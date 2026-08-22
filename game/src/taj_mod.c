@@ -170,6 +170,21 @@ static unsigned int mod_racer_next_generation(void) {
 static void mod_racer_queue_retry(const TajModPersistentState *candidate,
                                    TajModPersistenceIssue issue) {
     if (candidate == NULL) return;
+    /* The queue is one slot deep, so parking is normally last-writer-wins:
+     * a later unlock candidate is built from s_roster.persisted and strictly
+     * supersedes an earlier unlock park, and a later ERASE supersedes
+     * anything (serial-equivalent: whatever the earlier park would have
+     * written, erase-all zeroes it). The one downgrade that loses intent is
+     * UNLOCK over a parked ERASE: the destructive action the player was told
+     * would retry must not be silently dropped by a code entered afterwards.
+     * The refused unlock keeps its session effect in RAM ("session remains
+     * active"); the erase replays first and, being erase-all, also erases
+     * the newer code -- which the player can simply re-enter. */
+    if (s_roster.retry_pending &&
+        s_roster.retry_issue == TAJ_MOD_PERSISTENCE_ERASE &&
+        issue == TAJ_MOD_PERSISTENCE_UNLOCK) {
+        return;
+    }
     s_roster.retry_candidate = *candidate;
     s_roster.retry_issue = issue;
     s_roster.retry_pending = 1;

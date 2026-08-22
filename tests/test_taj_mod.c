@@ -314,10 +314,6 @@ static void test_async_persistence_state_machine(void) {
     first = taj_mod_pending_generation_for_test();
     CHECK(first != 0 && taj_mod_persistence_pending());
     CHECK(store_has_state(&store, 1, 1));
-    /* A second destructive action cannot replace the first transaction. */
-    CHECK(!taj_mod_erase_all_bonuses());
-    CHECK(taj_mod_pending_generation_for_test() == first &&
-          taj_mod_is_unlocked() && taj_mod_is_enabled());
     taj_mod_report_persistence_failure(first);
     CHECK(!taj_mod_persistence_pending() && taj_mod_persistence_failed() &&
           taj_mod_persistence_issue() == TAJ_MOD_PERSISTENCE_UNLOCK &&
@@ -336,6 +332,12 @@ static void test_async_persistence_state_machine(void) {
      * shell's independent retry timer can ever flush the failed candidate. */
     CHECK(taj_mod_erase_all_bonuses());
     erase = taj_mod_pending_generation_for_test();
+    /* A second destructive action cannot replace the in-flight transaction:
+     * it parks instead (an UNLOCK park could not steal that slot back -- see
+     * the dedicated parked-erase test) and the identical candidate is simply
+     * superseded by the failure park below. */
+    CHECK(!taj_mod_erase_all_bonuses());
+    CHECK(taj_mod_pending_generation_for_test() == erase);
     CHECK(erase != 0 && !taj_mod_is_unlocked() &&
           store_has_state(&store, 0, 1));
     taj_mod_report_persistence_failure(erase);
@@ -433,6 +435,44 @@ static void test_async_success_defers_queued_erase_while_race_active(void) {
     store.read_result = 1;
     taj_mod_boot(&storage);
     CHECK(!taj_mod_is_unlocked() && !taj_mod_is_enabled());
+}
+
+/* The retry queue is one slot deep. A parked ERASE is a destructive intent
+ * the player has been promised will retry; a later unlock parking behind the
+ * same busy transaction must not silently replace it. The unlock stays
+ * session-active in RAM (the existing "session remains active" philosophy),
+ * and the erase replays first -- erase-all erases the newer code too, which
+ * a player can simply re-enter. */
+static void test_parked_erase_survives_later_unlock_park(void) {
+    MemoryStore store = { {0}, 0, 0, 1 };
+    TajModStateStorage storage = storage_for(&store);
+    unsigned int first;
+    unsigned int erase_replay;
+
+    taj_mod_reset_for_test();
+    taj_mod_boot(&storage);
+    taj_mod_set_async_persistence_for_test(1);
+    CHECK(taj_mod_submit_magic_code("ABRACADABRA"));
+    first = taj_mod_pending_generation_for_test();
+    CHECK(first != 0 && taj_mod_persistence_pending());
+    /* The erase parks behind the in-flight unlock commit... */
+    CHECK(!taj_mod_erase_all_bonuses());
+    /* ...and a second unlock discovered while still busy keeps its session
+     * effect but must not steal the park from the destructive intent. */
+    CHECK(mod_racer_submit_magic_code("WIZPIGPOWER") == MOD_RACER_WIZPIG);
+    CHECK(mod_racer_is_enabled(MOD_RACER_WIZPIG));
+    taj_mod_report_persistence_success(first);
+    /* The chained replay executes the parked ERASE, not the unlock. */
+    CHECK(!taj_mod_is_unlocked() && !mod_racer_is_unlocked(MOD_RACER_WIZPIG));
+    CHECK(store_has_state(&store, 0, 1));
+    erase_replay = taj_mod_pending_generation_for_test();
+    CHECK(erase_replay != 0 && erase_replay != first);
+    taj_mod_report_persistence_success(erase_replay);
+    CHECK(!taj_mod_persistence_pending() && !taj_mod_persistence_failed());
+    taj_mod_reset_for_test();
+    store.read_result = 1;
+    taj_mod_boot(&storage);
+    CHECK(!taj_mod_is_unlocked() && !mod_racer_is_unlocked(MOD_RACER_WIZPIG));
 }
 
 /* The failure path's ERASE-restore arm is the same hazard in the other
@@ -604,6 +644,7 @@ int main(void) {
     test_persisted_reload_and_failures();
     test_async_persistence_state_machine();
     test_async_success_defers_queued_erase_while_race_active();
+    test_parked_erase_survives_later_unlock_park();
     test_async_erase_failure_restore_defers_while_race_active();
     test_failed_erase_is_transactional();
     test_challenge_mask_and_identity();
