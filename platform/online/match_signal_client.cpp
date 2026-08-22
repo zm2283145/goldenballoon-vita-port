@@ -46,6 +46,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -74,6 +75,12 @@ constexpr size_t kMaxQueuedEvents = 1024u;
 /* Read-poll slice: every blocking wait on the socket thread wakes at this
  * cadence to honor stop/close requests and the welcome deadline. */
 constexpr uint32_t kPollSliceMs = 20u;
+/* Per-frame write budget. A healthy peer drains a 60 KiB signaling frame
+ * in far less; a peer this stalled is already lost, and close() can abort
+ * the wait sooner through the interrupt. */
+constexpr uint32_t kDataWriteBudgetMs = 5000u;
+/* The final close frame's bounded best effort. */
+constexpr uint32_t kCloseFrameBudgetMs = 250u;
 
 uint64_t steadyNowMs() {
     return static_cast<uint64_t>(
@@ -606,6 +613,15 @@ NativeSocket connectTcp(const std::string &host, uint16_t port,
         fd = ::socket(entry->ai_family, entry->ai_socktype,
                       entry->ai_protocol);
         if (fd == kBadNativeSocket) continue;
+#ifdef SO_NOSIGPIPE
+        /* A write aborted by close()'s shutdown must surface as EPIPE, not
+         * kill the process (BSD/macOS; Linux uses MSG_NOSIGNAL per send). */
+        {
+            int one = 1;
+            ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE,
+                         reinterpret_cast<const char *>(&one), sizeof(one));
+        }
+#endif
         if (!setNonBlocking(fd, true)) {
             closeNativeSocket(fd);
             fd = kBadNativeSocket;
@@ -652,13 +668,74 @@ NativeSocket connectTcp(const std::string &host, uint16_t port,
             }
             break;
         }
-        if (established && setNonBlocking(fd, false)) break;
+        /* The fd stays non-blocking for its whole life: reads go through
+         * timeout-sliced waits and writes through the interruptible
+         * deadline-bound writeAll, so nothing on the socket thread can
+         * block past a poll slice. */
+        if (established) break;
         closeNativeSocket(fd);
         fd = kBadNativeSocket;
         if (*timedOut || stopping) break;
     }
     ::freeaddrinfo(results);
     return fd;
+}
+
+/* Wait up to `ms` for writability. poll() on POSIX -- select() is
+ * undefined behavior once a long-lived launcher's descriptor numbers reach
+ * FD_SETSIZE; Windows select() has no such value limit. */
+void waitWritable(int fd, uint32_t ms) {
+#ifdef _WIN32
+    fd_set writable;
+    FD_ZERO(&writable);
+    FD_SET(static_cast<NativeSocket>(fd), &writable);
+    struct timeval slice;
+    slice.tv_sec = 0;
+    slice.tv_usec = static_cast<long>(ms) * 1000;
+    (void)::select(0, nullptr, &writable, nullptr, &slice);
+#else
+    struct pollfd item;
+    item.fd = fd;
+    item.events = POLLOUT;
+    item.revents = 0;
+    (void)::poll(&item, 1, static_cast<int>(ms));
+#endif
+}
+
+/* mbedtls_net_send with SIGPIPE suppressed where the socket option cannot
+ * do it (MSG_NOSIGNAL). Used for plain writes and as the TLS bio send
+ * callback, so both paths share one signal-safe choke point. */
+int netSendNoSignal(void *context, const unsigned char *data, size_t length) {
+    mbedtls_net_context *net = static_cast<mbedtls_net_context *>(context);
+    int flags = 0;
+#ifdef MSG_NOSIGNAL
+    flags = MSG_NOSIGNAL;
+#endif
+#ifdef _WIN32
+    const int wrote = static_cast<int>(
+        ::send(static_cast<NativeSocket>(net->fd),
+               reinterpret_cast<const char *>(data),
+               static_cast<int>(length), flags));
+    if (wrote < 0) {
+        if (WSAGetLastError() == WSAEWOULDBLOCK) {
+            return MBEDTLS_ERR_SSL_WANT_WRITE;
+        }
+        return MBEDTLS_ERR_NET_SEND_FAILED;
+    }
+#else
+    const int wrote = static_cast<int>(
+        ::send(net->fd, data, length, flags));
+    if (wrote < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+            return MBEDTLS_ERR_SSL_WANT_WRITE;
+        }
+        if (errno == EPIPE || errno == ECONNRESET) {
+            return MBEDTLS_ERR_NET_CONN_RESET;
+        }
+        return MBEDTLS_ERR_NET_SEND_FAILED;
+    }
+#endif
+    return wrote;
 }
 
 std::string standardBase64(const unsigned char *bytes, size_t length) {
@@ -908,6 +985,9 @@ struct Transport {
     mbedtls_ssl_config config;
     mbedtls_x509_crt ca;
     bool alive = false;
+    /* close() sets this (closeRequested); a data write in progress aborts
+     * at its next poll slice instead of blocking behind a stalled peer. */
+    const std::atomic<bool> *interrupt = nullptr;
 
     Transport() {
         mbedtls_net_init(&net);
@@ -962,7 +1042,7 @@ struct Transport {
             mbedtls_ssl_set_hostname(&ssl, hostname.c_str()) != 0) {
             return false;
         }
-        mbedtls_ssl_set_bio(&ssl, &net, mbedtls_net_send, nullptr,
+        mbedtls_ssl_set_bio(&ssl, &net, netSendNoSignal, nullptr,
                             mbedtls_net_recv_timeout);
         for (;;) {
             if (stopping) return false;
@@ -972,9 +1052,10 @@ struct Transport {
             }
             const int ret = mbedtls_ssl_handshake(&ssl);
             if (ret == 0) return true;
-            if (ret != MBEDTLS_ERR_SSL_WANT_READ &&
-                ret != MBEDTLS_ERR_SSL_WANT_WRITE &&
-                ret != MBEDTLS_ERR_SSL_TIMEOUT) {
+            if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+                waitWritable(net.fd, kPollSliceMs);
+            } else if (ret != MBEDTLS_ERR_SSL_WANT_READ &&
+                       ret != MBEDTLS_ERR_SSL_TIMEOUT) {
                 return false;
             }
         }
@@ -997,13 +1078,25 @@ struct Transport {
         }
         ret = mbedtls_net_recv_timeout(&net, buffer, capacity, kPollSliceMs);
         if (ret > 0) return ret;
-        if (ret == MBEDTLS_ERR_SSL_TIMEOUT) return 0;
+        if (ret == MBEDTLS_ERR_SSL_TIMEOUT ||
+            ret == MBEDTLS_ERR_SSL_WANT_READ) {
+            /* WANT_READ: select claimed readable but the non-blocking recv
+             * raced to empty -- same as a timeout slice. */
+            return 0;
+        }
         alive = false;
         return -1;
     }
 
-    bool writeAll(const unsigned char *data, size_t length) {
+    /* Deadline-bound, interruptible write. Every stall waits one poll
+     * slice at a time, honoring `interrupt` (unless the frame is a final
+     * close frame, which must get its bounded best effort even while a
+     * close is in progress) and the budget, so a peer with a zero receive
+     * window can never wedge the socket thread -- and with it close(). */
+    bool writeAll(const unsigned char *data, size_t length, uint32_t budgetMs,
+                  bool honorInterrupt) {
         if (!alive) return false;
+        const uint64_t deadline = steadyNowMs() + budgetMs;
         size_t sent = 0u;
         while (sent < length) {
             int ret;
@@ -1011,11 +1104,18 @@ struct Transport {
                 ret = mbedtls_ssl_write(&ssl, data + sent, length - sent);
                 if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
                     ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
-                    continue;
+                    ret = MBEDTLS_ERR_SSL_WANT_WRITE;
                 }
             } else {
-                ret = mbedtls_net_send(&net, data + sent, length - sent);
-                if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+                ret = netSendNoSignal(&net, data + sent, length - sent);
+            }
+            if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+                if ((honorInterrupt && interrupt != nullptr && *interrupt) ||
+                    steadyNowMs() >= deadline) {
+                    return false; /* aborted mid-frame; the socket is done */
+                }
+                waitWritable(net.fd, kPollSliceMs);
+                continue;
             }
             if (ret <= 0) {
                 alive = false;
@@ -1026,9 +1126,10 @@ struct Transport {
         return true;
     }
 
-    bool writeAll(const std::string &data) {
+    bool writeAll(const std::string &data, uint32_t budgetMs,
+                  bool honorInterrupt = true) {
         return writeAll(reinterpret_cast<const unsigned char *>(data.data()),
-                        data.size());
+                        data.size(), budgetMs, honorInterrupt);
     }
 
     void teardown() {
@@ -1078,7 +1179,11 @@ struct Transport {
         payload.push_back(static_cast<char>((code >> 8u) & 0xffu));
         payload.push_back(static_cast<char>(code & 0xffu));
         payload += reason;
-        return writeAll(clientFrame(0x8u, payload));
+        /* Bounded best effort, deliberately NOT interruptible: this is the
+         * one frame close() itself wants written, and a peer that has
+         * stopped reading only costs the short budget. */
+        return writeAll(clientFrame(0x8u, payload), kCloseFrameBudgetMs,
+                        /*honorInterrupt=*/false);
     }
 };
 
@@ -1140,6 +1245,7 @@ void MdkrMatchSignalClient::State::run() {
     }
     transport.net.fd = static_cast<int>(fd);
     transport.alive = true;
+    transport.interrupt = &closeRequested;
 
     /* ---- TLS ---- */
     if (transport.tls) {
@@ -1180,7 +1286,7 @@ void MdkrMatchSignalClient::State::run() {
                           "Sec-WebSocket-Protocol: " +
                           kMdkrMatchSignalSubprotocol + ", " +
                           credentialOffer + "\r\n\r\n";
-    const bool requestSent = transport.writeAll(request);
+    const bool requestSent = transport.writeAll(request, kDataWriteBudgetMs);
     mbedtls_platform_zeroize(&request[0], request.size());
     mbedtls_platform_zeroize(&credentialOffer[0], credentialOffer.size());
     if (!requestSent) {
@@ -1291,8 +1397,15 @@ void MdkrMatchSignalClient::State::run() {
                 pending.swap(outbound);
             }
             for (const std::string &payload : pending) {
-                if (!transport.writeAll(transport.clientFrame(0x1u, payload))) {
-                    terminate(kMdkrMatchSignalTransportLost, false);
+                if (!transport.writeAll(transport.clientFrame(0x1u, payload),
+                                        kDataWriteBudgetMs)) {
+                    /* A close() abort lands here mid-flush; everything
+                     * else is a dead or hopelessly stalled transport. */
+                    if (closeRequested) {
+                        finishClose();
+                    } else {
+                        terminate(kMdkrMatchSignalTransportLost, false);
+                    }
                     return;
                 }
             }
@@ -1359,8 +1472,13 @@ void MdkrMatchSignalClient::State::run() {
             carried.erase(0u, headerSize + static_cast<size_t>(length));
 
             if (opcode == 0x9u) { /* ping -> pong */
-                if (!transport.writeAll(transport.clientFrame(0xau, payload))) {
-                    terminate(kMdkrMatchSignalTransportLost, false);
+                if (!transport.writeAll(transport.clientFrame(0xau, payload),
+                                        kDataWriteBudgetMs)) {
+                    if (closeRequested) {
+                        finishClose();
+                    } else {
+                        terminate(kMdkrMatchSignalTransportLost, false);
+                    }
                     return;
                 }
                 continue;
@@ -1369,7 +1487,8 @@ void MdkrMatchSignalClient::State::run() {
             if (opcode == 0x8u) {
                 /* Server close: echo per RFC, then the JS close-event path
                  * (terminal transport loss, no 4003). */
-                (void)transport.writeAll(transport.clientFrame(0x8u, payload));
+                (void)transport.writeAll(transport.clientFrame(0x8u, payload),
+                                         kCloseFrameBudgetMs);
                 terminate(kMdkrMatchSignalTransportLost, false);
                 return;
             }
@@ -1575,6 +1694,11 @@ void MdkrMatchSignalClient::close() {
         state.stopping = true;
         toJoin = std::move(state.thread);
     }
+    /* The join is bounded by construction: every socket-thread wait is a
+     * kPollSliceMs slice, and every write is interruptible (closeRequested
+     * aborts a data write mid-flush; the clean-close frame itself carries
+     * its own short deadline), so a peer with a stalled receive window
+     * cannot hold this join. */
     if (toJoin.joinable()) toJoin.join();
 }
 
