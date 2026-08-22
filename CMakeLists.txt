@@ -910,6 +910,46 @@ if(NOT EMSCRIPTEN)
                 endif()
                 add_test(NAME match_peer_crypto COMMAND mdkr_match_peer_crypto_test)
 
+                # O-T1 online multiplayer: the native match-signaling client
+                # (platform/online/match_signal_client.cpp), pinned wire-level
+                # against a scriptable loopback fake of the
+                # /api/match/{roomId}/signal endpoint
+                # (tests/match_signal_test_server.cpp). Lives here (not
+                # cmake/tests.cmake) because it needs nlohmann + MbedTLS + the
+                # embedded CA header, which are only configured inside this
+                # MDKR_NATIVE_PHONE_PARTY block. ROM-, GPU- and network-free:
+                # every socket is 127.0.0.1 on an ephemeral port.
+                add_executable(mdkr_match_signal_client_test
+                    ${CMAKE_SOURCE_DIR}/tests/test_match_signal_client.cpp
+                    ${CMAKE_SOURCE_DIR}/tests/match_signal_test_server.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_webrtc_signaling.cpp)
+                target_include_directories(mdkr_match_signal_client_test PRIVATE
+                    ${CMAKE_SOURCE_DIR}/platform
+                    ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}
+                    ${MDKR_PARTY_GENERATED_INCLUDE})
+                target_compile_features(mdkr_match_signal_client_test PRIVATE
+                    cxx_std_17)
+                target_link_libraries(mdkr_match_signal_client_test PRIVATE
+                    MbedTLS::MbedTLS Threads::Threads)
+                if(WIN32)
+                    target_link_libraries(mdkr_match_signal_client_test PRIVATE
+                        ws2_32)
+                endif()
+                if(MSVC)
+                    target_compile_options(mdkr_match_signal_client_test PRIVATE
+                        /W4 /WX)
+                else()
+                    target_compile_options(mdkr_match_signal_client_test PRIVATE
+                        -Wall -Wextra -Wpedantic -Werror)
+                endif()
+                add_test(NAME match_signal_client
+                    COMMAND mdkr_match_signal_client_test)
+                # Bounded waits throughout the suite (two deliberate ~2 s
+                # welcome-timeout cases included); the ctest timeout backstops
+                # a genuine hang instead of stalling the suite.
+                set_tests_properties(match_signal_client PROPERTIES TIMEOUT 120)
+
                 # End-to-end lane driver: the real WSS/WebRTC transport under
                 # the real host model, narrated on stdout. Deliberately no
                 # add_test() — it needs a live local Party Worker and a paired
