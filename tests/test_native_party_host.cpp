@@ -1182,6 +1182,27 @@ void controllerRenameIsStrictAndSurvivesRoomUpdates() {
     assert(host.view().controllers[0].name == "A friend's phone");
 }
 
+/* F1 flood guard semantics: dedupe against the last admitted name (the
+ * browser host's exact behavior), a humane fresh-name budget per fixed
+ * window (a rename is a human act), and recovery in the next window. */
+void renameGateDedupesAndRateLimits() {
+    MdkrPartyRenameGate gate;
+    assert(mdkr_party_rename_admit(gate, "Blue Racer", 10000u));
+    assert(!mdkr_party_rename_admit(gate, "Blue Racer", 10001u));
+    assert(mdkr_party_rename_admit(gate, "Red Racer", 10002u));
+    assert(mdkr_party_rename_admit(gate, "Green Racer", 10003u));
+    /* Burst spent: nothing fresh for the rest of the window... */
+    assert(!mdkr_party_rename_admit(gate, "Gold Racer", 10004u));
+    assert(!mdkr_party_rename_admit(gate, "Gold Racer",
+                                    10000u + kMdkrPartyRenameWindowMs - 1u));
+    /* ...and the next window admits a human's next rename. */
+    assert(mdkr_party_rename_admit(gate, "Gold Racer",
+                                   10000u + kMdkrPartyRenameWindowMs));
+    /* The dedupe outlives windows: the same name never re-enqueues. */
+    assert(!mdkr_party_rename_admit(gate, "Gold Racer",
+                                    10000u + 10u * kMdkrPartyRenameWindowMs));
+}
+
 size_t rumbleSendCount(const FakeTransport &transport) {
     size_t count = 0u;
     for (const std::string &call : transport.calls) {
@@ -1315,6 +1336,7 @@ int main() {
     groupedFallbackCodeIsDisplayOnly();
     neverConnectedLeaseReadsAsConnecting();
     controllerRenameIsStrictAndSurvivesRoomUpdates();
+    renameGateDedupesAndRateLimits();
     sustainedRumbleRefreshesWhileTheMailboxHoldsStrength();
     mismatchedOrDisconnectedSeatsGetNoRumbleRefreshes();
     mdkr_native_remote_pad_reset_all();

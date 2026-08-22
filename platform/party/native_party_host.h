@@ -310,6 +310,49 @@ inline bool mdkr_party_canonical_https_origin(const std::string &origin) {
 }
 
 /*
+ * F1 flood guard: per-peer admission for controller_rename at the transport
+ * boundary, BEFORE any event exists. ControllerRenamed is a non-droppable
+ * event in the shared transport queue (a rename mutates the host's model and
+ * must never vanish silently), which is only safe if a hostile phone cannot
+ * mint them at wire speed -- otherwise a rename flood evicts and then
+ * refuses the droppable pad packets every other seat depends on. A rename
+ * is a human act, so the budget is humane and tiny: a repeat of the last
+ * admitted name is dropped outright (the browser host dedupes on value the
+ * same way), and at most kMdkrPartyRenameWindowMessages fresh names are
+ * admitted per kMdkrPartyRenameWindowMs fixed window -- the same
+ * fixed-window shape as the room model's per-socket signal throttle
+ * (kMdkrLanPartySignalWindow* / worker admitSignalMessage), scaled down to
+ * this one message class. Refusal costs no queue slot. Inline because both
+ * transports keep one gate per peer and must stay byte-alike (twin rule);
+ * tests/test_native_party_host.cpp pins the semantics and
+ * tests/test_party_event_queue.cpp pins the no-starvation outcome.
+ */
+inline constexpr uint64_t kMdkrPartyRenameWindowMs = 3000u;
+inline constexpr unsigned kMdkrPartyRenameWindowMessages = 3u;
+
+struct MdkrPartyRenameGate {
+    std::string lastName;
+    bool named = false;
+    uint64_t windowStartedAtMs = 0u;
+    unsigned windowMessages = 0u;
+};
+
+inline bool mdkr_party_rename_admit(MdkrPartyRenameGate &gate,
+                                    const std::string &name,
+                                    uint64_t nowMs) {
+    if (gate.named && gate.lastName == name) return false;
+    if (nowMs - gate.windowStartedAtMs >= kMdkrPartyRenameWindowMs) {
+        gate.windowStartedAtMs = nowMs;
+        gate.windowMessages = 0u;
+    }
+    if (gate.windowMessages >= kMdkrPartyRenameWindowMessages) return false;
+    gate.windowMessages++;
+    gate.named = true;
+    gate.lastName = name;
+    return true;
+}
+
+/*
  * F11: the six-digit invite code, grouped for DISPLAY as two groups of three
  * ("123 456"). Grouping is presentation only -- every input path still takes
  * the raw six digits -- so anything that is not exactly six digits is

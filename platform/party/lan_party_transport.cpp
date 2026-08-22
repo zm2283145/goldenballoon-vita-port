@@ -132,6 +132,8 @@ struct Peer {
     uint32_t peerGeneration = 0u;
     bool failed = false;
     bool authenticated = false;
+    /* F1 flood guard state, one per peer (native_party_host.h). */
+    MdkrPartyRenameGate renameGate;
     bool protocolMismatch = false;
     uint32_t pingNonce = 0u;
     Clock::time_point nextPingAt{};
@@ -663,16 +665,23 @@ private:
                  * controller_ready may relabel its own seat row, and only
                  * within the redeem-time name budget; the host model
                  * (native_party_host.cpp validRenameName) is the strict
-                 * validation boundary behind this size gate. */
-                bool authenticated = false;
-                {
+                 * validation boundary behind this size gate. The per-peer
+                 * mdkr_party_rename_admit gate (dedupe + humane rate) runs
+                 * BEFORE any event exists, so a rename flood can never
+                 * crowd pad packets out of the shared queue. */
+                std::string name;
+                bool admitted = false;
+                if (safeString(value, "name", name, 48u)) {
+                    const uint64_t nowMs = static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            Clock::now().time_since_epoch()).count());
                     std::lock_guard<std::mutex> lock(mutex_);
                     const auto found = peers_.find(peer->id);
-                    authenticated = found != peers_.end() &&
-                        found->second == peer && peer->authenticated;
+                    admitted = found != peers_.end() &&
+                        found->second == peer && peer->authenticated &&
+                        mdkr_party_rename_admit(peer->renameGate, name, nowMs);
                 }
-                std::string name;
-                if (authenticated && safeString(value, "name", name, 48u)) {
+                if (admitted) {
                     MdkrPartyTransportEvent renamed;
                     renamed.type = MdkrPartyTransportEventType::ControllerRenamed;
                     renamed.controllerId = peer->id;
