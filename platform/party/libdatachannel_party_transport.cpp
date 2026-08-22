@@ -581,6 +581,11 @@ private:
 
     void tick() {
         bool reconnect = false;
+        /* F4: whether the room socket was healthy at the moment a give-up
+         * verdict landed -- captured under the same lock, because the copy
+         * fork (network-blocked diagnosis vs generic remedy) is only honest
+         * about the socket state the ladder actually ran against. */
+        bool giveUpSocketHealthy = false;
         std::shared_ptr<rtc::WebSocket> cycleSocket;
         std::vector<std::shared_ptr<Peer>> ping;
         std::vector<std::shared_ptr<Peer>> expired;
@@ -627,6 +632,12 @@ private:
                         if (decision.giveUp) {
                             peer->gaveUp = true;
                             timedOut.push_back(peer);
+                            try {
+                                giveUpSocketHealthy =
+                                    socket_ && socket_->isOpen();
+                            } catch (...) {
+                                giveUpSocketHealthy = false;
+                            }
                         } else if (decision.recreatePeer) {
                             const auto known = controllers_.find(peer->id);
                             if (known != controllers_.end()) {
@@ -667,11 +678,14 @@ private:
              * are untouched. Reused CommandRejected shape (reason:
              * connect_timeout) rather than a new event type, since the host
              * already renders CommandRejected.message without needing to
-             * know the controller it came from. */
+             * know the controller it came from. F4: with the room socket
+             * healthy through the whole ladder, the specific diagnosis --
+             * the network blocks phone-to-display connections -- replaces
+             * the generic remedy (mdkr_party_give_up_copy). */
             MdkrPartyTransportEvent event;
             event.type = MdkrPartyTransportEventType::CommandRejected;
             event.controllerId = peer->id;
-            event.message = "This phone could not connect. Remove it and pair again.";
+            event.message = mdkr_party_give_up_copy(giveUpSocketHealthy);
             enqueue(std::move(event));
         }
         for (const auto &recreation : recreations) {
@@ -1206,14 +1220,32 @@ private:
                        value.contains("nonce") &&
                        value["nonce"].is_number_unsigned()) {
                 const uint64_t nonce = value["nonce"].get<uint64_t>();
-                std::lock_guard<std::mutex> lock(mutex_);
-                const auto found = peers_.find(peer->id);
-                if (nonce <= std::numeric_limits<uint32_t>::max() &&
-                    found != peers_.end() && found->second == peer &&
-                    peer->pingOutstandingAt != Clock::time_point{} &&
-                    static_cast<uint32_t>(nonce) == peer->pingNonce) {
-                    peer->pingOutstandingAt = Clock::time_point{};
-                    peer->nextPingAt = Clock::now() + std::chrono::seconds(5);
+                unsigned rttMs = 0u;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    const auto found = peers_.find(peer->id);
+                    if (nonce <= std::numeric_limits<uint32_t>::max() &&
+                        found != peers_.end() && found->second == peer &&
+                        peer->pingOutstandingAt != Clock::time_point{} &&
+                        static_cast<uint32_t>(nonce) == peer->pingNonce) {
+                        /* RTT: this pong closes the outstanding ping.
+                         * Floored at 1 ms so "measured, just fast" never
+                         * reads as the host model's no-sample zero. */
+                        const auto elapsed = std::chrono::duration_cast<
+                            std::chrono::milliseconds>(
+                                Clock::now() - peer->pingOutstandingAt).count();
+                        rttMs = elapsed < 1 ? 1u : static_cast<unsigned>(elapsed);
+                        peer->pingOutstandingAt = Clock::time_point{};
+                        peer->nextPingAt = Clock::now() + std::chrono::seconds(5);
+                    }
+                }
+                /* Outside the lock: enqueue() takes mutex_ itself. */
+                if (rttMs != 0u) {
+                    MdkrPartyTransportEvent sample;
+                    sample.type = MdkrPartyTransportEventType::ControllerRtt;
+                    sample.controllerId = peer->id;
+                    sample.rttMs = rttMs;
+                    enqueue(std::move(sample));
                 }
             }
         } catch (...) { /* Malformed peer control cannot escape its callback. */ }

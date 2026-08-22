@@ -134,6 +134,32 @@ def run(args: argparse.Namespace) -> None:
                        "globalThis.__mdkrPartyHostTestState.controlPongs",
                        lambda value: value == 1,
                        "reliable control ping/pong", args.timeout)
+            # RTT instrumentation (RC checklist items 33/50 gain a number):
+            # the matched pong must carry a measured round trip across the
+            # seam, and the value must be plausible — above zero, and under
+            # the 5 s that would mean the direct channel is unusable.
+            rtt = host.evaluate(
+                "globalThis.__mdkrPartyHostTestState.controlRtts?.at(-1)")
+            require(isinstance(rtt, (int, float)) and 0 < rtt < 5000,
+                    f"control-channel RTT sample missing or implausible: {rtt!r}")
+            seat_status = host.evaluate(
+                "document.querySelector('[data-seat=\\\"1\\\"] small').textContent")
+            require("ms · direct" in seat_status,
+                    f"seat row does not surface the RTT: {seat_status!r}")
+            # The phone's own status pill: its bounded 5 s probe rides the
+            # existing input_test/input_test_ack round trip, so a plausible
+            # number appears without any new protocol message.
+            phone_rtt = wait_value(phone,
+                "(() => { const rtts = globalThis.__mdkrControllerTestState.rtts;"
+                " return rtts?.length ? rtts[rtts.length-1] : null; })()",
+                lambda value: isinstance(value, (int, float)) and 0 < value < 5000,
+                "phone-side RTT sample", args.timeout)
+            pill = phone.evaluate("""(() => {
+              const pill = document.getElementById('rtt-pill');
+              return {hidden: pill.hidden, text: pill.textContent};
+            })()""")
+            require(pill["hidden"] is False and pill["text"].endswith(" ms"),
+                    f"phone RTT pill missing or unlabeled: {pill}")
 
             # F1 session-alive names: the phone renames itself over the live
             # control channel and the host seat row updates without any room

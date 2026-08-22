@@ -464,6 +464,11 @@ void MdkrNativePartyHost::applyRoomState(
                 former->connectionSequence == candidate.connectionSequence) {
                 candidate.pairingPhrase = former->pairingPhrase;
             }
+            /* RTT rides the same rule as the phrase: it measured this exact
+             * channel, so a new connectionSequence starts sampleless. */
+            if (former->connectionSequence == candidate.connectionSequence) {
+                candidate.rttMs = former->rttMs;
+            }
             /* F2: connection history belongs to the phone (id + key), not
              * to any one room transition -- carry it. */
             candidate.everConnected = candidate.everConnected ||
@@ -553,6 +558,8 @@ void MdkrNativePartyHost::applyEvent(
              * refusal would leave the old channel's words standing
              * indefinitely against a live channel they do not bind. */
             candidate->pairingPhrase.clear();
+            /* The RTT sample measured the channel that just ended. */
+            candidate->rttMs = 0u;
             (void)mdkr_native_remote_pad_set_haptics(
                 candidate->seat - 1u, ownerFor(*candidate),
                 candidate->connectionSequence, false);
@@ -587,6 +594,15 @@ void MdkrNativePartyHost::applyEvent(
                 view_.message =
                     "Phone input paused safely. Reconnecting…";
             }
+            return;
+        }
+        case MdkrPartyTransportEventType::ControllerRtt: {
+            /* RTT: newest matched pong wins; the sample is cosmetic and
+             * scoped to the live channel (cleared wherever that channel
+             * ends or demotes). */
+            MdkrNativePartyController *candidate = controller(event.controllerId);
+            if (candidate == nullptr || !occupiesSeat(*candidate)) return;
+            candidate->rttMs = event.rttMs;
             return;
         }
         case MdkrPartyTransportEventType::ControllerPhrase: {
@@ -627,6 +643,8 @@ void MdkrNativePartyHost::applyEvent(
             candidate->needsRebind = false;
             candidate->direct = false;
             candidate->haptics = false;
+            /* No RTT number may vouch for a demoted channel. */
+            candidate->rttMs = 0u;
             (void)mdkr_native_remote_pad_set_haptics(
                 candidate->seat - 1u, ownerFor(*candidate),
                 candidate->connectionSequence, false);

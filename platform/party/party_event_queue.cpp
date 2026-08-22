@@ -14,6 +14,9 @@ bool isDroppable(MdkrPartyTransportEventType type) {
     bool droppable = false;
     switch (type) {
         case MdkrPartyTransportEventType::ControllerPacket:
+        /* An RTT sample is cosmetic and superseded by the next pong; a
+         * dropped one costs one display refresh, never model state. */
+        case MdkrPartyTransportEventType::ControllerRtt:
             droppable = true;
             break;
         case MdkrPartyTransportEventType::RoomState:

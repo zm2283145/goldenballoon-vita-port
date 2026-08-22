@@ -693,14 +693,32 @@ private:
                        value.contains("nonce") &&
                        value["nonce"].is_number_unsigned()) {
                 const uint64_t nonce = value["nonce"].get<uint64_t>();
-                std::lock_guard<std::mutex> lock(mutex_);
-                const auto found = peers_.find(peer->id);
-                if (nonce <= std::numeric_limits<uint32_t>::max() &&
-                    found != peers_.end() && found->second == peer &&
-                    peer->pingOutstandingAt != Clock::time_point{} &&
-                    static_cast<uint32_t>(nonce) == peer->pingNonce) {
-                    peer->pingOutstandingAt = Clock::time_point{};
-                    peer->nextPingAt = Clock::now() + std::chrono::seconds(5);
+                unsigned rttMs = 0u;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    const auto found = peers_.find(peer->id);
+                    if (nonce <= std::numeric_limits<uint32_t>::max() &&
+                        found != peers_.end() && found->second == peer &&
+                        peer->pingOutstandingAt != Clock::time_point{} &&
+                        static_cast<uint32_t>(nonce) == peer->pingNonce) {
+                        /* RTT: this pong closes the outstanding ping.
+                         * Floored at 1 ms so "measured, just fast" never
+                         * reads as the host model's no-sample zero. */
+                        const auto elapsed = std::chrono::duration_cast<
+                            std::chrono::milliseconds>(
+                                Clock::now() - peer->pingOutstandingAt).count();
+                        rttMs = elapsed < 1 ? 1u : static_cast<unsigned>(elapsed);
+                        peer->pingOutstandingAt = Clock::time_point{};
+                        peer->nextPingAt = Clock::now() + std::chrono::seconds(5);
+                    }
+                }
+                /* Outside the lock: enqueue() takes mutex_ itself. */
+                if (rttMs != 0u) {
+                    MdkrPartyTransportEvent sample;
+                    sample.type = MdkrPartyTransportEventType::ControllerRtt;
+                    sample.controllerId = peer->id;
+                    sample.rttMs = rttMs;
+                    enqueue(std::move(sample));
                 }
             }
         } catch (...) { /* Malformed peer control cannot escape its callback. */ }

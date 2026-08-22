@@ -1145,6 +1145,24 @@ void groupedFallbackCodeIsDisplayOnly() {
     assert(mdkr_party_grouped_fallback_code("") == "");
 }
 
+/* F4: the C3 give-up's copy forks on what actually failed. With the room
+ * socket healthy the whole ladder, signaling delivered every offer and the
+ * phone still never connected -- the network between the devices is the
+ * diagnosis, and all three surfaces speak this exact sentence. With the
+ * socket down the generic remedy stays: signaling itself was broken, so
+ * nothing about the direct path was proven. TURN has been server-delivered
+ * since wave 0, which is exactly why the rare healthy-socket give-up must
+ * name the real cause instead of a remedy that cannot help. */
+void giveUpCopyNamesTheNetworkOnlyWhenSignalingWasHealthy() {
+    assert(std::string(mdkr_party_give_up_copy(true)) ==
+           kMdkrPartyIceBlockedCopy);
+    assert(std::string(mdkr_party_give_up_copy(false)) ==
+           "This phone could not connect. Remove it and pair again.");
+    assert(std::string(kMdkrPartyIceBlockedCopy) ==
+           "This network blocks phone-to-display connections. "
+           "Try another Wi-Fi network or a phone hotspot.");
+}
+
 size_t rotateCallCount(const FakeTransport &transport) {
     size_t count = 0u;
     for (const std::string &call : transport.calls) {
@@ -1274,6 +1292,81 @@ void neverConnectedLeaseReadsAsConnecting() {
         roomEvent(4u, 1u, 121000u, {phone, phoneConnected}));
     host.service(1005u);
     assert(host.view().controllers[1].everConnected);
+}
+
+/* RTT surfacing: each matched pong on a seat's control channel arrives as a
+ * ControllerRtt event; the model keeps the newest sample per seat so both
+ * host surfaces can show "NN ms · direct". The sample describes ONE live
+ * channel: it survives room updates of the same connection, and dies with
+ * the channel -- a disconnect, a protocol mismatch, or a fresh
+ * connectionSequence all clear it rather than letting an old channel's
+ * number vouch for a new one. */
+void rttSampleTracksItsOwnChannelOnly() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    auto phone = approved("phone-a", 1u, 4u, 9u);
+    transport.events.push_back(roomEvent(1u, 1u, 121000u, {phone}));
+    MdkrPartyTransportEvent connected;
+    connected.type = MdkrPartyTransportEventType::ControllerConnected;
+    connected.controllerId = "phone-a";
+    transport.events.push_back(connected);
+    host.service(1000u);
+    assert(host.view().controllers[0].rttMs == 0u);  // no sample yet
+
+    MdkrPartyTransportEvent rtt;
+    rtt.type = MdkrPartyTransportEventType::ControllerRtt;
+    rtt.controllerId = "phone-a";
+    rtt.rttMs = 23u;
+    transport.events.push_back(rtt);
+    host.service(1001u);
+    assert(host.view().controllers[0].rttMs == 23u);
+
+    /* Newest sample wins; an unknown controller's sample is dropped. */
+    rtt.rttMs = 41u;
+    transport.events.push_back(rtt);
+    MdkrPartyTransportEvent ghost = rtt;
+    ghost.controllerId = "phone-zz";
+    transport.events.push_back(ghost);
+    host.service(1002u);
+    assert(host.view().controllers[0].rttMs == 41u);
+
+    /* Survives a room update of the same connection... */
+    transport.events.push_back(roomEvent(2u, 1u, 121000u, {phone}));
+    host.service(1003u);
+    assert(host.view().controllers[0].rttMs == 41u);
+
+    /* ...but a fresh connectionSequence is a new channel with no sample. */
+    transport.events.push_back(roomEvent(
+        3u, 1u, 121000u, {approved("phone-a", 1u, 4u, 10u)}));
+    host.service(1004u);
+    assert(host.view().controllers[0].rttMs == 0u);
+
+    /* A disconnect ends the measured channel: the sample goes with it. */
+    rtt.rttMs = 17u;
+    transport.events.push_back(rtt);
+    host.service(1005u);
+    assert(host.view().controllers[0].rttMs == 17u);
+    MdkrPartyTransportEvent dropped;
+    dropped.type = MdkrPartyTransportEventType::ControllerDisconnected;
+    dropped.controllerId = "phone-a";
+    transport.events.push_back(dropped);
+    host.service(1006u);
+    assert(host.view().controllers[0].rttMs == 0u);
+
+    /* A protocol mismatch demotes the channel: no number may vouch for it. */
+    transport.events.push_back(connected);
+    rtt.rttMs = 12u;
+    transport.events.push_back(rtt);
+    host.service(1007u);
+    assert(host.view().controllers[0].rttMs == 12u);
+    MdkrPartyTransportEvent mismatch;
+    mismatch.type = MdkrPartyTransportEventType::ControllerProtocolMismatch;
+    mismatch.controllerId = "phone-a";
+    transport.events.push_back(mismatch);
+    host.service(1008u);
+    assert(host.view().controllers[0].rttMs == 0u);
 }
 
 MdkrPartyTransportEvent renameEvent(std::string id, std::string name) {
@@ -1500,7 +1593,9 @@ int main() {
     phraseArrivesAtConnectionAndSurvivesRoomUpdates();
     groupedFallbackCodeIsDisplayOnly();
     displayedInviteAutoRotatesBeforeItsTtlLapses();
+    giveUpCopyNamesTheNetworkOnlyWhenSignalingWasHealthy();
     neverConnectedLeaseReadsAsConnecting();
+    rttSampleTracksItsOwnChannelOnly();
     controllerRenameIsStrictAndSurvivesRoomUpdates();
     renameGateDedupesAndRateLimits();
     sustainedRumbleRefreshesWhileTheMailboxHoldsStrength();

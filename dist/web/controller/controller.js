@@ -729,12 +729,19 @@
     let lanFrame = null;
     let lanPending = null;
     let inputTestNonce = 0;
+    // RTT pill: when the newest input_test left this page (performance.now
+    // domain; 0 = none outstanding). Every input_test doubles as a probe.
+    let rttProbeSentAt = 0;
     let controlGeneration = 0;
     let reconnectTimer = null;
     let reconnectAttempt = 0;
     let reconnectExhausted = false;
     let controlStableTimer = null;
     let signalingLimited = false;
+    // F4: consecutive peer-connection failures; reset by a completed direct
+    // connection. Three with the room socket healthy earns the specific
+    // diagnosis — the same sentence the native and browser hosts speak.
+    let peerFailureStreak = 0;
     let publishedControllerTransition = 0;
     let publishedControllerFingerprint = "";
     const wiredPeers = new WeakSet();
@@ -748,6 +755,7 @@
     function completeDirectRecovery(connection) {
       if (peer !== connection || !directChannelsOpen()) return;
       everConnectedDirect = true;
+      peerFailureStreak = 0;
       if (phase === "reconnecting" &&
           currentPeerGeneration >= recoveryPeerGeneration) {
         recoveryPeerGeneration = 0;
@@ -923,7 +931,16 @@
         if (peer !== connection) return;
         if (connection.connectionState === "connected") {
           completeDirectRecovery(connection);
-        } else if (["failed", "disconnected"].includes(connection.connectionState)) {
+        } else if (connection.connectionState === "failed") {
+          peerFailureStreak++;
+          directTransportLost(connection);
+          if (peerFailureStreak >= 3 && phase === "reconnecting" &&
+              controlSocket?.readyState === WebSocket.OPEN) {
+            $("reconnect-progress").textContent =
+              "This network blocks phone-to-display connections. " +
+              "Try another Wi-Fi network or a phone hotspot.";
+          }
+        } else if (connection.connectionState === "disconnected") {
           directTransportLost(connection);
         } else if (connection.connectionState === "closed") {
           directTransportLost(connection, true);
@@ -976,6 +993,19 @@
                     nonce: value.nonce}));
                 } catch (_) { directTransportLost(connection, true); }
               } else if (value.type === "input_test_ack" && value.nonce === inputTestNonce) {
+                if (rttProbeSentAt !== 0) {
+                  // RTT pill: the ack closes this page's bounded probe (the
+                  // same input_test round trip pairing already uses — no new
+                  // message class). Floored at 1 ms so "measured, just fast"
+                  // still reads as a number.
+                  const rtt = Math.max(1,
+                    Math.round(performance.now() - rttProbeSentAt));
+                  rttProbeSentAt = 0;
+                  const pill = $("rtt-pill");
+                  pill.hidden = false;
+                  pill.textContent = rtt + " ms";
+                  if (testState) (testState.rtts ||= []).push(rtt);
+                }
                 markInputTestPassed();
               } else if (value.type === "rumble" && value.protocol === 1 && active &&
                          typeof navigator.vibrate === "function") {
@@ -1313,8 +1343,10 @@
         if (!pressed || controlChannel?.readyState !== "open") return "unsent";
         inputTestNonce = (inputTestNonce + 1) >>> 0;
         try {
+          rttProbeSentAt = performance.now();
           controlChannel.send(JSON.stringify({type: "input_test", nonce: inputTestNonce}));
         } catch (_) {
+          rttProbeSentAt = 0;
           if (peer) directTransportLost(peer, true);
           return "unsent";
         }
@@ -1383,6 +1415,21 @@
         return value;
       },
     };
+
+    // RTT probe: while racing, one input_test every 5 s times the direct
+    // round trip for the status pill. Budget: ~45 bytes each way per 5 s on
+    // the already-open reliable channel — the same cadence as the host's
+    // own liveness ping, whose semantics this changes not at all.
+    setInterval(() => {
+      if (leavingPage || phase !== "controller" ||
+          controlChannel?.readyState !== "open") return;
+      inputTestNonce = (inputTestNonce + 1) >>> 0;
+      rttProbeSentAt = performance.now();
+      try {
+        controlChannel.send(JSON.stringify({type: "input_test",
+          nonce: inputTestNonce}));
+      } catch (_) { rttProbeSentAt = 0; }
+    }, 5000);
 
     // Local play: build the redeem frame and let connectControl open the host's
     // own ws, send it first, and adopt that same socket for signaling once
@@ -1623,6 +1670,8 @@
   function reconnect(attempt = 1) {
     if (phase !== "reconnecting") reconnectResume = phase;
     neutralize("transport-lost");
+    // The RTT pill measured the channel that was just lost.
+    $("rtt-pill").hidden = true;
     autoAdvanceUntil = 0;
     clearInputTestWindow();
     $("controller-retry").disabled = false;

@@ -86,12 +86,18 @@ def run(args: argparse.Namespace) -> None:
     # for a lease that never connected, leads the Approved screen with the
     # pairing phrase and keeps it one tap away while racing, and asks for
     # the phone's name BEFORE redeem plus renames it live over the control
-    # channel (controller_rename). The guardrail's job is catching runaway
+    # channel (controller_rename), and to 135 KiB when Phase 2's
+    # session/presence batch gave the racing surface an RTT status pill (a
+    # bounded 5 s input_test probe over the already-open reliable channel,
+    # timed at the ack) and taught the reconnect surface the specific
+    # network-blocks-phone-to-display diagnosis after three straight peer
+    # failures with a healthy room socket -- the same sentence the native
+    # and browser hosts speak. The guardrail's job is catching runaway
     # growth -- a bundled library, an accidental asset -- not vetoing player
     # copy, the MITM defense or a real second pairing transport, so the
     # ceiling moves by the smallest whole KiB each time.
-    require(critical_bytes < 132 * 1024,
-            f"controller critical path is {critical_bytes} bytes, budget is 132 KiB")
+    require(critical_bytes < 135 * 1024,
+            f"controller critical path is {critical_bytes} bytes, budget is 135 KiB")
     headers = (shell / "_headers").read_text(encoding="utf-8")
     for value in ("frame-ancestors 'none'", "Referrer-Policy: no-referrer",
                   "X-Content-Type-Options: nosniff", "Cache-Control: no-store"):

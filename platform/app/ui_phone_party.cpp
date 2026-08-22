@@ -319,6 +319,13 @@ void drawControllers(MdkrNativePartyHost &host) {
         ImGui::Text("Controller %u  %s", controller.seat,
                     controller.name.empty() ? "Phone" : controller.name.c_str());
         ui::TextSubtle("%s", statusText(controller));
+        /* RTT: the newest control-channel round trip, refreshed per pong.
+         * Only a live direct channel gets a number -- the model clears it
+         * the moment that channel ends or demotes. */
+        if (controller.phase == MdkrNativePartyControllerPhase::Connected &&
+            controller.rttMs != 0u) {
+            ui::TextSubtle("%u ms · direct", controller.rttMs);
+        }
         /* SAS v2: the phrase arrives once the phone's direct connection is
          * up and it names that exact connection, so this seat row is the
          * compare surface. No phrase yet simply shows nothing -- an

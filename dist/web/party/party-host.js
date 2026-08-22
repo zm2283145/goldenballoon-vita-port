@@ -14,7 +14,7 @@
   const testState = testConfig
     ? {requests: [], requestDetails: [], rooms: [], announcements: [], lifecycle: [],
       peerCreations: 0, iceRestarts: 0, channelFailures: 0,
-      controlPings: 0, controlPongs: 0} : null;
+      controlPings: 0, controlPongs: 0, controlRtts: []} : null;
   if (testState) globalThis.__mdkrPartyHostTestState = testState;
 
   const dialog = $("party-dialog");
@@ -54,6 +54,14 @@
   let removeReturnFocus = null;
   let removeControllerId = "";
   const pairingPhrases = new Map();
+  // F4: consecutive peer-connection failures per controller. Kept across
+  // rebuilds (a rebuilt peer that fails again is the same streak); reset by
+  // a completed direct connection. At three failures with the room socket
+  // healthy, the diagnosis is specific: the network blocks phone-to-display
+  // connections. Same sentence as the native host and the phone page.
+  const peerIceFailures = new Map();
+  const iceBlockedCopy = "This network blocks phone-to-display connections. " +
+    "Try another Wi-Fi network or a phone hotspot.";
   // F1 session-alive names: a phone's controller_rename over its live control
   // channel overrides the redeem-time name the room state still carries.
   const controllerNames = new Map();
@@ -515,7 +523,10 @@
 
   function markPeerConnected(controller, connected) {
     if (!controller?.seat) return;
-    if (connected) everConnectedIds.add(controllerIdentity(controller));
+    if (connected) {
+      everConnectedIds.add(controllerIdentity(controller));
+      peerIceFailures.delete(controller.controllerId);
+    }
     const pad = remotePads[controller.seat - 1];
     pad.reserved = true;
     pad.active = connected;
@@ -630,7 +641,7 @@
       state: null, control: null, authenticated: false,
       retired: false, remoteReady: false, offerSentAt: 0,
       restartAttempt: 0, recoveryTimer: null, pingTimer: null,
-      pingNonce: 0, pingOutstandingAt: 0};
+      pingNonce: 0, pingOutstandingAt: 0, rttMs: 0};
     peers.set(controllerId, peer);
     if (testState) testState.peerCreations++;
     const activateIfReady = () => {
@@ -655,6 +666,14 @@
         scheduleIceRestart(controllerId, peer, 750);
       } else if (pc.connectionState === "failed") {
         markPeerConnected(controller, false);
+        // F4: repeated failure while the room socket is healthy means
+        // signaling works and the direct path does not — say which.
+        const failures = (peerIceFailures.get(controllerId) || 0) + 1;
+        peerIceFailures.set(controllerId, failures);
+        if (failures === 3 &&
+            (testConfig !== null || socket?.readyState === WebSocket.OPEN)) {
+          announce(iceBlockedCopy);
+        }
         scheduleIceRestart(controllerId, peer, 0);
       } else if (pc.connectionState === "closed") {
         rebuildPeer(controllerId, peer);
@@ -725,6 +744,15 @@
         } else if (message.type === "pong" && message.protocol === 1 &&
                    Number.isInteger(message.nonce) &&
                    message.nonce === peer.pingNonce) {
+          if (peer.pingOutstandingAt !== 0) {
+            // RTT: newest matched pong, floored at 1 ms so "measured, just
+            // fast" is distinguishable from no sample. The number dies with
+            // this peer (a rebuilt channel starts sampleless), mirroring
+            // the native model.
+            peer.rttMs = Math.max(1, Math.round(Date.now() - peer.pingOutstandingAt));
+            if (testState) testState.controlRtts.push(peer.rttMs);
+            if (room) renderRoomState({...room, transitionId: room.transitionId});
+          }
           peer.pingOutstandingAt = 0;
           if (testState) testState.controlPongs++;
         }
@@ -1064,11 +1092,15 @@
       // F2: a lease that has never reached Connected is connecting, not
       // reconnecting — "reconnecting" promises a recovery of something that
       // never existed. Mirrors the native seat row (ui_phone_party.cpp).
+      // RTT: the live peer's newest control-channel round trip, refreshed
+      // per pong; only an active direct channel shows a number.
+      const seatRtt = controller && remotePads[seat - 1].active &&
+        peers.get(controller.controllerId)?.rttMs;
       tile.querySelector("small").textContent = controller
         ? (remotePads[seat - 1].active
-          ? (seatPhrase
+          ? ((seatPhrase
             ? `Phone connected — compare on both screens: ${seatPhrase}`
-            : "Phone connected")
+            : "Phone connected") + (seatRtt ? ` · ${seatRtt} ms · direct` : ""))
           : (everConnectedIds.has(controllerIdentity(controller))
             ? "Phone reconnecting — neutral" : "Phone connecting…"))
         : (source || "Available");
@@ -1090,6 +1122,9 @@
     const liveIds = new Set(controllers.map((controller) => controller.controllerId));
     for (const controllerId of peers.keys()) {
       if (!liveIds.has(controllerId)) retirePeer(controllerId, true);
+    }
+    for (const controllerId of [...peerIceFailures.keys()]) {
+      if (!liveIds.has(controllerId)) peerIceFailures.delete(controllerId);
     }
     const liveIdentities = new Set(controllers.map(controllerIdentity));
     for (const identity of [...controllerNames.keys()]) {
@@ -1169,6 +1204,7 @@
     resetRemotePads();
     signaledControllers.clear();
     pairingPhrases.clear();
+    peerIceFailures.clear();
     controllerNames.clear();
     everConnectedIds.clear();
     hostIdentity = null;
@@ -1423,6 +1459,7 @@
     resetRemotePads();
     signaledControllers.clear();
     pairingPhrases.clear();
+    peerIceFailures.clear();
     controllerNames.clear();
     everConnectedIds.clear();
     hostIdentity = null;

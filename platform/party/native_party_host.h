@@ -70,6 +70,13 @@ struct MdkrNativePartyController {
      * so a wedged phone cannot spin the rebind every tick. */
     bool needsRebind = false;
     uint64_t lastRebindMs = 0u;
+    /* RTT: the newest control-channel ping round trip for THIS channel, in
+     * milliseconds; 0 means no sample. Set per matched pong
+     * (ControllerRtt), carried across room updates of the same
+     * connectionSequence only, cleared when the channel ends or demotes
+     * (disconnect, protocol mismatch, new sequence) -- an old channel's
+     * number never vouches for a new one. */
+    unsigned rttMs = 0u;
 };
 
 /* I2: the one sentence every mismatch surface shows -- the room message
@@ -89,6 +96,28 @@ inline constexpr char kMdkrPartyProtocolMismatchCopy[] =
  * pins the sentence itself. */
 inline constexpr char kMdkrPartyRoomEndedCopy[] =
     "This controller room has ended. Create a new invite to keep playing.";
+
+/* F4: the one diagnosis sentence for a phone the C3 offer ladder gave up on
+ * WHILE the room socket was healthy -- signaling delivered every offer, so
+ * what failed is the phone-to-display path itself. All three surfaces (this
+ * launcher, the browser host, the phone page) speak these exact bytes. TURN
+ * has been server-delivered since wave 0, so this fires rarely; that is
+ * precisely why the honest, specific copy matters when it does. */
+inline constexpr char kMdkrPartyIceBlockedCopy[] =
+    "This network blocks phone-to-display connections. "
+    "Try another Wi-Fi network or a phone hotspot.";
+
+/* F4 selection, used by the cloud transport's give-up site (tick()): only a
+ * give-up whose whole ladder ran against a healthy room socket may claim
+ * the network-blocked diagnosis; with the socket down, nothing about the
+ * direct path was proven and the generic remedy stays. Inline so the
+ * host-model test binary pins both branches without linking the
+ * socket-owning transport. */
+inline const char *mdkr_party_give_up_copy(bool roomSocketHealthy) {
+    return roomSocketHealthy
+        ? kMdkrPartyIceBlockedCopy
+        : "This phone could not connect. Remove it and pair again.";
+}
 
 struct MdkrNativePartyView {
     MdkrNativePartyPhase phase = MdkrNativePartyPhase::Closed;
@@ -115,6 +144,10 @@ enum class MdkrPartyTransportEventType {
      * (native_party_host.cpp validRenameName). */
     ControllerRenamed,
     ControllerProtocolMismatch,
+    /* RTT: one matched control-channel pong's round trip (event.rttMs).
+     * Droppable in the shared queue -- a lost sample is replaced by the
+     * next pong and mutates nothing but a cosmetic number. */
+    ControllerRtt,
     CommandRejected,
     Recovering,
     Error,
@@ -164,6 +197,10 @@ struct MdkrPartyTransportEvent {
     /* ControllerProtocolMismatch only: the protocol version the phone's
      * controller_ready declared. Zero means it declared none at all. */
     unsigned theirProtocol = 0u;
+    /* ControllerRtt only: the matched pong's round trip in milliseconds,
+     * floored at 1 so "measured, just fast" is distinguishable from the
+     * model's 0 = no sample. */
+    unsigned rttMs = 0u;
     std::vector<uint8_t> packet;
     bool haptics = false;
 };
