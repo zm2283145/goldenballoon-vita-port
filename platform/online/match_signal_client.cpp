@@ -648,14 +648,24 @@ NativeSocket connectTcp(const std::string &host, uint16_t port,
                 *timedOut = true;
                 break;
             }
+            /* poll() on POSIX: select()'s fd_set is undefined behavior for
+             * descriptor VALUES >= FD_SETSIZE, which a long-lived launcher
+             * can reach; Windows select() has no value limit. */
+#ifdef _WIN32
             fd_set writable;
             FD_ZERO(&writable);
             FD_SET(fd, &writable);
             struct timeval slice;
             slice.tv_sec = 0;
-            slice.tv_usec = static_cast<int>(kPollSliceMs) * 1000;
-            const int ready = ::select(static_cast<int>(fd) + 1, nullptr,
-                                       &writable, nullptr, &slice);
+            slice.tv_usec = static_cast<long>(kPollSliceMs) * 1000;
+            const int ready = ::select(0, nullptr, &writable, nullptr, &slice);
+#else
+            struct pollfd item;
+            item.fd = fd;
+            item.events = POLLOUT;
+            item.revents = 0;
+            const int ready = ::poll(&item, 1, static_cast<int>(kPollSliceMs));
+#endif
             if (ready < 0) break;
             if (ready == 0) continue;
             int soError = 0;
@@ -1144,8 +1154,11 @@ struct Transport {
         alive = false;
     }
 
-    /* Masked client frame (RFC 6455 5.3). */
-    std::string clientFrame(uint8_t opcode, const std::string &payload) {
+    /* Masked client frame (RFC 6455 5.3). False when the DRBG cannot
+     * produce mask bytes: predictable all-zero masking is a protocol
+     * violation in spirit, so the frame is refused rather than sent. */
+    bool clientFrame(uint8_t opcode, const std::string &payload,
+                     std::string &out) {
         std::string frame;
         frame.push_back(static_cast<char>(0x80u | opcode));
         if (payload.size() < 126u) {
@@ -1163,7 +1176,9 @@ struct Transport {
             }
         }
         unsigned char mask[4] = {0u, 0u, 0u, 0u};
-        (void)mbedtls_ctr_drbg_random(&drbg, mask, sizeof(mask));
+        if (mbedtls_ctr_drbg_random(&drbg, mask, sizeof(mask)) != 0) {
+            return false;
+        }
         for (const unsigned char byte : mask) {
             frame.push_back(static_cast<char>(byte));
         }
@@ -1171,7 +1186,8 @@ struct Transport {
             frame.push_back(static_cast<char>(
                 static_cast<uint8_t>(payload[index]) ^ mask[index % 4u]));
         }
-        return frame;
+        out = std::move(frame);
+        return true;
     }
 
     bool sendCloseFrame(uint16_t code, const std::string &reason) {
@@ -1179,10 +1195,12 @@ struct Transport {
         payload.push_back(static_cast<char>((code >> 8u) & 0xffu));
         payload.push_back(static_cast<char>(code & 0xffu));
         payload += reason;
+        std::string frame;
+        if (!clientFrame(0x8u, payload, frame)) return false;
         /* Bounded best effort, deliberately NOT interruptible: this is the
          * one frame close() itself wants written, and a peer that has
          * stopped reading only costs the short budget. */
-        return writeAll(clientFrame(0x8u, payload), kCloseFrameBudgetMs,
+        return writeAll(frame, kCloseFrameBudgetMs,
                         /*honorInterrupt=*/false);
     }
 };
@@ -1341,6 +1359,14 @@ void MdkrMatchSignalClient::State::run() {
         terminate(kMdkrMatchSignalTransportLost, false);
         return;
     }
+    /* RFC 6455 4.1: a 101 naming an extension the client never requested
+     * (this client requests none) MUST fail the connection -- an extension
+     * changes the framing itself, so ignoring the header would mean
+     * parsing frames under a contract we never agreed to. */
+    if (responseHeader(head, "sec-websocket-extensions", headerField)) {
+        terminate(kMdkrMatchSignalTransportLost, false);
+        return;
+    }
     std::string selected;
     const bool hasSelection =
         responseHeader(head, "sec-websocket-protocol", selected);
@@ -1397,8 +1423,9 @@ void MdkrMatchSignalClient::State::run() {
                 pending.swap(outbound);
             }
             for (const std::string &payload : pending) {
-                if (!transport.writeAll(transport.clientFrame(0x1u, payload),
-                                        kDataWriteBudgetMs)) {
+                std::string frame;
+                if (!transport.clientFrame(0x1u, payload, frame) ||
+                    !transport.writeAll(frame, kDataWriteBudgetMs)) {
                     /* A close() abort lands here mid-flush; everything
                      * else is a dead or hopelessly stalled transport. */
                     if (closeRequested) {
@@ -1472,8 +1499,9 @@ void MdkrMatchSignalClient::State::run() {
             carried.erase(0u, headerSize + static_cast<size_t>(length));
 
             if (opcode == 0x9u) { /* ping -> pong */
-                if (!transport.writeAll(transport.clientFrame(0xau, payload),
-                                        kDataWriteBudgetMs)) {
+                std::string pong;
+                if (!transport.clientFrame(0xau, payload, pong) ||
+                    !transport.writeAll(pong, kDataWriteBudgetMs)) {
                     if (closeRequested) {
                         finishClose();
                     } else {
@@ -1487,8 +1515,10 @@ void MdkrMatchSignalClient::State::run() {
             if (opcode == 0x8u) {
                 /* Server close: echo per RFC, then the JS close-event path
                  * (terminal transport loss, no 4003). */
-                (void)transport.writeAll(transport.clientFrame(0x8u, payload),
-                                         kCloseFrameBudgetMs);
+                std::string echo;
+                if (transport.clientFrame(0x8u, payload, echo)) {
+                    (void)transport.writeAll(echo, kCloseFrameBudgetMs);
+                }
                 terminate(kMdkrMatchSignalTransportLost, false);
                 return;
             }
