@@ -294,14 +294,18 @@ inline bool mdkr_online_live_lobby_gate_open() {
            std::strcmp(token, kMdkrOnlineLiveLobbyTestToken) == 0;
 }
 
-/* Launcher-side factory for the gated live adapter (defined in
- * match_live_adapter.cpp). Builds the production MatchRoom transport + peer
- * signal feed from the environment and returns the composed live adapter, or
- * nullptr if the token gate is closed or a transport could not be built. The
- * launcher calls this only behind #if MDKR_ENABLE_ONLINE_ROOM_PREVIEW, so the
- * heavy transport translation unit is linked into the app only in preview
- * builds. */
-std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
-    const MdkrOnlineCompatibilityV1 &compatibility);
+/* Launcher-side hook for the gated live adapter. The production MatchRoom HTTP
+ * transport + real signal-client mesh backend are owned by the O-T6 two-process
+ * race lane, which constructs the live adapter directly through
+ * mdkr_online_live_adapter_create with those production transports (mirroring
+ * how the Party e2e driver owns the real party transport). Until O-T6 lands
+ * this returns nullptr, so the launcher panel -- even with the token gate open
+ * -- keeps constructing the fail-closed fake adapter. It is a header-inline
+ * stub so the app never links the heavy live-adapter/transport translation
+ * units, and no build configuration can start an online race from the panel. */
+inline std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
+    const MdkrOnlineCompatibilityV1 & /*compatibility*/) {
+    return nullptr;
+}
 
 #endif /* MDKR_MATCH_LIVE_ADAPTER_H */

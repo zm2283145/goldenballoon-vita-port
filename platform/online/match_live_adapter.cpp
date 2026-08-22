@@ -834,13 +834,6 @@ bool mdkr_online_live_adapter_probe(const IMdkrOnlineAdapter *adapter,
     return true;
 }
 
-std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
-    const MdkrOnlineCompatibilityV1 &) {
-    /* Production wiring (real HTTP MatchRoom transport + real signal-client
-     * mesh backend from the join payload) is owned by the O-T6 two-process
-     * race lane, which constructs the live adapter through
-     * mdkr_online_live_adapter_create with production transports. In the
-     * launcher panel this returns nullptr, so even with the token gate open the
-     * panel falls back to the fail-closed fake path until O-T6 lands. */
-    return nullptr;
-}
+/* OnlineRoom_makeGatedLiveAdapter is a header-inline stub (returns nullptr)
+ * so the launcher panel never links this translation unit; the production
+ * transport wiring is owned by the O-T6 race lane. */
