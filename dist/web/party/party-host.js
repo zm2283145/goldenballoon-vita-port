@@ -176,6 +176,9 @@
       if (!credentialed && keys !== "urls") return null;
       const urls = Array.isArray(entry.urls) ? entry.urls : [entry.urls];
       if (urls.length < 1 || urls.length > 8 || !urls.every(validUrl)) return null;
+      // Credentials are TURN-scoped: a credentialed entry must name only
+      // turn:/turns: urls, or the whole list is refused.
+      if (credentialed && !urls.every((url) => /^turns?:/i.test(url))) return null;
       if (credentialed &&
           (!validSecret(entry.username) || !validSecret(entry.credential))) {
         return null;

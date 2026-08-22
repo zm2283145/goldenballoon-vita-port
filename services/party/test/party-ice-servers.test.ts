@@ -66,6 +66,13 @@ describe("controller-page iceServers validation", () => {
         username: "", credential: "secret"}],
       [{urls: ["turn:turn.cloudflare.com:3478?transport=udp"],
         username: "x".repeat(600), credential: "secret"}],
+      // Credentials are TURN-scoped: a credentialed entry naming any
+      // stun url — alone or mixed in — refuses the whole list.
+      [{urls: ["stun:stun.cloudflare.com:3478"],
+        username: "minted-user", credential: "minted-secret"}],
+      [{urls: ["stun:stun.cloudflare.com:3478",
+        "turn:turn.cloudflare.com:3478?transport=udp"],
+        username: "minted-user", credential: "minted-secret"}],
       Array.from({length: 9}, () => stunEntry),
     ]) {
       expect(internals.normalizedIceServers(bad)).toBeNull();

@@ -197,6 +197,13 @@ std::vector<MdkrPartyIceServer> iceServersFromSignal(const Json &value) {
             if (!validIceUrl(url) || servers.size() >= kMaxIceServersTotal) {
                 return {};
             }
+            /* Credentials are TURN-scoped: a credentialed entry naming any
+             * non-turn/turns url refuses the whole list, the same rejection
+             * the page validators apply. */
+            if (!username.empty() && url.rfind("turn:", 0u) != 0u &&
+                url.rfind("turns:", 0u) != 0u) {
+                return {};
+            }
             MdkrPartyIceServer server;
             server.url = url;
             server.username = username;
@@ -946,6 +953,13 @@ private:
         rtc::Configuration configuration;
         for (const MdkrPartyIceServer &server : resolvedIceServers(iceServers)) {
             try {
+                /* Credentials are TURN-scoped even here at the last hop: a
+                 * non-turn/turns url carrying them is skipped, never handed
+                 * to the ICE agent (iceServersFromSignal already refuses
+                 * such lists, matching the page validators). */
+                const bool relay = server.url.rfind("turn:", 0u) == 0u ||
+                    server.url.rfind("turns:", 0u) == 0u;
+                if (!server.username.empty() && !relay) continue;
                 rtc::IceServer resolved(server.url);
                 if (!server.username.empty()) {
                     resolved.username = server.username;

@@ -384,6 +384,14 @@ int main() {
              R"("username":"user-without-credential"}]})",
              R"({"iceServers":[{"urls":["turn:turn.cloudflare.com:3478"],)"
              R"("username":7,"credential":"secret"}]})",
+             /* Credentials are TURN-scoped: a credentialed entry naming any
+              * stun url -- alone or mixed in -- refuses the whole list, the
+              * same rejection the page validators apply. */
+             R"({"iceServers":[{"urls":["stun:stun.cloudflare.com:3478"],)"
+             R"("username":"minted-user","credential":"minted-secret"}]})",
+             R"({"iceServers":[{"urls":["stun:stun.cloudflare.com:3478",)"
+             R"("turn:turn.cloudflare.com:3478?transport=udp"],)"
+             R"("username":"minted-user","credential":"minted-secret"}]})",
          }) {
         /* Malformed lists degrade to the same single fallback rather than
          * failing the bootstrap or forwarding unvetted config into ICE. */

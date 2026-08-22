@@ -62,7 +62,7 @@ def run(args: argparse.Namespace) -> None:
     for path in required:
         require(path.is_file(), f"controller artifact is missing: {path}")
     critical_bytes = sum(path.stat().st_size for path in required[:6])
-    # 126 KiB, raised across the phases: to 101 KiB when accumulated honest
+    # 127 KiB, raised across the phases: to 101 KiB when accumulated honest
     # error copy (the protocol_update_required entry) crossed the original 100
     # KiB, to 104 KiB when SAS v2 put the fingerprint parser + connection-time
     # derivation on the critical path, to 117 KiB when local (LAN) play made
@@ -76,13 +76,15 @@ def run(args: argparse.Namespace) -> None:
     # 126 KiB when the server-declared local/cloud mode handling had already
     # crossed 123 and the page then took on the strict validator for
     # server-delivered iceServers (the zero-cost TURN path, which must be
-    # revalidated and rebuilt client-side, never trusted verbatim). The
+    # revalidated and rebuilt client-side, never trusted verbatim), and to
+    # 127 KiB when that validator learned to refuse credentials on any
+    # non-TURN url (relay credentials must never reach a stun server). The
     # guardrail's job is catching runaway growth -- a bundled library, an
     # accidental asset -- not vetoing player copy, the MITM defense or a real
     # second pairing transport, so the ceiling moves by the smallest whole KiB
     # each time.
-    require(critical_bytes < 126 * 1024,
-            f"controller critical path is {critical_bytes} bytes, budget is 126 KiB")
+    require(critical_bytes < 127 * 1024,
+            f"controller critical path is {critical_bytes} bytes, budget is 127 KiB")
     headers = (shell / "_headers").read_text(encoding="utf-8")
     for value in ("frame-ancestors 'none'", "Referrer-Policy: no-referrer",
                   "X-Content-Type-Options: nosniff", "Cache-Control: no-store"):

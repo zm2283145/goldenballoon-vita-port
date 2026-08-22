@@ -90,8 +90,10 @@ function validIceSecret(value: unknown): value is string {
 /** Rebuild the provider's credentialed entries from known fields only, so
  * nothing unvalidated is ever forwarded to a client. Uncredentialed entries
  * (the provider repeats its STUN urls) are dropped — STUN is already served
- * unconditionally. Null means "nothing usable", which the caller treats as a
- * mint failure. */
+ * unconditionally — and stun urls inside a credentialed entry are stripped,
+ * because credentials ride on turn/turns urls only; an entry with no
+ * turn/turns url left is dropped. Null means "nothing usable", which the
+ * caller treats as a mint failure. */
 function normalizedTurnEntries(value: unknown): TurnIceServer[] | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const listed = (value as Record<string, unknown>).iceServers;
@@ -110,7 +112,8 @@ function normalizedTurnEntries(value: unknown): TurnIceServer[] | null {
     if (!validIceSecret(entry.username) || !validIceSecret(entry.credential)) {
       return null;
     }
-    const urls = rawUrls.filter(validIceUrl);
+    const urls = rawUrls.filter(validIceUrl)
+      .filter(url => /^turns?:/.test(url));
     if (urls.length === 0) continue;
     entries.push({urls, username: entry.username, credential: entry.credential});
   }

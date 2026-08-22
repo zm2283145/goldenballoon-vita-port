@@ -87,6 +87,18 @@ describe("zero-cost TURN credential minting", () => {
     expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ttl: 14_400});
   });
 
+  it("keeps credentials on turn/turns urls only, stripping stun from a mixed entry", async () => {
+    /* The provider may repeat its stun urls inside the credentialed entry;
+     * forwarding one would hand relay credentials to a non-TURN server. */
+    const {fetcher} = mintStub(201, {iceServers: [
+      {urls: ["stun:stun.cloudflare.com:3478",
+        "turn:turn.cloudflare.com:3478?transport=udp",
+        "turns:turn.cloudflare.com:5349?transport=tcp"],
+      username: "minted-user", credential: "minted-secret"},
+    ]});
+    expect(await mintTurnIceServers(turnEnv, fetcher)).toEqual(mintedEntries);
+  });
+
   it("treats every mint failure as no-TURN, never an error", async () => {
     for (const [status, body] of [
       [500, providerResponse],
@@ -99,6 +111,9 @@ describe("zero-cost TURN credential minting", () => {
       // A credential without its username is malformed, not usable.
       [201, {iceServers: [{urls: ["turn:turn.cloudflare.com:3478?transport=udp"],
         credential: "half"}]}],
+      // Credentials never ride on a stun-only entry: nothing usable.
+      [201, {iceServers: [{urls: ["stun:stun.cloudflare.com:3478"],
+        username: "user", credential: "secret"}]}],
       // Only browser-blocked port-53 urls survive validation: nothing usable.
       [201, {iceServers: [{urls: ["turn:turn.cloudflare.com:53?transport=udp"],
         username: "user", credential: "secret"}]}],
