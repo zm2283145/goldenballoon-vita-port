@@ -1170,6 +1170,28 @@ private:
                        value["nonce"].is_number_unsigned()) {
                 peer->control->send(Json{{"type", "input_test_ack"},
                     {"nonce", value["nonce"]}}.dump());
+            } else if (value.value("type", std::string{}) == "controller_rename" &&
+                       value.value("protocol", 0u) == kProtocol) {
+                /* F1 session-alive names: only a peer that completed
+                 * controller_ready may relabel its own seat row, and only
+                 * within the redeem-time name budget; the host model
+                 * (native_party_host.cpp validRenameName) is the strict
+                 * validation boundary behind this size gate. */
+                bool authenticated = false;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    const auto found = peers_.find(peer->id);
+                    authenticated = found != peers_.end() &&
+                        found->second == peer && peer->authenticated;
+                }
+                std::string name;
+                if (authenticated && safeString(value, "name", name, 48u)) {
+                    MdkrPartyTransportEvent renamed;
+                    renamed.type = MdkrPartyTransportEventType::ControllerRenamed;
+                    renamed.controllerId = peer->id;
+                    renamed.message = std::move(name);
+                    enqueue(std::move(renamed));
+                }
             } else if (value.value("type", std::string{}) == "pong" &&
                        value.value("protocol", 0u) == kProtocol &&
                        value.contains("nonce") &&

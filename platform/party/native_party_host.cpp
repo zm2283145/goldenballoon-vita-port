@@ -61,6 +61,75 @@ std::string safeMessage(const std::string &value, const char *fallback) {
     return printable(value, kMaxMessage) && !value.empty() ? value : fallback;
 }
 
+/* F1 rename validation: the same bounds the redeem-time name field already
+ * enforces (services/party/src/security.ts normalizeName and its native
+ * twin in lan_party_room.cpp) -- 24 code points, none of the control /
+ * zero-width / bidi-formatting set, no edge whitespace, kMaxName bytes --
+ * applied as REFUSAL rather than repair. The phone page normalizes before
+ * sending, so anything that arrives outside these bounds is a client this
+ * host does not trust to relabel a seat row. Empty is valid: the name field
+ * is optional and a rename may clear it. */
+bool validRenameName(const std::string &value) {
+    if (value.size() > kMaxName) return false;
+    std::vector<uint32_t> codePoints;
+    for (size_t index = 0u; index < value.size();) {
+        const auto byte = static_cast<unsigned char>(value[index]);
+        uint32_t code = 0u;
+        size_t length = 0u;
+        if (byte < 0x80u) {
+            code = byte;
+            length = 1u;
+        } else if ((byte & 0xe0u) == 0xc0u) {
+            code = byte & 0x1fu;
+            length = 2u;
+        } else if ((byte & 0xf0u) == 0xe0u) {
+            code = byte & 0x0fu;
+            length = 3u;
+        } else if ((byte & 0xf8u) == 0xf0u) {
+            code = byte & 0x07u;
+            length = 4u;
+        } else {
+            return false;
+        }
+        if (index + length > value.size()) return false;
+        for (size_t offset = 1u; offset < length; offset++) {
+            const auto continuation =
+                static_cast<unsigned char>(value[index + offset]);
+            if ((continuation & 0xc0u) != 0x80u) return false;
+            code = (code << 6u) | (continuation & 0x3fu);
+        }
+        if ((length == 2u && code < 0x80u) ||
+            (length == 3u && code < 0x800u) ||
+            (length == 4u && code < 0x10000u) || code > 0x10ffffu ||
+            (code >= 0xd800u && code <= 0xdfffu)) {
+            return false;
+        }
+        codePoints.push_back(code);
+        index += length;
+    }
+    if (codePoints.size() > 24u) return false;
+    const auto stripped = [](uint32_t code) {
+        return code <= 0x1fu || (code >= 0x7fu && code <= 0x9fu) ||
+            (code >= 0x200bu && code <= 0x200fu) || code == 0x2028u ||
+            code == 0x2029u || (code >= 0x202au && code <= 0x202eu) ||
+            code == 0x2060u || (code >= 0x2066u && code <= 0x2069u) ||
+            code == 0xfeffu;
+    };
+    const auto spaceLike = [](uint32_t code) {
+        return code == 0x20u || code == 0xa0u || code == 0x1680u ||
+            (code >= 0x2000u && code <= 0x200au) || code == 0x202fu ||
+            code == 0x205fu || code == 0x3000u;
+    };
+    for (uint32_t code : codePoints) {
+        if (stripped(code)) return false;
+    }
+    if (!codePoints.empty() &&
+        (spaceLike(codePoints.front()) || spaceLike(codePoints.back()))) {
+        return false;
+    }
+    return true;
+}
+
 /* I3: the worker's typed host_command_result codes, mapped to honest
  * player-facing copy (services/party/src/party-room.ts commandError and
  * room-model.ts supply the codes). An unmapped code returns nullptr and the
@@ -346,17 +415,30 @@ void MdkrNativePartyHost::applyRoomState(
     view_.controllers = room.controllers;
     for (MdkrNativePartyController &candidate : view_.controllers) {
         candidate.commandPending = false;
-        if (candidate.pairingPhrase.empty()) {
-            const auto former = std::find_if(
-                previous.begin(), previous.end(),
-                [&candidate](const MdkrNativePartyController &other) {
-                    return other.id == candidate.id;
-                });
-            if (former != previous.end() &&
-                former->connectionSequence == candidate.connectionSequence &&
-                former->publicKey == candidate.publicKey) {
+        const auto former = std::find_if(
+            previous.begin(), previous.end(),
+            [&candidate](const MdkrNativePartyController &other) {
+                return other.id == candidate.id;
+            });
+        if (former != previous.end() &&
+            former->publicKey == candidate.publicKey) {
+            if (candidate.pairingPhrase.empty() &&
+                former->connectionSequence == candidate.connectionSequence) {
                 candidate.pairingPhrase = former->pairingPhrase;
             }
+            /* F2: connection history belongs to the phone (id + key), not
+             * to any one room transition -- carry it. */
+            candidate.everConnected = candidate.everConnected ||
+                former->everConnected;
+            /* F1: the room update still carries the redeem-time name; a
+             * live rename outlives it while this is the same phone. */
+            if (former->renamed && occupiesSeat(candidate)) {
+                candidate.name = former->name;
+                candidate.renamed = true;
+            }
+        }
+        if (candidate.phase == MdkrNativePartyControllerPhase::Connected) {
+            candidate.everConnected = true;
         }
         const uint64_t owner = ownerFor(candidate);
         if (owner != 0u && candidate.connectionSequence != 0u) {
@@ -402,6 +484,9 @@ void MdkrNativePartyHost::applyEvent(
             candidate->phase = MdkrNativePartyControllerPhase::Connected;
             candidate->direct = true;
             candidate->haptics = event.haptics;
+            /* F2: this lease has now connected once; a later drop reads as
+             * "Reconnecting", never again as first-time "Connecting…". */
+            candidate->everConnected = true;
             /* I2 recovery: a genuine controller_ready at this build's own
              * protocol means the phone reloaded into a matching page. */
             candidate->protocolMismatch = false;
@@ -464,6 +549,21 @@ void MdkrNativePartyHost::applyEvent(
             if (candidate != nullptr && printable(event.message, kMaxPhrase)) {
                 candidate->pairingPhrase = event.message;
             }
+            return;
+        }
+        case MdkrPartyTransportEventType::ControllerRenamed: {
+            /* F1: a rename may only come from a seat's own authenticated
+             * control channel (the transports enforce that side), may only
+             * name a seated controller, and must pass the same bounds the
+             * redeem-time name field enforces -- otherwise it is dropped
+             * whole. The row updates silently; nothing else changes. */
+            MdkrNativePartyController *candidate = controller(event.controllerId);
+            if (candidate == nullptr || !occupiesSeat(*candidate) ||
+                !validRenameName(event.message)) {
+                return;
+            }
+            candidate->name = event.message;
+            candidate->renamed = true;
             return;
         }
         case MdkrPartyTransportEventType::ControllerProtocolMismatch: {

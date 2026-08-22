@@ -104,6 +104,15 @@ const char *statusText(const MdkrNativePartyController &controller) {
      * transport keeps, while this state only the player can fix. Same
      * sentence as the room message, from the one shared constant. */
     if (controller.protocolMismatch) return kMdkrPartyProtocolMismatchCopy;
+    /* F2: a lease that has never reached Connected is connecting for the
+     * first time -- "Reconnecting" would promise a recovery of something
+     * that never existed. Only a lease that connected and then dropped may
+     * say so. */
+    if (!controller.everConnected &&
+        (controller.phase == MdkrNativePartyControllerPhase::Approved ||
+         controller.phase == MdkrNativePartyControllerPhase::Leased)) {
+        return "Connecting…";
+    }
     switch (controller.phase) {
         case MdkrNativePartyControllerPhase::Pending: return "Waiting for approval";
         case MdkrNativePartyControllerPhase::Approved: return "Approved";
@@ -190,7 +199,11 @@ void drawInvite(MdkrNativePartyHost &host) {
     ui::Gap(ui::kGapS);
     ImGui::PushFont(AppTheme::fonts().title);
     g_traceDrewCode = true;
-    ImGui::Text("Code  %s", view.fallbackCode.c_str());
+    /* F11: two groups of three, display only -- the phone's entry field
+     * groups the same way, and every input path still takes six digits. */
+    const std::string groupedCode =
+        mdkr_party_grouped_fallback_code(view.fallbackCode);
+    ImGui::Text("Code  %s", groupedCode.c_str());
     ImGui::PopFont();
     const uint64_t now = static_cast<uint64_t>(SDL_GetTicks64());
     const uint64_t seconds = view.inviteExpiresAtMs > now
@@ -206,7 +219,7 @@ void drawInvite(MdkrNativePartyHost &host) {
         mdkr_a11y_announce(MDKR_A11Y_CAT_STATUS, MDKR_A11Y_PRI_NORMAL,
                           "Phone controller invite copied.");
     }
-    ui::SpeakFocusedItem("Copy Invite Link", view.fallbackCode.c_str(),
+    ui::SpeakFocusedItem("Copy Invite Link", groupedCode.c_str(),
         "Copies this short-lived private invite. The same 6-digit code is visible above.");
     if (ImGui::GetContentRegionAvail().x >
         ui::kBtnSecondary().x + ImGui::GetStyle().ItemSpacing.x) {

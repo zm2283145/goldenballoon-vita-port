@@ -46,6 +46,17 @@ struct MdkrNativePartyController {
     bool direct = false;
     bool haptics = false;
     bool commandPending = false;
+    /* F2: whether this lease has EVER reached Connected. A lease that never
+     * has is "Connecting…" on every surface; only a lease that connected and
+     * then dropped may honestly read as "Reconnecting". Set by
+     * ControllerConnected (or a room update that itself says Connected) and
+     * carried across room updates of the same phone + key. */
+    bool everConnected = false;
+    /* F1: the phone renamed itself over its live control channel
+     * (controller_rename -> ControllerRenamed). Room updates still carry the
+     * redeem-time name, so the applied rename is carried across them while
+     * the id + key still describe the same phone. */
+    bool renamed = false;
     /* I2: the phone's controller page completed the WebRTC handshake but
      * spoke a different pairing-protocol version, so its input can never be
      * trusted. The seat keeps its lease (the room is not torn down) but must
@@ -98,6 +109,11 @@ enum class MdkrPartyTransportEventType {
     ControllerDisconnected,
     ControllerPacket,
     ControllerPhrase,
+    /* F1: the phone's controller_rename from its authenticated control
+     * channel; `controllerId` names the seat and `message` carries the new
+     * name verbatim. The host model is the validation boundary
+     * (native_party_host.cpp validRenameName). */
+    ControllerRenamed,
     ControllerProtocolMismatch,
     CommandRejected,
     Recovering,
@@ -291,6 +307,22 @@ inline bool mdkr_party_canonical_https_origin(const std::string &origin) {
         if (port > 65535u) return false;
     }
     return true;
+}
+
+/*
+ * F11: the six-digit invite code, grouped for DISPLAY as two groups of three
+ * ("123 456"). Grouping is presentation only -- every input path still takes
+ * the raw six digits -- so anything that is not exactly six digits is
+ * returned unchanged rather than inventing structure for it. Inline because
+ * the launcher surface (ui_phone_party.cpp) is the caller and
+ * tests/test_native_party_host.cpp pins the shape.
+ */
+inline std::string mdkr_party_grouped_fallback_code(const std::string &code) {
+    if (code.size() != 6u) return code;
+    for (char byte : code) {
+        if (byte < '0' || byte > '9') return code;
+    }
+    return code.substr(0u, 3u) + " " + code.substr(3u);
 }
 
 class MdkrNativePartyHost {

@@ -1048,6 +1048,140 @@ void phraseArrivesAtConnectionAndSurvivesRoomUpdates() {
     assert(host.view().controllers[0].pairingPhrase.empty());
 }
 
+/* F11: the invite code renders as two groups of three, display only --
+ * grouping is the UI's concern and must never invent structure for a value
+ * that is not exactly the six digits the room minted. */
+void groupedFallbackCodeIsDisplayOnly() {
+    assert(mdkr_party_grouped_fallback_code("123456") == "123 456");
+    assert(mdkr_party_grouped_fallback_code("000000") == "000 000");
+    assert(mdkr_party_grouped_fallback_code("12345") == "12345");
+    assert(mdkr_party_grouped_fallback_code("1234567") == "1234567");
+    assert(mdkr_party_grouped_fallback_code("12a456") == "12a456");
+    assert(mdkr_party_grouped_fallback_code("") == "");
+}
+
+/* F2: a lease that has never reached Connected is CONNECTING, not
+ * reconnecting -- the model carries the distinction so both host surfaces
+ * (ui_phone_party.cpp statusText, the browser host's seat tile) can show
+ * honest copy. The flag survives room updates and disconnects. */
+void neverConnectedLeaseReadsAsConnecting() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    auto phone = approved("phone-a", 1u, 2u, 3u);
+    transport.events.push_back(roomEvent(1u, 1u, 121000u, {phone}));
+    host.service(1000u);
+    assert(!host.view().controllers[0].everConnected);
+
+    /* Another room update of the same never-connected lease keeps it so. */
+    transport.events.push_back(roomEvent(2u, 1u, 121000u, {phone}));
+    host.service(1001u);
+    assert(!host.view().controllers[0].everConnected);
+
+    MdkrPartyTransportEvent connected;
+    connected.type = MdkrPartyTransportEventType::ControllerConnected;
+    connected.controllerId = "phone-a";
+    transport.events.push_back(connected);
+    host.service(1002u);
+    assert(host.view().controllers[0].everConnected);
+
+    /* A drop demotes the phase but never the history: this lease HAS
+     * connected, so its surface may honestly say "reconnecting". */
+    MdkrPartyTransportEvent dropped;
+    dropped.type = MdkrPartyTransportEventType::ControllerDisconnected;
+    dropped.controllerId = "phone-a";
+    transport.events.push_back(dropped);
+    host.service(1003u);
+    assert(host.view().controllers[0].phase ==
+           MdkrNativePartyControllerPhase::Leased);
+    assert(host.view().controllers[0].everConnected);
+
+    /* Carried across a room update of the same phone + key. */
+    transport.events.push_back(roomEvent(3u, 1u, 121000u, {phone}));
+    host.service(1004u);
+    assert(host.view().controllers[0].everConnected);
+
+    /* A room update that itself says Connected marks the history even when
+     * no ControllerConnected event ever reached this host instance. */
+    auto phoneConnected = approved("phone-b", 2u, 2u, 3u);
+    phoneConnected.phase = MdkrNativePartyControllerPhase::Connected;
+    transport.events.push_back(
+        roomEvent(4u, 1u, 121000u, {phone, phoneConnected}));
+    host.service(1005u);
+    assert(host.view().controllers[1].everConnected);
+}
+
+MdkrPartyTransportEvent renameEvent(std::string id, std::string name) {
+    MdkrPartyTransportEvent event;
+    event.type = MdkrPartyTransportEventType::ControllerRenamed;
+    event.controllerId = std::move(id);
+    event.message = std::move(name);
+    return event;
+}
+
+/* F1 session-alive names: controller_rename arrives over the direct control
+ * channel as a ControllerRenamed event. The model applies it under the same
+ * bounds the redeem-time name field enforces (24 code points, no control /
+ * zero-width / bidi code points, no edge whitespace, 48 bytes) -- refusing,
+ * not repairing, anything else -- and the applied name survives room updates
+ * that still carry the redeem-time name. */
+void controllerRenameIsStrictAndSurvivesRoomUpdates() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    auto phone = approved("phone-a", 1u, 2u, 3u);
+    transport.events.push_back(roomEvent(1u, 1u, 121000u, {phone}));
+    host.service(1000u);
+    assert(host.view().controllers[0].name == "A friend's phone");
+
+    transport.events.push_back(renameEvent("phone-a", "Blue Racer"));
+    host.service(1001u);
+    assert(host.view().controllers[0].name == "Blue Racer");
+
+    /* The next room update still carries the redeem-time name; the live
+     * rename must not be clobbered by it. */
+    transport.events.push_back(roomEvent(2u, 1u, 121000u, {phone}));
+    host.service(1002u);
+    assert(host.view().controllers[0].name == "Blue Racer");
+
+    /* Refusals: a control byte, a bidi override, edge whitespace, over the
+     * 24-code-point budget, malformed UTF-8, an unknown controller. */
+    transport.events.push_back(renameEvent("phone-a", "Bad\tName"));
+    transport.events.push_back(renameEvent("phone-a", "Bad\xE2\x80\xAEName"));
+    transport.events.push_back(renameEvent("phone-a", " Padded"));
+    transport.events.push_back(renameEvent("phone-a", "Padded "));
+    transport.events.push_back(renameEvent("phone-a", std::string(25u, 'x')));
+    transport.events.push_back(renameEvent("phone-a", "Bad\xFFName"));
+    transport.events.push_back(renameEvent("phone-zz", "Ghost"));
+    host.service(1003u);
+    assert(host.view().controllers[0].name == "Blue Racer");
+
+    /* An empty rename clears the cosmetic name -- the field is optional. */
+    transport.events.push_back(renameEvent("phone-a", ""));
+    host.service(1004u);
+    assert(host.view().controllers[0].name.empty());
+
+    /* A pending phone has no authenticated channel; a rename naming one is
+     * refused outright. */
+    transport.events.push_back(
+        roomEvent(3u, 1u, 121000u, {phone, pending("phone-p")}));
+    transport.events.push_back(renameEvent("phone-p", "Sneaky"));
+    host.service(1005u);
+    assert(host.view().controllers[1].name == "A friend's phone");
+
+    /* A rename never follows an id whose key changed: a different phone
+     * under a reused id gets the room's own name, not the old rename. */
+    transport.events.push_back(renameEvent("phone-a", "Blue Racer"));
+    host.service(1006u);
+    auto swapped = phone;
+    swapped.publicKey = std::string(87u, 'D');
+    transport.events.push_back(roomEvent(4u, 1u, 121000u, {swapped}));
+    host.service(1007u);
+    assert(host.view().controllers[0].name == "A friend's phone");
+}
+
 size_t rumbleSendCount(const FakeTransport &transport) {
     size_t count = 0u;
     for (const std::string &call : transport.calls) {
@@ -1178,6 +1312,9 @@ int main() {
     destructionDuringOpeningAttemptsGoodbyeButNeverWaits();
     destructionDuringRecoveringAttemptsGoodbyeButNeverWaits();
     phraseArrivesAtConnectionAndSurvivesRoomUpdates();
+    groupedFallbackCodeIsDisplayOnly();
+    neverConnectedLeaseReadsAsConnecting();
+    controllerRenameIsStrictAndSurvivesRoomUpdates();
     sustainedRumbleRefreshesWhileTheMailboxHoldsStrength();
     mismatchedOrDisconnectedSeatsGetNoRumbleRefreshes();
     mdkr_native_remote_pad_reset_all();
