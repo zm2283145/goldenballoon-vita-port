@@ -97,15 +97,21 @@ int main(void) {
     MdkrMatchManifestV1 manifest;
     MdkrMatchLaunchDescriptorV1 descriptor;
     MdkrMatchLaunchDescriptorV1 decoded;
+    MdkrMatchLocalRosterV1 retail_roster;
+    MdkrMatchLocalRosterV1 bonus_roster;
+    MdkrMatchLaunchRefusal refusal;
     uint8_t encoded[MDKR_MATCH_LAUNCH_DESCRIPTOR_BYTES];
     uint8_t mutated[MDKR_MATCH_LAUNCH_DESCRIPTOR_BYTES];
     unsigned byte;
 
+    memset(&retail_roster, 0, sizeof(retail_roster));
     expect(loading_lobby(&lobby, &compat),
            "launcher reducer reaches Loading with frozen selections");
     manifest = manifest_for(&lobby, &compat);
+    refusal = MDKR_MATCH_LAUNCH_REFUSE_SNAPSHOT;
     expect(mdkr_match_launch_descriptor_from_lobby(
-               &lobby, &manifest, &descriptor),
+               &lobby, &manifest, &retail_roster, &descriptor, &refusal) &&
+           refusal == MDKR_MATCH_LAUNCH_ADMITTED,
            "loading lobby freezes one canonical launch descriptor");
     expect(descriptor.selections[0].character_id == 9u &&
            descriptor.selections[0].vehicle_id == 1u &&
@@ -148,11 +154,44 @@ int main(void) {
     decoded = descriptor;
     decoded.manifest.track_id++;
     expect(!mdkr_match_launch_descriptor_from_lobby(
-               &lobby, &decoded.manifest, &decoded),
+               &lobby, &decoded.manifest, &retail_roster, &decoded,
+               &refusal) &&
+           refusal == MDKR_MATCH_LAUNCH_REFUSE_SNAPSHOT,
            "manifest/lobby track mismatch fails before output mutation");
+
+    /* Online v1 admits retail identities only. The manifest cannot even
+     * express a bonus identity, so each peer would resolve it from local
+     * roster state and peers could disagree at tick zero. A local player
+     * that would resolve non-retail must refuse admission with the typed
+     * reason, before bindings activation can ever start. */
+    bonus_roster = retail_roster;
+    bonus_roster.player_identity[1] = 2u; /* local P2 resolves to Wizpig */
+    decoded = descriptor;
+    refusal = MDKR_MATCH_LAUNCH_ADMITTED;
+    expect(!mdkr_match_launch_descriptor_from_lobby(
+               &lobby, &manifest, &bonus_roster, &decoded, &refusal),
+           "bonus-identity local selection is refused at admission");
+    expect(refusal == MDKR_MATCH_LAUNCH_REFUSE_NON_RETAIL_IDENTITY,
+           "the refusal reason is the typed non-retail-identity value");
+    expect(memcmp(&decoded, &descriptor, sizeof(decoded)) == 0,
+           "identity refusal happens before output mutation");
+    /* Missing roster evidence fails closed rather than assuming retail. */
+    expect(!mdkr_match_launch_descriptor_from_lobby(
+               &lobby, &manifest, NULL, &decoded, &refusal) &&
+           refusal == MDKR_MATCH_LAUNCH_REFUSE_SNAPSHOT,
+           "missing local roster evidence fails closed");
+    /* The typed reason is optional custody, never required plumbing. */
+    expect(!mdkr_match_launch_descriptor_from_lobby(
+               &lobby, &manifest, &bonus_roster, &decoded, NULL),
+           "identity refusal also holds without a refusal out-param");
+    expect(mdkr_match_launch_descriptor_from_lobby(
+               &lobby, &manifest, &retail_roster, &decoded, NULL),
+           "retail-only roster still builds without a refusal out-param");
+
     lobby.phase = MDKR_ONLINE_RACING;
     expect(!mdkr_match_launch_descriptor_from_lobby(
-               &lobby, &manifest, &decoded),
+               &lobby, &manifest, &retail_roster, &decoded, &refusal) &&
+           refusal == MDKR_MATCH_LAUNCH_REFUSE_SNAPSHOT,
            "descriptor can freeze only at the Loading barrier");
 
     if (failures != 0) return 1;
