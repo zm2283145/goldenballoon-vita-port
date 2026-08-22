@@ -1070,6 +1070,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c
                     ${CMAKE_SOURCE_DIR}/platform/session/session_bridge.c
@@ -1107,6 +1108,23 @@ if(NOT EMSCRIPTEN)
                 # Two real loopback DTLS meshes reaching preflight consensus;
                 # internal waits are bounded, so this timeout backstops a hang.
                 set_tests_properties(online_live_adapter PROPERTIES TIMEOUT 180)
+
+                # O2.2-sim: the automatable NET-01 determinism matrix. The same
+                # two-endpoint mesh race, replayed under EACH of the six named
+                # net_impairment carrier profiles (LAN..ADVERSARIAL). Convergent
+                # profiles must still reach a byte-identical confirmed state hash
+                # within the 30-tick rollback window; a profile that exceeds the
+                # window (the 2 s outage) must fire the TYPED recovery path
+                # (INPUT_GAP) rather than a silent desync. Impairment is a
+                # test-only injection gated behind the O-T6 race seam
+                # (race_drain_local + carrier-gated race_resend); production
+                # match_peer_transport / match_transport behaviour is untouched.
+                # ROM-, GPU- and (external-)network-free -- part of the same
+                # ROM-free family as online_live_adapter.
+                add_test(NAME online_live_matrix
+                    COMMAND mdkr_online_live_adapter_test --matrix)
+                # Six full bring-up + 240-tick impaired races over real DTLS.
+                set_tests_properties(online_live_matrix PROPERTIES TIMEOUT 360)
 
                 # O-T6 online multiplayer CAPSTONE end-to-end race driver: the
                 # REAL online stack (production MatchRoom HTTP + /connect WS
