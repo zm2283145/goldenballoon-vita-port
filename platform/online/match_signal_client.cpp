@@ -1,38 +1,1539 @@
+/*
+ * Native match-signaling client. See match_signal_client.h for the contract
+ * and for why the RFC 6455 client half is implemented here instead of on
+ * rtc::WebSocket. The validation surface is a line-for-line mirror of
+ * dist/web/online/match-signal-client.js; where a comment below names a JS
+ * function, the behavior is that function's, byte-for-byte on the wire and
+ * string-for-string in the failure codes.
+ */
 #include "online/match_signal_client.h"
 
-/* Red-first placeholder: the full JS-conformant client lands behind the
- * failing suite in tests/test_match_signal_client.cpp. */
+#include "mozilla_ca_bundle.h"
+#include "party/native_party_host.h"      /* mdkr_party_loopback_test_url_allowed */
+#include "party/party_webrtc_signaling.h" /* mdkr_party::decodePublicKey */
 
-struct MdkrMatchSignalClient::State {};
+#include <nlohmann/json.hpp>
+
+#include <mbedtls/base64.h>
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/entropy.h>
+#include <mbedtls/net_sockets.h>
+#include <mbedtls/platform_util.h>
+#include <mbedtls/sha1.h>
+#include <mbedtls/ssl.h>
+#include <mbedtls/x509_crt.h>
+
+#include <atomic>
+#include <cctype>
+#include <chrono>
+#include <cmath>
+#include <cstring>
+#include <deque>
+#include <map>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <cerrno>
+#include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
+namespace {
+
+using Json = nlohmann::json;
+
+/* The reference client's bounds (match-signal-client.js, and the $0
+ * accounting table in docs/ref/match-signaling-v1.md). */
+constexpr size_t kSignalBytes = 64u * 1024u;
+constexpr size_t kSdpBytes = 60u * 1024u;
+constexpr size_t kIceBytes = 4u * 1024u;
+constexpr size_t kMetaBytes = 256u;
+constexpr size_t kMaxTrackedPeerGenerations = 64u;
+constexpr uint64_t kU32Max = 0xffffffffull;
+
+/* Bounded launcher-facing event queue. The relay's own admission (60
+ * messages / 10 s per sender, 256 lifetime, <= 3 peers) makes ~18 events/s
+ * the hostile ceiling, so this is close to a minute of undrained backlog
+ * before anything is evicted. Eviction never touches a Failure event -- the
+ * terminal verdict must always reach the launcher. */
+constexpr size_t kMaxQueuedEvents = 1024u;
+
+/* Read-poll slice: every blocking wait on the socket thread wakes at this
+ * cadence to honor stop/close requests and the welcome deadline. */
+constexpr uint32_t kPollSliceMs = 20u;
+
+uint64_t steadyNowMs() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+
+/* ---- Validators (u32 / endpoint / text / exact / publicKey) -------------- */
+
+bool base64UrlChars(const std::string &value) {
+    for (const char byte : value) {
+        const bool ok = (byte >= 'A' && byte <= 'Z') ||
+                        (byte >= 'a' && byte <= 'z') ||
+                        (byte >= '0' && byte <= '9') || byte == '-' ||
+                        byte == '_';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+/* JS endpoint(): ^[1-9][0-9]{0,19}$ and <= 2^64-1. No leading zeros, so a
+ * length-then-lexicographic compare is exact numeric order. */
+bool endpointString(const std::string &value) {
+    if (value.empty() || value.size() > 20u) return false;
+    if (value[0] < '1' || value[0] > '9') return false;
+    for (const char byte : value) {
+        if (byte < '0' || byte > '9') return false;
+    }
+    if (value.size() == 20u && value > std::string("18446744073709551615")) {
+        return false;
+    }
+    return true;
+}
+
+bool endpointNumericLess(const std::string &left, const std::string &right) {
+    if (left.size() != right.size()) return left.size() < right.size();
+    return left < right;
+}
+
+/* JS u32(): Number.isInteger(value) within [nonzero?1:0, 2^32-1]. JSON
+ * numbers arrive typed in nlohmann; an integral float (JSON "5.0") is a JS
+ * integer and stays one here. Booleans and strings are not numbers. */
+bool jsonU32(const Json &value, bool nonzero, uint32_t &out) {
+    uint64_t raw = 0u;
+    if (value.is_number_unsigned()) {
+        raw = value.get<uint64_t>();
+    } else if (value.is_number_integer()) {
+        const int64_t asSigned = value.get<int64_t>();
+        if (asSigned < 0) return false;
+        raw = static_cast<uint64_t>(asSigned);
+    } else if (value.is_number_float()) {
+        const double asDouble = value.get<double>();
+        if (!(asDouble >= 0.0) || asDouble > 4294967295.0 ||
+            std::floor(asDouble) != asDouble) {
+            return false;
+        }
+        raw = static_cast<uint64_t>(asDouble);
+    } else {
+        return false;
+    }
+    if (raw > kU32Max || (nonzero && raw == 0u)) return false;
+    out = static_cast<uint32_t>(raw);
+    return true;
+}
+
+/* JS strict `=== <number>` against a known u32 (bool/string never equal). */
+bool jsonNumberEquals(const Json &value, uint32_t target) {
+    uint32_t raw = 0u;
+    return jsonU32(value, false, raw) && raw == target;
+}
+
+/* JS text(): string, nonempty unless allowed, no NUL, UTF-8 bytes <= limit.
+ * nlohmann already refused invalid UTF-8 at parse (stricter than JS lone
+ * surrogates -- both end in the same terminal failure code). */
+bool textString(const std::string &value, size_t limit, bool allowEmpty) {
+    if (!allowEmpty && value.empty()) return false;
+    if (value.find('\0') != std::string::npos) return false;
+    return value.size() <= limit;
+}
+
+bool jsonText(const Json &value, size_t limit, bool allowEmpty,
+              std::string &out) {
+    if (!value.is_string()) return false;
+    out = value.get<std::string>();
+    return textString(out, limit, allowEmpty);
+}
+
+/* JS exact(): a plain object with exactly these keys. */
+bool exactKeys(const Json &object, std::initializer_list<const char *> keys) {
+    if (!object.is_object() || object.size() != keys.size()) return false;
+    for (const char *key : keys) {
+        if (!object.contains(key)) return false;
+    }
+    return true;
+}
+
+/* JS publicKey(): 87-char canonical base64url, 65 bytes, uncompressed
+ * (0x04) with a nonzero body. mdkr_party::decodePublicKey enforces length,
+ * alphabet, the canonical trailing bits and the 0x04 prefix; the nonzero
+ * body check is added here to match the JS rule exactly. */
+bool publicKeyString(const std::string &value) {
+    std::array<uint8_t, 65> raw{};
+    if (!mdkr_party::decodePublicKey(value, raw)) return false;
+    for (size_t index = 1u; index < raw.size(); index++) {
+        if (raw[index] != 0u) return true;
+    }
+    return false;
+}
+
+bool jsonStringEquals(const Json &value, const std::string &expected) {
+    return value.is_string() &&
+           value.get_ref<const std::string &>() == expected;
+}
+
+bool jsonEndpointNotSelf(const Json &value, const std::string &self,
+                         std::string &out) {
+    if (!value.is_string()) return false;
+    out = value.get<std::string>();
+    return endpointString(out) && out != self;
+}
+
+/* ---- parseServerMessage (the JS function, structured identically) -------- */
+
+bool parseServerMessage(const Json &raw, const std::string &self,
+                        uint32_t generation, MdkrMatchSignalEvent &out) {
+    if (!raw.is_object()) return false;
+    const auto version = raw.find("protocolVersion");
+    if (version == raw.end() || !jsonNumberEquals(*version, 1u)) return false;
+    const auto typeField = raw.find("type");
+    if (typeField == raw.end() || !typeField->is_string()) return false;
+    const std::string type = typeField->get<std::string>();
+
+    if (type == "signal_welcome" && generation == 0u &&
+        exactKeys(raw, {"protocolVersion", "type", "endpointId",
+                        "connectionGeneration", "peers"}) &&
+        jsonStringEquals(raw["endpointId"], self) &&
+        jsonU32(raw["connectionGeneration"], true, out.connectionGeneration) &&
+        raw["peers"].is_array() && raw["peers"].size() <= 3u) {
+        out.peers.clear();
+        for (const Json &item : raw["peers"]) {
+            MdkrMatchSignalPeerRef peer;
+            if (!exactKeys(item, {"endpointId", "connectionGeneration"}) ||
+                !jsonEndpointNotSelf(item["endpointId"], self,
+                                     peer.endpointId) ||
+                !jsonU32(item["connectionGeneration"], true,
+                         peer.connectionGeneration)) {
+                return false;
+            }
+            out.peers.push_back(std::move(peer));
+        }
+        /* Strictly ascending numeric ids: sorted AND unique in one rule. */
+        for (size_t index = 1u; index < out.peers.size(); index++) {
+            if (!endpointNumericLess(out.peers[index - 1u].endpointId,
+                                     out.peers[index].endpointId)) {
+                return false;
+            }
+        }
+        out.type = MdkrMatchSignalEventType::Welcome;
+        out.endpointId = self;
+        return true;
+    }
+    if (generation == 0u) return false;
+
+    if (type == "peer_presence" &&
+        exactKeys(raw, {"protocolVersion", "type", "endpointId",
+                        "connectionGeneration", "present"}) &&
+        jsonEndpointNotSelf(raw["endpointId"], self, out.endpointId) &&
+        jsonU32(raw["connectionGeneration"], true, out.connectionGeneration) &&
+        raw["present"].is_boolean()) {
+        out.type = MdkrMatchSignalEventType::PeerPresence;
+        out.present = raw["present"].get<bool>();
+        return true;
+    }
+
+    if (type == "signal_error" &&
+        exactKeys(raw, {"protocolVersion", "type", "sequence", "toEndpointId",
+                        "toConnectionGeneration", "error"}) &&
+        jsonU32(raw["sequence"], true, out.sequence) &&
+        jsonEndpointNotSelf(raw["toEndpointId"], self, out.toEndpointId) &&
+        jsonU32(raw["toConnectionGeneration"], true,
+                out.toConnectionGeneration) &&
+        jsonStringEquals(raw["error"], "peer_unavailable")) {
+        out.type = MdkrMatchSignalEventType::SignalError;
+        out.error = "peer_unavailable";
+        return true;
+    }
+
+    /* Directed messages: common authenticated fields first, exactly like
+     * the JS ordering (missing keys read as never-equal). */
+    const auto sequenceField = raw.find("sequence");
+    const auto toField = raw.find("toEndpointId");
+    const auto toGenerationField = raw.find("toConnectionGeneration");
+    const auto fromField = raw.find("fromEndpointId");
+    const auto fromGenerationField = raw.find("fromConnectionGeneration");
+    if (sequenceField == raw.end() ||
+        !jsonU32(*sequenceField, true, out.sequence)) {
+        return false;
+    }
+    if (toField == raw.end() || !jsonStringEquals(*toField, self)) return false;
+    if (toGenerationField == raw.end() ||
+        !jsonNumberEquals(*toGenerationField, generation)) {
+        return false;
+    }
+    if (fromField == raw.end() ||
+        !jsonEndpointNotSelf(*fromField, self, out.fromEndpointId)) {
+        return false;
+    }
+    if (fromGenerationField == raw.end() ||
+        !jsonU32(*fromGenerationField, true, out.fromConnectionGeneration)) {
+        return false;
+    }
+    out.toEndpointId = self;
+    out.toConnectionGeneration = generation;
+
+    if (type == "peer_hello" &&
+        exactKeys(raw, {"protocolVersion", "type", "sequence", "toEndpointId",
+                        "toConnectionGeneration", "fromEndpointId",
+                        "fromConnectionGeneration", "publicKey"}) &&
+        raw["publicKey"].is_string()) {
+        out.publicKey = raw["publicKey"].get<std::string>();
+        if (!publicKeyString(out.publicKey)) return false;
+        out.type = MdkrMatchSignalEventType::PeerHello;
+        return true;
+    }
+    if ((type == "webrtc_offer" || type == "webrtc_answer") &&
+        exactKeys(raw, {"protocolVersion", "type", "sequence", "toEndpointId",
+                        "toConnectionGeneration", "fromEndpointId",
+                        "fromConnectionGeneration", "sdp"}) &&
+        jsonText(raw["sdp"], kSdpBytes, false, out.sdp)) {
+        out.type = type == "webrtc_offer" ? MdkrMatchSignalEventType::WebrtcOffer
+                                          : MdkrMatchSignalEventType::WebrtcAnswer;
+        return true;
+    }
+    if (type == "webrtc_ice" &&
+        exactKeys(raw, {"protocolVersion", "type", "sequence", "toEndpointId",
+                        "toConnectionGeneration", "fromEndpointId",
+                        "fromConnectionGeneration", "candidate", "sdpMid",
+                        "sdpMLineIndex", "usernameFragment"}) &&
+        jsonText(raw["candidate"], kIceBytes, false, out.candidate)) {
+        const Json &sdpMid = raw["sdpMid"];
+        if (sdpMid.is_null()) {
+            out.hasSdpMid = false;
+        } else if (jsonText(sdpMid, kMetaBytes, true, out.sdpMid)) {
+            out.hasSdpMid = true;
+        } else {
+            return false;
+        }
+        const Json &fragment = raw["usernameFragment"];
+        if (fragment.is_null()) {
+            out.hasUsernameFragment = false;
+        } else if (jsonText(fragment, kMetaBytes, true, out.usernameFragment)) {
+            out.hasUsernameFragment = true;
+        } else {
+            return false;
+        }
+        const Json &line = raw["sdpMLineIndex"];
+        if (line.is_null()) {
+            out.hasSdpMLineIndex = false;
+        } else if (jsonU32(line, false, out.sdpMLineIndex) &&
+                   out.sdpMLineIndex <= 255u) {
+            out.hasSdpMLineIndex = true;
+        } else {
+            return false;
+        }
+        out.type = MdkrMatchSignalEventType::WebrtcIce;
+        return true;
+    }
+    if (type == "peer_end" &&
+        exactKeys(raw, {"protocolVersion", "type", "sequence", "toEndpointId",
+                        "toConnectionGeneration", "fromEndpointId",
+                        "fromConnectionGeneration", "reason"}) &&
+        (jsonStringEquals(raw["reason"], "restart") ||
+         jsonStringEquals(raw["reason"], "close"))) {
+        out.reason = raw["reason"].get<std::string>();
+        out.type = MdkrMatchSignalEventType::PeerEnd;
+        return true;
+    }
+    return false;
+}
+
+/* ---- clientMessage (the JS function, over the typed outbound struct) ----- */
+
+/* The typed mirror of the JS exact-key rule: fields that do not belong to
+ * the message type must be unset, or the whole message is invalid. */
+bool iceMetaUnset(const MdkrMatchSignalOutbound &m) {
+    return !m.hasSdpMid && m.sdpMid.empty() && !m.hasSdpMLineIndex &&
+           m.sdpMLineIndex == 0u && !m.hasUsernameFragment &&
+           m.usernameFragment.empty();
+}
+
+bool buildClientMessage(const MdkrMatchSignalOutbound &m,
+                        const std::string &self, uint64_t sequence,
+                        Json &out) {
+    if (!endpointString(m.toEndpointId) || m.toEndpointId == self ||
+        m.toConnectionGeneration == 0u) {
+        return false;
+    }
+    out = Json{{"protocolVersion", 1u},
+               {"type", m.type},
+               {"sequence", sequence},
+               {"toEndpointId", m.toEndpointId},
+               {"toConnectionGeneration", m.toConnectionGeneration}};
+    if (m.type == "peer_hello") {
+        if (!publicKeyString(m.publicKey) || !m.sdp.empty() ||
+            !m.candidate.empty() || !m.reason.empty() || !iceMetaUnset(m)) {
+            return false;
+        }
+        out["publicKey"] = m.publicKey;
+        return true;
+    }
+    if (m.type == "webrtc_offer" || m.type == "webrtc_answer") {
+        if (!textString(m.sdp, kSdpBytes, false) || !m.publicKey.empty() ||
+            !m.candidate.empty() || !m.reason.empty() || !iceMetaUnset(m)) {
+            return false;
+        }
+        out["sdp"] = m.sdp;
+        return true;
+    }
+    if (m.type == "webrtc_ice") {
+        if (!textString(m.candidate, kIceBytes, false) ||
+            !m.publicKey.empty() || !m.sdp.empty() || !m.reason.empty()) {
+            return false;
+        }
+        if (m.hasSdpMid) {
+            if (!textString(m.sdpMid, kMetaBytes, true)) return false;
+            out["sdpMid"] = m.sdpMid;
+        } else {
+            if (!m.sdpMid.empty()) return false;
+            out["sdpMid"] = nullptr;
+        }
+        if (m.hasSdpMLineIndex) {
+            if (m.sdpMLineIndex > 255u) return false;
+            out["sdpMLineIndex"] = m.sdpMLineIndex;
+        } else {
+            if (m.sdpMLineIndex != 0u) return false;
+            out["sdpMLineIndex"] = nullptr;
+        }
+        if (m.hasUsernameFragment) {
+            if (!textString(m.usernameFragment, kMetaBytes, true)) return false;
+            out["usernameFragment"] = m.usernameFragment;
+        } else {
+            if (!m.usernameFragment.empty()) return false;
+            out["usernameFragment"] = nullptr;
+        }
+        out["candidate"] = m.candidate;
+        return true;
+    }
+    if (m.type == "peer_end") {
+        if ((m.reason != "restart" && m.reason != "close") ||
+            !m.publicKey.empty() || !m.sdp.empty() || !m.candidate.empty() ||
+            !iceMetaUnset(m)) {
+            return false;
+        }
+        out["reason"] = m.reason;
+        return true;
+    }
+    return false;
+}
+
+/* ---- Origin parsing ------------------------------------------------------ */
+
+struct ParsedOrigin {
+    bool tls = false;
+    std::string host;
+    uint16_t port = 0u;
+    std::string hostHeader;
+};
+
+/* scheme://host[:port][/] and nothing else. https/wss speak TLS; http/ws
+ * are the loopback test lane behind the Party transport's exact token gate
+ * (native_party_host.h) -- the credential never rides plaintext
+ * off-machine. */
+bool parseOrigin(const std::string &origin, ParsedOrigin &out) {
+    std::string rest;
+    std::string scheme;
+    for (const char *candidate : {"https://", "wss://", "http://", "ws://"}) {
+        const size_t length = std::strlen(candidate);
+        if (origin.compare(0u, length, candidate) == 0) {
+            scheme.assign(candidate, length - 3u); /* strip "://" */
+            rest = origin.substr(length);
+            break;
+        }
+    }
+    if (scheme.empty()) return false;
+    out.tls = scheme == "https" || scheme == "wss";
+    if (!out.tls) {
+        /* Reuse the house loopback gate verbatim by normalizing the scheme
+         * it expects. */
+        const std::string asHttp = "http://" + rest;
+        if (!mdkr_party_loopback_test_url_allowed(asHttp)) return false;
+    }
+    if (!rest.empty() && rest.back() == '/') rest.pop_back();
+    if (rest.empty() || rest.find('/') != std::string::npos) return false;
+    const size_t colon = rest.find(':');
+    std::string host = colon == std::string::npos ? rest : rest.substr(0u, colon);
+    if (host.empty()) return false;
+    for (const char byte : host) {
+        const bool ok = (byte >= 'a' && byte <= 'z') ||
+                        (byte >= 'A' && byte <= 'Z') ||
+                        (byte >= '0' && byte <= '9') || byte == '.' ||
+                        byte == '-';
+        if (!ok) return false;
+    }
+    uint32_t port = out.tls ? 443u : 80u;
+    if (colon != std::string::npos) {
+        const std::string digits = rest.substr(colon + 1u);
+        if (digits.empty() || digits.size() > 5u) return false;
+        port = 0u;
+        for (const char byte : digits) {
+            if (byte < '0' || byte > '9') return false;
+            port = port * 10u + static_cast<uint32_t>(byte - '0');
+        }
+        if (port == 0u || port > 65535u) return false;
+    }
+    out.host = host;
+    out.port = static_cast<uint16_t>(port);
+    out.hostHeader = host;
+    if ((out.tls && out.port != 443u) || (!out.tls && out.port != 80u)) {
+        out.hostHeader += ":" + std::to_string(out.port);
+    }
+    return true;
+}
+
+/* ---- Low-level socket helpers -------------------------------------------- */
+
+#ifdef _WIN32
+using NativeSocket = SOCKET;
+constexpr NativeSocket kBadNativeSocket = INVALID_SOCKET;
+#else
+using NativeSocket = int;
+constexpr NativeSocket kBadNativeSocket = -1;
+#endif
+
+void closeNativeSocket(NativeSocket fd) {
+    if (fd == kBadNativeSocket) return;
+#ifdef _WIN32
+    ::closesocket(fd);
+#else
+    ::close(fd);
+#endif
+}
+
+bool setNonBlocking(NativeSocket fd, bool nonBlocking) {
+#ifdef _WIN32
+    u_long mode = nonBlocking ? 1u : 0u;
+    return ::ioctlsocket(fd, FIONBIO, &mode) == 0;
+#else
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    if (flags < 0) return false;
+    const int updated = nonBlocking ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK);
+    return ::fcntl(fd, F_SETFL, updated) == 0;
+#endif
+}
+
+/* Deadline- and stop-aware TCP connect. Returns kBadNativeSocket on any
+ * failure; *timedOut distinguishes the deadline from a refusal. */
+NativeSocket connectTcp(const std::string &host, uint16_t port,
+                        uint64_t deadlineMs, const std::atomic<bool> &stopping,
+                        bool *timedOut) {
+    *timedOut = false;
+    struct addrinfo hints;
+    std::memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    struct addrinfo *results = nullptr;
+    if (::getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints,
+                      &results) != 0 ||
+        results == nullptr) {
+        if (results != nullptr) ::freeaddrinfo(results);
+        return kBadNativeSocket;
+    }
+    NativeSocket fd = kBadNativeSocket;
+    for (struct addrinfo *entry = results; entry != nullptr;
+         entry = entry->ai_next) {
+        fd = ::socket(entry->ai_family, entry->ai_socktype,
+                      entry->ai_protocol);
+        if (fd == kBadNativeSocket) continue;
+        if (!setNonBlocking(fd, true)) {
+            closeNativeSocket(fd);
+            fd = kBadNativeSocket;
+            continue;
+        }
+        const int connected = ::connect(fd, entry->ai_addr,
+                                        static_cast<socklen_t>(entry->ai_addrlen));
+        bool pending = false;
+        if (connected != 0) {
+#ifdef _WIN32
+            pending = WSAGetLastError() == WSAEWOULDBLOCK;
+#else
+            pending = errno == EINPROGRESS;
+#endif
+            if (!pending) {
+                closeNativeSocket(fd);
+                fd = kBadNativeSocket;
+                continue;
+            }
+        }
+        bool established = !pending;
+        while (pending && !stopping) {
+            if (steadyNowMs() >= deadlineMs) {
+                *timedOut = true;
+                break;
+            }
+            fd_set writable;
+            FD_ZERO(&writable);
+            FD_SET(fd, &writable);
+            struct timeval slice;
+            slice.tv_sec = 0;
+            slice.tv_usec = static_cast<int>(kPollSliceMs) * 1000;
+            const int ready = ::select(static_cast<int>(fd) + 1, nullptr,
+                                       &writable, nullptr, &slice);
+            if (ready < 0) break;
+            if (ready == 0) continue;
+            int soError = 0;
+            socklen_t errorLength = sizeof(soError);
+            if (::getsockopt(fd, SOL_SOCKET, SO_ERROR,
+                             reinterpret_cast<char *>(&soError),
+                             &errorLength) == 0 &&
+                soError == 0) {
+                established = true;
+            }
+            break;
+        }
+        if (established && setNonBlocking(fd, false)) break;
+        closeNativeSocket(fd);
+        fd = kBadNativeSocket;
+        if (*timedOut || stopping) break;
+    }
+    ::freeaddrinfo(results);
+    return fd;
+}
+
+std::string standardBase64(const unsigned char *bytes, size_t length) {
+    unsigned char encoded[128];
+    size_t written = 0u;
+    if (mbedtls_base64_encode(encoded, sizeof(encoded), &written, bytes,
+                              length) != 0) {
+        return std::string{};
+    }
+    return std::string(reinterpret_cast<const char *>(encoded), written);
+}
+
+std::string websocketAcceptFor(const std::string &key) {
+    static const char kGuid[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    const std::string joined = key + kGuid;
+    unsigned char digest[20];
+    if (mbedtls_sha1(reinterpret_cast<const unsigned char *>(joined.data()),
+                     joined.size(), digest) != 0) {
+        return std::string{};
+    }
+    return standardBase64(digest, sizeof(digest));
+}
+
+std::string loweredCopy(std::string value) {
+    for (char &byte : value) {
+        byte = static_cast<char>(std::tolower(static_cast<unsigned char>(byte)));
+    }
+    return value;
+}
+
+/* First matching header (lowercase name), trimmed. */
+bool responseHeader(const std::string &head, const std::string &name,
+                    std::string &value) {
+    size_t start = head.find("\r\n");
+    while (start != std::string::npos && start + 2u < head.size()) {
+        start += 2u;
+        size_t end = head.find("\r\n", start);
+        if (end == std::string::npos) end = head.size();
+        const std::string line = head.substr(start, end - start);
+        const size_t colon = line.find(':');
+        if (colon != std::string::npos &&
+            loweredCopy(line.substr(0u, colon)) == name) {
+            value = line.substr(colon + 1u);
+            while (!value.empty() &&
+                   (value.front() == ' ' || value.front() == '\t')) {
+                value.erase(0u, 1u);
+            }
+            while (!value.empty() &&
+                   (value.back() == ' ' || value.back() == '\t')) {
+                value.pop_back();
+            }
+            return true;
+        }
+        start = end;
+    }
+    return false;
+}
+
+} // namespace
+
+/* ---- State ---------------------------------------------------------------- */
+
+struct MdkrMatchSignalClient::State {
+    /* Immutable after create(). */
+    ParsedOrigin origin;
+    std::string path;
+    std::string endpointId;
+    unsigned timeoutMs = 10000u;
+
+    mutable std::mutex mutex;
+    MdkrMatchSignalPhase phase = MdkrMatchSignalPhase::Idle;
+    std::string credential; /* wiped by close() */
+    uint32_t generation = 0u;
+    uint64_t nextSequence = 1u;
+    std::map<std::string, uint32_t> peerGenerations;
+    /* High-water marks are never deleted (a departed peer's mark is what
+     * refuses a rollback), so the map is append-only and carries the
+     * explicit 64-entry bound that fails CLOSED. */
+    std::map<std::string, uint32_t> peerGenerationHighWater;
+    std::map<std::string, uint32_t> receivedSequences;
+    std::map<uint32_t, MdkrMatchSignalPeerRef> sentTargets;
+
+    std::deque<MdkrMatchSignalEvent> events;
+    uint64_t droppedEvents = 0u;
+
+    std::deque<std::string> outbound; /* serialized payloads, FIFO */
+
+    std::thread thread;
+    std::atomic<bool> stopping{false};
+    std::atomic<bool> closeRequested{false};
+    bool wantCloseFrame1000 = false; /* set by close() while upgraded */
+    bool socketOpen = false;         /* 101 completed (socket thread) */
+
+    /* ---- Event queue (bounded; Failure events are never evicted) ---- */
+    void enqueueLocked(MdkrMatchSignalEvent &&event) {
+        if (events.size() >= kMaxQueuedEvents) {
+            for (auto iterator = events.begin(); iterator != events.end();
+                 ++iterator) {
+                if (iterator->type != MdkrMatchSignalEventType::Failure) {
+                    events.erase(iterator);
+                    droppedEvents++;
+                    break;
+                }
+            }
+            if (events.size() >= kMaxQueuedEvents) return; /* all terminal */
+        }
+        events.push_back(std::move(event));
+    }
+
+    /* Latch the terminal failure (JS fail()): once failed or closed,
+     * nothing further is recorded. */
+    bool latchFailureLocked(const char *code) {
+        if (phase == MdkrMatchSignalPhase::Failed ||
+            phase == MdkrMatchSignalPhase::Closed) {
+            return false;
+        }
+        phase = MdkrMatchSignalPhase::Failed;
+        MdkrMatchSignalEvent event;
+        event.type = MdkrMatchSignalEventType::Failure;
+        event.failureCode = code;
+        enqueueLocked(std::move(event));
+        return true;
+    }
+
+    bool rememberPeerGenerationLocked(const std::string &id, uint32_t value) {
+        if (peerGenerationHighWater.find(id) == peerGenerationHighWater.end() &&
+            peerGenerationHighWater.size() >= kMaxTrackedPeerGenerations) {
+            return false;
+        }
+        peerGenerationHighWater[id] = value;
+        return true;
+    }
+
+    /* The JS onmessage handler after JSON.parse. Returns nullptr on
+     * success, otherwise the terminal failure code. */
+    const char *handleServerText(const std::string &text) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (phase != MdkrMatchSignalPhase::Connecting &&
+                phase != MdkrMatchSignalPhase::Open) {
+                return nullptr;
+            }
+        }
+        if (text.size() > kSignalBytes) return kMdkrMatchSignalInvalidMessage;
+        const Json raw = Json::parse(text, nullptr, false);
+        if (raw.is_discarded()) return kMdkrMatchSignalInvalidMessage;
+
+        std::lock_guard<std::mutex> lock(mutex);
+        if (phase != MdkrMatchSignalPhase::Connecting &&
+            phase != MdkrMatchSignalPhase::Open) {
+            return nullptr;
+        }
+        MdkrMatchSignalEvent event;
+        if (!parseServerMessage(raw, endpointId, generation, event)) {
+            return kMdkrMatchSignalInvalidMessage;
+        }
+        switch (event.type) {
+        case MdkrMatchSignalEventType::Welcome: {
+            for (const MdkrMatchSignalPeerRef &peer : event.peers) {
+                peerGenerations[peer.endpointId] = peer.connectionGeneration;
+                if (!rememberPeerGenerationLocked(peer.endpointId,
+                                                  peer.connectionGeneration)) {
+                    return kMdkrMatchSignalPeerGenerationOverflow;
+                }
+            }
+            generation = event.connectionGeneration;
+            phase = MdkrMatchSignalPhase::Open;
+            break;
+        }
+        case MdkrMatchSignalEventType::PeerPresence: {
+            const auto current = peerGenerations.find(event.endpointId);
+            const auto mark = peerGenerationHighWater.find(event.endpointId);
+            const uint32_t highWater =
+                mark == peerGenerationHighWater.end() ? 0u : mark->second;
+            if ((event.present && event.connectionGeneration <= highWater) ||
+                (!event.present &&
+                 (current == peerGenerations.end() ||
+                  current->second != event.connectionGeneration))) {
+                return kMdkrMatchSignalInvalidMessage;
+            }
+            if (event.present) {
+                if (!rememberPeerGenerationLocked(event.endpointId,
+                                                  event.connectionGeneration)) {
+                    return kMdkrMatchSignalPeerGenerationOverflow;
+                }
+                peerGenerations[event.endpointId] = event.connectionGeneration;
+                receivedSequences.erase(event.endpointId);
+            } else {
+                peerGenerations.erase(event.endpointId);
+                receivedSequences.erase(event.endpointId);
+            }
+            break;
+        }
+        case MdkrMatchSignalEventType::SignalError: {
+            const auto target = sentTargets.find(event.sequence);
+            if (target == sentTargets.end() ||
+                target->second.endpointId != event.toEndpointId ||
+                target->second.connectionGeneration !=
+                    event.toConnectionGeneration) {
+                return kMdkrMatchSignalInvalidMessage;
+            }
+            sentTargets.erase(target);
+            break;
+        }
+        default: { /* Directed message. */
+            const auto sender = peerGenerations.find(event.fromEndpointId);
+            const auto prior = receivedSequences.find(event.fromEndpointId);
+            const uint32_t floor =
+                prior == receivedSequences.end() ? 0u : prior->second;
+            if (sender == peerGenerations.end() ||
+                sender->second != event.fromConnectionGeneration ||
+                event.sequence <= floor) {
+                return kMdkrMatchSignalInvalidMessage;
+            }
+            receivedSequences[event.fromEndpointId] = event.sequence;
+            break;
+        }
+        }
+        enqueueLocked(std::move(event));
+        return nullptr;
+    }
+
+    bool isTerminalOrClosing() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return phase == MdkrMatchSignalPhase::Failed ||
+               phase == MdkrMatchSignalPhase::Closed;
+    }
+
+    bool welcomePending() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return phase == MdkrMatchSignalPhase::Connecting;
+    }
+
+    /* ---- Socket thread ---- */
+    void run();
+};
+
+namespace {
+
+/* Everything the socket thread owns for one connection attempt. */
+struct Transport {
+    bool tls = false;
+    mbedtls_net_context net;
+    mbedtls_entropy_context entropy;
+    mbedtls_ctr_drbg_context drbg;
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config config;
+    mbedtls_x509_crt ca;
+    bool alive = false;
+
+    Transport() {
+        mbedtls_net_init(&net);
+        mbedtls_entropy_init(&entropy);
+        mbedtls_ctr_drbg_init(&drbg);
+        mbedtls_ssl_init(&ssl);
+        mbedtls_ssl_config_init(&config);
+        mbedtls_x509_crt_init(&ca);
+    }
+
+    ~Transport() {
+        teardown();
+        mbedtls_x509_crt_free(&ca);
+        mbedtls_ssl_config_free(&config);
+        mbedtls_ssl_free(&ssl);
+        mbedtls_ctr_drbg_free(&drbg);
+        mbedtls_entropy_free(&entropy);
+        mbedtls_net_free(&net);
+    }
+
+    Transport(const Transport &) = delete;
+    Transport &operator=(const Transport &) = delete;
+
+    bool seedRandom() {
+        static const char kPersonalization[] = "mdkr-match-signal-v1";
+        return mbedtls_ctr_drbg_seed(
+                   &drbg, mbedtls_entropy_func, &entropy,
+                   reinterpret_cast<const unsigned char *>(kPersonalization),
+                   sizeof(kPersonalization) - 1u) == 0;
+    }
+
+    bool startTls(const std::string &hostname, uint64_t deadlineMs,
+                  const std::atomic<bool> &stopping, bool *timedOut) {
+        *timedOut = false;
+        /* The generated header ends with an explicit 0x00 the PEM parser
+         * requires; Length excludes it, parse length includes it. */
+        if (mbedtls_x509_crt_parse(&ca, kMdkrMozillaCaBundle,
+                                   static_cast<size_t>(
+                                       kMdkrMozillaCaBundleLength) + 1u) != 0) {
+            return false;
+        }
+        if (mbedtls_ssl_config_defaults(&config, MBEDTLS_SSL_IS_CLIENT,
+                                        MBEDTLS_SSL_TRANSPORT_STREAM,
+                                        MBEDTLS_SSL_PRESET_DEFAULT) != 0) {
+            return false;
+        }
+        mbedtls_ssl_conf_authmode(&config, MBEDTLS_SSL_VERIFY_REQUIRED);
+        mbedtls_ssl_conf_ca_chain(&config, &ca, nullptr);
+        mbedtls_ssl_conf_rng(&config, mbedtls_ctr_drbg_random, &drbg);
+        mbedtls_ssl_conf_read_timeout(&config, kPollSliceMs);
+        if (mbedtls_ssl_setup(&ssl, &config) != 0 ||
+            mbedtls_ssl_set_hostname(&ssl, hostname.c_str()) != 0) {
+            return false;
+        }
+        mbedtls_ssl_set_bio(&ssl, &net, mbedtls_net_send, nullptr,
+                            mbedtls_net_recv_timeout);
+        for (;;) {
+            if (stopping) return false;
+            if (steadyNowMs() >= deadlineMs) {
+                *timedOut = true;
+                return false;
+            }
+            const int ret = mbedtls_ssl_handshake(&ssl);
+            if (ret == 0) return true;
+            if (ret != MBEDTLS_ERR_SSL_WANT_READ &&
+                ret != MBEDTLS_ERR_SSL_WANT_WRITE &&
+                ret != MBEDTLS_ERR_SSL_TIMEOUT) {
+                return false;
+            }
+        }
+    }
+
+    /* One slice: >0 bytes read, 0 nothing yet, -1 transport gone. */
+    int readSlice(unsigned char *buffer, size_t capacity) {
+        if (!alive) return -1;
+        int ret;
+        if (tls) {
+            ret = mbedtls_ssl_read(&ssl, buffer, capacity);
+            if (ret > 0) return ret;
+            if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
+                ret == MBEDTLS_ERR_SSL_WANT_WRITE ||
+                ret == MBEDTLS_ERR_SSL_TIMEOUT) {
+                return 0;
+            }
+            alive = false;
+            return -1;
+        }
+        ret = mbedtls_net_recv_timeout(&net, buffer, capacity, kPollSliceMs);
+        if (ret > 0) return ret;
+        if (ret == MBEDTLS_ERR_SSL_TIMEOUT) return 0;
+        alive = false;
+        return -1;
+    }
+
+    bool writeAll(const unsigned char *data, size_t length) {
+        if (!alive) return false;
+        size_t sent = 0u;
+        while (sent < length) {
+            int ret;
+            if (tls) {
+                ret = mbedtls_ssl_write(&ssl, data + sent, length - sent);
+                if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
+                    ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+                    continue;
+                }
+            } else {
+                ret = mbedtls_net_send(&net, data + sent, length - sent);
+                if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+            }
+            if (ret <= 0) {
+                alive = false;
+                return false;
+            }
+            sent += static_cast<size_t>(ret);
+        }
+        return true;
+    }
+
+    bool writeAll(const std::string &data) {
+        return writeAll(reinterpret_cast<const unsigned char *>(data.data()),
+                        data.size());
+    }
+
+    void teardown() {
+        if (net.fd >= 0) {
+#ifdef _WIN32
+            ::shutdown(static_cast<NativeSocket>(net.fd), SD_BOTH);
+#else
+            ::shutdown(net.fd, SHUT_RDWR);
+#endif
+        }
+        mbedtls_net_free(&net); /* closes and re-inits */
+        alive = false;
+    }
+
+    /* Masked client frame (RFC 6455 5.3). */
+    std::string clientFrame(uint8_t opcode, const std::string &payload) {
+        std::string frame;
+        frame.push_back(static_cast<char>(0x80u | opcode));
+        if (payload.size() < 126u) {
+            frame.push_back(
+                static_cast<char>(0x80u | static_cast<uint8_t>(payload.size())));
+        } else if (payload.size() <= 0xffffu) {
+            frame.push_back(static_cast<char>(0x80u | 126u));
+            frame.push_back(static_cast<char>((payload.size() >> 8u) & 0xffu));
+            frame.push_back(static_cast<char>(payload.size() & 0xffu));
+        } else {
+            frame.push_back(static_cast<char>(0x80u | 127u));
+            for (int shift = 56; shift >= 0; shift -= 8) {
+                frame.push_back(static_cast<char>(
+                    (static_cast<uint64_t>(payload.size()) >> shift) & 0xffu));
+            }
+        }
+        unsigned char mask[4] = {0u, 0u, 0u, 0u};
+        (void)mbedtls_ctr_drbg_random(&drbg, mask, sizeof(mask));
+        for (const unsigned char byte : mask) {
+            frame.push_back(static_cast<char>(byte));
+        }
+        for (size_t index = 0u; index < payload.size(); index++) {
+            frame.push_back(static_cast<char>(
+                static_cast<uint8_t>(payload[index]) ^ mask[index % 4u]));
+        }
+        return frame;
+    }
+
+    bool sendCloseFrame(uint16_t code, const std::string &reason) {
+        std::string payload;
+        payload.push_back(static_cast<char>((code >> 8u) & 0xffu));
+        payload.push_back(static_cast<char>(code & 0xffu));
+        payload += reason;
+        return writeAll(clientFrame(0x8u, payload));
+    }
+};
+
+} // namespace
+
+void MdkrMatchSignalClient::State::run() {
+    const uint64_t deadlineMs = steadyNowMs() + timeoutMs;
+    Transport transport;
+    transport.tls = origin.tls;
+
+    /* Terminal exit for this attempt. JS fail() sends close 4003
+     * "invalid_server_message" on every fail path with a live upgraded
+     * socket; the browser's own handshake aborts (subprotocol absent or
+     * unoffered, refused 101) never carry a close frame. */
+    const auto terminate = [&](const char *code, bool sendFrame) {
+        bool latched = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            latched = latchFailureLocked(code);
+        }
+        if (latched && sendFrame && transport.alive) {
+            (void)transport.sendCloseFrame(4003u, "invalid_server_message");
+        }
+        transport.teardown();
+    };
+
+    /* Clean-close exit requested by close(). */
+    const auto finishClose = [&]() {
+        bool wantFrame = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            wantFrame = wantCloseFrame1000 && socketOpen;
+        }
+        if (wantFrame && transport.alive) {
+            (void)transport.sendCloseFrame(1000u, "launcher_route_changed");
+        }
+        transport.teardown();
+    };
+
+    if (!transport.seedRandom()) {
+        terminate(kMdkrMatchSignalTransportLost, false);
+        return;
+    }
+
+    /* ---- TCP ---- */
+    bool timedOut = false;
+    const NativeSocket fd =
+        connectTcp(origin.host, origin.port, deadlineMs, stopping, &timedOut);
+    if (stopping || closeRequested) {
+        closeNativeSocket(fd);
+        finishClose();
+        return;
+    }
+    if (fd == kBadNativeSocket) {
+        terminate(timedOut ? kMdkrMatchSignalTimeout
+                           : kMdkrMatchSignalTransportLost,
+                  false);
+        return;
+    }
+    transport.net.fd = static_cast<int>(fd);
+    transport.alive = true;
+
+    /* ---- TLS ---- */
+    if (transport.tls) {
+        bool tlsTimedOut = false;
+        if (!transport.startTls(origin.host, deadlineMs, stopping,
+                                &tlsTimedOut)) {
+            if (stopping || closeRequested) {
+                finishClose();
+                return;
+            }
+            terminate(tlsTimedOut ? kMdkrMatchSignalTimeout
+                                  : kMdkrMatchSignalTransportLost,
+                      false);
+            return;
+        }
+    }
+
+    /* ---- Upgrade ---- */
+    unsigned char nonce[16];
+    if (mbedtls_ctr_drbg_random(&transport.drbg, nonce, sizeof(nonce)) != 0) {
+        terminate(kMdkrMatchSignalTransportLost, false);
+        return;
+    }
+    const std::string key = standardBase64(nonce, sizeof(nonce));
+    std::string credentialOffer;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        credentialOffer = "gb-match." + credential;
+    }
+    /* Native is originless: no Origin header, and the credential rides ONLY
+     * in the subprotocol offer. */
+    std::string request = "GET " + path + " HTTP/1.1\r\n" +
+                          "Host: " + origin.hostHeader + "\r\n" +
+                          "Upgrade: websocket\r\n" +
+                          "Connection: Upgrade\r\n" +
+                          "Sec-WebSocket-Key: " + key + "\r\n" +
+                          "Sec-WebSocket-Version: 13\r\n" +
+                          "Sec-WebSocket-Protocol: " +
+                          kMdkrMatchSignalSubprotocol + ", " +
+                          credentialOffer + "\r\n\r\n";
+    const bool requestSent = transport.writeAll(request);
+    mbedtls_platform_zeroize(&request[0], request.size());
+    mbedtls_platform_zeroize(&credentialOffer[0], credentialOffer.size());
+    if (!requestSent) {
+        terminate(kMdkrMatchSignalTransportLost, false);
+        return;
+    }
+
+    std::string head;
+    unsigned char buffer[16384];
+    while (head.find("\r\n\r\n") == std::string::npos) {
+        if (stopping || closeRequested) {
+            finishClose();
+            return;
+        }
+        if (steadyNowMs() >= deadlineMs) {
+            terminate(kMdkrMatchSignalTimeout, false);
+            return;
+        }
+        if (head.size() > sizeof(buffer)) {
+            terminate(kMdkrMatchSignalTransportLost, false);
+            return;
+        }
+        const int got = transport.readSlice(buffer, sizeof(buffer));
+        if (got < 0) {
+            terminate(kMdkrMatchSignalTransportLost, false);
+            return;
+        }
+        if (got > 0) head.append(reinterpret_cast<char *>(buffer),
+                                 static_cast<size_t>(got));
+    }
+    const size_t headEnd = head.find("\r\n\r\n");
+    std::string carried = head.substr(headEnd + 4u);
+    head.resize(headEnd + 2u);
+
+    if (head.compare(0u, 12u, "HTTP/1.1 101") != 0) {
+        terminate(kMdkrMatchSignalTransportLost, false);
+        return;
+    }
+    std::string headerField;
+    if (!responseHeader(head, "upgrade", headerField) ||
+        loweredCopy(headerField) != "websocket") {
+        terminate(kMdkrMatchSignalTransportLost, false);
+        return;
+    }
+    if (!responseHeader(head, "connection", headerField) ||
+        loweredCopy(headerField).find("upgrade") == std::string::npos) {
+        terminate(kMdkrMatchSignalTransportLost, false);
+        return;
+    }
+    if (!responseHeader(head, "sec-websocket-accept", headerField) ||
+        headerField != websocketAcceptFor(key)) {
+        terminate(kMdkrMatchSignalTransportLost, false);
+        return;
+    }
+    std::string selected;
+    const bool hasSelection =
+        responseHeader(head, "sec-websocket-protocol", selected);
+    if (selected != kMdkrMatchSignalSubprotocol) {
+        std::string storedOffer;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            storedOffer = "gb-match." + credential;
+        }
+        const bool offeredButWrong =
+            hasSelection && selected == storedOffer;
+        mbedtls_platform_zeroize(&storedOffer[0], storedOffer.size());
+        if (offeredButWrong) {
+            /* The JS open-handler check: the socket opened, but with the
+             * credential subprotocol selected instead of the public
+             * version token. */
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                socketOpen = true;
+            }
+            terminate(kMdkrMatchSignalInvalidSubprotocol, true);
+        } else {
+            /* Absent or never offered: the browser fails the WebSocket
+             * connection itself -- the reference client only ever sees the
+             * transport loss. */
+            terminate(kMdkrMatchSignalTransportLost, false);
+        }
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        socketOpen = true;
+    }
+
+    /* ---- Frame loop ---- */
+    std::string assembled;
+    bool assembling = false;
+    for (;;) {
+        if (stopping || closeRequested) {
+            finishClose();
+            return;
+        }
+        /* Welcome deadline (the JS connect timer, cleared by welcome). */
+        if (welcomePending() && steadyNowMs() >= deadlineMs) {
+            terminate(kMdkrMatchSignalTimeout, true);
+            return;
+        }
+        /* Single-writer discipline: every wire write happens on this
+         * thread, so TLS state is never touched concurrently. */
+        {
+            std::deque<std::string> pending;
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                pending.swap(outbound);
+            }
+            for (const std::string &payload : pending) {
+                if (!transport.writeAll(transport.clientFrame(0x1u, payload))) {
+                    terminate(kMdkrMatchSignalTransportLost, false);
+                    return;
+                }
+            }
+        }
+
+        /* Extract complete frames from `carried`. */
+        bool needMore = false;
+        while (!needMore) {
+            if (carried.size() < 2u) {
+                needMore = true;
+                break;
+            }
+            const uint8_t byte0 = static_cast<uint8_t>(carried[0]);
+            const uint8_t byte1 = static_cast<uint8_t>(carried[1]);
+            if ((byte0 & 0x70u) != 0u || (byte1 & 0x80u) != 0u) {
+                /* RSV bits or a masked server frame: protocol violation.
+                 * The browser kills such a connection at the protocol
+                 * layer; the reference client sees transport loss. */
+                terminate(kMdkrMatchSignalTransportLost, false);
+                return;
+            }
+            const bool fin = (byte0 & 0x80u) != 0u;
+            const uint8_t opcode = byte0 & 0x0fu;
+            size_t headerSize = 2u;
+            uint64_t length = byte1 & 0x7fu;
+            if (length == 126u) headerSize = 4u;
+            else if (length == 127u) headerSize = 10u;
+            if (carried.size() < headerSize) {
+                needMore = true;
+                break;
+            }
+            if (headerSize == 4u) {
+                length = (static_cast<uint64_t>(
+                              static_cast<uint8_t>(carried[2])) << 8u) |
+                         static_cast<uint64_t>(static_cast<uint8_t>(carried[3]));
+            } else if (headerSize == 10u) {
+                length = 0u;
+                for (unsigned index = 0u; index < 8u; index++) {
+                    length = (length << 8u) |
+                             static_cast<uint8_t>(carried[2u + index]);
+                }
+            }
+            const bool isControl = (opcode & 0x8u) != 0u;
+            if (isControl && (length > 125u || !fin)) {
+                terminate(kMdkrMatchSignalTransportLost, false);
+                return;
+            }
+            if (!isControl) {
+                /* The signaling frame bound, enforced from the declared
+                 * length BEFORE any payload is buffered or parsed. */
+                const uint64_t pendingBytes =
+                    static_cast<uint64_t>(assembled.size());
+                if (length > kSignalBytes || pendingBytes + length > kSignalBytes) {
+                    terminate(kMdkrMatchSignalInvalidMessage, true);
+                    return;
+                }
+            }
+            if (carried.size() < headerSize + length) {
+                needMore = true;
+                break;
+            }
+            std::string payload =
+                carried.substr(headerSize, static_cast<size_t>(length));
+            carried.erase(0u, headerSize + static_cast<size_t>(length));
+
+            if (opcode == 0x9u) { /* ping -> pong */
+                if (!transport.writeAll(transport.clientFrame(0xau, payload))) {
+                    terminate(kMdkrMatchSignalTransportLost, false);
+                    return;
+                }
+                continue;
+            }
+            if (opcode == 0xau) continue; /* pong */
+            if (opcode == 0x8u) {
+                /* Server close: echo per RFC, then the JS close-event path
+                 * (terminal transport loss, no 4003). */
+                (void)transport.writeAll(transport.clientFrame(0x8u, payload));
+                terminate(kMdkrMatchSignalTransportLost, false);
+                return;
+            }
+            if (opcode == 0x2u) {
+                /* Binary data can never be a valid signal message (the JS
+                 * typeof check). */
+                terminate(kMdkrMatchSignalInvalidMessage, true);
+                return;
+            }
+            if (opcode == 0x1u) {
+                if (assembling) {
+                    terminate(kMdkrMatchSignalTransportLost, false);
+                    return;
+                }
+                if (!fin) {
+                    assembling = true;
+                    assembled = std::move(payload);
+                    continue;
+                }
+                const char *code = handleServerText(payload);
+                if (code != nullptr) {
+                    terminate(code, true);
+                    return;
+                }
+                continue;
+            }
+            if (opcode == 0x0u) {
+                if (!assembling) {
+                    terminate(kMdkrMatchSignalTransportLost, false);
+                    return;
+                }
+                assembled += payload;
+                if (!fin) continue;
+                assembling = false;
+                std::string message;
+                message.swap(assembled);
+                const char *code = handleServerText(message);
+                if (code != nullptr) {
+                    terminate(code, true);
+                    return;
+                }
+                continue;
+            }
+            /* Unknown opcode: protocol violation. */
+            terminate(kMdkrMatchSignalTransportLost, false);
+            return;
+        }
+
+        const int got = transport.readSlice(buffer, sizeof(buffer));
+        if (got < 0) {
+            /* EOF/reset: the JS socket close event -- terminal transport
+             * loss, no close frame (the socket is already gone). */
+            terminate(kMdkrMatchSignalTransportLost, false);
+            return;
+        }
+        if (got > 0) {
+            carried.append(reinterpret_cast<char *>(buffer),
+                           static_cast<size_t>(got));
+        }
+    }
+}
+
+/* ---- Public API ------------------------------------------------------------ */
 
 MdkrMatchSignalClient::MdkrMatchSignalClient(std::shared_ptr<State> state)
     : state_(std::move(state)) {}
 
-MdkrMatchSignalClient::~MdkrMatchSignalClient() = default;
+MdkrMatchSignalClient::~MdkrMatchSignalClient() { close(); }
 
 std::unique_ptr<MdkrMatchSignalClient> MdkrMatchSignalClient::create(
-    const MdkrMatchSignalClientOptions &, std::string *errorMessage) {
-    if (errorMessage != nullptr) *errorMessage = "unimplemented";
-    return nullptr;
+    const MdkrMatchSignalClientOptions &options, std::string *errorMessage) {
+    const auto refuse = [&](const char *message)
+        -> std::unique_ptr<MdkrMatchSignalClient> {
+        if (errorMessage != nullptr) *errorMessage = message;
+        return nullptr;
+    };
+    if (options.roomId.size() != 22u || !base64UrlChars(options.roomId) ||
+        !endpointString(options.endpointId) ||
+        options.credential.size() != 43u ||
+        !base64UrlChars(options.credential)) {
+        return refuse(kMdkrMatchSignalInvalidIdentity);
+    }
+    ParsedOrigin origin;
+    if (!parseOrigin(options.serviceOrigin, origin)) {
+        return refuse(kMdkrMatchSignalCrossOriginRefused);
+    }
+#ifdef _WIN32
+    WSADATA data;
+    WSAStartup(MAKEWORD(2, 2), &data);
+#endif
+    auto state = std::make_shared<State>();
+    state->origin = origin;
+    state->path = "/api/match/" + options.roomId + "/signal";
+    state->endpointId = options.endpointId;
+    state->credential = options.credential;
+    const unsigned requested = options.timeoutMs == 0u ? 10000u : options.timeoutMs;
+    state->timeoutMs = requested < 2000u    ? 2000u
+                       : requested > 30000u ? 30000u
+                                            : requested;
+    return std::unique_ptr<MdkrMatchSignalClient>(
+        new MdkrMatchSignalClient(std::move(state)));
 }
 
 bool MdkrMatchSignalClient::connect(std::string *errorCode) {
-    if (errorCode != nullptr) *errorCode = "unimplemented";
-    return false;
+    State &state = *state_;
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (state.phase == MdkrMatchSignalPhase::Open ||
+        state.phase == MdkrMatchSignalPhase::Connecting) {
+        return true;
+    }
+    if (state.phase != MdkrMatchSignalPhase::Idle) {
+        if (errorCode != nullptr) *errorCode = kMdkrMatchSignalClientClosed;
+        return false;
+    }
+    state.phase = MdkrMatchSignalPhase::Connecting;
+    state.generation = 0u;
+    state.nextSequence = 1u;
+    state.peerGenerations.clear();
+    state.peerGenerationHighWater.clear();
+    state.receivedSequences.clear();
+    state.sentTargets.clear();
+    state.stopping = false;
+    state.closeRequested = false;
+    std::shared_ptr<State> shared = state_;
+    state.thread = std::thread([shared]() { shared->run(); });
+    return true;
 }
 
 MdkrMatchSignalSendResult MdkrMatchSignalClient::send(
-    const MdkrMatchSignalOutbound &) {
-    return MdkrMatchSignalSendResult{};
+    const MdkrMatchSignalOutbound &message) {
+    State &state = *state_;
+    MdkrMatchSignalSendResult result;
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (state.phase != MdkrMatchSignalPhase::Open ||
+        state.nextSequence > kU32Max) {
+        result.error = kMdkrMatchSignalNotConnected;
+        return result;
+    }
+    Json wire;
+    if (!buildClientMessage(message, state.endpointId, state.nextSequence,
+                            wire)) {
+        result.error = kMdkrMatchSignalInvalidClientMessage;
+        return result;
+    }
+    const auto tracked = state.peerGenerations.find(message.toEndpointId);
+    if (tracked == state.peerGenerations.end() ||
+        tracked->second != message.toConnectionGeneration) {
+        result.error = kMdkrMatchSignalPeerUnavailable;
+        return result;
+    }
+    const uint32_t sequence = static_cast<uint32_t>(state.nextSequence);
+    state.outbound.push_back(wire.dump());
+    MdkrMatchSignalPeerRef target;
+    target.endpointId = message.toEndpointId;
+    target.connectionGeneration = message.toConnectionGeneration;
+    state.sentTargets[sequence] = std::move(target);
+    state.nextSequence++;
+    result.ok = true;
+    result.sequence = sequence;
+    return result;
 }
 
-void MdkrMatchSignalClient::close() {}
+void MdkrMatchSignalClient::close() {
+    State &state = *state_;
+    std::thread toJoin;
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        if (state.phase == MdkrMatchSignalPhase::Closed) return;
+        const bool wasConnecting =
+            state.phase == MdkrMatchSignalPhase::Connecting;
+        state.phase = MdkrMatchSignalPhase::Closed;
+        state.generation = 0u;
+        state.peerGenerations.clear();
+        state.peerGenerationHighWater.clear();
+        state.receivedSequences.clear();
+        state.sentTargets.clear();
+        state.outbound.clear();
+        if (!state.credential.empty()) {
+            mbedtls_platform_zeroize(&state.credential[0],
+                                     state.credential.size());
+            state.credential.clear();
+        }
+        if (wasConnecting) {
+            /* The JS pending-connect rejection. */
+            MdkrMatchSignalEvent event;
+            event.type = MdkrMatchSignalEventType::Failure;
+            event.failureCode = kMdkrMatchSignalClientClosed;
+            state.enqueueLocked(std::move(event));
+        }
+        state.wantCloseFrame1000 = state.socketOpen;
+        state.closeRequested = true;
+        state.stopping = true;
+        toJoin = std::move(state.thread);
+    }
+    if (toJoin.joinable()) toJoin.join();
+}
 
 MdkrMatchSignalSnapshot MdkrMatchSignalClient::snapshot() const {
-    return MdkrMatchSignalSnapshot{};
+    const State &state = *state_;
+    std::lock_guard<std::mutex> lock(state.mutex);
+    MdkrMatchSignalSnapshot out;
+    out.phase = state.phase;
+    out.connectionGeneration = state.generation;
+    out.nextSequence = state.nextSequence;
+    out.connected = state.phase == MdkrMatchSignalPhase::Open;
+    out.droppedEvents = state.droppedEvents;
+    return out;
 }
 
 void MdkrMatchSignalClient::drainEvents(
     std::vector<MdkrMatchSignalEvent> &out) {
     out.clear();
+    State &state = *state_;
+    std::lock_guard<std::mutex> lock(state.mutex);
+    out.reserve(state.events.size());
+    while (!state.events.empty()) {
+        out.push_back(std::move(state.events.front()));
+        state.events.pop_front();
+    }
 }
