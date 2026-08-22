@@ -161,20 +161,27 @@
       keys.every((key, index) => key === wanted[index]);
   }
 
-  // The one name validator: the exact bounds the worker's normalizeName
-  // enforces at redemption (NFC, trimmed, 24 code points, none of the
-  // control/zero-width/bidi set), applied as refusal. Used for room-state
-  // names AND for a phone's live controller_rename.
+  // The one name validator: the exact bounds the redeem-time name field
+  // enforces everywhere (NFC, trimmed, 24 code points, 48 UTF-8 bytes as the
+  // native host caps it, none of the control/zero-width/bidi set), applied
+  // as refusal. Used for room-state names AND a phone's controller_rename.
   function validControllerName(value) {
     return typeof value === "string" &&
       value.normalize("NFC") === value && value.trim() === value &&
       [...value].length <= 24 &&
+      new TextEncoder().encode(value).byteLength <= 48 &&
       !/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/
         .test(value);
   }
 
+  // Native binds renames and connection history to id+key (a different
+  // phone under a reused id must never inherit either); mirror that here.
+  function controllerIdentity(controller) {
+    return controller.controllerId + ":" + (controller.controllerPublicKey || "");
+  }
+
   function controllerDisplayName(controller) {
-    return controllerNames.get(controller.controllerId) ?? controller.name;
+    return controllerNames.get(controllerIdentity(controller)) ?? controller.name;
   }
 
   // Server-delivered iceServers (services/party/src/turn.ts): strictly
@@ -504,7 +511,7 @@
 
   function markPeerConnected(controller, connected) {
     if (!controller?.seat) return;
-    if (connected) everConnectedIds.add(controller.controllerId);
+    if (connected) everConnectedIds.add(controllerIdentity(controller));
     const pad = remotePads[controller.seat - 1];
     pad.reserved = true;
     pad.active = connected;
@@ -705,8 +712,10 @@
           // F1: a phone may relabel its own seat row over its authenticated
           // channel, under the exact redeem-time name bounds — refused, not
           // repaired, otherwise.
-          if (controllerNames.get(controllerId) !== message.name) {
-            controllerNames.set(controllerId, message.name);
+          const identity = controllerIdentity(
+            controllerById(controllerId) || peer.controller);
+          if (controllerNames.get(identity) !== message.name) {
+            controllerNames.set(identity, message.name);
             if (room) renderRoomState({...room, transitionId: room.transitionId});
           }
         } else if (message.type === "pong" && message.protocol === 1 &&
@@ -998,7 +1007,7 @@
       // F2: the room saying Connected is connection history too — this host
       // page may have joined (or reloaded) after the phone first connected.
       if (controller.phase === "connected") {
-        everConnectedIds.add(controller.controllerId);
+        everConnectedIds.add(controllerIdentity(controller));
       }
     }
     const pending = controllers.filter((controller) => controller.phase === "pending");
@@ -1056,7 +1065,7 @@
           ? (seatPhrase
             ? `Phone connected — compare on both screens: ${seatPhrase}`
             : "Phone connected")
-          : (everConnectedIds.has(controller.controllerId)
+          : (everConnectedIds.has(controllerIdentity(controller))
             ? "Phone reconnecting — neutral" : "Phone connecting…"))
         : (source || "Available");
       const remove = tile.querySelector(".party-seat-remove");
@@ -1078,11 +1087,12 @@
     for (const controllerId of peers.keys()) {
       if (!liveIds.has(controllerId)) retirePeer(controllerId, true);
     }
-    for (const controllerId of [...controllerNames.keys()]) {
-      if (!liveIds.has(controllerId)) controllerNames.delete(controllerId);
+    const liveIdentities = new Set(controllers.map(controllerIdentity));
+    for (const identity of [...controllerNames.keys()]) {
+      if (!liveIdentities.has(identity)) controllerNames.delete(identity);
     }
-    for (const controllerId of [...everConnectedIds]) {
-      if (!liveIds.has(controllerId)) everConnectedIds.delete(controllerId);
+    for (const identity of [...everConnectedIds]) {
+      if (!liveIdentities.has(identity)) everConnectedIds.delete(identity);
     }
     for (const controller of controllers) void ensurePeer(controller.controllerId);
   }

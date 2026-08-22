@@ -215,17 +215,32 @@ def run(args: argparse.Namespace) -> None:
             cdp.evaluate("""globalThis.MDKRPartyHost.applyRoomState({
               type:'room_state', transitionId:5, controllers:[{
                 controllerId:'phone-one', name:'Sam’s phone',
+                controllerPublicKey:'K'.repeat(87),
                 phase:'connected', seat:2, leaseGeneration:1, connectionSequence:1
               }]});""")
             cdp.evaluate("""globalThis.MDKRPartyHost.applyRoomState({
               type:'room_state', transitionId:6, controllers:[{
                 controllerId:'phone-one', name:'Sam’s phone',
+                controllerPublicKey:'K'.repeat(87),
                 phase:'leased', seat:2, leaseGeneration:1, connectionSequence:1
               }]});""")
             wait_value(cdp,
                 "document.querySelector('[data-seat=\\\"2\\\"] small').textContent",
                 lambda value: value == "Phone reconnecting — neutral",
                 "dropped lease reads as reconnecting", args.timeout)
+            # Connection history binds to id+key, exactly as the native model
+            # does: a different phone under a reused id is connecting for the
+            # first time, never "reconnecting".
+            cdp.evaluate("""globalThis.MDKRPartyHost.applyRoomState({
+              type:'room_state', transitionId:7, controllers:[{
+                controllerId:'phone-one', name:'Sam’s phone',
+                controllerPublicKey:'L'.repeat(87),
+                phase:'leased', seat:2, leaseGeneration:1, connectionSequence:1
+              }]});""")
+            wait_value(cdp,
+                "document.querySelector('[data-seat=\\\"2\\\"] small').textContent",
+                lambda value: value == "Phone connecting…",
+                "key swap resets connection history", args.timeout)
 
             cdp.evaluate("""(() => {
               globalThis.__partyQrEncode = qrcodegen.QrCode.encodeText;

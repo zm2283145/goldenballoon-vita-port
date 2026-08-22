@@ -64,6 +64,7 @@
   let everConnectedDirect = false;
   // F3: auto input test's bounded window; past it, Press Go is the fallback.
   let autoAdvanceUntil = 0;
+  let wakeRetryOnPointer = false;
   let inputTestWindowTimer = null;
   const inputTestWindowMs = 3500;
   const maxControllerResponseBytes = 16 * 1024;
@@ -1613,6 +1614,9 @@
     publishPad(true);
     render("controller");
     void requestWakeLock();
+    // The auto-advance carries no user activation, so the insecure-LAN
+    // keep-awake video can be refused; retry once on the first real touch.
+    wakeRetryOnPointer = true;
     if (heartbeat === null) heartbeat = setInterval(() => publishPad(true), 50);
   }
 
@@ -1793,6 +1797,11 @@
     testPress(true); setTimeout(() => testPress(false), 90);
   });
   $("use-controller").addEventListener("click", useController);
+  $("state-controller").addEventListener("pointerdown", () => {
+    if (!wakeRetryOnPointer || phase !== "controller") return;
+    wakeRetryOnPointer = false;
+    if (!wakeLock) void requestWakeLock();
+  }, true);
   $("controller-retry").addEventListener("click", () => {
     $("controller-retry").disabled = true;
     if (transport?.retry?.() === true) {
@@ -1916,6 +1925,7 @@
       inviteUrl: controllerInviteUrl,
       state: () => ({phase, seat, active, pad: {...pad}, connectionSequence}),
       receiveSignal: (value) => receiveTestSignal?.(value),
+      passInputTest: markInputTestPassed,
     });
   }
   void start();

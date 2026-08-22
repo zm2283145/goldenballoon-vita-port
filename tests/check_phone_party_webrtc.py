@@ -148,6 +148,29 @@ def run(args: argparse.Namespace) -> None:
                        "document.querySelector('[data-seat=\\\"1\\\"] strong').textContent",
                        lambda value: value == "Blue Racer",
                        "live rename crossed the direct control channel", args.timeout)
+            # All three surfaces share the redeem-time byte bound: a 13-emoji
+            # name is 13 code points but 52 UTF-8 bytes, over the 48-byte cap
+            # the native host refuses — the browser host must refuse it too.
+            # The control channel is ordered, so if the oversize name were
+            # accepted it would re-render the room once before the valid
+            # sentinel does; the render count pins the refusal exactly.
+            renders_before = host.evaluate(
+                "globalThis.__mdkrPartyHostTestState.rooms.length")
+            phone.evaluate("""(() => {
+              const field = document.getElementById('device-name-live');
+              field.value = '🎈'.repeat(13);
+              field.dispatchEvent(new Event('change', {bubbles:true}));
+              field.value = 'Red Racer';
+              field.dispatchEvent(new Event('change', {bubbles:true}));
+            })()""")
+            wait_value(host,
+                       "document.querySelector('[data-seat=\\\"1\\\"] strong').textContent",
+                       lambda value: value == "Red Racer",
+                       "valid rename after the oversize one", args.timeout)
+            renders_after = host.evaluate(
+                "globalThis.__mdkrPartyHostTestState.rooms.length")
+            require(renders_after - renders_before == 1,
+                    "a 52-byte name crossed the browser host's 48-byte bound")
             phone.evaluate(
                 "document.querySelector('#settings-dialog .icon-button').click()")
             wait_value(phone, "!document.getElementById('settings-dialog').open",

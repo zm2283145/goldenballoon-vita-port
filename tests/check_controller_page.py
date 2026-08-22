@@ -505,6 +505,18 @@ def run(args: argparse.Namespace) -> None:
                     cdp.evaluate(
                         "document.getElementById('use-controller').disabled") is True,
                     "an unanswered input test unlocked the controller")
+            # An ack that lands AFTER the bounded window must unlock the
+            # manual path but never auto-advance: the person left the auto
+            # flow's window, so the tap is theirs to make.
+            late = cdp.evaluate("""(() => {
+              globalThis.__mdkrControllerTest.passInputTest();
+              return {phase: globalThis.__mdkrControllerTest.state().phase,
+                unlocked: !document.getElementById('use-controller').disabled,
+                status: document.getElementById('input-test-status').textContent};
+            })()""")
+            require(late == {"phase": "assigned", "unlocked": True,
+                             "status": "Connection works"},
+                    f"a late pass must unlock without auto-advancing: {late}")
 
             paths = [request.path for request in server.requests]
             forbidden = ("mdkr64_web", ".wasm", "/rom", "/save", "hero.jpg")
