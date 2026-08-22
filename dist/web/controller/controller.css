@@ -56,6 +56,15 @@ p { color: var(--muted); line-height: 1.5; }
   font-size: clamp(1rem, 5vw, 1.42rem);
   letter-spacing: .02em;
 }
+/* F10 phrase-first: on the Approved screen the phrase is the dominant
+   element; the seat identity recedes into a compact row beneath it. */
+.phrase-lead { margin: 16px 0 12px; padding: 18px 16px 20px; border-color: #ffd25744; }
+.phrase-lead strong { min-height: 1.2em; font-size: clamp(1.45rem, 8.5vw, 2.15rem); line-height: 1.15; letter-spacing: .01em; text-wrap: balance; }
+.assigned-seat { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 2px 0 4px; }
+.assigned-seat .seat-badge { width: 40px; height: 40px; margin: 0; border-radius: 13px; font-size: 1.2rem; box-shadow: 0 6px 14px color-mix(in srgb, var(--seat) 28%, transparent); }
+.assigned-seat h1 { margin: 0; font-size: 1.2rem; letter-spacing: -.01em; }
+.phrase-settings { margin: 14px 0 6px; }
+.phrase-settings strong { font-size: 1.05rem; }
 label { display: block; margin: 18px 0 7px; text-align: left; font-weight: 700; }
 input[type="text"] { width: 100%; min-height: 48px; padding: 0 14px; border: 1px solid #d8e8ff42; border-radius: 13px; background: #06182b; color: var(--ink); }
 .room-code { text-align: center; font: 800 1.7rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .14em; }

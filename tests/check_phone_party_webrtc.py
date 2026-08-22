@@ -94,12 +94,16 @@ def run(args: argparse.Namespace) -> None:
                 time.sleep(0.03)
             require(bool(connected), "direct WebRTC controller did not become active")
 
-            phase = phone.evaluate("globalThis.__mdkrControllerTest.state().phase")
-            require(phase == "assigned", f"phone was not assigned after direct handshake: {phase}")
-            phone.evaluate("document.getElementById('input-test').click()")
-            wait_value(phone, "!document.getElementById('use-controller').disabled", bool,
-                       "reliable input-test round trip", args.timeout)
-            phone.evaluate("document.getElementById('use-controller').click()")
+            # P2a join compression: once the direct channels open, the page
+            # runs the input test itself and advances to the controller
+            # surface — no Press Go tap, no Use controller tap.
+            wait_value(phone, "globalThis.__mdkrControllerTest.state().phase",
+                       lambda value: value == "controller",
+                       "auto input test advanced to the controller surface",
+                       args.timeout)
+            require(bool(phone.evaluate(
+                        "!document.getElementById('use-controller').disabled")),
+                    "auto input test did not also unlock the manual fallback")
             phone.evaluate("""(() => {
               const go=document.querySelector('.touch-go');
               const r=go.getBoundingClientRect();
@@ -130,6 +134,24 @@ def run(args: argparse.Namespace) -> None:
                        "globalThis.__mdkrPartyHostTestState.controlPongs",
                        lambda value: value == 1,
                        "reliable control ping/pong", args.timeout)
+
+            # F1 session-alive names: the phone renames itself over the live
+            # control channel and the host seat row updates without any room
+            # state transition.
+            phone.evaluate("""(() => {
+              document.getElementById('settings-open').click();
+              const field = document.getElementById('device-name-live');
+              field.value = 'Blue Racer';
+              field.dispatchEvent(new Event('change', {bubbles:true}));
+            })()""")
+            wait_value(host,
+                       "document.querySelector('[data-seat=\\\"1\\\"] strong').textContent",
+                       lambda value: value == "Blue Racer",
+                       "live rename crossed the direct control channel", args.timeout)
+            phone.evaluate(
+                "document.querySelector('#settings-dialog .icon-button').click()")
+            wait_value(phone, "!document.getElementById('settings-dialog').open",
+                       bool, "controller settings closed after rename", args.timeout)
 
             initial_peer_evidence = host.evaluate(
                 "({creations:globalThis.__mdkrPartyHostTestState.peerCreations,"

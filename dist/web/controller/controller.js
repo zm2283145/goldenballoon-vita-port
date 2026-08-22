@@ -59,6 +59,13 @@
   let reconnectResume = "controller";
   let leaveReturnFocus = null;
   let errorRecoveryAction = "code";
+  // F2: whether THIS page ever completed the direct channels; until then an
+  // interruption is first-time "Connecting…", never "Reconnecting".
+  let everConnectedDirect = false;
+  // F3: auto input test's bounded window; past it, Press Go is the fallback.
+  let autoAdvanceUntil = 0;
+  let inputTestWindowTimer = null;
+  const inputTestWindowMs = 3500;
   const maxControllerResponseBytes = 16 * 1024;
   const controllerRequestTimeoutMs = 10_000;
   const pageBoundRequests = new Set();
@@ -693,6 +700,7 @@
   function mockTransport() {
     return {
       sendState() {}, neutral() {}, inputTest() { return false; },
+      rename() { return true; },
       async redeem() {
         if (testConfig.redeemError) throw new Error(testConfig.redeemError);
         return {phrase: testConfig.phrase || "Bright Balloon",
@@ -738,11 +746,13 @@
 
     function completeDirectRecovery(connection) {
       if (peer !== connection || !directChannelsOpen()) return;
+      everConnectedDirect = true;
       if (phase === "reconnecting" &&
           currentPeerGeneration >= recoveryPeerGeneration) {
         recoveryPeerGeneration = 0;
         reconnectComplete(connectionSequence);
       }
+      queueAutoInputTest();
     }
 
     function directTransportLost(connection, terminal = false) {
@@ -1110,7 +1120,7 @@
         if (update.type === "controller_state" && update.phase === "pending") {
           signalingLimited = false;
           if (phase === "reconnecting" && reconnectResume === "waiting") {
-            render("waiting", {focus: $("device-name")});
+            render("waiting", {focus: $("waiting-title")});
           }
         } else if (update.type === "controller_state" &&
             ["approved", "leased", "connected"].includes(update.phase)) {
@@ -1296,15 +1306,32 @@
         catch (_) { if (peer) directTransportLost(peer, true); }
       },
       neutral() {},
+      // "sent": round trip in flight. "unsent": no open control channel yet;
+      // the caller narrates the wait and never fakes a pass.
       inputTest(pressed) {
-        if (!pressed || controlChannel?.readyState !== "open") return true;
+        if (!pressed || controlChannel?.readyState !== "open") return "unsent";
         inputTestNonce = (inputTestNonce + 1) >>> 0;
         try {
           controlChannel.send(JSON.stringify({type: "input_test", nonce: inputTestNonce}));
         } catch (_) {
           if (peer) directTransportLost(peer, true);
+          return "unsent";
         }
-        return true;
+        return "sent";
+      },
+      directReady() { return directChannelsOpen(); },
+      // F1: rename the seat row while connected. Best effort — the name is
+      // stored locally and rides the next redeem regardless.
+      rename(name) {
+        if (controlChannel?.readyState !== "open") return false;
+        try {
+          controlChannel.send(JSON.stringify({type: "controller_rename",
+            protocol: 1, name}));
+          return true;
+        } catch (_) {
+          if (peer) directTransportLost(peer, true);
+          return false;
+        }
       },
       close() {
         signalingLimited = false;
@@ -1404,7 +1431,7 @@
         return;
       }
       $("pairing-phrase").textContent = result.phrase || "";
-      render("waiting", {focus: $("device-name")});
+      render("waiting", {focus: $("waiting-title")});
       if (testConfig && testConfig.autoApprove !== false) {
         setTimeout(() => approve(testConfig.seat || 1), testConfig.approveDelayMs || 0);
       }
@@ -1435,25 +1462,72 @@
     document.documentElement.style.setProperty("--seat",
       ["#4bc7ff", "#ff6f91", "#72e38f", "#c491ff"][seat - 1]);
     render("assigned", {focus: $("input-test")});
+    // F3: the channels may already be open (they raced approval).
+    if (transport?.directReady?.() === true) queueAutoInputTest();
     return true;
+  }
+
+  function clearInputTestWindow() {
+    if (inputTestWindowTimer !== null) {
+      clearTimeout(inputTestWindowTimer);
+      inputTestWindowTimer = null;
+    }
+  }
+
+  // F3: every "checking" state must resolve — to the ack, to this concrete
+  // retry, or to the reconnecting surface when the transport goes.
+  function armInputTestWindow() {
+    clearInputTestWindow();
+    inputTestWindowTimer = setTimeout(() => {
+      inputTestWindowTimer = null;
+      autoAdvanceUntil = 0;
+      if (inputTestPassed || phase !== "assigned") return;
+      $("input-test-status").textContent = "Not tested yet. Press Go to try again.";
+    }, inputTestWindowMs);
+  }
+
+  // F3 join compression: run the existing input_test/input_test_ack round
+  // trip by itself once the direct channels open — strictly AFTER approval +
+  // channel open, ack still from the host, so no gate is weakened.
+  function queueAutoInputTest() {
+    if (inputTestPassed || leavingPage || phase !== "assigned") return;
+    if (autoAdvanceUntil !== 0) return;
+    autoAdvanceUntil = performance.now() + inputTestWindowMs;
+    $("input-test-status").textContent = "Testing the connection…";
+    transport?.inputTest?.(true);
+    armInputTestWindow();
   }
 
   function markInputTestPassed() {
     if (inputTestPassed) return;
     inputTestPassed = true;
+    clearInputTestWindow();
     $("input-test").classList.add("passed");
     $("input-test-status").textContent = "Connection works";
     $("use-controller").disabled = false;
+    if (phase === "assigned" && autoAdvanceUntil !== 0 &&
+        performance.now() <= autoAdvanceUntil) {
+      autoAdvanceUntil = 0;
+      useController();
+      return;
+    }
+    autoAdvanceUntil = 0;
     announce("Connection works. Use controller is now available.");
   }
 
   function testPress(pressed) {
     pad.buttons = pressed ? 32768 : 0;
-    const waitingForRoundTrip = transport?.inputTest?.(pressed) === true;
-    if (pressed && !inputTestPassed) {
-      if (!waitingForRoundTrip) markInputTestPassed();
-      else $("input-test-status").textContent = "Checking connection…";
+    const result = transport?.inputTest?.(pressed);
+    if (!pressed || inputTestPassed) return;
+    if (result !== "sent" && result !== "unsent" && result !== true) {
+      markInputTestPassed();
+      return;
     }
+    // "unsent": no control channel yet — say so; the test re-runs by itself
+    // the moment the channel opens (queueAutoInputTest).
+    $("input-test-status").textContent = result === "unsent"
+      ? "Still connecting to the display…" : "Checking connection…";
+    armInputTestWindow();
   }
 
   /* Wake Lock, or the keep-awake fallback the insecure-origin LAN page needs.
@@ -1545,9 +1619,16 @@
   function reconnect(attempt = 1) {
     if (phase !== "reconnecting") reconnectResume = phase;
     neutralize("transport-lost");
+    autoAdvanceUntil = 0;
+    clearInputTestWindow();
     $("controller-retry").disabled = false;
-    $("reconnect-progress").textContent =
-      `Attempt ${Math.max(1, Math.min(5, attempt))} of 5. Controls are safely released.`;
+    // F2: a connection that never existed cannot be RE-connected.
+    const step = Math.max(1, Math.min(5, attempt));
+    $("reconnecting-title").textContent =
+      everConnectedDirect ? "Reconnecting…" : "Connecting…";
+    $("reconnect-progress").textContent = everConnectedDirect
+      ? `Attempt ${step} of 5. Controls are safely released.`
+      : `Attempt ${step} of 5. Connecting to the display.`;
     render("reconnecting", {focus: $("state-reconnecting")});
   }
 
@@ -1679,7 +1760,7 @@
         return;
       }
       $("pairing-phrase").textContent = result.phrase || "";
-      render("waiting", {focus: $("device-name")});
+      render("waiting", {focus: $("waiting-title")});
       if (testConfig && testConfig.autoApprove !== false) {
         setTimeout(() => approve(testConfig.seat || 1), testConfig.approveDelayMs || 0);
       }
@@ -1727,7 +1808,12 @@
     $("settings-dialog").close();
     requestAnimationFrame(() => confirmLeave($("settings-open")));
   });
-  $("settings-open").addEventListener("click", () => $("settings-dialog").showModal());
+  $("settings-open").addEventListener("click", () => {
+    $("device-name-live").value = $("device-name").value;
+    // The compare ritual stays one tap away after the auto-advance.
+    $("pairing-phrase-settings").textContent = $("pairing-phrase").textContent;
+    $("settings-dialog").showModal();
+  });
   $("settings-dialog").addEventListener("close", () => $("settings-open").focus());
   $("settings-dialog").addEventListener("change", saveSettings);
   $("leave-dialog").addEventListener("close", () => {
@@ -1780,6 +1866,16 @@
     const value = normalizedDeviceName($("device-name").value);
     $("device-name").value = value;
     try { localStorage.setItem("gb-controller-name", value); } catch (_) {}
+  });
+  // F1: a connected rename updates the host's seat row live and persists
+  // for the next session either way.
+  $("device-name-live").addEventListener("change", () => {
+    const value = normalizedDeviceName($("device-name-live").value);
+    $("device-name-live").value = value;
+    $("device-name").value = value;
+    try { localStorage.setItem("gb-controller-name", value); } catch (_) {}
+    if (testState) (testState.renames ||= []).push(value);
+    transport?.rename?.(value);
   });
   try {
     $("device-name").value = normalizedDeviceName(

@@ -78,13 +78,20 @@ def run(args: argparse.Namespace) -> None:
     # server-delivered iceServers (the zero-cost TURN path, which must be
     # revalidated and rebuilt client-side, never trusted verbatim), and to
     # 127 KiB when that validator learned to refuse credentials on any
-    # non-TURN url (relay credentials must never reach a stun server). The
-    # guardrail's job is catching runaway growth -- a bundled library, an
-    # accidental asset -- not vetoing player copy, the MITM defense or a real
-    # second pairing transport, so the ceiling moves by the smallest whole KiB
-    # each time.
-    require(critical_bytes < 127 * 1024,
-            f"controller critical path is {critical_bytes} bytes, budget is 127 KiB")
+    # non-TURN url (relay credentials must never reach a stun server), and to
+    # 132 KiB when Phase 2's join compression landed: the page now runs the
+    # input-test round trip itself on channel open and advances when it
+    # passes (bounded window, Press Go kept as the fallback, the pre-channel
+    # press narrated honestly instead of dead-ending), says "Connecting…"
+    # for a lease that never connected, leads the Approved screen with the
+    # pairing phrase and keeps it one tap away while racing, and asks for
+    # the phone's name BEFORE redeem plus renames it live over the control
+    # channel (controller_rename). The guardrail's job is catching runaway
+    # growth -- a bundled library, an accidental asset -- not vetoing player
+    # copy, the MITM defense or a real second pairing transport, so the
+    # ceiling moves by the smallest whole KiB each time.
+    require(critical_bytes < 132 * 1024,
+            f"controller critical path is {critical_bytes} bytes, budget is 132 KiB")
     headers = (shell / "_headers").read_text(encoding="utf-8")
     for value in ("frame-ancestors 'none'", "Referrer-Policy: no-referrer",
                   "X-Content-Type-Options: nosniff", "Cache-Control: no-store"):
@@ -130,6 +137,10 @@ def run(args: argparse.Namespace) -> None:
                   hash: location.hash,
                   title: document.getElementById("assigned-title")?.textContent,
                   phrase: document.getElementById("pairing-phrase")?.textContent,
+                  phraseLeads: Boolean(document.querySelector('#state-assigned .phrase') &&
+                    (document.querySelector('#state-assigned .phrase')
+                      .compareDocumentPosition(document.getElementById('assigned-title')) &
+                     Node.DOCUMENT_POSITION_FOLLOWING)),
                   overflow: document.documentElement.scrollWidth > innerWidth
                 }))()""",
                 lambda value: isinstance(value, dict) and value.get("phase") == "assigned",
@@ -137,6 +148,9 @@ def run(args: argparse.Namespace) -> None:
             require(assigned["hash"] == "", "bearer fragment remained in the address bar")
             require(assigned["title"] == "Controller 3", f"seat copy: {assigned}")
             require(assigned["phrase"] == "Swift Balloon", f"phrase copy: {assigned}")
+            # F10: the phrase is the screen's lead — it comes before the seat
+            # heading and everything else on the assigned card.
+            require(assigned["phraseLeads"], f"phrase does not lead the assigned card: {assigned}")
             require(not assigned["overflow"], "320×568 controller layout overflows horizontally")
 
             cdp.evaluate('document.getElementById("input-test").click()')
@@ -239,6 +253,19 @@ def run(args: argparse.Namespace) -> None:
             cdp.evaluate("document.getElementById('settings-open').click()")
             wait_value(cdp, "document.getElementById('settings-dialog').open", bool,
                        "controller settings", args.timeout)
+            # F1 session-alive names: renaming while connected sends
+            # controller_rename over the transport and persists locally.
+            rename_evidence = cdp.evaluate("""(() => {
+              const field = document.getElementById('device-name-live');
+              field.value = 'Zed’s phone';
+              field.dispatchEvent(new Event('change', {bubbles:true}));
+              return {sent: globalThis.__mdkrControllerTestState.renames,
+                stored: localStorage.getItem('gb-controller-name'),
+                mirrored: document.getElementById('device-name').value};
+            })()""")
+            require(rename_evidence == {"sent": ["Zed’s phone"],
+                        "stored": "Zed’s phone", "mirrored": "Zed’s phone"},
+                    f"connected rename was not sent and persisted: {rename_evidence}")
             cdp.evaluate("document.getElementById('leave-controller').click()")
             leave_prompt = wait_value(cdp, """(() => ({
               open:document.getElementById('leave-dialog').open,
@@ -255,8 +282,21 @@ def run(args: argparse.Namespace) -> None:
             require(cdp.evaluate("globalThis.__mdkrControllerTest.state().phase") ==
                     "controller", "cancelling leave disconnected the controller")
 
+            # F1: the optional device-name field sits BEFORE redeem (on the
+            # code screen), not on the post-redeem waiting screen; the live
+            # rename twin lives in settings.
+            cdp.evaluate("globalThis.__mdkrControllerTest.showCode()")
+            name_home = cdp.evaluate("""(() => ({
+              inCode: document.getElementById('state-code')
+                .contains(document.getElementById('device-name')),
+              inWaiting: document.getElementById('state-waiting')
+                .contains(document.getElementById('device-name')),
+              inSettings: Boolean(document.getElementById('device-name-live'))
+            }))()""")
+            require(name_home == {"inCode": True, "inWaiting": False,
+                                  "inSettings": True},
+                    f"device name is not asked before redeem: {name_home}")
             cdp.evaluate("""(() => {
-              globalThis.__mdkrControllerTest.showCode();
               const input = document.getElementById('room-code');
               input.value = '123456';
               input.dispatchEvent(new Event('input', {bubbles:true}));
@@ -435,6 +475,36 @@ def run(args: argparse.Namespace) -> None:
             require(restored == {"phase": "code", "hash": "",
                         "href": server.origin + "/controller/", "leases": 0},
                     f"BFCache restore revived dead controller custody: {restored}")
+
+            # F3: the pre-channel "Checking connection…" dead end is gone. A
+            # press before the direct control channel exists narrates the wait
+            # and resolves, within the bounded window, to a concrete retry.
+            cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": """
+              globalThis.__mdkrControllerTestConfig={directSignaling:true,seat:2,
+                connectionSequence:1,capability:'controller-test-capability',
+                request:async()=>({roomId:'abcdefghijklmnopqrstuv',
+                  controllerId:'phone-two',credential:'C'.repeat(43),protocol:2,
+                  hostPublicKey:'K'.repeat(87)})};
+            """})
+            load_controller(cdp, server.origin + "/controller/",
+                            "pre-channel entry", args.timeout)
+            wait_value(cdp, "globalThis.__mdkrControllerTest?.state().phase",
+                       lambda value: value == "assigned",
+                       "pre-channel assigned state", args.timeout)
+            cdp.evaluate("document.getElementById('input-test').click()")
+            pressed = cdp.evaluate(
+                "document.getElementById('input-test-status').textContent")
+            require(pressed == "Still connecting to the display…",
+                    f"pre-channel press was not narrated honestly: {pressed!r}")
+            wait_value(cdp,
+                       "document.getElementById('input-test-status').textContent",
+                       lambda value: value == "Not tested yet. Press Go to try again.",
+                       "pre-channel test resolved to a retry", args.timeout)
+            require(cdp.evaluate(
+                        "globalThis.__mdkrControllerTest.state().phase") == "assigned" and
+                    cdp.evaluate(
+                        "document.getElementById('use-controller').disabled") is True,
+                    "an unanswered input test unlocked the controller")
 
             paths = [request.path for request in server.requests]
             forbidden = ("mdkr64_web", ".wasm", "/rom", "/save", "hero.jpg")

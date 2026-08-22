@@ -255,23 +255,23 @@ def wait_connected(driver: Driver, controller_id: str,
 
 
 def activate_controls(phone: CDPClient, timeout: float) -> None:
-    wait_value(phone, "!document.getElementById('state-assigned').hidden",
+    # P2a join compression: the page runs the input test itself on channel
+    # open and usually advances to the controller surface with no taps at
+    # all. The manual Press Go / Use controller path stays as the page's own
+    # fallback, so this helper walks whichever of the two the page took.
+    wait_value(phone,
+               "!document.getElementById('state-assigned').hidden || "
+               "!document.getElementById('state-controller').hidden",
                bool, "assigned phone", timeout)
-    # A press before the direct control channel has opened is deliberately a
-    # no-op on the page (a person simply presses again), so keep pressing
-    # until the round trip unlocks the button.
     deadline = time.monotonic() + timeout
-    while True:
-        phone.evaluate("document.getElementById('input-test').click()")
+    while phone.evaluate("document.getElementById('state-controller').hidden"):
         if phone.evaluate("!document.getElementById('use-controller').disabled"):
-            break
+            phone.evaluate("document.getElementById('use-controller').click()")
+        elif phone.evaluate("!document.getElementById('state-assigned').hidden"):
+            phone.evaluate("document.getElementById('input-test').click()")
         if time.monotonic() >= deadline:
-            raise CheckFailure("input-test round trip never unlocked "
-                               "the use-controller button")
+            raise CheckFailure("the controller surface never became active")
         time.sleep(0.25)
-    phone.evaluate("document.getElementById('use-controller').click()")
-    wait_value(phone, "!document.getElementById('state-controller').hidden",
-               bool, "active controller surface", timeout)
     phone.evaluate(HOLD_GO)
 
 
