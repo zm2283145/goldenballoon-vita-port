@@ -34,6 +34,13 @@ Operational rules:
   can be consumed. Budget counters reserve worst-case external-operation units
   (including fallback-code collision loops), not one optimistic unit per API
   call; see the [capacity runbook](../../docs/ops/multiplayer/capacity.md).
+- Optional zero-cost TURN (Cloudflare Realtime): with the `TURN_KEY_ID` and
+  `TURN_API_TOKEN` Worker secrets provisioned, rooms mint short-lived relay
+  credentials — charged through the fixed `turnMint` budget shape and cached
+  per room for the credential TTL, so N joins never mean N mints — and every
+  payload that hands a client its room carries `iceServers`. Without the
+  secrets, or on any mint failure or budget refusal, the same payloads carry
+  the STUN-only list; TURN absence is a supported deployment, never an error.
 - A separate secret-gated operations route exposes only the versioned daily
   capacity aggregate. Refusal is latched once per category, and each UTC-day
   shard is alarm-deleted after 32 days; no room/player/capability dimensions are
