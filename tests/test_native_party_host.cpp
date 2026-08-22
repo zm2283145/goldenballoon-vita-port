@@ -1145,6 +1145,45 @@ void groupedFallbackCodeIsDisplayOnly() {
     assert(mdkr_party_grouped_fallback_code("") == "");
 }
 
+/* Item 4: the join-request attention cue fires once per NEW pending phone --
+ * never on the first (priming) observation, a repeat render, or an approval --
+ * and a phone that leaves and later re-requests fires again. Pure detection
+ * twin the launcher surface drives; the ImGui cue itself has no UI harness. */
+void newPendingAttentionFiresOncePerFreshPending() {
+    MdkrPartyPendingAttention attention;
+    const auto pending = [](const char *id) {
+        MdkrNativePartyController controller;
+        controller.id = id;
+        controller.phase = MdkrNativePartyControllerPhase::Pending;
+        return controller;
+    };
+    /* First observation primes -- a room already holding a waiting phone must
+     * not flash when the overlay opens onto it. */
+    assert(mdkr_party_note_new_pending(attention, {pending("a")}) == 0u);
+    /* A repeat render of the same pending phone does not re-fire. */
+    assert(mdkr_party_note_new_pending(attention, {pending("a")}) == 0u);
+    /* A genuinely new pending phone fires exactly once. */
+    assert(mdkr_party_note_new_pending(attention,
+        {pending("a"), pending("b")}) == 1u);
+    /* Two brand-new phones arriving together fire twice. */
+    assert(mdkr_party_note_new_pending(attention,
+        {pending("a"), pending("b"), pending("c"), pending("d")}) == 2u);
+    /* Approving one (it leaves the pending set) is not a new pending. */
+    MdkrNativePartyController approved;
+    approved.id = "a";
+    approved.phase = MdkrNativePartyControllerPhase::Approved;
+    approved.seat = 1u;
+    assert(mdkr_party_note_new_pending(attention,
+        {approved, pending("b"), pending("c"), pending("d")}) == 0u);
+    /* A phone that left and later re-requests fires again. */
+    assert(mdkr_party_note_new_pending(attention, {pending("b")}) == 0u);
+    assert(mdkr_party_note_new_pending(attention,
+        {pending("b"), pending("a")}) == 1u);
+    /* An empty room clears the set; the next arrival is fresh once more. */
+    assert(mdkr_party_note_new_pending(attention, {}) == 0u);
+    assert(mdkr_party_note_new_pending(attention, {pending("b")}) == 1u);
+}
+
 /* F4: the C3 give-up's copy forks on what actually failed. With the room
  * socket healthy the whole ladder, signaling delivered every offer and the
  * phone still never connected -- the network between the devices is the
@@ -1592,6 +1631,7 @@ int main() {
     destructionDuringRecoveringAttemptsGoodbyeButNeverWaits();
     phraseArrivesAtConnectionAndSurvivesRoomUpdates();
     groupedFallbackCodeIsDisplayOnly();
+    newPendingAttentionFiresOncePerFreshPending();
     displayedInviteAutoRotatesBeforeItsTtlLapses();
     giveUpCopyNamesTheNetworkOnlyWhenSignalingWasHealthy();
     neverConnectedLeaseReadsAsConnecting();

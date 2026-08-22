@@ -405,6 +405,51 @@ inline std::string mdkr_party_grouped_fallback_code(const std::string &code) {
     return code.substr(0u, 3u) + " " + code.substr(3u);
 }
 
+/*
+ * Item 4: a phone that redeems appears as a new Pending controller. The
+ * launcher has no audio path (a grep of platform/app + platform/party finds no
+ * sound hook), so the surface flashes a VISUAL attention cue -- a pulsing
+ * pending card and a brief in-game indicator line -- once per NEW pending id:
+ * never re-fired for an id already noticed, never on approval or any other
+ * transition. This is the pure detection twin the UI (ui_phone_party.cpp)
+ * drives. The first observation primes -- it adopts the current pending set
+ * without firing -- so opening the manage overlay onto an existing room never
+ * flashes a stale cue. Returns the count of newly-pending ids this observation
+ * and updates `seen` to exactly the pending ids present now, so a phone that
+ * leaves and later re-requests fires again. Whether native UI cues should ever
+ * become audible is an owner decision (no launcher audio subsystem exists to
+ * reuse, and inventing one is out of scope). Inline for the same reason as the
+ * other host-model helpers; tests/test_native_party_host.cpp pins the semantics.
+ */
+struct MdkrPartyPendingAttention {
+    std::vector<std::string> seen;
+    bool primed = false;
+};
+
+inline unsigned mdkr_party_note_new_pending(
+        MdkrPartyPendingAttention &state,
+        const std::vector<MdkrNativePartyController> &controllers) {
+    std::vector<std::string> current;
+    for (const auto &controller : controllers) {
+        if (controller.phase == MdkrNativePartyControllerPhase::Pending) {
+            current.push_back(controller.id);
+        }
+    }
+    unsigned fresh = 0u;
+    if (state.primed) {
+        for (const auto &id : current) {
+            bool known = false;
+            for (const auto &prior : state.seen) {
+                if (prior == id) { known = true; break; }
+            }
+            if (!known) fresh++;
+        }
+    }
+    state.seen = current;
+    state.primed = true;
+    return fresh;
+}
+
 class MdkrNativePartyHost {
 public:
     explicit MdkrNativePartyHost(MdkrPartyTransport &transport);

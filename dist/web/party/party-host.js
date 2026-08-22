@@ -68,6 +68,13 @@
   // F2: leases that have EVER been connected (room state or a live peer).
   // Only these may read as "reconnecting"; the rest are still connecting.
   const everConnectedIds = new Set();
+  // Item 4: pending controller ids already announced with the join-request ding,
+  // so it fires once per NEW pending phone and never on approval or a repeat
+  // render. `dingPrimed` adopts an existing room's waiting phones on the first
+  // observation without beeping, so opening onto an occupied room is silent.
+  const dingedPending = new Set();
+  let dingPrimed = false;
+  let partyDingContext = null;
   const peers = new Map();
   const pageBoundRequests = new Set();
   let peerGeneration = 0;
@@ -325,14 +332,13 @@
     pageBoundRequests.clear();
   }
 
-  function renderQr(url) {
+  function renderQrInto(canvas, url, targetSide) {
     const qr = globalThis.qrcodegen?.QrCode?.encodeText(
       url, globalThis.qrcodegen.QrCode.Ecc.QUARTILE);
     if (!qr) return false;
     const quiet = 4;
-    const scale = Math.max(4, Math.floor(300 / (qr.size + quiet * 2)));
+    const scale = Math.max(4, Math.floor(targetSide / (qr.size + quiet * 2)));
     const side = (qr.size + quiet * 2) * scale;
-    const canvas = $("party-qr");
     canvas.width = side;
     canvas.height = side;
     const context = canvas.getContext("2d", {alpha: false});
@@ -348,6 +354,107 @@
       }
     }
     return true;
+  }
+
+  function renderQr(url) {
+    return renderQrInto($("party-qr"), url, 300);
+  }
+
+  // F11.5: clicking the invite QR enlarges it to a full-screen overlay so a
+  // phone camera can scan from across the room. Display-only — it re-renders
+  // the SAME controllerUrl bigger; the invite and its capability are unchanged.
+  // Built with programmatic (CSSOM) styles so it needs no stylesheet edit and
+  // stays within the page's style-src 'self' CSP. Dismissed by click or Escape.
+  let qrOverlay = null;
+  function qrOverlayKeydown(event) {
+    if (event.key === "Escape") { event.preventDefault(); closeQrOverlay(); }
+  }
+  function closeQrOverlay() {
+    if (!qrOverlay) return;
+    try { qrOverlay.remove(); } catch (_) {}
+    qrOverlay = null;
+    removeEventListener("keydown", qrOverlayKeydown, true);
+    try { $("party-qr").focus?.(); } catch (_) {}
+  }
+  function openQrOverlay() {
+    if (qrOverlay || !room || !room.controllerUrl || !inviteActive) return;
+    const canvas = document.createElement("canvas");
+    canvas.style.cssText = "display:block;width:min(82vw,82vh);height:min(82vw,82vh);" +
+      "image-rendering:pixelated";
+    if (!renderQrInto(canvas, room.controllerUrl, 760)) return;
+    const overlay = document.createElement("div");
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-label", "Enlarged controller QR code");
+    overlay.tabIndex = -1;
+    overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:flex;" +
+      "flex-direction:column;align-items:center;justify-content:center;gap:18px;" +
+      "padding:24px;background:rgb(0 8 20 / 92%);cursor:zoom-out";
+    const frame = document.createElement("div");
+    frame.style.cssText = "padding:16px;background:#fff;border-radius:14px";
+    frame.appendChild(canvas);
+    const hint = document.createElement("p");
+    hint.textContent = "Scan from anywhere in the room. Tap or press Escape to close.";
+    hint.style.cssText = "margin:0;max-width:36ch;color:#f7fbff;text-align:center;" +
+      "font:600 1rem/1.4 system-ui,sans-serif";
+    overlay.append(frame, hint);
+    overlay.addEventListener("click", closeQrOverlay);
+    document.body.appendChild(overlay);
+    qrOverlay = overlay;
+    addEventListener("keydown", qrOverlayKeydown, true);
+    overlay.focus({preventScroll: true});
+    if (testState) testState.qrOverlayOpens = (testState.qrOverlayOpens || 0) + 1;
+  }
+
+  // Item 4: a short, non-intrusive WebAudio cue when a phone redeems and
+  // appears as a NEW pending approval, so a host looking away notices. Fired
+  // once per new pending controller (renderRoomState below), never on approval
+  // or a repeat render. Feature-detected (no AudioContext -> silent) and
+  // respects a mute: the "gb-party-ding" preference set to "0". A two-note
+  // rise, ~0.2 s, low gain. Returns true when a cue actually played.
+  function partyDingMuted() {
+    try { return localStorage.getItem("gb-party-ding") === "0"; }
+    catch (_) { return false; }
+  }
+  function playJoinDing() {
+    if (partyDingMuted()) return false;
+    const Ctx = globalThis.AudioContext || globalThis.webkitAudioContext;
+    if (typeof Ctx !== "function") return false;
+    try {
+      partyDingContext = partyDingContext || new Ctx();
+      const ctx = partyDingContext;
+      if (ctx.state === "suspended") ctx.resume?.().catch(() => {});
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(880, now);
+      osc.frequency.setValueAtTime(1174.66, now + 0.09);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.11, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.24);
+      return true;
+    } catch (_) { return false; }
+  }
+
+  // Fire the join-request cue for any pending controller not seen before, then
+  // remember exactly the ids pending now (so a phone that leaves and later
+  // re-requests dings again). Silent on the first observation (priming).
+  function noteNewPending(pending) {
+    if (dingPrimed) {
+      for (const controller of pending) {
+        if (dingedPending.has(controller.controllerId)) continue;
+        const played = playJoinDing();
+        if (played && testState) {
+          testState.joinDings = (testState.joinDings || 0) + 1;
+        }
+      }
+    }
+    dingedPending.clear();
+    for (const controller of pending) dingedPending.add(controller.controllerId);
+    dingPrimed = true;
   }
 
   function normalizedInvite(value, creating, expectedGeneration = null) {
@@ -398,6 +505,7 @@
   function clearInvitePresentation(expired, announceExpiry = false) {
     inviteActive = false;
     deadline = 0;
+    closeQrOverlay();
     if (room) {
       const {fallbackCode: _code, controllerUrl: _url, ...retained} = room;
       room = retained;
@@ -1043,6 +1151,8 @@
       }
     }
     const pending = controllers.filter((controller) => controller.phase === "pending");
+    // Item 4: a new phone waiting for approval earns one join-request cue.
+    noteNewPending(pending);
     const pendingList = $("party-pending-list");
     pendingList.replaceChildren();
     $("party-pending-empty").hidden = pending.length !== 0;
@@ -1576,6 +1686,23 @@
     else void openRoom();
   });
   $("party-extend").addEventListener("click", () => void extendInvite());
+  // F11.5: the invite QR enlarges on click/tap (or Enter/Space) for scanning
+  // across the room. Marked up as an accessible button; display-only.
+  {
+    const qrCanvas = $("party-qr");
+    qrCanvas.style.cursor = "zoom-in";
+    qrCanvas.setAttribute("role", "button");
+    qrCanvas.setAttribute("tabindex", "0");
+    qrCanvas.setAttribute("aria-label",
+      "Controller QR code. Activate to enlarge it for scanning across the room.");
+    qrCanvas.addEventListener("click", openQrOverlay);
+    qrCanvas.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openQrOverlay();
+      }
+    });
+  }
   $("party-close").addEventListener("click", dismissRoom);
   $("party-end").addEventListener("click", confirmEndRoom);
   $("party-remove-cancel").addEventListener("click", () => removeDialog.close());
@@ -1628,6 +1755,7 @@
     dismissRoom();
   });
   dialog.addEventListener("close", () => {
+    closeQrOverlay();
     if (testState) testState.lifecycle.push(
       `close:${startingGame}:${Boolean(room)}:${preserveOnClose}`);
     const returnToStage = openedFromStage || startingGame;

@@ -105,6 +105,43 @@ def run(args: argparse.Namespace) -> None:
             require(ready["dialog"] and ready["code"] == "123 456" and ready["qr"] > 200,
                     f"pairing invite did not render: {ready}")
 
+            # F11.5: clicking the invite QR opens a full-screen enlarge overlay
+            # (re-rendered from the same URL, bigger) so a phone camera can scan
+            # from across the room; it dismisses on Escape or a click and never
+            # touches the invite/capability. Display-only.
+            enlarged = cdp.evaluate("""(() => {
+              document.getElementById('party-qr').click();
+              const overlay = document.querySelector(
+                '[role="dialog"][aria-label="Enlarged controller QR code"]');
+              const canvas = overlay && overlay.querySelector('canvas');
+              return {opens: globalThis.__mdkrPartyHostTestState.qrOverlayOpens || 0,
+                present: Boolean(overlay),
+                big: canvas ? canvas.width : 0,
+                roomIntact: Boolean(globalThis.MDKRPartyHost.state().room &&
+                  globalThis.MDKRPartyHost.state().room.controllerUrl)};
+            })()""")
+            require(enlarged["opens"] == 1 and enlarged["present"] and
+                    enlarged["big"] > ready["qr"] and enlarged["big"] > 400 and
+                    enlarged["roomIntact"],
+                    f"QR enlarge overlay did not open bigger and non-destructively: "
+                    f"{enlarged}")
+            cdp.evaluate(
+                "dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))")
+            wait_value(cdp, """Boolean(document.querySelector(
+                '[aria-label="Enlarged controller QR code"]'))""",
+                lambda value: value is False, "QR overlay closes on Escape",
+                args.timeout)
+            cdp.evaluate("document.getElementById('party-qr').click()")
+            wait_value(cdp, """Boolean(document.querySelector(
+                '[aria-label="Enlarged controller QR code"]'))""",
+                lambda value: value is True, "QR overlay reopens", args.timeout)
+            cdp.evaluate("""document.querySelector(
+                '[aria-label="Enlarged controller QR code"]').click()""")
+            wait_value(cdp, """Boolean(document.querySelector(
+                '[aria-label="Enlarged controller QR code"]'))""",
+                lambda value: value is False, "QR overlay closes on click",
+                args.timeout)
+
             sas = cdp.evaluate("""(async () => {
               const host=await MDKRPartySas.createIdentity();
               const phone=await MDKRPartySas.createIdentity();
@@ -490,6 +527,50 @@ def run(args: argparse.Namespace) -> None:
                             for pad in bfcache["hidden"]["pads"]) and
                     bfcache["lifecycle"] == ["pagehide", "pageshow:persisted"],
                     f"BFCache lifecycle revived invite/input custody: {bfcache}")
+
+            # Item 4: a phone that redeems and appears as a NEW pending approval
+            # plays a one-shot join-request cue (WebAudio) so a host looking away
+            # notices. Fires once per new pending controller, never on approval
+            # or a repeat render, and stays silent when muted (gb-party-ding=0).
+            ding_base = cdp.evaluate(
+                "Number(globalThis.MDKRPartyHost.state().room.transitionId)||0")
+            dings0 = cdp.evaluate(
+                "globalThis.__mdkrPartyHostTestState.joinDings || 0")
+            def apply_ding_state(step, controllers):
+                cdp.evaluate(
+                    "globalThis.MDKRPartyHost.applyRoomState({type:'room_state',"
+                    f"transitionId:{ding_base + step}, controllers:" +
+                    json.dumps(controllers, separators=(",", ":")) + "})")
+            waiting = {"controllerId": "phone-ding-1", "name": "Late arrival",
+                       "phase": "pending", "seat": None, "leaseGeneration": 0,
+                       "connectionSequence": 1}
+            second = {"controllerId": "phone-ding-2", "name": "Another phone",
+                      "phase": "pending", "seat": None, "leaseGeneration": 0,
+                      "connectionSequence": 1}
+            apply_ding_state(1, [waiting])
+            wait_value(cdp, "globalThis.__mdkrPartyHostTestState.joinDings || 0",
+                lambda value: value == dings0 + 1,
+                "join-request ding on new pending", args.timeout)
+            # A repeat render of the same pending phone must not re-ding.
+            apply_ding_state(2, [waiting])
+            # A second, different new pending phone dings exactly once more.
+            apply_ding_state(3, [waiting, second])
+            wait_value(cdp, "globalThis.__mdkrPartyHostTestState.joinDings || 0",
+                lambda value: value == dings0 + 2,
+                "second new pending dings once", args.timeout)
+            # Approving a pending phone must NOT ding.
+            apply_ding_state(4, [{**waiting, "phase": "approved", "seat": 1,
+                                  "leaseGeneration": 1}, second])
+            # Muted: a new pending while gb-party-ding is "0" stays silent.
+            cdp.evaluate("localStorage.setItem('gb-party-ding','0')")
+            apply_ding_state(5, [second, {"controllerId": "phone-ding-3",
+                "name": "Muted phone", "phase": "pending", "seat": None,
+                "leaseGeneration": 0, "connectionSequence": 1}])
+            dings_after = cdp.evaluate(
+                "globalThis.__mdkrPartyHostTestState.joinDings || 0")
+            require(dings_after == dings0 + 2,
+                    f"join ding fired on approval or while muted: {dings_after}")
+            cdp.evaluate("localStorage.removeItem('gb-party-ding')")
 
             cdp.evaluate("document.getElementById('party-end').click()")
             confirmation = wait_value(cdp, """(() => ({
