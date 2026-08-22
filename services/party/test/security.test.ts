@@ -11,7 +11,25 @@ describe("room-bound credentials", () => {
   it("normalizes controller names without visual-order controls", () => {
     expect(normalizeName(`  ${"\u202e".repeat(30)}Sam\u2066's phone  `))
       .toBe("Sam's phone");
-    expect([...normalizeName("🎈".repeat(30))]).toHaveLength(24);
+    expect([...normalizeName("x".repeat(30))]).toHaveLength(24);
+  });
+
+  it("caps normalized names at the 48-byte wire bound every host enforces", () => {
+    // 24 code points of four-byte emoji is 96 UTF-8 bytes — legal under the
+    // old code-point-only cap, but over the 48-byte name bound the native
+    // host (native_party_host.cpp kMaxName), the browser host
+    // (validControllerName) and the transports (safeString(...,48)) all
+    // refuse. A worker-legal name must never be host-refused: the byte cap
+    // trims whole code points from the end, never splitting a sequence.
+    const balloons = normalizeName("🎈".repeat(30));
+    expect(new TextEncoder().encode(balloons).byteLength).toBeLessThanOrEqual(48);
+    expect([...balloons]).toHaveLength(12);
+    // A name already under both bounds is untouched.
+    expect(normalizeName("Sam's phone")).toBe("Sam's phone");
+    // Mixed widths trim to the last whole code point that still fits.
+    const mixed = normalizeName("ab" + "🎈".repeat(24));
+    expect(new TextEncoder().encode(mixed).byteLength).toBeLessThanOrEqual(48);
+    expect(mixed).toBe("ab" + "🎈".repeat(11));
   });
 
   it("accepts only a canonical HTTPS or loopback Party origin", () => {

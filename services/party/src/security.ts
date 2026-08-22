@@ -96,7 +96,16 @@ export function normalizeName(value: unknown): string {
     .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g,
       "")
     .trim();
-  return [...safe].slice(0, LIMITS.maxNameCodePoints).join("");
+  const points = [...safe].slice(0, LIMITS.maxNameCodePoints);
+  /* Byte cap on top of the code-point cap: every host and transport refuses
+   * names past LIMITS.maxNameBytes UTF-8 bytes, and a worker-legal name must
+   * never be host-refused. Trim whole code points from the end so a
+   * multi-byte sequence is never split. */
+  while (points.length > 0 &&
+         utf8Exceeds(points.join(""), LIMITS.maxNameBytes)) {
+    points.pop();
+  }
+  return points.join("");
 }
 
 /** Return as soon as a JavaScript string's UTF-8 representation crosses the

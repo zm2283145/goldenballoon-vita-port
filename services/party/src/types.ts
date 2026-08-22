@@ -6,6 +6,12 @@ export const LIMITS = Object.freeze({
   maxJsonBytes: 16 * 1024,
   maxSignalBytes: 64 * 1024,
   maxNameCodePoints: 24,
+  /* The name's UTF-8 wire bound. Every consumer refuses names past it — the
+   * native host (native_party_host.cpp kMaxName), the browser host
+   * (party-host.js validControllerName) and both transports' room-state
+   * parsers — so normalizeName must emit nothing they would refuse: a
+   * code-point cap alone lets 24 four-byte emoji reach 96 bytes. */
+  maxNameBytes: 48,
   maxTransitions: 4096,
 });
 
