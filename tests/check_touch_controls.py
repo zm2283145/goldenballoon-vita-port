@@ -313,6 +313,12 @@ def check_input_arm(
                     },
                 },
             )
+            # The shipped release policy keeps Phone Party fail-closed
+            # (online-control-config.js phonePartyEnabled:false), so the
+            # in-game overlay boundary below is reached through the loopback
+            # qualification hook party-host.js carries for exactly this lane.
+            cdp.call("Page.addScriptToEvaluateOnNewDocument", {
+                "source": "globalThis.__mdkrPartyHostSurfaceTest = true;"})
             cdp.call(
                 "Page.navigate",
                 {"url": server.origin + "/?touch=1"},
