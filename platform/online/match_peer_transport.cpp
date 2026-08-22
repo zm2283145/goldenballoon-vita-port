@@ -170,6 +170,11 @@ struct PeerRuntime {
     unsigned offerAttempts = 0u;
     bool gaveUp = false;
     unsigned restartEpisodes = 0u;
+    /* M4 bounds: consecutive PeerConnection construction failures (an
+     * offerer whose ctor throws must not recreate unboundedly every tick),
+     * and the answerer's setup-deadline anchor (0 = not armed). */
+    unsigned buildFailures = 0u;
+    uint64_t setupStartedMs = 0u;
     bool lost = false;
 
     /* Control ping ladder. */
@@ -177,10 +182,16 @@ struct PeerRuntime {
     uint64_t nextPingAtMs = 0u;
     uint64_t pingOutstandingSinceMs = 0u;
 
-    /* Derived directional keys (slots in the mesh keyring) + replay. */
+    /* Derived directional keys (slots in the mesh keyring) + replay. The
+     * two channels are independent streams over one sender sequence space:
+     * a reliable control fragment delayed behind >64 lossy state envelopes
+     * is honest traffic, so each channel keeps its own 64-deep window (its
+     * own subsequence stays monotonic-enough) instead of one shared window
+     * retiring the laggard as REPLAY. */
     MdkrMatchPeerSealingKey *sealKey = nullptr;
     MdkrMatchPeerSealingKey *openKey = nullptr;
-    MdkrMatchPeerReplayWindow replay{};
+    MdkrMatchPeerReplayWindow replayState{};
+    MdkrMatchPeerReplayWindow replayControl{};
 };
 
 }  // namespace
@@ -293,6 +304,7 @@ struct MdkrMatchPeerMesh::State
         peer.offerSentMs = 0u;
         peer.pingOutstandingSinceMs = 0u;
         peer.nextPingAtMs = 0u;
+        peer.setupStartedMs = 0u; /* the answerer deadline re-arms fresh */
         if (stale) {
             try { stale->close(); } catch (...) {}
         }
@@ -334,7 +346,8 @@ struct MdkrMatchPeerMesh::State
             for (auto &entry : peers) {
                 entry.second.sealKey = nullptr;
                 entry.second.openKey = nullptr;
-                entry.second.replay = MdkrMatchPeerReplayWindow{};
+                entry.second.replayState = MdkrMatchPeerReplayWindow{};
+                entry.second.replayControl = MdkrMatchPeerReplayWindow{};
             }
         }
     }
@@ -498,11 +511,20 @@ struct MdkrMatchPeerMesh::State
     void createConnection(PeerRuntime &peer) {
         peer.attempt++;
         peer.answerApplied = false;
+        /* M4: a machine where construction itself keeps throwing must not
+         * recreate every tick forever -- bounded like everything else. */
+        const auto buildFailed = [this, &peer]() {
+            peer.buildFailures++;
+            if (peer.buildFailures >= kMdkrMatchMaxRestartEpisodes) {
+                peerLost(peer, MdkrMatchPeerLostReason::ConnectTimeout);
+            }
+        };
         try {
             peer.connection =
                 std::make_shared<rtc::PeerConnection>(rtcConfiguration());
         } catch (...) {
             peer.connection.reset();
+            buildFailed();
             return;
         }
         attachConnectionCallbacks(peer);
@@ -520,7 +542,10 @@ struct MdkrMatchPeerMesh::State
                                    /*isState=*/false);
         } catch (...) {
             silentTeardown(peer);
+            buildFailed();
+            return;
         }
+        peer.buildFailures = 0u;
     }
 
     /* ---- Feed event handling ---------------------------------------------*/
@@ -678,8 +703,14 @@ struct MdkrMatchPeerMesh::State
         PeerRuntime *peer = rosterPeer(event.fromEndpointId,
                                        event.fromConnectionGeneration);
         if (peer == nullptr || peer->lost) return;
+        /* M2 attempt guard: offerSentMs is zeroed by every teardown and set
+         * only when the CURRENT attempt's offer actually went to the wire,
+         * so an answer that arrives while it is 0 can only belong to a
+         * retired attempt -- applying it to the fresh PeerConnection would
+         * poison the DTLS handshake and burn a restart episode. */
         if (!peer->offerer || !peer->connection || peer->answerApplied ||
-            event.sdp.empty() || event.sdp.size() > kMaxSdpBytes) {
+            peer->offerSentMs == 0u || event.sdp.empty() ||
+            event.sdp.size() > kMaxSdpBytes) {
             counters.ignoredStaleSignals++;
             return;
         }
@@ -874,7 +905,7 @@ struct MdkrMatchPeerMesh::State
         MdkrMatchPeerEnvelopeContext context{};
         MdkrMatchPeerMeshEvent event;
         if (mdkr_match_peer_open(peer.openKey, &peer.openKey->direction,
-                                 &peer.replay, bytes.data(), &context,
+                                 &peer.replayState, bytes.data(), &context,
                                  event.payload.data()) !=
                 MDKR_MATCH_PEER_CRYPTO_OK ||
             context.payload_type != MDKR_MATCH_PEER_PAYLOAD_INPUT) {
@@ -888,20 +919,36 @@ struct MdkrMatchPeerMesh::State
     }
 
     void controlBinary(PeerRuntime &peer, const std::vector<uint8_t> &bytes) {
-        /* The reliable ordered channel never delivers garbage: any open
-         * failure here is terminal for the peer. */
-        if (bytes.size() != MDKR_MATCH_PEER_ENVELOPE_BYTES || !keysDerived ||
-            peer.openKey == nullptr) {
+        /* The reliable ordered channel never delivers STRUCTURAL garbage:
+         * a conforming peer only ever sends 132-byte envelopes here, so a
+         * wrong-size frame is terminal. An envelope that fails to OPEN is
+         * not: any roster peer's generation bump retires every
+         * transcript-salted key mesh-wide, and an honest third peer's
+         * in-flight fragment sealed under the old digest -- or one that
+         * lands before this side finished (re-)deriving -- authenticates
+         * as garbage while being nothing of the sort. Those are counted
+         * drops; the preflight layer's own retry discipline re-carries
+         * fragments once both sides re-derive. */
+        if (bytes.size() != MDKR_MATCH_PEER_ENVELOPE_BYTES) {
             peerLost(peer, MdkrMatchPeerLostReason::ControlChannelViolation);
+            return;
+        }
+        if (!keysDerived || peer.openKey == nullptr) {
+            counters.rejectedControlEnvelopes++;
             return;
         }
         MdkrMatchPeerEnvelopeContext context{};
         MdkrMatchPeerMeshEvent event;
         if (mdkr_match_peer_open(peer.openKey, &peer.openKey->direction,
-                                 &peer.replay, bytes.data(), &context,
+                                 &peer.replayControl, bytes.data(), &context,
                                  event.payload.data()) !=
-                MDKR_MATCH_PEER_CRYPTO_OK ||
-            context.payload_type != MDKR_MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT) {
+                MDKR_MATCH_PEER_CRYPTO_OK) {
+            counters.rejectedControlEnvelopes++;
+            return;
+        }
+        if (context.payload_type != MDKR_MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT) {
+            /* Authenticated under the peer's own key with the wrong type:
+             * proven misbehavior, not a race. */
             peerLost(peer, MdkrMatchPeerLostReason::ControlChannelViolation);
             return;
         }
@@ -912,38 +959,55 @@ struct MdkrMatchPeerMesh::State
     }
 
     void controlText(PeerRuntime &peer, const std::string &text) {
-        Json value = Json::parse(text, nullptr, false);
-        if (value.is_discarded() || !value.is_object()) {
-            peerLost(peer, MdkrMatchPeerLostReason::ControlChannelViolation);
-            return;
-        }
-        const std::string type = value.value("type", std::string{});
-        const bool validShape = value.value("protocol", 0u) ==
-                kChannelProtocol && value.contains("nonce") &&
-            value["nonce"].is_number_unsigned() &&
-            value["nonce"].get<uint64_t>() <= UINT32_MAX;
-        if (type == "ping" && validShape) {
-            if (peer.control && peer.control->isOpen()) {
-                try {
-                    peer.control->send(Json{{"type", "pong"},
-                        {"protocol", kChannelProtocol},
-                        {"nonce", value["nonce"]}}.dump());
-                } catch (...) {
-                    connectionDown(peer);
-                }
+        /* C1: every extraction is shape-checked BEFORE it is typed --
+         * nlohmann's value() throws json::type_error on a key that exists
+         * with a mismatched type ({"type":123}), and this runs inside
+         * pump() on the launcher thread, where a roster peer must never be
+         * able to raise anything. The outer catch is the same guard the
+         * party transport gives its control parser; here any escape is
+         * garbage on the reliable channel and terminal for the peer. */
+        try {
+            const Json value = Json::parse(text, nullptr, false);
+            if (value.is_discarded() || !value.is_object() ||
+                !value.contains("type") || !value["type"].is_string() ||
+                !value.contains("protocol") ||
+                !value["protocol"].is_number_unsigned() ||
+                value["protocol"].get<uint64_t>() != kChannelProtocol ||
+                !value.contains("nonce") ||
+                !value["nonce"].is_number_unsigned() ||
+                value["nonce"].get<uint64_t>() > UINT32_MAX) {
+                peerLost(peer,
+                         MdkrMatchPeerLostReason::ControlChannelViolation);
+                return;
             }
-            return;
-        }
-        if (type == "pong" && validShape) {
+            const std::string type = value["type"].get<std::string>();
             const uint32_t nonce =
                 static_cast<uint32_t>(value["nonce"].get<uint64_t>());
-            if (peer.pingOutstandingSinceMs != 0u && nonce == peer.pingNonce) {
-                peer.pingOutstandingSinceMs = 0u;
-                peer.nextPingAtMs = now() + kMdkrMatchControlPingIntervalMs;
+            if (type == "ping") {
+                if (peer.control && peer.control->isOpen()) {
+                    try {
+                        peer.control->send(Json{{"type", "pong"},
+                            {"protocol", kChannelProtocol},
+                            {"nonce", nonce}}.dump());
+                    } catch (...) {
+                        connectionDown(peer);
+                    }
+                }
+                return;
             }
-            return;
+            if (type == "pong") {
+                if (peer.pingOutstandingSinceMs != 0u &&
+                    nonce == peer.pingNonce) {
+                    peer.pingOutstandingSinceMs = 0u;
+                    peer.nextPingAtMs =
+                        now() + kMdkrMatchControlPingIntervalMs;
+                }
+                return;
+            }
+            peerLost(peer, MdkrMatchPeerLostReason::ControlChannelViolation);
+        } catch (...) {
+            peerLost(peer, MdkrMatchPeerLostReason::ControlChannelViolation);
         }
-        peerLost(peer, MdkrMatchPeerLostReason::ControlChannelViolation);
     }
 
     /* ---- Key schedule -----------------------------------------------------*/
@@ -997,14 +1061,16 @@ struct MdkrMatchPeerMesh::State
                 &keyring, identity, peer.publicKey, digest, &outbound);
             peer.openKey = mdkr_match_peer_identity_derive_key(
                 &keyring, identity, peer.publicKey, digest, &inbound);
-            peer.replay = MdkrMatchPeerReplayWindow{};
+            peer.replayState = MdkrMatchPeerReplayWindow{};
+            peer.replayControl = MdkrMatchPeerReplayWindow{};
             if (peer.sealKey == nullptr || peer.openKey == nullptr) {
                 /* An invalid revealed key surfaces here (derive validates
-                 * the curve point): attribute it to the peer and fail the
-                 * schedule -- no phrase from a broken roster. */
+                 * the curve point): that is THIS peer's typed loss, not a
+                 * mesh failure -- the commitment round passed over bytes
+                 * ECDH cannot consume. The lost peer blocks completion, so
+                 * no phrase can ever be produced from the broken roster,
+                 * while the mesh itself stays alive and typed. */
                 peerLost(peer, MdkrMatchPeerLostReason::HelloViolation);
-                failed = true;
-                emitFailure(MdkrMatchPeerMeshFailure::KeyScheduleFailed);
                 mdkr_match_peer_keyring_forget(&keyring);
                 for (auto &reset : peers) {
                     reset.second.sealKey = nullptr;
@@ -1041,7 +1107,11 @@ struct MdkrMatchPeerMesh::State
         for (auto &entry : peers) {
             PeerRuntime &peer = entry.second;
             if (peer.lost || !peer.present || peer.generation == 0u) continue;
-            /* Hellos: commit eagerly; reveal only after the peer commits. */
+            /* Hellos: commit eagerly; reveal only after the peer commits.
+             * Each of the three sends is guarded independently, so a
+             * refused send (relay said peer_unavailable mid-blip) is
+             * retried on the next pump rather than dead-ending the
+             * exchange -- hellosSent only advances on an accepted send. */
             if (ownCommitmentReady) {
                 if (peer.hellosSent == 0u) {
                     sendHello(peer, encodeHelloBody(ownCommitment));
@@ -1049,9 +1119,22 @@ struct MdkrMatchPeerMesh::State
                 if (peer.hellosSent == 1u && peer.hellosReceived >= 1u) {
                     sendHello(peer, mdkr_party::base64Url(
                                         ownPublicKey, sizeof(ownPublicKey)));
-                    if (peer.hellosSent == 2u) {
-                        sendHello(peer, encodeHelloBody(ownNonce));
-                    }
+                }
+                if (peer.hellosSent == 2u && peer.hellosReceived >= 1u) {
+                    sendHello(peer, encodeHelloBody(ownNonce));
+                }
+            }
+            /* M4: the answerer's bounded setup verdict -- it has no offer
+             * ladder, so a peer whose offer never arrives (or never
+             * completes) must still resolve in bounded time. */
+            if (!peer.offerer && !peer.channelsReady && !peer.gaveUp) {
+                if (peer.setupStartedMs == 0u) {
+                    peer.setupStartedMs = nowMs;
+                } else if (nowMs - peer.setupStartedMs >=
+                           kMdkrMatchAnswererSetupDeadlineMs) {
+                    peer.gaveUp = true;
+                    peerLost(peer, MdkrMatchPeerLostReason::ConnectTimeout);
+                    continue;
                 }
             }
             /* Offer ladder (glare-free: lower id offers, higher answers). */

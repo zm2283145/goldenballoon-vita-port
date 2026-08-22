@@ -127,6 +127,20 @@ public:
         endpoints_[id].blackholed = value;
     }
 
+    /* A signaling reconnect: the relay tracks a strictly higher generation
+     * for this endpoint from now on. */
+    void setGeneration(uint64_t id, uint32_t generation) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        endpoints_[id].generation = generation;
+    }
+
+    /* M1 seam: fail the Nth peer_hello send (1-based, counted per sender)
+     * with the relay's peer_unavailable refusal instead of delivering. */
+    void failHelloSend(uint64_t from, unsigned index) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        helloFailPlan_[from].insert(index);
+    }
+
     /* Deliver a welcome to `target` naming every OTHER endpoint present. */
     void welcome(uint64_t target) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -158,6 +172,16 @@ public:
         MdkrMatchSignalSendResult result;
         result.sequence = ++sequence_;
         result.ok = true;
+        if (m.type == "peer_hello") {
+            const unsigned index = ++helloSendCount_[from];
+            const auto plan = helloFailPlan_.find(from);
+            if (plan != helloFailPlan_.end() &&
+                plan->second.count(index) != 0u) {
+                result.ok = false;
+                result.error = kMdkrMatchSignalPeerUnavailable;
+                return result;
+            }
+        }
         uint64_t to = 0u;
         try { to = std::stoull(m.toEndpointId); } catch (...) { to = 0u; }
         const auto found = endpoints_.find(to);
@@ -227,6 +251,8 @@ public:
 
 private:
     std::map<uint64_t, Endpoint> endpoints_;
+    std::map<uint64_t, std::set<unsigned>> helloFailPlan_;
+    std::map<uint64_t, unsigned> helloSendCount_;
     std::mutex mutex_;
     uint32_t sequence_ = 0u;
 };
@@ -609,17 +635,39 @@ struct RawPeer {
         catch (...) { return false; }
     }
 
-    std::vector<uint8_t> sealedInput(
-        const std::array<uint8_t, MDKR_MATCH_PEER_PAYLOAD_BYTES> &payload) {
+    bool sendControlText(const std::string &text) {
+        std::shared_ptr<rtc::DataChannel> channel;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            channel = control;
+        }
+        if (!channel || !channel->isOpen()) return false;
+        try { return channel->send(text); }
+        catch (...) { return false; }
+    }
+
+    std::vector<uint8_t> sealed(
+        const std::array<uint8_t, MDKR_MATCH_PEER_PAYLOAD_BYTES> &payload,
+        uint8_t payloadType) {
         assert(keysDerived);
         MdkrMatchPeerSendContext context{};
         context.key = sealKey->direction;
         context.intermediate_endpoint_id = 0u;
-        context.payload_type = MDKR_MATCH_PEER_PAYLOAD_INPUT;
+        context.payload_type = payloadType;
         std::vector<uint8_t> envelope(MDKR_MATCH_PEER_ENVELOPE_BYTES);
         assert(mdkr_match_peer_seal(sealKey, &context, payload.data(),
                                     envelope.data()));
         return envelope;
+    }
+
+    std::vector<uint8_t> sealedInput(
+        const std::array<uint8_t, MDKR_MATCH_PEER_PAYLOAD_BYTES> &payload) {
+        return sealed(payload, MDKR_MATCH_PEER_PAYLOAD_INPUT);
+    }
+
+    std::vector<uint8_t> sealedFragment(
+        const std::array<uint8_t, MDKR_MATCH_PEER_PAYLOAD_BYTES> &payload) {
+        return sealed(payload, MDKR_MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT);
     }
 };
 
@@ -917,8 +965,19 @@ void badStateEnvelopeDroppedAndCounted() {
         100u, MdkrMatchPeerMeshEventType::InputEnvelope, 200u);
     assert(input != nullptr && input->payload == payload);
 
-    /* Garbage on the RELIABLE control channel IS terminal for the peer. */
+    /* A correctly sized control envelope that fails to open is the
+     * rekey-window race shape: counted, dropped, NOT terminal (I2). */
     assert(rig.raw->sendControlBytes(junk));
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.mesh->stats().rejectedControlEnvelopes >= 1u;
+    }, 5000u));
+    assert(rig.harness.countEvents(100u,
+               MdkrMatchPeerMeshEventType::PeerLost) == 0u);
+
+    /* STRUCTURAL garbage on the reliable channel -- a frame no conforming
+     * peer can ever produce -- is terminal. */
+    assert(rig.raw->sendControlBytes(runt));
     assert(rig.harness.pumpUntil([&]() {
         return rig.harness.countEvents(100u,
                    MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
@@ -927,9 +986,12 @@ void badStateEnvelopeDroppedAndCounted() {
         100u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
     assert(lost != nullptr && lost->lostReason ==
            MdkrMatchPeerLostReason::ControlChannelViolation);
-    std::printf("badStateEnvelopeDroppedAndCounted: ok (rejected=%llu)\n",
+    std::printf("badStateEnvelopeDroppedAndCounted: ok (state=%llu "
+                "control=%llu)\n",
                 static_cast<unsigned long long>(
-                    rig.mesh->stats().rejectedStateEnvelopes));
+                    rig.mesh->stats().rejectedStateEnvelopes),
+                static_cast<unsigned long long>(
+                    rig.mesh->stats().rejectedControlEnvelopes));
 }
 
 void controlPingTimeoutIsTypedPeerLoss() {
@@ -1048,6 +1110,468 @@ void closeTearsDownBounded() {
                 static_cast<long long>(elapsed.count()));
 }
 
+/* ---- Fix round 1 ---------------------------------------------------------*/
+
+/* C1: a roster peer must never be able to throw through pump(). Every one
+ * of these frames used to reach nlohmann typed extraction with a mismatched
+ * type and terminate the launcher via json::type_error. */
+void malformedControlJsonIsTypedLossNotCrash() {
+    RawHarness rig;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    rig.mesh = rig.harness.add(100u, 1u, roster);
+    rig.rawFeed = rig.harness.hub.addEndpoint(200u, 2u);
+    rig.raw = std::make_unique<RawPeer>(200u, 2u, 100u, 1u, &rig.harness.hub);
+    rig.raw->sendHellos = false; /* the control plane predates the keys */
+    rig.harness.hub.welcome(100u);
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 200u) >= 1u &&
+               rig.raw->channelsOpen();
+    }));
+    assert(rig.raw->sendControlText("{\"type\":123}"));
+    assert(rig.raw->sendControlText(
+        "{\"type\":\"ping\",\"protocol\":true,\"nonce\":1}"));
+    assert(rig.raw->sendControlText(
+        "{\"type\":\"pong\",\"protocol\":1,\"nonce\":\"x\"}"));
+    assert(rig.harness.pumpUntil([&]() {
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *lost = rig.harness.lastEvent(
+        100u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+    assert(lost != nullptr && lost->lostReason ==
+           MdkrMatchPeerLostReason::ControlChannelViolation);
+    /* The mesh survives its peer's garbage: still pumpable, still typed. */
+    (void)rig.mesh->stats();
+    rig.harness.pumpOnce();
+    std::printf("malformedControlJsonIsTypedLossNotCrash: ok\n");
+}
+
+/* I1: state and control are independent streams; one shared 64-deep replay
+ * window let >64 state envelopes retire a delayed-but-honest control
+ * fragment as REPLAY -- a terminal kill of a healthy peer. */
+void delayedControlFragmentSurvivesInputBurst() {
+    RawHarness rig;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    rig.mesh = rig.harness.add(100u, 1u, roster);
+    rig.rawFeed = rig.harness.hub.addEndpoint(200u, 2u);
+    rig.raw = std::make_unique<RawPeer>(200u, 2u, 100u, 1u, &rig.harness.hub);
+    rig.harness.hub.welcome(100u);
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 200u) >= 1u &&
+               rig.raw->channelsOpen() && rig.raw->meshHellos >= 3u;
+    }));
+    rig.raw->deriveKeys();
+
+    /* The fragment is sealed FIRST (sequence 1), then delayed while 70
+     * inputs (sequences 2..71) advance the direction. */
+    const auto fragment = payloadFixture(0x66u);
+    const std::vector<uint8_t> delayed = rig.raw->sealedFragment(fragment);
+    for (unsigned index = 0u; index < 70u; index++) {
+        assert(rig.raw->sendStateBytes(rig.raw->sealedInput(
+            payloadFixture(static_cast<uint8_t>(index)))));
+    }
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::InputEnvelope, 200u) >= 65u;
+    }));
+    assert(rig.raw->sendControlBytes(delayed));
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PreflightFragment, 200u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *preflight = rig.harness.lastEvent(
+        100u, MdkrMatchPeerMeshEventType::PreflightFragment, 200u);
+    assert(preflight != nullptr && preflight->payload == fragment);
+    assert(rig.harness.countEvents(100u,
+               MdkrMatchPeerMeshEventType::PeerLost) == 0u);
+    std::printf("delayedControlFragmentSurvivesInputBurst: ok\n");
+}
+
+/* Hello-only stand-in for a reconnected endpoint: one identity, the
+ * three-hello dance with several targets, no WebRTC (the phrase never
+ * needed channels). */
+struct HelloDriver {
+    struct Target {
+        uint64_t id = 0u;
+        uint32_t generation = 0u;
+        unsigned received = 0u;
+        bool committed = false;
+        bool revealed = false;
+    };
+
+    uint64_t selfId;
+    FakeHub *hub;
+    FakeFeed *feed;
+    MdkrMatchPeerIdentity *identity = nullptr;
+    std::array<uint8_t, MDKR_MATCH_PEER_PUBLIC_KEY_BYTES> publicKey{};
+    std::array<uint8_t, MDKR_MATCH_PEER_COMMIT_NONCE_BYTES> nonce{};
+    std::array<uint8_t, MDKR_MATCH_PEER_COMMIT_BYTES> commitment{};
+    std::vector<Target> targets;
+
+    HelloDriver(uint64_t self, uint32_t generation, FakeHub *owner,
+                FakeFeed *ownFeed,
+                const std::vector<std::pair<uint64_t, uint32_t>> &list)
+        : selfId(self), hub(owner), feed(ownFeed) {
+        identity = mdkr_match_peer_identity_create();
+        assert(identity != nullptr);
+        assert(mdkr_match_peer_identity_public_key(identity, publicKey.data()));
+        for (unsigned index = 0u; index < nonce.size(); index++) {
+            nonce[index] = static_cast<uint8_t>(0x51u + index);
+        }
+        assert(mdkr_match_peer_commitment(kEpoch, selfId, generation,
+                                          nonce.data(), publicKey.data(),
+                                          commitment.data()));
+        for (const auto &entry : list) {
+            Target target;
+            target.id = entry.first;
+            target.generation = entry.second;
+            targets.push_back(target);
+        }
+    }
+
+    ~HelloDriver() { mdkr_match_peer_identity_destroy(identity); }
+
+    std::string blob(const uint8_t body[32]) const {
+        uint8_t raw[MDKR_MATCH_PEER_PUBLIC_KEY_BYTES] = {};
+        raw[0] = 0x04u;
+        std::memcpy(raw + 1u, body, 32u);
+        return mdkr_party::base64Url(raw, sizeof(raw));
+    }
+
+    void sendHello(const Target &target, const std::string &publicKeyBlob) {
+        MdkrMatchSignalOutbound message;
+        message.type = "peer_hello";
+        message.toEndpointId = std::to_string(target.id);
+        message.toConnectionGeneration = target.generation;
+        message.publicKey = publicKeyBlob;
+        hub->route(selfId, message);
+    }
+
+    void pump() {
+        for (Target &target : targets) {
+            if (!target.committed) {
+                sendHello(target, blob(commitment.data()));
+                target.committed = true;
+            }
+        }
+        std::vector<MdkrMatchSignalEvent> drained;
+        feed->drainEvents(drained);
+        for (const MdkrMatchSignalEvent &event : drained) {
+            if (event.type != MdkrMatchSignalEventType::PeerHello) continue;
+            uint64_t from = 0u;
+            try { from = std::stoull(event.fromEndpointId); } catch (...) {}
+            for (Target &target : targets) {
+                if (target.id != from) continue;
+                target.received++;
+                if (!target.revealed && target.received >= 1u) {
+                    sendHello(target, mdkr_party::base64Url(publicKey.data(),
+                                                            publicKey.size()));
+                    sendHello(target, blob(nonce.data()));
+                    target.revealed = true;
+                }
+            }
+        }
+    }
+};
+
+/* I2: a generation bump for one peer retires every transcript-salted key;
+ * an honest third peer's in-flight old-digest control fragment during that
+ * window must be a counted drop, never a peer kill -- and the whole roster
+ * must re-derive to one fresh phrase afterwards. */
+void rekeyGenerationBumpKeepsHonestPeers() {
+    MeshHarness harness;
+    const std::vector<MdkrMatchPeerSlotOwner> roster =
+        rosterOf({100u, 200u, 300u});
+    MdkrMatchPeerMesh *meshA = harness.add(100u, 1u, roster);
+    MdkrMatchPeerMesh *meshB = harness.add(200u, 2u, roster);
+    MdkrMatchPeerMesh *meshC = harness.add(300u, 3u, roster);
+    harness.hub.welcome(100u);
+    harness.hub.welcome(200u);
+    harness.hub.welcome(300u);
+    assert(harness.pumpUntil([&]() {
+        return harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PhraseReady) >= 1u &&
+               harness.countEvents(200u,
+                   MdkrMatchPeerMeshEventType::PhraseReady) >= 1u &&
+               harness.countEvents(300u,
+                   MdkrMatchPeerMeshEventType::PhraseReady) >= 1u &&
+               harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 300u) >= 1u &&
+               harness.countEvents(300u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 100u) >= 1u;
+    }, 30000u));
+    std::string phraseBefore;
+    assert(meshA->phrase(phraseBefore));
+
+    /* B's signaling socket reconnects: gone at generation 2, back at 5. */
+    meshB->close();
+    harness.hub.setGeneration(200u, 5u);
+    MdkrMatchSignalEvent bump;
+    bump.type = MdkrMatchSignalEventType::PeerPresence;
+    bump.endpointId = "200";
+    bump.connectionGeneration = 5u;
+    bump.present = true;
+    harness.hub.inject(100u, bump); /* A learns first: presence skew */
+    harness.pumpOnce();
+
+    /* C, still keyed on the old digest, has a control fragment in flight
+     * toward A. A must drop it non-terminally. */
+    const auto fragment = payloadFixture(0x2Au);
+    assert(meshC->sendPreflightFragment(100u, fragment.data()));
+    for (unsigned index = 0u; index < 30u; index++) {
+        harness.pumpOnce();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    assert(harness.countEvents(100u, MdkrMatchPeerMeshEventType::PeerLost,
+                               300u) == 0u);
+
+    /* C learns of the bump; a fresh endpoint 200 completes the exchange at
+     * generation 5 (hello-only: the phrase never needed its channels). */
+    harness.hub.inject(300u, bump);
+    harness.pumpOnce();
+    FakeFeed *replacementFeed = harness.hub.addEndpoint(200u, 5u);
+    HelloDriver replacement(200u, 5u, &harness.hub, replacementFeed,
+                            {{100u, 1u}, {300u, 3u}});
+    assert(harness.pumpUntil([&]() {
+        replacement.pump();
+        return harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PhraseReady) >= 2u &&
+               harness.countEvents(300u,
+                   MdkrMatchPeerMeshEventType::PhraseReady) >= 2u;
+    }));
+    std::string phraseA;
+    std::string phraseC;
+    assert(meshA->phrase(phraseA));
+    assert(meshC->phrase(phraseC));
+    assert(!phraseA.empty() && phraseA == phraseC && phraseA != phraseBefore);
+
+    /* The A<->C lane rides the re-derived keys immediately. */
+    const auto payload = payloadFixture(0x77u);
+    assert(meshA->sendInput(payload.data()) >= 1u);
+    assert(harness.pumpUntil([&]() {
+        return harness.countEvents(300u,
+                   MdkrMatchPeerMeshEventType::InputEnvelope, 100u) >= 1u;
+    }));
+    assert(harness.countEvents(100u,
+               MdkrMatchPeerMeshEventType::PeerLost) == 0u);
+    assert(harness.countEvents(300u,
+               MdkrMatchPeerMeshEventType::PeerLost) == 0u);
+    std::printf("rekeyGenerationBumpKeepsHonestPeers: ok\n");
+}
+
+/* I3: the invented three-hello convention, pinned case by case. Nothing
+ * malformed, duplicated, reordered or replayed may ever yield a phrase. */
+void helloProtocolPinning() {
+    const auto runCase =
+        [](const char *name,
+           const std::function<void(MeshHarness &, RawPeer &)> &drive,
+           bool expectLost, MdkrMatchPeerLostReason expected) {
+            MeshHarness harness;
+            const std::vector<MdkrMatchPeerSlotOwner> roster =
+                rosterOf({100u, 200u});
+            MdkrMatchPeerMesh *mesh = harness.add(100u, 1u, roster);
+            harness.hub.addEndpoint(200u, 2u);
+            RawPeer raw(200u, 2u, 100u, 1u, &harness.hub);
+            raw.sendHellos = false;
+            harness.hub.welcome(100u);
+            harness.pumpOnce();
+            drive(harness, raw);
+            for (unsigned index = 0u; index < 5u; index++) {
+                harness.pumpOnce();
+            }
+            if (expectLost) {
+                const MdkrMatchPeerMeshEvent *lost = harness.lastEvent(
+                    100u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+                assert(lost != nullptr && lost->lostReason == expected);
+            } else {
+                assert(harness.countEvents(
+                           100u, MdkrMatchPeerMeshEventType::PeerLost) == 0u);
+            }
+            /* Fails closed: no phrase from unverified material, ever. */
+            std::string phrase;
+            assert(!mesh->phrase(phrase));
+            assert(harness.countEvents(
+                       100u, MdkrMatchPeerMeshEventType::PhraseReady) == 0u);
+            std::printf("  helloProtocolPinning[%s]: ok\n", name);
+        };
+
+    runCase("fourth-hello", [](MeshHarness &, RawPeer &raw) {
+        raw.sendCommitHello();
+        raw.sendRevealHellos();
+        raw.sendSignal("peer_hello", [&](MdkrMatchSignalOutbound &m) {
+            m.publicKey = raw.helloBlob(raw.commitment.data());
+        });
+    }, true, MdkrMatchPeerLostReason::HelloViolation);
+
+    runCase("duplicate-commit", [](MeshHarness &, RawPeer &raw) {
+        raw.sendCommitHello();
+        raw.sendSignal("peer_hello", [&](MdkrMatchSignalOutbound &m) {
+            m.publicKey = raw.helloBlob(raw.commitment.data());
+        });
+        raw.sendSignal("peer_hello", [&](MdkrMatchSignalOutbound &m) {
+            m.publicKey = mdkr_party::base64Url(raw.publicKey.data(),
+                                                raw.publicKey.size());
+        });
+    }, true, MdkrMatchPeerLostReason::HelloViolation);
+
+    runCase("out-of-order", [](MeshHarness &, RawPeer &raw) {
+        /* The real key where the commit belongs: its tail is not zero. */
+        raw.sendSignal("peer_hello", [&](MdkrMatchSignalOutbound &m) {
+            m.publicKey = mdkr_party::base64Url(raw.publicKey.data(),
+                                                raw.publicKey.size());
+        });
+    }, true, MdkrMatchPeerLostReason::HelloViolation);
+
+    runCase("commit-mismatch", [](MeshHarness &, RawPeer &raw) {
+        /* Committed to one key, revealed another (the grinding shape). */
+        MdkrMatchPeerIdentity *other = mdkr_match_peer_identity_create();
+        assert(other != nullptr);
+        std::array<uint8_t, MDKR_MATCH_PEER_PUBLIC_KEY_BYTES> otherKey{};
+        assert(mdkr_match_peer_identity_public_key(other, otherKey.data()));
+        raw.sendCommitHello();
+        raw.sendSignal("peer_hello", [&](MdkrMatchSignalOutbound &m) {
+            m.publicKey = mdkr_party::base64Url(otherKey.data(),
+                                                otherKey.size());
+        });
+        raw.sendSignal("peer_hello", [&](MdkrMatchSignalOutbound &m) {
+            m.publicKey = raw.helloBlob(raw.nonce.data());
+        });
+        mdkr_match_peer_identity_destroy(other);
+    }, true, MdkrMatchPeerLostReason::CommitmentMismatch);
+
+    runCase("dirty-tail", [](MeshHarness &, RawPeer &raw) {
+        uint8_t blob[MDKR_MATCH_PEER_PUBLIC_KEY_BYTES] = {};
+        blob[0] = 0x04u;
+        std::memcpy(blob + 1u, raw.commitment.data(), 32u);
+        blob[64] = 0x01u; /* reserved bytes must be zero */
+        raw.sendSignal("peer_hello", [&](MdkrMatchSignalOutbound &m) {
+            m.publicKey = mdkr_party::base64Url(blob, sizeof(blob));
+        });
+    }, true, MdkrMatchPeerLostReason::HelloViolation);
+
+    runCase("stale-generation-replay", [](MeshHarness &harness, RawPeer &raw) {
+        /* A hello claiming a generation other than the tracked one is
+         * ignored, before AND after a generation bump. */
+        MdkrMatchSignalEvent stale;
+        stale.type = MdkrMatchSignalEventType::PeerHello;
+        stale.fromEndpointId = "200";
+        stale.fromConnectionGeneration = 99u;
+        stale.publicKey = raw.helloBlob(raw.commitment.data());
+        harness.hub.inject(100u, stale);
+        harness.pumpOnce();
+        MdkrMatchSignalEvent bump;
+        bump.type = MdkrMatchSignalEventType::PeerPresence;
+        bump.endpointId = "200";
+        bump.connectionGeneration = 3u;
+        bump.present = true;
+        harness.hub.inject(100u, bump);
+        harness.pumpOnce();
+        MdkrMatchSignalEvent replay;
+        replay.type = MdkrMatchSignalEventType::PeerHello;
+        replay.fromEndpointId = "200";
+        replay.fromConnectionGeneration = 2u; /* the retired generation */
+        replay.publicKey = raw.helloBlob(raw.commitment.data());
+        harness.hub.inject(100u, replay);
+        harness.pumpOnce();
+        assert(harness.mesh(100u)->stats().ignoredStaleSignals >= 2u);
+    }, false, MdkrMatchPeerLostReason::HelloViolation);
+
+    std::printf("helloProtocolPinning: ok\n");
+}
+
+/* M3: a peer whose committed-and-opened key is not a curve point is that
+ * peer's typed loss, not a whole-mesh failure. */
+void offCurveRevealIsPerPeerLoss() {
+    MeshHarness harness;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    MdkrMatchPeerMesh *mesh = harness.add(100u, 1u, roster);
+    harness.hub.addEndpoint(200u, 2u);
+    RawPeer raw(200u, 2u, 100u, 1u, &harness.hub);
+    raw.sendHellos = false;
+    harness.hub.welcome(100u);
+    harness.pumpOnce();
+
+    /* Commit to garbage bytes, open the commitment honestly over them: the
+     * commitment round passes, ECDH cannot. */
+    uint8_t garbage[MDKR_MATCH_PEER_PUBLIC_KEY_BYTES];
+    garbage[0] = 0x04u;
+    for (unsigned index = 1u; index < sizeof(garbage); index++) {
+        garbage[index] = static_cast<uint8_t>(0xB0u + index * 7u);
+    }
+    uint8_t commitment[MDKR_MATCH_PEER_COMMIT_BYTES];
+    assert(mdkr_match_peer_commitment(kEpoch, 200u, 2u, raw.nonce.data(),
+                                      garbage, commitment));
+    raw.sendSignal("peer_hello", [&](MdkrMatchSignalOutbound &m) {
+        m.publicKey = raw.helloBlob(commitment);
+    });
+    raw.sendSignal("peer_hello", [&](MdkrMatchSignalOutbound &m) {
+        m.publicKey = mdkr_party::base64Url(garbage, sizeof(garbage));
+    });
+    raw.sendSignal("peer_hello", [&](MdkrMatchSignalOutbound &m) {
+        m.publicKey = raw.helloBlob(raw.nonce.data());
+    });
+    assert(harness.pumpUntil([&]() {
+        return harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *lost = harness.lastEvent(
+        100u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+    assert(lost != nullptr &&
+           lost->lostReason == MdkrMatchPeerLostReason::HelloViolation);
+    /* Per-peer, not mesh-fatal: no Failure event, mesh stays serviceable. */
+    assert(harness.countEvents(100u,
+               MdkrMatchPeerMeshEventType::Failure) == 0u);
+    std::string phrase;
+    assert(!mesh->phrase(phrase));
+    (void)mesh->stats();
+    harness.pumpOnce();
+    std::printf("offCurveRevealIsPerPeerLoss: ok\n");
+}
+
+/* M1: a refused opening-nonce hello (relay said peer_unavailable) must be
+ * retried like hellos 1 and 2, not dead-end the exchange forever. */
+void helloNonceSendFailureRetries() {
+    RawHarness rig;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    rig.mesh = rig.harness.add(100u, 1u, roster);
+    rig.rawFeed = rig.harness.hub.addEndpoint(200u, 2u);
+    rig.raw = std::make_unique<RawPeer>(200u, 2u, 100u, 1u, &rig.harness.hub);
+    rig.harness.hub.failHelloSend(100u, 3u); /* the opening nonce, once */
+    rig.harness.hub.welcome(100u);
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        rig.raw->serviceControl();
+        return rig.raw->meshHellos >= 3u; /* the peer got all three */
+    }, 10000u));
+    std::printf("helloNonceSendFailureRetries: ok\n");
+}
+
+/* M4: an answerer whose offer never arrives must reach a typed, bounded
+ * verdict instead of waiting forever. */
+void answererSetupDeadlineBounded() {
+    MeshHarness harness;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({200u, 300u});
+    harness.add(300u, 3u, roster); /* higher id: pure answerer */
+    harness.hub.addEndpoint(200u, 2u);
+    harness.hub.welcome(300u);
+    assert(harness.pumpUntil([&]() {
+        return harness.countEvents(300u,
+                   MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
+    }, 20000u, 5000u));
+    const MdkrMatchPeerMeshEvent *lost = harness.lastEvent(
+        300u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+    assert(lost != nullptr &&
+           lost->lostReason == MdkrMatchPeerLostReason::ConnectTimeout);
+    std::printf("answererSetupDeadlineBounded: ok\n");
+}
+
 }  // namespace
 
 int main() {
@@ -1061,6 +1585,14 @@ int main() {
     iceRestartRecoversAfterChannelDeath();
     offerLadderGivesUpBounded();
     closeTearsDownBounded();
+    /* Fix round 1: C1, I1, I2, I3, M1, M3, M4. */
+    malformedControlJsonIsTypedLossNotCrash();
+    delayedControlFragmentSurvivesInputBurst();
+    rekeyGenerationBumpKeepsHonestPeers();
+    helloProtocolPinning();
+    offCurveRevealIsPerPeerLoss();
+    helloNonceSendFailureRetries();
+    answererSetupDeadlineBounded();
     std::printf("all match_peer_transport cases passed\n");
     return 0;
 }

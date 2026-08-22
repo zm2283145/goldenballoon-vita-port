@@ -52,8 +52,21 @@
  *                          terminal.
  *   gb-match-control-v1 -- reliable ordered; sealed PREFLIGHT fragments +
  *                          the bounded ping. A reliable channel never
- *                          delivers garbage, so an open failure here IS
- *                          terminal for the peer.
+ *                          delivers STRUCTURAL garbage, so a wrong-size
+ *                          binary frame, malformed ping JSON, or an
+ *                          authenticated envelope of the wrong payload
+ *                          type IS terminal for the peer. An envelope
+ *                          that merely fails to open is NOT: during a
+ *                          roster rekey (any peer's generation bump
+ *                          retires every transcript-salted key) an honest
+ *                          peer's in-flight old-digest fragment is
+ *                          indistinguishable from garbage, so it is
+ *                          counted and dropped instead of killing the
+ *                          peer. Each channel keeps its own replay window
+ *                          over the shared sender sequence space, so a
+ *                          control fragment delayed behind a burst of
+ *                          state envelopes can never be retired as a
+ *                          replay.
  *
  * One-hop forwarding (match_peer_graph.h / match_peer_forward.h) is OUT of
  * scope for this transport revision: only the direct mesh is wired. The
@@ -94,6 +107,11 @@ inline constexpr unsigned kMdkrMatchControlPingTimeoutMs = 15000u;
  * after every restart must not loop forever), matching the offer ladder's
  * 3-attempt bound in party_retry_policy.h. */
 inline constexpr unsigned kMdkrMatchMaxRestartEpisodes = 3u;
+
+/* An answerer has no offer ladder of its own: if the peer's offer never
+ * arrives it must still reach a typed, bounded verdict. Three times the
+ * ladder's 20 s deadline -- the same total budget the offerer gets. */
+inline constexpr unsigned kMdkrMatchAnswererSetupDeadlineMs = 60000u;
 
 /*
  * Injectable signaling seam. The mesh consumes validated match-signal
@@ -171,8 +189,10 @@ enum class MdkrMatchPeerLostReason {
     /* This direction's seal window is exhausted: the direction requires a
      * reconnect and a fresh generation-bound key. */
     SealWindowExhausted,
-    /* Garbage on the reliable control channel (bad envelope, wrong payload
-     * type, malformed ping JSON). */
+    /* Structural garbage on the reliable control channel: wrong-size
+     * binary, malformed/mistyped ping JSON, or an authenticated envelope
+     * carrying the wrong payload type. (An envelope that merely fails to
+     * open is a counted drop, not this -- see the channel contract.) */
     ControlChannelViolation,
     /* The peer's round-1 commitment did not open over its revealed key. */
     CommitmentMismatch,
@@ -213,6 +233,9 @@ struct MdkrMatchPeerMeshStats {
     /* State-channel datagrams dropped: wrong size, no key yet, or
      * open/replay rejection. The state channel is lossy by design. */
     uint64_t rejectedStateEnvelopes = 0u;
+    /* Control-channel envelopes dropped non-terminally: correctly sized
+     * but no key yet or failed to open -- the rekey-window race shape. */
+    uint64_t rejectedControlEnvelopes = 0u;
     /* Signaling messages ignored for stale generation / wrong role /
      * unknown endpoint / unexpected timing. */
     uint64_t ignoredStaleSignals = 0u;
