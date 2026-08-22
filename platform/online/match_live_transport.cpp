@@ -25,7 +25,22 @@
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509_crt.h>
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <cerrno>
+#endif
+
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -39,11 +54,169 @@ namespace {
 
 using Json = nlohmann::json;
 
+/* Bounds so a stalled/unreachable host (the exact Wave-2 NET-01 failure mode)
+ * can never wedge the worker thread past a deadline: close()/join() then always
+ * returns promptly. Mirrors the O-T1 signal client's discipline. */
+constexpr uint64_t kConnectTimeoutMs = 8000u;
+constexpr uint64_t kWriteTimeoutMs = 8000u;
+constexpr uint32_t kPollSliceMs = 100u;
+/* Total assembled-message cap across continuation frames (memory-DoS guard) --
+ * a lobby snapshot is a few KiB; 256 KiB is generous and fails closed above. */
+constexpr size_t kMaxWsMessageBytes = 256u * 1024u;
+/* Once any byte of a frame has arrived, the rest must land within this budget;
+ * a server that half-sends a frame then goes silent is otherwise a spin. */
+constexpr uint64_t kFrameTimeoutMs = 15000u;
+
 uint64_t nowMs() {
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch())
             .count());
+}
+
+#ifdef _WIN32
+using SocketFd = SOCKET;
+constexpr SocketFd kBadSocket = INVALID_SOCKET;
+void closeSocket(SocketFd fd) { ::closesocket(fd); }
+void ensureNetStartup() {
+    static std::once_flag once;
+    std::call_once(once, []() {
+        WSADATA data;
+        (void)::WSAStartup(MAKEWORD(2, 2), &data);
+    });
+}
+bool setBlocking(SocketFd fd, bool blocking) {
+    u_long mode = blocking ? 0u : 1u;
+    return ::ioctlsocket(fd, FIONBIO, &mode) == 0;
+}
+#else
+using SocketFd = int;
+constexpr SocketFd kBadSocket = -1;
+void closeSocket(SocketFd fd) { ::close(fd); }
+void ensureNetStartup() {}
+bool setBlocking(SocketFd fd, bool blocking) {
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    if (flags < 0) return false;
+    const int updated = blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
+    return ::fcntl(fd, F_SETFL, updated) == 0;
+}
+#endif
+
+/* Deadline- and abort-aware TCP connect (O-T1 connectTcp discipline): a
+ * non-blocking connect polled in short slices, so an unreachable host stops at
+ * the deadline and a close() during connect aborts within one slice. Returns
+ * kBadSocket on any failure. The returned fd is left BLOCKING so mbedtls's
+ * recv_timeout/send operate on it exactly as before. */
+SocketFd connectWithDeadline(const std::string &host, const std::string &port,
+                             uint64_t deadlineMs,
+                             const std::atomic<bool> *abort) {
+    ensureNetStartup();
+    struct addrinfo hints;
+    std::memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    struct addrinfo *results = nullptr;
+    if (::getaddrinfo(host.c_str(), port.c_str(), &hints, &results) != 0 ||
+        results == nullptr) {
+        if (results != nullptr) ::freeaddrinfo(results);
+        return kBadSocket;
+    }
+    SocketFd fd = kBadSocket;
+    for (struct addrinfo *entry = results; entry != nullptr;
+         entry = entry->ai_next) {
+        fd = ::socket(entry->ai_family, entry->ai_socktype, entry->ai_protocol);
+        if (fd == kBadSocket) continue;
+#ifdef SO_NOSIGPIPE
+        int one = 1;
+        ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE,
+                     reinterpret_cast<const char *>(&one), sizeof(one));
+#endif
+        if (!setBlocking(fd, false)) {
+            closeSocket(fd);
+            fd = kBadSocket;
+            continue;
+        }
+        const int rc = ::connect(fd, entry->ai_addr,
+                                 static_cast<socklen_t>(entry->ai_addrlen));
+        bool pending = false;
+        if (rc != 0) {
+#ifdef _WIN32
+            pending = ::WSAGetLastError() == WSAEWOULDBLOCK;
+#else
+            pending = errno == EINPROGRESS;
+#endif
+            if (!pending) {
+                closeSocket(fd);
+                fd = kBadSocket;
+                continue;
+            }
+        }
+        bool established = !pending;
+        while (pending && (abort == nullptr || !abort->load())) {
+            if (nowMs() >= deadlineMs) break;
+#ifdef _WIN32
+            fd_set writable;
+            FD_ZERO(&writable);
+            FD_SET(fd, &writable);
+            struct timeval slice;
+            slice.tv_sec = 0;
+            slice.tv_usec = static_cast<long>(kPollSliceMs) * 1000;
+            const int ready = ::select(0, nullptr, &writable, nullptr, &slice);
+#else
+            struct pollfd item;
+            item.fd = fd;
+            item.events = POLLOUT;
+            item.revents = 0;
+            const int ready = ::poll(&item, 1, static_cast<int>(kPollSliceMs));
+#endif
+            if (ready < 0) break;
+            if (ready == 0) continue;
+            int soError = 0;
+            socklen_t len = sizeof(soError);
+            if (::getsockopt(fd, SOL_SOCKET, SO_ERROR,
+                             reinterpret_cast<char *>(&soError), &len) == 0 &&
+                soError == 0) {
+                established = true;
+            }
+            break;
+        }
+        if (established && setBlocking(fd, true)) break;
+        closeSocket(fd);
+        fd = kBadSocket;
+        if (abort != nullptr && abort->load()) break;
+    }
+    ::freeaddrinfo(results);
+    return fd;
+}
+
+/* First matching HTTP header value (case-insensitive name), trimmed. */
+std::string loweredCopy(std::string value) {
+    for (char &byte : value)
+        byte = static_cast<char>(std::tolower(static_cast<unsigned char>(byte)));
+    return value;
+}
+bool responseHeader(const std::string &head, const std::string &name,
+                    std::string &value) {
+    size_t start = head.find("\r\n");
+    while (start != std::string::npos && start + 2u < head.size()) {
+        start += 2u;
+        size_t end = head.find("\r\n", start);
+        if (end == std::string::npos) end = head.size();
+        const std::string line = head.substr(start, end - start);
+        const size_t colon = line.find(':');
+        if (colon != std::string::npos &&
+            loweredCopy(line.substr(0u, colon)) == name) {
+            value = line.substr(colon + 1u);
+            while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
+                value.erase(0u, 1u);
+            while (!value.empty() && (value.back() == ' ' || value.back() == '\t'))
+                value.pop_back();
+            return true;
+        }
+        start = end;
+    }
+    return false;
 }
 
 /* ---- Origin parsing (mirrors match_signal_client.cpp::parseOrigin) -------- */
@@ -113,11 +286,17 @@ public:
     WireSocket(const WireSocket &) = delete;
     WireSocket &operator=(const WireSocket &) = delete;
 
-    bool connect(const ParsedOrigin &origin, uint64_t deadline) {
-        if (mbedtls_net_connect(&net_, origin.host.c_str(), origin.port.c_str(),
-                                MBEDTLS_NET_PROTO_TCP) != 0) {
-            return false;
-        }
+    bool connect(const ParsedOrigin &origin, uint64_t deadline,
+                 const std::atomic<bool> *abort) {
+        abort_ = abort;
+        const uint64_t connectDeadline =
+            deadline < nowMs() + kConnectTimeoutMs ? deadline
+                                                   : nowMs() + kConnectTimeoutMs;
+        const SocketFd fd = connectWithDeadline(origin.host, origin.port,
+                                                connectDeadline, abort);
+        if (fd == kBadSocket) return false;
+        net_.fd = static_cast<int>(fd);
+        setSocketTimeouts(fd, static_cast<uint32_t>(kWriteTimeoutMs));
         tls_ = origin.tls;
         if (!tls_) {
             open_ = true;
@@ -152,14 +331,17 @@ public:
                 ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
                 return false;
             }
-            if (nowMs() > deadline) return false;
+            if (nowMs() > deadline || (abort_ && abort_->load())) return false;
         }
         if (mbedtls_ssl_get_verify_result(&ssl_) != 0) return false;
         open_ = true;
         return true;
     }
 
-    bool writeAll(const uint8_t *data, size_t len) {
+    /* Deadline-bounded write: SO_SNDTIMEO caps each stalled send() and the
+     * deadline caps the whole transfer, so an unresponsive host cannot block
+     * the worker thread past `deadline`. */
+    bool writeAll(const uint8_t *data, size_t len, uint64_t deadline) {
         size_t sent = 0u;
         while (sent < len) {
             int n;
@@ -170,6 +352,9 @@ public:
             }
             if (n == MBEDTLS_ERR_SSL_WANT_READ ||
                 n == MBEDTLS_ERR_SSL_WANT_WRITE) {
+                if (nowMs() >= deadline || (abort_ && abort_->load())) {
+                    return false;
+                }
                 continue;
             }
             if (n <= 0) return false;
@@ -177,8 +362,9 @@ public:
         }
         return true;
     }
-    bool writeAll(const std::string &s) {
-        return writeAll(reinterpret_cast<const uint8_t *>(s.data()), s.size());
+    bool writeAll(const std::string &s, uint64_t deadline) {
+        return writeAll(reinterpret_cast<const uint8_t *>(s.data()), s.size(),
+                        deadline);
     }
 
     /* Returns bytes read (>0), 0 on timeout, -1 on close/error. */
@@ -214,12 +400,29 @@ public:
     mbedtls_ctr_drbg_context *drbg() { return &drbg_; }
 
 private:
+    static void setSocketTimeouts(SocketFd fd, uint32_t ms) {
+#ifdef _WIN32
+        DWORD value = ms;
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO,
+                     reinterpret_cast<const char *>(&value), sizeof(value));
+        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
+                     reinterpret_cast<const char *>(&value), sizeof(value));
+#else
+        struct timeval tv;
+        tv.tv_sec = static_cast<time_t>(ms / 1000u);
+        tv.tv_usec = static_cast<suseconds_t>((ms % 1000u) * 1000u);
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
+    }
+
     mbedtls_net_context net_;
     mbedtls_entropy_context entropy_;
     mbedtls_ctr_drbg_context drbg_;
     mbedtls_ssl_context ssl_;
     mbedtls_ssl_config conf_;
     mbedtls_x509_crt ca_;
+    const std::atomic<bool> *abort_ = nullptr;
     bool tls_ = false;
     bool open_ = false;
 };
@@ -248,11 +451,12 @@ std::string base64(const uint8_t *data, size_t len) {
 HttpResult httpRequest(const ParsedOrigin &origin, const std::string &method,
                        const std::string &path, const std::string *body,
                        const std::string *credential,
-                       const std::string &originHeader) {
+                       const std::string &originHeader,
+                       const std::atomic<bool> *abort) {
     HttpResult result;
     WireSocket socket;
     const uint64_t deadline = nowMs() + 15000u;
-    if (!socket.connect(origin, deadline)) return result;
+    if (!socket.connect(origin, deadline, abort)) return result;
     std::string request = method + " " + path + " HTTP/1.1\r\n";
     request += "Host: " + origin.hostHeader + "\r\n";
     /* The MatchRoom lobby routes are HTTP POST with strict same-origin
@@ -270,11 +474,12 @@ HttpResult httpRequest(const ParsedOrigin &origin, const std::string &method,
     }
     request += "Connection: close\r\n\r\n";
     if (body != nullptr) request += *body;
-    if (!socket.writeAll(request)) return result;
+    if (!socket.writeAll(request, deadline)) return result;
 
     std::string raw;
     uint8_t buf[4096];
     while (nowMs() < deadline && raw.size() < (1u << 20)) {
+        if (abort != nullptr && abort->load()) return result;
         const int n = socket.read(buf, sizeof(buf), 1000u);
         if (n < 0) break; /* server closed after the response */
         if (n == 0) continue;
@@ -319,9 +524,11 @@ class WsConnection {
 public:
     bool open(const ParsedOrigin &origin, const std::string &path,
               const std::string &subprotocol,
-              const std::string &credentialSubprotocol) {
+              const std::string &credentialSubprotocol,
+              const std::atomic<bool> *abort) {
+        abort_ = abort;
         const uint64_t deadline = nowMs() + 15000u;
-        if (!socket_.connect(origin, deadline)) return false;
+        if (!socket_.connect(origin, deadline, abort)) return false;
         uint8_t nonce[16];
         if (mbedtls_ctr_drbg_random(socket_.drbg(), nonce, sizeof(nonce)) != 0) {
             return false;
@@ -334,11 +541,12 @@ public:
         request += "Sec-WebSocket-Version: 13\r\n";
         request += "Sec-WebSocket-Protocol: " + subprotocol + ", " +
                    credentialSubprotocol + "\r\n\r\n";
-        if (!socket_.writeAll(request)) return false;
+        if (!socket_.writeAll(request, deadline)) return false;
         /* Read headers up to the blank line, keeping any trailing frame bytes. */
         std::string head;
         uint8_t buf[2048];
         while (nowMs() < deadline) {
+            if (abort != nullptr && abort->load()) return false;
             const size_t marker = head.find("\r\n\r\n");
             if (marker != std::string::npos) {
                 inbound_.assign(head.begin() +
@@ -353,15 +561,30 @@ public:
             if (head.size() > 65536u) return false;
         }
         if (head.find("\r\n\r\n") == std::string::npos) return false;
+        /* RFC 6455 4.1 handshake validation (O-T1 discipline): 101 status,
+         * Upgrade: websocket, Connection: upgrade, the exact accept key, the
+         * versioned subprotocol, and NO negotiated extension (we offered none,
+         * so any Sec-WebSocket-Extensions would silently misframe). */
         if (head.rfind("HTTP/1.1 101", 0) != 0) return false;
-        if (head.find("Sec-WebSocket-Accept: " + acceptFor(key)) ==
-            std::string::npos) {
+        std::string value;
+        if (!responseHeader(head, "upgrade", value) ||
+            loweredCopy(value) != "websocket") {
             return false;
         }
-        /* The server MUST select the versioned subprotocol. */
-        if (head.find("Sec-WebSocket-Protocol: " + subprotocol) ==
-            std::string::npos) {
+        if (!responseHeader(head, "connection", value) ||
+            loweredCopy(value).find("upgrade") == std::string::npos) {
             return false;
+        }
+        if (!responseHeader(head, "sec-websocket-accept", value) ||
+            value != acceptFor(key)) {
+            return false;
+        }
+        if (!responseHeader(head, "sec-websocket-protocol", value) ||
+            value != subprotocol) {
+            return false;
+        }
+        if (responseHeader(head, "sec-websocket-extensions", value)) {
+            return false; /* we negotiated none */
         }
         open_ = true;
         return true;
@@ -411,46 +634,61 @@ private:
     bool fill(uint32_t timeoutMs) {
         uint8_t buf[4096];
         const int n = socket_.read(buf, sizeof(buf), timeoutMs);
-        if (n <= 0) return n == 0 ? false : throwClosed();
+        if (n < 0) {
+            closed_ = true;
+            return false;
+        }
+        if (n == 0) return false; /* timeout, not closed */
         inbound_.insert(inbound_.end(), buf, buf + n);
         return true;
     }
-    bool throwClosed() {
-        closed_ = true;
-        return false;
+
+    /* Block until `count` bytes are buffered. Returns 1 (have them), 0 (idle:
+     * no frame in progress and nothing arrived -- normal quiet), or -1 (closed,
+     * aborted, or a mid-frame STALL past the deadline). Once any frame byte has
+     * arrived, a steady deadline bounds the wait so a server that sends a
+     * partial frame then goes silent can never spin serviceLoop()/close(). */
+    int ensure(size_t count, uint32_t timeoutMs, bool midFrame,
+               uint64_t &midFrameDeadline) {
+        while (inbound_.size() < count) {
+            if (closed_) return -1;
+            if (abort_ != nullptr && abort_->load()) return -1;
+            const bool waitingMidFrame = midFrame || !inbound_.empty();
+            if (waitingMidFrame && midFrameDeadline == 0u) {
+                midFrameDeadline = nowMs() + kFrameTimeoutMs;
+            }
+            if (!fill(timeoutMs)) {
+                if (closed_) return -1;
+                if (!waitingMidFrame) return 0; /* idle */
+                if (nowMs() >= midFrameDeadline) return -1; /* stalled */
+            }
+        }
+        return 1;
     }
 
-    /* Returns 1 with (opcode,payload), 0 on timeout, -1 on close/error. Handles
-     * fragmentation into a single logical message. */
+    /* Returns 1 with (opcode,payload), 0 on quiet, -1 on close/error/stall.
+     * Assembles a fragmented message under a total cap. */
     int readFrame(uint8_t &opcodeOut, std::string &payloadOut,
                   uint32_t timeoutMs) {
         std::string message;
         uint8_t firstOpcode = 0u;
         bool started = false;
-        const uint64_t deadline = nowMs() + timeoutMs + 2000u;
+        uint64_t midFrameDeadline = 0u;
         for (;;) {
-            /* Need at least a 2-byte header. */
-            while (inbound_.size() < 2u) {
-                if (closed_) return -1;
-                if (!fill(timeoutMs)) {
-                    if (closed_) return -1;
-                    if (!started && nowMs() > deadline) return 0;
-                    if (!started) return 0;
-                    continue;
-                }
-            }
+            int got = ensure(2u, timeoutMs, started, midFrameDeadline);
+            if (got <= 0) return got;
             const uint8_t b0 = inbound_[0];
             const uint8_t b1 = inbound_[1];
             const bool fin = (b0 & 0x80u) != 0u;
+            if ((b0 & 0x70u) != 0u) return -1;   /* RSV1-3 set, no extension */
             const uint8_t opcode = b0 & 0x0fu;
-            if ((b1 & 0x80u) != 0u) return -1; /* server frames must not mask */
+            if ((b1 & 0x80u) != 0u) return -1;   /* server frames must not mask */
             uint64_t len = b1 & 0x7fu;
             size_t headerLen = 2u;
             if (len == 126u) headerLen = 4u;
             else if (len == 127u) headerLen = 10u;
-            while (inbound_.size() < headerLen) {
-                if (!fill(timeoutMs) && closed_) return -1;
-            }
+            got = ensure(headerLen, timeoutMs, true, midFrameDeadline);
+            if (got <= 0) return got;
             if (headerLen == 4u) {
                 len = (static_cast<uint64_t>(inbound_[2]) << 8) | inbound_[3];
             } else if (headerLen == 10u) {
@@ -460,9 +698,9 @@ private:
                 }
             }
             if (len > (1u << 20)) return -1;
-            while (inbound_.size() < headerLen + len) {
-                if (!fill(timeoutMs) && closed_) return -1;
-            }
+            got = ensure(headerLen + static_cast<size_t>(len), timeoutMs, true,
+                         midFrameDeadline);
+            if (got <= 0) return got;
             std::string payload(inbound_.begin() +
                                     static_cast<long>(headerLen),
                                 inbound_.begin() +
@@ -479,6 +717,8 @@ private:
                 started = true;
                 firstOpcode = opcode; /* 0x1 text / 0x2 binary */
             }
+            /* Total-message cap across continuation frames (memory-DoS guard). */
+            if (message.size() + payload.size() > kMaxWsMessageBytes) return -1;
             message += payload;
             if (fin) {
                 opcodeOut = firstOpcode;
@@ -490,23 +730,26 @@ private:
 
     void sendControl(uint8_t opcode, const std::string &payload) {
         if (payload.size() > 125u) return;
+        uint8_t mask[4];
+        /* A client frame MUST be masked with fresh entropy; if the DRBG fails,
+         * refuse to send rather than emit a predictably (zero-)masked frame. */
+        if (mbedtls_ctr_drbg_random(socket_.drbg(), mask, sizeof(mask)) != 0) {
+            return;
+        }
         std::string frame;
         frame.push_back(static_cast<char>(0x80u | opcode));
         frame.push_back(static_cast<char>(0x80u | payload.size()));
-        uint8_t mask[4];
-        if (mbedtls_ctr_drbg_random(socket_.drbg(), mask, sizeof(mask)) != 0) {
-            std::memset(mask, 0, sizeof(mask));
-        }
         frame.append(reinterpret_cast<char *>(mask), 4u);
         for (size_t i = 0u; i < payload.size(); ++i) {
             frame.push_back(static_cast<char>(
                 static_cast<uint8_t>(payload[i]) ^ mask[i % 4u]));
         }
-        (void)socket_.writeAll(frame);
+        (void)socket_.writeAll(frame, nowMs() + kWriteTimeoutMs);
     }
 
     WireSocket socket_;
     std::vector<uint8_t> inbound_;
+    const std::atomic<bool> *abort_ = nullptr;
     bool open_ = false;
     bool closed_ = false;
 };
@@ -772,6 +1015,10 @@ public:
             if (stop_) return;
             stop_ = true;
         }
+        /* Abort any in-flight connect/handshake/read/write on the worker thread
+         * within a poll slice so join() returns promptly even against a stalled
+         * or unreachable host. */
+        aborting_.store(true);
         if (worker_.joinable()) worker_.join();
     }
 
@@ -851,7 +1098,8 @@ private:
         }
         const std::string bodyStr = body.dump();
         const HttpResult res =
-            httpRequest(origin_, "POST", path, &bodyStr, nullptr, originString_);
+            httpRequest(origin_, "POST", path, &bodyStr, nullptr, originString_,
+                        &aborting_);
         if (!res.ok) {
             enqueueFailure(MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE);
             return;
@@ -919,7 +1167,8 @@ private:
     void serviceLoop() {
         WsConnection ws;
         const std::string path = "/api/match/" + roomId_ + "/connect";
-        if (!ws.open(origin_, path, "gb-match-v1", "gb-match." + credential_)) {
+        if (!ws.open(origin_, path, "gb-match-v1", "gb-match." + credential_,
+                     &aborting_)) {
             /* The lobby is usable over HTTP polling even if the push socket
              * failed; surface a soft recovery instead of tearing the room. */
             enqueueFailure(MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK);
@@ -988,8 +1237,9 @@ private:
                 std::to_string(command.target_endpoint_id);
             const std::string bodyStr = body.dump();
             const std::string path = "/api/match/" + roomId_ + "/command";
-            const HttpResult res = httpRequest(origin_, "POST", path, &bodyStr,
-                                               &credential_, originString_);
+            const HttpResult res =
+                httpRequest(origin_, "POST", path, &bodyStr, &credential_,
+                            originString_, &aborting_);
             MdkrOnlineRoomEvent ev;
             ev.type = MdkrOnlineRoomEvent::Type::CommandResult;
             if (!res.ok) {
@@ -1042,6 +1292,7 @@ private:
 
     std::mutex mutex_;
     bool stop_ = false;
+    std::atomic<bool> aborting_{false};
     Kind kind_ = Kind::None;
     std::string capability_;
     std::string code_;
