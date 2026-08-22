@@ -279,8 +279,36 @@ reader and writer. It prevents a declaration from silently bypassing that
 decision. Local automatic variables and heap fields remain covered by the v3
 family audit and the engine range registry.
 
-The reviewed baseline is now 1,618 declarations. Its four-declaration delta is
-classified: `sMdkrMutationObserver` is a diagnostic-only allocator callback
+The reviewed baseline is now 1,646 declarations. Its twenty-nine-row delta is
+classified. `sRollbackModelMemoryPool` is a match-constant allocator handle
+written once in `allocate_object_pools` before registry freeze; its pointed-to
+model subpool descriptor and backing arena are registered authority and the
+host pointer itself must never be byte-registered. Fourteen `menu.c` rows
+(`sCharacterSelectCount`, the Wizpig/Terry select indices, unlock-banner
+timers, `sLastSyntheticUnlock`, and the six portrait texture/command/latch
+statics plus `gMenuPortraitWizpig`/`gMenuPortraitTerry`) are character-select
+presentation with no reader outside menu scenes; their only match-relevant
+product is the already-inventoried character arrays written before load.
+`sRacerFinishCameraExcludeLegacy` is a process-constant environment latch
+whose sole reader is the presentation-snapshot camera-exclusion seam. The
+three `sIdentityPredicate` code pointers (taj_physics, wizpig_visual,
+terry_visual) are set once at title boot to `mod_racer_live_identity` and are
+match-constant host handles. `s_roster` (replacing the removed `s_taj`) is
+read by the authored tick through the physics identity predicate; on native
+builds every write site is title/menu/adventure-scene or pre-freeze load
+work, so its simulation-read fields are match-constant and deliberately
+unregistered, but the wasm async-persistence callbacks can execute a queued
+erase mid-race and reset live bindings — an open defect that must be
+scene-gated before browser online GO. The wizpig_visual/terry_visual
+`sSelect`/`sSelectPoseTraced` rows are select-scene presentation and a trace
+latch; their `sLease`/`sSlots` rows are authored-tick-mutable spawn/animation
+sidecars for pool-resident actors and join the existing Playable-Taj sidecar
+open audit item: register, deterministically rebuild, or reject bonus
+identities at online admission before `GO`. Roster identity is not yet bound
+by the match manifest; online admission must close that gap.
+
+The prior 1,618/1,619 baseline's four-declaration delta remains classified:
+`sMdkrMutationObserver` is a diagnostic-only allocator callback
 that simulation never reads, and `sTransitionWorkspacePinned` is a stable
 allocation-policy latch whose pointed-to workspace and gameplay-readable state
 are registered. `sRollbackResimulating` is an execution-mode latch used only to

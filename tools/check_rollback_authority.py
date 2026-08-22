@@ -24,8 +24,8 @@ DECLARATION = re.compile(
     r"(?:char|short|int|long|float|double|[us](?:8|16|32|64)|"
     r"[A-Z][A-Za-z0-9_]*)\s+[\s*]*(?:g|s)[A-Za-z0-9_]+"
     r"(?:\s*\[[^;=]*\])?\s*(?:=|;)")
-EXPECTED_COUNT = 1619
-EXPECTED_DIGEST = "ecf1f6332b08b50c3ac6454bcb144632ec9c3375e0701d2575f0f4787c8d0dbe"
+EXPECTED_COUNT = 1646
+EXPECTED_DIGEST = "2e64b267bf38299ab360b948ff7c723bb2847b13fc2993ffe001d7fa3ff3726a"
 
 
 def _code_without_comments_or_literals(
