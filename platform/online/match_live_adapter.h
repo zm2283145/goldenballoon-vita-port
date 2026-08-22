@@ -19,14 +19,20 @@
 #ifndef MDKR_MATCH_LIVE_ADAPTER_H
 #define MDKR_MATCH_LIVE_ADAPTER_H
 
+#include "online/lobby_core.h"
 #include "online/lobby_fake_adapter.h"
 #include "online/lobby_view_model.h"
+#include "online/match_launch_builder.h"
+#include "online/match_peer_transport.h"
 #include "session/session_types.h"
 
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <memory>
+#include <string>
+#include <vector>
 
 /* ---- Neutral seam vocabulary -------------------------------------------- */
 
@@ -162,6 +168,111 @@ private:
     uint32_t scheduledToken_ = 0u;
     unsigned scheduledFrames_ = 0u;
 };
+
+/* ---- Live adapter: MatchRoom transport seam ----------------------------- *
+ *
+ * The launcher-side native client of the MatchRoom routes (create / join /
+ * code / state / command over same-origin HTTP, with the state subscription).
+ * The live adapter owns exactly one; tests inject a small in-process double
+ * driving the real lobby reducer, production injects the HTTP client. All calls
+ * are launcher-thread; the client copies observations into events drained by
+ * pump(), the same discipline the signal client and peer mesh use.
+ */
+struct MdkrOnlineRoomEvent {
+    enum class Type { Ready, State, CommandResult, Failure };
+    Type type = Type::Failure;
+    /* Ready: authenticated identity + delivered ICE servers + first snapshot. */
+    uint64_t localEndpointId = 0u;
+    std::string roomId;     /* 22-char base64url (production signal binding). */
+    std::string credential; /* 43-char base64url (production subprotocol). */
+    std::vector<MdkrMatchPeerIceServer> iceServers;
+    /* Ready / State: the authoritative lobby snapshot. */
+    MdkrOnlineLobby lobby{};
+    bool haveLobby = false;
+    /* CommandResult: the server's step for a submitted command. */
+    MdkrOnlineStep step{};
+    /* Failure: a pre-mapped stable launcher failure -- never a raw wire code. */
+    MdkrOnlineViewFailure failure = MDKR_ONLINE_VIEW_FAILURE_NONE;
+};
+
+class MdkrOnlineRoomTransport {
+public:
+    virtual ~MdkrOnlineRoomTransport() = default;
+    /* Exactly one of the begin* calls is made once, per the journey. */
+    virtual bool beginCreate(const MdkrOnlineCompatibilityV1 &compatibility,
+                             unsigned seatCount) = 0;
+    virtual bool beginJoin(const std::string &capability,
+                           const MdkrOnlineCompatibilityV1 &compatibility,
+                           unsigned seatCount) = 0;
+    virtual bool beginJoinByCode(const std::string &code,
+                                 const MdkrOnlineCompatibilityV1 &compatibility,
+                                 unsigned seatCount) = 0;
+    /* Submit one authenticated lobby command (async). */
+    virtual bool submitCommand(const MdkrOnlineCommand &command) = 0;
+    /* Drive I/O and drain events, oldest first, into `out` (cleared first). */
+    virtual void pump(std::vector<MdkrOnlineRoomEvent> &out) = 0;
+    virtual void close() = 0;
+};
+
+/* ---- Live adapter: peer-mesh signaling backend -------------------------- *
+ *
+ * Supplies the MdkrMatchPeerSignalFeed the peer mesh borrows, brought up at the
+ * Loading barrier once the authenticated identity is known. The backend OWNS
+ * the returned feed (and any signal client behind it) until reset(). Tests
+ * return a loopback-hub feed; production wraps a real MdkrMatchSignalClient.
+ */
+class MdkrOnlineMeshSignalBackend {
+public:
+    virtual ~MdkrOnlineMeshSignalBackend() = default;
+    virtual MdkrMatchPeerSignalFeed *beginSignaling(
+        uint64_t localEndpointId, uint32_t generation,
+        const std::string &roomId, const std::string &credential,
+        const std::vector<MdkrMatchPeerIceServer> &iceServers) = 0;
+    virtual void reset() = 0;
+};
+
+/* ---- Live adapter: construction options --------------------------------- */
+struct MdkrOnlineLiveAdapterOptions {
+    uint64_t sessionId = 0u;
+    MdkrOnlineCompatibilityV1 compatibility{};
+    MdkrOnlineJourney journey = MDKR_ONLINE_JOURNEY_CREATE;
+    unsigned localSeatCount = 1u;
+    std::string joinCapability; /* journey == JOIN via invite link */
+    std::string joinCode;       /* journey == JOIN via fallback code */
+    /* Retail-identity clamp input: what the LOCAL mod roster resolves for each
+     * local player slot. Read once, frozen at the Loading barrier. */
+    MdkrMatchLocalRosterV1 localRoster{};
+    bool raceAdmissionEnabled = false;
+    /* Launcher-local ROM verification result (the ROM_VERIFIED preflight flag).
+     * Never sourced from room/service data. */
+    bool romVerified = false;
+    uint8_t inputDelay = 2u; /* manifest input delay, <= 8 */
+    std::function<uint64_t()> nowMs; /* clock seam; empty -> steady clock */
+    /* Borrowed; both must outlive the adapter. */
+    MdkrOnlineRoomTransport *room = nullptr;
+    MdkrOnlineMeshSignalBackend *meshBackend = nullptr;
+};
+
+/* Validates options and returns the composed live adapter, or nullptr with
+ * *error set. Never touches the network at construction: the room transport
+ * begins on the first submit(CREATE_ROOM/JOIN_ROOM). */
+std::unique_ptr<IMdkrOnlineAdapter> mdkr_online_live_adapter_create(
+    const MdkrOnlineLiveAdapterOptions &options, std::string *error = nullptr);
+
+/* Test-only introspection of the live adapter's Loading-barrier launch build,
+ * so a test can prove the descriptor was built through the O-T5 clamp and
+ * installed without a second engine process. Returns false for a non-live
+ * adapter or before the build has run. */
+struct MdkrOnlineLiveLaunchProbe {
+    bool descriptorBuilt = false;
+    MdkrMatchLaunchRefusal refusal = MDKR_MATCH_LAUNCH_ADMITTED;
+    bool installed = false;
+    bool phraseConfirmed = false;
+    bool preflightReady = false;
+    MdkrMatchLaunchDescriptorV1 descriptor{};
+};
+bool mdkr_online_live_adapter_probe(const IMdkrOnlineAdapter *adapter,
+                                    MdkrOnlineLiveLaunchProbe *out);
 
 /* ---- Internal-test-token gate for the live adapter ---------------------- *
  *
