@@ -59,7 +59,7 @@
     packets: [], drops: 0,
     haptics: false, rumble: null,
   }));
-  const rtcConfig = Object.freeze({iceServers: [{
+  const fallbackRtcConfig = Object.freeze({iceServers: [{
     urls: "stun:stun.cloudflare.com:3478",
   }]});
   const maxPartyResponseBytes = 16 * 1024;
@@ -153,6 +153,49 @@
     const wanted = [...expected].sort();
     return keys.length === wanted.length &&
       keys.every((key, index) => key === wanted[index]);
+  }
+
+  // Server-delivered iceServers (services/party/src/turn.ts): strictly
+  // validated and rebuilt, urls always normalized to an array. Anything short
+  // of fully valid returns null and the caller behaves as if none were sent —
+  // connectivity config is best effort and must never fail the room create
+  // that carried it, so absence and malformation alike fall back to built-in
+  // STUN. Kept verbatim in sync with controller.js, where the controller-page
+  // unit tests pin it.
+  function normalizedIceServers(value) {
+    if (!Array.isArray(value) || value.length < 1 || value.length > 8) return null;
+    const validUrl = (url) => typeof url === "string" && url.length <= 256 &&
+      /^(stun|turn|turns):[!-~]+$/.test(url);
+    const validSecret = (secret) => typeof secret === "string" &&
+      secret.length >= 1 && secret.length <= 512;
+    const servers = [];
+    for (const entry of value) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+      const keys = Object.keys(entry).sort().join(",");
+      const credentialed = keys === "credential,urls,username";
+      if (!credentialed && keys !== "urls") return null;
+      const urls = Array.isArray(entry.urls) ? entry.urls : [entry.urls];
+      if (urls.length < 1 || urls.length > 8 || !urls.every(validUrl)) return null;
+      // Credentials are TURN-scoped: a credentialed entry must name only
+      // turn:/turns: urls, or the whole list is refused.
+      if (credentialed && !urls.every((url) => /^turns?:/i.test(url))) return null;
+      if (credentialed &&
+          (!validSecret(entry.username) || !validSecret(entry.credential))) {
+        return null;
+      }
+      servers.push(Object.freeze({urls: Object.freeze([...urls]),
+        ...(credentialed
+          ? {username: entry.username, credential: entry.credential} : {})}));
+    }
+    return Object.freeze(servers);
+  }
+
+  function rtcConfiguration() {
+    // Prefer the room's server-delivered iceServers (TURN credentials when
+    // the service minted them); their absence is the built-in STUN-only
+    // path, byte-identical to the pre-TURN behavior.
+    return room?.iceServers
+      ? {iceServers: room.iceServers} : fallbackRtcConfig;
   }
 
   async function readPartyJson(response) {
@@ -271,7 +314,12 @@
       "inviteGeneration", "inviteExpiresInMs", "controllerUrl"];
     const rotateKeys = ["fallbackCode", "inviteGeneration",
       "inviteExpiresInMs", "controllerUrl"];
-    if (!exactKeys(value, creating ? createKeys : rotateKeys) ||
+    // Creation may carry the room's iceServers; rotation never re-sends them.
+    const keysMatch = creating
+      ? exactKeys(value, createKeys) ||
+        exactKeys(value, [...createKeys, "iceServers"])
+      : exactKeys(value, rotateKeys);
+    if (!keysMatch ||
         !/^\d{6}$/.test(value.fallbackCode) ||
         !Number.isInteger(value.inviteGeneration) ||
         value.inviteGeneration < 1 || value.inviteGeneration > 0xffff_ffff ||
@@ -292,7 +340,9 @@
           !/^[A-Za-z0-9_-]{43}$/.test(capability) ||
           url.hash !== `#${capability}`) return null;
     } catch (_) { return null; }
-    return Object.freeze({...value});
+    const {iceServers: rawIceServers, ...invite} = value;
+    const iceServers = normalizedIceServers(rawIceServers);
+    return Object.freeze({...invite, ...(iceServers ? {iceServers} : {})});
   }
 
   function normalizedRevocation(value, expectedGeneration) {
@@ -537,7 +587,7 @@
     const controller = controllerById(controllerId);
     if (!controller || !["approved", "leased", "connected"].includes(controller.phase)) return;
     let pc;
-    try { pc = new RTCPeerConnection(rtcConfig); }
+    try { pc = new RTCPeerConnection(rtcConfiguration()); }
     catch (_) {
       announce("Could not open a direct phone connection. The phone can try again.");
       return;

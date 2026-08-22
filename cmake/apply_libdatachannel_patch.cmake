@@ -1,7 +1,5 @@
-if(NOT DEFINED SOURCE_DIR OR NOT DEFINED PATCH_FILE OR
-   NOT DEFINED DTLS_PATCH_FILE)
-    message(FATAL_ERROR
-        "SOURCE_DIR, PATCH_FILE and DTLS_PATCH_FILE are required")
+if(NOT DEFINED SOURCE_DIR OR NOT DEFINED PATCH_FILE)
+    message(FATAL_ERROR "SOURCE_DIR and PATCH_FILE are required")
 endif()
 
 set(WEBSOCKET_SOURCE "${SOURCE_DIR}/src/impl/websocket.cpp")
@@ -21,29 +19,12 @@ if(NOT WEBSOCKET_TEXT MATCHES "defined\\(_WIN32\\) && !USE_MBEDTLS")
     endif()
 endif()
 
-# The pinned release's Mbed TLS DTLS read callback reports the caller's whole
-# buffer capacity instead of the copied datagram length, which makes every
-# incoming handshake flight end in a fatal invalid-record parse; a browser's
-# very first ClientHello kills the connection. Fixed to report the copied
-# length; see cmake/patches/libdatachannel-mbedtls-dtls-read-length.patch.
-set(DTLS_SOURCE "${SOURCE_DIR}/src/impl/dtlstransport.cpp")
-if(NOT EXISTS "${DTLS_SOURCE}")
-    message(FATAL_ERROR "libdatachannel DTLS transport source is missing")
-endif()
-file(READ "${DTLS_SOURCE}" DTLS_TEXT)
-if(NOT DTLS_TEXT MATCHES "return int\\(bufMin\\)")
-    find_program(GIT_EXECUTABLE git REQUIRED)
-    execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --whitespace=nowarn "${DTLS_PATCH_FILE}"
-        WORKING_DIRECTORY "${SOURCE_DIR}"
-        RESULT_VARIABLE DTLS_PATCH_RESULT
-        ERROR_VARIABLE DTLS_PATCH_ERROR)
-    if(NOT DTLS_PATCH_RESULT EQUAL 0)
-        message(FATAL_ERROR
-            "Could not apply libdatachannel DTLS read-length patch: "
-            "${DTLS_PATCH_ERROR}")
-    endif()
-endif()
+# The Mbed TLS DTLS read callback must report the copied datagram length, not
+# the caller's whole buffer capacity, or every incoming handshake flight ends
+# in a fatal invalid-record parse. Upstream fixed this in v0.24.4 (our former
+# vendored read-length patch, retired at the v0.24.5 bump); the load-bearing
+# `return int(bufMin)` content check in cmake/datachannel.cmake still guards
+# it at configure time, so nothing is patched here anymore.
 
 set(PLOG_HEADER "${SOURCE_DIR}/deps/plog/include/plog/Log.h")
 if(NOT EXISTS "${PLOG_HEADER}")

@@ -11,6 +11,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 
 int main() {
     /* SAS v2 interoperability vectors. Expected words come from the web
@@ -333,6 +334,79 @@ int main() {
         roster["kept"].id = "kept";
         assert(mdkr_party_prune_signaled_ids(signaled, roster) == 2u);
         assert(signaled == std::set<std::string>{"kept"});
+    }
+
+    /* Server-delivered iceServers. The bootstrap may carry the room's
+     * iceServers -- STUN always, TURN credentials when the service minted
+     * them (services/party/src/turn.ts) -- and the transport prefers a fully
+     * valid list over its baked-in STUN. Absence and malformation alike
+     * resolve to exactly that baked-in fallback: connectivity config is best
+     * effort and must never fail the bootstrap that carried it. */
+    {
+        std::vector<MdkrPartyIceServer> servers;
+        assert(mdkr_party_ice_servers_for_test(
+            R"({"type":"native_bootstrap","iceServers":[)"
+            R"({"urls":"stun:stun.cloudflare.com:3478"},)"
+            R"({"urls":["turn:turn.cloudflare.com:3478?transport=udp",)"
+            R"("turns:turn.cloudflare.com:5349?transport=tcp"],)"
+            R"("username":"minted-user","credential":"minted-secret"}]})",
+            servers));
+        assert(servers.size() == 3u);
+        assert(servers[0].url == "stun:stun.cloudflare.com:3478");
+        assert(servers[0].username.empty() && servers[0].credential.empty());
+        assert(servers[1].url == "turn:turn.cloudflare.com:3478?transport=udp");
+        assert(servers[1].username == "minted-user");
+        assert(servers[1].credential == "minted-secret");
+        assert(servers[2].url == "turns:turn.cloudflare.com:5349?transport=tcp");
+        assert(servers[2].username == "minted-user");
+        assert(servers[2].credential == "minted-secret");
+    }
+    {
+        /* No iceServers field at all: exactly the baked-in STUN fallback. */
+        std::vector<MdkrPartyIceServer> servers;
+        assert(!mdkr_party_ice_servers_for_test(
+            R"({"type":"native_bootstrap"})", servers));
+        assert(servers.size() == 1u);
+        assert(servers[0].url == "stun:stun.cloudflare.com:3478");
+        assert(servers[0].username.empty() && servers[0].credential.empty());
+    }
+    for (const char *malformed : {
+             R"(not json)",
+             R"({"iceServers":"stun:stun.cloudflare.com:3478"})",
+             R"({"iceServers":[]})",
+             R"({"iceServers":[{"urls":7}]})",
+             R"({"iceServers":[{"urls":[]}]})",
+             R"({"iceServers":[{"urls":"http://stun.cloudflare.com:3478"}]})",
+             R"({"iceServers":[{"urls":"stun:stun.cloudflare.com 3478"}]})",
+             R"({"iceServers":[{"urls":["turn:turn.cloudflare.com:3478"],)"
+             R"("username":"user-without-credential"}]})",
+             R"({"iceServers":[{"urls":["turn:turn.cloudflare.com:3478"],)"
+             R"("username":7,"credential":"secret"}]})",
+             /* Credentials are TURN-scoped: a credentialed entry naming any
+              * stun url -- alone or mixed in -- refuses the whole list, the
+              * same rejection the page validators apply. */
+             R"({"iceServers":[{"urls":["stun:stun.cloudflare.com:3478"],)"
+             R"("username":"minted-user","credential":"minted-secret"}]})",
+             R"({"iceServers":[{"urls":["stun:stun.cloudflare.com:3478",)"
+             R"("turn:turn.cloudflare.com:3478?transport=udp"],)"
+             R"("username":"minted-user","credential":"minted-secret"}]})",
+         }) {
+        /* Malformed lists degrade to the same single fallback rather than
+         * failing the bootstrap or forwarding unvetted config into ICE. */
+        std::vector<MdkrPartyIceServer> servers;
+        assert(!mdkr_party_ice_servers_for_test(malformed, servers));
+        assert(servers.size() == 1u);
+        assert(servers[0].url == "stun:stun.cloudflare.com:3478");
+    }
+    {
+        /* An oversized URL refuses the whole list the same way. */
+        std::vector<MdkrPartyIceServer> servers;
+        assert(!mdkr_party_ice_servers_for_test(
+            std::string(R"({"iceServers":[{"urls":"stun:)") +
+                std::string(300u, 'a') + R"(:3478"}]})",
+            servers));
+        assert(servers.size() == 1u);
+        assert(servers[0].url == "stun:stun.cloudflare.com:3478");
     }
     return 0;
 }

@@ -10,9 +10,9 @@ include(FetchContent)
 set(MDKR_MBEDTLS_VERSION "3.6.7")
 set(MDKR_MBEDTLS_SHA256
     "a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6")
-set(MDKR_LIBDATACHANNEL_VERSION "0.24.3")
+set(MDKR_LIBDATACHANNEL_VERSION "0.24.5")
 set(MDKR_LIBDATACHANNEL_COMMIT
-    "c6696d157b5612df2a741d9a03b192b47ab6cefb")
+    "443f6934d9007eb7076ab7825ba330f355fcbead")
 set(MDKR_MOZILLA_CA_DATE "2026-07-16")
 set(MDKR_MOZILLA_CA_SHA256
     "3ff344e30b9b1ed2971044eabb438a08f2e2245ddb5f8ab1a3ad8b63ab4eaf91")
@@ -85,15 +85,15 @@ FetchContent_Declare(mdkr_libdatachannel
     PATCH_COMMAND "${CMAKE_COMMAND}"
       "-DSOURCE_DIR=<SOURCE_DIR>"
       "-DPATCH_FILE=${CMAKE_SOURCE_DIR}/cmake/patches/libdatachannel-windows-mbedtls-verify.patch"
-      "-DDTLS_PATCH_FILE=${CMAKE_SOURCE_DIR}/cmake/patches/libdatachannel-mbedtls-dtls-read-length.patch"
       -P "${CMAKE_SOURCE_DIR}/cmake/apply_libdatachannel_patch.cmake")
 FetchContent_MakeAvailable(mdkr_libdatachannel)
 
 # The DTLS read-length fix is load-bearing on every platform: without it the
 # Mbed TLS server side reports whole-buffer datagrams and no phone's first
-# DTLS flight can ever complete the handshake. A checkout that lost the patch
-# (for example a FETCHCONTENT_SOURCE_DIR override pointing at a pristine
-# clone, which skips PATCH_COMMAND) must fail configuration, not pairing.
+# DTLS flight can ever complete the handshake. Upstream fixed it in v0.24.4
+# (our former vendored patch, retired at the v0.24.5 bump), so this check now
+# pins the upstream fix: an upstream regression, or a FETCHCONTENT_SOURCE_DIR
+# override pointing at an older tree, must fail configuration, not pairing.
 file(READ "${mdkr_libdatachannel_SOURCE_DIR}/src/impl/dtlstransport.cpp"
     MDKR_LIBDATACHANNEL_DTLS_SOURCE)
 if(NOT MDKR_LIBDATACHANNEL_DTLS_SOURCE MATCHES "return int\\(bufMin\\)")

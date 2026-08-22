@@ -122,6 +122,11 @@ describe("Party Worker local workerd adapter", () => {
     expect(bootstrap.inviteExpiresInMs).toBeLessThanOrEqual(LIMITS.inviteTtlMs);
     expect(bootstrap.roomId).toMatch(/^[A-Za-z0-9_-]{22}$/);
     expect(bootstrap.hostCredential).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    /* Without TURN secrets the bootstrap still names the STUN servers: the
+     * native host prefers server-delivered iceServers over its baked-in one. */
+    expect(bootstrap.iceServers).toEqual([
+      {urls: "stun:stun.cloudflare.com:3478"},
+    ]);
     expect(state).toMatchObject({type: "room_state", phase: "open",
       transitionId: 1, controllers: []});
     expect(JSON.stringify(state)).not.toContain(bootstrap.hostCredential);
@@ -286,6 +291,12 @@ describe("Party Worker local workerd adapter", () => {
     const room = await created.json() as Record<string, string>;
     const capability = new URL(room.controllerUrl!).hash.slice(1);
     expect(capability).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    /* Absent TURN secrets degrade to STUN-only iceServers — present in every
+     * payload that hands a client its room, never an error. */
+    const stunOnly = [
+      {urls: "stun:stun.cloudflare.com:3478"},
+    ];
+    expect(room.iceServers).toEqual(stunOnly);
 
     const redeemed = await post("/api/controller/redeem", {
       capability, protocol: 2, name: "Test phone", controllerPublicKey,
@@ -293,6 +304,7 @@ describe("Party Worker local workerd adapter", () => {
     expect(redeemed.status).toBe(201);
     const controller = await redeemed.json() as Record<string, string>;
     expect(controller.hostPublicKey).toBe(hostPublicKey);
+    expect(controller.iceServers).toEqual(stunOnly);
     const approved = await post(
       `/api/party/${room.roomId}/approve`,
       {controllerId: controller.controllerId, seat: 2},
@@ -317,7 +329,7 @@ describe("Party Worker local workerd adapter", () => {
     });
     expect(codeRedeemed.status).toBe(201);
     expect(await codeRedeemed.json()).toMatchObject({roomId: room.roomId,
-      protocol: 2});
+      protocol: 2, iceServers: stunOnly});
   });
 
   it("refuses pairing protocol 1 with 409 protocol_update_required", async () => {

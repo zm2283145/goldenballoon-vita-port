@@ -7,7 +7,7 @@ import {INTERNAL_API_HEADER, INTERNAL_API_VERSION,
 export const BUDGET_OPERATIONS = [
   "matchCreate", "matchLinkJoin", "matchCodeJoin", "matchControl",
   "matchRotate", "matchSocket", "matchSignalSocket", "partyCreate", "partyLinkJoin",
-  "partyCodeJoin", "partyControl", "partyRotate", "partySocket",
+  "partyCodeJoin", "partyControl", "partyRotate", "partySocket", "turnMint",
 ] as const;
 export type BudgetOperation = typeof BUDGET_OPERATIONS[number];
 type StoredBudgetOperation = BudgetOperation | "legacy";
@@ -24,6 +24,8 @@ const BUDGET_OPERATION_SHAPE: Readonly<Record<BudgetOperation,
   partyLinkJoin: ["pairing", 2], partyCodeJoin: ["pairing", 3],
   partyControl: ["control", 2],
   partyRotate: ["control", 10], partySocket: ["control", 28],
+  /* Budget object + one external TURN credential mint (turn.ts). */
+  turnMint: ["control", 2],
 });
 
 interface Counters {

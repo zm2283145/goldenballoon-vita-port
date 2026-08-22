@@ -1,6 +1,7 @@
 import {DurableObject} from "cloudflare:workers";
 import {constantTimeEqual, json, readJson, utf8Exceeds} from "../security";
 import {rejectUnsupportedInternalApi} from "../internal-api";
+import {roomIceServers} from "../turn";
 import type {Env} from "../types";
 import {blankCompatibility, MATCH_LIMITS,
   MATCH_PROTOCOL_VERSION, type MatchCommandV1, type MatchCompatibilityV1,
@@ -219,7 +220,11 @@ export class MatchRoom extends DurableObject<Env> {
         controlLog: [], closedReason: null};
       await this.save(record);
       await this.ctx.storage.setAlarm(record.expiresAt);
-      return json(publicRoom(record), 201);
+      /* iceServers ride the create/join payloads and the connect welcome,
+       * symmetric with PartyRoom. TURN is minted and cached by turn.ts;
+       * every failure degrades to STUN-only, never a refused response. */
+      return json({...publicRoom(record),
+        iceServers: await roomIceServers(this.env, this.ctx.storage)}, 201);
     }
     const record = await this.record();
     if (!record) return json({error: "not_found"}, 404);
@@ -264,7 +269,9 @@ export class MatchRoom extends DurableObject<Env> {
       appendControl(record, result);
       await this.save(record);
       this.broadcast(record);
-      return json({endpointId: input.endpointId, ...publicRoom(record)}, 201);
+      return json({endpointId: input.endpointId,
+        iceServers: await roomIceServers(this.env, this.ctx.storage),
+        ...publicRoom(record)}, 201);
     }
     if (url.pathname === "/connect") return this.upgradeState(request, record);
     if (url.pathname === "/signal") return this.upgradeSignal(request, record);
@@ -339,6 +346,10 @@ export class MatchRoom extends DurableObject<Env> {
     }
     const credential = this.credential(request, record);
     if (!credential) return json({error: "unauthorized"}, 401);
+    /* Resolved before the upgrade is accepted so a slow mint can never leave
+     * an accepted socket waiting on its welcome. Cache-backed: reconnects
+     * inside one TTL window cost no further mint. */
+    const iceServers = await roomIceServers(this.env, this.ctx.storage);
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
@@ -352,7 +363,8 @@ export class MatchRoom extends DurableObject<Env> {
       closeSocket(server, 1011, "state_socket_setup_failed");
       return json({error: "service_unavailable"}, 503);
     }
-    if (!deliverMatchSocketText(server, JSON.stringify(publicRoom(record)),
+    if (!deliverMatchSocketText(server,
+      JSON.stringify({...publicRoom(record), iceServers}),
       "state_delivery_failed")) {
       /* The server endpoint is already accepted; answer the negotiated upgrade
        * and let the client observe the typed close/reconnect instead of trying
