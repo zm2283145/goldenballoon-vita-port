@@ -27,7 +27,7 @@
   if (testConfig?.exposeInternals) {
     globalThis.__mdkrControllerInternals = Object.freeze({
       trustedControllerLocation, pairingCryptoAvailable, lanControllerMode,
-      lanRedeemFrame,
+      lanRedeemFrame, normalizedIceServers, normalizedControllerInfo,
     });
     return;
   }
@@ -214,15 +214,47 @@
     }
   }
 
+  // Server-delivered iceServers (services/party/src/turn.ts): strictly
+  // validated and rebuilt, urls always normalized to an array. Anything short
+  // of fully valid returns null and the caller behaves as if none were sent —
+  // connectivity config is best effort and must never fail the pairing that
+  // carried it, so absence and malformation alike fall back to built-in STUN.
+  function normalizedIceServers(value) {
+    if (!Array.isArray(value) || value.length < 1 || value.length > 8) return null;
+    const validUrl = (url) => typeof url === "string" && url.length <= 256 &&
+      /^(stun|turn|turns):[!-~]+$/.test(url);
+    const validSecret = (secret) => typeof secret === "string" &&
+      secret.length >= 1 && secret.length <= 512;
+    const servers = [];
+    for (const entry of value) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+      const keys = Object.keys(entry).sort().join(",");
+      const credentialed = keys === "credential,urls,username";
+      if (!credentialed && keys !== "urls") return null;
+      const urls = Array.isArray(entry.urls) ? entry.urls : [entry.urls];
+      if (urls.length < 1 || urls.length > 8 || !urls.every(validUrl)) return null;
+      if (credentialed &&
+          (!validSecret(entry.username) || !validSecret(entry.credential))) {
+        return null;
+      }
+      servers.push(Object.freeze({urls: Object.freeze([...urls]),
+        ...(credentialed
+          ? {username: entry.username, credential: entry.credential} : {})}));
+    }
+    return Object.freeze(servers);
+  }
+
   function normalizedControllerInfo(value) {
     const keys = ["controllerId", "credential", "roomId", "protocol",
       "hostPublicKey"];
-    if (!exactKeys(value, keys) ||
+    if (!(exactKeys(value, keys) || exactKeys(value, [...keys, "iceServers"])) ||
         !/^[A-Za-z0-9_-]{22}$/.test(value.controllerId) ||
         !/^[A-Za-z0-9_-]{43}$/.test(value.credential) ||
         !/^[A-Za-z0-9_-]{22}$/.test(value.roomId) || value.protocol !== 2 ||
         !/^[A-Za-z0-9_-]{87}$/.test(value.hostPublicKey)) return null;
-    return Object.freeze({...value});
+    const {iceServers: rawIceServers, ...info} = value;
+    const iceServers = normalizedIceServers(rawIceServers);
+    return Object.freeze({...info, ...(iceServers ? {iceServers} : {})});
   }
 
   function consumeFragment() {
@@ -848,9 +880,14 @@
         controlChannel = null;
         currentPeerGeneration = offeredGeneration;
         try {
-          connection = new RTCPeerConnection({iceServers: [{
-            urls: "stun:stun.cloudflare.com:3478",
-          }]});
+          // Prefer the room's server-delivered iceServers (TURN credentials
+          // when the service minted them); their absence is the built-in
+          // STUN-only path, byte-identical to the pre-TURN behavior.
+          connection = new RTCPeerConnection({
+            iceServers: controllerInfo.iceServers || [{
+              urls: "stun:stun.cloudflare.com:3478",
+            }],
+          });
         } catch (_) {
           reconnect(1);
           announce("Could not open a direct controller connection. Trying again.");
