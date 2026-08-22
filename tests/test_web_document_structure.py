@@ -269,7 +269,12 @@ def main() -> int:
             "[expectedGeneration, value.inviteGeneration]" in party_host and
             "const invalidatesDisplayedInvite = inviteActive" in party_host and
             "publishedInviteGeneration !== priorInviteGeneration" in party_host and
-            "function clearInvitePresentation(expired, announceExpiry = false)" in
+            # Matched as a prefix (through the recovery-relevant params) rather
+            # than a closed signature so an added trailing arg -- keepOverlay,
+            # which keeps an enlarged QR live across an auto-rotation -- does not
+            # break this structural pin, the same tolerance the close-reason set
+            # below uses.
+            "function clearInvitePresentation(expired, announceExpiry = false" in
             party_host and
             "const pendingRevocation = inviteRevocation" in party_host and
             "canvas.width = 1" in party_host and
