@@ -950,6 +950,55 @@ if(NOT EMSCRIPTEN)
                 # a genuine hang instead of stalling the suite.
                 set_tests_properties(match_signal_client PROPERTIES TIMEOUT 120)
 
+                # O-T2 online multiplayer: the launcher-owned WebRTC peer
+                # mesh (platform/online/match_peer_transport.cpp) over REAL
+                # libdatachannel DTLS on loopback, with the signaling relay
+                # faked in-process through the MdkrMatchPeerSignalFeed seam.
+                # Lives here (not cmake/tests.cmake) because it needs
+                # libdatachannel + nlohmann + MbedTLS, which are only
+                # configured inside this MDKR_NATIVE_PHONE_PARTY block.
+                # ROM-, GPU- and network-free.
+                add_executable(mdkr_match_peer_transport_test
+                    ${CMAKE_SOURCE_DIR}/tests/test_match_peer_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_peer_crypto.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
+                    ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+                    ${CMAKE_SOURCE_DIR}/platform/sha256.c
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_retry_policy.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_webrtc_signaling.cpp)
+                target_include_directories(mdkr_match_peer_transport_test PRIVATE
+                    ${CMAKE_SOURCE_DIR}
+                    ${CMAKE_SOURCE_DIR}/platform
+                    ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}
+                    ${MDKR_PARTY_GENERATED_INCLUDE})
+                target_include_directories(mdkr_match_peer_transport_test
+                    SYSTEM PRIVATE
+                    ${mdkr_libdatachannel_SOURCE_DIR}/include)
+                target_compile_features(mdkr_match_peer_transport_test PRIVATE
+                    cxx_std_17)
+                target_link_libraries(mdkr_match_peer_transport_test PRIVATE
+                    LibDataChannel::LibDataChannel MbedTLS::MbedTLS
+                    Threads::Threads)
+                if(WIN32)
+                    target_link_libraries(mdkr_match_peer_transport_test PRIVATE
+                        ws2_32)
+                endif()
+                if(MSVC)
+                    target_compile_options(mdkr_match_peer_transport_test PRIVATE
+                        /W4 /WX)
+                else()
+                    target_compile_options(mdkr_match_peer_transport_test PRIVATE
+                        -Wall -Wextra -Wpedantic -Werror)
+                endif()
+                add_test(NAME match_peer_transport
+                    COMMAND mdkr_match_peer_transport_test)
+                # Real loopback DTLS handshakes for a 3-endpoint mesh plus
+                # restart recovery; internal waits are bounded, so this
+                # timeout backstops a genuine hang only.
+                set_tests_properties(match_peer_transport PROPERTIES TIMEOUT 180)
+
                 # End-to-end lane driver: the real WSS/WebRTC transport under
                 # the real host model, narrated on stdout. Deliberately no
                 # add_test() — it needs a live local Party Worker and a paired
