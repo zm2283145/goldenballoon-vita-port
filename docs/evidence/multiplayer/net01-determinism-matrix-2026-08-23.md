@@ -8,9 +8,8 @@ matrix now proves and where that boundary sits.
 
 ## Provenance
 
-- Commit: `3261f6c` on branch `campaign-w2` (working tree dirty: this change set —
-  the matrix test, the additive O-T6 race seam, `net_impairment` wiring and this
-  note).
+- Commit: `5445381` on branch `campaign-w2` (the matrix test, the additive O-T6
+  race seam, `net_impairment` wiring and this note).
 - Build: CMake preset `rel` → `build-rel/`, Apple clang 21.0.0, `-Wall -Wextra
   -Wpedantic -Werror`, full build clean.
 - Protocol / gameplay ids: `MDKR_ONLINE_PROTOCOL_VERSION = 1`; rollback window
@@ -93,9 +92,12 @@ Verbatim per-profile narration (`[MATRIX]` lines, `build-rel`):
 
 The four convergent profiles fold the identical hash `e56bb71e8dadd9e1` — the
 same content regardless of carrier, because impairment only reorders/delays the
-timing of genuine frames. The two recovery profiles latch INPUT_GAP with a
-pre-fault prefix that is still byte-identical between endpoints, then unwind
-typed rather than desyncing silently.
+timing of genuine frames. Both recovery profiles latch INPUT_GAP on an
+identical pre-fault prefix, then unwind typed rather than desyncing silently.
+(The two-second-outage row folds identical hashes up to the fault; the
+adversarial row's endpoints break at different fold counts, so its final
+hashA/hashB differ — the divergence is where each stopped, not a content
+disagreement, and the test never asserts adversarial hash equality.)
 
 ### Key assertions (verbatim, `tests/test_online_live_adapter.cpp`)
 
