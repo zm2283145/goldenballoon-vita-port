@@ -142,11 +142,18 @@ def run(args: argparse.Namespace) -> None:
                 "pending approval", args.timeout)
             # v2 ritual: the phrase binds the direct channel, so a pending
             # phone shows the placeholder and Approve is NOT phrase-gated.
+            # F14: the copy mirrors the native pending card (ui_phone_party.cpp
+            # drawPending) — same order sentence, same button label.
             require("Sam’s phone" in pending["text"] and
-                    "Phrase appears when the phone connects." in pending["text"] and
+                    "Pick a slot and approve. The pairing phrase to compare "
+                    "appears after the phone connects." in pending["text"] and
                     pending["approveDisabled"] is False and
                     pending["seat"] == "2",
                     f"identity/placeholder absent from approval: {pending}")
+            approve_label = cdp.evaluate(
+                "document.querySelector('#party-pending-list .btn-primary').textContent")
+            require(approve_label == "Approve This Phone",
+                    f"approve label diverged from the native host: {approve_label!r}")
             cdp.evaluate("document.querySelector('#party-pending-list .btn-primary').click()")
             wait_value(cdp,
                 "globalThis.__mdkrPartyHostTestState.requests.some(p=>p.endsWith('/approve'))",
@@ -168,8 +175,57 @@ def run(args: argparse.Namespace) -> None:
               startDisabled: document.getElementById('party-start').disabled
             }))()""", lambda value: isinstance(value, dict) and value.get("ready") == "true",
                 "approved seat", args.timeout)
-            require(not seat["startDisabled"] and seat["label"] == "Phone reconnecting — neutral",
+            # F2: this lease has never reached Connected, so its tile says
+            # connecting — never "reconnecting", which promises a recovery of
+            # something that never existed.
+            require(not seat["startDisabled"] and seat["label"] == "Phone connecting…",
                     f"approved controller did not enable start: {seat}")
+
+            # F14: with all four slots taken, the pending card names the fix
+            # instead of a silently disabled Approve (mirrors the native host).
+            cdp.evaluate("""globalThis.MDKRPartyHost.applyRoomState({
+              type:'room_state', transitionId:4, controllers:[
+                {controllerId:'phone-one', name:'Sam’s phone', phase:'leased',
+                 seat:2, leaseGeneration:1, connectionSequence:1},
+                {controllerId:'phone-two', name:'B', phase:'approved', seat:1,
+                 leaseGeneration:1, connectionSequence:1},
+                {controllerId:'phone-three', name:'C', phase:'approved', seat:3,
+                 leaseGeneration:1, connectionSequence:1},
+                {controllerId:'phone-four', name:'D', phase:'approved', seat:4,
+                 leaseGeneration:1, connectionSequence:1},
+                {controllerId:'phone-five', name:'Late phone', phase:'pending',
+                 seat:null, leaseGeneration:0, connectionSequence:1}
+              ]});""")
+            slots_full = wait_value(cdp, """(() => ({
+              text: document.getElementById('party-pending-list').textContent,
+              approveDisabled: document.querySelector(
+                '#party-pending-list .btn-primary')?.disabled,
+              seatChoice: document.querySelector('#party-pending-list select')?.value
+            }))()""", lambda value: isinstance(value, dict) and
+                "Late phone" in str(value.get("text")), "full-slot pending card",
+                args.timeout)
+            require(slots_full["approveDisabled"] is True and
+                    not slots_full["seatChoice"] and
+                    "All four controller slots are taken. Remove a connected "
+                    "phone below to free one." in slots_full["text"],
+                    f"full slots did not name the fix: {slots_full}")
+
+            # F2 flow pin: only after the room has said Connected may a later
+            # neutral lease read as reconnecting.
+            cdp.evaluate("""globalThis.MDKRPartyHost.applyRoomState({
+              type:'room_state', transitionId:5, controllers:[{
+                controllerId:'phone-one', name:'Sam’s phone',
+                phase:'connected', seat:2, leaseGeneration:1, connectionSequence:1
+              }]});""")
+            cdp.evaluate("""globalThis.MDKRPartyHost.applyRoomState({
+              type:'room_state', transitionId:6, controllers:[{
+                controllerId:'phone-one', name:'Sam’s phone',
+                phase:'leased', seat:2, leaseGeneration:1, connectionSequence:1
+              }]});""")
+            wait_value(cdp,
+                "document.querySelector('[data-seat=\\\"2\\\"] small').textContent",
+                lambda value: value == "Phone reconnecting — neutral",
+                "dropped lease reads as reconnecting", args.timeout)
 
             cdp.evaluate("""(() => {
               globalThis.__partyQrEncode = qrcodegen.QrCode.encodeText;

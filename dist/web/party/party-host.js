@@ -50,6 +50,12 @@
   let removeReturnFocus = null;
   let removeControllerId = "";
   const pairingPhrases = new Map();
+  // F1 session-alive names: a phone's controller_rename over its live control
+  // channel overrides the redeem-time name the room state still carries.
+  const controllerNames = new Map();
+  // F2: leases that have EVER been connected (room state or a live peer).
+  // Only these may read as "reconnecting"; the rest are still connecting.
+  const everConnectedIds = new Set();
   const peers = new Map();
   const pageBoundRequests = new Set();
   let peerGeneration = 0;
@@ -153,6 +159,22 @@
     const wanted = [...expected].sort();
     return keys.length === wanted.length &&
       keys.every((key, index) => key === wanted[index]);
+  }
+
+  // The one name validator: the exact bounds the worker's normalizeName
+  // enforces at redemption (NFC, trimmed, 24 code points, none of the
+  // control/zero-width/bidi set), applied as refusal. Used for room-state
+  // names AND for a phone's live controller_rename.
+  function validControllerName(value) {
+    return typeof value === "string" &&
+      value.normalize("NFC") === value && value.trim() === value &&
+      [...value].length <= 24 &&
+      !/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/
+        .test(value);
+  }
+
+  function controllerDisplayName(controller) {
+    return controllerNames.get(controller.controllerId) ?? controller.name;
   }
 
   // Server-delivered iceServers (services/party/src/turn.ts): strictly
@@ -482,6 +504,7 @@
 
   function markPeerConnected(controller, connected) {
     if (!controller?.seat) return;
+    if (connected) everConnectedIds.add(controller.controllerId);
     const pad = remotePads[controller.seat - 1];
     pad.reserved = true;
     pad.active = connected;
@@ -677,6 +700,15 @@
           control.send(JSON.stringify({type: "controller_ready_ack"}));
         } else if (message.type === "input_test") {
           control.send(JSON.stringify({type: "input_test_ack", nonce: message.nonce}));
+        } else if (message.type === "controller_rename" && message.protocol === 1 &&
+                   peer.authenticated && validControllerName(message.name)) {
+          // F1: a phone may relabel its own seat row over its authenticated
+          // channel, under the exact redeem-time name bounds — refused, not
+          // repaired, otherwise.
+          if (controllerNames.get(controllerId) !== message.name) {
+            controllerNames.set(controllerId, message.name);
+            if (room) renderRoomState({...room, transitionId: room.transitionId});
+          }
         } else if (message.type === "pong" && message.protocol === 1 &&
                    Number.isInteger(message.nonce) &&
                    message.nonce === peer.pingNonce) {
@@ -811,6 +843,14 @@
       select.append(option);
       candidates.push(option);
     }
+    if (!candidates.length) {
+      // F14: the native combo previews "No free phone slot" here; value stays
+      // empty so Approve remains disabled.
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No free phone slot";
+      select.append(option);
+    }
     const recommended = candidates.find((option) => option.dataset.free === "true");
     if (recommended) recommended.selected = true;
     label.append(select);
@@ -883,12 +923,7 @@
       if (!exactKeys(controller, controllerKeys) ||
           !/^[A-Za-z0-9_-]{22}$/.test(controller.controllerId) ||
           ids.has(controller.controllerId) ||
-          typeof controller.name !== "string" ||
-          controller.name.normalize("NFC") !== controller.name ||
-          controller.name.trim() !== controller.name ||
-          [...controller.name].length > 24 ||
-          /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/
-            .test(controller.name) ||
+          !validControllerName(controller.name) ||
           !/^[A-Za-z0-9_-]{87}$/.test(controller.controllerPublicKey) ||
           !controllerPhases.has(controller.phase) ||
           !Number.isInteger(controller.leaseGeneration) ||
@@ -959,6 +994,13 @@
       }
     }
     syncRemoteReservations(controllers);
+    for (const controller of controllers) {
+      // F2: the room saying Connected is connection history too — this host
+      // page may have joined (or reloaded) after the phone first connected.
+      if (controller.phase === "connected") {
+        everConnectedIds.add(controller.controllerId);
+      }
+    }
     const pending = controllers.filter((controller) => controller.phase === "pending");
     const pendingList = $("party-pending-list");
     pendingList.replaceChildren();
@@ -971,15 +1013,25 @@
       const item = document.createElement("li");
       const copy = document.createElement("span");
       const name = document.createElement("strong");
-      name.textContent = controller.name || "Phone controller";
+      name.textContent = controllerDisplayName(controller) || "Phone controller";
       const phrase = document.createElement("small");
-      phrase.textContent = "Phrase appears when the phone connects.";
+      // F14: mirrors the native pending card (ui_phone_party.cpp drawPending).
+      phrase.textContent = "Pick a slot and approve. The pairing phrase to " +
+        "compare appears after the phone connects.";
       copy.append(name, phrase);
       const picker = seatPicker(controllers);
+      if (!picker.select.value) {
+        // F14: a disabled Approve with no reason is a dead end — name the
+        // fix, in the native host's exact words.
+        const full = document.createElement("small");
+        full.textContent = "All four controller slots are taken. Remove a " +
+          "connected phone below to free one.";
+        copy.append(full);
+      }
       item.append(copy,
         picker.label,
-        button("Approve", "btn btn-primary", "approve", controller.controllerId,
-          !picker.select.value,
+        button("Approve This Phone", "btn btn-primary", "approve",
+          controller.controllerId, !picker.select.value,
           () => ({seat: Number(picker.select.value)})),
         button("Decline", "btn btn-ghost", "reject", controller.controllerId));
       pendingList.append(item);
@@ -992,22 +1044,28 @@
       const controller = phoneAtSeat(controllers, seat);
       const source = controller ? null : sources[seat - 1];
       tile.dataset.ready = controller || source ? "true" : "false";
-      tile.querySelector("strong").textContent = controller?.name || `Controller ${seat}`;
+      tile.querySelector("strong").textContent =
+        (controller && controllerDisplayName(controller)) || `Controller ${seat}`;
       const seatPhrase = controller &&
         pairingPhrases.get(controller.controllerId);
+      // F2: a lease that has never reached Connected is connecting, not
+      // reconnecting — "reconnecting" promises a recovery of something that
+      // never existed. Mirrors the native seat row (ui_phone_party.cpp).
       tile.querySelector("small").textContent = controller
         ? (remotePads[seat - 1].active
           ? (seatPhrase
             ? `Phone connected — compare on both screens: ${seatPhrase}`
             : "Phone connected")
-          : "Phone reconnecting — neutral")
+          : (everConnectedIds.has(controller.controllerId)
+            ? "Phone reconnecting — neutral" : "Phone connecting…"))
         : (source || "Available");
       const remove = tile.querySelector(".party-seat-remove");
       remove.hidden = !controller;
       remove.disabled = false;
       remove.onclick = controller ? () => confirmRemove(controller, remove) : null;
       remove.setAttribute("aria-label", controller
-        ? `Remove ${controller.name || "phone controller"} from Controller ${seat}`
+        ? `Remove ${controllerDisplayName(controller) || "phone controller"} ` +
+          `from Controller ${seat}`
         : `No phone assigned to Controller ${seat}`);
       if (controller || source) ready++;
     }
@@ -1019,6 +1077,12 @@
     const liveIds = new Set(controllers.map((controller) => controller.controllerId));
     for (const controllerId of peers.keys()) {
       if (!liveIds.has(controllerId)) retirePeer(controllerId, true);
+    }
+    for (const controllerId of [...controllerNames.keys()]) {
+      if (!liveIds.has(controllerId)) controllerNames.delete(controllerId);
+    }
+    for (const controllerId of [...everConnectedIds]) {
+      if (!liveIds.has(controllerId)) everConnectedIds.delete(controllerId);
     }
     for (const controller of controllers) void ensurePeer(controller.controllerId);
   }
@@ -1091,6 +1155,8 @@
     resetRemotePads();
     signaledControllers.clear();
     pairingPhrases.clear();
+    controllerNames.clear();
+    everConnectedIds.clear();
     hostIdentity = null;
     setOverlayOpen(false);
     const expired = reason === "room_expired";
@@ -1246,8 +1312,11 @@
         "Phone declined.");
     } catch (error) {
       if (source?.isConnected) source.disabled = false;
+      // F14: the worker's typed room_full mirrors the native host's copy
+      // (native_party_host.cpp typedCommandErrorCopy); the pending card
+      // itself carries the actionable full-slots guidance.
       announce(error?.message === "room_full"
-        ? "All four phone controller seats are in use. Decline or remove a phone first."
+        ? "No free phone slot."
         : "That controller action did not complete. Try again.");
     }
   }
@@ -1340,6 +1409,8 @@
     resetRemotePads();
     signaledControllers.clear();
     pairingPhrases.clear();
+    controllerNames.clear();
+    everConnectedIds.clear();
     hostIdentity = null;
     if (ending) {
       void request(`/api/party/${ending.roomId}/close`, {
@@ -1362,7 +1433,7 @@
     removeControllerId = controller.controllerId;
     removeReturnFocus = source;
     $("party-remove-copy").textContent =
-      `${controller.name || "This phone"} will stop controlling Controller ` +
+      `${controllerDisplayName(controller) || "This phone"} will stop controlling Controller ` +
       `${controller.seat}. Its input becomes neutral and the seat becomes available.`;
     removeDialog.showModal();
     requestAnimationFrame(() => $("party-remove-cancel").focus());
