@@ -4,8 +4,10 @@ import {internalRequest} from "./internal-api";
 /**
  * Zero-cost TURN (Cloudflare Realtime) with STUN-only degradation.
  *
- * Doctrine: iceServers are connectivity hints, never authority. The two fixed
- * STUN servers are always served; TURN credentials are appended only when the
+ * Doctrine: iceServers are connectivity hints, never authority. The one
+ * fixed STUN server is always served — Cloudflare only, matching the
+ * clients' baked-in fallback and disclosing traffic to no third party —
+ * and TURN credentials are appended only when the
  * owner has provisioned BOTH secrets and a mint succeeds. Every failure —
  * unprovisioned secrets, budget refusal, provider outage, malformed response —
  * degrades to the best still-valid answer (cached credentials, then
@@ -43,7 +45,7 @@ export interface TurnIceServer {
 }
 
 /** What a response's iceServers array holds: the fixed single-url STUN
- * entries plus any minted TURN entries. */
+ * entry plus any minted TURN entries. */
 export type DeliveredIceServer = {urls: string} | TurnIceServer;
 
 interface StoredTurnServers {
@@ -60,7 +62,6 @@ export interface TurnSeams {
 export function stunIceServers(): DeliveredIceServer[] {
   return [
     {urls: "stun:stun.cloudflare.com:3478"},
-    {urls: "stun:stun.l.google.com:19302"},
   ];
 }
 

@@ -13,7 +13,6 @@ const turnEnv: Env = {...bindings,
 
 const stunEntries = [
   {urls: "stun:stun.cloudflare.com:3478"},
-  {urls: "stun:stun.l.google.com:19302"},
 ];
 
 /* The documented Cloudflare Realtime response: one uncredentialed STUN entry
@@ -57,7 +56,7 @@ function scratchStorage<T>(name: string,
 }
 
 describe("zero-cost TURN credential minting", () => {
-  it("always serves the two fixed STUN servers", () => {
+  it("always serves the fixed Cloudflare STUN server, and only that one", () => {
     expect(stunIceServers()).toEqual(stunEntries);
   });
 

@@ -117,7 +117,6 @@ describe("MatchRoom local Durable Object adapter", () => {
      * iceServers, STUN-only while no TURN secrets are provisioned. */
     const stunOnly = [
       {urls: "stun:stun.cloudflare.com:3478"},
-      {urls: "stun:stun.l.google.com:19302"},
     ];
     expect(host.iceServers).toEqual(stunOnly);
     const joined = await post("/api/match/code", {code: host.fallbackCode,
@@ -161,8 +160,7 @@ describe("MatchRoom local Durable Object adapter", () => {
      * transport that lost its join payload can still configure ICE. */
     expect(await initialMessage).toMatchObject({type: "match_state",
       lobby: {revision: host.lobby.revision},
-      iceServers: [{urls: "stun:stun.cloudflare.com:3478"},
-        {urls: "stun:stun.l.google.com:19302"}]});
+      iceServers: [{urls: "stun:stun.cloudflare.com:3478"}]});
     const bindings = env as unknown as Env;
     const stub = bindings.MATCH_ROOMS.get(bindings.MATCH_ROOMS.idFromName(host.roomId));
     await evictDurableObject(stub, {webSockets: "hibernate"});

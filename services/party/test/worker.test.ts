@@ -126,7 +126,6 @@ describe("Party Worker local workerd adapter", () => {
      * native host prefers server-delivered iceServers over its baked-in one. */
     expect(bootstrap.iceServers).toEqual([
       {urls: "stun:stun.cloudflare.com:3478"},
-      {urls: "stun:stun.l.google.com:19302"},
     ]);
     expect(state).toMatchObject({type: "room_state", phase: "open",
       transitionId: 1, controllers: []});
@@ -296,7 +295,6 @@ describe("Party Worker local workerd adapter", () => {
      * payload that hands a client its room, never an error. */
     const stunOnly = [
       {urls: "stun:stun.cloudflare.com:3478"},
-      {urls: "stun:stun.l.google.com:19302"},
     ];
     expect(room.iceServers).toEqual(stunOnly);
 

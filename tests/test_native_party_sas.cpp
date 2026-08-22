@@ -347,21 +347,19 @@ int main() {
         assert(mdkr_party_ice_servers_for_test(
             R"({"type":"native_bootstrap","iceServers":[)"
             R"({"urls":"stun:stun.cloudflare.com:3478"},)"
-            R"({"urls":"stun:stun.l.google.com:19302"},)"
             R"({"urls":["turn:turn.cloudflare.com:3478?transport=udp",)"
             R"("turns:turn.cloudflare.com:5349?transport=tcp"],)"
             R"("username":"minted-user","credential":"minted-secret"}]})",
             servers));
-        assert(servers.size() == 4u);
+        assert(servers.size() == 3u);
         assert(servers[0].url == "stun:stun.cloudflare.com:3478");
         assert(servers[0].username.empty() && servers[0].credential.empty());
-        assert(servers[1].url == "stun:stun.l.google.com:19302");
-        assert(servers[2].url == "turn:turn.cloudflare.com:3478?transport=udp");
+        assert(servers[1].url == "turn:turn.cloudflare.com:3478?transport=udp");
+        assert(servers[1].username == "minted-user");
+        assert(servers[1].credential == "minted-secret");
+        assert(servers[2].url == "turns:turn.cloudflare.com:5349?transport=tcp");
         assert(servers[2].username == "minted-user");
         assert(servers[2].credential == "minted-secret");
-        assert(servers[3].url == "turns:turn.cloudflare.com:5349?transport=tcp");
-        assert(servers[3].username == "minted-user");
-        assert(servers[3].credential == "minted-secret");
     }
     {
         /* No iceServers field at all: exactly the baked-in STUN fallback. */
