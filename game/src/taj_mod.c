@@ -40,8 +40,22 @@ typedef struct ModRacerRuntimeState {
     int test_async_persistence;
 #endif
     int racer_bindings_active;
+    /* D1 scene gate. A persistence outcome that lands while racer bindings
+     * are live is recorded here and applied by taj_mod_service_deferred() at
+     * the next menu-scene transition, so a bound bonus racer can never flip
+     * to retail physics between two authored ticks. Only the asynchronous
+     * (browser) backend can populate these: the synchronous native path never
+     * sets pending_store, so its callbacks return before recording. */
+    int deferred_report_kind;
+    unsigned int deferred_report_generation;
     int booted;
 } ModRacerRuntimeState;
+
+enum {
+    TAJ_MOD_DEFERRED_NONE = 0,
+    TAJ_MOD_DEFERRED_SUCCESS,
+    TAJ_MOD_DEFERRED_FAILURE
+};
 
 static ModRacerRuntimeState s_roster;
 
@@ -342,7 +356,32 @@ void taj_mod_boot(const TajModStateStorage *storage) {
     s_roster.booted = 1;
 }
 
-void taj_mod_on_title_return(void) { taj_mod_reset_player_selections(); }
+void taj_mod_on_title_return(void) {
+    taj_mod_reset_player_selections();
+    taj_mod_service_deferred();
+}
+
+void taj_mod_service_deferred(void) {
+    int kind = s_roster.deferred_report_kind;
+    unsigned int generation = s_roster.deferred_report_generation;
+    /* "Race active" is the existing racer-bindings window this file already
+     * owns: taj_mod_begin_racer_bindings() opens it at level load and the
+     * menu-scene selection resets close it, which is exactly the span where
+     * s_roster's sim-read fields must stay match-constant. Every caller of
+     * this service point sits after such a reset. */
+    if (kind == TAJ_MOD_DEFERRED_NONE || s_roster.racer_bindings_active) {
+        return;
+    }
+    s_roster.deferred_report_kind = TAJ_MOD_DEFERRED_NONE;
+    s_roster.deferred_report_generation = 0;
+    /* Replay the recorded outcome now that no live racer reads the roster.
+     * The stale-generation guard inside each report still applies. */
+    if (kind == TAJ_MOD_DEFERRED_SUCCESS) {
+        taj_mod_report_persistence_success(generation);
+    } else {
+        taj_mod_report_persistence_failure(generation);
+    }
+}
 int taj_mod_persistence_failed(void) { return s_roster.persistence_failed; }
 TajModPersistenceIssue taj_mod_persistence_issue(void) {
     return s_roster.persistence_issue;
@@ -548,6 +587,7 @@ int taj_mod_erase_all_bonuses(void) {
 
 void taj_mod_on_adventure_file_deleted(void) {
     taj_mod_reset_player_selections();
+    taj_mod_service_deferred();
 }
 
 void mod_racer_set_player_identity(int player_index,
@@ -654,6 +694,16 @@ TAJ_MOD_KEEPALIVE void taj_mod_report_persistence_failure(
     int restored = 1;
     if (!s_roster.pending_store || generation == 0 ||
         generation != s_roster.pending_generation) return;
+    if (s_roster.racer_bindings_active) {
+        /* Record only: the ERASE-restore arm below rewrites unlock state and
+         * resets live bindings, which must not happen mid-race. A generation
+         * has exactly one outcome, so the first recording wins. */
+        if (s_roster.deferred_report_kind == TAJ_MOD_DEFERRED_NONE) {
+            s_roster.deferred_report_kind = TAJ_MOD_DEFERRED_FAILURE;
+            s_roster.deferred_report_generation = generation;
+        }
+        return;
+    }
     issue = s_roster.pending_issue;
     previous = s_roster.pending_previous;
     candidate = s_roster.pending_candidate;
@@ -693,6 +743,16 @@ TAJ_MOD_KEEPALIVE void taj_mod_report_persistence_success(
     int continue_queue;
     if (!s_roster.pending_store || generation == 0 ||
         generation != s_roster.pending_generation) return;
+    if (s_roster.racer_bindings_active) {
+        /* Record only: settling here would chain into
+         * taj_mod_retry_persistence(), which can execute a QUEUED ERASE and
+         * flip a bound bonus racer to retail mid-race. */
+        if (s_roster.deferred_report_kind == TAJ_MOD_DEFERRED_NONE) {
+            s_roster.deferred_report_kind = TAJ_MOD_DEFERRED_SUCCESS;
+            s_roster.deferred_report_generation = generation;
+        }
+        return;
+    }
     continue_queue = s_roster.retry_pending;
     s_roster.pending_store = 0;
     s_roster.pending_generation = 0;

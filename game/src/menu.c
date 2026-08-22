@@ -9380,6 +9380,11 @@ s32 menu_character_select_loop(s32 updateRate) {
             charSlot = 0;
 #ifdef NATIVE_PORT
             taj_mod_reset_player_selections();
+            /* Menu-scene service point: bindings from the previous race are
+             * now closed, so a browser persistence outcome that was deferred
+             * mid-race (queued erase, or a rejected erase's restore) applies
+             * here, before the identities below are re-selected. */
+            taj_mod_service_deferred();
 #endif
             for (j = 0; j < ARRAY_COUNT(gActivePlayersArray); j++) {
                 if (gActivePlayersArray[j]) {
