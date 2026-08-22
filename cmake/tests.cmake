@@ -1896,6 +1896,10 @@ if(BUILD_TESTING)
             COMMAND ${MDKR_NODE_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tests/web/touch-surface.test.cjs)
         add_test(
+            NAME controller_embedded_ua_js
+            COMMAND ${MDKR_NODE_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/web/controller-embedded-ua.test.cjs)
+        add_test(
             NAME match_peer_crypto_js
             COMMAND ${MDKR_NODE_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tests/test_match_peer_crypto_js.mjs)

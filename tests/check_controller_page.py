@@ -92,12 +92,19 @@ def run(args: argparse.Namespace) -> None:
     # timed at the ack) and taught the reconnect surface the specific
     # network-blocks-phone-to-display diagnosis after three straight peer
     # failures with a healthy room socket -- the same sentence the native
-    # and browser hosts speak. The guardrail's job is catching runaway
+    # and browser hosts speak, and to 140 KiB when Phase 2's device/platform
+    # batch added the Android immersive path (request fullscreen + lock
+    # landscape on the Use-controller gesture, both feature-detected, deferred
+    # to the first touch when the surface was auto-advanced into, released on
+    # leave) and the in-app-webview User-Agent heuristic that routes known
+    # embedded browsers (FBAN/Instagram/Line/"; wv"/... ) to the existing
+    # Continue-in-Safari/Chrome card without false-positiving a real browser.
+    # The guardrail's job is catching runaway
     # growth -- a bundled library, an accidental asset -- not vetoing player
     # copy, the MITM defense or a real second pairing transport, so the
     # ceiling moves by the smallest whole KiB each time.
-    require(critical_bytes < 135 * 1024,
-            f"controller critical path is {critical_bytes} bytes, budget is 135 KiB")
+    require(critical_bytes < 140 * 1024,
+            f"controller critical path is {critical_bytes} bytes, budget is 140 KiB")
     headers = (shell / "_headers").read_text(encoding="utf-8")
     for value in ("frame-ancestors 'none'", "Referrer-Policy: no-referrer",
                   "X-Content-Type-Options: nosniff", "Cache-Control: no-store"):
@@ -523,6 +530,136 @@ def run(args: argparse.Namespace) -> None:
             require(late == {"phase": "assigned", "unlocked": True,
                              "status": "Connection works"},
                     f"a late pass must unlock without auto-advancing: {late}")
+
+            # Item 1 (Android immersive): the "Use controller" gesture requests
+            # fullscreen + landscape lock, both feature-detected; a surface
+            # entered without a gesture (F3 auto-advance) defers the request to
+            # the first controller-surface touch (the same hook the wake-lock
+            # retry uses); leaving the surface releases both. Real fullscreen is
+            # stubbed to recorders so the headless run proves the calls are made
+            # and guarded without actually entering fullscreen. Behavior on a
+            # real Android phone is a human RC item; here we pin that the calls
+            # are made, are guarded, defer correctly, and are released.
+            immersive_stub = """
+              globalThis.__mdkrControllerTestConfig={seat:2,autoApprove:true,
+                capability:'controller-test-capability'};
+              globalThis.__immersiveCalls=[];
+              let __fsEl=null;
+              Object.defineProperty(document,'fullscreenElement',
+                {configurable:true,get:()=>__fsEl});
+              Object.defineProperty(Element.prototype,'requestFullscreen',
+                {configurable:true,value:function(){__fsEl=this;
+                  globalThis.__immersiveCalls.push('requestFullscreen');
+                  return Promise.resolve();}});
+              Object.defineProperty(document,'exitFullscreen',
+                {configurable:true,value:function(){__fsEl=null;
+                  globalThis.__immersiveCalls.push('exitFullscreen');
+                  return Promise.resolve();}});
+              try{Object.defineProperty(screen.orientation,'lock',
+                {configurable:true,value:function(o){
+                  globalThis.__immersiveCalls.push('lock:'+o);
+                  return Promise.resolve();}});}catch(e){}
+              try{Object.defineProperty(screen.orientation,'unlock',
+                {configurable:true,value:function(){
+                  globalThis.__immersiveCalls.push('unlock');}});}catch(e){}
+            """
+            cdp.call("Page.addScriptToEvaluateOnNewDocument",
+                     {"source": immersive_stub})
+            load_controller(cdp, server.origin + "/controller/#" + secret,
+                            "immersive gesture entry", args.timeout)
+            wait_value(cdp, "globalThis.__mdkrControllerTest?.state().phase",
+                       lambda value: value == "assigned",
+                       "immersive assigned state", args.timeout)
+            cdp.evaluate('document.getElementById("input-test").click()')
+            wait_value(cdp, "!document.getElementById('use-controller').disabled",
+                       bool, "immersive input test", args.timeout)
+            cdp.evaluate('document.getElementById("use-controller").click()')
+            immersive_enter = wait_value(cdp, """(() => ({
+              phase:globalThis.__mdkrControllerTest.state().phase,
+              calls:globalThis.__immersiveCalls.slice(),
+              record:globalThis.__mdkrControllerTestState.immersive.slice()
+            }))()""", lambda value: isinstance(value, dict) and
+                "lock:landscape" in value.get("calls", []),
+                "immersive enter on gesture", args.timeout)
+            require(immersive_enter["phase"] == "controller" and
+                    immersive_enter["calls"][:2] ==
+                        ["requestFullscreen", "lock:landscape"] and
+                    immersive_enter["record"][-1] ==
+                        {"action": "enter", "fullscreen": True, "lock": True},
+                    f"gesture did not request fullscreen+lock: {immersive_enter}")
+            cdp.evaluate("globalThis.__mdkrControllerTest.reject('left_room')")
+            immersive_exit = wait_value(cdp, """(() => ({
+              calls:globalThis.__immersiveCalls.slice(),
+              record:globalThis.__mdkrControllerTestState.immersive.slice()
+            }))()""", lambda value: isinstance(value, dict) and
+                "unlock" in value.get("calls", []),
+                "immersive release on leave", args.timeout)
+            require("exitFullscreen" in immersive_exit["calls"] and
+                    immersive_exit["record"][-1] == {"action": "exit"},
+                    f"leaving the surface did not release immersive: {immersive_exit}")
+
+            # Auto-advance path: entering the controller surface programmatically
+            # (no user activation) must NOT request immersive until the first
+            # real controller-surface touch, reusing the same pointer hook.
+            load_controller(cdp, server.origin + "/controller/#" + secret,
+                            "immersive auto-advance entry", args.timeout)
+            wait_value(cdp, "globalThis.__mdkrControllerTest?.state().phase",
+                       lambda value: value == "assigned",
+                       "immersive auto-advance assigned", args.timeout)
+            cdp.evaluate('document.getElementById("input-test").click()')
+            wait_value(cdp, "!document.getElementById('use-controller').disabled",
+                       bool, "immersive auto-advance input test", args.timeout)
+            deferred = cdp.evaluate("""(() => {
+              globalThis.__mdkrControllerTest.useController();
+              return {phase:globalThis.__mdkrControllerTest.state().phase,
+                calls:globalThis.__immersiveCalls.slice(),
+                record:globalThis.__mdkrControllerTestState.immersive.slice()};
+            })()""")
+            require(deferred["phase"] == "controller" and deferred["calls"] == [] and
+                    deferred["record"] == [],
+                    f"auto-advance requested immersive without a gesture: {deferred}")
+            cdp.evaluate("""document.getElementById('state-controller').dispatchEvent(
+              new PointerEvent('pointerdown', {pointerId:91, pointerType:'touch',
+                bubbles:true, cancelable:true}))""")
+            # The landscape lock is requested from the resolved-fullscreen
+            # microtask, so wait for it rather than sampling synchronously.
+            entered = wait_value(cdp, "globalThis.__immersiveCalls.slice()",
+                lambda value: isinstance(value, list) and
+                    "lock:landscape" in value,
+                "auto-advance first touch enters immersive", args.timeout)
+            require(entered[:2] == ["requestFullscreen", "lock:landscape"],
+                    f"first controller-surface touch did not enter immersive: {entered}")
+
+            # Unsupported (iOS Safari): no Element.requestFullscreen, no
+            # orientation.lock — the gesture must degrade silently, no calls,
+            # no throw, controller surface still usable.
+            cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": """
+              Object.defineProperty(Element.prototype,'requestFullscreen',
+                {configurable:true,value:undefined});
+              try{Object.defineProperty(screen.orientation,'lock',
+                {configurable:true,value:undefined});}catch(e){}
+            """})
+            load_controller(cdp, server.origin + "/controller/#" + secret,
+                            "immersive unsupported entry", args.timeout)
+            wait_value(cdp, "globalThis.__mdkrControllerTest?.state().phase",
+                       lambda value: value == "assigned",
+                       "immersive unsupported assigned", args.timeout)
+            cdp.evaluate('document.getElementById("input-test").click()')
+            wait_value(cdp, "!document.getElementById('use-controller').disabled",
+                       bool, "immersive unsupported input test", args.timeout)
+            cdp.evaluate('document.getElementById("use-controller").click()')
+            unsupported = wait_value(cdp, """(() => ({
+              phase:globalThis.__mdkrControllerTest.state().phase,
+              calls:globalThis.__immersiveCalls.slice(),
+              record:globalThis.__mdkrControllerTestState.immersive.slice(),
+              overflow:document.documentElement.scrollWidth > innerWidth
+            }))()""", lambda value: isinstance(value, dict) and
+                value.get("phase") == "controller" and value.get("record"),
+                "immersive unsupported degrade", args.timeout)
+            require(unsupported["calls"] == [] and not unsupported["overflow"] and
+                    unsupported["record"][-1] ==
+                        {"action": "enter", "fullscreen": False, "lock": False},
+                    f"unsupported immersive did not degrade silently: {unsupported}")
 
             paths = [request.path for request in server.requests]
             forbidden = ("mdkr64_web", ".wasm", "/rom", "/save", "hero.jpg")

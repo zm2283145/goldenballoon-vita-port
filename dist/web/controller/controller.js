@@ -19,6 +19,7 @@
     ? globalThis.__mdkrControllerTestConfig : null;
   const testState = testConfig ? {
     states: [], packets: [], neutralizations: 0, requests: [], errors: [],
+    immersive: [],
   } : null;
   if (testState) globalThis.__mdkrControllerTestState = testState;
 
@@ -28,6 +29,7 @@
     globalThis.__mdkrControllerInternals = Object.freeze({
       trustedControllerLocation, pairingCryptoAvailable, lanControllerMode,
       lanRedeemFrame, normalizedIceServers, normalizedControllerInfo,
+      embeddedWebviewUa,
     });
     return;
   }
@@ -65,6 +67,11 @@
   // F3: auto input test's bounded window; past it, Press Go is the fallback.
   let autoAdvanceUntil = 0;
   let wakeRetryOnPointer = false;
+  // Item 1 (Android): request fullscreen + landscape lock on the first real
+  // controller-surface gesture when the surface was entered without one (the
+  // F3 auto-advance carries no user activation), exactly like the wake-lock
+  // retry above.
+  let immersiveRetryOnPointer = false;
   let inputTestWindowTimer = null;
   const inputTestWindowMs = 3500;
   const maxControllerResponseBytes = 16 * 1024;
@@ -145,6 +152,9 @@
   function showError(id, recoveryLabel = "Enter another code",
                      recoveryAction = "code") {
     neutralize("error");
+    // Item 1: every terminal state funnels through here — release fullscreen and
+    // the landscape lock on leaving the controller surface.
+    exitImmersive();
     const copy = errors[id] || ["Couldn’t join", "Try the current QR or room code again."];
     $("error-title").textContent = copy[0];
     $("error-message").textContent = copy[1];
@@ -325,6 +335,20 @@
       }
       return false;
     } catch (_) { return false; }
+  }
+
+  // F13: known in-app webview UA tokens where the phone-to-display WebRTC path
+  // tends to fail. A HINT that routes to the same recoverable "Continue in
+  // Safari or Chrome" card an <iframe> embed does — never a hard block, since
+  // the card's share/copy recovery opens the link in a real browser. Kept
+  // precise so a real Safari/Chrome (incl. WKWebView-based full browsers CriOS/
+  // FxiOS/EdgiOS) never matches; the "; wv" token is the Android System WebView
+  // marker real Chrome lacks. controller-embedded-ua.test.cjs pins the UA table.
+  function embeddedWebviewUa(ua) {
+    const value = String(ua || "");
+    if (/;\s?wv[;)]/.test(value)) return true;
+    return /FBAN|FBAV|FB_IAB|FBIOS|Instagram|Line\/|MicroMessenger|Snapchat|musical_ly|TikTok|Bytedance|Twitter|Pinterest|LinkedInApp|KAKAOTALK|WebView/i
+      .test(value);
   }
 
   // The redeem selector is the mode the SERVER declared (party-mode.js), never a
@@ -1578,6 +1602,61 @@
     armInputTestWindow();
   }
 
+  /* Item 1: Android immersive controls. On the user's "Use controller" gesture
+   * (both APIs need a real activation) request fullscreen, then lock landscape
+   * once fullscreen resolves (Android requires that order). Every call is
+   * feature-detected and swallows rejection, so iOS Safari — no requestFullscreen
+   * on a non-video element, no orientation.lock — degrades to the CSS-only
+   * layout with no error. exitImmersive releases both on leaving the surface.
+   * check_controller_page.py pins the calls, the guards, the auto-advance
+   * defer-to-gesture, and the release. */
+  function lockLandscape() {
+    try {
+      const orientation = globalThis.screen && globalThis.screen.orientation;
+      if (orientation && typeof orientation.lock === "function") {
+        const locking = orientation.lock("landscape");
+        if (locking && typeof locking.catch === "function") locking.catch(() => {});
+      }
+    } catch (_) {}
+  }
+
+  function enterImmersive() {
+    immersiveRetryOnPointer = false;
+    const root = document.documentElement;
+    const canFullscreen = !!root && typeof root.requestFullscreen === "function";
+    const orientation = globalThis.screen && globalThis.screen.orientation;
+    const canLock = !!orientation && typeof orientation.lock === "function";
+    if (testState) testState.immersive.push({action: "enter",
+      fullscreen: canFullscreen, lock: canLock});
+    if (canFullscreen && !document.fullscreenElement) {
+      try {
+        const entering = root.requestFullscreen({navigationUI: "hide"});
+        if (entering && typeof entering.then === "function") {
+          entering.then(lockLandscape, () => {});
+        } else {
+          lockLandscape();
+        }
+      } catch (_) { lockLandscape(); }
+    } else {
+      lockLandscape();
+    }
+  }
+
+  function exitImmersive() {
+    immersiveRetryOnPointer = false;
+    if (testState) testState.immersive.push({action: "exit"});
+    try {
+      const orientation = globalThis.screen && globalThis.screen.orientation;
+      if (orientation && typeof orientation.unlock === "function") orientation.unlock();
+    } catch (_) {}
+    try {
+      if (document.fullscreenElement && typeof document.exitFullscreen === "function") {
+        const leaving = document.exitFullscreen();
+        if (leaving && typeof leaving.catch === "function") leaving.catch(() => {});
+      }
+    } catch (_) {}
+  }
+
   /* Wake Lock, or the keep-awake fallback the insecure-origin LAN page needs.
    * navigator.wakeLock is a secure-context API, so a plain-http phone does not
    * get it; there, a muted inline video kept playing holds the screen awake
@@ -1662,8 +1741,12 @@
     render("controller");
     void requestWakeLock();
     // The auto-advance carries no user activation, so the insecure-LAN
-    // keep-awake video can be refused; retry once on the first real touch.
+    // keep-awake video AND the fullscreen/orientation request can be refused;
+    // arm both to retry once on the first real controller-surface touch. The
+    // real "Use controller" tap enters immersive in its own click handler and
+    // clears this flag, so the retry only ever fires for the auto-advance path.
     wakeRetryOnPointer = true;
+    immersiveRetryOnPointer = true;
     if (heartbeat === null) heartbeat = setInterval(() => publishPad(true), 50);
   }
 
@@ -1706,6 +1789,9 @@
       publishPad(true);
     }
     void requestWakeLock();
+    // A tab that was hidden had its fullscreen dropped by the browser; the
+    // next controller-surface touch re-enters immersive (same gesture hook).
+    immersiveRetryOnPointer = true;
   }
 
   function leave() {
@@ -1779,6 +1865,13 @@
           "Enter another code", secureUrl ? "secure" : "code");
         return;
       }
+      // F13: a known in-app webview is a hint to open in Safari or Chrome,
+      // where the direct pairing path works — the same recoverable card as an
+      // <iframe> embed, checked before the generic "unsupported" fallback so a
+      // recognized webview gets the specific remedy.
+      if (embeddedWebviewUa(navigator.userAgent)) {
+        showError("embedded", shareRecoveryLabel(), "share"); return;
+      }
       if (!("PointerEvent" in window) || !("RTCPeerConnection" in window) ||
           !pairingCryptoAvailable() || !globalThis.MDKRPartySas) {
         showError("unsupported", shareRecoveryLabel(), "share"); return;
@@ -1845,11 +1938,20 @@
     if (event.detail !== 0) return;
     testPress(true); setTimeout(() => testPress(false), 90);
   });
-  $("use-controller").addEventListener("click", useController);
+  $("use-controller").addEventListener("click", () => {
+    useController();
+    // The tap IS the user activation both fullscreen and orientation.lock need.
+    if (phase === "controller") enterImmersive();
+  });
   $("state-controller").addEventListener("pointerdown", () => {
-    if (!wakeRetryOnPointer || phase !== "controller") return;
-    wakeRetryOnPointer = false;
-    if (!wakeLock) void requestWakeLock();
+    if (phase !== "controller") return;
+    if (wakeRetryOnPointer) {
+      wakeRetryOnPointer = false;
+      if (!wakeLock) void requestWakeLock();
+    }
+    // Item 1: the auto-advance had no gesture, so this first touch is where
+    // fullscreen + landscape lock become available. Reuses this same hook.
+    if (immersiveRetryOnPointer) enterImmersive();
   }, true);
   $("controller-retry").addEventListener("click", () => {
     $("controller-retry").disabled = true;
