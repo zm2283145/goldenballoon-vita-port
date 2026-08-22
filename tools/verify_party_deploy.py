@@ -459,6 +459,33 @@ def assert_no_workers_dev(origin: str, workers_dev_host: str | None,
         evidence.append("workers.dev: disabled in config (no host given to probe)")
 
 
+def assert_ice_servers(payload: Any, label: str, evidence: list[str]) -> None:
+    """Every room-handing payload must name at least one STUN server.
+
+    TURN entries appear only once the owner has provisioned the two Realtime
+    TURN secrets, and their absence is a supported STUN-only deployment, so
+    TURN presence is reported as evidence rather than asserted.
+    """
+    servers = payload.get("iceServers") if isinstance(payload, dict) else None
+    require(isinstance(servers, list) and len(servers) >= 1,
+            f"{label} response carries no iceServers array: {servers!r}")
+    urls: list[str] = []
+    for entry in servers:
+        require(isinstance(entry, dict),
+                f"{label} iceServers entry is not an object: {entry!r}")
+        listed = entry.get("urls")
+        for url in listed if isinstance(listed, list) else [listed]:
+            require(isinstance(url, str) and url.startswith(("stun:", "turn:", "turns:")),
+                    f"{label} iceServers url has the wrong shape: {url!r}")
+            urls.append(url)
+    require(any(url.startswith("stun:") for url in urls),
+            f"{label} iceServers carry no STUN entry: {urls}")
+    turn = any(url.startswith(("turn:", "turns:")) for url in urls)
+    evidence.append(f"iceServers ({label}): {len(servers)} entries, STUN present, "
+                    + ("TURN credentials minted"
+                       if turn else "TURN absent (secrets not provisioned)"))
+
+
 def assert_pairing(origin: str, evidence: list[str]) -> None:
     host_key = public_key()
     status, headers, room = http(origin, "/api/party/create",
@@ -467,6 +494,7 @@ def assert_pairing(origin: str, evidence: list[str]) -> None:
     require(headers.get("cache-control") == "no-store" and
             headers.get("referrer-policy") == "no-referrer",
             f"credential response was not no-store/no-referrer: {headers}")
+    assert_ice_servers(room, "create", evidence)
     room_id = room["roomId"]
     host_credential = room["hostCredential"]
     controller_url = room["controllerUrl"]
@@ -480,6 +508,7 @@ def assert_pairing(origin: str, evidence: list[str]) -> None:
     require(status == 201, f"invite redeem failed: {status} {controller}")
     require(headers.get("cache-control") == "no-store",
             "controller credential response was not no-store")
+    assert_ice_servers(controller, "redeem", evidence)
     controller_id = controller["controllerId"]
     require(re.fullmatch(r"[A-Za-z0-9_-]{22}", controller_id),
             f"controller identity has the wrong shape: {controller_id}")
