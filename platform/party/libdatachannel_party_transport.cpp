@@ -56,7 +56,6 @@ constexpr unsigned kProtocol = 1u;
  * sends) and equals mdkr_party::kChannelProtocol by construction.
  */
 using PartyIdentity = mdkr_party::Identity;
-using mdkr_party::base64Url;
 using mdkr_party::canonicalSdpFingerprint;
 using mdkr_party::commandRejectionFromSignal;
 using mdkr_party::controllerReadyEventFromControl;
