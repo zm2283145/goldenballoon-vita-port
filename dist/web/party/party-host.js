@@ -366,6 +366,7 @@
   // Built with programmatic (CSSOM) styles so it needs no stylesheet edit and
   // stays within the page's style-src 'self' CSP. Dismissed by click or Escape.
   let qrOverlay = null;
+  let qrOverlayCanvas = null;
   function qrOverlayKeydown(event) {
     if (event.key === "Escape") { event.preventDefault(); closeQrOverlay(); }
   }
@@ -373,6 +374,7 @@
     if (!qrOverlay) return;
     try { qrOverlay.remove(); } catch (_) {}
     qrOverlay = null;
+    qrOverlayCanvas = null;
     removeEventListener("keydown", qrOverlayKeydown, true);
     try { $("party-qr").focus?.(); } catch (_) {}
   }
@@ -382,6 +384,9 @@
     canvas.style.cssText = "display:block;width:min(82vw,82vh);height:min(82vw,82vh);" +
       "image-rendering:pixelated";
     if (!renderQrInto(canvas, room.controllerUrl, 760)) return;
+    canvas.dataset.qrUrl = room.controllerUrl;
+    canvas.dataset.qrRenders = "1";
+    qrOverlayCanvas = canvas;
     const overlay = document.createElement("div");
     overlay.setAttribute("role", "dialog");
     overlay.setAttribute("aria-label", "Enlarged controller QR code");
@@ -403,6 +408,22 @@
     addEventListener("keydown", qrOverlayKeydown, true);
     overlay.focus({preventScroll: true});
     if (testState) testState.qrOverlayOpens = (testState.qrOverlayOpens || 0) + 1;
+  }
+
+  // F11.5 x F6: keep an OPEN enlarge overlay live across an invite rotation.
+  // renderInvite re-renders the same overlay canvas to the new url in place, so
+  // the big QR a host left up for the room never shows an invalidated code while
+  // the page announces the previous one expired. If the new url can't render,
+  // close rather than leave a stale giant QR up. No-op when nothing is enlarged.
+  function refreshQrOverlay(url) {
+    if (!qrOverlay || !qrOverlayCanvas) return;
+    if (renderQrInto(qrOverlayCanvas, url, 760)) {
+      qrOverlayCanvas.dataset.qrUrl = url;
+      qrOverlayCanvas.dataset.qrRenders =
+        String((Number(qrOverlayCanvas.dataset.qrRenders) || 0) + 1);
+    } else {
+      closeQrOverlay();
+    }
   }
 
   // Item 4: a short, non-intrusive WebAudio cue when a phone redeems and
@@ -502,10 +523,14 @@
     return Object.freeze({...value});
   }
 
-  function clearInvitePresentation(expired, announceExpiry = false) {
+  function clearInvitePresentation(expired, announceExpiry = false,
+                                   keepOverlay = false) {
     inviteActive = false;
     deadline = 0;
-    closeQrOverlay();
+    // keepOverlay is set only on the invite-rotation path (renderRoomState),
+    // where renderInvite immediately re-renders the open enlarge overlay to the
+    // new url; every genuine teardown leaves it false so the overlay closes.
+    if (!keepOverlay) closeQrOverlay();
     if (room) {
       const {fallbackCode: _code, controllerUrl: _url, ...retained} = room;
       room = retained;
@@ -550,6 +575,9 @@
     catch (_) { qrReady = false; }
     const wrap = $("party-qr").closest(".party-qr-wrap");
     if (wrap) wrap.hidden = !qrReady;
+    // F11.5 x F6: keep any open enlarge overlay showing the current invite.
+    if (qrReady) refreshQrOverlay(normalized.controllerUrl);
+    else closeQrOverlay();
     $("party-scan-step").textContent = qrReady
       ? "1. Scan with your phone’s camera"
       : "1. Open this site’s controller page on your phone";
@@ -1126,7 +1154,12 @@
         publishedInviteGeneration !== priorInviteGeneration) ||
        next.phase === "closed");
     room = {...room, ...next};
-    if (invalidatesDisplayedInvite) clearInvitePresentation(false);
+    // A generation bump is this host's own rotate echo; renderInvite will draw
+    // (and re-render any open enlarge overlay to) the new invite, so keep the
+    // overlay across it. A closed room has no invite coming — let it close.
+    if (invalidatesDisplayedInvite) {
+      clearInvitePresentation(false, false, next.phase !== "closed");
+    }
     const controllers = activeControllers();
     if (removeControllerId && !controllers.some((controller) =>
         controller.controllerId === removeControllerId)) {

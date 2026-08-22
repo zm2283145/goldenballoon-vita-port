@@ -444,6 +444,45 @@ def run(args: argparse.Namespace) -> None:
               globalThis.MDKRPartyHost.state().room.inviteExpiresInMs === 120000""",
                 bool, "invite restored to the full TTL", args.timeout)
 
+            # F11.5 x F6: an enlarge overlay left open (item 3's whole purpose --
+            # scan from across the room) must stay live when the invite rotates.
+            # renderInvite re-renders the OPEN overlay canvas to the current url;
+            # without that fix the giant QR shows the invalidated code while the
+            # page announces the previous one expired. Proven by the overlay's
+            # per-render counter incrementing and its encoded url tracking the
+            # room's live controllerUrl across a rotation.
+            cdp.evaluate("document.getElementById('party-qr').click()")
+            wait_value(cdp, """(() => {
+              const o=document.querySelector(
+                '[aria-label="Enlarged controller QR code"]');
+              const c=o&&o.querySelector('canvas');
+              return c?c.dataset.qrRenders:null;
+            })()""", lambda value: value == "1",
+                "enlarge overlay open before rotation", args.timeout)
+            cdp.evaluate("document.getElementById('party-extend').click()")
+            rotated_overlay = wait_value(cdp, """(() => {
+              const o=document.querySelector(
+                '[aria-label="Enlarged controller QR code"]');
+              const c=o&&o.querySelector('canvas');
+              return {present:Boolean(o),
+                renders:c?c.dataset.qrRenders:null,
+                url:c?c.dataset.qrUrl:null,
+                roomUrl:globalThis.MDKRPartyHost.state().room?.controllerUrl||null};
+            })()""", lambda value: isinstance(value, dict) and
+                value.get("renders") == "2",
+                "enlarge overlay re-rendered on invite rotation", args.timeout)
+            require(rotated_overlay["present"] and
+                    rotated_overlay["url"] == rotated_overlay["roomUrl"] and
+                    rotated_overlay["url"],
+                    f"enlarge overlay went stale on invite rotation: "
+                    f"{rotated_overlay}")
+            cdp.evaluate(
+                "dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))")
+            wait_value(cdp, """Boolean(document.querySelector(
+                '[aria-label="Enlarged controller QR code"]'))""",
+                lambda value: value is False,
+                "enlarge overlay closed after rotation test", args.timeout)
+
             removal_requests_before = cdp.evaluate("""globalThis.__mdkrPartyHostTestState
               .requests.filter(path=>path.endsWith('/remove')).length""")
             cdp.evaluate("document.querySelector('[data-seat=\"2\"] .party-seat-remove').click()")
