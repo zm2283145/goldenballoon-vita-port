@@ -217,6 +217,7 @@ struct MdkrMatchPeerMesh::State
     MdkrMatchPeerKeyring keyring{};
     bool keysDerived = false;
     std::string verificationPhrase;
+    uint8_t transcriptDigestBytes[MDKR_MATCH_PEER_TRANSCRIPT_DIGEST_BYTES] = {};
 
     /* ---- Launcher-thread state ----------------------------------------- */
     std::map<uint64_t, PeerRuntime> peers;
@@ -1086,6 +1087,7 @@ struct MdkrMatchPeerMesh::State
             return;
         }
         verificationPhrase = phrase;
+        std::memcpy(transcriptDigestBytes, digest, sizeof(transcriptDigestBytes));
         keysDerived = true;
         MdkrMatchPeerMeshEvent event;
         event.type = MdkrMatchPeerMeshEventType::PhraseReady;
@@ -1416,6 +1418,32 @@ bool MdkrMatchPeerMesh::sendPreflightFragment(
 bool MdkrMatchPeerMesh::phrase(std::string &out) const {
     if (state_->closed || state_->failed || !state_->keysDerived) return false;
     out = state_->verificationPhrase;
+    return true;
+}
+
+bool MdkrMatchPeerMesh::transcriptDigest(
+    uint8_t out[MDKR_MATCH_PEER_TRANSCRIPT_DIGEST_BYTES]) const {
+    if (out == nullptr || state_->closed || state_->failed ||
+        !state_->keysDerived) {
+        return false;
+    }
+    std::memcpy(out, state_->transcriptDigestBytes,
+                MDKR_MATCH_PEER_TRANSCRIPT_DIGEST_BYTES);
+    return true;
+}
+
+uint32_t MdkrMatchPeerMesh::connectionGeneration() const {
+    return state_ ? state_->localGeneration : 0u;
+}
+
+bool MdkrMatchPeerMesh::peerGeneration(uint64_t peerEndpointId,
+                                       uint32_t *out) const {
+    if (out == nullptr || !state_) return false;
+    const auto found = state_->peers.find(peerEndpointId);
+    if (found == state_->peers.end() || found->second.generation == 0u) {
+        return false;
+    }
+    *out = found->second.generation;
     return true;
 }
 

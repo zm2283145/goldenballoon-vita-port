@@ -86,6 +86,7 @@
 #include "online/lobby_core.h"
 #include "online/match_signal_client.h"
 #include "net/match_peer_crypto.h"
+#include "net/match_peer_transcript.h"
 
 #include <array>
 #include <cstdint>
@@ -302,6 +303,31 @@ public:
      * peer's key is committed, opened and derived (mirrors the transcript
      * layer: no phrase from uncommitted key material); refuses otherwise. */
     bool phrase(std::string &out) const;
+
+    /* The raw 32-byte transcript digest the phrase is derived from -- the
+     * canonical, commitment-verified fingerprint of the whole peer key
+     * transcript (mdkr_match_peer_transcript_digest). Every honest peer derives
+     * the identical value, so binding it into a preflight attestation achieves
+     * consensus over the transcript directly, without the phrase's lossy
+     * word mapping. Available under the same gate as phrase(): only once every
+     * roster peer's key is committed, opened and derived. */
+    bool transcriptDigest(
+        uint8_t out[MDKR_MATCH_PEER_TRANSCRIPT_DIGEST_BYTES]) const;
+
+    /* The connection generation the signal service assigned this endpoint, as
+     * carried in the welcome and adopted by the mesh (options.localGeneration
+     * == 0). Zero before the welcome arrives. The launcher binds this into the
+     * graph and its own preflight attestation instead of assuming generation 1;
+     * against the real service an endpoint that reconnected its signal socket
+     * holds a higher generation. */
+    uint32_t connectionGeneration() const;
+
+    /* The connection generation the mesh has learned for a roster peer (from
+     * the welcome peer list or a later presence), so the launcher can build the
+     * peer graph with each endpoint's real generation. False before it is
+     * known. Every peer reports the same server-assigned value, so both sides
+     * build a byte-identical graph. */
+    bool peerGeneration(uint64_t peerEndpointId, uint32_t *out) const;
 
     MdkrMatchPeerMeshStats stats() const;
 

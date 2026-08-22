@@ -30,23 +30,28 @@
  * raw transport codes never become UI. Retry/backoff is launcher-owned; game
  * code is untouched.
  *
- * The transcript_digest bound into each attestation is SHA-256 of the mesh's
- * human verification phrase. The phrase is the canonical, human-verified
- * fingerprint of the committed transcript (the mesh re-verifies every
- * commitment before it will emit a phrase), and every honest peer derives the
- * same phrase, so this achieves attestation consensus over the transcript. A
- * future revision may bind the raw transcript digest if the mesh exposes it.
+ * The transcript_digest bound into each attestation is the mesh's RAW 32-byte
+ * transcript digest (mdkr_match_peer_transcript_digest, exposed by the mesh),
+ * the canonical commitment-verified fingerprint the human phrase is itself
+ * derived from. Binding the raw digest rather than SHA-256(phrase) closes the
+ * O-T3 note: consensus is over the full transcript, not the phrase's lossy word
+ * mapping. Every honest peer derives the identical digest, so consensus holds.
+ *
+ * Post-install (O-T6) the adapter owns a launcher-side match transport bound to
+ * a headless session bridge: opened INPUT envelopes from the mesh drive
+ * mdkr_match_transport_receive per covered tick, and race_advance() seals the
+ * local endpoint's bundle onto the mesh and drains one authored tick -- the
+ * live replacement for main_app.cpp's loopback MatchInputProviderContext.
  */
 #include "match_live_adapter.h"
 
+#include "net/match_input_bundle.h"
 #include "net/match_preflight.h"
+#include "net/match_transport.h"
 #include "net/net_roster.h"
 #include "net/net_roster_runtime.h"
+#include "session/session_bridge.h"
 #include "session/session_core.h"
-
-extern "C" {
-#include "sha256.h"
-}
 
 #include <chrono>
 #include <cstring>
@@ -62,6 +67,27 @@ uint64_t steadyNowMs() {
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch())
             .count());
+}
+
+/* Deterministic per-slot input for the O-T6 race. Both endpoints compute the
+ * SAME sample for a given (canonical slot, authored tick), so the frame this
+ * endpoint seals for a future tick equals the frame the peer later drains for
+ * that slot, and the committed canonical inputs converge byte-for-byte. Sticks
+ * stay in the +/-80 bundle bound; a distinct pattern per slot keeps the race
+ * non-trivial (both endpoints drive different inputs). */
+MdkrPadSample raceLocalSample(uint8_t canonicalSlot, uint32_t tick) {
+    uint32_t h = tick * UINT32_C(2654435761) +
+                 static_cast<uint32_t>(canonicalSlot) * UINT32_C(40503) +
+                 UINT32_C(0x9e3779b9);
+    h ^= h >> 15;
+    h *= UINT32_C(2246822519);
+    h ^= h >> 13;
+    MdkrPadSample s;
+    s.buttons = static_cast<uint16_t>(h & 0x3fffu);
+    s.stick_x = static_cast<int8_t>(static_cast<int>((h >> 16) % 161u) - 80);
+    s.stick_y = static_cast<int8_t>(static_cast<int>((h >> 8) % 161u) - 80);
+    s.present = 1u;
+    return s;
 }
 
 /* Deterministic, peer-agreed race seed from the shared lobby snapshot. */
@@ -460,9 +486,11 @@ private:
         if (meshUp_ || !opts_.meshBackend || !haveLobby_) return;
         buildMeshRoster();
         meshEpoch_ = lobby_.leader_generation; /* stable nonzero keying epoch */
+        /* localGeneration 0 == adopt the welcome's assigned generation: against
+         * the real signal service the server owns the per-endpoint monotonic
+         * generation, so the launcher must not hardcode 1. */
         MdkrMatchPeerSignalFeed *feed = opts_.meshBackend->beginSignaling(
-            localEndpointId_, meshGeneration_, roomIdStr_, credential_,
-            iceServers_);
+            localEndpointId_, 0u, roomIdStr_, credential_, iceServers_);
         if (feed == nullptr) {
             failure_ = MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK;
             return;
@@ -471,7 +499,7 @@ private:
         o.signal = feed;
         o.roomId = roomIdStr_;
         o.localEndpointId = localEndpointId_;
-        o.localGeneration = meshGeneration_;
+        o.localGeneration = 0u;
         o.matchEpoch = meshEpoch_;
         o.compatibility = opts_.compatibility;
         o.roster = meshRoster_;
@@ -514,6 +542,10 @@ private:
                         p.size() + 1u <= sizeof(phrase_)) {
                         std::memcpy(phrase_, p.c_str(), p.size() + 1u);
                         havePhrase_ = true;
+                        /* Adopt the service-assigned local generation now that
+                         * the welcome has been processed; it is bound into the
+                         * graph and the local attestation. */
+                        meshGeneration_ = mesh_->connectionGeneration();
                         bump();
                     }
                     break;
@@ -538,10 +570,8 @@ private:
                     }
                     break;
                 case MdkrMatchPeerMeshEventType::InputEnvelope:
-                    /* Post-install per-tick input feed into match_transport is
-                     * driven by the two-process race lane (O-T6); counted here
-                     * for diagnosability. */
                     ++inputEnvelopes_;
+                    feedInputEnvelope(ev);
                     break;
             }
         }
@@ -609,7 +639,9 @@ private:
         if (!preflightInit_) {
             buildGraph();
             uint8_t transcriptDigest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES];
-            phraseDigest(transcriptDigest);
+            if (!mesh_ || !mesh_->transcriptDigest(transcriptDigest)) {
+                return; /* phrase/digest not ready yet; retry next service() */
+            }
             if (!mdkr_match_preflight_init(&preflight_, &descriptor_, &graph_,
                                            transcriptDigest, localEndpointId_,
                                            meshGeneration_)) {
@@ -644,13 +676,6 @@ private:
         }
     }
 
-    void phraseDigest(uint8_t out[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES]) const {
-        MdkrSha256 ctx;
-        mdkr_sha256_init(&ctx);
-        mdkr_sha256_update(&ctx, phrase_, std::strlen(phrase_));
-        mdkr_sha256_final(&ctx, out);
-    }
-
     void buildGraph() {
         std::vector<MdkrMatchPeerEndpoint> eps;
         std::map<uint64_t, unsigned> index;
@@ -658,7 +683,17 @@ private:
             MdkrMatchPeerEndpoint e;
             std::memset(&e, 0, sizeof(e));
             e.endpoint_id = o.endpointId;
-            e.generation = meshGeneration_;
+            /* Each endpoint's own service-assigned generation, so both peers
+             * hash a byte-identical graph. Local uses the adopted generation;
+             * peers use the value the mesh learned from the welcome. */
+            if (o.endpointId == localEndpointId_) {
+                e.generation = meshGeneration_;
+            } else if (uint32_t g = 0u; mesh_ && mesh_->peerGeneration(
+                                            o.endpointId, &g)) {
+                e.generation = g;
+            } else {
+                e.generation = meshGeneration_;
+            }
             e.reachable_mask = 0u;
             index[o.endpointId] = static_cast<unsigned>(eps.size());
             eps.push_back(e);
@@ -692,7 +727,7 @@ private:
         att->endpoint_id = localEndpointId_;
         (void)mdkr_match_preflight_descriptor_digest(&descriptor_,
                                                      att->descriptor_digest);
-        phraseDigest(att->transcript_digest);
+        if (mesh_) (void)mesh_->transcriptDigest(att->transcript_digest);
         (void)mdkr_match_preflight_graph_digest(&graph_, att->graph_digest);
         att->flags = 0u;
         if (opts_.romVerified) att->flags |= MDKR_MATCH_PREFLIGHT_ROM_VERIFIED;
@@ -737,9 +772,7 @@ private:
     }
 
     void install() {
-        if (installed_) return;
-        MdkrNetRoster roster;
-        if (!mdkr_net_roster_init(&roster, &descriptor_.manifest)) return;
+        if (installed_ || raceReady_) return;
         uint8_t localSlots[MDKR_MATCH_SLOTS];
         unsigned localCount = 0u;
         for (unsigned i = 0u; i < descriptor_.manifest.slot_count; ++i) {
@@ -747,14 +780,189 @@ private:
                 localSlots[localCount++] = static_cast<uint8_t>(i);
             }
         }
-        if (!mdkr_net_roster_configure_local(&roster, localSlots, localCount) ||
-            !mdkr_net_roster_set_viewports(&roster, localSlots, localCount)) {
-            return;
-        }
-        if (mdkr_net_roster_runtime_install_launch(&descriptor_, &roster)) {
+        MdkrNetRoster roster;
+        if (mdkr_net_roster_init(&roster, &descriptor_.manifest) &&
+            mdkr_net_roster_configure_local(&roster, localSlots, localCount) &&
+            mdkr_net_roster_set_viewports(&roster, localSlots, localCount) &&
+            mdkr_net_roster_runtime_install_launch(&descriptor_, &roster)) {
             installed_ = true;
         }
+        /* The race transport is per-endpoint (its own session bridge), so it is
+         * brought up independently of the process-global engine roster: in a
+         * real online race each process holds its own runtime AND its race
+         * transport, while two endpoints sharing one process (the in-process
+         * convergence test) can only publish one global roster but must still
+         * both race. */
+        setUpRace(localSlots, localCount);
     }
+
+    /* Post-install: bring up the launcher-side match transport bound to a
+     * headless session bridge, so opened INPUT envelopes advance a real engine
+     * timeline. Best-effort: a race-setup failure never unwinds the roster
+     * install (which is the launcher's actual contract). */
+    void setUpRace(const uint8_t *localSlots, unsigned localCount) {
+        uint8_t localMask = 0u;
+        for (unsigned i = 0u; i < localCount; ++i) {
+            localMask |= static_cast<uint8_t>(1u << localSlots[i]);
+        }
+        MdkrSessionLaunchV3 launch;
+        std::memset(&launch, 0, sizeof(launch));
+        launch.version = MDKR_SESSION_LAUNCH_V3_VERSION;
+        launch.size = sizeof(launch);
+        launch.match = descriptor_;
+        launch.local_slot_mask = localMask;
+        launch.viewport_slot_mask = localMask;
+        mdkr_session_bridge_init(&raceBridge_);
+        if (!mdkr_session_bridge_apply_launch_v3(&raceBridge_, &launch) ||
+            !mdkr_session_bridge_set_engine_phase(&raceBridge_,
+                                                  MDKR_ENGINE_BOOTING) ||
+            !mdkr_session_bridge_set_engine_phase(&raceBridge_,
+                                                  MDKR_ENGINE_READY)) {
+            return;
+        }
+        raceEpoch_ = descriptor_.manifest.match_epoch;
+        raceFirstTick_ = 1u;
+        raceNextTick_ = raceFirstTick_;
+        if (!mdkr_match_transport_init(&raceTransport_, &raceBridge_,
+                                       raceFirstTick_)) {
+            return;
+        }
+        peerSlotMask_.clear();
+        for (const MdkrMatchPeerSlotOwner &o : meshRoster_) {
+            if (o.endpointId == localEndpointId_) continue;
+            peerSlotMask_[o.endpointId] = o.slotMask;
+        }
+        raceInputDelay_ = opts_.inputDelay != 0u ? opts_.inputDelay : 2u;
+        raceReady_ = true;
+    }
+
+    /* One opened INPUT envelope -> the launcher transport. The authenticated
+     * slot mask is the SENDER's owned canonical slots (from the roster, never
+     * the packet bytes); only covered ticks/slots are admitted. */
+    void feedInputEnvelope(const MdkrMatchPeerMeshEvent &ev) {
+        if (!raceReady_) return;
+        const auto it = peerSlotMask_.find(ev.context.key.source_endpoint_id);
+        if (it == peerSlotMask_.end()) return;
+        const uint8_t authMask = it->second;
+        MdkrMatchInputBundle bundle;
+        if (!mdkr_match_input_bundle_decode(ev.payload.data(),
+                                            ev.payload.size(), &bundle)) {
+            return;
+        }
+        for (unsigned age = 0u; age < bundle.frame_count &&
+                                age < MDKR_MATCH_INPUT_BUNDLE_FRAMES; ++age) {
+            const uint32_t authoredTick = bundle.newest_tick - age;
+            for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; ++slot) {
+                const uint8_t bit = static_cast<uint8_t>(1u << slot);
+                if ((bundle.slot_mask & bit) == 0u ||
+                    (authMask & bit) == 0u) {
+                    continue;
+                }
+                (void)mdkr_match_transport_receive(
+                    &raceTransport_, bundle.match_epoch, authMask, slot,
+                    authoredTick, &bundle.frames[age][slot]);
+            }
+        }
+    }
+
+public:
+    /* ---- O-T6 race API (reached through the free accessors) ------------- */
+    bool raceReady() const { return raceReady_; }
+
+    void raceInfo(MdkrOnlineLiveRaceInfo *out) const {
+        out->ready = raceReady_;
+        out->matchEpoch = raceEpoch_;
+        out->firstTick = raceFirstTick_;
+        out->nextTick = raceNextTick_;
+        out->activeSlotMask = raceTransport_.active_slot_mask;
+        out->localSlotMask = raceTransport_.local_slot_mask;
+        out->remoteSlotMask = raceTransport_.remote_slot_mask;
+        out->inputDelay = raceInputDelay_;
+    }
+
+    /* Seal + fan out this endpoint's local input for `newestTick` and the two
+     * ticks before it (the 3-frame redundancy window). Deterministic from the
+     * local script, so a retransmit re-derives byte-identical frames. */
+    void sendLocalBundle(uint32_t newestTick) {
+        if (!mesh_) return;
+        const uint8_t localMask = raceTransport_.local_slot_mask;
+        MdkrMatchInputBundle bundle;
+        std::memset(&bundle, 0, sizeof(bundle));
+        bundle.match_epoch = raceEpoch_;
+        bundle.newest_tick = newestTick;
+        bundle.frame_count = MDKR_MATCH_INPUT_BUNDLE_FRAMES;
+        bundle.slot_mask = localMask;
+        for (unsigned age = 0u; age < MDKR_MATCH_INPUT_BUNDLE_FRAMES; ++age) {
+            if (age > bundle.newest_tick) break; /* no tick below 0 */
+            const uint32_t frameTick = bundle.newest_tick - age;
+            for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; ++slot) {
+                if ((localMask & (1u << slot)) == 0u) continue;
+                bundle.frames[age][slot] =
+                    raceLocalSample(static_cast<uint8_t>(slot), frameTick);
+            }
+        }
+        uint8_t bytes[MDKR_MATCH_INPUT_BUNDLE_BYTES];
+        if (mdkr_match_input_bundle_encode(&bundle, bytes, sizeof(bytes))) {
+            (void)mesh_->sendInput(bytes);
+        }
+    }
+
+    /* Retransmit the local input covering an authored tick, so the lossy state
+     * channel (maxRetransmits 0) cannot permanently wedge the peer's contiguous
+     * confirmation on a single dropped datagram. */
+    bool raceSendInputForTick(uint32_t newestTick) {
+        if (!raceReady_ || !mesh_) return false;
+        sendLocalBundle(newestTick);
+        return true;
+    }
+
+    bool raceAdvance() {
+        if (!raceReady_ || !mesh_) return false;
+        sendLocalBundle(raceNextTick_ + raceInputDelay_);
+        /* Drain the current authored tick with this endpoint's local seats in
+         * ascending canonical-slot order (the bridge's frozen local order). */
+        const uint8_t localMask = raceTransport_.local_slot_mask;
+        MdkrPadSample local[MDKR_SESSION_MAX_PLAYERS];
+        unsigned localCount = 0u;
+        for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; ++slot) {
+            if ((localMask & (1u << slot)) == 0u) continue;
+            local[localCount++] =
+                raceLocalSample(static_cast<uint8_t>(slot), raceNextTick_);
+        }
+        if (!mdkr_match_transport_drain_tick(&raceTransport_, raceEpoch_,
+                                             raceNextTick_, local, localCount)) {
+            return false;
+        }
+        ++raceNextTick_;
+        return true;
+    }
+
+    bool raceInputsForTick(uint32_t tick, MdkrInputSet *out) {
+        if (!raceReady_) return false;
+        return mdkr_match_transport_inputs_for_tick(&raceTransport_, raceEpoch_,
+                                                    tick, out);
+    }
+
+    void raceStats(MdkrOnlineLiveRaceStats *out) const {
+        out->inputEnvelopesReceived = inputEnvelopes_;
+        if (mesh_) {
+            const MdkrMatchPeerMeshStats m = mesh_->stats();
+            out->meshRejectedState = m.rejectedStateEnvelopes;
+            out->meshIgnoredStaleSignals = m.ignoredStaleSignals;
+            out->meshDroppedEvents = m.droppedEvents;
+        }
+        const MdkrMatchTransportStats *t =
+            mdkr_match_transport_stats(&raceTransport_);
+        if (t) {
+            out->transportAccepted = t->accepted;
+            out->transportCorrected = t->corrected;
+            out->transportDuplicates = t->duplicates;
+            out->transportOutOfWindow = t->out_of_window;
+            out->transportDrained = t->drained;
+        }
+    }
+
+private:
 
     /* ---- State -------------------------------------------------------- */
     MdkrOnlineLiveAdapterOptions opts_;
@@ -783,8 +991,11 @@ private:
     std::string credential_;
     std::vector<MdkrOnlineRoomEvent> roomEvents_;
 
-    /* Mesh */
-    static constexpr uint32_t meshGeneration_ = 1u;
+    /* Mesh. The connection generation is ADOPTED from the signal service's
+     * welcome (localGeneration 0 to the mesh); the constant 1 is never assumed
+     * against real signaling. It is read once the phrase is ready and bound
+     * into the graph and the local attestation. */
+    uint32_t meshGeneration_ = 0u;
     uint32_t meshEpoch_ = 1u;
     std::vector<MdkrMatchPeerSlotOwner> meshRoster_;
     std::unique_ptr<MdkrMatchPeerMesh> mesh_;
@@ -792,6 +1003,18 @@ private:
     std::set<uint64_t> channelsReady_;
     std::vector<MdkrMatchPeerMeshEvent> meshEvents_;
     uint64_t inputEnvelopes_ = 0u;
+
+    /* Race runtime (post-install): the launcher-side match transport bound to a
+     * headless session bridge, plus the per-peer authenticated slot masks used
+     * to authorize opened INPUT envelopes into mdkr_match_transport_receive. */
+    MdkrSessionBridge raceBridge_{};
+    MdkrMatchTransport raceTransport_{};
+    bool raceReady_ = false;
+    uint32_t raceEpoch_ = 0u;
+    uint32_t raceFirstTick_ = 1u;
+    uint32_t raceNextTick_ = 1u;
+    uint8_t raceInputDelay_ = 2u;
+    std::map<uint64_t, uint8_t> peerSlotMask_;
 
     /* Loading barrier + preflight */
     bool loadingBuildDone_ = false;
@@ -831,6 +1054,45 @@ bool mdkr_online_live_adapter_probe(const IMdkrOnlineAdapter *adapter,
     const LiveAdapter *live = dynamic_cast<const LiveAdapter *>(adapter);
     if (live == nullptr) return false;
     live->fillProbe(out);
+    return true;
+}
+
+bool mdkr_online_live_adapter_race_info(const IMdkrOnlineAdapter *adapter,
+                                        MdkrOnlineLiveRaceInfo *out) {
+    if (adapter == nullptr || out == nullptr) return false;
+    const LiveAdapter *live = dynamic_cast<const LiveAdapter *>(adapter);
+    if (live == nullptr) return false;
+    live->raceInfo(out);
+    return true;
+}
+
+bool mdkr_online_live_adapter_race_advance(IMdkrOnlineAdapter *adapter) {
+    if (adapter == nullptr) return false;
+    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    return live != nullptr && live->raceAdvance();
+}
+
+bool mdkr_online_live_adapter_race_resend(IMdkrOnlineAdapter *adapter,
+                                          uint32_t newestTick) {
+    if (adapter == nullptr) return false;
+    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    return live != nullptr && live->raceSendInputForTick(newestTick);
+}
+
+bool mdkr_online_live_adapter_race_inputs_for_tick(IMdkrOnlineAdapter *adapter,
+                                                   uint32_t tick,
+                                                   MdkrInputSet *out) {
+    if (adapter == nullptr || out == nullptr) return false;
+    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    return live != nullptr && live->raceInputsForTick(tick, out);
+}
+
+bool mdkr_online_live_adapter_race_stats(const IMdkrOnlineAdapter *adapter,
+                                         MdkrOnlineLiveRaceStats *out) {
+    if (adapter == nullptr || out == nullptr) return false;
+    const LiveAdapter *live = dynamic_cast<const LiveAdapter *>(adapter);
+    if (live == nullptr) return false;
+    live->raceStats(out);
     return true;
 }
 

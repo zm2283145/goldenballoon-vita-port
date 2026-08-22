@@ -340,7 +340,11 @@ public:
         const std::string &,
         const std::vector<MdkrMatchPeerIceServer> &) override {
         began = localEndpointId;
-        return hub_->addEndpoint(localEndpointId, generation);
+        /* The live adapter now passes 0 to ADOPT the service-assigned
+         * generation (O-T6 forward-fix). Mirror the real signal service, which
+         * assigns each endpoint's first signal socket generation 1. */
+        return hub_->addEndpoint(localEndpointId,
+                                 generation != 0u ? generation : 1u);
     }
     void reset() override {}
     uint64_t began = 0u;
@@ -495,9 +499,33 @@ struct FullRunResult {
     bool reachedLoading = false;
     MdkrOnlineLiveLaunchProbe probeA{};
     MdkrOnlineLiveLaunchProbe probeB{};
+    bool raceRun = false;
+    bool raceConverged = false;
+    uint32_t racedTicks = 0u;
+    uint64_t hashA = 0u;
+    uint64_t hashB = 0u;
 };
 
-FullRunResult driveTwoAdapters(bool bonusIdentityOnA) {
+/* FNV-1a fold of one confirmed canonical frame, over exactly the active slots
+ * -- the ROM-free "engine advance" both endpoints agree on. */
+void foldFrame(uint64_t &hash, uint32_t tick, uint8_t activeMask,
+               const MdkrInputSet &frame) {
+    auto mix = [&hash](uint64_t v) {
+        for (unsigned b = 0u; b < 8u; ++b) {
+            hash ^= (v >> (b * 8u)) & 0xffu;
+            hash *= UINT64_C(1099511628211);
+        }
+    };
+    mix(tick);
+    for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; ++slot) {
+        if ((activeMask & (1u << slot)) == 0u) continue;
+        mix(frame.slots[slot].buttons);
+        mix(static_cast<uint64_t>(static_cast<uint8_t>(frame.slots[slot].stick_x)));
+        mix(static_cast<uint64_t>(static_cast<uint8_t>(frame.slots[slot].stick_y)));
+    }
+}
+
+FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u) {
     FullRunResult result;
     mdkr_net_roster_runtime_clear();
 
@@ -602,6 +630,57 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA) {
 
     mdkr_online_live_adapter_probe(A.get(), &result.probeA);
     mdkr_online_live_adapter_probe(B.get(), &result.probeB);
+
+    /* O-T6 race: with both descriptors installed, feed real sealed input
+     * bundles over the loopback mesh for `raceTicks` authored ticks and fold
+     * every confirmed canonical frame into a per-endpoint FNV state hash. The
+     * two independent endpoints must converge on the identical hash. */
+    MdkrOnlineLiveRaceInfo ia{}, ib{};
+    mdkr_online_live_adapter_race_info(A.get(), &ia);
+    mdkr_online_live_adapter_race_info(B.get(), &ib);
+    /* Both endpoints bring up their per-endpoint race transport even though the
+     * process-global engine roster can hold only one (see install()). */
+    if (raceTicks > 0u && ia.ready && ib.ready) {
+        result.raceRun = true;
+        const uint32_t target = ia.firstTick + raceTicks - 1u;
+        const uint32_t kThrottle = 16u;
+        uint32_t cursorA = ia.firstTick, cursorB = ib.firstTick;
+        uint64_t hA = UINT64_C(1469598103934665603);
+        uint64_t hB = UINT64_C(1469598103934665603);
+        auto foldReady = [&](IMdkrOnlineAdapter *self, uint32_t &cursor,
+                             uint8_t active, uint64_t &h) {
+            MdkrInputSet frame;
+            while (mdkr_online_live_adapter_race_inputs_for_tick(self, cursor,
+                                                                 &frame)) {
+                if ((frame.confirmed_mask & active) != active) break;
+                foldFrame(h, cursor, active, frame);
+                ++cursor;
+            }
+        };
+        for (unsigned step = 0u; step < 20000u; ++step) {
+            A->service();
+            B->service();
+            MdkrOnlineLiveRaceInfo na{}, nb{};
+            mdkr_online_live_adapter_race_info(A.get(), &na);
+            mdkr_online_live_adapter_race_info(B.get(), &nb);
+            if (na.nextTick <= target && na.nextTick - cursorA < kThrottle) {
+                mdkr_online_live_adapter_race_advance(A.get());
+            }
+            if (nb.nextTick <= target && nb.nextTick - cursorB < kThrottle) {
+                mdkr_online_live_adapter_race_advance(B.get());
+            }
+            foldReady(A.get(), cursorA, ia.activeSlotMask, hA);
+            foldReady(B.get(), cursorB, ib.activeSlotMask, hB);
+            if (cursorA > target && cursorB > target) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            clock.nowMs += 2u;
+        }
+        result.racedTicks = (cursorA <= cursorB ? cursorA : cursorB) - ia.firstTick;
+        result.hashA = hA;
+        result.hashB = hB;
+        result.raceConverged =
+            cursorA > target && cursorB > target && hA == hB;
+    }
     return result;
 }
 
@@ -631,6 +710,27 @@ void test_full_flow_installs_through_builder() {
     mdkr_net_roster_runtime_clear();
 }
 
+void test_two_endpoint_race_converges() {
+    const FullRunResult r = driveTwoAdapters(/*bonusIdentityOnA=*/false,
+                                             /*raceTicks=*/240u);
+    CHECK(r.probeA.installed);  /* the process-global roster holder */
+    CHECK(r.probeA.preflightReady && r.probeB.preflightReady);
+    CHECK(r.raceRun);
+    CHECK(r.racedTicks >= 240u);
+    /* The headline: two independent endpoints, real sealed input over the mesh,
+     * byte-identical converged state hash. */
+    CHECK(r.raceConverged);
+    CHECK(r.hashA == r.hashB);
+    if (!r.raceConverged) {
+        std::fprintf(stderr,
+                     "race did not converge: ticks=%u hashA=%016llx "
+                     "hashB=%016llx\n",
+                     r.racedTicks, (unsigned long long)r.hashA,
+                     (unsigned long long)r.hashB);
+    }
+    mdkr_net_roster_runtime_clear();
+}
+
 void test_clamp_refuses_bonus_identity() {
     const FullRunResult r = driveTwoAdapters(/*bonusIdentityOnA=*/true);
     /* A reached the Loading barrier but the retail clamp refused the build. */
@@ -649,6 +749,7 @@ int main() {
     test_create_room_view();
     test_transport_failure_preserves_lobby();
     test_full_flow_installs_through_builder();
+    test_two_endpoint_race_converges();
     test_clamp_refuses_bonus_identity();
     std::fprintf(stderr, "online_live_adapter: %d checks, %d failures\n",
                  g_checks, g_failures);

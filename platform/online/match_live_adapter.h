@@ -24,6 +24,7 @@
 #include "online/lobby_view_model.h"
 #include "online/match_launch_builder.h"
 #include "online/match_peer_transport.h"
+#include "session/session_bridge.h"
 #include "session/session_types.h"
 
 #include <cstdint>
@@ -273,6 +274,61 @@ struct MdkrOnlineLiveLaunchProbe {
 };
 bool mdkr_online_live_adapter_probe(const IMdkrOnlineAdapter *adapter,
                                     MdkrOnlineLiveLaunchProbe *out);
+
+/* ---- O-T6 post-install per-tick race feed ------------------------------- *
+ *
+ * Once the descriptor installs, the adapter owns a launcher-side match
+ * transport bound to a headless session bridge -- the live replacement for the
+ * loopback simulator in main_app.cpp's MatchInputProviderContext. Opened INPUT
+ * envelopes from the mesh are fed to mdkr_match_transport_receive per covered
+ * tick inside service(); race_advance() seals the local endpoint's 3-frame
+ * bundle, fans it out on the mesh and drains one authored tick through the
+ * transport. The engine model that advances over the resulting canonical input
+ * frames -- and the state hash the two processes compare -- is owned by the
+ * O-T6 race driver, which reads confirmed frames back through
+ * race_inputs_for_tick(). These functions return false for a non-live adapter
+ * or before install; they never run on the launcher's fake-adapter path. */
+struct MdkrOnlineLiveRaceInfo {
+    bool ready = false;
+    uint32_t matchEpoch = 0u;
+    uint32_t firstTick = 0u;
+    uint32_t nextTick = 0u;      /* the next authored tick race_advance drains */
+    uint8_t activeSlotMask = 0u; /* every canonical slot in the manifest */
+    uint8_t localSlotMask = 0u;  /* this endpoint's owned canonical slots */
+    uint8_t remoteSlotMask = 0u; /* peers' canonical slots (fed from the mesh) */
+    uint8_t inputDelay = 0u;     /* ticks the sealed input leads the drain */
+};
+bool mdkr_online_live_adapter_race_info(const IMdkrOnlineAdapter *adapter,
+                                        MdkrOnlineLiveRaceInfo *out);
+/* Seal + fan out this endpoint's local input for the delayed future tick and
+ * drain the current authored tick. Deterministic: the sealed future frames and
+ * the drained current frame come from the same launcher-owned input script, so
+ * both endpoints commit byte-identical canonical inputs. */
+bool mdkr_online_live_adapter_race_advance(IMdkrOnlineAdapter *adapter);
+/* Retransmit the local input covering `newestTick` (and the two ticks before
+ * it) without draining, so a datagram dropped on the lossy state channel cannot
+ * permanently wedge the peer's contiguous confirmation. */
+bool mdkr_online_live_adapter_race_resend(IMdkrOnlineAdapter *adapter,
+                                          uint32_t newestTick);
+/* The canonical frame retained for an authored tick (confirmed_mask tells the
+ * driver when every active slot's input has actually arrived). */
+bool mdkr_online_live_adapter_race_inputs_for_tick(
+    IMdkrOnlineAdapter *adapter, uint32_t tick, MdkrInputSet *out);
+
+/* Diagnostics for the race lane (never terminal). */
+struct MdkrOnlineLiveRaceStats {
+    uint64_t inputEnvelopesReceived = 0u; /* opened INPUT envelopes from peers */
+    uint64_t meshRejectedState = 0u;
+    uint64_t meshIgnoredStaleSignals = 0u;
+    uint64_t meshDroppedEvents = 0u;
+    uint32_t transportAccepted = 0u;
+    uint32_t transportCorrected = 0u;
+    uint32_t transportDuplicates = 0u;
+    uint32_t transportOutOfWindow = 0u;
+    uint32_t transportDrained = 0u;
+};
+bool mdkr_online_live_adapter_race_stats(const IMdkrOnlineAdapter *adapter,
+                                         MdkrOnlineLiveRaceStats *out);
 
 /* ---- Internal-test-token gate for the live adapter ---------------------- *
  *
