@@ -145,6 +145,8 @@ struct MdkrMatchSignalTestServerState {
     std::vector<std::string> offered;
 
     std::vector<std::string> texts;
+    std::vector<std::string> pongs;
+    std::atomic<bool> pauseReading{false};
     bool clientClosed = false;
     uint16_t closeCode = 0u;
     std::string closeReason;
@@ -203,7 +205,8 @@ bool MdkrMatchSignalTestServer::start() {
 
     const ProtocolMode mode = protocolMode;
     const bool respond = respondToUpgrade;
-    state->thread = std::thread([state, mode, respond]() {
+    const std::string extraHeader = extra101Header;
+    state->thread = std::thread([state, mode, respond, extraHeader]() {
         while (!state->stopping) {
             struct sockaddr_in peer;
             socklen_t peerLength = sizeof(peer);
@@ -331,6 +334,9 @@ bool MdkrMatchSignalTestServer::start() {
             if (!selected.empty()) {
                 response += "Sec-WebSocket-Protocol: " + selected + "\r\n";
             }
+            if (!extraHeader.empty()) {
+                response += extraHeader + "\r\n";
+            }
             response += "\r\n";
             {
                 std::lock_guard<std::mutex> lock(state->writeMutex);
@@ -352,6 +358,12 @@ bool MdkrMatchSignalTestServer::start() {
             std::string carried;
             bool open = true;
             while (!state->stopping && open) {
+                if (state->pauseReading) {
+                    /* stopReading(): leave the client's bytes in the kernel
+                     * buffers so its send side backs up. */
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    continue;
+                }
                 /* Need at least a 2-byte header. */
                 if (carried.size() < 2u) {
                     char chunk[4096];
@@ -458,8 +470,11 @@ bool MdkrMatchSignalTestServer::start() {
                                      0);
                     }
                     open = false;
+                } else if (opcode == 0xau) {
+                    state->pongs.push_back(std::move(payload));
+                    state->condition.notify_all();
                 }
-                /* Ping/pong from the client are ignored by the harness. */
+                /* Client pings are ignored by the harness. */
             }
             {
                 std::lock_guard<std::mutex> lock(state->mutex);
@@ -618,4 +633,19 @@ bool MdkrMatchSignalTestServer::waitForDisconnect(unsigned budgetMs) {
 bool MdkrMatchSignalTestServer::allClientFramesMasked() const {
     std::lock_guard<std::mutex> lock(state_->mutex);
     return !state_->sawUnmaskedClientFrame;
+}
+
+void MdkrMatchSignalTestServer::stopReading() {
+    state_->pauseReading = true;
+}
+
+bool MdkrMatchSignalTestServer::waitForPongs(size_t count, unsigned budgetMs) {
+    auto state = state_;
+    return state->waitUntil([&]() { return state->pongs.size() >= count; },
+                            budgetMs);
+}
+
+std::vector<std::string> MdkrMatchSignalTestServer::pongPayloads() const {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    return state_->pongs;
 }

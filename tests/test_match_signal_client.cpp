@@ -116,9 +116,11 @@ struct Rig {
 
     explicit Rig(MdkrMatchSignalTestServer::ProtocolMode mode =
                      MdkrMatchSignalTestServer::ProtocolMode::SelectV1,
-                 unsigned timeoutMs = 10000u, bool respond = true) {
+                 unsigned timeoutMs = 10000u, bool respond = true,
+                 const std::string &extra101Header = std::string()) {
         server.protocolMode = mode;
         server.respondToUpgrade = respond;
+        server.extra101Header = extra101Header;
         assert(server.start());
         std::string error;
         client = MdkrMatchSignalClient::create(
@@ -815,6 +817,105 @@ void invalidOutboundMessagesAreRefusedBeforeTheWire() {
     assert(sent.ok && sent.sequence == 1u);
 }
 
+/* Fix round 1, Important 1: an outbound text field that is not well-formed
+ * UTF-8 must be the same "invalid match signal message" value-refusal as
+ * every other bad shape -- never an exception escaping send() (nlohmann's
+ * dump() throws type_error.316 on invalid UTF-8). */
+void invalidUtf8OutboundIsRefusedNotThrown() {
+    Rig rig;
+    rig.welcome(7u, {{"202", 5u}});
+    const auto refused = [&](const MdkrMatchSignalOutbound &message) {
+        const MdkrMatchSignalSendResult result = rig.client->send(message);
+        assert(!result.ok);
+        assert(result.error == kMdkrMatchSignalInvalidClientMessage);
+    };
+    MdkrMatchSignalOutbound base;
+    base.toEndpointId = "202";
+    base.toConnectionGeneration = 5u;
+    { /* Stray continuation byte in an sdp. */
+        MdkrMatchSignalOutbound m = base;
+        m.type = "webrtc_offer";
+        m.sdp = std::string("v=0\x80stray");
+        refused(m);
+    }
+    { /* Truncated multi-byte sequence at the end of a candidate. */
+        MdkrMatchSignalOutbound m = base;
+        m.type = "webrtc_ice";
+        m.candidate = std::string("candidate:1\xc3");
+        refused(m);
+    }
+    { /* Overlong encoding (0xC0 0xAF is an overlong '/'). */
+        MdkrMatchSignalOutbound m = base;
+        m.type = "webrtc_ice";
+        m.candidate = "candidate:1";
+        m.hasSdpMid = true;
+        m.sdpMid = std::string("\xc0\xaf");
+        refused(m);
+    }
+    { /* CESU-8 style surrogate half (ED A0 80). */
+        MdkrMatchSignalOutbound m = base;
+        m.type = "webrtc_answer";
+        m.sdp = std::string("v=0\xed\xa0\x80");
+        refused(m);
+    }
+    /* No sequence consumed, nothing on the wire, and the client still
+     * accepts a valid (multi-byte UTF-8) payload afterwards. */
+    assert(rig.client->snapshot().nextSequence == 1u);
+    MdkrMatchSignalOutbound good = base;
+    good.type = "webrtc_offer";
+    good.sdp = std::string("v=0 caf\xc3\xa9 \xe2\x9c\x93");
+    const MdkrMatchSignalSendResult sent = rig.client->send(good);
+    assert(sent.ok && sent.sequence == 1u);
+    assert(rig.server.waitForTextMessages(1u));
+}
+
+/* Fix round 1, Important 2: a peer that stops draining the socket (zero
+ * receive window) while the launcher queues large payloads must not turn
+ * close() into a hang -- the blocked write is aborted and the socket thread
+ * joins promptly. */
+void closeReturnsPromptlyWithABlockedWrite() {
+    Rig rig;
+    rig.welcome(7u, {{"202", 5u}});
+    rig.server.stopReading();
+    MdkrMatchSignalOutbound offer;
+    offer.type = "webrtc_offer";
+    offer.toEndpointId = "202";
+    offer.toConnectionGeneration = 5u;
+    offer.sdp = std::string(60u * 1024u, 's');
+    /* ~4.2 MB queued: far past what loopback send+receive buffers absorb,
+     * so the socket thread ends up blocked inside a send. */
+    for (unsigned index = 0u; index < 70u; index++) {
+        const MdkrMatchSignalSendResult sent = rig.client->send(offer);
+        assert(sent.ok);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const auto start = std::chrono::steady_clock::now();
+    std::atomic<bool> closed{false};
+    std::thread closer([&]() {
+        rig.client->close();
+        closed = true;
+    });
+    const auto deadline = start + std::chrono::milliseconds(3000);
+    while (!closed && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(closed); /* pre-fix: the join blocks behind ::send forever */
+    closer.join();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - start)
+                             .count();
+    assert(elapsed < 3000);
+    assert(rig.client->snapshot().phase == MdkrMatchSignalPhase::Closed);
+}
+
+/* Fix round 1, minor: RFC 6455 4.1 -- a 101 carrying a Sec-WebSocket-
+ * Extensions the client never requested must fail the connection. */
+void unrequestedExtensionOnThe101IsRefused() {
+    Rig rig(MdkrMatchSignalTestServer::ProtocolMode::SelectV1, 10000u, true,
+            "Sec-WebSocket-Extensions: permessage-deflate");
+    rig.expectTerminalFailure(kMdkrMatchSignalTransportLost);
+}
+
 void abruptTransportLossIsTerminal() {
     Rig rig;
     rig.welcome(7u, {});
@@ -875,6 +976,11 @@ int main() {
     invalidOutboundMessagesAreRefusedBeforeTheWire();
     abruptTransportLossIsTerminal();
     serverCloseFrameIsTransportLost();
+
+    /* Fix round 1. */
+    invalidUtf8OutboundIsRefusedNotThrown();
+    closeReturnsPromptlyWithABlockedWrite();
+    unrequestedExtensionOnThe101IsRefused();
 
     std::fprintf(stderr, "test_match_signal_client: all cases passed\n");
     return 0;

@@ -146,13 +146,66 @@ bool jsonNumberEquals(const Json &value, uint32_t target) {
     return jsonU32(value, false, raw) && raw == target;
 }
 
+/* RFC 3629 well-formedness (the exact table nlohmann's serializer
+ * enforces): no overlongs, no surrogate code points, nothing past
+ * U+10FFFF, no truncated sequences. A JS string can never hand the wire
+ * invalid UTF-8; a C++ launcher can, and without this check the refusal
+ * would surface as dump()'s type_error.316 escaping send() instead of the
+ * documented value-refusal. */
+bool validUtf8(const std::string &value) {
+    size_t index = 0u;
+    const size_t size = value.size();
+    while (index < size) {
+        const uint8_t lead = static_cast<uint8_t>(value[index]);
+        size_t follow = 0u;
+        uint8_t secondLow = 0x80u;
+        uint8_t secondHigh = 0xbfu;
+        if (lead <= 0x7fu) {
+            index++;
+            continue;
+        } else if (lead >= 0xc2u && lead <= 0xdfu) {
+            follow = 1u;
+        } else if (lead == 0xe0u) {
+            follow = 2u;
+            secondLow = 0xa0u; /* refuse overlong 3-byte forms */
+        } else if (lead >= 0xe1u && lead <= 0xecu) {
+            follow = 2u;
+        } else if (lead == 0xedu) {
+            follow = 2u;
+            secondHigh = 0x9fu; /* refuse surrogates U+D800..U+DFFF */
+        } else if (lead >= 0xeeu && lead <= 0xefu) {
+            follow = 2u;
+        } else if (lead == 0xf0u) {
+            follow = 3u;
+            secondLow = 0x90u; /* refuse overlong 4-byte forms */
+        } else if (lead >= 0xf1u && lead <= 0xf3u) {
+            follow = 3u;
+        } else if (lead == 0xf4u) {
+            follow = 3u;
+            secondHigh = 0x8fu; /* refuse > U+10FFFF */
+        } else {
+            return false; /* 0x80..0xc1, 0xf5..0xff are never leads */
+        }
+        if (index + follow >= size) return false;
+        const uint8_t second = static_cast<uint8_t>(value[index + 1u]);
+        if (second < secondLow || second > secondHigh) return false;
+        for (size_t offset = 2u; offset <= follow; offset++) {
+            const uint8_t byte = static_cast<uint8_t>(value[index + offset]);
+            if (byte < 0x80u || byte > 0xbfu) return false;
+        }
+        index += follow + 1u;
+    }
+    return true;
+}
+
 /* JS text(): string, nonempty unless allowed, no NUL, UTF-8 bytes <= limit.
- * nlohmann already refused invalid UTF-8 at parse (stricter than JS lone
- * surrogates -- both end in the same terminal failure code). */
+ * Inbound strings are already valid UTF-8 (nlohmann refused anything else
+ * at parse); the well-formedness check is load-bearing for OUTBOUND
+ * launcher-supplied strings, which are raw bytes. */
 bool textString(const std::string &value, size_t limit, bool allowEmpty) {
     if (!allowEmpty && value.empty()) return false;
     if (value.find('\0') != std::string::npos) return false;
-    return value.size() <= limit;
+    return value.size() <= limit && validUtf8(value);
 }
 
 bool jsonText(const Json &value, size_t limit, bool allowEmpty,
@@ -1468,7 +1521,18 @@ MdkrMatchSignalSendResult MdkrMatchSignalClient::send(
         return result;
     }
     const uint32_t sequence = static_cast<uint32_t>(state.nextSequence);
-    state.outbound.push_back(wire.dump());
+    /* Belt and suspenders for the throws-as-values contract: every string
+     * reaching `wire` is validated above (validUtf8 for text fields,
+     * charset/literal checks for the rest), so dump() cannot throw -- but
+     * if that invariant is ever broken, the refusal stays a value. */
+    std::string payload;
+    try {
+        payload = wire.dump();
+    } catch (...) {
+        result.error = kMdkrMatchSignalInvalidClientMessage;
+        return result;
+    }
+    state.outbound.push_back(std::move(payload));
     MdkrMatchSignalPeerRef target;
     target.endpointId = message.toEndpointId;
     target.connectionGeneration = message.toConnectionGeneration;
