@@ -817,6 +817,87 @@ void invalidOutboundMessagesAreRefusedBeforeTheWire() {
     assert(sent.ok && sent.sequence == 1u);
 }
 
+/* ---- Fix round 1, Important 3: the hand-rolled frame parser's own rules,
+ * positive and negative, driven byte-level through sendPing/sendRawFrame. */
+
+void serverPingIsAnsweredWithAnIdenticalPong() {
+    Rig rig;
+    rig.welcome(7u, {});
+    assert(rig.server.sendPing("abc"));
+    assert(rig.server.waitForPongs(1u));
+    assert(rig.server.pongPayloads()[0] == "abc");
+    /* Control traffic is transparent: the client stays open and keeps
+     * processing data frames afterwards. */
+    assert(rig.client->snapshot().phase == MdkrMatchSignalPhase::Open);
+    assert(rig.server.sendText(presenceMessage("404", 1u, true).dump()));
+    assert(waitForEvents(*rig.client, rig.events, rig.events.size() + 1u));
+    assert(rig.events.back().type == MdkrMatchSignalEventType::PeerPresence);
+}
+
+void fragmentedTextReassemblesAcrossContinuations() {
+    Rig rig;
+    rig.welcome(7u, {});
+    const std::string message = presenceMessage("404", 1u, true).dump();
+    /* text FIN=0, continuation FIN=0, continuation FIN=1. */
+    assert(rig.server.sendRawFrame(0x01u, false, message.substr(0u, 9u)));
+    assert(rig.server.sendRawFrame(0x00u, false, message.substr(9u, 5u)));
+    assert(rig.server.sendRawFrame(0x80u, false, message.substr(14u)));
+    assert(waitForEvents(*rig.client, rig.events, rig.events.size() + 1u));
+    const MdkrMatchSignalEvent &presence = rig.events.back();
+    assert(presence.type == MdkrMatchSignalEventType::PeerPresence);
+    assert(presence.endpointId == "404");
+    assert(rig.client->snapshot().phase == MdkrMatchSignalPhase::Open);
+}
+
+void rsvBitsAreAProtocolViolation() {
+    Rig rig;
+    rig.welcome(7u, {});
+    /* FIN|RSV1|text: reserved bits are only legal under a negotiated
+     * extension, and this client negotiates none. */
+    assert(rig.server.sendRawFrame(0xc1u, false, "{}"));
+    rig.expectTerminalFailure(kMdkrMatchSignalTransportLost);
+}
+
+void maskedServerFrameIsAProtocolViolation() {
+    Rig rig;
+    rig.welcome(7u, {});
+    /* RFC 6455 5.1: a server MUST NOT mask. The violation is refused from
+     * the header bit alone. */
+    assert(rig.server.sendRawFrame(0x81u, true,
+                                   presenceMessage("404", 1u, true).dump()));
+    rig.expectTerminalFailure(kMdkrMatchSignalTransportLost);
+}
+
+void newTextFrameDuringFragmentationIsAProtocolViolation() {
+    Rig rig;
+    rig.welcome(7u, {});
+    assert(rig.server.sendRawFrame(0x01u, false, "{"));
+    assert(rig.server.sendRawFrame(0x81u, false, "{}"));
+    rig.expectTerminalFailure(kMdkrMatchSignalTransportLost);
+}
+
+void continuationWithoutAStartIsAProtocolViolation() {
+    Rig rig;
+    rig.welcome(7u, {});
+    assert(rig.server.sendRawFrame(0x80u, false, "{}"));
+    rig.expectTerminalFailure(kMdkrMatchSignalTransportLost);
+}
+
+void unknownOpcodeIsAProtocolViolation() {
+    Rig rig;
+    rig.welcome(7u, {});
+    assert(rig.server.sendRawFrame(0x83u, false, "x")); /* reserved 0x3 */
+    rig.expectTerminalFailure(kMdkrMatchSignalTransportLost);
+}
+
+void oversizeControlFrameIsAProtocolViolation() {
+    Rig rig;
+    rig.welcome(7u, {});
+    /* RFC 6455 5.5: control payloads are capped at 125 bytes. */
+    assert(rig.server.sendPing(std::string(126u, 'p')));
+    rig.expectTerminalFailure(kMdkrMatchSignalTransportLost);
+}
+
 /* Fix round 1, Important 1: an outbound text field that is not well-formed
  * UTF-8 must be the same "invalid match signal message" value-refusal as
  * every other bad shape -- never an exception escaping send() (nlohmann's
@@ -978,6 +1059,14 @@ int main() {
     serverCloseFrameIsTransportLost();
 
     /* Fix round 1. */
+    serverPingIsAnsweredWithAnIdenticalPong();
+    fragmentedTextReassemblesAcrossContinuations();
+    rsvBitsAreAProtocolViolation();
+    maskedServerFrameIsAProtocolViolation();
+    newTextFrameDuringFragmentationIsAProtocolViolation();
+    continuationWithoutAStartIsAProtocolViolation();
+    unknownOpcodeIsAProtocolViolation();
+    oversizeControlFrameIsAProtocolViolation();
     invalidUtf8OutboundIsRefusedNotThrown();
     closeReturnsPromptlyWithABlockedWrite();
     unrequestedExtensionOnThe101IsRefused();
