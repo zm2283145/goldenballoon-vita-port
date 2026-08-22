@@ -113,11 +113,18 @@ describe("MatchRoom local Durable Object adapter", () => {
     expect(host.fallbackCode).toMatch(/^\d{6}$/);
     expect(host.inviteExpiresInMs).toBeGreaterThan(0);
     expect(host.inviteExpiresInMs).toBeLessThanOrEqual(MATCH_LIMITS.inviteTtlMs);
+    /* Symmetric with the party payloads: create and join both carry the room's
+     * iceServers, STUN-only while no TURN secrets are provisioned. */
+    const stunOnly = [
+      {urls: "stun:stun.cloudflare.com:3478"},
+      {urls: "stun:stun.l.google.com:19302"},
+    ];
+    expect(host.iceServers).toEqual(stunOnly);
     const joined = await post("/api/match/code", {code: host.fallbackCode,
       compatibility, seatCount: 1}, undefined);
     expect(joined.status).toBe(201);
     expect(await joined.json()).toMatchObject({roomId: host.roomId,
-      lobby: {revision: 2}});
+      lobby: {revision: 2}, iceServers: stunOnly});
 
     const bindings = env as unknown as Env;
     const roomStub = bindings.MATCH_ROOMS.get(
@@ -150,8 +157,12 @@ describe("MatchRoom local Durable Object adapter", () => {
     const socket = response.webSocket!;
     const initialMessage = nextMessage(socket, "initial message");
     socket.accept();
+    /* The connect welcome carries iceServers alongside the state so a
+     * transport that lost its join payload can still configure ICE. */
     expect(await initialMessage).toMatchObject({type: "match_state",
-      lobby: {revision: host.lobby.revision}});
+      lobby: {revision: host.lobby.revision},
+      iceServers: [{urls: "stun:stun.cloudflare.com:3478"},
+        {urls: "stun:stun.l.google.com:19302"}]});
     const bindings = env as unknown as Env;
     const stub = bindings.MATCH_ROOMS.get(bindings.MATCH_ROOMS.idFromName(host.roomId));
     await evictDurableObject(stub, {webSockets: "hibernate"});

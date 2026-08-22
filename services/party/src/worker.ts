@@ -9,6 +9,7 @@ import {MATCH_LIMITS, type MatchCompatibilityV1,
 import {allowedOrigin, base64Url, boundCredential, constantTimeEqual, digest,
   fallbackCode, fromBase64Url, json, normalizeName, readJson,
   randomToken, validBoundCredential, validPartyOrigin} from "./security";
+import {stunIceServers} from "./turn";
 import {LIMITS, partyInviteRemainingMs, type Env} from "./types";
 import {internalRequest} from "./internal-api";
 
@@ -36,6 +37,13 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[]):
 function exactKeysWithOptionalName(value: Record<string, unknown>,
                                    required: readonly string[]): boolean {
   return exactKeys(value, required) || exactKeys(value, [...required, "name"]);
+}
+
+/** The iceServers a room object attached to its response, or the fixed STUN
+ * pair when a not-yet-updated object omitted them. Absence of TURN is a
+ * supported degradation, never an error (turn.ts). */
+function deliveredIceServers(state: Record<string, unknown>): unknown {
+  return Array.isArray(state.iceServers) ? state.iceServers : stunIceServers();
 }
 
 /**
@@ -168,7 +176,8 @@ async function createMatch(request: Request, env: Env): Promise<Response> {
   if (inviteExpiresInMs === null) {
     return json({error: "room_create_failed"}, 503);
   }
-  return json({...state, roomId, endpointId, credential, fallbackCode: matchCode,
+  return json({...state, iceServers: deliveredIceServers(state),
+    roomId, endpointId, credential, fallbackCode: matchCode,
     inviteExpiresInMs,
     inviteUrl: `${env.PARTY_ORIGIN}/room/#match=${capability}`}, 201);
 }
@@ -194,7 +203,8 @@ async function joinMatchToRoom(body: Record<string, unknown>, env: Env,
   }));
   if (!response.ok) return response;
   const state = await response.json() as Record<string, unknown>;
-  return json({...state, roomId, endpointId, credential}, 201);
+  return json({...state, iceServers: deliveredIceServers(state),
+    roomId, endpointId, credential}, 201);
 }
 
 async function joinMatch(request: Request, env: Env): Promise<Response> {
@@ -418,6 +428,7 @@ async function createRoomForKey(hostPublicKey: string, env: Env,
   }
   return json({roomId: name, hostCredential, fallbackCode: code,
     inviteGeneration: 1, inviteExpiresInMs,
+    iceServers: deliveredIceServers(state),
     controllerUrl: `${env.PARTY_ORIGIN}/controller/#${capability}`}, 201);
 }
 
@@ -454,7 +465,8 @@ async function redeemToRoom(body: Record<string, unknown>, env: Env, roomId: str
   if (!response.ok) return response;
   const result = await response.json() as Record<string, unknown>;
   return json({controllerId, credential, roomId, protocol: 2,
-    hostPublicKey: result.hostPublicKey}, 201);
+    hostPublicKey: result.hostPublicKey,
+    iceServers: deliveredIceServers(result)}, 201);
 }
 
 async function redeem(request: Request, env: Env): Promise<Response> {

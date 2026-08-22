@@ -3,6 +3,7 @@ import {applyRoomCommand} from "./room-model";
 import {base64Url, constantTimeEqual, digest, fallbackCode, fromBase64Url, json,
   readJson, utf8Exceeds, validPartyOrigin} from "./security";
 import {internalRequest, rejectUnsupportedInternalApi} from "./internal-api";
+import {roomIceServers} from "./turn";
 import {LIMITS, type CreateRoomInput, type Env, type RedeemInput,
   type StoredRoom} from "./types";
 
@@ -320,8 +321,12 @@ export class PartyRoom extends DurableObject<Env> {
       };
       await this.save(room);
       await this.ctx.storage.setAlarm(room.expiresAt);
+      /* iceServers ride the payloads that hand a client its room — here for
+       * the host's create/bootstrap, below for the phone's redeem. TURN is
+       * minted and cached by turn.ts; every failure degrades to STUN-only. */
       return json({ok: true, transitionId: room.transitionId,
-        inviteExpiresAt: room.inviteExpiresAt});
+        inviteExpiresAt: room.inviteExpiresAt,
+        iceServers: await roomIceServers(this.env, this.ctx.storage)});
     }
     const room = await this.room();
     if (!room) return json({error: "not_found"}, 404);
@@ -336,7 +341,8 @@ export class PartyRoom extends DurableObject<Env> {
       if (!result.ok) return json({error: result.error}, 409);
       await this.save(room);
       this.broadcastHost(publicRoom(room));
-      return json({...result, hostPublicKey: room.hostPublicKey}, 201);
+      return json({...result, hostPublicKey: room.hostPublicKey,
+        iceServers: await roomIceServers(this.env, this.ctx.storage)}, 201);
     }
     if (url.pathname === "/connect") return this.upgradeWebSocket(request, room);
     if (!(await this.authenticatedHost(request, room))) {

@@ -108,6 +108,8 @@ describe("zero-cost budget settings", () => {
       "/admit?kind=pairing&units=2&operation=matchCodeJoin",
       "/admit?kind=control&units=28&operation=partyControl",
       "/admit?kind=control&units=14&operation=matchSignalSocket",
+      "/admit?kind=pairing&units=2&operation=turnMint",
+      "/admit?kind=control&units=3&operation=turnMint",
     ]) {
       const response = await stub.fetch(`https://budget${path}`,
         {method: "POST", headers});
@@ -134,7 +136,7 @@ describe("zero-cost budget settings", () => {
         matchCreate: 0, matchLinkJoin: 0, matchCodeJoin: 1,
         matchControl: 0, matchRotate: 0, matchSocket: 0, matchSignalSocket: 1,
         partyCreate: 0, partyLinkJoin: 0, partyCodeJoin: 0,
-        partyControl: 0, partyRotate: 0, partySocket: 1, legacy: 1,
+        partyControl: 0, partyRotate: 0, partySocket: 1, turnMint: 0, legacy: 1,
       },
       admitted: {pairingUnits: 4, controlUnits: 43},
       tracked: {pairingUnits: 3, controlUnits: 43},

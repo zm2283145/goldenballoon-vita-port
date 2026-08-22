@@ -39,6 +39,10 @@ export interface Env {
   MAX_ADMISSIONS_PER_DAY: string;
   CONTROL_RESERVE_PER_DAY: string;
   OPS_READ_TOKEN?: string;
+  /* Cloudflare Realtime TURN secrets (turn.ts). Deliberately optional: their
+   * absence is a supported deployment that serves STUN-only iceServers. */
+  TURN_KEY_ID?: string;
+  TURN_API_TOKEN?: string;
 }
 
 export interface StoredController {
