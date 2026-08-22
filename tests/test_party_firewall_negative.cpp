@@ -340,15 +340,25 @@ void midSessionDropGoesNeutralNotStale() {
     assert(drainSeat(kPort, kOwner, kConnection) == 0u);
     assert(!mdkr_native_remote_pad_haptics_supported(kPort));
 
-    /* The room never comes back: the seat is released and local play is told
-     * it is still there. */
-    MdkrPartyTransportEvent fatal;
-    fatal.type = MdkrPartyTransportEventType::Error;
-    transport.events.push_back(fatal);
+    /* F8: an untyped transport error while the seat holds its lease keeps
+     * the lease -- the blocked room socket proves nothing about the direct
+     * path -- and the surface shows recovery, not a teardown. */
+    MdkrPartyTransportEvent fault;
+    fault.type = MdkrPartyTransportEventType::Error;
+    transport.events.push_back(fault);
     host.service(1004u);
-    assert(host.view().phase == MdkrNativePartyPhase::Error);
-    assert(host.view().message ==
-           "Phone controllers are unavailable. Local controllers still work.");
+    assert(host.view().phase == MdkrNativePartyPhase::Recovering);
+    assert(mdkr_native_remote_pad_info(kPort, &owner, &connection));
+
+    /* The room never comes back: only the service's typed verdict
+     * (RoomGone -- refusals classified by the I4 resume policy) ends the
+     * session, releasing the seat, and local play is told it is back. */
+    MdkrPartyTransportEvent fatal;
+    fatal.type = MdkrPartyTransportEventType::RoomGone;
+    transport.events.push_back(fatal);
+    host.service(1005u);
+    assert(host.view().phase == MdkrNativePartyPhase::RoomEnded);
+    assert(host.view().message == kMdkrPartyRoomEndedCopy);
     assert(!mdkr_native_remote_pad_info(kPort, &owner, &connection));
     for (unsigned port = 0u; port < MDKR_NATIVE_REMOTE_PAD_PORTS; ++port) {
         if (port == kPort) continue;
