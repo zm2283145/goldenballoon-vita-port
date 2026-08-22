@@ -206,6 +206,11 @@ void drawInvite(MdkrNativePartyHost &host) {
     ImGui::Text("Code  %s", groupedCode.c_str());
     ImGui::PopFont();
     const uint64_t now = static_cast<uint64_t>(SDL_GetTicks64());
+    /* F6: this frame really drew the QR and code, so tell the host -- while
+     * the card stays on screen it rotates the invite before its TTL lapses,
+     * keeping the displayed code redeemable. The rotated invite replaces
+     * QR, code and countdown right here in place. */
+    host.noteInviteDisplayed(now);
     const uint64_t seconds = view.inviteExpiresAtMs > now
         ? (view.inviteExpiresAtMs - now + 999u) / 1000u : 0u;
     ui::TextSubtle("Expires in %llu:%02llu",

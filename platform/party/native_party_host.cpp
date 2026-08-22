@@ -25,6 +25,11 @@ constexpr uint64_t kRebindRateLimitMs = 500u;
  * a healthy channel refreshes before the previous pulse expires, a broken
  * one goes silent within 250 ms. */
 constexpr uint64_t kRumbleRefreshMs = 200u;
+/* F6 auto-rotate: how recent the UI's last noteInviteDisplayed must be for
+ * the invite card to count as ON SCREEN right now. The UI reports once per
+ * drawn frame, so anything past a second means the card left the screen
+ * and the invite must simply expire at its ordinary TTL. */
+constexpr uint64_t kInviteDisplayedFreshMs = 1000u;
 
 bool printable(const std::string &value, size_t maximum) {
     if (value.size() > maximum) return false;
@@ -196,6 +201,8 @@ bool MdkrNativePartyHost::open(const std::string &serviceOrigin) {
     }
     releaseAll();
     view_ = MdkrNativePartyView{};
+    inviteDisplayedAtMs_ = 0u;
+    inviteTtlMs_ = 0u;
     if (!transport_.available()) {
         setError(safeMessage(
             transport_.unavailableReason(),
@@ -298,6 +305,10 @@ bool MdkrNativePartyHost::rotateInvite() {
     return true;
 }
 
+void MdkrNativePartyHost::noteInviteDisplayed(uint64_t nowMs) {
+    inviteDisplayedAtMs_ = nowMs;
+}
+
 bool MdkrNativePartyHost::dismissInvite() {
     if (!view_.inviteVisible || view_.busy || !transport_.revokeInvite()) {
         return false;
@@ -313,6 +324,8 @@ bool MdkrNativePartyHost::closeRoom() {
     transport_.shutdown();
     releaseAll();
     view_ = MdkrNativePartyView{};
+    inviteDisplayedAtMs_ = 0u;
+    inviteTtlMs_ = 0u;
     view_.message = "Phone controllers closed.";
     return requested;
 }
@@ -476,6 +489,13 @@ void MdkrNativePartyHost::applyRoomState(
         }
     }
 
+    /* F6: latch the generation's ORIGINAL TTL once, at the transition that
+     * introduces the generation -- the 75% auto-rotate mark is measured
+     * against it, and a later same-generation update (which arrives with
+     * only the remaining time) must not shrink the baseline. */
+    if (room.inviteGeneration != view_.inviteGeneration) {
+        inviteTtlMs_ = room.inviteActive ? room.inviteExpiresInMs : 0u;
+    }
     view_.transitionId = room.transitionId;
     view_.inviteGeneration = room.inviteGeneration;
     /* I1 fix: room.inviteExpiresInMs is relative (ms remaining as of the
@@ -711,6 +731,8 @@ void MdkrNativePartyHost::applyEvent(
         case MdkrPartyTransportEventType::Closed:
             releaseAll();
             view_ = MdkrNativePartyView{};
+            inviteDisplayedAtMs_ = 0u;
+            inviteTtlMs_ = 0u;
             view_.message = safeMessage(event.message, "Phone controllers closed.");
             return;
     }
@@ -816,6 +838,24 @@ void MdkrNativePartyHost::service(uint64_t nowMs) {
         view_.fallbackCode.clear();
         view_.phase = MdkrNativePartyPhase::InviteRevoked;
         view_.message = "Controller code expired. Connected phones keep their seats.";
+    }
+
+    /* F6: an invite the player is actually LOOKING at right now (the UI
+     * reported the card drawn within the last frame or so) rotates itself
+     * once ~75% of its TTL has elapsed, so the QR/code on screen is always
+     * redeemable. The TTL itself never lengthens: an undisplayed invite
+     * just expired above exactly as it always did, and this path mints a
+     * replacement rather than stretching the old one. rotateInvite() keeps
+     * every one of its own gates (phase, busy, generation), so an in-flight
+     * rotation is never doubled. */
+    if (view_.inviteVisible && !view_.busy &&
+        view_.phase == MdkrNativePartyPhase::Open &&
+        inviteTtlMs_ != 0u && inviteDisplayedAtMs_ != 0u &&
+        nowMs >= inviteDisplayedAtMs_ &&
+        nowMs - inviteDisplayedAtMs_ <= kInviteDisplayedFreshMs &&
+        view_.inviteExpiresAtMs > nowMs &&
+        view_.inviteExpiresAtMs - nowMs <= inviteTtlMs_ / 4u) {
+        (void)rotateInvite();
     }
 
     for (MdkrNativePartyController &candidate : view_.controllers) {

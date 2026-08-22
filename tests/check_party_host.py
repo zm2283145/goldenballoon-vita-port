@@ -68,7 +68,7 @@ def run(args: argparse.Namespace) -> None:
                     });
                     return {
                       fallbackCode:'654321', inviteGeneration:partyInviteGeneration,
-                      inviteExpiresInMs:120000,
+                      inviteExpiresInMs:globalThis.__partyRotateTtl||120000,
                       controllerUrl:location.origin+'/controller/#'+'B'.repeat(43)
                     };
                   }
@@ -370,6 +370,42 @@ def run(args: argparse.Namespace) -> None:
               .map(entry=>entry.body.expectedInviteGeneration)""")
             require(rotate_generations == [1, 3, 5, 7],
                     f"rotate requests lost revoke/publication correlation: {rotate_generations}")
+
+            # F6: while the invite card is on screen, the host rotates the
+            # invite by itself before its TTL lapses (~75% elapsed), so a
+            # displayed QR/code is always redeemable. The TTL itself never
+            # lengthens: the fixture mints a 4 s invite and the page must
+            # request a fresh /rotate with no click, replacing QR + code +
+            # countdown in place instead of ever showing "expired".
+            cdp.evaluate("globalThis.__partyRotateTtl=4000")
+            rotates_before = cdp.evaluate("""globalThis.__mdkrPartyHostTestState
+              .requests.filter(path=>path.endsWith('/rotate')).length""")
+            cdp.evaluate("document.getElementById('party-extend').click()")
+            wait_value(cdp, """globalThis.__mdkrPartyHostTestState
+              .requests.filter(path=>path.endsWith('/rotate')).length""",
+                lambda value: value == rotates_before + 1,
+                "manual short-TTL rotation", args.timeout)
+            wait_value(cdp, """globalThis.__mdkrPartyHostTestState
+              .requests.filter(path=>path.endsWith('/rotate')).length""",
+                lambda value: isinstance(value, int) and value >= rotates_before + 2,
+                "displayed invite auto-rotated before its TTL lapsed",
+                args.timeout)
+            auto_rotated = cdp.evaluate("""(() => ({
+              code:document.getElementById('party-code').textContent,
+              expiry:document.getElementById('party-expiry').textContent
+            }))()""")
+            require(auto_rotated["code"] == "654 321" and
+                    "expire" not in auto_rotated["expiry"].lower().replace(
+                        "invite expires in", ""),
+                    f"auto-rotation did not keep the displayed invite live: "
+                    f"{auto_rotated}")
+            cdp.evaluate("globalThis.__partyRotateTtl=0;"
+                         "document.getElementById('party-extend').click()")
+            wait_value(cdp, """globalThis.__mdkrPartyHostTestState
+              .requestDetails.filter(entry=>entry.path.endsWith('/rotate'))
+              .length >= 1 &&
+              globalThis.MDKRPartyHost.state().room.inviteExpiresInMs === 120000""",
+                bool, "invite restored to the full TTL", args.timeout)
 
             removal_requests_before = cdp.evaluate("""globalThis.__mdkrPartyHostTestState
               .requests.filter(path=>path.endsWith('/remove')).length""")

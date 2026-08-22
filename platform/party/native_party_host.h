@@ -383,6 +383,14 @@ public:
     bool dismissInvite();
     bool closeRoom();
 
+    /* F6: the UI calls this on every frame it actually draws the invite
+     * card (QR + code). While the card is on screen, service() rotates the
+     * invite on its own once ~75% of its TTL has elapsed, so a displayed
+     * code is always redeemable. The TTL itself never lengthens (binding
+     * security decision): an invite nobody displays expires exactly as
+     * before, and perceived permanence comes only from rotation. */
+    void noteInviteDisplayed(uint64_t nowMs);
+
     /* Drain bounded network events and newest engine rumble requests. */
     void service(uint64_t nowMs);
     const MdkrNativePartyView &view() const { return view_; }
@@ -401,6 +409,13 @@ private:
 
     MdkrPartyTransport &transport_;
     MdkrNativePartyView view_;
+    /* F6 auto-rotate state: when the UI last reported the invite card on
+     * screen (host service clock; 0 = never), and the full TTL the current
+     * invite generation arrived with -- the 75% mark is measured against
+     * the generation's ORIGINAL TTL, not whatever remained when some later
+     * same-generation room update happened to arrive. */
+    uint64_t inviteDisplayedAtMs_ = 0u;
+    uint64_t inviteTtlMs_ = 0u;
     /* M5 sustained rumble: per-seat timestamp (service()'s own nowMs clock)
      * of the last rumble command actually sent, rate-limiting the 200 ms
      * refresh loop. Timestamps only, never strengths -- each refresh

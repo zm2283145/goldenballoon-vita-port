@@ -43,6 +43,10 @@
   let preserveOnClose = false;
   let inviteActive = false;
   let inviteRevocation = null;
+  // F6: one auto-rotation in flight at a time — updateCountdown ticks every
+  // second, and a second extendInvite() would ++operation and cancel the
+  // first one's UI completion.
+  let autoRotatePending = false;
   let dialogClosing = false;
   let pendingOpenFromStage = null;
   let hostIdentity = null;
@@ -1454,6 +1458,19 @@
     const remaining = Math.max(0, deadline - Date.now());
     if (remaining === 0) {
       if (inviteActive) clearInvitePresentation(true, true);
+      return;
+    }
+    // F6: while the invite card is actually on screen, rotate the invite
+    // before its TTL lapses (~75% elapsed) so the displayed QR/code is
+    // always redeemable; renderInvite replaces QR + code + countdown in
+    // place. The TTL itself never lengthens (binding security decision):
+    // a hidden or dismissed invite still expires on the ordinary clock
+    // above, exactly as before. Mirrors the native launcher card.
+    if (inviteActive && dialog.open && !$("party-room").hidden &&
+        !autoRotatePending &&
+        remaining <= Number(room.inviteExpiresInMs || 0) / 4) {
+      autoRotatePending = true;
+      void extendInvite().finally(() => { autoRotatePending = false; });
       return;
     }
     const seconds = Math.ceil(remaining / 1000);

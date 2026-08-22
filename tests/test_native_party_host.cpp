@@ -1145,6 +1145,85 @@ void groupedFallbackCodeIsDisplayOnly() {
     assert(mdkr_party_grouped_fallback_code("") == "");
 }
 
+size_t rotateCallCount(const FakeTransport &transport) {
+    size_t count = 0u;
+    for (const std::string &call : transport.calls) {
+        if (call.rfind("rotate:", 0u) == 0u) count++;
+    }
+    return count;
+}
+
+/* F6: while the invite card is actually on screen (the UI reports each
+ * frame it draws the QR via noteInviteDisplayed), the host rotates the
+ * invite on its own once ~75% of the TTL has elapsed, so a displayed
+ * QR/code is always redeemable. Binding security decision: the TTL itself
+ * never lengthens -- perceived permanence comes from rotation, and an
+ * invite nobody is displaying still dies at its ordinary TTL without a
+ * single rotate. */
+void displayedInviteAutoRotatesBeforeItsTtlLapses() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    transport.events.push_back(roomEvent(1u, 1u, 120000u, {}));
+    host.service(1000u);
+    assert(host.view().phase == MdkrNativePartyPhase::Open);
+    assert(host.view().inviteExpiresAtMs == 121000u);
+
+    /* Displayed, but under 75% elapsed: no rotation. */
+    host.noteInviteDisplayed(90999u);
+    host.service(90999u);
+    assert(rotateCallCount(transport) == 0u);
+
+    /* Displayed at 75% elapsed (30 s remaining of 120 s): rotate now. */
+    host.noteInviteDisplayed(91000u);
+    host.service(91000u);
+    assert(rotateCallCount(transport) == 1u);
+    assert(transport.calls.back() == "rotate:1");
+    assert(host.view().busy);
+    /* The old invite's deadline is untouched until the rotated room state
+     * arrives: rotation, never TTL extension. */
+    assert(host.view().inviteExpiresAtMs == 121000u);
+    /* busy gates a duplicate rotate while the command is in flight. */
+    host.noteInviteDisplayed(91100u);
+    host.service(91100u);
+    assert(rotateCallCount(transport) == 1u);
+
+    /* The rotated invite lands with a fresh generation and full TTL; kept
+     * on screen, it auto-rotates again at ITS 75% mark. */
+    transport.events.push_back(roomEvent(2u, 2u, 120000u, {}));
+    host.service(92000u);
+    assert(host.view().phase == MdkrNativePartyPhase::Open);
+    host.noteInviteDisplayed(181999u);
+    host.service(181999u);
+    assert(rotateCallCount(transport) == 1u);
+    host.noteInviteDisplayed(182000u);
+    host.service(182000u);
+    assert(rotateCallCount(transport) == 2u);
+    assert(transport.calls.back() == "rotate:2");
+
+    /* An invite nobody displays never rotates: it expires at its ordinary
+     * TTL exactly as before this feature existed. */
+    transport.events.push_back(roomEvent(3u, 3u, 120000u, {}));
+    host.service(183000u);
+    assert(host.view().phase == MdkrNativePartyPhase::Open);
+    for (uint64_t at = 213000u; at <= 303000u; at += 30000u) {
+        host.service(at);
+    }
+    assert(rotateCallCount(transport) == 2u);
+    assert(host.view().phase == MdkrNativePartyPhase::InviteRevoked);
+
+    /* A stale display report (the card left the screen a while ago) does
+     * not count as displayed. */
+    assert(host.rotateInvite());
+    transport.events.push_back(roomEvent(4u, 4u, 120000u, {}));
+    host.service(304000u);
+    assert(host.view().phase == MdkrNativePartyPhase::Open);
+    host.noteInviteDisplayed(304000u);
+    host.service(304000u + 119000u);
+    assert(rotateCallCount(transport) == 3u);  // only the manual one above
+}
+
 /* F2: a lease that has never reached Connected is CONNECTING, not
  * reconnecting -- the model carries the distinction so both host surfaces
  * (ui_phone_party.cpp statusText, the browser host's seat tile) can show
@@ -1420,6 +1499,7 @@ int main() {
     destructionDuringRecoveringAttemptsGoodbyeButNeverWaits();
     phraseArrivesAtConnectionAndSurvivesRoomUpdates();
     groupedFallbackCodeIsDisplayOnly();
+    displayedInviteAutoRotatesBeforeItsTtlLapses();
     neverConnectedLeaseReadsAsConnecting();
     controllerRenameIsStrictAndSurvivesRoomUpdates();
     renameGateDedupesAndRateLimits();
