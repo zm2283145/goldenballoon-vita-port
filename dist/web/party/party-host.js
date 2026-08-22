@@ -91,6 +91,10 @@
     owner: 0, connectionSequence: 0,
     packets: [], drops: 0,
     haptics: false, rumble: null,
+    // P2.2 in-race feedback relay + its change-driven dedup key. Visual, so it
+    // exists for every confirmed phone regardless of haptics. Reset whenever
+    // the seat's channel is (re)built so a reconnect re-sends the live state.
+    raceState: null, lastRaceStateKey: "",
   }));
   const fallbackRtcConfig = Object.freeze({iceServers: [{
     urls: "stun:stun.cloudflare.com:3478",
@@ -659,6 +663,8 @@
       pad.packets.length = 0;
       pad.haptics = false;
       pad.rumble = null;
+      pad.raceState = null;
+      pad.lastRaceStateKey = "";
       if (releaseReservation) {
         pad.owner = 0;
         pad.connectionSequence = 0;
@@ -908,6 +914,19 @@
               durationMs: strength > 0 ? 250 : 0}));
             return true;
           } : null;
+          // P2.2 in-race feedback: a bounded, change-driven race_state over the
+          // same reliable control channel. A fresh channel forgets the last
+          // snapshot so the current race state is re-sent on connect/reconnect;
+          // an unchanged frame sends nothing (a few Hz, never per game frame).
+          pad.lastRaceStateKey = "";
+          pad.raceState = (state) => {
+            if (control.readyState !== "open") return false;
+            const key = JSON.stringify(state);
+            if (key === pad.lastRaceStateKey) return false;
+            pad.lastRaceStateKey = key;
+            control.send(JSON.stringify({type: "race_state", protocol: 1, ...state}));
+            return true;
+          };
           activateIfReady();
           scheduleControlPing(controllerId, peer);
           control.send(JSON.stringify({type: "controller_ready_ack"}));
@@ -1024,6 +1043,8 @@
         pad.packets.length = 0;
         pad.haptics = false;
         pad.rumble = null;
+        pad.raceState = null;
+        pad.lastRaceStateKey = "";
         continue;
       }
       const owner = Math.max(1, ((Number(controller.leaseGeneration) << 3) |
@@ -1056,6 +1077,8 @@
       pad.drops = 0;
       pad.haptics = false;
       pad.rumble = null;
+      pad.raceState = null;
+      pad.lastRaceStateKey = "";
     }
   }
 

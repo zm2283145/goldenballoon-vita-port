@@ -960,15 +960,28 @@ void MdkrNativePartyHost::service(uint64_t nowMs) {
 
     for (MdkrNativePartyController &candidate : view_.controllers) {
         /* P2.1: a provisional (unconfirmed) seat holds no ingress reservation,
-         * so its rumble mailbox is never bound; the confirmed gate keeps this
-         * loop from even reaching for it. */
-        if (!candidate.direct || !candidate.haptics || !candidate.confirmed ||
+         * so neither engine mailbox is bound; the confirmed gate keeps this
+         * loop from even reaching for them. */
+        if (!candidate.direct || !candidate.confirmed ||
             !occupiesSeat(candidate)) {
             continue;
         }
-        uint16_t strength = 0u;
         const uint64_t owner = ownerFor(candidate);
         const unsigned port = candidate.seat - 1u;
+        /* P2.2 in-race feedback reaches EVERY confirmed phone, haptics or not,
+         * because it is visual. The ingress only flags a real change, so this
+         * is change-driven (a few Hz) over the reliable control channel, never
+         * per engine frame. */
+        MdkrNativeRaceState raceState{};
+        if (mdkr_native_remote_pad_take_race_state(
+                port, owner, candidate.connectionSequence, &raceState)) {
+            (void)transport_.sendRaceState(candidate.id, raceState);
+        }
+        /* Rumble is haptic: only a phone that advertised vibration gets it. */
+        if (!candidate.haptics) {
+            continue;
+        }
+        uint16_t strength = 0u;
         /* A fresh engine post always goes out immediately -- stops
          * (strength zero) included, which must never wait out a refresh
          * window. */

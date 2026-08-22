@@ -103,13 +103,20 @@ def run(args: argparse.Namespace) -> None:
     # on the compare screen until the host confirms the phrase: the page now
     # handles the seat_confirmed control message, gates the auto input test on
     # it, and leads the Approved card with the compare-and-confirm copy -- the
-    # phone-side half of moving seat custody after the human's Words Match.
+    # phone-side half of moving seat custody after the human's Words Match,
+    # and to 148 KiB when P2.2/P2.3 gave the phone in-race feedback: it now
+    # handles the race_state control message, paints a compact in-race readout
+    # (item, lap, position, countdown, finish) into the status pill, and plays a
+    # distinct navigator.vibrate pattern per event already crossing to it
+    # (countdown beat, boost/overtake, bump, item pickup, final lap, finish) --
+    # with the vibration setting hidden and honestly unsupported where the
+    # Vibration API is absent (iOS Safari), no fake.
     # The guardrail's job is catching runaway
     # growth -- a bundled library, an accidental asset -- not vetoing player
     # copy, the MITM defense or a real second pairing transport, so the
     # ceiling moves by the smallest whole KiB each time.
-    require(critical_bytes < 141 * 1024,
-            f"controller critical path is {critical_bytes} bytes, budget is 141 KiB")
+    require(critical_bytes < 148 * 1024,
+            f"controller critical path is {critical_bytes} bytes, budget is 148 KiB")
     headers = (shell / "_headers").read_text(encoding="utf-8")
     for value in ("frame-ancestors 'none'", "Referrer-Policy: no-referrer",
                   "X-Content-Type-Options: nosniff", "Cache-Control: no-store"):

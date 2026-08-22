@@ -236,6 +236,30 @@ public:
         } catch (...) { return false; }
     }
 
+    /* P2.2 in-race feedback: a bounded, change-driven race_state over the same
+     * reliable control channel rumble uses. One-way like rumble/seat_confirmed
+     * -- the phone updates its own readout and never answers. */
+    bool sendRaceState(const std::string &id, const MdkrNativeRaceState &state) {
+        std::shared_ptr<rtc::DataChannel> channel;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto found = peers_.find(id);
+            if (found == peers_.end() || !found->second->control ||
+                !found->second->control->isOpen()) return false;
+            channel = found->second->control;
+        }
+        try {
+            return channel->send(Json{{"type", "race_state"},
+                {"protocol", kProtocol}, {"racing", state.racing},
+                {"item", state.item_type}, {"itemLevel", state.item_level},
+                {"itemQty", state.item_quantity},
+                {"lap", state.lap}, {"laps", state.lap_total},
+                {"pos", state.position}, {"field", state.field_size},
+                {"countdown", state.countdown}, {"finished", state.finished},
+                {"finishPos", state.finish_position}}.dump());
+        } catch (...) { return false; }
+    }
+
     /* P2.1 compare-then-trust: the host confirmed this controller (Words
      * Match). Remember it -- so a reconnecting peer is trusted again with no
      * second human step -- and, when its control channel is already live, tell
@@ -984,6 +1008,10 @@ public:
     bool closeRoom() override { return sendHostCommand("close", ""); }
     bool sendRumble(const std::string &id, uint16_t strength) override {
         return state_ && state_->sendRumble(id, strength);
+    }
+    bool sendRaceState(const std::string &id,
+                       const MdkrNativeRaceState &state) override {
+        return state_ && state_->sendRaceState(id, state);
     }
     bool poll(MdkrPartyTransportEvent &event) override {
         return state_ && state_->poll(event);

@@ -41,12 +41,18 @@
     error: $("state-error"),
   };
   const pad = {buttons: 0, stickX: 0, stickY: 0};
+  // P2.3 honest capability detection: iOS Safari has no Vibration API. When it
+  // is absent the vibration setting hides and no haptic ever fires or is faked.
+  const hapticsSupported = typeof navigator.vibrate === "function";
   let phase = "opening";
   let seat = 0;
   let connectionSequence = 1;
   let sampleSequence = 0;
   let padHistory = [];
   let active = false;
+  // P2.2 the last race_state this seat rendered, for change-driven haptics (a
+  // beat fires once per real event, not per message) and repaint-on-change.
+  let lastRace = null;
   let inputTestPassed = false;
   // P2.1 compare-then-trust: the host confirmed the pairing phrase matches
   // (Words Match), sent as seat_confirmed over the control channel. Until then
@@ -723,6 +729,12 @@
     pad.buttons = 0; pad.stickX = 0; pad.stickY = 0;
     if (wasActive) publishPad(true);
     active = false;
+    // P2.2: released controls show no stale race readout, and the next
+    // race_state after a reconnect is treated as fresh (the host re-sends the
+    // live state), so no phantom overtake/pickup buzz replays across the gap.
+    lastRace = null;
+    const raceReadout = $("race-readout");
+    if (raceReadout) { raceReadout.hidden = true; raceReadout.textContent = ""; }
     if (testState) testState.neutralizations++;
     if (transport && transport.neutral) transport.neutral(reason);
   }
@@ -1057,6 +1069,10 @@
                 const duration = Math.max(0, Math.min(250,
                   Number(value.durationMs) || 0));
                 if ($("haptics").checked) navigator.vibrate(strength > 0 ? duration : 0);
+              } else if (value.type === "race_state" && value.protocol === 1) {
+                // P2.2: in-race feedback. One-way like seat_confirmed — it only
+                // updates this phone's own readout and haptics, never answering.
+                handleRaceState(value);
               }
             } catch (_) { /* malformed direct control message is ignored */ }
           });
@@ -1835,6 +1851,117 @@
     requestAnimationFrame(() => $("leave-cancel").focus());
   }
 
+  // P2.3 haptic vocabulary. Distinct navigator.vibrate patterns for the events
+  // that ALREADY cross to the phone — countdown beats, an overtake (boost feel),
+  // being bumped down a place, an item pickup, the final lap and the finish.
+  // The sustained rumble message keeps its own 250 ms motor buzz (the impact /
+  // hit feel) handled above. DKR emits no drift-charge telemetry to the phone,
+  // so there is deliberately no drift pattern: inventing a sim signal for one
+  // is out of scope by rule.
+  const HAPTIC_PATTERNS = {
+    countdownBeat: [40],
+    go: [90, 40, 90],
+    boost: [20, 30, 70],
+    bump: [70],
+    pickup: [25, 40, 25],
+    finalLap: [50, 60, 50],
+    finish: [120, 60, 120, 60, 200],
+  };
+  function playHaptic(name) {
+    // Honest gating: no Vibration API (iOS Safari) or the vibration setting off
+    // means nothing fires and nothing is faked.
+    if (!hapticsSupported || !$("haptics").checked) return false;
+    const pattern = HAPTIC_PATTERNS[name];
+    if (!pattern) return false;
+    try { navigator.vibrate(pattern); return true; }
+    catch (_) { return false; }
+  }
+
+  const RACE_ITEM_NAMES = ["Boost", "Missiles", "Traps", "Shield", "Magnet"];
+  const RACE_ORDINALS = ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th"];
+  // The raw race countdown counts down in engine fields; bucket it into a small
+  // 3·2·1 so a beat fires about once a second regardless of the exact rate.
+  function countdownSecond(countdown) {
+    const value = Number(countdown) || 0;
+    return value > 0 ? Math.min(3, Math.ceil(value / 30)) : 0;
+  }
+
+  // P2.2 compose the compact in-race readout. Legible in both orientations: the
+  // pill wraps and the seat colour already leads the row.
+  function renderRaceReadout(state) {
+    const readout = $("race-readout");
+    if (!readout) return;
+    if (state.finished) {
+      const place = Number(state.finishPos) || 0;
+      readout.textContent = place >= 1 && place <= RACE_ORDINALS.length
+        ? "Finished " + RACE_ORDINALS[place - 1] : "Finished";
+      return;
+    }
+    const secs = countdownSecond(state.countdown);
+    if (secs > 0) {
+      readout.textContent = "Get ready " + secs;
+      return;
+    }
+    const parts = [];
+    const laps = Number(state.laps) || 0;
+    if (laps > 0) {
+      parts.push("Lap " + Math.min(laps, (Number(state.lap) || 0) + 1) + "/" + laps);
+    }
+    const field = Number(state.field) || 0;
+    const pos = Number(state.pos) || 0;
+    if (pos > 0) parts.push(field > 1 ? "P" + pos + "/" + field : "P" + pos);
+    const qty = Number(state.itemQty) || 0;
+    if (qty > 0) {
+      const type = Number(state.item);
+      const name = type >= 0 && type < RACE_ITEM_NAMES.length
+        ? RACE_ITEM_NAMES[type] : "Item";
+      parts.push(qty > 1 ? name + " ×" + qty : name);
+    }
+    readout.textContent = parts.join(" · ") || "Racing";
+  }
+
+  // P2.2 render + P2.3 haptics for one race_state message.
+  function handleRaceState(state) {
+    const racing = Boolean(state.racing);
+    const readout = $("race-readout");
+    if (readout) {
+      const show = racing || Boolean(state.finished);
+      readout.hidden = !show;
+      if (show) renderRaceReadout(state);
+      else readout.textContent = "";
+    }
+    // Change-driven: one haptic per real event, by priority. navigator.vibrate
+    // replaces any running pattern, so at most one plays per message anyway.
+    const prev = lastRace;
+    if (prev && (racing || state.finished)) {
+      if (state.finished && !prev.finished) {
+        playHaptic("finish");
+      } else if (!state.finished && (Number(state.itemQty) || 0) >
+                 (Number(prev.itemQty) || 0)) {
+        playHaptic("pickup");
+      } else if (racing && !state.finished) {
+        const cd = countdownSecond(state.countdown);
+        const pcd = countdownSecond(prev.countdown);
+        const laps = Number(state.laps) || 0;
+        if (cd === 0 && pcd > 0) {
+          playHaptic("go");
+        } else if (cd > 0 && cd < pcd) {
+          playHaptic("countdownBeat");
+        } else if (cd === 0 && laps > 0 &&
+                   (Number(state.lap) || 0) + 1 >= laps &&
+                   (Number(prev.lap) || 0) + 1 < laps) {
+          playHaptic("finalLap");
+        } else if (cd === 0 && (Number(state.pos) || 0) > 0 &&
+                   (Number(prev.pos) || 0) > 0) {
+          if (Number(state.pos) < Number(prev.pos)) playHaptic("boost");
+          else if (Number(state.pos) > Number(prev.pos)) playHaptic("bump");
+        }
+      }
+    }
+    lastRace = state;
+    if (testState) testState.race = state;
+  }
+
   function applySettings() {
     let handedness = "left";
     try {
@@ -1850,6 +1977,10 @@
     $("phone-touch-controls").style.setProperty(
       "--control-scale", String(Number($("control-size").value) / 100));
     if (surface) surface.haptics = $("haptics").checked;
+    // P2.3: with no Vibration API (iOS Safari) the whole vibration control is
+    // hidden — an honest "unsupported", never a switch that does nothing.
+    const hapticsLabel = $("haptics").closest("label");
+    if (hapticsLabel) hapticsLabel.hidden = !hapticsSupported;
   }
 
   function saveSettings() {

@@ -73,6 +73,12 @@ public:
         calls.push_back("rumble:" + id + ":" + std::to_string(strength));
         return commandResult;
     }
+    bool sendRaceState(const std::string &id,
+                       const MdkrNativeRaceState &state) override {
+        calls.push_back("race:" + id + ":lap" + std::to_string(state.lap) +
+                        ":pos" + std::to_string(state.position));
+        return commandResult;
+    }
     bool poll(MdkrPartyTransportEvent &event) override {
         if (events.empty()) return false;
         event = std::move(events.front());
@@ -213,6 +219,25 @@ void lifecycleAndCustody() {
     assert(mdkr_native_remote_pad_request_rumble(1u, 1234u));
     host.service(1003u);
     assert(transport.calls.back() == "rumble:phone-a:1234");
+
+    /* P2.2 in-race feedback: a published race_state reaches the confirmed phone
+     * over the same reliable control channel, and is change-driven -- an
+     * identical publish queues nothing more. */
+    MdkrNativeRaceState race{};
+    race.racing = 1; race.lap = 2; race.lap_total = 3;
+    race.position = 3; race.field_size = 6; race.item_quantity = 1;
+    assert(mdkr_native_remote_pad_publish_race_state(1u, &race));
+    host.service(1003u);
+    assert(!mdkr_native_remote_pad_publish_race_state(1u, &race));
+    host.service(1003u);
+    {
+        size_t raceCalls = 0u;
+        std::string lastRace;
+        for (const std::string &entry : transport.calls) {
+            if (entry.rfind("race:", 0u) == 0u) { raceCalls++; lastRace = entry; }
+        }
+        assert(raceCalls == 1u && lastRace == "race:phone-a:lap2:pos3");
+    }
 
     MdkrPartyTransportEvent disconnected;
     disconnected.type = MdkrPartyTransportEventType::ControllerDisconnected;

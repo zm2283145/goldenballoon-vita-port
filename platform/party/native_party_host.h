@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "native_remote_pad_ingress.h"  /* MdkrNativeRaceState (P2.2 feedback) */
+
 enum class MdkrNativePartyPhase {
     Closed,
     Opening,
@@ -263,6 +265,20 @@ public:
     virtual bool closeRoom() = 0;
     virtual bool sendRumble(
         const std::string &controllerId, uint16_t strength) = 0;
+    /*
+     * P2.2 in-race feedback: deliver a bounded race_state to a CONFIRMED phone
+     * over its reliable control channel. Best-effort and one-way, the same
+     * shape as sendRumble but visual, so a phone that never advertised haptics
+     * still receives it. The default no-op keeps every test fake and the
+     * unavailable stub building; the two shipping transports override it and
+     * stay byte-alike (twin rule), exactly like confirm() above.
+     */
+    virtual bool sendRaceState(
+        const std::string &controllerId, const MdkrNativeRaceState &state) {
+        (void)controllerId;
+        (void)state;
+        return true;
+    }
     virtual bool poll(MdkrPartyTransportEvent &event) = 0;
     virtual void shutdown() = 0;
 };
