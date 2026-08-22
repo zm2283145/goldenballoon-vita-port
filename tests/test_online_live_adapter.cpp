@@ -11,6 +11,7 @@
  */
 #include "online/match_live_adapter.h"
 
+#include "net/net_impairment.h"
 #include "net/net_roster_runtime.h"
 
 #include <cassert>
@@ -504,7 +505,62 @@ struct FullRunResult {
     uint32_t racedTicks = 0u;
     uint64_t hashA = 0u;
     uint64_t hashB = 0u;
+    /* O2.2-sim impaired-matrix witnesses (unset on the unimpaired path). */
+    bool bothReachedTarget = false;        /* both drained + confirmed target */
+    uint32_t recoveryReason = 0u;          /* max over endpoints: 1 gap, 2 late */
+    uint32_t recoveryFirstTick = 0u;
+    uint32_t recoveryObservedTick = 0u;
+    uint8_t recoverySlot = 0u;
+    uint64_t inputEnvelopesA = 0u;         /* real opened INPUT envelopes A saw */
+    uint64_t inputEnvelopesB = 0u;
+    uint32_t transportAcceptedA = 0u;      /* remote frames folded through mesh */
+    uint32_t transportAcceptedB = 0u;
+    /* Seeded net_impairment carrier counters, summed over both directions. */
+    uint64_t impSent = 0u;
+    uint64_t impDropped = 0u;
+    uint64_t impDuplicated = 0u;
+    uint64_t impReordered = 0u;
+    uint64_t impCorrupted = 0u;
+    uint64_t impOutageDropped = 0u;
+    uint64_t impThrottled = 0u;
+    uint64_t impOverflow = 0u;
+    uint64_t impCorruptDropped = 0u;       /* corrupt tokens the driver discarded */
 };
+
+/* One net_impairment matrix cell: a named carrier profile + a deterministic
+ * seed and its expected honest outcome. */
+enum MatrixExpect { MATRIX_CONVERGE, MATRIX_RECOVER, MATRIX_EITHER };
+struct ImpairmentSpec {
+    MdkrNetImpairmentProfileName profile;
+    const char *name;
+    MatrixExpect expect;
+    uint64_t seed;
+};
+
+/* A tiny checksummed tick token carried through the impairment carrier. The
+ * carrier's malformed path flips bit 0x80 of the LAST byte, so a trailing XOR
+ * checksum over the tick bytes detects every corruption deterministically. The
+ * token itself never crosses the mesh -- it only tells the driver WHICH tick's
+ * real sealed bundle to transmit once the carrier says the datagram survived. */
+constexpr size_t kTokBytes = 6u;
+void encodeTok(uint8_t *b, uint32_t tick) {
+    b[0] = 0x5au;
+    b[1] = static_cast<uint8_t>(tick & 0xffu);
+    b[2] = static_cast<uint8_t>((tick >> 8) & 0xffu);
+    b[3] = static_cast<uint8_t>((tick >> 16) & 0xffu);
+    b[4] = static_cast<uint8_t>((tick >> 24) & 0xffu);
+    b[5] = static_cast<uint8_t>(b[1] ^ b[2] ^ b[3] ^ b[4] ^ 0xa5u);
+}
+bool decodeTok(const uint8_t *b, size_t len, uint32_t *tick) {
+    if (len < kTokBytes || b[0] != 0x5au) return false;
+    if (b[5] != static_cast<uint8_t>(b[1] ^ b[2] ^ b[3] ^ b[4] ^ 0xa5u))
+        return false; /* corrupted datagram: the receiver discards it */
+    *tick = static_cast<uint32_t>(b[1]) |
+            (static_cast<uint32_t>(b[2]) << 8) |
+            (static_cast<uint32_t>(b[3]) << 16) |
+            (static_cast<uint32_t>(b[4]) << 24);
+    return true;
+}
 
 /* FNV-1a fold of one confirmed canonical frame, over exactly the active slots
  * -- the ROM-free "engine advance" both endpoints agree on. */
@@ -525,7 +581,8 @@ void foldFrame(uint64_t &hash, uint32_t tick, uint8_t activeMask,
     }
 }
 
-FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u) {
+FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
+                               const ImpairmentSpec *imp = nullptr) {
     FullRunResult result;
     mdkr_net_roster_runtime_clear();
 
@@ -657,29 +714,142 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u) {
                 ++cursor;
             }
         };
+        if (imp == nullptr) {
+            for (unsigned step = 0u; step < 20000u; ++step) {
+                A->service();
+                B->service();
+                MdkrOnlineLiveRaceInfo na{}, nb{};
+                mdkr_online_live_adapter_race_info(A.get(), &na);
+                mdkr_online_live_adapter_race_info(B.get(), &nb);
+                if (na.nextTick <= target && na.nextTick - cursorA < kThrottle) {
+                    mdkr_online_live_adapter_race_advance(A.get());
+                }
+                if (nb.nextTick <= target && nb.nextTick - cursorB < kThrottle) {
+                    mdkr_online_live_adapter_race_advance(B.get());
+                }
+                foldReady(A.get(), cursorA, ia.activeSlotMask, hA);
+                foldReady(B.get(), cursorB, ib.activeSlotMask, hB);
+                if (cursorA > target && cursorB > target) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                clock.nowMs += 2u;
+            }
+            result.racedTicks =
+                (cursorA <= cursorB ? cursorA : cursorB) - ia.firstTick;
+            result.hashA = hA;
+            result.hashB = hB;
+            result.raceConverged =
+                cursorA > target && cursorB > target && hA == hB;
+            return result;
+        }
+
+        /* ---- O2.2-sim impaired path -------------------------------------- *
+         *
+         * The engine advances in real time (one drain per loop, predicting
+         * through stalls via race_drain_local). Every mesh transmission is
+         * gated by a seeded net_impairment carrier: the fresh 3-frame bundle
+         * for `nextTick + inputDelay` is offered to the carrier each tick, and
+         * ONLY the datagrams the carrier says survived trigger the genuine
+         * race_resend (real seal -> real libdatachannel DTLS -> real fold), so
+         * remote input still crosses the mesh -- impairment never shortcuts it.
+         * Two carriers model the two directions; each is seeded per endpoint so
+         * the whole matrix is reproducible with no wall-clock dependence. */
+        MdkrNetImpairmentProfile prof;
+        CHECK(mdkr_net_impairment_named_profile(imp->profile, 30u, &prof));
+        MdkrNetImpairment simA; /* A -> B */
+        MdkrNetImpairment simB; /* B -> A */
+        mdkr_net_impairment_init(&simA, imp->seed ^ UINT64_C(0xA11CE),
+                                 prof);
+        mdkr_net_impairment_init(&simB, imp->seed ^ UINT64_C(0xB0B),
+                                 prof);
+        const uint8_t delay = ia.inputDelay;
+        uint32_t simTick = ia.firstTick;
         for (unsigned step = 0u; step < 20000u; ++step) {
             A->service();
             B->service();
             MdkrOnlineLiveRaceInfo na{}, nb{};
             mdkr_online_live_adapter_race_info(A.get(), &na);
             mdkr_online_live_adapter_race_info(B.get(), &nb);
-            if (na.nextTick <= target && na.nextTick - cursorA < kThrottle) {
-                mdkr_online_live_adapter_race_advance(A.get());
+            /* Offer this tick's fresh bundle to each carrier (may drop / delay /
+             * duplicate / corrupt / throttle it). */
+            if (na.nextTick <= target) {
+                uint8_t tok[kTokBytes];
+                encodeTok(tok, na.nextTick + delay);
+                (void)mdkr_net_impairment_send(&simA, simTick, 0u, 1u, tok,
+                                               kTokBytes);
             }
-            if (nb.nextTick <= target && nb.nextTick - cursorB < kThrottle) {
-                mdkr_online_live_adapter_race_advance(B.get());
+            if (nb.nextTick <= target) {
+                uint8_t tok[kTokBytes];
+                encodeTok(tok, nb.nextTick + delay);
+                (void)mdkr_net_impairment_send(&simB, simTick, 1u, 0u, tok,
+                                               kTokBytes);
+            }
+            /* Real-time drain: keep predicting even while the carrier starves,
+             * so a stall genuinely outruns the confirmed frontier. */
+            if (na.nextTick <= target) {
+                (void)mdkr_online_live_adapter_race_drain_local(A.get());
+            }
+            if (nb.nextTick <= target) {
+                (void)mdkr_online_live_adapter_race_drain_local(B.get());
+            }
+            /* Deliver whatever survived the carrier THIS tick as a genuine mesh
+             * send of that tick's real sealed bundle. */
+            MdkrNetSimPacket pkt;
+            while (mdkr_net_impairment_receive(&simA, simTick, 1u, &pkt)) {
+                uint32_t t;
+                if (decodeTok(pkt.bytes, pkt.length, &t)) {
+                    (void)mdkr_online_live_adapter_race_resend(A.get(), t);
+                } else {
+                    ++result.impCorruptDropped;
+                }
+            }
+            while (mdkr_net_impairment_receive(&simB, simTick, 0u, &pkt)) {
+                uint32_t t;
+                if (decodeTok(pkt.bytes, pkt.length, &t)) {
+                    (void)mdkr_online_live_adapter_race_resend(B.get(), t);
+                } else {
+                    ++result.impCorruptDropped;
+                }
             }
             foldReady(A.get(), cursorA, ia.activeSlotMask, hA);
             foldReady(B.get(), cursorB, ib.activeSlotMask, hB);
+            MdkrOnlineLiveRaceStats sa{}, sb{};
+            mdkr_online_live_adapter_race_stats(A.get(), &sa);
+            mdkr_online_live_adapter_race_stats(B.get(), &sb);
+            if (sa.recoveryReason != 0u || sb.recoveryReason != 0u) {
+                const MdkrOnlineLiveRaceStats &s =
+                    sa.recoveryReason != 0u ? sa : sb;
+                result.recoveryReason = s.recoveryReason;
+                result.recoveryFirstTick = s.recoveryFirstTick;
+                result.recoveryObservedTick = s.recoveryObservedTick;
+                result.recoverySlot = s.recoverySlot;
+                break;
+            }
             if (cursorA > target && cursorB > target) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
             clock.nowMs += 2u;
+            ++simTick;
         }
-        result.racedTicks = (cursorA <= cursorB ? cursorA : cursorB) - ia.firstTick;
+        result.racedTicks =
+            (cursorA <= cursorB ? cursorA : cursorB) - ia.firstTick;
         result.hashA = hA;
         result.hashB = hB;
-        result.raceConverged =
-            cursorA > target && cursorB > target && hA == hB;
+        result.bothReachedTarget = cursorA > target && cursorB > target;
+        result.raceConverged = result.bothReachedTarget && hA == hB;
+        MdkrOnlineLiveRaceStats sa{}, sb{};
+        mdkr_online_live_adapter_race_stats(A.get(), &sa);
+        mdkr_online_live_adapter_race_stats(B.get(), &sb);
+        result.inputEnvelopesA = sa.inputEnvelopesReceived;
+        result.inputEnvelopesB = sb.inputEnvelopesReceived;
+        result.transportAcceptedA = sa.transportAccepted;
+        result.transportAcceptedB = sb.transportAccepted;
+        result.impSent = simA.sent + simB.sent;
+        result.impDropped = simA.dropped + simB.dropped;
+        result.impDuplicated = simA.duplicated + simB.duplicated;
+        result.impReordered = simA.reordered + simB.reordered;
+        result.impCorrupted = simA.corrupted + simB.corrupted;
+        result.impOutageDropped = simA.outage_dropped + simB.outage_dropped;
+        result.impThrottled = simA.throttled + simB.throttled;
+        result.impOverflow = simA.overflow + simB.overflow;
     }
     return result;
 }
@@ -742,9 +912,145 @@ void test_clamp_refuses_bonus_identity() {
     mdkr_net_roster_runtime_clear();
 }
 
+/* Seed derived from the profile index only -- never wall-clock -- so every
+ * matrix cell is byte-reproducible across CI reruns. */
+uint64_t matrixSeed(unsigned profileIndex) {
+    return UINT64_C(0x9E3779B97F4A7C15) ^
+           (static_cast<uint64_t>(profileIndex) * UINT64_C(0x100000001B3));
+}
+
+/* O2.2-sim headline: the O-T6 two-endpoint mesh race run under EACH of the six
+ * named net_impairment profiles. Convergent profiles must still reach a
+ * byte-identical confirmed state hash within the 30-tick rollback window;
+ * profiles that exceed the window (the 2 s outage) must fire the TYPED recovery
+ * path (INPUT_GAP / LATE_INPUT) instead of a silent desync. Impairment is a
+ * pure test injection: it only decides which real sealed bundles cross the real
+ * DTLS mesh and when -- the confirmed frames folded into the hash are always
+ * genuine remote input that traversed the mesh. */
+void test_impairment_matrix() {
+    const ImpairmentSpec specs[] = {
+        {MDKR_NET_PROFILE_LAN, "lan", MATRIX_CONVERGE, matrixSeed(0u)},
+        {MDKR_NET_PROFILE_REGIONAL_GOOD, "regional-good", MATRIX_CONVERGE,
+         matrixSeed(1u)},
+        {MDKR_NET_PROFILE_REGIONAL_VARIABLE, "regional-variable",
+         MATRIX_CONVERGE, matrixSeed(2u)},
+        {MDKR_NET_PROFILE_POOR, "poor", MATRIX_CONVERGE, matrixSeed(3u)},
+        {MDKR_NET_PROFILE_TWO_SECOND_OUTAGE, "two-second-outage",
+         MATRIX_RECOVER, matrixSeed(4u)},
+        {MDKR_NET_PROFILE_ADVERSARIAL, "adversarial", MATRIX_EITHER,
+         matrixSeed(5u)},
+    };
+    for (const ImpairmentSpec &spec : specs) {
+        const FullRunResult r =
+            driveTwoAdapters(/*bonusIdentityOnA=*/false, /*raceTicks=*/240u,
+                             &spec);
+        /* The stack came up and installed under this profile. */
+        CHECK(r.probeA.installed);
+        CHECK(r.probeA.preflightReady && r.probeB.preflightReady);
+        CHECK(r.raceRun);
+        /* The carrier was genuinely in the path (non-vacuous) and never
+         * overflowed its bounded schedule buffer. */
+        CHECK(r.impSent > 0u);
+        CHECK(r.impOverflow == 0u);
+        /* Remote input really crossed the mesh -- impairment did not shortcut
+         * the convergence proof. */
+        CHECK(r.inputEnvelopesA > 0u && r.inputEnvelopesB > 0u);
+        CHECK(r.transportAcceptedA > 0u && r.transportAcceptedB > 0u);
+
+        const bool recovered = r.recoveryReason != 0u;
+        const bool converged = r.raceConverged && !recovered;
+        const bool silentDesync = r.bothReachedTarget && r.hashA != r.hashB;
+        /* The one thing that must NEVER pass: both endpoints ran to the target
+         * yet folded different state. */
+        CHECK(!silentDesync);
+
+        bool outcomeOk = false;
+        const char *outcome = "none";
+        switch (spec.expect) {
+            case MATRIX_CONVERGE:
+                outcomeOk = converged;
+                outcome = "converged";
+                break;
+            case MATRIX_RECOVER:
+                outcomeOk = recovered && !r.raceConverged;
+                outcome = "recovered";
+                break;
+            case MATRIX_EITHER:
+                outcomeOk = converged || recovered;
+                outcome = converged ? "converged" : "recovered";
+                break;
+        }
+        CHECK(outcomeOk);
+
+        if (converged) {
+            CHECK(r.hashA == r.hashB);
+            CHECK(r.racedTicks >= 240u);
+        }
+        /* Profiles carrying loss must have dropped at least one datagram, so
+         * the loss arm is not a no-op with this seed. */
+        if (spec.profile == MDKR_NET_PROFILE_REGIONAL_VARIABLE ||
+            spec.profile == MDKR_NET_PROFILE_POOR ||
+            spec.profile == MDKR_NET_PROFILE_ADVERSARIAL) {
+            CHECK(r.impDropped > 0u);
+        }
+        if (spec.profile == MDKR_NET_PROFILE_ADVERSARIAL) {
+            /* The 1-delivery/tick throttle and the malformed arm both bite. */
+            CHECK(r.impThrottled > 0u);
+            CHECK(r.impCorrupted > 0u);
+            CHECK(r.impCorruptDropped > 0u);
+        }
+        if (spec.profile == MDKR_NET_PROFILE_TWO_SECOND_OUTAGE) {
+            /* The outage genuinely blacked the carrier out and the transport
+             * latched INPUT_GAP once the stall outran the retained window. */
+            CHECK(r.impOutageDropped > 0u);
+            CHECK(r.recoveryReason == 1u); /* INPUT_GAP */
+            CHECK(r.recoveryObservedTick - r.recoveryFirstTick >= 31u);
+        }
+
+        std::fprintf(
+            stderr,
+            "[MATRIX] profile=%s outcome=%s ticks=%u hashA=%016llx "
+            "hashB=%016llx recovery=%u firstTick=%u observedTick=%u slot=%u "
+            "sent=%llu dropped=%llu dup=%llu reorder=%llu corrupt=%llu "
+            "outage=%llu throttled=%llu envsA=%llu envsB=%llu "
+            "acceptedA=%u acceptedB=%u\n",
+            spec.name, outcome, r.racedTicks,
+            (unsigned long long)r.hashA, (unsigned long long)r.hashB,
+            r.recoveryReason, r.recoveryFirstTick, r.recoveryObservedTick,
+            (unsigned)r.recoverySlot,
+            (unsigned long long)r.impSent, (unsigned long long)r.impDropped,
+            (unsigned long long)r.impDuplicated,
+            (unsigned long long)r.impReordered,
+            (unsigned long long)r.impCorrupted,
+            (unsigned long long)r.impOutageDropped,
+            (unsigned long long)r.impThrottled,
+            (unsigned long long)r.inputEnvelopesA,
+            (unsigned long long)r.inputEnvelopesB,
+            r.transportAcceptedA, r.transportAcceptedB);
+        mdkr_net_roster_runtime_clear();
+    }
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char **argv) {
+    bool matrixOnly = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--matrix") == 0) matrixOnly = true;
+    }
+    /* The token gate must be open for the live adapter to construct. The
+     * matrix lane runs in its own process, so set it there too. */
+#if defined(_WIN32)
+    _putenv_s("MDKR_INTERNAL_TEST_TOKEN", "mdkr64-online-live-v1");
+#else
+    setenv("MDKR_INTERNAL_TEST_TOKEN", "mdkr64-online-live-v1", 1);
+#endif
+    if (matrixOnly) {
+        test_impairment_matrix();
+        std::fprintf(stderr, "online_live_matrix: %d checks, %d failures\n",
+                     g_checks, g_failures);
+        return g_failures == 0 ? 0 : 1;
+    }
     test_token_gate_required();
     test_create_room_view();
     test_transport_failure_preserves_lobby();

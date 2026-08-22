@@ -83,6 +83,15 @@ input[type="text"] { width: 100%; min-height: 48px; padding: 0 14px; border: 1px
 .controller-status { position: fixed; z-index: 30; display: flex; align-items: center; gap: 10px; top: max(8px, env(safe-area-inset-top)); left: max(10px, env(safe-area-inset-left)); right: max(10px, env(safe-area-inset-right)); min-height: 44px; padding: 5px 5px 5px 14px; border: 1px solid #d8e8ff24; border-radius: 999px; background: #081e36dd; backdrop-filter: blur(14px); font-size: .78rem; font-weight: 750; }
 #wake-status { color: var(--muted); margin-left: auto; }
 .rtt-pill { color: var(--muted); font-weight: 650; white-space: nowrap; }
+/* P2.2 in-race readout: reads against the seat colour that already leads the
+   status pill; wraps rather than overflowing so it stays legible in portrait
+   and landscape. */
+.race-readout {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 2px 9px; border-radius: 999px;
+  color: #06182b; font-weight: 800; letter-spacing: -.01em;
+  background: var(--seat); box-shadow: 0 2px 8px color-mix(in srgb, var(--seat) 30%, transparent);
+}
 .icon-button { display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: #173b64; color: var(--ink); font-size: 1.15rem; }
 .phone-controls:not([hidden]) { --touch-size: calc(clamp(132px, min(34vw, 40vh), 196px) * var(--control-scale, 1)); position: fixed; inset: 0; display: block; pointer-events: none; }
 .phone-controls .touch-stick { position: fixed; left: max(14px, env(safe-area-inset-left)); bottom: max(18px, env(safe-area-inset-bottom)); width: var(--touch-size); height: var(--touch-size); border-radius: 50%; pointer-events: auto; }

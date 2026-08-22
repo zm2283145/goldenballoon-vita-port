@@ -310,6 +310,17 @@ bool mdkr_online_live_adapter_race_advance(IMdkrOnlineAdapter *adapter);
  * permanently wedge the peer's contiguous confirmation. */
 bool mdkr_online_live_adapter_race_resend(IMdkrOnlineAdapter *adapter,
                                           uint32_t newestTick);
+/* Drain the current authored tick WITHOUT sealing/fanning out any local bundle
+ * -- the "advance-minus-send" half of race_advance. Test-lane seam (O2.2-sim):
+ * lets a deterministic impairment matrix separate the launcher-side engine's
+ * real-time drain (which keeps predicting through a network stall) from the
+ * network send, so the driver can route every mesh transmission through a
+ * seeded net_impairment carrier while the engine keeps advancing. Every
+ * surviving transmission still crosses the real mesh via race_resend; this only
+ * decouples local progress from that send. Additive, reachable only through the
+ * token-gated live adapter (the whole race API is test-only; the production
+ * launcher never constructs this adapter), so it changes no shipped netcode. */
+bool mdkr_online_live_adapter_race_drain_local(IMdkrOnlineAdapter *adapter);
 /* The canonical frame retained for an authored tick (confirmed_mask tells the
  * driver when every active slot's input has actually arrived). */
 bool mdkr_online_live_adapter_race_inputs_for_tick(
@@ -326,6 +337,15 @@ struct MdkrOnlineLiveRaceStats {
     uint32_t transportDuplicates = 0u;
     uint32_t transportOutOfWindow = 0u;
     uint32_t transportDrained = 0u;
+    /* Sticky typed recovery latched by the launcher-side match transport: 0 ==
+     * none, 1 == INPUT_GAP (a remote slot's confirmation fell irrecoverably
+     * behind the drain frontier), 2 == LATE_INPUT (a delivered input arrived
+     * out of the retained rollback window). The impairment matrix asserts this
+     * fires -- rather than a silent desync -- when a profile exceeds the window. */
+    uint32_t recoveryReason = 0u;
+    uint32_t recoveryFirstTick = 0u;    /* first unrecoverable authored tick */
+    uint32_t recoveryObservedTick = 0u; /* drain tick where it was observed */
+    uint8_t recoverySlot = 0u;          /* the stalled canonical slot */
 };
 bool mdkr_online_live_adapter_race_stats(const IMdkrOnlineAdapter *adapter,
                                          MdkrOnlineLiveRaceStats *out);

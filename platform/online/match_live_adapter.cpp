@@ -937,6 +937,29 @@ public:
         return true;
     }
 
+    /* Drain the current authored tick with this endpoint's local seats but do
+     * NOT seal/fan out any bundle (the send half of raceAdvance is skipped).
+     * The O2.2-sim impairment matrix uses this to keep the launcher-side engine
+     * advancing in real time -- predicting through a network stall -- while it
+     * routes every mesh transmission through a seeded net_impairment carrier. */
+    bool raceDrainLocal() {
+        if (!raceReady_) return false;
+        const uint8_t localMask = raceTransport_.local_slot_mask;
+        MdkrPadSample local[MDKR_SESSION_MAX_PLAYERS];
+        unsigned localCount = 0u;
+        for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; ++slot) {
+            if ((localMask & (1u << slot)) == 0u) continue;
+            local[localCount++] =
+                raceLocalSample(static_cast<uint8_t>(slot), raceNextTick_);
+        }
+        if (!mdkr_match_transport_drain_tick(&raceTransport_, raceEpoch_,
+                                             raceNextTick_, local, localCount)) {
+            return false;
+        }
+        ++raceNextTick_;
+        return true;
+    }
+
     bool raceInputsForTick(uint32_t tick, MdkrInputSet *out) {
         if (!raceReady_) return false;
         return mdkr_match_transport_inputs_for_tick(&raceTransport_, raceEpoch_,
@@ -959,6 +982,13 @@ public:
             out->transportDuplicates = t->duplicates;
             out->transportOutOfWindow = t->out_of_window;
             out->transportDrained = t->drained;
+        }
+        MdkrMatchRecovery rec;
+        if (mdkr_match_transport_recovery(&raceTransport_, &rec)) {
+            out->recoveryReason = static_cast<uint32_t>(rec.reason);
+            out->recoveryFirstTick = rec.first_unrecoverable_tick;
+            out->recoveryObservedTick = rec.observed_at_tick;
+            out->recoverySlot = rec.canonical_slot;
         }
     }
 
@@ -1077,6 +1107,12 @@ bool mdkr_online_live_adapter_race_resend(IMdkrOnlineAdapter *adapter,
     if (adapter == nullptr) return false;
     LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
     return live != nullptr && live->raceSendInputForTick(newestTick);
+}
+
+bool mdkr_online_live_adapter_race_drain_local(IMdkrOnlineAdapter *adapter) {
+    if (adapter == nullptr) return false;
+    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    return live != nullptr && live->raceDrainLocal();
 }
 
 bool mdkr_online_live_adapter_race_inputs_for_tick(IMdkrOnlineAdapter *adapter,

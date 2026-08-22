@@ -30,7 +30,30 @@ typedef struct MdkrNativeRemotePadIngressStats {
     uint64_t stale;
     uint64_t overflows;
     uint64_t rumble_requests;
+    uint64_t race_state_changes;
 } MdkrNativeRemotePadIngressStats;
+
+/*
+ * P2.2 in-race phone feedback. The launcher-owned twin of the rumble mailbox,
+ * but ENGINE -> phone in the other direction: the HUD forwards the per-racer
+ * quantities a confirmed phone renders (held item, lap, position, countdown,
+ * finish). Every field is a value the HUD already computed for this frame --
+ * this carries presentation state, never simulation authority, and is never
+ * hashed. All int so the platform bridge (C) fills it without a cast.
+ */
+typedef struct MdkrNativeRaceState {
+    int racing;         /* 1 while a race/challenge/time-trial HUD is live */
+    int item_type;      /* BalloonType: 0 boost 1 missiles 2 traps 3 shield 4 magnet */
+    int item_level;     /* power level of the held item */
+    int item_quantity;  /* how many are held; 0 means no item */
+    int lap;            /* zero-based, as the racer stores it */
+    int lap_total;      /* laps in this race */
+    int position;       /* 1-based race position */
+    int field_size;     /* racers in the field */
+    int countdown;      /* raw get_race_countdown(); >0 while the grid holds */
+    int finished;       /* 1 once this racer has crossed the line */
+    int finish_position;/* final placing, valid when finished */
+} MdkrNativeRaceState;
 
 /*
  * Bind/rebind is a reliable-control-plane event.  owner and
@@ -84,6 +107,23 @@ bool mdkr_native_remote_pad_take_rumble(
 bool mdkr_native_remote_pad_peek_rumble(
     unsigned port, uint64_t owner, uint32_t connection_sequence,
     uint16_t *out_strength);
+
+/*
+ * P2.2 engine -> launcher in-race feedback. publish stores the newest HUD
+ * snapshot for a reserved seat and flags it pending ONLY when a field changed,
+ * so the reliable control channel stays change-driven (a few Hz), never
+ * per-frame -- the HUD may call this every frame and interpolation replay may
+ * call it several times a frame; unchanged calls cost one bounded compare and
+ * send nothing. A rebind/release clears the snapshot, so the first publish
+ * after a phone (re)connects always resends the current state. take is the
+ * launcher-thread read side, identity-checked like every other crossing; it
+ * returns the pending snapshot once and clears the flag.
+ */
+bool mdkr_native_remote_pad_publish_race_state(
+    unsigned port, const MdkrNativeRaceState *state);
+bool mdkr_native_remote_pad_take_race_state(
+    unsigned port, uint64_t owner, uint32_t connection_sequence,
+    MdkrNativeRaceState *out_state);
 
 void mdkr_native_remote_pad_stats(
     unsigned port, MdkrNativeRemotePadIngressStats *out_stats);

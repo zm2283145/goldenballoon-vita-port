@@ -476,6 +476,24 @@ EM_JS(int, browser_remote_phone_rumble, (int port, int strength), {
     if (!pad || !pad.active || !pad.haptics || typeof pad.rumble !== "function") return 0;
     try { return pad.rumble(strength) ? 1 : 0; } catch (_) { return 0; }
 });
+/* P2.2 in-race feedback (web host). Hand the phone's per-racer HUD snapshot to
+ * the party host's relay, which dedups and sends it over the reliable control
+ * channel only to a confirmed (active) seat -- the browser twin of the native
+ * host's sendRaceState drain. Visual, so it does NOT require haptics. */
+EM_JS(void, browser_remote_phone_race_state,
+      (int port, int racing, int itemType, int itemLevel, int itemQuantity,
+       int lap, int lapTotal, int position, int fieldSize, int countdown,
+       int finished, int finishPosition), {
+    const pads = Module.__mdkrRemotePads;
+    const pad = Array.isArray(pads) ? pads[port] : null;
+    if (!pad || !pad.active || typeof pad.raceState !== "function") return;
+    try {
+        pad.raceState({racing: racing, item: itemType, itemLevel: itemLevel,
+            itemQty: itemQuantity, lap: lap, laps: lapTotal, pos: position,
+            field: fieldSize, countdown: countdown, finished: finished,
+            finishPos: finishPosition});
+    } catch (_) { /* relay errors never touch the game loop */ }
+});
 
 /*
  * Touch input is published by the browser shell as plain Module state and
@@ -5484,6 +5502,49 @@ void mdkr_pace_probe_finish(
     mdkr_a11y_race_publish(racePosition, racerCount, lap, lapCount,
                            raceFinished, finishPosition, itemQuantity,
                            itemType);
+}
+/*
+ * P2.2 Phone Party in-race feedback bridge. The HUD (game/src/game_ui.c, under
+ * NATIVE_PORT) forwards the per-racer quantities a connected phone renders --
+ * the same presentation values it and mdkr_pace_probe_finish() hand the a11y
+ * race announcer, and the same one-way discipline as rumble. Nothing here reads
+ * back into the simulation and nothing here is hashed; the launcher-owned party
+ * layer dedups, rate-limits (change-driven, reliable control channel) and
+ * delivers only to a CONFIRMED phone, so this is a no-op -- and the whole path
+ * is byte-identical -- whenever no phone owns `port`.
+ */
+void mdkr_phone_party_publish_race_state(
+    int port, int racing, int itemType, int itemLevel, int itemQuantity,
+    int lap, int lapTotal, int position, int fieldSize, int countdown,
+    int finished, int finishPosition) {
+    if (port < 0 || port >= DKR_MAXPADS) {
+        return;
+    }
+#ifdef __EMSCRIPTEN__
+    browser_remote_phone_race_state(port, racing, itemType, itemLevel,
+        itemQuantity, lap, lapTotal, position, fieldSize, countdown,
+        finished, finishPosition);
+#elif defined(MDKR_APP)
+    {
+        MdkrNativeRaceState state;
+        state.racing = racing;
+        state.item_type = itemType;
+        state.item_level = itemLevel;
+        state.item_quantity = itemQuantity;
+        state.lap = lap;
+        state.lap_total = lapTotal;
+        state.position = position;
+        state.field_size = fieldSize;
+        state.countdown = countdown;
+        state.finished = finished;
+        state.finish_position = finishPosition;
+        (void)mdkr_native_remote_pad_publish_race_state((unsigned)port, &state);
+    }
+#else
+    (void)racing; (void)itemType; (void)itemLevel; (void)itemQuantity;
+    (void)lap; (void)lapTotal; (void)position; (void)fieldSize;
+    (void)countdown; (void)finished; (void)finishPosition;
+#endif
 }
 /* Time-trial ghost playback: a count of interpolated ghost frames, plus which
  * ghost bank the last one came from (0/1 = the player's own recorded ghost,

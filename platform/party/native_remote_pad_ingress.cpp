@@ -22,6 +22,9 @@ struct Port {
     bool reserved = false;
     bool haptics = false;
     bool rumblePending = false;
+    MdkrNativeRaceState raceState{};
+    bool raceStateValid = false;
+    bool raceStatePending = false;
     MdkrNativeRemotePadIngressStats stats{};
 };
 
@@ -40,6 +43,20 @@ void clearPayload(Port &port) {
     port.rumbleStrength = 0u;
     port.rumblePending = false;
     port.haptics = false;
+    /* A new epoch forgets the last snapshot so the first publish after a
+     * (re)connect always re-sends the current state to the phone. */
+    port.raceState = MdkrNativeRaceState{};
+    port.raceStateValid = false;
+    port.raceStatePending = false;
+}
+
+bool sameRaceState(const MdkrNativeRaceState &a, const MdkrNativeRaceState &b) {
+    return a.racing == b.racing && a.item_type == b.item_type &&
+        a.item_level == b.item_level && a.item_quantity == b.item_quantity &&
+        a.lap == b.lap && a.lap_total == b.lap_total &&
+        a.position == b.position && a.field_size == b.field_size &&
+        a.countdown == b.countdown && a.finished == b.finished &&
+        a.finish_position == b.finish_position;
 }
 
 bool sameBinding(
@@ -222,6 +239,41 @@ extern "C" bool mdkr_native_remote_pad_peek_rumble(
     std::lock_guard<std::mutex> lock(port->mutex);
     if (!sameBinding(*port, owner, connectionSequence)) return false;
     *outStrength = port->rumbleStrength;
+    return true;
+}
+
+extern "C" bool mdkr_native_remote_pad_publish_race_state(
+    unsigned index, const MdkrNativeRaceState *state) {
+    Port *port = portAt(index);
+    if (port == nullptr || state == nullptr) return false;
+    std::lock_guard<std::mutex> lock(port->mutex);
+    /* Only a bound (confirmed) seat carries feedback -- a provisional phone
+     * holds no reservation, so its HUD publications are dropped here, one layer
+     * below the host's confirmed gate. */
+    if (!port->reserved) return false;
+    if (port->raceStateValid && sameRaceState(port->raceState, *state)) {
+        return false; /* unchanged: change-driven cadence, nothing to send */
+    }
+    port->raceState = *state;
+    port->raceStateValid = true;
+    port->raceStatePending = true;
+    port->stats.race_state_changes++;
+    return true;
+}
+
+extern "C" bool mdkr_native_remote_pad_take_race_state(
+    unsigned index, uint64_t owner, uint32_t connectionSequence,
+    MdkrNativeRaceState *outState) {
+    Port *port = portAt(index);
+    if (outState != nullptr) *outState = MdkrNativeRaceState{};
+    if (port == nullptr || outState == nullptr) return false;
+    std::lock_guard<std::mutex> lock(port->mutex);
+    if (!sameBinding(*port, owner, connectionSequence) ||
+        !port->raceStatePending) {
+        return false;
+    }
+    *outState = port->raceState;
+    port->raceStatePending = false;
     return true;
 }
 

@@ -1371,6 +1371,39 @@ void hud_render_player(Gfx **dList, Mtx **mtx, Vertex **vertexList, Object *obj,
                  * small project-owned badge makes that boundary honest in every
                  * HUD layout and labels OP Time Trial runs noncanonical. */
                 hud_render_taj_identity(racer);
+                /* P2.2 Phone Party in-race feedback. Forward the per-racer HUD
+                 * values a connected phone's on-screen readout needs -- the same
+                 * presentation quantities the a11y announcer forwards
+                 * (mdkr_pace_probe_finish -> mdkr_a11y_race_publish) and the same
+                 * local-extern platform seam objects.c uses for that probe. This
+                 * is READ-ONLY: every value was already computed for this frame's
+                 * HUD, so it writes nothing the simulation reads back and is never
+                 * hashed. The launcher-owned party layer dedups, rate-limits
+                 * (change-driven, reliable control channel) and delivers only to
+                 * a CONFIRMED phone, so this is a no-op -- and off-path
+                 * byte-identical -- whenever no phone owns racer->playerIndex. */
+                {
+                    extern void mdkr_phone_party_publish_race_state(
+                        int, int, int, int, int, int, int, int, int, int, int,
+                        int);
+                    s32 raceFieldSize = 0;
+                    s32 raceLevelType = level_type();
+                    s32 racing = is_in_time_trial() ||
+                        (cutscene_id() != 10 &&
+                         (raceLevelType == RACETYPE_DEFAULT ||
+                          raceLevelType == RACETYPE_HORSESHOE_GULCH ||
+                          raceLevelType == RACETYPE_BOSS ||
+                          (raceLevelType & RACETYPE_CHALLENGE)));
+                    (void) get_racer_objects(&raceFieldSize);
+                    mdkr_phone_party_publish_race_state(
+                        racer->playerIndex, racing,
+                        racer->balloon_type, racer->balloon_level,
+                        racer->balloon_quantity,
+                        racer->lap, gHudLevelHeader->laps,
+                        racer->racePosition, raceFieldSize,
+                        get_race_countdown(),
+                        racer->raceFinished, racer->finishPosition);
+                }
 #endif
 #ifndef NATIVE_PORT
                 gMinimapFade = FALSE;

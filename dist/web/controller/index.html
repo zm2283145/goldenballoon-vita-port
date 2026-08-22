@@ -56,7 +56,7 @@
     </section>
 
     <section id="state-assigned" class="state-card" aria-labelledby="assigned-title" hidden>
-      <p class="eyebrow">Approved</p>
+      <p class="eyebrow">Compare on both screens</p>
       <div class="phrase phrase-lead" aria-label="Pairing phrase">
         <span>Pairing phrase — check it matches the display</span>
         <strong id="pairing-phrase"></strong>
@@ -65,7 +65,8 @@
         <div id="seat-badge" class="seat-badge" aria-hidden="true">1</div>
         <h1 id="assigned-title">Controller 1</h1>
       </div>
-      <p>The connection test runs by itself; racing starts when it passes.</p>
+      <p>When the host confirms the words match, the connection test runs by
+         itself and racing starts.</p>
       <button id="input-test" class="input-test" type="button">
         <span>Press Go</span><small id="input-test-status">Connection test</small>
       </button>
@@ -102,6 +103,8 @@
     <section id="state-controller" class="controller-view" aria-label="Controller" hidden>
       <div class="controller-status">
         <span id="controller-seat">Controller 1</span>
+        <span id="race-readout" class="race-readout" role="status"
+              aria-live="polite" hidden></span>
         <span id="rtt-pill" class="rtt-pill" aria-label="Connection delay" hidden></span>
         <span id="wake-status">Screen awake when supported</span>
         <button id="settings-open" class="icon-button" type="button"

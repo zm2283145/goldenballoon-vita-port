@@ -80,7 +80,53 @@ def run(args: argparse.Namespace) -> None:
             wait_value(host, "!document.getElementById('party-room').hidden", bool,
                        "host room", args.timeout)
 
+            # P2.1 compare-then-trust: relay signaling until the direct channels
+            # are up — a PROVISIONAL connection. Approval alone grants no seat
+            # custody: the pad must NOT be active (input discarded at the
+            # ingress), the seat row must not read as connected/racing, and the
+            # phone must hold on the compare screen with its controller locked.
+            # (This fixture's fake room_state carries no controllerPublicKey, so
+            # the host cannot derive the phrase and the seat stays in its
+            # phraseless provisional state; the real key + rendered phrase +
+            # matched Words Match control are exercised in check_party_native_e2e
+            # against the live Worker.)
             deadline = time.monotonic() + args.timeout
+            provisional = False
+            while time.monotonic() < deadline:
+                relay(phone, host,
+                      "globalThis.__mdkrControllerTestState.signals?.splice(0) || []",
+                      "globalThis.MDKRPartyHost.receiveSignal")
+                relay(host, phone,
+                      "globalThis.__mdkrPartyHostTestState.signals?.splice(0) || []",
+                      "globalThis.__mdkrControllerTest.receiveSignal")
+                provisional = host.evaluate(
+                    "globalThis.MDKRPartyHost.remotePads()[0].provisional === true")
+                if provisional:
+                    break
+                time.sleep(0.03)
+            require(bool(provisional),
+                    "direct WebRTC controller never reached the provisional state")
+            require(not host.evaluate(
+                        "globalThis.MDKRPartyHost.remotePads()[0].active"),
+                    "unconfirmed phone took input custody before Words Match")
+            seat_small = host.evaluate(
+                "document.querySelector('[data-seat=\\\"1\\\"] small').textContent")
+            require(seat_small != "Phone connected" and
+                    "reconnecting" not in seat_small.lower(),
+                    f"provisional seat mislabeled as connected/reconnecting: {seat_small!r}")
+            require(phone.evaluate(
+                        "globalThis.__mdkrControllerTest.state().phase") == "assigned",
+                    "phone advanced past the compare screen before Words Match")
+            require(bool(phone.evaluate(
+                        "document.getElementById('use-controller').disabled")),
+                    "phone unlocked its controller before the host confirmed")
+
+            # Words Match: the host confirms (the same call the seat tile's
+            # button makes). Seat custody begins and the phone runs the auto
+            # input test itself and advances — no Press Go tap.
+            host.evaluate("globalThis.MDKRPartyHost.confirm('phone-one')")
+            deadline = time.monotonic() + args.timeout
+            connected = False
             while time.monotonic() < deadline:
                 relay(phone, host,
                       "globalThis.__mdkrControllerTestState.signals?.splice(0) || []",
@@ -92,11 +138,8 @@ def run(args: argparse.Namespace) -> None:
                 if connected:
                     break
                 time.sleep(0.03)
-            require(bool(connected), "direct WebRTC controller did not become active")
-
-            # P2a join compression: once the direct channels open, the page
-            # runs the input test itself and advances to the controller
-            # surface — no Press Go tap, no Use controller tap.
+            require(bool(connected),
+                    "confirmed phone did not take input custody after Words Match")
             wait_value(phone, "globalThis.__mdkrControllerTest.state().phase",
                        lambda value: value == "controller",
                        "auto input test advanced to the controller surface",
