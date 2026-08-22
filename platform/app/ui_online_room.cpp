@@ -6,7 +6,7 @@
 #include "ui_settings.h"
 
 #include "a11y_model.h"
-#include "online/lobby_fake_adapter.h"
+#include "online/match_live_adapter.h"
 
 #include "imgui.h"
 
@@ -18,15 +18,13 @@
 namespace {
 
 struct OnlineRoomUiState {
-    MdkrOnlineFakeAdapter adapter{};
+    std::unique_ptr<IMdkrOnlineAdapter> adapter;
     bool initialized = false;
     bool detailsOpen = false;
     bool connectionDoctorOpen = false;
     bool updateHelpOpen = false;
     bool leaveRaceConfirm = false;
     std::uint64_t nextRequestId = 1u;
-    std::uint32_t scheduledToken = 0u;
-    unsigned scheduledFrames = 0u;
     MdkrOnlineViewKind announcedKind = static_cast<MdkrOnlineViewKind>(0);
     MdkrOnlineViewFailure announcedFailure = MDKR_ONLINE_VIEW_FAILURE_NONE;
     char announcedVerificationPhrase[64]{};
@@ -115,67 +113,64 @@ MdkrOnlineCompatibilityV1 fakeCompatibility() {
     return value;
 }
 
-void ensureInitialized() {
-    if (g_online.initialized || !fakeEnabled()) return;
-    const MdkrOnlineCompatibilityV1 compatibility = fakeCompatibility();
-    g_online.initialized = mdkr_online_fake_init(
-        &g_online.adapter, UINT64_C(0x4f4e303342), &compatibility,
-        std::getenv("MDKR_APP_ONLINE_FAKE_ALLOW_START") != nullptr);
+// Constructs the launcher-owned adapter behind the seam. The default path is
+// the deterministic fake (the view-model oracle); the live adapter is swapped
+// in only behind the internal-test-token gate AND the compile-time Online Room
+// preview gate below -- never in a normal build.
+std::unique_ptr<IMdkrOnlineAdapter> makeAdapter(
+    const MdkrOnlineCompatibilityV1 &compatibility) {
+#if MDKR_ENABLE_ONLINE_ROOM_PREVIEW
+    if (mdkr_online_live_lobby_gate_open()) {
+        std::unique_ptr<IMdkrOnlineAdapter> live =
+            OnlineRoom_makeGatedLiveAdapter(compatibility);
+        if (live) return live;
+    }
+#endif
+    if (!fakeEnabled()) return nullptr;
+    auto fake = std::make_unique<MdkrOnlineFakeAdapterSeam>();
+    if (!fake->init(UINT64_C(0x4f4e303342), &compatibility,
+                    std::getenv("MDKR_APP_ONLINE_FAKE_ALLOW_START") != nullptr)) {
+        return nullptr;
+    }
     const char *gallery = std::getenv("MDKR_APP_ONLINE_GALLERY");
-    if (!g_online.initialized || gallery == nullptr || gallery[0] == '\0') return;
-    g_online.gallerySpec = mdkr_online_fake_gallery_find(gallery);
-    if (g_online.gallerySpec == nullptr ||
-        !mdkr_online_fake_prepare_gallery(&g_online.adapter, gallery)) {
-        std::fprintf(stderr,
-                     "[online-gallery] rejected slug=%s admission=%u\n",
-                     gallery,
-                     g_online.adapter.race_admission_enabled ? 1u : 0u);
-        g_online.initialized = false;
-        g_online.gallerySpec = nullptr;
-        return;
+    if (gallery != nullptr && gallery[0] != '\0') {
+        g_online.gallerySpec = mdkr_online_fake_gallery_find(gallery);
+        if (g_online.gallerySpec == nullptr ||
+            !mdkr_online_fake_prepare_gallery(fake->fakeAdapter(), gallery)) {
+            std::fprintf(stderr,
+                         "[online-gallery] rejected slug=%s admission=%u\n",
+                         gallery, fake->raceAdmissionEnabled() ? 1u : 0u);
+            g_online.gallerySpec = nullptr;
+            return nullptr;
+        }
+        // Gallery construction intentionally traverses the public command seam,
+        // so it consumes request IDs just like a resumed persisted room would.
+        // Continue after its high-water mark: restarting at 1 turns the first
+        // player action into a correctly rejected replay.
+        g_online.nextRequestId = fake->fakeAdapter()->last_request_id + 1u;
+        if (g_online.nextRequestId == 0u) g_online.nextRequestId = 1u;
     }
-    // Gallery construction intentionally traverses the public command seam,
-    // so it consumes request IDs just like a resumed persisted room would.
-    // Continue after its high-water mark: restarting at 1 turns the first
-    // player action into a correctly rejected replay.
-    g_online.nextRequestId = g_online.adapter.last_request_id + 1u;
-    if (g_online.nextRequestId == 0u) g_online.nextRequestId = 1u;
+    return fake;
 }
 
-void scheduleIfPending(const MdkrOnlineFakeStep &step) {
-    if (!step.accepted || step.pending_token == 0u) return;
-    g_online.scheduledToken = step.pending_token;
-    g_online.scheduledFrames = 1u;
+void ensureInitialized() {
+    if (g_online.initialized) return;
+    const MdkrOnlineCompatibilityV1 compatibility = fakeCompatibility();
+    std::unique_ptr<IMdkrOnlineAdapter> adapter = makeAdapter(compatibility);
+    if (!adapter) return;
+    g_online.adapter = std::move(adapter);
+    g_online.initialized = true;
 }
 
-void serviceFakeCallback() {
-    if (!g_online.initialized || g_online.scheduledToken == 0u) return;
-    if (g_online.scheduledFrames != 0u) {
-        --g_online.scheduledFrames;
-        return;
-    }
-    const std::uint32_t token = g_online.scheduledToken;
-    g_online.scheduledToken = 0u;
-    const MdkrOnlineFakeStep step = mdkr_online_fake_complete(
-        &g_online.adapter, token, MDKR_ONLINE_VIEW_FAILURE_NONE);
-    if (!step.accepted) {
-        std::fprintf(stderr,
-                     "[online-ui] ignored callback token=%u error=%u\n",
-                     token, static_cast<unsigned>(step.error));
-    }
-}
-
-MdkrOnlineFakeStep dispatch(MdkrOnlineViewAction action,
-                            unsigned seat = 0u, unsigned value = 0u) {
-    MdkrOnlineFakeCommand command{};
-    command.expected_revision = g_online.adapter.revision;
-    command.request_id = g_online.nextRequestId++;
+MdkrOnlineAdapterStep dispatch(MdkrOnlineViewAction action,
+                               unsigned seat = 0u, unsigned value = 0u) {
+    MdkrOnlineAdapterCommand command;
+    command.expectedRevision = g_online.adapter->revision();
+    command.requestId = g_online.nextRequestId++;
     command.action = action;
     command.seat = seat;
     command.value = value;
-    const MdkrOnlineFakeStep step =
-        mdkr_online_fake_dispatch(&g_online.adapter, &command);
-    scheduleIfPending(step);
+    const MdkrOnlineAdapterStep step = g_online.adapter->submit(command);
     if (actionSmokeEnabled() && action == focusedAction()) {
         std::fprintf(stderr,
                      "[online-ui-action] dispatch action=%u seat=%u value=%u "
@@ -375,8 +370,8 @@ void handleAction(MdkrOnlineViewAction action, LauncherState &state) {
     if (action == MDKR_ONLINE_VIEW_ACTION_PLAY_HERE ||
         action == MDKR_ONLINE_VIEW_ACTION_CHOOSE_ROM ||
         action == MDKR_ONLINE_VIEW_ACTION_RETURN_HOME) {
-        if (g_online.adapter.session.state.intent != MDKR_INTENT_NONE) {
-            const MdkrOnlineFakeStep step = dispatch(action);
+        if (g_online.adapter->sessionIntent() != MDKR_INTENT_NONE) {
+            const MdkrOnlineAdapterStep step = dispatch(action);
             if (!step.accepted) return;
         } else {
             recordAction(action, true);
@@ -386,7 +381,7 @@ void handleAction(MdkrOnlineViewAction action, LauncherState &state) {
         return;
     }
     if (action == MDKR_ONLINE_VIEW_ACTION_CHANGE_TRACK) {
-        const MdkrOnlineFakeStep step =
+        const MdkrOnlineAdapterStep step =
             dispatch(MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN);
         recordAction(action, step.accepted);
     } else if (action == MDKR_ONLINE_VIEW_ACTION_START_RACE) {
@@ -411,7 +406,7 @@ void handleAction(MdkrOnlineViewAction action, LauncherState &state) {
             g_online.leaveRaceConfirm = true;
             recordAction(action, true);
         } else {
-            const MdkrOnlineFakeStep step = dispatch(action);
+            const MdkrOnlineAdapterStep step = dispatch(action);
             if (step.accepted) {
                 g_online.leaveRaceConfirm = false;
                 Launcher_requestTab(state, kLauncherPanelPlay,
@@ -445,10 +440,10 @@ void drawLeaveRaceConfirmation(LauncherState &state) {
         "Stops this display's game and disconnects it from the private room.");
 }
 
-void drawFakePanel(LauncherState &state) {
-    serviceFakeCallback();
+void drawRoomPanel(LauncherState &state) {
+    g_online.adapter->service();
     MdkrOnlineViewModel model{};
-    if (!mdkr_online_fake_view(&g_online.adapter, &model)) {
+    if (!g_online.adapter->view(&model)) {
         ui::CautionBox("Preview State Rejected",
                        "The fake adapter produced an invalid composition. "
                        "Return to the Game ROM panel and inspect Diagnostics.");
@@ -466,8 +461,8 @@ void drawFakePanel(LauncherState &state) {
             static_cast<unsigned>(model.secondary.action),
             static_cast<unsigned>(model.cancel.action),
             model.timeout.present ? 1u : 0u,
-            g_online.adapter.timeout_expired ? 1u : 0u,
-            g_online.adapter.race_admission_enabled ? 1u : 0u);
+            g_online.adapter->timeoutExpired() ? 1u : 0u,
+            g_online.adapter->raceAdmissionEnabled() ? 1u : 0u);
     }
     announceView(model);
     ui::SectionHeader(model.title, model.explanation);
@@ -477,7 +472,7 @@ void drawFakePanel(LauncherState &state) {
                                                        : "Private Room Preview");
         ui::TextSubtle("%u members • %u racer seats • %u ready",
                        model.member_count, model.seat_count, model.ready_count);
-        if (!g_online.adapter.race_admission_enabled) {
+        if (!g_online.adapter->raceAdmissionEnabled()) {
             ui::TextSubtleWrapped(
                 "Interaction preview only. Start Race is held by the local "
                 "rollback release gate; this screen cannot enable it.");
@@ -488,7 +483,7 @@ void drawFakePanel(LauncherState &state) {
     ui::Gap(ui::kGapM);
 
     const MdkrOnlineViewAction timeoutAction =
-        model.timeout.present && g_online.adapter.timeout_expired
+        model.timeout.present && g_online.adapter->timeoutExpired()
             ? model.timeout.primary.action : MDKR_ONLINE_VIEW_ACTION_NONE;
     if (timeoutAction != MDKR_ONLINE_VIEW_ACTION_NONE) {
         ui::CautionBox(model.timeout.title, model.timeout.explanation);
@@ -519,14 +514,16 @@ void drawFakePanel(LauncherState &state) {
 
     if (model.kind == MDKR_ONLINE_VIEW_RACING) {
         ui::Gap(ui::kGapM);
-        ImGui::BeginDisabled(!g_online.adapter.race_admission_enabled);
+        ImGui::BeginDisabled(!g_online.adapter->raceAdmissionEnabled());
         if (ImGui::Button("Finish Preview Race", ui::kBtnFullWidth())) {
-            mdkr_online_fake_finish_race(
-                &g_online.adapter, g_online.adapter.revision);
+            // Development-only result stub, valid only for the fake adapter.
+            if (MdkrOnlineFakeAdapter *fake = g_online.adapter->fakeAdapter()) {
+                mdkr_online_fake_finish_race(fake, fake->revision);
+            }
         }
         ui::SpeakFocusedItem(
             "Finish Preview Race",
-            g_online.adapter.race_admission_enabled ? "Available" : "Unavailable",
+            g_online.adapter->raceAdmissionEnabled() ? "Available" : "Unavailable",
             "A development-only stand-in for a confirmed engine result.");
         ImGui::EndDisabled();
     }
@@ -541,11 +538,11 @@ void drawFakePanel(LauncherState &state) {
 void OnlineRoomPanel_draw(LauncherState &state, LauncherAction &action) {
     (void)action;
     ensureInitialized();
-    if (!fakeEnabled() || !g_online.initialized) {
+    if (!g_online.adapter || !g_online.initialized) {
         drawUnavailablePanel();
         return;
     }
-    drawFakePanel(state);
+    drawRoomPanel(state);
 }
 
 int OnlineRoom_dumpGalleryContract() {

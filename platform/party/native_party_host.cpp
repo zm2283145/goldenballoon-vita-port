@@ -25,6 +25,11 @@ constexpr uint64_t kRebindRateLimitMs = 500u;
  * a healthy channel refreshes before the previous pulse expires, a broken
  * one goes silent within 250 ms. */
 constexpr uint64_t kRumbleRefreshMs = 200u;
+/* F6 auto-rotate: how recent the UI's last noteInviteDisplayed must be for
+ * the invite card to count as ON SCREEN right now. The UI reports once per
+ * drawn frame, so anything past a second means the card left the screen
+ * and the invite must simply expire at its ordinary TTL. */
+constexpr uint64_t kInviteDisplayedFreshMs = 1000u;
 
 bool printable(const std::string &value, size_t maximum) {
     if (value.size() > maximum) return false;
@@ -59,6 +64,87 @@ bool occupiesSeat(const MdkrNativePartyController &controller) {
 
 std::string safeMessage(const std::string &value, const char *fallback) {
     return printable(value, kMaxMessage) && !value.empty() ? value : fallback;
+}
+
+/* F8: whether any controller currently holds a seat lease. The terminal /
+ * recoverable fork for transport errors hangs on this: a room with no
+ * seated lease has nothing to protect and may fail closed, while a room
+ * with one must never trade a live direct channel for an error screen. */
+bool anySeatHeld(const MdkrNativePartyView &view) {
+    return std::any_of(view.controllers.begin(), view.controllers.end(),
+        [](const MdkrNativePartyController &candidate) {
+            return candidate.phase != MdkrNativePartyControllerPhase::Pending &&
+                candidate.seat >= 1u && candidate.seat <= 4u;
+        });
+}
+
+/* F1 rename validation: the same bounds the redeem-time name field already
+ * enforces (services/party/src/security.ts normalizeName and its native
+ * twin in lan_party_room.cpp) -- 24 code points, none of the control /
+ * zero-width / bidi-formatting set, no edge whitespace, kMaxName bytes --
+ * applied as REFUSAL rather than repair. The phone page normalizes before
+ * sending, so anything that arrives outside these bounds is a client this
+ * host does not trust to relabel a seat row. Empty is valid: the name field
+ * is optional and a rename may clear it. */
+bool validRenameName(const std::string &value) {
+    if (value.size() > kMaxName) return false;
+    std::vector<uint32_t> codePoints;
+    for (size_t index = 0u; index < value.size();) {
+        const auto byte = static_cast<unsigned char>(value[index]);
+        uint32_t code = 0u;
+        size_t length = 0u;
+        if (byte < 0x80u) {
+            code = byte;
+            length = 1u;
+        } else if ((byte & 0xe0u) == 0xc0u) {
+            code = byte & 0x1fu;
+            length = 2u;
+        } else if ((byte & 0xf0u) == 0xe0u) {
+            code = byte & 0x0fu;
+            length = 3u;
+        } else if ((byte & 0xf8u) == 0xf0u) {
+            code = byte & 0x07u;
+            length = 4u;
+        } else {
+            return false;
+        }
+        if (index + length > value.size()) return false;
+        for (size_t offset = 1u; offset < length; offset++) {
+            const auto continuation =
+                static_cast<unsigned char>(value[index + offset]);
+            if ((continuation & 0xc0u) != 0x80u) return false;
+            code = (code << 6u) | (continuation & 0x3fu);
+        }
+        if ((length == 2u && code < 0x80u) ||
+            (length == 3u && code < 0x800u) ||
+            (length == 4u && code < 0x10000u) || code > 0x10ffffu ||
+            (code >= 0xd800u && code <= 0xdfffu)) {
+            return false;
+        }
+        codePoints.push_back(code);
+        index += length;
+    }
+    if (codePoints.size() > 24u) return false;
+    const auto stripped = [](uint32_t code) {
+        return code <= 0x1fu || (code >= 0x7fu && code <= 0x9fu) ||
+            (code >= 0x200bu && code <= 0x200fu) || code == 0x2028u ||
+            code == 0x2029u || (code >= 0x202au && code <= 0x202eu) ||
+            code == 0x2060u || (code >= 0x2066u && code <= 0x2069u) ||
+            code == 0xfeffu;
+    };
+    const auto spaceLike = [](uint32_t code) {
+        return code == 0x20u || code == 0xa0u || code == 0x1680u ||
+            (code >= 0x2000u && code <= 0x200au) || code == 0x202fu ||
+            code == 0x205fu || code == 0x3000u;
+    };
+    for (uint32_t code : codePoints) {
+        if (stripped(code)) return false;
+    }
+    if (!codePoints.empty() &&
+        (spaceLike(codePoints.front()) || spaceLike(codePoints.back()))) {
+        return false;
+    }
+    return true;
 }
 
 /* I3: the worker's typed host_command_result codes, mapped to honest
@@ -115,6 +201,8 @@ bool MdkrNativePartyHost::open(const std::string &serviceOrigin) {
     }
     releaseAll();
     view_ = MdkrNativePartyView{};
+    inviteDisplayedAtMs_ = 0u;
+    inviteTtlMs_ = 0u;
     if (!transport_.available()) {
         setError(safeMessage(
             transport_.unavailableReason(),
@@ -217,6 +305,10 @@ bool MdkrNativePartyHost::rotateInvite() {
     return true;
 }
 
+void MdkrNativePartyHost::noteInviteDisplayed(uint64_t nowMs) {
+    inviteDisplayedAtMs_ = nowMs;
+}
+
 bool MdkrNativePartyHost::dismissInvite() {
     if (!view_.inviteVisible || view_.busy || !transport_.revokeInvite()) {
         return false;
@@ -232,6 +324,8 @@ bool MdkrNativePartyHost::closeRoom() {
     transport_.shutdown();
     releaseAll();
     view_ = MdkrNativePartyView{};
+    inviteDisplayedAtMs_ = 0u;
+    inviteTtlMs_ = 0u;
     view_.message = "Phone controllers closed.";
     return requested;
 }
@@ -312,6 +406,19 @@ void MdkrNativePartyHost::releaseAll() {
 void MdkrNativePartyHost::applyRoomState(
     const MdkrPartyTransportRoomState &room, uint64_t nowMs) {
     if (!roomStateValid(room)) {
+        /* F8: an invalid update is refused either way, but only a room with
+         * no seated lease may fail closed over it. Seated leases ride out
+         * the fault in Recovering -- their direct channels never depended
+         * on this update, and the next valid room update recovers the
+         * surface (applyRoomState below runs on Recovering explicitly). */
+        if (anySeatHeld(view_)) {
+            view_.phase = MdkrNativePartyPhase::Recovering;
+            view_.busy = true;
+            view_.message =
+                "The controller service sent an invalid room update. "
+                "Connected phones keep working.";
+            return;
+        }
         setError("The controller service returned an invalid room update.");
         return;
     }
@@ -346,17 +453,35 @@ void MdkrNativePartyHost::applyRoomState(
     view_.controllers = room.controllers;
     for (MdkrNativePartyController &candidate : view_.controllers) {
         candidate.commandPending = false;
-        if (candidate.pairingPhrase.empty()) {
-            const auto former = std::find_if(
-                previous.begin(), previous.end(),
-                [&candidate](const MdkrNativePartyController &other) {
-                    return other.id == candidate.id;
-                });
-            if (former != previous.end() &&
-                former->connectionSequence == candidate.connectionSequence &&
-                former->publicKey == candidate.publicKey) {
+        const auto former = std::find_if(
+            previous.begin(), previous.end(),
+            [&candidate](const MdkrNativePartyController &other) {
+                return other.id == candidate.id;
+            });
+        if (former != previous.end() &&
+            former->publicKey == candidate.publicKey) {
+            if (candidate.pairingPhrase.empty() &&
+                former->connectionSequence == candidate.connectionSequence) {
                 candidate.pairingPhrase = former->pairingPhrase;
             }
+            /* RTT rides the same rule as the phrase: it measured this exact
+             * channel, so a new connectionSequence starts sampleless. */
+            if (former->connectionSequence == candidate.connectionSequence) {
+                candidate.rttMs = former->rttMs;
+            }
+            /* F2: connection history belongs to the phone (id + key), not
+             * to any one room transition -- carry it. */
+            candidate.everConnected = candidate.everConnected ||
+                former->everConnected;
+            /* F1: the room update still carries the redeem-time name; a
+             * live rename outlives it while this is the same phone. */
+            if (former->renamed && occupiesSeat(candidate)) {
+                candidate.name = former->name;
+                candidate.renamed = true;
+            }
+        }
+        if (candidate.phase == MdkrNativePartyControllerPhase::Connected) {
+            candidate.everConnected = true;
         }
         const uint64_t owner = ownerFor(candidate);
         if (owner != 0u && candidate.connectionSequence != 0u) {
@@ -369,6 +494,13 @@ void MdkrNativePartyHost::applyRoomState(
         }
     }
 
+    /* F6: latch the generation's ORIGINAL TTL once, at the transition that
+     * introduces the generation -- the 75% auto-rotate mark is measured
+     * against it, and a later same-generation update (which arrives with
+     * only the remaining time) must not shrink the baseline. */
+    if (room.inviteGeneration != view_.inviteGeneration) {
+        inviteTtlMs_ = room.inviteActive ? room.inviteExpiresInMs : 0u;
+    }
     view_.transitionId = room.transitionId;
     view_.inviteGeneration = room.inviteGeneration;
     /* I1 fix: room.inviteExpiresInMs is relative (ms remaining as of the
@@ -402,6 +534,9 @@ void MdkrNativePartyHost::applyEvent(
             candidate->phase = MdkrNativePartyControllerPhase::Connected;
             candidate->direct = true;
             candidate->haptics = event.haptics;
+            /* F2: this lease has now connected once; a later drop reads as
+             * "Reconnecting", never again as first-time "Connecting…". */
+            candidate->everConnected = true;
             /* I2 recovery: a genuine controller_ready at this build's own
              * protocol means the phone reloaded into a matching page. */
             candidate->protocolMismatch = false;
@@ -423,6 +558,8 @@ void MdkrNativePartyHost::applyEvent(
              * refusal would leave the old channel's words standing
              * indefinitely against a live channel they do not bind. */
             candidate->pairingPhrase.clear();
+            /* The RTT sample measured the channel that just ended. */
+            candidate->rttMs = 0u;
             (void)mdkr_native_remote_pad_set_haptics(
                 candidate->seat - 1u, ownerFor(*candidate),
                 candidate->connectionSequence, false);
@@ -459,11 +596,35 @@ void MdkrNativePartyHost::applyEvent(
             }
             return;
         }
+        case MdkrPartyTransportEventType::ControllerRtt: {
+            /* RTT: newest matched pong wins; the sample is cosmetic and
+             * scoped to the live channel (cleared wherever that channel
+             * ends or demotes). */
+            MdkrNativePartyController *candidate = controller(event.controllerId);
+            if (candidate == nullptr || !occupiesSeat(*candidate)) return;
+            candidate->rttMs = event.rttMs;
+            return;
+        }
         case MdkrPartyTransportEventType::ControllerPhrase: {
             MdkrNativePartyController *candidate = controller(event.controllerId);
             if (candidate != nullptr && printable(event.message, kMaxPhrase)) {
                 candidate->pairingPhrase = event.message;
             }
+            return;
+        }
+        case MdkrPartyTransportEventType::ControllerRenamed: {
+            /* F1: a rename may only come from a seat's own authenticated
+             * control channel (the transports enforce that side), may only
+             * name a seated controller, and must pass the same bounds the
+             * redeem-time name field enforces -- otherwise it is dropped
+             * whole. The row updates silently; nothing else changes. */
+            MdkrNativePartyController *candidate = controller(event.controllerId);
+            if (candidate == nullptr || !occupiesSeat(*candidate) ||
+                !validRenameName(event.message)) {
+                return;
+            }
+            candidate->name = event.message;
+            candidate->renamed = true;
             return;
         }
         case MdkrPartyTransportEventType::ControllerProtocolMismatch: {
@@ -482,6 +643,8 @@ void MdkrNativePartyHost::applyEvent(
             candidate->needsRebind = false;
             candidate->direct = false;
             candidate->haptics = false;
+            /* No RTT number may vouch for a demoted channel. */
+            candidate->rttMs = 0u;
             (void)mdkr_native_remote_pad_set_haptics(
                 candidate->seat - 1u, ownerFor(*candidate),
                 candidate->connectionSequence, false);
@@ -549,6 +712,24 @@ void MdkrNativePartyHost::applyEvent(
             view_.message = "Reconnecting the controller room…";
             return;
         case MdkrPartyTransportEventType::Error:
+            /* F8: only credential-invalid and room-closed are terminal, and
+             * on this model both arrive typed (RoomGone below; Closed for
+             * the host's own goodbye). Any other transport error while a
+             * seat holds its lease keeps the lease and shows recovery --
+             * the phones' direct channels do not depend on the faulted
+             * signaling path, so tearing their seats down would trade live
+             * controls for an error screen. With no seat held there is
+             * nothing to protect and the error stays terminal, keeping the
+             * retry button honest. */
+            if (anySeatHeld(view_)) {
+                view_.phase = MdkrNativePartyPhase::Recovering;
+                view_.busy = true;
+                view_.message = safeMessage(
+                    event.message,
+                    "Phone controller connection hit a fault. "
+                    "Connected phones keep working.");
+                return;
+            }
             setError(safeMessage(
                 event.message,
                 "Phone controllers are unavailable. Local controllers still work."));
@@ -568,6 +749,8 @@ void MdkrNativePartyHost::applyEvent(
         case MdkrPartyTransportEventType::Closed:
             releaseAll();
             view_ = MdkrNativePartyView{};
+            inviteDisplayedAtMs_ = 0u;
+            inviteTtlMs_ = 0u;
             view_.message = safeMessage(event.message, "Phone controllers closed.");
             return;
     }
@@ -673,6 +856,24 @@ void MdkrNativePartyHost::service(uint64_t nowMs) {
         view_.fallbackCode.clear();
         view_.phase = MdkrNativePartyPhase::InviteRevoked;
         view_.message = "Controller code expired. Connected phones keep their seats.";
+    }
+
+    /* F6: an invite the player is actually LOOKING at right now (the UI
+     * reported the card drawn within the last frame or so) rotates itself
+     * once ~75% of its TTL has elapsed, so the QR/code on screen is always
+     * redeemable. The TTL itself never lengthens: an undisplayed invite
+     * just expired above exactly as it always did, and this path mints a
+     * replacement rather than stretching the old one. rotateInvite() keeps
+     * every one of its own gates (phase, busy, generation), so an in-flight
+     * rotation is never doubled. */
+    if (view_.inviteVisible && !view_.busy &&
+        view_.phase == MdkrNativePartyPhase::Open &&
+        inviteTtlMs_ != 0u && inviteDisplayedAtMs_ != 0u &&
+        nowMs >= inviteDisplayedAtMs_ &&
+        nowMs - inviteDisplayedAtMs_ <= kInviteDisplayedFreshMs &&
+        view_.inviteExpiresAtMs > nowMs &&
+        view_.inviteExpiresAtMs - nowMs <= inviteTtlMs_ / 4u) {
+        (void)rotateInvite();
     }
 
     for (MdkrNativePartyController &candidate : view_.controllers) {

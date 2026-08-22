@@ -53,6 +53,27 @@ sender fields. It does not reflect arbitrary client JSON. Binary input,
 malformed JSON, sender fields, self-targeting, stale/replayed sequences,
 noncanonical keys and invalid types close with a bounded code.
 
+### `peer_hello` carries a three-step commit-then-reveal (native peer transport)
+
+The signaling wire has no dedicated commitment message, so the native peer
+transport (`platform/online/match_peer_transport.cpp`) layers commit-then-reveal
+onto a fixed **three `peer_hello` sequence** per (epoch, connection generation),
+each a wire-valid 65-byte `0x04`-prefixed key with a nonzero head so the relay's
+`publicKey` validator accepts it:
+
+1. `0x04 ‖ commitment(32) ‖ zero(32)` — the commitment to the real key + nonce.
+2. the real uncompressed P-256 public key.
+3. `0x04 ‖ nonce(32) ‖ zero(32)` — the reveal nonce.
+
+A peer withholds its own step 2/3 reveal until the other side's commitment
+(step 1) has arrived, and `match_peer_transcript` re-verifies every commitment
+against the revealed key+nonce before the key enters the transcript — so a
+mismatch, a fourth hello, out-of-order or duplicate steps, or a hello replayed
+from a retired generation all fail closed (no verification phrase is ever
+produced from unverified material). This is a **v1 native↔native convention**:
+a future browser peer implementation must reproduce all three steps and the
+withheld-reveal ordering exactly, not just send a single key.
+
 ## Bounds and $0 accounting
 
 - Total signaling frame: 64 KiB UTF-8.

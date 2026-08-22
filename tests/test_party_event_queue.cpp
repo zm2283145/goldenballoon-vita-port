@@ -140,11 +140,56 @@ void drainThenPushDeliversTheNextBurstToo() {
     }
 }
 
+/* F1 flood guard. ControllerRenamed is non-droppable (a rename mutates the
+ * host's model and must never vanish silently), which is only safe because
+ * the transports admit controller_rename through the per-peer
+ * mdkr_party_rename_admit gate BEFORE any event exists: repeats of the
+ * admitted name are dropped (the browser host dedupes the same way) and
+ * fresh names are capped per fixed window, so a phone blasting ~8k
+ * renames/s can never fill the shared queue and evict or refuse other
+ * seats' pad packets. */
+void renameFloodCannotStarvePadInput() {
+    MdkrPartyRenameGate gate;
+    MdkrPartyEventQueue queue(128u);
+
+    unsigned admitted = 0u;
+    for (unsigned index = 0u; index < 8000u; ++index) {
+        /* ~8 messages per simulated millisecond = one second of flood. */
+        const uint64_t nowMs = 10000u + index / 8u;
+        if (mdkr_party_rename_admit(
+                gate, "name-" + std::to_string(index), nowMs)) {
+            MdkrPartyTransportEvent renamed;
+            renamed.type = MdkrPartyTransportEventType::ControllerRenamed;
+            renamed.controllerId = "phone-a";
+            renamed.message = "name-" + std::to_string(index);
+            queue.push(std::move(renamed));
+            admitted++;
+        }
+    }
+    assert(admitted <= kMdkrPartyRenameWindowMessages);
+
+    /* Another seat's pad heartbeats arrive during and after the flood and
+     * every one of them must still cross the queue. */
+    for (uint32_t sequence = 0u; sequence < 16u; ++sequence) {
+        queue.push(padPacketEvent(sequence));
+    }
+    const std::vector<MdkrPartyTransportEvent> drained = queue.drain();
+    size_t pads = 0u;
+    for (const MdkrPartyTransportEvent &event : drained) {
+        if (event.type == MdkrPartyTransportEventType::ControllerPacket) {
+            pads++;
+        }
+    }
+    assert(pads == 16u);
+    assert(queue.droppedPadPackets() == 0u);
+}
+
 }  // namespace
 
 int main() {
     floodOfDroppablePacketsDropsOldestAndCounts();
     roomStateSurvivesAPacketFloodInOrder();
     drainThenPushDeliversTheNextBurstToo();
+    renameFloodCannotStarvePadInput();
     return 0;
 }

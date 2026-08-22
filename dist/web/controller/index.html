@@ -40,30 +40,32 @@
                aria-describedby="code-error" aria-invalid="false"
                translate="no" required>
         <p id="code-error" class="code-error" role="alert" hidden>Check the code and try again.</p>
+        <label for="device-name">Phone name <span>(optional)</span></label>
+        <input id="device-name" name="device-name" type="text" maxlength="24"
+               autocomplete="off" spellcheck="false"
+               enterkeyhint="done" placeholder="For example, Sam’s phone…">
         <button id="join-code" class="primary-button" type="submit">Join controller room</button>
       </form>
     </section>
 
     <section id="state-waiting" class="state-card" aria-labelledby="waiting-title" hidden>
       <p class="eyebrow">Waiting for approval</p>
-      <h1 id="waiting-title">Check the display</h1>
+      <h1 id="waiting-title" tabindex="-1">Check the display</h1>
       <p>The pairing phrase appears on both screens when this phone connects.</p>
-      <label for="device-name">Phone name <span>(optional)</span></label>
-      <input id="device-name" name="device-name" type="text" maxlength="24"
-             autocomplete="off" spellcheck="false"
-             enterkeyhint="done" placeholder="For example, Sam’s phone…">
       <button class="text-button" type="button" data-action="leave">Leave room</button>
     </section>
 
     <section id="state-assigned" class="state-card" aria-labelledby="assigned-title" hidden>
       <p class="eyebrow">Approved</p>
-      <div id="seat-badge" class="seat-badge" aria-hidden="true">1</div>
-      <h1 id="assigned-title">Controller 1</h1>
-      <p>Check this phrase matches the one shown on the display.</p>
-      <div class="phrase" aria-label="Pairing phrase">
-        <span>Pairing phrase</span><strong id="pairing-phrase"></strong>
+      <div class="phrase phrase-lead" aria-label="Pairing phrase">
+        <span>Pairing phrase — check it matches the display</span>
+        <strong id="pairing-phrase"></strong>
       </div>
-      <p>Test the connection, then pick up your phone and race.</p>
+      <div class="assigned-seat">
+        <div id="seat-badge" class="seat-badge" aria-hidden="true">1</div>
+        <h1 id="assigned-title">Controller 1</h1>
+      </div>
+      <p>The connection test runs by itself; racing starts when it passes.</p>
       <button id="input-test" class="input-test" type="button">
         <span>Press Go</span><small id="input-test-status">Connection test</small>
       </button>
@@ -100,6 +102,7 @@
     <section id="state-controller" class="controller-view" aria-label="Controller" hidden>
       <div class="controller-status">
         <span id="controller-seat">Controller 1</span>
+        <span id="rtt-pill" class="rtt-pill" aria-label="Connection delay" hidden></span>
         <span id="wake-status">Screen awake when supported</span>
         <button id="settings-open" class="icon-button" type="button"
                 aria-label="Controller settings">⚙</button>
@@ -141,6 +144,13 @@
       <input id="control-size" name="control-size" type="range" min="85" max="125" value="100">
       <label><input id="show-labels" name="show-labels" type="checkbox" checked> Show button labels</label>
       <label><input id="haptics" name="haptics" type="checkbox" checked> Touch vibration</label>
+      <label for="device-name-live">Phone name</label>
+      <input id="device-name-live" name="device-name-live" type="text" maxlength="24"
+             autocomplete="off" spellcheck="false" enterkeyhint="done"
+             placeholder="For example, Sam’s phone…">
+      <div class="phrase phrase-settings" aria-label="Pairing phrase">
+        <span>Pairing phrase</span><strong id="pairing-phrase-settings"></strong>
+      </div>
       <button id="leave-controller" class="danger-button" value="close" type="button">Leave controller room</button>
     </form>
   </dialog>

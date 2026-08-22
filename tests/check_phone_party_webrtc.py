@@ -94,12 +94,16 @@ def run(args: argparse.Namespace) -> None:
                 time.sleep(0.03)
             require(bool(connected), "direct WebRTC controller did not become active")
 
-            phase = phone.evaluate("globalThis.__mdkrControllerTest.state().phase")
-            require(phase == "assigned", f"phone was not assigned after direct handshake: {phase}")
-            phone.evaluate("document.getElementById('input-test').click()")
-            wait_value(phone, "!document.getElementById('use-controller').disabled", bool,
-                       "reliable input-test round trip", args.timeout)
-            phone.evaluate("document.getElementById('use-controller').click()")
+            # P2a join compression: once the direct channels open, the page
+            # runs the input test itself and advances to the controller
+            # surface — no Press Go tap, no Use controller tap.
+            wait_value(phone, "globalThis.__mdkrControllerTest.state().phase",
+                       lambda value: value == "controller",
+                       "auto input test advanced to the controller surface",
+                       args.timeout)
+            require(bool(phone.evaluate(
+                        "!document.getElementById('use-controller').disabled")),
+                    "auto input test did not also unlock the manual fallback")
             phone.evaluate("""(() => {
               const go=document.querySelector('.touch-go');
               const r=go.getBoundingClientRect();
@@ -130,6 +134,73 @@ def run(args: argparse.Namespace) -> None:
                        "globalThis.__mdkrPartyHostTestState.controlPongs",
                        lambda value: value == 1,
                        "reliable control ping/pong", args.timeout)
+            # RTT instrumentation (RC checklist items 33/50 gain a number):
+            # the matched pong must carry a measured round trip across the
+            # seam, and the value must be plausible — above zero, and under
+            # the 5 s that would mean the direct channel is unusable.
+            rtt = host.evaluate(
+                "globalThis.__mdkrPartyHostTestState.controlRtts?.at(-1)")
+            require(isinstance(rtt, (int, float)) and 0 < rtt < 5000,
+                    f"control-channel RTT sample missing or implausible: {rtt!r}")
+            seat_status = host.evaluate(
+                "document.querySelector('[data-seat=\\\"1\\\"] small').textContent")
+            require("ms · direct" in seat_status,
+                    f"seat row does not surface the RTT: {seat_status!r}")
+            # The phone's own status pill: its bounded 5 s probe rides the
+            # existing input_test/input_test_ack round trip, so a plausible
+            # number appears without any new protocol message.
+            phone_rtt = wait_value(phone,
+                "(() => { const rtts = globalThis.__mdkrControllerTestState.rtts;"
+                " return rtts?.length ? rtts[rtts.length-1] : null; })()",
+                lambda value: isinstance(value, (int, float)) and 0 < value < 5000,
+                "phone-side RTT sample", args.timeout)
+            pill = phone.evaluate("""(() => {
+              const pill = document.getElementById('rtt-pill');
+              return {hidden: pill.hidden, text: pill.textContent};
+            })()""")
+            require(pill["hidden"] is False and pill["text"].endswith(" ms"),
+                    f"phone RTT pill missing or unlabeled: {pill}")
+
+            # F1 session-alive names: the phone renames itself over the live
+            # control channel and the host seat row updates without any room
+            # state transition.
+            phone.evaluate("""(() => {
+              document.getElementById('settings-open').click();
+              const field = document.getElementById('device-name-live');
+              field.value = 'Blue Racer';
+              field.dispatchEvent(new Event('change', {bubbles:true}));
+            })()""")
+            wait_value(host,
+                       "document.querySelector('[data-seat=\\\"1\\\"] strong').textContent",
+                       lambda value: value == "Blue Racer",
+                       "live rename crossed the direct control channel", args.timeout)
+            # All three surfaces share the redeem-time byte bound: a 13-emoji
+            # name is 13 code points but 52 UTF-8 bytes, over the 48-byte cap
+            # the native host refuses — the browser host must refuse it too.
+            # The control channel is ordered, so if the oversize name were
+            # accepted it would re-render the room once before the valid
+            # sentinel does; the render count pins the refusal exactly.
+            renders_before = host.evaluate(
+                "globalThis.__mdkrPartyHostTestState.rooms.length")
+            phone.evaluate("""(() => {
+              const field = document.getElementById('device-name-live');
+              field.value = '🎈'.repeat(13);
+              field.dispatchEvent(new Event('change', {bubbles:true}));
+              field.value = 'Red Racer';
+              field.dispatchEvent(new Event('change', {bubbles:true}));
+            })()""")
+            wait_value(host,
+                       "document.querySelector('[data-seat=\\\"1\\\"] strong').textContent",
+                       lambda value: value == "Red Racer",
+                       "valid rename after the oversize one", args.timeout)
+            renders_after = host.evaluate(
+                "globalThis.__mdkrPartyHostTestState.rooms.length")
+            require(renders_after - renders_before == 1,
+                    "a 52-byte name crossed the browser host's 48-byte bound")
+            phone.evaluate(
+                "document.querySelector('#settings-dialog .icon-button').click()")
+            wait_value(phone, "!document.getElementById('settings-dialog').open",
+                       bool, "controller settings closed after rename", args.timeout)
 
             initial_peer_evidence = host.evaluate(
                 "({creations:globalThis.__mdkrPartyHostTestState.peerCreations,"

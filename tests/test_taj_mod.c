@@ -314,10 +314,6 @@ static void test_async_persistence_state_machine(void) {
     first = taj_mod_pending_generation_for_test();
     CHECK(first != 0 && taj_mod_persistence_pending());
     CHECK(store_has_state(&store, 1, 1));
-    /* A second destructive action cannot replace the first transaction. */
-    CHECK(!taj_mod_erase_all_bonuses());
-    CHECK(taj_mod_pending_generation_for_test() == first &&
-          taj_mod_is_unlocked() && taj_mod_is_enabled());
     taj_mod_report_persistence_failure(first);
     CHECK(!taj_mod_persistence_pending() && taj_mod_persistence_failed() &&
           taj_mod_persistence_issue() == TAJ_MOD_PERSISTENCE_UNLOCK &&
@@ -336,6 +332,12 @@ static void test_async_persistence_state_machine(void) {
      * shell's independent retry timer can ever flush the failed candidate. */
     CHECK(taj_mod_erase_all_bonuses());
     erase = taj_mod_pending_generation_for_test();
+    /* A second destructive action cannot replace the in-flight transaction:
+     * it parks instead (an UNLOCK park could not steal that slot back -- see
+     * the dedicated parked-erase test) and the identical candidate is simply
+     * superseded by the failure park below. */
+    CHECK(!taj_mod_erase_all_bonuses());
+    CHECK(taj_mod_pending_generation_for_test() == erase);
     CHECK(erase != 0 && !taj_mod_is_unlocked() &&
           store_has_state(&store, 0, 1));
     taj_mod_report_persistence_failure(erase);
@@ -382,6 +384,137 @@ static void test_async_persistence_state_machine(void) {
     CHECK(taj_mod_is_unlocked());
     CHECK(mod_racer_is_unlocked(MOD_RACER_WIZPIG));
     CHECK(mod_racer_is_unlocked(MOD_RACER_TERRY));
+}
+
+/* D1 scene gate: browser persistence outcomes land at arbitrary wall-clock
+ * frames. While racer bindings are live (level load until the next menu
+ * selection reset) a completion callback may only RECORD its outcome; the
+ * roster mutations it implies -- executing a queued erase, or restoring a
+ * rejected one -- apply at the next menu-scene service point. A bound bonus
+ * racer must never flip to retail physics between two authored ticks. */
+static void test_async_success_defers_queued_erase_while_race_active(void) {
+    MemoryStore store = { {0}, 0, 0, 1 };
+    TajModStateStorage storage = storage_for(&store);
+    unsigned int first;
+
+    taj_mod_reset_for_test();
+    taj_mod_boot(&storage);
+    taj_mod_set_async_persistence_for_test(1);
+    CHECK(taj_mod_submit_magic_code("ABRACADABRA"));
+    first = taj_mod_pending_generation_for_test();
+    CHECK(first != 0 && taj_mod_persistence_pending());
+    /* An erase while the unlock commit is in flight parks on the retry queue. */
+    CHECK(!taj_mod_erase_all_bonuses());
+    CHECK(taj_mod_is_unlocked() && taj_mod_is_enabled());
+
+    /* The race begins with Taj selected and bound to a live port. */
+    mod_racer_set_player_identity(0, MOD_RACER_TAJ);
+    taj_mod_begin_racer_bindings();
+    taj_mod_bind_racer_player(0, 0);
+    CHECK(mod_racer_live_identity(0) == MOD_RACER_TAJ);
+
+    /* IDBFS confirms the unlock mid-race. The queued erase must NOT run. */
+    taj_mod_report_persistence_success(first);
+    CHECK(mod_racer_live_identity(0) == MOD_RACER_TAJ);
+    CHECK(taj_mod_is_unlocked() && taj_mod_is_enabled());
+    CHECK(taj_mod_persistence_pending());
+    /* Servicing is refused while the race still owns the roster. */
+    taj_mod_service_deferred();
+    CHECK(mod_racer_live_identity(0) == MOD_RACER_TAJ);
+    CHECK(taj_mod_is_unlocked());
+
+    /* Back at a menu scene the deferral flushes and the erase commits. */
+    taj_mod_reset_player_selections();
+    taj_mod_service_deferred();
+    CHECK(!taj_mod_is_unlocked() && !taj_mod_is_enabled());
+    CHECK(store_has_state(&store, 0, 1));
+    CHECK(taj_mod_persistence_pending());
+    taj_mod_report_persistence_success(taj_mod_pending_generation_for_test());
+    CHECK(!taj_mod_persistence_pending() && !taj_mod_persistence_failed());
+    taj_mod_reset_for_test();
+    store.read_result = 1;
+    taj_mod_boot(&storage);
+    CHECK(!taj_mod_is_unlocked() && !taj_mod_is_enabled());
+}
+
+/* The retry queue is one slot deep. A parked ERASE is a destructive intent
+ * the player has been promised will retry; a later unlock parking behind the
+ * same busy transaction must not silently replace it. The unlock stays
+ * session-active in RAM (the existing "session remains active" philosophy),
+ * and the erase replays first -- erase-all erases the newer code too, which
+ * a player can simply re-enter. */
+static void test_parked_erase_survives_later_unlock_park(void) {
+    MemoryStore store = { {0}, 0, 0, 1 };
+    TajModStateStorage storage = storage_for(&store);
+    unsigned int first;
+    unsigned int erase_replay;
+
+    taj_mod_reset_for_test();
+    taj_mod_boot(&storage);
+    taj_mod_set_async_persistence_for_test(1);
+    CHECK(taj_mod_submit_magic_code("ABRACADABRA"));
+    first = taj_mod_pending_generation_for_test();
+    CHECK(first != 0 && taj_mod_persistence_pending());
+    /* The erase parks behind the in-flight unlock commit... */
+    CHECK(!taj_mod_erase_all_bonuses());
+    /* ...and a second unlock discovered while still busy keeps its session
+     * effect but must not steal the park from the destructive intent. */
+    CHECK(mod_racer_submit_magic_code("WIZPIGPOWER") == MOD_RACER_WIZPIG);
+    CHECK(mod_racer_is_enabled(MOD_RACER_WIZPIG));
+    taj_mod_report_persistence_success(first);
+    /* The chained replay executes the parked ERASE, not the unlock. */
+    CHECK(!taj_mod_is_unlocked() && !mod_racer_is_unlocked(MOD_RACER_WIZPIG));
+    CHECK(store_has_state(&store, 0, 1));
+    erase_replay = taj_mod_pending_generation_for_test();
+    CHECK(erase_replay != 0 && erase_replay != first);
+    taj_mod_report_persistence_success(erase_replay);
+    CHECK(!taj_mod_persistence_pending() && !taj_mod_persistence_failed());
+    taj_mod_reset_for_test();
+    store.read_result = 1;
+    taj_mod_boot(&storage);
+    CHECK(!taj_mod_is_unlocked() && !mod_racer_is_unlocked(MOD_RACER_WIZPIG));
+}
+
+/* The failure path's ERASE-restore arm is the same hazard in the other
+ * direction: a mid-race rejection must not resurrect the erased unlocks or
+ * clear live bindings until the next menu scene. */
+static void test_async_erase_failure_restore_defers_while_race_active(void) {
+    MemoryStore store = { {0}, 0, 0, 1 };
+    TajModStateStorage storage = storage_for(&store);
+    unsigned int erase;
+
+    taj_mod_reset_for_test();
+    taj_mod_boot(&storage);
+    CHECK(taj_mod_submit_magic_code("ABRACADABRA"));
+    taj_mod_set_async_persistence_for_test(1);
+    CHECK(taj_mod_erase_all_bonuses());
+    erase = taj_mod_pending_generation_for_test();
+    CHECK(erase != 0 && !taj_mod_is_unlocked() &&
+          store_has_state(&store, 0, 1));
+
+    /* The player races retail; the erase already took effect locally. */
+    taj_mod_begin_racer_bindings();
+    taj_mod_bind_racer_player(0, 0);
+
+    /* IDBFS rejects the erase mid-race: record only. No restore of RAM or
+     * MEMFS bytes, no binding reset, no failure surfaced to menus yet. */
+    taj_mod_report_persistence_failure(erase);
+    CHECK(!taj_mod_is_unlocked());
+    CHECK(store_has_state(&store, 0, 1));
+    CHECK(taj_mod_persistence_pending());
+    CHECK(!taj_mod_persistence_failed());
+
+    /* Title return is a menu transition; it services the deferral. */
+    taj_mod_on_title_return();
+    CHECK(taj_mod_is_unlocked() && taj_mod_is_enabled());
+    CHECK(store_has_state(&store, 1, 1));
+    CHECK(!taj_mod_persistence_pending() && taj_mod_persistence_failed());
+    CHECK(taj_mod_persistence_issue() == TAJ_MOD_PERSISTENCE_ERASE);
+    /* The rejected erase stays queued; an explicit menu retry replays it. */
+    CHECK(taj_mod_retry_persistence());
+    CHECK(!taj_mod_is_unlocked());
+    taj_mod_report_persistence_success(taj_mod_pending_generation_for_test());
+    CHECK(!taj_mod_persistence_pending() && !taj_mod_persistence_failed());
 }
 
 static void test_failed_erase_is_transactional(void) {
@@ -510,6 +643,9 @@ int main(void) {
     test_magic_code_and_lifecycle();
     test_persisted_reload_and_failures();
     test_async_persistence_state_machine();
+    test_async_success_defers_queued_erase_while_race_active();
+    test_parked_erase_survives_later_unlock_park();
+    test_async_erase_failure_restore_defers_while_race_active();
     test_failed_erase_is_transactional();
     test_challenge_mask_and_identity();
     test_wizpig_unlock_and_identity();

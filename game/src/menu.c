@@ -4302,6 +4302,14 @@ void menu_title_screen_init(void) {
     gOptionBlinkTimer = 0;
     gMenuDelay = 0;
     reset_character_id_slots();
+#ifdef NATIVE_PORT
+    /* Quit-to-title arrives here through menu_init(MENU_TITLE) and never
+     * passes init_title_screen_variables (logo boot only). Close the
+     * racer-bindings window on this path too and service any persistence
+     * outcome deferred mid-race, so unlock state and failure surfacing are
+     * already correct on the title/options screens after a quit. */
+    taj_mod_on_title_return();
+#endif
     gSaveFileIndex = 0;
     gTitleScreenCurrentOption = 0;
     gNumberOfActivePlayers = 4;
@@ -9380,6 +9388,11 @@ s32 menu_character_select_loop(s32 updateRate) {
             charSlot = 0;
 #ifdef NATIVE_PORT
             taj_mod_reset_player_selections();
+            /* Menu-scene service point: bindings from the previous race are
+             * now closed, so a browser persistence outcome that was deferred
+             * mid-race (queued erase, or a rejected erase's restore) applies
+             * here, before the identities below are re-selected. */
+            taj_mod_service_deferred();
 #endif
             for (j = 0; j < ARRAY_COUNT(gActivePlayersArray); j++) {
                 if (gActivePlayersArray[j]) {

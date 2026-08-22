@@ -132,6 +132,8 @@ struct Peer {
     uint32_t peerGeneration = 0u;
     bool failed = false;
     bool authenticated = false;
+    /* F1 flood guard state, one per peer (native_party_host.h). */
+    MdkrPartyRenameGate renameGate;
     bool protocolMismatch = false;
     uint32_t pingNonce = 0u;
     Clock::time_point nextPingAt{};
@@ -657,19 +659,66 @@ private:
                        value["nonce"].is_number_unsigned()) {
                 peer->control->send(Json{{"type", "input_test_ack"},
                     {"nonce", value["nonce"]}}.dump());
+            } else if (value.value("type", std::string{}) == "controller_rename" &&
+                       value.value("protocol", 0u) == kProtocol) {
+                /* F1 session-alive names: only a peer that completed
+                 * controller_ready may relabel its own seat row, and only
+                 * within the redeem-time name budget; the host model
+                 * (native_party_host.cpp validRenameName) is the strict
+                 * validation boundary behind this size gate. The per-peer
+                 * mdkr_party_rename_admit gate (dedupe + humane rate) runs
+                 * BEFORE any event exists, so a rename flood can never
+                 * crowd pad packets out of the shared queue. */
+                std::string name;
+                bool admitted = false;
+                if (safeString(value, "name", name, 48u)) {
+                    const uint64_t nowMs = static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            Clock::now().time_since_epoch()).count());
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    const auto found = peers_.find(peer->id);
+                    admitted = found != peers_.end() &&
+                        found->second == peer && peer->authenticated &&
+                        mdkr_party_rename_admit(peer->renameGate, name, nowMs);
+                }
+                if (admitted) {
+                    MdkrPartyTransportEvent renamed;
+                    renamed.type = MdkrPartyTransportEventType::ControllerRenamed;
+                    renamed.controllerId = peer->id;
+                    renamed.message = std::move(name);
+                    enqueue(std::move(renamed));
+                }
             } else if (value.value("type", std::string{}) == "pong" &&
                        value.value("protocol", 0u) == kProtocol &&
                        value.contains("nonce") &&
                        value["nonce"].is_number_unsigned()) {
                 const uint64_t nonce = value["nonce"].get<uint64_t>();
-                std::lock_guard<std::mutex> lock(mutex_);
-                const auto found = peers_.find(peer->id);
-                if (nonce <= std::numeric_limits<uint32_t>::max() &&
-                    found != peers_.end() && found->second == peer &&
-                    peer->pingOutstandingAt != Clock::time_point{} &&
-                    static_cast<uint32_t>(nonce) == peer->pingNonce) {
-                    peer->pingOutstandingAt = Clock::time_point{};
-                    peer->nextPingAt = Clock::now() + std::chrono::seconds(5);
+                unsigned rttMs = 0u;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    const auto found = peers_.find(peer->id);
+                    if (nonce <= std::numeric_limits<uint32_t>::max() &&
+                        found != peers_.end() && found->second == peer &&
+                        peer->pingOutstandingAt != Clock::time_point{} &&
+                        static_cast<uint32_t>(nonce) == peer->pingNonce) {
+                        /* RTT: this pong closes the outstanding ping.
+                         * Floored at 1 ms so "measured, just fast" never
+                         * reads as the host model's no-sample zero. */
+                        const auto elapsed = std::chrono::duration_cast<
+                            std::chrono::milliseconds>(
+                                Clock::now() - peer->pingOutstandingAt).count();
+                        rttMs = elapsed < 1 ? 1u : static_cast<unsigned>(elapsed);
+                        peer->pingOutstandingAt = Clock::time_point{};
+                        peer->nextPingAt = Clock::now() + std::chrono::seconds(5);
+                    }
+                }
+                /* Outside the lock: enqueue() takes mutex_ itself. */
+                if (rttMs != 0u) {
+                    MdkrPartyTransportEvent sample;
+                    sample.type = MdkrPartyTransportEventType::ControllerRtt;
+                    sample.controllerId = peer->id;
+                    sample.rttMs = rttMs;
+                    enqueue(std::move(sample));
                 }
             }
         } catch (...) { /* Malformed peer control cannot escape its callback. */ }

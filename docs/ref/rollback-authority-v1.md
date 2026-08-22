@@ -297,15 +297,22 @@ match-constant host handles. `s_roster` (replacing the removed `s_taj`) is
 read by the authored tick through the physics identity predicate; on native
 builds every write site is title/menu/adventure-scene or pre-freeze load
 work, so its simulation-read fields are match-constant and deliberately
-unregistered, but the wasm async-persistence callbacks can execute a queued
-erase mid-race and reset live bindings — an open defect that must be
-scene-gated before browser online GO. The wizpig_visual/terry_visual
+unregistered; the wasm async-persistence callbacks are now scene-gated —
+while the racer-bindings window is open they only record their outcome, and
+the roster mutations they imply (committing a queued erase, restoring a
+rejected one) apply through `taj_mod_service_deferred()` at the menu-scene
+transitions that close that window, including quit-to-title's
+`menu_title_screen_init` entry. The wizpig_visual/terry_visual
 `sSelect`/`sSelectPoseTraced` rows are select-scene presentation and a trace
 latch; their `sLease`/`sSlots` rows are authored-tick-mutable spawn/animation
 sidecars for pool-resident actors and join the existing Playable-Taj sidecar
 open audit item: register, deterministically rebuild, or reject bonus
-identities at online admission before `GO`. Roster identity is not yet bound
-by the match manifest; online admission must close that gap.
+identities at online admission before `GO`. Roster identity is still not
+bound by the match manifest; online v1 therefore clamps admission to retail
+identities in the launch-descriptor builder — the only seam producing an
+online descriptor, evaluated before bindings activation — with a typed
+refusal that fails closed on missing local roster evidence. A manifest v2
+may bind identities into the manifest instead.
 
 The prior 1,618/1,619 baseline's four-declaration delta remains classified:
 `sMdkrMutationObserver` is a diagnostic-only allocator callback

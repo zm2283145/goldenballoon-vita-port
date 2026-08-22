@@ -24,6 +24,25 @@ std::string g_lastAnnouncement;
 std::string g_removeController;
 std::string g_removeName;
 uint64_t g_inviteCopiedUntilMs = 0u;
+/* F5: join/drop toast state, latched by the same announceState hook that
+ * already narrates seat events for accessibility -- one event source, two
+ * surfaces. Primed after the first observation so opening the overlay onto
+ * an existing room never fires a stale toast. */
+std::string g_toastText;
+uint64_t g_toastUntilMs = 0u;
+unsigned g_lastConnectedCount = 0u;
+bool g_presencePrimed = false;
+constexpr uint64_t kToastMs = 4000u;
+/* Item 4: a new phone waiting for approval is the join-request cue. With no
+ * launcher audio path, the cue is visual: the pending card pulses and the
+ * in-game card shows a brief attention line, armed here once per NEW pending id
+ * (mdkr_party_note_new_pending) and cleared after kToastMs. */
+MdkrPartyPendingAttention g_pendingAttention;
+uint64_t g_pendingAttentionUntilMs = 0u;
+
+/* Item 3 (native): the invite QR enlarges to a modal so a phone camera can scan
+ * from across the room. Display-only ImGui state; no model change. */
+bool g_qrEnlarged = false;
 
 /* MDKR_APP_PARTY_TRACE=1: one line, once per process, on the first frame the
  * party surface actually commits draws — the packaged-build lanes assert the
@@ -69,19 +88,53 @@ void partyTraceEmitOnce(MdkrNativePartyHost &host, const char *serviceOrigin) {
 }
 
 
-void announceState(const MdkrNativePartyView &view) {
-    if (!ui::SpeechEnabled()) return;
-    unsigned pending = 0u;
-    unsigned connected = 0u;
+/* Counts both surfaces need: pending approvals and connected phones. */
+void partyPresence(const MdkrNativePartyView &view,
+                   unsigned &pending, unsigned &connected) {
+    pending = 0u;
+    connected = 0u;
     for (const auto &controller : view.controllers) {
         if (controller.phase == MdkrNativePartyControllerPhase::Pending) pending++;
         if (controller.phase == MdkrNativePartyControllerPhase::Connected) connected++;
+    }
+}
+
+void announceState(const MdkrNativePartyView &view) {
+    unsigned pending = 0u;
+    unsigned connected = 0u;
+    partyPresence(view, pending, connected);
+    /* F5: which room phases are a live room (join/drop toast + pending cue). */
+    const bool liveRoom = view.phase == MdkrNativePartyPhase::Open ||
+        view.phase == MdkrNativePartyPhase::InviteRevoked ||
+        view.phase == MdkrNativePartyPhase::Recovering;
+    /* Item 4: arm the visual join-request cue once per NEW pending phone. Run
+     * every frame (before the announcement dedup below) so a fast pending swap
+     * that leaves the count unchanged is never missed; the helper primes on its
+     * first observation so opening onto an existing room stays quiet. */
+    const unsigned freshPending =
+        mdkr_party_note_new_pending(g_pendingAttention, view.controllers);
+    if (freshPending != 0u && liveRoom) {
+        g_pendingAttentionUntilMs = SDL_GetTicks64() + kToastMs;
     }
     std::string identity = std::to_string(view.transitionId) + ":" +
         std::to_string(static_cast<unsigned>(view.phase)) + ":" +
         std::to_string(pending) + ":" + std::to_string(connected) + ":" + view.message;
     if (identity == g_lastAnnouncement) return;
     g_lastAnnouncement = std::move(identity);
+    /* F5: the same seat events this hook already narrates for
+     * accessibility surface as a brief visual toast on the in-game card --
+     * latched here so no second event source exists. Only a LIVE room's
+     * join/drop is a toast: a room the player closed (or that ended) says
+     * what happened on its own surface. */
+    if (g_presencePrimed && liveRoom && connected != g_lastConnectedCount) {
+        g_toastText = connected > g_lastConnectedCount
+            ? "Phone controller connected."
+            : "Phone controller dropped; its controls are neutral.";
+        g_toastUntilMs = SDL_GetTicks64() + kToastMs;
+    }
+    g_lastConnectedCount = connected;
+    g_presencePrimed = true;
+    if (!ui::SpeechEnabled()) return;
     char message[MDKR_A11Y_TEXT_MAX] = {};
     if (pending != 0u) {
         std::snprintf(message, sizeof(message),
@@ -104,6 +157,15 @@ const char *statusText(const MdkrNativePartyController &controller) {
      * transport keeps, while this state only the player can fix. Same
      * sentence as the room message, from the one shared constant. */
     if (controller.protocolMismatch) return kMdkrPartyProtocolMismatchCopy;
+    /* F2: a lease that has never reached Connected is connecting for the
+     * first time -- "Reconnecting" would promise a recovery of something
+     * that never existed. Only a lease that connected and then dropped may
+     * say so. */
+    if (!controller.everConnected &&
+        (controller.phase == MdkrNativePartyControllerPhase::Approved ||
+         controller.phase == MdkrNativePartyControllerPhase::Leased)) {
+        return "Connecting…";
+    }
     switch (controller.phase) {
         case MdkrNativePartyControllerPhase::Pending: return "Waiting for approval";
         case MdkrNativePartyControllerPhase::Approved: return "Approved";
@@ -137,14 +199,14 @@ bool seatOccupied(const MdkrNativePartyView &view, unsigned seat) {
         });
 }
 
-void drawQr(const std::string &url) {
+// Returns true when the QR area was clicked (item 3: enlarge for scanning).
+bool drawQr(const std::string &url, float maxSize) {
     try {
         g_traceDrewQr = true;
         const qrcodegen::QrCode qr = qrcodegen::QrCode::encodeText(
             url.c_str(), qrcodegen::QrCode::Ecc::QUARTILE);
         const float available = ImGui::GetContentRegionAvail().x;
-        const float size = (std::max)(64.0f, (std::min)(
-            360.0f * AppTheme::uiScale(), available));
+        const float size = (std::max)(64.0f, (std::min)(maxSize, available));
         const int quiet = 4;
         const int modules = qr.getSize() + quiet * 2;
         const float pixel = std::floor(size / static_cast<float>(modules));
@@ -168,11 +230,40 @@ void drawQr(const std::string &url) {
                     ImVec2(left + pixel, top + pixel), dark);
             }
         }
-        ImGui::Dummy(ImVec2(actual, actual));
+        // The QR occupies its own space AND is the click target that enlarges
+        // it; an InvisibleButton over the drawn modules keeps the whole code
+        // clickable without recoloring or overdrawing it.
+        const bool clicked = ImGui::InvisibleButton("##qr", ImVec2(actual, actual));
+        if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        return clicked;
     } catch (...) {
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
         ImGui::TextWrapped("The QR code could not be rendered. Use the 6-digit code below.");
         ImGui::PopStyleColor();
+    }
+    return false;
+}
+
+/* Item 3: the enlarge modal. Redraws the SAME invite URL as large as the
+ * viewport allows so a phone camera scans from across the room. Display-only:
+ * the invite and its capability are untouched. Dismissed by the window close
+ * box, Escape (both via the &open flag), or the Close button. */
+void drawQrEnlargeModal(const std::string &url) {
+    if (!g_qrEnlarged) return;
+    const ImVec2 work = ImGui::GetMainViewport()->WorkSize;
+    const float big = (std::max)(160.0f, (std::min)(work.x, work.y) * 0.8f);
+    ImGui::SetNextWindowSize(ImVec2(big + 80.0f * AppTheme::uiScale(), 0.0f),
+                             ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Scan from across the room", &g_qrEnlarged,
+                               ImGuiWindowFlags_NoResize)) {
+        drawQr(url, big);
+        ui::TextSubtleWrapped(
+            "Point a phone camera at this code from anywhere in the room.");
+        if (ImGui::Button("Close", ui::kBtnSecondary())) {
+            g_qrEnlarged = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
 }
 
@@ -180,19 +271,34 @@ void drawInvite(MdkrNativePartyHost &host) {
     const MdkrNativePartyView &view = host.view();
     g_traceDrewInvite = view.inviteVisible;
     if (!view.inviteVisible) {
+        g_qrEnlarged = false;
         ImGui::TextUnformatted("Invite closed");
         ui::TextSubtleWrapped(
             "Connected phones keep their seats. Create a fresh code when someone else joins.");
         if (ImGui::Button("Create New Invite", ui::kBtnWide())) host.rotateInvite();
         return;
     }
-    drawQr(view.controllerUrl);
+    if (drawQr(view.controllerUrl, 360.0f * AppTheme::uiScale())) {
+        g_qrEnlarged = true;
+        ImGui::OpenPopup("Scan from across the room");
+    }
+    ui::TextSubtle("Click the code to enlarge it for scanning across the room.");
+    drawQrEnlargeModal(view.controllerUrl);
     ui::Gap(ui::kGapS);
     ImGui::PushFont(AppTheme::fonts().title);
     g_traceDrewCode = true;
-    ImGui::Text("Code  %s", view.fallbackCode.c_str());
+    /* F11: two groups of three, display only -- the phone's entry field
+     * groups the same way, and every input path still takes six digits. */
+    const std::string groupedCode =
+        mdkr_party_grouped_fallback_code(view.fallbackCode);
+    ImGui::Text("Code  %s", groupedCode.c_str());
     ImGui::PopFont();
     const uint64_t now = static_cast<uint64_t>(SDL_GetTicks64());
+    /* F6: this frame really drew the QR and code, so tell the host -- while
+     * the card stays on screen it rotates the invite before its TTL lapses,
+     * keeping the displayed code redeemable. The rotated invite replaces
+     * QR, code and countdown right here in place. */
+    host.noteInviteDisplayed(now);
     const uint64_t seconds = view.inviteExpiresAtMs > now
         ? (view.inviteExpiresAtMs - now + 999u) / 1000u : 0u;
     ui::TextSubtle("Expires in %llu:%02llu",
@@ -206,7 +312,7 @@ void drawInvite(MdkrNativePartyHost &host) {
         mdkr_a11y_announce(MDKR_A11Y_CAT_STATUS, MDKR_A11Y_PRI_NORMAL,
                           "Phone controller invite copied.");
     }
-    ui::SpeakFocusedItem("Copy Invite Link", view.fallbackCode.c_str(),
+    ui::SpeakFocusedItem("Copy Invite Link", groupedCode.c_str(),
         "Copies this short-lived private invite. The same 6-digit code is visible above.");
     if (ImGui::GetContentRegionAvail().x >
         ui::kBtnSecondary().x + ImGui::GetStyle().ItemSpacing.x) {
@@ -223,8 +329,20 @@ void drawInvite(MdkrNativePartyHost &host) {
 void drawPending(MdkrNativePartyHost &host,
                  const MdkrNativePartyController &controller) {
     const MdkrNativePartyView &view = host.view();
-    if (ui::CardBegin(("##pending-" + controller.id).c_str(),
-                      AppTheme::accent(), 0.0f)) {
+    /* Item 4: while the join-request cue is armed, pulse this card's border
+     * between the accent and the gameplay-warn color so a host looking away
+     * notices the phone that just arrived. Purely visual; fades after kToastMs. */
+    ImVec4 border = AppTheme::accent();
+    if (SDL_GetTicks64() < g_pendingAttentionUntilMs) {
+        const float phase =
+            static_cast<float>(SDL_GetTicks64() % 900u) / 900.0f;
+        const float pulse = 0.5f + 0.5f * std::sin(phase * 6.2831853f);
+        const ImVec4 hot = AppTheme::warn();
+        border.x += (hot.x - border.x) * pulse;
+        border.y += (hot.y - border.y) * pulse;
+        border.z += (hot.z - border.z) * pulse;
+    }
+    if (ui::CardBegin(("##pending-" + controller.id).c_str(), border, 0.0f)) {
         ImGui::TextWrapped("%s", controller.name.empty()
             ? "Phone controller" : controller.name.c_str());
         /* SAS v2: the pairing phrase binds the phone's direct connection, so
@@ -301,6 +419,13 @@ void drawControllers(MdkrNativePartyHost &host) {
         ImGui::Text("Controller %u  %s", controller.seat,
                     controller.name.empty() ? "Phone" : controller.name.c_str());
         ui::TextSubtle("%s", statusText(controller));
+        /* RTT: the newest control-channel round trip, refreshed per pong.
+         * Only a live direct channel gets a number -- the model clears it
+         * the moment that channel ends or demotes. */
+        if (controller.phase == MdkrNativePartyControllerPhase::Connected &&
+            controller.rttMs != 0u) {
+            ui::TextSubtle("%u ms · direct", controller.rttMs);
+        }
         /* SAS v2: the phrase arrives once the phone's direct connection is
          * up and it names that exact connection, so this seat row is the
          * compare surface. No phrase yet simply shows nothing -- an
@@ -346,10 +471,25 @@ void drawControllers(MdkrNativePartyHost &host) {
 
 void drawRoom(MdkrNativePartyHost &host) {
     const MdkrNativePartyView &view = host.view();
-    if (view.phase == MdkrNativePartyPhase::Opening ||
-        view.phase == MdkrNativePartyPhase::Recovering) {
-        ImGui::TextUnformatted(view.phase == MdkrNativePartyPhase::Opening
-            ? "Opening secure room…" : "Reconnecting securely…");
+    if (view.phase == MdkrNativePartyPhase::Opening) {
+        ImGui::TextUnformatted("Opening secure room…");
+    } else if (view.phase == MdkrNativePartyPhase::Recovering) {
+        /* F7: the ROOM connection is recovering; the seats are not gone.
+         * Connected phones keep working over their direct channels (a fact
+         * the transports guarantee -- recovery never touches a live peer),
+         * so the roster stays on screen under an honest banner instead of
+         * vanishing into a bare status line. No seat state is invented:
+         * each row still shows exactly what the model knows. */
+        ImGui::TextUnformatted("Reconnecting securely…");
+        if (!view.message.empty()) ui::TextSubtleWrapped("%s", view.message.c_str());
+        ui::TextSubtleWrapped(
+            "Connected phones keep working over their direct connections. "
+            "New phones can join once the room returns.");
+        if (!view.controllers.empty()) {
+            ui::Gap(ui::kGapM);
+            ImGui::SeparatorText("Phones");
+            drawControllers(host);
+        }
     } else if (view.phase == MdkrNativePartyPhase::Error) {
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
         ImGui::TextWrapped("%s", view.message.c_str());
@@ -576,16 +716,42 @@ void PhoneParty_drawOverlay(MdkrNativePartyHost &host,
                             const char *serviceOrigin) {
     ui::Gap(ui::kGapM);
     const auto &view = host.view();
+    /* F5: run the shared presence hook here too -- with the manage popup
+     * closed, drawFull is not running, and the in-game card is the one
+     * surface left to notice a join, a drop, or a phone waiting. */
+    announceState(view);
+    unsigned pending = 0u;
     unsigned connected = 0u;
-    for (const auto &controller : view.controllers) {
-        if (controller.phase == MdkrNativePartyControllerPhase::Connected) connected++;
-    }
+    partyPresence(view, pending, connected);
     const char *label = view.phase == MdkrNativePartyPhase::Closed
         ? "Add Phone Controllers" : "Manage Phone Controllers";
     if (ImGui::Button(label, ui::kBtnWide())) g_manageOverlay = true;
     ui::SpeakFocusedItem(label, nullptr,
         "Open the phone controller room without leaving the game.");
-    ui::TextSubtle("%u connected", connected);
+    /* F5: a pending approval is the one thing a host mid-race must not
+     * miss -- put the count right in the card's subtitle. */
+    if (pending != 0u) {
+        ui::TextSubtle("%u connected · %u waiting for approval",
+                       connected, pending);
+    } else {
+        ui::TextSubtle("%u connected", connected);
+    }
+    /* Item 4: the launcher has no sound, so a phone that just asked to join
+     * flashes this brief line here -- the in-game card is the surface a host
+     * mid-race is looking at. Same one-shot arming as the pending-card pulse;
+     * fades after kToastMs. Audio, if ever wanted, is an owner decision. */
+    if (SDL_GetTicks64() < g_pendingAttentionUntilMs) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::warn());
+        ImGui::TextWrapped("A phone is asking to join — open to approve it.");
+        ImGui::PopStyleColor();
+    }
+    /* F5: the join/drop toast the announceState hook latched, shown
+     * briefly on this same card. */
+    if (!g_toastText.empty() && SDL_GetTicks64() < g_toastUntilMs) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+        ImGui::TextWrapped("%s", g_toastText.c_str());
+        ImGui::PopStyleColor();
+    }
     if (g_manageOverlay) ImGui::OpenPopup("Phone Controllers");
     if (ImGui::BeginPopupModal("Phone Controllers", &g_manageOverlay,
                                ImGuiWindowFlags_AlwaysAutoResize)) {

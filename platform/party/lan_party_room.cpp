@@ -601,7 +601,15 @@ std::string normalizeName(const std::string &value) {
     for (size_t index = begin;
          index < finish && codePoints < kMdkrLanPartyMaxNameCodePoints;
          index++, codePoints++) {
+        /* Byte cap on top of the code-point cap (worker parity,
+         * security.ts normalizeName): whole code points only, so a
+         * multi-byte sequence is never split. */
+        const size_t before = out.size();
         encodeUtf8(out, kept[index]);
+        if (out.size() > kMdkrLanPartyMaxNameBytes) {
+            out.resize(before);
+            break;
+        }
     }
     return out;
 }

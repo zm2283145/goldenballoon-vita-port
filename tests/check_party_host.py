@@ -68,7 +68,7 @@ def run(args: argparse.Namespace) -> None:
                     });
                     return {
                       fallbackCode:'654321', inviteGeneration:partyInviteGeneration,
-                      inviteExpiresInMs:120000,
+                      inviteExpiresInMs:globalThis.__partyRotateTtl||120000,
                       controllerUrl:location.origin+'/controller/#'+'B'.repeat(43)
                     };
                   }
@@ -104,6 +104,43 @@ def run(args: argparse.Namespace) -> None:
                 "pairing sheet", args.timeout)
             require(ready["dialog"] and ready["code"] == "123 456" and ready["qr"] > 200,
                     f"pairing invite did not render: {ready}")
+
+            # F11.5: clicking the invite QR opens a full-screen enlarge overlay
+            # (re-rendered from the same URL, bigger) so a phone camera can scan
+            # from across the room; it dismisses on Escape or a click and never
+            # touches the invite/capability. Display-only.
+            enlarged = cdp.evaluate("""(() => {
+              document.getElementById('party-qr').click();
+              const overlay = document.querySelector(
+                '[role="dialog"][aria-label="Enlarged controller QR code"]');
+              const canvas = overlay && overlay.querySelector('canvas');
+              return {opens: globalThis.__mdkrPartyHostTestState.qrOverlayOpens || 0,
+                present: Boolean(overlay),
+                big: canvas ? canvas.width : 0,
+                roomIntact: Boolean(globalThis.MDKRPartyHost.state().room &&
+                  globalThis.MDKRPartyHost.state().room.controllerUrl)};
+            })()""")
+            require(enlarged["opens"] == 1 and enlarged["present"] and
+                    enlarged["big"] > ready["qr"] and enlarged["big"] > 400 and
+                    enlarged["roomIntact"],
+                    f"QR enlarge overlay did not open bigger and non-destructively: "
+                    f"{enlarged}")
+            cdp.evaluate(
+                "dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))")
+            wait_value(cdp, """Boolean(document.querySelector(
+                '[aria-label="Enlarged controller QR code"]'))""",
+                lambda value: value is False, "QR overlay closes on Escape",
+                args.timeout)
+            cdp.evaluate("document.getElementById('party-qr').click()")
+            wait_value(cdp, """Boolean(document.querySelector(
+                '[aria-label="Enlarged controller QR code"]'))""",
+                lambda value: value is True, "QR overlay reopens", args.timeout)
+            cdp.evaluate("""document.querySelector(
+                '[aria-label="Enlarged controller QR code"]').click()""")
+            wait_value(cdp, """Boolean(document.querySelector(
+                '[aria-label="Enlarged controller QR code"]'))""",
+                lambda value: value is False, "QR overlay closes on click",
+                args.timeout)
 
             sas = cdp.evaluate("""(async () => {
               const host=await MDKRPartySas.createIdentity();
@@ -142,11 +179,18 @@ def run(args: argparse.Namespace) -> None:
                 "pending approval", args.timeout)
             # v2 ritual: the phrase binds the direct channel, so a pending
             # phone shows the placeholder and Approve is NOT phrase-gated.
+            # F14: the copy mirrors the native pending card (ui_phone_party.cpp
+            # drawPending) — same order sentence, same button label.
             require("Sam’s phone" in pending["text"] and
-                    "Phrase appears when the phone connects." in pending["text"] and
+                    "Pick a slot and approve. The pairing phrase to compare "
+                    "appears after the phone connects." in pending["text"] and
                     pending["approveDisabled"] is False and
                     pending["seat"] == "2",
                     f"identity/placeholder absent from approval: {pending}")
+            approve_label = cdp.evaluate(
+                "document.querySelector('#party-pending-list .btn-primary').textContent")
+            require(approve_label == "Approve This Phone",
+                    f"approve label diverged from the native host: {approve_label!r}")
             cdp.evaluate("document.querySelector('#party-pending-list .btn-primary').click()")
             wait_value(cdp,
                 "globalThis.__mdkrPartyHostTestState.requests.some(p=>p.endsWith('/approve'))",
@@ -168,8 +212,72 @@ def run(args: argparse.Namespace) -> None:
               startDisabled: document.getElementById('party-start').disabled
             }))()""", lambda value: isinstance(value, dict) and value.get("ready") == "true",
                 "approved seat", args.timeout)
-            require(not seat["startDisabled"] and seat["label"] == "Phone reconnecting — neutral",
+            # F2: this lease has never reached Connected, so its tile says
+            # connecting — never "reconnecting", which promises a recovery of
+            # something that never existed.
+            require(not seat["startDisabled"] and seat["label"] == "Phone connecting…",
                     f"approved controller did not enable start: {seat}")
+
+            # F14: with all four slots taken, the pending card names the fix
+            # instead of a silently disabled Approve (mirrors the native host).
+            cdp.evaluate("""globalThis.MDKRPartyHost.applyRoomState({
+              type:'room_state', transitionId:4, controllers:[
+                {controllerId:'phone-one', name:'Sam’s phone', phase:'leased',
+                 seat:2, leaseGeneration:1, connectionSequence:1},
+                {controllerId:'phone-two', name:'B', phase:'approved', seat:1,
+                 leaseGeneration:1, connectionSequence:1},
+                {controllerId:'phone-three', name:'C', phase:'approved', seat:3,
+                 leaseGeneration:1, connectionSequence:1},
+                {controllerId:'phone-four', name:'D', phase:'approved', seat:4,
+                 leaseGeneration:1, connectionSequence:1},
+                {controllerId:'phone-five', name:'Late phone', phase:'pending',
+                 seat:null, leaseGeneration:0, connectionSequence:1}
+              ]});""")
+            slots_full = wait_value(cdp, """(() => ({
+              text: document.getElementById('party-pending-list').textContent,
+              approveDisabled: document.querySelector(
+                '#party-pending-list .btn-primary')?.disabled,
+              seatChoice: document.querySelector('#party-pending-list select')?.value
+            }))()""", lambda value: isinstance(value, dict) and
+                "Late phone" in str(value.get("text")), "full-slot pending card",
+                args.timeout)
+            require(slots_full["approveDisabled"] is True and
+                    not slots_full["seatChoice"] and
+                    "All four controller slots are taken. Remove a connected "
+                    "phone below to free one." in slots_full["text"],
+                    f"full slots did not name the fix: {slots_full}")
+
+            # F2 flow pin: only after the room has said Connected may a later
+            # neutral lease read as reconnecting.
+            cdp.evaluate("""globalThis.MDKRPartyHost.applyRoomState({
+              type:'room_state', transitionId:5, controllers:[{
+                controllerId:'phone-one', name:'Sam’s phone',
+                controllerPublicKey:'K'.repeat(87),
+                phase:'connected', seat:2, leaseGeneration:1, connectionSequence:1
+              }]});""")
+            cdp.evaluate("""globalThis.MDKRPartyHost.applyRoomState({
+              type:'room_state', transitionId:6, controllers:[{
+                controllerId:'phone-one', name:'Sam’s phone',
+                controllerPublicKey:'K'.repeat(87),
+                phase:'leased', seat:2, leaseGeneration:1, connectionSequence:1
+              }]});""")
+            wait_value(cdp,
+                "document.querySelector('[data-seat=\\\"2\\\"] small').textContent",
+                lambda value: value == "Phone reconnecting — neutral",
+                "dropped lease reads as reconnecting", args.timeout)
+            # Connection history binds to id+key, exactly as the native model
+            # does: a different phone under a reused id is connecting for the
+            # first time, never "reconnecting".
+            cdp.evaluate("""globalThis.MDKRPartyHost.applyRoomState({
+              type:'room_state', transitionId:7, controllers:[{
+                controllerId:'phone-one', name:'Sam’s phone',
+                controllerPublicKey:'L'.repeat(87),
+                phase:'leased', seat:2, leaseGeneration:1, connectionSequence:1
+              }]});""")
+            wait_value(cdp,
+                "document.querySelector('[data-seat=\\\"2\\\"] small').textContent",
+                lambda value: value == "Phone connecting…",
+                "key swap resets connection history", args.timeout)
 
             cdp.evaluate("""(() => {
               globalThis.__partyQrEncode = qrcodegen.QrCode.encodeText;
@@ -300,6 +408,81 @@ def run(args: argparse.Namespace) -> None:
             require(rotate_generations == [1, 3, 5, 7],
                     f"rotate requests lost revoke/publication correlation: {rotate_generations}")
 
+            # F6: while the invite card is on screen, the host rotates the
+            # invite by itself before its TTL lapses (~75% elapsed), so a
+            # displayed QR/code is always redeemable. The TTL itself never
+            # lengthens: the fixture mints a 4 s invite and the page must
+            # request a fresh /rotate with no click, replacing QR + code +
+            # countdown in place instead of ever showing "expired".
+            cdp.evaluate("globalThis.__partyRotateTtl=4000")
+            rotates_before = cdp.evaluate("""globalThis.__mdkrPartyHostTestState
+              .requests.filter(path=>path.endsWith('/rotate')).length""")
+            cdp.evaluate("document.getElementById('party-extend').click()")
+            wait_value(cdp, """globalThis.__mdkrPartyHostTestState
+              .requests.filter(path=>path.endsWith('/rotate')).length""",
+                lambda value: value == rotates_before + 1,
+                "manual short-TTL rotation", args.timeout)
+            wait_value(cdp, """globalThis.__mdkrPartyHostTestState
+              .requests.filter(path=>path.endsWith('/rotate')).length""",
+                lambda value: isinstance(value, int) and value >= rotates_before + 2,
+                "displayed invite auto-rotated before its TTL lapsed",
+                args.timeout)
+            auto_rotated = cdp.evaluate("""(() => ({
+              code:document.getElementById('party-code').textContent,
+              expiry:document.getElementById('party-expiry').textContent
+            }))()""")
+            require(auto_rotated["code"] == "654 321" and
+                    "expire" not in auto_rotated["expiry"].lower().replace(
+                        "invite expires in", ""),
+                    f"auto-rotation did not keep the displayed invite live: "
+                    f"{auto_rotated}")
+            cdp.evaluate("globalThis.__partyRotateTtl=0;"
+                         "document.getElementById('party-extend').click()")
+            wait_value(cdp, """globalThis.__mdkrPartyHostTestState
+              .requestDetails.filter(entry=>entry.path.endsWith('/rotate'))
+              .length >= 1 &&
+              globalThis.MDKRPartyHost.state().room.inviteExpiresInMs === 120000""",
+                bool, "invite restored to the full TTL", args.timeout)
+
+            # F11.5 x F6: an enlarge overlay left open (item 3's whole purpose --
+            # scan from across the room) must stay live when the invite rotates.
+            # renderInvite re-renders the OPEN overlay canvas to the current url;
+            # without that fix the giant QR shows the invalidated code while the
+            # page announces the previous one expired. Proven by the overlay's
+            # per-render counter incrementing and its encoded url tracking the
+            # room's live controllerUrl across a rotation.
+            cdp.evaluate("document.getElementById('party-qr').click()")
+            wait_value(cdp, """(() => {
+              const o=document.querySelector(
+                '[aria-label="Enlarged controller QR code"]');
+              const c=o&&o.querySelector('canvas');
+              return c?c.dataset.qrRenders:null;
+            })()""", lambda value: value == "1",
+                "enlarge overlay open before rotation", args.timeout)
+            cdp.evaluate("document.getElementById('party-extend').click()")
+            rotated_overlay = wait_value(cdp, """(() => {
+              const o=document.querySelector(
+                '[aria-label="Enlarged controller QR code"]');
+              const c=o&&o.querySelector('canvas');
+              return {present:Boolean(o),
+                renders:c?c.dataset.qrRenders:null,
+                url:c?c.dataset.qrUrl:null,
+                roomUrl:globalThis.MDKRPartyHost.state().room?.controllerUrl||null};
+            })()""", lambda value: isinstance(value, dict) and
+                value.get("renders") == "2",
+                "enlarge overlay re-rendered on invite rotation", args.timeout)
+            require(rotated_overlay["present"] and
+                    rotated_overlay["url"] == rotated_overlay["roomUrl"] and
+                    rotated_overlay["url"],
+                    f"enlarge overlay went stale on invite rotation: "
+                    f"{rotated_overlay}")
+            cdp.evaluate(
+                "dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))")
+            wait_value(cdp, """Boolean(document.querySelector(
+                '[aria-label="Enlarged controller QR code"]'))""",
+                lambda value: value is False,
+                "enlarge overlay closed after rotation test", args.timeout)
+
             removal_requests_before = cdp.evaluate("""globalThis.__mdkrPartyHostTestState
               .requests.filter(path=>path.endsWith('/remove')).length""")
             cdp.evaluate("document.querySelector('[data-seat=\"2\"] .party-seat-remove').click()")
@@ -383,6 +566,50 @@ def run(args: argparse.Namespace) -> None:
                             for pad in bfcache["hidden"]["pads"]) and
                     bfcache["lifecycle"] == ["pagehide", "pageshow:persisted"],
                     f"BFCache lifecycle revived invite/input custody: {bfcache}")
+
+            # Item 4: a phone that redeems and appears as a NEW pending approval
+            # plays a one-shot join-request cue (WebAudio) so a host looking away
+            # notices. Fires once per new pending controller, never on approval
+            # or a repeat render, and stays silent when muted (gb-party-ding=0).
+            ding_base = cdp.evaluate(
+                "Number(globalThis.MDKRPartyHost.state().room.transitionId)||0")
+            dings0 = cdp.evaluate(
+                "globalThis.__mdkrPartyHostTestState.joinDings || 0")
+            def apply_ding_state(step, controllers):
+                cdp.evaluate(
+                    "globalThis.MDKRPartyHost.applyRoomState({type:'room_state',"
+                    f"transitionId:{ding_base + step}, controllers:" +
+                    json.dumps(controllers, separators=(",", ":")) + "})")
+            waiting = {"controllerId": "phone-ding-1", "name": "Late arrival",
+                       "phase": "pending", "seat": None, "leaseGeneration": 0,
+                       "connectionSequence": 1}
+            second = {"controllerId": "phone-ding-2", "name": "Another phone",
+                      "phase": "pending", "seat": None, "leaseGeneration": 0,
+                      "connectionSequence": 1}
+            apply_ding_state(1, [waiting])
+            wait_value(cdp, "globalThis.__mdkrPartyHostTestState.joinDings || 0",
+                lambda value: value == dings0 + 1,
+                "join-request ding on new pending", args.timeout)
+            # A repeat render of the same pending phone must not re-ding.
+            apply_ding_state(2, [waiting])
+            # A second, different new pending phone dings exactly once more.
+            apply_ding_state(3, [waiting, second])
+            wait_value(cdp, "globalThis.__mdkrPartyHostTestState.joinDings || 0",
+                lambda value: value == dings0 + 2,
+                "second new pending dings once", args.timeout)
+            # Approving a pending phone must NOT ding.
+            apply_ding_state(4, [{**waiting, "phase": "approved", "seat": 1,
+                                  "leaseGeneration": 1}, second])
+            # Muted: a new pending while gb-party-ding is "0" stays silent.
+            cdp.evaluate("localStorage.setItem('gb-party-ding','0')")
+            apply_ding_state(5, [second, {"controllerId": "phone-ding-3",
+                "name": "Muted phone", "phase": "pending", "seat": None,
+                "leaseGeneration": 0, "connectionSequence": 1}])
+            dings_after = cdp.evaluate(
+                "globalThis.__mdkrPartyHostTestState.joinDings || 0")
+            require(dings_after == dings0 + 2,
+                    f"join ding fired on approval or while muted: {dings_after}")
+            cdp.evaluate("localStorage.removeItem('gb-party-ding')")
 
             cdp.evaluate("document.getElementById('party-end').click()")
             confirmation = wait_value(cdp, """(() => ({

@@ -102,6 +102,13 @@ int taj_mod_resolve_race_character(int player_index, int requested_character);
 unsigned int taj_mod_persistence_pending_generation(void);
 void taj_mod_report_persistence_failure(unsigned int generation);
 void taj_mod_report_persistence_success(unsigned int generation);
+/* Menu-scene service point for persistence outcomes that arrived while racer
+ * bindings were live. The callbacks above only record their outcome in that
+ * window; the roster mutations they imply (committing a queued erase,
+ * restoring a rejected one) apply here, after the scene has reset the live
+ * bindings. Safe to call anywhere: it refuses to act mid-race and is provably
+ * a no-op on the synchronous native path, which never defers. */
+void taj_mod_service_deferred(void);
 
 #ifdef TAJ_MOD_TESTING
 void taj_mod_reset_for_test(void);

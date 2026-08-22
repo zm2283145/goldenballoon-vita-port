@@ -1871,6 +1871,13 @@ if(BUILD_TESTING)
         NAME multiplayer_boundaries
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/check_multiplayer_boundaries.py)
+    # Source-shaped: the D1 deferral is only safe if every menu transition
+    # that closes the racer-bindings window also services it; those hooks
+    # live in call sites the taj_mod unit binary cannot reach.
+    add_test(
+        NAME taj_service_points
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_taj_service_points.py)
     # This is deliberately the source-only arm.  The full check owns real
     # Chromium activation evidence and therefore remains in run_checks.py's
     # serialized browser lane; ordinary CTest must never launch a browser.
@@ -1888,6 +1895,10 @@ if(BUILD_TESTING)
             NAME touch_surface_js
             COMMAND ${MDKR_NODE_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tests/web/touch-surface.test.cjs)
+        add_test(
+            NAME controller_embedded_ua_js
+            COMMAND ${MDKR_NODE_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/web/controller-embedded-ua.test.cjs)
         add_test(
             NAME match_peer_crypto_js
             COMMAND ${MDKR_NODE_EXECUTABLE}

@@ -528,17 +528,20 @@ void expiryLatchesInHostsOwnClockDomain() {
     assert(host.view().phase == MdkrNativePartyPhase::InviteRevoked);
 }
 
-/* Review fix: setError() releases every seat and shuts the transport down,
- * but before this fix left a controller's needsRebind flag standing. If a
- * push failure (queue overflow revokes ingress custody, same shape as the
- * stall-recovery coverage in test_party_session_lifecycle.cpp) and a
- * terminal Error land in the same drain cycle, service()'s top-of-loop heal
+/* Review fix: setTerminal() releases every seat and shuts the transport
+ * down, but before this fix left a controller's needsRebind flag standing.
+ * If a push failure (queue overflow revokes ingress custody, same shape as
+ * the stall-recovery coverage in test_party_session_lifecycle.cpp) and a
+ * terminal event land in the same drain cycle, service()'s top-of-loop heal
  * on the very next tick re-bound the already-released seat, flipped the
  * controller back to Connected and overwrote the terminal message -- all
- * inside a room the host had already declared Error. Prove the controller
- * stays put, the room stays in Error, and the error message is not
+ * inside a room the host had already declared over. F8 update: a generic
+ * Error with a seated lease is recoverable now, so the terminal event for
+ * a seated room is the typed RoomGone; the invariant under test -- a
+ * terminal room never re-binds -- is unchanged. Prove the controller stays
+ * put, the room stays RoomEnded, and the terminal message is not
  * clobbered. */
-void terminalErrorAfterPushFailureStaysErrorAndNeverRebinds() {
+void terminalRoomGoneAfterPushFailureStaysEndedAndNeverRebinds() {
     mdkr_native_remote_pad_reset_all();
     FakeTransport transport;
     MdkrNativePartyHost host(transport);
@@ -578,29 +581,111 @@ void terminalErrorAfterPushFailureStaysErrorAndNeverRebinds() {
         transport.events.push_back(packet);
     }
     MdkrPartyTransportEvent fatal;
-    fatal.type = MdkrPartyTransportEventType::Error;
-    fatal.message =
-        "Phone controllers are unavailable. Local controllers still work.";
+    fatal.type = MdkrPartyTransportEventType::RoomGone;
     transport.events.push_back(fatal);
     host.service(2000u);
 
-    assert(host.view().phase == MdkrNativePartyPhase::Error);
-    assert(host.view().message == fatal.message);
+    assert(host.view().phase == MdkrNativePartyPhase::RoomEnded);
+    assert(host.view().message == kMdkrPartyRoomEndedCopy);
     assert(host.view().controllers[0].phase ==
            MdkrNativePartyControllerPhase::Leased);
 
     /* The next tick, with no new events at all, is exactly where the bug
      * lived: the top-of-service heal loop must not resurrect the released
-     * seat inside an Error room. */
+     * seat inside an ended room. */
     host.service(2100u);
-    assert(host.view().phase == MdkrNativePartyPhase::Error);
-    assert(host.view().message == fatal.message);
+    assert(host.view().phase == MdkrNativePartyPhase::RoomEnded);
+    assert(host.view().message == kMdkrPartyRoomEndedCopy);
     assert(host.view().controllers[0].phase ==
            MdkrNativePartyControllerPhase::Leased);
     assert(!host.view().controllers[0].needsRebind);
     uint64_t owner = 0u;
     uint32_t connection = 0u;
     assert(!mdkr_native_remote_pad_info(0u, &owner, &connection));
+}
+
+/* F8: only credential-invalid and room-closed are terminal -- on this model
+ * those arrive as the typed RoomGone (and the host's own Closed) -- so every
+ * OTHER transport error while seats hold leases must keep them and show a
+ * recovery state instead of tearing the room down. The pinned offender: an
+ * invalid room update mid-session (both transports emit it as a generic
+ * Error event, and the host's own roomStateValid refusal took the same
+ * setError path) used to release every seat and land phase Error; the
+ * connected phone's direct channel never dropped, so the teardown was pure
+ * self-harm. Now: phase Recovering, seats and ingress custody intact, pad
+ * packets still flowing, and the next valid room update recovers to Open. */
+void recoverableTransportErrorKeepsLeasesAndShowsRecovery() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    transport.events.push_back(roomEvent(
+        1u, 1u, 121000u, {approved("phone-a", 1u, 4u, 9u)}));
+    host.service(1000u);
+    MdkrPartyTransportEvent connected;
+    connected.type = MdkrPartyTransportEventType::ControllerConnected;
+    connected.controllerId = "phone-a";
+    connected.haptics = true;
+    transport.events.push_back(connected);
+    host.service(1001u);
+    assert(host.view().controllers[0].direct);
+
+    /* The invalid-update shape both transports emit as a plain Error. */
+    MdkrPartyTransportEvent fault;
+    fault.type = MdkrPartyTransportEventType::Error;
+    fault.message = "Controller service sent an invalid room update.";
+    transport.events.push_back(fault);
+    host.service(2000u);
+    assert(host.view().phase == MdkrNativePartyPhase::Recovering);
+    assert(host.view().message ==
+           "Controller service sent an invalid room update.");
+    assert(host.view().controllers.size() == 1u);
+    assert(host.view().controllers[0].seat == 1u);
+    assert(host.view().controllers[0].direct);
+    uint64_t owner = 0u;
+    uint32_t connection = 0u;
+    assert(mdkr_native_remote_pad_info(0u, &owner, &connection));
+    assert(owner == ((4u << 3u) | 1u) && connection == 9u);
+
+    /* The direct channel never dropped: its input still reaches the sim. */
+    MdkrPartyTransportEvent packet;
+    packet.type = MdkrPartyTransportEventType::ControllerPacket;
+    packet.controllerId = "phone-a";
+    packet.packet = padPacket(9u, 1u);
+    transport.events.push_back(packet);
+    host.service(2001u);
+    std::array<uint8_t, MDKR_PARTY_PAD_MAX_BYTES> output{};
+    assert(mdkr_native_remote_pad_pop(
+        0u, owner, connection, output.data(), output.size()) > 0u);
+
+    /* The host's own roomStateValid refusal takes the same recovery path
+     * while seats are held: two controllers on one seat is invalid. */
+    auto first = approved("one", 2u, 1u, 1u);
+    auto second = approved("two", 2u, 2u, 2u);
+    transport.events.push_back(roomEvent(5u, 1u, 121000u, {first, second}));
+    host.service(2002u);
+    assert(host.view().phase == MdkrNativePartyPhase::Recovering);
+    assert(host.view().controllers.size() == 1u);
+    assert(mdkr_native_remote_pad_info(0u, &owner, &connection));
+
+    /* The next valid room update recovers the surface to Open. */
+    transport.events.push_back(roomEvent(
+        6u, 1u, 121000u, {approved("phone-a", 1u, 4u, 9u)}));
+    host.service(3000u);
+    assert(host.view().phase == MdkrNativePartyPhase::Open);
+    assert(mdkr_native_remote_pad_info(0u, &owner, &connection));
+
+    /* Boundary unchanged: with no seat held (a room that never got past
+     * bootstrap), the same Error event is still terminal -- there is no
+     * lease to protect and the retry button is the honest way forward. */
+    assert(host.closeRoom());
+    assert(host.open("https://party.example"));
+    MdkrPartyTransportEvent createFault;
+    createFault.type = MdkrPartyTransportEventType::Error;
+    createFault.message = "Could not create a secure phone controller room.";
+    transport.events.push_back(createFault);
+    host.service(4000u);
+    assert(host.view().phase == MdkrNativePartyPhase::Error);
 }
 
 /* I2: a phone whose controller page speaks a different pairing-protocol
@@ -1048,6 +1133,372 @@ void phraseArrivesAtConnectionAndSurvivesRoomUpdates() {
     assert(host.view().controllers[0].pairingPhrase.empty());
 }
 
+/* F11: the invite code renders as two groups of three, display only --
+ * grouping is the UI's concern and must never invent structure for a value
+ * that is not exactly the six digits the room minted. */
+void groupedFallbackCodeIsDisplayOnly() {
+    assert(mdkr_party_grouped_fallback_code("123456") == "123 456");
+    assert(mdkr_party_grouped_fallback_code("000000") == "000 000");
+    assert(mdkr_party_grouped_fallback_code("12345") == "12345");
+    assert(mdkr_party_grouped_fallback_code("1234567") == "1234567");
+    assert(mdkr_party_grouped_fallback_code("12a456") == "12a456");
+    assert(mdkr_party_grouped_fallback_code("") == "");
+}
+
+/* Item 4: the join-request attention cue fires once per NEW pending phone --
+ * never on the first (priming) observation, a repeat render, or an approval --
+ * and a phone that leaves and later re-requests fires again. Pure detection
+ * twin the launcher surface drives; the ImGui cue itself has no UI harness. */
+void newPendingAttentionFiresOncePerFreshPending() {
+    MdkrPartyPendingAttention attention;
+    const auto pending = [](const char *id) {
+        MdkrNativePartyController controller;
+        controller.id = id;
+        controller.phase = MdkrNativePartyControllerPhase::Pending;
+        return controller;
+    };
+    /* First observation primes -- a room already holding a waiting phone must
+     * not flash when the overlay opens onto it. */
+    assert(mdkr_party_note_new_pending(attention, {pending("a")}) == 0u);
+    /* A repeat render of the same pending phone does not re-fire. */
+    assert(mdkr_party_note_new_pending(attention, {pending("a")}) == 0u);
+    /* A genuinely new pending phone fires exactly once. */
+    assert(mdkr_party_note_new_pending(attention,
+        {pending("a"), pending("b")}) == 1u);
+    /* Two brand-new phones arriving together fire twice. */
+    assert(mdkr_party_note_new_pending(attention,
+        {pending("a"), pending("b"), pending("c"), pending("d")}) == 2u);
+    /* Approving one (it leaves the pending set) is not a new pending. */
+    MdkrNativePartyController approved;
+    approved.id = "a";
+    approved.phase = MdkrNativePartyControllerPhase::Approved;
+    approved.seat = 1u;
+    assert(mdkr_party_note_new_pending(attention,
+        {approved, pending("b"), pending("c"), pending("d")}) == 0u);
+    /* A phone that left and later re-requests fires again. */
+    assert(mdkr_party_note_new_pending(attention, {pending("b")}) == 0u);
+    assert(mdkr_party_note_new_pending(attention,
+        {pending("b"), pending("a")}) == 1u);
+    /* An empty room clears the set; the next arrival is fresh once more. */
+    assert(mdkr_party_note_new_pending(attention, {}) == 0u);
+    assert(mdkr_party_note_new_pending(attention, {pending("b")}) == 1u);
+}
+
+/* F4: the C3 give-up's copy forks on what actually failed. With the room
+ * socket healthy the whole ladder, signaling delivered every offer and the
+ * phone still never connected -- the network between the devices is the
+ * diagnosis, and all three surfaces speak this exact sentence. With the
+ * socket down the generic remedy stays: signaling itself was broken, so
+ * nothing about the direct path was proven. TURN has been server-delivered
+ * since wave 0, which is exactly why the rare healthy-socket give-up must
+ * name the real cause instead of a remedy that cannot help. */
+void giveUpCopyNamesTheNetworkOnlyWhenSignalingWasHealthy() {
+    assert(std::string(mdkr_party_give_up_copy(true)) ==
+           kMdkrPartyIceBlockedCopy);
+    assert(std::string(mdkr_party_give_up_copy(false)) ==
+           "This phone could not connect. Remove it and pair again.");
+    assert(std::string(kMdkrPartyIceBlockedCopy) ==
+           "This network blocks phone-to-display connections. "
+           "Try another Wi-Fi network or a phone hotspot.");
+}
+
+size_t rotateCallCount(const FakeTransport &transport) {
+    size_t count = 0u;
+    for (const std::string &call : transport.calls) {
+        if (call.rfind("rotate:", 0u) == 0u) count++;
+    }
+    return count;
+}
+
+/* F6: while the invite card is actually on screen (the UI reports each
+ * frame it draws the QR via noteInviteDisplayed), the host rotates the
+ * invite on its own once ~75% of the TTL has elapsed, so a displayed
+ * QR/code is always redeemable. Binding security decision: the TTL itself
+ * never lengthens -- perceived permanence comes from rotation, and an
+ * invite nobody is displaying still dies at its ordinary TTL without a
+ * single rotate. */
+void displayedInviteAutoRotatesBeforeItsTtlLapses() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    transport.events.push_back(roomEvent(1u, 1u, 120000u, {}));
+    host.service(1000u);
+    assert(host.view().phase == MdkrNativePartyPhase::Open);
+    assert(host.view().inviteExpiresAtMs == 121000u);
+
+    /* Displayed, but under 75% elapsed: no rotation. */
+    host.noteInviteDisplayed(90999u);
+    host.service(90999u);
+    assert(rotateCallCount(transport) == 0u);
+
+    /* Displayed at 75% elapsed (30 s remaining of 120 s): rotate now. */
+    host.noteInviteDisplayed(91000u);
+    host.service(91000u);
+    assert(rotateCallCount(transport) == 1u);
+    assert(transport.calls.back() == "rotate:1");
+    assert(host.view().busy);
+    /* The old invite's deadline is untouched until the rotated room state
+     * arrives: rotation, never TTL extension. */
+    assert(host.view().inviteExpiresAtMs == 121000u);
+    /* busy gates a duplicate rotate while the command is in flight. */
+    host.noteInviteDisplayed(91100u);
+    host.service(91100u);
+    assert(rotateCallCount(transport) == 1u);
+
+    /* The rotated invite lands with a fresh generation and full TTL; kept
+     * on screen, it auto-rotates again at ITS 75% mark. */
+    transport.events.push_back(roomEvent(2u, 2u, 120000u, {}));
+    host.service(92000u);
+    assert(host.view().phase == MdkrNativePartyPhase::Open);
+    host.noteInviteDisplayed(181999u);
+    host.service(181999u);
+    assert(rotateCallCount(transport) == 1u);
+    host.noteInviteDisplayed(182000u);
+    host.service(182000u);
+    assert(rotateCallCount(transport) == 2u);
+    assert(transport.calls.back() == "rotate:2");
+
+    /* An invite nobody displays never rotates: it expires at its ordinary
+     * TTL exactly as before this feature existed. */
+    transport.events.push_back(roomEvent(3u, 3u, 120000u, {}));
+    host.service(183000u);
+    assert(host.view().phase == MdkrNativePartyPhase::Open);
+    for (uint64_t at = 213000u; at <= 303000u; at += 30000u) {
+        host.service(at);
+    }
+    assert(rotateCallCount(transport) == 2u);
+    assert(host.view().phase == MdkrNativePartyPhase::InviteRevoked);
+
+    /* A stale display report (the card left the screen a while ago) does
+     * not count as displayed. */
+    assert(host.rotateInvite());
+    transport.events.push_back(roomEvent(4u, 4u, 120000u, {}));
+    host.service(304000u);
+    assert(host.view().phase == MdkrNativePartyPhase::Open);
+    host.noteInviteDisplayed(304000u);
+    host.service(304000u + 119000u);
+    assert(rotateCallCount(transport) == 3u);  // only the manual one above
+}
+
+/* F2: a lease that has never reached Connected is CONNECTING, not
+ * reconnecting -- the model carries the distinction so both host surfaces
+ * (ui_phone_party.cpp statusText, the browser host's seat tile) can show
+ * honest copy. The flag survives room updates and disconnects. */
+void neverConnectedLeaseReadsAsConnecting() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    auto phone = approved("phone-a", 1u, 2u, 3u);
+    transport.events.push_back(roomEvent(1u, 1u, 121000u, {phone}));
+    host.service(1000u);
+    assert(!host.view().controllers[0].everConnected);
+
+    /* Another room update of the same never-connected lease keeps it so. */
+    transport.events.push_back(roomEvent(2u, 1u, 121000u, {phone}));
+    host.service(1001u);
+    assert(!host.view().controllers[0].everConnected);
+
+    MdkrPartyTransportEvent connected;
+    connected.type = MdkrPartyTransportEventType::ControllerConnected;
+    connected.controllerId = "phone-a";
+    transport.events.push_back(connected);
+    host.service(1002u);
+    assert(host.view().controllers[0].everConnected);
+
+    /* A drop demotes the phase but never the history: this lease HAS
+     * connected, so its surface may honestly say "reconnecting". */
+    MdkrPartyTransportEvent dropped;
+    dropped.type = MdkrPartyTransportEventType::ControllerDisconnected;
+    dropped.controllerId = "phone-a";
+    transport.events.push_back(dropped);
+    host.service(1003u);
+    assert(host.view().controllers[0].phase ==
+           MdkrNativePartyControllerPhase::Leased);
+    assert(host.view().controllers[0].everConnected);
+
+    /* Carried across a room update of the same phone + key. */
+    transport.events.push_back(roomEvent(3u, 1u, 121000u, {phone}));
+    host.service(1004u);
+    assert(host.view().controllers[0].everConnected);
+
+    /* A room update that itself says Connected marks the history even when
+     * no ControllerConnected event ever reached this host instance. */
+    auto phoneConnected = approved("phone-b", 2u, 2u, 3u);
+    phoneConnected.phase = MdkrNativePartyControllerPhase::Connected;
+    transport.events.push_back(
+        roomEvent(4u, 1u, 121000u, {phone, phoneConnected}));
+    host.service(1005u);
+    assert(host.view().controllers[1].everConnected);
+}
+
+/* RTT surfacing: each matched pong on a seat's control channel arrives as a
+ * ControllerRtt event; the model keeps the newest sample per seat so both
+ * host surfaces can show "NN ms · direct". The sample describes ONE live
+ * channel: it survives room updates of the same connection, and dies with
+ * the channel -- a disconnect, a protocol mismatch, or a fresh
+ * connectionSequence all clear it rather than letting an old channel's
+ * number vouch for a new one. */
+void rttSampleTracksItsOwnChannelOnly() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    auto phone = approved("phone-a", 1u, 4u, 9u);
+    transport.events.push_back(roomEvent(1u, 1u, 121000u, {phone}));
+    MdkrPartyTransportEvent connected;
+    connected.type = MdkrPartyTransportEventType::ControllerConnected;
+    connected.controllerId = "phone-a";
+    transport.events.push_back(connected);
+    host.service(1000u);
+    assert(host.view().controllers[0].rttMs == 0u);  // no sample yet
+
+    MdkrPartyTransportEvent rtt;
+    rtt.type = MdkrPartyTransportEventType::ControllerRtt;
+    rtt.controllerId = "phone-a";
+    rtt.rttMs = 23u;
+    transport.events.push_back(rtt);
+    host.service(1001u);
+    assert(host.view().controllers[0].rttMs == 23u);
+
+    /* Newest sample wins; an unknown controller's sample is dropped. */
+    rtt.rttMs = 41u;
+    transport.events.push_back(rtt);
+    MdkrPartyTransportEvent ghost = rtt;
+    ghost.controllerId = "phone-zz";
+    transport.events.push_back(ghost);
+    host.service(1002u);
+    assert(host.view().controllers[0].rttMs == 41u);
+
+    /* Survives a room update of the same connection... */
+    transport.events.push_back(roomEvent(2u, 1u, 121000u, {phone}));
+    host.service(1003u);
+    assert(host.view().controllers[0].rttMs == 41u);
+
+    /* ...but a fresh connectionSequence is a new channel with no sample. */
+    transport.events.push_back(roomEvent(
+        3u, 1u, 121000u, {approved("phone-a", 1u, 4u, 10u)}));
+    host.service(1004u);
+    assert(host.view().controllers[0].rttMs == 0u);
+
+    /* A disconnect ends the measured channel: the sample goes with it. */
+    rtt.rttMs = 17u;
+    transport.events.push_back(rtt);
+    host.service(1005u);
+    assert(host.view().controllers[0].rttMs == 17u);
+    MdkrPartyTransportEvent dropped;
+    dropped.type = MdkrPartyTransportEventType::ControllerDisconnected;
+    dropped.controllerId = "phone-a";
+    transport.events.push_back(dropped);
+    host.service(1006u);
+    assert(host.view().controllers[0].rttMs == 0u);
+
+    /* A protocol mismatch demotes the channel: no number may vouch for it. */
+    transport.events.push_back(connected);
+    rtt.rttMs = 12u;
+    transport.events.push_back(rtt);
+    host.service(1007u);
+    assert(host.view().controllers[0].rttMs == 12u);
+    MdkrPartyTransportEvent mismatch;
+    mismatch.type = MdkrPartyTransportEventType::ControllerProtocolMismatch;
+    mismatch.controllerId = "phone-a";
+    transport.events.push_back(mismatch);
+    host.service(1008u);
+    assert(host.view().controllers[0].rttMs == 0u);
+}
+
+MdkrPartyTransportEvent renameEvent(std::string id, std::string name) {
+    MdkrPartyTransportEvent event;
+    event.type = MdkrPartyTransportEventType::ControllerRenamed;
+    event.controllerId = std::move(id);
+    event.message = std::move(name);
+    return event;
+}
+
+/* F1 session-alive names: controller_rename arrives over the direct control
+ * channel as a ControllerRenamed event. The model applies it under the same
+ * bounds the redeem-time name field enforces (24 code points, no control /
+ * zero-width / bidi code points, no edge whitespace, 48 bytes) -- refusing,
+ * not repairing, anything else -- and the applied name survives room updates
+ * that still carry the redeem-time name. */
+void controllerRenameIsStrictAndSurvivesRoomUpdates() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    auto phone = approved("phone-a", 1u, 2u, 3u);
+    transport.events.push_back(roomEvent(1u, 1u, 121000u, {phone}));
+    host.service(1000u);
+    assert(host.view().controllers[0].name == "A friend's phone");
+
+    transport.events.push_back(renameEvent("phone-a", "Blue Racer"));
+    host.service(1001u);
+    assert(host.view().controllers[0].name == "Blue Racer");
+
+    /* The next room update still carries the redeem-time name; the live
+     * rename must not be clobbered by it. */
+    transport.events.push_back(roomEvent(2u, 1u, 121000u, {phone}));
+    host.service(1002u);
+    assert(host.view().controllers[0].name == "Blue Racer");
+
+    /* Refusals: a control byte, a bidi override, edge whitespace, over the
+     * 24-code-point budget, malformed UTF-8, an unknown controller. */
+    transport.events.push_back(renameEvent("phone-a", "Bad\tName"));
+    transport.events.push_back(renameEvent("phone-a", "Bad\xE2\x80\xAEName"));
+    transport.events.push_back(renameEvent("phone-a", " Padded"));
+    transport.events.push_back(renameEvent("phone-a", "Padded "));
+    transport.events.push_back(renameEvent("phone-a", std::string(25u, 'x')));
+    transport.events.push_back(renameEvent("phone-a", "Bad\xFFName"));
+    transport.events.push_back(renameEvent("phone-zz", "Ghost"));
+    host.service(1003u);
+    assert(host.view().controllers[0].name == "Blue Racer");
+
+    /* An empty rename clears the cosmetic name -- the field is optional. */
+    transport.events.push_back(renameEvent("phone-a", ""));
+    host.service(1004u);
+    assert(host.view().controllers[0].name.empty());
+
+    /* A pending phone has no authenticated channel; a rename naming one is
+     * refused outright. */
+    transport.events.push_back(
+        roomEvent(3u, 1u, 121000u, {phone, pending("phone-p")}));
+    transport.events.push_back(renameEvent("phone-p", "Sneaky"));
+    host.service(1005u);
+    assert(host.view().controllers[1].name == "A friend's phone");
+
+    /* A rename never follows an id whose key changed: a different phone
+     * under a reused id gets the room's own name, not the old rename. */
+    transport.events.push_back(renameEvent("phone-a", "Blue Racer"));
+    host.service(1006u);
+    auto swapped = phone;
+    swapped.publicKey = std::string(87u, 'D');
+    transport.events.push_back(roomEvent(4u, 1u, 121000u, {swapped}));
+    host.service(1007u);
+    assert(host.view().controllers[0].name == "A friend's phone");
+}
+
+/* F1 flood guard semantics: dedupe against the last admitted name (the
+ * browser host's exact behavior), a humane fresh-name budget per fixed
+ * window (a rename is a human act), and recovery in the next window. */
+void renameGateDedupesAndRateLimits() {
+    MdkrPartyRenameGate gate;
+    assert(mdkr_party_rename_admit(gate, "Blue Racer", 10000u));
+    assert(!mdkr_party_rename_admit(gate, "Blue Racer", 10001u));
+    assert(mdkr_party_rename_admit(gate, "Red Racer", 10002u));
+    assert(mdkr_party_rename_admit(gate, "Green Racer", 10003u));
+    /* Burst spent: nothing fresh for the rest of the window... */
+    assert(!mdkr_party_rename_admit(gate, "Gold Racer", 10004u));
+    assert(!mdkr_party_rename_admit(gate, "Gold Racer",
+                                    10000u + kMdkrPartyRenameWindowMs - 1u));
+    /* ...and the next window admits a human's next rename. */
+    assert(mdkr_party_rename_admit(gate, "Gold Racer",
+                                   10000u + kMdkrPartyRenameWindowMs));
+    /* The dedupe outlives windows: the same name never re-enqueues. */
+    assert(!mdkr_party_rename_admit(gate, "Gold Racer",
+                                    10000u + 10u * kMdkrPartyRenameWindowMs));
+}
+
 size_t rumbleSendCount(const FakeTransport &transport) {
     size_t count = 0u;
     for (const std::string &call : transport.calls) {
@@ -1168,8 +1619,9 @@ int main() {
     typedCommandErrorSurfacesHonestCopyPerController();
     echoedIdentityScopesRejectionCleanupToItsOwnCommand();
     seatlessRoomEntryAppliedAsNoSeatPendingWithoutCrash();
+    recoverableTransportErrorKeepsLeasesAndShowsRecovery();
     expiryLatchesInHostsOwnClockDomain();
-    terminalErrorAfterPushFailureStaysErrorAndNeverRebinds();
+    terminalRoomGoneAfterPushFailureStaysEndedAndNeverRebinds();
     protocolMismatchMarksSeatLoudlyWithoutRebindLoop();
     giveUpForMismatchedSeatKeepsTheHonestRoomCopy();
     roomGoneForGoodEndsTheRoomInsteadOfRetryingForever();
@@ -1178,6 +1630,14 @@ int main() {
     destructionDuringOpeningAttemptsGoodbyeButNeverWaits();
     destructionDuringRecoveringAttemptsGoodbyeButNeverWaits();
     phraseArrivesAtConnectionAndSurvivesRoomUpdates();
+    groupedFallbackCodeIsDisplayOnly();
+    newPendingAttentionFiresOncePerFreshPending();
+    displayedInviteAutoRotatesBeforeItsTtlLapses();
+    giveUpCopyNamesTheNetworkOnlyWhenSignalingWasHealthy();
+    neverConnectedLeaseReadsAsConnecting();
+    rttSampleTracksItsOwnChannelOnly();
+    controllerRenameIsStrictAndSurvivesRoomUpdates();
+    renameGateDedupesAndRateLimits();
     sustainedRumbleRefreshesWhileTheMailboxHoldsStrength();
     mismatchedOrDisconnectedSeatsGetNoRumbleRefreshes();
     mdkr_native_remote_pad_reset_all();

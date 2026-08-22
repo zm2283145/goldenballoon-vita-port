@@ -594,6 +594,25 @@ void nameStripsZeroWidthAndBidiControls() {
     assert(!fixture.hostSaw("\xe2\x80\xae"));
 }
 
+/* Worker-parity byte cap (services/party/src/security.ts normalizeName):
+ * 24 code points of four-byte emoji is 96 UTF-8 bytes, over the 48-byte
+ * name bound the LAN transport's own room-state parser enforces
+ * (lan_party_transport.cpp safeString(item,"name",48)). A room-legal name
+ * must never be transport-refused -- before this cap a 13-emoji phone name
+ * made every room_state carrying it unparseable on the host. Whole code
+ * points are trimmed from the end, never splitting a sequence. */
+void nameCapsAtTheTransportsByteBound() {
+    Fixture fixture;
+    auto phone = fixture.attach();
+    std::string balloons;
+    for (int index = 0; index < 30; index++) balloons += "\xf0\x9f\x8e\x88";
+    phone->inject(redeemCapability(fixture.invite.capability, balloons));
+    std::string kept;
+    for (int index = 0; index < 12; index++) kept += "\xf0\x9f\x8e\x88";
+    assert(fixture.hostSaw("\"name\":\"" + kept + "\""));
+    assert(!fixture.hostSaw(kept + "\xf0\x9f\x8e\x88"));
+}
+
 } // namespace
 
 int main() {
@@ -615,6 +634,7 @@ int main() {
     signalLifetimeCapClosesAtFiveTwelve();
     controllerSignalWithMalformedIdIsRefused();
     nameStripsZeroWidthAndBidiControls();
+    nameCapsAtTheTransportsByteBound();
     std::fprintf(stderr, "test_lan_party_room: all cases passed\n");
     return 0;
 }

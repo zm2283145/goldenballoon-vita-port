@@ -45,6 +45,11 @@ inline constexpr uint64_t kMdkrLanPartyRoomTtlMs = 24u * 60u * 60u * 1000u;
 inline constexpr unsigned kMdkrLanPartyMaxPending = 8u;
 inline constexpr unsigned kMdkrLanPartyMaxSeats = 4u;
 inline constexpr unsigned kMdkrLanPartyMaxNameCodePoints = 24u;
+/* Worker parity (types.ts LIMITS.maxNameBytes): the name's UTF-8 wire bound.
+ * The transports' room-state parsers refuse names past 48 bytes, so a name
+ * this room admits must never exceed it -- a code-point cap alone lets 24
+ * four-byte emoji reach 96 bytes and break every room_state carrying it. */
+inline constexpr size_t kMdkrLanPartyMaxNameBytes = 48u;
 inline constexpr uint64_t kMdkrLanPartyMaxTransitions = 4096u;
 inline constexpr size_t kMdkrLanPartyMaxSignalBytes = 64u * 1024u;
 

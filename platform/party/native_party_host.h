@@ -46,6 +46,17 @@ struct MdkrNativePartyController {
     bool direct = false;
     bool haptics = false;
     bool commandPending = false;
+    /* F2: whether this lease has EVER reached Connected. A lease that never
+     * has is "Connecting…" on every surface; only a lease that connected and
+     * then dropped may honestly read as "Reconnecting". Set by
+     * ControllerConnected (or a room update that itself says Connected) and
+     * carried across room updates of the same phone + key. */
+    bool everConnected = false;
+    /* F1: the phone renamed itself over its live control channel
+     * (controller_rename -> ControllerRenamed). Room updates still carry the
+     * redeem-time name, so the applied rename is carried across them while
+     * the id + key still describe the same phone. */
+    bool renamed = false;
     /* I2: the phone's controller page completed the WebRTC handshake but
      * spoke a different pairing-protocol version, so its input can never be
      * trusted. The seat keeps its lease (the room is not torn down) but must
@@ -59,6 +70,13 @@ struct MdkrNativePartyController {
      * so a wedged phone cannot spin the rebind every tick. */
     bool needsRebind = false;
     uint64_t lastRebindMs = 0u;
+    /* RTT: the newest control-channel ping round trip for THIS channel, in
+     * milliseconds; 0 means no sample. Set per matched pong
+     * (ControllerRtt), carried across room updates of the same
+     * connectionSequence only, cleared when the channel ends or demotes
+     * (disconnect, protocol mismatch, new sequence) -- an old channel's
+     * number never vouches for a new one. */
+    unsigned rttMs = 0u;
 };
 
 /* I2: the one sentence every mismatch surface shows -- the room message
@@ -79,6 +97,28 @@ inline constexpr char kMdkrPartyProtocolMismatchCopy[] =
 inline constexpr char kMdkrPartyRoomEndedCopy[] =
     "This controller room has ended. Create a new invite to keep playing.";
 
+/* F4: the one diagnosis sentence for a phone the C3 offer ladder gave up on
+ * WHILE the room socket was healthy -- signaling delivered every offer, so
+ * what failed is the phone-to-display path itself. All three surfaces (this
+ * launcher, the browser host, the phone page) speak these exact bytes. TURN
+ * has been server-delivered since wave 0, so this fires rarely; that is
+ * precisely why the honest, specific copy matters when it does. */
+inline constexpr char kMdkrPartyIceBlockedCopy[] =
+    "This network blocks phone-to-display connections. "
+    "Try another Wi-Fi network or a phone hotspot.";
+
+/* F4 selection, used by the cloud transport's give-up site (tick()): only a
+ * give-up whose whole ladder ran against a healthy room socket may claim
+ * the network-blocked diagnosis; with the socket down, nothing about the
+ * direct path was proven and the generic remedy stays. Inline so the
+ * host-model test binary pins both branches without linking the
+ * socket-owning transport. */
+inline const char *mdkr_party_give_up_copy(bool roomSocketHealthy) {
+    return roomSocketHealthy
+        ? kMdkrPartyIceBlockedCopy
+        : "This phone could not connect. Remove it and pair again.";
+}
+
 struct MdkrNativePartyView {
     MdkrNativePartyPhase phase = MdkrNativePartyPhase::Closed;
     std::string controllerUrl;
@@ -98,7 +138,16 @@ enum class MdkrPartyTransportEventType {
     ControllerDisconnected,
     ControllerPacket,
     ControllerPhrase,
+    /* F1: the phone's controller_rename from its authenticated control
+     * channel; `controllerId` names the seat and `message` carries the new
+     * name verbatim. The host model is the validation boundary
+     * (native_party_host.cpp validRenameName). */
+    ControllerRenamed,
     ControllerProtocolMismatch,
+    /* RTT: one matched control-channel pong's round trip (event.rttMs).
+     * Droppable in the shared queue -- a lost sample is replaced by the
+     * next pong and mutates nothing but a cosmetic number. */
+    ControllerRtt,
     CommandRejected,
     Recovering,
     Error,
@@ -148,6 +197,10 @@ struct MdkrPartyTransportEvent {
     /* ControllerProtocolMismatch only: the protocol version the phone's
      * controller_ready declared. Zero means it declared none at all. */
     unsigned theirProtocol = 0u;
+    /* ControllerRtt only: the matched pong's round trip in milliseconds,
+     * floored at 1 so "measured, just fast" is distinguishable from the
+     * model's 0 = no sample. */
+    unsigned rttMs = 0u;
     std::vector<uint8_t> packet;
     bool haptics = false;
 };
@@ -293,6 +346,110 @@ inline bool mdkr_party_canonical_https_origin(const std::string &origin) {
     return true;
 }
 
+/*
+ * F1 flood guard: per-peer admission for controller_rename at the transport
+ * boundary, BEFORE any event exists. ControllerRenamed is a non-droppable
+ * event in the shared transport queue (a rename mutates the host's model and
+ * must never vanish silently), which is only safe if a hostile phone cannot
+ * mint them at wire speed -- otherwise a rename flood evicts and then
+ * refuses the droppable pad packets every other seat depends on. A rename
+ * is a human act, so the budget is humane and tiny: a repeat of the last
+ * admitted name is dropped outright (the browser host dedupes on value the
+ * same way), and at most kMdkrPartyRenameWindowMessages fresh names are
+ * admitted per kMdkrPartyRenameWindowMs fixed window -- the same
+ * fixed-window shape as the room model's per-socket signal throttle
+ * (kMdkrLanPartySignalWindow* / worker admitSignalMessage), scaled down to
+ * this one message class. Refusal costs no queue slot. Inline because both
+ * transports keep one gate per peer and must stay byte-alike (twin rule);
+ * tests/test_native_party_host.cpp pins the semantics and
+ * tests/test_party_event_queue.cpp pins the no-starvation outcome.
+ */
+inline constexpr uint64_t kMdkrPartyRenameWindowMs = 3000u;
+inline constexpr unsigned kMdkrPartyRenameWindowMessages = 3u;
+
+struct MdkrPartyRenameGate {
+    std::string lastName;
+    bool named = false;
+    uint64_t windowStartedAtMs = 0u;
+    unsigned windowMessages = 0u;
+};
+
+inline bool mdkr_party_rename_admit(MdkrPartyRenameGate &gate,
+                                    const std::string &name,
+                                    uint64_t nowMs) {
+    if (gate.named && gate.lastName == name) return false;
+    if (nowMs - gate.windowStartedAtMs >= kMdkrPartyRenameWindowMs) {
+        gate.windowStartedAtMs = nowMs;
+        gate.windowMessages = 0u;
+    }
+    if (gate.windowMessages >= kMdkrPartyRenameWindowMessages) return false;
+    gate.windowMessages++;
+    gate.named = true;
+    gate.lastName = name;
+    return true;
+}
+
+/*
+ * F11: the six-digit invite code, grouped for DISPLAY as two groups of three
+ * ("123 456"). Grouping is presentation only -- every input path still takes
+ * the raw six digits -- so anything that is not exactly six digits is
+ * returned unchanged rather than inventing structure for it. Inline because
+ * the launcher surface (ui_phone_party.cpp) is the caller and
+ * tests/test_native_party_host.cpp pins the shape.
+ */
+inline std::string mdkr_party_grouped_fallback_code(const std::string &code) {
+    if (code.size() != 6u) return code;
+    for (char byte : code) {
+        if (byte < '0' || byte > '9') return code;
+    }
+    return code.substr(0u, 3u) + " " + code.substr(3u);
+}
+
+/*
+ * Item 4: a phone that redeems appears as a new Pending controller. The
+ * launcher has no audio path (a grep of platform/app + platform/party finds no
+ * sound hook), so the surface flashes a VISUAL attention cue -- a pulsing
+ * pending card and a brief in-game indicator line -- once per NEW pending id:
+ * never re-fired for an id already noticed, never on approval or any other
+ * transition. This is the pure detection twin the UI (ui_phone_party.cpp)
+ * drives. The first observation primes -- it adopts the current pending set
+ * without firing -- so opening the manage overlay onto an existing room never
+ * flashes a stale cue. Returns the count of newly-pending ids this observation
+ * and updates `seen` to exactly the pending ids present now, so a phone that
+ * leaves and later re-requests fires again. Whether native UI cues should ever
+ * become audible is an owner decision (no launcher audio subsystem exists to
+ * reuse, and inventing one is out of scope). Inline for the same reason as the
+ * other host-model helpers; tests/test_native_party_host.cpp pins the semantics.
+ */
+struct MdkrPartyPendingAttention {
+    std::vector<std::string> seen;
+    bool primed = false;
+};
+
+inline unsigned mdkr_party_note_new_pending(
+        MdkrPartyPendingAttention &state,
+        const std::vector<MdkrNativePartyController> &controllers) {
+    std::vector<std::string> current;
+    for (const auto &controller : controllers) {
+        if (controller.phase == MdkrNativePartyControllerPhase::Pending) {
+            current.push_back(controller.id);
+        }
+    }
+    unsigned fresh = 0u;
+    if (state.primed) {
+        for (const auto &id : current) {
+            bool known = false;
+            for (const auto &prior : state.seen) {
+                if (prior == id) { known = true; break; }
+            }
+            if (!known) fresh++;
+        }
+    }
+    state.seen = current;
+    state.primed = true;
+    return fresh;
+}
+
 class MdkrNativePartyHost {
 public:
     explicit MdkrNativePartyHost(MdkrPartyTransport &transport);
@@ -307,6 +464,14 @@ public:
     bool rotateInvite();
     bool dismissInvite();
     bool closeRoom();
+
+    /* F6: the UI calls this on every frame it actually draws the invite
+     * card (QR + code). While the card is on screen, service() rotates the
+     * invite on its own once ~75% of its TTL has elapsed, so a displayed
+     * code is always redeemable. The TTL itself never lengthens (binding
+     * security decision): an invite nobody displays expires exactly as
+     * before, and perceived permanence comes only from rotation. */
+    void noteInviteDisplayed(uint64_t nowMs);
 
     /* Drain bounded network events and newest engine rumble requests. */
     void service(uint64_t nowMs);
@@ -326,6 +491,13 @@ private:
 
     MdkrPartyTransport &transport_;
     MdkrNativePartyView view_;
+    /* F6 auto-rotate state: when the UI last reported the invite card on
+     * screen (host service clock; 0 = never), and the full TTL the current
+     * invite generation arrived with -- the 75% mark is measured against
+     * the generation's ORIGINAL TTL, not whatever remained when some later
+     * same-generation room update happened to arrive. */
+    uint64_t inviteDisplayedAtMs_ = 0u;
+    uint64_t inviteTtlMs_ = 0u;
     /* M5 sustained rumble: per-seat timestamp (service()'s own nowMs clock)
      * of the last rumble command actually sent, rate-limiting the 200 ms
      * refresh loop. Timestamps only, never strengths -- each refresh

@@ -19,6 +19,7 @@
     ? globalThis.__mdkrControllerTestConfig : null;
   const testState = testConfig ? {
     states: [], packets: [], neutralizations: 0, requests: [], errors: [],
+    immersive: [],
   } : null;
   if (testState) globalThis.__mdkrControllerTestState = testState;
 
@@ -28,6 +29,7 @@
     globalThis.__mdkrControllerInternals = Object.freeze({
       trustedControllerLocation, pairingCryptoAvailable, lanControllerMode,
       lanRedeemFrame, normalizedIceServers, normalizedControllerInfo,
+      embeddedWebviewUa,
     });
     return;
   }
@@ -59,6 +61,19 @@
   let reconnectResume = "controller";
   let leaveReturnFocus = null;
   let errorRecoveryAction = "code";
+  // F2: whether THIS page ever completed the direct channels; until then an
+  // interruption is first-time "Connecting…", never "Reconnecting".
+  let everConnectedDirect = false;
+  // F3: auto input test's bounded window; past it, Press Go is the fallback.
+  let autoAdvanceUntil = 0;
+  let wakeRetryOnPointer = false;
+  // Item 1 (Android): request fullscreen + landscape lock on the first real
+  // controller-surface gesture when the surface was entered without one (the
+  // F3 auto-advance carries no user activation), exactly like the wake-lock
+  // retry above.
+  let immersiveRetryOnPointer = false;
+  let inputTestWindowTimer = null;
+  const inputTestWindowMs = 3500;
   const maxControllerResponseBytes = 16 * 1024;
   const controllerRequestTimeoutMs = 10_000;
   const pageBoundRequests = new Set();
@@ -137,6 +152,9 @@
   function showError(id, recoveryLabel = "Enter another code",
                      recoveryAction = "code") {
     neutralize("error");
+    // Item 1: every terminal state funnels through here — release fullscreen and
+    // the landscape lock on leaving the controller surface.
+    exitImmersive();
     const copy = errors[id] || ["Couldn’t join", "Try the current QR or room code again."];
     $("error-title").textContent = copy[0];
     $("error-message").textContent = copy[1];
@@ -317,6 +335,20 @@
       }
       return false;
     } catch (_) { return false; }
+  }
+
+  // F13: known in-app webview UA tokens where the phone-to-display WebRTC path
+  // tends to fail. A HINT that routes to the same recoverable "Continue in
+  // Safari or Chrome" card an <iframe> embed does — never a hard block, since
+  // the card's share/copy recovery opens the link in a real browser. Kept
+  // precise so a real Safari/Chrome (incl. WKWebView-based full browsers CriOS/
+  // FxiOS/EdgiOS) never matches; the "; wv" token is the Android System WebView
+  // marker real Chrome lacks. controller-embedded-ua.test.cjs pins the UA table.
+  function embeddedWebviewUa(ua) {
+    const value = String(ua || "");
+    if (/;\s?wv[;)]/.test(value)) return true;
+    return /FBAN|FBAV|FB_IAB|FBIOS|Instagram|Line\/|MicroMessenger|Snapchat|musical_ly|TikTok|Bytedance|Twitter|Pinterest|LinkedInApp|KAKAOTALK|WebView/i
+      .test(value);
   }
 
   // The redeem selector is the mode the SERVER declared (party-mode.js), never a
@@ -693,6 +725,7 @@
   function mockTransport() {
     return {
       sendState() {}, neutral() {}, inputTest() { return false; },
+      rename() { return true; },
       async redeem() {
         if (testConfig.redeemError) throw new Error(testConfig.redeemError);
         return {phrase: testConfig.phrase || "Bright Balloon",
@@ -720,12 +753,19 @@
     let lanFrame = null;
     let lanPending = null;
     let inputTestNonce = 0;
+    // RTT pill: when the newest input_test left this page (performance.now
+    // domain; 0 = none outstanding). Every input_test doubles as a probe.
+    let rttProbeSentAt = 0;
     let controlGeneration = 0;
     let reconnectTimer = null;
     let reconnectAttempt = 0;
     let reconnectExhausted = false;
     let controlStableTimer = null;
     let signalingLimited = false;
+    // F4: consecutive peer-connection failures; reset by a completed direct
+    // connection. Three with the room socket healthy earns the specific
+    // diagnosis — the same sentence the native and browser hosts speak.
+    let peerFailureStreak = 0;
     let publishedControllerTransition = 0;
     let publishedControllerFingerprint = "";
     const wiredPeers = new WeakSet();
@@ -738,11 +778,14 @@
 
     function completeDirectRecovery(connection) {
       if (peer !== connection || !directChannelsOpen()) return;
+      everConnectedDirect = true;
+      peerFailureStreak = 0;
       if (phase === "reconnecting" &&
           currentPeerGeneration >= recoveryPeerGeneration) {
         recoveryPeerGeneration = 0;
         reconnectComplete(connectionSequence);
       }
+      queueAutoInputTest();
     }
 
     function directTransportLost(connection, terminal = false) {
@@ -912,7 +955,16 @@
         if (peer !== connection) return;
         if (connection.connectionState === "connected") {
           completeDirectRecovery(connection);
-        } else if (["failed", "disconnected"].includes(connection.connectionState)) {
+        } else if (connection.connectionState === "failed") {
+          peerFailureStreak++;
+          directTransportLost(connection);
+          if (peerFailureStreak >= 3 && phase === "reconnecting" &&
+              controlSocket?.readyState === WebSocket.OPEN) {
+            $("reconnect-progress").textContent =
+              "This network blocks phone-to-display connections. " +
+              "Try another Wi-Fi network or a phone hotspot.";
+          }
+        } else if (connection.connectionState === "disconnected") {
           directTransportLost(connection);
         } else if (connection.connectionState === "closed") {
           directTransportLost(connection, true);
@@ -965,6 +1017,19 @@
                     nonce: value.nonce}));
                 } catch (_) { directTransportLost(connection, true); }
               } else if (value.type === "input_test_ack" && value.nonce === inputTestNonce) {
+                if (rttProbeSentAt !== 0) {
+                  // RTT pill: the ack closes this page's bounded probe (the
+                  // same input_test round trip pairing already uses — no new
+                  // message class). Floored at 1 ms so "measured, just fast"
+                  // still reads as a number.
+                  const rtt = Math.max(1,
+                    Math.round(performance.now() - rttProbeSentAt));
+                  rttProbeSentAt = 0;
+                  const pill = $("rtt-pill");
+                  pill.hidden = false;
+                  pill.textContent = rtt + " ms";
+                  if (testState) (testState.rtts ||= []).push(rtt);
+                }
                 markInputTestPassed();
               } else if (value.type === "rumble" && value.protocol === 1 && active &&
                          typeof navigator.vibrate === "function") {
@@ -1110,7 +1175,7 @@
         if (update.type === "controller_state" && update.phase === "pending") {
           signalingLimited = false;
           if (phase === "reconnecting" && reconnectResume === "waiting") {
-            render("waiting", {focus: $("device-name")});
+            render("waiting", {focus: $("waiting-title")});
           }
         } else if (update.type === "controller_state" &&
             ["approved", "leased", "connected"].includes(update.phase)) {
@@ -1296,15 +1361,34 @@
         catch (_) { if (peer) directTransportLost(peer, true); }
       },
       neutral() {},
+      // "sent": round trip in flight. "unsent": no open control channel yet;
+      // the caller narrates the wait and never fakes a pass.
       inputTest(pressed) {
-        if (!pressed || controlChannel?.readyState !== "open") return true;
+        if (!pressed || controlChannel?.readyState !== "open") return "unsent";
         inputTestNonce = (inputTestNonce + 1) >>> 0;
         try {
+          rttProbeSentAt = performance.now();
           controlChannel.send(JSON.stringify({type: "input_test", nonce: inputTestNonce}));
         } catch (_) {
+          rttProbeSentAt = 0;
           if (peer) directTransportLost(peer, true);
+          return "unsent";
         }
-        return true;
+        return "sent";
+      },
+      directReady() { return directChannelsOpen(); },
+      // F1: rename the seat row while connected. Best effort — the name is
+      // stored locally and rides the next redeem regardless.
+      rename(name) {
+        if (controlChannel?.readyState !== "open") return false;
+        try {
+          controlChannel.send(JSON.stringify({type: "controller_rename",
+            protocol: 1, name}));
+          return true;
+        } catch (_) {
+          if (peer) directTransportLost(peer, true);
+          return false;
+        }
       },
       close() {
         signalingLimited = false;
@@ -1356,6 +1440,21 @@
       },
     };
 
+    // RTT probe: while racing, one input_test every 5 s times the direct
+    // round trip for the status pill. Budget: ~45 bytes each way per 5 s on
+    // the already-open reliable channel — the same cadence as the host's
+    // own liveness ping, whose semantics this changes not at all.
+    setInterval(() => {
+      if (leavingPage || phase !== "controller" ||
+          controlChannel?.readyState !== "open") return;
+      inputTestNonce = (inputTestNonce + 1) >>> 0;
+      rttProbeSentAt = performance.now();
+      try {
+        controlChannel.send(JSON.stringify({type: "input_test",
+          nonce: inputTestNonce}));
+      } catch (_) { rttProbeSentAt = 0; }
+    }, 5000);
+
     // Local play: build the redeem frame and let connectControl open the host's
     // own ws, send it first, and adopt that same socket for signaling once
     // redeem_result arrives. A timeout mirrors the cloud POST so an unreachable
@@ -1404,7 +1503,7 @@
         return;
       }
       $("pairing-phrase").textContent = result.phrase || "";
-      render("waiting", {focus: $("device-name")});
+      render("waiting", {focus: $("waiting-title")});
       if (testConfig && testConfig.autoApprove !== false) {
         setTimeout(() => approve(testConfig.seat || 1), testConfig.approveDelayMs || 0);
       }
@@ -1435,25 +1534,127 @@
     document.documentElement.style.setProperty("--seat",
       ["#4bc7ff", "#ff6f91", "#72e38f", "#c491ff"][seat - 1]);
     render("assigned", {focus: $("input-test")});
+    // F3: the channels may already be open (they raced approval).
+    if (transport?.directReady?.() === true) queueAutoInputTest();
     return true;
+  }
+
+  function clearInputTestWindow() {
+    if (inputTestWindowTimer !== null) {
+      clearTimeout(inputTestWindowTimer);
+      inputTestWindowTimer = null;
+    }
+  }
+
+  // F3: every "checking" state must resolve — to the ack, to this concrete
+  // retry, or to the reconnecting surface when the transport goes.
+  function armInputTestWindow() {
+    clearInputTestWindow();
+    inputTestWindowTimer = setTimeout(() => {
+      inputTestWindowTimer = null;
+      autoAdvanceUntil = 0;
+      if (inputTestPassed || phase !== "assigned") return;
+      $("input-test-status").textContent = "Not tested yet. Press Go to try again.";
+    }, inputTestWindowMs);
+  }
+
+  // F3 join compression: run the existing input_test/input_test_ack round
+  // trip by itself once the direct channels open — strictly AFTER approval +
+  // channel open, ack still from the host, so no gate is weakened.
+  function queueAutoInputTest() {
+    if (inputTestPassed || leavingPage || phase !== "assigned") return;
+    if (autoAdvanceUntil !== 0) return;
+    autoAdvanceUntil = performance.now() + inputTestWindowMs;
+    $("input-test-status").textContent = "Testing the connection…";
+    transport?.inputTest?.(true);
+    armInputTestWindow();
   }
 
   function markInputTestPassed() {
     if (inputTestPassed) return;
     inputTestPassed = true;
+    clearInputTestWindow();
     $("input-test").classList.add("passed");
     $("input-test-status").textContent = "Connection works";
     $("use-controller").disabled = false;
+    if (phase === "assigned" && autoAdvanceUntil !== 0 &&
+        performance.now() <= autoAdvanceUntil) {
+      autoAdvanceUntil = 0;
+      useController();
+      return;
+    }
+    autoAdvanceUntil = 0;
     announce("Connection works. Use controller is now available.");
   }
 
   function testPress(pressed) {
     pad.buttons = pressed ? 32768 : 0;
-    const waitingForRoundTrip = transport?.inputTest?.(pressed) === true;
-    if (pressed && !inputTestPassed) {
-      if (!waitingForRoundTrip) markInputTestPassed();
-      else $("input-test-status").textContent = "Checking connection…";
+    const result = transport?.inputTest?.(pressed);
+    if (!pressed || inputTestPassed) return;
+    if (result !== "sent" && result !== "unsent" && result !== true) {
+      markInputTestPassed();
+      return;
     }
+    // "unsent": no control channel yet — say so; the test re-runs by itself
+    // the moment the channel opens (queueAutoInputTest).
+    $("input-test-status").textContent = result === "unsent"
+      ? "Still connecting to the display…" : "Checking connection…";
+    armInputTestWindow();
+  }
+
+  /* Item 1: Android immersive controls. On the user's "Use controller" gesture
+   * (both APIs need a real activation) request fullscreen, then lock landscape
+   * once fullscreen resolves (Android requires that order). Every call is
+   * feature-detected and swallows rejection, so iOS Safari — no requestFullscreen
+   * on a non-video element, no orientation.lock — degrades to the CSS-only
+   * layout with no error. exitImmersive releases both on leaving the surface.
+   * check_controller_page.py pins the calls, the guards, the auto-advance
+   * defer-to-gesture, and the release. */
+  function lockLandscape() {
+    try {
+      const orientation = globalThis.screen && globalThis.screen.orientation;
+      if (orientation && typeof orientation.lock === "function") {
+        const locking = orientation.lock("landscape");
+        if (locking && typeof locking.catch === "function") locking.catch(() => {});
+      }
+    } catch (_) {}
+  }
+
+  function enterImmersive() {
+    immersiveRetryOnPointer = false;
+    const root = document.documentElement;
+    const canFullscreen = !!root && typeof root.requestFullscreen === "function";
+    const orientation = globalThis.screen && globalThis.screen.orientation;
+    const canLock = !!orientation && typeof orientation.lock === "function";
+    if (testState) testState.immersive.push({action: "enter",
+      fullscreen: canFullscreen, lock: canLock});
+    if (canFullscreen && !document.fullscreenElement) {
+      try {
+        const entering = root.requestFullscreen({navigationUI: "hide"});
+        if (entering && typeof entering.then === "function") {
+          entering.then(lockLandscape, () => {});
+        } else {
+          lockLandscape();
+        }
+      } catch (_) { lockLandscape(); }
+    } else {
+      lockLandscape();
+    }
+  }
+
+  function exitImmersive() {
+    immersiveRetryOnPointer = false;
+    if (testState) testState.immersive.push({action: "exit"});
+    try {
+      const orientation = globalThis.screen && globalThis.screen.orientation;
+      if (orientation && typeof orientation.unlock === "function") orientation.unlock();
+    } catch (_) {}
+    try {
+      if (document.fullscreenElement && typeof document.exitFullscreen === "function") {
+        const leaving = document.exitFullscreen();
+        if (leaving && typeof leaving.catch === "function") leaving.catch(() => {});
+      }
+    } catch (_) {}
   }
 
   /* Wake Lock, or the keep-awake fallback the insecure-origin LAN page needs.
@@ -1539,15 +1740,31 @@
     publishPad(true);
     render("controller");
     void requestWakeLock();
+    // The auto-advance carries no user activation, so the insecure-LAN
+    // keep-awake video AND the fullscreen/orientation request can be refused;
+    // arm both to retry once on the first real controller-surface touch. The
+    // real "Use controller" tap enters immersive in its own click handler and
+    // clears this flag, so the retry only ever fires for the auto-advance path.
+    wakeRetryOnPointer = true;
+    immersiveRetryOnPointer = true;
     if (heartbeat === null) heartbeat = setInterval(() => publishPad(true), 50);
   }
 
   function reconnect(attempt = 1) {
     if (phase !== "reconnecting") reconnectResume = phase;
     neutralize("transport-lost");
+    // The RTT pill measured the channel that was just lost.
+    $("rtt-pill").hidden = true;
+    autoAdvanceUntil = 0;
+    clearInputTestWindow();
     $("controller-retry").disabled = false;
-    $("reconnect-progress").textContent =
-      `Attempt ${Math.max(1, Math.min(5, attempt))} of 5. Controls are safely released.`;
+    // F2: a connection that never existed cannot be RE-connected.
+    const step = Math.max(1, Math.min(5, attempt));
+    $("reconnecting-title").textContent =
+      everConnectedDirect ? "Reconnecting…" : "Connecting…";
+    $("reconnect-progress").textContent = everConnectedDirect
+      ? `Attempt ${step} of 5. Controls are safely released.`
+      : `Attempt ${step} of 5. Connecting to the display.`;
     render("reconnecting", {focus: $("state-reconnecting")});
   }
 
@@ -1572,6 +1789,9 @@
       publishPad(true);
     }
     void requestWakeLock();
+    // A tab that was hidden had its fullscreen dropped by the browser; the
+    // next controller-surface touch re-enters immersive (same gesture hook).
+    immersiveRetryOnPointer = true;
   }
 
   function leave() {
@@ -1645,6 +1865,13 @@
           "Enter another code", secureUrl ? "secure" : "code");
         return;
       }
+      // F13: a known in-app webview is a hint to open in Safari or Chrome,
+      // where the direct pairing path works — the same recoverable card as an
+      // <iframe> embed, checked before the generic "unsupported" fallback so a
+      // recognized webview gets the specific remedy.
+      if (embeddedWebviewUa(navigator.userAgent)) {
+        showError("embedded", shareRecoveryLabel(), "share"); return;
+      }
       if (!("PointerEvent" in window) || !("RTCPeerConnection" in window) ||
           !pairingCryptoAvailable() || !globalThis.MDKRPartySas) {
         showError("unsupported", shareRecoveryLabel(), "share"); return;
@@ -1679,7 +1906,7 @@
         return;
       }
       $("pairing-phrase").textContent = result.phrase || "";
-      render("waiting", {focus: $("device-name")});
+      render("waiting", {focus: $("waiting-title")});
       if (testConfig && testConfig.autoApprove !== false) {
         setTimeout(() => approve(testConfig.seat || 1), testConfig.approveDelayMs || 0);
       }
@@ -1711,7 +1938,21 @@
     if (event.detail !== 0) return;
     testPress(true); setTimeout(() => testPress(false), 90);
   });
-  $("use-controller").addEventListener("click", useController);
+  $("use-controller").addEventListener("click", () => {
+    useController();
+    // The tap IS the user activation both fullscreen and orientation.lock need.
+    if (phase === "controller") enterImmersive();
+  });
+  $("state-controller").addEventListener("pointerdown", () => {
+    if (phase !== "controller") return;
+    if (wakeRetryOnPointer) {
+      wakeRetryOnPointer = false;
+      if (!wakeLock) void requestWakeLock();
+    }
+    // Item 1: the auto-advance had no gesture, so this first touch is where
+    // fullscreen + landscape lock become available. Reuses this same hook.
+    if (immersiveRetryOnPointer) enterImmersive();
+  }, true);
   $("controller-retry").addEventListener("click", () => {
     $("controller-retry").disabled = true;
     if (transport?.retry?.() === true) {
@@ -1727,7 +1968,12 @@
     $("settings-dialog").close();
     requestAnimationFrame(() => confirmLeave($("settings-open")));
   });
-  $("settings-open").addEventListener("click", () => $("settings-dialog").showModal());
+  $("settings-open").addEventListener("click", () => {
+    $("device-name-live").value = $("device-name").value;
+    // The compare ritual stays one tap away after the auto-advance.
+    $("pairing-phrase-settings").textContent = $("pairing-phrase").textContent;
+    $("settings-dialog").showModal();
+  });
   $("settings-dialog").addEventListener("close", () => $("settings-open").focus());
   $("settings-dialog").addEventListener("change", saveSettings);
   $("leave-dialog").addEventListener("close", () => {
@@ -1781,6 +2027,16 @@
     $("device-name").value = value;
     try { localStorage.setItem("gb-controller-name", value); } catch (_) {}
   });
+  // F1: a connected rename updates the host's seat row live and persists
+  // for the next session either way.
+  $("device-name-live").addEventListener("change", () => {
+    const value = normalizedDeviceName($("device-name-live").value);
+    $("device-name-live").value = value;
+    $("device-name").value = value;
+    try { localStorage.setItem("gb-controller-name", value); } catch (_) {}
+    if (testState) (testState.renames ||= []).push(value);
+    transport?.rename?.(value);
+  });
   try {
     $("device-name").value = normalizedDeviceName(
       localStorage.getItem("gb-controller-name") || "");
@@ -1820,6 +2076,7 @@
       inviteUrl: controllerInviteUrl,
       state: () => ({phase, seat, active, pad: {...pad}, connectionSequence}),
       receiveSignal: (value) => receiveTestSignal?.(value),
+      passInputTest: markInputTestPassed,
     });
   }
   void start();

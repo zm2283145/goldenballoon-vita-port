@@ -14,7 +14,7 @@
   const testState = testConfig
     ? {requests: [], requestDetails: [], rooms: [], announcements: [], lifecycle: [],
       peerCreations: 0, iceRestarts: 0, channelFailures: 0,
-      controlPings: 0, controlPongs: 0} : null;
+      controlPings: 0, controlPongs: 0, controlRtts: []} : null;
   if (testState) globalThis.__mdkrPartyHostTestState = testState;
 
   const dialog = $("party-dialog");
@@ -43,6 +43,10 @@
   let preserveOnClose = false;
   let inviteActive = false;
   let inviteRevocation = null;
+  // F6: one auto-rotation in flight at a time — updateCountdown ticks every
+  // second, and a second extendInvite() would ++operation and cancel the
+  // first one's UI completion.
+  let autoRotatePending = false;
   let dialogClosing = false;
   let pendingOpenFromStage = null;
   let hostIdentity = null;
@@ -50,6 +54,27 @@
   let removeReturnFocus = null;
   let removeControllerId = "";
   const pairingPhrases = new Map();
+  // F4: consecutive peer-connection failures per controller. Kept across
+  // rebuilds (a rebuilt peer that fails again is the same streak); reset by
+  // a completed direct connection. At three failures with the room socket
+  // healthy, the diagnosis is specific: the network blocks phone-to-display
+  // connections. Same sentence as the native host and the phone page.
+  const peerIceFailures = new Map();
+  const iceBlockedCopy = "This network blocks phone-to-display connections. " +
+    "Try another Wi-Fi network or a phone hotspot.";
+  // F1 session-alive names: a phone's controller_rename over its live control
+  // channel overrides the redeem-time name the room state still carries.
+  const controllerNames = new Map();
+  // F2: leases that have EVER been connected (room state or a live peer).
+  // Only these may read as "reconnecting"; the rest are still connecting.
+  const everConnectedIds = new Set();
+  // Item 4: pending controller ids already announced with the join-request ding,
+  // so it fires once per NEW pending phone and never on approval or a repeat
+  // render. `dingPrimed` adopts an existing room's waiting phones on the first
+  // observation without beeping, so opening onto an occupied room is silent.
+  const dingedPending = new Set();
+  let dingPrimed = false;
+  let partyDingContext = null;
   const peers = new Map();
   const pageBoundRequests = new Set();
   let peerGeneration = 0;
@@ -153,6 +178,29 @@
     const wanted = [...expected].sort();
     return keys.length === wanted.length &&
       keys.every((key, index) => key === wanted[index]);
+  }
+
+  // The one name validator: the exact bounds the redeem-time name field
+  // enforces everywhere (NFC, trimmed, 24 code points, 48 UTF-8 bytes as the
+  // native host caps it, none of the control/zero-width/bidi set), applied
+  // as refusal. Used for room-state names AND a phone's controller_rename.
+  function validControllerName(value) {
+    return typeof value === "string" &&
+      value.normalize("NFC") === value && value.trim() === value &&
+      [...value].length <= 24 &&
+      new TextEncoder().encode(value).byteLength <= 48 &&
+      !/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/
+        .test(value);
+  }
+
+  // Native binds renames and connection history to id+key (a different
+  // phone under a reused id must never inherit either); mirror that here.
+  function controllerIdentity(controller) {
+    return controller.controllerId + ":" + (controller.controllerPublicKey || "");
+  }
+
+  function controllerDisplayName(controller) {
+    return controllerNames.get(controllerIdentity(controller)) ?? controller.name;
   }
 
   // Server-delivered iceServers (services/party/src/turn.ts): strictly
@@ -284,14 +332,13 @@
     pageBoundRequests.clear();
   }
 
-  function renderQr(url) {
+  function renderQrInto(canvas, url, targetSide) {
     const qr = globalThis.qrcodegen?.QrCode?.encodeText(
       url, globalThis.qrcodegen.QrCode.Ecc.QUARTILE);
     if (!qr) return false;
     const quiet = 4;
-    const scale = Math.max(4, Math.floor(300 / (qr.size + quiet * 2)));
+    const scale = Math.max(4, Math.floor(targetSide / (qr.size + quiet * 2)));
     const side = (qr.size + quiet * 2) * scale;
-    const canvas = $("party-qr");
     canvas.width = side;
     canvas.height = side;
     const context = canvas.getContext("2d", {alpha: false});
@@ -307,6 +354,128 @@
       }
     }
     return true;
+  }
+
+  function renderQr(url) {
+    return renderQrInto($("party-qr"), url, 300);
+  }
+
+  // F11.5: clicking the invite QR enlarges it to a full-screen overlay so a
+  // phone camera can scan from across the room. Display-only — it re-renders
+  // the SAME controllerUrl bigger; the invite and its capability are unchanged.
+  // Built with programmatic (CSSOM) styles so it needs no stylesheet edit and
+  // stays within the page's style-src 'self' CSP. Dismissed by click or Escape.
+  let qrOverlay = null;
+  let qrOverlayCanvas = null;
+  function qrOverlayKeydown(event) {
+    if (event.key === "Escape") { event.preventDefault(); closeQrOverlay(); }
+  }
+  function closeQrOverlay() {
+    if (!qrOverlay) return;
+    try { qrOverlay.remove(); } catch (_) {}
+    qrOverlay = null;
+    qrOverlayCanvas = null;
+    removeEventListener("keydown", qrOverlayKeydown, true);
+    try { $("party-qr").focus?.(); } catch (_) {}
+  }
+  function openQrOverlay() {
+    if (qrOverlay || !room || !room.controllerUrl || !inviteActive) return;
+    const canvas = document.createElement("canvas");
+    canvas.style.cssText = "display:block;width:min(82vw,82vh);height:min(82vw,82vh);" +
+      "image-rendering:pixelated";
+    if (!renderQrInto(canvas, room.controllerUrl, 760)) return;
+    canvas.dataset.qrUrl = room.controllerUrl;
+    canvas.dataset.qrRenders = "1";
+    qrOverlayCanvas = canvas;
+    const overlay = document.createElement("div");
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-label", "Enlarged controller QR code");
+    overlay.tabIndex = -1;
+    overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:flex;" +
+      "flex-direction:column;align-items:center;justify-content:center;gap:18px;" +
+      "padding:24px;background:rgb(0 8 20 / 92%);cursor:zoom-out";
+    const frame = document.createElement("div");
+    frame.style.cssText = "padding:16px;background:#fff;border-radius:14px";
+    frame.appendChild(canvas);
+    const hint = document.createElement("p");
+    hint.textContent = "Scan from anywhere in the room. Tap or press Escape to close.";
+    hint.style.cssText = "margin:0;max-width:36ch;color:#f7fbff;text-align:center;" +
+      "font:600 1rem/1.4 system-ui,sans-serif";
+    overlay.append(frame, hint);
+    overlay.addEventListener("click", closeQrOverlay);
+    document.body.appendChild(overlay);
+    qrOverlay = overlay;
+    addEventListener("keydown", qrOverlayKeydown, true);
+    overlay.focus({preventScroll: true});
+    if (testState) testState.qrOverlayOpens = (testState.qrOverlayOpens || 0) + 1;
+  }
+
+  // F11.5 x F6: keep an OPEN enlarge overlay live across an invite rotation.
+  // renderInvite re-renders the same overlay canvas to the new url in place, so
+  // the big QR a host left up for the room never shows an invalidated code while
+  // the page announces the previous one expired. If the new url can't render,
+  // close rather than leave a stale giant QR up. No-op when nothing is enlarged.
+  function refreshQrOverlay(url) {
+    if (!qrOverlay || !qrOverlayCanvas) return;
+    if (renderQrInto(qrOverlayCanvas, url, 760)) {
+      qrOverlayCanvas.dataset.qrUrl = url;
+      qrOverlayCanvas.dataset.qrRenders =
+        String((Number(qrOverlayCanvas.dataset.qrRenders) || 0) + 1);
+    } else {
+      closeQrOverlay();
+    }
+  }
+
+  // Item 4: a short, non-intrusive WebAudio cue when a phone redeems and
+  // appears as a NEW pending approval, so a host looking away notices. Fired
+  // once per new pending controller (renderRoomState below), never on approval
+  // or a repeat render. Feature-detected (no AudioContext -> silent) and
+  // respects a mute: the "gb-party-ding" preference set to "0". A two-note
+  // rise, ~0.2 s, low gain. Returns true when a cue actually played.
+  function partyDingMuted() {
+    try { return localStorage.getItem("gb-party-ding") === "0"; }
+    catch (_) { return false; }
+  }
+  function playJoinDing() {
+    if (partyDingMuted()) return false;
+    const Ctx = globalThis.AudioContext || globalThis.webkitAudioContext;
+    if (typeof Ctx !== "function") return false;
+    try {
+      partyDingContext = partyDingContext || new Ctx();
+      const ctx = partyDingContext;
+      if (ctx.state === "suspended") ctx.resume?.().catch(() => {});
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(880, now);
+      osc.frequency.setValueAtTime(1174.66, now + 0.09);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.11, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.24);
+      return true;
+    } catch (_) { return false; }
+  }
+
+  // Fire the join-request cue for any pending controller not seen before, then
+  // remember exactly the ids pending now (so a phone that leaves and later
+  // re-requests dings again). Silent on the first observation (priming).
+  function noteNewPending(pending) {
+    if (dingPrimed) {
+      for (const controller of pending) {
+        if (dingedPending.has(controller.controllerId)) continue;
+        const played = playJoinDing();
+        if (played && testState) {
+          testState.joinDings = (testState.joinDings || 0) + 1;
+        }
+      }
+    }
+    dingedPending.clear();
+    for (const controller of pending) dingedPending.add(controller.controllerId);
+    dingPrimed = true;
   }
 
   function normalizedInvite(value, creating, expectedGeneration = null) {
@@ -354,9 +523,14 @@
     return Object.freeze({...value});
   }
 
-  function clearInvitePresentation(expired, announceExpiry = false) {
+  function clearInvitePresentation(expired, announceExpiry = false,
+                                   keepOverlay = false) {
     inviteActive = false;
     deadline = 0;
+    // keepOverlay is set only on the invite-rotation path (renderRoomState),
+    // where renderInvite immediately re-renders the open enlarge overlay to the
+    // new url; every genuine teardown leaves it false so the overlay closes.
+    if (!keepOverlay) closeQrOverlay();
     if (room) {
       const {fallbackCode: _code, controllerUrl: _url, ...retained} = room;
       room = retained;
@@ -401,6 +575,9 @@
     catch (_) { qrReady = false; }
     const wrap = $("party-qr").closest(".party-qr-wrap");
     if (wrap) wrap.hidden = !qrReady;
+    // F11.5 x F6: keep any open enlarge overlay showing the current invite.
+    if (qrReady) refreshQrOverlay(normalized.controllerUrl);
+    else closeQrOverlay();
     $("party-scan-step").textContent = qrReady
       ? "1. Scan with your phone’s camera"
       : "1. Open this site’s controller page on your phone";
@@ -482,6 +659,10 @@
 
   function markPeerConnected(controller, connected) {
     if (!controller?.seat) return;
+    if (connected) {
+      everConnectedIds.add(controllerIdentity(controller));
+      peerIceFailures.delete(controller.controllerId);
+    }
     const pad = remotePads[controller.seat - 1];
     pad.reserved = true;
     pad.active = connected;
@@ -596,7 +777,7 @@
       state: null, control: null, authenticated: false,
       retired: false, remoteReady: false, offerSentAt: 0,
       restartAttempt: 0, recoveryTimer: null, pingTimer: null,
-      pingNonce: 0, pingOutstandingAt: 0};
+      pingNonce: 0, pingOutstandingAt: 0, rttMs: 0};
     peers.set(controllerId, peer);
     if (testState) testState.peerCreations++;
     const activateIfReady = () => {
@@ -621,6 +802,14 @@
         scheduleIceRestart(controllerId, peer, 750);
       } else if (pc.connectionState === "failed") {
         markPeerConnected(controller, false);
+        // F4: repeated failure while the room socket is healthy means
+        // signaling works and the direct path does not — say which.
+        const failures = (peerIceFailures.get(controllerId) || 0) + 1;
+        peerIceFailures.set(controllerId, failures);
+        if (failures === 3 &&
+            (testConfig !== null || socket?.readyState === WebSocket.OPEN)) {
+          announce(iceBlockedCopy);
+        }
         scheduleIceRestart(controllerId, peer, 0);
       } else if (pc.connectionState === "closed") {
         rebuildPeer(controllerId, peer);
@@ -677,9 +866,29 @@
           control.send(JSON.stringify({type: "controller_ready_ack"}));
         } else if (message.type === "input_test") {
           control.send(JSON.stringify({type: "input_test_ack", nonce: message.nonce}));
+        } else if (message.type === "controller_rename" && message.protocol === 1 &&
+                   peer.authenticated && validControllerName(message.name)) {
+          // F1: a phone may relabel its own seat row over its authenticated
+          // channel, under the exact redeem-time name bounds — refused, not
+          // repaired, otherwise.
+          const identity = controllerIdentity(
+            controllerById(controllerId) || peer.controller);
+          if (controllerNames.get(identity) !== message.name) {
+            controllerNames.set(identity, message.name);
+            if (room) renderRoomState({...room, transitionId: room.transitionId});
+          }
         } else if (message.type === "pong" && message.protocol === 1 &&
                    Number.isInteger(message.nonce) &&
                    message.nonce === peer.pingNonce) {
+          if (peer.pingOutstandingAt !== 0) {
+            // RTT: newest matched pong, floored at 1 ms so "measured, just
+            // fast" is distinguishable from no sample. The number dies with
+            // this peer (a rebuilt channel starts sampleless), mirroring
+            // the native model.
+            peer.rttMs = Math.max(1, Math.round(Date.now() - peer.pingOutstandingAt));
+            if (testState) testState.controlRtts.push(peer.rttMs);
+            if (room) renderRoomState({...room, transitionId: room.transitionId});
+          }
           peer.pingOutstandingAt = 0;
           if (testState) testState.controlPongs++;
         }
@@ -811,6 +1020,14 @@
       select.append(option);
       candidates.push(option);
     }
+    if (!candidates.length) {
+      // F14: the native combo previews "No free phone slot" here; value stays
+      // empty so Approve remains disabled.
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No free phone slot";
+      select.append(option);
+    }
     const recommended = candidates.find((option) => option.dataset.free === "true");
     if (recommended) recommended.selected = true;
     label.append(select);
@@ -883,12 +1100,7 @@
       if (!exactKeys(controller, controllerKeys) ||
           !/^[A-Za-z0-9_-]{22}$/.test(controller.controllerId) ||
           ids.has(controller.controllerId) ||
-          typeof controller.name !== "string" ||
-          controller.name.normalize("NFC") !== controller.name ||
-          controller.name.trim() !== controller.name ||
-          [...controller.name].length > 24 ||
-          /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/
-            .test(controller.name) ||
+          !validControllerName(controller.name) ||
           !/^[A-Za-z0-9_-]{87}$/.test(controller.controllerPublicKey) ||
           !controllerPhases.has(controller.phase) ||
           !Number.isInteger(controller.leaseGeneration) ||
@@ -942,7 +1154,12 @@
         publishedInviteGeneration !== priorInviteGeneration) ||
        next.phase === "closed");
     room = {...room, ...next};
-    if (invalidatesDisplayedInvite) clearInvitePresentation(false);
+    // A generation bump is this host's own rotate echo; renderInvite will draw
+    // (and re-render any open enlarge overlay to) the new invite, so keep the
+    // overlay across it. A closed room has no invite coming — let it close.
+    if (invalidatesDisplayedInvite) {
+      clearInvitePresentation(false, false, next.phase !== "closed");
+    }
     const controllers = activeControllers();
     if (removeControllerId && !controllers.some((controller) =>
         controller.controllerId === removeControllerId)) {
@@ -959,7 +1176,16 @@
       }
     }
     syncRemoteReservations(controllers);
+    for (const controller of controllers) {
+      // F2: the room saying Connected is connection history too — this host
+      // page may have joined (or reloaded) after the phone first connected.
+      if (controller.phase === "connected") {
+        everConnectedIds.add(controllerIdentity(controller));
+      }
+    }
     const pending = controllers.filter((controller) => controller.phase === "pending");
+    // Item 4: a new phone waiting for approval earns one join-request cue.
+    noteNewPending(pending);
     const pendingList = $("party-pending-list");
     pendingList.replaceChildren();
     $("party-pending-empty").hidden = pending.length !== 0;
@@ -971,15 +1197,25 @@
       const item = document.createElement("li");
       const copy = document.createElement("span");
       const name = document.createElement("strong");
-      name.textContent = controller.name || "Phone controller";
+      name.textContent = controllerDisplayName(controller) || "Phone controller";
       const phrase = document.createElement("small");
-      phrase.textContent = "Phrase appears when the phone connects.";
+      // F14: mirrors the native pending card (ui_phone_party.cpp drawPending).
+      phrase.textContent = "Pick a slot and approve. The pairing phrase to " +
+        "compare appears after the phone connects.";
       copy.append(name, phrase);
       const picker = seatPicker(controllers);
+      if (!picker.select.value) {
+        // F14: a disabled Approve with no reason is a dead end — name the
+        // fix, in the native host's exact words.
+        const full = document.createElement("small");
+        full.textContent = "All four controller slots are taken. Remove a " +
+          "connected phone below to free one.";
+        copy.append(full);
+      }
       item.append(copy,
         picker.label,
-        button("Approve", "btn btn-primary", "approve", controller.controllerId,
-          !picker.select.value,
+        button("Approve This Phone", "btn btn-primary", "approve",
+          controller.controllerId, !picker.select.value,
           () => ({seat: Number(picker.select.value)})),
         button("Decline", "btn btn-ghost", "reject", controller.controllerId));
       pendingList.append(item);
@@ -992,22 +1228,32 @@
       const controller = phoneAtSeat(controllers, seat);
       const source = controller ? null : sources[seat - 1];
       tile.dataset.ready = controller || source ? "true" : "false";
-      tile.querySelector("strong").textContent = controller?.name || `Controller ${seat}`;
+      tile.querySelector("strong").textContent =
+        (controller && controllerDisplayName(controller)) || `Controller ${seat}`;
       const seatPhrase = controller &&
         pairingPhrases.get(controller.controllerId);
+      // F2: a lease that has never reached Connected is connecting, not
+      // reconnecting — "reconnecting" promises a recovery of something that
+      // never existed. Mirrors the native seat row (ui_phone_party.cpp).
+      // RTT: the live peer's newest control-channel round trip, refreshed
+      // per pong; only an active direct channel shows a number.
+      const seatRtt = controller && remotePads[seat - 1].active &&
+        peers.get(controller.controllerId)?.rttMs;
       tile.querySelector("small").textContent = controller
         ? (remotePads[seat - 1].active
-          ? (seatPhrase
+          ? ((seatPhrase
             ? `Phone connected — compare on both screens: ${seatPhrase}`
-            : "Phone connected")
-          : "Phone reconnecting — neutral")
+            : "Phone connected") + (seatRtt ? ` · ${seatRtt} ms · direct` : ""))
+          : (everConnectedIds.has(controllerIdentity(controller))
+            ? "Phone reconnecting — neutral" : "Phone connecting…"))
         : (source || "Available");
       const remove = tile.querySelector(".party-seat-remove");
       remove.hidden = !controller;
       remove.disabled = false;
       remove.onclick = controller ? () => confirmRemove(controller, remove) : null;
       remove.setAttribute("aria-label", controller
-        ? `Remove ${controller.name || "phone controller"} from Controller ${seat}`
+        ? `Remove ${controllerDisplayName(controller) || "phone controller"} ` +
+          `from Controller ${seat}`
         : `No phone assigned to Controller ${seat}`);
       if (controller || source) ready++;
     }
@@ -1019,6 +1265,16 @@
     const liveIds = new Set(controllers.map((controller) => controller.controllerId));
     for (const controllerId of peers.keys()) {
       if (!liveIds.has(controllerId)) retirePeer(controllerId, true);
+    }
+    for (const controllerId of [...peerIceFailures.keys()]) {
+      if (!liveIds.has(controllerId)) peerIceFailures.delete(controllerId);
+    }
+    const liveIdentities = new Set(controllers.map(controllerIdentity));
+    for (const identity of [...controllerNames.keys()]) {
+      if (!liveIdentities.has(identity)) controllerNames.delete(identity);
+    }
+    for (const identity of [...everConnectedIds]) {
+      if (!liveIdentities.has(identity)) everConnectedIds.delete(identity);
     }
     for (const controller of controllers) void ensurePeer(controller.controllerId);
   }
@@ -1091,6 +1347,9 @@
     resetRemotePads();
     signaledControllers.clear();
     pairingPhrases.clear();
+    peerIceFailures.clear();
+    controllerNames.clear();
+    everConnectedIds.clear();
     hostIdentity = null;
     setOverlayOpen(false);
     const expired = reason === "room_expired";
@@ -1246,8 +1505,11 @@
         "Phone declined.");
     } catch (error) {
       if (source?.isConnected) source.disabled = false;
+      // F14: the worker's typed room_full mirrors the native host's copy
+      // (native_party_host.cpp typedCommandErrorCopy); the pending card
+      // itself carries the actionable full-slots guidance.
       announce(error?.message === "room_full"
-        ? "All four phone controller seats are in use. Decline or remove a phone first."
+        ? "No free phone slot."
         : "That controller action did not complete. Try again.");
     }
   }
@@ -1340,6 +1602,9 @@
     resetRemotePads();
     signaledControllers.clear();
     pairingPhrases.clear();
+    peerIceFailures.clear();
+    controllerNames.clear();
+    everConnectedIds.clear();
     hostIdentity = null;
     if (ending) {
       void request(`/api/party/${ending.roomId}/close`, {
@@ -1362,7 +1627,7 @@
     removeControllerId = controller.controllerId;
     removeReturnFocus = source;
     $("party-remove-copy").textContent =
-      `${controller.name || "This phone"} will stop controlling Controller ` +
+      `${controllerDisplayName(controller) || "This phone"} will stop controlling Controller ` +
       `${controller.seat}. Its input becomes neutral and the seat becomes available.`;
     removeDialog.showModal();
     requestAnimationFrame(() => $("party-remove-cancel").focus());
@@ -1373,6 +1638,19 @@
     const remaining = Math.max(0, deadline - Date.now());
     if (remaining === 0) {
       if (inviteActive) clearInvitePresentation(true, true);
+      return;
+    }
+    // F6: while the invite card is actually on screen, rotate the invite
+    // before its TTL lapses (~75% elapsed) so the displayed QR/code is
+    // always redeemable; renderInvite replaces QR + code + countdown in
+    // place. The TTL itself never lengthens (binding security decision):
+    // a hidden or dismissed invite still expires on the ordinary clock
+    // above, exactly as before. Mirrors the native launcher card.
+    if (inviteActive && dialog.open && !$("party-room").hidden &&
+        !autoRotatePending &&
+        remaining <= Number(room.inviteExpiresInMs || 0) / 4) {
+      autoRotatePending = true;
+      void extendInvite().finally(() => { autoRotatePending = false; });
       return;
     }
     const seconds = Math.ceil(remaining / 1000);
@@ -1441,6 +1719,23 @@
     else void openRoom();
   });
   $("party-extend").addEventListener("click", () => void extendInvite());
+  // F11.5: the invite QR enlarges on click/tap (or Enter/Space) for scanning
+  // across the room. Marked up as an accessible button; display-only.
+  {
+    const qrCanvas = $("party-qr");
+    qrCanvas.style.cursor = "zoom-in";
+    qrCanvas.setAttribute("role", "button");
+    qrCanvas.setAttribute("tabindex", "0");
+    qrCanvas.setAttribute("aria-label",
+      "Controller QR code. Activate to enlarge it for scanning across the room.");
+    qrCanvas.addEventListener("click", openQrOverlay);
+    qrCanvas.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openQrOverlay();
+      }
+    });
+  }
   $("party-close").addEventListener("click", dismissRoom);
   $("party-end").addEventListener("click", confirmEndRoom);
   $("party-remove-cancel").addEventListener("click", () => removeDialog.close());
@@ -1493,6 +1788,7 @@
     dismissRoom();
   });
   dialog.addEventListener("close", () => {
+    closeQrOverlay();
     if (testState) testState.lifecycle.push(
       `close:${startingGame}:${Boolean(room)}:${preserveOnClose}`);
     const returnToStage = openedFromStage || startingGame;
