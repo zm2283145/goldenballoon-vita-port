@@ -61,6 +61,18 @@ std::string safeMessage(const std::string &value, const char *fallback) {
     return printable(value, kMaxMessage) && !value.empty() ? value : fallback;
 }
 
+/* F8: whether any controller currently holds a seat lease. The terminal /
+ * recoverable fork for transport errors hangs on this: a room with no
+ * seated lease has nothing to protect and may fail closed, while a room
+ * with one must never trade a live direct channel for an error screen. */
+bool anySeatHeld(const MdkrNativePartyView &view) {
+    return std::any_of(view.controllers.begin(), view.controllers.end(),
+        [](const MdkrNativePartyController &candidate) {
+            return candidate.phase != MdkrNativePartyControllerPhase::Pending &&
+                candidate.seat >= 1u && candidate.seat <= 4u;
+        });
+}
+
 /* F1 rename validation: the same bounds the redeem-time name field already
  * enforces (services/party/src/security.ts normalizeName and its native
  * twin in lan_party_room.cpp) -- 24 code points, none of the control /
@@ -381,6 +393,19 @@ void MdkrNativePartyHost::releaseAll() {
 void MdkrNativePartyHost::applyRoomState(
     const MdkrPartyTransportRoomState &room, uint64_t nowMs) {
     if (!roomStateValid(room)) {
+        /* F8: an invalid update is refused either way, but only a room with
+         * no seated lease may fail closed over it. Seated leases ride out
+         * the fault in Recovering -- their direct channels never depended
+         * on this update, and the next valid room update recovers the
+         * surface (applyRoomState below runs on Recovering explicitly). */
+        if (anySeatHeld(view_)) {
+            view_.phase = MdkrNativePartyPhase::Recovering;
+            view_.busy = true;
+            view_.message =
+                "The controller service sent an invalid room update. "
+                "Connected phones keep working.";
+            return;
+        }
         setError("The controller service returned an invalid room update.");
         return;
     }
@@ -649,6 +674,24 @@ void MdkrNativePartyHost::applyEvent(
             view_.message = "Reconnecting the controller room…";
             return;
         case MdkrPartyTransportEventType::Error:
+            /* F8: only credential-invalid and room-closed are terminal, and
+             * on this model both arrive typed (RoomGone below; Closed for
+             * the host's own goodbye). Any other transport error while a
+             * seat holds its lease keeps the lease and shows recovery --
+             * the phones' direct channels do not depend on the faulted
+             * signaling path, so tearing their seats down would trade live
+             * controls for an error screen. With no seat held there is
+             * nothing to protect and the error stays terminal, keeping the
+             * retry button honest. */
+            if (anySeatHeld(view_)) {
+                view_.phase = MdkrNativePartyPhase::Recovering;
+                view_.busy = true;
+                view_.message = safeMessage(
+                    event.message,
+                    "Phone controller connection hit a fault. "
+                    "Connected phones keep working.");
+                return;
+            }
             setError(safeMessage(
                 event.message,
                 "Phone controllers are unavailable. Local controllers still work."));

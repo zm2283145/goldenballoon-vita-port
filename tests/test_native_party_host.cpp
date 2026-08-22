@@ -528,17 +528,20 @@ void expiryLatchesInHostsOwnClockDomain() {
     assert(host.view().phase == MdkrNativePartyPhase::InviteRevoked);
 }
 
-/* Review fix: setError() releases every seat and shuts the transport down,
- * but before this fix left a controller's needsRebind flag standing. If a
- * push failure (queue overflow revokes ingress custody, same shape as the
- * stall-recovery coverage in test_party_session_lifecycle.cpp) and a
- * terminal Error land in the same drain cycle, service()'s top-of-loop heal
+/* Review fix: setTerminal() releases every seat and shuts the transport
+ * down, but before this fix left a controller's needsRebind flag standing.
+ * If a push failure (queue overflow revokes ingress custody, same shape as
+ * the stall-recovery coverage in test_party_session_lifecycle.cpp) and a
+ * terminal event land in the same drain cycle, service()'s top-of-loop heal
  * on the very next tick re-bound the already-released seat, flipped the
  * controller back to Connected and overwrote the terminal message -- all
- * inside a room the host had already declared Error. Prove the controller
- * stays put, the room stays in Error, and the error message is not
+ * inside a room the host had already declared over. F8 update: a generic
+ * Error with a seated lease is recoverable now, so the terminal event for
+ * a seated room is the typed RoomGone; the invariant under test -- a
+ * terminal room never re-binds -- is unchanged. Prove the controller stays
+ * put, the room stays RoomEnded, and the terminal message is not
  * clobbered. */
-void terminalErrorAfterPushFailureStaysErrorAndNeverRebinds() {
+void terminalRoomGoneAfterPushFailureStaysEndedAndNeverRebinds() {
     mdkr_native_remote_pad_reset_all();
     FakeTransport transport;
     MdkrNativePartyHost host(transport);
@@ -578,29 +581,111 @@ void terminalErrorAfterPushFailureStaysErrorAndNeverRebinds() {
         transport.events.push_back(packet);
     }
     MdkrPartyTransportEvent fatal;
-    fatal.type = MdkrPartyTransportEventType::Error;
-    fatal.message =
-        "Phone controllers are unavailable. Local controllers still work.";
+    fatal.type = MdkrPartyTransportEventType::RoomGone;
     transport.events.push_back(fatal);
     host.service(2000u);
 
-    assert(host.view().phase == MdkrNativePartyPhase::Error);
-    assert(host.view().message == fatal.message);
+    assert(host.view().phase == MdkrNativePartyPhase::RoomEnded);
+    assert(host.view().message == kMdkrPartyRoomEndedCopy);
     assert(host.view().controllers[0].phase ==
            MdkrNativePartyControllerPhase::Leased);
 
     /* The next tick, with no new events at all, is exactly where the bug
      * lived: the top-of-service heal loop must not resurrect the released
-     * seat inside an Error room. */
+     * seat inside an ended room. */
     host.service(2100u);
-    assert(host.view().phase == MdkrNativePartyPhase::Error);
-    assert(host.view().message == fatal.message);
+    assert(host.view().phase == MdkrNativePartyPhase::RoomEnded);
+    assert(host.view().message == kMdkrPartyRoomEndedCopy);
     assert(host.view().controllers[0].phase ==
            MdkrNativePartyControllerPhase::Leased);
     assert(!host.view().controllers[0].needsRebind);
     uint64_t owner = 0u;
     uint32_t connection = 0u;
     assert(!mdkr_native_remote_pad_info(0u, &owner, &connection));
+}
+
+/* F8: only credential-invalid and room-closed are terminal -- on this model
+ * those arrive as the typed RoomGone (and the host's own Closed) -- so every
+ * OTHER transport error while seats hold leases must keep them and show a
+ * recovery state instead of tearing the room down. The pinned offender: an
+ * invalid room update mid-session (both transports emit it as a generic
+ * Error event, and the host's own roomStateValid refusal took the same
+ * setError path) used to release every seat and land phase Error; the
+ * connected phone's direct channel never dropped, so the teardown was pure
+ * self-harm. Now: phase Recovering, seats and ingress custody intact, pad
+ * packets still flowing, and the next valid room update recovers to Open. */
+void recoverableTransportErrorKeepsLeasesAndShowsRecovery() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    transport.events.push_back(roomEvent(
+        1u, 1u, 121000u, {approved("phone-a", 1u, 4u, 9u)}));
+    host.service(1000u);
+    MdkrPartyTransportEvent connected;
+    connected.type = MdkrPartyTransportEventType::ControllerConnected;
+    connected.controllerId = "phone-a";
+    connected.haptics = true;
+    transport.events.push_back(connected);
+    host.service(1001u);
+    assert(host.view().controllers[0].direct);
+
+    /* The invalid-update shape both transports emit as a plain Error. */
+    MdkrPartyTransportEvent fault;
+    fault.type = MdkrPartyTransportEventType::Error;
+    fault.message = "Controller service sent an invalid room update.";
+    transport.events.push_back(fault);
+    host.service(2000u);
+    assert(host.view().phase == MdkrNativePartyPhase::Recovering);
+    assert(host.view().message ==
+           "Controller service sent an invalid room update.");
+    assert(host.view().controllers.size() == 1u);
+    assert(host.view().controllers[0].seat == 1u);
+    assert(host.view().controllers[0].direct);
+    uint64_t owner = 0u;
+    uint32_t connection = 0u;
+    assert(mdkr_native_remote_pad_info(0u, &owner, &connection));
+    assert(owner == ((4u << 3u) | 1u) && connection == 9u);
+
+    /* The direct channel never dropped: its input still reaches the sim. */
+    MdkrPartyTransportEvent packet;
+    packet.type = MdkrPartyTransportEventType::ControllerPacket;
+    packet.controllerId = "phone-a";
+    packet.packet = padPacket(9u, 1u);
+    transport.events.push_back(packet);
+    host.service(2001u);
+    std::array<uint8_t, MDKR_PARTY_PAD_MAX_BYTES> output{};
+    assert(mdkr_native_remote_pad_pop(
+        0u, owner, connection, output.data(), output.size()) > 0u);
+
+    /* The host's own roomStateValid refusal takes the same recovery path
+     * while seats are held: two controllers on one seat is invalid. */
+    auto first = approved("one", 2u, 1u, 1u);
+    auto second = approved("two", 2u, 2u, 2u);
+    transport.events.push_back(roomEvent(5u, 1u, 121000u, {first, second}));
+    host.service(2002u);
+    assert(host.view().phase == MdkrNativePartyPhase::Recovering);
+    assert(host.view().controllers.size() == 1u);
+    assert(mdkr_native_remote_pad_info(0u, &owner, &connection));
+
+    /* The next valid room update recovers the surface to Open. */
+    transport.events.push_back(roomEvent(
+        6u, 1u, 121000u, {approved("phone-a", 1u, 4u, 9u)}));
+    host.service(3000u);
+    assert(host.view().phase == MdkrNativePartyPhase::Open);
+    assert(mdkr_native_remote_pad_info(0u, &owner, &connection));
+
+    /* Boundary unchanged: with no seat held (a room that never got past
+     * bootstrap), the same Error event is still terminal -- there is no
+     * lease to protect and the retry button is the honest way forward. */
+    assert(host.closeRoom());
+    assert(host.open("https://party.example"));
+    MdkrPartyTransportEvent createFault;
+    createFault.type = MdkrPartyTransportEventType::Error;
+    createFault.message = "Could not create a secure phone controller room.";
+    transport.events.push_back(createFault);
+    host.service(4000u);
+    assert(host.view().phase == MdkrNativePartyPhase::Error);
 }
 
 /* I2: a phone whose controller page speaks a different pairing-protocol
@@ -1323,8 +1408,9 @@ int main() {
     typedCommandErrorSurfacesHonestCopyPerController();
     echoedIdentityScopesRejectionCleanupToItsOwnCommand();
     seatlessRoomEntryAppliedAsNoSeatPendingWithoutCrash();
+    recoverableTransportErrorKeepsLeasesAndShowsRecovery();
     expiryLatchesInHostsOwnClockDomain();
-    terminalErrorAfterPushFailureStaysErrorAndNeverRebinds();
+    terminalRoomGoneAfterPushFailureStaysEndedAndNeverRebinds();
     protocolMismatchMarksSeatLoudlyWithoutRebindLoop();
     giveUpForMismatchedSeatKeepsTheHonestRoomCopy();
     roomGoneForGoodEndsTheRoomInsteadOfRetryingForever();
