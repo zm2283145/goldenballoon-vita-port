@@ -10,8 +10,29 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <string>
+#include <vector>
 
 std::unique_ptr<MdkrPartyTransport> mdkr_create_native_party_transport();
+
+/* One resolved ICE server the cloud transport hands to libdatachannel: a
+ * stun/turn/turns URL, plus the TURN credential pair when the service minted
+ * one (both empty for plain STUN). */
+struct MdkrPartyIceServer {
+    std::string url;
+    std::string username;
+    std::string credential;
+};
+
+/* Server-iceServers parse seam: feeds one raw bootstrap JSON text through
+ * the exact validation createPeer's configuration uses and copies out the
+ * resolved server list. Returns true when a fully valid server-delivered
+ * list was adopted; false -- with `servers` holding exactly the baked-in
+ * STUN fallback -- for an absent or malformed field, which must never fail
+ * the bootstrap that carried it (services/party/src/turn.ts is the minting
+ * side of this contract). */
+bool mdkr_party_ice_servers_for_test(
+    const std::string &text, std::vector<MdkrPartyIceServer> &servers);
 
 /* M4: quitting must tell the phones goodbye without hanging the app.
  * closeRoom() sends the worker the `close` command (relayed to every

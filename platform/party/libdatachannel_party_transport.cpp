@@ -136,6 +136,87 @@ uint64_t wallExpiryToSteady(uint64_t expiresAtMs) {
     return expiresAtMs > wall ? now + (expiresAtMs - wall) : now;
 }
 
+/*
+ * Server-delivered iceServers (services/party/src/turn.ts). The bootstrap
+ * may carry the room's iceServers -- STUN always, TURN credentials when the
+ * service minted them -- and createPeer prefers a fully valid list over the
+ * baked-in STUN below. Strictly validated and rebuilt here; any shortfall
+ * discards the whole list, because connectivity config is best effort and
+ * must never fail the bootstrap that carried it.
+ */
+constexpr size_t kMaxIceServerEntries = 8u;
+constexpr size_t kMaxIceServersTotal = 16u;
+constexpr size_t kMaxIceUrlBytes = 256u;
+constexpr size_t kMaxIceSecretBytes = 512u;
+const char kFallbackStunUrl[] = "stun:stun.cloudflare.com:3478";
+
+bool validIceUrl(const std::string &url) {
+    if (url.size() > kMaxIceUrlBytes) return false;
+    if (url.rfind("stun:", 0u) != 0u && url.rfind("turn:", 0u) != 0u &&
+        url.rfind("turns:", 0u) != 0u) {
+        return false;
+    }
+    for (const char byte : url) {
+        if (byte <= ' ' || byte > '~') return false;
+    }
+    return true;
+}
+
+std::vector<MdkrPartyIceServer> iceServersFromSignal(const Json &value) {
+    const auto found = value.find("iceServers");
+    if (found == value.end() || !found->is_array() || found->empty() ||
+        found->size() > kMaxIceServerEntries) {
+        return {};
+    }
+    std::vector<MdkrPartyIceServer> servers;
+    for (const Json &entry : *found) {
+        if (!entry.is_object() || !entry.contains("urls")) return {};
+        std::vector<std::string> urls;
+        if (entry["urls"].is_array()) {
+            if (entry["urls"].empty() ||
+                entry["urls"].size() > kMaxIceServerEntries) return {};
+            for (const Json &url : entry["urls"]) {
+                if (!url.is_string()) return {};
+                urls.push_back(url.get<std::string>());
+            }
+        } else {
+            std::string url;
+            if (!safeString(entry, "urls", url, kMaxIceUrlBytes) ||
+                url.empty()) return {};
+            urls.push_back(std::move(url));
+        }
+        std::string username;
+        std::string credential;
+        if (!safeString(entry, "username", username, kMaxIceSecretBytes, false) ||
+            !safeString(entry, "credential", credential, kMaxIceSecretBytes,
+                false) ||
+            username.empty() != credential.empty()) {
+            return {};
+        }
+        for (const std::string &url : urls) {
+            if (!validIceUrl(url) || servers.size() >= kMaxIceServersTotal) {
+                return {};
+            }
+            MdkrPartyIceServer server;
+            server.url = url;
+            server.username = username;
+            server.credential = credential;
+            servers.push_back(std::move(server));
+        }
+    }
+    return servers;
+}
+
+std::vector<MdkrPartyIceServer> resolvedIceServers(
+        std::vector<MdkrPartyIceServer> servers) {
+    if (servers.empty()) {
+        MdkrPartyIceServer fallback;
+        fallback.url = kFallbackStunUrl;
+        servers.push_back(std::move(fallback));
+    }
+    return servers;
+}
+
 struct Peer {
     std::string id;
     unsigned seat = 0u;
@@ -653,6 +734,10 @@ private:
             enqueue(std::move(event));
             return;
         }
+        /* Optional field, validated separately: a missing or malformed list
+         * resolves to the baked-in STUN in createPeer, never a refused
+         * bootstrap (the service's own TURN degradation contract). */
+        std::vector<MdkrPartyIceServer> iceServers = iceServersFromSignal(value);
         std::lock_guard<std::mutex> lock(mutex_);
         if (!credential_.empty()) return;
         roomId_ = std::move(room);
@@ -661,6 +746,7 @@ private:
         fallbackCode_ = std::move(code);
         inviteGeneration_ = static_cast<unsigned>(generation);
         inviteExpiresAtMs_ = steadyNowMs() + expiresIn;
+        iceServers_ = std::move(iceServers);
     }
 
     bool parseRoom(const Json &value, MdkrPartyTransportRoomState &room) {
@@ -835,9 +921,11 @@ private:
     void createPeer(const MdkrNativePartyController &controller,
                     bool forceRecreate = false, unsigned carriedOfferAttempts = 0u) {
         uint32_t peerGeneration = 0u;
+        std::vector<MdkrPartyIceServer> iceServers;
         std::shared_ptr<rtc::PeerConnection> stale;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            iceServers = iceServers_;
             const auto found = peers_.find(controller.id);
             if (found != peers_.end() && !found->second->failed && !forceRecreate) return;
             if (found != peers_.end()) {
@@ -856,7 +944,21 @@ private:
         }
         if (stale) stale->close();
         rtc::Configuration configuration;
-        configuration.iceServers.emplace_back("stun:stun.cloudflare.com:3478");
+        for (const MdkrPartyIceServer &server : resolvedIceServers(iceServers)) {
+            try {
+                rtc::IceServer resolved(server.url);
+                if (!server.username.empty()) {
+                    resolved.username = server.username;
+                    resolved.password = server.credential;
+                }
+                configuration.iceServers.push_back(std::move(resolved));
+            } catch (...) {
+                /* One URL libdatachannel refuses must not cost the rest. */
+            }
+        }
+        if (configuration.iceServers.empty()) {
+            configuration.iceServers.emplace_back(kFallbackStunUrl);
+        }
         configuration.maxMessageSize = kMaxSignalBytes;
         auto peer = std::make_shared<Peer>();
         peer->id = controller.id;
@@ -1233,6 +1335,9 @@ private:
     std::string credential_;
     std::string inviteUrl_;
     std::string fallbackCode_;
+    /* The room's server-delivered ICE servers, set once by the bootstrap;
+     * empty means createPeer uses the baked-in STUN fallback. */
+    std::vector<MdkrPartyIceServer> iceServers_;
     unsigned inviteGeneration_ = 0u;
     uint64_t inviteExpiresAtMs_ = 0u;
     uint64_t generation_ = 0u;
@@ -1380,6 +1485,21 @@ bool mdkr_party_controller_ready_event_for_test(
         return controllerReadyEventFromControl(
             value, controllerId, connectionSequence, event);
     } catch (...) { return false; }
+}
+
+bool mdkr_party_ice_servers_for_test(
+    const std::string &text, std::vector<MdkrPartyIceServer> &servers) {
+    servers.clear();
+    const Json value = Json::parse(text, nullptr, false);
+    std::vector<MdkrPartyIceServer> parsed;
+    if (!value.is_discarded() && value.is_object()) {
+        /* Same guard the socket path's outer try gives the shared parser. */
+        try { parsed = iceServersFromSignal(value); }
+        catch (...) { parsed.clear(); }
+    }
+    const bool serverProvided = !parsed.empty();
+    servers = resolvedIceServers(std::move(parsed));
+    return serverProvided;
 }
 
 size_t mdkr_party_prune_signaled_ids(
