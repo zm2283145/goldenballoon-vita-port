@@ -352,8 +352,9 @@ void drawPending(MdkrNativePartyHost &host,
          * so the button below does not read as "match a phrase" that is not on
          * screen yet. */
         ui::TextSubtleWrapped(
-            "Pick a slot and approve. The pairing phrase to compare appears "
-            "after the phone connects.");
+            "Pick a slot and approve. After the phone connects, its pairing "
+            "phrase appears to compare — choose Words Match to give it a "
+            "controller.");
         unsigned &choice = g_seatChoices[controller.id];
         if (choice < 1u || choice > 4u || seatOccupied(view, choice)) {
             choice = firstFreeSeat(view);
@@ -397,12 +398,66 @@ void drawPending(MdkrNativePartyHost &host,
         }
         ui::SpeakFocusedItem("Approve This Phone", nullptr,
             "Approves this phone into the chosen slot. After it connects, a "
-            "pairing phrase appears on both screens — compare them, and remove "
-            "the phone if they differ.");
+            "pairing phrase appears on both screens — compare them, then choose "
+            "Words Match to give it a controller or Words Differ to remove it.");
         if (disabled) ImGui::EndDisabled();
         if (ImGui::Button("Decline", ui::kBtnSecondary())) host.reject(controller.id);
         ui::SpeakFocusedItem("Decline", nullptr,
             "Removes this pending phone without assigning a controller slot.");
+    }
+    ui::CardEnd();
+}
+
+/* P2.1 compare-then-trust: a phone the host approved holds a PROVISIONAL
+ * connection only -- its direct channel is up and its channel-bound phrase is
+ * on screen, but it holds no seat and its input is discarded at the ingress
+ * until the human compares the words and grants the seat. This card is that
+ * compare surface: it leads with the phrase and offers the Words Match /
+ * Words Differ decision, mirroring the online room's phrase ceremony. */
+void drawProvisional(MdkrNativePartyHost &host,
+                     const MdkrNativePartyController &controller) {
+    if (ui::CardBegin(("##provisional-" + controller.id).c_str(),
+                      AppTheme::accent(), 0.0f)) {
+        ImGui::Text("Controller %u  %s", controller.seat,
+                    controller.name.empty() ? "Phone" : controller.name.c_str());
+        if (controller.pairingPhrase.empty()) {
+            /* The channel is coming up; the phrase binds it and appears here to
+             * compare. No words yet means nothing to match, so no decision is
+             * offered -- only a way to remove a phone that will not connect. */
+            ui::TextSubtle("%s", statusText(controller));
+            ui::TextSubtleWrapped(
+                "The pairing phrase to compare appears here once the phone "
+                "connects.");
+            if (ImGui::Button("Remove Phone", ui::kBtnSecondary())) {
+                host.reject(controller.id);
+            }
+            ui::SpeakFocusedItem("Remove Phone", nullptr,
+                "Removes this phone before it takes a controller.");
+            ui::CardEnd();
+            return;
+        }
+        ui::TextSubtle("Compare on both screens:");
+        ImGui::PushFont(AppTheme::fonts().title);
+        ImGui::TextUnformatted(controller.pairingPhrase.c_str());
+        ImGui::PopFont();
+        ui::TextSubtleWrapped(
+            "Give this phone its controller only if the words match exactly on "
+            "both screens.");
+        const bool busy = controller.commandPending;
+        if (busy) ImGui::BeginDisabled();
+        if (ui::PrimaryButton("Words Match", ui::kBtnWide())) {
+            host.confirmPairing(controller.id);
+        }
+        ui::SpeakFocusedItem("Words Match", controller.pairingPhrase.c_str(),
+            "The words match on both screens. Gives this phone its controller "
+            "and starts its input.");
+        if (busy) ImGui::EndDisabled();
+        if (ImGui::Button("Words Differ", ui::kBtnSecondary())) {
+            host.reject(controller.id);
+        }
+        ui::SpeakFocusedItem("Words Differ", nullptr,
+            "The words are not the same. Removes this phone; it never takes a "
+            "controller.");
     }
     ui::CardEnd();
 }
@@ -412,6 +467,17 @@ void drawControllers(MdkrNativePartyHost &host) {
     for (const auto &controller : view.controllers) {
         if (controller.phase == MdkrNativePartyControllerPhase::Pending) {
             drawPending(host, controller);
+            ui::Gap(ui::kGapS);
+            continue;
+        }
+        /* P2.1: an approved-but-unconfirmed phone is provisional -- draw the
+         * compare-and-confirm card instead of an occupied seat row. Only once
+         * the human's Words Match granted the seat does it read as a normal
+         * connected controller. */
+        if (!controller.confirmed) {
+            ImGui::PushID(controller.id.c_str());
+            drawProvisional(host, controller);
+            ImGui::PopID();
             ui::Gap(ui::kGapS);
             continue;
         }
@@ -425,16 +491,6 @@ void drawControllers(MdkrNativePartyHost &host) {
         if (controller.phase == MdkrNativePartyControllerPhase::Connected &&
             controller.rttMs != 0u) {
             ui::TextSubtle("%u ms · direct", controller.rttMs);
-        }
-        /* SAS v2: the phrase arrives once the phone's direct connection is
-         * up and it names that exact connection, so this seat row is the
-         * compare surface. No phrase yet simply shows nothing -- an
-         * unverifiable channel never gets words to vouch for it. */
-        if (!controller.pairingPhrase.empty()) {
-            ui::TextSubtle("Compare on both screens:");
-            ImGui::PushFont(AppTheme::fonts().title);
-            ImGui::TextUnformatted(controller.pairingPhrase.c_str());
-            ImGui::PopFont();
         }
         if (ImGui::Button("Remove Phone", ui::kBtnSecondary())) {
             g_removeController = controller.id;
@@ -688,7 +744,7 @@ void PhoneParty_drawLauncher(MdkrNativePartyHost &host,
         "Scan the code with any phone to play with it — just you, or up to four "
         "players on this screen. Approve the phone and it becomes Controller 1 "
         "(or the next open slot); when it connects, compare the pairing phrase "
-        "on both screens.");
+        "and choose Words Match to give it a controller.");
     /* Exactly one surface at a time. While a local room is the live transport it
      * owns the whole card; otherwise the cloud flow does (unchanged), and local
      * play is offered beneath it only when no cloud room is open -- so a cloud

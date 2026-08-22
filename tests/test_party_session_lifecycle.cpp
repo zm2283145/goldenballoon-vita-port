@@ -37,7 +37,6 @@
 
 #include <array>
 #include <cassert>
-#include <cstdio>
 #include <deque>
 #include <string>
 #include <utility>
@@ -257,16 +256,25 @@ void establishConnectedPhone(
     connected.controllerId = "phone-a";
     connected.haptics = true;
     transport.events.push_back(connected);
-    for (uint32_t sequence = 1u; sequence <= 3u; ++sequence) {
-        queuePacket(transport, "phone-a", kConnection, sequence);
-    }
     host.service(1001u);
     assert(host.view().controllers[0].direct);
     assert(host.view().controllers[0].phase ==
            MdkrNativePartyControllerPhase::Connected);
 
+    /* P2.1 compare-then-trust: approval brought up a PROVISIONAL channel with
+     * a phrase to compare, but no seat custody yet -- the ingress is unbound
+     * and any pad packet would be discarded at the boundary. The human's
+     * Words Match grants the seat; only then do pad packets reach the sim. */
     uint64_t owner = 0u;
     uint32_t connection = 0u;
+    assert(!mdkr_native_remote_pad_info(kPort, &owner, &connection));
+    assert(host.confirmPairing("phone-a"));
+    assert(host.view().controllers[0].confirmed);
+    for (uint32_t sequence = 1u; sequence <= 3u; ++sequence) {
+        queuePacket(transport, "phone-a", kConnection, sequence);
+    }
+    host.service(1002u);
+
     assert(mdkr_native_remote_pad_info(kPort, &owner, &connection));
     assert(owner == kOwner && connection == kConnection);
     const std::vector<uint32_t> delivered =
@@ -426,6 +434,11 @@ void inviteExpiryDuringMinimizeKeepsSeatsAndSaysSo() {
     transport.events.push_back(roomEvent(
         1u, 1u, 20000u, {approved("phone-a", kSeat, kLease, kConnection)}));
     host.service(1000u);
+    MdkrPartyTransportEvent phrase;
+    phrase.type = MdkrPartyTransportEventType::ControllerPhrase;
+    phrase.controllerId = "phone-a";
+    phrase.message = "Gentle-Star Royal-Pilot";
+    transport.events.push_back(phrase);
     MdkrPartyTransportEvent connected;
     connected.type = MdkrPartyTransportEventType::ControllerConnected;
     connected.controllerId = "phone-a";
@@ -433,6 +446,9 @@ void inviteExpiryDuringMinimizeKeepsSeatsAndSaysSo() {
     transport.events.push_back(connected);
     host.service(1001u);
     assert(host.view().controllers[0].direct);
+    /* P2.1: the human's Words Match grants seat custody -- only a confirmed
+     * seat keeps its ingress across the invite expiry below. */
+    assert(host.confirmPairing("phone-a"));
 
     /* Ninety seconds minimized: the code times out while nobody is looking. */
     queuePacket(transport, "phone-a", kConnection, 1u);

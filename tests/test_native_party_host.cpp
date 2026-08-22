@@ -50,6 +50,9 @@ public:
     bool remove(const std::string &id) override {
         calls.push_back("remove:" + id); return commandResult;
     }
+    bool confirm(const std::string &id) override {
+        calls.push_back("confirm:" + id); return commandResult;
+    }
     bool rotateInvite(unsigned generation) override {
         calls.push_back("rotate:" + std::to_string(generation));
         return commandResult;
@@ -118,6 +121,24 @@ MdkrPartyTransportEvent roomEvent(
     return event;
 }
 
+/* P2.1 compare-then-trust: drive a seated phone through the human's Words
+ * Match so it takes ingress custody, the way the launcher does once the phrase
+ * renders. A phone can only be confirmed while its channel-bound phrase is on
+ * screen, so deliver one first (the transport's ControllerPhrase event), then
+ * confirm. Leaves a "confirm:<id>" call on the fake so the seat-grant handoff
+ * is observable. */
+void confirmSeat(FakeTransport &transport, MdkrNativePartyHost &host,
+                 const std::string &id, uint64_t nowMs,
+                 const char *phrase = "Gentle-Star Royal-Pilot") {
+    MdkrPartyTransportEvent event;
+    event.type = MdkrPartyTransportEventType::ControllerPhrase;
+    event.controllerId = id;
+    event.message = phrase;
+    transport.events.push_back(event);
+    host.service(nowMs);
+    assert(host.confirmPairing(id));
+}
+
 std::vector<uint8_t> padPacket(uint32_t connection, uint32_t sequence) {
     MdkrPartyPadPacket source{};
     source.flags = MDKR_PARTY_PAD_FLAG_PRESENT;
@@ -165,6 +186,11 @@ void lifecycleAndCustody() {
     host.service(1001u);
     uint64_t owner = 0u;
     uint32_t connection = 0u;
+    /* P2.1: approval is a provisional connection -- the room reserves the seat
+     * number but no ingress custody exists until the human's Words Match. */
+    assert(!mdkr_native_remote_pad_info(1u, &owner, &connection));
+    confirmSeat(transport, host, "phone-a", 1001u);
+    assert(host.view().controllers[0].confirmed);
     assert(mdkr_native_remote_pad_info(1u, &owner, &connection));
     assert(owner == ((4u << 3u) | 2u) && connection == 9u);
 
@@ -212,6 +238,123 @@ void lifecycleAndCustody() {
     assert(!mdkr_native_remote_pad_info(1u, &owner, &connection));
 }
 
+/* P2.1 compare-then-trust (red-first ingress-discard proof): approval brings
+ * up a PROVISIONAL connection only. WebRTC comes up (ControllerConnected ->
+ * direct, Connected) and the phrase is computed, but until the human's Words
+ * Match the seat holds NO ingress binding and every pad packet the phone
+ * sends is discarded AT THE INGRESS BOUNDARY -- a provisional phone moves
+ * nothing. Words Match then grants custody: the ingress binds under the
+ * seat's stable owner, the transport is told to trust the phone, and the next
+ * packet reaches the sim. Before this task the ingress bound at approval, so
+ * a provisional packet reached the sim; this pins that it no longer can. */
+void provisionalInputDiscardedUntilConfirmed() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    transport.events.push_back(roomEvent(1u, 1u, 121000u, {pending("phone-a")}));
+    host.service(1000u);
+    assert(host.approve("phone-a", 1u));  // seat 1 -> ingress port 0
+
+    auto phone = approved("phone-a", 1u, 4u, 9u);
+    transport.events.push_back(roomEvent(2u, 1u, 121000u, {phone}));
+    MdkrPartyTransportEvent connected;
+    connected.type = MdkrPartyTransportEventType::ControllerConnected;
+    connected.controllerId = "phone-a";
+    connected.haptics = true;
+    transport.events.push_back(connected);
+    MdkrPartyTransportEvent phrase;
+    phrase.type = MdkrPartyTransportEventType::ControllerPhrase;
+    phrase.controllerId = "phone-a";
+    phrase.message = "Gentle-Star Royal-Pilot";
+    transport.events.push_back(phrase);
+    host.service(1001u);
+    assert(host.view().controllers[0].direct);
+    assert(host.view().controllers[0].phase ==
+           MdkrNativePartyControllerPhase::Connected);
+    assert(!host.view().controllers[0].confirmed);
+    assert(!host.view().controllers[0].pairingPhrase.empty());
+
+    /* The ingress boundary: no seat is bound while provisional. */
+    uint64_t owner = 0u;
+    uint32_t connection = 0u;
+    assert(!mdkr_native_remote_pad_info(0u, &owner, &connection));
+
+    /* A provisional phone that sends pad packets moves nothing: discarded at
+     * the boundary (no binding), the demote path is never taken either -- the
+     * channel stays healthy, still Connected and direct. */
+    MdkrPartyTransportEvent early;
+    early.type = MdkrPartyTransportEventType::ControllerPacket;
+    early.controllerId = "phone-a";
+    early.packet = padPacket(9u, 1u);
+    transport.events.push_back(early);
+    host.service(1002u);
+    std::array<uint8_t, MDKR_PARTY_PAD_MAX_BYTES> output{};
+    assert(!mdkr_native_remote_pad_info(0u, &owner, &connection));
+    assert(mdkr_native_remote_pad_pop(
+        0u, (4u << 3u) | 1u, 9u, output.data(), output.size()) == 0u);
+    assert(host.view().controllers[0].direct);
+    assert(host.view().controllers[0].phase ==
+           MdkrNativePartyControllerPhase::Connected);
+
+    /* Words Match: seat custody begins and the phone is told it is trusted. */
+    assert(host.confirmPairing("phone-a"));
+    assert(host.view().controllers[0].confirmed);
+    assert(transport.calls.back() == "confirm:phone-a");
+    assert(mdkr_native_remote_pad_info(0u, &owner, &connection));
+    assert(owner == ((4u << 3u) | 1u) && connection == 9u);
+
+    /* Now the same packet reaches the sim. */
+    MdkrPartyTransportEvent live;
+    live.type = MdkrPartyTransportEventType::ControllerPacket;
+    live.controllerId = "phone-a";
+    live.packet = padPacket(9u, 2u);
+    transport.events.push_back(live);
+    host.service(1003u);
+    assert(mdkr_native_remote_pad_pop(
+        0u, owner, connection, output.data(), output.size()) > 0u);
+
+    /* Idempotent, and refused for a phone with no seat or no phrase. */
+    assert(!host.confirmPairing("phone-a"));  // already confirmed
+    assert(!host.confirmPairing("ghost"));    // unknown controller
+}
+
+/* P2.1: Words Differ is the ordinary remove path, so a differing phone is
+ * confirmed=false forever and never held a seat -- its removal releases no
+ * ingress custody because none was ever bound. */
+void wordsDifferRemovesWithoutEverHoldingASeat() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    transport.events.push_back(roomEvent(1u, 1u, 121000u, {pending("phone-a")}));
+    host.service(1000u);
+    assert(host.approve("phone-a", 1u));
+    auto phone = approved("phone-a", 1u, 4u, 9u);
+    phone.phase = MdkrNativePartyControllerPhase::Connected;
+    transport.events.push_back(roomEvent(2u, 1u, 121000u, {phone}));
+    MdkrPartyTransportEvent phrase;
+    phrase.type = MdkrPartyTransportEventType::ControllerPhrase;
+    phrase.controllerId = "phone-a";
+    phrase.message = "Gentle-Star Royal-Pilot";
+    transport.events.push_back(phrase);
+    host.service(1001u);
+    assert(!host.view().controllers[0].confirmed);
+
+    uint64_t owner = 0u;
+    uint32_t connection = 0u;
+    assert(!mdkr_native_remote_pad_info(0u, &owner, &connection));
+
+    /* Words Differ == reject() a non-pending (seated) controller == remove. */
+    assert(host.reject("phone-a"));
+    assert(transport.calls.back() == "remove:phone-a");
+    auto empty = roomEvent(3u, 1u, 121000u, {});
+    transport.events.push_back(std::move(empty));
+    host.service(1002u);
+    assert(host.view().controllers.empty());
+    assert(!mdkr_native_remote_pad_info(0u, &owner, &connection));
+}
+
 void invalidAndStaleUpdatesFailClosed() {
     mdkr_native_remote_pad_reset_all();
     FakeTransport transport;
@@ -243,6 +386,9 @@ void expiryPreservesApprovedSeat() {
     transport.events.push_back(roomEvent(
         1u, 1u, 9u, {approved("phone", 4u, 9u, 12u)}));
     host.service(1u);
+    /* A confirmed (Words Match) seat holds ingress custody that invite expiry
+     * must not disturb. */
+    confirmSeat(transport, host, "phone", 1u);
     host.service(10u);
     assert(host.view().phase == MdkrNativePartyPhase::InviteRevoked);
     assert(host.view().controllers.size() == 1u);
@@ -563,6 +709,8 @@ void terminalRoomGoneAfterPushFailureStaysEndedAndNeverRebinds() {
     assert(host.view().controllers[0].direct);
     assert(host.view().controllers[0].phase ==
            MdkrNativePartyControllerPhase::Connected);
+    /* Only a confirmed seat has ingress custody a flood can overflow. */
+    confirmSeat(transport, host, "phone-a", 1002u);
 
     /* Flood the bounded ingress queue with live packets for this same
      * controller -- the same overflow shape
@@ -629,6 +777,10 @@ void recoverableTransportErrorKeepsLeasesAndShowsRecovery() {
     transport.events.push_back(connected);
     host.service(1001u);
     assert(host.view().controllers[0].direct);
+    /* Words Match grants this seat its ingress custody; the recovery paths
+     * below must hold onto it. */
+    confirmSeat(transport, host, "phone-a", 1001u);
+    assert(host.view().controllers[0].confirmed);
 
     /* The invalid-update shape both transports emit as a plain Error. */
     MdkrPartyTransportEvent fault;
@@ -714,6 +866,9 @@ void protocolMismatchMarksSeatLoudlyWithoutRebindLoop() {
     transport.events.push_back(connected);
     host.service(1001u);
     assert(host.view().controllers[0].direct);
+    /* The seat must be confirmed (Words Match) to hold the ingress custody
+     * this test then watches survive a protocol mismatch. */
+    confirmSeat(transport, host, "phone-a", 1001u);
 
     /* The phone reloads into a page speaking a fake future protocol. */
     MdkrPartyTransportEvent mismatch;
@@ -874,6 +1029,14 @@ void roomGoneForGoodEndsTheRoomInsteadOfRetryingForever() {
     transport.events.push_back(connected);
     host.service(1001u);
     assert(host.view().controllers[0].direct);
+    /* A live, confirmed seat -- so the teardown below proves real custody is
+     * handed back to local play, not a vacuously unbound seat. */
+    confirmSeat(transport, host, "phone-a", 1001u);
+    {
+        uint64_t seatOwner = 0u;
+        uint32_t seatConnection = 0u;
+        assert(mdkr_native_remote_pad_info(0u, &seatOwner, &seatConnection));
+    }
 
     MdkrPartyTransportEvent gone;
     gone.type = MdkrPartyTransportEventType::RoomGone;
@@ -937,6 +1100,12 @@ void destructionWithLiveRoomSaysGoodbyeBeforeHangingUp() {
             1u, 1u, 121000u, {approved("phone-a", 1u, 4u, 9u)}));
         host.service(1000u);
         assert(host.view().phase == MdkrNativePartyPhase::Open);
+        /* A confirmed seat holds real ingress custody, so the teardown below
+         * proves the seat goes back to local play. */
+        confirmSeat(transport, host, "phone-a", 1000u);
+        uint64_t seatOwner = 0u;
+        uint32_t seatConnection = 0u;
+        assert(mdkr_native_remote_pad_info(0u, &seatOwner, &seatConnection));
     }
     /* The goodbye precedes the hangup, and the hangup still happens. */
     assert(transport.calls.size() >= 2u);
@@ -1034,6 +1203,8 @@ void destructionDuringRecoveringAttemptsGoodbyeButNeverWaits() {
             1u, 1u, 121000u, {approved("phone-a", 1u, 4u, 9u)}));
         host.service(1000u);
         assert(host.view().phase == MdkrNativePartyPhase::Open);
+        /* A confirmed seat holds ingress custody the teardown must release. */
+        confirmSeat(transport, host, "phone-a", 1000u);
         MdkrPartyTransportEvent recovering;
         recovering.type = MdkrPartyTransportEventType::Recovering;
         transport.events.push_back(recovering);
@@ -1521,6 +1692,10 @@ void connectHapticPhone(FakeTransport &transport, MdkrNativePartyHost &host) {
     host.service(1000u);
     assert(host.view().controllers[0].direct);
     assert(host.view().controllers[0].haptics);
+    /* Rumble needs a bound seat, and a seat is bound only once the human
+     * confirmed it (Words Match) -- then the ingress carries its haptics bit. */
+    confirmSeat(transport, host, "phone-a", 1000u);
+    assert(host.view().controllers[0].confirmed);
 }
 
 /* M5 sustained rumble. The engine's SDL path sustains an effect by letting
@@ -1612,6 +1787,8 @@ void mismatchedOrDisconnectedSeatsGetNoRumbleRefreshes() {
 int main() {
     unavailableAndSecureOrigin();
     lifecycleAndCustody();
+    provisionalInputDiscardedUntilConfirmed();
+    wordsDifferRemovesWithoutEverHoldingASeat();
     invalidAndStaleUpdatesFailClosed();
     expiryPreservesApprovedSeat();
     commandRejectionAndRemovalStayRecoverable();

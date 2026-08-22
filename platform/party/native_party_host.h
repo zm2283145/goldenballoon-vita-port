@@ -46,6 +46,18 @@ struct MdkrNativePartyController {
     bool direct = false;
     bool haptics = false;
     bool commandPending = false;
+    /* P2.1 compare-then-trust: the human pressed Words Match for this phone's
+     * channel-bound pairing phrase, granting seat CUSTODY. Approval alone is
+     * now a provisional connection only -- the WebRTC/DTLS comes up and the
+     * phrase is computed and shown, but this stays false, so applyRoomState
+     * binds NO ingress and applyEvent discards every pad packet at the
+     * ingress boundary (fail-neutral). confirmPairing() flips it, binds the
+     * seat, and tells the phone; Words Differ takes the ordinary remove path
+     * so a differing phone is confirmed=false forever and never held a seat.
+     * Launcher-owned (never carried on the wire); carried across room updates
+     * of the same phone + key so a trusted phone auto-resumes its seat on
+     * reconnect with no re-compare, exactly like everConnected. */
+    bool confirmed = false;
     /* F2: whether this lease has EVER reached Connected. A lease that never
      * has is "Connecting…" on every surface; only a lease that connected and
      * then dropped may honestly read as "Reconnecting". Set by
@@ -231,6 +243,21 @@ public:
     virtual bool approve(const std::string &controllerId, unsigned seat) = 0;
     virtual bool reject(const std::string &controllerId) = 0;
     virtual bool remove(const std::string &controllerId) = 0;
+    /*
+     * P2.1 compare-then-trust: the human confirmed this phone's pairing phrase
+     * matches on both screens (Words Match). Tell the phone it is trusted over
+     * its own reliable control channel (the seat_confirmed message) so it may
+     * leave the compare screen and run the auto input test, and start honoring
+     * its input_test round trips. Best-effort and idempotent: the ingress seat
+     * custody is granted by the host model, not by this call, so a transport
+     * that cannot deliver the message never leaves a seat wrongly held. The
+     * default no-op keeps every test fake and the unavailable stub building;
+     * the two shipping transports override it and stay byte-alike (twin rule).
+     */
+    virtual bool confirm(const std::string &controllerId) {
+        (void)controllerId;
+        return true;
+    }
     virtual bool rotateInvite(unsigned expectedGeneration) = 0;
     virtual bool revokeInvite() = 0;
     virtual bool closeRoom() = 0;
@@ -460,6 +487,12 @@ public:
 
     bool open(const std::string &serviceOrigin);
     bool approve(const std::string &controllerId, unsigned seat);
+    /* P2.1: the human's Words Match decision for a provisionally-connected
+     * phone. Grants seat custody (binds the ingress now) and tells the phone
+     * it is trusted. Refused unless the phone holds a seat and its
+     * channel-bound phrase is actually on screen to compare -- Words Differ is
+     * the ordinary reject()/remove path, so a mismatch never reaches here. */
+    bool confirmPairing(const std::string &controllerId);
     bool reject(const std::string &controllerId);
     bool rotateInvite();
     bool dismissInvite();

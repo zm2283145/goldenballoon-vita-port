@@ -280,6 +280,49 @@ bool MdkrNativePartyHost::approve(
     return true;
 }
 
+bool MdkrNativePartyHost::confirmPairing(const std::string &controllerId) {
+    /* P2.1 compare-then-trust: approval brought up a provisional connection
+     * whose phrase is now on both screens; this is the human's Words Match.
+     * Only a phone that holds a seat AND has a channel-bound phrase to compare
+     * can be confirmed -- a phone that never connected, or whose channel was
+     * refused (no phrase) or dropped (phrase cleared), offers nothing to
+     * match, so Words Match is refused there. Idempotent: an already-confirmed
+     * seat is left exactly as it is. Words Differ is reject()/remove, so a
+     * mismatch is never routed through this method. */
+    MdkrNativePartyController *candidate = controller(controllerId);
+    if (candidate == nullptr || candidate->commandPending ||
+        candidate->confirmed || !occupiesSeat(*candidate) ||
+        candidate->pairingPhrase.empty()) {
+        return false;
+    }
+    candidate->confirmed = true;
+    /* Seat custody begins HERE, not at approval: bind the ingress now so the
+     * next pad packet lands on a live seat. A fresh bind clears the ingress
+     * haptics bit, so reassert the phone's known capability when the channel
+     * is already live (the same call ControllerConnected makes). */
+    const uint64_t owner = ownerFor(*candidate);
+    if (owner != 0u && candidate->connectionSequence != 0u) {
+        if (!mdkr_native_remote_pad_bind(
+                candidate->seat - 1u, owner, candidate->connectionSequence)) {
+            candidate->confirmed = false;
+            setError("A phone controller could not reserve its seat safely.");
+            return false;
+        }
+        if (candidate->direct) {
+            (void)mdkr_native_remote_pad_set_haptics(
+                candidate->seat - 1u, owner, candidate->connectionSequence,
+                candidate->haptics);
+        }
+    }
+    /* Tell the phone it is trusted so it leaves the compare screen and runs
+     * the auto input test. Best-effort: the seat custody above already holds
+     * regardless of whether the message reaches the phone this instant (the
+     * transport re-sends it when the control channel opens). */
+    (void)transport_.confirm(controllerId);
+    view_.message = "Phone confirmed. Its controls are live.";
+    return true;
+}
+
 bool MdkrNativePartyHost::reject(const std::string &controllerId) {
     MdkrNativePartyController *candidate = controller(controllerId);
     if (candidate == nullptr || candidate->commandPending ||
@@ -473,6 +516,14 @@ void MdkrNativePartyHost::applyRoomState(
              * to any one room transition -- carry it. */
             candidate.everConnected = candidate.everConnected ||
                 former->everConnected;
+            /* P2.1: seat custody, once the human granted it (Words Match),
+             * belongs to the phone (id + key) too -- carry it so a trusted
+             * phone auto-resumes its seat on reconnect with no re-compare,
+             * exactly as everConnected rides across room updates. The wire
+             * never carries confirmed, so a different phone reusing an id
+             * (key changed) does not inherit it: this block only runs when
+             * the former entry's key matches. */
+            candidate.confirmed = candidate.confirmed || former->confirmed;
             /* F1: the room update still carries the redeem-time name; a
              * live rename outlives it while this is the same phone. */
             if (former->renamed && occupiesSeat(candidate)) {
@@ -483,8 +534,16 @@ void MdkrNativePartyHost::applyRoomState(
         if (candidate.phase == MdkrNativePartyControllerPhase::Connected) {
             candidate.everConnected = true;
         }
+        /* P2.1: bind a seat's ingress only once the human confirmed it.
+         * Before Words Match a seated phone is a provisional connection --
+         * the room reserves the seat number, but no ingress custody exists,
+         * so its pad packets are discarded at the boundary (fail-neutral).
+         * A confirmed phone re-binds here on every room transition, which is
+         * exactly how a trusted phone auto-resumes its seat across a
+         * reconnect (confirmed rode across the update above). */
         const uint64_t owner = ownerFor(candidate);
-        if (owner != 0u && candidate.connectionSequence != 0u) {
+        if (candidate.confirmed && owner != 0u &&
+            candidate.connectionSequence != 0u) {
             if (!mdkr_native_remote_pad_bind(
                     candidate.seat - 1u, owner,
                     candidate.connectionSequence)) {
@@ -540,9 +599,15 @@ void MdkrNativePartyHost::applyEvent(
             /* I2 recovery: a genuine controller_ready at this build's own
              * protocol means the phone reloaded into a matching page. */
             candidate->protocolMismatch = false;
-            (void)mdkr_native_remote_pad_set_haptics(
-                candidate->seat - 1u, ownerFor(*candidate),
-                candidate->connectionSequence, event.haptics);
+            /* P2.1: only a confirmed seat holds an ingress binding to carry
+             * the haptics bit -- a provisional seat has none, so touching it
+             * here would only stale-count. confirmPairing() re-asserts haptics
+             * when the human grants the seat. */
+            if (candidate->confirmed) {
+                (void)mdkr_native_remote_pad_set_haptics(
+                    candidate->seat - 1u, ownerFor(*candidate),
+                    candidate->connectionSequence, event.haptics);
+            }
             view_.message = "Phone connected directly.";
             return;
         }
@@ -560,9 +625,12 @@ void MdkrNativePartyHost::applyEvent(
             candidate->pairingPhrase.clear();
             /* The RTT sample measured the channel that just ended. */
             candidate->rttMs = 0u;
-            (void)mdkr_native_remote_pad_set_haptics(
-                candidate->seat - 1u, ownerFor(*candidate),
-                candidate->connectionSequence, false);
+            /* P2.1: only a confirmed seat has an ingress binding to neutralize. */
+            if (candidate->confirmed) {
+                (void)mdkr_native_remote_pad_set_haptics(
+                    candidate->seat - 1u, ownerFor(*candidate),
+                    candidate->connectionSequence, false);
+            }
             if (candidate->phase == MdkrNativePartyControllerPhase::Connected) {
                 candidate->phase = MdkrNativePartyControllerPhase::Leased;
             }
@@ -571,7 +639,13 @@ void MdkrNativePartyHost::applyEvent(
         }
         case MdkrPartyTransportEventType::ControllerPacket: {
             MdkrNativePartyController *candidate = controller(event.controllerId);
-            if (candidate == nullptr || !candidate->direct ||
+            /* P2.1 ingress discard: a provisional (unconfirmed) phone moves
+             * nothing. Its seat has no ingress binding until Words Match, so
+             * even attempting the push would only fail sameBinding and demote
+             * a healthy connection -- discard here instead, at the ingress
+             * boundary, exactly as the hard constraint requires. */
+            if (candidate == nullptr || !candidate->confirmed ||
+                !candidate->direct ||
                 candidate->phase != MdkrNativePartyControllerPhase::Connected) {
                 return;
             }
@@ -645,9 +719,12 @@ void MdkrNativePartyHost::applyEvent(
             candidate->haptics = false;
             /* No RTT number may vouch for a demoted channel. */
             candidate->rttMs = 0u;
-            (void)mdkr_native_remote_pad_set_haptics(
-                candidate->seat - 1u, ownerFor(*candidate),
-                candidate->connectionSequence, false);
+            /* P2.1: only a confirmed seat has an ingress binding to neutralize. */
+            if (candidate->confirmed) {
+                (void)mdkr_native_remote_pad_set_haptics(
+                    candidate->seat - 1u, ownerFor(*candidate),
+                    candidate->connectionSequence, false);
+            }
             if (candidate->phase == MdkrNativePartyControllerPhase::Connected) {
                 candidate->phase = MdkrNativePartyControllerPhase::Leased;
             }
@@ -817,8 +894,13 @@ void MdkrNativePartyHost::service(uint64_t nowMs) {
              * reconnected." would overwrite the honest mismatch copy.
              * applyEvent already clears needsRebind at the mismatch site
              * (belt); this keeps the loop safe regardless (suspenders). */
+            /* P2.1: only a confirmed seat can have had ingress custody to
+             * lose, so only a confirmed seat can be healed. needsRebind is
+             * already set solely on a confirmed seat's push overflow, so this
+             * is a belt beside that suspenders. */
             if (candidate.protocolMismatch || !candidate.needsRebind ||
-                !occupiesSeat(candidate) || candidate.connectionSequence == 0u) {
+                !candidate.confirmed || !occupiesSeat(candidate) ||
+                candidate.connectionSequence == 0u) {
                 continue;
             }
             if (candidate.lastRebindMs != 0u &&
@@ -877,7 +959,11 @@ void MdkrNativePartyHost::service(uint64_t nowMs) {
     }
 
     for (MdkrNativePartyController &candidate : view_.controllers) {
-        if (!candidate.direct || !candidate.haptics || !occupiesSeat(candidate)) {
+        /* P2.1: a provisional (unconfirmed) seat holds no ingress reservation,
+         * so its rumble mailbox is never bound; the confirmed gate keeps this
+         * loop from even reaching for it. */
+        if (!candidate.direct || !candidate.haptics || !candidate.confirmed ||
+            !occupiesSeat(candidate)) {
             continue;
         }
         uint16_t strength = 0u;

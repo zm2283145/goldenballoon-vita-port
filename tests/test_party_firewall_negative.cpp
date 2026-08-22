@@ -300,14 +300,23 @@ void midSessionDropGoesNeutralNotStale() {
     transport.events.push_back(roomEvent(
         1u, 1u, 600000u, {approved("phone-a", kSeat, kLease, kConnection)}));
     host.service(1000u);
+    MdkrPartyTransportEvent phrase;
+    phrase.type = MdkrPartyTransportEventType::ControllerPhrase;
+    phrase.controllerId = "phone-a";
+    phrase.message = "Gentle-Star Royal-Pilot";
+    transport.events.push_back(phrase);
     MdkrPartyTransportEvent connected;
     connected.type = MdkrPartyTransportEventType::ControllerConnected;
     connected.controllerId = "phone-a";
     connected.haptics = true;
     transport.events.push_back(connected);
-    queuePacket(transport, "phone-a", kConnection, 1u);
     host.service(1001u);
     assert(host.view().controllers[0].direct);
+    /* P2.1 compare-then-trust: the human's Words Match grants seat custody;
+     * only a confirmed seat carries input across the ingress. */
+    assert(host.confirmPairing("phone-a"));
+    queuePacket(transport, "phone-a", kConnection, 1u);
+    host.service(1001u);
     assert(drainSeat(kPort, kOwner, kConnection) == 1u);
 
     /* Room socket retrying: seat preserved, and the player is told. */

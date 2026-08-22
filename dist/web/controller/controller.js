@@ -48,6 +48,11 @@
   let padHistory = [];
   let active = false;
   let inputTestPassed = false;
+  // P2.1 compare-then-trust: the host confirmed the pairing phrase matches
+  // (Words Match), sent as seat_confirmed over the control channel. Until then
+  // the phone holds on the compare screen and the host discards its input.
+  // Reset on a fresh redeem; kept across a reconnect (the host re-sends it).
+  let confirmed = false;
   let wakeLock = null;
   let keepAwakeVideo = null;
   let keepAwakeTimer = null;
@@ -785,7 +790,11 @@
         recoveryPeerGeneration = 0;
         reconnectComplete(connectionSequence);
       }
-      queueAutoInputTest();
+      // P2.1: the channels are up, but approval alone is a provisional
+      // connection. Auto-advance only once the host confirmed the phrase
+      // (seat_confirmed set `confirmed`); a reconnect resumes via
+      // reconnectComplete above, so this only gates the first connect.
+      if (confirmed) queueAutoInputTest();
     }
 
     function directTransportLost(connection, terminal = false) {
@@ -1016,6 +1025,16 @@
                   controlChannel.send(JSON.stringify({type: "pong", protocol: 1,
                     nonce: value.nonce}));
                 } catch (_) { directTransportLost(connection, true); }
+              } else if (value.type === "seat_confirmed" && value.protocol === 1) {
+                // P2.1: the host pressed Words Match. Leave the compare screen
+                // and run the auto input test, which the host now answers.
+                confirmed = true;
+                if (phase === "assigned" && !inputTestPassed &&
+                    directChannelsOpen()) {
+                  autoAdvanceUntil = 0;
+                  clearInputTestWindow();
+                  queueAutoInputTest();
+                }
               } else if (value.type === "input_test_ack" && value.nonce === inputTestNonce) {
                 if (rttProbeSentAt !== 0) {
                   // RTT pill: the ack closes this page's bounded probe (the
@@ -1495,6 +1514,7 @@
     $("room-code").setAttribute("aria-invalid", "false");
     $("join-code").disabled = true;
     render("opening");
+    confirmed = false;  // P2.1: a fresh pairing must be confirmed anew.
     try {
       const result = await transport.redeemCode(code);
       if (leavingPage) return;
@@ -1534,8 +1554,10 @@
     document.documentElement.style.setProperty("--seat",
       ["#4bc7ff", "#ff6f91", "#72e38f", "#c491ff"][seat - 1]);
     render("assigned", {focus: $("input-test")});
-    // F3: the channels may already be open (they raced approval).
-    if (transport?.directReady?.() === true) queueAutoInputTest();
+    // F3: the channels may already be open (they raced approval) — but the
+    // auto test only runs once the host confirms the phrase (P2.1). Before
+    // that the compare screen leads with the phrase and waits.
+    if (confirmed && transport?.directReady?.() === true) queueAutoInputTest();
     return true;
   }
 
@@ -1897,6 +1919,7 @@
     }
     transport = testConfig && !testConfig.directSignaling
       ? mockTransport() : networkTransport();
+    confirmed = false;  // P2.1: a fresh pairing must be confirmed anew.
     try {
       const result = await transport.redeem(capability);
       capability = "";

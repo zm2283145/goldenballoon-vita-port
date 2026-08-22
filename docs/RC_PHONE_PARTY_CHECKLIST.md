@@ -21,12 +21,37 @@ Before starting, all of these must already be true:
 
 ---
 
+## The pairing ritual: compare, then trust
+
+Every item below pairs a phone with the same **compare-then-trust** ritual, so
+read it once here. It matches the code exactly (P2.1); the phrase is bound to
+the direct connection's DTLS fingerprints, so it cannot exist until *after* the
+connection comes up.
+
+1. The host picks a slot and **Approve**s the phone. This grants a **provisional
+   connection only**: the WebRTC/DTLS comes up and the pairing phrase is
+   computed, but the phone **holds no seat** and its input is **discarded** —
+   moving nothing on screen — until it is confirmed.
+2. The pairing phrase renders **prominently on both screens** — the phone leads
+   its screen with it, and the launcher's seat card shows it.
+3. The host compares the two phrases. **Only when they match
+   character-for-character** does the host choose **Words Match**, which grants
+   the seat and starts the phone's input. If they differ (or anything looks
+   off), the host chooses **Words Differ**, which removes the phone cleanly — it
+   never held a seat.
+
+So "grant the seat only on a match" is now literally what the buttons do:
+approval is provisional, and **Words Match** is the step that trusts the phone.
+
+---
+
 ## 1. Solo phone controller (single-player)
 
 **Do:** From a cold launcher with a ROM loaded, open **Play → Use a Phone as a
-Controller** and pair ONE phone by QR. Approve it (it defaults to Controller 1). With no
-keyboard or gamepad touched, start an ordinary single-player Adventure/race and play with
-the phone alone.
+Controller** and pair ONE phone by QR. Approve it into Controller 1, then compare the
+pairing phrase on both screens and choose **Words Match** to grant its controller (the
+ritual above). With no keyboard or gamepad touched, start an ordinary single-player
+Adventure/race and play with the phone alone.
 
 **Expected observable:**
 - The single approved phone drives player one: steering, accelerate, brake, item and horn
@@ -39,7 +64,8 @@ the phone alone.
 ## 2. Four-phone race
 
 **Do:** From a cold launcher with a ROM loaded, open **Play → Use a Phone as a
-Controller** and pair four different phones by QR. Approve each into a distinct seat. Start
+Controller** and pair four different phones by QR. Approve each into a distinct seat and
+confirm each with **Words Match** once its phrase matches on both screens. Start
 a four-player standard race and run it to the results screen. Mid-race, open the in-game
 overlay's compact Phone Party entry and confirm it lists the same four seats.
 
@@ -61,8 +87,10 @@ QR code, and follow the link into Safari. Pair and take a seat.
 **Expected observable:**
 - The camera's link banner opens Safari directly to the controller page over **HTTPS** —
   no certificate warning, no "not secure" chip, no App Store or install prompt.
-- The comparison phrase shown on the phone is **character-for-character identical** to
-  the phrase shown in the launcher. Approve only on a match.
+- After approval brings up the connection, the comparison phrase shown on the phone is
+  **character-for-character identical** to the phrase shown in the launcher, and choosing
+  **Words Match** is what grants the seat. A provisional (not-yet-confirmed) phone moves
+  nothing in-game. Choose **Words Match** only on a match; **Words Differ** removes it.
 - The controller renders full-bleed with the D-pad/stick and buttons clear of the notch,
   the home indicator and the Dynamic Island, in both the initial orientation and after
   rotation.
@@ -74,7 +102,8 @@ QR code, and follow the link into Safari. Pair and take a seat.
 camera or Chrome's scanner. Pair and take a seat.
 
 **Expected observable:**
-- Same as item 3: HTTPS with no warning, no install prompt, phrase matches exactly.
+- Same as item 3: HTTPS with no warning, no install prompt, phrase matches exactly before
+  you choose **Words Match**.
 - Also verify the **fallback code** path on this device: dismiss the QR, enter the
   six-digit code shown by the launcher on the controller page, and confirm it lands in
   the same room. Then rotate the invite in the launcher and confirm the **old** code is
@@ -168,14 +197,16 @@ real Android phone using the stock camera, and open the link.
 **Expected observable:** The phone opens the controller page over
 **`http://<this machine's LAN IP>:<port>/controller/`**. A browser "not secure"
 chip is **expected and correct** here — local play uses no certificate. The
-controller renders full-bleed and takes a seat after host approval; the
-six-digit code path also lands in the same room when typed on the phone.
+controller renders full-bleed and takes a seat after the host confirms the phrase
+with **Words Match**; the six-digit code path also lands in the same room when typed
+on the phone.
 
 **Do (phrase match):** When the phone connects, compare the pairing phrase shown
 on the phone with the one in the launcher.
 **Expected observable:** The two phrases are **character-for-character
-identical**. Approve only on a match. A mismatch means the pad channel was not
-verified — do not approve.
+identical**; choose **Words Match** only then, which grants the seat and starts
+the phone's input. A mismatch means the pad channel was not verified — choose
+**Words Differ**, which removes the phone cleanly; it never held a seat.
 
 **Do (race with the router unplugged from the internet):** Disconnect the
 router's internet uplink (unplug the WAN, or turn the modem off) so the LAN has

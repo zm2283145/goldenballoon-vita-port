@@ -350,6 +350,30 @@ public:
         } catch (...) { return false; }
     }
 
+    /* P2.1 compare-then-trust: the host confirmed this controller (Words
+     * Match). Remember it -- so a reconnecting peer is trusted again with no
+     * second human step -- and, when its control channel is already live, tell
+     * the phone now; controlOpened re-sends on any later (re)open. */
+    bool confirm(const std::string &id) {
+        std::shared_ptr<rtc::DataChannel> channel;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            confirmed_.insert(id);
+            const auto found = peers_.find(id);
+            if (found != peers_.end() && found->second->control &&
+                found->second->control->isOpen()) {
+                channel = found->second->control;
+            }
+        }
+        if (channel) {
+            try {
+                channel->send(Json{{"type", "seat_confirmed"},
+                    {"protocol", kProtocol}}.dump());
+            } catch (...) { /* controlOpened re-sends; best effort */ }
+        }
+        return true;
+    }
+
     bool poll(MdkrPartyTransportEvent &event) {
         tick();
         std::lock_guard<std::mutex> lock(mutex_);
@@ -382,6 +406,7 @@ public:
             socket = std::move(socket_);
             peers.swap(peers_);
             signaled_.clear();
+            confirmed_.clear();
         }
         if (socket) socket->close();
         for (auto &entry : peers) {
@@ -895,6 +920,9 @@ private:
              * the roster has nothing left to vouch for: a phone that
              * returns says controller_hello again. */
             (void)mdkr_party_prune_signaled_ids(signaled_, controllers_);
+            /* P2.1: a confirmation is scoped to a live seat; an id that left
+             * the roster has nothing left to trust, so drop it the same way. */
+            (void)mdkr_party_prune_signaled_ids(confirmed_, controllers_);
         }
         for (const auto &peer : retired) {
             if (peer->connection) peer->connection->close();
@@ -1139,6 +1167,19 @@ private:
             peer->control->send(Json{{"type", "host_ready"}, {"protocol", kProtocol},
                 {"seat", peer->seat}, {"leaseGeneration", peer->leaseGeneration},
                 {"connectionSequence", peer->connectionSequence}}.dump());
+            /* P2.1: a phone reconnecting to an already-confirmed seat is told
+             * it is trusted the moment its control channel is back, so it
+             * resumes without a second human step (confirm() also sends this
+             * the instant the human presses Words Match on a live channel). */
+            bool trusted;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                trusted = confirmed_.count(peer->id) != 0u;
+            }
+            if (trusted) {
+                peer->control->send(Json{{"type", "seat_confirmed"},
+                    {"protocol", kProtocol}}.dump());
+            }
         } catch (...) { peerDisconnected(peer, true); }
     }
 
@@ -1184,8 +1225,20 @@ private:
             } else if (value.value("type", std::string{}) == "input_test" &&
                        value.contains("nonce") &&
                        value["nonce"].is_number_unsigned()) {
-                peer->control->send(Json{{"type", "input_test_ack"},
-                    {"nonce", value["nonce"]}}.dump());
+                /* P2.1: hold the connection-test ack until the human has
+                 * confirmed this phone (Words Match). An unconfirmed phone
+                 * that taps Go anyway never passes the test, so it cannot
+                 * advance past the compare screen; the auto test the phone
+                 * runs on seat_confirmed then completes at once. */
+                bool trusted;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    trusted = confirmed_.count(peer->id) != 0u;
+                }
+                if (trusted) {
+                    peer->control->send(Json{{"type", "input_test_ack"},
+                        {"nonce", value["nonce"]}}.dump());
+                }
             } else if (value.value("type", std::string{}) == "controller_rename" &&
                        value.value("protocol", 0u) == kProtocol) {
                 /* F1 session-alive names: only a peer that completed
@@ -1405,6 +1458,12 @@ private:
     std::map<std::string, std::shared_ptr<Peer>> peers_;
     std::map<std::string, MdkrNativePartyController> controllers_;
     std::set<std::string> signaled_;
+    /* P2.1 compare-then-trust: controllerIds the host has confirmed (Words
+     * Match). Only a confirmed controller is told seat_confirmed and has its
+     * input_test acked, so a provisional phone cannot advance past the compare
+     * screen. Keyed by id so it survives a peer recreation on reconnect;
+     * pruned with signaled_ as controllers leave, cleared on shutdown. */
+    std::set<std::string> confirmed_;
     PartyIdentity identity_;
     std::string origin_;
     std::string roomId_;
@@ -1466,6 +1525,9 @@ public:
     }
     bool remove(const std::string &id) override {
         return sendHostCommand("remove", id);
+    }
+    bool confirm(const std::string &id) override {
+        return state_ && state_->confirm(id);
     }
     bool rotateInvite(unsigned generation) override {
         return state_ && state_->command(Json{{"type", "host_command"},

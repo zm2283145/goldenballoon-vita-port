@@ -98,13 +98,18 @@ def run(args: argparse.Namespace) -> None:
     # to the first touch when the surface was auto-advanced into, released on
     # leave) and the in-app-webview User-Agent heuristic that routes known
     # embedded browsers (FBAN/Instagram/Line/"; wv"/... ) to the existing
-    # Continue-in-Safari/Chrome card without false-positiving a real browser.
+    # Continue-in-Safari/Chrome card without false-positiving a real browser,
+    # and to 141 KiB when P2.1's compare-then-trust reorder made the phone hold
+    # on the compare screen until the host confirms the phrase: the page now
+    # handles the seat_confirmed control message, gates the auto input test on
+    # it, and leads the Approved card with the compare-and-confirm copy -- the
+    # phone-side half of moving seat custody after the human's Words Match.
     # The guardrail's job is catching runaway
     # growth -- a bundled library, an accidental asset -- not vetoing player
     # copy, the MITM defense or a real second pairing transport, so the
     # ceiling moves by the smallest whole KiB each time.
-    require(critical_bytes < 140 * 1024,
-            f"controller critical path is {critical_bytes} bytes, budget is 140 KiB")
+    require(critical_bytes < 141 * 1024,
+            f"controller critical path is {critical_bytes} bytes, budget is 141 KiB")
     headers = (shell / "_headers").read_text(encoding="utf-8")
     for value in ("frame-ancestors 'none'", "Referrer-Policy: no-referrer",
                   "X-Content-Type-Options: nosniff", "Cache-Control: no-store"):

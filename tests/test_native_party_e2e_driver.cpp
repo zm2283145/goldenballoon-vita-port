@@ -236,6 +236,27 @@ void approveFirstPending(MdkrNativePartyHost &host) {
     }
 }
 
+/* P2.1 compare-then-trust: the launcher's human presses Words Match once the
+ * pairing phrase is on both screens. The driver stands in for that human --
+ * as soon as a seated controller has a phrase (the transport derived it from
+ * the answer), confirm it, granting seat custody so input can flow. Approval
+ * alone is now a provisional connection that moves nothing at the ingress. */
+void confirmConfirmable(MdkrNativePartyHost &host) {
+    for (const MdkrNativePartyController &controller :
+         host.view().controllers) {
+        if (controller.confirmed || controller.commandPending ||
+            controller.pairingPhrase.empty() ||
+            controller.phase == MdkrNativePartyControllerPhase::Pending ||
+            controller.seat < 1u || controller.seat > 4u) {
+            continue;
+        }
+        if (host.confirmPairing(controller.id)) {
+            std::printf("[E2E] confirm controller=%s\n", controller.id.c_str());
+            std::fflush(stdout);
+        }
+    }
+}
+
 /* Engine-side of the crossing: drain every bound seat the way the SDL input
  * boundary does (tests/test_party_session_lifecycle.cpp drainSeat). The
  * owner is re-read per pass because the C1 self-heal rebinds a seat under a
@@ -342,7 +363,10 @@ int main(int argc, char **argv) {
             std::fflush(stdout);
             return 2;
         }
-        if (options.autoApprove) approveFirstPending(host);
+        if (options.autoApprove) {
+            approveFirstPending(host);
+            confirmConfirmable(host);
+        }
         pumpIngress(totalPackets, nonNeutral);
         if (nonNeutral >= echoedNonNeutral + 10u ||
             (nonNeutral >= options.packets &&

@@ -68,6 +68,13 @@
   // F2: leases that have EVER been connected (room state or a live peer).
   // Only these may read as "reconnecting"; the rest are still connecting.
   const everConnectedIds = new Set();
+  // P2.1 compare-then-trust: identities (id+key) the host confirmed by Words
+  // Match. Until an identity is here its phone holds a PROVISIONAL connection
+  // only — the direct channels come up and the phrase renders, but the pad
+  // stays inactive so its input is discarded, and its input_test goes
+  // unanswered so it cannot advance. Keyed by identity so it survives a peer
+  // rebuild on reconnect; pruned as controllers leave, cleared on teardown.
+  const confirmedIdentities = new Set();
   // Item 4: pending controller ids already announced with the join-request ding,
   // so it fires once per NEW pending phone and never on approval or a repeat
   // render. `dingPrimed` adopts an existing room's waiting phones on the first
@@ -80,7 +87,8 @@
   let peerGeneration = 0;
   const signaledControllers = new Set();
   const remotePads = Array.from({length: 4}, () => ({
-    reserved: false, active: false, owner: 0, connectionSequence: 0,
+    reserved: false, active: false, provisional: false,
+    owner: 0, connectionSequence: 0,
     packets: [], drops: 0,
     haptics: false, rumble: null,
   }));
@@ -647,6 +655,7 @@
       const pad = remotePads[controller.seat - 1];
       pad.reserved = !releaseReservation;
       pad.active = false;
+      pad.provisional = false;
       pad.packets.length = 0;
       pad.haptics = false;
       pad.rumble = null;
@@ -665,12 +674,41 @@
     }
     const pad = remotePads[controller.seat - 1];
     pad.reserved = true;
-    pad.active = connected;
+    // P2.1 compare-then-trust: the direct channels being up is a PROVISIONAL
+    // connection; seat custody (active) begins only once the host confirms the
+    // phrase (Words Match). A connected-but-unconfirmed phone is provisional —
+    // its phrase renders for the compare, and its pad input is discarded.
+    const trusted = confirmedIdentities.has(controllerIdentity(controller));
+    pad.active = connected && trusted;
+    pad.provisional = connected && !trusted;
     pad.owner = Math.max(1, ((Number(controller.leaseGeneration) << 3) |
       Number(controller.seat)) >>> 0);
     pad.connectionSequence = Number(controller.connectionSequence) >>> 0;
-    if (!connected) pad.packets.length = 0;
+    if (!pad.active) pad.packets.length = 0;
     if (room) renderRoomState({...room, transitionId: room.transitionId});
+  }
+
+  // P2.1 compare-then-trust: the host pressed Words Match for this seat's
+  // pairing phrase. Grant seat custody now — the pad goes active if the direct
+  // channels are already up — and tell the phone it is trusted over its
+  // reliable control channel, so it leaves the compare screen and runs the
+  // auto input test. Idempotent; Words Differ is the ordinary remove path.
+  function confirmSeat(controller) {
+    if (!controller?.controllerId || !controller.seat) return;
+    if (confirmedIdentities.has(controllerIdentity(controller))) return;
+    confirmedIdentities.add(controllerIdentity(controller));
+    const peer = peers.get(controller.controllerId);
+    const ready = peer && !peer.retired && peer.authenticated &&
+      peer.pc.connectionState === "connected" &&
+      peer.state?.readyState === "open" && peer.control?.readyState === "open";
+    if (ready) markPeerConnected(controller, true);
+    if (peer?.control?.readyState === "open") {
+      try {
+        peer.control.send(JSON.stringify({type: "seat_confirmed", protocol: 1}));
+      } catch (_) {}
+    }
+    if (room) renderRoomState({...room, transitionId: room.transitionId});
+    announce("Phone confirmed. Its controls are now live.");
   }
 
   function rebuildPeer(controllerId, peer, delay = 300) {
@@ -840,6 +878,15 @@
         leaseGeneration: controller.leaseGeneration,
         connectionSequence: controller.connectionSequence,
       }));
+      // P2.1: a phone reconnecting to an already-confirmed seat is told it is
+      // trusted as soon as its control channel is back, so it resumes without
+      // a second Words Match (confirmSeat also sends this live).
+      if (confirmedIdentities.has(controllerIdentity(
+          controllerById(controllerId) || peer.controller))) {
+        try {
+          control.send(JSON.stringify({type: "seat_confirmed", protocol: 1}));
+        } catch (_) {}
+      }
       activateIfReady();
     });
     control.addEventListener("close", () => directChannelLost(controllerId, peer));
@@ -865,7 +912,14 @@
           scheduleControlPing(controllerId, peer);
           control.send(JSON.stringify({type: "controller_ready_ack"}));
         } else if (message.type === "input_test") {
-          control.send(JSON.stringify({type: "input_test_ack", nonce: message.nonce}));
+          // P2.1: answer the connection test only once the host has confirmed
+          // this phone (Words Match). An unconfirmed phone that taps Go anyway
+          // never passes, so it cannot advance past the compare screen; the
+          // auto test it runs on seat_confirmed then completes at once.
+          if (confirmedIdentities.has(controllerIdentity(
+              controllerById(controllerId) || peer.controller))) {
+            control.send(JSON.stringify({type: "input_test_ack", nonce: message.nonce}));
+          }
         } else if (message.type === "controller_rename" && message.protocol === 1 &&
                    peer.authenticated && validControllerName(message.name)) {
           // F1: a phone may relabel its own seat row over its authenticated
@@ -964,6 +1018,7 @@
       if (!controller) {
         pad.reserved = false;
         pad.active = false;
+        pad.provisional = false;
         pad.owner = 0;
         pad.connectionSequence = 0;
         pad.packets.length = 0;
@@ -981,6 +1036,7 @@
           retirePeer(controller.controllerId, false);
         }
         pad.active = false;
+        pad.provisional = false;
         pad.packets.length = 0;
       }
       pad.reserved = true;
@@ -993,6 +1049,7 @@
     for (const pad of remotePads) {
       pad.reserved = false;
       pad.active = false;
+      pad.provisional = false;
       pad.owner = 0;
       pad.connectionSequence = 0;
       pad.packets.length = 0;
@@ -1230,32 +1287,70 @@
       tile.dataset.ready = controller || source ? "true" : "false";
       tile.querySelector("strong").textContent =
         (controller && controllerDisplayName(controller)) || `Controller ${seat}`;
+      const pad = remotePads[seat - 1];
       const seatPhrase = controller &&
         pairingPhrases.get(controller.controllerId);
-      // F2: a lease that has never reached Connected is connecting, not
-      // reconnecting — "reconnecting" promises a recovery of something that
-      // never existed. Mirrors the native seat row (ui_phone_party.cpp).
-      // RTT: the live peer's newest control-channel round trip, refreshed
-      // per pong; only an active direct channel shows a number.
-      const seatRtt = controller && remotePads[seat - 1].active &&
+      // RTT: the live peer's newest control-channel round trip, refreshed per
+      // pong; only an active (confirmed) direct channel shows a number.
+      const seatRtt = controller && pad.active &&
         peers.get(controller.controllerId)?.rttMs;
+      // P2.1 compare-then-trust: a provisional seat is connected with a phrase
+      // ready but not yet confirmed. It leads with the phrase and the Words
+      // Match / Words Differ decision; only after Words Match (pad.active) does
+      // the row read as connected/racing. F2: a lease that never reached
+      // Connected is connecting, not reconnecting.
+      const provisional = controller && pad.provisional && !!seatPhrase;
       tile.querySelector("small").textContent = controller
-        ? (remotePads[seat - 1].active
-          ? ((seatPhrase
-            ? `Phone connected — compare on both screens: ${seatPhrase}`
-            : "Phone connected") + (seatRtt ? ` · ${seatRtt} ms · direct` : ""))
-          : (everConnectedIds.has(controllerIdentity(controller))
-            ? "Phone reconnecting — neutral" : "Phone connecting…"))
+        ? (pad.active
+          ? ("Phone connected" + (seatRtt ? ` · ${seatRtt} ms · direct` : ""))
+          : (provisional
+            ? `Compare on both screens: ${seatPhrase}`
+            : (pad.provisional
+              ? "Phone connected — reading the pairing phrase…"
+              : (everConnectedIds.has(controllerIdentity(controller))
+                ? "Phone reconnecting — neutral" : "Phone connecting…"))))
         : (source || "Available");
       const remove = tile.querySelector(".party-seat-remove");
       remove.hidden = !controller;
       remove.disabled = false;
       remove.onclick = controller ? () => confirmRemove(controller, remove) : null;
-      remove.setAttribute("aria-label", controller
-        ? `Remove ${controllerDisplayName(controller) || "phone controller"} ` +
-          `from Controller ${seat}`
-        : `No phone assigned to Controller ${seat}`);
-      if (controller || source) ready++;
+      // P2.1: while provisional, the seat offers Words Match (confirm, granting
+      // custody) beside Words Differ (the ordinary remove, so a mismatched
+      // phone never held a seat). Every other state shows plain Remove.
+      let confirmButton = tile.querySelector(".party-seat-confirm");
+      if (provisional) {
+        if (!confirmButton) {
+          confirmButton = document.createElement("button");
+          confirmButton.type = "button";
+          confirmButton.className = "party-seat-confirm btn btn-primary";
+          tile.insertBefore(confirmButton, remove);
+        }
+        confirmButton.hidden = false;
+        confirmButton.textContent = "Words Match";
+        confirmButton.setAttribute("aria-label",
+          `Words match for Controller ${seat} — confirm this phone`);
+        confirmButton.onclick = () => confirmSeat(controller);
+        remove.textContent = "Words Differ";
+        remove.setAttribute("aria-label",
+          `Words differ for Controller ${seat} — remove this phone`);
+        // A mismatch is decisive: remove at once via the ordinary remove path,
+        // with no second confirm dialog (the phone never held a seat).
+        remove.onclick = () => void control("remove", controller.controllerId, remove);
+      } else {
+        if (confirmButton) confirmButton.remove();
+        remove.textContent = "Remove";
+        remove.setAttribute("aria-label", controller
+          ? `Remove ${controllerDisplayName(controller) || "phone controller"} ` +
+            `from Controller ${seat}`
+          : `No phone assigned to Controller ${seat}`);
+      }
+      // P2.1: a provisional phone holds no seat custody, so it is not a ready
+      // racer; only a confirmed phone (active or briefly reconnecting) or a
+      // local source counts toward starting.
+      if ((controller && confirmedIdentities.has(controllerIdentity(controller))) ||
+          source) {
+        ready++;
+      }
     }
     $("party-ready-count").textContent = `${ready} of 4 ready`;
     $("party-start").disabled = !(romReady && ready > 0);
@@ -1275,6 +1370,11 @@
     }
     for (const identity of [...everConnectedIds]) {
       if (!liveIdentities.has(identity)) everConnectedIds.delete(identity);
+    }
+    // P2.1: a confirmation is scoped to a live seat; drop it once its identity
+    // has left the roster (a returning phone is a new id and confirms anew).
+    for (const identity of [...confirmedIdentities]) {
+      if (!liveIdentities.has(identity)) confirmedIdentities.delete(identity);
     }
     for (const controller of controllers) void ensurePeer(controller.controllerId);
   }
@@ -1350,6 +1450,7 @@
     peerIceFailures.clear();
     controllerNames.clear();
     everConnectedIds.clear();
+    confirmedIdentities.clear();
     hostIdentity = null;
     setOverlayOpen(false);
     const expired = reason === "room_expired";
@@ -1605,6 +1706,7 @@
     peerIceFailures.clear();
     controllerNames.clear();
     everConnectedIds.clear();
+    confirmedIdentities.clear();
     hostIdentity = null;
     if (ending) {
       void request(`/api/party/${ending.roomId}/close`, {
@@ -1846,6 +1948,13 @@
     refreshSources,
     applyRoomState: renderRoomState,
     receiveSignal: (value) => void handleSignal(value),
+    // P2.1 compare-then-trust: the host's Words Match decision for a
+    // provisional seat, exposed so the same call the seat tile's button makes
+    // is scriptable (the launcher/native host has confirmPairing()).
+    confirm: (controllerId) => {
+      const controller = controllerById(controllerId);
+      if (controller) confirmSeat(controller);
+    },
     state: () => ({romReady, room: room ? JSON.parse(JSON.stringify(room)) : null}),
     remotePads: () => remotePads,
     ...(testConfig ? {
