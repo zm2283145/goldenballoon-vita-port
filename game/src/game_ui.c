@@ -313,54 +313,179 @@ static s32 hud_element_index(const HudElement *element) {
     return (s32)((address - first) / sizeof(HudElement));
 }
 
-static MdkrHudAnchor hud_widescreen_anchor(s32 elementIndex) {
-    switch (elementIndex) {
-        case HUD_RACE_POSITION:
-        case HUD_RACE_POSITION_END:
-        case HUD_WEAPON_DISPLAY:
-        case HUD_BALLOON_COUNT_ICON:
-        case HUD_BALLOON_COUNT_X:
-        case HUD_BALLOON_COUNT_NUMBER_1:
-        case HUD_BALLOON_COUNT_NUMBER_2:
-        case HUD_STOPWATCH_HANDS:
-        case HUD_STOPWATCH:
-        case HUD_TREASURE_METRE:
-        case HUD_SILVER_COIN_TALLY:
-        case HUD_WEAPON_QUANTITY:
-        case HUD_CHALLENGE_PORTRAIT:
-        case HUD_EGG_CHALLENGE_ICON:
-        case HUD_BATTLE_BANANA_ICON:
-        case HUD_BATTLE_BANANA_X:
-        case HUD_BATTLE_BANANA_COUNT_1:
-        case HUD_BATTLE_BANANA_COUNT_2:
-            return MDKR_HUD_ANCHOR_LEFT;
-        case HUD_LAP_COUNT_LABEL:
-        case HUD_LAP_COUNT_CURRENT:
-        case HUD_LAP_COUNT_SEPERATOR:
-        case HUD_LAP_COUNT_TOTAL:
-        case HUD_BANANA_COUNT_ICON_SPIN:
-        case HUD_BANANA_COUNT_X:
-        case HUD_BANANA_COUNT_NUMBER_1:
-        case HUD_BANANA_COUNT_NUMBER_2:
-        case HUD_RACE_TIME_LABEL:
-        case HUD_RACE_TIME_NUMBER:
-        case HUD_LAP_COUNT_FLAG:
-        case HUD_TIME_TRIAL_LAP_TEXT:
-        case HUD_TIME_TRIAL_LAP_NUMBER:
-        case HUD_BANANA_COUNT_ICON_STATIC:
-        case HUD_BANANA_COUNT_SPARKLE:
-        case HUD_SPEEDOMETRE_ARROW:
-        case HUD_SPEEDOMETRE_0:
-        case HUD_SPEEDOMETRE_30:
-        case HUD_SPEEDOMETRE_60:
-        case HUD_SPEEDOMETRE_90:
-        case HUD_SPEEDOMETRE_120:
-        case HUD_SPEEDOMETRE_150:
-        case HUD_SPEEDOMETRE_BG:
-            return MDKR_HUD_ANCHOR_RIGHT;
-        default:
-            return MDKR_HUD_ANCHOR_CENTER;
+/* Issue #51: the widescreen HUD anchor is mode-aware. hud_init_element()
+ * repositions whole element groups per game mode (Time Trial moves the lap
+ * counter -58 to the top-left, boss races move the banana counter -120, the
+ * one-player challenge arenas stride the portrait strip across the full
+ * authored width), so a single static classification shoved those groups
+ * toward edges they no longer sit near. The classification is an explicit,
+ * reviewable table -- one row per HUD element, one column per layout mode --
+ * deliberately NOT auto-derived from baseline x. Totality and the exact
+ * (element, mode) -> anchor mapping are pinned by
+ * tests/check_widescreen_hud_scope.py, so a new element or a new per-mode
+ * reposition cannot dodge classification silently. */
+typedef enum HudWidescreenMode {
+    HUD_WIDESCREEN_MODE_RACE,       /* default races, incl. Taj challenges */
+    HUD_WIDESCREEN_MODE_TIME_TRIAL, /* is_in_time_trial() */
+    HUD_WIDESCREEN_MODE_BOSS,       /* RACETYPE_BOSS */
+    HUD_WIDESCREEN_MODE_CHALLENGE,  /* battle/eggs/treasure arenas */
+    HUD_WIDESCREEN_MODE_HUB,        /* overworld hubs */
+    HUD_WIDESCREEN_MODE_COUNT
+} HudWidescreenMode;
+
+/* Row shape: { race, time trial, boss, challenge, hub }. */
+#define HUD_ANCHOR_MODES(race, timeTrial, boss, challenge, hub) \
+    { race, timeTrial, boss, challenge, hub }
+#define HUD_ANCHOR_ALL_MODES(anchor) \
+    HUD_ANCHOR_MODES(anchor, anchor, anchor, anchor, anchor)
+
+static const s8 sHudWidescreenAnchor[HUD_ELEMENT_COUNT][HUD_WIDESCREEN_MODE_COUNT] = {
+    [HUD_RACE_POSITION] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_LEFT),
+    [HUD_RACE_POSITION_END] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_LEFT),
+    [HUD_WEAPON_DISPLAY] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_LEFT),
+    /* Time Trial moves the lap counter group to the authored top-left
+     * (hud_init_element -58); everywhere else it rides the right edge. */
+    [HUD_LAP_COUNT_LABEL] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_RIGHT,
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_LAP_COUNT_CURRENT] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_RIGHT,
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_LAP_COUNT_SEPERATOR] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_RIGHT,
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_LAP_COUNT_TOTAL] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_RIGHT,
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_LAP_COUNT_FLAG] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_RIGHT,
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+    /* Boss races move the banana counter group to the authored top-left
+     * (hud_init_element -120); everywhere else it rides the right edge. */
+    [HUD_BANANA_COUNT_ICON_SPIN] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT,
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_BANANA_COUNT_NUMBER_1] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT,
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_BANANA_COUNT_NUMBER_2] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT,
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_BANANA_COUNT_X] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT,
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_BANANA_COUNT_ICON_STATIC] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT,
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_BANANA_COUNT_SPARKLE] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT,
+        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_RACE_TIME_LABEL] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_RACE_TIME_NUMBER] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_RACE_START_GO] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
+    [HUD_RACE_START_READY] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
+    [HUD_RACE_END_FINISH] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
+    [HUD_MINIMAP_MARKER] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
+    [HUD_MAGNET_RETICLE] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
+    [HUD_BALLOON_COUNT_ICON] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_LEFT),
+    [HUD_BALLOON_COUNT_X] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_LEFT),
+    [HUD_BALLOON_COUNT_NUMBER_1] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_LEFT),
+    [HUD_BALLOON_COUNT_NUMBER_2] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_LEFT),
+    /* HUD_LAP_TIME_TEXT is never rendered by pointer identity; it is the
+     * x-origin of the Time Trial per-lap rows (transient glyphs, see
+     * hud_main_time_trial). RIGHT documents the row block's anchor and is
+     * what hud_widescreen_texture_offset_x() resolves for bypass draws. */
+    [HUD_LAP_TIME_TEXT] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_CENTER,
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_CENTER),
+    [HUD_TIME_TRIAL_LAP_TEXT] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_TIME_TRIAL_LAP_NUMBER] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_STOPWATCH_HANDS] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_LEFT),
+    [HUD_LAP_TEXT_FINAL] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
+    [HUD_LAP_TEXT_LAP] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
+    [HUD_LAP_TEXT_TWO] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
+    /* The challenge portrait strip (portraits, banana tallies, treasure
+     * metre, egg icons) is authored as a full-width, visually centered strip
+     * in the one-player arenas; CENTER keeps its texture (+margin) and
+     * sprite (0) conventions mutually aligned. Outside the arenas the
+     * two-player race layouts reuse these slots at authored left positions
+     * (wide HUD is hard-gated to one viewport, so those layouts never see
+     * this table). */
+    [HUD_TREASURE_METRE] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_LEFT,
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_LEFT),
+    [HUD_COURSE_ARROWS] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
+    [HUD_STOPWATCH] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_LEFT),
+    [HUD_WRONGWAY_1] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
+    [HUD_WRONGWAY_2] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
+    [HUD_PRO_AM_LOGO] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
+    [HUD_SPEEDOMETRE_ARROW] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_SPEEDOMETRE_0] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_SPEEDOMETRE_30] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_SPEEDOMETRE_60] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_SPEEDOMETRE_90] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_SPEEDOMETRE_120] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_SPEEDOMETRE_150] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_SPEEDOMETRE_BG] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_SILVER_COIN_TALLY] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_LEFT),
+    [HUD_CHALLENGE_FINISH_POS_1] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
+    [HUD_CHALLENGE_FINISH_POS_2] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
+    [HUD_WEAPON_QUANTITY] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_LEFT),
+    [HUD_CHALLENGE_PORTRAIT] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_LEFT,
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_LEFT),
+    [HUD_EGG_CHALLENGE_ICON] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_LEFT,
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_LEFT),
+    [HUD_BATTLE_BANANA_ICON] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_LEFT,
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_LEFT),
+    [HUD_BATTLE_BANANA_X] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_LEFT,
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_LEFT),
+    [HUD_BATTLE_BANANA_COUNT_1] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_LEFT,
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_LEFT),
+    [HUD_BATTLE_BANANA_COUNT_2] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_LEFT,
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_LEFT),
+    [HUD_RACE_FINISH_POS_1] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
+    /* Authored top-right corner card (260,16) shown only in the hubs during
+     * two-player Adventure. */
+    [HUD_TWO_PLAYER_ADV_PORTRAIT] = HUD_ANCHOR_MODES(
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_CENTER,
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_RIGHT),
+    [HUD_RACE_FINISH_POS_2] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
+};
+
+/* Same predicates hud_init_element() branches on when it lays the groups
+ * out, so the classification is always consistent with wherever the current
+ * mode actually put an element. All are level-constant while a HUD exists. */
+static HudWidescreenMode hud_widescreen_mode(void) {
+    s32 raceType = level_type();
+    if (is_in_time_trial()) {
+        return HUD_WIDESCREEN_MODE_TIME_TRIAL;
     }
+    if (raceType == RACETYPE_BOSS) {
+        return HUD_WIDESCREEN_MODE_BOSS;
+    }
+    if (raceType & RACETYPE_CHALLENGE) {
+        return HUD_WIDESCREEN_MODE_CHALLENGE;
+    }
+    if (raceType == RACETYPE_UNK1 || raceType == RACETYPE_HUBWORLD) {
+        return HUD_WIDESCREEN_MODE_HUB;
+    }
+    return HUD_WIDESCREEN_MODE_RACE;
+}
+
+static MdkrHudAnchor hud_widescreen_anchor(s32 elementIndex) {
+    if (elementIndex < 0 || elementIndex >= HUD_ELEMENT_COUNT) {
+        /* Transient stack glyphs (hud_timer_render) resolve to no identity;
+         * they keep the CENTER canvas treatment and bypass sites add their
+         * real anchor's remaining margin explicitly. */
+        return MDKR_HUD_ANCHOR_CENTER;
+    }
+    return (MdkrHudAnchor) sHudWidescreenAnchor[elementIndex][hud_widescreen_mode()];
 }
 
 static s32 hud_widescreen_enabled(void) {
@@ -649,6 +774,42 @@ static f32 sHudRaceStartGoDrawX[MAXCONTROLLERS];
  * stopwatch had drawn. Keep that visual mutation pending until the matching
  * viewport reaches the same post-draw point. */
 static u8 sHudStopwatchBoostFacePending[MAXCONTROLLERS];
+
+/* Issue #51: the race-start slide parks the HUD at gHudOffsetX = SCREEN_WIDTH
+ * (320) -- offscreen on the authored 4:3 canvas but well inside the wider
+ * WIDE_HUD canvas (240 * aspect units) -- so the parked LEFT/CENTER groups
+ * were visible along the right edge for the whole pre-slide hold. Scale the
+ * DRAW-side slide term by canvas/320 so the authored 0..320 sweep maps onto
+ * 0..canvas and the hold stays offscreen at every aspect. The authoritative
+ * state machine (hud_player_tick, hud_race_start's GO thresholds and
+ * musicStartTimer) is untouched, so slide duration and the whoosh/boom cues
+ * stay bit-identical; the bounce is deliberately NOT scaled (an authored
+ * +/-16px wobble, only active once the slide has landed). Every draw-side
+ * consumer of gHudOffsetX must come through here -- the slide-site census in
+ * tests/check_widescreen_hud_scope.py pins that. Widescreen HUD off: returns
+ * the exact legacy gHudOffsetX + gHudBounceX integer sum. */
+static f32 hud_slide_draw_offset(void) {
+    f32 slide = gHudOffsetX;
+    if (hud_widescreen_enabled()) {
+        MdkrDisplayLayout layout = mdkr_display_layout();
+        f32 scale = (240.0f * layout.presentation_aspect) / 320.0f;
+        if (scale > 1.0f) {
+            slide *= scale;
+        }
+    }
+    return slide + gHudBounceX;
+}
+
+/* The net WIDE_HUD x shift hud_widescreen_reflow_element() gives a texture
+ * element: the signed anchor margin plus the positive-expanded-origin margin.
+ * For draw sites that bypass the pointer-identity reflow inside
+ * hud_element_render -- transient timer glyphs, draw_text labels, raw
+ * texrects -- and must land exactly where their real element group did.
+ * Zero whenever the widescreen HUD is off. */
+static f32 hud_widescreen_texture_offset_x(s32 elementIndex) {
+    return hud_widescreen_offset(hud_widescreen_anchor(elementIndex)) +
+           hud_widescreen_offset(MDKR_HUD_ANCHOR_RIGHT);
+}
 #endif
 
 /******************************/
@@ -1096,6 +1257,13 @@ static void hud_render_taj_identity(const Object_Racer *racer) {
         x = (SCREEN_WIDTH / 4) + (gHudCurrentViewport & 1) * (SCREEN_WIDTH / 2);
         y += (gHudCurrentViewport >> 1) * (SCREEN_HEIGHT / 2);
     }
+    /* Issue #51: draw_text centers within the authored 0..320 sub-canvas; in
+     * WIDE_HUD space that is one margin left of the presentation center. Add
+     * the single-margin canvas-center compensation (the hud_race_time /
+     * minimap idiom). Zero when the widescreen HUD is off, and the wide HUD
+     * only ever drives the one-viewport layout, so the split-screen branches
+     * above keep their authored x untouched. */
+    x += (s32) hud_widescreen_offset(MDKR_HUD_ANCHOR_RIGHT);
     set_text_font(ASSET_FONTS_FUNFONT);
     set_text_background_colour(0, 0, 0, 0);
     set_text_colour(0, 0, 0, 255, 180);
@@ -1149,8 +1317,16 @@ static void hud_render_identity_portrait(HudElement *portrait, s32 character,
         sHudBonusPortrait[0].xOffset = 0;
         sHudBonusPortrait[0].yOffset = 0;
         sHudBonusPortrait[1].texture = NULL;
+        /* Issue #51: this raw texrect bypasses hud_element_render, so it must
+         * take the same net widescreen texture shift the retail portrait gets
+         * from hud_widescreen_reflow_element for this element's anchor, and
+         * the same canvas-scaled slide term. Both are the legacy values when
+         * the widescreen HUD is off. */
         texrect_draw_scaled(&gHudDL, sHudBonusPortrait,
-                            portrait->pos.x + gHudOffsetX + gHudBounceX,
+                            portrait->pos.x +
+                                hud_widescreen_texture_offset_x(
+                                    hud_element_index(portrait)) +
+                                hud_slide_draw_offset(),
                             y, portrait->scale, yScale,
                             gHudColour, TEXRECT_POINT);
     }
@@ -2708,7 +2884,20 @@ void hud_main_time_trial(s32 arg0, Object *playerRacerObj, s32 updateRate) {
              i++) {
             get_timestamp_from_frames(curRacer->lap_times[i], &spB4, &spB0, &spAC);
             gHudColour = gHudLapColours[i];
+#ifdef NATIVE_PORT
+            /* Issue #51: hud_timer_render builds transient glyphs, so it
+             * cannot recover this row block's RIGHT anchor from pointer
+             * identity (the hud_race_time pattern). The glyphs already get
+             * the CENTER canvas shift inside hud_element_render; add the
+             * remaining anchor margin so the digits share the LAP label's
+             * +2-margin treatment and the authored 188/206/221 row spacing
+             * survives. Zero when the widescreen HUD is off. */
+            hud_timer_render(gCurrentHud->entry[HUD_LAP_TIME_TEXT].pos.x +
+                                 (s32) hud_widescreen_offset(MDKR_HUD_ANCHOR_RIGHT),
+                             spB8, spB4, spB0, spAC, 1);
+#else
             hud_timer_render(gCurrentHud->entry[HUD_LAP_TIME_TEXT].pos.x, spB8, spB4, spB0, spAC, 1);
+#endif
             gHudColour = COLOUR_RGBA32(255, 255, 255, 254);
             spB8 += 12;
             gDPSetPrimColor(gHudDL++, 0, 0, 255, 255, 255, 255);
@@ -2883,6 +3072,32 @@ void hud_main_time_trial(s32 arg0, Object *playerRacerObj, s32 updateRate) {
 
         set_kerning(TRUE);
         set_text_font(ASSET_FONTS_FUNFONT);
+#ifdef NATIVE_PORT
+        {
+            /* Issue #51: canvas-scaled slide term (hud_slide_draw_offset).
+             * The authored x=55 needs no anchor term: the raw WIDE_HUD origin
+             * is the left presentation edge, coherent with the LEFT-anchored
+             * stopwatch this error text replaces. */
+            s32 stopwatchErrorDrawX =
+                gStopwatchErrorX + (s32) hud_slide_draw_offset();
+            // Draw text shadow.
+            set_text_colour(0, 0, 0, 255, 255);
+            draw_text(&gHudDL, stopwatchErrorDrawX + 1, gStopwatchErrorY + 1, SWMessage[2],
+                      ALIGN_MIDDLE_CENTER);
+            draw_text(&gHudDL, stopwatchErrorDrawX + 1, gStopwatchErrorY + 15, SWMessage[1],
+                      ALIGN_MIDDLE_CENTER);
+            draw_text(&gHudDL, stopwatchErrorDrawX + 1, gStopwatchErrorY + 29, SWMessage[0],
+                      ALIGN_MIDDLE_CENTER);
+            // Draw actual text.
+            set_text_colour(D_80127194->rgba.r, D_80127194->rgba.g, D_80127194->rgba.b, 128, D_80127194->rgba.a);
+            draw_text(&gHudDL, stopwatchErrorDrawX, gStopwatchErrorY, SWMessage[2],
+                      ALIGN_MIDDLE_CENTER);
+            draw_text(&gHudDL, stopwatchErrorDrawX, gStopwatchErrorY + 14, SWMessage[1],
+                      ALIGN_MIDDLE_CENTER);
+            draw_text(&gHudDL, stopwatchErrorDrawX, gStopwatchErrorY + 28, SWMessage[0],
+                      ALIGN_MIDDLE_CENTER);
+        }
+#else
         // Draw text shadow.
         set_text_colour(0, 0, 0, 255, 255);
         draw_text(&gHudDL, gStopwatchErrorX + gHudOffsetX + gHudBounceX + 1, gStopwatchErrorY + 1, SWMessage[2],
@@ -2899,6 +3114,7 @@ void hud_main_time_trial(s32 arg0, Object *playerRacerObj, s32 updateRate) {
                   ALIGN_MIDDLE_CENTER);
         draw_text(&gHudDL, gStopwatchErrorX + gHudOffsetX + gHudBounceX, gStopwatchErrorY + 28, SWMessage[0],
                   ALIGN_MIDDLE_CENTER);
+#endif
         update_colour_cycle(D_80127194, updateRate);
         set_kerning(FALSE);
     }
@@ -4891,7 +5107,12 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
         gMinimapScreenY *= 1.2;
     }
     sprite_opaque(FALSE);
+#ifdef NATIVE_PORT
+    /* Issue #51: canvas-scaled slide term for the WIDE_HUD draw space. */
+    hudElem.pos.x = gMinimapScreenX + hud_slide_draw_offset();
+#else
     hudElem.pos.x = gMinimapScreenX + gHudOffsetX + gHudBounceX;
+#endif
     hudElem.pos.y = gMinimapScreenY;
     if (osTvType == OS_TV_TYPE_PAL) {
         hudElem.pos.x -= 4.0f;
@@ -5155,6 +5376,9 @@ void hud_element_render(Gfx **dList, Mtx **mtx, Vertex **vtxList, HudElement *hu
     HudElement endpointHud;
     HudElement widescreenHud;
     const HudElement *identityHud = hud;
+    /* Issue #51: one canvas-scaled slide value shared by the add/restore
+     * pair below, so the two sites cannot diverge within a draw. */
+    f32 slideDrawX = hud_slide_draw_offset();
     if (hud_endpoint_reflow_element(hud, &endpointHud)) {
         static u8 reportedOutput[MAXCONTROLLERS];
         const MdkrNetRoster *roster = mdkr_net_roster_runtime_get();
@@ -5227,7 +5451,11 @@ void hud_element_render(Gfx **dList, Mtx **mtx, Vertex **vtxList, HudElement *hu
             spriteID != HUD_SILVER_COIN_TALLY && gMinimapXlu & 1) {
             hud->pos.y += objEntry.offsetY;
         }
+#ifdef NATIVE_PORT
+        hud->pos.x += slideDrawX;
+#else
         hud->pos.x += gHudOffsetX + gHudBounceX;
+#endif
     }
     spriteID = hud->spriteID;
     if ((gAssetHudElementIds[spriteID] & ASSET_MASK_TEXTURE) == ASSET_MASK_TEXTURE) {
@@ -5352,7 +5580,11 @@ void hud_element_render(Gfx **dList, Mtx **mtx, Vertex **vtxList, HudElement *hu
             gMinimapXlu & 1) {
             hud->pos.y -= objEntry.offsetY;
         }
+#ifdef NATIVE_PORT
+        hud->pos.x -= slideDrawX;
+#else
         hud->pos.x -= gHudOffsetX + gHudBounceX;
+#endif
     }
     *dList = gHudDL;
     *mtx = gHudMtx;
