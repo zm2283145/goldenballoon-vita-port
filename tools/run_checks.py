@@ -205,6 +205,7 @@ GPU_SERIAL_NAMES = frozenset({
     "door_glyphs",
     "adventure_hub",
     "adventure_race_loop",
+    "save_options_scroll_band",
     "determinism",
     "rom_revision",
     "online_process_convergence",
@@ -763,6 +764,9 @@ CHECKS = (
           "per-door balloon numeral binding across shared models and GL/WebGPU"),
     Check("adventure_race_loop", "check_adventure_race_loop.py", "native",
           "Adventure hub/race return loop"),
+    Check("save_options_scroll_band", "check_save_options_scroll_band.py", "native",
+          "inverted rectangles on the Save Options pak-switch scroll draw "
+          "nothing, as on hardware (issue #52)"),
     Check("postrace_door_fling", "check_postrace_door_fling.py", "native",
           "post-race lobby returns stay grounded on the quit paths, with the "
           "rising-door carry-frame legacy control"),
