@@ -945,6 +945,16 @@ CHECKS = (
           "native host driver, real local Worker and real controller page: "
           "seatless pending entry, matched phrases, Connected with real "
           "input, dropped-offer retry under 60s and 3s-stall recovery"),
+    # The online crown gate: wrangler dev (real MatchRoom Durable Object) +
+    # two real native driver processes race 1800 ticks over real WebRTC and
+    # must agree on the confirmed state hash. Needs wrangler + serialized
+    # ports, so it rides the browser_local lane like party_native_e2e.
+    Check("online_live_transport_e2e", "check_online_live_transport_e2e.py",
+          "browser_local",
+          "two live native processes: create/join over the real Worker, "
+          "hello/offer/ice over the real relay, phrase + preflight consensus, "
+          "an 1800-tick race converging to one state hash, and a mid-frame "
+          "/connect stall torn down promptly"),
     # The no-internet crown gate: the same driver under --lan drives the
     # embedded server + in-process room (NO wrangler) against a real headless
     # controller over plain http, so it drives Chromium and belongs to the
