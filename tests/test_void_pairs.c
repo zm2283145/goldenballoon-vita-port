@@ -16,6 +16,14 @@
  *     and the bubble sort's swapByte wrote the wrapped id back into the
  *     caller's open list (case A2).
  *
+ *  2. Exact entry-table saturation orphans a half-pair: func_80026C14 drops
+ *     only the overflowing push, so the accepted first-of-pair leaves its
+ *     partner slot at -1 (or stale) and the walker then dereferences
+ *     D_8011D478[-1] (case B1) or a wild in-range entry (case B2). Today
+ *     void_check's own `D_8011D49E >= D_8011D4BA` bail keeps this
+ *     unreachable; the walker-side skip is degrade-don't-corrupt armour so
+ *     no future cap or gate change can turn saturation into corruption.
+ *
  * The tables are allocated here as two separate heap blocks with exactly the
  * capacities void_init carves out of its single pool, so ASan redzones sit
  * where the pool would silently absorb an underflow. Below 128 pairs the
@@ -23,7 +31,7 @@
  * pin that on the full renderer, as they did for 6f7a081).
  *
  * Run with no arguments for every case (the ctest registration), or with a
- * case name (A1, A2) to observe one red at a time under ASan.
+ * case name (A1, A2, B1, B2) to observe one red at a time under ASan.
  */
 
 #include <stdbool.h>
@@ -223,6 +231,60 @@ static void case_a2_swap_path_wide(void) {
     EXPECT(gVoidVertCount == 4, "A2: swapped call still emits four vertices");
 }
 
+/* Shared B-case table: two complete edges (floor id 0, ceiling id 1) plus a
+ * lone first-of-pair (id 2), the shape exact saturation leaves behind when
+ * func_80026C14 accepts the first push of an edge and drops the second. */
+static void build_orphan_table(void) {
+    harness_reset();
+    push_flat_pair(100, 300, 100, 1); /* pair id 0, floor */
+    push_flat_pair(100, 300, 400, 0); /* pair id 1, ceiling */
+    func_80026C14(100, 250, 1);       /* pair id 2: orphan first-of-pair */
+    EXPECT(D_8011D49E == 5, "orphan table holds 5 entries");
+    fill_pair_slots();
+    EXPECT((D_8011D478[D_8011D47C[4]].unk6 & 2) != 0,
+           "orphan entry is marked first-of-pair");
+}
+
+/* Case B1: the orphan's partner slot holds -1 (its push-time init value).
+ * Before the walker skip, `next = &D_8011D478[-1]` reads one entry before
+ * the table -- ASan heap-buffer-underflow (RED). After it, the orphan is
+ * dropped from the open list and the surviving pair still emits. */
+static void case_b1_orphan_minus_one(void) {
+    VoidPairIndex open_list[3] = { 0, 2, 1 };
+
+    build_orphan_table();
+    D_8011D47C[5] = -1; /* what saturation leaves for the dropped partner */
+    func_80026E54(3, open_list, 250.0f, 150.0f);
+
+    EXPECT(gVoidPrimCount == 1, "B1: surviving pair still emits");
+    EXPECT(gVoidVertCount == 4, "B1: surviving pair emits four vertices");
+    EXPECT(vert_buffer[0].y == 102 && vert_buffer[2].y == 398,
+           "B1: surviving band heights are the complete pair's");
+    EXPECT(open_list[0] == 0 && open_list[1] == 1,
+           "B1: orphan id compacted out of the caller's open list");
+}
+
+/* Case B2: the partner slot can also be stale garbage -- slot 2p+1 of the
+ * orphan pair is one past the -1 initialisation run, so whatever the pool
+ * held last frame is still there. A stale in-range index aliased the walker
+ * onto an unrelated entry: staged here so the aliased entry shares the
+ * orphan's x, which made the pre-fix walker take its equal-x bail and
+ * silently drop EVERY band in the strip (RED as a plain assertion failure).
+ * The bounds-validating skip ignores the stale slot instead (GREEN). */
+static void case_b2_orphan_stale_slot(void) {
+    VoidPairIndex open_list[3] = { 0, 2, 1 };
+
+    build_orphan_table();
+    D_8011D47C[5] = 300; /* stale index, >= D_8011D49E but inside the block */
+    D_8011D478[300].unk0 = 100; /* equal-x with the orphan's first entry */
+    D_8011D478[300].unk2 = 0;
+    func_80026E54(3, open_list, 250.0f, 150.0f);
+
+    EXPECT(gVoidPrimCount == 1,
+           "B2: stale partner slot must not suppress the surviving pair");
+    EXPECT(gVoidVertCount == 4, "B2: surviving pair emits four vertices");
+}
+
 int main(int argc, char **argv) {
     struct {
         const char *name;
@@ -230,6 +292,8 @@ int main(int argc, char **argv) {
     } cases[] = {
         { "A1", case_a1_walker_locals_wide },
         { "A2", case_a2_swap_path_wide },
+        { "B1", case_b1_orphan_minus_one },
+        { "B2", case_b2_orphan_stale_slot },
     };
     size_t i;
     int ran = 0;

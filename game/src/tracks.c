@@ -2114,6 +2114,41 @@ void func_80026E54(s16 arg0, VoidPairIndex *arg1, f32 arg2, f32 arg3) {
     }
 #endif
 
+#ifdef NATIVE_PORT
+    /* Degrade-don't-corrupt (issue #53 fallout): exact entry-table
+     * saturation drops only the overflowing push of an edge, so the
+     * accepted first-of-pair's partner slot still holds -1 (a previous
+     * fill's initialiser) or stale pool data, and walking such a pair
+     * dereferenced D_8011D478[-1] or an unrelated entry. void_check's own
+     * `D_8011D49E >= D_8011D4BA` bail keeps that unreachable today; this
+     * skip keeps any future cap or gate change from turning saturation
+     * into garbage curtain quads. Compacting the caller's list is what the
+     * closing bracket would eventually do -- an orphan can never close, so
+     * it must not stay open -- and is a no-op whenever every pair is
+     * complete, i.e. everywhere reachable today. Unit-pinned by
+     * tests/test_void_pairs.c (cases B1/B2). */
+    {
+        s16 src;
+        s16 dst;
+
+        for (src = 0, dst = 0; src < arg0; src++) {
+            VoidPairIndex pairId = arg1[src];
+            s16 slotA = D_8011D47C[pairId * 2];
+            s16 slotB = D_8011D47C[pairId * 2 + 1];
+
+            if (slotA < 0 || slotA >= D_8011D49E || slotB < 0 || slotB >= D_8011D49E) {
+                continue;
+            }
+            arg1[dst] = pairId;
+            dst++;
+        }
+        arg0 = dst;
+        if (arg0 == 0) {
+            return;
+        }
+    }
+#endif
+
     for (j = 0, i = 0; i < arg0;) {
         temp = arg1[i];
         curr = &D_8011D478[D_8011D47C[(s16) (temp * 2)]];
