@@ -344,6 +344,17 @@ static bool dkr_in_rectangle = false;
 
 static uint64_t dkr_mirrored_rects_cleared = 0;
 
+/* Rectangles refused because their coordinates were inverted (issue #52).
+ * The RDP walks rectangle spans with unsigned 10.2 coordinates and marks
+ * every scanline where xleft > xright invalid, so an inverted rectangle
+ * draws ZERO pixels on hardware. DKR emits them for real: font.c's
+ * off-screen-left clamp (`textureUlx < 0 && textureLrx > 0`, strictly
+ * greater) misses a glyph whose right edge lands exactly at x=0, and the GBI
+ * macro wraps the negative ulx into the unsigned 12-bit field -- ul=(4064,y)
+ * lr=(0,y+48). Drawing that as an ordinary quad smeared the font page's edge
+ * column across the whole framebuffer (the Save Options pak-switch band). */
+static uint64_t dkr_inverted_rects_skipped = 0;
+
 static uint64_t dkr_replay_hold_no_pair = 0;
 static uint64_t dkr_replay_hold_discont = 0;
 static uint64_t dkr_replay_hold_still = 0;
@@ -4847,6 +4858,15 @@ static void dkr_dp_fill_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t
         rdp.color_image_token == rdp.z_buf_token) return;
     uint32_t cyc = rdp.other_mode_h & (3U << G_MDSFT_CYCLETYPE);
     if (cyc == G_CYC_FILL || cyc == G_CYC_COPY) { lrx += 1 << 2; lry += 1 << 2; }
+    /* Hardware span-invalid rule (issue #52, see dkr_inverted_rects_skipped):
+     * the RDP draws nothing for an inverted rectangle, so neither may we.
+     * Strictly less-than -- an equal-coordinate rectangle keeps drawing
+     * exactly as before, and the fill/copy +1 adjustment above has already
+     * run, so a legitimate clear is never caught here. */
+    if (lrx < ulx || lry < uly) {
+        dkr_inverted_rects_skipped++;
+        return;
+    }
     uint8_t saved_space = rsp.draw_space;
     bool promoted_to_fullbleed = false;
     /*
@@ -4898,6 +4918,18 @@ static void dkr_dp_texture_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int3
                                      int16_t dsdx, int16_t dtdy, bool flip) {
     uint32_t cyc = rdp.other_mode_h & (3U << G_MDSFT_CYCLETYPE);
     if (cyc == G_CYC_COPY) { dsdx >>= 2; lrx += 1 << 2; lry += 1 << 2; }
+
+    /* Hardware span-invalid rule (issue #52, see dkr_inverted_rects_skipped):
+     * the span walker marks every scanline with xleft > xright invalid, so an
+     * inverted TEXRECT draws zero pixels on console (bit-accurate reference:
+     * the pinned ares oracle's span_setup.comp). Drawing it instead stretched
+     * the bound font page's edge column into a full-width band on the Save
+     * Options pak-switch scroll. Strictly less-than: zero-width and
+     * zero-height rectangles keep drawing exactly as before. */
+    if (lrx < ulx || lry < uly) {
+        dkr_inverted_rects_skipped++;
+        return;
+    }
 
     uint8_t tb_saved = rsp.tile_base;
     rsp.tile_base = tile;
@@ -7798,6 +7830,26 @@ static void dkr_mirror_rect_report(void) {
     if (trace != NULL && trace[0] != '\0' && trace[0] != '0') {
         fprintf(stderr, "[MIRROR-RECT] cleared=%llu\n",
                 (unsigned long long)dkr_mirrored_rects_cleared);
+    }
+}
+
+/*
+ * Issue #52. The count of inverted rectangles the interpreter refused to
+ * draw -- every one of them draws zero pixels on real hardware, so each was
+ * previously a full-width texel smear waiting for a font page with opaque
+ * edge texels. Nonzero whenever a route scrolls a menu label across the left
+ * screen edge (the Save Options pak switch, the OPTIONS slide-in).
+ *
+ * A destructor for the same reason as dkr_mirror_rect_report above: the
+ * routes that prove the guard non-vacuous end on a headless frame budget and
+ * never run the renderer's own teardown.
+ */
+__attribute__((destructor))
+static void dkr_rect_skip_report(void) {
+    const char *trace = getenv("MDKR_TRACE");
+    if (trace != NULL && trace[0] != '\0' && trace[0] != '0') {
+        fprintf(stderr, "[RECT-SKIP] skipped=%llu\n",
+                (unsigned long long)dkr_inverted_rects_skipped);
     }
 }
 
