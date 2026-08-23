@@ -493,7 +493,28 @@ production coverage:
   confined to `gGameMode == GAMEMODE_INGAME` -- the only mode that emits the
   expanded WIDE_HUD ortho -- so the intro/menu/lockup dialogue path is left
   untouched. A self-test replays all three assertions against the pre-fix source
-  to prove they fail red.
+  to prove they fail red. Since the issue-#51 batch it additionally requires
+  every `HudTypes` element to carry an explicit per-mode row in the
+  `sHudWidescreenAnchor` table (totality against a golden snapshot) and
+  censuses every draw-side `gHudOffsetX` consumer against the
+  `hud_slide_draw_offset()` owner list, with red self-tests per assertion.
+- `check_widescreen_hud_layers.py` is the pixel companion the scope gate
+  cannot be: the first check that actually enables `Video.WidescreenHUD` and
+  measures rendered frames. Its arms pin the issue-#51 fixes -- time-trial
+  lap rows laid out disjoint and ordered (labels no longer overprint the
+  times), the TAJ MAGIC identity label centered, the battle-mode HUD strip
+  at its authored center, and zero HUD pixels parked in the right expanded
+  gutter during the race-start pre-slide hold -- plus a 4:3 rail where the
+  widescreen-ON frame must stay byte-identical to OFF. Detector self-tests
+  run against synthetic rasters on every invocation.
+- `check_save_options_scroll_band.py` drives a seeded save to the Save
+  Options screen, scrolls between Game Paks, and asserts no screen-wide
+  band appears (issue #52): a glyph landing exactly at the left screen edge
+  makes the game emit a corner-swapped rectangle that real hardware's
+  span-invalid rule refuses, and the port now refuses identically
+  (`[RECT-SKIP]`). The check also requires the skip counter to be non-zero
+  (the guard is exercised, not vacuous) and known-good UI pixels to remain
+  (an over-skipping regression fails).
 - `check_live_toggle_settings.py` gates the same settings being CHANGED
   mid-run. `Video.FrameLimit`, `Video.MotionSmoothing` and
   `Video.AllowTearing` apply at the host-frame boundary and
