@@ -3,7 +3,7 @@
 *Released 2026-08-23.*
 
 A small bug-fix release for the reports that came in after 1.5.1: the
-Expanded HUD now lays out every game mode correctly, and a transient
+Widescreen HUD now lays out every game mode correctly, and a transient
 rectangle glitch in the Save Options screen is gone. There are no new
 features and no changes to gameplay.
 
@@ -18,12 +18,12 @@ authored rate.
 
 ## Fixes
 
-- The Expanded HUD now positions every screen correctly: time-trial lap
-  times no longer pile up on the right, the TAJ MAGIC label is centered,
-  the battle-mode HUD sits where the game intended, and the race-start
-  HUD slide now begins off screen instead of parking at the right edge
-  (issue #51). The Expanded HUD is still off by default, and turning it
-  off is unchanged, byte for byte.
+- The Widescreen HUD — the "Expanded HUD" from the reports — now positions
+  every screen correctly: time-trial lap times no longer pile up on the
+  right, the TAJ MAGIC label is centered, the battle-mode HUD sits where
+  the game intended, and the race-start HUD slide now begins off screen
+  instead of parking at the right edge (issue #51). The Widescreen HUD is
+  still off by default, and turning it off is unchanged, byte for byte.
 - Switching Game Paks in Save Options no longer flashes a thin colored
   rectangle across the screen. The game occasionally asks for a rectangle
   drawn with its corners swapped; real N64 hardware refuses those, and now
@@ -31,8 +31,9 @@ authored rate.
   artifact elsewhere in the menus (issue #52).
 - Two internal robustness fixes in the out-of-bounds geometry system,
   found while investigating a Walrus Cove report (issue #53). The brief
-  blue flash in the cave there is the original game's own out-of-bounds
-  curtain, reproduced faithfully.
+  blue flash in the cave there matches the original game's own
+  out-of-bounds curtain — the level data itself specifies that exact blue,
+  and it appears identically with every enhancement switched off.
 
 ## Compatibility
 
