@@ -75,13 +75,25 @@ HUD_CAPTURE_FRAME = 6300
 # balloon glyph is a persistent SAFE_2D screen-space element, not a
 # trajectory-dependent world position, so it carries none of this risk.
 HISTORICAL_WORLD_CAPTURE_FRAME = 6410
-WORLD_SETTLE_BEFORE_COLLECTION = 66     # historical 6476 (collect) - 6410 (capture)
-MAX_WORLD_FRAME_DRIFT = 150             # generous vs. the 66-frame settle gap itself
+# Retimed 66 -> 95 (the remedy the note above prescribes): on the current
+# fixture the route banks balloon 10 at ~6503 and the kart now swings across
+# the balloon during the final approach, so the motif sits inside the fixed
+# search band from ~collection-123 to ~collection-83 (measured at stride 5 on
+# the pre-#51 baseline 1567b1c and unchanged since).  95 lands the capture in
+# the middle of that window (~6405, drift 5 from the historical anchor).
+WORLD_SETTLE_BEFORE_COLLECTION = 95
+MAX_WORLD_FRAME_DRIFT = 150             # generous vs. the settle gap itself
 WORLD_DUMP_STRIDE = 5
 # Keep running after both sampled approach frames until the fixture physically
 # collects balloon 10. This proves the world motif belongs to the intended
-# object rather than similarly coloured scenery.
-FRAMES = 6500
+# object rather than similarly coloured scenery.  The budget must cover the
+# whole drift window this check itself allows: collection may legitimately
+# land as late as HISTORICAL_WORLD_CAPTURE_FRAME + MAX_WORLD_FRAME_DRIFT +
+# WORLD_SETTLE_BEFORE_COLLECTION = 6626 (the old 6500 had NEGATIVE headroom
+# once the fixture drifted 27 frames late -- collection at ~6503 on the
+# pre-#51 baseline 1567b1c -- and every arm failed with "route did not
+# collect balloon 10" while the proportions under test were fine).
+FRAMES = 6800
 LOGICAL_ASPECT = 4.0 / 3.0
 MAX_PROPORTION_ERROR = 0.08
 MAX_SCALE_ERROR = 0.10
@@ -454,11 +466,18 @@ def hud_balloon_component(image: Image, legacy: bool) -> Component | None:
     # blue glyph component in this deliberately broad HUD crop.  The balloon's
     # authored blue zigzag is always wider than it is tall, including the
     # legacy-stretch positive control.  Select by that invariant before area
-    # so sharper unrelated text cannot masquerade as the balloon.
+    # so sharper unrelated text cannot masquerade as the balloon.  Components
+    # clipped by the crop boundary are world content bleeding across the edge
+    # (the wide-FOV arms pull blue water/sky into this corner at the current
+    # fixture pose); a clipped bounding box could not yield an honest
+    # proportion measurement even if it were the balloon, so it never
+    # qualifies.
     components = [
         component
         for component in blue_components(image, bounds)
         if component.aspect >= 1.5
+        and component.x0 > bounds[0] and component.y0 > bounds[1]
+        and component.x1 < bounds[2] - 1 and component.y1 < bounds[3] - 1
     ]
     return max(components, key=lambda item: item.area, default=None)
 
@@ -698,7 +717,8 @@ def main() -> int:
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--renderer", choices=("gl", "webgpu"), default=None)
-    parser.add_argument("--timeout", type=int, default=120, help="seconds per arm")
+    # Sized with the FRAMES budget above (was 120 for 6500 frames).
+    parser.add_argument("--timeout", type=int, default=150, help="seconds per arm")
     parser.add_argument("--keep-frames", type=Path)
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
