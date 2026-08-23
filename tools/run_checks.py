@@ -181,6 +181,7 @@ GPU_SERIAL_NAMES = frozenset({
     "widescreen_shadow_asan",
     "video_presets",
     "widescreen_proportions",
+    "widescreen_hud_layers",
     "framed_world_views",
     "shadow_visual_ab",
     "intro_shrub_sprite",
@@ -601,8 +602,10 @@ CHECKS = (
           "push/PR native, sanitizer, wasm, save-custody, and ROM policy"),
     Check("widescreen_hud_scope", "check_widescreen_hud_scope.py", "source",
           "the opt-in widescreen HUD offset stays confined to the HUD: the "
-          "banana counter rides its group's anchor and the centered ortho is "
-          "restored before dialogue boxes/pause menu/Taj subtitles draw (#50)"),
+          "mode-aware anchor table is total over enum HudTypes and matches "
+          "its golden snapshot, every draw-side slide consumer goes through "
+          "hud_slide_draw_offset() (#51), and the centered ortho is restored "
+          "before dialogue boxes/pause menu/Taj subtitles draw (#50)"),
     Check("release_ready_web_provenance", "check_release_ready_web_provenance.py", "source",
           "candidate staged-web source-commit and clean-provenance fixtures"),
     Check("web_publish_stamp", "check_web_publish_stamp.py", "source",
@@ -650,6 +653,10 @@ CHECKS = (
           "precedence ladder"),
     Check("widescreen_proportions", "check_widescreen_proportions.py", "native",
           "pixel-level HUD/world billboard proportions across aspect and FOV"),
+    Check("widescreen_hud_layers", "check_widescreen_hud_layers.py", "native",
+          "opt-in widescreen HUD pixel layout (#51): TT rows share one right "
+          "anchor, the race-start hold stays offscreen, identity label and "
+          "battle strip stay centered, 4:3 byte-identical with the option on"),
     Check("framed_world_views", "check_framed_world_views.py", "native",
           "fixed-aspect live menu views remain inside their 4:3 regions"),
     Check("shadow_visual_ab", "check_shadow_visual_ab.py", "native",
