@@ -1,10 +1,11 @@
-# Golden Balloon 1.5.1
+# Golden Balloon 1.5.2
 
-*Released 2026-08-21.*
+*Released 2026-08-23.*
 
-A bug-fix release: it restores the cave echo, fixes the widescreen HUD
-layout, and lets the game build from source on stock Ubuntu again. There
-are no new features and no changes to gameplay.
+A small bug-fix release for the reports that came in after 1.5.1: the
+Expanded HUD now lays out every game mode correctly, and a transient
+rectangle glitch in the Save Options screen is gone. There are no new
+features and no changes to gameplay.
 
 Recommended settings: **WebGPU**, **Restored**, frame limit **Original**,
 Motion smoothing **Interpolated** on 120 Hz displays or **Off** elsewhere,
@@ -17,27 +18,34 @@ authored rate.
 
 ## Fixes
 
-- The echo in Treasure Caves and other tunnel levels is back. Sound
-  effects were being sent to the wrong reverb, so deep in a cave they thinned
-  out to nothing instead of echoing; they now use the proper big-room reverb,
-  and the music keeps its own reverb (issue #49).
-- The Widescreen HUD no longer pushes the pause menu and Taj's dialog boxes
-  off-center, and the banana counter no longer overlaps the lap counter
-  (issue #50). The Widescreen HUD is still off by default; turning it off was
-  never affected.
-- Building from source works again on stock Ubuntu 22.04.
+- The Expanded HUD now positions every screen correctly: time-trial lap
+  times no longer pile up on the right, the TAJ MAGIC label is centered,
+  the battle-mode HUD sits where the game intended, and the race-start
+  HUD slide now begins off screen instead of parking at the right edge
+  (issue #51). The Expanded HUD is still off by default, and turning it
+  off is unchanged, byte for byte.
+- Switching Game Paks in Save Options no longer flashes a thin colored
+  rectangle across the screen. The game occasionally asks for a rectangle
+  drawn with its corners swapped; real N64 hardware refuses those, and now
+  the port does too — which also cleans up fainter versions of the same
+  artifact elsewhere in the menus (issue #52).
+- Two internal robustness fixes in the out-of-bounds geometry system,
+  found while investigating a Walrus Cove report (issue #53). The brief
+  blue flash in the cave there is the original game's own out-of-bounds
+  curtain, reproduced faithfully.
 
 ## Compatibility
 
-Save data, settings, unlocked Magic Codes, and Time Trial ghosts from 1.5.0
-carry over unchanged. Phone Party and Online Room remain out of the
-player-facing build, exactly as in 1.5.0. The launcher is keyboard and
-gamepad operable, but does not claim a
+Save data, settings, unlocked Magic Codes, and Time Trial ghosts from
+1.5.0 and 1.5.1 carry over unchanged. Phone Party and Online Room remain
+out of the player-facing build, exactly as in 1.5.1. The launcher is
+keyboard and gamepad operable, but does not claim a
 VoiceOver, UI Automation, or other screen-reader semantic tree.
 
 ## Known reports under investigation
 
 One Windows report of characters briefly appearing unanimated ("T-posing")
-at race start (issue #48) still could not be reproduced from source, and the
-game applies each racer's seated animation before the first frame is drawn.
-If you saw this, please retest on 1.5.1 and report either way in the issue.
+at race start (issue #48) still could not be reproduced from source, and
+the game applies each racer's seated animation before the first frame is
+drawn. If you saw this, please retest on this release and report either
+way in the issue.
