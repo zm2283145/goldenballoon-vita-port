@@ -1856,6 +1856,60 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME webgpu_artifacts
         COMMAND ${CMAKE_COMMAND} -P
                 ${CMAKE_SOURCE_DIR}/tests/check_webgpu_artifacts.cmake)
+
+    # Void-curtain pair walker (issue #53 fallout): links the PRODUCTION
+    # game/src/tracks.c so the s8-narrowing and saturation-orphan defects are
+    # exercised against the shipped walker, not a test-local copy. tracks.c
+    # references the whole engine; the dead-strip/--gc-sections link is what
+    # confines this ROM-free target to the void subsystem's closure (two
+    # renderer symbols are stubbed in the test). MSVC has no equivalent
+    # linker contract, and no MSVC lane builds these tests today.
+    if(NOT MSVC)
+        add_executable(mdkr_void_pairs_test
+            ${CMAKE_SOURCE_DIR}/tests/test_void_pairs.c
+            ${CMAKE_SOURCE_DIR}/game/src/tracks.c)
+        target_include_directories(mdkr_void_pairs_test PRIVATE
+            ${CMAKE_SOURCE_DIR}/game
+            ${CMAKE_SOURCE_DIR}/game/src
+            ${CMAKE_SOURCE_DIR}/game/include
+            ${CMAKE_SOURCE_DIR}/game/include/PR
+            ${CMAKE_SOURCE_DIR}/game/include/sys
+            ${CMAKE_SOURCE_DIR}/game/libultra
+            ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
+            ${CMAKE_SOURCE_DIR}/platform
+            ${CMAKE_SOURCE_DIR}/platform/fast3d
+            ${CMAKE_SOURCE_DIR}/platform/fast3d_shim)
+        target_compile_definitions(mdkr_void_pairs_test PRIVATE
+            VERSION_us_v80
+            _LANGUAGE_C
+            MODERN_CC
+            NON_MATCHING=1
+            AVOID_UB=1
+            NATIVE_PORT=1
+            F3DDKR_GBI
+            _FINALROM)
+        # tracks.c is decomp engine code: give it the same relaxed parse and
+        # tentative-definition flags the app target compiles it with.
+        target_compile_options(mdkr_void_pairs_test PRIVATE
+            -fno-strict-aliasing
+            -fcommon)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+            target_compile_options(mdkr_void_pairs_test PRIVATE
+                -Wno-everything
+                -fms-extensions
+                -Wno-c23-extensions)
+        endif()
+        if(APPLE)
+            target_link_options(mdkr_void_pairs_test PRIVATE -Wl,-dead_strip)
+        else()
+            target_compile_options(mdkr_void_pairs_test PRIVATE
+                -ffunction-sections
+                -fdata-sections)
+            target_link_options(mdkr_void_pairs_test PRIVATE -Wl,--gc-sections)
+        endif()
+        target_link_libraries(mdkr_void_pairs_test PRIVATE m)
+        add_test(NAME void_pairs COMMAND mdkr_void_pairs_test)
+    endif()
 endif()
 
 # Repository-publication policy is backend-independent and must run in every
