@@ -181,6 +181,7 @@ GPU_SERIAL_NAMES = frozenset({
     "widescreen_shadow_asan",
     "video_presets",
     "widescreen_proportions",
+    "widescreen_hud_layers",
     "framed_world_views",
     "shadow_visual_ab",
     "intro_shrub_sprite",
@@ -205,6 +206,7 @@ GPU_SERIAL_NAMES = frozenset({
     "door_glyphs",
     "adventure_hub",
     "adventure_race_loop",
+    "save_options_scroll_band",
     "determinism",
     "rom_revision",
     "online_process_convergence",
@@ -600,8 +602,10 @@ CHECKS = (
           "push/PR native, sanitizer, wasm, save-custody, and ROM policy"),
     Check("widescreen_hud_scope", "check_widescreen_hud_scope.py", "source",
           "the opt-in widescreen HUD offset stays confined to the HUD: the "
-          "banana counter rides its group's anchor and the centered ortho is "
-          "restored before dialogue boxes/pause menu/Taj subtitles draw (#50)"),
+          "mode-aware anchor table is total over enum HudTypes and matches "
+          "its golden snapshot, every draw-side slide consumer goes through "
+          "hud_slide_draw_offset() (#51), and the centered ortho is restored "
+          "before dialogue boxes/pause menu/Taj subtitles draw (#50)"),
     Check("release_ready_web_provenance", "check_release_ready_web_provenance.py", "source",
           "candidate staged-web source-commit and clean-provenance fixtures"),
     Check("web_publish_stamp", "check_web_publish_stamp.py", "source",
@@ -649,6 +653,10 @@ CHECKS = (
           "precedence ladder"),
     Check("widescreen_proportions", "check_widescreen_proportions.py", "native",
           "pixel-level HUD/world billboard proportions across aspect and FOV"),
+    Check("widescreen_hud_layers", "check_widescreen_hud_layers.py", "native",
+          "opt-in widescreen HUD pixel layout (#51): TT rows share one right "
+          "anchor, the race-start hold stays offscreen, identity label and "
+          "battle strip stay centered, 4:3 byte-identical with the option on"),
     Check("framed_world_views", "check_framed_world_views.py", "native",
           "fixed-aspect live menu views remain inside their 4:3 regions"),
     Check("shadow_visual_ab", "check_shadow_visual_ab.py", "native",
@@ -763,6 +771,9 @@ CHECKS = (
           "per-door balloon numeral binding across shared models and GL/WebGPU"),
     Check("adventure_race_loop", "check_adventure_race_loop.py", "native",
           "Adventure hub/race return loop"),
+    Check("save_options_scroll_band", "check_save_options_scroll_band.py", "native",
+          "inverted rectangles on the Save Options pak-switch scroll draw "
+          "nothing, as on hardware (issue #52)"),
     Check("postrace_door_fling", "check_postrace_door_fling.py", "native",
           "post-race lobby returns stay grounded on the quit paths, with the "
           "rising-door carry-frame legacy control"),
@@ -941,6 +952,16 @@ CHECKS = (
           "native host driver, real local Worker and real controller page: "
           "seatless pending entry, matched phrases, Connected with real "
           "input, dropped-offer retry under 60s and 3s-stall recovery"),
+    # The online crown gate: wrangler dev (real MatchRoom Durable Object) +
+    # two real native driver processes race 1800 ticks over real WebRTC and
+    # must agree on the confirmed state hash. Needs wrangler + serialized
+    # ports, so it rides the browser_local lane like party_native_e2e.
+    Check("online_live_transport_e2e", "check_online_live_transport_e2e.py",
+          "browser_local",
+          "two live native processes: create/join over the real Worker, "
+          "hello/offer/ice over the real relay, phrase + preflight consensus, "
+          "an 1800-tick race converging to one state hash, and a mid-frame "
+          "/connect stall torn down promptly"),
     # The no-internet crown gate: the same driver under --lan drives the
     # embedded server + in-process room (NO wrangler) against a real headless
     # controller over plain http, so it drives Chromium and belongs to the
