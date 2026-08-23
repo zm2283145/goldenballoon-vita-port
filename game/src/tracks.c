@@ -2089,10 +2089,20 @@ void func_80026E54(s16 arg0, VoidPairIndex *arg1, f32 arg2, f32 arg3) {
     f32 sp6C[10];
     s8 sp60[10];
 #endif
-    s8 temp;
-    s8 temp0;
-    s8 temp1;
-    s8 swapByte;
+    /* Pair ids: the 1.4.0 widening (6f7a081) moved unk7, the render walk's
+     * sp7C list and this function's list parameter to VoidPairIndex (s16)
+     * but left these locals at s8 -- with >127 pairs in a tick (needs >256
+     * entries, cap now 351) `temp = arg1[i]` wrapped negative and indexed
+     * D_8011D47C/D_8011D478 out of bounds, and the bubble sort wrote the
+     * wrapped id back into the caller's open list through swapByte.
+     * VoidPairIndex is s8 on ROM builds, so retail stays byte-identical;
+     * below 128 pairs the widened walker is bit-identical (render_purity
+     * arms, exactly as for 6f7a081). temp0/temp1 only ever hold unk6 & 1;
+     * widened for hygiene. Unit-pinned by tests/test_void_pairs.c. */
+    VoidPairIndex temp;
+    VoidPairIndex temp0;
+    VoidPairIndex temp1;
+    VoidPairIndex swapByte;
 
 #ifdef NATIVE_PORT
     if (arg0 >= 88 || arg0 == 0) {
