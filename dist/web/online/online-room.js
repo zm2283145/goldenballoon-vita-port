@@ -101,6 +101,9 @@
   let liveCommandId = 1;
   let liveLastOperation = null;
   let liveSelectionSaving = false;
+  let liveRefreshTimer = 0;
+  let liveObservedRevision = 0;
+  let liveCoverage = null;
   let currentPresentation = null;
   let pendingEntryCapability = entryFragment.capability;
   entryFragment.capability = "";
@@ -111,6 +114,14 @@
   let gateExplanation = "Private rooms are still being qualified. Opening " +
     "this screen makes no network request and cannot enable online racing.";
   const maxLiveResponseBytes = 64 * 1024;
+  // S1: fallback-only /state refresh window. The room object pushes the
+  // post-command state over the /connect socket BEFORE the command response
+  // even returns, so the push normally lands with (or ahead of) the response.
+  // Only if the revision covering an accepted command has not arrived by this
+  // deadline does exactly ONE /state fetch recover. Test pages may shorten
+  // the window; production never defines the test config object.
+  const liveRefreshFallbackMs = Math.max(50, Math.min(5000,
+    Number(testConfig?.refreshFallbackMs) || 1600));
 
   function syncLocalRecovery() {
     const playable = !play.disabled && play.dataset.blocked !== "1";
@@ -375,6 +386,16 @@
       throw Object.assign(new Error("projection_failed"),
         {code: "service_unavailable"});
     }
+    // S1 coverage bookkeeping is a transport fact — the authoritative snapshot
+    // with this revision reached us — recorded before projection so a
+    // presentation failure can never spend a redundant /state fetch on a
+    // snapshot that already arrived.
+    const ingestedRevision = Number(ingested.state.lobby?.revision);
+    if (Number.isInteger(ingestedRevision) &&
+        ingestedRevision > liveObservedRevision) {
+      liveObservedRevision = ingestedRevision;
+    }
+    resolveLiveCoverage();
     liveRoom = ingested.state;
     liveInvite = ingested.invite;
     try {
@@ -421,6 +442,19 @@
     if (code === "host_closed" || code === "not_found") forgetLiveRoom();
   }
 
+  // S4: typed 4000-class closes are terminal verdicts from the room object.
+  // party-host.js and controller.js already branch on exactly this pair of
+  // reasons; the state socket must not ride the reconnect ladder (~8 s of
+  // charged, doomed refreshes) to a card the close has already named. The
+  // returned string is the failure code to present; "" means the close is
+  // ordinary transport loss and reconnection proceeds.
+  function terminalLiveCloseCode(code, reason) {
+    if (code !== 4000) return "";
+    if (reason === "host_closed") return "host_closed";
+    if (reason === "room_expired") return "not_found";
+    return "";
+  }
+
   function closeLiveSocket() {
     liveSocketGeneration++;
     clearTimeout(liveSocketTimer);
@@ -440,6 +474,62 @@
         liveSocketAttempt = 0;
       }
     }, 30_000);
+  }
+
+  // S1: settle the waiter for a command's covering revision. Called from
+  // mergeLiveState whenever a newer authoritative snapshot is ingested, so a
+  // pushed state that covers the in-flight command cancels the fallback
+  // /state fetch before it ever spends a round trip or budget units.
+  function resolveLiveCoverage() {
+    const pending = liveCoverage;
+    if (!pending) return;
+    if (pending.operation !== liveOperation) {
+      liveCoverage = null;
+      clearTimeout(liveRefreshTimer);
+      liveRefreshTimer = 0;
+      pending.resolve(false);
+      return;
+    }
+    if (liveObservedRevision >= pending.revision) {
+      liveCoverage = null;
+      clearTimeout(liveRefreshTimer);
+      liveRefreshTimer = 0;
+      pending.resolve(true);
+    }
+  }
+
+  // Resolve true once the room's ingested revision reaches the accepted
+  // command's post-command revision — normally via the push that the object
+  // sent before the command response returned. Otherwise a single fallback
+  // /state fetch fires at the deadline; a successfully merged full snapshot
+  // is by definition current, so its merge settles the command.
+  function awaitLiveCoverage(operation, revision) {
+    if (operation !== liveOperation) return Promise.resolve(false);
+    if (liveObservedRevision >= revision) return Promise.resolve(true);
+    // One command is in flight at a time (controls disable while saving and
+    // Save Selection is CAS-serial). If a waiter somehow lingers, settle it
+    // by current coverage before replacing it so no caller dangles.
+    const superseded = liveCoverage;
+    if (superseded) {
+      liveCoverage = null;
+      superseded.resolve(liveObservedRevision >= superseded.revision);
+    }
+    clearTimeout(liveRefreshTimer);
+    return new Promise((resolve) => {
+      liveCoverage = {operation, revision, resolve};
+      liveRefreshTimer = setTimeout(() => {
+        liveRefreshTimer = 0;
+        const pending = liveCoverage;
+        if (!pending) return;
+        liveCoverage = null;
+        if (pending.operation !== liveOperation) {
+          pending.resolve(false);
+          return;
+        }
+        void refreshLive(pending.operation).then((refreshed) =>
+          pending.resolve(refreshed));
+      }, liveRefreshFallbackMs);
+    });
   }
 
   async function refreshLive(operation = liveOperation) {
@@ -498,13 +588,19 @@
               socketGeneration !== liveSocketGeneration) return;
           try { mergeLiveState(value); }
           catch (error) { closeLiveSocket(); showLiveFailure(error); }
-        }, () => {
+        }, (code, reason) => {
           if (operation !== liveOperation ||
               socketGeneration !== liveSocketGeneration) return;
           clearTimeout(liveSocketStableTimer);
           liveSocketStableTimer = 0;
           liveSocketGeneration++;
           liveSocket = null;
+          const terminal = terminalLiveCloseCode(code, reason);
+          if (terminal) {
+            showLiveFailure(Object.assign(new Error(terminal),
+              {code: terminal}));
+            return;
+          }
           scheduleLiveReconnect(operation);
         });
       } catch (_) {
@@ -559,11 +655,17 @@
           showLiveFailure(error);
         }
       });
-      socket.addEventListener("close", () => {
+      socket.addEventListener("close", (event) => {
         if (socket === liveSocket && socketGeneration === liveSocketGeneration) {
           liveSocket = null;
           clearTimeout(liveSocketStableTimer);
           liveSocketStableTimer = 0;
+          const terminal = terminalLiveCloseCode(event.code, event.reason);
+          if (terminal) {
+            showLiveFailure(Object.assign(new Error(terminal),
+              {code: terminal}));
+            return;
+          }
           scheduleLiveReconnect(operation);
         }
       });
@@ -606,6 +708,7 @@
         compatibility: structuredClone(liveConfig.compatibility), seatCount: 1});
       if (operation !== liveOperation) return false;
       liveCommandId = 1;
+      liveObservedRevision = 0;
       mergeLiveState(value);
       liveLastOperation = () => refreshLive();
       return connectLiveSocket(operation);
@@ -637,6 +740,7 @@
         compatibility: structuredClone(liveConfig.compatibility), seatCount: 1});
       if (operation !== liveOperation) return false;
       liveCommandId = 2;
+      liveObservedRevision = 0;
       mergeLiveState(value);
       liveLastOperation = () => refreshLive();
       return connectLiveSocket(operation);
@@ -821,7 +925,17 @@
       // receipt has a useful authenticated state refresh left to perform; the
       // caller clears locally only after this accepted response.
       if (type === "leave" || type === "close") return true;
-      return refreshLive(operation);
+      // S1: the room object broadcast the post-command state to this client's
+      // own socket BEFORE this response was returned (match-room.ts), so the
+      // unconditional refresh that used to run here paid a second full round
+      // trip (+2 budget units) for a snapshot already in flight — on every
+      // click, and three times per Save Selection. Wait for the push whose
+      // revision covers this command instead; the single /state fetch is a
+      // deadline fallback that normally never fires. The native adapter
+      // already trusts the revision-gated push the same way.
+      const covering = Number.isInteger(result.revision) && result.revision >= 1
+        ? result.revision : Number.MAX_SAFE_INTEGER;
+      return awaitLiveCoverage(operation, covering);
     } catch (error) {
       if (error?.code === "stale_revision") {
         const refreshed = await refreshLive(operation);
@@ -838,6 +952,12 @@
     liveOperation++;
     closeLiveSocket();
     clearLiveInviteTimer();
+    clearTimeout(liveRefreshTimer);
+    liveRefreshTimer = 0;
+    liveObservedRevision = 0;
+    const pendingCoverage = liveCoverage;
+    liveCoverage = null;
+    if (pendingCoverage) pendingCoverage.resolve(false);
     liveRoom = null;
     liveInvite = null;
     liveInviteRotating = false;
@@ -1460,6 +1580,27 @@
     dismiss();
     requestAnimationFrame(() => phone.click());
   });
+
+  // Test-only seams, mirroring controller.js's exposeInternals precedent:
+  // the node harness (tests/test_online_room_client.mjs) drives the live
+  // command/socket paths against fixture transports without the Wasm model.
+  // Gated on the loopback host AND the explicit flag; production pages never
+  // define the test config object, so this block is inert in release use.
+  if (testConfig?.exposeInternals === true && loopbackHost) {
+    globalThis.__mdkrOnlineRoomInternals = Object.freeze({
+      adoptLiveFixture: (config, room) => {
+        forgetLiveRoom();
+        liveConfig = config;
+        liveRoom = room;
+        liveObservedRevision = Number(room?.lobby?.revision) || 0;
+        return liveOperation;
+      },
+      connectLiveSocket: () => connectLiveSocket(liveOperation),
+      sendLiveCommand,
+      liveRoomSnapshot: () => (liveRoom ? structuredClone(liveRoom) : null),
+      refreshFallbackMs: liveRefreshFallbackMs,
+    });
+  }
 
   globalThis.MDKROnlineRoom = Object.freeze({
     open, close: dismiss, sync: syncLocalRecovery, ready,
