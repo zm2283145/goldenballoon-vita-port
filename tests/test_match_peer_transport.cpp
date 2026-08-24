@@ -225,6 +225,21 @@ public:
         return result;
     }
 
+    /* Every peer_hello blob `from` put on the wire, in order. hello #1 of a
+     * (re)exchange is the round-1 commitment (encodeHelloBody(ownCommitment));
+     * a fresh local nonce changes that blob, so a rekey that refreshes our
+     * entropy is observable here (W3 CRITICAL-2). */
+    std::vector<std::string> helloBlobs(uint64_t from) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<std::string> out;
+        for (const SentRecord &record : sentLog) {
+            if (record.from == from && record.message.type == "peer_hello") {
+                out.push_back(record.message.publicKey);
+            }
+        }
+        return out;
+    }
+
     unsigned countSent(uint64_t from, const std::string &type,
                        const std::string &reason = std::string()) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1572,6 +1587,253 @@ void answererSetupDeadlineBounded() {
     std::printf("answererSetupDeadlineBounded: ok\n");
 }
 
+/* W3 N4: the race mesh must not reuse the phones' 20 s human-in-the-loop
+ * offer deadline -- a relay-dropped offer recreates in single-digit seconds
+ * (kMdkrMatchOfferRetryDeadlineMs), 3 attempts kept. The phones' default is
+ * pinned separately by test_party_transport_retry. */
+void meshOfferLadderRetriesInSingleDigitSeconds() {
+    MeshHarness harness;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    harness.add(100u, 1u, roster);
+    harness.hub.addEndpoint(200u, 7u);
+    harness.hub.blackhole(200u, true); /* every offer vanishes in the relay */
+    harness.hub.welcome(100u);
+    assert(harness.pumpUntil([&]() {
+        return harness.hub.countSent(100u, "webrtc_offer") >= 1u;
+    }, 10000u));
+    /* Just under the mesh deadline (fake clock): no recreate yet. */
+    harness.clock.nowMs += kMdkrMatchOfferRetryDeadlineMs - 500u;
+    for (unsigned index = 0u; index < 10u; index++) {
+        harness.pumpOnce();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(harness.hub.countSent(100u, "webrtc_offer") == 1u);
+    /* Cross it: the second offer must appear WITHOUT 20 s of fake time. */
+    harness.clock.nowMs += 1000u;
+    assert(harness.pumpUntil([&]() {
+        return harness.hub.countSent(100u, "webrtc_offer") >= 2u;
+    }, 10000u));
+    std::printf("meshOfferLadderRetriesInSingleDigitSeconds: ok\n");
+}
+
+/* W3 N4: the answerer's bounded verdict drops with the ladder it mirrors
+ * (3 x the mesh deadline -- the offerer's total budget), so a failed
+ * pairing resolves in ~21 s instead of 60 s. */
+void meshAnswererVerdictWithinTheMeshBudget() {
+    MeshHarness harness;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({200u, 300u});
+    harness.add(300u, 3u, roster); /* higher id: pure answerer */
+    harness.hub.addEndpoint(200u, 2u);
+    harness.hub.welcome(300u);
+    harness.pumpOnce(); /* arm the setup deadline */
+    harness.clock.nowMs += 22000u; /* > 3 x 7 s, far under the old 60 s */
+    assert(harness.pumpUntil([&]() {
+        return harness.countEvents(300u,
+                   MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *lost = harness.lastEvent(
+        300u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+    assert(lost != nullptr &&
+           lost->lostReason == MdkrMatchPeerLostReason::ConnectTimeout);
+    std::printf("meshAnswererVerdictWithinTheMeshBudget: ok\n");
+}
+
+/* W3 CRITICAL-2: a peer-presence-bump rekey must refresh OUR OWN commitment
+ * (fresh nonce), not reuse the already-revealed one. Pre-fix, rekeyPeer left
+ * ownNonce/ownCommitment untouched on a peer bump, so our transcript
+ * contribution was a stable identity key + an already-public nonce -- fully
+ * known to the relay, which could then offline-grind ~2^20 fresh peer
+ * keypairs to force a colliding phrase a human would wave through. Observed
+ * on the wire: the local endpoint's round-1 commitment hello blob MUST
+ * differ before vs after the bump, and the phrase still converges across the
+ * pair on the re-derived transcript. */
+void peerBumpRefreshesLocalCommitment() {
+    PairHarness pair;
+    assert(pair.connect());
+    std::string phraseBefore;
+    assert(pair.low->phrase(phraseBefore));
+    const std::vector<std::string> lowHellosBefore =
+        pair.harness.hub.helloBlobs(100u);
+    assert(!lowHellosBefore.empty());
+    const std::string commitBefore = lowHellosBefore.front();
+    const size_t sentBefore = lowHellosBefore.size();
+
+    /* The peer (200) reconnects its signal socket: higher generation,
+     * announced to us as a presence bump; a replacement peer completes the
+     * fresh hello exchange at generation 5. Close the old real mesh first so
+     * addEndpoint can retire its borrowed feed safely (the 3-peer rekey
+     * test's discipline). */
+    pair.high->close();
+    pair.harness.hub.setGeneration(200u, 5u);
+    MdkrMatchSignalEvent bump;
+    bump.type = MdkrMatchSignalEventType::PeerPresence;
+    bump.endpointId = "200";
+    bump.connectionGeneration = 5u;
+    bump.present = true;
+    pair.harness.hub.inject(100u, bump);
+    FakeFeed *replacementFeed = pair.harness.hub.addEndpoint(200u, 5u);
+    HelloDriver replacement(200u, 5u, &pair.harness.hub, replacementFeed,
+                            {{100u, 1u}});
+    assert(pair.harness.pumpUntil([&]() {
+        replacement.pump();
+        return pair.harness.countEvents(
+                   100u, MdkrMatchPeerMeshEventType::PhraseReady) >= 2u;
+    }, 30000u));
+
+    /* Our round-1 commitment after the bump is a DIFFERENT blob: the local
+     * nonce was refreshed (pre-fix this was byte-identical to commitBefore). */
+    const std::vector<std::string> lowHellosAfter =
+        pair.harness.hub.helloBlobs(100u);
+    assert(lowHellosAfter.size() > sentBefore);
+    const std::string commitAfter = lowHellosAfter[sentBefore];
+    assert(commitAfter != commitBefore);
+
+    /* And the phrase converged on the new transcript -- fresh, not reused. */
+    std::string phraseLow;
+    assert(pair.low->phrase(phraseLow));
+    assert(!phraseLow.empty() && phraseLow != phraseBefore);
+    std::printf("peerBumpRefreshesLocalCommitment: ok\n");
+}
+
+/* W3 MINOR (batched-single-pump): a malicious relay can batch
+ * [presence-bump, hello1, hello2, hello3] into ONE feed drain, so the mesh's
+ * keysDerived flips false->true INSIDE a single pump() and an observer that
+ * only polls phrase() BETWEEN pumps never sees the retire window. This pins
+ * the property the adapter's digest-keyed detection relies on: after that one
+ * pump the phrase is available again (no refusal to observe) BUT the
+ * transcript digest has CHANGED -- so a digest compare arms the barrier where
+ * a phrase()-refusal poll would miss it entirely. */
+void batchedRewelcomeChangesDigestInOnePump() {
+    MeshHarness harness;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    MdkrMatchPeerMesh *mesh = harness.add(100u, 1u, roster);
+    FakeFeed *feed2 = harness.hub.addEndpoint(200u, 2u);
+    HelloDriver driver2(200u, 2u, &harness.hub, feed2, {{100u, 1u}});
+    harness.hub.welcome(100u);
+    assert(harness.pumpUntil([&]() {
+        driver2.pump();
+        return harness.countEvents(
+                   100u, MdkrMatchPeerMeshEventType::PhraseReady) >= 1u;
+    }));
+    uint8_t digestBefore[MDKR_MATCH_PEER_TRANSCRIPT_DIGEST_BYTES];
+    assert(mesh->transcriptDigest(digestBefore));
+    std::string phraseBefore;
+    assert(mesh->phrase(phraseBefore));
+
+    /* Queue the WHOLE re-welcome before a single pump: the peer's higher
+     * generation bump, then a fresh peer's three hellos back-to-back. */
+    harness.hub.setGeneration(200u, 5u);
+    MdkrMatchSignalEvent bump;
+    bump.type = MdkrMatchSignalEventType::PeerPresence;
+    bump.endpointId = "200";
+    bump.connectionGeneration = 5u;
+    bump.present = true;
+    harness.hub.inject(100u, bump);
+    FakeFeed *feed5 = harness.hub.addEndpoint(200u, 5u);
+    HelloDriver driver5(200u, 5u, &harness.hub, feed5, {{100u, 1u}});
+    const HelloDriver::Target &target = driver5.targets.front();
+    driver5.sendHello(target, driver5.blob(driver5.commitment.data()));
+    driver5.sendHello(target, mdkr_party::base64Url(driver5.publicKey.data(),
+                                                    driver5.publicKey.size()));
+    driver5.sendHello(target, driver5.blob(driver5.nonce.data()));
+
+    /* ONE pump: presence + all three hellos drain, deriveAll runs, keysDerived
+     * ends true -- phrase() never observed as refusing across pumps. */
+    mesh->pump();
+    std::vector<MdkrMatchPeerMeshEvent> drained;
+    mesh->drainEvents(drained);
+
+    std::string phraseAfter;
+    uint8_t digestAfter[MDKR_MATCH_PEER_TRANSCRIPT_DIGEST_BYTES];
+    assert(mesh->phrase(phraseAfter));          /* no refusal to observe */
+    assert(mesh->transcriptDigest(digestAfter));
+    assert(std::memcmp(digestBefore, digestAfter,
+                       sizeof(digestBefore)) != 0); /* 256-bit change */
+    std::printf("batchedRewelcomeChangesDigestInOnePump: ok\n");
+}
+
+/* W3 N6b (mesh half): the local endpoint's own signal socket dies (the
+ * feed's terminal Failure) and a REPLACEMENT socket's fresh welcome -- a
+ * strictly higher connection generation, the wire contract's first-class
+ * replacement shape -- arrives through the same feed. The mesh must adopt
+ * the new generation as its own replacement (fresh commitment, full pair
+ * rekey, fresh phrase, keys that still carry input), and -- the actual hole
+ * -- have its recovery ladders back: a later channel death must run the
+ * peer_end/restart ladder again instead of PeerLost(TransportFailed). */
+void reWelcomeAfterSignalLossRestoresRecoveryLadders() {
+    PairHarness pair;
+    assert(pair.connect());
+    std::string phraseBefore;
+    assert(pair.low->phrase(phraseBefore));
+
+    MdkrMatchSignalEvent failure;
+    failure.type = MdkrMatchSignalEventType::Failure;
+    failure.failureCode = kMdkrMatchSignalTransportLost;
+    pair.harness.hub.inject(100u, failure);
+    assert(pair.harness.pumpUntil([&]() {
+        return pair.harness.countEvents(
+                   100u, MdkrMatchPeerMeshEventType::Failure) >= 1u;
+    }, 5000u));
+
+    /* The service assigns the replacement socket generation 4 and
+     * announces it to the peer as a presence bump. */
+    pair.harness.hub.setGeneration(100u, 4u);
+    MdkrMatchSignalEvent bump;
+    bump.type = MdkrMatchSignalEventType::PeerPresence;
+    bump.endpointId = "100";
+    bump.connectionGeneration = 4u;
+    bump.present = true;
+    pair.harness.hub.inject(200u, bump);
+    pair.harness.hub.welcome(100u); /* the fresh welcome, generation 4 */
+
+    assert(pair.harness.pumpUntil([&]() {
+        return pair.harness.countEvents(
+                   100u, MdkrMatchPeerMeshEventType::PhraseReady) >= 2u &&
+               pair.harness.countEvents(
+                   200u, MdkrMatchPeerMeshEventType::PhraseReady) >= 2u &&
+               pair.harness.countEvents(
+                   100u, MdkrMatchPeerMeshEventType::PeerChannelsReady,
+                   200u) >= 2u &&
+               pair.harness.countEvents(
+                   200u, MdkrMatchPeerMeshEventType::PeerChannelsReady,
+                   100u) >= 2u;
+    }, 30000u));
+    assert(pair.low->connectionGeneration() == 4u);
+    std::string phraseLow;
+    std::string phraseHigh;
+    assert(pair.low->phrase(phraseLow));
+    assert(pair.high->phrase(phraseHigh));
+    assert(!phraseLow.empty() && phraseLow == phraseHigh);
+    assert(phraseLow != phraseBefore); /* a replaced endpoint re-keys */
+
+    /* Input crosses on the re-derived generation-4 keys. */
+    const auto payload = payloadFixture(0x66u);
+    assert(pair.low->sendInput(payload.data()) == 1u);
+    assert(pair.harness.pumpUntil([&]() {
+        return pair.harness.countEvents(
+                   200u, MdkrMatchPeerMeshEventType::InputEnvelope, 100u) >= 1u;
+    }));
+
+    /* THE hole: restarts must work again after the reconnect. */
+    const unsigned readyLow = pair.harness.countEvents(
+        100u, MdkrMatchPeerMeshEventType::PeerChannelsReady, 200u);
+    const unsigned readyHigh = pair.harness.countEvents(
+        200u, MdkrMatchPeerMeshEventType::PeerChannelsReady, 100u);
+    assert(mdkr_match_peer_mesh_kill_channels_for_test(*pair.low, 200u));
+    assert(pair.harness.pumpUntil([&]() {
+        return pair.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 200u) >
+                   readyLow &&
+               pair.harness.countEvents(200u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 100u) >
+                   readyHigh;
+    }, 30000u));
+    assert(pair.harness.hub.countSent(100u, "peer_end", "restart") >= 1u);
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerLost) == 0u);
+    std::printf("reWelcomeAfterSignalLossRestoresRecoveryLadders: ok\n");
+}
+
 }  // namespace
 
 int main() {
@@ -1593,6 +1855,12 @@ int main() {
     offCurveRevealIsPerPeerLoss();
     helloNonceSendFailureRetries();
     answererSetupDeadlineBounded();
+    /* W3 connection robustness. */
+    meshOfferLadderRetriesInSingleDigitSeconds();
+    meshAnswererVerdictWithinTheMeshBudget();
+    reWelcomeAfterSignalLossRestoresRecoveryLadders();
+    peerBumpRefreshesLocalCommitment();
+    batchedRewelcomeChangesDigestInOnePump();
     std::printf("all match_peer_transport cases passed\n");
     return 0;
 }

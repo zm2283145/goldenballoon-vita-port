@@ -1,0 +1,3 @@
+HTTP.1 200 OK
+
+{"accepted": true, "duplicate": false, "error": "ok", "replicate": false, "error": 0}

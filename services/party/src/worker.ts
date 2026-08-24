@@ -10,7 +10,8 @@ import {allowedOrigin, base64Url, boundCredential, constantTimeEqual, digest,
   fallbackCode, fromBase64Url, json, normalizeName, readJson,
   randomToken, validBoundCredential, validPartyOrigin} from "./security";
 import {stunIceServers} from "./turn";
-import {LIMITS, partyInviteRemainingMs, type Env} from "./types";
+import {LIMITS, partyInviteRemainingMs, singletonLocationHint,
+  type Env} from "./types";
 import {internalRequest} from "./internal-api";
 
 export {MatchRoom, PartyBudget, PartyCodeDirectory, PartyRoom};
@@ -78,7 +79,8 @@ async function budget(env: Env, kind: "pairing" | "control",
                       sourceDigest = ""): Promise<Response> {
   const day = new Date().toISOString().slice(0, 10);
   const id = env.PARTY_BUDGETS.idFromName(day);
-  const response = await env.PARTY_BUDGETS.get(id).fetch(
+  const response = await env.PARTY_BUDGETS.get(id,
+    {locationHint: singletonLocationHint(env)}).fetch(
     `https://budget/admit?kind=${kind}&units=${units}&operation=${operation}` +
     (sourceDigest ? `&source=${sourceDigest}` : ""),
     internalRequest({method: "POST"}));
@@ -109,7 +111,8 @@ async function operationsStatus(request: Request, env: Env,
   if (!constantTimeEqual(supplied, token)) return json({error: "unauthorized"}, 401);
   const day = new Date().toISOString().slice(0, 10);
   const id = env.PARTY_BUDGETS.idFromName(day);
-  const response = await env.PARTY_BUDGETS.get(id).fetch(`https://budget/${view}`,
+  const response = await env.PARTY_BUDGETS.get(id,
+    {locationHint: singletonLocationHint(env)}).fetch(`https://budget/${view}`,
     internalRequest());
   if (!response.ok) return json({error: "service_unavailable"}, 503);
   const snapshot = await response.json() as Record<string, unknown>;
@@ -121,7 +124,8 @@ function roomStub(env: Env, name: string): DurableObjectStub<PartyRoom> {
 }
 
 function codeStub(env: Env, directory = "v1"): DurableObjectStub<PartyCodeDirectory> {
-  return env.PARTY_CODES.get(env.PARTY_CODES.idFromName(directory));
+  return env.PARTY_CODES.get(env.PARTY_CODES.idFromName(directory),
+    {locationHint: singletonLocationHint(env)});
 }
 
 function matchStub(env: Env, name: string): DurableObjectStub<MatchRoom> {
@@ -646,14 +650,18 @@ function nativeReconnectProtocols(request: Request): boolean {
 async function nativeCreateSocket(request: Request, env: Env,
                                   hostPublicKey: string): Promise<Response> {
   /* Reuse the public create/connect contracts exactly while giving native one
-   * WSS dependency instead of introducing a second portable HTTP stack. */
-  const pairing = await budget(env, "pairing", 10, "partyCreate",
+   * WSS dependency instead of introducing a second portable HTTP stack.
+   *
+   * S3: one compound admission (pairing 10 + control 28, the exact units of
+   * the partyCreate + partySocket pair it replaces) instead of two serialized
+   * budget round trips on the bootstrap's critical path. The ordering
+   * contract is unchanged — the full create fanout AND the socket lifetime
+   * are reserved before any durable room state exists, so a refused reserve
+   * still cannot leave an unreachable orphan; atomicity in the budget object
+   * additionally means a refusal of either half charges neither. */
+  const admission = await budget(env, "pairing", 10, "partyNativeCreate",
     await createSource(request, env));
-  if (!pairing.ok) return pairing;
-  /* Reserve the full socket lifetime before creating durable room state. A
-   * closed control reserve therefore cannot leave an unreachable orphan. */
-  const socketControl = await budget(env, "control", 28, "partySocket");
-  if (!socketControl.ok) return socketControl;
+  if (!admission.ok) return admission;
   const created = await createRoomForKey(hostPublicKey, env, true);
   if (!created.ok) return created;
   const value = await created.json() as Record<string, unknown>;

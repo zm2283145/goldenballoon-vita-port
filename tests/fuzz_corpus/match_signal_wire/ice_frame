@@ -1,0 +1,1 @@
+Å~{"protocolVersion": 1, "type": "webrtc_ice", "sequence": 5, "toEndpointId": "101", "toConnectionGeneration": 7, "fromEndpointId": "202", "fromConnectionGeneration": 5, "candidate": "candidate:1 1 udp 1 10.0.0.1 9 typ host", "sdpMid": "0", "sdpMLineIndex": 0, "usernameFragment": null}

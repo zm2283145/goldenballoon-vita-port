@@ -140,12 +140,14 @@ struct MdkrMatchSignalTestServerState {
     std::mutex writeMutex;
 
     bool upgraded = false;
+    unsigned upgradeCount = 0u;
     std::string requestHead;
     std::string requestPath;
     std::vector<std::string> offered;
 
     std::vector<std::string> texts;
     std::vector<std::string> pongs;
+    std::vector<std::string> pings;
     std::atomic<bool> pauseReading{false};
     bool clientClosed = false;
     uint16_t closeCode = 0u;
@@ -206,7 +208,9 @@ bool MdkrMatchSignalTestServer::start() {
     const ProtocolMode mode = protocolMode;
     const bool respond = respondToUpgrade;
     const std::string extraHeader = extra101Header;
-    state->thread = std::thread([state, mode, respond, extraHeader]() {
+    const bool autoPong = autoPongClientPings;
+    state->thread = std::thread([state, mode, respond, extraHeader,
+                                 autoPong]() {
         while (!state->stopping) {
             struct sockaddr_in peer;
             socklen_t peerLength = sizeof(peer);
@@ -351,6 +355,7 @@ bool MdkrMatchSignalTestServer::start() {
             {
                 std::lock_guard<std::mutex> lock(state->mutex);
                 state->upgraded = true;
+                state->upgradeCount++;
                 state->condition.notify_all();
             }
 
@@ -473,8 +478,26 @@ bool MdkrMatchSignalTestServer::start() {
                 } else if (opcode == 0xau) {
                     state->pongs.push_back(std::move(payload));
                     state->condition.notify_all();
+                } else if (opcode == 0x9u) {
+                    /* Client-originated ping: recorded; answered with the
+                     * RFC pong echo only when the case opts in -- silence
+                     * is the half-open-death shape under test. */
+                    state->pings.push_back(payload);
+                    state->condition.notify_all();
+                    if (autoPong) {
+                        const std::string pong =
+                            buildServerFrame(0x8au, false, payload);
+                        std::lock_guard<std::mutex> writeLock(
+                            state->writeMutex);
+                        (void)::send(accepted, pong.data(),
+#ifdef _WIN32
+                                     static_cast<int>(pong.size()),
+#else
+                                     pong.size(),
+#endif
+                                     0);
+                    }
                 }
-                /* Client pings are ignored by the harness. */
             }
             {
                 std::lock_guard<std::mutex> lock(state->mutex);
@@ -514,6 +537,13 @@ bool MdkrMatchSignalTestServer::waitForUpgrade(unsigned budgetMs) {
 bool MdkrMatchSignalTestServer::waitForOpen(unsigned budgetMs) {
     auto state = state_;
     return state->waitUntil([&]() { return state->upgraded; }, budgetMs);
+}
+
+bool MdkrMatchSignalTestServer::waitForUpgrades(unsigned count,
+                                                unsigned budgetMs) {
+    auto state = state_;
+    return state->waitUntil(
+        [&]() { return state->upgradeCount >= count; }, budgetMs);
 }
 
 std::string MdkrMatchSignalTestServer::requestHeadRaw() const {
@@ -648,4 +678,15 @@ bool MdkrMatchSignalTestServer::waitForPongs(size_t count, unsigned budgetMs) {
 std::vector<std::string> MdkrMatchSignalTestServer::pongPayloads() const {
     std::lock_guard<std::mutex> lock(state_->mutex);
     return state_->pongs;
+}
+
+bool MdkrMatchSignalTestServer::waitForPings(size_t count, unsigned budgetMs) {
+    auto state = state_;
+    return state->waitUntil([&]() { return state->pings.size() >= count; },
+                            budgetMs);
+}
+
+std::vector<std::string> MdkrMatchSignalTestServer::pingPayloads() const {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    return state_->pings;
 }

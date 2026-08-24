@@ -36,6 +36,7 @@
 #ifndef MDKR_MATCH_SIGNAL_CLIENT_H
 #define MDKR_MATCH_SIGNAL_CLIENT_H
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -197,7 +198,49 @@ struct MdkrMatchSignalClientOptions {
     /* Welcome deadline; clamped to [2000, 30000] like the JS client
      * (0 selects the 10000 default). */
     unsigned timeoutMs = 10000u;
+    /* Client-originated liveness (W3 N6a; a native-only extension BELOW the
+     * mirrored JS validation surface -- a browser WebSocket cannot originate
+     * pings, so the reference client has none, and RFC 6455 5.5.2/5.5.3
+     * obliges the server to pong). After livenessIdleMs without ANY inbound
+     * byte the socket thread sends a masked ping; when nothing inbound
+     * follows within livenessTimeoutMs more, the transport is declared lost
+     * through the existing terminal path (signal_transport_lost), so a
+     * NAT-timed-out half-open socket can no longer report Open forever
+     * while ICE-restart recovery is silently dead. 0 selects the defaults
+     * (20000 / 10000 ms). */
+    unsigned livenessIdleMs = 0u;
+    unsigned livenessTimeoutMs = 0u;
 };
+
+/* ---- Test seams (the *_for_test convention of the party transport) -------
+ *
+ * Process-global, test-binary-only knobs over the client's resolver. The
+ * production launcher never calls them; they exist so the connect loop's
+ * address-budget and bounded-resolve behavior are pinned by wire-level tests
+ * instead of only being reachable against a broken home network.
+ */
+
+/* Prepend one numeric address to every subsequent resolution, ahead of the
+ * real getaddrinfo results -- the broken-AAAA-first household shape. An
+ * unroutable TEST-NET address here must cost at most the per-address budget,
+ * never the whole welcome deadline. Pass nullptr to clear. */
+void mdkr_match_signal_client_prepend_address_for_test(const char *ip,
+                                                       uint16_t port);
+
+/* Stall every subsequent resolution by `ms` before it completes -- the DNS
+ * outage shape. close() must still return promptly (the resolver is
+ * deadline-bounded and abandoned, never joined). 0 clears. */
+void mdkr_match_signal_client_stall_resolver_for_test(unsigned ms);
+
+/* ---- Fuzz seam (W3 N7) ---------------------------------------------------
+ *
+ * Drives the EXACT shipped parsers -- the RFC 6455 server-frame extractor
+ * and the server-message validation state machine (parse + generation/
+ * sequence/high-water rules) -- over arbitrary bytes, with no socket and no
+ * thread. Compiled unconditionally (small, unreferenced and stripped in
+ * production links) so the fuzzer can never drift onto a copy of the
+ * parser. Entry point for tests/fuzz_match_signal_wire.cpp. */
+void mdkr_match_signal_fuzz_wire(const uint8_t *data, size_t size);
 
 class MdkrMatchSignalClient {
 public:
@@ -247,6 +290,11 @@ private:
     struct State;
     explicit MdkrMatchSignalClient(std::shared_ptr<State> state);
     std::shared_ptr<State> state_;
+
+    /* The N7 fuzz seam exercises the private message-validation state
+     * machine directly (no socket, no thread). */
+    friend void ::mdkr_match_signal_fuzz_wire(const uint8_t *data,
+                                              size_t size);
 };
 
 #endif /* MDKR_MATCH_SIGNAL_CLIENT_H */

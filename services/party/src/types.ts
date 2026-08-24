@@ -49,6 +49,32 @@ export interface Env {
    * absence is a supported deployment that serves STUN-only iceServers. */
   TURN_KEY_ID?: string;
   TURN_API_TOKEN?: string;
+  /* Optional region override for the singleton placement hint below. Kept
+   * optional so it can be introduced per deployment (wrangler var or secret)
+   * without a tracked-config change; absence means the code default. */
+  SINGLETON_LOCATION_HINT?: string;
+}
+
+/* The per-day budget object (`idFromName(day)`) and the code directories
+ * ("v1"/"match-v1") are global singletons on every hot path. Without a hint
+ * their placement is wherever the day's (or deployment's) first request
+ * landed — random with respect to any given player, up to another continent
+ * of tail latency on every serialized budget/code hop, all day. Every
+ * singleton `.get()` passes this hint so the object is created near the
+ * primary audience region; room objects stay creator-local and unhinted.
+ * The hint only affects first creation and is advisory by contract, so a
+ * malformed override degrades to the default rather than failing a request. */
+export const SINGLETON_LOCATION_HINTS = Object.freeze([
+  "wnam", "enam", "sam", "weur", "eeur", "apac", "oc", "afr", "me",
+] as const);
+export type SingletonLocationHint = typeof SINGLETON_LOCATION_HINTS[number];
+export const DEFAULT_SINGLETON_LOCATION_HINT: SingletonLocationHint = "wnam";
+
+export function singletonLocationHint(env: Env): SingletonLocationHint {
+  const value = env.SINGLETON_LOCATION_HINT;
+  return typeof value === "string" &&
+    (SINGLETON_LOCATION_HINTS as readonly string[]).includes(value)
+    ? value as SingletonLocationHint : DEFAULT_SINGLETON_LOCATION_HINT;
 }
 
 export interface StoredController {

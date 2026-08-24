@@ -2,8 +2,9 @@ import {env} from "cloudflare:workers";
 import {runInDurableObject} from "cloudflare:test";
 import {describe, expect, it} from "vitest";
 import {INTERNAL_API_HEADER} from "../src/internal-api";
-import {TURN_TTL_MS, mintTurnIceServers, reserveTurnMint, roomIceServers,
-  stunIceServers, turnConfigured} from "../src/turn";
+import {TURN_REFRESH_LOCKOUT_MS, TURN_TTL_MS, mintTurnIceServers,
+  reserveTurnMint, roomIceServers, stunIceServers, turnConfigured}
+  from "../src/turn";
 import type {Env} from "../src/types";
 
 const bindings = env as unknown as Env;
@@ -159,42 +160,174 @@ describe("zero-cost TURN credential minting", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it("re-mints once less than half the TTL window remains", async () => {
+  /* F2 remedy contract: the half-TTL refresh serves the still-valid cached
+   * credentials immediately (≥ TTL/2 validity remains at the refresh point)
+   * and re-mints in the background — never inside the caller's join/redeem
+   * response. The seams.background hook is how these tests observe the
+   * floating task the production DO simply lets run. */
+  it("re-mints once less than half the TTL window remains, in the background",
+      async () => {
     const {calls, fetcher} = mintStub(201, providerResponse);
     const now = Date.now();
+    const staleEntries = [{urls: ["turn:turn.cloudflare.com:3478?transport=udp"],
+      username: "stale-user", credential: "stale-secret"}];
+    const tasks: Promise<boolean>[] = [];
     await scratchStorage("turn-refresh-unit", async storage => {
-      await storage.put("turnIceServers", {iceServers: [{
-        urls: ["turn:turn.cloudflare.com:3478?transport=udp"],
-        username: "stale-user", credential: "stale-secret",
-      }], expiresAt: now + TURN_TTL_MS / 2 - 1});
+      await storage.put("turnIceServers",
+        {iceServers: staleEntries, expiresAt: now + TURN_TTL_MS / 2 - 1});
       const served = await roomIceServers(turnEnv, storage,
-        {reserve: async () => true, fetcher, now});
-      expect(served).toEqual([...stunEntries, ...mintedEntries]);
+        {reserve: async () => true, fetcher, now,
+          background: task => tasks.push(task)});
+      /* The caller gets the still-valid cached set, not the refresh. */
+      expect(served).toEqual([...stunEntries, ...staleEntries]);
+      expect(tasks).toHaveLength(1);
+      expect(await tasks[0]!).toBe(true);
+      /* The background refresh landed the fresh set for later joins. */
+      const refreshed = await roomIceServers(turnEnv, storage,
+        {reserve: async () => {
+          throw new Error("a refreshed cache hit must not charge the budget");
+        }, fetcher: refusingFetcher(), now: now + 1_000});
+      expect(refreshed).toEqual([...stunEntries, ...mintedEntries]);
     });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("never blocks a join/redeem response on a slow refresh mint", async () => {
+    const now = Date.now();
+    const staleEntries = [{urls: ["turn:turn.cloudflare.com:3478?transport=udp"],
+      username: "stale-user", credential: "stale-secret"}];
+    let releaseMint = () => {};
+    const mintGate = new Promise<void>(resolve => { releaseMint = resolve; });
+    const calls: {url: string}[] = [];
+    const fetcher = (async (input: RequestInfo | URL) => {
+      calls.push({url: String(input)});
+      await mintGate;
+      return new Response(JSON.stringify(providerResponse), {status: 201});
+    }) as typeof fetch;
+    const tasks: Promise<boolean>[] = [];
+    await scratchStorage("turn-nonblocking-unit", async storage => {
+      await storage.put("turnIceServers",
+        {iceServers: staleEntries, expiresAt: now + 60_000});
+      /* The provider is still hanging (up to its 5 s cap in production); the
+       * room's answer must win this race with the cached credentials. */
+      const raced = await Promise.race([
+        roomIceServers(turnEnv, storage, {reserve: async () => true, fetcher,
+          now, background: task => tasks.push(task)}),
+        new Promise(resolve =>
+          setTimeout(() => resolve("mint_blocked_the_response"), 250)),
+      ]);
+      expect(raced).toEqual([...stunEntries, ...staleEntries]);
+      releaseMint();
+      expect(tasks).toHaveLength(1);
+      expect(await tasks[0]!).toBe(true);
+      expect(await storage.get("turnIceServers")).toEqual(
+        {iceServers: mintedEntries, expiresAt: now + TURN_TTL_MS});
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("keeps the background refresh single-flight inside one live object",
+      async () => {
+    const now = Date.now();
+    const staleEntries = [{urls: ["turn:turn.cloudflare.com:3478?transport=udp"],
+      username: "stale-user", credential: "stale-secret"}];
+    const {calls, fetcher} = mintStub(201, providerResponse);
+    let reserves = 0;
+    const tasks: Promise<boolean>[] = [];
+    await scratchStorage("turn-single-flight-unit", async storage => {
+      await storage.put("turnIceServers",
+        {iceServers: staleEntries, expiresAt: now + 60_000});
+      const seams = {reserve: async () => { reserves++; return true; }, fetcher,
+        now, background: (task: Promise<boolean>) => tasks.push(task)};
+      const [first, second] = await Promise.all([
+        roomIceServers(turnEnv, storage, seams),
+        roomIceServers(turnEnv, storage, seams),
+      ]);
+      expect(first).toEqual([...stunEntries, ...staleEntries]);
+      expect(second).toEqual([...stunEntries, ...staleEntries]);
+      await Promise.all(tasks);
+    });
+    /* Two concurrent stale serves, ONE charged mint. */
+    expect(reserves).toBe(1);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("survives hibernation losing the in-memory flag: the stored refresh " +
+     "stamp still gates a rehydrated object", async () => {
+    const now = Date.now();
+    const staleEntries = [{urls: ["turn:turn.cloudflare.com:3478?transport=udp"],
+      username: "stale-user", credential: "stale-secret"}];
+    let releaseMint = () => {};
+    const mintGate = new Promise<void>(resolve => { releaseMint = resolve; });
+    let reserves = 0;
+    const calls: {url: string}[] = [];
+    const fetcher = (async (input: RequestInfo | URL) => {
+      calls.push({url: String(input)});
+      await mintGate;
+      return new Response(JSON.stringify(providerResponse), {status: 201});
+    }) as typeof fetch;
+    await scratchStorage("turn-hibernation-unit", async storage => {
+      await storage.put("turnIceServers",
+        {iceServers: staleEntries, expiresAt: now + 60_000});
+      const tasks: Promise<boolean>[] = [];
+      let noteReserveCharged = () => {};
+      const reserveCharged = new Promise<void>(resolve => {
+        noteReserveCharged = resolve;
+      });
+      const first = await roomIceServers(turnEnv, storage,
+        {reserve: async () => {
+          reserves++;
+          noteReserveCharged();
+          return true;
+        }, fetcher, now, background: task => tasks.push(task)});
+      expect(first).toEqual([...stunEntries, ...staleEntries]);
+      /* The reserve runs only after the refresh stamp is durable, so a
+       * rehydrated object (fresh in-memory state over the same storage — the
+       * facade's new identity models the post-hibernation object) must fall
+       * back to the stamp and start no second mint while one is in flight. */
+      await reserveCharged;
+      expect(reserves).toBe(1);
+      const rehydrated = {
+        get: (key: string) => storage.get(key),
+        put: (key: string, value: unknown) => storage.put(key, value),
+      } as unknown as DurableObjectStorage;
+      const tasksAfterWake: Promise<boolean>[] = [];
+      const second = await roomIceServers(turnEnv, rehydrated,
+        {reserve: async () => { reserves++; return true; },
+          fetcher: refusingFetcher(calls),
+          now: now + TURN_REFRESH_LOCKOUT_MS - 1,
+          background: task => tasksAfterWake.push(task)});
+      expect(second).toEqual([...stunEntries, ...staleEntries]);
+      for (const task of tasksAfterWake) expect(await task).toBe(false);
+      releaseMint();
+      await Promise.all(tasks);
+      expect(await storage.get("turnIceServers")).toEqual(
+        {iceServers: mintedEntries, expiresAt: now + TURN_TTL_MS});
+    });
+    expect(reserves).toBe(1);
     expect(calls).toHaveLength(1);
   });
 
   it("degrades a refused or failed refresh to the best still-valid answer", async () => {
     const now = Date.now();
+    const staleEntries = [{urls: ["turn:turn.cloudflare.com:3478?transport=udp"],
+      username: "stale-user", credential: "stale-secret"}];
     await scratchStorage("turn-refusal-unit", async storage => {
       /* Budget refusal with nothing cached: STUN-only, and no provider call
        * because a refusal must charge and cost nothing. */
       const refused = await roomIceServers(turnEnv, storage,
         {reserve: async () => false, fetcher: refusingFetcher(), now});
       expect(refused).toEqual(stunEntries);
-      /* Budget refusal with unexpired credentials cached: keep serving them. */
-      const staleEntries = [{urls: ["turn:turn.cloudflare.com:3478?transport=udp"],
-        username: "stale-user", credential: "stale-secret"}];
+      /* Budget refusal with unexpired credentials cached: keep serving them;
+       * the refused background refresh charges nothing and mints nothing. */
       await storage.put("turnIceServers",
         {iceServers: staleEntries, expiresAt: now + 60_000});
+      const tasks: Promise<boolean>[] = [];
       const refusedWithCache = await roomIceServers(turnEnv, storage,
-        {reserve: async () => false, fetcher: refusingFetcher(), now});
+        {reserve: async () => false, fetcher: refusingFetcher(), now,
+          background: task => tasks.push(task)});
       expect(refusedWithCache).toEqual([...stunEntries, ...staleEntries]);
-      /* Provider failure during a refresh: same degradation ladder. */
-      const {fetcher: failing} = mintStub(500, {error: "unavailable"});
-      const failedRefresh = await roomIceServers(turnEnv, storage,
-        {reserve: async () => true, fetcher: failing, now});
-      expect(failedRefresh).toEqual([...stunEntries, ...staleEntries]);
+      for (const task of tasks) expect(await task).toBe(false);
       /* An expired or corrupt record is never served. */
       await storage.put("turnIceServers",
         {iceServers: staleEntries, expiresAt: now - 1});
@@ -206,6 +339,22 @@ describe("zero-cost TURN credential minting", () => {
       const corrupt = await roomIceServers(turnEnv, storage,
         {reserve: async () => false, fetcher: refusingFetcher(), now});
       expect(corrupt).toEqual(stunEntries);
+    });
+    /* Provider failure during a background refresh: the caller already got
+     * the cached set; the failed task leaves it in place for the next join. */
+    await scratchStorage("turn-failed-refresh-unit", async storage => {
+      await storage.put("turnIceServers",
+        {iceServers: staleEntries, expiresAt: now + 60_000});
+      const {fetcher: failing} = mintStub(500, {error: "unavailable"});
+      const tasks: Promise<boolean>[] = [];
+      const failedRefresh = await roomIceServers(turnEnv, storage,
+        {reserve: async () => true, fetcher: failing, now,
+          background: task => tasks.push(task)});
+      expect(failedRefresh).toEqual([...stunEntries, ...staleEntries]);
+      expect(tasks).toHaveLength(1);
+      expect(await tasks[0]!).toBe(false);
+      expect(await storage.get("turnIceServers")).toEqual(
+        {iceServers: staleEntries, expiresAt: now + 60_000});
     });
   });
 

@@ -9,6 +9,7 @@ using SocketHandle = SOCKET;
 #include <cerrno>
 #include <ifaddrs.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -1150,6 +1151,17 @@ void acceptLoop(std::shared_ptr<MdkrLanPartyServerState> state) {
         if (ready <= 0) continue;
         const SocketHandle client = ::accept(listenFd, nullptr, nullptr);
         if (client == kInvalidSocket) continue;
+        {
+            /* Disable Nagle immediately post-accept: every frame this server
+             * writes is small (control JSON, WS frames), and Nagle + the
+             * phone's delayed ACK adds tens of ms per exchange during
+             * pairing. Set-failure is non-fatal -- coalescing merely stays
+             * on (the SO_NOSIGPIPE discipline in setSocketTimeouts). */
+            int noDelay = 1;
+            (void)::setsockopt(client, IPPROTO_TCP, TCP_NODELAY,
+                               reinterpret_cast<const char *>(&noDelay),
+                               sizeof(noDelay));
+        }
         auto connection = std::make_shared<Connection>();
         connection->fd = client;
         bool admitted = false;

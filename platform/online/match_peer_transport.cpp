@@ -322,9 +322,53 @@ struct MdkrMatchPeerMesh::State
         emit(std::move(event));
     }
 
+    /* Draw a fresh local commit nonce and recompute our round-1 commitment
+     * for the current generation (the handleReWelcome discipline). Called on
+     * EVERY transcript-retiring rekey so our contribution to the next
+     * transcript carries fresh, unrevealed entropy. */
+    void refreshOwnCommitment() {
+        if (!secureRandom(ownNonce, sizeof(ownNonce)) ||
+            !mdkr_match_peer_commitment(matchEpoch, localEndpointId,
+                                        localGeneration, ownNonce,
+                                        ownPublicKey, ownCommitment)) {
+            ownCommitmentReady = false;
+            failed = true;
+            emitFailure(MdkrMatchPeerMeshFailure::KeyScheduleFailed);
+            return;
+        }
+        ownCommitmentReady = true;
+    }
+
     /* A generation change is a replaced peer: retire keys AND channels,
-     * restart the hello exchange, compare a new phrase later. */
+     * restart the hello exchange, compare a new phrase later.
+     *
+     * W3 CRITICAL-2 -- local entropy on a rekey. A rekey retires the whole
+     * transcript, and our contribution to the NEXT one must be fresh: reusing
+     * our already-revealed nonce leaves it fully known to the relay, which
+     * could then offline-grind a colliding phrase past a human. We refresh
+     * our nonce only when it propagates CONSISTENTLY to every endpoint, i.e.
+     * when we re-exchange hellos with everyone that would carry our new
+     * contribution:
+     *   - OUR OWN reconnect (handleReWelcome): our generation bumped, so the
+     *     relay announces us to EVERY peer, each resets its us-lane, and we
+     *     re-exchange with all of them. handleReWelcome refreshes there and
+     *     resets every lane, so this holds for any mesh size.
+     *   - a PEER's reconnect (applyPresence -> here) in a TWO-endpoint mesh:
+     *     the bumped peer is our only peer and it reset its us-lane when it
+     *     re-welcomed, so re-exchanging just that lane propagates our fresh
+     *     contribution to the whole (2-node) transcript. Refresh here.
+     * In a 3-4P mesh a single peer's bump does NOT change our generation, so
+     * bystanders never reset their us-lane and cannot accept a re-hello
+     * (RFC-style hello-sequence restart = HelloViolation), and our refreshed
+     * self-entry could not reach them without diverging the digest. So we
+     * keep our nonce on a peer-bump there and rely on the reconnecting peer's
+     * own fresh entropy plus the adapter's digest-keyed re-verify barrier;
+     * full per-peer-bump grind resistance for 3-4P needs the post-flip
+     * full-mesh-rekey protocol and is tracked with that work. 2P -- the
+     * shipping config -- is fully closed. */
     void rekeyPeer(PeerRuntime &peer, uint32_t generation) {
+        const bool retireTranscript = keysDerived;
+        const bool soleOtherPeer = peers.size() == 1u;
         peer.generation = generation;
         peer.hellosSent = 0u;
         peer.hellosReceived = 0u;
@@ -337,13 +381,14 @@ struct MdkrMatchPeerMesh::State
         peer.restartEpisodes = 0u;
         peer.lost = false;
         silentTeardown(peer);
-        if (keysDerived) {
+        if (retireTranscript) {
             /* Every pairwise key was salted with the old transcript digest;
              * all of them retire together and re-derive when the exchange
              * completes again. */
             keysDerived = false;
             verificationPhrase.clear();
             mdkr_match_peer_keyring_forget(&keyring);
+            if (soleOtherPeer) refreshOwnCommitment(); /* fresh local entropy */
             for (auto &entry : peers) {
                 entry.second.sealKey = nullptr;
                 entry.second.openKey = nullptr;
@@ -567,9 +612,55 @@ struct MdkrMatchPeerMesh::State
         return &found->second;
     }
 
+    /* W3 N6b: the LOCAL endpoint's replacement signal socket. Replacement
+     * sockets are first-class in the wire contract (the service assigns the
+     * fresh socket a strictly higher connection generation and announces it
+     * to peers as a presence bump), and the peer-side half of this already
+     * existed (applyPresence -> rekeyPeer). This is the missing local half:
+     * a second welcome after a signal loss means WE are the replaced
+     * endpoint -- adopt the new generation, recommit the (unchanged) mesh
+     * key under it with a fresh nonce, restart every pairwise exchange, and
+     * un-latch the signal-health flag so connectionDown() can run the
+     * peer_end/restart ladder again instead of PeerLost(TransportFailed).
+     * The launcher's expectedLocalGeneration pin applies to the FIRST
+     * welcome only: a replacement's generation is service-assigned and
+     * necessarily different. */
+    void handleReWelcome(const MdkrMatchSignalEvent &event) {
+        uint64_t id = 0u;
+        if (!parseEndpointId(event.endpointId, id) || id != localEndpointId ||
+            event.connectionGeneration <= localGeneration) {
+            /* A replayed or stale welcome can never move the mesh. */
+            counters.ignoredStaleSignals++;
+            return;
+        }
+        localGeneration = event.connectionGeneration;
+        if (!secureRandom(ownNonce, sizeof(ownNonce)) ||
+            !mdkr_match_peer_commitment(matchEpoch, localEndpointId,
+                                        localGeneration, ownNonce,
+                                        ownPublicKey, ownCommitment)) {
+            failed = true;
+            emitFailure(MdkrMatchPeerMeshFailure::KeyScheduleFailed);
+            return;
+        }
+        ownCommitmentReady = true;
+        signalHealthy = true;
+        signalLossReported = false;
+        /* Every pairwise exchange restarts: peers rekey us on the presence
+         * bump, and rekeyPeer here retires all transcript-salted keys
+         * (keysDerived drops until the exchange completes again). */
+        for (auto &entry : peers) {
+            PeerRuntime &peer = entry.second;
+            rekeyPeer(peer, peer.generation);
+            peer.present = false; /* the welcome's peer list re-asserts */
+        }
+        for (const MdkrMatchSignalPeerRef &ref : event.peers) {
+            applyPresence(ref.endpointId, ref.connectionGeneration, true);
+        }
+    }
+
     void handleWelcome(const MdkrMatchSignalEvent &event) {
         if (welcomed) {
-            counters.ignoredStaleSignals++;
+            handleReWelcome(event);
             return;
         }
         uint64_t id = 0u;
@@ -1144,12 +1235,15 @@ struct MdkrMatchPeerMesh::State
                 if (!peer.connection) {
                     createConnection(peer);
                 } else if (!peer.channelsReady) {
+                    /* W3 N4: the shared 3-attempt ladder on the MESH
+                     * deadline -- the phones keep their 20 s default. */
                     const MdkrPartyRetryDecision decision =
                         mdkr_party_retry_decide(
                             nowMs, peer.offerSentMs, peer.offerAttempts,
                             /*authenticated=*/false,
                             /*protocolMismatched=*/false,
-                            /*socketOpen=*/false);
+                            /*socketOpen=*/false,
+                            kMdkrMatchOfferRetryDeadlineMs);
                     if (decision.giveUp) {
                         peer.gaveUp = true;
                         peerLost(peer, MdkrMatchPeerLostReason::ConnectTimeout);
@@ -1445,6 +1539,13 @@ bool MdkrMatchPeerMesh::peerGeneration(uint64_t peerEndpointId,
     }
     *out = found->second.generation;
     return true;
+}
+
+bool MdkrMatchPeerMesh::peerChannelsReady(uint64_t peerEndpointId) const {
+    if (!state_) return false;
+    const auto found = state_->peers.find(peerEndpointId);
+    return found != state_->peers.end() && !found->second.lost &&
+           found->second.channelsReady;
 }
 
 MdkrMatchPeerMeshStats MdkrMatchPeerMesh::stats() const {

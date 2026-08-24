@@ -209,6 +209,10 @@ int race(IMdkrOnlineAdapter *adapter, const Options &options) {
     uint64_t lastNarrate = 0u;
 
     while (nowMs() < g_deadline) {
+        /* Pump ordering is load-bearing (match_live_adapter.h integration
+         * contract): service() folds remote input BEFORE this frame's
+         * advance/drain, keeping every remote input at most one service()
+         * old. Do not reorder. */
         adapter->service();
         MdkrOnlineLiveRaceInfo cur{};
         mdkr_online_live_adapter_race_info(adapter, &cur);

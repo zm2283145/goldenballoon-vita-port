@@ -38,3 +38,6 @@ lib/sdl_gamecontrollerdb/** linguist-vendored
 # The repository is public and keeps normal history. `export-ignore` is not a
 # privacy mechanism; private working material belongs outside tracked paths and
 # is rejected by tools/check_public_surface.py before commit, push, and in CI.
+# Fuzz seed corpora are byte-exact wire vectors (HTTP CRLF framing, raw
+# WebSocket frames): never text-normalize them.
+tests/fuzz_corpus/** binary

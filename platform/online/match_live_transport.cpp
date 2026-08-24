@@ -32,6 +32,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -42,9 +43,12 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -60,6 +64,24 @@ using Json = nlohmann::json;
 constexpr uint64_t kConnectTimeoutMs = 8000u;
 constexpr uint64_t kWriteTimeoutMs = 8000u;
 constexpr uint32_t kPollSliceMs = 100u;
+/* Per-address connect cap (N3, the match_signal_client discipline): one
+ * blackholed address costs at most min(this, remaining/addresses-left). */
+constexpr uint64_t kPerAddressConnectCapMs = 3500u;
+/* /connect + /signal reconnect ladder (N1/N6b): the party resume ladder's
+ * shape -- exponential from 300 ms, capped, bounded attempts, then the
+ * existing terminal path. */
+constexpr uint64_t kReconnectBaseDelayMs = 300u;
+constexpr uint64_t kReconnectMaxDelayMs = 5000u;
+constexpr unsigned kReconnectMaxAttempts = 6u;
+
+uint64_t reconnectDelayMs(unsigned failedAttempts) {
+    const unsigned exponent =
+        failedAttempts > 0u ? (failedAttempts - 1u < 5u ? failedAttempts - 1u
+                                                        : 5u)
+                            : 0u;
+    const uint64_t delay = kReconnectBaseDelayMs << exponent;
+    return delay > kReconnectMaxDelayMs ? kReconnectMaxDelayMs : delay;
+}
 /* Total assembled-message cap across continuation frames (memory-DoS guard) --
  * a lobby snapshot is a few KiB; 256 KiB is generous and fails closed above. */
 constexpr size_t kMaxWsMessageBytes = 256u * 1024u;
@@ -102,6 +124,149 @@ bool setBlocking(SocketFd fd, bool blocking) {
 }
 #endif
 
+/* ---- Resolution (seamed for tests; see match_live_transport.h) -----------
+ * Mirrors match_signal_client.cpp's resolver discipline; kept file-local
+ * because these two clients deliberately share no translation unit. */
+
+struct ResolvedAddress {
+    int family = AF_UNSPEC;
+    int socktype = SOCK_STREAM;
+    int protocol = IPPROTO_TCP;
+    struct sockaddr_storage storage {};
+    socklen_t length = 0u;
+};
+
+std::mutex &resolverSeamMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+std::string g_prependAddressForTest;      /* guarded by resolverSeamMutex() */
+uint16_t g_prependPortForTest = 0u;       /* guarded by resolverSeamMutex() */
+std::atomic<unsigned> g_resolverStallMsForTest{0u};
+
+void appendAddrinfo(const struct addrinfo *results,
+                    std::vector<ResolvedAddress> &out) {
+    for (const struct addrinfo *entry = results; entry != nullptr;
+         entry = entry->ai_next) {
+        if (entry->ai_addrlen == 0u ||
+            entry->ai_addrlen > sizeof(struct sockaddr_storage)) {
+            continue;
+        }
+        ResolvedAddress address;
+        address.family = entry->ai_family;
+        address.socktype = entry->ai_socktype;
+        address.protocol = entry->ai_protocol;
+        std::memcpy(&address.storage, entry->ai_addr, entry->ai_addrlen);
+        address.length = static_cast<socklen_t>(entry->ai_addrlen);
+        out.push_back(address);
+    }
+}
+
+bool prependTestAddress(uint16_t port, std::vector<ResolvedAddress> &out) {
+    std::string ip;
+    uint16_t overridePort = 0u;
+    {
+        std::lock_guard<std::mutex> lock(resolverSeamMutex());
+        ip = g_prependAddressForTest;
+        overridePort = g_prependPortForTest;
+    }
+    if (ip.empty()) return false;
+    ResolvedAddress address;
+    struct sockaddr_in *v4 =
+        reinterpret_cast<struct sockaddr_in *>(&address.storage);
+    std::memset(v4, 0, sizeof(*v4));
+    if (::inet_pton(AF_INET, ip.c_str(), &v4->sin_addr) != 1) return false;
+    v4->sin_family = AF_INET;
+    v4->sin_port = htons(overridePort != 0u ? overridePort : port);
+    address.family = AF_INET;
+    address.length = static_cast<socklen_t>(sizeof(*v4));
+    out.push_back(address);
+    return true;
+}
+
+/* Resolve on a detached helper thread, polled in kPollSliceMs slices against
+ * the deadline and the abort flag (N6c): getaddrinfo is uninterruptible, and
+ * it used to run directly on the worker thread that close() joins, so a DNS
+ * outage could freeze the launcher for the resolver timeout. On give-up the
+ * helper is ABANDONED (it frees its own result), never joined. Same
+ * detached-resolver choice as match_signal_client.cpp and for the same
+ * reason: pre-resolving before thread start would just move the identical
+ * synchronous hit onto the launcher thread. */
+struct ResolveTask {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+    bool abandoned = false;
+    int rc = -1;
+    struct addrinfo *results = nullptr;
+};
+/* Abandoned helpers accumulate only until their getaddrinfo returns (the
+ * resolver timeout, worst case ~30 s), and new ones are minted only by
+ * connect attempts, which the reconnect ladders bound (<= 6 per outage per
+ * socket) -- so the in-principle-unbounded detached threads are ladder-
+ * bounded in practice and each self-frees its result. */
+
+bool resolveAddresses(const std::string &host, const std::string &port,
+                      uint64_t deadlineMs, const std::atomic<bool> *abort,
+                      std::vector<ResolvedAddress> &out) {
+    out.clear();
+    uint16_t numericPort = 0u;
+    for (const char c : port) {
+        numericPort = static_cast<uint16_t>(numericPort * 10u +
+                                            static_cast<uint16_t>(c - '0'));
+    }
+    (void)prependTestAddress(numericPort, out);
+    auto task = std::make_shared<ResolveTask>();
+    const unsigned stallMs = g_resolverStallMsForTest.load();
+    std::thread helper([task, host, port, stallMs]() {
+        if (stallMs != 0u) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(stallMs));
+        }
+        struct addrinfo hints;
+        std::memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_protocol = IPPROTO_TCP;
+        struct addrinfo *results = nullptr;
+        const int rc = ::getaddrinfo(host.c_str(), port.c_str(), &hints,
+                                     &results);
+        std::lock_guard<std::mutex> lock(task->mutex);
+        if (task->abandoned) {
+            if (results != nullptr) ::freeaddrinfo(results);
+        } else {
+            task->rc = rc;
+            task->results = results;
+        }
+        task->done = true;
+        task->cv.notify_all();
+    });
+    helper.detach();
+
+    struct addrinfo *results = nullptr;
+    int rc = -1;
+    {
+        std::unique_lock<std::mutex> lock(task->mutex);
+        while (!task->done) {
+            if ((abort != nullptr && abort->load()) ||
+                nowMs() >= deadlineMs) {
+                task->abandoned = true;
+                return !out.empty(); /* only a test prepend, if any */
+            }
+            task->cv.wait_for(lock, std::chrono::milliseconds(kPollSliceMs));
+        }
+        rc = task->rc;
+        results = task->results;
+        task->results = nullptr;
+    }
+    if (rc != 0 || results == nullptr) {
+        if (results != nullptr) ::freeaddrinfo(results);
+        return !out.empty();
+    }
+    appendAddrinfo(results, out);
+    ::freeaddrinfo(results);
+    return !out.empty();
+}
+
 /* Deadline- and abort-aware TCP connect (O-T1 connectTcp discipline): a
  * non-blocking connect polled in short slices, so an unreachable host stops at
  * the deadline and a close() during connect aborts within one slice. Returns
@@ -111,21 +276,30 @@ SocketFd connectWithDeadline(const std::string &host, const std::string &port,
                              uint64_t deadlineMs,
                              const std::atomic<bool> *abort) {
     ensureNetStartup();
-    struct addrinfo hints;
-    std::memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-    struct addrinfo *results = nullptr;
-    if (::getaddrinfo(host.c_str(), port.c_str(), &hints, &results) != 0 ||
-        results == nullptr) {
-        if (results != nullptr) ::freeaddrinfo(results);
+    std::vector<ResolvedAddress> addresses;
+    if (!resolveAddresses(host, port, deadlineMs, abort, addresses) ||
+        addresses.empty()) {
         return kBadSocket;
     }
     SocketFd fd = kBadSocket;
-    for (struct addrinfo *entry = results; entry != nullptr;
-         entry = entry->ai_next) {
-        fd = ::socket(entry->ai_family, entry->ai_socktype, entry->ai_protocol);
+    for (size_t index = 0u; index < addresses.size(); index++) {
+        /* N3 per-address budget: min(cap, remaining/left), so a blackholed
+         * first address (broken-IPv6 household) costs one slice and the
+         * loop falls through to the rest of the list; the overall deadline
+         * still bounds the whole connect. DELIBERATE edge: a single-address
+         * host is also capped at 3.5 s even when the caller's deadline is
+         * longer -- a healthy TCP handshake completes orders of magnitude
+         * faster, so past the cap the address is a blackhole and the faster
+         * typed failure beats waiting out the full budget. */
+        const uint64_t nowAtEntry = nowMs();
+        if (nowAtEntry >= deadlineMs) break;
+        const uint64_t remaining = deadlineMs - nowAtEntry;
+        uint64_t slice = remaining / (addresses.size() - index);
+        if (slice == 0u) slice = remaining;
+        if (slice > kPerAddressConnectCapMs) slice = kPerAddressConnectCapMs;
+        const uint64_t addressDeadlineMs = nowAtEntry + slice;
+        const ResolvedAddress &entry = addresses[index];
+        fd = ::socket(entry.family, entry.socktype, entry.protocol);
         if (fd == kBadSocket) continue;
 #ifdef SO_NOSIGPIPE
         int one = 1;
@@ -137,8 +311,9 @@ SocketFd connectWithDeadline(const std::string &host, const std::string &port,
             fd = kBadSocket;
             continue;
         }
-        const int rc = ::connect(fd, entry->ai_addr,
-                                 static_cast<socklen_t>(entry->ai_addrlen));
+        const int rc = ::connect(
+            fd, reinterpret_cast<const struct sockaddr *>(&entry.storage),
+            entry.length);
         bool pending = false;
         if (rc != 0) {
 #ifdef _WIN32
@@ -154,7 +329,7 @@ SocketFd connectWithDeadline(const std::string &host, const std::string &port,
         }
         bool established = !pending;
         while (pending && (abort == nullptr || !abort->load())) {
-            if (nowMs() >= deadlineMs) break;
+            if (nowMs() >= addressDeadlineMs) break;
 #ifdef _WIN32
             fd_set writable;
             FD_ZERO(&writable);
@@ -181,12 +356,22 @@ SocketFd connectWithDeadline(const std::string &host, const std::string &port,
             }
             break;
         }
-        if (established && setBlocking(fd, true)) break;
+        if (established && setBlocking(fd, true)) {
+            /* Disable Nagle immediately post-connect: lobby commands and
+             * /connect state frames are all small (~300 B), and Nagle +
+             * delayed ACK adds up to ~40-200 ms per request against the
+             * live service. Set-failure is non-fatal -- coalescing merely
+             * stays on (the SO_NOSIGPIPE discipline above). */
+            int noDelay = 1;
+            (void)::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
+                               reinterpret_cast<const char *>(&noDelay),
+                               sizeof(noDelay));
+            break;
+        }
         closeSocket(fd);
         fd = kBadSocket;
         if (abort != nullptr && abort->load()) break;
     }
-    ::freeaddrinfo(results);
     return fd;
 }
 
@@ -448,6 +633,43 @@ std::string base64(const uint8_t *data, size_t len) {
     return out;
 }
 
+/* HTTP/1.1 response parse (status line + optional chunked decode), factored
+ * out of httpRequest so the N7 fuzzer drives the EXACT shipped parser.
+ * Semantics unchanged: false until a complete head has arrived. */
+bool parseHttpResponse(const std::string &raw, int &statusOut,
+                       std::string &bodyOut) {
+    if (raw.empty()) return false;
+    const size_t headerEnd = raw.find("\r\n\r\n");
+    if (headerEnd == std::string::npos) return false;
+    const std::string statusLine = raw.substr(0, raw.find("\r\n"));
+    const size_t sp = statusLine.find(' ');
+    if (sp == std::string::npos) return false;
+    statusOut = std::atoi(statusLine.c_str() + sp + 1);
+    std::string bodyPart = raw.substr(headerEnd + 4u);
+    /* Chunked transfer decode if present, else the body is verbatim. */
+    if (raw.substr(0, headerEnd).find("Transfer-Encoding: chunked") !=
+            std::string::npos ||
+        raw.substr(0, headerEnd).find("transfer-encoding: chunked") !=
+            std::string::npos) {
+        std::string decoded;
+        size_t p = 0u;
+        while (p < bodyPart.size()) {
+            const size_t eol = bodyPart.find("\r\n", p);
+            if (eol == std::string::npos) break;
+            const long size = std::strtol(bodyPart.substr(p, eol - p).c_str(),
+                                          nullptr, 16);
+            if (size <= 0) break;
+            p = eol + 2u;
+            if (p + static_cast<size_t>(size) > bodyPart.size()) break;
+            decoded.append(bodyPart, p, static_cast<size_t>(size));
+            p += static_cast<size_t>(size) + 2u;
+        }
+        bodyPart = decoded;
+    }
+    bodyOut = bodyPart;
+    return true;
+}
+
 HttpResult httpRequest(const ParsedOrigin &origin, const std::string &method,
                        const std::string &path, const std::string *body,
                        const std::string *credential,
@@ -485,40 +707,60 @@ HttpResult httpRequest(const ParsedOrigin &origin, const std::string &method,
         if (n == 0) continue;
         raw.append(reinterpret_cast<char *>(buf), static_cast<size_t>(n));
     }
-    if (raw.empty()) return result;
-    const size_t headerEnd = raw.find("\r\n\r\n");
-    if (headerEnd == std::string::npos) return result;
-    const std::string statusLine = raw.substr(0, raw.find("\r\n"));
-    const size_t sp = statusLine.find(' ');
-    if (sp == std::string::npos) return result;
-    result.status = std::atoi(statusLine.c_str() + sp + 1);
-    std::string bodyPart = raw.substr(headerEnd + 4u);
-    /* Chunked transfer decode if present, else the body is verbatim. */
-    if (raw.substr(0, headerEnd).find("Transfer-Encoding: chunked") !=
-            std::string::npos ||
-        raw.substr(0, headerEnd).find("transfer-encoding: chunked") !=
-            std::string::npos) {
-        std::string decoded;
-        size_t p = 0u;
-        while (p < bodyPart.size()) {
-            const size_t eol = bodyPart.find("\r\n", p);
-            if (eol == std::string::npos) break;
-            const long size = std::strtol(bodyPart.substr(p, eol - p).c_str(),
-                                          nullptr, 16);
-            if (size <= 0) break;
-            p = eol + 2u;
-            if (p + static_cast<size_t>(size) > bodyPart.size()) break;
-            decoded.append(bodyPart, p, static_cast<size_t>(size));
-            p += static_cast<size_t>(size) + 2u;
-        }
-        bodyPart = decoded;
-    }
-    result.body = bodyPart;
+    if (!parseHttpResponse(raw, result.status, result.body)) return result;
     result.ok = true;
     return result;
 }
 
 /* ---- RFC 6455 client for /connect (read-only, masked control replies) ----- */
+
+/* One byte-level decode step over the buffered inbound bytes -- the
+ * WsConnection frame parser, factored out so the N7 fuzzer drives the EXACT
+ * shipped parser. Semantics unchanged: RSV bits, a masked server frame, or
+ * a frame declaring more than 1 MiB is a Violation; NeedMore reports the
+ * total bytes required (`needed`) so the caller's stall-bounded fill keeps
+ * its exact behavior; Frame sets `consumed` for the caller to erase. */
+enum class WsFrameStatus { NeedMore, Frame, Violation };
+struct WsFrameOut {
+    bool fin = false;
+    uint8_t opcode = 0u;
+    std::string payload;
+    size_t needed = 0u;
+};
+
+WsFrameStatus wsDecodeFrame(const std::vector<uint8_t> &inbound,
+                            WsFrameOut &out, size_t &consumed) {
+    out.needed = 2u;
+    if (inbound.size() < 2u) return WsFrameStatus::NeedMore;
+    const uint8_t b0 = inbound[0];
+    const uint8_t b1 = inbound[1];
+    if ((b0 & 0x70u) != 0u) return WsFrameStatus::Violation; /* RSV set */
+    if ((b1 & 0x80u) != 0u) return WsFrameStatus::Violation; /* masked */
+    uint64_t len = b1 & 0x7fu;
+    size_t headerLen = 2u;
+    if (len == 126u) headerLen = 4u;
+    else if (len == 127u) headerLen = 10u;
+    out.needed = headerLen;
+    if (inbound.size() < headerLen) return WsFrameStatus::NeedMore;
+    if (headerLen == 4u) {
+        len = (static_cast<uint64_t>(inbound[2]) << 8) | inbound[3];
+    } else if (headerLen == 10u) {
+        len = 0u;
+        for (unsigned i = 0u; i < 8u; ++i) {
+            len = (len << 8) | inbound[2u + i];
+        }
+    }
+    if (len > (1u << 20)) return WsFrameStatus::Violation;
+    out.needed = headerLen + static_cast<size_t>(len);
+    if (inbound.size() < out.needed) return WsFrameStatus::NeedMore;
+    out.fin = (b0 & 0x80u) != 0u;
+    out.opcode = b0 & 0x0fu;
+    out.payload.assign(inbound.begin() + static_cast<long>(headerLen),
+                       inbound.begin() +
+                           static_cast<long>(headerLen + len));
+    consumed = out.needed;
+    return WsFrameStatus::Frame;
+}
 
 class WsConnection {
 public:
@@ -604,7 +846,19 @@ public:
                 textOut = std::move(payload);
                 return Poll::Text;
             }
-            if (opcode == 0x8u) return Poll::Closed; /* close */
+            if (opcode == 0x8u) { /* close */
+                /* Keep the application close code + reason so the service
+                 * loop can tell a worker-contract 4000-class close (room
+                 * gone: terminal) from a transport-shaped drop (reconnect). */
+                if (payload.size() >= 2u) {
+                    closeCode_ = static_cast<uint16_t>(
+                        (static_cast<uint16_t>(
+                             static_cast<uint8_t>(payload[0])) << 8u) |
+                        static_cast<uint8_t>(payload[1]));
+                    closeReason_ = payload.substr(2u);
+                }
+                return Poll::Closed;
+            }
             if (opcode == 0x9u) {                     /* ping -> pong */
                 sendControl(0xAu, payload);
                 continue;
@@ -612,6 +866,11 @@ public:
             /* pong / continuation of a non-text message: ignore. */
         }
     }
+
+    /* Application close code from a received close frame; 0 when the socket
+     * died without one (EOF/reset/stall -- the transport-shaped closes). */
+    uint16_t closeCode() const { return closeCode_; }
+    const std::string &closeReason() const { return closeReason_; }
 
     void close() {
         if (open_) {
@@ -667,7 +926,10 @@ private:
     }
 
     /* Returns 1 with (opcode,payload), 0 on quiet, -1 on close/error/stall.
-     * Assembles a fragmented message under a total cap. */
+     * Assembles a fragmented message under a total cap. The byte-level
+     * decode is the shared wsDecodeFrame (the N7 fuzzer drives the same
+     * function); this wrapper owns the stall-bounded fill and the
+     * cross-frame assembly cap, both unchanged. */
     int readFrame(uint8_t &opcodeOut, std::string &payloadOut,
                   uint32_t timeoutMs) {
         std::string message;
@@ -675,52 +937,34 @@ private:
         bool started = false;
         uint64_t midFrameDeadline = 0u;
         for (;;) {
-            int got = ensure(2u, timeoutMs, started, midFrameDeadline);
-            if (got <= 0) return got;
-            const uint8_t b0 = inbound_[0];
-            const uint8_t b1 = inbound_[1];
-            const bool fin = (b0 & 0x80u) != 0u;
-            if ((b0 & 0x70u) != 0u) return -1;   /* RSV1-3 set, no extension */
-            const uint8_t opcode = b0 & 0x0fu;
-            if ((b1 & 0x80u) != 0u) return -1;   /* server frames must not mask */
-            uint64_t len = b1 & 0x7fu;
-            size_t headerLen = 2u;
-            if (len == 126u) headerLen = 4u;
-            else if (len == 127u) headerLen = 10u;
-            got = ensure(headerLen, timeoutMs, true, midFrameDeadline);
-            if (got <= 0) return got;
-            if (headerLen == 4u) {
-                len = (static_cast<uint64_t>(inbound_[2]) << 8) | inbound_[3];
-            } else if (headerLen == 10u) {
-                len = 0u;
-                for (unsigned i = 0u; i < 8u; ++i) {
-                    len = (len << 8) | inbound_[2u + i];
-                }
+            WsFrameOut frame;
+            size_t consumed = 0u;
+            const WsFrameStatus status =
+                wsDecodeFrame(inbound_, frame, consumed);
+            if (status == WsFrameStatus::Violation) return -1;
+            if (status == WsFrameStatus::NeedMore) {
+                const int got = ensure(frame.needed, timeoutMs, started,
+                                       midFrameDeadline);
+                if (got <= 0) return got;
+                continue;
             }
-            if (len > (1u << 20)) return -1;
-            got = ensure(headerLen + static_cast<size_t>(len), timeoutMs, true,
-                         midFrameDeadline);
-            if (got <= 0) return got;
-            std::string payload(inbound_.begin() +
-                                    static_cast<long>(headerLen),
-                                inbound_.begin() +
-                                    static_cast<long>(headerLen + len));
             inbound_.erase(inbound_.begin(),
-                           inbound_.begin() +
-                               static_cast<long>(headerLen + len));
-            if (opcode >= 0x8u) { /* control frame delivered immediately */
-                opcodeOut = opcode;
-                payloadOut = std::move(payload);
+                           inbound_.begin() + static_cast<long>(consumed));
+            if (frame.opcode >= 0x8u) { /* control frame delivered now */
+                opcodeOut = frame.opcode;
+                payloadOut = std::move(frame.payload);
                 return 1;
             }
             if (!started) {
                 started = true;
-                firstOpcode = opcode; /* 0x1 text / 0x2 binary */
+                firstOpcode = frame.opcode; /* 0x1 text / 0x2 binary */
             }
             /* Total-message cap across continuation frames (memory-DoS guard). */
-            if (message.size() + payload.size() > kMaxWsMessageBytes) return -1;
-            message += payload;
-            if (fin) {
+            if (message.size() + frame.payload.size() > kMaxWsMessageBytes) {
+                return -1;
+            }
+            message += frame.payload;
+            if (frame.fin) {
                 opcodeOut = firstOpcode;
                 payloadOut = std::move(message);
                 return 1;
@@ -752,9 +996,39 @@ private:
     const std::atomic<bool> *abort_ = nullptr;
     bool open_ = false;
     bool closed_ = false;
+    uint16_t closeCode_ = 0u;
+    std::string closeReason_;
 };
 
 /* ---- JSON -> MdkrOnlineLobby -------------------------------------------- */
+
+/* Bounded u32 field read (the signal client's jsonU32 semantics: integers
+ * and INTEGRAL floats in range; anything else reads as the fallback).
+ * nlohmann's own value(key, 0u) static_casts a float straight to unsigned,
+ * which is UB for out-of-range values -- flagged by the N7 UBSan fuzz lane
+ * (4.4e19 into `revision`). */
+uint32_t readU32(const Json &object, const char *key, uint32_t fallback) {
+    if (!object.is_object()) return fallback;
+    const auto it = object.find(key);
+    if (it == object.end()) return fallback;
+    if (it->is_number_unsigned()) {
+        const uint64_t raw = it->get<uint64_t>();
+        return raw <= 0xffffffffull ? static_cast<uint32_t>(raw) : fallback;
+    }
+    if (it->is_number_integer()) {
+        const int64_t raw = it->get<int64_t>();
+        return raw >= 0 && raw <= 0xffffffffll ? static_cast<uint32_t>(raw)
+                                               : fallback;
+    }
+    if (it->is_number_float()) {
+        const double raw = it->get<double>();
+        if (!(raw >= 0.0) || raw > 4294967295.0 || std::floor(raw) != raw) {
+            return fallback;
+        }
+        return static_cast<uint32_t>(raw);
+    }
+    return fallback;
+}
 
 bool parseU64(const Json &value, uint64_t &out) {
     if (value.is_string()) {
@@ -800,10 +1074,10 @@ bool parseLobby(const Json &root, MdkrOnlineLobby &lobby) {
     const Json &l = root["lobby"];
     std::memset(&lobby, 0, sizeof(lobby));
     try {
-        lobby.protocol_version = l.value("protocolVersion", 0u);
-        lobby.revision = l.value("revision", 0u);
-        lobby.match_epoch = l.value("matchEpoch", 0u);
-        lobby.leader_generation = l.value("leaderGeneration", 0u);
+        lobby.protocol_version = readU32(l, "protocolVersion", 0u);
+        lobby.revision = readU32(l, "revision", 0u);
+        lobby.match_epoch = readU32(l, "matchEpoch", 0u);
+        lobby.leader_generation = readU32(l, "leaderGeneration", 0u);
         if (!parseU64(l.at("roomId"), lobby.room_id) ||
             !parseU64(l.at("leaderEndpointId"), lobby.leader_endpoint_id)) {
             return false;
@@ -815,16 +1089,16 @@ bool parseLobby(const Json &root, MdkrOnlineLobby &lobby) {
         }
         lobby.phase = phase;
         const Json &c = l.at("compatibility");
-        lobby.compatibility.protocol_version = c.value("protocolVersion", 0u);
+        lobby.compatibility.protocol_version = readU32(c, "protocolVersion", 0u);
         if (!parseByteArray(c.at("buildId"), lobby.compatibility.build_id, 16u) ||
             !parseByteArray(c.at("gameplayDigest"),
                             lobby.compatibility.gameplay_digest, 32u)) {
             return false;
         }
         lobby.compatibility.rom_revision =
-            static_cast<uint8_t>(c.value("romRevision", 0u));
+            static_cast<uint8_t>(readU32(c, "romRevision", 0u));
         lobby.compatibility.cadence_hz =
-            static_cast<uint8_t>(c.value("cadenceHz", 0u));
+            static_cast<uint8_t>(readU32(c, "cadenceHz", 0u));
 
         const Json &members = l.at("members");
         if (!members.is_array() || members.empty() ||
@@ -837,7 +1111,7 @@ bool parseLobby(const Json &root, MdkrOnlineLobby &lobby) {
                 return false;
             }
             m.seat_count =
-                static_cast<uint8_t>(members[i].value("seatCount", 0u));
+                static_cast<uint8_t>(readU32(members[i], "seatCount", 0u));
             m.connected = members[i].value("connected", false);
             m.ready = members[i].value("ready", false);
             m.loaded = members[i].value("loaded", false);
@@ -855,9 +1129,9 @@ bool parseLobby(const Json &root, MdkrOnlineLobby &lobby) {
             if (!parseU64(seats[i].at("endpointId"), s.endpoint_id)) {
                 return false;
             }
-            s.selection_revision = seats[i].value("selectionRevision", 0u);
+            s.selection_revision = readU32(seats[i], "selectionRevision", 0u);
             s.local_index =
-                static_cast<uint8_t>(seats[i].value("localIndex", 0u));
+                static_cast<uint8_t>(readU32(seats[i], "localIndex", 0u));
             const Json &vote = seats[i].value("voteTrack", Json());
             s.vote_track = vote.is_number_integer() || vote.is_number_unsigned()
                                ? static_cast<uint16_t>(vote.get<unsigned>())
@@ -880,7 +1154,7 @@ bool parseLobby(const Json &root, MdkrOnlineLobby &lobby) {
                 ? static_cast<uint16_t>(track.get<unsigned>())
                 : MDKR_ONLINE_NO_VOTE;
         lobby.selected_vehicle_mask =
-            static_cast<uint8_t>(l.value("selectedVehicleMask", 0u));
+            static_cast<uint8_t>(readU32(l, "selectedVehicleMask", 0u));
         lobby.next_receipt = 0u;
     } catch (...) {
         return false;
@@ -894,8 +1168,14 @@ void parseIceServers(const Json &root,
     if (!root.contains("iceServers") || !root["iceServers"].is_array()) return;
     for (const Json &entry : root["iceServers"]) {
         if (!entry.is_object() || !entry.contains("urls")) continue;
-        std::string username = entry.value("username", std::string());
-        std::string credential = entry.value("credential", std::string());
+        /* Json-default value() + typed read: a wrong-typed username or
+         * credential is skipped, never a worker-thread throw (N7). */
+        const Json user = entry.value("username", Json());
+        const Json cred = entry.value("credential", Json());
+        std::string username =
+            user.is_string() ? user.get<std::string>() : std::string();
+        std::string credential =
+            cred.is_string() ? cred.get<std::string>() : std::string();
         const Json &urls = entry["urls"];
         auto push = [&](const std::string &url) {
             MdkrMatchPeerIceServer server;
@@ -928,6 +1208,29 @@ MdkrOnlineError mapMatchError(const std::string &code) {
         return MDKR_ONLINE_ERROR_SELECTION_CONFLICT;
     if (code == "illegal_vehicle") return MDKR_ONLINE_ERROR_ILLEGAL_VEHICLE;
     return MDKR_ONLINE_ERROR_PROTOCOL;
+}
+
+/* Step extraction for a /command response body (drainCommands' shape,
+ * shared with the N7 fuzz seam so the two can never drift). The WHOLE parse
+ * sits behind one catch: nlohmann's value() throws type_error.302 when a
+ * key is present with the wrong type ({"error": 0}), and pre-N7 that throw
+ * escaped the worker thread as std::terminate -- found by the online-wire
+ * fuzzer at exec #352448 of its first smoke. A wrong-typed field is the
+ * same typed PROTOCOL refusal as unparseable JSON. */
+void parseCommandStep(const std::string &body, MdkrOnlineStep &step) {
+    try {
+        const Json root = Json::parse(body);
+        step.accepted = root.value("accepted", false);
+        step.duplicate = root.value("duplicate", false);
+        step.error =
+            mapMatchError(root.value("error", std::string("protocol")));
+        step.revision = readU32(root, "revision", 0u);
+        step.match_epoch = readU32(root, "matchEpoch", 0u);
+    } catch (...) {
+        step = MdkrOnlineStep{};
+        step.accepted = false;
+        step.error = MDKR_ONLINE_ERROR_PROTOCOL;
+    }
 }
 
 const char *commandTypeName(MdkrOnlineCommandType type) {
@@ -1138,8 +1441,17 @@ private:
             invite_.roomId = roomId;
             invite_.credential = credential;
             invite_.endpointId = endpointId;
-            invite_.fallbackCode = root.value("fallbackCode", std::string());
-            invite_.inviteUrl = root.value("inviteUrl", std::string());
+            /* Json-default value(): no conversion, so a wrong-typed field
+             * can never throw here (the N7 hazard); non-strings read as
+             * absent. */
+            const Json fallback = root.value("fallbackCode", Json());
+            invite_.fallbackCode =
+                fallback.is_string() ? fallback.get<std::string>()
+                                     : std::string();
+            const Json inviteUrl = root.value("inviteUrl", Json());
+            invite_.inviteUrl = inviteUrl.is_string()
+                                    ? inviteUrl.get<std::string>()
+                                    : std::string();
         }
 
         roomId_ = roomId;
@@ -1164,32 +1476,89 @@ private:
         serviceLoop();
     }
 
+    /* The /connect service loop (W3 N1).
+     *
+     * A transport-shaped loss of the push socket (EOF/reset, a stalled
+     * frame, a failed open) is NOT the room ending: reopen it on the party
+     * ladder's shape (300 ms doubling to 5 s, kReconnectMaxAttempts
+     * consecutive failed opens) with the same credential. The fresh socket
+     * re-delivers the current state and lastRevision_ dedupe makes that
+     * idempotent, so nothing above this loop ever observes the blip.
+     * Application closes are different: the worker ends /connect with a
+     * 4000-class code (match-room.ts: 4000 room_expired / host_closed,
+     * 4001 membership/replacement, 4003 protocol) -- those are the service
+     * declaring this subscription over, so they stay terminal immediately
+     * and the ladder never reopens a room the service closed. Ladder
+     * exhaustion lands on the same pre-existing terminal HOST_CLOSED path
+     * a close used to take. Commands keep draining over HTTP between
+     * reopen attempts. */
     void serviceLoop() {
-        WsConnection ws;
         const std::string path = "/api/match/" + roomId_ + "/connect";
-        if (!ws.open(origin_, path, "gb-match-v1", "gb-match." + credential_,
-                     &aborting_)) {
-            /* The lobby is usable over HTTP polling even if the push socket
-             * failed; surface a soft recovery instead of tearing the room. */
-            enqueueFailure(MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK);
-        }
+        std::unique_ptr<WsConnection> ws;
+        bool wsOpen = false;
+        bool everOpened = false;
+        unsigned failedOpens = 0u;
+        uint64_t nextOpenAtMs = nowMs();
         while (true) {
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (stop_) break;
             }
             drainCommands();
+            if (!wsOpen) {
+                if (nowMs() < nextOpenAtMs) {
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(20));
+                    continue;
+                }
+                ws.reset(new WsConnection());
+                if (ws->open(origin_, path, "gb-match-v1",
+                             "gb-match." + credential_, &aborting_)) {
+                    wsOpen = true;
+                    everOpened = true;
+                    failedOpens = 0u;
+                    continue;
+                }
+                ws.reset();
+                if (aborting_.load()) break;
+                ++failedOpens;
+                if (!everOpened && failedOpens == 1u) {
+                    /* The lobby is usable over HTTP while the ladder runs;
+                     * surface a soft recovery instead of tearing the room
+                     * (the pre-existing first-open behavior). */
+                    enqueueFailure(MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK);
+                }
+                if (failedOpens >= kReconnectMaxAttempts) {
+                    enqueueFailure(MDKR_ONLINE_VIEW_FAILURE_HOST_CLOSED);
+                    break;
+                }
+                nextOpenAtMs = nowMs() + reconnectDelayMs(failedOpens);
+                continue;
+            }
             std::string text;
-            const WsConnection::Poll p = ws.poll(text, 40u);
+            const WsConnection::Poll p = ws->poll(text, 40u);
             if (p == WsConnection::Poll::Closed) {
-                enqueueFailure(MDKR_ONLINE_VIEW_FAILURE_HOST_CLOSED);
-                break;
+                const uint16_t code = ws->closeCode();
+                const std::string reason = ws->closeReason();
+                ws->close();
+                ws.reset();
+                wsOpen = false;
+                if (roomClosedSeen_) break; /* failure already delivered */
+                if (code >= 4000u && code <= 4999u) {
+                    enqueueFailure(
+                        reason == "room_expired"
+                            ? MDKR_ONLINE_VIEW_FAILURE_ROOM_EXPIRED
+                            : MDKR_ONLINE_VIEW_FAILURE_HOST_CLOSED);
+                    break;
+                }
+                nextOpenAtMs = nowMs() + kReconnectBaseDelayMs;
+                continue;
             }
             if (p == WsConnection::Poll::Text) {
                 applyStateFrame(text);
             }
         }
-        ws.close();
+        if (ws) ws->close();
     }
 
     void applyStateFrame(const std::string &text) {
@@ -1199,9 +1568,17 @@ private:
         } catch (...) {
             return;
         }
+        /* value() on a non-object throws (type_error.306), and that throw
+         * would escape into the worker thread: a state frame that is valid
+         * JSON but not an object is just ignored. Found while wiring the
+         * N7 fuzz lane over this parser; the lane pins the shape. */
+        if (!root.is_object()) return;
         if (root.value("closedReason", Json()).is_string()) {
             const std::string reason =
                 root["closedReason"].get<std::string>();
+            /* The room itself ended: latch it so the WS close that follows
+             * is treated as terminal, never re-laddered (N1). */
+            roomClosedSeen_ = true;
             enqueueFailure(reason == "room_expired"
                                ? MDKR_ONLINE_VIEW_FAILURE_ROOM_EXPIRED
                                : MDKR_ONLINE_VIEW_FAILURE_HOST_CLOSED);
@@ -1248,21 +1625,7 @@ private:
                 enqueue(std::move(ev));
                 continue;
             }
-            Json root;
-            try {
-                root = Json::parse(res.body);
-            } catch (...) {
-                ev.step.accepted = false;
-                ev.step.error = MDKR_ONLINE_ERROR_PROTOCOL;
-                enqueue(std::move(ev));
-                continue;
-            }
-            ev.step.accepted = root.value("accepted", false);
-            ev.step.duplicate = root.value("duplicate", false);
-            ev.step.error =
-                mapMatchError(root.value("error", std::string("protocol")));
-            ev.step.revision = root.value("revision", 0u);
-            ev.step.match_epoch = root.value("matchEpoch", 0u);
+            parseCommandStep(res.body, ev.step);
             enqueue(std::move(ev));
         }
     }
@@ -1307,11 +1670,104 @@ private:
     std::string credential_;
     uint64_t localEndpointId_ = 0u;
     uint32_t lastRevision_ = 0u;
+    bool roomClosedSeen_ = false;
 
     std::thread worker_;
 };
 
 /* ---- The mesh signal backend -------------------------------------------- */
+
+/* W3 N6b: the /signal socket's replacement path. The signal client itself is
+ * deliberately one-shot (the JS reference client's contract: any terminal
+ * failure latches), and replacement sockets are first-class in the wire
+ * contract (docs/ref/match-signaling-v1.md: the service assigns the fresh
+ * socket a HIGHER connection generation and announces it to peers as
+ * presence). The mesh borrows exactly one MdkrMatchPeerSignalFeed pointer
+ * for its whole life, so replacement lives HERE, inside the feed: when the
+ * current client fails (silent death surfaces via its liveness ping, N6a),
+ * the Failure event flows through to the mesh (which reports the SignalLost
+ * status), and this feed then mints a replacement client on the party
+ * ladder's shape (300 ms doubling to 5 s, kReconnectMaxAttempts consecutive
+ * failures). The replacement's welcome -- the fresh generation -- reaches
+ * the mesh through the same feed, which re-arms every recovery ladder
+ * (match_peer_transport handleWelcome's re-welcome path). Launcher-thread
+ * only, like every feed. */
+class ReconnectingSignalFeed final : public MdkrMatchPeerSignalFeed {
+public:
+    explicit ReconnectingSignalFeed(MdkrMatchSignalClientOptions options)
+        : options_(std::move(options)) {}
+    ~ReconnectingSignalFeed() override {
+        if (client_) client_->close();
+    }
+
+    bool start(std::string *error) {
+        client_ = MdkrMatchSignalClient::create(options_, error);
+        if (!client_) return false;
+        std::string code;
+        if (!client_->connect(&code)) {
+            if (error != nullptr) *error = code;
+            client_.reset();
+            return false;
+        }
+        return true;
+    }
+
+    MdkrMatchSignalSendResult send(
+        const MdkrMatchSignalOutbound &message) override {
+        if (!client_) {
+            MdkrMatchSignalSendResult refused;
+            refused.error = kMdkrMatchSignalNotConnected;
+            return refused;
+        }
+        return client_->send(message);
+    }
+
+    void drainEvents(std::vector<MdkrMatchSignalEvent> &out) override {
+        out.clear();
+        if (client_) client_->drainEvents(out);
+        for (const MdkrMatchSignalEvent &event : out) {
+            if (event.type == MdkrMatchSignalEventType::Failure) {
+                scheduleReplacement();
+            } else if (event.type == MdkrMatchSignalEventType::Welcome) {
+                /* Healthy (again): the ladder re-arms from scratch. */
+                failedAttempts_ = 0u;
+                replacementDue_ = false;
+            }
+        }
+        if (replacementDue_ && nowMs() >= nextAttemptAtMs_) {
+            replacementDue_ = false;
+            replaceClient();
+        }
+    }
+
+private:
+    void scheduleReplacement() {
+        if (failedAttempts_ >= kReconnectMaxAttempts) return; /* gave up */
+        ++failedAttempts_;
+        replacementDue_ = true;
+        nextAttemptAtMs_ = nowMs() + reconnectDelayMs(failedAttempts_);
+    }
+
+    void replaceClient() {
+        if (client_) client_->close();
+        client_.reset();
+        client_ = MdkrMatchSignalClient::create(options_, nullptr);
+        std::string code;
+        if (client_ != nullptr && client_->connect(&code)) {
+            /* The outcome arrives on the queue: Welcome resets the ladder,
+             * Failure schedules the next bounded rung. */
+            return;
+        }
+        client_.reset();
+        scheduleReplacement();
+    }
+
+    MdkrMatchSignalClientOptions options_;
+    std::unique_ptr<MdkrMatchSignalClient> client_;
+    unsigned failedAttempts_ = 0u;
+    bool replacementDue_ = false;
+    uint64_t nextAttemptAtMs_ = 0u;
+};
 
 class MeshSignalClientBackend final : public MdkrOnlineMeshSignalBackend {
 public:
@@ -1330,30 +1786,20 @@ public:
         options.roomId = roomId;
         options.endpointId = std::to_string(localEndpointId);
         options.credential = credential;
+        feed_.reset(new ReconnectingSignalFeed(std::move(options)));
         std::string error;
-        client_ = MdkrMatchSignalClient::create(options, &error);
-        if (!client_) return nullptr;
-        std::string code;
-        if (!client_->connect(&code)) {
-            client_.reset();
+        if (!feed_->start(&error)) {
+            feed_.reset();
             return nullptr;
         }
-        feed_.reset(new MdkrMatchSignalClientFeed(client_.get()));
         return feed_.get();
     }
 
-    void reset() override {
-        feed_.reset();
-        if (client_) {
-            client_->close();
-            client_.reset();
-        }
-    }
+    void reset() override { feed_.reset(); }
 
 private:
     std::string origin_;
-    std::unique_ptr<MdkrMatchSignalClient> client_;
-    std::unique_ptr<MdkrMatchSignalClientFeed> feed_;
+    std::unique_ptr<ReconnectingSignalFeed> feed_;
 };
 
 }  // namespace
@@ -1380,4 +1826,72 @@ std::unique_ptr<MdkrOnlineMeshSignalBackend>
 mdkr_online_mesh_signal_backend_create(const std::string &origin) {
     return std::unique_ptr<MdkrOnlineMeshSignalBackend>(
         new MeshSignalClientBackend(origin));
+}
+
+/* ---- Test seams (declarations in match_live_transport.h) ------------------ */
+
+void mdkr_online_room_transport_prepend_address_for_test(const char *ip,
+                                                         uint16_t port) {
+    std::lock_guard<std::mutex> lock(resolverSeamMutex());
+    g_prependAddressForTest = ip != nullptr ? ip : "";
+    g_prependPortForTest = port;
+}
+
+void mdkr_online_room_transport_stall_resolver_for_test(unsigned ms) {
+    g_resolverStallMsForTest.store(ms);
+}
+
+/* ---- Fuzz seam (declaration in match_live_transport.h) -------------------- */
+
+void mdkr_online_room_fuzz_wire(const uint8_t *data, size_t size) {
+    const std::string raw(reinterpret_cast<const char *>(data), size);
+
+    /* Lane A: the HTTP/1.1 response parse, then the JSON -> lobby/ice
+     * mapping over whatever body it yields (the create/join path). */
+    int status = 0;
+    std::string body;
+    if (parseHttpResponse(raw, status, body)) {
+        const Json root = Json::parse(body, nullptr, false);
+        if (!root.is_discarded()) {
+            MdkrOnlineLobby lobby;
+            (void)parseLobby(root, lobby);
+            std::vector<MdkrMatchPeerIceServer> ice;
+            parseIceServers(root, ice);
+        }
+        /* The /command step extraction -- the SHARED production function,
+         * which is exactly where the first smoke's terminate lived. */
+        MdkrOnlineStep step{};
+        parseCommandStep(body, step);
+    }
+
+    /* Lane B: the /connect WS frame decoder over the same bytes, with the
+     * serviceLoop's state-frame JSON mapping on every complete message. */
+    std::vector<uint8_t> inbound(data, data + size);
+    size_t assembledBytes = 0u;
+    for (;;) {
+        WsFrameOut frame;
+        size_t consumed = 0u;
+        const WsFrameStatus frameStatus =
+            wsDecodeFrame(inbound, frame, consumed);
+        if (frameStatus != WsFrameStatus::Frame) break;
+        inbound.erase(inbound.begin(),
+                      inbound.begin() + static_cast<long>(consumed));
+        if (frame.opcode >= 0x8u) continue; /* control: extracted, dropped */
+        if (assembledBytes + frame.payload.size() > kMaxWsMessageBytes) break;
+        assembledBytes += frame.payload.size();
+        if (frame.fin) {
+            const Json root = Json::parse(frame.payload, nullptr, false);
+            if (!root.is_discarded()) {
+                /* The serviceLoop's state-frame shape: closedReason first
+                 * (object-guarded -- value() throws on non-objects), then
+                 * the lobby mapping. */
+                if (root.is_object()) {
+                    (void)root.value("closedReason", Json()).is_string();
+                }
+                MdkrOnlineLobby lobby;
+                (void)parseLobby(root, lobby);
+            }
+            assembledBytes = 0u;
+        }
+    }
 }

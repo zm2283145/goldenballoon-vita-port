@@ -7,7 +7,8 @@ import {INTERNAL_API_HEADER, INTERNAL_API_VERSION,
 export const BUDGET_OPERATIONS = [
   "matchCreate", "matchLinkJoin", "matchCodeJoin", "matchControl",
   "matchRotate", "matchSocket", "matchSignalSocket", "partyCreate", "partyLinkJoin",
-  "partyCodeJoin", "partyControl", "partyRotate", "partySocket", "turnMint",
+  "partyCodeJoin", "partyControl", "partyRotate", "partySocket",
+  "partyNativeCreate", "turnMint",
 ] as const;
 export type BudgetOperation = typeof BUDGET_OPERATIONS[number];
 type StoredBudgetOperation = BudgetOperation | "legacy";
@@ -24,9 +25,21 @@ const BUDGET_OPERATION_SHAPE: Readonly<Record<BudgetOperation,
   partyLinkJoin: ["pairing", 2], partyCodeJoin: ["pairing", 3],
   partyControl: ["control", 2],
   partyRotate: ["control", 10], partySocket: ["control", 28],
+  /* S3 compound: the native create+socket bootstrap in ONE admission. The
+   * declared URL shape stays the pairing half (the anti-abuse create side
+   * that carries the source digest); the control half it also reserves is
+   * fixed below in COMPOUND_CONTROL_UNITS. Unit-for-unit identical to the
+   * partyCreate(10) + partySocket(28) pair it replaces. */
+  partyNativeCreate: ["pairing", 10],
   /* Budget object + one external TURN credential mint (turn.ts). */
   turnMint: ["control", 2],
 });
+
+/* Control units a compound operation reserves in the same atomic admission
+ * as its declared pairing units. A refusal of either ceiling charges
+ * neither side; admission charges both under one blockConcurrencyWhile. */
+const COMPOUND_CONTROL_UNITS: Readonly<Partial<Record<BudgetOperation,
+  number>>> = Object.freeze({partyNativeCreate: 28});
 
 interface Counters {
   pairing: number;
@@ -50,7 +63,7 @@ const BUDGET_RETENTION_MS = 32 * 24 * 60 * 60_000;
  * deleted by the same retention alarm. Refusal charges nothing anywhere:
  * neither the reserve nor the source counter moves. */
 const CREATE_OPERATIONS: ReadonlySet<string> = new Set(
-  ["partyCreate", "matchCreate"]);
+  ["partyCreate", "matchCreate", "partyNativeCreate"]);
 const MAX_DAILY_CREATES_PER_SOURCE = 25;
 
 export function boundedSetting(value: string | undefined, fallback: number,
@@ -120,6 +133,9 @@ export class PartyBudget extends DurableObject<Env> {
           const [kind, units] = BUDGET_OPERATION_SHAPE[operation];
           if (kind === "pairing") trackedPairingUnits += reservations[operation] * units;
           else trackedControlUnits += reservations[operation] * units;
+          /* A compound reservation admitted both halves at once. */
+          trackedControlUnits += reservations[operation] *
+            (COMPOUND_CONTROL_UNITS[operation] || 0);
         }
       }
       const tracking = trackedPairingUnits > counters.pairing ||
@@ -172,6 +188,11 @@ export class PartyBudget extends DurableObject<Env> {
         : source !== null) {
       return json({error: "invalid_source"}, 400);
     }
+    /* Compound operations reserve their control half in the same admission.
+     * The whole decision below stays one atomic gate: a refusal of either
+     * ceiling charges neither counter, and an admission charges both. */
+    const compoundControlUnits = operation === "legacy" ? 0 :
+      COMPOUND_CONTROL_UNITS[operation] || 0;
     return this.ctx.blockConcurrencyWhile(async () => {
       const counters = await this.ctx.storage.get<Counters>("counters") ||
         {pairing: 0, control: 0};
@@ -195,9 +216,14 @@ export class PartyBudget extends DurableObject<Env> {
       const firstWrite = total === 0 &&
         counters.pairingRefusalObserved !== true &&
         counters.controlRefusalObserved !== true;
+      /* A compound's full footprint rides the pairing admission check. Since
+       * controlReserve ≥ 2000 > 100, this bound is strictly tighter than the
+       * control ceiling below, so the compound can never sneak the control
+       * counter past its own reserve either. */
       if (kind === "pairing" &&
           (counters.pairing + units > maxAdmissions ||
-           total + units > SAFE_EXTERNAL_OPERATIONS - controlReserve)) {
+           total + units + compoundControlUnits >
+             SAFE_EXTERNAL_OPERATIONS - controlReserve)) {
         if (counters.pairingRefusalObserved !== true) {
           counters.pairingRefusalObserved = true;
           await this.persist(counters, firstWrite);
@@ -212,6 +238,7 @@ export class PartyBudget extends DurableObject<Env> {
         return json({allowed: false, error: "service_budget_safe"}, 503);
       }
       counters[kind] += units;
+      if (compoundControlUnits) counters.control += compoundControlUnits;
       const reservations = counters.reservations || {};
       reservations[operation] = Math.min(19_900,
         (reservations[operation] || 0) + 1);

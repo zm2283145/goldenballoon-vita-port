@@ -64,4 +64,25 @@ bool mdkr_online_room_http_transport_invite(MdkrOnlineRoomTransport *transport,
 std::unique_ptr<MdkrOnlineMeshSignalBackend>
 mdkr_online_mesh_signal_backend_create(const std::string &origin);
 
+/* ---- Test seams (the *_for_test convention of the party transport) -------
+ *
+ * Process-global, test-binary-only knobs over this transport's resolver,
+ * mirroring the match_signal_client seams: prepend one numeric address ahead
+ * of every real resolution (the broken-AAAA-first household shape; nullptr
+ * clears), and stall every resolution by `ms` (the DNS outage shape; 0
+ * clears). The production launcher never calls either. */
+void mdkr_online_room_transport_prepend_address_for_test(const char *ip,
+                                                         uint16_t port);
+void mdkr_online_room_transport_stall_resolver_for_test(unsigned ms);
+
+/* ---- Fuzz seam (W3 N7) ---------------------------------------------------
+ *
+ * Drives the EXACT shipped parsers -- the HTTP/1.1 response parse (status
+ * line + chunked decode), the /connect RFC 6455 frame decoder, and the
+ * lobby/ice-server JSON mapping -- over arbitrary bytes, with no socket and
+ * no thread. Compiled unconditionally (small, unreferenced and stripped in
+ * production links) so the fuzzer can never drift onto a copy of the
+ * parser. Entry point for tests/fuzz_online_live_wire.cpp. */
+void mdkr_online_room_fuzz_wire(const uint8_t *data, size_t size);
+
 #endif /* MDKR_MATCH_LIVE_TRANSPORT_H */

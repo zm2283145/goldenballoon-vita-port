@@ -287,7 +287,22 @@ bool mdkr_online_live_adapter_probe(const IMdkrOnlineAdapter *adapter,
  * frames -- and the state hash the two processes compare -- is owned by the
  * O-T6 race driver, which reads confirmed frames back through
  * race_inputs_for_tick(). These functions return false for a non-live adapter
- * or before install; they never run on the launcher's fake-adapter path. */
+ * or before install; they never run on the launcher's fake-adapter path.
+ *
+ * INTEGRATION CONTRACT -- pump ordering (W3 N5, review A5). The send side is
+ * immediate (race_advance seals and hands the bundle to the mesh
+ * synchronously), but the RECEIVE side is deferred: remote input only moves
+ * from the mesh's bounded callback queue into mdkr_match_transport_receive
+ * inside service(). Every integration loop MUST therefore call service()
+ * immediately BEFORE the tick drain (race_advance / race_drain_local) in the
+ * same frame, so remote input entering the fold is at most one service()
+ * old. Draining first and servicing after adds a full frame interval (33 ms
+ * at 30 Hz -- one extra resim tick) to every remote input's effective age;
+ * it never changes local feel (there is no input delay on the local drain)
+ * but it deepens every remote-kart correction for free. Both shipped
+ * drivers (tests/test_online_live_transport_e2e_driver.cpp and the
+ * in-process race in tests/test_online_live_adapter.cpp) order
+ * service()-then-advance and are the reference loop shapes. */
 struct MdkrOnlineLiveRaceInfo {
     bool ready = false;
     uint32_t matchEpoch = 0u;

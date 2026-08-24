@@ -109,10 +109,23 @@ inline constexpr unsigned kMdkrMatchControlPingTimeoutMs = 15000u;
  * 3-attempt bound in party_retry_policy.h. */
 inline constexpr unsigned kMdkrMatchMaxRestartEpisodes = 3u;
 
+/* W3 N4: the race mesh's unanswered-offer deadline for the shared
+ * mdkr_party_retry_decide ladder (3 attempts kept). The phones' 20 s
+ * default is deliberate for HUMAN-in-the-loop pairing; a race lobby's
+ * "Check Setup" observes sub-2 s offer->answer, so a relay-dropped offer
+ * should recover in single-digit seconds. 7 s is still 3-4x the observed
+ * setup time. Deliberately deterministic, no jitter: glare is impossible
+ * (one offerer per pair, the numerically lower id), the mesh is <= 3
+ * simultaneous offers already staggered by ICE gathering, and the pure
+ * policy stays exactly reproducible under test. */
+inline constexpr unsigned kMdkrMatchOfferRetryDeadlineMs = 7000u;
+
 /* An answerer has no offer ladder of its own: if the peer's offer never
  * arrives it must still reach a typed, bounded verdict. Three times the
- * ladder's 20 s deadline -- the same total budget the offerer gets. */
-inline constexpr unsigned kMdkrMatchAnswererSetupDeadlineMs = 60000u;
+ * mesh ladder's deadline -- the same total budget the offerer gets (W3 N4:
+ * was 60 s while the mesh rode the phones' 20 s ladder). */
+inline constexpr unsigned kMdkrMatchAnswererSetupDeadlineMs =
+    3u * kMdkrMatchOfferRetryDeadlineMs;
 
 /*
  * Injectable signaling seam. The mesh consumes validated match-signal
@@ -253,7 +266,10 @@ struct MdkrMatchPeerMeshOptions {
     /* 22-char base64url (16 bytes) -- the transcript's room binding. */
     std::string roomId;
     uint64_t localEndpointId = 0u;
-    /* 0 adopts the welcome's generation; nonzero must match the welcome. */
+    /* 0 adopts the welcome's generation; nonzero must match the FIRST
+     * welcome. A replacement signal socket's re-welcome (W3 N6b) always
+     * carries a strictly higher service-assigned generation and supersedes
+     * the pin: the mesh adopts it and restarts every pairwise exchange. */
     uint32_t localGeneration = 0u;
     uint32_t matchEpoch = 0u;
     /* Bound into the transcript digest (protocol/build/gameplay/ROM). */
@@ -328,6 +344,13 @@ public:
      * known. Every peer reports the same server-assigned value, so both sides
      * build a byte-identical graph. */
     bool peerGeneration(uint64_t peerEndpointId, uint32_t *out) const;
+
+    /* Live truth for "both channels to this peer are open right now"
+     * (launcher thread only, like every accessor). The adapter's re-verify
+     * barrier (W3 fix round) rebuilds its channels-ready bookkeeping from
+     * this instead of event replay, so it can never wipe a fresh
+     * PeerChannelsReady that raced the rekey detection. */
+    bool peerChannelsReady(uint64_t peerEndpointId) const;
 
     MdkrMatchPeerMeshStats stats() const;
 

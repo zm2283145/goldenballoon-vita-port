@@ -45,6 +45,10 @@ public:
     /* Extra raw header line appended to the 101 (no CRLF), e.g.
      * "Sec-WebSocket-Extensions: permessage-deflate". Set before start(). */
     std::string extra101Header;
+    /* Answer every client ping with an RFC 6455 pong echo (the live
+     * worker's behavior). Default off: a silent harness is the half-open
+     * death shape. Set before start(). */
+    bool autoPongClientPings = false;
 
     /* Bind 127.0.0.1 on an ephemeral port and start accepting. */
     bool start();
@@ -56,6 +60,9 @@ public:
     /* True once the 101 has been written (never true when respondToUpgrade
      * is false); scripted frames sent after this cannot outrun it. */
     bool waitForOpen(unsigned budgetMs = 5000u);
+    /* True once at least `count` upgrades have completed over the server's
+     * lifetime -- a replacement socket after a drop is upgrade #2. */
+    bool waitForUpgrades(unsigned count, unsigned budgetMs = 5000u);
     std::string requestHeadRaw() const; /* full request head, verbatim */
     std::string requestPath() const;
     /* Every token offered via Sec-WebSocket-Protocol, in offer order. */
@@ -93,6 +100,9 @@ public:
     /* Pong frames the client sent (payloads, demasked, in order). */
     bool waitForPongs(size_t count, unsigned budgetMs = 5000u);
     std::vector<std::string> pongPayloads() const;
+    /* Ping frames the CLIENT originated (payloads, demasked, in order). */
+    bool waitForPings(size_t count, unsigned budgetMs = 5000u);
+    std::vector<std::string> pingPayloads() const;
 
 private:
     std::shared_ptr<MdkrMatchSignalTestServerState> state_;

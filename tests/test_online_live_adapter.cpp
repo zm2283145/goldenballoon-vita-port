@@ -263,6 +263,20 @@ public:
         endpoint.feed->inbox.push_back(std::move(event));
     }
 
+    /* A signaling reconnect: the relay tracks a strictly higher generation
+     * for this endpoint from now on (does NOT touch the borrowed feed). */
+    void setGeneration(uint64_t id, uint32_t generation) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        endpoints_.at(id).generation = generation;
+    }
+
+    /* Inject one raw event into `target`'s inbox (re-welcome / stale-welcome
+     * cases). */
+    void inject(uint64_t target, MdkrMatchSignalEvent event) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        endpoints_.at(target).feed->inbox.push_back(std::move(event));
+    }
+
     MdkrMatchSignalSendResult route(uint64_t from,
                                     const MdkrMatchSignalOutbound &m) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -716,6 +730,8 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
         };
         if (imp == nullptr) {
             for (unsigned step = 0u; step < 20000u; ++step) {
+                /* service() before the tick drain -- the load-bearing pump
+                 * ordering (match_live_adapter.h integration contract). */
                 A->service();
                 B->service();
                 MdkrOnlineLiveRaceInfo na{}, nb{};
@@ -912,6 +928,227 @@ void test_clamp_refuses_bonus_identity() {
     mdkr_net_roster_runtime_clear();
 }
 
+/* W3 fix round (Critical): a POST-CONFIRMATION re-welcome must force a fresh
+ * SAS compare. docs/ref/match-signaling-v1.md:114 ("Secure connection
+ * changed"): retire keys/channels, reconnect, compare a NEW phrase; never
+ * reuse Ready. Pre-fix the adapter latched phraseConfirmed_ forever: a
+ * replacement /signal socket after confirmation re-keyed the whole mesh and
+ * play continued on channels the humans never re-verified. Pinned here end
+ * to end: install both adapters, force A's re-welcome (higher generation),
+ * assert BOTH sides drop race-Ready, reset confirmation, surface the
+ * VERIFICATION_MISMATCH recovery ("Reconnect Securely"), re-surface a fresh
+ * phrase (equal across sides, different from the confirmed one), and only a
+ * SECOND confirm re-arms the preflight barrier and restores play on the
+ * re-derived keys. Negative arm: a stale (equal-generation) welcome changes
+ * nothing. */
+void test_reverify_after_post_confirmation_rewelcome() {
+    mdkr_net_roster_runtime_clear();
+    FakeMatchRoom room;
+    FakeHub hub;
+    FakeClock clock;
+    FakeRoomTransport transportA(&room, 1u);
+    FakeRoomTransport transportB(&room, 1u);
+    HubMeshBackend backendA(&hub);
+    HubMeshBackend backendB(&hub);
+    auto A = mdkr_online_live_adapter_create(
+        baseOptions(&transportA, &backendA, &clock, MDKR_ONLINE_JOURNEY_CREATE));
+    auto B = mdkr_online_live_adapter_create(
+        baseOptions(&transportB, &backendB, &clock, MDKR_ONLINE_JOURNEY_JOIN));
+    CHECK(A != nullptr && B != nullptr);
+    if (!A || !B) return;
+    std::vector<IMdkrOnlineAdapter *> both{A.get(), B.get()};
+
+    A->submit(cmd(A.get(), MDKR_ONLINE_VIEW_ACTION_CREATE_ROOM));
+    CHECK(pumpUntil({A.get()}, clock, [&]() {
+        return viewOf(A.get()).kind == MDKR_ONLINE_VIEW_ROOM;
+    }, 3000u));
+    B->submit(cmd(B.get(), MDKR_ONLINE_VIEW_ACTION_JOIN_ROOM));
+    CHECK(pumpUntil(both, clock, [&]() {
+        return viewOf(A.get()).member_count == 2u &&
+               viewOf(B.get()).member_count == 2u;
+    }, 3000u));
+    A->submit(cmd(A.get(), MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP));
+    B->submit(cmd(B.get(), MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP));
+    hub.welcome(backendA.began);
+    hub.welcome(backendB.began);
+    CHECK(pumpUntil(both, clock, [&]() {
+        return viewOf(A.get()).verification_phrase[0] != '\0' &&
+               viewOf(B.get()).verification_phrase[0] != '\0';
+    }, 30000u));
+    const std::string phraseBefore = viewOf(A.get()).verification_phrase;
+    A->submit(cmd(A.get(), MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE));
+    B->submit(cmd(B.get(), MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE));
+    CHECK(pumpUntil(both, clock, [&]() {
+        return viewOf(A.get()).kind == MDKR_ONLINE_VIEW_SELECTING &&
+               viewOf(B.get()).kind == MDKR_ONLINE_VIEW_SELECTING;
+    }, 3000u));
+    auto selectReady = [&](IMdkrOnlineAdapter *self, unsigned character) {
+        auto until = [&](MdkrOnlineViewAction next) {
+            return pumpUntil(both, clock, [&]() {
+                return viewOf(self).primary.action == next;
+            }, 5000u);
+        };
+        self->submit(
+            cmd(self, MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER, 0u, character));
+        until(MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE);
+        self->submit(cmd(self, MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE, 0u, 0u));
+        until(MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK);
+        self->submit(cmd(self, MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK, 0u, 5u));
+        until(MDKR_ONLINE_VIEW_ACTION_READY);
+        self->submit(cmd(self, MDKR_ONLINE_VIEW_ACTION_READY, 0u, 1u));
+        (void)pumpUntil(both, clock, [&]() {
+            return viewOf(self).primary.action != MDKR_ONLINE_VIEW_ACTION_READY;
+        }, 5000u);
+    };
+    selectReady(A.get(), 1u);
+    selectReady(B.get(), 2u);
+    CHECK(pumpUntil(both, clock, [&]() {
+        return viewOf(A.get()).ready_count == 2u &&
+               viewOf(B.get()).ready_count == 2u;
+    }, 3000u));
+    A->submit(cmd(A.get(), MDKR_ONLINE_VIEW_ACTION_START_RACE, 0u, 1u));
+    MdkrOnlineLiveRaceInfo ia{}, ib{};
+    CHECK(pumpUntil(both, clock, [&]() {
+        return mdkr_online_live_adapter_race_info(A.get(), &ia) && ia.ready &&
+               mdkr_online_live_adapter_race_info(B.get(), &ib) && ib.ready;
+    }, 30000u));
+
+    /* Negative arm: a STALE (equal-generation) welcome changes nothing. */
+    {
+        MdkrMatchSignalEvent stale;
+        stale.type = MdkrMatchSignalEventType::Welcome;
+        stale.endpointId = std::to_string(backendA.began);
+        stale.connectionGeneration = 1u; /* the current generation */
+        MdkrMatchSignalPeerRef ref;
+        ref.endpointId = std::to_string(backendB.began);
+        ref.connectionGeneration = 1u;
+        stale.peers.push_back(ref);
+        hub.inject(backendA.began, stale);
+    }
+    for (unsigned index = 0u; index < 10u; index++) {
+        for (IMdkrOnlineAdapter *a : both) a->service();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        clock.nowMs += 5u;
+    }
+    MdkrOnlineLiveLaunchProbe probeA{};
+    mdkr_online_live_adapter_probe(A.get(), &probeA);
+    CHECK(mdkr_online_live_adapter_race_info(A.get(), &ia) && ia.ready);
+    CHECK(probeA.phraseConfirmed);
+    CHECK(viewOf(A.get()).kind != MDKR_ONLINE_VIEW_RECOVERY);
+
+    /* The replacement socket: the relay assigns A a strictly higher
+     * generation and announces it to B as a presence bump. */
+    hub.setGeneration(backendA.began, 4u);
+    MdkrMatchSignalEvent bump;
+    bump.type = MdkrMatchSignalEventType::PeerPresence;
+    bump.endpointId = std::to_string(backendA.began);
+    bump.connectionGeneration = 4u;
+    bump.present = true;
+    hub.inject(backendB.began, bump);
+    hub.welcome(backendA.began); /* the fresh welcome, generation 4 */
+
+    /* Both sides must drop race-Ready and reset the confirmation... */
+    CHECK(pumpUntil(both, clock, [&]() {
+        MdkrOnlineLiveRaceInfo na{}, nb{};
+        return mdkr_online_live_adapter_race_info(A.get(), &na) &&
+               mdkr_online_live_adapter_race_info(B.get(), &nb) &&
+               !na.ready && !nb.ready;
+    }, 15000u));
+    MdkrOnlineLiveLaunchProbe probeB{};
+    mdkr_online_live_adapter_probe(A.get(), &probeA);
+    mdkr_online_live_adapter_probe(B.get(), &probeB);
+    CHECK(!probeA.phraseConfirmed);
+    CHECK(!probeB.phraseConfirmed);
+    /* ...on the documented "Secure connection changed" recovery surface. */
+    CHECK(viewOf(A.get()).kind == MDKR_ONLINE_VIEW_RECOVERY);
+    CHECK(viewOf(A.get()).failure ==
+          MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH);
+    CHECK(viewOf(B.get()).kind == MDKR_ONLINE_VIEW_RECOVERY);
+    CHECK(viewOf(B.get()).failure ==
+          MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH);
+
+    /* MINOR: a SECOND re-welcome DURING the re-verify window (before the
+     * human retries) must be absorbed -- the barrier stays armed, the
+     * confirmation stays reset, neither side escapes to play, and RETRY then
+     * surfaces the LATEST transcript's phrase. */
+    hub.setGeneration(backendA.began, 6u);
+    MdkrMatchSignalEvent bump2;
+    bump2.type = MdkrMatchSignalEventType::PeerPresence;
+    bump2.endpointId = std::to_string(backendA.began);
+    bump2.connectionGeneration = 6u;
+    bump2.present = true;
+    hub.inject(backendB.began, bump2);
+    hub.welcome(backendA.began); /* second fresh welcome, generation 6 */
+    for (unsigned index = 0u; index < 40u; index++) {
+        for (IMdkrOnlineAdapter *a : both) a->service();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        clock.nowMs += 5u;
+    }
+    mdkr_online_live_adapter_probe(A.get(), &probeA);
+    mdkr_online_live_adapter_probe(B.get(), &probeB);
+    CHECK(!probeA.phraseConfirmed);
+    CHECK(!probeB.phraseConfirmed);
+    CHECK(viewOf(A.get()).kind == MDKR_ONLINE_VIEW_RECOVERY);
+    CHECK(viewOf(B.get()).kind == MDKR_ONLINE_VIEW_RECOVERY);
+    {
+        MdkrOnlineLiveRaceInfo na{}, nb{};
+        CHECK(mdkr_online_live_adapter_race_info(A.get(), &na) && !na.ready);
+        CHECK(mdkr_online_live_adapter_race_info(B.get(), &nb) && !nb.ready);
+    }
+
+    /* "Reconnect Securely" -> a FRESH phrase surfaces on both sides. */
+    CHECK(A->submit(cmd(A.get(), MDKR_ONLINE_VIEW_ACTION_RETRY)).accepted);
+    CHECK(B->submit(cmd(B.get(), MDKR_ONLINE_VIEW_ACTION_RETRY)).accepted);
+    CHECK(pumpUntil(both, clock, [&]() {
+        return viewOf(A.get()).verification_phrase[0] != '\0' &&
+               viewOf(B.get()).verification_phrase[0] != '\0';
+    }, 30000u));
+    const std::string phraseAfterA = viewOf(A.get()).verification_phrase;
+    const std::string phraseAfterB = viewOf(B.get()).verification_phrase;
+    CHECK(phraseAfterA == phraseAfterB);
+    CHECK(phraseAfterA != phraseBefore); /* never reuse the retired SAS */
+
+    /* Only the SECOND confirm re-arms the barrier and restores play. */
+    A->submit(cmd(A.get(), MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE));
+    B->submit(cmd(B.get(), MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE));
+    CHECK(pumpUntil(both, clock, [&]() {
+        return mdkr_online_live_adapter_race_info(A.get(), &ia) && ia.ready &&
+               mdkr_online_live_adapter_race_info(B.get(), &ib) && ib.ready;
+    }, 30000u));
+    mdkr_online_live_adapter_probe(A.get(), &probeA);
+    mdkr_online_live_adapter_probe(B.get(), &probeB);
+    CHECK(probeA.phraseConfirmed);
+    CHECK(probeB.phraseConfirmed);
+
+    /* And the re-derived keys genuinely carry input: the rebuilt race
+     * transport confirms its first tick across both slots. */
+    bool confirmed = false;
+    for (unsigned step = 0u; step < 2000u && !confirmed; ++step) {
+        A->service();
+        B->service();
+        MdkrOnlineLiveRaceInfo na{}, nb{};
+        mdkr_online_live_adapter_race_info(A.get(), &na);
+        mdkr_online_live_adapter_race_info(B.get(), &nb);
+        if (na.nextTick < na.firstTick + 8u) {
+            mdkr_online_live_adapter_race_advance(A.get());
+        }
+        if (nb.nextTick < nb.firstTick + 8u) {
+            mdkr_online_live_adapter_race_advance(B.get());
+        }
+        MdkrInputSet frame;
+        if (mdkr_online_live_adapter_race_inputs_for_tick(A.get(),
+                                                          na.firstTick,
+                                                          &frame) &&
+            (frame.confirmed_mask & na.activeSlotMask) == na.activeSlotMask) {
+            confirmed = true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        clock.nowMs += 2u;
+    }
+    CHECK(confirmed);
+    mdkr_net_roster_runtime_clear();
+}
+
 /* Seed derived from the profile index only -- never wall-clock -- so every
  * matrix cell is byte-reproducible across CI reruns. */
 uint64_t matrixSeed(unsigned profileIndex) {
@@ -1057,6 +1294,7 @@ int main(int argc, char **argv) {
     test_full_flow_installs_through_builder();
     test_two_endpoint_race_converges();
     test_clamp_refuses_bonus_identity();
+    test_reverify_after_post_confirmation_rewelcome();
     std::fprintf(stderr, "online_live_adapter: %d checks, %d failures\n",
                  g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

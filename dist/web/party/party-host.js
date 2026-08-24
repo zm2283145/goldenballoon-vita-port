@@ -777,6 +777,48 @@
     rebuildPeer(controllerId, peer);
   }
 
+  // S5 (review F6) surgical RTT repaint: a pong changes exactly one number on
+  // one seat tile, so rewrite that status text alone — the exact string
+  // renderRoomState paints for an active seat. The full renderRoomState this
+  // replaces rebuilt the roster INCLUDING the pending-approval cards every
+  // five seconds whenever any connected phone ponged, destroying the host's
+  // slot-picker selection and focus mid-approve. A seat that is not currently
+  // an active direct connection shows no number, so there is nothing to
+  // repaint; pending cards may only be rebuilt when their own data changes.
+  function updateSeatRtt(controllerId) {
+    const controller = controllerById(controllerId);
+    if (!controller?.seat) return false;
+    const pad = remotePads[controller.seat - 1];
+    if (!pad.active) return false;
+    const rtt = peers.get(controllerId)?.rttMs;
+    for (const tile of $("party-seats").children) {
+      if (Number(tile.dataset.seat) !== controller.seat) continue;
+      tile.querySelector("small").textContent =
+        "Phone connected" + (rtt ? ` · ${rtt} ms · direct` : "");
+      return true;
+    }
+    return false;
+  }
+
+  // RTT bookkeeping for a matched control-channel pong, extracted from the
+  // control channel's message handler so the testConfig hook drives the exact
+  // production path.
+  function handleControlPong(controllerId, peer, nonce) {
+    if (!Number.isInteger(nonce) || nonce !== peer.pingNonce) return false;
+    if (peer.pingOutstandingAt !== 0) {
+      // RTT: newest matched pong, floored at 1 ms so "measured, just
+      // fast" is distinguishable from no sample. The number dies with
+      // this peer (a rebuilt channel starts sampleless), mirroring
+      // the native model.
+      peer.rttMs = Math.max(1, Math.round(Date.now() - peer.pingOutstandingAt));
+      if (testState) testState.controlRtts.push(peer.rttMs);
+      updateSeatRtt(controllerId);
+    }
+    peer.pingOutstandingAt = 0;
+    if (testState) testState.controlPongs++;
+    return true;
+  }
+
   function scheduleControlPing(controllerId, peer, delay = 5000) {
     if (peers.get(controllerId) !== peer || peer.retired || peer.pingTimer !== null) return;
     peer.pingTimer = setTimeout(() => {
@@ -950,20 +992,8 @@
             controllerNames.set(identity, message.name);
             if (room) renderRoomState({...room, transitionId: room.transitionId});
           }
-        } else if (message.type === "pong" && message.protocol === 1 &&
-                   Number.isInteger(message.nonce) &&
-                   message.nonce === peer.pingNonce) {
-          if (peer.pingOutstandingAt !== 0) {
-            // RTT: newest matched pong, floored at 1 ms so "measured, just
-            // fast" is distinguishable from no sample. The number dies with
-            // this peer (a rebuilt channel starts sampleless), mirroring
-            // the native model.
-            peer.rttMs = Math.max(1, Math.round(Date.now() - peer.pingOutstandingAt));
-            if (testState) testState.controlRtts.push(peer.rttMs);
-            if (room) renderRoomState({...room, transitionId: room.transitionId});
-          }
-          peer.pingOutstandingAt = 0;
-          if (testState) testState.controlPongs++;
+        } else if (message.type === "pong" && message.protocol === 1) {
+          handleControlPong(controllerId, peer, message.nonce);
         }
       } catch (_) { /* reliable control still rejects malformed JSON */ }
     });
@@ -2012,6 +2042,16 @@
           connectionState: entry.pc.connectionState,
           signalingState: entry.pc.signalingState,
           state: entry.state?.readyState, control: entry.control?.readyState} : null;
+      },
+      // S5: stamp an outstanding ping and run the REAL pong handler, so both
+      // the vitest fake-DOM suite and the browser lane can prove a routine
+      // RTT pong never rebuilds the roster mid-approve.
+      testControlPong: (controllerId, rttMs = 20) => {
+        const peer = peers.get(controllerId);
+        if (!peer) return false;
+        peer.pingNonce = (peer.pingNonce + 1) >>> 0;
+        peer.pingOutstandingAt = Date.now() - Math.max(1, Number(rttMs) || 1);
+        return handleControlPong(controllerId, peer, peer.pingNonce);
       },
     } : {}),
   });

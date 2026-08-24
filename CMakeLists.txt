@@ -6,6 +6,8 @@ project(mdkr64 C)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(CTest)
 option(MDKR_BUILD_FUZZERS "Build coverage-guided save-format fuzzers" OFF)
+option(MDKR_ENABLE_FUZZERS
+    "Build coverage-guided online wire-parser fuzzers (Clang/libFuzzer)" OFF)
 option(MDKR_ENABLE_GPU_TESTS
     "Register native GPU/window tests (dedicated test desktop only)" OFF)
 set(MDKR_ONLINE_ROOM_PREVIEW_DEFAULT OFF)
@@ -1108,6 +1110,97 @@ if(NOT EMSCRIPTEN)
                 # Two real loopback DTLS meshes reaching preflight consensus;
                 # internal waits are bounded, so this timeout backstops a hang.
                 set_tests_properties(online_live_adapter PROPERTIES TIMEOUT 180)
+
+                # W3 connection robustness: the production MatchRoom transport
+                # (platform/online/match_live_transport.cpp) driven wire-level
+                # against a scriptable loopback fake of the MatchRoom service
+                # (HTTP create/command + the /connect RFC 6455 state socket),
+                # plus the mesh signal backend against the O-T1 loopback
+                # signal fake. Pins the /connect reconnect ladder + revision
+                # dedupe, terminal 4000-class closes, the per-address connect
+                # budget, the bounded resolve, and the /signal replacement
+                # socket. ROM-, GPU- and network-free (127.0.0.1 only).
+                add_executable(mdkr_match_live_transport_test
+                    ${CMAKE_SOURCE_DIR}/tests/test_match_live_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/tests/match_signal_test_server.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_live_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_webrtc_signaling.cpp)
+                target_include_directories(mdkr_match_live_transport_test PRIVATE
+                    ${CMAKE_SOURCE_DIR}
+                    ${CMAKE_SOURCE_DIR}/platform
+                    ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}
+                    ${MDKR_PARTY_GENERATED_INCLUDE})
+                target_compile_features(mdkr_match_live_transport_test PRIVATE
+                    cxx_std_17)
+                target_link_libraries(mdkr_match_live_transport_test PRIVATE
+                    MbedTLS::MbedTLS Threads::Threads)
+                if(WIN32)
+                    target_link_libraries(mdkr_match_live_transport_test PRIVATE
+                        ws2_32)
+                endif()
+                if(MSVC)
+                    target_compile_options(mdkr_match_live_transport_test PRIVATE
+                        /W4 /WX)
+                else()
+                    target_compile_options(mdkr_match_live_transport_test PRIVATE
+                        -Wall -Wextra -Wpedantic -Werror)
+                endif()
+                add_test(NAME match_live_transport
+                    COMMAND mdkr_match_live_transport_test)
+                # Deliberate multi-second waits inside (per-address budget,
+                # abandoned-resolver drain); the ctest timeout backstops a
+                # genuine hang only.
+                set_tests_properties(match_live_transport PROPERTIES TIMEOUT 120)
+
+                # W3 N7: coverage-guided fuzzers for the two hand-rolled wire
+                # parser families (the signal client's RFC 6455 frame
+                # extractor + server-message validators, and the MatchRoom
+                # transport's HTTP response / /connect WS frame / lobby-JSON
+                # parsers), each driven through a shipped *_fuzz_wire seam so
+                # the corpus exercises the EXACT production code. OFF by
+                # default and additive: a normal build never configures or
+                # links these targets. Seed corpora live in
+                # tests/fuzz_corpus/; see tests/README.md.
+                if(MDKR_ENABLE_FUZZERS)
+                    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+                        message(FATAL_ERROR
+                            "MDKR_ENABLE_FUZZERS requires Clang/libFuzzer")
+                    endif()
+                    add_executable(mdkr_match_signal_wire_fuzzer
+                        ${CMAKE_SOURCE_DIR}/tests/fuzz_match_signal_wire.cpp
+                        ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
+                        ${CMAKE_SOURCE_DIR}/platform/party/party_webrtc_signaling.cpp)
+                    add_executable(mdkr_online_live_wire_fuzzer
+                        ${CMAKE_SOURCE_DIR}/tests/fuzz_online_live_wire.cpp
+                        ${CMAKE_SOURCE_DIR}/platform/online/match_live_transport.cpp
+                        ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
+                        ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+                        ${CMAKE_SOURCE_DIR}/platform/party/party_webrtc_signaling.cpp)
+                    foreach(MDKR_WIRE_FUZZER
+                            mdkr_match_signal_wire_fuzzer
+                            mdkr_online_live_wire_fuzzer)
+                        target_include_directories(${MDKR_WIRE_FUZZER} PRIVATE
+                            ${CMAKE_SOURCE_DIR}
+                            ${CMAKE_SOURCE_DIR}/platform
+                            ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}
+                            ${MDKR_PARTY_GENERATED_INCLUDE})
+                        target_compile_features(${MDKR_WIRE_FUZZER} PRIVATE
+                            cxx_std_17)
+                        target_link_libraries(${MDKR_WIRE_FUZZER} PRIVATE
+                            MbedTLS::MbedTLS Threads::Threads)
+                        if(WIN32)
+                            target_link_libraries(${MDKR_WIRE_FUZZER} PRIVATE
+                                ws2_32)
+                        endif()
+                        target_compile_options(${MDKR_WIRE_FUZZER} PRIVATE
+                            -fsanitize=fuzzer,address,undefined
+                            -fno-omit-frame-pointer)
+                        target_link_options(${MDKR_WIRE_FUZZER} PRIVATE
+                            -fsanitize=fuzzer,address,undefined)
+                    endforeach()
+                endif()
 
                 # O2.2-sim: the automatable NET-01 determinism matrix. The same
                 # two-endpoint mesh race, replayed under EACH of the six named

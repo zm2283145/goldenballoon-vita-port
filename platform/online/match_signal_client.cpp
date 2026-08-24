@@ -27,9 +27,11 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -75,12 +77,25 @@ constexpr size_t kMaxQueuedEvents = 1024u;
 /* Read-poll slice: every blocking wait on the socket thread wakes at this
  * cadence to honor stop/close requests and the welcome deadline. */
 constexpr uint32_t kPollSliceMs = 20u;
+/* Per-address connect cap (N3): one blackholed address (the classic
+ * advertised-but-broken IPv6 route against a dual-stack service) may cost at
+ * most min(this, remaining/addresses-left) before the loop falls through to
+ * the next address. 3.5 s is comfortably past any healthy handshake RTT
+ * while leaving the rest of the welcome budget for the working family. */
+constexpr uint64_t kPerAddressConnectCapMs = 3500u;
 /* Per-frame write budget. A healthy peer drains a 60 KiB signaling frame
  * in far less; a peer this stalled is already lost, and close() can abort
  * the wait sooner through the interrupt. */
 constexpr uint32_t kDataWriteBudgetMs = 5000u;
 /* The final close frame's bounded best effort. */
 constexpr uint32_t kCloseFrameBudgetMs = 250u;
+/* Client-originated liveness defaults (W3 N6a; see the options doc): ping
+ * after this much inbound silence, declare the transport lost when nothing
+ * inbound follows within the timeout on top. 20 s idle stays far above the
+ * relay's own traffic cadence and well under common NAT UDP/TCP idle
+ * reaping, and two probes fit inside a minute. */
+constexpr unsigned kLivenessIdleDefaultMs = 20000u;
+constexpr unsigned kLivenessTimeoutDefaultMs = 10000u;
 
 uint64_t steadyNowMs() {
     return static_cast<uint64_t>(
@@ -589,29 +604,187 @@ bool setNonBlocking(NativeSocket fd, bool nonBlocking) {
 #endif
 }
 
+/* ---- Resolution (seamed for tests; see match_signal_client.h) ------------ */
+
+struct ResolvedAddress {
+    int family = AF_UNSPEC;
+    int socktype = SOCK_STREAM;
+    int protocol = IPPROTO_TCP;
+    struct sockaddr_storage storage {};
+    socklen_t length = 0u;
+};
+
+std::mutex &resolverSeamMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+std::string g_prependAddressForTest;      /* guarded by resolverSeamMutex() */
+uint16_t g_prependPortForTest = 0u;       /* guarded by resolverSeamMutex() */
+std::atomic<unsigned> g_resolverStallMsForTest{0u};
+
+/* getaddrinfo -> flat copies, so the caller owns plain values with no
+ * addrinfo lifetime to thread through the connect loop. */
+void appendAddrinfo(const struct addrinfo *results,
+                    std::vector<ResolvedAddress> &out) {
+    for (const struct addrinfo *entry = results; entry != nullptr;
+         entry = entry->ai_next) {
+        if (entry->ai_addrlen == 0u ||
+            entry->ai_addrlen > sizeof(struct sockaddr_storage)) {
+            continue;
+        }
+        ResolvedAddress address;
+        address.family = entry->ai_family;
+        address.socktype = entry->ai_socktype;
+        address.protocol = entry->ai_protocol;
+        std::memcpy(&address.storage, entry->ai_addr, entry->ai_addrlen);
+        address.length = static_cast<socklen_t>(entry->ai_addrlen);
+        out.push_back(address);
+    }
+}
+
+bool prependTestAddress(uint16_t port, std::vector<ResolvedAddress> &out) {
+    std::string ip;
+    uint16_t overridePort = 0u;
+    {
+        std::lock_guard<std::mutex> lock(resolverSeamMutex());
+        ip = g_prependAddressForTest;
+        overridePort = g_prependPortForTest;
+    }
+    if (ip.empty()) return false;
+    ResolvedAddress address;
+    struct sockaddr_in *v4 =
+        reinterpret_cast<struct sockaddr_in *>(&address.storage);
+    std::memset(v4, 0, sizeof(*v4));
+    if (::inet_pton(AF_INET, ip.c_str(), &v4->sin_addr) != 1) return false;
+    v4->sin_family = AF_INET;
+    v4->sin_port = htons(overridePort != 0u ? overridePort : port);
+    address.family = AF_INET;
+    address.length = static_cast<socklen_t>(sizeof(*v4));
+    out.push_back(address);
+    return true;
+}
+
+/* Resolve `host` into flat address copies, bounded by `deadlineMs` and by
+ * `stopping` even though getaddrinfo itself is uninterruptible: the actual
+ * resolve runs on a detached helper thread and this waiter polls it in
+ * kPollSliceMs slices. On a give-up (deadline or close()) the helper is
+ * ABANDONED, never joined -- it frees its own result when it eventually
+ * returns -- so a DNS outage can no longer freeze close()/join() on the
+ * launcher (review N6c/B5). Chosen over pre-resolve-before-thread-start
+ * because the socket thread is also created per connect() and the launcher
+ * thread would then take the identical getaddrinfo hit synchronously; this
+ * bounds EVERY caller with one mechanism. The honored test stall models the
+ * outage. Returns false with *timedOut clear on a plain resolution failure,
+ * *timedOut set when the deadline expired first. */
+struct ResolveTask {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+    bool abandoned = false;
+    int rc = -1;
+    struct addrinfo *results = nullptr;
+};
+/* Abandoned helpers accumulate only until their getaddrinfo returns (the
+ * resolver timeout, worst case ~30 s), and new ones are minted only by
+ * connect attempts, which the reconnect ladders bound (<= 6 per outage per
+ * socket) -- so the in-principle-unbounded detached threads are ladder-
+ * bounded in practice and each self-frees its result. */
+
+bool resolveAddresses(const std::string &host, uint16_t port,
+                      uint64_t deadlineMs, const std::atomic<bool> &stopping,
+                      std::vector<ResolvedAddress> &out, bool *timedOut) {
+    out.clear();
+    *timedOut = false;
+    (void)prependTestAddress(port, out);
+    auto task = std::make_shared<ResolveTask>();
+    const unsigned stallMs = g_resolverStallMsForTest.load();
+    std::thread helper([task, host, port, stallMs]() {
+        if (stallMs != 0u) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(stallMs));
+        }
+        struct addrinfo hints;
+        std::memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_protocol = IPPROTO_TCP;
+        struct addrinfo *results = nullptr;
+        const int rc = ::getaddrinfo(host.c_str(),
+                                     std::to_string(port).c_str(), &hints,
+                                     &results);
+        std::lock_guard<std::mutex> lock(task->mutex);
+        if (task->abandoned) {
+            /* Nobody is waiting anymore: this thread owns the cleanup. */
+            if (results != nullptr) ::freeaddrinfo(results);
+        } else {
+            task->rc = rc;
+            task->results = results;
+        }
+        task->done = true;
+        task->cv.notify_all();
+    });
+    helper.detach();
+
+    struct addrinfo *results = nullptr;
+    int rc = -1;
+    {
+        std::unique_lock<std::mutex> lock(task->mutex);
+        while (!task->done) {
+            if (stopping || steadyNowMs() >= deadlineMs) {
+                task->abandoned = true;
+                if (!stopping) *timedOut = true;
+                return !out.empty(); /* only a test prepend, if any */
+            }
+            task->cv.wait_for(lock, std::chrono::milliseconds(kPollSliceMs));
+        }
+        rc = task->rc;
+        results = task->results;
+        task->results = nullptr;
+    }
+    if (rc != 0 || results == nullptr) {
+        if (results != nullptr) ::freeaddrinfo(results);
+        return !out.empty(); /* the test prepend still supplies an address */
+    }
+    appendAddrinfo(results, out);
+    ::freeaddrinfo(results);
+    return !out.empty();
+}
+
 /* Deadline- and stop-aware TCP connect. Returns kBadNativeSocket on any
  * failure; *timedOut distinguishes the deadline from a refusal. */
 NativeSocket connectTcp(const std::string &host, uint16_t port,
                         uint64_t deadlineMs, const std::atomic<bool> &stopping,
                         bool *timedOut) {
     *timedOut = false;
-    struct addrinfo hints;
-    std::memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-    struct addrinfo *results = nullptr;
-    if (::getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints,
-                      &results) != 0 ||
-        results == nullptr) {
-        if (results != nullptr) ::freeaddrinfo(results);
+    std::vector<ResolvedAddress> addresses;
+    bool resolveTimedOut = false;
+    if (!resolveAddresses(host, port, deadlineMs, stopping, addresses,
+                          &resolveTimedOut) ||
+        addresses.empty()) {
+        *timedOut = resolveTimedOut;
         return kBadNativeSocket;
     }
     NativeSocket fd = kBadNativeSocket;
-    for (struct addrinfo *entry = results; entry != nullptr;
-         entry = entry->ai_next) {
-        fd = ::socket(entry->ai_family, entry->ai_socktype,
-                      entry->ai_protocol);
+    bool anyAddressTimedOut = false;
+    for (size_t index = 0u; index < addresses.size(); index++) {
+        /* N3 per-address budget: min(cap, remaining/left). A blackholed
+         * first address costs one slice, never the whole deadline; the
+         * overall deadline still bounds the whole loop. DELIBERATE edge: a
+         * single-address host is also capped at 3.5 s even when the caller's
+         * deadline is longer -- a healthy TCP handshake completes orders of
+         * magnitude faster, so past the cap the address is a blackhole and
+         * the faster typed timeout beats waiting out the full budget. */
+        const uint64_t nowAtEntry = steadyNowMs();
+        if (nowAtEntry >= deadlineMs) {
+            *timedOut = true;
+            break;
+        }
+        const uint64_t remaining = deadlineMs - nowAtEntry;
+        uint64_t slice = remaining / (addresses.size() - index);
+        if (slice == 0u) slice = remaining;
+        if (slice > kPerAddressConnectCapMs) slice = kPerAddressConnectCapMs;
+        const uint64_t addressDeadlineMs = nowAtEntry + slice;
+        const ResolvedAddress &entry = addresses[index];
+        fd = ::socket(entry.family, entry.socktype, entry.protocol);
         if (fd == kBadNativeSocket) continue;
 #ifdef SO_NOSIGPIPE
         /* A write aborted by close()'s shutdown must surface as EPIPE, not
@@ -627,8 +800,9 @@ NativeSocket connectTcp(const std::string &host, uint16_t port,
             fd = kBadNativeSocket;
             continue;
         }
-        const int connected = ::connect(fd, entry->ai_addr,
-                                        static_cast<socklen_t>(entry->ai_addrlen));
+        const int connected = ::connect(
+            fd, reinterpret_cast<const struct sockaddr *>(&entry.storage),
+            entry.length);
         bool pending = false;
         if (connected != 0) {
 #ifdef _WIN32
@@ -644,8 +818,8 @@ NativeSocket connectTcp(const std::string &host, uint16_t port,
         }
         bool established = !pending;
         while (pending && !stopping) {
-            if (steadyNowMs() >= deadlineMs) {
-                *timedOut = true;
+            if (steadyNowMs() >= addressDeadlineMs) {
+                anyAddressTimedOut = true;
                 break;
             }
             /* poll() on POSIX: select()'s fd_set is undefined behavior for
@@ -682,12 +856,25 @@ NativeSocket connectTcp(const std::string &host, uint16_t port,
          * timeout-sliced waits and writes through the interruptible
          * deadline-bound writeAll, so nothing on the socket thread can
          * block past a poll slice. */
-        if (established) break;
+        if (established) {
+            /* Disable Nagle immediately post-connect: every signaling frame
+             * is small (hellos ~200 B, ICE ~300 B) and Nagle + delayed ACK
+             * adds up to ~40-200 ms per hop during the join/ICE-trickle
+             * burst. Set-failure is non-fatal -- coalescing merely stays on
+             * (the SO_NOSIGPIPE discipline above). */
+            int noDelay = 1;
+            (void)::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
+                               reinterpret_cast<const char *>(&noDelay),
+                               sizeof(noDelay));
+            break;
+        }
         closeNativeSocket(fd);
         fd = kBadNativeSocket;
-        if (*timedOut || stopping) break;
+        if (stopping) break;
     }
-    ::freeaddrinfo(results);
+    /* Exhausted with at least one address stuck at its slice: report the
+     * timeout class (the pre-N3 semantics for a blackhole), not a refusal. */
+    if (fd == kBadNativeSocket && anyAddressTimedOut) *timedOut = true;
     return fd;
 }
 
@@ -776,6 +963,73 @@ std::string loweredCopy(std::string value) {
     return value;
 }
 
+/* ---- Server-frame extraction (one step over the carried buffer) -----------
+ *
+ * The byte-level half of the socket thread's frame loop, factored out so the
+ * N7 fuzz harness drives the EXACT shipped parser. Semantics are the frame
+ * loop's, unchanged: RSV bits, a masked server frame, or an oversize/
+ * fragmented control frame is a protocol Violation (transport-lost class);
+ * a data frame whose DECLARED length would breach the kSignalBytes signaling
+ * bound -- alone or on top of `assembledBytes` of pending continuation
+ * payload -- is Oversize (invalid-message class), refused before any payload
+ * is buffered. On Frame the bytes are consumed from `carried`. */
+enum class ServerFrameStatus { NeedMore, Frame, Violation, Oversize };
+struct ServerFrame {
+    bool fin = false;
+    uint8_t opcode = 0u;
+    std::string payload;
+};
+
+ServerFrameStatus extractServerFrame(std::string &carried,
+                                     size_t assembledBytes,
+                                     ServerFrame &out) {
+    if (carried.size() < 2u) return ServerFrameStatus::NeedMore;
+    const uint8_t byte0 = static_cast<uint8_t>(carried[0]);
+    const uint8_t byte1 = static_cast<uint8_t>(carried[1]);
+    if ((byte0 & 0x70u) != 0u || (byte1 & 0x80u) != 0u) {
+        /* RSV bits or a masked server frame: protocol violation. */
+        return ServerFrameStatus::Violation;
+    }
+    const bool fin = (byte0 & 0x80u) != 0u;
+    const uint8_t opcode = byte0 & 0x0fu;
+    size_t headerSize = 2u;
+    uint64_t length = byte1 & 0x7fu;
+    if (length == 126u) headerSize = 4u;
+    else if (length == 127u) headerSize = 10u;
+    if (carried.size() < headerSize) return ServerFrameStatus::NeedMore;
+    if (headerSize == 4u) {
+        length = (static_cast<uint64_t>(
+                      static_cast<uint8_t>(carried[2])) << 8u) |
+                 static_cast<uint64_t>(static_cast<uint8_t>(carried[3]));
+    } else if (headerSize == 10u) {
+        length = 0u;
+        for (unsigned index = 0u; index < 8u; index++) {
+            length = (length << 8u) |
+                     static_cast<uint8_t>(carried[2u + index]);
+        }
+    }
+    const bool isControl = (opcode & 0x8u) != 0u;
+    if (isControl && (length > 125u || !fin)) {
+        return ServerFrameStatus::Violation;
+    }
+    if (!isControl) {
+        /* The signaling frame bound, enforced from the declared length
+         * BEFORE any payload is buffered or parsed. */
+        const uint64_t pendingBytes = static_cast<uint64_t>(assembledBytes);
+        if (length > kSignalBytes || pendingBytes + length > kSignalBytes) {
+            return ServerFrameStatus::Oversize;
+        }
+    }
+    if (carried.size() < headerSize + length) {
+        return ServerFrameStatus::NeedMore;
+    }
+    out.fin = fin;
+    out.opcode = opcode;
+    out.payload = carried.substr(headerSize, static_cast<size_t>(length));
+    carried.erase(0u, headerSize + static_cast<size_t>(length));
+    return ServerFrameStatus::Frame;
+}
+
 /* First matching header (lowercase name), trimmed. */
 bool responseHeader(const std::string &head, const std::string &name,
                     std::string &value) {
@@ -806,6 +1060,19 @@ bool responseHeader(const std::string &head, const std::string &name,
 
 } // namespace
 
+/* ---- Test seams (declarations in match_signal_client.h) ------------------- */
+
+void mdkr_match_signal_client_prepend_address_for_test(const char *ip,
+                                                       uint16_t port) {
+    std::lock_guard<std::mutex> lock(resolverSeamMutex());
+    g_prependAddressForTest = ip != nullptr ? ip : "";
+    g_prependPortForTest = port;
+}
+
+void mdkr_match_signal_client_stall_resolver_for_test(unsigned ms) {
+    g_resolverStallMsForTest.store(ms);
+}
+
 /* ---- State ---------------------------------------------------------------- */
 
 struct MdkrMatchSignalClient::State {
@@ -814,6 +1081,8 @@ struct MdkrMatchSignalClient::State {
     std::string path;
     std::string endpointId;
     unsigned timeoutMs = 10000u;
+    unsigned livenessIdleMs = kLivenessIdleDefaultMs;
+    unsigned livenessTimeoutMs = kLivenessTimeoutDefaultMs;
 
     mutable std::mutex mutex;
     MdkrMatchSignalPhase phase = MdkrMatchSignalPhase::Idle;
@@ -1404,6 +1673,13 @@ void MdkrMatchSignalClient::State::run() {
     /* ---- Frame loop ---- */
     std::string assembled;
     bool assembling = false;
+    /* Client-originated liveness (W3 N6a): ANY inbound byte proves the
+     * transport; a ping is only the probe that forces a silent one to
+     * speak. Native-only -- the browser reference client cannot originate
+     * pings -- and the worker echoes pongs per RFC 6455 5.5.2/5.5.3. */
+    uint64_t lastInboundMs = steadyNowMs();
+    bool livenessPingSent = false;
+    uint32_t livenessPingCounter = 0u;
     for (;;) {
         if (stopping || closeRequested) {
             finishClose();
@@ -1413,6 +1689,33 @@ void MdkrMatchSignalClient::State::run() {
         if (welcomePending() && steadyNowMs() >= deadlineMs) {
             terminate(kMdkrMatchSignalTimeout, true);
             return;
+        }
+        /* Liveness ladder: idle -> one probe; idle + timeout -> the
+         * transport is dead (a half-open socket looks exactly like this),
+         * through the existing terminal path. */
+        {
+            const uint64_t quietMs = steadyNowMs() - lastInboundMs;
+            if (livenessPingSent &&
+                quietMs >= static_cast<uint64_t>(livenessIdleMs) +
+                               livenessTimeoutMs) {
+                terminate(kMdkrMatchSignalTransportLost, false);
+                return;
+            }
+            if (!livenessPingSent && quietMs >= livenessIdleMs) {
+                std::string ping;
+                const std::string probe =
+                    "gb-live-" + std::to_string(++livenessPingCounter);
+                if (!transport.clientFrame(0x9u, probe, ping) ||
+                    !transport.writeAll(ping, kDataWriteBudgetMs)) {
+                    if (closeRequested) {
+                        finishClose();
+                    } else {
+                        terminate(kMdkrMatchSignalTransportLost, false);
+                    }
+                    return;
+                }
+                livenessPingSent = true;
+            }
         }
         /* Single-writer discipline: every wire write happens on this
          * thread, so TLS state is never touched concurrently. */
@@ -1438,65 +1741,31 @@ void MdkrMatchSignalClient::State::run() {
             }
         }
 
-        /* Extract complete frames from `carried`. */
+        /* Extract complete frames from `carried` (the shared byte-level
+         * extractor; the N7 fuzzer drives the same function). */
         bool needMore = false;
         while (!needMore) {
-            if (carried.size() < 2u) {
+            ServerFrame frame;
+            const ServerFrameStatus frameStatus =
+                extractServerFrame(carried, assembled.size(), frame);
+            if (frameStatus == ServerFrameStatus::NeedMore) {
                 needMore = true;
                 break;
             }
-            const uint8_t byte0 = static_cast<uint8_t>(carried[0]);
-            const uint8_t byte1 = static_cast<uint8_t>(carried[1]);
-            if ((byte0 & 0x70u) != 0u || (byte1 & 0x80u) != 0u) {
-                /* RSV bits or a masked server frame: protocol violation.
-                 * The browser kills such a connection at the protocol
+            if (frameStatus == ServerFrameStatus::Violation) {
+                /* RSV bits, a masked server frame, or a bad control frame:
+                 * the browser kills such a connection at the protocol
                  * layer; the reference client sees transport loss. */
                 terminate(kMdkrMatchSignalTransportLost, false);
                 return;
             }
-            const bool fin = (byte0 & 0x80u) != 0u;
-            const uint8_t opcode = byte0 & 0x0fu;
-            size_t headerSize = 2u;
-            uint64_t length = byte1 & 0x7fu;
-            if (length == 126u) headerSize = 4u;
-            else if (length == 127u) headerSize = 10u;
-            if (carried.size() < headerSize) {
-                needMore = true;
-                break;
-            }
-            if (headerSize == 4u) {
-                length = (static_cast<uint64_t>(
-                              static_cast<uint8_t>(carried[2])) << 8u) |
-                         static_cast<uint64_t>(static_cast<uint8_t>(carried[3]));
-            } else if (headerSize == 10u) {
-                length = 0u;
-                for (unsigned index = 0u; index < 8u; index++) {
-                    length = (length << 8u) |
-                             static_cast<uint8_t>(carried[2u + index]);
-                }
-            }
-            const bool isControl = (opcode & 0x8u) != 0u;
-            if (isControl && (length > 125u || !fin)) {
-                terminate(kMdkrMatchSignalTransportLost, false);
+            if (frameStatus == ServerFrameStatus::Oversize) {
+                terminate(kMdkrMatchSignalInvalidMessage, true);
                 return;
             }
-            if (!isControl) {
-                /* The signaling frame bound, enforced from the declared
-                 * length BEFORE any payload is buffered or parsed. */
-                const uint64_t pendingBytes =
-                    static_cast<uint64_t>(assembled.size());
-                if (length > kSignalBytes || pendingBytes + length > kSignalBytes) {
-                    terminate(kMdkrMatchSignalInvalidMessage, true);
-                    return;
-                }
-            }
-            if (carried.size() < headerSize + length) {
-                needMore = true;
-                break;
-            }
-            std::string payload =
-                carried.substr(headerSize, static_cast<size_t>(length));
-            carried.erase(0u, headerSize + static_cast<size_t>(length));
+            const bool fin = frame.fin;
+            const uint8_t opcode = frame.opcode;
+            std::string payload = std::move(frame.payload);
 
             if (opcode == 0x9u) { /* ping -> pong */
                 std::string pong;
@@ -1575,6 +1844,9 @@ void MdkrMatchSignalClient::State::run() {
             return;
         }
         if (got > 0) {
+            /* Any inbound byte proves the transport is alive. */
+            lastInboundMs = steadyNowMs();
+            livenessPingSent = false;
             carried.append(reinterpret_cast<char *>(buffer),
                            static_cast<size_t>(got));
         }
@@ -1618,6 +1890,12 @@ std::unique_ptr<MdkrMatchSignalClient> MdkrMatchSignalClient::create(
     state->timeoutMs = requested < 2000u    ? 2000u
                        : requested > 30000u ? 30000u
                                             : requested;
+    state->livenessIdleMs = options.livenessIdleMs == 0u
+                                ? kLivenessIdleDefaultMs
+                                : options.livenessIdleMs;
+    state->livenessTimeoutMs = options.livenessTimeoutMs == 0u
+                                   ? kLivenessTimeoutDefaultMs
+                                   : options.livenessTimeoutMs;
     return std::unique_ptr<MdkrMatchSignalClient>(
         new MdkrMatchSignalClient(std::move(state)));
 }
@@ -1754,4 +2032,71 @@ void MdkrMatchSignalClient::drainEvents(
         out.push_back(std::move(state.events.front()));
         state.events.pop_front();
     }
+}
+
+/* ---- Fuzz seam (declaration in match_signal_client.h) --------------------- */
+
+void mdkr_match_signal_fuzz_wire(const uint8_t *data, size_t size) {
+    /* Lane A: the byte-level frame extractor, accumulating exactly like the
+     * socket thread (fragmented text assembles under the shared bound;
+     * control frames pass through; any violation ends the stream). Complete
+     * text messages feed lane B. */
+    std::string carried(reinterpret_cast<const char *>(data), size);
+    std::string assembled;
+    bool assembling = false;
+    std::vector<std::string> texts;
+    for (;;) {
+        ServerFrame frame;
+        const ServerFrameStatus status =
+            extractServerFrame(carried, assembled.size(), frame);
+        if (status != ServerFrameStatus::Frame) break;
+        if (frame.opcode == 0x1u) {
+            if (assembling) break; /* run() terminates here */
+            if (!frame.fin) {
+                assembling = true;
+                assembled = std::move(frame.payload);
+                continue;
+            }
+            texts.push_back(std::move(frame.payload));
+        } else if (frame.opcode == 0x0u) {
+            if (!assembling) break;
+            assembled += frame.payload;
+            if (frame.fin) {
+                assembling = false;
+                texts.push_back(std::move(assembled));
+                assembled.clear();
+            }
+        }
+        /* control frames: extracted and dropped, like run()'s replies. */
+    }
+
+    /* Lane B: the server-message validation state machine, in both phases
+     * (pre-welcome generation 0, and open at generation 7 with a tracked
+     * peer + a recorded sent target so the presence/sequence/signal_error
+     * rules are all reachable). */
+    const auto drive = [&](bool open) {
+        MdkrMatchSignalClient::State state;
+        state.endpointId = "101";
+        state.phase = open ? MdkrMatchSignalPhase::Open
+                           : MdkrMatchSignalPhase::Connecting;
+        if (open) {
+            state.generation = 7u;
+            state.peerGenerations["202"] = 5u;
+            state.peerGenerationHighWater["202"] = 5u;
+            state.receivedSequences["202"] = 3u;
+            MdkrMatchSignalPeerRef target;
+            target.endpointId = "202";
+            target.connectionGeneration = 5u;
+            state.sentTargets[1u] = std::move(target);
+        }
+        for (const std::string &text : texts) {
+            (void)state.handleServerText(text);
+        }
+        /* The raw input as one message too, so a pure-JSON corpus needs no
+         * WS framing to reach the validators. */
+        (void)state.handleServerText(
+            std::string(reinterpret_cast<const char *>(data), size));
+    };
+    drive(false);
+    drive(true);
 }

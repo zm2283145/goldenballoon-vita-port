@@ -303,6 +303,38 @@ void proactiveCycleRidesTheLadderWithoutTouchingTheRefusalStreak() {
     assert(!amidStreak.terminal);
 }
 
+/* W3 N4: the unanswered-offer deadline is a defaulted parameter so the race
+ * mesh can run the same 3-attempt ladder on a setup-scale deadline. Every
+ * case above calls the 6-argument form and thereby pins that the PHONE
+ * transports' 20 s default is untouched; this case pins that a caller's own
+ * deadline is honored exactly. */
+void meshDeadlineParameterIsHonored() {
+    const uint64_t offerSentMs = 1000u;
+    const uint64_t customDeadlineMs = 7000u;
+    /* Just under the custom deadline: nothing fires. */
+    allDecisionsAreFalse(mdkr_party_retry_decide(
+        offerSentMs + customDeadlineMs - 1u, offerSentMs, /*offerAttempts=*/1u,
+        /*authenticated=*/false, /*protocolMismatched=*/false,
+        /*socketOpen=*/false, customDeadlineMs));
+    /* At it, attempts available: recreate. */
+    const MdkrPartyRetryDecision recreate = mdkr_party_retry_decide(
+        offerSentMs + customDeadlineMs, offerSentMs, /*offerAttempts=*/1u,
+        /*authenticated=*/false, /*protocolMismatched=*/false,
+        /*socketOpen=*/false, customDeadlineMs);
+    assert(recreate.recreatePeer);
+    assert(!recreate.resendOffer);
+    assert(!recreate.giveUp);
+    /* At it on the 3rd attempt: the shared attempt bound still gives up. */
+    const MdkrPartyRetryDecision giveUp = mdkr_party_retry_decide(
+        offerSentMs + customDeadlineMs, offerSentMs, /*offerAttempts=*/3u,
+        /*authenticated=*/false, /*protocolMismatched=*/false,
+        /*socketOpen=*/false, customDeadlineMs);
+    assert(giveUp.giveUp);
+    assert(!giveUp.recreatePeer);
+    /* And the default parameter IS the phones' 20 s contract. */
+    assert(kMdkrPartyOfferDeadlineDefaultMs == kDeadlineMs);
+}
+
 }  // namespace
 
 int main() {
@@ -321,5 +353,6 @@ int main() {
     networkFailuresNeverGoTerminalEvenWithAStaleRejectionStreak();
     socketCycleFiresExactlyOnceAtTheHeadroomThreshold();
     proactiveCycleRidesTheLadderWithoutTouchingTheRefusalStreak();
+    meshDeadlineParameterIsHonored();
     return 0;
 }
