@@ -985,6 +985,9 @@ CHECKS = (
 # role arguments. ``rom_free_units`` owns their execution.
 CTEST_COMPANION_SCRIPTS = {
     "check_multiplayer_boundaries.py",
+    # Registered as the gamecontrollerdb_lint CTest (cmake/tests.cmake); a
+    # plain source lint with no artifacts, run once by the ctest task.
+    "check_gamecontrollerdb.py",
     "check_controller_settings_persistence.py",
     "check_host_input_focus.py",
     "check_launcher_tabs.py",

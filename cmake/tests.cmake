@@ -1925,6 +1925,14 @@ if(BUILD_TESTING)
         NAME multiplayer_boundaries
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/check_multiplayer_boundaries.py)
+    # The shipped controller-mapping database: every line parses, no
+    # (GUID, platform) pair appears twice, and the curated NSO N64 HIDAPI
+    # entries (issue #55) stay present and behaviorally equivalent to the
+    # upstream DirectInput entry across refreshes of the upstream snapshot.
+    add_test(
+        NAME gamecontrollerdb_lint
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_gamecontrollerdb.py)
     # This is deliberately the source-only arm.  The full check owns real
     # Chromium activation evidence and therefore remains in run_checks.py's
     # serialized browser lane; ordinary CTest must never launch a browser.
