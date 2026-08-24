@@ -199,6 +199,26 @@ struct MdkrMatchSignalClientOptions {
     unsigned timeoutMs = 10000u;
 };
 
+/* ---- Test seams (the *_for_test convention of the party transport) -------
+ *
+ * Process-global, test-binary-only knobs over the client's resolver. The
+ * production launcher never calls them; they exist so the connect loop's
+ * address-budget and bounded-resolve behavior are pinned by wire-level tests
+ * instead of only being reachable against a broken home network.
+ */
+
+/* Prepend one numeric address to every subsequent resolution, ahead of the
+ * real getaddrinfo results -- the broken-AAAA-first household shape. An
+ * unroutable TEST-NET address here must cost at most the per-address budget,
+ * never the whole welcome deadline. Pass nullptr to clear. */
+void mdkr_match_signal_client_prepend_address_for_test(const char *ip,
+                                                       uint16_t port);
+
+/* Stall every subsequent resolution by `ms` before it completes -- the DNS
+ * outage shape. close() must still return promptly (the resolver is
+ * deadline-bounded and abandoned, never joined). 0 clears. */
+void mdkr_match_signal_client_stall_resolver_for_test(unsigned ms);
+
 class MdkrMatchSignalClient {
 public:
     /*

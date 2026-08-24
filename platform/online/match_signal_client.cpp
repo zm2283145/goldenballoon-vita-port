@@ -27,9 +27,11 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -75,6 +77,12 @@ constexpr size_t kMaxQueuedEvents = 1024u;
 /* Read-poll slice: every blocking wait on the socket thread wakes at this
  * cadence to honor stop/close requests and the welcome deadline. */
 constexpr uint32_t kPollSliceMs = 20u;
+/* Per-address connect cap (N3): one blackholed address (the classic
+ * advertised-but-broken IPv6 route against a dual-stack service) may cost at
+ * most min(this, remaining/addresses-left) before the loop falls through to
+ * the next address. 3.5 s is comfortably past any healthy handshake RTT
+ * while leaving the rest of the welcome budget for the working family. */
+constexpr uint64_t kPerAddressConnectCapMs = 3500u;
 /* Per-frame write budget. A healthy peer drains a 60 KiB signaling frame
  * in far less; a peer this stalled is already lost, and close() can abort
  * the wait sooner through the interrupt. */
@@ -589,29 +597,178 @@ bool setNonBlocking(NativeSocket fd, bool nonBlocking) {
 #endif
 }
 
+/* ---- Resolution (seamed for tests; see match_signal_client.h) ------------ */
+
+struct ResolvedAddress {
+    int family = AF_UNSPEC;
+    int socktype = SOCK_STREAM;
+    int protocol = IPPROTO_TCP;
+    struct sockaddr_storage storage {};
+    socklen_t length = 0u;
+};
+
+std::mutex &resolverSeamMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+std::string g_prependAddressForTest;      /* guarded by resolverSeamMutex() */
+uint16_t g_prependPortForTest = 0u;       /* guarded by resolverSeamMutex() */
+std::atomic<unsigned> g_resolverStallMsForTest{0u};
+
+/* getaddrinfo -> flat copies, so the caller owns plain values with no
+ * addrinfo lifetime to thread through the connect loop. */
+void appendAddrinfo(const struct addrinfo *results,
+                    std::vector<ResolvedAddress> &out) {
+    for (const struct addrinfo *entry = results; entry != nullptr;
+         entry = entry->ai_next) {
+        if (entry->ai_addrlen == 0u ||
+            entry->ai_addrlen > sizeof(struct sockaddr_storage)) {
+            continue;
+        }
+        ResolvedAddress address;
+        address.family = entry->ai_family;
+        address.socktype = entry->ai_socktype;
+        address.protocol = entry->ai_protocol;
+        std::memcpy(&address.storage, entry->ai_addr, entry->ai_addrlen);
+        address.length = static_cast<socklen_t>(entry->ai_addrlen);
+        out.push_back(address);
+    }
+}
+
+bool prependTestAddress(uint16_t port, std::vector<ResolvedAddress> &out) {
+    std::string ip;
+    uint16_t overridePort = 0u;
+    {
+        std::lock_guard<std::mutex> lock(resolverSeamMutex());
+        ip = g_prependAddressForTest;
+        overridePort = g_prependPortForTest;
+    }
+    if (ip.empty()) return false;
+    ResolvedAddress address;
+    struct sockaddr_in *v4 =
+        reinterpret_cast<struct sockaddr_in *>(&address.storage);
+    std::memset(v4, 0, sizeof(*v4));
+    if (::inet_pton(AF_INET, ip.c_str(), &v4->sin_addr) != 1) return false;
+    v4->sin_family = AF_INET;
+    v4->sin_port = htons(overridePort != 0u ? overridePort : port);
+    address.family = AF_INET;
+    address.length = static_cast<socklen_t>(sizeof(*v4));
+    out.push_back(address);
+    return true;
+}
+
+/* Resolve `host` into flat address copies, bounded by `deadlineMs` and by
+ * `stopping` even though getaddrinfo itself is uninterruptible: the actual
+ * resolve runs on a detached helper thread and this waiter polls it in
+ * kPollSliceMs slices. On a give-up (deadline or close()) the helper is
+ * ABANDONED, never joined -- it frees its own result when it eventually
+ * returns -- so a DNS outage can no longer freeze close()/join() on the
+ * launcher (review N6c/B5). Chosen over pre-resolve-before-thread-start
+ * because the socket thread is also created per connect() and the launcher
+ * thread would then take the identical getaddrinfo hit synchronously; this
+ * bounds EVERY caller with one mechanism. The honored test stall models the
+ * outage. Returns false with *timedOut clear on a plain resolution failure,
+ * *timedOut set when the deadline expired first. */
+struct ResolveTask {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+    bool abandoned = false;
+    int rc = -1;
+    struct addrinfo *results = nullptr;
+};
+
+bool resolveAddresses(const std::string &host, uint16_t port,
+                      uint64_t deadlineMs, const std::atomic<bool> &stopping,
+                      std::vector<ResolvedAddress> &out, bool *timedOut) {
+    out.clear();
+    *timedOut = false;
+    (void)prependTestAddress(port, out);
+    auto task = std::make_shared<ResolveTask>();
+    const unsigned stallMs = g_resolverStallMsForTest.load();
+    std::thread helper([task, host, port, stallMs]() {
+        if (stallMs != 0u) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(stallMs));
+        }
+        struct addrinfo hints;
+        std::memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_protocol = IPPROTO_TCP;
+        struct addrinfo *results = nullptr;
+        const int rc = ::getaddrinfo(host.c_str(),
+                                     std::to_string(port).c_str(), &hints,
+                                     &results);
+        std::lock_guard<std::mutex> lock(task->mutex);
+        if (task->abandoned) {
+            /* Nobody is waiting anymore: this thread owns the cleanup. */
+            if (results != nullptr) ::freeaddrinfo(results);
+        } else {
+            task->rc = rc;
+            task->results = results;
+        }
+        task->done = true;
+        task->cv.notify_all();
+    });
+    helper.detach();
+
+    struct addrinfo *results = nullptr;
+    int rc = -1;
+    {
+        std::unique_lock<std::mutex> lock(task->mutex);
+        while (!task->done) {
+            if (stopping || steadyNowMs() >= deadlineMs) {
+                task->abandoned = true;
+                if (!stopping) *timedOut = true;
+                return !out.empty(); /* only a test prepend, if any */
+            }
+            task->cv.wait_for(lock, std::chrono::milliseconds(kPollSliceMs));
+        }
+        rc = task->rc;
+        results = task->results;
+        task->results = nullptr;
+    }
+    if (rc != 0 || results == nullptr) {
+        if (results != nullptr) ::freeaddrinfo(results);
+        return !out.empty(); /* the test prepend still supplies an address */
+    }
+    appendAddrinfo(results, out);
+    ::freeaddrinfo(results);
+    return !out.empty();
+}
+
 /* Deadline- and stop-aware TCP connect. Returns kBadNativeSocket on any
  * failure; *timedOut distinguishes the deadline from a refusal. */
 NativeSocket connectTcp(const std::string &host, uint16_t port,
                         uint64_t deadlineMs, const std::atomic<bool> &stopping,
                         bool *timedOut) {
     *timedOut = false;
-    struct addrinfo hints;
-    std::memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-    struct addrinfo *results = nullptr;
-    if (::getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints,
-                      &results) != 0 ||
-        results == nullptr) {
-        if (results != nullptr) ::freeaddrinfo(results);
+    std::vector<ResolvedAddress> addresses;
+    bool resolveTimedOut = false;
+    if (!resolveAddresses(host, port, deadlineMs, stopping, addresses,
+                          &resolveTimedOut) ||
+        addresses.empty()) {
+        *timedOut = resolveTimedOut;
         return kBadNativeSocket;
     }
     NativeSocket fd = kBadNativeSocket;
-    for (struct addrinfo *entry = results; entry != nullptr;
-         entry = entry->ai_next) {
-        fd = ::socket(entry->ai_family, entry->ai_socktype,
-                      entry->ai_protocol);
+    bool anyAddressTimedOut = false;
+    for (size_t index = 0u; index < addresses.size(); index++) {
+        /* N3 per-address budget: min(cap, remaining/left). A blackholed
+         * first address costs one slice, never the whole deadline; the
+         * overall deadline still bounds the whole loop. */
+        const uint64_t nowAtEntry = steadyNowMs();
+        if (nowAtEntry >= deadlineMs) {
+            *timedOut = true;
+            break;
+        }
+        const uint64_t remaining = deadlineMs - nowAtEntry;
+        uint64_t slice = remaining / (addresses.size() - index);
+        if (slice == 0u) slice = remaining;
+        if (slice > kPerAddressConnectCapMs) slice = kPerAddressConnectCapMs;
+        const uint64_t addressDeadlineMs = nowAtEntry + slice;
+        const ResolvedAddress &entry = addresses[index];
+        fd = ::socket(entry.family, entry.socktype, entry.protocol);
         if (fd == kBadNativeSocket) continue;
 #ifdef SO_NOSIGPIPE
         /* A write aborted by close()'s shutdown must surface as EPIPE, not
@@ -627,8 +784,9 @@ NativeSocket connectTcp(const std::string &host, uint16_t port,
             fd = kBadNativeSocket;
             continue;
         }
-        const int connected = ::connect(fd, entry->ai_addr,
-                                        static_cast<socklen_t>(entry->ai_addrlen));
+        const int connected = ::connect(
+            fd, reinterpret_cast<const struct sockaddr *>(&entry.storage),
+            entry.length);
         bool pending = false;
         if (connected != 0) {
 #ifdef _WIN32
@@ -644,8 +802,8 @@ NativeSocket connectTcp(const std::string &host, uint16_t port,
         }
         bool established = !pending;
         while (pending && !stopping) {
-            if (steadyNowMs() >= deadlineMs) {
-                *timedOut = true;
+            if (steadyNowMs() >= addressDeadlineMs) {
+                anyAddressTimedOut = true;
                 break;
             }
             /* poll() on POSIX: select()'s fd_set is undefined behavior for
@@ -696,9 +854,11 @@ NativeSocket connectTcp(const std::string &host, uint16_t port,
         }
         closeNativeSocket(fd);
         fd = kBadNativeSocket;
-        if (*timedOut || stopping) break;
+        if (stopping) break;
     }
-    ::freeaddrinfo(results);
+    /* Exhausted with at least one address stuck at its slice: report the
+     * timeout class (the pre-N3 semantics for a blackhole), not a refusal. */
+    if (fd == kBadNativeSocket && anyAddressTimedOut) *timedOut = true;
     return fd;
 }
 
@@ -816,6 +976,19 @@ bool responseHeader(const std::string &head, const std::string &name,
 }
 
 } // namespace
+
+/* ---- Test seams (declarations in match_signal_client.h) ------------------- */
+
+void mdkr_match_signal_client_prepend_address_for_test(const char *ip,
+                                                       uint16_t port) {
+    std::lock_guard<std::mutex> lock(resolverSeamMutex());
+    g_prependAddressForTest = ip != nullptr ? ip : "";
+    g_prependPortForTest = port;
+}
+
+void mdkr_match_signal_client_stall_resolver_for_test(unsigned ms) {
+    g_resolverStallMsForTest.store(ms);
+}
 
 /* ---- State ---------------------------------------------------------------- */
 

@@ -997,6 +997,64 @@ void unrequestedExtensionOnThe101IsRefused() {
     rig.expectTerminalFailure(kMdkrMatchSignalTransportLost);
 }
 
+/* W3 N6c: a resolver stalled by a DNS outage must never hold close() (and
+ * with it the launcher/UI thread that joins the socket thread) hostage. The
+ * resolve is deadline-bounded and abandoned on close, never joined. */
+void closeDuringResolverStallReturnsPromptly() {
+    mdkr_match_signal_client_stall_resolver_for_test(3000u);
+    MdkrMatchSignalTestServer server;
+    assert(server.start());
+    std::string error;
+    auto client =
+        MdkrMatchSignalClient::create(baseOptions(server.port()), &error);
+    assert(client != nullptr);
+    assert(client->connect());
+    /* Let the socket thread enter the (stalled) resolve. */
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    const auto start = std::chrono::steady_clock::now();
+    client->close();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - start)
+                             .count();
+    /* Pre-fix: close() joined a thread parked inside the resolve and took
+     * the remaining ~2.9 s; bounded means within poll-slice order. */
+    assert(elapsed < 1500);
+    assert(client->snapshot().phase == MdkrMatchSignalPhase::Closed);
+    mdkr_match_signal_client_stall_resolver_for_test(0u);
+    /* Let the abandoned resolve run out before process teardown. */
+    std::this_thread::sleep_for(std::chrono::milliseconds(3100));
+    server.stop();
+    std::fprintf(stderr, "  close during resolver stall: %lld ms\n",
+                 static_cast<long long>(elapsed));
+}
+
+/* W3 N3: a broken first route (the advertised-but-dead-IPv6 household; here
+ * TEST-NET-1 192.0.2.1, guaranteed-unroutable space) must cost at most a
+ * per-address slice of the welcome budget -- min(3.5 s, remaining/left) --
+ * and fall through to the next address, instead of burning the entire
+ * deadline and stranding a household that could connect over the other
+ * family every single time. */
+void blackholedFirstAddressStillReachesWelcome() {
+    mdkr_match_signal_client_prepend_address_for_test("192.0.2.1", 9u);
+    const auto start = std::chrono::steady_clock::now();
+    {
+        /* 4 s welcome budget over 2 addresses: the blackhole's slice is
+         * min(3500, 4000/2) = 2000 ms, then the loopback harness connects. */
+        Rig rig(MdkrMatchSignalTestServer::ProtocolMode::SelectV1, 4000u);
+        rig.welcome(7u, {});
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start)
+                .count();
+        /* Pre-fix the blackhole ate the full 4 s and the client terminated
+         * with signal_timeout before the loopback address was ever tried. */
+        assert(elapsed < 3500);
+        std::fprintf(stderr, "  blackhole fell through in %lld ms\n",
+                     static_cast<long long>(elapsed));
+    }
+    mdkr_match_signal_client_prepend_address_for_test(nullptr, 0u);
+}
+
 void abruptTransportLossIsTerminal() {
     Rig rig;
     rig.welcome(7u, {});
@@ -1070,6 +1128,10 @@ int main() {
     invalidUtf8OutboundIsRefusedNotThrown();
     closeReturnsPromptlyWithABlockedWrite();
     unrequestedExtensionOnThe101IsRefused();
+
+    /* W3 connection robustness: N6c bounded resolve, N3 address budget. */
+    closeDuringResolverStallReturnsPromptly();
+    blackholedFirstAddressStillReachesWelcome();
 
     std::fprintf(stderr, "test_match_signal_client: all cases passed\n");
     return 0;
