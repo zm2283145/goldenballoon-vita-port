@@ -1,4 +1,4 @@
-import type {Env} from "./types";
+import {singletonLocationHint, type Env} from "./types";
 import {internalRequest} from "./internal-api";
 
 /**
@@ -57,6 +57,10 @@ export interface TurnSeams {
   reserve?: (env: Env) => Promise<boolean>;
   fetcher?: typeof fetch;
   now?: number;
+  /** Unit tests observe the floating background refresh through this hook;
+   * production callers leave it unset and let the task run detached (a
+   * Durable Object stays alive while async work is pending). */
+  background?: (task: Promise<boolean>) => void;
 }
 
 export function stunIceServers(): DeliveredIceServer[] {
@@ -156,7 +160,8 @@ export async function reserveTurnMint(env: Env): Promise<boolean> {
   try {
     const day = new Date().toISOString().slice(0, 10);
     const id = env.PARTY_BUDGETS.idFromName(day);
-    const response = await env.PARTY_BUDGETS.get(id).fetch(
+    const response = await env.PARTY_BUDGETS.get(id,
+      {locationHint: singletonLocationHint(env)}).fetch(
       "https://budget/admit?kind=control&units=2&operation=turnMint",
       internalRequest({method: "POST"}));
     return response.ok;
@@ -175,29 +180,88 @@ function validStoredTurnServers(value: unknown,
   return normalizedTurnEntries({iceServers: record.iceServers}) !== null;
 }
 
+/* F2: the half-TTL refresh must never hold a room object's input gate on the
+ * external mint (a slow provider stalls every join/redeem in the room for up
+ * to the 5 s cap). Cached credentials at the refresh point still carry at
+ * least TTL/2 validity (≥2 h at the 4 h default), so they are always served
+ * immediately and the re-mint runs as a floating background task. Single
+ * flight: the in-memory per-storage flag stops concurrent tasks inside one
+ * live object; the stored start stamp is what survives hibernation, so a
+ * rehydrated object (flag lost) cannot stampede — the worst case is exactly
+ * one duplicate charged mint, and a refusal still charges nothing. */
+const TURN_REFRESH_KEY = "turnRefreshStartedAt";
+export const TURN_REFRESH_LOCKOUT_MS = 30_000;
+const refreshingStorages = new WeakSet<DurableObjectStorage>();
+
+function startTurnRefresh(env: Env, storage: DurableObjectStorage,
+                          seams: TurnSeams, now: number): void {
+  if (refreshingStorages.has(storage)) return;
+  refreshingStorages.add(storage);
+  const task = (async () => {
+    try {
+      /* Stamp compare-and-set. Durable Object events are single-threaded and
+       * this object's tasks are already serialized by the in-memory flag, so
+       * read-check-write cannot race with itself; the stamp's job is to gate
+       * the NEXT object incarnation while this mint is still in flight. A
+       * malformed or future stamp reads as absent, which fails open to one
+       * charged re-mint rather than locking refresh out forever. */
+      const stamped = await storage.get<unknown>(TURN_REFRESH_KEY);
+      if (typeof stamped === "number" && Number.isSafeInteger(stamped) &&
+          stamped <= now && now - stamped < TURN_REFRESH_LOCKOUT_MS) {
+        return false;
+      }
+      await storage.put(TURN_REFRESH_KEY, now);
+      const reserve = seams.reserve || reserveTurnMint;
+      if (!(await reserve(env))) return false;
+      const minted = await mintTurnIceServers(env, seams.fetcher);
+      if (!minted) return false;
+      await storage.put(TURN_CACHE_KEY,
+        {iceServers: minted,
+          expiresAt: (seams.now ?? Date.now()) + TURN_TTL_MS} satisfies
+          StoredTurnServers);
+      return true;
+    } catch {
+      /* Every failure leaves the still-valid cache in place; the next caller
+       * past the lockout tries again. Never surfaces to any response. */
+      return false;
+    } finally {
+      refreshingStorages.delete(storage);
+    }
+  })();
+  seams.background?.(task);
+}
+
 /** The room's full iceServers answer: fixed STUN, plus TURN credentials when
- * they can be had. Storage-backed cache, half-TTL refresh, and the
- * degradation ladder described in the module doctrine. Never throws. The
- * seams parameter exists for unit tests only. */
+ * they can be had. Storage-backed cache, non-blocking half-TTL background
+ * refresh, and the degradation ladder described in the module doctrine.
+ * Never throws. The seams parameter exists for unit tests only. */
 export async function roomIceServers(
     env: Env, storage: DurableObjectStorage,
     seams: TurnSeams = {}): Promise<DeliveredIceServer[]> {
   const stun = stunIceServers();
   if (!turnConfigured(env)) return stun;
-  const reserve = seams.reserve || reserveTurnMint;
   const now = seams.now ?? Date.now();
   let cached: StoredTurnServers | null = null;
   try {
     const stored = await storage.get<unknown>(TURN_CACHE_KEY);
     if (validStoredTurnServers(stored, now)) cached = stored;
   } catch { /* Unreadable cache is the same as no cache. */ }
-  if (cached && cached.expiresAt - now >= TURN_TTL_MS / 2) {
+  if (cached) {
+    /* Still-valid credentials are served immediately, always. Less than half
+     * the window remaining only means the refresh starts in the background —
+     * no joiner ever waits on the provider for credentials that exist. */
+    if (cached.expiresAt - now < TURN_TTL_MS / 2) {
+      startTurnRefresh(env, storage, seams, now);
+    }
     return [...stun, ...cached.iceServers];
   }
-  const degraded = () => cached ? [...stun, ...cached.iceServers] : stun;
-  if (!(await reserve(env))) return degraded();
+  /* No valid cache — the very first mint (room create), or a set that fully
+   * expired while the room slept. This one stays synchronous so the wave-0
+   * payloads still carry TURN whenever it can be had at all. */
+  const reserve = seams.reserve || reserveTurnMint;
+  if (!(await reserve(env))) return stun;
   const minted = await mintTurnIceServers(env, seams.fetcher);
-  if (!minted) return degraded();
+  if (!minted) return stun;
   try {
     await storage.put(TURN_CACHE_KEY,
       {iceServers: minted, expiresAt: now + TURN_TTL_MS} satisfies
