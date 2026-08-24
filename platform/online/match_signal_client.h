@@ -197,6 +197,18 @@ struct MdkrMatchSignalClientOptions {
     /* Welcome deadline; clamped to [2000, 30000] like the JS client
      * (0 selects the 10000 default). */
     unsigned timeoutMs = 10000u;
+    /* Client-originated liveness (W3 N6a; a native-only extension BELOW the
+     * mirrored JS validation surface -- a browser WebSocket cannot originate
+     * pings, so the reference client has none, and RFC 6455 5.5.2/5.5.3
+     * obliges the server to pong). After livenessIdleMs without ANY inbound
+     * byte the socket thread sends a masked ping; when nothing inbound
+     * follows within livenessTimeoutMs more, the transport is declared lost
+     * through the existing terminal path (signal_transport_lost), so a
+     * NAT-timed-out half-open socket can no longer report Open forever
+     * while ICE-restart recovery is silently dead. 0 selects the defaults
+     * (20000 / 10000 ms). */
+    unsigned livenessIdleMs = 0u;
+    unsigned livenessTimeoutMs = 0u;
 };
 
 /* ---- Test seams (the *_for_test convention of the party transport) -------

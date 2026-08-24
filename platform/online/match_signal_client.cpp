@@ -89,6 +89,13 @@ constexpr uint64_t kPerAddressConnectCapMs = 3500u;
 constexpr uint32_t kDataWriteBudgetMs = 5000u;
 /* The final close frame's bounded best effort. */
 constexpr uint32_t kCloseFrameBudgetMs = 250u;
+/* Client-originated liveness defaults (W3 N6a; see the options doc): ping
+ * after this much inbound silence, declare the transport lost when nothing
+ * inbound follows within the timeout on top. 20 s idle stays far above the
+ * relay's own traffic cadence and well under common NAT UDP/TCP idle
+ * reaping, and two probes fit inside a minute. */
+constexpr unsigned kLivenessIdleDefaultMs = 20000u;
+constexpr unsigned kLivenessTimeoutDefaultMs = 10000u;
 
 uint64_t steadyNowMs() {
     return static_cast<uint64_t>(
@@ -998,6 +1005,8 @@ struct MdkrMatchSignalClient::State {
     std::string path;
     std::string endpointId;
     unsigned timeoutMs = 10000u;
+    unsigned livenessIdleMs = kLivenessIdleDefaultMs;
+    unsigned livenessTimeoutMs = kLivenessTimeoutDefaultMs;
 
     mutable std::mutex mutex;
     MdkrMatchSignalPhase phase = MdkrMatchSignalPhase::Idle;
@@ -1588,6 +1597,13 @@ void MdkrMatchSignalClient::State::run() {
     /* ---- Frame loop ---- */
     std::string assembled;
     bool assembling = false;
+    /* Client-originated liveness (W3 N6a): ANY inbound byte proves the
+     * transport; a ping is only the probe that forces a silent one to
+     * speak. Native-only -- the browser reference client cannot originate
+     * pings -- and the worker echoes pongs per RFC 6455 5.5.2/5.5.3. */
+    uint64_t lastInboundMs = steadyNowMs();
+    bool livenessPingSent = false;
+    uint32_t livenessPingCounter = 0u;
     for (;;) {
         if (stopping || closeRequested) {
             finishClose();
@@ -1597,6 +1613,33 @@ void MdkrMatchSignalClient::State::run() {
         if (welcomePending() && steadyNowMs() >= deadlineMs) {
             terminate(kMdkrMatchSignalTimeout, true);
             return;
+        }
+        /* Liveness ladder: idle -> one probe; idle + timeout -> the
+         * transport is dead (a half-open socket looks exactly like this),
+         * through the existing terminal path. */
+        {
+            const uint64_t quietMs = steadyNowMs() - lastInboundMs;
+            if (livenessPingSent &&
+                quietMs >= static_cast<uint64_t>(livenessIdleMs) +
+                               livenessTimeoutMs) {
+                terminate(kMdkrMatchSignalTransportLost, false);
+                return;
+            }
+            if (!livenessPingSent && quietMs >= livenessIdleMs) {
+                std::string ping;
+                const std::string probe =
+                    "gb-live-" + std::to_string(++livenessPingCounter);
+                if (!transport.clientFrame(0x9u, probe, ping) ||
+                    !transport.writeAll(ping, kDataWriteBudgetMs)) {
+                    if (closeRequested) {
+                        finishClose();
+                    } else {
+                        terminate(kMdkrMatchSignalTransportLost, false);
+                    }
+                    return;
+                }
+                livenessPingSent = true;
+            }
         }
         /* Single-writer discipline: every wire write happens on this
          * thread, so TLS state is never touched concurrently. */
@@ -1759,6 +1802,9 @@ void MdkrMatchSignalClient::State::run() {
             return;
         }
         if (got > 0) {
+            /* Any inbound byte proves the transport is alive. */
+            lastInboundMs = steadyNowMs();
+            livenessPingSent = false;
             carried.append(reinterpret_cast<char *>(buffer),
                            static_cast<size_t>(got));
         }
@@ -1802,6 +1848,12 @@ std::unique_ptr<MdkrMatchSignalClient> MdkrMatchSignalClient::create(
     state->timeoutMs = requested < 2000u    ? 2000u
                        : requested > 30000u ? 30000u
                                             : requested;
+    state->livenessIdleMs = options.livenessIdleMs == 0u
+                                ? kLivenessIdleDefaultMs
+                                : options.livenessIdleMs;
+    state->livenessTimeoutMs = options.livenessTimeoutMs == 0u
+                                   ? kLivenessTimeoutDefaultMs
+                                   : options.livenessTimeoutMs;
     return std::unique_ptr<MdkrMatchSignalClient>(
         new MdkrMatchSignalClient(std::move(state)));
 }

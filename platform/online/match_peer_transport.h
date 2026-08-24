@@ -253,7 +253,10 @@ struct MdkrMatchPeerMeshOptions {
     /* 22-char base64url (16 bytes) -- the transcript's room binding. */
     std::string roomId;
     uint64_t localEndpointId = 0u;
-    /* 0 adopts the welcome's generation; nonzero must match the welcome. */
+    /* 0 adopts the welcome's generation; nonzero must match the FIRST
+     * welcome. A replacement signal socket's re-welcome (W3 N6b) always
+     * carries a strictly higher service-assigned generation and supersedes
+     * the pin: the mesh adopts it and restarts every pairwise exchange. */
     uint32_t localGeneration = 0u;
     uint32_t matchEpoch = 0u;
     /* Bound into the transcript digest (protocol/build/gameplay/ROM). */

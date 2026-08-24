@@ -567,9 +567,55 @@ struct MdkrMatchPeerMesh::State
         return &found->second;
     }
 
+    /* W3 N6b: the LOCAL endpoint's replacement signal socket. Replacement
+     * sockets are first-class in the wire contract (the service assigns the
+     * fresh socket a strictly higher connection generation and announces it
+     * to peers as a presence bump), and the peer-side half of this already
+     * existed (applyPresence -> rekeyPeer). This is the missing local half:
+     * a second welcome after a signal loss means WE are the replaced
+     * endpoint -- adopt the new generation, recommit the (unchanged) mesh
+     * key under it with a fresh nonce, restart every pairwise exchange, and
+     * un-latch the signal-health flag so connectionDown() can run the
+     * peer_end/restart ladder again instead of PeerLost(TransportFailed).
+     * The launcher's expectedLocalGeneration pin applies to the FIRST
+     * welcome only: a replacement's generation is service-assigned and
+     * necessarily different. */
+    void handleReWelcome(const MdkrMatchSignalEvent &event) {
+        uint64_t id = 0u;
+        if (!parseEndpointId(event.endpointId, id) || id != localEndpointId ||
+            event.connectionGeneration <= localGeneration) {
+            /* A replayed or stale welcome can never move the mesh. */
+            counters.ignoredStaleSignals++;
+            return;
+        }
+        localGeneration = event.connectionGeneration;
+        if (!secureRandom(ownNonce, sizeof(ownNonce)) ||
+            !mdkr_match_peer_commitment(matchEpoch, localEndpointId,
+                                        localGeneration, ownNonce,
+                                        ownPublicKey, ownCommitment)) {
+            failed = true;
+            emitFailure(MdkrMatchPeerMeshFailure::KeyScheduleFailed);
+            return;
+        }
+        ownCommitmentReady = true;
+        signalHealthy = true;
+        signalLossReported = false;
+        /* Every pairwise exchange restarts: peers rekey us on the presence
+         * bump, and rekeyPeer here retires all transcript-salted keys
+         * (keysDerived drops until the exchange completes again). */
+        for (auto &entry : peers) {
+            PeerRuntime &peer = entry.second;
+            rekeyPeer(peer, peer.generation);
+            peer.present = false; /* the welcome's peer list re-asserts */
+        }
+        for (const MdkrMatchSignalPeerRef &ref : event.peers) {
+            applyPresence(ref.endpointId, ref.connectionGeneration, true);
+        }
+    }
+
     void handleWelcome(const MdkrMatchSignalEvent &event) {
         if (welcomed) {
-            counters.ignoredStaleSignals++;
+            handleReWelcome(event);
             return;
         }
         uint64_t id = 0u;

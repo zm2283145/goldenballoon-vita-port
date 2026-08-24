@@ -45,6 +45,10 @@ public:
     /* Extra raw header line appended to the 101 (no CRLF), e.g.
      * "Sec-WebSocket-Extensions: permessage-deflate". Set before start(). */
     std::string extra101Header;
+    /* Answer every client ping with an RFC 6455 pong echo (the live
+     * worker's behavior). Default off: a silent harness is the half-open
+     * death shape. Set before start(). */
+    bool autoPongClientPings = false;
 
     /* Bind 127.0.0.1 on an ephemeral port and start accepting. */
     bool start();
@@ -96,6 +100,9 @@ public:
     /* Pong frames the client sent (payloads, demasked, in order). */
     bool waitForPongs(size_t count, unsigned budgetMs = 5000u);
     std::vector<std::string> pongPayloads() const;
+    /* Ping frames the CLIENT originated (payloads, demasked, in order). */
+    bool waitForPings(size_t count, unsigned budgetMs = 5000u);
+    std::vector<std::string> pingPayloads() const;
 
 private:
     std::shared_ptr<MdkrMatchSignalTestServerState> state_;

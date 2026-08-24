@@ -1572,6 +1572,88 @@ void answererSetupDeadlineBounded() {
     std::printf("answererSetupDeadlineBounded: ok\n");
 }
 
+/* W3 N6b (mesh half): the local endpoint's own signal socket dies (the
+ * feed's terminal Failure) and a REPLACEMENT socket's fresh welcome -- a
+ * strictly higher connection generation, the wire contract's first-class
+ * replacement shape -- arrives through the same feed. The mesh must adopt
+ * the new generation as its own replacement (fresh commitment, full pair
+ * rekey, fresh phrase, keys that still carry input), and -- the actual hole
+ * -- have its recovery ladders back: a later channel death must run the
+ * peer_end/restart ladder again instead of PeerLost(TransportFailed). */
+void reWelcomeAfterSignalLossRestoresRecoveryLadders() {
+    PairHarness pair;
+    assert(pair.connect());
+    std::string phraseBefore;
+    assert(pair.low->phrase(phraseBefore));
+
+    MdkrMatchSignalEvent failure;
+    failure.type = MdkrMatchSignalEventType::Failure;
+    failure.failureCode = kMdkrMatchSignalTransportLost;
+    pair.harness.hub.inject(100u, failure);
+    assert(pair.harness.pumpUntil([&]() {
+        return pair.harness.countEvents(
+                   100u, MdkrMatchPeerMeshEventType::Failure) >= 1u;
+    }, 5000u));
+
+    /* The service assigns the replacement socket generation 4 and
+     * announces it to the peer as a presence bump. */
+    pair.harness.hub.setGeneration(100u, 4u);
+    MdkrMatchSignalEvent bump;
+    bump.type = MdkrMatchSignalEventType::PeerPresence;
+    bump.endpointId = "100";
+    bump.connectionGeneration = 4u;
+    bump.present = true;
+    pair.harness.hub.inject(200u, bump);
+    pair.harness.hub.welcome(100u); /* the fresh welcome, generation 4 */
+
+    assert(pair.harness.pumpUntil([&]() {
+        return pair.harness.countEvents(
+                   100u, MdkrMatchPeerMeshEventType::PhraseReady) >= 2u &&
+               pair.harness.countEvents(
+                   200u, MdkrMatchPeerMeshEventType::PhraseReady) >= 2u &&
+               pair.harness.countEvents(
+                   100u, MdkrMatchPeerMeshEventType::PeerChannelsReady,
+                   200u) >= 2u &&
+               pair.harness.countEvents(
+                   200u, MdkrMatchPeerMeshEventType::PeerChannelsReady,
+                   100u) >= 2u;
+    }, 30000u));
+    assert(pair.low->connectionGeneration() == 4u);
+    std::string phraseLow;
+    std::string phraseHigh;
+    assert(pair.low->phrase(phraseLow));
+    assert(pair.high->phrase(phraseHigh));
+    assert(!phraseLow.empty() && phraseLow == phraseHigh);
+    assert(phraseLow != phraseBefore); /* a replaced endpoint re-keys */
+
+    /* Input crosses on the re-derived generation-4 keys. */
+    const auto payload = payloadFixture(0x66u);
+    assert(pair.low->sendInput(payload.data()) == 1u);
+    assert(pair.harness.pumpUntil([&]() {
+        return pair.harness.countEvents(
+                   200u, MdkrMatchPeerMeshEventType::InputEnvelope, 100u) >= 1u;
+    }));
+
+    /* THE hole: restarts must work again after the reconnect. */
+    const unsigned readyLow = pair.harness.countEvents(
+        100u, MdkrMatchPeerMeshEventType::PeerChannelsReady, 200u);
+    const unsigned readyHigh = pair.harness.countEvents(
+        200u, MdkrMatchPeerMeshEventType::PeerChannelsReady, 100u);
+    assert(mdkr_match_peer_mesh_kill_channels_for_test(*pair.low, 200u));
+    assert(pair.harness.pumpUntil([&]() {
+        return pair.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 200u) >
+                   readyLow &&
+               pair.harness.countEvents(200u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 100u) >
+                   readyHigh;
+    }, 30000u));
+    assert(pair.harness.hub.countSent(100u, "peer_end", "restart") >= 1u);
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerLost) == 0u);
+    std::printf("reWelcomeAfterSignalLossRestoresRecoveryLadders: ok\n");
+}
+
 }  // namespace
 
 int main() {
@@ -1593,6 +1675,8 @@ int main() {
     offCurveRevealIsPerPeerLoss();
     helloNonceSendFailureRetries();
     answererSetupDeadlineBounded();
+    /* W3 connection robustness. */
+    reWelcomeAfterSignalLossRestoresRecoveryLadders();
     std::printf("all match_peer_transport cases passed\n");
     return 0;
 }

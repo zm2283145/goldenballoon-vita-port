@@ -1055,6 +1055,79 @@ void blackholedFirstAddressStillReachesWelcome() {
     mdkr_match_signal_client_prepend_address_for_test(nullptr, 0u);
 }
 
+/* W3 N6a: nothing client-side detected a silently dead (NAT-timed-out,
+ * half-open) signal socket -- snapshot stayed Open and sends kept
+ * "succeeding" into the void, so ICE-restart recovery was dead for the rest
+ * of the match with no repair path. The client must originate a masked ping
+ * after livenessIdleMs of inbound silence and declare the transport lost
+ * (the existing terminal path) when nothing inbound follows within
+ * livenessTimeoutMs more. */
+void idleClientPingsAndSilentDeathIsTerminal() {
+    MdkrMatchSignalTestServer server;
+    assert(server.start());
+    MdkrMatchSignalClientOptions options = baseOptions(server.port());
+    options.livenessIdleMs = 300u;
+    options.livenessTimeoutMs = 400u;
+    std::string error;
+    auto client = MdkrMatchSignalClient::create(options, &error);
+    assert(client != nullptr);
+    assert(client->connect());
+    assert(server.waitForOpen());
+    assert(server.sendText(welcomeMessage(7u, {}).dump()));
+    std::vector<MdkrMatchSignalEvent> events;
+    assert(waitForEvents(*client, events, 1u));
+    assert(events.back().type == MdkrMatchSignalEventType::Welcome);
+    /* Idle silence -> a client ping reaches the wire... */
+    assert(server.waitForPings(1u, 3000u));
+    /* ...and a server that never answers is a DETECTED dead transport. */
+    bool sawFailure = false;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(5000);
+    while (!sawFailure && std::chrono::steady_clock::now() < deadline) {
+        (void)waitForEvents(*client, events, events.size() + 1u, 200u);
+        for (const MdkrMatchSignalEvent &event : events) {
+            if (event.type == MdkrMatchSignalEventType::Failure) {
+                assert(event.failureCode == kMdkrMatchSignalTransportLost);
+                sawFailure = true;
+            }
+        }
+    }
+    assert(sawFailure);
+    assert(client->snapshot().phase == MdkrMatchSignalPhase::Failed);
+    client->close();
+    server.stop();
+    std::fprintf(stderr, "  idle ping detected the dead transport\n");
+}
+
+/* W3 N6a: pongs (the worker's RFC echo) keep a quiet-but-alive socket open
+ * across several idle periods, and data still flows afterwards. */
+void answeredPingsKeepTheQuietSocketOpen() {
+    MdkrMatchSignalTestServer server;
+    server.autoPongClientPings = true;
+    assert(server.start());
+    MdkrMatchSignalClientOptions options = baseOptions(server.port());
+    options.livenessIdleMs = 200u;
+    options.livenessTimeoutMs = 400u;
+    std::string error;
+    auto client = MdkrMatchSignalClient::create(options, &error);
+    assert(client != nullptr);
+    assert(client->connect());
+    assert(server.waitForOpen());
+    assert(server.sendText(welcomeMessage(7u, {}).dump()));
+    std::vector<MdkrMatchSignalEvent> events;
+    assert(waitForEvents(*client, events, 1u));
+    /* Several idle periods' worth of ping/pong chatter... */
+    assert(server.waitForPings(3u, 5000u));
+    assert(client->snapshot().phase == MdkrMatchSignalPhase::Open);
+    /* ...and the data plane is untouched by the control chatter. */
+    assert(server.sendText(presenceMessage("404", 1u, true).dump()));
+    assert(waitForEvents(*client, events, events.size() + 1u));
+    assert(events.back().type == MdkrMatchSignalEventType::PeerPresence);
+    client->close();
+    server.stop();
+    std::fprintf(stderr, "  answered pings kept the socket open\n");
+}
+
 void abruptTransportLossIsTerminal() {
     Rig rig;
     rig.welcome(7u, {});
@@ -1129,9 +1202,12 @@ int main() {
     closeReturnsPromptlyWithABlockedWrite();
     unrequestedExtensionOnThe101IsRefused();
 
-    /* W3 connection robustness: N6c bounded resolve, N3 address budget. */
+    /* W3 connection robustness: N6c bounded resolve, N3 address budget,
+     * N6a client-originated liveness. */
     closeDuringResolverStallReturnsPromptly();
     blackholedFirstAddressStillReachesWelcome();
+    idleClientPingsAndSilentDeathIsTerminal();
+    answeredPingsKeepTheQuietSocketOpen();
 
     std::fprintf(stderr, "test_match_signal_client: all cases passed\n");
     return 0;
