@@ -777,6 +777,10 @@ CHECKS = (
     Check("postrace_door_fling", "check_postrace_door_fling.py", "native",
           "post-race lobby returns stay grounded on the quit paths, with the "
           "rising-door carry-frame legacy control"),
+    Check("track_exit_storage", "check_track_exit_storage.py", "native",
+          "Hot Top Volcano's destination -1 exit reloads the central hub "
+          "through the measured retail us.v80 path with trophy storage "
+          "intact, instead of the menu-8 dead-end hang (issue #55)"),
     Check("trophy_series", "check_trophy_series.py", "native",
           "all four Adventure trophy championships, quit/retry, and EEPROM reload"),
     Check("race_finish_time", "check_race_finish_time.py", "native",
