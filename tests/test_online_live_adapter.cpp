@@ -1067,6 +1067,35 @@ void test_reverify_after_post_confirmation_rewelcome() {
     CHECK(viewOf(B.get()).failure ==
           MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH);
 
+    /* MINOR: a SECOND re-welcome DURING the re-verify window (before the
+     * human retries) must be absorbed -- the barrier stays armed, the
+     * confirmation stays reset, neither side escapes to play, and RETRY then
+     * surfaces the LATEST transcript's phrase. */
+    hub.setGeneration(backendA.began, 6u);
+    MdkrMatchSignalEvent bump2;
+    bump2.type = MdkrMatchSignalEventType::PeerPresence;
+    bump2.endpointId = std::to_string(backendA.began);
+    bump2.connectionGeneration = 6u;
+    bump2.present = true;
+    hub.inject(backendB.began, bump2);
+    hub.welcome(backendA.began); /* second fresh welcome, generation 6 */
+    for (unsigned index = 0u; index < 40u; index++) {
+        for (IMdkrOnlineAdapter *a : both) a->service();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        clock.nowMs += 5u;
+    }
+    mdkr_online_live_adapter_probe(A.get(), &probeA);
+    mdkr_online_live_adapter_probe(B.get(), &probeB);
+    CHECK(!probeA.phraseConfirmed);
+    CHECK(!probeB.phraseConfirmed);
+    CHECK(viewOf(A.get()).kind == MDKR_ONLINE_VIEW_RECOVERY);
+    CHECK(viewOf(B.get()).kind == MDKR_ONLINE_VIEW_RECOVERY);
+    {
+        MdkrOnlineLiveRaceInfo na{}, nb{};
+        CHECK(mdkr_online_live_adapter_race_info(A.get(), &na) && !na.ready);
+        CHECK(mdkr_online_live_adapter_race_info(B.get(), &nb) && !nb.ready);
+    }
+
     /* "Reconnect Securely" -> a FRESH phrase surfaces on both sides. */
     CHECK(A->submit(cmd(A.get(), MDKR_ONLINE_VIEW_ACTION_RETRY)).accepted);
     CHECK(B->submit(cmd(B.get(), MDKR_ONLINE_VIEW_ACTION_RETRY)).accepted);

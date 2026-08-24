@@ -363,6 +363,10 @@ private:
                                      MDKR_ROOM_SELECTING)) return false;
                 phraseConfirmed_ = true;
                 reVerify_ = false; /* the fresh SAS has been compared */
+                /* Pin the exact transcript the human just compared: any
+                 * later digest change re-arms the barrier (CRITICAL-1). */
+                haveConfirmedDigest_ =
+                    mesh_ && mesh_->transcriptDigest(confirmedDigest_);
                 /* After a RE-verify confirm, return the room to the
                  * authoritative lobby phase (the barrier had parked it at
                  * the preflight surface mid-LOADING). */
@@ -575,11 +579,17 @@ private:
      * forever and play silently continued on channels the SAS never
      * validated.
      *
-     * Detection is the phrase itself, which makes both sides symmetric:
+     * Detection keys on the 256-bit TRANSCRIPT DIGEST, never the 20-bit
+     * phrase (a phrase strcmp collides ~2^-20 and is grindable). Two
+     * symmetric paths, both compared against the confirmed digest:
      * (a) mesh_->phrase() REFUSES while a rekey is in flight (keys retired)
-     *     -- polled every pumpMesh(); and
-     * (b) a PhraseReady delivering a phrase different from the held one
-     *     (covers a retire-and-rederive that completes inside one pump).
+     *     -- polled every pumpMesh(); catches a rekey that spans pumps; and
+     * (b) a PhraseReady whose fresh transcript digest differs from the
+     *     confirmed one -- catches a retire-and-rederive that completes
+     *     inside ONE pump (the batched [presence,hello1,hello2,hello3] feed
+     *     drain a malicious relay can force: keysDerived flips false->true
+     *     within a single mesh pump(), so path (a) never observes the
+     *     window, but the new digest still differs and arms the barrier).
      *
      * What the re-verify does: drop race-Ready IMMEDIATELY (the race feed
      * reports not-ready, so integrators stop advancing; the in-progress
@@ -600,6 +610,7 @@ private:
         const bool confirmed = phraseConfirmed_;
         havePhrase_ = false;      /* the retired phrase must never redisplay */
         phraseConfirmed_ = false; /* never reuse Ready */
+        haveConfirmedDigest_ = false; /* the confirmed transcript is retired */
         preflightInit_ = false;
         ownSubmitted_ = false;
         preflightReady_ = false;
@@ -633,12 +644,17 @@ private:
             switch (ev.type) {
                 case MdkrMatchPeerMeshEventType::PhraseReady: {
                     std::string p;
+                    uint8_t digest[MDKR_MATCH_PEER_TRANSCRIPT_DIGEST_BYTES];
                     if (mesh_->phrase(p) &&
-                        p.size() + 1u <= sizeof(phrase_)) {
-                        if (havePhrase_ &&
-                            std::strcmp(phrase_, p.c_str()) != 0) {
-                            /* Retire-and-rederive completed within one
-                             * pump: still a new SAS to compare. */
+                        p.size() + 1u <= sizeof(phrase_) &&
+                        mesh_->transcriptDigest(digest)) {
+                        /* Path (b): a fresh transcript digest that differs
+                         * from the confirmed one is a re-key to re-verify,
+                         * even if it collided to the same 20-bit phrase and
+                         * even if it landed inside a single pump. */
+                        if (haveConfirmedDigest_ &&
+                            std::memcmp(digest, confirmedDigest_,
+                                        sizeof(digest)) != 0) {
                             beginReVerify();
                         }
                         std::memcpy(phrase_, p.c_str(), p.size() + 1u);
@@ -1135,6 +1151,14 @@ private:
      * post-confirmation rekey, cleared by the second CONFIRM_PHRASE. While
      * armed, syncPhase() leaves the room at the re-verify surface. */
     bool reVerify_ = false;
+    /* The 256-bit transcript digest the human confirmed. Re-verify detection
+     * keys on THIS, never the 20-bit phrase: two different transcripts
+     * collide to the same phrase with probability ~2^-20, so a strcmp on the
+     * SAS is grindable, but a full-digest compare arms the barrier on ANY
+     * transcript change. Captured at CONFIRM_PHRASE; compared every time a
+     * fresh phrase is derived. */
+    bool haveConfirmedDigest_ = false;
+    uint8_t confirmedDigest_[MDKR_MATCH_PEER_TRANSCRIPT_DIGEST_BYTES] = {};
     char phrase_[MDKR_ONLINE_VERIFICATION_PHRASE_BYTES] = {};
     uint32_t revision_ = 1u;
     uint64_t nextCommandId_ = 1u;
