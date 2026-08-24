@@ -611,6 +611,56 @@ def run(args: argparse.Namespace) -> None:
                     f"join ding fired on approval or while muted: {dings_after}")
             cdp.evaluate("localStorage.removeItem('gb-party-ding')")
 
+            # S5 (F6): a routine RTT pong from an already-connected phone must
+            # never rebuild the pending-approval cards. Before the fix,
+            # renderRoomState ran on every 5-second pong and replaceChildren'd
+            # the roster, destroying the slot picker's selection AND focus
+            # exactly while the host was approving a phone. testControlPong
+            # stamps an outstanding ping and runs the exact production pong
+            # handler; the pending card's DOM node, its chosen slot and the
+            # host's focus must all survive, while the pong'd seat tile shows
+            # the fresh RTT sample.
+            pong_base = cdp.evaluate(
+                "Number(globalThis.MDKRPartyHost.state().room.transitionId)||0")
+            cdp.evaluate("""globalThis.MDKRPartyHost.applyRoomState({
+              type:'room_state', transitionId:%d, controllers:[
+                {controllerId:'phone-live-rtt', name:'Connected phone',
+                 controllerPublicKey:'%s', phase:'connected', seat:1,
+                 leaseGeneration:1, connectionSequence:1},
+                {controllerId:'phone-waiting-rtt', name:'Waiting phone',
+                 phase:'pending', seat:null, leaseGeneration:0,
+                 connectionSequence:1}
+              ]});
+              globalThis.MDKRPartyHost.receiveSignal({type:'controller_hello',
+                controllerId:'phone-live-rtt'});""" % (pong_base + 1, "M" * 87))
+            wait_value(cdp,
+                "globalThis.MDKRPartyHost.testControlPong('phone-live-rtt', 23)",
+                bool, "live peer for the RTT pong", args.timeout)
+            cdp.evaluate("""(() => {
+              const select = document.querySelector('#party-pending-list select');
+              select.focus();
+              select.value = '3';
+              globalThis.__partyPongSelect = select;
+              globalThis.MDKRPartyHost.remotePads()[0].active = true;
+            })()""")
+            pong = cdp.evaluate("""(() => {
+              const before = document.querySelector('#party-pending-list select');
+              const ok = globalThis.MDKRPartyHost.testControlPong(
+                'phone-live-rtt', 23);
+              const after = document.querySelector('#party-pending-list select');
+              return {ok,
+                sameNode: after === globalThis.__partyPongSelect &&
+                  after === before,
+                value: after ? after.value : null,
+                focused: document.activeElement === after,
+                seatText: document.querySelector(
+                  '[data-seat="1"] small').textContent};
+            })()""")
+            require(pong["ok"] is True and pong["sameNode"] is True and
+                    pong["value"] == "3" and pong["focused"] is True and
+                    " ms · direct" in pong["seatText"],
+                    f"RTT pong rebuilt the pending card mid-approve: {pong}")
+
             cdp.evaluate("document.getElementById('party-end').click()")
             confirmation = wait_value(cdp, """(() => ({
               open:document.getElementById('party-end-dialog').open,
@@ -641,7 +691,8 @@ def run(args: argparse.Namespace) -> None:
             fatal = [line for line in cdp.console if "Uncaught" in line or "TypeError" in line]
             require(not fatal, "party host console errors: " + "; ".join(fatal))
             print("check_party_host: PASS — mixed-source seats, safe phone removal, QR/code "
-                  "fallback, dismiss/start revoke/preserve, confirmed close and 200% layout")
+                  "fallback, dismiss/start revoke/preserve, pong-stable pending cards, "
+                  "confirmed close and 200% layout")
         finally:
             if cdp is not None:
                 cdp.close()
