@@ -716,6 +716,8 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
         };
         if (imp == nullptr) {
             for (unsigned step = 0u; step < 20000u; ++step) {
+                /* service() before the tick drain -- the load-bearing pump
+                 * ordering (match_live_adapter.h integration contract). */
                 A->service();
                 B->service();
                 MdkrOnlineLiveRaceInfo na{}, nb{};
