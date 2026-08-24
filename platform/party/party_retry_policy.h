@@ -49,6 +49,17 @@ struct MdkrPartyRetryDecision {
 };
 
 /*
+ * The phones' contractual unanswered-offer deadline, and the default for
+ * mdkr_party_retry_decide's deadline parameter: 20 s is deliberate for
+ * phone pairing (a human is in the loop and the Worker relay may lag), and
+ * the phone transports keep it exactly. The deadline became a PARAMETER
+ * (W3 N4) so the race mesh can run the same 3-attempt ladder shape on a
+ * setup-scale deadline (match_peer_transport.h's
+ * kMdkrMatchOfferRetryDeadlineMs) without touching this contract.
+ */
+inline constexpr uint64_t kMdkrPartyOfferDeadlineDefaultMs = 20000u;
+
+/*
  * nowMs and offerSentMs share one steady clock (the transport's
  * steadyNowMs()). offerSentMs == 0 means no offer has gone out yet for this
  * peer (still gathering ICE candidates, say) -- there is nothing to retry,
@@ -56,6 +67,11 @@ struct MdkrPartyRetryDecision {
  * including the first, so it starts at 1 the moment the first offer goes
  * out and only advances when recreatePeer produces a genuinely new offer
  * (a resend does not consume an attempt).
+ *
+ * unansweredDeadlineMs is the age at which an unanswered offer triggers the
+ * ladder (recreate, or give up on the last attempt). Callers other than the
+ * phone transports may pass their own; the 3-attempt bound is shared and
+ * unchanged.
  *
  * protocolMismatched is the transport's per-peer I2 latch: set the moment a
  * controller_ready arrives with any pairing-protocol version but this
@@ -69,7 +85,8 @@ struct MdkrPartyRetryDecision {
  */
 MdkrPartyRetryDecision mdkr_party_retry_decide(
     uint64_t nowMs, uint64_t offerSentMs, unsigned offerAttempts,
-    bool authenticated, bool protocolMismatched, bool socketOpen);
+    bool authenticated, bool protocolMismatched, bool socketOpen,
+    uint64_t unansweredDeadlineMs = kMdkrPartyOfferDeadlineDefaultMs);
 
 /*
  * Signaling-socket resume policy (I4): the decision half of the transport's

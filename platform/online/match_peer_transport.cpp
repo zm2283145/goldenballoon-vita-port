@@ -1190,12 +1190,15 @@ struct MdkrMatchPeerMesh::State
                 if (!peer.connection) {
                     createConnection(peer);
                 } else if (!peer.channelsReady) {
+                    /* W3 N4: the shared 3-attempt ladder on the MESH
+                     * deadline -- the phones keep their 20 s default. */
                     const MdkrPartyRetryDecision decision =
                         mdkr_party_retry_decide(
                             nowMs, peer.offerSentMs, peer.offerAttempts,
                             /*authenticated=*/false,
                             /*protocolMismatched=*/false,
-                            /*socketOpen=*/false);
+                            /*socketOpen=*/false,
+                            kMdkrMatchOfferRetryDeadlineMs);
                     if (decision.giveUp) {
                         peer.gaveUp = true;
                         peerLost(peer, MdkrMatchPeerLostReason::ConnectTimeout);

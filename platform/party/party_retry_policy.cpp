@@ -2,8 +2,10 @@
 
 namespace {
 
-/* Contractual policy numbers -- see party_retry_policy.h. */
-constexpr uint64_t kUnauthenticatedDeadlineMs = 20000u;
+/* Contractual policy numbers -- see party_retry_policy.h. The
+ * unanswered-offer deadline lives in the header now (it is the defaulted
+ * parameter, kMdkrPartyOfferDeadlineDefaultMs); the attempt bound is shared
+ * by every caller. */
 constexpr unsigned kMaxOfferAttempts = 3u;
 /* I4 resume ladder: the same 300 ms-doubling-to-8 s ladder the transport
  * always ran, now decided here; and the terminal gates -- at least three
@@ -23,7 +25,8 @@ constexpr unsigned kSocketCycleAtMessages = 480u;
 
 MdkrPartyRetryDecision mdkr_party_retry_decide(
     uint64_t nowMs, uint64_t offerSentMs, unsigned offerAttempts,
-    bool authenticated, bool protocolMismatched, bool socketOpen) {
+    bool authenticated, bool protocolMismatched, bool socketOpen,
+    uint64_t unansweredDeadlineMs) {
     MdkrPartyRetryDecision decision;
 
     /* A connected phone, a peer whose controller_ready declared the wrong
@@ -45,7 +48,7 @@ MdkrPartyRetryDecision mdkr_party_retry_decide(
     }
 
     const uint64_t age = nowMs >= offerSentMs ? nowMs - offerSentMs : 0u;
-    if (age < kUnauthenticatedDeadlineMs) return decision;
+    if (age < unansweredDeadlineMs) return decision;
 
     if (offerAttempts >= kMaxOfferAttempts) decision.giveUp = true;
     else decision.recreatePeer = true;

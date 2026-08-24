@@ -1572,6 +1572,57 @@ void answererSetupDeadlineBounded() {
     std::printf("answererSetupDeadlineBounded: ok\n");
 }
 
+/* W3 N4: the race mesh must not reuse the phones' 20 s human-in-the-loop
+ * offer deadline -- a relay-dropped offer recreates in single-digit seconds
+ * (kMdkrMatchOfferRetryDeadlineMs), 3 attempts kept. The phones' default is
+ * pinned separately by test_party_transport_retry. */
+void meshOfferLadderRetriesInSingleDigitSeconds() {
+    MeshHarness harness;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    harness.add(100u, 1u, roster);
+    harness.hub.addEndpoint(200u, 7u);
+    harness.hub.blackhole(200u, true); /* every offer vanishes in the relay */
+    harness.hub.welcome(100u);
+    assert(harness.pumpUntil([&]() {
+        return harness.hub.countSent(100u, "webrtc_offer") >= 1u;
+    }, 10000u));
+    /* Just under the mesh deadline (fake clock): no recreate yet. */
+    harness.clock.nowMs += kMdkrMatchOfferRetryDeadlineMs - 500u;
+    for (unsigned index = 0u; index < 10u; index++) {
+        harness.pumpOnce();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(harness.hub.countSent(100u, "webrtc_offer") == 1u);
+    /* Cross it: the second offer must appear WITHOUT 20 s of fake time. */
+    harness.clock.nowMs += 1000u;
+    assert(harness.pumpUntil([&]() {
+        return harness.hub.countSent(100u, "webrtc_offer") >= 2u;
+    }, 10000u));
+    std::printf("meshOfferLadderRetriesInSingleDigitSeconds: ok\n");
+}
+
+/* W3 N4: the answerer's bounded verdict drops with the ladder it mirrors
+ * (3 x the mesh deadline -- the offerer's total budget), so a failed
+ * pairing resolves in ~21 s instead of 60 s. */
+void meshAnswererVerdictWithinTheMeshBudget() {
+    MeshHarness harness;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({200u, 300u});
+    harness.add(300u, 3u, roster); /* higher id: pure answerer */
+    harness.hub.addEndpoint(200u, 2u);
+    harness.hub.welcome(300u);
+    harness.pumpOnce(); /* arm the setup deadline */
+    harness.clock.nowMs += 22000u; /* > 3 x 7 s, far under the old 60 s */
+    assert(harness.pumpUntil([&]() {
+        return harness.countEvents(300u,
+                   MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *lost = harness.lastEvent(
+        300u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+    assert(lost != nullptr &&
+           lost->lostReason == MdkrMatchPeerLostReason::ConnectTimeout);
+    std::printf("meshAnswererVerdictWithinTheMeshBudget: ok\n");
+}
+
 /* W3 N6b (mesh half): the local endpoint's own signal socket dies (the
  * feed's terminal Failure) and a REPLACEMENT socket's fresh welcome -- a
  * strictly higher connection generation, the wire contract's first-class
@@ -1676,6 +1727,8 @@ int main() {
     helloNonceSendFailureRetries();
     answererSetupDeadlineBounded();
     /* W3 connection robustness. */
+    meshOfferLadderRetriesInSingleDigitSeconds();
+    meshAnswererVerdictWithinTheMeshBudget();
     reWelcomeAfterSignalLossRestoresRecoveryLadders();
     std::printf("all match_peer_transport cases passed\n");
     return 0;
