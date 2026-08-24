@@ -124,6 +124,8 @@ The ares hooks read these env vars (set for you by `run_oracle.sh`):
 | `MDKR64_ARES_AUDIO_DUMP` | write the ROM's own audio-interface PCM (raw LE s16 stereo) |
 | `MDKR64_ARES_VEHICLE_RNG_TRACE` | write the local-only US 1.1 retail car-audio RNG call witness |
 | `MDKR64_ARES_FORCE_TRACK` | `source:target` level ids; rewrite the one-player `level_load` argument so a route can reach a track the menus cannot script into (`bluey2_state_oracle` sets `5:52`) |
+| `MDKR64_ARES_POKE_RACER_POS` | `start:end:x:y:z[:trophyWorld]` — hold the human racer's object position for a presented-frame window (issue #55 exit-latch lane) |
+| `MDKR64_ARES_MENU_RESULT_TRACE` | write the local-only US 1.1 per-return `menu_loop` value witness (issue #55 uninitialized-return lane) |
 
 ### The audio lane
 
@@ -187,6 +189,47 @@ one-byte negative controls; it is not a relaxed threshold.
 
 Button masks are the standard N64 SI layout (A=0x8000 … C-Right=0x0001),
 identical to the native port's masks, so an injected value lands verbatim.
+
+### The track-exit poke and menu-result lanes (issue #55)
+
+Hot Top Volcano's destination −1 `BHV_EXIT` sits ~114 units below the
+drivable surface, so no input route can trip `obj_loop_exit`'s latch on the
+real ROM — the only human route is an out-of-bounds clip. Two paired lanes
+make the authored aftermath measurable anyway:
+
+- **`MDKR64_ARES_POKE_RACER_POS="start:end:x:y:z[:trophyWorld]"`** holds the
+  human racer's object position at `(x, y, z)` for the presented-frame window
+  and zeroes its velocity, so the retail latch, `racer_enter_door`, the fade,
+  and the destination routing all run authored code. Writes go through
+  `CPU::writeDebug` — cache-aware — because writing backing RDRAM can be
+  undone by a later dirty D-cache writeback (the same hazard the vehicle-RNG
+  lane documents on its read side). The optional `trophyWorld` seeds
+  `gTrophyRaceWorldId` (and `gTrophyRaceRound=2`) once at window start so the
+  status heartbeat (printed to stderr every 30 presented frames from window
+  start) can witness whether retail preserves them across the transition.
+  Mind the half-plane: the latch requires `dot(dir, racer) + rotationDiff <
+  0`, so take the exit's `dir`/`rotDiff` from a native `MDKR_OBJDUMP` row and
+  pick the poke point on the negative side (for HTV's exit at
+  (−1517, 158, −2354) with dir (0, 1), that means z < −2354).
+- **`MDKR64_ARES_MENU_RESULT_TRACE=<path>`** records the exact value the
+  retail US 1.1 `menu_loop` returns to `mode_menu`, per call, by watching the
+  CPU step from inside `menu_loop`'s address range directly into
+  `mode_menu`'s (symbol ranges from `docs/ref/symbols/symbol_addrs.us.v80.txt`;
+  callees return into `menu_loop`, interrupts land in neither range, so that
+  boundary is precisely the return, and v0 is the routed value). This is the
+  only way to read the value for `MENU_UNUSED_8`, whose `ret` the C leaves
+  uninitialized — authored UB with no source-level answer. Rows are kept for
+  every menuId 8 return plus each menuId change for context.
+
+Measured 2026-08-24 (route `race_state_oracle` inputs, `MDKR64_ARES_FORCE_TRACK=5:7`,
+poke window 4300–4420 at (−1517, 158, −2400)): the menu 8 return is
+`v0 = 0x8006CA60`, `mode_menu` consumes it through the `MENU_RESULT_FLAGS_200`
+arm (`& 0x7F` → level 96), `level_load`'s own out-of-range guard substitutes
+the central hub, and the seeded trophy globals survive to the end of the run.
+`game/src/menu.c` pins that measured value at the `AVOID_UB` default for
+`MENU_UNUSED_8`; `tests/check_track_exit_storage.py` holds the native port to
+the same end-to-end outcome. Like every oracle output, the traces are
+ROM-derived and local-only.
 
 ### ares must be allowed to run unfocused
 
