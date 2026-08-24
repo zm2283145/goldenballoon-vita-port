@@ -4,8 +4,8 @@ import {base64Url, constantTimeEqual, digest, fallbackCode, fromBase64Url, json,
   readJson, utf8Exceeds, validPartyOrigin} from "./security";
 import {internalRequest, rejectUnsupportedInternalApi} from "./internal-api";
 import {roomIceServers} from "./turn";
-import {LIMITS, type CreateRoomInput, type Env, type RedeemInput,
-  type StoredRoom} from "./types";
+import {LIMITS, singletonLocationHint, type CreateRoomInput, type Env,
+  type RedeemInput, type StoredRoom} from "./types";
 
 interface SocketAttachment {
   role: "host" | "controller";
@@ -556,7 +556,8 @@ export class PartyRoom extends DurableObject<Env> {
   private async registerNativeCode(roomId: string, code: string,
                                    expiresAt: number): Promise<boolean> {
     const stub = this.env.PARTY_CODES.get(
-      this.env.PARTY_CODES.idFromName("v1"));
+      this.env.PARTY_CODES.idFromName("v1"),
+      {locationHint: singletonLocationHint(this.env)});
     const response = await stub.fetch("https://code/register", internalRequest({
       method: "POST", headers: {"content-type": "application/json"},
       body: JSON.stringify({codeDigest: await digest(this.env, "party-code", code),
@@ -603,7 +604,8 @@ export class PartyRoom extends DurableObject<Env> {
     try {
       const day = new Date().toISOString().slice(0, 10);
       const id = this.env.PARTY_BUDGETS.idFromName(day);
-      const response = await this.env.PARTY_BUDGETS.get(id).fetch(
+      const response = await this.env.PARTY_BUDGETS.get(id,
+        {locationHint: singletonLocationHint(this.env)}).fetch(
         `https://budget/admit?kind=control&units=${units}&operation=${operation}`,
         internalRequest({method: "POST"}));
       return response.ok;

@@ -101,6 +101,22 @@ async function admittedUnits(): Promise<{pairing: number; control: number}> {
     control: value.admitted.controlUnits};
 }
 
+interface BudgetHealth {
+  reservationRequests: number;
+  reservations: Record<string, number>;
+  admitted: {pairingUnits: number; controlUnits: number};
+}
+
+async function budgetHealth(): Promise<BudgetHealth> {
+  const bindings = env as unknown as Env;
+  const day = new Date().toISOString().slice(0, 10);
+  const response = await bindings.PARTY_BUDGETS.get(
+    bindings.PARTY_BUDGETS.idFromName(day)).fetch("https://budget/health", {
+      headers: {[INTERNAL_API_HEADER]: "1"},
+    });
+  return await response.json() as BudgetHealth;
+}
+
 describe("Party Worker local workerd adapter", () => {
   it("bootstraps a native host over one originless, versioned WSS upgrade", async () => {
     const response = await SELF.fetch("https://party.test/api/party/native-create", {
@@ -222,6 +238,43 @@ describe("Party Worker local workerd adapter", () => {
           "gb-native-host-v1, gb-control-v1, gb-key.short",
       }});
     expect(malformed.status).toBe(403);
+  });
+
+  /* S3: the native bootstrap's two serialized budget round trips (partyCreate
+   * pairing 10, then partySocket control 28) collapse into ONE compound
+   * admission. Unit-for-unit equivalence: the flow charges exactly the same
+   * totals — pairing 10, control 28 — while making a single reservation. */
+  it("charges the native bootstrap in one compound round trip, same units", async () => {
+    const before = await budgetHealth();
+    const response = await SELF.fetch("https://party.test/api/party/native-create", {
+      headers: {upgrade: "websocket", "sec-websocket-protocol":
+        `gb-native-host-v1, gb-control-v1, gb-key.${hostPublicKey}`},
+    });
+    expect(response.status).toBe(101);
+    const socket = response.webSocket!;
+    const messages = nextMessages(socket, 2);
+    socket.accept();
+    await messages;
+    socket.close(1000, "budget_equivalence_verified");
+    const after = await budgetHealth();
+    expect(after.admitted.pairingUnits - before.admitted.pairingUnits).toBe(10);
+    expect(after.admitted.controlUnits - before.admitted.controlUnits).toBe(28);
+    expect(after.reservationRequests - before.reservationRequests).toBe(1);
+    expect((after.reservations.partyNativeCreate || 0) -
+      (before.reservations.partyNativeCreate || 0)).toBe(1);
+    expect(after.reservations.partyCreate || 0)
+      .toBe(before.reservations.partyCreate || 0);
+    expect(after.reservations.partySocket || 0)
+      .toBe(before.reservations.partySocket || 0);
+    /* The browser create flow is untouched: still one partyCreate at 10. */
+    const created = await post("/api/party/create",
+      {hostPublicKey: controllerPublicKey});
+    expect(created.status).toBe(201);
+    const browserAfter = await budgetHealth();
+    expect(browserAfter.admitted.pairingUnits - after.admitted.pairingUnits)
+      .toBe(10);
+    expect((browserAfter.reservations.partyCreate || 0) -
+      (after.reservations.partyCreate || 0)).toBe(1);
   });
 
   it("rejects unknown Worker-to-object protocol versions at every boundary", async () => {
