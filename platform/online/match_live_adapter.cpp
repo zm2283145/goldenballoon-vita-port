@@ -174,9 +174,32 @@ public:
 
     bool view(MdkrOnlineViewModel *out) const override {
         MdkrOnlineViewInput in;
+        MdkrOnlineLobby reVerifyLobby;
         std::memset(&in, 0, sizeof(in));
         in.session = &session_.state;
-        in.lobby = haveLobby_ ? &lobby_ : nullptr;
+        if (haveLobby_ && reVerify_) {
+            /* Re-verify projection (SAS barrier armed): the race is
+             * suspended and the room presents at its lobby/preflight
+             * surface so the shared view-model oracle -- which refuses an
+             * inconsistent (session, lobby) pair by design -- renders the
+             * recovery and fresh-phrase views. The projection is the real
+             * snapshot scrubbed to the oracle's LOBBY-phase invariants
+             * (no selected track/vehicle-mask, no loaded flags, the
+             * session's epoch); the AUTHORITATIVE snapshot in lobby_ is
+             * untouched and returns the moment the second confirmation
+             * clears the barrier. */
+            reVerifyLobby = lobby_;
+            reVerifyLobby.phase = MDKR_ONLINE_LOBBY;
+            reVerifyLobby.match_epoch = session_.state.match_epoch;
+            reVerifyLobby.selected_track = MDKR_ONLINE_NO_VOTE;
+            reVerifyLobby.selected_vehicle_mask = 0u;
+            for (unsigned i = 0u; i < MDKR_ONLINE_MAX_ENDPOINTS; ++i) {
+                reVerifyLobby.members[i].loaded = false;
+            }
+            in.lobby = &reVerifyLobby;
+        } else {
+            in.lobby = haveLobby_ ? &lobby_ : nullptr;
+        }
         in.local_endpoint_id = localEndpointId_;
         in.journey = journey_;
         in.failure = failure_;
@@ -332,13 +355,20 @@ private:
                                      MDKR_ROOM_PREFLIGHT)) return false;
                 bringUpMesh();
                 return true;
-            case MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE:
+            case MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE: {
                 if (!havePhrase_ ||
                     session_.state.room != MDKR_ROOM_PREFLIGHT) return false;
+                const bool resync = reVerify_;
                 if (!sessionDispatch(MDKR_SESSION_COMMAND_SET_ROOM_PHASE,
                                      MDKR_ROOM_SELECTING)) return false;
                 phraseConfirmed_ = true;
+                reVerify_ = false; /* the fresh SAS has been compared */
+                /* After a RE-verify confirm, return the room to the
+                 * authoritative lobby phase (the barrier had parked it at
+                 * the preflight surface mid-LOADING). */
+                if (resync) syncPhase();
                 return true;
+            }
             case MDKR_ONLINE_VIEW_ACTION_REPORT_PHRASE_MISMATCH:
                 failure_ = MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH;
                 return true;
@@ -470,8 +500,12 @@ private:
 
     /* Follow the authoritative lobby phase for phases the room/leader drives.
      * Local sub-phases (PREFLIGHT/SELECTING while lobby is LOBBY) are never
-     * overwritten here. */
+     * overwritten here. While the SAS re-verify barrier is armed the room
+     * presentation stays at the re-verify surface -- a lobby snapshot must
+     * not yank the phase back and hide the fresh phrase; the authoritative
+     * phase re-syncs after the second confirmation. */
     void syncPhase() {
+        if (reVerify_) return;
         if (lobby_.phase == MDKR_ONLINE_LOADING &&
             session_.state.room != MDKR_ROOM_LOADING) {
             (void)sessionDispatch(MDKR_SESSION_COMMAND_SET_ROOM_PHASE,
@@ -530,6 +564,67 @@ private:
         }
     }
 
+    /* W3 fix round (Critical): the SAS re-verification barrier.
+     *
+     * A mesh rekey after the humans confirmed the phrase -- the local
+     * endpoint's replacement /signal socket (re-welcome, higher generation)
+     * or a PEER's replacement (presence bump -> rekeyPeer) -- derives fresh
+     * keys and a fresh phrase. docs/ref/match-signaling-v1.md:114 ("Secure
+     * connection changed"): retire keys/channels, reconnect, and compare a
+     * NEW phrase; NEVER reuse Ready. Pre-fix, phraseConfirmed_ latched
+     * forever and play silently continued on channels the SAS never
+     * validated.
+     *
+     * Detection is the phrase itself, which makes both sides symmetric:
+     * (a) mesh_->phrase() REFUSES while a rekey is in flight (keys retired)
+     *     -- polled every pumpMesh(); and
+     * (b) a PhraseReady delivering a phrase different from the held one
+     *     (covers a retire-and-rederive that completes inside one pump).
+     *
+     * What the re-verify does: drop race-Ready IMMEDIATELY (the race feed
+     * reports not-ready, so integrators stop advancing; the in-progress
+     * race presentation is ABANDONED -- resuming it would be reusing
+     * Ready), reset the confirmation and the whole preflight barrier
+     * (attestations/fragments were bound to the retired generations),
+     * surface the typed VERIFICATION_MISMATCH recovery (the launcher
+     * model's "secure connection may have changed... compare a new phrase"
+     * copy, primary "Reconnect Securely" = RETRY), and return the room to
+     * PREFLIGHT so the fresh phrase surfaces after RETRY. A second
+     * CONFIRM_PHRASE re-runs the barrier over the re-derived transcript;
+     * install() then rebuilds the race transport from its FIRST tick (the
+     * engine roster install itself is process-global and stays). Stale
+     * (lower/equal-generation) welcomes never reach here: the mesh ignores
+     * them, the phrase never retires, and nothing changes -- pinned by the
+     * adapter test's negative arm. */
+    void beginReVerify() {
+        const bool confirmed = phraseConfirmed_;
+        havePhrase_ = false;      /* the retired phrase must never redisplay */
+        phraseConfirmed_ = false; /* never reuse Ready */
+        preflightInit_ = false;
+        ownSubmitted_ = false;
+        preflightReady_ = false;
+        fragStates_.clear();
+        pendingPeerAtts_.clear();
+        /* Rebuild channel bookkeeping from LIVE mesh truth rather than
+         * clearing blindly: a fresh PeerChannelsReady that raced the
+         * detection must survive, and stale pre-rekey entries must go. */
+        channelsReady_.clear();
+        for (const MdkrMatchPeerSlotOwner &o : meshRoster_) {
+            if (o.endpointId == localEndpointId_) continue;
+            if (mesh_ && mesh_->peerChannelsReady(o.endpointId)) {
+                channelsReady_.insert(o.endpointId);
+            }
+        }
+        if (confirmed) {
+            reVerify_ = true;
+            raceReady_ = false;
+            failure_ = MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH;
+            (void)sessionDispatch(MDKR_SESSION_COMMAND_SET_ROOM_PHASE,
+                                  MDKR_ROOM_PREFLIGHT);
+        }
+        bump();
+    }
+
     void pumpMesh() {
         if (!meshUp_ || !mesh_) return;
         mesh_->pump();
@@ -540,6 +635,12 @@ private:
                     std::string p;
                     if (mesh_->phrase(p) &&
                         p.size() + 1u <= sizeof(phrase_)) {
+                        if (havePhrase_ &&
+                            std::strcmp(phrase_, p.c_str()) != 0) {
+                            /* Retire-and-rederive completed within one
+                             * pump: still a new SAS to compare. */
+                            beginReVerify();
+                        }
                         std::memcpy(phrase_, p.c_str(), p.size() + 1u);
                         havePhrase_ = true;
                         /* Adopt the service-assigned local generation now that
@@ -574,6 +675,16 @@ private:
                     feedInputEnvelope(ev);
                     break;
             }
+        }
+        /* Rekey-in-flight detection (see beginReVerify): the mesh refuses
+         * phrase() the moment any generation bump retires the keys. Checked
+         * AFTER the event drain so channel bookkeeping rebuilt inside
+         * beginReVerify sees this pump's events. Self-limiting: the reset
+         * clears havePhrase_, and it only re-arms once the NEW phrase has
+         * been adopted. */
+        if (havePhrase_) {
+            std::string current;
+            if (!mesh_->phrase(current)) beginReVerify();
         }
     }
 
@@ -630,7 +741,13 @@ private:
     /* ---- Preflight consensus + install -------------------------------- */
 
     void runPreflight() {
-        if (!descriptorBuilt_ || installed_ || preflightReady_) return;
+        /* Gate on preflightReady_ alone (not installed_): the SAS re-verify
+         * barrier clears preflightReady_ so consensus re-runs over the
+         * re-derived transcript even though the process-global engine
+         * roster stays installed. First-run behavior is unchanged --
+         * preflightReady_ latches true at READY and only the barrier ever
+         * clears it. */
+        if (!descriptorBuilt_ || preflightReady_) return;
         if (!meshUp_ || !mesh_) return;
         /* Every roster peer's channels must be ready before consensus. */
         if (channelsReady_.size() + 1u < meshRoster_.size()) return;
@@ -772,7 +889,7 @@ private:
     }
 
     void install() {
-        if (installed_ || raceReady_) return;
+        if (raceReady_) return;
         uint8_t localSlots[MDKR_MATCH_SLOTS];
         unsigned localCount = 0u;
         for (unsigned i = 0u; i < descriptor_.manifest.slot_count; ++i) {
@@ -780,12 +897,21 @@ private:
                 localSlots[localCount++] = static_cast<uint8_t>(i);
             }
         }
-        MdkrNetRoster roster;
-        if (mdkr_net_roster_init(&roster, &descriptor_.manifest) &&
-            mdkr_net_roster_configure_local(&roster, localSlots, localCount) &&
-            mdkr_net_roster_set_viewports(&roster, localSlots, localCount) &&
-            mdkr_net_roster_runtime_install_launch(&descriptor_, &roster)) {
-            installed_ = true;
+        /* The engine roster install is process-global and once-only; after
+         * an SAS re-verify barrier it is skipped and only the race
+         * transport below is rebuilt -- from its FIRST tick, because the
+         * interrupted race's Ready is never reused (see beginReVerify). */
+        if (!installed_) {
+            MdkrNetRoster roster;
+            if (mdkr_net_roster_init(&roster, &descriptor_.manifest) &&
+                mdkr_net_roster_configure_local(&roster, localSlots,
+                                                localCount) &&
+                mdkr_net_roster_set_viewports(&roster, localSlots,
+                                              localCount) &&
+                mdkr_net_roster_runtime_install_launch(&descriptor_,
+                                                       &roster)) {
+                installed_ = true;
+            }
         }
         /* The race transport is per-endpoint (its own session bridge), so it is
          * brought up independently of the process-global engine roster: in a
@@ -1005,6 +1131,10 @@ private:
     bool inviteReady_ = false;
     bool havePhrase_ = false;
     bool phraseConfirmed_ = false;
+    /* SAS re-verify barrier latch: armed by beginReVerify() after a
+     * post-confirmation rekey, cleared by the second CONFIRM_PHRASE. While
+     * armed, syncPhase() leaves the room at the re-verify surface. */
+    bool reVerify_ = false;
     char phrase_[MDKR_ONLINE_VERIFICATION_PHRASE_BYTES] = {};
     uint32_t revision_ = 1u;
     uint64_t nextCommandId_ = 1u;

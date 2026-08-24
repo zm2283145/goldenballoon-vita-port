@@ -345,6 +345,13 @@ public:
      * build a byte-identical graph. */
     bool peerGeneration(uint64_t peerEndpointId, uint32_t *out) const;
 
+    /* Live truth for "both channels to this peer are open right now"
+     * (launcher thread only, like every accessor). The adapter's re-verify
+     * barrier (W3 fix round) rebuilds its channels-ready bookkeeping from
+     * this instead of event replay, so it can never wipe a fresh
+     * PeerChannelsReady that raced the rekey detection. */
+    bool peerChannelsReady(uint64_t peerEndpointId) const;
+
     MdkrMatchPeerMeshStats stats() const;
 
     /* Terminal, idempotent, bounded: closes every peer connection and

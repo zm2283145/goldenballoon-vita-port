@@ -1496,6 +1496,13 @@ bool MdkrMatchPeerMesh::peerGeneration(uint64_t peerEndpointId,
     return true;
 }
 
+bool MdkrMatchPeerMesh::peerChannelsReady(uint64_t peerEndpointId) const {
+    if (!state_) return false;
+    const auto found = state_->peers.find(peerEndpointId);
+    return found != state_->peers.end() && !found->second.lost &&
+           found->second.channelsReady;
+}
+
 MdkrMatchPeerMeshStats MdkrMatchPeerMesh::stats() const {
     MdkrMatchPeerMeshStats stats = state_->counters;
     std::lock_guard<std::mutex> lock(state_->queueMutex);
