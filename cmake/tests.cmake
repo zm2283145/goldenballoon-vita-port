@@ -772,6 +772,19 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME portable_paths_fallback
         COMMAND mdkr_portable_paths_test --fallback)
 
+    # Issue #54: a non-packaged native build resolves saves under the per-user
+    # preference directory, grandfathering a populated legacy $CWD/save in place.
+    # Two processes because the CWD/pref resolution caches once per run.
+    add_executable(mdkr_save_resolution_test
+        ${CMAKE_SOURCE_DIR}/tests/test_save_resolution.c
+        ${CMAKE_SOURCE_DIR}/platform/user_paths.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c)
+    target_include_directories(mdkr_save_resolution_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform ${CMAKE_SOURCE_DIR}/tests)
+    add_test(NAME save_resolution_per_user COMMAND mdkr_save_resolution_test)
+    add_test(NAME save_resolution_legacy
+        COMMAND mdkr_save_resolution_test --legacy)
+
     add_executable(mdkr_fs_utf8_test
         ${CMAKE_SOURCE_DIR}/tests/test_fs_utf8.c
         ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c)

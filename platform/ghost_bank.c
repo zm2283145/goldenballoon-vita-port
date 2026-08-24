@@ -773,6 +773,7 @@ static int store_image(const char *path, const uint8_t *image, size_t size) {
     file = mdkr_fopen_utf8(temporary, "wb");
     if (file == NULL) {
         fprintf(stderr, "[GHOSTBANK] could not open %s\n", temporary);
+        mdkr_user_paths_note_save_write_failure(s_bank_root);
         return 0;
     }
     if (fwrite(image, 1, size, file) != size || fflush(file) != 0) {
@@ -790,6 +791,7 @@ static int store_image(const char *path, const uint8_t *image, size_t size) {
     if (failed) {
         (void)mdkr_remove_utf8(temporary);
         fprintf(stderr, "[GHOSTBANK] durable write of %s failed\n", path);
+        mdkr_user_paths_note_save_write_failure(s_bank_root);
         return 0;
     }
     (void)mdkr_parent_directory_sync_utf8(path);

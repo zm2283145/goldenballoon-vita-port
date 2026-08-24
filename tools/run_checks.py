@@ -804,6 +804,9 @@ CHECKS = (
           "perturbed-boost-constant positive controls"),
     Check("save_failsafe", "check_save_failsafe.py", "native",
           "EEPROM recovery and persistence"),
+    Check("save_write_notice", "check_save_write_notice.py", "native",
+          "a failed durable save surfaces one player notice instead of losing "
+          "progress silently (issue #54 Run B)"),
     Check("save_100_entry", "check_save_100_entry.py", "native",
           "a 100%-complete save is actually enterable through the FILE_SELECT "
           "input gate, with the AT2-config-bit defect as a positive control"),

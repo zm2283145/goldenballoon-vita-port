@@ -18,7 +18,9 @@
 //     no rebinding widget and nothing here writes those keys back: editing the
 //     file is currently the only way to change them.
 #include "ui_overlay.h"
+#include "a11y_model.h"     // mdkr_a11y_announce: the in-game notice surface
 #include "a11y_speech.h"    // the drain worker's per-frame pump
+#include "user_paths.h"     // mdkr_user_paths_save_write_failed (issue #54)
 #include "app_brand.h"
 #include "app_config.h"
 #include "app_theme.h"
@@ -293,6 +295,18 @@ static int onWantsRender(void) {
 // spoken. Same thread, same single-owner rule: see platform/a11y_speech.h.
 static void onService(void) {
     AppWindow_servicePending();
+    /* Issue #54: the engine latches a save-write failure the moment it happens
+     * (during a blocking race the app shell is otherwise idle). Speak it once,
+     * on the same thread that pushes announcements and just before the pump
+     * below drains them, so a player who cannot see the launcher still learns
+     * their progress was not saved. */
+    static bool s_saveFailureAnnounced = false;
+    if (!s_saveFailureAnnounced && mdkr_user_paths_save_write_failed()) {
+        s_saveFailureAnnounced = true;
+        mdkr_a11y_announce(MDKR_A11Y_CAT_STATUS, MDKR_A11Y_PRI_CRITICAL,
+                           kSavePersistFailedNotice);
+        SDL_Log("[app] %s", kSavePersistFailedNotice);
+    }
     mdkr_a11y_speech_service_pump();
     if (g_phonePartyHost != nullptr) {
         g_phonePartyHost->service(static_cast<uint64_t>(SDL_GetTicks64()));

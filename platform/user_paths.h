@@ -62,6 +62,20 @@ int mdkr_user_paths_relocation_base(char *output, size_t output_size);
 
 int mdkr_user_video_config_path(char *output, size_t output_size);
 int mdkr_user_save_directory(char *output, size_t output_size);
+
+/* One-word origin of what mdkr_user_save_directory() resolves right now:
+ * "env", "portable", "fallback", "legacy", "per-user", "cwd", or "browser".
+ * Drives the boot log line so a support log answers "where do my saves go?" at
+ * a glance (issue #54). The returned pointer is a string literal. */
+const char *mdkr_user_paths_save_origin_label(void);
+
+/* Issue #54 save-failure surfacing. The save layer (eeprom/pak/ghost) calls the
+ * note function when a durable write has failed and no relocation rescued it;
+ * the latch is set once per session (the first failure's directory is kept).
+ * The app shell polls _failed() and renders one player-facing notice. */
+void mdkr_user_paths_note_save_write_failure(const char *directory);
+int mdkr_user_paths_save_write_failed(void);
+int mdkr_user_paths_save_write_failed_directory(char *output, size_t output_size);
 /* The content-pack root (`mods/`). Same policy as the save directory and for
  * the same reason: a signed bundle cannot host player-installed content, so a
  * packaged app looks beside its writable save directory, and a command-line

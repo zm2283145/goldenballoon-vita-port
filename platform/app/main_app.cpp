@@ -2452,6 +2452,10 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
                            std::string *bootRecoveryMessage) {
     bool running  = true;
     int  exitCode = 0;
+    // Issue #54: show the "could not save" card the first time the player is
+    // back at the launcher after a durable save write failed, for players who
+    // cannot hear the in-game spoken notice.
+    bool saveFailureCardShown = false;
     while (running) {
         const bool drawableAvailable =
             host.drawableWidth() > 0 && host.drawableHeight() > 0;
@@ -2482,6 +2486,10 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
             exitCode = runEngineSession(host, session, action.boot, transition);
             if (exitCode != 0) {
                 describeBootFailure(host, exitCode, bootRecoveryMessage);
+            } else if (!saveFailureCardShown &&
+                       mdkr_user_paths_save_write_failed()) {
+                saveFailureCardShown = true;
+                launcher.setBootError(kSavePersistFailedNotice);
             }
             if (exitCode == 0 && transition != nullptr &&
                 transition->request == OverlayExitRequest::ReturnToLauncher) {
@@ -2641,6 +2649,16 @@ int main(int argc, char **argv) {
     // and the Windows GUI subsystem, where there is no console to catch them.
     // Interactive path only — automation returned above and is never redirected.
     DiagLogScope diagnosticLog;
+
+    /* Always record where saves go (issue #54). A support log that showed this
+     * one line would have answered the ghost-saves report at a glance. */
+    {
+        char saveDirectory[4096];
+        if (mdkr_user_save_directory(saveDirectory, sizeof(saveDirectory))) {
+            std::fprintf(stderr, "[SAVE] directory %s (%s)\n", saveDirectory,
+                         mdkr_user_paths_save_origin_label());
+        }
+    }
 
     AppHost host;
     if (!host.init(MDKR_BRAND_NAME, 1280, 800)) {

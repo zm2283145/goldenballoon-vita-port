@@ -28,15 +28,18 @@
 #include <string.h>
 
 /* Link-time SDL preference provider so user_paths.c resolves without SDL. The
- * portable and fallback code paths deliberately never reach it. */
+ * portable and write-fallback code paths deliberately never reach it, but the
+ * non-portable, non-fallback default now does: issue #54 resolves a plain build's
+ * SAVE directory below this per-user root (config stays CWD-relative). */
+static const char kPrefRoot[] = "/tmp/mdkr-portable-unused-pref/";
+
 char *SDL_GetPrefPath(const char *organization, const char *application) {
-    static const char kPref[] = "/tmp/mdkr-portable-unused-pref/";
     char *result;
     (void)organization;
     (void)application;
-    result = (char *)malloc(sizeof(kPref));
+    result = (char *)malloc(sizeof(kPrefRoot));
     if (result != NULL) {
-        memcpy(result, kPref, sizeof(kPref));
+        memcpy(result, kPrefRoot, sizeof(kPrefRoot));
     }
     return result;
 }
@@ -153,15 +156,29 @@ int main(int argc, char **argv) {
         (void)mdkr_test_env_unset("MDKR_VIDEO_CONFIG_PATH");
         (void)mdkr_remove_utf8(marker);
     } else {
-        /* No marker: the getters keep their historical CWD-relative spellings
-         * until the fallback is activated. */
+        char pref_save[4096];
+        char scratch_cwd[4096];
+        /* A fresh, empty working directory so no stray populated $CWD/save
+         * grandfathers itself over the per-user default this arm asserts
+         * (issue #54). Must precede the first save query, which caches the CWD. */
+        expect("scratch working directory created",
+               mdkr_test_make_temp_directory(scratch_cwd, sizeof(scratch_cwd),
+                                             "mdkr-portable-fallback"));
+        expect("entered scratch working directory", chdir(scratch_cwd) == 0);
+        /* No marker: config keeps its historical CWD-relative spelling, but the
+         * SAVE directory now resolves below the per-user preference root until
+         * the fallback relocates everything next to the executable. */
         expect("not portable without a marker", !mdkr_user_paths_is_portable());
         expect("config is CWD-relative before fallback",
                mdkr_user_video_config_path(resolved, sizeof(resolved)) &&
                strcmp(resolved, "mdkr64.ini") == 0);
-        expect("save is CWD-relative before fallback",
+        /* kPrefRoot ends in '/', so match path_join()'s single-separator form
+         * rather than the test join() helper's unconditional one. */
+        expect("per-user save path",
+               snprintf(pref_save, sizeof(pref_save), "%ssave", kPrefRoot) > 0);
+        expect("save resolves below the per-user root before fallback",
                mdkr_user_save_directory(resolved, sizeof(resolved)) &&
-               strcmp(resolved, "save") == 0);
+               strcmp(resolved, pref_save) == 0);
         expect("no relocation notice before a failure",
                !mdkr_user_paths_write_relocated());
         /* Simulate the home-directory write failing. */

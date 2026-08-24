@@ -4,6 +4,14 @@
 
 #include "../video_config.h"
 
+// Issue #54: the one player-facing sentence shown when a durable save write
+// could not be completed and no relocation rescued it. Shared by the in-game
+// spoken notice (ui_overlay) and the launcher card (main_app) so the wording
+// cannot drift, and prose-gated by tests/check_player_prose.py.
+inline constexpr char kSavePersistFailedNotice[] =
+    "Your progress could not be saved. The save folder is not writable. "
+    "See mdkr64.log for the folder it tried.";
+
 enum class OverlayBackInput { Escape, ControllerB };
 
 struct OverlayBackState {
