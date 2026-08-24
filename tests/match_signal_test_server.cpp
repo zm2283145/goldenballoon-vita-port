@@ -140,6 +140,7 @@ struct MdkrMatchSignalTestServerState {
     std::mutex writeMutex;
 
     bool upgraded = false;
+    unsigned upgradeCount = 0u;
     std::string requestHead;
     std::string requestPath;
     std::vector<std::string> offered;
@@ -351,6 +352,7 @@ bool MdkrMatchSignalTestServer::start() {
             {
                 std::lock_guard<std::mutex> lock(state->mutex);
                 state->upgraded = true;
+                state->upgradeCount++;
                 state->condition.notify_all();
             }
 
@@ -514,6 +516,13 @@ bool MdkrMatchSignalTestServer::waitForUpgrade(unsigned budgetMs) {
 bool MdkrMatchSignalTestServer::waitForOpen(unsigned budgetMs) {
     auto state = state_;
     return state->waitUntil([&]() { return state->upgraded; }, budgetMs);
+}
+
+bool MdkrMatchSignalTestServer::waitForUpgrades(unsigned count,
+                                                unsigned budgetMs) {
+    auto state = state_;
+    return state->waitUntil(
+        [&]() { return state->upgradeCount >= count; }, budgetMs);
 }
 
 std::string MdkrMatchSignalTestServer::requestHeadRaw() const {

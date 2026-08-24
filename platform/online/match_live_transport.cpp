@@ -43,9 +43,11 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -61,6 +63,24 @@ using Json = nlohmann::json;
 constexpr uint64_t kConnectTimeoutMs = 8000u;
 constexpr uint64_t kWriteTimeoutMs = 8000u;
 constexpr uint32_t kPollSliceMs = 100u;
+/* Per-address connect cap (N3, the match_signal_client discipline): one
+ * blackholed address costs at most min(this, remaining/addresses-left). */
+constexpr uint64_t kPerAddressConnectCapMs = 3500u;
+/* /connect + /signal reconnect ladder (N1/N6b): the party resume ladder's
+ * shape -- exponential from 300 ms, capped, bounded attempts, then the
+ * existing terminal path. */
+constexpr uint64_t kReconnectBaseDelayMs = 300u;
+constexpr uint64_t kReconnectMaxDelayMs = 5000u;
+constexpr unsigned kReconnectMaxAttempts = 6u;
+
+uint64_t reconnectDelayMs(unsigned failedAttempts) {
+    const unsigned exponent =
+        failedAttempts > 0u ? (failedAttempts - 1u < 5u ? failedAttempts - 1u
+                                                        : 5u)
+                            : 0u;
+    const uint64_t delay = kReconnectBaseDelayMs << exponent;
+    return delay > kReconnectMaxDelayMs ? kReconnectMaxDelayMs : delay;
+}
 /* Total assembled-message cap across continuation frames (memory-DoS guard) --
  * a lobby snapshot is a few KiB; 256 KiB is generous and fails closed above. */
 constexpr size_t kMaxWsMessageBytes = 256u * 1024u;
@@ -103,6 +123,144 @@ bool setBlocking(SocketFd fd, bool blocking) {
 }
 #endif
 
+/* ---- Resolution (seamed for tests; see match_live_transport.h) -----------
+ * Mirrors match_signal_client.cpp's resolver discipline; kept file-local
+ * because these two clients deliberately share no translation unit. */
+
+struct ResolvedAddress {
+    int family = AF_UNSPEC;
+    int socktype = SOCK_STREAM;
+    int protocol = IPPROTO_TCP;
+    struct sockaddr_storage storage {};
+    socklen_t length = 0u;
+};
+
+std::mutex &resolverSeamMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+std::string g_prependAddressForTest;      /* guarded by resolverSeamMutex() */
+uint16_t g_prependPortForTest = 0u;       /* guarded by resolverSeamMutex() */
+std::atomic<unsigned> g_resolverStallMsForTest{0u};
+
+void appendAddrinfo(const struct addrinfo *results,
+                    std::vector<ResolvedAddress> &out) {
+    for (const struct addrinfo *entry = results; entry != nullptr;
+         entry = entry->ai_next) {
+        if (entry->ai_addrlen == 0u ||
+            entry->ai_addrlen > sizeof(struct sockaddr_storage)) {
+            continue;
+        }
+        ResolvedAddress address;
+        address.family = entry->ai_family;
+        address.socktype = entry->ai_socktype;
+        address.protocol = entry->ai_protocol;
+        std::memcpy(&address.storage, entry->ai_addr, entry->ai_addrlen);
+        address.length = static_cast<socklen_t>(entry->ai_addrlen);
+        out.push_back(address);
+    }
+}
+
+bool prependTestAddress(uint16_t port, std::vector<ResolvedAddress> &out) {
+    std::string ip;
+    uint16_t overridePort = 0u;
+    {
+        std::lock_guard<std::mutex> lock(resolverSeamMutex());
+        ip = g_prependAddressForTest;
+        overridePort = g_prependPortForTest;
+    }
+    if (ip.empty()) return false;
+    ResolvedAddress address;
+    struct sockaddr_in *v4 =
+        reinterpret_cast<struct sockaddr_in *>(&address.storage);
+    std::memset(v4, 0, sizeof(*v4));
+    if (::inet_pton(AF_INET, ip.c_str(), &v4->sin_addr) != 1) return false;
+    v4->sin_family = AF_INET;
+    v4->sin_port = htons(overridePort != 0u ? overridePort : port);
+    address.family = AF_INET;
+    address.length = static_cast<socklen_t>(sizeof(*v4));
+    out.push_back(address);
+    return true;
+}
+
+/* Resolve on a detached helper thread, polled in kPollSliceMs slices against
+ * the deadline and the abort flag (N6c): getaddrinfo is uninterruptible, and
+ * it used to run directly on the worker thread that close() joins, so a DNS
+ * outage could freeze the launcher for the resolver timeout. On give-up the
+ * helper is ABANDONED (it frees its own result), never joined. Same
+ * detached-resolver choice as match_signal_client.cpp and for the same
+ * reason: pre-resolving before thread start would just move the identical
+ * synchronous hit onto the launcher thread. */
+struct ResolveTask {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+    bool abandoned = false;
+    int rc = -1;
+    struct addrinfo *results = nullptr;
+};
+
+bool resolveAddresses(const std::string &host, const std::string &port,
+                      uint64_t deadlineMs, const std::atomic<bool> *abort,
+                      std::vector<ResolvedAddress> &out) {
+    out.clear();
+    uint16_t numericPort = 0u;
+    for (const char c : port) {
+        numericPort = static_cast<uint16_t>(numericPort * 10u +
+                                            static_cast<uint16_t>(c - '0'));
+    }
+    (void)prependTestAddress(numericPort, out);
+    auto task = std::make_shared<ResolveTask>();
+    const unsigned stallMs = g_resolverStallMsForTest.load();
+    std::thread helper([task, host, port, stallMs]() {
+        if (stallMs != 0u) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(stallMs));
+        }
+        struct addrinfo hints;
+        std::memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_protocol = IPPROTO_TCP;
+        struct addrinfo *results = nullptr;
+        const int rc = ::getaddrinfo(host.c_str(), port.c_str(), &hints,
+                                     &results);
+        std::lock_guard<std::mutex> lock(task->mutex);
+        if (task->abandoned) {
+            if (results != nullptr) ::freeaddrinfo(results);
+        } else {
+            task->rc = rc;
+            task->results = results;
+        }
+        task->done = true;
+        task->cv.notify_all();
+    });
+    helper.detach();
+
+    struct addrinfo *results = nullptr;
+    int rc = -1;
+    {
+        std::unique_lock<std::mutex> lock(task->mutex);
+        while (!task->done) {
+            if ((abort != nullptr && abort->load()) ||
+                nowMs() >= deadlineMs) {
+                task->abandoned = true;
+                return !out.empty(); /* only a test prepend, if any */
+            }
+            task->cv.wait_for(lock, std::chrono::milliseconds(kPollSliceMs));
+        }
+        rc = task->rc;
+        results = task->results;
+        task->results = nullptr;
+    }
+    if (rc != 0 || results == nullptr) {
+        if (results != nullptr) ::freeaddrinfo(results);
+        return !out.empty();
+    }
+    appendAddrinfo(results, out);
+    ::freeaddrinfo(results);
+    return !out.empty();
+}
+
 /* Deadline- and abort-aware TCP connect (O-T1 connectTcp discipline): a
  * non-blocking connect polled in short slices, so an unreachable host stops at
  * the deadline and a close() during connect aborts within one slice. Returns
@@ -112,21 +270,26 @@ SocketFd connectWithDeadline(const std::string &host, const std::string &port,
                              uint64_t deadlineMs,
                              const std::atomic<bool> *abort) {
     ensureNetStartup();
-    struct addrinfo hints;
-    std::memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-    struct addrinfo *results = nullptr;
-    if (::getaddrinfo(host.c_str(), port.c_str(), &hints, &results) != 0 ||
-        results == nullptr) {
-        if (results != nullptr) ::freeaddrinfo(results);
+    std::vector<ResolvedAddress> addresses;
+    if (!resolveAddresses(host, port, deadlineMs, abort, addresses) ||
+        addresses.empty()) {
         return kBadSocket;
     }
     SocketFd fd = kBadSocket;
-    for (struct addrinfo *entry = results; entry != nullptr;
-         entry = entry->ai_next) {
-        fd = ::socket(entry->ai_family, entry->ai_socktype, entry->ai_protocol);
+    for (size_t index = 0u; index < addresses.size(); index++) {
+        /* N3 per-address budget: min(cap, remaining/left), so a blackholed
+         * first address (broken-IPv6 household) costs one slice and the
+         * loop falls through to the rest of the list; the overall deadline
+         * still bounds the whole connect. */
+        const uint64_t nowAtEntry = nowMs();
+        if (nowAtEntry >= deadlineMs) break;
+        const uint64_t remaining = deadlineMs - nowAtEntry;
+        uint64_t slice = remaining / (addresses.size() - index);
+        if (slice == 0u) slice = remaining;
+        if (slice > kPerAddressConnectCapMs) slice = kPerAddressConnectCapMs;
+        const uint64_t addressDeadlineMs = nowAtEntry + slice;
+        const ResolvedAddress &entry = addresses[index];
+        fd = ::socket(entry.family, entry.socktype, entry.protocol);
         if (fd == kBadSocket) continue;
 #ifdef SO_NOSIGPIPE
         int one = 1;
@@ -138,8 +301,9 @@ SocketFd connectWithDeadline(const std::string &host, const std::string &port,
             fd = kBadSocket;
             continue;
         }
-        const int rc = ::connect(fd, entry->ai_addr,
-                                 static_cast<socklen_t>(entry->ai_addrlen));
+        const int rc = ::connect(
+            fd, reinterpret_cast<const struct sockaddr *>(&entry.storage),
+            entry.length);
         bool pending = false;
         if (rc != 0) {
 #ifdef _WIN32
@@ -155,7 +319,7 @@ SocketFd connectWithDeadline(const std::string &host, const std::string &port,
         }
         bool established = !pending;
         while (pending && (abort == nullptr || !abort->load())) {
-            if (nowMs() >= deadlineMs) break;
+            if (nowMs() >= addressDeadlineMs) break;
 #ifdef _WIN32
             fd_set writable;
             FD_ZERO(&writable);
@@ -198,7 +362,6 @@ SocketFd connectWithDeadline(const std::string &host, const std::string &port,
         fd = kBadSocket;
         if (abort != nullptr && abort->load()) break;
     }
-    ::freeaddrinfo(results);
     return fd;
 }
 
@@ -616,7 +779,19 @@ public:
                 textOut = std::move(payload);
                 return Poll::Text;
             }
-            if (opcode == 0x8u) return Poll::Closed; /* close */
+            if (opcode == 0x8u) { /* close */
+                /* Keep the application close code + reason so the service
+                 * loop can tell a worker-contract 4000-class close (room
+                 * gone: terminal) from a transport-shaped drop (reconnect). */
+                if (payload.size() >= 2u) {
+                    closeCode_ = static_cast<uint16_t>(
+                        (static_cast<uint16_t>(
+                             static_cast<uint8_t>(payload[0])) << 8u) |
+                        static_cast<uint8_t>(payload[1]));
+                    closeReason_ = payload.substr(2u);
+                }
+                return Poll::Closed;
+            }
             if (opcode == 0x9u) {                     /* ping -> pong */
                 sendControl(0xAu, payload);
                 continue;
@@ -624,6 +799,11 @@ public:
             /* pong / continuation of a non-text message: ignore. */
         }
     }
+
+    /* Application close code from a received close frame; 0 when the socket
+     * died without one (EOF/reset/stall -- the transport-shaped closes). */
+    uint16_t closeCode() const { return closeCode_; }
+    const std::string &closeReason() const { return closeReason_; }
 
     void close() {
         if (open_) {
@@ -764,6 +944,8 @@ private:
     const std::atomic<bool> *abort_ = nullptr;
     bool open_ = false;
     bool closed_ = false;
+    uint16_t closeCode_ = 0u;
+    std::string closeReason_;
 };
 
 /* ---- JSON -> MdkrOnlineLobby -------------------------------------------- */
@@ -1176,32 +1358,89 @@ private:
         serviceLoop();
     }
 
+    /* The /connect service loop (W3 N1).
+     *
+     * A transport-shaped loss of the push socket (EOF/reset, a stalled
+     * frame, a failed open) is NOT the room ending: reopen it on the party
+     * ladder's shape (300 ms doubling to 5 s, kReconnectMaxAttempts
+     * consecutive failed opens) with the same credential. The fresh socket
+     * re-delivers the current state and lastRevision_ dedupe makes that
+     * idempotent, so nothing above this loop ever observes the blip.
+     * Application closes are different: the worker ends /connect with a
+     * 4000-class code (match-room.ts: 4000 room_expired / host_closed,
+     * 4001 membership/replacement, 4003 protocol) -- those are the service
+     * declaring this subscription over, so they stay terminal immediately
+     * and the ladder never reopens a room the service closed. Ladder
+     * exhaustion lands on the same pre-existing terminal HOST_CLOSED path
+     * a close used to take. Commands keep draining over HTTP between
+     * reopen attempts. */
     void serviceLoop() {
-        WsConnection ws;
         const std::string path = "/api/match/" + roomId_ + "/connect";
-        if (!ws.open(origin_, path, "gb-match-v1", "gb-match." + credential_,
-                     &aborting_)) {
-            /* The lobby is usable over HTTP polling even if the push socket
-             * failed; surface a soft recovery instead of tearing the room. */
-            enqueueFailure(MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK);
-        }
+        std::unique_ptr<WsConnection> ws;
+        bool wsOpen = false;
+        bool everOpened = false;
+        unsigned failedOpens = 0u;
+        uint64_t nextOpenAtMs = nowMs();
         while (true) {
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (stop_) break;
             }
             drainCommands();
+            if (!wsOpen) {
+                if (nowMs() < nextOpenAtMs) {
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(20));
+                    continue;
+                }
+                ws.reset(new WsConnection());
+                if (ws->open(origin_, path, "gb-match-v1",
+                             "gb-match." + credential_, &aborting_)) {
+                    wsOpen = true;
+                    everOpened = true;
+                    failedOpens = 0u;
+                    continue;
+                }
+                ws.reset();
+                if (aborting_.load()) break;
+                ++failedOpens;
+                if (!everOpened && failedOpens == 1u) {
+                    /* The lobby is usable over HTTP while the ladder runs;
+                     * surface a soft recovery instead of tearing the room
+                     * (the pre-existing first-open behavior). */
+                    enqueueFailure(MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK);
+                }
+                if (failedOpens >= kReconnectMaxAttempts) {
+                    enqueueFailure(MDKR_ONLINE_VIEW_FAILURE_HOST_CLOSED);
+                    break;
+                }
+                nextOpenAtMs = nowMs() + reconnectDelayMs(failedOpens);
+                continue;
+            }
             std::string text;
-            const WsConnection::Poll p = ws.poll(text, 40u);
+            const WsConnection::Poll p = ws->poll(text, 40u);
             if (p == WsConnection::Poll::Closed) {
-                enqueueFailure(MDKR_ONLINE_VIEW_FAILURE_HOST_CLOSED);
-                break;
+                const uint16_t code = ws->closeCode();
+                const std::string reason = ws->closeReason();
+                ws->close();
+                ws.reset();
+                wsOpen = false;
+                if (roomClosedSeen_) break; /* failure already delivered */
+                if (code >= 4000u && code <= 4999u) {
+                    enqueueFailure(
+                        reason == "room_expired"
+                            ? MDKR_ONLINE_VIEW_FAILURE_ROOM_EXPIRED
+                            : MDKR_ONLINE_VIEW_FAILURE_HOST_CLOSED);
+                    break;
+                }
+                nextOpenAtMs = nowMs() + kReconnectBaseDelayMs;
+                continue;
             }
             if (p == WsConnection::Poll::Text) {
                 applyStateFrame(text);
             }
         }
-        ws.close();
+        if (ws) ws->close();
     }
 
     void applyStateFrame(const std::string &text) {
@@ -1214,6 +1453,9 @@ private:
         if (root.value("closedReason", Json()).is_string()) {
             const std::string reason =
                 root["closedReason"].get<std::string>();
+            /* The room itself ended: latch it so the WS close that follows
+             * is treated as terminal, never re-laddered (N1). */
+            roomClosedSeen_ = true;
             enqueueFailure(reason == "room_expired"
                                ? MDKR_ONLINE_VIEW_FAILURE_ROOM_EXPIRED
                                : MDKR_ONLINE_VIEW_FAILURE_HOST_CLOSED);
@@ -1319,11 +1561,104 @@ private:
     std::string credential_;
     uint64_t localEndpointId_ = 0u;
     uint32_t lastRevision_ = 0u;
+    bool roomClosedSeen_ = false;
 
     std::thread worker_;
 };
 
 /* ---- The mesh signal backend -------------------------------------------- */
+
+/* W3 N6b: the /signal socket's replacement path. The signal client itself is
+ * deliberately one-shot (the JS reference client's contract: any terminal
+ * failure latches), and replacement sockets are first-class in the wire
+ * contract (docs/ref/match-signaling-v1.md: the service assigns the fresh
+ * socket a HIGHER connection generation and announces it to peers as
+ * presence). The mesh borrows exactly one MdkrMatchPeerSignalFeed pointer
+ * for its whole life, so replacement lives HERE, inside the feed: when the
+ * current client fails (silent death surfaces via its liveness ping, N6a),
+ * the Failure event flows through to the mesh (which reports the SignalLost
+ * status), and this feed then mints a replacement client on the party
+ * ladder's shape (300 ms doubling to 5 s, kReconnectMaxAttempts consecutive
+ * failures). The replacement's welcome -- the fresh generation -- reaches
+ * the mesh through the same feed, which re-arms every recovery ladder
+ * (match_peer_transport handleWelcome's re-welcome path). Launcher-thread
+ * only, like every feed. */
+class ReconnectingSignalFeed final : public MdkrMatchPeerSignalFeed {
+public:
+    explicit ReconnectingSignalFeed(MdkrMatchSignalClientOptions options)
+        : options_(std::move(options)) {}
+    ~ReconnectingSignalFeed() override {
+        if (client_) client_->close();
+    }
+
+    bool start(std::string *error) {
+        client_ = MdkrMatchSignalClient::create(options_, error);
+        if (!client_) return false;
+        std::string code;
+        if (!client_->connect(&code)) {
+            if (error != nullptr) *error = code;
+            client_.reset();
+            return false;
+        }
+        return true;
+    }
+
+    MdkrMatchSignalSendResult send(
+        const MdkrMatchSignalOutbound &message) override {
+        if (!client_) {
+            MdkrMatchSignalSendResult refused;
+            refused.error = kMdkrMatchSignalNotConnected;
+            return refused;
+        }
+        return client_->send(message);
+    }
+
+    void drainEvents(std::vector<MdkrMatchSignalEvent> &out) override {
+        out.clear();
+        if (client_) client_->drainEvents(out);
+        for (const MdkrMatchSignalEvent &event : out) {
+            if (event.type == MdkrMatchSignalEventType::Failure) {
+                scheduleReplacement();
+            } else if (event.type == MdkrMatchSignalEventType::Welcome) {
+                /* Healthy (again): the ladder re-arms from scratch. */
+                failedAttempts_ = 0u;
+                replacementDue_ = false;
+            }
+        }
+        if (replacementDue_ && nowMs() >= nextAttemptAtMs_) {
+            replacementDue_ = false;
+            replaceClient();
+        }
+    }
+
+private:
+    void scheduleReplacement() {
+        if (failedAttempts_ >= kReconnectMaxAttempts) return; /* gave up */
+        ++failedAttempts_;
+        replacementDue_ = true;
+        nextAttemptAtMs_ = nowMs() + reconnectDelayMs(failedAttempts_);
+    }
+
+    void replaceClient() {
+        if (client_) client_->close();
+        client_.reset();
+        client_ = MdkrMatchSignalClient::create(options_, nullptr);
+        std::string code;
+        if (client_ != nullptr && client_->connect(&code)) {
+            /* The outcome arrives on the queue: Welcome resets the ladder,
+             * Failure schedules the next bounded rung. */
+            return;
+        }
+        client_.reset();
+        scheduleReplacement();
+    }
+
+    MdkrMatchSignalClientOptions options_;
+    std::unique_ptr<MdkrMatchSignalClient> client_;
+    unsigned failedAttempts_ = 0u;
+    bool replacementDue_ = false;
+    uint64_t nextAttemptAtMs_ = 0u;
+};
 
 class MeshSignalClientBackend final : public MdkrOnlineMeshSignalBackend {
 public:
@@ -1342,30 +1677,20 @@ public:
         options.roomId = roomId;
         options.endpointId = std::to_string(localEndpointId);
         options.credential = credential;
+        feed_.reset(new ReconnectingSignalFeed(std::move(options)));
         std::string error;
-        client_ = MdkrMatchSignalClient::create(options, &error);
-        if (!client_) return nullptr;
-        std::string code;
-        if (!client_->connect(&code)) {
-            client_.reset();
+        if (!feed_->start(&error)) {
+            feed_.reset();
             return nullptr;
         }
-        feed_.reset(new MdkrMatchSignalClientFeed(client_.get()));
         return feed_.get();
     }
 
-    void reset() override {
-        feed_.reset();
-        if (client_) {
-            client_->close();
-            client_.reset();
-        }
-    }
+    void reset() override { feed_.reset(); }
 
 private:
     std::string origin_;
-    std::unique_ptr<MdkrMatchSignalClient> client_;
-    std::unique_ptr<MdkrMatchSignalClientFeed> feed_;
+    std::unique_ptr<ReconnectingSignalFeed> feed_;
 };
 
 }  // namespace
@@ -1392,4 +1717,17 @@ std::unique_ptr<MdkrOnlineMeshSignalBackend>
 mdkr_online_mesh_signal_backend_create(const std::string &origin) {
     return std::unique_ptr<MdkrOnlineMeshSignalBackend>(
         new MeshSignalClientBackend(origin));
+}
+
+/* ---- Test seams (declarations in match_live_transport.h) ------------------ */
+
+void mdkr_online_room_transport_prepend_address_for_test(const char *ip,
+                                                         uint16_t port) {
+    std::lock_guard<std::mutex> lock(resolverSeamMutex());
+    g_prependAddressForTest = ip != nullptr ? ip : "";
+    g_prependPortForTest = port;
+}
+
+void mdkr_online_room_transport_stall_resolver_for_test(unsigned ms) {
+    g_resolverStallMsForTest.store(ms);
 }

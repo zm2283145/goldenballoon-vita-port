@@ -56,6 +56,9 @@ public:
     /* True once the 101 has been written (never true when respondToUpgrade
      * is false); scripted frames sent after this cannot outrun it. */
     bool waitForOpen(unsigned budgetMs = 5000u);
+    /* True once at least `count` upgrades have completed over the server's
+     * lifetime -- a replacement socket after a drop is upgrade #2. */
+    bool waitForUpgrades(unsigned count, unsigned budgetMs = 5000u);
     std::string requestHeadRaw() const; /* full request head, verbatim */
     std::string requestPath() const;
     /* Every token offered via Sec-WebSocket-Protocol, in offer order. */

@@ -64,4 +64,15 @@ bool mdkr_online_room_http_transport_invite(MdkrOnlineRoomTransport *transport,
 std::unique_ptr<MdkrOnlineMeshSignalBackend>
 mdkr_online_mesh_signal_backend_create(const std::string &origin);
 
+/* ---- Test seams (the *_for_test convention of the party transport) -------
+ *
+ * Process-global, test-binary-only knobs over this transport's resolver,
+ * mirroring the match_signal_client seams: prepend one numeric address ahead
+ * of every real resolution (the broken-AAAA-first household shape; nullptr
+ * clears), and stall every resolution by `ms` (the DNS outage shape; 0
+ * clears). The production launcher never calls either. */
+void mdkr_online_room_transport_prepend_address_for_test(const char *ip,
+                                                         uint16_t port);
+void mdkr_online_room_transport_stall_resolver_for_test(unsigned ms);
+
 #endif /* MDKR_MATCH_LIVE_TRANSPORT_H */
