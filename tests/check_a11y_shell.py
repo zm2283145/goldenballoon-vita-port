@@ -164,11 +164,35 @@ def walk_panel(executable: Path, root: Path, panel: str, timeout: int) -> str:
         "MDKR_APP_SMOKE_A11Y_WALK": "1",
         "MDKR_APP_SMOKE_INPUT": "keyboard",
         "MDKR_APP_SMOKE_INPUT_TOKEN": INPUT_TOKEN,
-        # The Online Room panel is hidden without the preview flag; this gate
-        # must still speak-walk every panel that CAN exist.
+        # Where the build compiles the Online Room preview in, this flag is
+        # what reveals it. Everywhere else (every shipped configuration) the
+        # flag is inert and check_panels expects the refusal instead.
         "MDKR_ONLINE_ROOM_PREVIEW": "1",
     })
     return run(executable, env, f"{panel} panel walk", timeout)
+
+
+def online_room_compiled(executable: Path) -> bool:
+    """Whether the build under test compiles the Online Room surface at all.
+
+    Since the 1.3.0 release the room is a compile-time surface
+    (MDKR_ENABLE_ONLINE_ROOM_PREVIEW, OFF in every shipped configuration);
+    MDKR_ONLINE_ROOM_PREVIEW=1 only reveals it where it was compiled in. The
+    build's own cache is the authority here, so the gate demands the panel
+    exactly where the panel can exist -- neither demanding a preview surface
+    of a release binary, nor quietly excusing a preview build that lost its
+    announcement.
+    """
+    cache = executable.parent / "CMakeCache.txt"
+    if not cache.is_file():
+        raise GateFailure(
+            f"cannot tell whether {executable} compiles the Online Room "
+            "preview in: no CMakeCache.txt beside it")
+    for line in cache.read_text(errors="replace").splitlines():
+        if line.startswith("MDKR_ENABLE_ONLINE_ROOM_PREVIEW:"):
+            value = line.split("=", 1)[1].strip().upper()
+            return value in ("ON", "1", "TRUE", "YES", "Y")
+    return False
 
 
 def walk_overlay(executable: Path, root: Path, rom: Path, timeout: int) -> str:
@@ -241,17 +265,35 @@ def check_launcher(output: str, controls: list[tuple[str, str, str]]) -> str:
 
 
 def check_panels(executable: Path, root: Path, timeout: int) -> str:
-    """Each launcher panel announces itself on arrival."""
+    """Each launcher panel announces itself on arrival.
+
+    The Online Room is resolved per BUILD, not excused: where the preview is
+    compiled in, opening it must say so; where it is compiled out, the
+    launcher refuses the request and must announce the Play home it lands on
+    instead. Either way an arrival is spoken -- and a compiled-out build that
+    suddenly voiced the room would fail here, because the panel it named is
+    one the release promises not to carry.
+    """
+    online_room = online_room_compiled(executable)
     announced = []
     for panel in ("Play", "Online Room", "Diagnostics", "About"):
         output = walk_panel(executable, root, panel, timeout)
         sections = [text for category, _priority, text in utterances(output)
                     if category == "section"]
-        if not any(text.startswith(panel) for text in sections):
+        expected = panel
+        if panel == "Online Room" and not online_room:
+            expected = "Play"
+        if not any(text.startswith(expected) for text in sections):
+            if expected == panel:
+                raise GateFailure(
+                    f"opening the {panel!r} panel produced no cat=section "
+                    f"utterance naming it; got {sections}")
             raise GateFailure(
-                f"opening the {panel!r} panel produced no cat=section "
-                f"utterance naming it; got {sections}")
-        announced.append(panel)
+                f"the {panel!r} panel is compiled out, so the launcher must "
+                "refuse the request and announce the Play home it lands on; "
+                f"got {sections}")
+        announced.append(panel if expected == panel
+                         else f"{panel} (compiled out; Play announced)")
     return ", ".join(announced)
 
 
