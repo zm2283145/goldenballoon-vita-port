@@ -527,6 +527,12 @@ production coverage:
   one player-facing notice (issue #54): a save-write failure retries via the
   write-relocation fallback and then announces "progress could not be saved"
   rather than discarding the error silently.
+- `check_gamecontrollerdb.py` (the `gamecontrollerdb_lint` CTest companion)
+  parses the whole shipped `gamecontrollerdb.txt`, requires every `(GUID,
+  platform)` pair to be unique, and pins the six curated Nintendo Switch
+  Online N64 HIDAPI entries present + behaviorally equivalent to the
+  DirectInput entry with no BACK binding (issue #55), so the added lines are
+  inert for every other controller.
 - `check_live_toggle_settings.py` gates the same settings being CHANGED
   mid-run. `Video.FrameLimit`, `Video.MotionSmoothing` and
   `Video.AllowTearing` apply at the host-frame boundary and
