@@ -43,6 +43,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
@@ -623,6 +624,43 @@ std::string base64(const uint8_t *data, size_t len) {
     return out;
 }
 
+/* HTTP/1.1 response parse (status line + optional chunked decode), factored
+ * out of httpRequest so the N7 fuzzer drives the EXACT shipped parser.
+ * Semantics unchanged: false until a complete head has arrived. */
+bool parseHttpResponse(const std::string &raw, int &statusOut,
+                       std::string &bodyOut) {
+    if (raw.empty()) return false;
+    const size_t headerEnd = raw.find("\r\n\r\n");
+    if (headerEnd == std::string::npos) return false;
+    const std::string statusLine = raw.substr(0, raw.find("\r\n"));
+    const size_t sp = statusLine.find(' ');
+    if (sp == std::string::npos) return false;
+    statusOut = std::atoi(statusLine.c_str() + sp + 1);
+    std::string bodyPart = raw.substr(headerEnd + 4u);
+    /* Chunked transfer decode if present, else the body is verbatim. */
+    if (raw.substr(0, headerEnd).find("Transfer-Encoding: chunked") !=
+            std::string::npos ||
+        raw.substr(0, headerEnd).find("transfer-encoding: chunked") !=
+            std::string::npos) {
+        std::string decoded;
+        size_t p = 0u;
+        while (p < bodyPart.size()) {
+            const size_t eol = bodyPart.find("\r\n", p);
+            if (eol == std::string::npos) break;
+            const long size = std::strtol(bodyPart.substr(p, eol - p).c_str(),
+                                          nullptr, 16);
+            if (size <= 0) break;
+            p = eol + 2u;
+            if (p + static_cast<size_t>(size) > bodyPart.size()) break;
+            decoded.append(bodyPart, p, static_cast<size_t>(size));
+            p += static_cast<size_t>(size) + 2u;
+        }
+        bodyPart = decoded;
+    }
+    bodyOut = bodyPart;
+    return true;
+}
+
 HttpResult httpRequest(const ParsedOrigin &origin, const std::string &method,
                        const std::string &path, const std::string *body,
                        const std::string *credential,
@@ -660,40 +698,60 @@ HttpResult httpRequest(const ParsedOrigin &origin, const std::string &method,
         if (n == 0) continue;
         raw.append(reinterpret_cast<char *>(buf), static_cast<size_t>(n));
     }
-    if (raw.empty()) return result;
-    const size_t headerEnd = raw.find("\r\n\r\n");
-    if (headerEnd == std::string::npos) return result;
-    const std::string statusLine = raw.substr(0, raw.find("\r\n"));
-    const size_t sp = statusLine.find(' ');
-    if (sp == std::string::npos) return result;
-    result.status = std::atoi(statusLine.c_str() + sp + 1);
-    std::string bodyPart = raw.substr(headerEnd + 4u);
-    /* Chunked transfer decode if present, else the body is verbatim. */
-    if (raw.substr(0, headerEnd).find("Transfer-Encoding: chunked") !=
-            std::string::npos ||
-        raw.substr(0, headerEnd).find("transfer-encoding: chunked") !=
-            std::string::npos) {
-        std::string decoded;
-        size_t p = 0u;
-        while (p < bodyPart.size()) {
-            const size_t eol = bodyPart.find("\r\n", p);
-            if (eol == std::string::npos) break;
-            const long size = std::strtol(bodyPart.substr(p, eol - p).c_str(),
-                                          nullptr, 16);
-            if (size <= 0) break;
-            p = eol + 2u;
-            if (p + static_cast<size_t>(size) > bodyPart.size()) break;
-            decoded.append(bodyPart, p, static_cast<size_t>(size));
-            p += static_cast<size_t>(size) + 2u;
-        }
-        bodyPart = decoded;
-    }
-    result.body = bodyPart;
+    if (!parseHttpResponse(raw, result.status, result.body)) return result;
     result.ok = true;
     return result;
 }
 
 /* ---- RFC 6455 client for /connect (read-only, masked control replies) ----- */
+
+/* One byte-level decode step over the buffered inbound bytes -- the
+ * WsConnection frame parser, factored out so the N7 fuzzer drives the EXACT
+ * shipped parser. Semantics unchanged: RSV bits, a masked server frame, or
+ * a frame declaring more than 1 MiB is a Violation; NeedMore reports the
+ * total bytes required (`needed`) so the caller's stall-bounded fill keeps
+ * its exact behavior; Frame sets `consumed` for the caller to erase. */
+enum class WsFrameStatus { NeedMore, Frame, Violation };
+struct WsFrameOut {
+    bool fin = false;
+    uint8_t opcode = 0u;
+    std::string payload;
+    size_t needed = 0u;
+};
+
+WsFrameStatus wsDecodeFrame(const std::vector<uint8_t> &inbound,
+                            WsFrameOut &out, size_t &consumed) {
+    out.needed = 2u;
+    if (inbound.size() < 2u) return WsFrameStatus::NeedMore;
+    const uint8_t b0 = inbound[0];
+    const uint8_t b1 = inbound[1];
+    if ((b0 & 0x70u) != 0u) return WsFrameStatus::Violation; /* RSV set */
+    if ((b1 & 0x80u) != 0u) return WsFrameStatus::Violation; /* masked */
+    uint64_t len = b1 & 0x7fu;
+    size_t headerLen = 2u;
+    if (len == 126u) headerLen = 4u;
+    else if (len == 127u) headerLen = 10u;
+    out.needed = headerLen;
+    if (inbound.size() < headerLen) return WsFrameStatus::NeedMore;
+    if (headerLen == 4u) {
+        len = (static_cast<uint64_t>(inbound[2]) << 8) | inbound[3];
+    } else if (headerLen == 10u) {
+        len = 0u;
+        for (unsigned i = 0u; i < 8u; ++i) {
+            len = (len << 8) | inbound[2u + i];
+        }
+    }
+    if (len > (1u << 20)) return WsFrameStatus::Violation;
+    out.needed = headerLen + static_cast<size_t>(len);
+    if (inbound.size() < out.needed) return WsFrameStatus::NeedMore;
+    out.fin = (b0 & 0x80u) != 0u;
+    out.opcode = b0 & 0x0fu;
+    out.payload.assign(inbound.begin() + static_cast<long>(headerLen),
+                       inbound.begin() +
+                           static_cast<long>(headerLen + len));
+    consumed = out.needed;
+    return WsFrameStatus::Frame;
+}
 
 class WsConnection {
 public:
@@ -859,7 +917,10 @@ private:
     }
 
     /* Returns 1 with (opcode,payload), 0 on quiet, -1 on close/error/stall.
-     * Assembles a fragmented message under a total cap. */
+     * Assembles a fragmented message under a total cap. The byte-level
+     * decode is the shared wsDecodeFrame (the N7 fuzzer drives the same
+     * function); this wrapper owns the stall-bounded fill and the
+     * cross-frame assembly cap, both unchanged. */
     int readFrame(uint8_t &opcodeOut, std::string &payloadOut,
                   uint32_t timeoutMs) {
         std::string message;
@@ -867,52 +928,34 @@ private:
         bool started = false;
         uint64_t midFrameDeadline = 0u;
         for (;;) {
-            int got = ensure(2u, timeoutMs, started, midFrameDeadline);
-            if (got <= 0) return got;
-            const uint8_t b0 = inbound_[0];
-            const uint8_t b1 = inbound_[1];
-            const bool fin = (b0 & 0x80u) != 0u;
-            if ((b0 & 0x70u) != 0u) return -1;   /* RSV1-3 set, no extension */
-            const uint8_t opcode = b0 & 0x0fu;
-            if ((b1 & 0x80u) != 0u) return -1;   /* server frames must not mask */
-            uint64_t len = b1 & 0x7fu;
-            size_t headerLen = 2u;
-            if (len == 126u) headerLen = 4u;
-            else if (len == 127u) headerLen = 10u;
-            got = ensure(headerLen, timeoutMs, true, midFrameDeadline);
-            if (got <= 0) return got;
-            if (headerLen == 4u) {
-                len = (static_cast<uint64_t>(inbound_[2]) << 8) | inbound_[3];
-            } else if (headerLen == 10u) {
-                len = 0u;
-                for (unsigned i = 0u; i < 8u; ++i) {
-                    len = (len << 8) | inbound_[2u + i];
-                }
+            WsFrameOut frame;
+            size_t consumed = 0u;
+            const WsFrameStatus status =
+                wsDecodeFrame(inbound_, frame, consumed);
+            if (status == WsFrameStatus::Violation) return -1;
+            if (status == WsFrameStatus::NeedMore) {
+                const int got = ensure(frame.needed, timeoutMs, started,
+                                       midFrameDeadline);
+                if (got <= 0) return got;
+                continue;
             }
-            if (len > (1u << 20)) return -1;
-            got = ensure(headerLen + static_cast<size_t>(len), timeoutMs, true,
-                         midFrameDeadline);
-            if (got <= 0) return got;
-            std::string payload(inbound_.begin() +
-                                    static_cast<long>(headerLen),
-                                inbound_.begin() +
-                                    static_cast<long>(headerLen + len));
             inbound_.erase(inbound_.begin(),
-                           inbound_.begin() +
-                               static_cast<long>(headerLen + len));
-            if (opcode >= 0x8u) { /* control frame delivered immediately */
-                opcodeOut = opcode;
-                payloadOut = std::move(payload);
+                           inbound_.begin() + static_cast<long>(consumed));
+            if (frame.opcode >= 0x8u) { /* control frame delivered now */
+                opcodeOut = frame.opcode;
+                payloadOut = std::move(frame.payload);
                 return 1;
             }
             if (!started) {
                 started = true;
-                firstOpcode = opcode; /* 0x1 text / 0x2 binary */
+                firstOpcode = frame.opcode; /* 0x1 text / 0x2 binary */
             }
             /* Total-message cap across continuation frames (memory-DoS guard). */
-            if (message.size() + payload.size() > kMaxWsMessageBytes) return -1;
-            message += payload;
-            if (fin) {
+            if (message.size() + frame.payload.size() > kMaxWsMessageBytes) {
+                return -1;
+            }
+            message += frame.payload;
+            if (frame.fin) {
                 opcodeOut = firstOpcode;
                 payloadOut = std::move(message);
                 return 1;
@@ -949,6 +992,34 @@ private:
 };
 
 /* ---- JSON -> MdkrOnlineLobby -------------------------------------------- */
+
+/* Bounded u32 field read (the signal client's jsonU32 semantics: integers
+ * and INTEGRAL floats in range; anything else reads as the fallback).
+ * nlohmann's own value(key, 0u) static_casts a float straight to unsigned,
+ * which is UB for out-of-range values -- flagged by the N7 UBSan fuzz lane
+ * (4.4e19 into `revision`). */
+uint32_t readU32(const Json &object, const char *key, uint32_t fallback) {
+    if (!object.is_object()) return fallback;
+    const auto it = object.find(key);
+    if (it == object.end()) return fallback;
+    if (it->is_number_unsigned()) {
+        const uint64_t raw = it->get<uint64_t>();
+        return raw <= 0xffffffffull ? static_cast<uint32_t>(raw) : fallback;
+    }
+    if (it->is_number_integer()) {
+        const int64_t raw = it->get<int64_t>();
+        return raw >= 0 && raw <= 0xffffffffll ? static_cast<uint32_t>(raw)
+                                               : fallback;
+    }
+    if (it->is_number_float()) {
+        const double raw = it->get<double>();
+        if (!(raw >= 0.0) || raw > 4294967295.0 || std::floor(raw) != raw) {
+            return fallback;
+        }
+        return static_cast<uint32_t>(raw);
+    }
+    return fallback;
+}
 
 bool parseU64(const Json &value, uint64_t &out) {
     if (value.is_string()) {
@@ -994,10 +1065,10 @@ bool parseLobby(const Json &root, MdkrOnlineLobby &lobby) {
     const Json &l = root["lobby"];
     std::memset(&lobby, 0, sizeof(lobby));
     try {
-        lobby.protocol_version = l.value("protocolVersion", 0u);
-        lobby.revision = l.value("revision", 0u);
-        lobby.match_epoch = l.value("matchEpoch", 0u);
-        lobby.leader_generation = l.value("leaderGeneration", 0u);
+        lobby.protocol_version = readU32(l, "protocolVersion", 0u);
+        lobby.revision = readU32(l, "revision", 0u);
+        lobby.match_epoch = readU32(l, "matchEpoch", 0u);
+        lobby.leader_generation = readU32(l, "leaderGeneration", 0u);
         if (!parseU64(l.at("roomId"), lobby.room_id) ||
             !parseU64(l.at("leaderEndpointId"), lobby.leader_endpoint_id)) {
             return false;
@@ -1009,16 +1080,16 @@ bool parseLobby(const Json &root, MdkrOnlineLobby &lobby) {
         }
         lobby.phase = phase;
         const Json &c = l.at("compatibility");
-        lobby.compatibility.protocol_version = c.value("protocolVersion", 0u);
+        lobby.compatibility.protocol_version = readU32(c, "protocolVersion", 0u);
         if (!parseByteArray(c.at("buildId"), lobby.compatibility.build_id, 16u) ||
             !parseByteArray(c.at("gameplayDigest"),
                             lobby.compatibility.gameplay_digest, 32u)) {
             return false;
         }
         lobby.compatibility.rom_revision =
-            static_cast<uint8_t>(c.value("romRevision", 0u));
+            static_cast<uint8_t>(readU32(c, "romRevision", 0u));
         lobby.compatibility.cadence_hz =
-            static_cast<uint8_t>(c.value("cadenceHz", 0u));
+            static_cast<uint8_t>(readU32(c, "cadenceHz", 0u));
 
         const Json &members = l.at("members");
         if (!members.is_array() || members.empty() ||
@@ -1031,7 +1102,7 @@ bool parseLobby(const Json &root, MdkrOnlineLobby &lobby) {
                 return false;
             }
             m.seat_count =
-                static_cast<uint8_t>(members[i].value("seatCount", 0u));
+                static_cast<uint8_t>(readU32(members[i], "seatCount", 0u));
             m.connected = members[i].value("connected", false);
             m.ready = members[i].value("ready", false);
             m.loaded = members[i].value("loaded", false);
@@ -1049,9 +1120,9 @@ bool parseLobby(const Json &root, MdkrOnlineLobby &lobby) {
             if (!parseU64(seats[i].at("endpointId"), s.endpoint_id)) {
                 return false;
             }
-            s.selection_revision = seats[i].value("selectionRevision", 0u);
+            s.selection_revision = readU32(seats[i], "selectionRevision", 0u);
             s.local_index =
-                static_cast<uint8_t>(seats[i].value("localIndex", 0u));
+                static_cast<uint8_t>(readU32(seats[i], "localIndex", 0u));
             const Json &vote = seats[i].value("voteTrack", Json());
             s.vote_track = vote.is_number_integer() || vote.is_number_unsigned()
                                ? static_cast<uint16_t>(vote.get<unsigned>())
@@ -1074,7 +1145,7 @@ bool parseLobby(const Json &root, MdkrOnlineLobby &lobby) {
                 ? static_cast<uint16_t>(track.get<unsigned>())
                 : MDKR_ONLINE_NO_VOTE;
         lobby.selected_vehicle_mask =
-            static_cast<uint8_t>(l.value("selectedVehicleMask", 0u));
+            static_cast<uint8_t>(readU32(l, "selectedVehicleMask", 0u));
         lobby.next_receipt = 0u;
     } catch (...) {
         return false;
@@ -1088,8 +1159,14 @@ void parseIceServers(const Json &root,
     if (!root.contains("iceServers") || !root["iceServers"].is_array()) return;
     for (const Json &entry : root["iceServers"]) {
         if (!entry.is_object() || !entry.contains("urls")) continue;
-        std::string username = entry.value("username", std::string());
-        std::string credential = entry.value("credential", std::string());
+        /* Json-default value() + typed read: a wrong-typed username or
+         * credential is skipped, never a worker-thread throw (N7). */
+        const Json user = entry.value("username", Json());
+        const Json cred = entry.value("credential", Json());
+        std::string username =
+            user.is_string() ? user.get<std::string>() : std::string();
+        std::string credential =
+            cred.is_string() ? cred.get<std::string>() : std::string();
         const Json &urls = entry["urls"];
         auto push = [&](const std::string &url) {
             MdkrMatchPeerIceServer server;
@@ -1122,6 +1199,29 @@ MdkrOnlineError mapMatchError(const std::string &code) {
         return MDKR_ONLINE_ERROR_SELECTION_CONFLICT;
     if (code == "illegal_vehicle") return MDKR_ONLINE_ERROR_ILLEGAL_VEHICLE;
     return MDKR_ONLINE_ERROR_PROTOCOL;
+}
+
+/* Step extraction for a /command response body (drainCommands' shape,
+ * shared with the N7 fuzz seam so the two can never drift). The WHOLE parse
+ * sits behind one catch: nlohmann's value() throws type_error.302 when a
+ * key is present with the wrong type ({"error": 0}), and pre-N7 that throw
+ * escaped the worker thread as std::terminate -- found by the online-wire
+ * fuzzer at exec #352448 of its first smoke. A wrong-typed field is the
+ * same typed PROTOCOL refusal as unparseable JSON. */
+void parseCommandStep(const std::string &body, MdkrOnlineStep &step) {
+    try {
+        const Json root = Json::parse(body);
+        step.accepted = root.value("accepted", false);
+        step.duplicate = root.value("duplicate", false);
+        step.error =
+            mapMatchError(root.value("error", std::string("protocol")));
+        step.revision = readU32(root, "revision", 0u);
+        step.match_epoch = readU32(root, "matchEpoch", 0u);
+    } catch (...) {
+        step = MdkrOnlineStep{};
+        step.accepted = false;
+        step.error = MDKR_ONLINE_ERROR_PROTOCOL;
+    }
 }
 
 const char *commandTypeName(MdkrOnlineCommandType type) {
@@ -1332,8 +1432,17 @@ private:
             invite_.roomId = roomId;
             invite_.credential = credential;
             invite_.endpointId = endpointId;
-            invite_.fallbackCode = root.value("fallbackCode", std::string());
-            invite_.inviteUrl = root.value("inviteUrl", std::string());
+            /* Json-default value(): no conversion, so a wrong-typed field
+             * can never throw here (the N7 hazard); non-strings read as
+             * absent. */
+            const Json fallback = root.value("fallbackCode", Json());
+            invite_.fallbackCode =
+                fallback.is_string() ? fallback.get<std::string>()
+                                     : std::string();
+            const Json inviteUrl = root.value("inviteUrl", Json());
+            invite_.inviteUrl = inviteUrl.is_string()
+                                    ? inviteUrl.get<std::string>()
+                                    : std::string();
         }
 
         roomId_ = roomId;
@@ -1450,6 +1559,11 @@ private:
         } catch (...) {
             return;
         }
+        /* value() on a non-object throws (type_error.306), and that throw
+         * would escape into the worker thread: a state frame that is valid
+         * JSON but not an object is just ignored. Found while wiring the
+         * N7 fuzz lane over this parser; the lane pins the shape. */
+        if (!root.is_object()) return;
         if (root.value("closedReason", Json()).is_string()) {
             const std::string reason =
                 root["closedReason"].get<std::string>();
@@ -1502,21 +1616,7 @@ private:
                 enqueue(std::move(ev));
                 continue;
             }
-            Json root;
-            try {
-                root = Json::parse(res.body);
-            } catch (...) {
-                ev.step.accepted = false;
-                ev.step.error = MDKR_ONLINE_ERROR_PROTOCOL;
-                enqueue(std::move(ev));
-                continue;
-            }
-            ev.step.accepted = root.value("accepted", false);
-            ev.step.duplicate = root.value("duplicate", false);
-            ev.step.error =
-                mapMatchError(root.value("error", std::string("protocol")));
-            ev.step.revision = root.value("revision", 0u);
-            ev.step.match_epoch = root.value("matchEpoch", 0u);
+            parseCommandStep(res.body, ev.step);
             enqueue(std::move(ev));
         }
     }
@@ -1730,4 +1830,59 @@ void mdkr_online_room_transport_prepend_address_for_test(const char *ip,
 
 void mdkr_online_room_transport_stall_resolver_for_test(unsigned ms) {
     g_resolverStallMsForTest.store(ms);
+}
+
+/* ---- Fuzz seam (declaration in match_live_transport.h) -------------------- */
+
+void mdkr_online_room_fuzz_wire(const uint8_t *data, size_t size) {
+    const std::string raw(reinterpret_cast<const char *>(data), size);
+
+    /* Lane A: the HTTP/1.1 response parse, then the JSON -> lobby/ice
+     * mapping over whatever body it yields (the create/join path). */
+    int status = 0;
+    std::string body;
+    if (parseHttpResponse(raw, status, body)) {
+        const Json root = Json::parse(body, nullptr, false);
+        if (!root.is_discarded()) {
+            MdkrOnlineLobby lobby;
+            (void)parseLobby(root, lobby);
+            std::vector<MdkrMatchPeerIceServer> ice;
+            parseIceServers(root, ice);
+        }
+        /* The /command step extraction -- the SHARED production function,
+         * which is exactly where the first smoke's terminate lived. */
+        MdkrOnlineStep step{};
+        parseCommandStep(body, step);
+    }
+
+    /* Lane B: the /connect WS frame decoder over the same bytes, with the
+     * serviceLoop's state-frame JSON mapping on every complete message. */
+    std::vector<uint8_t> inbound(data, data + size);
+    size_t assembledBytes = 0u;
+    for (;;) {
+        WsFrameOut frame;
+        size_t consumed = 0u;
+        const WsFrameStatus frameStatus =
+            wsDecodeFrame(inbound, frame, consumed);
+        if (frameStatus != WsFrameStatus::Frame) break;
+        inbound.erase(inbound.begin(),
+                      inbound.begin() + static_cast<long>(consumed));
+        if (frame.opcode >= 0x8u) continue; /* control: extracted, dropped */
+        if (assembledBytes + frame.payload.size() > kMaxWsMessageBytes) break;
+        assembledBytes += frame.payload.size();
+        if (frame.fin) {
+            const Json root = Json::parse(frame.payload, nullptr, false);
+            if (!root.is_discarded()) {
+                /* The serviceLoop's state-frame shape: closedReason first
+                 * (object-guarded -- value() throws on non-objects), then
+                 * the lobby mapping. */
+                if (root.is_object()) {
+                    (void)root.value("closedReason", Json()).is_string();
+                }
+                MdkrOnlineLobby lobby;
+                (void)parseLobby(root, lobby);
+            }
+            assembledBytes = 0u;
+        }
+    }
 }

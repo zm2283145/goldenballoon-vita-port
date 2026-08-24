@@ -272,6 +272,9 @@ struct MiniRoomState {
     unsigned upgradeCount = 0u;
     std::string lastWsHead;
     std::vector<std::string> commandBodies;
+    /* When nonempty, served verbatim as every /command response body (the
+     * misbehaving-service arm). */
+    std::string commandResponseOverride;
 };
 
 class MiniRoomServer {
@@ -400,6 +403,11 @@ public:
         payload.push_back(static_cast<char>(code & 0xffu));
         payload += reason;
         return sendWsFrame(0x8u, payload);
+    }
+
+    void setCommandResponse(const std::string &raw) {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->commandResponseOverride = raw;
     }
 
     void dropWs() {
@@ -532,6 +540,18 @@ private:
         } else if (requestLine.find("/command") != std::string::npos) {
             std::lock_guard<std::mutex> lock(state->mutex);
             state->commandBodies.push_back(body);
+            if (!state->commandResponseOverride.empty()) {
+                const std::string payload = state->commandResponseOverride;
+                std::string response = std::string(status) + "\r\n";
+                response += "Content-Type: application/json\r\n";
+                response += "Content-Length: " +
+                            std::to_string(payload.size()) + "\r\n";
+                response += "Connection: close\r\n\r\n";
+                response += payload;
+                (void)sendAllRoom(fd, response);
+                closeRoomSocket(fd);
+                return;
+            }
             responseBody["accepted"] = true;
             responseBody["duplicate"] = false;
             responseBody["error"] = "ok";
@@ -749,6 +769,48 @@ void closeDuringResolverStallReturnsPromptly() {
     std::this_thread::sleep_for(std::chrono::milliseconds(3100));
 }
 
+/* W3 N7 regression (found by the online-wire fuzzer, exec #352448 of the
+ * first smoke): a /command response whose "error" field is present but the
+ * WRONG JSON type ({"error": 0}) made nlohmann's value() throw
+ * type_error.302 -- an uncaught exception on the worker thread, i.e. a
+ * remote-triggerable std::terminate of the launcher. Every wrong-typed
+ * field in a command result must instead surface as the typed PROTOCOL
+ * command error, with the transport alive afterwards. */
+void malformedCommandResultIsTypedProtocolError() {
+    RoomRig rig;
+    assert(rig.bringUp());
+    rig.server.setCommandResponse(
+        "{\"accepted\": true, \"duplicate\": false, \"error\": 0}");
+    MdkrOnlineCommand command;
+    std::memset(&command, 0, sizeof(command));
+    command.protocol_version = MDKR_ONLINE_PROTOCOL_VERSION;
+    command.command_id = 1u;
+    command.type = MDKR_ONLINE_SET_READY;
+    command.value = 1u;
+    assert(rig.transport->submitCommand(command));
+    assert(rig.pumpUntil(
+        [&]() {
+            return rig.count(MdkrOnlineRoomEvent::Type::CommandResult) >= 1u;
+        },
+        5000u));
+    const MdkrOnlineRoomEvent *result =
+        rig.last(MdkrOnlineRoomEvent::Type::CommandResult);
+    assert(result != nullptr);
+    assert(!result->step.accepted);
+    assert(result->step.error == MDKR_ONLINE_ERROR_PROTOCOL);
+    /* Alive: a well-formed result still flows afterwards. */
+    rig.server.setCommandResponse(std::string());
+    command.command_id = 2u;
+    assert(rig.transport->submitCommand(command));
+    assert(rig.pumpUntil(
+        [&]() {
+            return rig.count(MdkrOnlineRoomEvent::Type::CommandResult) >= 2u;
+        },
+        5000u));
+    assert(rig.last(MdkrOnlineRoomEvent::Type::CommandResult)->step.accepted);
+    std::fprintf(stderr, "malformedCommandResultIsTypedProtocolError: ok\n");
+}
+
 /* W3 N6b: after the /signal socket dies, the mesh backend must replace it
  * (replacement sockets are first-class, docs/ref/match-signaling-v1.md) on
  * the bounded ladder and deliver the replacement's fresh welcome -- a HIGHER
@@ -851,6 +913,7 @@ int main(int argc, char **argv) {
         {"terminal4000", applicationCloseCodeStaysTerminal},
         {"blackhole", blackholedFirstAddressCreatesWithinBudget},
         {"stall", closeDuringResolverStallReturnsPromptly},
+        {"badcommand", malformedCommandResultIsTypedProtocolError},
         {"backend", meshBackendReplacesADeadSignalSocket},
     };
     for (const auto &c : cases) {

@@ -36,6 +36,7 @@
 #ifndef MDKR_MATCH_SIGNAL_CLIENT_H
 #define MDKR_MATCH_SIGNAL_CLIENT_H
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -231,6 +232,16 @@ void mdkr_match_signal_client_prepend_address_for_test(const char *ip,
  * deadline-bounded and abandoned, never joined). 0 clears. */
 void mdkr_match_signal_client_stall_resolver_for_test(unsigned ms);
 
+/* ---- Fuzz seam (W3 N7) ---------------------------------------------------
+ *
+ * Drives the EXACT shipped parsers -- the RFC 6455 server-frame extractor
+ * and the server-message validation state machine (parse + generation/
+ * sequence/high-water rules) -- over arbitrary bytes, with no socket and no
+ * thread. Compiled unconditionally (small, unreferenced and stripped in
+ * production links) so the fuzzer can never drift onto a copy of the
+ * parser. Entry point for tests/fuzz_match_signal_wire.cpp. */
+void mdkr_match_signal_fuzz_wire(const uint8_t *data, size_t size);
+
 class MdkrMatchSignalClient {
 public:
     /*
@@ -279,6 +290,11 @@ private:
     struct State;
     explicit MdkrMatchSignalClient(std::shared_ptr<State> state);
     std::shared_ptr<State> state_;
+
+    /* The N7 fuzz seam exercises the private message-validation state
+     * machine directly (no socket, no thread). */
+    friend void ::mdkr_match_signal_fuzz_wire(const uint8_t *data,
+                                              size_t size);
 };
 
 #endif /* MDKR_MATCH_SIGNAL_CLIENT_H */

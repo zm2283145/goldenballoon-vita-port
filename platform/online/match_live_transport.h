@@ -75,4 +75,14 @@ void mdkr_online_room_transport_prepend_address_for_test(const char *ip,
                                                          uint16_t port);
 void mdkr_online_room_transport_stall_resolver_for_test(unsigned ms);
 
+/* ---- Fuzz seam (W3 N7) ---------------------------------------------------
+ *
+ * Drives the EXACT shipped parsers -- the HTTP/1.1 response parse (status
+ * line + chunked decode), the /connect RFC 6455 frame decoder, and the
+ * lobby/ice-server JSON mapping -- over arbitrary bytes, with no socket and
+ * no thread. Compiled unconditionally (small, unreferenced and stripped in
+ * production links) so the fuzzer can never drift onto a copy of the
+ * parser. Entry point for tests/fuzz_online_live_wire.cpp. */
+void mdkr_online_room_fuzz_wire(const uint8_t *data, size_t size);
+
 #endif /* MDKR_MATCH_LIVE_TRANSPORT_H */

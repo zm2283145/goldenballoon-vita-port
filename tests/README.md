@@ -5746,3 +5746,31 @@ exact candidate must pass, while a dirty tree, a source commit that is not HEAD,
 a missing version, and a wrong version must each be rejected with the reason
 named. A provenance guard that stopped inspecting anything fails here instead of
 accepting every candidate.
+
+### Online wire-parser fuzzers — `tests/fuzz_match_signal_wire.cpp`, `tests/fuzz_online_live_wire.cpp`
+
+```bash
+cmake -S . -B build-fuzz -DMDKR_ENABLE_FUZZERS=ON \
+  -DCMAKE_C_COMPILER=$(brew --prefix llvm)/bin/clang \
+  -DCMAKE_CXX_COMPILER=$(brew --prefix llvm)/bin/clang++
+cmake --build build-fuzz --target mdkr_match_signal_wire_fuzzer \
+  --target mdkr_online_live_wire_fuzzer -j6
+./build-fuzz/mdkr_match_signal_wire_fuzzer -max_total_time=300 \
+  tests/fuzz_corpus/match_signal_wire
+./build-fuzz/mdkr_online_live_wire_fuzzer -max_total_time=300 \
+  tests/fuzz_corpus/online_live_wire
+```
+
+Coverage-guided libFuzzer (ASan+UBSan) over the two hand-rolled wire-parser
+families in the native online stack: the match-signal client's RFC 6455
+server-frame extractor + server-message validation state machine, and the
+MatchRoom transport's HTTP/1.1 response parse, /connect WS frame decoder and
+lobby/ice-server JSON mapping. Each target drives a shipped `*_fuzz_wire`
+seam (compiled unconditionally, stripped from production links), so the
+corpus exercises the exact production parsers — no copies, no sockets, no
+threads. `MDKR_ENABLE_FUZZERS` is OFF by default and purely additive: a
+normal configure never creates the targets. Apple's toolchain clang ships no
+libFuzzer runtime; use Homebrew LLVM as above. Seed corpora are derived from
+the suites' wire-level test vectors (valid welcome/hello/ICE frames,
+fragmentation, masked/RSV violations, oversize declarations, a full 201
+create response, chunked state, 4000-class closes).

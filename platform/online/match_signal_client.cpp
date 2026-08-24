@@ -954,6 +954,73 @@ std::string loweredCopy(std::string value) {
     return value;
 }
 
+/* ---- Server-frame extraction (one step over the carried buffer) -----------
+ *
+ * The byte-level half of the socket thread's frame loop, factored out so the
+ * N7 fuzz harness drives the EXACT shipped parser. Semantics are the frame
+ * loop's, unchanged: RSV bits, a masked server frame, or an oversize/
+ * fragmented control frame is a protocol Violation (transport-lost class);
+ * a data frame whose DECLARED length would breach the kSignalBytes signaling
+ * bound -- alone or on top of `assembledBytes` of pending continuation
+ * payload -- is Oversize (invalid-message class), refused before any payload
+ * is buffered. On Frame the bytes are consumed from `carried`. */
+enum class ServerFrameStatus { NeedMore, Frame, Violation, Oversize };
+struct ServerFrame {
+    bool fin = false;
+    uint8_t opcode = 0u;
+    std::string payload;
+};
+
+ServerFrameStatus extractServerFrame(std::string &carried,
+                                     size_t assembledBytes,
+                                     ServerFrame &out) {
+    if (carried.size() < 2u) return ServerFrameStatus::NeedMore;
+    const uint8_t byte0 = static_cast<uint8_t>(carried[0]);
+    const uint8_t byte1 = static_cast<uint8_t>(carried[1]);
+    if ((byte0 & 0x70u) != 0u || (byte1 & 0x80u) != 0u) {
+        /* RSV bits or a masked server frame: protocol violation. */
+        return ServerFrameStatus::Violation;
+    }
+    const bool fin = (byte0 & 0x80u) != 0u;
+    const uint8_t opcode = byte0 & 0x0fu;
+    size_t headerSize = 2u;
+    uint64_t length = byte1 & 0x7fu;
+    if (length == 126u) headerSize = 4u;
+    else if (length == 127u) headerSize = 10u;
+    if (carried.size() < headerSize) return ServerFrameStatus::NeedMore;
+    if (headerSize == 4u) {
+        length = (static_cast<uint64_t>(
+                      static_cast<uint8_t>(carried[2])) << 8u) |
+                 static_cast<uint64_t>(static_cast<uint8_t>(carried[3]));
+    } else if (headerSize == 10u) {
+        length = 0u;
+        for (unsigned index = 0u; index < 8u; index++) {
+            length = (length << 8u) |
+                     static_cast<uint8_t>(carried[2u + index]);
+        }
+    }
+    const bool isControl = (opcode & 0x8u) != 0u;
+    if (isControl && (length > 125u || !fin)) {
+        return ServerFrameStatus::Violation;
+    }
+    if (!isControl) {
+        /* The signaling frame bound, enforced from the declared length
+         * BEFORE any payload is buffered or parsed. */
+        const uint64_t pendingBytes = static_cast<uint64_t>(assembledBytes);
+        if (length > kSignalBytes || pendingBytes + length > kSignalBytes) {
+            return ServerFrameStatus::Oversize;
+        }
+    }
+    if (carried.size() < headerSize + length) {
+        return ServerFrameStatus::NeedMore;
+    }
+    out.fin = fin;
+    out.opcode = opcode;
+    out.payload = carried.substr(headerSize, static_cast<size_t>(length));
+    carried.erase(0u, headerSize + static_cast<size_t>(length));
+    return ServerFrameStatus::Frame;
+}
+
 /* First matching header (lowercase name), trimmed. */
 bool responseHeader(const std::string &head, const std::string &name,
                     std::string &value) {
@@ -1665,65 +1732,31 @@ void MdkrMatchSignalClient::State::run() {
             }
         }
 
-        /* Extract complete frames from `carried`. */
+        /* Extract complete frames from `carried` (the shared byte-level
+         * extractor; the N7 fuzzer drives the same function). */
         bool needMore = false;
         while (!needMore) {
-            if (carried.size() < 2u) {
+            ServerFrame frame;
+            const ServerFrameStatus frameStatus =
+                extractServerFrame(carried, assembled.size(), frame);
+            if (frameStatus == ServerFrameStatus::NeedMore) {
                 needMore = true;
                 break;
             }
-            const uint8_t byte0 = static_cast<uint8_t>(carried[0]);
-            const uint8_t byte1 = static_cast<uint8_t>(carried[1]);
-            if ((byte0 & 0x70u) != 0u || (byte1 & 0x80u) != 0u) {
-                /* RSV bits or a masked server frame: protocol violation.
-                 * The browser kills such a connection at the protocol
+            if (frameStatus == ServerFrameStatus::Violation) {
+                /* RSV bits, a masked server frame, or a bad control frame:
+                 * the browser kills such a connection at the protocol
                  * layer; the reference client sees transport loss. */
                 terminate(kMdkrMatchSignalTransportLost, false);
                 return;
             }
-            const bool fin = (byte0 & 0x80u) != 0u;
-            const uint8_t opcode = byte0 & 0x0fu;
-            size_t headerSize = 2u;
-            uint64_t length = byte1 & 0x7fu;
-            if (length == 126u) headerSize = 4u;
-            else if (length == 127u) headerSize = 10u;
-            if (carried.size() < headerSize) {
-                needMore = true;
-                break;
-            }
-            if (headerSize == 4u) {
-                length = (static_cast<uint64_t>(
-                              static_cast<uint8_t>(carried[2])) << 8u) |
-                         static_cast<uint64_t>(static_cast<uint8_t>(carried[3]));
-            } else if (headerSize == 10u) {
-                length = 0u;
-                for (unsigned index = 0u; index < 8u; index++) {
-                    length = (length << 8u) |
-                             static_cast<uint8_t>(carried[2u + index]);
-                }
-            }
-            const bool isControl = (opcode & 0x8u) != 0u;
-            if (isControl && (length > 125u || !fin)) {
-                terminate(kMdkrMatchSignalTransportLost, false);
+            if (frameStatus == ServerFrameStatus::Oversize) {
+                terminate(kMdkrMatchSignalInvalidMessage, true);
                 return;
             }
-            if (!isControl) {
-                /* The signaling frame bound, enforced from the declared
-                 * length BEFORE any payload is buffered or parsed. */
-                const uint64_t pendingBytes =
-                    static_cast<uint64_t>(assembled.size());
-                if (length > kSignalBytes || pendingBytes + length > kSignalBytes) {
-                    terminate(kMdkrMatchSignalInvalidMessage, true);
-                    return;
-                }
-            }
-            if (carried.size() < headerSize + length) {
-                needMore = true;
-                break;
-            }
-            std::string payload =
-                carried.substr(headerSize, static_cast<size_t>(length));
-            carried.erase(0u, headerSize + static_cast<size_t>(length));
+            const bool fin = frame.fin;
+            const uint8_t opcode = frame.opcode;
+            std::string payload = std::move(frame.payload);
 
             if (opcode == 0x9u) { /* ping -> pong */
                 std::string pong;
@@ -1990,4 +2023,71 @@ void MdkrMatchSignalClient::drainEvents(
         out.push_back(std::move(state.events.front()));
         state.events.pop_front();
     }
+}
+
+/* ---- Fuzz seam (declaration in match_signal_client.h) --------------------- */
+
+void mdkr_match_signal_fuzz_wire(const uint8_t *data, size_t size) {
+    /* Lane A: the byte-level frame extractor, accumulating exactly like the
+     * socket thread (fragmented text assembles under the shared bound;
+     * control frames pass through; any violation ends the stream). Complete
+     * text messages feed lane B. */
+    std::string carried(reinterpret_cast<const char *>(data), size);
+    std::string assembled;
+    bool assembling = false;
+    std::vector<std::string> texts;
+    for (;;) {
+        ServerFrame frame;
+        const ServerFrameStatus status =
+            extractServerFrame(carried, assembled.size(), frame);
+        if (status != ServerFrameStatus::Frame) break;
+        if (frame.opcode == 0x1u) {
+            if (assembling) break; /* run() terminates here */
+            if (!frame.fin) {
+                assembling = true;
+                assembled = std::move(frame.payload);
+                continue;
+            }
+            texts.push_back(std::move(frame.payload));
+        } else if (frame.opcode == 0x0u) {
+            if (!assembling) break;
+            assembled += frame.payload;
+            if (frame.fin) {
+                assembling = false;
+                texts.push_back(std::move(assembled));
+                assembled.clear();
+            }
+        }
+        /* control frames: extracted and dropped, like run()'s replies. */
+    }
+
+    /* Lane B: the server-message validation state machine, in both phases
+     * (pre-welcome generation 0, and open at generation 7 with a tracked
+     * peer + a recorded sent target so the presence/sequence/signal_error
+     * rules are all reachable). */
+    const auto drive = [&](bool open) {
+        MdkrMatchSignalClient::State state;
+        state.endpointId = "101";
+        state.phase = open ? MdkrMatchSignalPhase::Open
+                           : MdkrMatchSignalPhase::Connecting;
+        if (open) {
+            state.generation = 7u;
+            state.peerGenerations["202"] = 5u;
+            state.peerGenerationHighWater["202"] = 5u;
+            state.receivedSequences["202"] = 3u;
+            MdkrMatchSignalPeerRef target;
+            target.endpointId = "202";
+            target.connectionGeneration = 5u;
+            state.sentTargets[1u] = std::move(target);
+        }
+        for (const std::string &text : texts) {
+            (void)state.handleServerText(text);
+        }
+        /* The raw input as one message too, so a pure-JSON corpus needs no
+         * WS framing to reach the validators. */
+        (void)state.handleServerText(
+            std::string(reinterpret_cast<const char *>(data), size));
+    };
+    drive(false);
+    drive(true);
 }
