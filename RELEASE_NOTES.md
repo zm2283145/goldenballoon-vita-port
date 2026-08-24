@@ -1,10 +1,12 @@
 # Golden Balloon 1.5.2
 
-*Released 2026-08-23.*
+*Released 2026-08-24.*
 
-A small bug-fix release for the reports that came in after 1.5.1: the
-Widescreen HUD now lays out every game mode correctly, and a transient
-rectangle glitch in the Save Options screen is gone. There are no new
+A bug-fix release closing the reports that came in after 1.5.1: the
+Widescreen HUD now lays out every game mode correctly, a transient rectangle
+glitch in the Save Options screen is gone, time-trial times and ghosts now
+save reliably on Linux, a Hot Top Volcano out-of-bounds exit no longer hangs,
+and Nintendo Switch Online N64 controllers map correctly. There are no new
 features and no changes to gameplay.
 
 Recommended settings: **WebGPU**, **Restored**, frame limit **Original**,
@@ -34,6 +36,19 @@ authored rate.
   blue flash in the cave there matches the original game's own
   out-of-bounds curtain — the level data itself specifies that exact blue,
   and it appears identically with every enhancement switched off.
+- Time Trial times and ghosts now save reliably on Linux (and other
+  non-macOS native builds). Saves resolve to your per-user profile
+  directory; if you were relying on a folder-local `save/` it is kept in
+  place, and you can force folder-local saves with a `portable.txt` beside
+  the game. The game also now tells you, instead of failing silently, if it
+  ever cannot write your progress (issue #54).
+- Leaving Hot Top Volcano through the out-of-bounds trophy-storage route no
+  longer hangs on a black screen; it now returns to the hub exactly as the
+  original game does, so the trick still works (issue #55).
+- Nintendo Switch Online N64 controllers now map correctly over Bluetooth —
+  the C-buttons no longer open the overlay or double as Z. You can also now
+  change which button opens the in-game overlay in Settings ▸ Controls
+  (issue #55).
 
 ## Compatibility
 
@@ -50,3 +65,7 @@ at race start (issue #48) still could not be reproduced from source, and
 the game applies each racer's seated animation before the first frame is
 drawn. If you saw this, please retest on this release and report either
 way in the issue.
+
+One report of some spectate-camera cuts feeling abrupt in a three-player
+time-trial spectate view is still being looked at; it does not affect normal
+racing.
