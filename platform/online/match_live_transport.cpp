@@ -32,6 +32,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -181,7 +182,18 @@ SocketFd connectWithDeadline(const std::string &host, const std::string &port,
             }
             break;
         }
-        if (established && setBlocking(fd, true)) break;
+        if (established && setBlocking(fd, true)) {
+            /* Disable Nagle immediately post-connect: lobby commands and
+             * /connect state frames are all small (~300 B), and Nagle +
+             * delayed ACK adds up to ~40-200 ms per request against the
+             * live service. Set-failure is non-fatal -- coalescing merely
+             * stays on (the SO_NOSIGPIPE discipline above). */
+            int noDelay = 1;
+            (void)::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
+                               reinterpret_cast<const char *>(&noDelay),
+                               sizeof(noDelay));
+            break;
+        }
         closeSocket(fd);
         fd = kBadSocket;
         if (abort != nullptr && abort->load()) break;

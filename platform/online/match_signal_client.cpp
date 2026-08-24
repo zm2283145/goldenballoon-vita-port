@@ -682,7 +682,18 @@ NativeSocket connectTcp(const std::string &host, uint16_t port,
          * timeout-sliced waits and writes through the interruptible
          * deadline-bound writeAll, so nothing on the socket thread can
          * block past a poll slice. */
-        if (established) break;
+        if (established) {
+            /* Disable Nagle immediately post-connect: every signaling frame
+             * is small (hellos ~200 B, ICE ~300 B) and Nagle + delayed ACK
+             * adds up to ~40-200 ms per hop during the join/ICE-trickle
+             * burst. Set-failure is non-fatal -- coalescing merely stays on
+             * (the SO_NOSIGPIPE discipline above). */
+            int noDelay = 1;
+            (void)::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
+                               reinterpret_cast<const char *>(&noDelay),
+                               sizeof(noDelay));
+            break;
+        }
         closeNativeSocket(fd);
         fd = kBadNativeSocket;
         if (*timedOut || stopping) break;
