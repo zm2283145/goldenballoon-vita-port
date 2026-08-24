@@ -515,6 +515,18 @@ production coverage:
   (`[RECT-SKIP]`). The check also requires the skip counter to be non-zero
   (the guard is exercised, not vacuous) and known-good UI pixels to remain
   (an over-skipping regression fails).
+- `check_track_exit_storage.py` drives the Hot Top Volcano destination-(-1)
+  out-of-bounds exit through the `MDKR_FORCE_EXIT_LATCH` seam and asserts the
+  game reaches the hub instead of the pre-1.5.2 dead-end menu stall
+  (`menu_init menuId=8` with no further activity), and that the trophy-storage
+  globals survive the transition (issue #55). The dead-end used to return an
+  uninitialized menu result; the port now returns the ares-measured us.v80
+  value, so the speedrun trick works while the black-screen hang is gone.
+- `check_save_write_notice.py` drives a durable save into a read-only save
+  directory and asserts the game both logs the failure and surfaces exactly
+  one player-facing notice (issue #54): a save-write failure retries via the
+  write-relocation fallback and then announces "progress could not be saved"
+  rather than discarding the error silently.
 - `check_live_toggle_settings.py` gates the same settings being CHANGED
   mid-run. `Video.FrameLimit`, `Video.MotionSmoothing` and
   `Video.AllowTearing` apply at the host-frame boundary and
