@@ -1980,6 +1980,15 @@ if(BUILD_TESTING)
             NAME online_room_live_state_js
             COMMAND ${MDKR_NODE_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tests/test_online_room_live_state.mjs)
+        # The Online Room page harness (S1 fallback-only /state refresh, S4
+        # typed 4000-class terminal closes) -- the page-level behavioral
+        # coverage over the real presenter + live-state modules. Registered
+        # beside its two siblings above (W3 fix round: it previously ran
+        # nowhere).
+        add_test(
+            NAME online_room_client_js
+            COMMAND ${MDKR_NODE_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_online_room_client.mjs)
     endif()
     add_test(
         NAME oracle_reference_replay

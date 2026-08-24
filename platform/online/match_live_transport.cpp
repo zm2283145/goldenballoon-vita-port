@@ -200,6 +200,11 @@ struct ResolveTask {
     int rc = -1;
     struct addrinfo *results = nullptr;
 };
+/* Abandoned helpers accumulate only until their getaddrinfo returns (the
+ * resolver timeout, worst case ~30 s), and new ones are minted only by
+ * connect attempts, which the reconnect ladders bound (<= 6 per outage per
+ * socket) -- so the in-principle-unbounded detached threads are ladder-
+ * bounded in practice and each self-frees its result. */
 
 bool resolveAddresses(const std::string &host, const std::string &port,
                       uint64_t deadlineMs, const std::atomic<bool> *abort,
@@ -281,7 +286,11 @@ SocketFd connectWithDeadline(const std::string &host, const std::string &port,
         /* N3 per-address budget: min(cap, remaining/left), so a blackholed
          * first address (broken-IPv6 household) costs one slice and the
          * loop falls through to the rest of the list; the overall deadline
-         * still bounds the whole connect. */
+         * still bounds the whole connect. DELIBERATE edge: a single-address
+         * host is also capped at 3.5 s even when the caller's deadline is
+         * longer -- a healthy TCP handshake completes orders of magnitude
+         * faster, so past the cap the address is a blackhole and the faster
+         * typed failure beats waiting out the full budget. */
         const uint64_t nowAtEntry = nowMs();
         if (nowAtEntry >= deadlineMs) break;
         const uint64_t remaining = deadlineMs - nowAtEntry;
