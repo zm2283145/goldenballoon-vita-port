@@ -1644,6 +1644,114 @@ bool drawUiScale(bool compact) {
     return changed;
 }
 
+// --- Menu button -------------------------------------------------------------
+//
+// The other schema-less control (see drawUiScale above), routed through
+// AppUi_shellPreferenceSection the same way: the controller button that opens
+// the in-game menu. Stored as mdkr64_app.ini menu_toggle_button and read by
+// Overlay_gamepadToggleButton() on every press, so a saved change applies
+// immediately. Issue #55 is why the row exists: SDL's fallback mapping for
+// the NSO N64 pad lands C-Right on View, so the menu opened mid-race and the
+// product offered no control anywhere to move or clear the binding.
+struct MenuButtonChoice {
+    const char *label;
+    int value;
+};
+// Face buttons are deliberately not offered: the overlay swallows its toggle
+// button, so putting the menu on A or B would eat a gameplay input. The
+// stick clicks are here because pads without a View button (the NSO N64 pad
+// among them) still have at least one click to spare.
+constexpr MenuButtonChoice kMenuButtonChoices[] = {
+    {"View", SDL_CONTROLLER_BUTTON_BACK},
+    {"Start", SDL_CONTROLLER_BUTTON_START},
+    {"Guide", SDL_CONTROLLER_BUTTON_GUIDE},
+    {"Left stick click", SDL_CONTROLLER_BUTTON_LEFTSTICK},
+    {"Right stick click", SDL_CONTROLLER_BUTTON_RIGHTSTICK},
+    {"None (keyboard only)", -1},
+};
+
+int menuToggleButtonPref() {
+    const std::string stored = AppConfig::get("menu_toggle_button", "");
+    if (stored.empty()) return SDL_CONTROLLER_BUTTON_BACK;
+    char *end = nullptr;
+    const long parsed = std::strtol(stored.c_str(), &end, 10);
+    return (end != nullptr && *end == '\0')
+               ? static_cast<int>(parsed)
+               : SDL_CONTROLLER_BUTTON_BACK;
+}
+
+bool drawMenuToggleButton(bool compact) {
+    bool changed = false;
+    const int current = menuToggleButtonPref();
+    const char *preview = nullptr;
+    for (const MenuButtonChoice &choice : kMenuButtonChoices) {
+        if (choice.value == current) {
+            preview = choice.label;
+            break;
+        }
+    }
+    char customLabel[32];
+    if (preview == nullptr) {
+        // A value written into mdkr64_app.ini by hand. Show it as it is
+        // rather than snapping the row to a choice the player never made.
+        std::snprintf(customLabel, sizeof(customLabel), "Button %d", current);
+        preview = customLabel;
+    }
+    static const char *const kMenuButtonHelp =
+        "The controller button that opens the menu over the game. The F1 key "
+        "always works too.";
+    ui::RowStyle style;
+    if (!compact) {
+        style.tooltip =
+            "If a button on your pad keeps opening this menu on its own, "
+            "move the menu to another button here, or to None to open it "
+            "from the keyboard only.";
+    }
+    ui::SettingLabel("Menu button", compact ? nullptr : kMenuButtonHelp,
+                     style);
+    ImGui::SetNextItemWidth(ui::kControlWidth());
+    if (ImGui::BeginCombo("##menu-toggle-button", preview)) {
+        for (const MenuButtonChoice &choice : kMenuButtonChoices) {
+            const bool selected = choice.value == current;
+            if (ImGui::Selectable(choice.label, selected, 0,
+                                  ImVec2(0.0f, ui::kTouchRowHeight())) &&
+                !selected) {
+                char value[16];
+                std::snprintf(value, sizeof(value), "%d", choice.value);
+                const AppConfig::PersistResult persist =
+                    AppConfig::setAndSave("menu_toggle_button", value);
+                if (AppConfig::persistResultApplied(persist)) {
+                    setStatus(
+                        persist ==
+                                AppConfig::PersistResult::DurabilityUnconfirmed
+                            ? "Menu button applied, but the system could not "
+                              "confirm it reached the disk. Set it again "
+                              "after an unexpected shutdown."
+                            : "Menu button saved.",
+                        persist ==
+                                AppConfig::PersistResult::DurabilityUnconfirmed
+                            ? AppTheme::accent()
+                            : AppTheme::good());
+                    changed = true;
+                } else {
+                    // On a failed save the preference store keeps the old
+                    // value in memory too, so the old button is still the
+                    // one that works. Say that.
+                    setStatus(
+                        "The menu button could not be saved and was not "
+                        "changed. Try again once the settings file is "
+                        "writable.",
+                        AppTheme::bad());
+                }
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ui::SpeakFocusedItem("Menu button", preview, kMenuButtonHelp);
+    return changed;
+}
+
 // --- Accessibility ---------------------------------------------------------
 //
 // One place for every option a player might need before they can use the rest
@@ -2273,6 +2381,14 @@ bool Settings_draw(SDL_Window *window, bool compact) {
         row(MDKR_INPUT_RUMBLE_PROFILE);
         if (visible(MDKR_INPUT_RUMBLE_ENABLED)) controllerRumbleWidgets++;
         if (visible(MDKR_INPUT_RUMBLE_PROFILE)) controllerRumbleWidgets++;
+        // Shell preference, not a schema key, so it cannot arrive via row().
+        // Routed like UI scale so "drawn in exactly one section" stays a
+        // property tests/test_app_ui_policy.cpp can read.
+        if (AppUi_shellPreferenceSection(
+                AppUiShellPreference::MenuToggleButton) ==
+            AppUiSettingsSection::Category) {
+            changed |= drawMenuToggleButton(compact);
+        }
         if (g_controllerSectionRequested) {
             ImGui::SetNextItemOpen(true, ImGuiCond_Always);
         }

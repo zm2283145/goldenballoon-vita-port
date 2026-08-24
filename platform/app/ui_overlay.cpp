@@ -423,14 +423,16 @@ const char *menuKeyName() {
 
 const char *menuButtonName() {
     switch (Overlay_gamepadToggleButton()) {
-        case SDL_CONTROLLER_BUTTON_BACK:  return "View";
-        case SDL_CONTROLLER_BUTTON_START: return "Start";
-        case SDL_CONTROLLER_BUTTON_GUIDE: return "Guide";
-        case SDL_CONTROLLER_BUTTON_A:     return "A";
-        case SDL_CONTROLLER_BUTTON_B:     return "B";
-        case SDL_CONTROLLER_BUTTON_X:     return "X";
-        case SDL_CONTROLLER_BUTTON_Y:     return "Y";
-        default:                          return "Menu";
+        case SDL_CONTROLLER_BUTTON_BACK:       return "View";
+        case SDL_CONTROLLER_BUTTON_START:      return "Start";
+        case SDL_CONTROLLER_BUTTON_GUIDE:      return "Guide";
+        case SDL_CONTROLLER_BUTTON_LEFTSTICK:  return "Left stick click";
+        case SDL_CONTROLLER_BUTTON_RIGHTSTICK: return "Right stick click";
+        case SDL_CONTROLLER_BUTTON_A:          return "A";
+        case SDL_CONTROLLER_BUTTON_B:          return "B";
+        case SDL_CONTROLLER_BUTTON_X:          return "X";
+        case SDL_CONTROLLER_BUTTON_Y:          return "Y";
+        default:                               return "Menu";
     }
 }
 
@@ -584,7 +586,12 @@ void drawOverlayHeader() {
     const bool usingGamepad =
         g_overlay.lastInputDevice == LastInputDevice::Gamepad;
     const bool usingTouch = g_overlay.lastInputDevice == LastInputDevice::Touch;
-    const char *resume = usingGamepad ? menuButtonName() : menuKeyName();
+    // Settings can set the pad toggle to None (-1). Naming a controller
+    // button then would tell the player to press one that does nothing, so
+    // fall back to the keyboard key, which always works.
+    const char *resume = (usingGamepad && Overlay_gamepadToggleButton() >= 0)
+                             ? menuButtonName()
+                             : menuKeyName();
     const char *nav = usingTouch
         ? "Swipe to scroll  \xE2\x80\xA2  tap an action"
         : usingGamepad
