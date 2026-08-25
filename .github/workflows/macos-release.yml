@@ -148,18 +148,18 @@ jobs:
             --release \
             --party-origin "$PARTY_ORIGIN" \
             --build-dir build-macos-release \
-            --output dist/mdkr64.app \
+            --output "dist/Golden Balloon.app" \
             --arch arm64 \
             --version "$RELEASE_VERSION" \
             --build-stamp "$GITHUB_SHA" \
             --deployment-target 13.0 \
             --strict-deployment-target \
             --bundle-sdl2
-          ./macos/Scripts/verify_asset_free.sh dist/mdkr64.app
-          ./macos/Scripts/verify_gatekeeper_bundle.sh dist/mdkr64.app
+          ./macos/Scripts/verify_asset_free.sh "dist/Golden Balloon.app"
+          ./macos/Scripts/verify_gatekeeper_bundle.sh "dist/Golden Balloon.app"
           ./macos/Scripts/verify_unsigned_release.sh \
             --version "$RELEASE_VERSION" --commit "$GITHUB_SHA" \
-            dist/mdkr64.app
+            "dist/Golden Balloon.app"
 
       # Qualify the packaged app's Phone Party host without a GPU, a window, a
       # network or a ROM. The smoke executable is built from build-macos-release
@@ -184,7 +184,7 @@ jobs:
           PARTY_ORIGIN: ${{ steps.party.outputs.party_origin }}
         run: |
           set -euo pipefail
-          app="dist/mdkr64.app"
+          app="dist/Golden Balloon.app"
           executable="$app/Contents/MacOS/mdkr64"
           plist_version="$(/usr/libexec/PlistBuddy -c \
             'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
@@ -270,12 +270,12 @@ jobs:
             -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH"
 
-          ./macos/Scripts/sign_and_notarize.sh dist/mdkr64.app
+          ./macos/Scripts/sign_and_notarize.sh "dist/Golden Balloon.app"
           ./macos/Scripts/verify_gatekeeper_bundle.sh \
-            --distribution dist/mdkr64.app
+            --distribution "dist/Golden Balloon.app"
 
           DMG_PATH="dist/Golden-Balloon-${RELEASE_VERSION}-macos-arm64-signed-notarized.dmg"
-          ./macos/Scripts/create_dmg.sh dist/mdkr64.app "$DMG_PATH"
+          ./macos/Scripts/create_dmg.sh "dist/Golden Balloon.app" "$DMG_PATH"
           codesign --force --sign "$DEVELOPER_ID_APPLICATION" \
             --timestamp "$DMG_PATH"
           ./macos/Scripts/notarize_artifact.sh "$DMG_PATH"
@@ -297,7 +297,7 @@ jobs:
         run: |
           set -euo pipefail
           DMG_PATH="dist/Golden-Balloon-${RELEASE_VERSION}-macos-arm64-unsigned.dmg"
-          ./macos/Scripts/create_dmg.sh dist/mdkr64.app "$DMG_PATH"
+          ./macos/Scripts/create_dmg.sh "dist/Golden Balloon.app" "$DMG_PATH"
           ./macos/Scripts/verify_unsigned_dmg.sh \
             --version "$RELEASE_VERSION" --commit "$GITHUB_SHA" "$DMG_PATH"
           ./macos/Scripts/stamp_macos_provenance.sh \

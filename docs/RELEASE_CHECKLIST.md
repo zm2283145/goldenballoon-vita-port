@@ -501,7 +501,7 @@ The package job must complete all of these checks before its artifact is
 accepted:
 
 - [ ] Build SHA-pinned standalone SDL2 2.32.10 for arm64/macOS 13.
-- [ ] Build `mdkr64.app` with `--strict-deployment-target`, embed version
+- [ ] Build `Golden Balloon.app` with `--strict-deployment-target`, embed version
       `1.5.2` and the exact source commit, bundle SDL2, then seal nested code
       before the outer app.
 - [ ] Run `verify_asset_free.sh`, `verify_gatekeeper_bundle.sh`, and
@@ -588,7 +588,7 @@ confirm the preview is correct. In a browser/profile without WebGPU, confirm tha
 the same save controls remain available while **Play** is blocked.
 
 For macOS, download the published DMG onto a machine without the build tree or
-Homebrew SDL libraries, verify its `.sha256`, mount it, copy `mdkr64.app` to
+Homebrew SDL libraries, verify its `.sha256`, mount it, copy `Golden Balloon.app` to
 `/Applications`, and launch it without renderer overrides. Confirm the ROM-free
 launcher renders through WebGPU, first launch produces at most the expected
 unidentified-developer warning, and Finder never reports the app as damaged.
