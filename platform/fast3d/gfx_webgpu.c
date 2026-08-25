@@ -1129,6 +1129,16 @@ static void on_device_lost(WGPUDevice const *device, WGPUDeviceLostReason reason
  * Verified against the emdawnwebgpu port's webgpu.h at build time; keep
  * "#canvas" in sync with web/index.html (W5).
  * ---------------------------------------------------------------------- */
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+/* The CAMetalLayer backing s_surface, captured here because it is the exact
+ * layer the surface wraps in BOTH the standalone-engine and app-shell paths
+ * (the engine passes platformGetMetalLayer(); the app shell passes its own
+ * SDL_Metal_GetLayer(), and platformGetMetalLayer() is NULL once the engine has
+ * only adopted that window). wgpu_configure_surface re-asserts
+ * allowsNextDrawableTimeout on it after each wgpuSurfaceConfigure (Part B). */
+static void *s_metal_layer = NULL;
+#endif
+
 WGPUSurface wgpuCompatCreateSurface(WGPUInstance instance, void *metal_layer,
                                     struct SDL_Window *window) {
     if (instance == NULL) {
@@ -1153,6 +1163,9 @@ WGPUSurface wgpuCompatCreateSurface(WGPUInstance instance, void *metal_layer,
         fprintf(stderr, "[webgpu] no CAMetalLayer - cannot create surface\n");
         return NULL;
     }
+    /* Remember the layer so wgpu_configure_surface can re-assert
+     * allowsNextDrawableTimeout on it after every (re)configure (Part B). */
+    s_metal_layer = metal_layer;
     WGPUSurfaceSourceMetalLayer ml = {0};
     ml.chain.sType = WGPUSType_SurfaceSourceMetalLayer;
     ml.layer = metal_layer;
@@ -1532,6 +1545,26 @@ static bool wgpu_configure_surface(uint32_t w, uint32_t h) {
     if (s_runtime_status == GFX_RENDERING_FATAL) {
         return false;
     }
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+    /*
+     * OCCLUSION-HANG SAFETY NET (Part B). wgpuSurfaceConfigure re-applies the
+     * CAMetalLayer's drawable state (it carries desiredMaximumFrameLatency ->
+     * maximumDrawableCount just above) and wgpu-hal disables the layer's
+     * next-drawable timeout while doing so, so re-assert it HERE -- after every
+     * (re)configure -- where it cannot be clobbered. With the timeout enabled, a
+     * genuinely occluded-but-composited window (covered by another window, or an
+     * uncomposited terminal-/bundle-launched window) makes [CAMetalLayer
+     * nextDrawable] FAIL after ~1s instead of parking the main thread in
+     * semaphore_wait forever. SDL does NOT flag such a window hidden, so the
+     * Part A presentable() guard lets it through to the acquire; this bound is
+     * what stops that acquire from beach-balling. wgpu-native then returns
+     * Timeout/unavailable and the frame takes the existing skip-present path,
+     * degrading to ~1fps while occluded. Visible-case pacing is unaffected: with
+     * the shipped 3-deep drawable pool the timeout only fires when genuinely
+     * starved (verified against check_app_adopted_pacing / check_pacing_quality).
+     */
+    platform_macos_enable_next_drawable_timeout(s_metal_layer);
+#endif
     s_cfg_w = w;
     s_cfg_h = h;
     return true;
@@ -3242,7 +3275,36 @@ static void wgpu_end_frame(void) {
     bool acquire_attempted = false;
     if (!hold_present) {
         const uint64_t acquire_begin_ns = wgpu_monotonic_ns();
-        wgpuSurfaceGetCurrentTexture(s_surface, &st);
+        if (!platform_sdl_surface_presentable()) {
+            /*
+             * OCCLUSION-HANG GUARD (Part A). platform_macos_install_occlusion_
+             * shim() swizzles -[NSWindow occlusionState] to always report
+             * Visible so wgpu-native's own pre-nextDrawable Occluded fast-refuse
+             * never fires (that refuse is what it uses to avoid a blocking
+             * acquire on an off-screen window). On a GENUINELY hidden/minimized/
+             * app-hidden window that lie turns wgpuSurfaceGetCurrentTexture into
+             * a blocking [CAMetalLayer nextDrawable] that parks the main thread
+             * in semaphore_wait until the window is shown again -- a permanent
+             * beach ball, and the spurious-occlusion retry loop below can't help
+             * because wgpu blocks instead of returning. Our own honest,
+             * un-swizzled platform state is the signal the shim removed: when it
+             * says the surface cannot supply a drawable, DO NOT enter the
+             * blocking acquire -- synthesize the exact Occluded status
+             * (0x00030001) wgpu-native would have returned, with the null
+             * texture the downstream skip-present path already expects (a raw 0
+             * status would fall through to the fatal default of the switch
+             * below). The offscreen scene already rendered and is submitted
+             * regardless of present, and the sim + event loop keep running, so
+             * the app recovers the instant it is shown again. Fault injection
+             * still runs on top of this status, so the headless surface-fault
+             * gates -- which pass a non-presentable (MDKR64_HIDDEN) window
+             * straight through here -- keep exercising their injected results.
+             */
+            st.status = (WGPUSurfaceGetCurrentTextureStatus)
+                            WGPUSurfaceGetCurrentTextureStatus_Occluded;
+        } else {
+            wgpuSurfaceGetCurrentTexture(s_surface, &st);
+        }
         /*
          * SPURIOUS-OCCLUSION DEFENSE. The vendored wgpu-native v29 checks
          * NSWindow.occlusionState BEFORE nextDrawable and refuses the
@@ -3422,7 +3484,25 @@ static void wgpu_end_frame(void) {
                 break;
             case WGPUSurfaceGetCurrentTextureStatus_Timeout:
                 s_runtime_status = GFX_RENDERING_TRANSIENT;
-                surface_retry_failed = true;
+                /*
+                 * A Timeout on a window our own platform state calls presentable
+                 * but the un-swizzled AppKit occlusionState calls occluded is
+                 * the behind-window / uncomposited case that Part B's
+                 * allowsNextDrawableTimeout converts from an INFINITE
+                 * nextDrawable block into a ~1s fail. That is a session
+                 * condition, not a broken surface, so it must NOT accrue toward
+                 * the fatal recovery limit -- otherwise a window left covered
+                 * for ~2 min (120 frames at ~1fps) would fatal-exit instead of
+                 * recovering the instant it is uncovered. Genuine queue overruns
+                 * (honest bit visible, or unknown) still count and still drive
+                 * the bounded recovery. The presentable() term keeps the
+                 * surface.timeout fault gate intact: its window is SDL-hidden
+                 * (not presentable), so its injected Timeouts still count to the
+                 * terminal 120-frame boundary the test asserts.
+                 */
+                surface_retry_failed =
+                    !(platform_sdl_surface_presentable() &&
+                      platform_present_occlusion_visible_bit_honest() == 0);
                 break;
             case WGPUSurfaceGetCurrentTextureStatus_Outdated:
             case WGPUSurfaceGetCurrentTextureStatus_Lost:

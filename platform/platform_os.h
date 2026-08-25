@@ -210,6 +210,12 @@ void platform_present_endpoint_gate(void);
  * raise/activate the app once per session.
  */
 int  platform_present_occlusion_visible_bit(void);
+/* Un-swizzled occlusionState read: bypasses the always-Visible shim to report
+ * the TRUE bit. 1 visible, 0 occluded, -1 unknown/other-OS. Lenient hint only
+ * (occlusionState false-flaps occluded on visible windows); the WebGPU backend
+ * uses it to keep a covered-window drawable timeout off the fatal recovery
+ * counter so a window left covered recovers when shown instead of exiting. */
+int  platform_present_occlusion_visible_bit_honest(void);
 void platform_present_occlusion_kick(void);
 /* Install the process-global NSWindow.occlusionState shim (macOS; no-op
  * elsewhere). Idempotent. The app shell must call it after ITS SDL_Init:
@@ -312,6 +318,14 @@ int  platform_sdl_surface_presentable(void);
  * shares the SDL_Window. NULL before the window exists / off the Metal path. */
 void *platformGetMetalLayer(void);
 void *platformGetSdlWindow(void);
+
+/* macOS only: set -[CAMetalLayer allowsNextDrawableTimeout] = YES on the layer
+ * backing the WebGPU surface, so a drawable acquire on a starved/occluded layer
+ * fails after ~1s instead of blocking the main thread forever. The WebGPU
+ * backend re-asserts this after every wgpuSurfaceConfigure (wgpu-hal disables
+ * it during configure). No-op for a NULL layer; defined only on macOS and
+ * called only from the macOS WebGPU path. */
+void platform_macos_enable_next_drawable_timeout(void *metal_layer);
 
 enum MdkrWebGpuWindowSystem {
     MDKR_WGPU_WINDOW_UNKNOWN = 0,
