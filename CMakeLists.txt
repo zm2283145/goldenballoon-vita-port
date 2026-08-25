@@ -1771,6 +1771,24 @@ if(NOT EMSCRIPTEN)
                         "PASS online room actions: actions=27 keyboard=27 gamepad=27"
                     TIMEOUT 300)
 
+                # The modal online lobby must fully take over the launcher while
+                # a live session is active: the nav rail, top tabs and the
+                # generic offline Play are suppressed so the offline launch is
+                # unreachable (the root fix for both reported online bugs). The
+                # per-frame probe is beta-only, so this gate is registered only
+                # for the native online beta build.
+                if(MDKR_ENABLE_ONLINE_BETA)
+                    add_test(NAME app_online_lobby_takeover
+                        COMMAND ${Python3_EXECUTABLE}
+                            ${CMAKE_SOURCE_DIR}/tests/check_online_lobby_takeover.py
+                            --build $<TARGET_FILE:${MDKR_TARGET}>)
+                    set_tests_properties(app_online_lobby_takeover PROPERTIES
+                        LABELS gpu
+                        PASS_REGULAR_EXPRESSION
+                            "PASS online lobby takeover: active-cases=9 entry-shell=1 offline-play-suppressed=1"
+                        TIMEOUT 300)
+                endif()
+
                 # The responsive launcher has three distinct navigation modes.
                 # Wide sidebar and dense dropdown coverage existed already;
                 # keep the intermediate top-tab layout from regressing into
