@@ -753,6 +753,77 @@ void drawActivePanel(int activePanel, LauncherState &state, LauncherAction &acti
     ImGui::EndChild();
 }
 
+#if MDKR_ENABLE_ONLINE_BETA
+// The modal online lobby. Owns the whole launcher window: a persistent header
+// (title, live status, player slots and the single Leave Race exit) over the
+// state-driven room body. The body is drawn through the SAME panel path the
+// normal router uses, so the online-room controls keep their ImGui IDs -- and
+// therefore their keyboard/gamepad focus -- across the shell->takeover
+// transition. The nav rail, top tabs and generic offline Play are simply never
+// drawn here, which is what makes the offline launch unreachable during a
+// session.
+void drawLobbyTakeover(LauncherState &state, LauncherAction &action) {
+    const float scale = AppTheme::uiScale();
+    OnlineLobbyHeaderInfo info{};
+    const bool haveInfo = OnlineRoom_lobbyHeaderInfo(&info);
+
+    ImGui::PushFont(AppTheme::fonts().title);
+    ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::brandSky());
+    ImGui::TextUnformatted("Online Race — Private Room");
+    ImGui::PopStyleColor();
+    ImGui::PopFont();
+
+    const float leaveWidth = 160.0f * scale;
+    ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - leaveWidth);
+    if (ImGui::Button("Leave Race", ImVec2(leaveWidth, ui::kBtnSecondary().y))) {
+        OnlineRoom_requestLeave();
+    }
+    ui::SpeakFocusedItem(
+        "Leave Race", "Exit online",
+        "Leaves the online race, closes the connection and returns to the "
+        "launcher home.");
+
+    if (haveInfo) {
+        ImGui::PushFont(AppTheme::fonts().small);
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::subtle());
+        ImGui::TextUnformatted(info.statusLine != nullptr ? info.statusLine
+                                                          : "Online race");
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+
+        // Per-player slots. The view model reports aggregate counts only, so the
+        // first `readyCount` occupied slots show Ready and the rest show their
+        // occupancy -- an honest projection of "N of 2 players, M ready".
+        const int slots =
+            info.seatCount > 0 ? (info.seatCount > 4 ? 4 : info.seatCount) : 2;
+        for (int i = 0; i < slots; ++i) {
+            if (i > 0) ImGui::SameLine();
+            const char *stateText;
+            ImVec4 color;
+            if (i < info.readyCount) {
+                stateText = "Ready";
+                color = AppTheme::good();
+            } else if (i < info.memberCount) {
+                stateText = "Here";
+                color = AppTheme::brandSky();
+            } else {
+                stateText = "Waiting…";
+                color = AppTheme::subtle();
+            }
+            char label[32];
+            std::snprintf(label, sizeof(label), "P%d · %s", i + 1, stateText);
+            ui::Chip(label, color);
+        }
+    }
+    ui::BrandRule();
+
+    drawActivePanel(kLauncherPanelOnlineRoom, state, action);
+
+    // Deferred, non-blocking teardown once the body has finished drawing.
+    OnlineRoom_serviceLobbyLeave(state);
+}
+#endif  // MDKR_ENABLE_ONLINE_BETA
+
 }  // namespace
 
 Launcher::Launcher() {
@@ -1043,8 +1114,28 @@ LauncherAction Launcher::draw(AppHost &host) {
 #if MDKR_ENABLE_ONLINE_BETA
     // Evaluated at frame start (nothing before this touches the online adapter),
     // so it reflects the takeover decision rather than any state a mid-frame
-    // draw would create. The lobby takeover render is wired in below.
+    // draw would create.
     const bool onlineActiveTakeover = OnlineRoom_isLobbyTakeoverActive();
+    if (onlineActiveTakeover) {
+        // MODAL LOBBY TAKEOVER. A live online session owns the whole window: the
+        // nav rail, top tabs, panel router and the generic offline Play are all
+        // suppressed, so the offline launch is unreachable -- the root fix for
+        // both reported bugs (originator launching offline over the room, joiner
+        // beach-balling by launching offline into a live session). Defensively
+        // drop any Play action a pending ROM re-check may have staged this
+        // frame, so offline can never fire while a session is live.
+        action = LauncherAction{};
+        drawLobbyTakeover(state_, action);
+        ImGui::End();
+        // Consume a deferred navigation (a clean "Leave Race" asks for home).
+        if (state_.requestTab >= 0 && state_.requestTab < kPanelCount) {
+            active_ = state_.requestTab;
+        }
+        state_.requestTab = -1;
+        state_.requestTabPriority = 0;
+        emitLobbyTakeoverProbe(true, true);
+        return action;
+    }
 #endif
     const bool compactNavigation =
         vp->Size.x < 860.0f * AppTheme::uiScale() ||

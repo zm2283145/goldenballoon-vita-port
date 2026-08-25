@@ -23,6 +23,29 @@ bool OnlineRoom_isLobbyTakeoverActive();
 
 // Current MdkrOnlineViewKind (0 when no live session), for the takeover probe.
 int OnlineRoom_lobbyProbeViewKind();
+
+// Player-slot / status snapshot for the persistent lobby header. Fills the
+// current member/ready/seat counts, whether this display leads the room, and a
+// plain-language status line derived from the view kind ("Waiting for the other
+// player…", "Racing", …) -- never a raw wire code. False when no live session.
+struct OnlineLobbyHeaderInfo {
+    int memberCount;
+    int readyCount;
+    int seatCount;
+    bool localIsLeader;
+    const char *statusLine;
+};
+bool OnlineRoom_lobbyHeaderInfo(OnlineLobbyHeaderInfo *out);
+
+// Request the single, clean "Leave Race" exit (deferred). The actual teardown
+// runs in OnlineRoom_serviceLobbyLeave after the frame's lobby body has drawn.
+void OnlineRoom_requestLeave();
+
+// Called by the takeover AFTER the lobby body draws. If a leave was requested or
+// the body navigated home, it hands the live adapter to a background thread for
+// teardown -- never blocking the UI thread on WebRTC/WebSocket close -- resets
+// the session UI to the chooser and returns the shell to the launcher home.
+void OnlineRoom_serviceLobbyLeave(LauncherState &state);
 #endif  // MDKR_ENABLE_ONLINE_BETA
 
 #endif
