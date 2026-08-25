@@ -83,7 +83,14 @@ MdkrPadSample raceLocalSample(uint8_t canonicalSlot, uint32_t tick) {
     h *= UINT32_C(2246822519);
     h ^= h >> 13;
     MdkrPadSample s;
-    s.buttons = static_cast<uint16_t>(h & 0x3fffu);
+    /* Hold ACCELERATE (N64 A == 0x8000) every tick and add only deterministic,
+     * race-safe extra bits (triggers + C-buttons == 0x003f). Deliberately never
+     * press START (0x1000) or the d-pad (0x0f00): the VISIBLE engine consumes
+     * these as real controller input, and a stray START/d-pad opens the pause
+     * menu and quits the race after a handful of ticks. Both endpoints derive
+     * the identical value from (slot, tick), so canonical convergence -- the
+     * only property the transport-level tests assert -- is unchanged. */
+    s.buttons = static_cast<uint16_t>(0x8000u | (h & 0x003fu));
     s.stick_x = static_cast<int8_t>(static_cast<int>((h >> 16) % 161u) - 80);
     s.stick_y = static_cast<int8_t>(static_cast<int>((h >> 8) % 161u) - 80);
     s.present = 1u;
@@ -147,6 +154,10 @@ public:
     }
 
     ~LiveAdapter() override {
+#if MDKR_ENABLE_ONLINE_BETA
+        /* Never leave a dangling boot handoff pointing at a destroyed adapter. */
+        OnlineRoom_retractEngineRaceBoot(this);
+#endif
         mesh_.reset(); /* mesh borrows the backend's feed: kill it first */
         if (opts_.meshBackend) opts_.meshBackend->reset();
     }
@@ -629,6 +640,11 @@ private:
         if (confirmed) {
             reVerify_ = true;
             raceReady_ = false;
+#if MDKR_ENABLE_ONLINE_BETA
+            /* The interrupted race's Ready is never reused: retract the boot
+             * handoff so main_app cannot boot on the abandoned transport. */
+            OnlineRoom_retractEngineRaceBoot(this);
+#endif
             failure_ = MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH;
             (void)sessionDispatch(MDKR_SESSION_COMMAND_SET_ROOM_PHASE,
                                   MDKR_ROOM_PREFLIGHT);
@@ -976,6 +992,13 @@ private:
         }
         raceInputDelay_ = opts_.inputDelay != 0u ? opts_.inputDelay : 2u;
         raceReady_ = true;
+#if MDKR_ENABLE_ONLINE_BETA
+        /* Make-or-break handoff: the visual race-start point has been reached.
+         * Publish THIS adapter so main_app's interactive loop can boot the
+         * visible engine on the live transport. Driven off adapter state, never
+         * a UI callback. */
+        OnlineRoom_publishEngineRaceBoot(this);
+#endif
     }
 
     /* One opened INPUT envelope -> the launcher transport. The authenticated
@@ -1106,6 +1129,45 @@ public:
         if (!raceReady_) return false;
         return mdkr_match_transport_inputs_for_tick(&raceTransport_, raceEpoch_,
                                                     tick, out);
+    }
+
+    /* Engine match-input seam (O-T6b): the two transport views the engine's
+     * canonical input provider needs beyond drain/inputs_for_tick. */
+    bool raceTakeDirty(uint32_t *tick) {
+        if (!raceReady_ || tick == nullptr) return false;
+        return mdkr_match_transport_take_dirty(&raceTransport_, tick);
+    }
+
+    bool raceAiMask(uint32_t tick, uint8_t *slotMask) const {
+        if (!raceReady_ || slotMask == nullptr) return false;
+        /* No mid-race AI handback exists on the 2-endpoint beta path, so this is
+         * almost always mask 0; routing it through the transport keeps the seam
+         * honest if a takeover is ever scheduled. */
+        return mdkr_match_transport_ai_takeover_mask_for_tick(
+            &raceTransport_, raceEpoch_, tick, slotMask);
+    }
+
+    /* True once every REMOTE canonical slot's input for `tick` has been received
+     * into the transport history -- independent of the drain frontier, which is
+     * why it reads the public net_input cell directly rather than
+     * inputs_for_tick (that refuses ticks ahead of current_tick). The in-process
+     * proof polls this before draining so the visible engine commits confirmed
+     * input, exactly like main_app.cpp's loopback simulator did synchronously,
+     * and never rolls back into the paused race countdown (which the engine
+     * rejects). remote_slot_mask == 0 (no peers) trivially returns true. */
+    bool raceRemoteReceivedForTick(uint32_t tick) const {
+        if (!raceReady_) return false;
+        const uint8_t remote = raceTransport_.remote_slot_mask;
+        if (remote == 0u) return true;
+        const MdkrNetInputCell *cell =
+            &raceTransport_.history.cells[tick % MDKR_NET_INPUT_CAPACITY];
+        if (!cell->occupied || cell->tick != tick) return false;
+        for (unsigned slot = 0u; slot < MDKR_NET_INPUT_SLOTS; ++slot) {
+            const uint8_t bit = static_cast<uint8_t>(1u << slot);
+            if ((remote & bit) == 0u) continue;
+            if (cell->status[slot] != MDKR_NET_INPUT_RECEIVED) return false;
+        }
+        return true;
     }
 
     void raceStats(MdkrOnlineLiveRaceStats *out) const {
@@ -1284,6 +1346,27 @@ bool mdkr_online_live_adapter_race_stats(const IMdkrOnlineAdapter *adapter,
     if (live == nullptr) return false;
     live->raceStats(out);
     return true;
+}
+
+bool mdkr_online_live_adapter_race_take_dirty(IMdkrOnlineAdapter *adapter,
+                                              uint32_t *tick) {
+    if (adapter == nullptr || tick == nullptr) return false;
+    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    return live != nullptr && live->raceTakeDirty(tick);
+}
+
+bool mdkr_online_live_adapter_race_ai_mask(IMdkrOnlineAdapter *adapter,
+                                           uint32_t tick, uint8_t *slot_mask) {
+    if (adapter == nullptr || slot_mask == nullptr) return false;
+    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    return live != nullptr && live->raceAiMask(tick, slot_mask);
+}
+
+bool mdkr_online_live_adapter_race_remote_ready(IMdkrOnlineAdapter *adapter,
+                                                uint32_t tick) {
+    if (adapter == nullptr) return false;
+    const LiveAdapter *live = dynamic_cast<const LiveAdapter *>(adapter);
+    return live != nullptr && live->raceRemoteReceivedForTick(tick);
 }
 
 /* OnlineRoom_makeGatedLiveAdapter is a header-inline stub (returns nullptr)

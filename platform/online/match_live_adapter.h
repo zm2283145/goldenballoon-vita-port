@@ -365,6 +365,36 @@ struct MdkrOnlineLiveRaceStats {
 bool mdkr_online_live_adapter_race_stats(const IMdkrOnlineAdapter *adapter,
                                          MdkrOnlineLiveRaceStats *out);
 
+/* ---- O-T6b engine match-input seam --------------------------------------- *
+ *
+ * The visible engine (mdkr64_engine_boot) drives its per-tick canonical input
+ * through the process-global MdkrMatchInputSource (platform/net/match_input_
+ * runtime.h): drain, inputs_for_tick, take_dirty and ai_mask_for_tick. The live
+ * adapter's race transport already answers the first two through race_advance /
+ * race_inputs_for_tick; these two accessors complete the seam so main_app.cpp
+ * can back the engine input provider with the LIVE adapter instead of its
+ * loopback simulator. Both return false for a non-live adapter or before the
+ * race transport is ready. */
+
+/* Oldest authored tick whose confirmed canonical input changed since the last
+ * call (mirrors mdkr_match_transport_take_dirty): the engine reconciles/replays
+ * from it. Returns false (and leaves *tick untouched) when nothing is dirty. */
+bool mdkr_online_live_adapter_race_take_dirty(IMdkrOnlineAdapter *adapter,
+                                              uint32_t *tick);
+/* AI-takeover mask for an authored tick (mirrors the transport's schedule).
+ * Returns true with *slot_mask == 0 when no takeover is scheduled, so the engine
+ * provider's begin_tick contract is always satisfiable on the live path. */
+bool mdkr_online_live_adapter_race_ai_mask(IMdkrOnlineAdapter *adapter,
+                                           uint32_t tick, uint8_t *slot_mask);
+
+/* True once every remote canonical slot's input for `tick` has been received
+ * into the transport history (independent of the drain frontier). The in-process
+ * loopback proof polls this to deliver peer input synchronously before draining,
+ * so the visible engine commits confirmed frames and never rolls back into the
+ * paused race countdown. Always true when the endpoint owns every slot. */
+bool mdkr_online_live_adapter_race_remote_ready(IMdkrOnlineAdapter *adapter,
+                                                uint32_t tick);
+
 /* ---- Internal-test-token gate for the live adapter ---------------------- *
  *
  * Fail-closed, mirroring platform/party/native_party_host.h's loopback gate:
@@ -422,6 +452,45 @@ std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
  * it in. Defined out-of-line in platform/app/online_live_wiring.cpp. */
 bool OnlineRoom_liveInvite(IMdkrOnlineAdapter *adapter, std::string *code,
                            std::string *inviteUrl);
+
+/* ---- O-T6b visible-engine race-boot handoff (beta only) ------------------ *
+ *
+ * The make-or-break seam: turning the headless online race into a VISIBLE 3D
+ * race. It is deliberately driven off ADAPTER STATE, not a UI callback -- the
+ * launcher's interactive loop (platform/app/main_app.cpp) polls it every frame
+ * and never needs a change in the UX-owned Online Room panel.
+ *
+ * When a gated live adapter's race transport becomes ready (LiveAdapter::
+ * setUpRace succeeded inside install()), the adapter publishes ITSELF here; a
+ * teardown / SAS re-verify retracts it. OnlineRoom_pollEngineRaceBoot() hands
+ * the pending adapter to main_app EXACTLY ONCE, which then boots the visible
+ * engine with the live transport as the match-input source and, on engine exit,
+ * tears down and returns to the launcher.
+ *
+ * The published pointer is the raw LiveAdapter (an IMdkrOnlineAdapter*), so the
+ * mdkr_online_live_adapter_race_* accessors resolve it. Its lifetime is the
+ * panel-owned adapter's lifetime; the blocking engine boot cannot outlive it
+ * because the launcher loop (which owns the adapter) is suspended for the race.
+ * Defined out-of-line in platform/app/online_live_wiring.cpp. */
+void OnlineRoom_publishEngineRaceBoot(IMdkrOnlineAdapter *adapter);
+void OnlineRoom_retractEngineRaceBoot(IMdkrOnlineAdapter *adapter);
+IMdkrOnlineAdapter *OnlineRoom_pollEngineRaceBoot(void);
+
+/* ---- Test-only in-process loopback race pair (MDKR_APP_TEST_ONLINE_LIVE) --- *
+ *
+ * Builds two real live adapters over the O-T2 loopback signal hub + an
+ * in-process MatchRoom double and drives them to a READY race transport, so a
+ * headless proof can boot the VISIBLE engine on endpoint A's live transport
+ * while endpoint B seals real input over the mesh. Returns nullptr on failure
+ * (*error set). Ordinary play never calls this. Defined in
+ * platform/app/online_live_wiring.cpp. */
+struct MdkrOnlineTestLoopbackRace; /* opaque owner of doubles + adapters */
+MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLoopbackRace(std::string *error);
+IMdkrOnlineAdapter *OnlineRoom_testLoopbackVisible(
+    MdkrOnlineTestLoopbackRace *race);
+IMdkrOnlineAdapter *OnlineRoom_testLoopbackPeer(
+    MdkrOnlineTestLoopbackRace *race);
+void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race);
 #else
 inline std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
     const MdkrOnlineCompatibilityV1 & /*compatibility*/,
