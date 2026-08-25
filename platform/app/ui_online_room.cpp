@@ -56,6 +56,11 @@ struct OnlineRoomUiState {
     char betaJoinCode[7] = {0};
     bool betaBuildFailed = false;
     bool betaCharacterTaken = false;
+    // Which grid tile the SELECTION_CONFLICT above refers to. Only meaningful
+    // while betaCharacterTaken is true -- the fake/live adapter exposes no
+    // per-seat roster, so this is the local player's own last rejected pick,
+    // not a live map of every racer's owner.
+    unsigned betaCharacterTakenIndex = 0u;
     // Deferred, non-blocking "Leave Race": set when the persistent takeover
     // control is pressed, consumed after the frame's lobby body has drawn.
     bool leavePending = false;
@@ -605,6 +610,7 @@ bool buildBetaLiveAdapter(MdkrOnlineJourney journey, const std::string &code) {
     g_online.initialized = true;
     g_online.betaBuildFailed = false;
     g_online.betaCharacterTaken = false;
+    g_online.betaCharacterTakenIndex = 0u;
     dispatch(journey == MDKR_ONLINE_JOURNEY_CREATE
                  ? MDKR_ONLINE_VIEW_ACTION_CREATE_ROOM
                  : MDKR_ONLINE_VIEW_ACTION_JOIN_ROOM);
@@ -883,21 +889,144 @@ void drawBetaPhraseDecision(const MdkrOnlineViewModel &model,
     ui::CardEnd();
 }
 
+// A purely decorative per-racer accent -- a color standing in for a portrait.
+// Decoded ROM character-select art is not reachable here: the launcher runs
+// its own ImGui shell before the emulated engine ever boots, and nothing in
+// this codebase decodes N64 character-portrait textures outside the booted
+// engine's own renderer (the in-engine character-select coverage --
+// tests/check_taj_character_select.py and friends -- drives the BOOTED game,
+// not this launcher panel). A name grid with a per-racer accent color reads
+// clearly without that dependency and beats blocking the grid on unavailable
+// art.
+constexpr unsigned kCharacterAccentHex[] = {
+    0xC98A4Bu,  // Diddy   -- warm tan
+    0xE07B39u,  // Timber  -- tiger orange
+    0xE0629Cu,  // Pipsy   -- pink
+    0x4CAF6Du,  // Tiptup  -- shell green
+    0xA8562Eu,  // Conker  -- chestnut brown
+    0x8B6FB3u,  // Bumper  -- lavender
+    0xC79A3Eu,  // Banjo   -- honey gold
+    0x5C8A3Fu,  // Krunch  -- kremling green
+    0xC94F4Fu,  // Drumstick -- rooster red
+    0x3E7CB3u,  // T.T.    -- stopwatch blue
+};
+static_assert(sizeof(kCharacterAccentHex) / sizeof(kCharacterAccentHex[0]) ==
+                 sizeof(kCharacters) / sizeof(kCharacters[0]),
+             "one decorative accent per base racer");
+constexpr unsigned kCharacterGridColumns = 5u;
+
+// One racer tile: a rounded card carrying the name, a decorative left accent
+// rule, and the local player's selection/taken state -- the same "paint the
+// state, then submit a plain hit target" shape drawRailPanelItem uses for the
+// nav rail, kept consistent here so the grid reads as part of one system.
+bool drawRacerTile(unsigned index, const char *name, unsigned accentHex,
+                   bool isYourPick, bool isTaken, const ImVec2 &size,
+                   const char *speakValue, const char *speakHelp) {
+    ImGui::PushID(static_cast<int>(index));
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    const ImVec2 max(min.x + size.x, min.y + size.y);
+    const bool hovered = !isTaken &&
+        ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
+        ImGui::IsMouseHoveringRect(min, max);
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    const float rounding = 8.0f * AppTheme::uiScale();
+    ImVec4 fill = isTaken ? AppTheme::surface()
+                : (isYourPick ? AppTheme::navSelected()
+                             : (hovered ? AppTheme::navHover()
+                                       : AppTheme::field()));
+    if (isTaken) fill.w *= 0.55f;
+    draw->AddRectFilled(min, max, ImGui::GetColorU32(fill), rounding);
+    if (isYourPick) {
+        draw->AddRect(min, max, ImGui::GetColorU32(AppTheme::accent()),
+                      rounding, 0, 2.0f * AppTheme::uiScale());
+    } else if (!isTaken) {
+        const float ruleW = 4.0f * AppTheme::uiScale();
+        draw->AddRectFilled(min, ImVec2(min.x + ruleW, max.y),
+                            ImGui::GetColorU32(AppTheme::hex(accentHex)),
+                            rounding, ImDrawFlags_RoundCornersLeft);
+    }
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0, 0, 0, 0));
+    if (isTaken) ImGui::BeginDisabled();
+    const bool pressed = ImGui::Button("##tile", size);
+    // Same call shape as drawActionButton: speak while the item is still the
+    // "last item" and still inside BeginDisabled/EndDisabled, so a disabled
+    // tile is silent for the same reason every other disabled control here is.
+    ui::SpeakFocusedItem("Choose Character", speakValue, speakHelp);
+    // Decorative label, drawn straight to the draw list (not another ImGui
+    // item) so it cannot itself become "the last item".
+    ImGui::PushFont(AppTheme::fonts().body);
+    const ImVec2 nameSize = ImGui::CalcTextSize(name);
+    ImGui::PopFont();
+    const ImU32 textColor = ImGui::GetColorU32(
+        isTaken ? AppTheme::subtle() : ImVec4(1, 1, 1, 1));
+    const float nameY = isTaken ? min.y + size.y * 0.5f - nameSize.y - 1.0f
+                                : min.y + (size.y - nameSize.y) * 0.5f;
+    draw->AddText(ImVec2(min.x + (size.x - nameSize.x) * 0.5f, nameY),
+                  textColor, name);
+    if (isTaken) {
+        ImGui::PushFont(AppTheme::fonts().small);
+        const char *caption = "Taken";
+        const ImVec2 capSize = ImGui::CalcTextSize(caption);
+        draw->AddText(ImVec2(min.x + (size.x - capSize.x) * 0.5f,
+                             min.y + size.y * 0.5f + 3.0f),
+                      ImGui::GetColorU32(AppTheme::bad()), caption);
+        ImGui::PopFont();
+    }
+    if (isTaken) ImGui::EndDisabled();
+    ImGui::PopStyleColor(3);
+    ImGui::PopID();
+    return pressed;
+}
+
+// The character step as a 5x2 grid of racer tiles, replacing the plain
+// dropdown. Dispatches the SAME MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER the
+// old combo did, from the same seat, with the same value semantics -- only
+// the widget changed.
+void drawCharacterGrid(MdkrOnlineViewAction action) {
+    constexpr unsigned kCount = sizeof(kCharacters) / sizeof(kCharacters[0]);
+    static unsigned character = 0u;
+    maybeFocusAction(action);
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float tileW =
+        (avail - spacing * (kCharacterGridColumns - 1u)) /
+        static_cast<float>(kCharacterGridColumns);
+    const float tileH = ui::kBtnPrimary().y * 1.2f;
+    for (unsigned i = 0u; i < kCount; ++i) {
+        if (i % kCharacterGridColumns != 0u) ImGui::SameLine();
+        const bool isTaken = g_online.betaCharacterTaken &&
+            g_online.betaCharacterTakenIndex == i;
+        const bool isYourPick = !isTaken && character == i;
+        char value[64];
+        std::snprintf(value, sizeof(value), "%s%s", kCharacters[i],
+                     isTaken ? ", taken by the other player"
+                            : isYourPick ? ", your pick" : "");
+        const char *help = isTaken
+            ? "Already taken by the other player. Pick another."
+            : "Choose with keyboard, gamepad, mouse or touch.";
+        if (drawRacerTile(i, kCharacters[i], kCharacterAccentHex[i],
+                          isYourPick, isTaken, ImVec2(tileW, tileH), value,
+                          help)) {
+            character = i;
+            const MdkrOnlineAdapterStep step = dispatch(action, 0u, i);
+            const bool conflict = step.error ==
+                static_cast<uint32_t>(MDKR_ONLINE_ERROR_SELECTION_CONFLICT);
+            g_online.betaCharacterTaken = conflict;
+            g_online.betaCharacterTakenIndex = conflict ? i : 0u;
+        }
+        if (i % kCharacterGridColumns == kCharacterGridColumns - 1u) {
+            ui::Gap(ui::kGapS);
+        }
+    }
+}
+
 // Selection, with the retail-only note and the SELECTION_CONFLICT surfaced as
 // friendly text. Returns true when a selection control was drawn.
 bool drawBetaSelection(const MdkrOnlineViewModel &model) {
     if (model.primary.action == MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER) {
-        static unsigned character = 0u;
-        if (drawChoiceCombo(model.primary.action, "Choose Character",
-                            "Select a racer…", kCharacters,
-                            sizeof(kCharacters) / sizeof(kCharacters[0]),
-                            &character)) {
-            const MdkrOnlineAdapterStep step =
-                dispatch(model.primary.action, 0u, character);
-            g_online.betaCharacterTaken =
-                step.error ==
-                static_cast<uint32_t>(MDKR_ONLINE_ERROR_SELECTION_CONFLICT);
-        }
+        drawCharacterGrid(model.primary.action);
         ui::TextSubtleWrapped(
             "Online beta uses the 10 base racers only, and each racer can be "
             "taken by just one player. You race full-screen from your own "
@@ -924,6 +1053,7 @@ void drawBetaRoom(LauncherState &state) {
     }
     if (model.kind != MDKR_ONLINE_VIEW_SELECTING) {
         g_online.betaCharacterTaken = false;
+        g_online.betaCharacterTakenIndex = 0u;
     }
     announceView(model);
     drawBetaStatusLine(model);
@@ -1158,6 +1288,7 @@ static void leaveOnlineSession(LauncherState &state) {
     g_online.betaJoinCode[0] = '\0';
     g_online.betaBuildFailed = false;
     g_online.betaCharacterTaken = false;
+    g_online.betaCharacterTakenIndex = 0u;
     Launcher_requestTab(state, kLauncherPanelPlay, kLauncherTabPlayer);
 }
 
