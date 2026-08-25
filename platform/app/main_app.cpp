@@ -1057,6 +1057,17 @@ struct LiveMatchInputContext {
     std::uint32_t racedTicks = 0u;        /* highest authored tick drained */
     std::uint64_t drainCalls = 0u;
     bool advanceFailed = false;
+    /* Cross-process test-only real-time pacing (see runOnlineLiveEngineSession's
+     * paceAdvanceHz parameter, default 0 == disabled/current behavior). Headless
+     * autoplay drains authored ticks as fast as the CPU allows; interactive play
+     * is already naturally paced by vsync, and the in-process loopback proof
+     * cross-pumps its peer synchronously, so neither needs this. A REAL
+     * two-process race has no such synchronous peer to force along, so its
+     * confirmed frontier can never catch an unthrottled drain frontier over a
+     * genuine network round trip. Zero leaves liveDrainMatchInput's `peer ==
+     * nullptr` branch exactly as before. */
+    unsigned paceAdvanceHz = 0u;
+    std::uint64_t lastAdvanceMs = 0u;
 };
 
 /* Serviced every engine frame (menu-nav included) via the overlay service hook,
@@ -1127,6 +1138,22 @@ bool liveDrainMatchInput(void *opaque, std::uint32_t /*epoch*/,
             /* Production: the real remote process supplies input over the mesh;
              * predict now and let the engine's rollback correct via take_dirty. */
             ctx->visible->service();
+            if (ctx->paceAdvanceHz > 0u) {
+                /* Test-only (see LiveMatchInputContext::paceAdvanceHz): hold this
+                 * authored tick's advance to roughly the authored cadence so a
+                 * REAL peer process's confirmations over a genuine network round
+                 * trip have real wall-clock time to land, instead of the
+                 * confirmed frontier falling permanently behind an unthrottled
+                 * headless drain rate it can never catch. */
+                const std::uint64_t intervalMs = 1000u / ctx->paceAdvanceHz;
+                if (ctx->lastAdvanceMs != 0u) {
+                    while (SDL_GetTicks64() < ctx->lastAdvanceMs + intervalMs) {
+                        ctx->visible->service();
+                        SDL_Delay(1u);
+                    }
+                }
+                ctx->lastAdvanceMs = SDL_GetTicks64();
+            }
         }
         if (!mdkr_online_live_adapter_race_advance(ctx->visible)) {
             ctx->advanceFailed = true;
@@ -1196,7 +1223,8 @@ std::uint32_t foldConfirmedRace(IMdkrOnlineAdapter *adapter,
 
 int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
                                IMdkrOnlineAdapter *visible,
-                               IMdkrOnlineAdapter *peer) {
+                               IMdkrOnlineAdapter *peer,
+                               unsigned paceAdvanceHz = 0u) {
     if (visible == nullptr) return 2;
     if (!mdkr_net_roster_runtime_active()) {
         std::fprintf(stderr,
@@ -1221,6 +1249,7 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
     context.peer = peer;
     context.epoch = info.matchEpoch;
     context.activeMask = info.activeSlotMask;
+    context.paceAdvanceHz = paceAdvanceHz;
 
     const MdkrMatchInputSource source = {
         MDKR_MATCH_INPUT_SOURCE_VERSION,
@@ -1266,10 +1295,40 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
 
     /* Flush any in-flight input so both endpoints have folded the same recent
      * window before we compare (the peer may still owe the visible endpoint's
-     * last few drained inputs). */
-    for (unsigned settle = 0u; settle < 100u; ++settle) {
+     * last few drained inputs). The loopback proof's peer is cross-pumped
+     * synchronously during the race itself (see liveDrainMatchInput), so 100
+     * iterations (~100ms) is already generous there; a REAL cross-process
+     * peer's straggling confirmations for the last few authored ticks travel
+     * an actual network round trip, so give paced (cross-process) sessions
+     * much more real wall-clock time to land before the trailing fold window
+     * is read. */
+    const unsigned settleIterations = paceAdvanceHz > 0u ? 5000u : 100u;
+    /* Test-only (paceAdvanceHz gate): the trailing window about to be folded
+     * below, precomputed here so the settle loop can periodically re-offer
+     * it. race_advance() only ever seals and sends EACH tick's bundle once (a
+     * 3-frame window); on the lossy, unordered, maxRetransmits-0 state
+     * channel, a single dropped datagram can leave one tick in that exact
+     * window unconfirmed forever, with no in-race resend sweep (unlike
+     * tests/test_online_live_transport_e2e_driver.cpp's own) to recover it. */
+    std::uint32_t resendFoldStart = 0u;
+    std::uint32_t resendFoldEnd = 0u;
+    if (paceAdvanceHz > 0u && context.racedTicks >= info.firstTick + 8u) {
+        resendFoldEnd = context.racedTicks - 6u;
+        const std::uint32_t window = 60u;
+        resendFoldStart = resendFoldEnd > info.firstTick + window
+                              ? resendFoldEnd - window
+                              : info.firstTick;
+    }
+    for (unsigned settle = 0u; settle < settleIterations; ++settle) {
         visible->service();
         if (peer != nullptr) peer->service();
+        if (resendFoldEnd > 0u && (settle % 100u) == 0u) {
+            for (std::uint32_t t = resendFoldEnd;;) {
+                mdkr_online_live_adapter_race_resend(visible, t);
+                if (t <= resendFoldStart) break;
+                t = t >= resendFoldStart + 3u ? t - 3u : resendFoldStart;
+            }
+        }
         SDL_Delay(1u);
     }
     MdkrOnlineLiveRaceStats stats{};
@@ -2576,6 +2635,95 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             host, config, OnlineRoom_testLoopbackVisible(race),
             OnlineRoom_testLoopbackPeer(race));
         OnlineRoom_destroyTestLoopbackRace(race);
+        host.shutdown();
+        return liveResult;
+    }
+    /* The two-PROCESS proof: this process drives ONE production-shaped live
+     * adapter -- the same OnlineRoom_makeGatedLiveAdapter factory the real
+     * Online Room panel uses -- against the compiled-in MDKR_PARTY_ORIGIN,
+     * to a ready race transport, then boots the VISIBLE engine on it with
+     * peer=nullptr: the real remote process (a companion instance of this
+     * SAME binary in the other role) supplies the peer's input over the real
+     * mesh, exactly the `peer == nullptr` production path liveDrainMatchInput
+     * already implements. MDKR_APP_TEST_ONLINE_LIVE above stays the loopback
+     * proof; this is its live-cloud, cross-process sibling. Ordinary autoplay
+     * never sets this variable, so the cloud harness stays inert. */
+    if (std::getenv("MDKR_APP_TEST_ONLINE_LIVE_CLOUD") != nullptr) {
+        const char *roleEnv = std::getenv("MDKR_APP_ONLINE_ROLE");
+        const std::string role = roleEnv != nullptr ? roleEnv : "";
+        if (role != "create" && role != "join") {
+            std::fprintf(stderr,
+                         "[online-live-cloud] invalid/missing "
+                         "MDKR_APP_ONLINE_ROLE (expected create|join)\n");
+            host.shutdown();
+            return 2;
+        }
+        const char *joinCodeEnv = std::getenv("MDKR_APP_ONLINE_JOIN_CODE");
+        const std::string joinCode = joinCodeEnv != nullptr ? joinCodeEnv : "";
+        if (role == "join" && joinCode.empty()) {
+            std::fprintf(stderr,
+                         "[online-live-cloud] MDKR_APP_ONLINE_ROLE=join "
+                         "requires MDKR_APP_ONLINE_JOIN_CODE\n");
+            host.shutdown();
+            return 2;
+        }
+        std::uint64_t timeoutMs = 60000u;
+        if (const char *timeoutEnv =
+                std::getenv("MDKR_APP_ONLINE_TIMEOUT_MS")) {
+            char      *end    = nullptr;
+            const long parsed = std::strtol(timeoutEnv, &end, 10);
+            if (end == timeoutEnv || *end != '\0' || parsed < 1000 ||
+                parsed > 600000) {
+                std::fprintf(stderr,
+                             "[online-live-cloud] invalid "
+                             "MDKR_APP_ONLINE_TIMEOUT_MS=%s (expected "
+                             "1000..600000)\n",
+                             timeoutEnv);
+                host.shutdown();
+                return 2;
+            }
+            timeoutMs = static_cast<std::uint64_t>(parsed);
+        }
+        const bool isCreate = role == "create";
+        /* Character 1/2, track 5 (Ancient Lake) and vehicle mask 0x07 exactly
+         * match the combination tests/check_online_engine_boot.py already
+         * proved the engine's online race admission accepts for
+         * tests/input_scripts/race_2p_split.txt. */
+        std::string cloudErr;
+        MdkrOnlineTestCloudLiveSession *cloud = OnlineRoom_makeTestCloudLiveSession(
+            isCreate ? MDKR_ONLINE_JOURNEY_CREATE : MDKR_ONLINE_JOURNEY_JOIN,
+            joinCode, isCreate ? 1u : 2u, 5u, 7u, timeoutMs, &cloudErr);
+        if (cloud == nullptr) {
+            std::fprintf(stderr,
+                         "[online-live-cloud] session setup failed: %s\n",
+                         cloudErr.c_str());
+            host.shutdown();
+            return 2;
+        }
+        /* Headless autoplay drains authored ticks unthrottled; a REAL peer
+         * PROCESS (unlike the in-process loopback proof's synchronous
+         * cross-pump) needs real wall-clock time between ticks for its
+         * confirmations to cross the actual network before the drain
+         * frontier moves on. Pace to the compiled compatibility fixture's
+         * cadence (30Hz) by default; overridable for tuning. */
+        unsigned paceHz = 30u;
+        if (const char *paceEnv = std::getenv("MDKR_APP_ONLINE_PACE_HZ")) {
+            char      *end    = nullptr;
+            const long parsed = std::strtol(paceEnv, &end, 10);
+            if (end == paceEnv || *end != '\0' || parsed < 0 || parsed > 1000) {
+                std::fprintf(stderr,
+                             "[online-live-cloud] invalid MDKR_APP_ONLINE_PACE_HZ="
+                             "%s (expected 0..1000)\n",
+                             paceEnv);
+                host.shutdown();
+                return 2;
+            }
+            paceHz = static_cast<unsigned>(parsed);
+        }
+        const int liveResult = runOnlineLiveEngineSession(
+            host, config, OnlineRoom_testCloudLiveAdapter(cloud), nullptr,
+            paceHz);
+        OnlineRoom_destroyTestCloudLiveSession(cloud);
         host.shutdown();
         return liveResult;
     }
