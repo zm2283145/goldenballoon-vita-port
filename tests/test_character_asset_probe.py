@@ -201,6 +201,19 @@ def make_manifest() -> dict[str, object]:
     }
 
 
+def rewrite_glb_document(data: bytes, update) -> bytes:
+    document, binary = probe.parse_glb(data)
+    update(document)
+    json_chunk = json.dumps(document, separators=(",", ":")).encode("utf-8")
+    json_chunk += b" " * ((-len(json_chunk)) % 4)
+    payload = binary or b""
+    output = bytearray(struct.pack("<4sII", b"glTF", 2, 0))
+    output += struct.pack("<II", len(json_chunk), probe.GLB_JSON_CHUNK) + json_chunk
+    output += struct.pack("<II", len(payload), probe.GLB_BIN_CHUNK) + payload
+    struct.pack_into("<I", output, 8, len(output))
+    return bytes(output)
+
+
 class CharacterAssetProbeTests(unittest.TestCase):
     def test_generated_glb_is_character_ready(self) -> None:
         report = probe.inspect_glb_bytes(make_animated_glb(), require_character=True)
@@ -272,6 +285,14 @@ class CharacterAssetProbeTests(unittest.TestCase):
         ))
         with self.assertRaisesRegex(compiler.CompileError, "dimensions"):
             compiler._png_dimensions(header, 0)
+
+    def test_compiler_rejects_nonuniform_joint_bind_scale(self) -> None:
+        model = rewrite_glb_document(
+            make_animated_glb(),
+            lambda document: document["nodes"][0].update({"scale": [1.0, 2.0, 1.0]}),
+        )
+        with self.assertRaisesRegex(compiler.CompileError, "non-uniform bind scale"):
+            compiler.compile_character(model, make_manifest(), bytes(32))
 
     def test_compiler_rejects_missing_socket_node(self) -> None:
         manifest = make_manifest()

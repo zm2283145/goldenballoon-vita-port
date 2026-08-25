@@ -503,6 +503,7 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
                 node_lods[lod_node] = level
                 lod_assigned.add(lod_node)
     node_records = []
+    node_scales: list[tuple[float, ...]] = []
     node_names: dict[str, int] = {}
     for index, node in enumerate(nodes):
         name = node.get("name") or f"node_{index}"
@@ -510,6 +511,7 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             raise CompileError(f"duplicate node name {name!r}")
         node_names[name] = index
         translation, rotation, scale = _node_trs(node)
+        node_scales.append(tuple(scale))
         node_records.append((strings.add(name), parents[index], *translation, *rotation, *scale))
 
     vertex_records: list[tuple[Any, ...]] = []
@@ -695,6 +697,7 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
 
     joint_records = []
     skin_records = []
+    joint_node_set: set[int] = set()
     for skin_index, skin in enumerate(_array(document, "skins")):
         if not isinstance(skin, dict):
             raise CompileError(f"skin[{skin_index}] must be an object")
@@ -712,6 +715,14 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         for joint_node, inverse in zip(joint_nodes, inverse_values):
             if not isinstance(joint_node, int) or joint_node < 0 or joint_node >= len(nodes):
                 raise CompileError(f"skin[{skin_index}] contains an invalid joint node")
+            joint_node_set.add(joint_node)
+            joint_scale = node_scales[joint_node]
+            if (abs(joint_scale[0] - joint_scale[1]) > 1.0e-6 or
+                    abs(joint_scale[0] - joint_scale[2]) > 1.0e-6):
+                raise CompileError(
+                    f"joint node[{joint_node}] has non-uniform bind scale; "
+                    "modern-skeletal-v1 cannot transform skinned normals correctly"
+                )
             matrix = _finite(inverse, "inverse bind matrix")
             if len(matrix) != 16:
                 raise CompileError("inverse bind accessor must contain MAT4 values")
@@ -746,6 +757,11 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             if not isinstance(target_node, int) or target_node < 0 or target_node >= len(nodes):
                 raise CompileError("animation channel targets an invalid node")
             path_name = target["path"]
+            if path_name == "scale" and target_node in joint_node_set:
+                raise CompileError(
+                    "joint scale animation requires a normal-matrix palette in "
+                    "a later renderer profile"
+                )
             values = reader.values(sampler.get("output"))
             component_count = 4 if path_name in ("rotation", "weights") else 3
             if path_name == "weights":

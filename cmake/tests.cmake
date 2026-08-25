@@ -364,6 +364,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME collada_to_glb
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_collada_to_glb.py)
+    add_test(NAME high_fidelity_character
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_high_fidelity_character.py)
 
     # When a pack PNG is refused, relative to when it is decoded. A pack is a
     # file a player downloaded from a stranger, so the cache cap is only a

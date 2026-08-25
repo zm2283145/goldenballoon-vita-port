@@ -508,6 +508,12 @@ fail-closed authored-animation/polylist handling. The native loader test then
 consumes the exact compiler result and covers corrupt-cache rejection, pose,
 sockets, render ownership and retained-command lifetime.
 
+`tests/test_high_fidelity_character.py` generates and compiles a license-clean
+25,600-vertex, 50,562-triangle skinned GLB. This is intentionally much larger
+than any retail driver mesh and proves that the compiler/cache path does not
+fall back through N64 vertices or display lists; it remains below the explicit
+100k v1 admission ceiling so the test also exercises the intended modern tier.
+
 The private Dixie fixture completed the same chain without contributing any
 tracked bytes: DAE -> self-contained GLB -> `.mdkrchar` -> `.mdkc` -> live race.
 The resulting cache contained 2,517 vertices, 3,489 triangles, 35 joints, two
