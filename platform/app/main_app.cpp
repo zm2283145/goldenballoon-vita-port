@@ -1068,6 +1068,17 @@ struct LiveMatchInputContext {
      * nullptr` branch exactly as before. */
     unsigned paceAdvanceHz = 0u;
     std::uint64_t lastAdvanceMs = 0u;
+    /* Test-only (MDKR_APP_TEST_ONLINE_LIVE_PREDICT): on the in-process loopback
+     * proof the visible endpoint normally spins until the peer's input for the
+     * tick it is about to commit has arrived, so it never rolls back. Set this
+     * to a positive count to instead advance the FIRST N active-race ticks with
+     * PREDICTED input (skip that wait), exactly as the production peer==nullptr
+     * path does, so the peer's real input lands one drain later and the engine's
+     * network-input rollback reconciles it -- a deterministic, cloud-free
+     * reproduction of a joiner rolling back on a viewport_count=1 endpoint.
+     * Zero leaves the loopback proof's confirmed-input behavior unchanged. */
+    unsigned predictWindowTicks = 0u;
+    unsigned predictTicksDone = 0u;
 };
 
 /* Serviced every engine frame (menu-nav included) via the overlay service hook,
@@ -1115,24 +1126,45 @@ bool liveDrainMatchInput(void *opaque, std::uint32_t /*epoch*/,
              * drainTick+lead are already in flight. The peer's own drain uses
              * prediction for the not-yet-sent visible input and is discarded;
              * only its mesh output feeds the visible engine. */
+            /* Test-only: advance a bounded window of active-race ticks with
+             * PREDICTED input instead of waiting for confirmation, so the peer's
+             * real input lands a drain later and the engine rolls back. Gated by
+             * MDKR_APP_TEST_ONLINE_LIVE_PREDICT; only fires once the race has
+             * unpaused (nextTick past the countdown), so it reproduces a
+             * mid-race joiner rollback rather than a countdown correction the
+             * engine rejects anyway. During the window the peer is held a few
+             * ticks BEHIND the commit frontier so its sealed input for the tick
+             * being committed has NOT crossed the mesh yet -- exactly the missing
+             * confirmation a real network round trip creates. */
+            const bool predictThisTick =
+                ctx->predictWindowTicks > 0u &&
+                ctx->predictTicksDone < ctx->predictWindowTicks &&
+                drainTick > lead + 1u;
+            const std::uint32_t peerBound =
+                predictThisTick ? (drainTick - lead - 1u) : (drainTick + lead);
             MdkrOnlineLiveRaceInfo pinfo{};
             while (mdkr_online_live_adapter_race_info(ctx->peer, &pinfo) &&
-                   pinfo.ready && pinfo.nextTick <= drainTick + lead) {
+                   pinfo.ready && pinfo.nextTick <= peerBound) {
                 ctx->peer->service();
                 if (!mdkr_online_live_adapter_race_advance(ctx->peer)) break;
             }
-            /* Deliver drainTick's remote input synchronously (like the loopback
-             * simulator this replaces): pump the visible endpoint until the
-             * peer's input for drainTick has been received, so the drain commits
-             * fully-confirmed input and the engine never rolls back into the
-             * paused race countdown. */
-            for (unsigned spin = 0u; spin < 4000u; ++spin) {
+            if (predictThisTick) {
                 ctx->visible->service();
-                if (mdkr_online_live_adapter_race_remote_ready(ctx->visible,
-                                                               drainTick)) {
-                    break;
+                ctx->predictTicksDone++;
+            } else {
+                /* Deliver drainTick's remote input synchronously (like the
+                 * loopback simulator this replaces): pump the visible endpoint
+                 * until the peer's input for drainTick has been received, so the
+                 * drain commits fully-confirmed input and the engine never rolls
+                 * back into the paused race countdown. */
+                for (unsigned spin = 0u; spin < 4000u; ++spin) {
+                    ctx->visible->service();
+                    if (mdkr_online_live_adapter_race_remote_ready(ctx->visible,
+                                                                   drainTick)) {
+                        break;
+                    }
+                    SDL_Delay(1u);
                 }
-                SDL_Delay(1u);
             }
         } else {
             /* Production: the real remote process supplies input over the mesh;
@@ -1250,6 +1282,14 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
     context.epoch = info.matchEpoch;
     context.activeMask = info.activeSlotMask;
     context.paceAdvanceHz = paceAdvanceHz;
+    if (const char *predict =
+            std::getenv("MDKR_APP_TEST_ONLINE_LIVE_PREDICT")) {
+        char *end = nullptr;
+        const long parsed = std::strtol(predict, &end, 10);
+        if (end != predict && *end == '\0' && parsed > 0 && parsed <= 100000) {
+            context.predictWindowTicks = static_cast<unsigned>(parsed);
+        }
+    }
 
     const MdkrMatchInputSource source = {
         MDKR_MATCH_INPUT_SOURCE_VERSION,

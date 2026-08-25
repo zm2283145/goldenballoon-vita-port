@@ -1971,8 +1971,29 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
     if (cam_output_view_state()->viewport >= 0) {
         const s32 cameraID =
             gActiveCameraID + (gCutsceneCameraActive ? 4 : 0);
+        /* The world region (safe aperture vs presentation) is a lens input, and
+         * render draws the projection latched for the CANONICAL viewport
+         * (projectionViewport) -- cam_rebuild_native_projection below reads that
+         * exact record. The fixed-tick resolver latched it using the canonical
+         * viewport's own region. So the compatibility guard must recompute the
+         * output lens against that SAME viewport's region, not the local output
+         * rectangle's. They differ only for an online endpoint whose local
+         * presentation viewport index (e.g. 0) is not its canonical slot (e.g.
+         * the joiner's 1): a framed screen -- the post-race results aperture sets
+         * the LOCAL index 0 to safe -- otherwise made the guard compare a 4:3
+         * safe output against the canonical full-screen 16:9 lens render actually
+         * uses, failing closed every frame on the joiner while the host (local ==
+         * canonical) stayed compatible. Keying off projectionViewport keeps the
+         * solo endpoint's output lens the full-screen own-camera lens render
+         * draws, across post-race and rollback resims alike. */
         const s32 safeWorldRegion =
-            viewport_world_region_uses_safe_aperture(savedCameraID);
+            viewport_world_region_uses_safe_aperture(
+#if MDKR_ENABLE_ONLINE_BETA
+                projectionViewport
+#else
+                savedCameraID
+#endif
+            );
         if (!cam_output_projection_compatible(
                 outputViewport, outputLayout, projectionViewport, cameraID,
                 safeWorldRegion)) {

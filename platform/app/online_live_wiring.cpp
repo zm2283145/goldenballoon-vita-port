@@ -678,6 +678,12 @@ struct MdkrOnlineTestLoopbackRace {
     LoopbackMeshBackend backendB{&hub};
     std::unique_ptr<IMdkrOnlineAdapter> a;
     std::unique_ptr<IMdkrOnlineAdapter> b;
+    /* Test-only (MDKR_APP_TEST_ONLINE_LIVE_JOINER): when set, endpoint B (the
+     * join journey, canonical slot 1) wins the once-only process-global roster
+     * install and becomes the visible engine, so the visible endpoint renders
+     * canonical slot 1 (the joiner) full-screen -- the exact topology the
+     * production join process presents. Default false keeps A (host) visible. */
+    bool joinerVisible = false;
 };
 
 MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLoopbackRace(std::string *error) {
@@ -689,6 +695,8 @@ MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLoopbackRace(std::string *error) 
     mdkr_net_roster_runtime_clear();
 
     auto race = std::make_unique<MdkrOnlineTestLoopbackRace>();
+    race->joinerVisible =
+        std::getenv("MDKR_APP_TEST_ONLINE_LIVE_JOINER") != nullptr;
     race->a = mdkr_online_live_adapter_create(
         loopbackOptions(&race->transportA, &race->backendA,
                         MDKR_ONLINE_JOURNEY_CREATE));
@@ -780,7 +788,13 @@ MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLoopbackRace(std::string *error) 
      * race admission (mdkr_match_manifest_accepts_loaded_race) rejects the boot.
      * Ancient Lake (track 5) is car/hovercraft/plane == 0x07. */
     A->submit(loopbackCmd(A, MDKR_ONLINE_VIEW_ACTION_START_RACE, 0u, 7u));
-    if (!loopbackPumpUntil(both, [&]() {
+    /* When the joiner must be visible, service B first here so it reaches
+     * race-ready and wins the once-only roster install ahead of A -- installing
+     * B's local=slot1 roster and making the visible engine render canonical
+     * slot 1. Otherwise A (host, slot0) wins as before. */
+    const std::vector<IMdkrOnlineAdapter *> raceReadyOrder =
+        race->joinerVisible ? std::vector<IMdkrOnlineAdapter *>{B, A} : both;
+    if (!loopbackPumpUntil(raceReadyOrder, [&]() {
             MdkrOnlineLiveRaceInfo ia{}, ib{};
             return mdkr_online_live_adapter_race_info(A, &ia) && ia.ready &&
                    mdkr_online_live_adapter_race_info(B, &ib) && ib.ready;
@@ -797,12 +811,14 @@ MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLoopbackRace(std::string *error) 
 
 IMdkrOnlineAdapter *OnlineRoom_testLoopbackVisible(
     MdkrOnlineTestLoopbackRace *race) {
-    return race != nullptr ? race->a.get() : nullptr;
+    if (race == nullptr) return nullptr;
+    return (race->joinerVisible ? race->b : race->a).get();
 }
 
 IMdkrOnlineAdapter *OnlineRoom_testLoopbackPeer(
     MdkrOnlineTestLoopbackRace *race) {
-    return race != nullptr ? race->b.get() : nullptr;
+    if (race == nullptr) return nullptr;
+    return (race->joinerVisible ? race->a : race->b).get();
 }
 
 void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race) {
