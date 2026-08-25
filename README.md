@@ -91,9 +91,11 @@ commit and checksum it was built from.
 ## Accessibility
 
 The desktop app gathers keyboard and gamepad menu navigation, UI scaling, and
-reduced motion under **Settings → Accessibility**. It does not present itself to
-a screen reader, so it is not advertised as screen-reader compatible, and it has
-no contrast control.
+reduced motion under **Settings → Accessibility**. It can also read menus and
+race events aloud in its own voice ("Speak menus", under Settings →
+Accessibility) — this is self-voicing, not screen-reader integration. It does
+not present itself to a screen reader, so it is not advertised as screen-reader
+compatible, and it has no contrast control.
 
 ## Known limitations
 
