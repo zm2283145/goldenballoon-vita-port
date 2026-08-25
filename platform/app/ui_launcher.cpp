@@ -65,11 +65,18 @@ static bool panelVisible(int index) {
     if (index < 0 || index >= kPanelCount) return false;
     if (std::strcmp(kPanels[index].label, "Online Room") != 0) return true;
 #if MDKR_ENABLE_ONLINE_ROOM_PREVIEW
+#if MDKR_ENABLE_ONLINE_BETA
+    // Native online beta: the Online Room panel is always reachable so beta
+    // testers set no env; the build gate replaces the MDKR_ONLINE_ROOM_PREVIEW=1
+    // preview env. Release builds never define MDKR_ENABLE_ONLINE_BETA.
+    return true;
+#else
     static const bool preview = [] {
         const char *value = std::getenv("MDKR_ONLINE_ROOM_PREVIEW");
         return value != nullptr && value[0] == '1';
     }();
     return preview;
+#endif
 #else
     return false;
 #endif

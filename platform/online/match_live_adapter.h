@@ -380,23 +380,55 @@ bool mdkr_online_live_adapter_race_stats(const IMdkrOnlineAdapter *adapter,
 inline constexpr char kMdkrOnlineLiveLobbyTestToken[] = "mdkr64-online-live-v1";
 
 inline bool mdkr_online_live_lobby_gate_open() {
+#if MDKR_ENABLE_ONLINE_BETA
+    /* Native online BETA build: the compile-time beta gate replaces the
+     * internal-test-token gate, so beta testers need no MDKR_INTERNAL_TEST_TOKEN.
+     * The other in-code fences (2-endpoint, retail clamp, STUN-only, the SAS
+     * verification phrase) are unchanged and still enforced downstream. */
+    return true;
+#else
     const char *token = std::getenv("MDKR_INTERNAL_TEST_TOKEN");
     return token != nullptr &&
            std::strcmp(token, kMdkrOnlineLiveLobbyTestToken) == 0;
+#endif
 }
 
-/* Launcher-side hook for the gated live adapter. The production MatchRoom HTTP
- * transport + real signal-client mesh backend are owned by the O-T6 two-process
- * race lane, which constructs the live adapter directly through
- * mdkr_online_live_adapter_create with those production transports (mirroring
- * how the Party e2e driver owns the real party transport). Until O-T6 lands
- * this returns nullptr, so the launcher panel -- even with the token gate open
- * -- keeps constructing the fail-closed fake adapter. It is a header-inline
- * stub so the app never links the heavy live-adapter/transport translation
- * units, and no build configuration can start an online race from the panel. */
+/* Launcher-side hook for the gated live adapter.
+ *
+ * In a NATIVE ONLINE BETA build (MDKR_ENABLE_ONLINE_BETA) this is a forward
+ * declaration; the real owning factory lives out-of-line in
+ * platform/app/online_live_wiring.cpp, composing the production MatchRoom HTTP
+ * transport + real signal-client mesh backend + O-T3 live adapter EXACTLY as the
+ * O-T6 e2e driver does, behind the beta gate and fenced to one local seat,
+ * retail identities and STUN-only. journey/joinCode select CREATE vs
+ * JOIN-by-code before construction (the live adapter is built with a fixed
+ * journey, unlike the fake).
+ *
+ * In every other build it stays a header-inline stub returning nullptr, so the
+ * app never links the heavy live-adapter/transport translation units and the
+ * launcher -- even with the token gate open -- keeps constructing the
+ * fail-closed fake adapter; no shipping configuration can start an online race
+ * from the panel. */
+#if MDKR_ENABLE_ONLINE_BETA
+std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
+    const MdkrOnlineCompatibilityV1 &compatibility,
+    MdkrOnlineJourney journey = MDKR_ONLINE_JOURNEY_CREATE,
+    const std::string &joinCode = std::string());
+
+/* Beta-only: the creator's invite (6-digit fallback code + invite URL) so the
+ * Online Room panel can render the invite card (big code + Copy + QR). Returns
+ * false for a non-live adapter, a joiner, or before the room is Ready; the
+ * out-params are decoupled from the transport header so the panel need not pull
+ * it in. Defined out-of-line in platform/app/online_live_wiring.cpp. */
+bool OnlineRoom_liveInvite(IMdkrOnlineAdapter *adapter, std::string *code,
+                           std::string *inviteUrl);
+#else
 inline std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
-    const MdkrOnlineCompatibilityV1 & /*compatibility*/) {
+    const MdkrOnlineCompatibilityV1 & /*compatibility*/,
+    MdkrOnlineJourney /*journey*/ = MDKR_ONLINE_JOURNEY_CREATE,
+    const std::string & /*joinCode*/ = std::string()) {
     return nullptr;
 }
+#endif
 
 #endif /* MDKR_MATCH_LIVE_ADAPTER_H */

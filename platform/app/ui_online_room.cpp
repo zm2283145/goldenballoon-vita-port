@@ -15,6 +15,17 @@
 #include <cstdlib>
 #include <cstring>
 
+#if MDKR_ENABLE_ONLINE_BETA
+// Native online beta only: the create/join chooser, invite QR and live status
+// UX. None of this compiles into a shipping (OFF) build, so the OFF object stays
+// byte-identical.
+#include "qrcodegen.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <string>
+#endif
+
 namespace {
 
 struct OnlineRoomUiState {
@@ -34,6 +45,16 @@ struct OnlineRoomUiState {
     MdkrOnlineViewAction completedAction = MDKR_ONLINE_VIEW_ACTION_NONE;
     bool focusApplied = false;
     bool completedActionAccepted = false;
+#if MDKR_ENABLE_ONLINE_BETA
+    // Create/Join chooser state, consumed BEFORE the live adapter is built --
+    // the live adapter fixes its journey + 6-digit join code at construction, so
+    // the choice must be made here first.
+    enum class BetaStage { Chooser, JoinCode };
+    BetaStage betaStage = BetaStage::Chooser;
+    char betaJoinCode[7] = {0};
+    bool betaBuildFailed = false;
+    bool betaCharacterTaken = false;
+#endif
 };
 
 OnlineRoomUiState g_online;
@@ -120,9 +141,19 @@ MdkrOnlineCompatibilityV1 fakeCompatibility() {
 std::unique_ptr<IMdkrOnlineAdapter> makeAdapter(
     const MdkrOnlineCompatibilityV1 &compatibility) {
 #if MDKR_ENABLE_ONLINE_ROOM_PREVIEW
-    if (mdkr_online_live_lobby_gate_open()) {
+    if (mdkr_online_live_lobby_gate_open()
+#if MDKR_ENABLE_ONLINE_BETA
+        // Beta: the interactive live adapter is built by the create/join chooser
+        // (drawBetaOnlinePanel) with the journey + 6-digit code the live adapter
+        // fixes at construction. Here we only honor an explicit fake-adapter
+        // smoke, so the fake is never shadowed by the live path.
+        && !fakeEnabled()
+#endif
+    ) {
+        // Non-beta token-gated dev builds create a room with a fixed journey.
         std::unique_ptr<IMdkrOnlineAdapter> live =
-            OnlineRoom_makeGatedLiveAdapter(compatibility);
+            OnlineRoom_makeGatedLiveAdapter(
+                compatibility, MDKR_ONLINE_JOURNEY_CREATE, std::string());
         if (live) return live;
     }
 #endif
@@ -155,6 +186,12 @@ std::unique_ptr<IMdkrOnlineAdapter> makeAdapter(
 
 void ensureInitialized() {
     if (g_online.initialized) return;
+#if MDKR_ENABLE_ONLINE_BETA
+    // Beta: never auto-construct the live adapter. The create/join chooser
+    // (drawBetaOnlinePanel) builds it once the player picks a journey + code.
+    // Only an explicit fake-adapter smoke falls through to the fake below.
+    if (!fakeEnabled()) return;
+#endif
     const MdkrOnlineCompatibilityV1 compatibility = fakeCompatibility();
     std::unique_ptr<IMdkrOnlineAdapter> adapter = makeAdapter(compatibility);
     if (!adapter) return;
@@ -533,11 +570,434 @@ void drawRoomPanel(LauncherState &state) {
 
 }
 
+#if MDKR_ENABLE_ONLINE_BETA
+// ===========================================================================
+// Native online beta: a first-run-friendly create/join + live lobby UX.
+//
+// Everything below is compiled ONLY under MDKR_ENABLE_ONLINE_BETA. It drives the
+// same IMdkrOnlineAdapter seam the fake path uses and only SURFACES existing
+// view-model / adapter signals -- the security-audited SAS/crypto/parser
+// internals and the 2-endpoint / retail-identity / STUN-only fences are never
+// touched here.
+// ===========================================================================
+
+// Restrict the join-code field to the 6 digits the fallback code uses.
+int betaDigitsOnlyFilter(ImGuiInputTextCallbackData *data) {
+    return (data->EventChar < '0' || data->EventChar > '9') ? 1 : 0;
+}
+
+// Build the live adapter with the chosen journey (+ code for JOIN) and kick the
+// entry action off immediately, so the chooser choice IS the create/join.
+bool buildBetaLiveAdapter(MdkrOnlineJourney journey, const std::string &code) {
+    const MdkrOnlineCompatibilityV1 compatibility = fakeCompatibility();
+    std::unique_ptr<IMdkrOnlineAdapter> adapter =
+        OnlineRoom_makeGatedLiveAdapter(compatibility, journey, code);
+    if (!adapter) {
+        g_online.betaBuildFailed = true;
+        return false;
+    }
+    g_online.adapter = std::move(adapter);
+    g_online.initialized = true;
+    g_online.betaBuildFailed = false;
+    g_online.betaCharacterTaken = false;
+    dispatch(journey == MDKR_ONLINE_JOURNEY_CREATE
+                 ? MDKR_ONLINE_VIEW_ACTION_CREATE_ROOM
+                 : MDKR_ONLINE_VIEW_ACTION_JOIN_ROOM);
+    return true;
+}
+
+void drawBetaChooser(LauncherState &state) {
+    (void)state;
+    ui::SectionHeader(
+        "Online Race — Beta",
+        "Race a friend over the internet: private, invite-only, 2 players, base "
+        "racers, direct peer-to-peer.");
+    if (g_online.betaBuildFailed) {
+        ui::CautionBox(
+            "Couldn't Start Online",
+            "The online service could not be reached from this build. Local play "
+            "and phone controllers still work; try the room again later.");
+        ui::Gap(ui::kGapS);
+    }
+    if (g_online.betaStage == OnlineRoomUiState::BetaStage::Chooser) {
+        if (ui::CardBegin("##beta-chooser", AppTheme::brandSky(), 0.0f)) {
+            ImGui::TextUnformatted("How do you want to play?");
+            ui::Gap(ui::kGapS);
+            if (ui::BrandPrimaryButton("Host a Race", ui::kBtnFullWidth())) {
+                buildBetaLiveAdapter(MDKR_ONLINE_JOURNEY_CREATE, std::string());
+            }
+            ui::SpeakFocusedItem("Host a Race", "Create a room",
+                                 "Creates a private room and shows a code to share.");
+            ui::Gap(ui::kGapS);
+            if (ImGui::Button("Join a Race", ui::kBtnFullWidth())) {
+                g_online.betaStage = OnlineRoomUiState::BetaStage::JoinCode;
+                g_online.betaJoinCode[0] = '\0';
+                g_online.betaBuildFailed = false;
+            }
+            ui::SpeakFocusedItem("Join a Race", "Enter a code",
+                                 "Enter the 6-digit code your host shares with you.");
+        }
+        ui::CardEnd();
+        ui::TextSubtleWrapped(
+            "One player hosts and shares the code; the other joins with it. Before "
+            "the race starts you will compare a short safety phrase together.");
+    } else {
+        if (ui::CardBegin("##beta-join", AppTheme::accent(), 0.0f)) {
+            ImGui::TextUnformatted("Enter the 6-digit code from your host");
+            ui::Gap(ui::kGapS);
+            ImGui::SetNextItemWidth(ui::kControlWidth());
+            ImGui::InputText("##beta-join-code", g_online.betaJoinCode,
+                             sizeof(g_online.betaJoinCode),
+                             ImGuiInputTextFlags_CallbackCharFilter,
+                             betaDigitsOnlyFilter);
+            ui::SpeakFocusedItem("Race code", g_online.betaJoinCode,
+                                 "Type the 6 digits your host reads to you.");
+            ui::Gap(ui::kGapS);
+            const bool ready = std::strlen(g_online.betaJoinCode) == 6u;
+            ImGui::BeginDisabled(!ready);
+            if (ui::BrandPrimaryButton("Join", ui::kBtnFullWidth())) {
+                buildBetaLiveAdapter(MDKR_ONLINE_JOURNEY_JOIN,
+                                     std::string(g_online.betaJoinCode));
+            }
+            ImGui::EndDisabled();
+            ui::SpeakFocusedItem("Join", ready ? "Ready" : "Enter 6 digits",
+                                 "Joins the room your host created.");
+            ui::Gap(ui::kGapS);
+            if (ImGui::Button("Back", ui::kBtnFullWidth())) {
+                g_online.betaStage = OnlineRoomUiState::BetaStage::Chooser;
+            }
+        }
+        ui::CardEnd();
+    }
+}
+
+const char *betaStatusLine(const MdkrOnlineViewModel &model) {
+    switch (model.kind) {
+    case MDKR_ONLINE_VIEW_ENTRY: return "Getting ready…";
+    case MDKR_ONLINE_VIEW_CONNECTING: return "Connecting…";
+    case MDKR_ONLINE_VIEW_ROOM:
+        return model.member_count >= 2u ? "Connected — both players are here"
+                                        : "Waiting for the other player…";
+    case MDKR_ONLINE_VIEW_PREFLIGHT:
+        return model.verification_phrase[0] != '\0'
+                   ? "Almost there — confirm the safety phrase"
+                   : "Checking setup…";
+    case MDKR_ONLINE_VIEW_SELECTING: return "Connected — choose your racer";
+    case MDKR_ONLINE_VIEW_LOADING: return "Loading the race…";
+    case MDKR_ONLINE_VIEW_COUNTDOWN: return "Get ready!";
+    case MDKR_ONLINE_VIEW_RACING: return "Racing";
+    case MDKR_ONLINE_VIEW_RESULTS: return "Race complete";
+    case MDKR_ONLINE_VIEW_RECOVERY: return "Lost connection — you can retry";
+    default: return "Online race";
+    }
+}
+
+// Bounded, honest failure copy: every entry is a plain sentence, no raw wire
+// codes, and each recovery view already carries a clear action (Retry / Enter
+// another code / Leave), so there is never an infinite spinner.
+const char *betaFailureCopy(MdkrOnlineViewFailure failure) {
+    switch (failure) {
+    case MDKR_ONLINE_VIEW_FAILURE_INVITE_EXPIRED:
+    case MDKR_ONLINE_VIEW_FAILURE_INVITE_ROTATED:
+        return "That invite expired. Ask the host for a fresh code.";
+    case MDKR_ONLINE_VIEW_FAILURE_ROOM_FULL:
+        return "That room is already full — the online beta is 2 players.";
+    case MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE:
+    case MDKR_ONLINE_VIEW_FAILURE_SERVICE_BUDGET_SAFE:
+        return "The matchmaking service is unavailable right now. Try again shortly.";
+    case MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_BUILD:
+    case MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_ROM:
+    case MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_SETTINGS:
+    case MDKR_ONLINE_VIEW_FAILURE_UPDATE_REQUIRED:
+        return "You and your friend are on different game versions. Use the same build.";
+    case MDKR_ONLINE_VIEW_FAILURE_CONTROLLER_NEEDED:
+        return "Set up a controller before racing online.";
+    case MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK:
+    case MDKR_ONLINE_VIEW_FAILURE_RELAY_CAPACITY:
+    case MDKR_ONLINE_VIEW_FAILURE_NETWORKS_CANNOT_CONNECT:
+        return "Couldn't connect directly. Check both networks and retry from a "
+               "fresh invite.";
+    case MDKR_ONLINE_VIEW_FAILURE_HOST_CLOSED:
+        return "The host closed the room.";
+    case MDKR_ONLINE_VIEW_FAILURE_ROOM_EXPIRED:
+        return "The room expired. Create or join a new one.";
+    case MDKR_ONLINE_VIEW_FAILURE_ENGINE_FAILED:
+    case MDKR_ONLINE_VIEW_FAILURE_EPOCH_MISMATCH:
+        return "The race couldn't start. Leave and try again.";
+    case MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH:
+        return "The safety phrases didn't match — stopped for your protection. "
+               "Leave and reconnect.";
+    default:
+        return "The connection was interrupted. You can retry or leave.";
+    }
+}
+
+void drawBetaStatusLine(const MdkrOnlineViewModel &model) {
+    if (ui::CardBegin("##beta-status-line", AppTheme::brandSky(), 0.0f)) {
+        ImGui::TextUnformatted(betaStatusLine(model));
+        if (model.kind == MDKR_ONLINE_VIEW_RECOVERY ||
+            model.failure != MDKR_ONLINE_VIEW_FAILURE_NONE) {
+            ui::TextSubtleWrapped("%s", betaFailureCopy(model.failure));
+        } else {
+            ui::TextSubtle("%u of 2 players • %u ready", model.member_count,
+                           model.ready_count);
+        }
+    }
+    ui::CardEnd();
+}
+
+// Draw-only QR of an arbitrary string, mirroring the phone-party invite QR.
+void drawBetaQr(const std::string &text) {
+    if (text.empty()) return;
+    try {
+        const qrcodegen::QrCode qr = qrcodegen::QrCode::encodeText(
+            text.c_str(), qrcodegen::QrCode::Ecc::QUARTILE);
+        const float maxSize = 220.0f * AppTheme::uiScale();
+        const float available = ImGui::GetContentRegionAvail().x;
+        const float size = (std::max)(96.0f, (std::min)(maxSize, available));
+        const int quiet = 4;
+        const int modules = qr.getSize() + quiet * 2;
+        const float pixel = std::floor(size / static_cast<float>(modules));
+        const float actual = pixel * static_cast<float>(modules);
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        ImDrawList *draw = ImGui::GetWindowDrawList();
+        const ImU32 light = ImGui::GetColorU32(AppTheme::qrLight());
+        const ImU32 dark = ImGui::GetColorU32(AppTheme::qrDark());
+        draw->AddRectFilled(origin, ImVec2(origin.x + actual, origin.y + actual),
+                            light);
+        for (int y = 0; y < qr.getSize(); ++y) {
+            for (int x = 0; x < qr.getSize(); ++x) {
+                if (!qr.getModule(x, y)) continue;
+                const float left = origin.x + (x + quiet) * pixel;
+                const float top = origin.y + (y + quiet) * pixel;
+                draw->AddRectFilled(ImVec2(left, top),
+                                    ImVec2(left + pixel, top + pixel), dark);
+            }
+        }
+        ImGui::Dummy(ImVec2(actual, actual));
+    } catch (...) {
+        ui::TextSubtleWrapped(
+            "The QR code could not be shown. Share the 6-digit code instead.");
+    }
+}
+
+// The creator's invite card: big shareable code + Copy + a QR of the invite
+// link. Renders nothing for a joiner or until the room is Ready.
+void drawBetaInviteCard() {
+    std::string code;
+    std::string url;
+    if (!OnlineRoom_liveInvite(g_online.adapter.get(), &code, &url) ||
+        code.empty()) {
+        return;
+    }
+    ui::Gap(ui::kGapM);
+    if (ui::CardBegin("##beta-invite", AppTheme::accent(), 0.0f)) {
+        ImGui::TextUnformatted("Invite a Friend");
+        ui::TextSubtleWrapped(
+            "Share this code. Your friend picks \"Join a Race\" and types it in.");
+        ui::Gap(ui::kGapS);
+        std::string grouped = code;
+        if (code.size() == 6u) {
+            grouped = code.substr(0, 3) + " " + code.substr(3);
+        }
+        ImGui::PushFont(AppTheme::fonts().title);
+        ImGui::TextUnformatted(grouped.c_str());
+        ImGui::PopFont();
+        ui::Gap(ui::kGapS);
+        if (ImGui::Button("Copy Code", ui::kBtnSecondary())) {
+            ImGui::SetClipboardText(code.c_str());
+        }
+        ui::SpeakFocusedItem("Copy Code", grouped.c_str(),
+                             "Copies the 6-digit race code to the clipboard.");
+        if (!url.empty()) {
+            ImGui::SameLine();
+            if (ImGui::Button("Copy Link", ui::kBtnSecondary())) {
+                ImGui::SetClipboardText(url.c_str());
+            }
+            ui::SpeakFocusedItem("Copy Link", "Invite link",
+                                 "Copies the full invite link to the clipboard.");
+        }
+        ui::Gap(ui::kGapS);
+        std::string qrTarget = url;
+#ifdef MDKR_PARTY_ORIGIN
+        if (!qrTarget.empty() && qrTarget[0] == '/') {
+            qrTarget = std::string(MDKR_PARTY_ORIGIN) + qrTarget;
+        }
+#endif
+        if (qrTarget.empty()) qrTarget = code;
+        drawBetaQr(qrTarget);
+        ui::TextSubtleWrapped(
+            "Invite-only and expires. Keep this window open until your friend "
+            "joins.");
+    }
+    ui::CardEnd();
+}
+
+// The secure-phrase barrier as a prominent, side-by-side decision. The two
+// buttons dispatch the SAME CONFIRM_PHRASE / REPORT_PHRASE_MISMATCH actions the
+// view model already exposes; the SAS logic behind them is untouched.
+void drawBetaPhraseDecision(const MdkrOnlineViewModel &model,
+                            LauncherState &state) {
+    ui::Gap(ui::kGapM);
+    if (ui::CardBegin("##beta-phrase", AppTheme::accent(), 0.0f)) {
+        ImGui::TextUnformatted("Compare These Words");
+        ui::TextSubtleWrapped(
+            "Read the words aloud with your friend. They must match exactly on "
+            "both screens — this is what keeps your connection private.");
+        ui::Gap(ui::kGapS);
+        ImGui::PushFont(AppTheme::fonts().title);
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(model.verification_phrase);
+        ImGui::PopTextWrapPos();
+        ImGui::PopFont();
+        ui::Gap(ui::kGapM);
+        const float full = ImGui::GetContentRegionAvail().x;
+        const float half = (full - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+        const float height = ui::kBtnPrimary().y;
+        if (model.primary.visible && model.primary.label != nullptr) {
+            if (ui::BrandPrimaryButton(model.primary.label,
+                                       ImVec2(half, height))) {
+                handleAction(model.primary.action, state);
+            }
+            ui::SpeakFocusedItem(model.primary.label, "Confirm",
+                                 "Confirms every word matches on both screens.");
+        }
+        if (model.secondary.visible && model.secondary.label != nullptr) {
+            ImGui::SameLine();
+            if (ImGui::Button(model.secondary.label, ImVec2(half, height))) {
+                handleAction(model.secondary.action, state);
+            }
+            ui::SpeakFocusedItem(model.secondary.label, "Stop",
+                                 "Use this if even one word is different.");
+        }
+        ui::Gap(ui::kGapS);
+        ui::TextSubtleWrapped(
+            "If even one word is different, choose \"Words Differ\" and reconnect.");
+    }
+    ui::CardEnd();
+}
+
+// Selection, with the retail-only note and the SELECTION_CONFLICT surfaced as
+// friendly text. Returns true when a selection control was drawn.
+bool drawBetaSelection(const MdkrOnlineViewModel &model) {
+    if (model.primary.action == MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER) {
+        static unsigned character = 0u;
+        if (drawChoiceCombo(model.primary.action, "Choose Character",
+                            "Select a racer…", kCharacters,
+                            sizeof(kCharacters) / sizeof(kCharacters[0]),
+                            &character)) {
+            const MdkrOnlineAdapterStep step =
+                dispatch(model.primary.action, 0u, character);
+            g_online.betaCharacterTaken =
+                step.error ==
+                static_cast<uint32_t>(MDKR_ONLINE_ERROR_SELECTION_CONFLICT);
+        }
+        ui::TextSubtleWrapped(
+            "Online beta uses the 10 base racers only, and each racer can be "
+            "taken by just one player. You race full-screen from your own "
+            "camera.");
+        if (g_online.betaCharacterTaken) {
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+            ui::TextSubtleWrapped(
+                "That racer is already taken by the other player. Pick another.");
+            ImGui::PopStyleColor();
+        }
+        return true;
+    }
+    return drawSelectionControl(model);
+}
+
+void drawBetaRoom(LauncherState &state) {
+    g_online.adapter->service();
+    MdkrOnlineViewModel model{};
+    if (!g_online.adapter->view(&model)) {
+        ui::CautionBox("Online Room Unavailable",
+                       "The online session produced an invalid state. Leave the "
+                       "room and try again.");
+        return;
+    }
+    if (model.kind != MDKR_ONLINE_VIEW_SELECTING) {
+        g_online.betaCharacterTaken = false;
+    }
+    announceView(model);
+    drawBetaStatusLine(model);
+    ui::SectionHeader(model.title, model.explanation);
+
+    if (model.kind == MDKR_ONLINE_VIEW_ROOM) {
+        drawBetaInviteCard();
+    }
+
+    // The secure-phrase confirmation is the prominent, side-by-side decision;
+    // it replaces the generic stacked buttons at this step only.
+    if (model.kind == MDKR_ONLINE_VIEW_PREFLIGHT &&
+        model.verification_phrase[0] != '\0') {
+        drawBetaPhraseDecision(model, state);
+        drawLeaveRaceConfirmation(state);
+        drawConnectionDetails(model);
+        return;
+    }
+
+    ui::Gap(ui::kGapM);
+
+    const MdkrOnlineViewAction timeoutAction =
+        model.timeout.present && g_online.adapter->timeoutExpired()
+            ? model.timeout.primary.action : MDKR_ONLINE_VIEW_ACTION_NONE;
+    if (timeoutAction != MDKR_ONLINE_VIEW_ACTION_NONE) {
+        ui::CautionBox(model.timeout.title, model.timeout.explanation);
+        ui::Gap(ui::kGapS);
+        if (drawActionButton(model.timeout.primary, true)) {
+            handleAction(model.timeout.primary.action, state);
+        }
+        ui::Gap(ui::kGapM);
+    }
+
+    const bool selectionDrawn = drawBetaSelection(model);
+    if (!selectionDrawn && model.primary.action != timeoutAction &&
+        drawActionButton(model.primary, true)) {
+        handleAction(model.primary.action, state);
+    }
+    if (model.secondary.visible && model.secondary.action != timeoutAction) {
+        ui::Gap(ui::kGapS);
+        if (drawActionButton(model.secondary, false)) {
+            handleAction(model.secondary.action, state);
+        }
+    }
+    if (model.cancel.visible) {
+        ui::Gap(ui::kGapS);
+        if (drawActionButton(model.cancel, false)) {
+            handleAction(model.cancel.action, state);
+        }
+    }
+
+    drawLeaveRaceConfirmation(state);
+    drawConnectionDetails(model);
+    drawUpdateHelp();
+}
+
+void drawBetaOnlinePanel(LauncherState &state) {
+    if (!g_online.adapter || !g_online.initialized) {
+        drawBetaChooser(state);
+        return;
+    }
+    drawBetaRoom(state);
+}
+#endif  // MDKR_ENABLE_ONLINE_BETA
+
 }  // namespace
 
 void OnlineRoomPanel_draw(LauncherState &state, LauncherAction &action) {
     (void)action;
     ensureInitialized();
+#if MDKR_ENABLE_ONLINE_BETA
+    // Beta interactive path: with no fake smoke requested, run the create/join
+    // chooser and the live Online Room UX. The chooser builds the live adapter
+    // on the player's choice, so before that g_online.adapter is intentionally
+    // null (ensureInitialized deferred it) -- this must come first.
+    if (!fakeEnabled()) {
+        drawBetaOnlinePanel(state);
+        return;
+    }
+#endif
     if (!g_online.adapter || !g_online.initialized) {
         drawUnavailablePanel();
         return;
