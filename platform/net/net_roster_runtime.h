@@ -24,6 +24,31 @@ bool mdkr_net_roster_runtime_install_launch(
     const MdkrNetRoster *roster);
 void mdkr_net_roster_runtime_clear(void);
 bool mdkr_net_roster_runtime_active(void);
+
+/* Ownership guard (issue: local-Play beach-ball).
+ *
+ * The installed roster is process-global and engine-lifetime. Historically the
+ * launcher only cleared it on engine EXIT and never checked on ENTRY, so a stray
+ * local-Play boot that started while an online session's roster was still
+ * installed would inherit it, put the engine into online-race mode, and then
+ * stall forever waiting for network input that a local race never delivers.
+ *
+ * Ownership makes that collision impossible to inherit silently. The session
+ * that installs a roster tags it with a nonzero owner token; any boot that is
+ * NOT that owner must guard itself BEFORE booting. These are additive and inert
+ * unless called: they never run on the release path (only the beta online engine
+ * boot and the local-Play guard reference them), so a non-beta build dead-strips
+ * them and stays byte-identical. */
+void mdkr_net_roster_runtime_set_owner(uint64_t owner_token);
+uint64_t mdkr_net_roster_runtime_owner(void);
+/* Defensive pre-boot guard. If a roster is active and is NOT owned by
+ * owner_token, force-clear it and return true (i.e. a foreign roster was
+ * discarded so this boot starts clean). owner_token == 0 means "this boot
+ * installs no roster" (ordinary local Play), which force-clears ANY active
+ * roster. A boot that DID install its own roster passes its own token and is
+ * left untouched. */
+bool mdkr_net_roster_runtime_guard_owner(uint64_t owner_token);
+
 const MdkrNetRoster *mdkr_net_roster_runtime_get(void);
 const MdkrMatchManifestV1 *mdkr_net_roster_runtime_manifest(void);
 const MdkrMatchLaunchDescriptorV1 *
