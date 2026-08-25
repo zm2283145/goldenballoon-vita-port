@@ -184,8 +184,12 @@ say "6/8  dry run and binding census"
 
 DRY_OUT="$SERVICE/.deploy-dry-run"
 rm -rf "$DRY_OUT"
-BINDINGS="$( cd "$SERVICE" && CI=1 "$NODE" "$WRANGLER_JS" deploy --dry-run \
-    --outdir "$DRY_OUT" --config "$GENERATED" --env production 2>&1 )"
+# wrangler >=4.12x colorizes the binding census even under CI, which broke the
+# fixed-string binding checks below. Ask it not to (NO_COLOR) and strip any SGR
+# escapes that survive, so the census parses regardless of the wrangler version.
+BINDINGS="$( cd "$SERVICE" && CI=1 NO_COLOR=1 "$NODE" "$WRANGLER_JS" deploy --dry-run \
+    --outdir "$DRY_OUT" --config "$GENERATED" --env production 2>&1 \
+    | perl -pe 's/\e\[[0-9;]*m//g' )"
 printf '%s\n' "$BINDINGS" | sed 's/^/  | /'
 
 for binding in "env.PARTY_ROOMS (PartyRoom)" "env.PARTY_BUDGETS (PartyBudget)" \

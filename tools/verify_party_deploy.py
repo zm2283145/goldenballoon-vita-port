@@ -111,6 +111,7 @@ class WebSocketClient:
             f"Sec-WebSocket-Key: {key}",
             "Sec-WebSocket-Version: 13",
             f"Sec-WebSocket-Protocol: {', '.join(protocols)}",
+            f"User-Agent: {BROWSER_UA}",
             f"Origin: {origin}",
             "", "",
         ]
@@ -251,11 +252,20 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+# Cloudflare Bot Fight Mode / Browser Integrity Check 403s non-browser user
+# agents (Python-urllib) even on the static launcher document, so the synthetic
+# phone must present as the mobile browser it stands in for. Presentation only:
+# the Worker's Origin allowlist and the edge rate limit still apply.
+BROWSER_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+              "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+              "Mobile/15E148 Safari/604.1")
+
+
 def http(origin: str, path: str, value: Any | None = None,
          credential: str = "", origin_header: str | None = "",
          method: str | None = None, follow: bool = True
          ) -> tuple[int, dict[str, str], Any]:
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {"User-Agent": BROWSER_UA}
     if origin_header == "":
         headers["Origin"] = origin
     elif origin_header is not None:

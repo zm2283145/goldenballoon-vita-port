@@ -4,7 +4,6 @@
   "main": "src/worker.ts",
   "compatibility_date": "2026-08-01",
   "workers_dev": false,
-  "limits": { "cpu_ms": 10 },
   "assets": {
     "directory": "../../dist/web",
     "html_handling": "auto-trailing-slash",
@@ -56,7 +55,6 @@
       "name": "golden-balloon-party",
       "workers_dev": false,
       "preview_urls": false,
-      "limits": { "cpu_ms": 10 },
       "routes": [
         { "pattern": "party.example.invalid", "custom_domain": true }
       ],
