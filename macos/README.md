@@ -33,7 +33,7 @@ PKG_CONFIG_PATH="$SDL_PREFIX/lib/pkgconfig" \
 ./macos/Scripts/build_app_bundle.sh \
   --release \
   --build-dir build-macos-release \
-  --output dist/mdkr64.app \
+  --output "dist/Golden Balloon.app" \
   --arch arm64 \
   --version "$RELEASE_VERSION" \
   --build-stamp "$SOURCE_COMMIT" \
@@ -44,10 +44,10 @@ PKG_CONFIG_PATH="$SDL_PREFIX/lib/pkgconfig" \
 ./macos/Scripts/verify_unsigned_release.sh \
   --version "$RELEASE_VERSION" \
   --commit "$SOURCE_COMMIT" \
-  dist/mdkr64.app
+  "dist/Golden Balloon.app"
 
 DMG_PATH="dist/Golden-Balloon-${RELEASE_VERSION}-macos-arm64-unsigned.dmg"
-./macos/Scripts/create_dmg.sh dist/mdkr64.app "$DMG_PATH"
+./macos/Scripts/create_dmg.sh "dist/Golden Balloon.app" "$DMG_PATH"
 ./macos/Scripts/verify_unsigned_dmg.sh \
   --version "$RELEASE_VERSION" --commit "$(git rev-parse HEAD)" "$DMG_PATH"
 ./macos/Scripts/stamp_macos_provenance.sh \
@@ -100,7 +100,7 @@ tagging or publishing anything:
 
 1. In the artifact directory, run
    `shasum -a 256 -c Golden-Balloon-1.2.1-macos-arm64-unsigned.dmg.sha256`.
-2. Open the DMG and drag `mdkr64.app` into a new, empty test folder. Launch that
+2. Open the DMG and drag `Golden Balloon.app` into a new, empty test folder. Launch that
    copy from Finder, with no `MDKR_RENDERER` environment override.
 3. If macOS blocks the unidentified developer, first attempt the launch, then
    open **System Settings → Privacy & Security**, choose **Open Anyway**, and

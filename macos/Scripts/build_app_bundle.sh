@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build_app_bundle.sh -- Build a local ad-hoc-signed mdkr64.app bundle.
+# build_app_bundle.sh -- Build a local ad-hoc-signed "Golden Balloon.app" bundle.
 #
 # There is no Swift/AppKit shell to link against: the CMake target `mdkr64` is
 # already a complete, self-contained SDL2 executable. The native app shell owns
@@ -122,8 +122,8 @@ if candidate in (pathlib.Path("/"), user_home, project_root):
     reject(f"refusing broad target {candidate}")
 if candidate.suffix != ".app" or candidate.name == ".app":
     reject("target must have a nonempty name ending in .app")
-if candidate.name != "mdkr64.app":
-    reject("target basename must be mdkr64.app")
+if candidate.name != "Golden Balloon.app":
+    reject("target basename must be Golden Balloon.app")
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]*\.app", candidate.name):
     reject("app bundle name contains unsupported characters")
 if candidate.parent == pathlib.Path("/"):
@@ -165,7 +165,7 @@ Options:
   --release              Build with Release optimizations (default)
   --debug                Build with Debug settings
   --build-dir PATH       CMake build directory (default: build-macos)
-  --output PATH          Output .app path (default: <build-dir>/mdkr64.app)
+  --output PATH          Output .app path (default: <build-dir>/Golden Balloon.app)
   --arch ARCH            Build one architecture: native, arm64, or x86_64
                          (default: native)
   --version VER          CFBundleShortVersionString / MDKR_VERSION (default: 1.5.1)
@@ -208,7 +208,10 @@ STRICT_DEPLOYMENT_TARGET=false
 BUNDLE_SDL2=false
 RUN_CMAKE=true
 VALIDATE_OUTPUT_ONLY=false
-APP_NAME="mdkr64"
+# Player-facing bundle basename. Only the .app wrapper carries the product
+# brand; the CFBundleExecutable inside stays "mdkr64" (see EXECUTABLE_NAME
+# below) and CFBundleIdentifier stays com.mdkr64.app.
+APP_NAME="Golden Balloon"
 # CFBundleExecutable: the real binary, directly. It now contains the native
 # ImGui app shell (platform/app/), so a Finder double-click with no arguments
 # opens the launcher -- the first-run ROM picker, settings and diagnostics --
