@@ -271,6 +271,16 @@ class CharacterAssetProbeTests(unittest.TestCase):
         with self.assertRaises(compiler.CompileError):
             compiler.compile_character(make_animated_glb(), manifest, bytes(32))
 
+    def test_manifest_rejects_unknown_fields_at_every_fixed_level(self) -> None:
+        manifest = make_manifest()
+        manifest["surprise"] = True
+        manifest["gameplay"]["speed_multiplier"] = 2.0
+        errors = probe.validate_manifest(
+            manifest, probe.inspect_glb_bytes(make_animated_glb(), require_character=True)
+        )
+        self.assertTrue(any("unknown field 'surprise'" in error for error in errors))
+        self.assertTrue(any("unknown field 'speed_multiplier'" in error for error in errors))
+
     def test_archive_inventory_fails_closed_without_license(self) -> None:
         dae = b'''<?xml version="1.0"?><COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1"><asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset><library_geometries><geometry/></library_geometries></COLLADA>'''
         nested = io.BytesIO()

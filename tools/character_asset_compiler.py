@@ -30,6 +30,7 @@ MDKC_HEADER_BYTES = 832
 MDKC_SECTION_SLOTS = 24
 MDKC_SECTION_ENTRY_BYTES = 32
 MDKC_FILE_MAX = 1024 * 1024 * 1024
+COMPILER_ID = "mdkr-character-compiler/1"
 
 SECTION_STRINGS = 1
 SECTION_VERTICES = 2
@@ -773,6 +774,7 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
     ]
     compiled = _assemble(sections, source_digest)
     report = {
+        "compiler": COMPILER_ID,
         "format": "mdkc-v1",
         "bytes": len(compiled),
         "sha256": hashlib.sha256(compiled).hexdigest(),

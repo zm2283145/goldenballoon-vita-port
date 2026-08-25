@@ -358,6 +358,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/run_modern_character_asset_test.py
                 --loader $<TARGET_FILE:mdkr_modern_character_asset_test>)
+    add_test(NAME character_package_manager
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_package_manager.py)
 
     # When a pack PNG is refused, relative to when it is decoded. A pack is a
     # file a player downloaded from a stranger, so the cache cap is only a

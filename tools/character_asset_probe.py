@@ -62,6 +62,7 @@ GAMEPLAY_DONORS = {
 VEHICLE_NAMES = {"car", "hovercraft", "plane"}
 REQUIRED_PRESENTATION_SOCKETS = {"seat", "head"}
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")
+SEMANTIC_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 
 
 class ProbeError(ValueError):
@@ -424,12 +425,21 @@ def inspect_glb(path: Path, require_character: bool = False) -> dict[str, Any]:
 
 def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    allowed = {
+        "schema", "id", "display_name", "renderer_profile", "license",
+        "animations", "gameplay", "presentation", "sockets", "model",
+        "model_sha256", "license_file",
+    }
+    for field in sorted(set(manifest) - allowed):
+        errors.append(f"manifest contains unknown field {field!r}")
     if manifest.get("schema") != PACKAGE_SCHEMA:
         errors.append(f"manifest.schema must be {PACKAGE_SCHEMA!r}")
     package_id = manifest.get("id")
     if not isinstance(package_id, str) or not ID_RE.fullmatch(package_id):
         errors.append("manifest.id must be a 2-64 character lowercase slug")
-    if not isinstance(manifest.get("display_name"), str) or not manifest["display_name"].strip():
+    if (not isinstance(manifest.get("display_name"), str) or
+            not manifest["display_name"].strip() or
+            len(manifest["display_name"]) > 96):
         errors.append("manifest.display_name is required")
     if manifest.get("renderer_profile") != "modern-skeletal-v1":
         errors.append("manifest.renderer_profile must be 'modern-skeletal-v1'")
@@ -437,6 +447,8 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
     if not isinstance(license_info, dict):
         errors.append("manifest.license object is required")
     else:
+        for field in sorted(set(license_info) - {"spdx", "attribution", "source_url"}):
+            errors.append(f"manifest.license contains unknown field {field!r}")
         for field in ("spdx", "attribution", "source_url"):
             if not isinstance(license_info.get(field), str) or not license_info[field].strip():
                 errors.append(f"manifest.license.{field} is required")
@@ -447,17 +459,25 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
     elif animation_info["fallback"] not in clip_names:
         errors.append("manifest.animations.fallback does not name a GLB animation")
     states = animation_info.get("states", {}) if isinstance(animation_info, dict) else {}
+    if isinstance(animation_info, dict):
+        for field in sorted(set(animation_info) - {"fallback", "states"}):
+            errors.append(f"manifest.animations contains unknown field {field!r}")
     if not isinstance(states, dict):
         errors.append("manifest.animations.states must be an object")
     else:
         for semantic, clip in states.items():
-            if not isinstance(semantic, str) or not isinstance(clip, str) or clip not in clip_names:
+            if (not isinstance(semantic, str) or not SEMANTIC_RE.fullmatch(semantic) or
+                    not isinstance(clip, str) or clip not in clip_names):
                 errors.append(f"animation mapping {semantic!r} does not name a GLB animation")
+        if len(states) > 64:
+            errors.append("manifest.animations.states exceeds 64 mappings")
 
     gameplay = manifest.get("gameplay")
     if not isinstance(gameplay, dict):
         errors.append("manifest.gameplay object is required")
     else:
+        for field in sorted(set(gameplay) - {"donor", "vehicles"}):
+            errors.append(f"manifest.gameplay contains unknown field {field!r}")
         donor = gameplay.get("donor")
         if donor not in GAMEPLAY_DONORS:
             errors.append(
@@ -476,6 +496,10 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
     if not isinstance(presentation, dict):
         errors.append("manifest.presentation object is required")
     else:
+        for field in sorted(set(presentation) - {
+            "scale", "translation_m", "rotation_xyzw", "lod_bias"
+        }):
+            errors.append(f"manifest.presentation contains unknown field {field!r}")
         vector_fields = {
             "scale": (3, 0.001, 1000.0),
             "translation_m": (3, -1000.0, 1000.0),
@@ -522,11 +546,13 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
         for semantic, node_name in sockets.items():
             if (
                 not isinstance(semantic, str)
-                or not semantic.strip()
+                or not SEMANTIC_RE.fullmatch(semantic)
                 or not isinstance(node_name, str)
                 or not node_name.strip()
             ):
                 errors.append("manifest.sockets must map non-empty semantic names to node names")
+        if len(sockets) > 32:
+            errors.append("manifest.sockets exceeds 32 mappings")
     return errors
 
 
