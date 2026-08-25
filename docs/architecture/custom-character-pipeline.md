@@ -199,13 +199,21 @@ A minimal manifest is:
   },
   "animations": {
     "fallback": "idle",
-    "states": {
-      "race.steer": "steer",
-      "race.boost": "boost",
-      "race.damage": "damage",
-      "select.idle": "select_idle",
-      "select.confirm": "select_confirm"
-    }
+    "states": {}
+  },
+  "gameplay": {
+    "donor": "diddy",
+    "vehicles": ["car", "hovercraft", "plane"]
+  },
+  "presentation": {
+    "scale": [1.0, 1.0, 1.0],
+    "translation_m": [0.0, 0.0, 0.0],
+    "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+    "lod_bias": 0.0
+  },
+  "sockets": {
+    "seat": "Root",
+    "head": "Head"
   }
 }
 ```
@@ -214,13 +222,12 @@ Later schema versions should add, without changing the principles above:
 
 - package version and minimum/maximum engine asset API;
 - optional creator, homepage, description, and attribution display fields;
-- built-in donor profile and supported vehicle set;
-- LOD mesh/node names and projected-size thresholds;
-- named sockets such as `seat`, `head`, `left_hand`, `right_hand`, and
-  `portrait_camera`;
-- semantic clip mapping, loop/once behavior, playback scale, blend duration,
-  and optional additive masks;
-- root placement transform and a declared standing/seat reference height;
+- projected-size LOD thresholds and hysteresis (v1 already reads authored
+  `MSFT_lod` chains and a package LOD bias);
+- per-semantic loop/once behavior, playback scale, blend duration, normalized
+  parameters, and optional additive masks;
+- a declared standing/seat reference height in addition to v1's root placement
+  transform and named node sockets;
 - optional material variants and eye/mouth morph mappings;
 - portrait/icon references, with generated fallback renders;
 - feature requirements such as morph targets or alpha blending.

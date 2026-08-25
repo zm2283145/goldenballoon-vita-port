@@ -218,12 +218,30 @@ and removal are currently developer CLI operations; Settings can rescan and
 select installed caches for P1-P4.
 
 ```sh
+# Optional convenience path for the adapter's deliberately bounded DAE subset.
+python3 tools/collada_to_glb.py source.dae --output model.glb
+
+# Inspect before packaging; --require-character applies the renderer contract.
+python3 tools/character_asset_probe.py probe model.glb --require-character
+
 python3 tools/character_asset_probe.py pack \
   --model model.glb --manifest manifest.json --license LICENSE.txt \
   --output character.mdkrchar
+python3 tools/character_asset_probe.py verify character.mdkrchar
 python3 tools/character_package_manager.py \
   --directory characters install character.mdkrchar
+
+# Cache/source provenance and removal use the manifest's stable package id.
+python3 tools/character_package_manager.py --directory characters list
+python3 tools/character_package_manager.py \
+  --directory characters remove org.example.character-name
 ```
+
+The runtime never reads DAE, GLB, JSON, or PNG source packages during a frame.
+Installation validates and compiles them into a bounded `.mdkc`; the launcher
+discovers that cache on its next scan. The manifest must match the complete
+example and schema in the architecture document, and every named animation or
+socket must exist in the GLB.
 
 Only the Diddy vehicle-model family has an exact qualified replacement seam.
 Other donor declarations remain visible but unavailable, and OpenGL keeps the
