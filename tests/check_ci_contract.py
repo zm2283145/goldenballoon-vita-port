@@ -1002,7 +1002,7 @@ def validate_output_guard(builder: Path) -> list[str]:
 
     with tempfile.TemporaryDirectory(prefix="mdkr-output-contract.") as temp_name:
         temp_root = Path(temp_name)
-        safe_output = temp_root / "mdkr64.app"
+        safe_output = temp_root / "Golden Balloon.app"
         result = subprocess.run(
             [
                 str(builder),
@@ -1020,7 +1020,7 @@ def validate_output_guard(builder: Path) -> list[str]:
         if safe_output.exists():
             failures.append("macOS output validation-only mode wrote to the filesystem")
 
-        unrelated = temp_root / "unrelated" / "mdkr64.app"
+        unrelated = temp_root / "unrelated" / "Golden Balloon.app"
         unrelated_plist = unrelated / "Contents" / "Info.plist"
         unrelated_plist.parent.mkdir(parents=True)
         with unrelated_plist.open("wb") as stream:
@@ -1050,7 +1050,7 @@ def validate_output_guard(builder: Path) -> list[str]:
         if sentinel.read_text(encoding="utf-8") != "unrelated app remains intact\n":
             failures.append("unrelated existing .app was changed during validation")
 
-        correct = temp_root / "identified" / "mdkr64.app"
+        correct = temp_root / "identified" / "Golden Balloon.app"
         correct_plist = correct / "Contents" / "Info.plist"
         correct_plist.parent.mkdir(parents=True)
         with correct_plist.open("wb") as stream:
@@ -1076,17 +1076,17 @@ def validate_output_guard(builder: Path) -> list[str]:
             text=True,
         )
         if result.returncode != 0 or "Safe app output:" not in result.stdout:
-            failures.append("identified existing mdkr64.app failed output validation")
+            failures.append("identified existing Golden Balloon.app failed output validation")
         if correct_sentinel.read_text(encoding="utf-8") != (
             "identified app remains intact\n"
         ):
-            failures.append("identified existing mdkr64.app changed during validation")
+            failures.append("identified existing Golden Balloon.app changed during validation")
 
         symlink_target = temp_root / "symlink-target"
         symlink_target.mkdir()
         symlink_sentinel = symlink_target / "must-survive.txt"
         symlink_sentinel.write_text("symlink target remains intact\n", encoding="utf-8")
-        symlink_output = temp_root / "symlink" / "mdkr64.app"
+        symlink_output = temp_root / "symlink" / "Golden Balloon.app"
         symlink_output.parent.mkdir()
         symlink_output.symlink_to(symlink_target, target_is_directory=True)
         result = subprocess.run(
@@ -1115,7 +1115,7 @@ def validate_dmg_output_guard(packager: Path) -> list[str]:
     failures: list[str] = []
     with tempfile.TemporaryDirectory(prefix="mdkr-dmg-contract.") as temp_name:
         temp_root = Path(temp_name)
-        app = temp_root / "mdkr64.app"
+        app = temp_root / "Golden Balloon.app"
         contents = app / "Contents"
         executable = contents / "MacOS" / "mdkr64"
         executable.parent.mkdir(parents=True)

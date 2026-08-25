@@ -192,7 +192,7 @@ only after this pass succeeds on Windows hardware.
 
 ### macOS Apple silicon
 
-Verify the DMG sidecars, mount it read-only, copy `mdkr64.app` to a fresh folder,
+Verify the DMG sidecars, mount it read-only, copy `Golden Balloon.app` to a fresh folder,
 and launch from Finder without renderer environment variables. An
 unidentified-developer prompt is expected for the unsigned candidate; a
 “damaged” warning is a failure. Diagnostics must report WebGPU. Test audio from
