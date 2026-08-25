@@ -94,6 +94,31 @@ ImVec2 g_smokePanelScrollMax;
 float g_smokePanelScrollY = 0.0f;
 bool g_smokePanelScrollValid = false;
 
+#if MDKR_ENABLE_ONLINE_BETA
+// Modal lobby takeover witness (beta only; vanishes in the OFF build, so the
+// shipped object stays byte-identical). Each launcher control that must be
+// SUPPRESSED during an active online session stamps the current frame index as
+// it draws; the probe then reports whether it drew this frame. This is a
+// truthful witness: if the takeover ever fell through to the shell, the stamp
+// would show the generic Play / nav as drawn and the takeover check would fail.
+int g_betaFrame = 0;
+int g_betaPlayDrawnFrame = -1;
+int g_betaNavDrawnFrame = -1;
+
+void emitLobbyTakeoverProbe(bool onlineActive, bool tookTakeover) {
+    static const bool probe =
+        std::getenv("MDKR_APP_LOBBY_TAKEOVER_PROBE") != nullptr;
+    if (!probe) return;
+    std::fprintf(stderr,
+                 "[app-lobby-takeover] frame=%d online_active=%d "
+                 "took_takeover=%d play_drawn=%d nav_drawn=%d view_kind=%d\n",
+                 g_betaFrame, onlineActive ? 1 : 0, tookTakeover ? 1 : 0,
+                 g_betaPlayDrawnFrame == g_betaFrame ? 1 : 0,
+                 g_betaNavDrawnFrame == g_betaFrame ? 1 : 0,
+                 OnlineRoom_lobbyProbeViewKind());
+}
+#endif  // MDKR_ENABLE_ONLINE_BETA
+
 void fillBootConfig(const LauncherState &state, MdkrBootConfig &boot) {
     boot = MdkrBootConfig{};
     boot.rom_path = state.romPath.empty() ? nullptr : state.romPath.c_str();
@@ -140,6 +165,11 @@ void preparePlay(LauncherState &state) {
 }
 
 void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size) {
+#if MDKR_ENABLE_ONLINE_BETA
+    // The generic offline Play. During an active online session the lobby
+    // takeover must never call this; the stamp witnesses that it did not.
+    g_betaPlayDrawnFrame = g_betaFrame;
+#endif
     const bool ready = !state.romPath.empty() && state.romInfo.valid;
     const bool busy = state.romPlayValidationPending ||
                       (!ready && state.romValidationPending);
@@ -333,6 +363,9 @@ float measuredRegionHeight(float regionTop, float contentTop) {
 
 void drawNavigation(int &activePanel, LauncherState &state,
                     LauncherAction &action) {
+#if MDKR_ENABLE_ONLINE_BETA
+    g_betaNavDrawnFrame = g_betaFrame;   // suppressed by the lobby takeover
+#endif
     /*
      * The footer reservation splits the rail, so overstating it steals rows
      * from the destination list rather than from anything the footer owns. It
@@ -440,6 +473,9 @@ void drawNavigation(int &activePanel, LauncherState &state,
 
 void drawTopNavigation(int &activePanel, LauncherState &state,
                        LauncherAction &action) {
+#if MDKR_ENABLE_ONLINE_BETA
+    g_betaNavDrawnFrame = g_betaFrame;   // suppressed by the lobby takeover
+#endif
     const float scale = AppTheme::uiScale();
     const float availableWidth = ImGui::GetContentRegionAvail().x;
     const bool dense = availableWidth < 720.0f * scale;
@@ -950,6 +986,9 @@ void drawAboutPanel(LauncherState &s, LauncherAction &out) {
 }  // namespace
 
 LauncherAction Launcher::draw(AppHost &host) {
+#if MDKR_ENABLE_ONLINE_BETA
+    ++g_betaFrame;
+#endif
     state_.hostWindow = host.window();
     phoneParty_->service(static_cast<uint64_t>(SDL_GetTicks64()));
     refreshLanControls();
@@ -1001,6 +1040,12 @@ LauncherAction Launcher::draw(AppHost &host) {
                  ImGuiWindowFlags_NoScrollbar |
                  ImGuiWindowFlags_NoScrollWithMouse);
 
+#if MDKR_ENABLE_ONLINE_BETA
+    // Evaluated at frame start (nothing before this touches the online adapter),
+    // so it reflects the takeover decision rather than any state a mid-frame
+    // draw would create. The lobby takeover render is wired in below.
+    const bool onlineActiveTakeover = OnlineRoom_isLobbyTakeoverActive();
+#endif
     const bool compactNavigation =
         vp->Size.x < 860.0f * AppTheme::uiScale() ||
         vp->Size.y < 620.0f * AppTheme::uiScale();
@@ -1037,6 +1082,9 @@ LauncherAction Launcher::draw(AppHost &host) {
         Settings_cancelAudioPreview();
     }
 
+#if MDKR_ENABLE_ONLINE_BETA
+    emitLobbyTakeoverProbe(onlineActiveTakeover, false);
+#endif
     return action;
 }
 

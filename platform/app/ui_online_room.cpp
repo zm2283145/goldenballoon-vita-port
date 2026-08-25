@@ -1073,3 +1073,41 @@ bool OnlineRoom_smokeActionResult(unsigned action, bool *accepted) {
     *accepted = g_online.completedActionAccepted;
     return true;
 }
+
+#if MDKR_ENABLE_ONLINE_BETA
+// ===========================================================================
+// Native online beta: modal lobby takeover support.
+//
+// The launcher shell renders ONLY the full-screen lobby -- suppressing the nav
+// rail, the top tabs, the panel router and the generic offline Play button --
+// whenever a live online session has progressed past the entry/chooser. The
+// decision is driven by the current view kind, so the one rule covers both the
+// beta live adapter and the deterministic fake used by the headless proof.
+// ===========================================================================
+
+// Read-only peek at the current view kind. Returns 0 before an adapter exists
+// or when it produces an invalid composition, so a half-built or torn-down
+// session never engages the takeover.
+static MdkrOnlineViewKind onlineCurrentViewKind() {
+    if (!g_online.initialized || !g_online.adapter) {
+        return static_cast<MdkrOnlineViewKind>(0);
+    }
+    MdkrOnlineViewModel model{};
+    if (!g_online.adapter->view(&model)) {
+        return static_cast<MdkrOnlineViewKind>(0);
+    }
+    return model.kind;
+}
+
+bool OnlineRoom_isLobbyTakeoverActive() {
+    const MdkrOnlineViewKind kind = onlineCurrentViewKind();
+    // ENTRY is the create/join chooser: the shell stays so a player can still
+    // reach it. Every later kind is a live session and takes over the window.
+    return kind != static_cast<MdkrOnlineViewKind>(0) &&
+           kind != MDKR_ONLINE_VIEW_ENTRY;
+}
+
+int OnlineRoom_lobbyProbeViewKind() {
+    return static_cast<int>(onlineCurrentViewKind());
+}
+#endif  // MDKR_ENABLE_ONLINE_BETA
