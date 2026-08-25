@@ -18,6 +18,24 @@ option(MDKR_ENABLE_ONLINE_ROOM_PREVIEW
     "Compile the deferred native Online Room preview (development tests only)"
     ${MDKR_ONLINE_ROOM_PREVIEW_DEFAULT})
 
+# BETA-ONLY native online enablement. When ON, this composes the production live
+# online transport into the launcher's Online Room panel and opens the build gate
+# that lets two native instances pair + race over the live MatchRoom service,
+# fenced to 2 endpoints / STUN-only / retail identities. Modeled on the
+# MDKR_NATIVE_PHONE_PARTY option below. It defaults OFF and is NEVER set by
+# .github/workflows/release.yml or macos/Scripts/build_app_bundle.sh, so every
+# shipping build stays byte-identical -- the two release guardrails
+# (check_release_local_only_surface.py, check_release_party_origin.py) key on the
+# unchanged -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF lines, which this leaves alone.
+option(MDKR_ENABLE_ONLINE_BETA
+    "Compose the live online transport into the launcher behind the native beta gate (never shipped)"
+    OFF)
+if(MDKR_ENABLE_ONLINE_BETA)
+    # The Online Room panel and its live-adapter seam only compile under the
+    # preview flag, so the beta forces it ON regardless of the default above.
+    set(MDKR_ENABLE_ONLINE_ROOM_PREVIEW ON)
+endif()
+
 # The launcher smoke tests share one physical graphics device and their isolated
 # files do not make concurrent GPU context creation safe.  Apply one named CTest
 # lock after all native tests have registered so adding another gpu-labelled test
@@ -809,6 +827,29 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport_stub.cpp)
         endif()
 
+        if(MDKR_ENABLE_ONLINE_BETA)
+            # Native online beta: the O-T3 live lobby adapter plus its production
+            # MatchRoom HTTP transport, signal-client mesh backend and O-T2 peer
+            # mesh, and the launcher-side wiring that composes them behind the
+            # beta gate (platform/app/online_live_wiring.cpp). These are exactly
+            # the online TUs the O-T6 e2e driver links; every other dependency
+            # already rides in -- the lobby_*, net_*, match_* (transport/manifest/
+            # preflight/launch/roster), session_* and sha256/input_tick_queue set
+            # through PLATFORM_SOURCES, and match_peer_crypto + party_webrtc_
+            # signaling + party_retry_policy + LibDataChannel/MbedTLS through the
+            # MDKR_NATIVE_PHONE_PARTY block above, which the beta requires.
+            if(NOT MDKR_NATIVE_PHONE_PARTY)
+                message(FATAL_ERROR
+                    "MDKR_ENABLE_ONLINE_BETA requires MDKR_NATIVE_PHONE_PARTY=ON")
+            endif()
+            list(APPEND APP_SOURCES
+                ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
+                ${CMAKE_SOURCE_DIR}/platform/online/match_live_transport.cpp
+                ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
+                ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/online_live_wiring.cpp)
+        endif()
+
         add_library(mdkr_qrcodegen STATIC
             ${CMAKE_SOURCE_DIR}/third_party/qrcodegen/qrcodegen.cpp)
         target_include_directories(mdkr_qrcodegen PUBLIC
@@ -1341,6 +1382,13 @@ if(NOT EMSCRIPTEN)
             MDKR_APP_VERSION_STR="${MDKR_VERSION}"
             MDKR_APP_BUILD_STAMP="${MDKR_BUILD_STAMP}"
             MDKR_PARTY_ORIGIN="${MDKR_PARTY_COMPILED_ORIGIN}")
+        if(MDKR_ENABLE_ONLINE_BETA)
+            # Turns the header seam (OnlineRoom_makeGatedLiveAdapter, the token
+            # gate, the panel-visibility gate) live and compiles the wiring TU.
+            # Beta-only, so a normal build never sees this macro or the online TUs.
+            target_compile_definitions(mdkr64_app PRIVATE MDKR_ENABLE_ONLINE_BETA=1)
+            target_include_directories(mdkr64_app PRIVATE ${CMAKE_SOURCE_DIR})
+        endif()
         target_include_directories(mdkr64_app PRIVATE
             ${IMGUI_DIR}
             ${IMGUI_DIR}/backends
