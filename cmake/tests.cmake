@@ -771,10 +771,16 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME portable_paths_marker COMMAND mdkr_portable_paths_test)
     add_test(NAME portable_paths_fallback
         COMMAND mdkr_portable_paths_test --fallback)
+    # Issue #54: an AppImage runs from a read-only mount, so portable.txt and the
+    # write-fallback must resolve beside the real on-disk AppImage ($APPIMAGE),
+    # not the mount. Its own process because portable detection caches once.
+    add_test(NAME portable_paths_appimage
+        COMMAND mdkr_portable_paths_test --appimage)
 
     # Issue #54: a non-packaged native build resolves saves under the per-user
-    # preference directory, grandfathering a populated legacy $CWD/save in place.
-    # Two processes because the CWD/pref resolution caches once per run.
+    # preference directory (launch-independent). An EMPTY $CWD/save is NOT
+    # grandfathered; a POPULATED legacy $CWD/save is copy-migrated there. Two
+    # processes because the CWD/pref resolution caches once per run.
     add_executable(mdkr_save_resolution_test
         ${CMAKE_SOURCE_DIR}/tests/test_save_resolution.c
         ${CMAKE_SOURCE_DIR}/platform/user_paths.c

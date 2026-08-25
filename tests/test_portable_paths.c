@@ -98,6 +98,7 @@ static int resolve_exe_dir(char *output, size_t size) {
 
 int main(int argc, char **argv) {
     const int fallback_mode = argc > 1 && strcmp(argv[1], "--fallback") == 0;
+    const int appimage_mode = argc > 1 && strcmp(argv[1], "--appimage") == 0;
     char exe_dir[4096];
     char expected[4096];
     char marker[4096];
@@ -105,9 +106,75 @@ int main(int argc, char **argv) {
     char override_config[4096];
 
     /* A stray override inherited from the caller's shell would silence every
-     * precedence assertion below; strip both before anything reads them. */
+     * precedence assertion below; strip both before anything reads them. Also
+     * strip $APPIMAGE unless this run is deliberately exercising it, so a suite
+     * launched from inside an AppImage cannot relocate the non-appimage arms. */
     (void)mdkr_test_env_unset("MDKR_VIDEO_CONFIG_PATH");
     (void)mdkr_test_env_unset("MDKR_SAVE_DIR");
+    if (!appimage_mode) {
+        (void)mdkr_test_env_unset("APPIMAGE");
+    }
+
+    if (appimage_mode) {
+        /* An AppImage runs from a read-only SquashFS mount, so /proc/self/exe
+         * points inside /tmp/.mount_XXXX rather than at the .AppImage file the
+         * player can see. The runtime exports $APPIMAGE with the real on-disk
+         * path; portable.txt beside it, and the write-fallback, must resolve
+         * relative to THAT directory -- not the mount, and not the launch cwd
+         * (issue #54). This arm sets $APPIMAGE and a portable.txt beside the
+         * simulated AppImage, then launches from an unrelated working directory
+         * and asserts every user path lands beside the AppImage. */
+        char appdir[4096];
+        char appimage_path[4096];
+        char scratch_cwd[4096];
+        expect("simulated AppImage directory created",
+               mdkr_test_make_temp_directory(appdir, sizeof(appdir),
+                                             "mdkr-appimage"));
+        expect("APPIMAGE path built",
+               join(appimage_path, sizeof(appimage_path), appdir,
+                    "Golden-Balloon-x86_64.AppImage"));
+        expect("exported APPIMAGE",
+               mdkr_test_env_set("APPIMAGE", appimage_path, 1) == 0);
+        expect("portable marker beside the AppImage path",
+               join(marker, sizeof(marker), appdir, "portable.txt"));
+        {
+            FILE *file = mdkr_fopen_utf8(marker, "wb");
+            expect("created portable marker beside the AppImage", file != NULL);
+            if (file != NULL) {
+                (void)fputs("portable\n", file);
+                (void)fclose(file);
+            }
+        }
+        /* Launch from an unrelated directory to prove cwd-independence. */
+        expect("scratch working directory created",
+               mdkr_test_make_temp_directory(scratch_cwd, sizeof(scratch_cwd),
+                                             "mdkr-appimage-cwd"));
+        expect("entered scratch working directory", chdir(scratch_cwd) == 0);
+
+        expect("portable mode detected via $APPIMAGE",
+               mdkr_user_paths_is_portable());
+        expect("config resolves beside the AppImage",
+               mdkr_user_video_config_path(resolved, sizeof(resolved)) &&
+               join(expected, sizeof(expected), appdir, "mdkr64.ini") &&
+               strcmp(resolved, expected) == 0);
+        expect("save resolves beside the AppImage",
+               mdkr_user_save_directory(resolved, sizeof(resolved)) &&
+               join(expected, sizeof(expected), appdir, "save") &&
+               strcmp(resolved, expected) == 0);
+        expect("mods resolves beside the AppImage",
+               mdkr_user_mods_directory(resolved, sizeof(resolved)) &&
+               join(expected, sizeof(expected), appdir, "mods") &&
+               strcmp(resolved, expected) == 0);
+        expect("save origin is labelled portable",
+               strcmp(mdkr_user_paths_save_origin_label(), "portable") == 0);
+        (void)mdkr_remove_utf8(marker);
+        if (s_failures != 0) {
+            fprintf(stderr, "%d portable-path test(s) failed\n", s_failures);
+            return 1;
+        }
+        puts("portable appimage: PASS");
+        return 0;
+    }
 
     expect("resolved executable directory",
            resolve_exe_dir(exe_dir, sizeof(exe_dir)));

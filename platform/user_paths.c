@@ -664,29 +664,6 @@ static int source_save_directory(char *output, size_t output_size) {
     return 0;
 }
 
-/* The legacy $CWD/save (or resource/save) directory if it already exists,
- * whether or not it holds a save file yet. A `save/` folder beside the launch
- * directory is the portable-app "put saves here" convention, so a non-packaged
- * build (issue #54) grandfathers it in place rather than moving to the per-user
- * directory -- which also keeps every regression check that runs from a
- * temporary working directory with its own save/ pointed there. The migration
- * source above stays stricter (a populated directory) so nothing empty is ever
- * copied. */
-static int MDKR_PACKAGED_ONLY existing_legacy_save_directory(char *output,
-                                                            size_t output_size) {
-    char candidate[MDKR_USER_PATH_MAX];
-    if (legacy_candidate(candidate, sizeof(candidate), "save", 0) &&
-        path_is_directory(candidate)) {
-        return path_copy(output, output_size, candidate);
-    }
-    if (strcmp(s_launch_cwd, s_resource_dir) != 0 &&
-        legacy_candidate(candidate, sizeof(candidate), "save", 1) &&
-        path_is_directory(candidate)) {
-        return path_copy(output, output_size, candidate);
-    }
-    return 0;
-}
-
 static int MDKR_PACKAGED_ONLY migrate_save_directory(void) {
     char destination[MDKR_USER_PATH_MAX];
     char destination_parent[MDKR_USER_PATH_MAX];
@@ -787,10 +764,26 @@ static int MDKR_PACKAGED_ONLY migrate_save_directory(void) {
  * platform. Returns 1 when s_exe_dir holds a usable directory. */
 static int resolve_executable_directory(void) {
     char *executable = NULL;
+    const char *appimage;
     int ok;
     if (s_exe_dir[0] != '\0') {
         return 1;
     }
+    /* An AppImage executes from a read-only SquashFS mount, so /proc/self/exe
+     * (mdkr_running_executable_path_utf8) resolves inside /tmp/.mount_XXXX rather
+     * than to the .AppImage file the player can see and write beside. The
+     * AppImage runtime exports $APPIMAGE with the real on-disk path of the
+     * AppImage; its parent directory is where a portable.txt lives and where the
+     * write-fallback can actually write (issue #54). $APPDIR, by contrast, is the
+     * mount root -- the wrong, read-only place, so it is deliberately not used.
+     * Checked on every platform because the variable simply does not exist off
+     * Linux; that keeps the behaviour uniformly testable. */
+    appimage = getenv("APPIMAGE");
+    if (appimage != NULL && appimage[0] != '\0' &&
+        path_parent(s_exe_dir, sizeof(s_exe_dir), appimage)) {
+        return 1;
+    }
+    s_exe_dir[0] = '\0';
     if (mdkr_running_executable_path_utf8(&executable) != 0 ||
         executable == NULL) {
         return 0;
@@ -1032,16 +1025,15 @@ int mdkr_user_save_directory(char *output, size_t output_size) {
         return s_pref_ready && path_join(output, output_size, s_pref_dir, "save");
     }
     /* Non-packaged native build (issue #54): unify saves under the per-user
-     * preference directory the shell already uses for logs and app prefs, but
-     * grandfather an existing legacy $CWD/save in place so no existing install
-     * is stranded. Env and portable/fallback overrides above still win. */
+     * preference directory the shell already uses for logs and app prefs, so the
+     * location is STABLE no matter which directory the AppImage/binary is
+     * launched from. A populated legacy $CWD/save is preserved by
+     * migrate_save_directory() (run from mdkr_user_paths_init), which COPIES it
+     * here once; an empty or unrelated $CWD/save is deliberately NOT adopted --
+     * grandfathering it re-introduced the launch-directory dependence this issue
+     * is about and split saves from where logs/prefs live. Env and
+     * portable/fallback overrides above still win. */
     ensure_per_user_resolved();
-    {
-        char legacy[MDKR_USER_PATH_MAX];
-        if (existing_legacy_save_directory(legacy, sizeof(legacy))) {
-            return path_copy(output, output_size, legacy);
-        }
-    }
     if (s_pref_ready) {
         return path_join(output, output_size, s_pref_dir, "save");
     }
@@ -1057,7 +1049,6 @@ const char *mdkr_user_paths_save_origin_label(void) {
 #ifdef __EMSCRIPTEN__
     return "browser";
 #else
-    char legacy[MDKR_USER_PATH_MAX];
     const char *override = getenv("MDKR_SAVE_DIR");
     if (override != NULL && override[0] != '\0') {
         return "env";
@@ -1073,9 +1064,6 @@ const char *mdkr_user_paths_save_origin_label(void) {
         return "per-user";
     }
     ensure_per_user_resolved();
-    if (existing_legacy_save_directory(legacy, sizeof(legacy))) {
-        return "legacy";
-    }
     if (s_pref_ready) {
         return "per-user";
     }
