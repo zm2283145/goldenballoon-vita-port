@@ -118,6 +118,11 @@ struct GfxModernSkinnedDraw {
     float model_matrix[16];
     float normal_matrix[16]; /* inverse-transpose(model), column-major */
     const float *bone_matrices; /* bone_count column-major mat4 values */
+    /* Immutable previous authored-tick endpoints. Presentation replay blends
+     * these toward the current fields with the same rational alpha used for
+     * the donor object, without following mutable runtime pose storage. */
+    float previous_model_matrix[16];
+    const float *previous_bone_matrices;
     uint32_t bone_count;
     float light_direction[3];   /* normalized in asset/model space */
     float ambient;

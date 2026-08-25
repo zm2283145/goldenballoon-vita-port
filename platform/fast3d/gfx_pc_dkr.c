@@ -92,6 +92,7 @@
 #include "mod_texture_store.h"   /* the override layer in front of the ROM path */
 #include "gfx_uniforms.h"
 #include "gfx_pc_dkr.h"
+#include "modern_character_render.h"
 #ifdef MDKR_WEBGPU_BACKEND
 #include "gfx_webgpu.h"
 #endif
@@ -125,6 +126,7 @@ typedef struct DkrModernDrawEntry {
     uint32_t token;
     struct GfxModernSkinnedDraw draw;
     float bones[DKR_MODERN_MAX_BONES * 16u];
+    float previous_bones[DKR_MODERN_MAX_BONES * 16u];
 } DkrModernDrawEntry;
 
 /*
@@ -148,7 +150,9 @@ uint32_t gfx_modern_character_register_draw(
     if (!gfx_modern_character_supported() || draw == NULL || draw->asset == NULL ||
         draw->primitive >= draw->asset->primitive_count ||
         draw->bone_count > DKR_MODERN_MAX_BONES ||
-        (draw->bone_count != 0u && draw->bone_matrices == NULL)) {
+        (draw->bone_count != 0u &&
+         (draw->bone_matrices == NULL ||
+          draw->previous_bone_matrices == NULL))) {
         return 0u;
     }
     token = dkr_modern_draw_serial++;
@@ -160,9 +164,13 @@ uint32_t gfx_modern_character_register_draw(
     if (draw->bone_count != 0u) {
         memcpy(entry->bones, draw->bone_matrices,
                (size_t)draw->bone_count * 16u * sizeof(float));
+        memcpy(entry->previous_bones, draw->previous_bone_matrices,
+               (size_t)draw->bone_count * 16u * sizeof(float));
         entry->draw.bone_matrices = entry->bones;
+        entry->draw.previous_bone_matrices = entry->previous_bones;
     } else {
         entry->draw.bone_matrices = NULL;
+        entry->draw.previous_bone_matrices = NULL;
     }
     return token;
 }
@@ -3429,6 +3437,8 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
 
 static void dkr_draw_modern_character(uint32_t token) {
     const DkrModernDrawEntry *entry;
+    struct GfxModernSkinnedDraw resolved;
+    float interpolated_bones[DKR_MODERN_MAX_BONES * 16u];
     float fog_color[3];
     bool fog_enabled;
     if (token == 0u || !gfx_modern_character_supported() ||
@@ -3442,6 +3452,17 @@ static void dkr_draw_modern_character(uint32_t token) {
          * unless every command registration succeeded. */
         return;
     }
+    resolved = entry->draw;
+    if (dkr_replay_pass && dkr_replay_object_alpha_valid &&
+        !mdkr_modern_render_resolve_draw(
+            &entry->draw, dkr_replay_object_alpha_numerator,
+            dkr_replay_object_alpha_denominator, &resolved,
+            interpolated_bones, DKR_MODERN_MAX_BONES)) {
+        /* A pathological midpoint (for example an exact half-turn matrix
+         * lerp) is not a safe normal transform. Hold the authored endpoint
+         * rather than publish NaNs to the GPU. */
+        resolved = entry->draw;
+    }
     (void)dkr_setup_draw_state(false);
     gfx_flush();
     fog_color[0] = (float)rdp.fog_color.r / 255.0f;
@@ -3450,7 +3471,7 @@ static void dkr_draw_modern_character(uint32_t token) {
     fog_enabled = (rdp.other_mode_l >> 30) == G_BL_CLR_FOG;
     dkr_begin_primitive(rsp.draw_space != G_MTX_DKR_SPACE_WORLD);
     gfx_rapi->draw_modern_skinned(
-        &entry->draw, rsp.mtx[rsp.active_slot], fog_color,
+        &resolved, rsp.mtx[rsp.active_slot], fog_color,
         (float)rsp.fog_mul, (float)rsp.fog_offset,
         fog_enabled ? 1 : 0);
 }

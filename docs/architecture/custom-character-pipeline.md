@@ -24,7 +24,7 @@ This gives three deliberately separate formats:
 |---|---|---|---|
 | Authoring | Blender/Maya/etc.; optional FBX or DAE handoff | None | Creator and their DCC tools |
 | Portable source package | `.mdkrchar`: deterministic ZIP containing `manifest.json`, `model.glb`, and `LICENSE.txt` | Public, versioned | Community tools and launcher |
-| Runtime cache | Proposed `.mdkc`: validated, GPU-oriented sections plus a source digest | Private to an engine cache version | Import compiler and renderer |
+| Runtime cache | `.mdkc`: validated, GPU-oriented sections plus a source digest | Private to an engine cache version | Import compiler and renderer |
 
 ## What the spike actually implements
 
@@ -42,7 +42,10 @@ This gives three deliberately separate formats:
   directional/ambient/fog response, core metallic-roughness inputs, role-aware
   mip generation, alpha masks, and explicit resource release/recreation;
 - a copied retained draw command and seat-socket attachment at the retail racer
-  render seam;
+  render seam, including exact-alpha previous/current pose replay;
+- a presentation-only race semantic adapter for steer, reverse, boost, item,
+  airborne, spin, damage, and win/lose finish states, with package fallback for
+  clips an author does not provide;
 - exact US/PAL Diddy car/hover/plane LOD fingerprints and driver-batch masks,
   so replacement is atomic and vehicle/effect geometry remains authored;
 - launcher discovery, diagnostics and P1-P4 selection of installed caches.
@@ -339,9 +342,13 @@ route modern characters through `ObjectModel`/F3DDKR.
 ### Skinning and animation
 
 - Evaluate the skeleton once per authored tick from semantic state and clip
-  time, producing previous/current local poses.
-- Interpolate TRS at presentation time, then build a GPU bone palette. Do not
-  interpolate already-skinned vertices.
+  time, producing previous/current poses.
+- The implemented v1 retains previous/current mesh and bone-palette endpoints
+  in each immutable native draw command, then resolves them with the renderer's
+  exact rational replay alpha before GPU skinning. This avoids interpolating an
+  already-skinned CPU vertex stream. A later animation profile can retain local
+  TRS and rebuild palettes after quaternion interpolation where rigs exhibit
+  large per-tick joint rotations.
 - Skin position, normal, and tangent in the vertex shader. Normalize weights at
   import and the transformed normal/tangent in the shader.
 - Support linear and step tracks first. Either implement cubic spline exactly
@@ -535,10 +542,10 @@ legacy-engine representation blockers:
 | Capability | Spike v1 | What must change for a cinematic/AAA profile |
 |---|---|---|
 | Geometry | 100k triangles and 100k unique vertices per source | Profile/device-tier budgets, measured LODs, culling and GPU timing; importing a multi-million-poly sculpt directly remains inappropriate |
-| Skin | 128 joints, four linear influences, GPU skinned | Normal palettes or rejection for non-uniform animated joint scale; dual-quaternion skinning only if art requires it |
+| Skin | 128 joints, four linear influences, GPU skinned; non-uniform joint bind scale and joint scale tracks rejected | Normal palettes and joint-scale animation in a later profile; dual-quaternion skinning only if art requires it |
 | Textures | Embedded PNG, max 4096 per side, 512 MiB decoded with full generated mips | Bounded KTX2/BasisU transcode and GPU block compression before allowing larger sets |
 | Materials | Core PBR-like factors/maps plus DKR fog/sun/ambient; OPAQUE/MASK/BLEND | IBL, calibrated tone mapping, shadow receive/cast, transparent ordering, then optional hair/clearcoat/subsurface profiles |
-| Animation | TRS tracks, LINEAR/STEP/CUBICSPLINE, cross-fade, semantic clips | Real authored clips, previous/current pose interpolation, additive masks, root-motion policy and possibly morph/facial animation |
+| Animation | TRS tracks, LINEAR/STEP/CUBICSPLINE, cross-fade, semantic clips, immutable previous/current replay interpolation | Real authored clips, local-TRS/quaternion presentation interpolation, additive masks, root-motion policy and possibly morph/facial animation |
 | Morphs | Rejected | Cache v2 storage, bounded weight tracks and shader path |
 | LOD | Authored `MSFT_lod`, per-viewport distance bands | Projected-size thresholds, hysteresis, optional offline simplification and measured 4P targets |
 | Backends | WebGPU; retail fallback on OpenGL | Implement GL parity or formally ship the modern profile as WebGPU-only |

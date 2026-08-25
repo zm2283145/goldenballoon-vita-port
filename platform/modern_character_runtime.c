@@ -27,6 +27,7 @@ typedef struct MdkrModernRuntimePlayer {
     MdkrModernPose pose;
     char semantic[96];
     float palette[MODERN_RUNTIME_MAX_BONES * 16u];
+    float previous_palette[MODERN_RUNTIME_MAX_BONES * 16u];
     uint32_t tokens[MODERN_RUNTIME_MAX_PRIMITIVES];
 } MdkrModernRuntimePlayer;
 
@@ -371,8 +372,11 @@ int mdkr_modern_character_emit(int player, float view_distance,
     MdkrModernRuntimePool *pool;
     float package_transform[16];
     float seat_transform[16];
+    float previous_seat_transform[16];
     float inverse_seat[16];
+    float previous_inverse_seat[16];
     float anchored_transform[16];
+    float previous_anchored_transform[16];
     uint32_t primitive_index;
     uint32_t selected_lod;
     uint32_t available_lod = 0u;
@@ -419,7 +423,11 @@ int mdkr_modern_character_emit(int player, float view_distance,
     }
     if (!mdkr_modern_pose_socket_matrix(&slot->pose, "seat", 0,
                                         seat_transform) ||
-        !matrix_affine_inverse(seat_transform, inverse_seat)) {
+        !mdkr_modern_pose_socket_matrix(&slot->pose, "seat", 1,
+                                        previous_seat_transform) ||
+        !matrix_affine_inverse(seat_transform, inverse_seat) ||
+        !matrix_affine_inverse(previous_seat_transform,
+                               previous_inverse_seat)) {
         set_error(error, error_size,
                   "character seat socket has a singular transform");
         return 0;
@@ -429,25 +437,32 @@ int mdkr_modern_character_emit(int player, float view_distance,
      * socket before applying the author adjustment keeps root-motion clips and
      * differently-authored rigs attached to the vehicle origin. */
     matrix_multiply(package_transform, inverse_seat, anchored_transform);
+    matrix_multiply(package_transform, previous_inverse_seat,
+                    previous_anchored_transform);
     for (primitive_index = 0u;
          primitive_index < pool->render.gpu.primitive_count;
          primitive_index++) {
         MdkrModernPrimitive primitive;
         struct GfxModernSkinnedDraw draw;
         const float *node_world;
+        const float *previous_node_world;
         memset(&draw, 0, sizeof(draw));
         if (pool->render.gpu.primitives[primitive_index].lod != selected_lod) continue;
         (void)mdkr_modern_character_asset_primitive(
             &pool->asset, primitive_index, &primitive);
         node_world = mdkr_modern_pose_node_matrix(&slot->pose,
                                                   primitive.node, 0);
-        if (node_world == NULL) {
+        previous_node_world = mdkr_modern_pose_node_matrix(
+            &slot->pose, primitive.node, 1);
+        if (node_world == NULL || previous_node_world == NULL) {
             set_error(error, error_size, "character primitive node pose is unavailable");
             return 0;
         }
         draw.asset = &pool->render.gpu;
         draw.primitive = primitive_index;
         matrix_multiply(anchored_transform, node_world, draw.model_matrix);
+        matrix_multiply(previous_anchored_transform, previous_node_world,
+                        draw.previous_model_matrix);
         if (!matrix_normal_transform(draw.model_matrix, draw.normal_matrix)) {
             set_error(error, error_size,
                       "character primitive has a singular normal transform");
@@ -465,8 +480,13 @@ int mdkr_modern_character_emit(int player, float view_distance,
                 !mdkr_modern_pose_skin_palette(
                     &slot->pose, (uint32_t)primitive.skin, primitive.node, 0,
                     slot->palette, MODERN_RUNTIME_MAX_BONES,
+                    error, error_size) ||
+                !mdkr_modern_pose_skin_palette(
+                    &slot->pose, (uint32_t)primitive.skin, primitive.node, 1,
+                    slot->previous_palette, MODERN_RUNTIME_MAX_BONES,
                     error, error_size)) return 0;
             draw.bone_matrices = slot->palette;
+            draw.previous_bone_matrices = slot->previous_palette;
             draw.bone_count = skin.joint_count;
         }
         slot->tokens[emitted] =

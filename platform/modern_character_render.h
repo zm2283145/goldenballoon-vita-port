@@ -31,6 +31,14 @@ int mdkr_modern_render_asset_init(MdkrModernRenderAsset *render,
                                   char *error, size_t error_size);
 void mdkr_modern_render_asset_shutdown(MdkrModernRenderAsset *render);
 
+/* Resolve one immutable retained draw at an exact presentation alpha. The
+ * caller supplies bounded palette scratch; endpoints remain bit-exact. */
+int mdkr_modern_render_resolve_draw(
+    const struct GfxModernSkinnedDraw *retained,
+    uint64_t numerator, uint64_t denominator,
+    struct GfxModernSkinnedDraw *resolved,
+    float *palette_scratch, size_t palette_matrices);
+
 #ifdef __cplusplus
 }
 #endif

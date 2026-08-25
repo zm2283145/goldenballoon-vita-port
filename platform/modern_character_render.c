@@ -32,6 +32,75 @@ static uint64_t digest_id(const uint8_t digest[32]) {
     return value != 0u ? value : 1u;
 }
 
+static float exact_lerp(float previous, float current,
+                        uint64_t numerator, uint64_t denominator) {
+    double alpha;
+    if (denominator == 0u || numerator == 0u) return previous;
+    if (numerator >= denominator) return current;
+    alpha = (double)numerator / (double)denominator;
+    return (float)((double)previous +
+                   ((double)current - (double)previous) * alpha);
+}
+
+static int normal_transform(const float input[16], float output[16]) {
+    const float a00 = input[0], a01 = input[4], a02 = input[8];
+    const float a10 = input[1], a11 = input[5], a12 = input[9];
+    const float a20 = input[2], a21 = input[6], a22 = input[10];
+    const float determinant = a00 * (a11 * a22 - a12 * a21) -
+                              a01 * (a10 * a22 - a12 * a20) +
+                              a02 * (a10 * a21 - a11 * a20);
+    float inverse;
+    if (!isfinite(determinant) || fabsf(determinant) < 1.0e-12f) return 0;
+    inverse = 1.0f / determinant;
+    memset(output, 0, sizeof(float) * 16u);
+    output[0] = (a11 * a22 - a12 * a21) * inverse;
+    output[1] = (a02 * a21 - a01 * a22) * inverse;
+    output[2] = (a01 * a12 - a02 * a11) * inverse;
+    output[4] = (a12 * a20 - a10 * a22) * inverse;
+    output[5] = (a00 * a22 - a02 * a20) * inverse;
+    output[6] = (a02 * a10 - a00 * a12) * inverse;
+    output[8] = (a10 * a21 - a11 * a20) * inverse;
+    output[9] = (a01 * a20 - a00 * a21) * inverse;
+    output[10] = (a00 * a11 - a01 * a10) * inverse;
+    output[15] = 1.0f;
+    return 1;
+}
+
+int mdkr_modern_render_resolve_draw(
+    const struct GfxModernSkinnedDraw *retained,
+    uint64_t numerator, uint64_t denominator,
+    struct GfxModernSkinnedDraw *resolved,
+    float *palette_scratch, size_t palette_matrices) {
+    uint32_t component;
+    if (retained == NULL || resolved == NULL || retained->asset == NULL ||
+        retained->primitive >= retained->asset->primitive_count ||
+        (retained->bone_count != 0u &&
+         (retained->bone_matrices == NULL ||
+          retained->previous_bone_matrices == NULL ||
+          palette_scratch == NULL ||
+          palette_matrices < retained->bone_count))) {
+        return 0;
+    }
+    *resolved = *retained;
+    for (component = 0u; component < 16u; component++) {
+        resolved->model_matrix[component] = exact_lerp(
+            retained->previous_model_matrix[component],
+            retained->model_matrix[component], numerator, denominator);
+    }
+    if (!normal_transform(resolved->model_matrix, resolved->normal_matrix)) {
+        return 0;
+    }
+    for (component = 0u; component < retained->bone_count * 16u; component++) {
+        palette_scratch[component] = exact_lerp(
+            retained->previous_bone_matrices[component],
+            retained->bone_matrices[component], numerator, denominator);
+    }
+    if (retained->bone_count != 0u) {
+        resolved->bone_matrices = palette_scratch;
+    }
+    return 1;
+}
+
 static int allocate_arrays(MdkrModernRenderAsset *render,
                            const MdkrModernCharacterAsset *asset) {
     const MdkrModernSectionView *vertices = mdkr_modern_character_asset_section(asset, MDKR_MDKC_VERTICES);

@@ -5151,10 +5151,21 @@ void obj_update(s32 updateRate) {
             !mdkr_modern_character_matches(
                 modernRacer->playerIndex, modernRacer->characterId,
                 modernRacer->vehicleIDPrev)) continue;
-        if (modernRacer->raceFinished) semantic = "race.finish";
-        else if (modernRacer->spinout_timer || modernRacer->squish_timer ||
-                 modernRacer->attackType != ATTACK_NONE) semantic = "race.damage";
-        else if (modernRacer->boostTimer) semantic = "race.boost";
+        if (modernRacer->raceFinished) {
+            semantic = modernRacer->finishPosition == 1
+                ? "race.finish_win" : "race.finish_lose";
+        } else if (modernRacer->spinout_timer ||
+                   modernRacer->attackType == ATTACK_SPIN) {
+            semantic = "race.spin";
+        } else if (modernRacer->squish_timer ||
+                   modernRacer->attackType != ATTACK_NONE) {
+            semantic = "race.damage";
+        } else if (modernRacer->boostTimer) semantic = "race.boost";
+        else if (modernRacer->held_obj != NULL) semantic = "race.item";
+        else if (modernRacer->vehicleIDPrev == VEHICLE_CAR &&
+                 modernRacer->groundedWheels == 0 &&
+                 modernRacer->buoyancy == 0.0f) semantic = "race.airborne";
+        else if (modernRacer->velocity > 2.0f) semantic = "race.reverse";
         (void)mdkr_modern_character_tick(
             modernRacer->playerIndex, semantic,
             (float)updateRate / 60.0f, modernError, sizeof(modernError));

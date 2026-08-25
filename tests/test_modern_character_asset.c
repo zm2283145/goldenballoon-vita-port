@@ -40,6 +40,13 @@ uint32_t gfx_modern_character_register_draw(
                 "runtime model transform is finite");
         require(isfinite(draw->normal_matrix[component]),
                 "runtime normal transform is finite");
+        require(isfinite(draw->previous_model_matrix[component]),
+                "runtime previous model transform is finite");
+    }
+    if (draw->bone_count != 0u) {
+        require(draw->bone_matrices != NULL &&
+                    draw->previous_bone_matrices != NULL,
+                "runtime retains both immutable skinning endpoints");
     }
     return ++registered_draws;
 }
@@ -66,6 +73,58 @@ static unsigned char *read_file(const char *path, size_t *out_size) {
     return bytes;
 }
 
+static void test_retained_pose_interpolation(void) {
+    struct GfxModernSkinnedAsset asset;
+    struct GfxModernPrimitive primitive;
+    struct GfxModernSkinnedDraw retained;
+    struct GfxModernSkinnedDraw resolved;
+    float previous_bone[16] = {0};
+    float current_bone[16] = {0};
+    float scratch[16];
+    unsigned diagonal;
+    memset(&asset, 0, sizeof(asset));
+    memset(&primitive, 0, sizeof(primitive));
+    memset(&retained, 0, sizeof(retained));
+    asset.primitives = &primitive;
+    asset.primitive_count = 1u;
+    retained.asset = &asset;
+    retained.bone_count = 1u;
+    retained.previous_bone_matrices = previous_bone;
+    retained.bone_matrices = current_bone;
+    for (diagonal = 0u; diagonal < 4u; diagonal++) {
+        unsigned component = diagonal * 5u;
+        retained.previous_model_matrix[component] = 1.0f;
+        retained.model_matrix[component] = 1.0f;
+        previous_bone[component] = 1.0f;
+        current_bone[component] = 1.0f;
+    }
+    retained.previous_model_matrix[12] = 2.0f;
+    retained.model_matrix[12] = 10.0f;
+    previous_bone[13] = -4.0f;
+    current_bone[13] = 8.0f;
+    require(mdkr_modern_render_resolve_draw(
+                &retained, 0u, 1u, &resolved, scratch, 1u),
+            "resolve previous retained animation endpoint");
+    require(memcmp(resolved.model_matrix, retained.previous_model_matrix,
+                   sizeof(retained.model_matrix)) == 0 &&
+                memcmp(resolved.bone_matrices, previous_bone,
+                       sizeof(previous_bone)) == 0,
+            "alpha zero preserves exact previous pose bits");
+    require(mdkr_modern_render_resolve_draw(
+                &retained, 1u, 2u, &resolved, scratch, 1u) &&
+                resolved.model_matrix[12] == 6.0f &&
+                resolved.bone_matrices[13] == 2.0f,
+            "retained pose resolves model and bones at rational midpoint");
+    require(mdkr_modern_render_resolve_draw(
+                &retained, 1u, 1u, &resolved, scratch, 1u),
+            "resolve current retained animation endpoint");
+    require(memcmp(resolved.model_matrix, retained.model_matrix,
+                   sizeof(retained.model_matrix)) == 0 &&
+                memcmp(resolved.bone_matrices, current_bone,
+                       sizeof(current_bone)) == 0,
+            "alpha one preserves exact current pose bits");
+}
+
 int main(int argc, char **argv) {
     MdkrModernCharacterAsset asset;
     MdkrModernCharacterAsset refused;
@@ -88,6 +147,7 @@ int main(int argc, char **argv) {
 
     require(argc == 3,
             "usage: test_modern_character_asset <generated.mdkc> <directory>");
+    test_retained_pose_interpolation();
     require(mdkr_modern_character_asset_load_file(argv[1], &asset,
                                                    error, sizeof(error)),
             error);
