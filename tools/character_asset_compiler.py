@@ -873,7 +873,9 @@ def compile_package(package_path: Path, output_path: Path) -> dict[str, Any]:
         raise CompileError("invalid source package: " + "; ".join(verification["errors"]))
     package = package_path.read_bytes()
     with zipfile.ZipFile(package_path) as archive:
-        manifest = json.loads(archive.read("manifest.json"))
+        manifest = probe.json_loads_strict(
+            archive.read("manifest.json"), "manifest"
+        )
         model = archive.read("model.glb")
     compiled, report = compile_character(model, manifest, hashlib.sha256(package).digest())
     output_path.parent.mkdir(parents=True, exist_ok=True)

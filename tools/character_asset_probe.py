@@ -18,6 +18,7 @@ import math
 import re
 import struct
 import sys
+import unicodedata
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -76,6 +77,45 @@ def _sha256(data: bytes) -> str:
 
 def _json_bytes(value: Any) -> bytes:
     return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def json_loads_strict(data: bytes | str, label: str = "JSON") -> Any:
+    """Decode hostile JSON without duplicate keys or non-finite numbers."""
+    def object_from_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, member in pairs:
+            if key in value:
+                raise ProbeError(f"{label} contains duplicate key {key!r}")
+            value[key] = member
+        return value
+
+    def reject_constant(value: str) -> Any:
+        raise ProbeError(f"{label} contains non-finite number {value}")
+
+    try:
+        text = data.decode("utf-8") if isinstance(data, bytes) else data
+        return json.loads(
+            text, object_pairs_hook=object_from_pairs,
+            parse_constant=reject_constant,
+        )
+    except UnicodeDecodeError as exc:
+        raise ProbeError(f"{label} is not valid UTF-8: {exc}") from exc
+
+
+def _manifest_unicode_errors(value: Any, path: str = "manifest") -> list[str]:
+    errors: list[str] = []
+    if isinstance(value, str):
+        if unicodedata.normalize("NFC", value) != value:
+            errors.append(f"{path} must use NFC-normalized Unicode")
+    elif isinstance(value, dict):
+        for key, member in value.items():
+            if unicodedata.normalize("NFC", key) != key:
+                errors.append(f"{path} contains a non-NFC key")
+            errors.extend(_manifest_unicode_errors(member, f"{path}.{key}"))
+    elif isinstance(value, list):
+        for index, member in enumerate(value):
+            errors.extend(_manifest_unicode_errors(member, f"{path}[{index}]"))
+    return errors
 
 
 def _read_bounded(path: Path, maximum: int, label: str) -> bytes:
@@ -259,7 +299,9 @@ def parse_glb(data: bytes) -> tuple[dict[str, Any], bytes | None]:
     if json_chunk is None:
         raise ProbeError("GLB has no JSON chunk")
     try:
-        document = json.loads(json_chunk.rstrip(b" \t\r\n\0"))
+        document = json_loads_strict(
+            json_chunk.rstrip(b" \t\r\n\0"), "GLB JSON"
+        )
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ProbeError(f"invalid GLB JSON: {exc}") from exc
     if not isinstance(document, dict):
@@ -553,7 +595,7 @@ def inspect_glb(path: Path, require_character: bool = False) -> dict[str, Any]:
 
 
 def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
+    errors = _manifest_unicode_errors(manifest)
     allowed = {
         "schema", "id", "display_name", "renderer_profile", "license",
         "animations", "gameplay", "presentation", "sockets", "model",
@@ -699,10 +741,11 @@ def build_package(model_path: Path, manifest_path: Path, license_path: Path, out
     if report["errors"]:
         raise ProbeError("model is not character-ready: " + "; ".join(report["errors"]))
     try:
-        manifest = json.loads(
-            _read_bounded(manifest_path, MAX_MANIFEST_BYTES, "manifest").decode("utf-8")
+        manifest = json_loads_strict(
+            _read_bounded(manifest_path, MAX_MANIFEST_BYTES, "manifest"),
+            "manifest",
         )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (OSError, ProbeError, json.JSONDecodeError) as exc:
         raise ProbeError(f"cannot read manifest: {exc}") from exc
     if not isinstance(manifest, dict):
         raise ProbeError("manifest root must be an object")
@@ -761,7 +804,7 @@ def verify_package(path: Path) -> dict[str, Any]:
             raise ProbeError(f"package member must use deterministic stored encoding: {safe_name}")
         if info.file_size > member_caps[safe_name]:
             raise ProbeError(f"package member exceeds its size cap: {safe_name}")
-    manifest = json.loads(archive.read("manifest.json"))
+    manifest = json_loads_strict(archive.read("manifest.json"), "manifest")
     if not isinstance(manifest, dict):
         raise ProbeError("manifest root must be an object")
     model = archive.read("model.glb")

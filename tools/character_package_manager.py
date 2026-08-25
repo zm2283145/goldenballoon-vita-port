@@ -114,7 +114,9 @@ def install(package_path: Path, directory: Path) -> dict[str, Any]:
         COMPILER_ID.encode("ascii") + b"\0" + package
     ).digest()
     with zipfile.ZipFile(package_path) as archive:
-        manifest = json.loads(archive.read("manifest.json"))
+        manifest = probe.json_loads_strict(
+            archive.read("manifest.json"), "manifest"
+        )
         model = archive.read("model.glb")
     compiled, compile_report = compiler.compile_character(
         model, manifest, compiler_digest

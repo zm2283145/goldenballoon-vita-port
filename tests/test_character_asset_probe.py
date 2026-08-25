@@ -310,6 +310,22 @@ class CharacterAssetProbeTests(unittest.TestCase):
         self.assertTrue(any("unknown field 'surprise'" in error for error in errors))
         self.assertTrue(any("unknown field 'speed_multiplier'" in error for error in errors))
 
+    def test_json_rejects_duplicate_keys_and_nonfinite_numbers(self) -> None:
+        with self.assertRaisesRegex(probe.ProbeError, "duplicate key 'id'"):
+            probe.json_loads_strict('{"id":"first","id":"second"}', "manifest")
+        with self.assertRaisesRegex(probe.ProbeError, "non-finite number"):
+            probe.json_loads_strict('{"scale":NaN}', "manifest")
+
+    def test_manifest_requires_nfc_unicode(self) -> None:
+        manifest = make_manifest()
+        manifest["display_name"] = "Cafe\u0301"
+        errors = probe.validate_manifest(
+            manifest, probe.inspect_glb_bytes(
+                make_animated_glb(), require_character=True
+            )
+        )
+        self.assertTrue(any("NFC-normalized Unicode" in error for error in errors))
+
     def test_archive_inventory_fails_closed_without_license(self) -> None:
         dae = b'''<?xml version="1.0"?><COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1"><asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset><library_geometries><geometry/></library_geometries></COLLADA>'''
         nested = io.BytesIO()

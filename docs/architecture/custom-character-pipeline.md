@@ -561,8 +561,10 @@ unfinished pieces into unbounded memory or GPU work.
 ### P0 - Freeze the source contract (partly complete)
 
 - Review and version the manifest schema and semantic animation/socket lists.
-- Add JSON Schema, duplicate-key detection, SPDX expression parsing, Unicode
-  normalization, compression-ratio gates, and complete GLB accessor checks.
+- The checked-in JSON Schema, duplicate-key/non-finite JSON rejection and NFC
+  Unicode requirement are complete. Add SPDX expression parsing,
+  compression-ratio gates for general source archives, and complete GLB
+  accessor checks.
 - Pin Khronos Validator and adapter versions with hashes and notices.
 - Add several license-clean external fixtures: static, skinned/animated,
   multi-material, morph target, alpha mask, malformed and budget-exceeding.
