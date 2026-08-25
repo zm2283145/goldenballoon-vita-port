@@ -414,6 +414,14 @@ std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
     const MdkrOnlineCompatibilityV1 &compatibility,
     MdkrOnlineJourney journey = MDKR_ONLINE_JOURNEY_CREATE,
     const std::string &joinCode = std::string());
+
+/* Beta-only: the creator's invite (6-digit fallback code + invite URL) so the
+ * Online Room panel can render the invite card (big code + Copy + QR). Returns
+ * false for a non-live adapter, a joiner, or before the room is Ready; the
+ * out-params are decoupled from the transport header so the panel need not pull
+ * it in. Defined out-of-line in platform/app/online_live_wiring.cpp. */
+bool OnlineRoom_liveInvite(IMdkrOnlineAdapter *adapter, std::string *code,
+                           std::string *inviteUrl);
 #else
 inline std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
     const MdkrOnlineCompatibilityV1 & /*compatibility*/,

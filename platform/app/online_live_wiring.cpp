@@ -78,6 +78,11 @@ public:
     }
     void close() override { inner_->close(); }
 
+    /* The wrapped production HTTP transport. mdkr_online_room_http_transport_invite
+     * dynamic_casts to the concrete RoomHttpTransport, so the invite accessor
+     * must reach past this belt to the real transport underneath. */
+    MdkrOnlineRoomTransport *inner() const { return inner_.get(); }
+
 private:
     static bool isRelay(const std::string &url) {
         std::string scheme = url.substr(0, url.find(':'));
@@ -126,6 +131,14 @@ public:
     bool timeoutExpired() const override { return inner_->timeoutExpired(); }
     MdkrOnlineFakeAdapter *fakeAdapter() override {
         return inner_->fakeAdapter();
+    }
+
+    /* The concrete HTTP transport behind the STUN-only belt, for the invite
+     * accessor. Returns the room transport directly if no belt is present. */
+    MdkrOnlineRoomTransport *httpTransportForInvite() const {
+        StunOnlyRoomTransport *belt =
+            dynamic_cast<StunOnlyRoomTransport *>(room_.get());
+        return belt != nullptr ? belt->inner() : room_.get();
     }
 
 private:
@@ -189,6 +202,26 @@ std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
 
     if (!adapter->build(options, &error)) return nullptr;
     return adapter;
+}
+
+/* Beta-only invite accessor for the creator's invite card. Reaches past the
+ * owning wrapper + STUN-only belt to the concrete HTTP transport and returns
+ * its learned 6-digit fallback code and invite URL, but only once the room has
+ * reached Ready (creator only). Returns false for a non-live adapter, a joiner,
+ * or before the room is Ready -- so the panel simply shows nothing yet. */
+bool OnlineRoom_liveInvite(IMdkrOnlineAdapter *adapter, std::string *code,
+                           std::string *inviteUrl) {
+    OwningLiveAdapter *owning = dynamic_cast<OwningLiveAdapter *>(adapter);
+    if (owning == nullptr) return false;
+    MdkrOnlineRoomTransport *http = owning->httpTransportForInvite();
+    if (http == nullptr) return false;
+    MdkrOnlineRoomHttpInvite invite;
+    if (!mdkr_online_room_http_transport_invite(http, &invite) || !invite.ready) {
+        return false;
+    }
+    if (code != nullptr) *code = invite.fallbackCode;
+    if (inviteUrl != nullptr) *inviteUrl = invite.inviteUrl;
+    return true;
 }
 
 #endif /* MDKR_ENABLE_ONLINE_BETA */
