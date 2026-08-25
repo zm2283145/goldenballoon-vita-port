@@ -30,6 +30,9 @@
 #include "net/net_impairment.h"
 #include "net/net_roster_runtime.h"
 #include "online/lobby_view_model.h"
+#if MDKR_ENABLE_ONLINE_BETA
+#include "online/match_live_adapter.h"  // O-T6b visible-engine race-boot handoff
+#endif
 #include "platform_os.h"
 #include "present_sched.h"
 #include "ui_launcher.h"
@@ -723,6 +726,19 @@ int runEngineSession(AppHost &host, SessionRuntime &session,
 
     const bool online =
         session.state().intent == MDKR_INTENT_ONLINE_PRIVATE;
+#if MDKR_ENABLE_ONLINE_BETA
+    /* Beach-ball guard (net_roster ownership): a local-Play boot must never
+     * inherit an online session's process-global roster -- that stray global
+     * would flip the engine into online-race mode and stall forever waiting for
+     * network input a local race never sends. Historically the roster was only
+     * cleared on engine EXIT and never checked on ENTRY. Force-clear any roster
+     * this local boot does not own BEFORE booting, not only after. */
+    if (!online && mdkr_net_roster_runtime_guard_owner(0u)) {
+        std::fprintf(stderr,
+                     "[session] discarded a stray online roster before a local "
+                     "boot (ownership guard)\n");
+    }
+#endif
     const MdkrMatchManifestV1 *networkManifest = online
         ? mdkr_session_bridge_manifest(&session.bridge()) : nullptr;
     const MdkrNetRoster *networkRoster = online
@@ -753,6 +769,13 @@ int runEngineSession(AppHost &host, SessionRuntime &session,
         (void)session.enginePhase(MDKR_ENGINE_FAILED);
         return 2;
     }
+#if MDKR_ENABLE_ONLINE_BETA
+    /* Tag the roster this online session installed so a subsequent local-Play
+     * boot's ownership guard clears it rather than silently inheriting it. */
+    if (networkRoster != nullptr) {
+        mdkr_net_roster_runtime_set_owner(session.state().session_id);
+    }
+#endif
     MatchInputProviderContext matchInputContext{};
     bool matchInputInstalled = false;
     if (networkManifest != nullptr && networkRoster != nullptr) {
@@ -1007,6 +1030,299 @@ int runEngineSession(AppHost &host, SessionRuntime &session,
     }
     return result;
 }
+
+#if MDKR_ENABLE_ONLINE_BETA
+/* ======================================================================== *
+ * O-T6b: boot the VISIBLE 3D engine for an ONLINE race driven by the LIVE
+ * adapter transport (make-or-break).
+ *
+ * The engine's per-tick canonical input runs through the process-global
+ * MdkrMatchInputSource (platform/net/match_input_runtime.h). runEngineSession's
+ * online branch backs that source with a launcher SessionRuntime fed by a
+ * LOOPBACK simulator; this path backs it with the LIVE adapter's race transport
+ * instead -- the same transport that drains real opened INPUT envelopes from the
+ * mesh. The engine roster is already installed process-globally by the adapter's
+ * install(); we only publish the input source, wire the host, and boot.
+ *
+ * `peer` is non-null only on the in-process loopback proof (MDKR_APP_TEST_
+ * ONLINE_LIVE): it is the second endpoint, cross-pumped one tick per drain so it
+ * seals real input over the mesh for the visible endpoint. In production `peer`
+ * is null and the real remote process supplies that input.
+ * ======================================================================== */
+struct LiveMatchInputContext {
+    IMdkrOnlineAdapter *visible = nullptr;
+    IMdkrOnlineAdapter *peer = nullptr;   /* loopback proof only; null in prod */
+    std::uint32_t epoch = 0u;
+    std::uint8_t activeMask = 0u;
+    std::uint32_t racedTicks = 0u;        /* highest authored tick drained */
+    std::uint64_t drainCalls = 0u;
+    bool advanceFailed = false;
+};
+
+/* Serviced every engine frame (menu-nav included) via the overlay service hook,
+ * so the mesh's application-level ping never lapses during the long headless
+ * menu walk that precedes the race level. Single instance per boot. */
+LiveMatchInputContext *g_liveMatchInput = nullptr;
+
+extern "C" {
+static void liveOverlayService(void) {
+    LiveMatchInputContext *ctx = g_liveMatchInput;
+    if (ctx == nullptr) return;
+    if (ctx->visible != nullptr) ctx->visible->service();
+    if (ctx->peer != nullptr) ctx->peer->service();
+}
+static int liveOverlayProcessEvent(const void * /*sdl_event*/) { return 0; }
+static int liveOverlayWantsInput(void) { return 0; }
+static int liveOverlayWantsPause(void) { return 0; }
+static int liveOverlayWantsRender(void) { return 0; }
+static int liveOverlayRender(void) { return 1; }
+}  // extern "C"
+
+/* Advance the visible endpoint's race transport up to `tick` (idempotent), then
+ * copy the canonical frame for `tick`. Authored ticks are 1-based and align with
+ * the adapter's raceFirstTick (1), so one drain == one race_advance. */
+bool liveDrainMatchInput(void *opaque, std::uint32_t /*epoch*/,
+                         std::uint32_t tick,
+                         const MdkrPadSample * /*physical*/, unsigned /*count*/,
+                         MdkrInputSet *out) {
+    LiveMatchInputContext *ctx = static_cast<LiveMatchInputContext *>(opaque);
+    if (ctx == nullptr || ctx->visible == nullptr || out == nullptr) return false;
+    ctx->drainCalls++;
+    MdkrOnlineLiveRaceInfo info{};
+    if (!mdkr_online_live_adapter_race_info(ctx->visible, &info) || !info.ready) {
+        return false;
+    }
+    /* Keep the in-process peer this many authored ticks ahead of the visible
+     * endpoint's drain frontier, so its sealed input for the tick we are about
+     * to commit has already crossed the loopback mesh. */
+    const std::uint32_t lead = static_cast<std::uint32_t>(info.inputDelay) + 2u;
+    for (unsigned guard = 0u; info.nextTick <= tick && guard < 100000u; ++guard) {
+        const std::uint32_t drainTick = info.nextTick;
+        if (ctx->peer != nullptr) {
+            /* Advance the peer ahead: each advance seals its deterministic input
+             * for (nextTick + inputDelay) and fans it out, so ticks up to
+             * drainTick+lead are already in flight. The peer's own drain uses
+             * prediction for the not-yet-sent visible input and is discarded;
+             * only its mesh output feeds the visible engine. */
+            MdkrOnlineLiveRaceInfo pinfo{};
+            while (mdkr_online_live_adapter_race_info(ctx->peer, &pinfo) &&
+                   pinfo.ready && pinfo.nextTick <= drainTick + lead) {
+                ctx->peer->service();
+                if (!mdkr_online_live_adapter_race_advance(ctx->peer)) break;
+            }
+            /* Deliver drainTick's remote input synchronously (like the loopback
+             * simulator this replaces): pump the visible endpoint until the
+             * peer's input for drainTick has been received, so the drain commits
+             * fully-confirmed input and the engine never rolls back into the
+             * paused race countdown. */
+            for (unsigned spin = 0u; spin < 4000u; ++spin) {
+                ctx->visible->service();
+                if (mdkr_online_live_adapter_race_remote_ready(ctx->visible,
+                                                               drainTick)) {
+                    break;
+                }
+                SDL_Delay(1u);
+            }
+        } else {
+            /* Production: the real remote process supplies input over the mesh;
+             * predict now and let the engine's rollback correct via take_dirty. */
+            ctx->visible->service();
+        }
+        if (!mdkr_online_live_adapter_race_advance(ctx->visible)) {
+            ctx->advanceFailed = true;
+            return false;
+        }
+        (void)mdkr_online_live_adapter_race_info(ctx->visible, &info);
+    }
+    if (tick > ctx->racedTicks) ctx->racedTicks = tick;
+    return mdkr_online_live_adapter_race_inputs_for_tick(ctx->visible, tick, out);
+}
+
+bool liveInputsForTick(void *opaque, std::uint32_t /*epoch*/,
+                       std::uint32_t tick, MdkrInputSet *out) {
+    LiveMatchInputContext *ctx = static_cast<LiveMatchInputContext *>(opaque);
+    return ctx != nullptr && ctx->visible != nullptr && out != nullptr &&
+           mdkr_online_live_adapter_race_inputs_for_tick(ctx->visible, tick, out);
+}
+
+bool liveTakeDirtyMatchInput(void *opaque, std::uint32_t /*epoch*/,
+                             std::uint32_t *tick) {
+    LiveMatchInputContext *ctx = static_cast<LiveMatchInputContext *>(opaque);
+    return ctx != nullptr && ctx->visible != nullptr && tick != nullptr &&
+           mdkr_online_live_adapter_race_take_dirty(ctx->visible, tick);
+}
+
+bool liveAiMaskMatchInput(void *opaque, std::uint32_t /*epoch*/,
+                          std::uint32_t tick, std::uint8_t *slotMask) {
+    LiveMatchInputContext *ctx = static_cast<LiveMatchInputContext *>(opaque);
+    return ctx != nullptr && ctx->visible != nullptr && slotMask != nullptr &&
+           mdkr_online_live_adapter_race_ai_mask(ctx->visible, tick, slotMask);
+}
+
+/* Fold the confirmed canonical frames one endpoint retained over [firstTick..]
+ * into an FNV-1a state hash, stopping at the first tick not fully confirmed.
+ * Returns how many ticks were folded. Two independent endpoints that converged
+ * on the same authority produce byte-identical hashes over the same span. */
+std::uint32_t foldConfirmedRace(IMdkrOnlineAdapter *adapter,
+                                std::uint32_t firstTick, std::uint32_t lastTick,
+                                std::uint8_t activeMask, std::uint64_t *hash) {
+    std::uint64_t h = UINT64_C(1469598103934665603);
+    std::uint32_t folded = 0u;
+    for (std::uint32_t tick = firstTick; tick <= lastTick; ++tick) {
+        MdkrInputSet frame{};
+        if (!mdkr_online_live_adapter_race_inputs_for_tick(adapter, tick,
+                                                           &frame)) {
+            break;
+        }
+        if ((frame.confirmed_mask & activeMask) != activeMask) break;
+        auto mix = [&h](std::uint64_t value) {
+            for (unsigned b = 0u; b < 8u; ++b) {
+                h ^= (value >> (b * 8u)) & 0xffu;
+                h *= UINT64_C(1099511628211);
+            }
+        };
+        mix(tick);
+        for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; ++slot) {
+            if ((activeMask & (1u << slot)) == 0u) continue;
+            mix(frame.slots[slot].buttons);
+            mix(static_cast<std::uint8_t>(frame.slots[slot].stick_x));
+            mix(static_cast<std::uint8_t>(frame.slots[slot].stick_y));
+        }
+        ++folded;
+    }
+    if (hash != nullptr) *hash = h;
+    return folded;
+}
+
+int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
+                               IMdkrOnlineAdapter *visible,
+                               IMdkrOnlineAdapter *peer) {
+    if (visible == nullptr) return 2;
+    if (!mdkr_net_roster_runtime_active()) {
+        std::fprintf(stderr,
+                     "[online-live] refused: no engine roster installed\n");
+        return 2;
+    }
+    MdkrOnlineLiveRaceInfo info{};
+    if (!mdkr_online_live_adapter_race_info(visible, &info) || !info.ready ||
+        info.matchEpoch == 0u) {
+        std::fprintf(stderr,
+                     "[online-live] refused: visible race transport not ready\n");
+        return 2;
+    }
+    /* Explicit ownership: tag the roster this online session installed so a
+     * later local-Play boot's guard force-clears it instead of inheriting it. */
+    const std::uint64_t ownerToken =
+        UINT64_C(0x4f4e4c49564500) ^ static_cast<std::uint64_t>(info.matchEpoch);
+    mdkr_net_roster_runtime_set_owner(ownerToken);
+
+    LiveMatchInputContext context;
+    context.visible = visible;
+    context.peer = peer;
+    context.epoch = info.matchEpoch;
+    context.activeMask = info.activeSlotMask;
+
+    const MdkrMatchInputSource source = {
+        MDKR_MATCH_INPUT_SOURCE_VERSION,
+        info.matchEpoch,
+        &context,
+        liveDrainMatchInput,
+        liveInputsForTick,
+        liveTakeDirtyMatchInput,
+        liveAiMaskMatchInput,
+    };
+    if (!mdkr_match_input_runtime_install(&source)) {
+        std::fprintf(stderr,
+                     "[online-live] refused: duplicate match input provider\n");
+        mdkr_net_roster_runtime_clear();
+        return 2;
+    }
+    g_liveMatchInput = &context;
+
+    static const AppOverlayHooks liveHooks = {
+        liveOverlayProcessEvent, liveOverlayService, liveOverlayWantsInput,
+        liveOverlayWantsPause, liveOverlayWantsRender, liveOverlayRender,
+    };
+    platformSetOverlayHooks(&liveHooks);
+
+    platformSetHostWindow(host.window(), host.glContext());
+    if (host.usingWebGpu()) {
+        platformSetHostWebGpu(host.wgpuInstance(), host.wgpuAdapter(),
+                              host.wgpuDevice(), host.wgpuQueue(),
+                              host.wgpuSurface(), host.wgpuFormat());
+        platformSetHostWebGpuRecovery(recoverAppHostWebGpu, &host);
+    }
+
+    std::fprintf(stderr,
+                 "[online-live] booting visible engine epoch=%u active=0x%02x "
+                 "local=0x%02x remote=0x%02x inputDelay=%u peer=%d\n",
+                 static_cast<unsigned>(info.matchEpoch),
+                 static_cast<unsigned>(info.activeSlotMask),
+                 static_cast<unsigned>(info.localSlotMask),
+                 static_cast<unsigned>(info.remoteSlotMask),
+                 static_cast<unsigned>(info.inputDelay), peer != nullptr ? 1 : 0);
+
+    const int result = mdkr64_engine_boot(&config);
+
+    /* Flush any in-flight input so both endpoints have folded the same recent
+     * window before we compare (the peer may still owe the visible endpoint's
+     * last few drained inputs). */
+    for (unsigned settle = 0u; settle < 100u; ++settle) {
+        visible->service();
+        if (peer != nullptr) peer->service();
+        SDL_Delay(1u);
+    }
+    MdkrOnlineLiveRaceStats stats{};
+    (void)mdkr_online_live_adapter_race_stats(visible, &stats);
+    std::uint64_t hashVisible = 0u;
+    std::uint64_t hashPeer = 0u;
+    std::uint32_t foldVisible = 0u;
+    std::uint32_t foldPeer = 0u;
+    bool converged = false;
+    /* Fold a recent CONFIRMED window rather than from tick 1: the net_input ring
+     * only retains the last MDKR_NET_INPUT_CAPACITY (128) authored ticks, so the
+     * opening ticks are long evicted after a long race. Two independent endpoints
+     * that stayed converged fold the identical window to the identical hash. */
+    if (context.racedTicks >= info.firstTick + 8u) {
+        const std::uint32_t foldEnd = context.racedTicks - 6u;
+        const std::uint32_t window = 60u;
+        const std::uint32_t foldStart =
+            foldEnd > info.firstTick + window ? foldEnd - window : info.firstTick;
+        foldVisible = foldConfirmedRace(visible, foldStart, foldEnd,
+                                        info.activeSlotMask, &hashVisible);
+        if (peer != nullptr) {
+            foldPeer = foldConfirmedRace(peer, foldStart, foldEnd,
+                                         info.activeSlotMask, &hashPeer);
+            converged = foldVisible > 0u && foldVisible == foldPeer &&
+                        hashVisible == hashPeer;
+        }
+    }
+    std::fprintf(
+        stderr,
+        "[ENGINE-ONLINE-LIVE] result=%d racedTicks=%u drainCalls=%llu "
+        "advanceFailed=%d inputEnvelopes=%llu transportAccepted=%u "
+        "transportCorrected=%u transportDrained=%u foldVisible=%u foldPeer=%u "
+        "hashVisible=%016llx hashPeer=%016llx converged=%d\n",
+        result, static_cast<unsigned>(context.racedTicks),
+        static_cast<unsigned long long>(context.drainCalls),
+        context.advanceFailed ? 1 : 0,
+        static_cast<unsigned long long>(stats.inputEnvelopesReceived),
+        stats.transportAccepted, stats.transportCorrected, stats.transportDrained,
+        static_cast<unsigned>(foldVisible), static_cast<unsigned>(foldPeer),
+        static_cast<unsigned long long>(hashVisible),
+        static_cast<unsigned long long>(hashPeer), converged ? 1 : 0);
+
+    platformSetOverlayHooks(nullptr);
+    platformSetHostWebGpuRecovery(nullptr, nullptr);
+    platformSetHostWebGpu(nullptr, nullptr, nullptr, nullptr, nullptr, 0);
+    platformSetHostWindow(nullptr, nullptr);
+    g_liveMatchInput = nullptr;
+    mdkr_match_input_runtime_clear();
+    /* This boot owned the roster: retire it so nothing downstream inherits it. */
+    mdkr_net_roster_runtime_clear();
+    return result;
+}
+#endif /* MDKR_ENABLE_ONLINE_BETA */
 
 int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeInputMode, const char *smoke) {
     int frames = std::atoi(smoke);
@@ -2237,6 +2553,33 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                      "continuing with offscreen engine frames\n",
                      warmupAttempts);
     }
+#if MDKR_ENABLE_ONLINE_BETA
+    /* Headless proof of the make-or-break wiring: stand up two REAL live adapters
+     * over the in-process loopback mesh, drive them to a ready race transport,
+     * then boot the VISIBLE engine on endpoint A's live transport while endpoint
+     * B seals real input over the mesh. Reuses this run's config (MDKR_ROM +
+     * MDKR_APP_AUTOPLAY_INPUT_SCRIPT navigate the engine to the agreed track;
+     * MDKR_APP_AUTOPLAY_TICKS bounds the run). Ordinary autoplay never sets this
+     * variable, so the loopback harness stays inert. */
+    if (std::getenv("MDKR_APP_TEST_ONLINE_LIVE") != nullptr) {
+        std::string liveErr;
+        MdkrOnlineTestLoopbackRace *race =
+            OnlineRoom_makeTestLoopbackRace(&liveErr);
+        if (race == nullptr) {
+            std::fprintf(stderr,
+                         "[online-live] loopback race setup failed: %s\n",
+                         liveErr.c_str());
+            host.shutdown();
+            return 2;
+        }
+        const int liveResult = runOnlineLiveEngineSession(
+            host, config, OnlineRoom_testLoopbackVisible(race),
+            OnlineRoom_testLoopbackPeer(race));
+        OnlineRoom_destroyTestLoopbackRace(race);
+        host.shutdown();
+        return liveResult;
+    }
+#endif
     int roundTrips = 1;
     if (const char *roundText =
             std::getenv("MDKR_APP_TEST_SESSION_ROUNDTRIPS")) {
@@ -2479,6 +2822,28 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
             running  = false;
             continue;
         }
+#if MDKR_ENABLE_ONLINE_BETA
+        /* Make-or-break handoff: an Online Room adapter (driven by the UX-owned
+         * panel inside launcher.draw above) has reached the visual race-start
+         * point and published itself. Boot the VISIBLE engine on its live
+         * transport, then fall back into this loop. No UI change is required --
+         * the trigger is adapter state, not a panel callback. */
+        if (IMdkrOnlineAdapter *raceBoot = OnlineRoom_pollEngineRaceBoot()) {
+            MdkrBootConfig onlineConfig{};
+            const std::string onlineRom = AppConfig::get("rom_path", "");
+            onlineConfig.rom_path = onlineRom.c_str();
+            onlineConfig.video_mode = -1;
+            std::fprintf(stderr,
+                         "[online-live] engine race-boot handoff accepted\n");
+            exitCode =
+                runOnlineLiveEngineSession(host, onlineConfig, raceBoot, nullptr);
+            if (exitCode != 0) {
+                describeBootFailure(host, exitCode, bootRecoveryMessage);
+                running = false;
+            }
+            continue;
+        }
+#endif
         if (action.type == LauncherActionType::Quit) {
             running = false;
         } else if (action.type == LauncherActionType::Play) {
