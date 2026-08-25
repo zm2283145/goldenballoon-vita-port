@@ -24,6 +24,8 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <thread>
+#include <utility>
 #endif
 
 namespace {
@@ -54,6 +56,9 @@ struct OnlineRoomUiState {
     char betaJoinCode[7] = {0};
     bool betaBuildFailed = false;
     bool betaCharacterTaken = false;
+    // Deferred, non-blocking "Leave Race": set when the persistent takeover
+    // control is pressed, consumed after the frame's lobby body has drawn.
+    bool leavePending = false;
 #endif
 };
 
@@ -609,9 +614,10 @@ bool buildBetaLiveAdapter(MdkrOnlineJourney journey, const std::string &code) {
 void drawBetaChooser(LauncherState &state) {
     (void)state;
     ui::SectionHeader(
-        "Online Race — Beta",
+        "Play Online",
         "Race a friend over the internet: private, invite-only, 2 players, base "
-        "racers, direct peer-to-peer.");
+        "racers, direct peer-to-peer. Pick a side to start; the lobby takes over "
+        "once you connect.");
     if (g_online.betaBuildFailed) {
         ui::CautionBox(
             "Couldn't Start Online",
@@ -1073,3 +1079,112 @@ bool OnlineRoom_smokeActionResult(unsigned action, bool *accepted) {
     *accepted = g_online.completedActionAccepted;
     return true;
 }
+
+#if MDKR_ENABLE_ONLINE_BETA
+// ===========================================================================
+// Native online beta: modal lobby takeover support.
+//
+// The launcher shell renders ONLY the full-screen lobby -- suppressing the nav
+// rail, the top tabs, the panel router and the generic offline Play button --
+// whenever a live online session has progressed past the entry/chooser. The
+// decision is driven by the current view kind, so the one rule covers both the
+// beta live adapter and the deterministic fake used by the headless proof.
+// ===========================================================================
+
+// Read-only peek at the current view kind. Returns 0 before an adapter exists
+// or when it produces an invalid composition, so a half-built or torn-down
+// session never engages the takeover.
+static MdkrOnlineViewKind onlineCurrentViewKind() {
+    if (!g_online.initialized || !g_online.adapter) {
+        return static_cast<MdkrOnlineViewKind>(0);
+    }
+    MdkrOnlineViewModel model{};
+    if (!g_online.adapter->view(&model)) {
+        return static_cast<MdkrOnlineViewKind>(0);
+    }
+    return model.kind;
+}
+
+bool OnlineRoom_isLobbyTakeoverActive() {
+    const MdkrOnlineViewKind kind = onlineCurrentViewKind();
+    // ENTRY is the create/join chooser: the shell stays so a player can still
+    // reach it. Every later kind is a live session and takes over the window.
+    return kind != static_cast<MdkrOnlineViewKind>(0) &&
+           kind != MDKR_ONLINE_VIEW_ENTRY;
+}
+
+int OnlineRoom_lobbyProbeViewKind() {
+    return static_cast<int>(onlineCurrentViewKind());
+}
+
+// Non-blocking teardown of the live adapter. Its destructor joins the room /
+// mesh / signal-client worker threads and closes the WebRTC data channels and
+// WebSocket -- any of which can stall for seconds. Doing that on the ImGui/main
+// thread is the observed beach-ball, so the live adapter is handed to a detached
+// thread and destroyed there while the UI returns home immediately. The
+// launcher thread never touches the adapter again after the hand-off, so
+// single-owner off-thread destruction is safe. The deterministic fake owns no
+// worker threads, so it is destroyed inline.
+static void teardownAdapterAsync(std::unique_ptr<IMdkrOnlineAdapter> adapter) {
+    if (!adapter) return;
+    if (adapter->fakeAdapter() != nullptr) {
+        adapter.reset();
+        return;
+    }
+    std::thread([owned = std::move(adapter)]() mutable {
+        owned.reset();
+    }).detach();
+}
+
+// The single, clean exit from an active online session. Hands the live adapter
+// off for non-blocking teardown, resets the session UI back to the create/join
+// chooser and asks the shell to return to the launcher home. The smoke witness
+// fields are deliberately preserved so a token-gated action smoke can still read
+// the outcome of a leave/return action after the adapter is gone.
+static void leaveOnlineSession(LauncherState &state) {
+    teardownAdapterAsync(std::move(g_online.adapter));
+    g_online.initialized = false;
+    g_online.detailsOpen = false;
+    g_online.connectionDoctorOpen = false;
+    g_online.updateHelpOpen = false;
+    g_online.leaveRaceConfirm = false;
+    g_online.leavePending = false;
+    g_online.gallerySpec = nullptr;
+    g_online.galleryTraced = false;
+    g_online.announcedKind = static_cast<MdkrOnlineViewKind>(0);
+    g_online.announcedFailure = MDKR_ONLINE_VIEW_FAILURE_NONE;
+    g_online.announcedVerificationPhrase[0] = '\0';
+    g_online.betaStage = OnlineRoomUiState::BetaStage::Chooser;
+    g_online.betaJoinCode[0] = '\0';
+    g_online.betaBuildFailed = false;
+    g_online.betaCharacterTaken = false;
+    Launcher_requestTab(state, kLauncherPanelPlay, kLauncherTabPlayer);
+}
+
+void OnlineRoom_requestLeave() { g_online.leavePending = true; }
+
+void OnlineRoom_serviceLobbyLeave(LauncherState &state) {
+    // A body control that navigates home (Return Home / Play Here / confirmed
+    // Leave Race) requests the Play tab; the persistent takeover control sets
+    // leavePending. Either way, a live session must be torn down before the
+    // shell returns, so returning home never leaves a live adapter behind (the
+    // structural cause of the offline-launch beach-ball).
+    const bool goingHome = state.requestTab == kLauncherPanelPlay;
+    if (!g_online.leavePending && !goingHome) return;
+    leaveOnlineSession(state);
+}
+
+bool OnlineRoom_lobbyHeaderInfo(OnlineLobbyHeaderInfo *out) {
+    if (out == nullptr || !g_online.initialized || !g_online.adapter) {
+        return false;
+    }
+    MdkrOnlineViewModel model{};
+    if (!g_online.adapter->view(&model)) return false;
+    out->memberCount = model.member_count;
+    out->readyCount = model.ready_count;
+    out->seatCount = model.seat_count;
+    out->localIsLeader = model.local_member_is_leader;
+    out->statusLine = betaStatusLine(model);
+    return true;
+}
+#endif  // MDKR_ENABLE_ONLINE_BETA
