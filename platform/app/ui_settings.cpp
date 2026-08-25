@@ -9,6 +9,8 @@
 #include "controller_mapping.h"
 #include "enhancement_registry.h"
 #include "mod_registry.h"
+#include "modern_character_registry.h"
+#include "user_paths.h"
 #include "video_config.h"
 #include "platform_os.h"
 
@@ -1806,6 +1808,127 @@ bool drawContentSection(SDL_Window *window, bool compact,
     return changed;
 }
 
+MdkrModernCharacterRegistry g_characterRegistry{};
+bool g_characterRegistryLoaded = false;
+std::string g_characterRegistryDirectory;
+
+void refreshCharacterRegistry() {
+    char directory[MDKR_MODERN_CHARACTER_PATH_MAX];
+    mdkr_modern_character_registry_shutdown(&g_characterRegistry);
+    g_characterRegistryDirectory.clear();
+    if (mdkr_user_characters_directory(directory, sizeof(directory))) {
+        g_characterRegistryDirectory = directory;
+        (void)mdkr_modern_character_registry_init(&g_characterRegistry,
+                                                   directory);
+    }
+    g_characterRegistryLoaded = true;
+}
+
+const char *donorName(uint32_t donor) {
+    static const char *names[] = {
+        "Krunch", "Bumper", "Tiptup", "Conker", "Timber",
+        "Banjo", "Drumstick", "Pipsy", "T.T.", "Diddy",
+    };
+    return donor < std::size(names) ? names[donor] : "Unknown";
+}
+
+bool drawCustomCharactersSection(bool compact) {
+    bool changed = false;
+    if (!g_characterRegistryLoaded) refreshCharacterRegistry();
+    ui::Gap(ui::kGapS);
+    if (!compact) {
+        ui::TextSubtleWrapped(
+            "Private .mdkrchar packages are compiled offline into this local "
+            "folder. The game never needs a second ROM and never puts these "
+            "presentation choices into saves, ghosts, or network authority.");
+    }
+    ImGui::Indent(ui::kGapM);
+    if (ImGui::Button("Rescan installed characters")) {
+        refreshCharacterRegistry();
+    }
+    if (!g_characterRegistryDirectory.empty()) {
+        ImGui::TextWrapped("Folder: %s", g_characterRegistryDirectory.c_str());
+    }
+
+    for (int player = 0; player < 4; ++player) {
+        const std::string key =
+            "custom_character_p" + std::to_string(player + 1);
+        const std::string selected = AppConfig::get(key);
+        const int selectedIndex = mdkr_modern_character_registry_find(
+            &g_characterRegistry, selected.c_str());
+        const MdkrModernCharacterEntry *selectedEntry =
+            mdkr_modern_character_registry_entry(&g_characterRegistry,
+                                                  selectedIndex);
+        const char *preview = selectedEntry != nullptr
+            ? selectedEntry->display_name : "Built-in racer";
+        const std::string label =
+            "Player " + std::to_string(player + 1) + "##custom-character";
+        if (ImGui::BeginCombo(label.c_str(), preview)) {
+            const bool noneSelected = selected.empty() || selectedEntry == nullptr;
+            if (ImGui::Selectable("Built-in racer", noneSelected)) {
+                const AppConfig::PersistResult result =
+                    AppConfig::setAndSave(key, "");
+                if (AppConfig::persistResultApplied(result)) {
+                    changed = true;
+                    setStatus("Custom character selection saved.", AppTheme::good());
+                } else {
+                    setStatus("The custom character selection could not be saved.",
+                              AppTheme::bad());
+                }
+            }
+            for (int index = 0;
+                 index < mdkr_modern_character_registry_count(&g_characterRegistry);
+                 ++index) {
+                const MdkrModernCharacterEntry *entry =
+                    mdkr_modern_character_registry_entry(&g_characterRegistry,
+                                                          index);
+                if (entry == nullptr) continue;
+                const bool seamless = entry->donor == 9u;
+                const std::string item = std::string(entry->display_name) +
+                    (seamless ? "" : " (donor not yet qualified)");
+                if (!seamless) ImGui::BeginDisabled();
+                if (ImGui::Selectable(item.c_str(), selected == entry->id)) {
+                    const AppConfig::PersistResult result =
+                        AppConfig::setAndSave(key, entry->id);
+                    if (AppConfig::persistResultApplied(result)) {
+                        changed = true;
+                        setStatus("Custom character selection saved; it applies on play.",
+                                  AppTheme::good());
+                    } else {
+                        setStatus("The custom character selection could not be saved.",
+                                  AppTheme::bad());
+                    }
+                }
+                if (!seamless) ImGui::EndDisabled();
+            }
+            ImGui::EndCombo();
+        }
+        if (selectedEntry != nullptr) {
+            ImGui::TextDisabled(
+                "%s donor · %u triangles · %u joints · %u materials",
+                donorName(selectedEntry->donor), selectedEntry->stats.triangles,
+                selectedEntry->stats.joints, selectedEntry->stats.materials);
+        }
+    }
+
+    const int skipped =
+        mdkr_modern_character_registry_skipped(&g_characterRegistry);
+    if (skipped > 0) {
+        ImGui::SeparatorText("Skipped");
+        for (int index = 0; index < skipped; ++index) {
+            ImGui::BulletText(
+                "%s — %s",
+                mdkr_modern_character_registry_skip_name(&g_characterRegistry,
+                                                         index),
+                mdkr_modern_character_registry_skip_reason(&g_characterRegistry,
+                                                           index));
+        }
+    }
+    ImGui::Unindent(ui::kGapM);
+    ui::Gap(ui::kGapS);
+    return changed;
+}
+
 }  // namespace
 
 void Settings_cancelAudioPreview() {
@@ -2383,6 +2506,20 @@ bool Settings_draw(SDL_Window *window, bool compact) {
             compact)) {
         ImGui::Unindent(ui::kGapM);  // the section helper manages its own indent
         changed |= drawContentSection(window, compact, packs, disabledList);
+    }
+
+    if (!g_characterRegistryLoaded) refreshCharacterRegistry();
+    const bool anyCharacters =
+        mdkr_modern_character_registry_count(&g_characterRegistry) > 0 ||
+        mdkr_modern_character_registry_skipped(&g_characterRegistry) > 0;
+    if (drawSettingsSectionHeader(
+            "Custom characters",
+            "Locally authored high-fidelity character presentation.",
+            anyCharacters ? ImGuiTreeNodeFlags_DefaultOpen
+                          : ImGuiTreeNodeFlags_None,
+            compact)) {
+        ImGui::Unindent(ui::kGapM);
+        changed |= drawCustomCharactersSection(compact);
     }
 
     // --- Advanced -----------------------------------------------------------

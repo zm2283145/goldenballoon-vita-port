@@ -7,14 +7,18 @@
 #include "engine_entry.h"
 
 #include "app_restart.h"    // AppRestart_getEnv, AppRestart_setEnv
+#include "app_config.h"
 #include "video_config.h"   // MdkrVideoMode, mdkr_video_schema
 
 #include <cstdio>
 #include <cstring>
+#include <array>
 #include <string>
 #include <vector>
 
 namespace {
+
+std::array<std::string, 4> s_launcherCharacterEnvironment;
 
 const char *modeFlag(int mode) {
     switch (mode) {
@@ -121,6 +125,25 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
                 "MDKR_CAMERA_OBSTRUCTION",
                 resolved->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text);
         }
+    }
+
+    /* Custom characters are local presentation choices. Persist them in the
+     * launcher preferences, then hand them to the engine through the same
+     * diagnostic override the CLI supports. An explicit caller environment
+     * remains higher priority. */
+    for (int player = 0; player < 4; ++player) {
+        const std::string variable =
+            "MDKR_CUSTOM_CHARACTER_P" + std::to_string(player + 1);
+        const bool hasExisting =
+            AppRestart_getEnv(variable.c_str(), existing) && !existing.empty();
+        if (hasExisting && existing != s_launcherCharacterEnvironment[player]) {
+            continue;
+        }
+        const std::string key =
+            "custom_character_p" + std::to_string(player + 1);
+        const std::string selected = AppConfig::get(key);
+        AppRestart_setEnv(variable.c_str(), selected.c_str());
+        s_launcherCharacterEnvironment[player] = selected;
     }
 
     std::fprintf(stderr, "[app] boot:");
