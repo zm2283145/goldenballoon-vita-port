@@ -407,6 +407,7 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
         (void)mdkr_modern_character_asset_texture(asset, index, &texture);
         if (mdkr_modern_character_asset_string(asset, texture.name) == NULL ||
             (texture.mime != 1u && texture.mime != 2u) || texture.data_size == 0u ||
+            (texture.flags != 1u && texture.flags != 2u && texture.flags != 4u) ||
             !range_u32(texture.data_offset, texture.data_size, texture_data->count)) {
             set_error(error, error_size, "compiled texture is invalid");
             return 0;

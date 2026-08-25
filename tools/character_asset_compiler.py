@@ -543,10 +543,39 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
     if not primitive_records:
         raise CompileError("no scene node instantiates a mesh")
 
+    textures_source = _array(document, "textures")
+    materials = _array(document, "materials")
+    if not materials:
+        materials = [{}]
+    texture_roles = [0] * len(textures_source)  # 1 sRGB, 2 linear data, 4 normal
+    for material_index, material in enumerate(materials):
+        if not isinstance(material, dict):
+            raise CompileError(f"material[{material_index}] must be an object")
+        pbr = material.get("pbrMetallicRoughness", {})
+        if not isinstance(pbr, dict):
+            raise CompileError("pbrMetallicRoughness must be an object")
+        uses = (
+            (_material_texture(pbr.get("baseColorTexture")), 1),
+            (_material_texture(pbr.get("metallicRoughnessTexture")), 2),
+            (_material_texture(material.get("normalTexture")), 4),
+            (_material_texture(material.get("occlusionTexture")), 2),
+            (_material_texture(material.get("emissiveTexture")), 1),
+        )
+        for texture_index, role in uses:
+            if texture_index < 0:
+                continue
+            if texture_index >= len(texture_roles):
+                raise CompileError(f"material[{material_index}] texture index is out of range")
+            if texture_roles[texture_index] not in (0, role):
+                raise CompileError(
+                    f"texture[{texture_index}] is reused across incompatible color/data roles"
+                )
+            texture_roles[texture_index] = role
+
     texture_data = bytearray()
     texture_records = []
     samplers = _array(document, "samplers")
-    for texture_index, texture in enumerate(_array(document, "textures")):
+    for texture_index, texture in enumerate(textures_source):
         if not isinstance(texture, dict):
             raise CompileError(f"texture[{texture_index}] must be an object")
         payload, mime_id = _image_bytes(document, binary, _texture_source(texture))
@@ -557,13 +586,11 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         texture_records.append((
             strings.add(texture.get("name") or f"texture_{texture_index}"), mime_id,
             data_offset, len(payload), sampler.get("wrapS", 10497), sampler.get("wrapT", 10497),
-            sampler.get("minFilter", 9987), sampler.get("magFilter", 9729), 0, 0,
+            sampler.get("minFilter", 9987), sampler.get("magFilter", 9729),
+            texture_roles[texture_index] or 1, 0,
         ))
 
     material_records = []
-    materials = _array(document, "materials")
-    if not materials:
-        materials = [{}]
     for material_index, material in enumerate(materials):
         if not isinstance(material, dict):
             raise CompileError(f"material[{material_index}] must be an object")

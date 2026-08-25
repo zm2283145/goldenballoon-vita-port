@@ -162,8 +162,19 @@ int mdkr_modern_render_asset_init(MdkrModernRenderAsset *render,
                 return 0;
             }
         }
-        if (!gfx_mip_build(rgba, width, height,
-                           render->decoded[index].mip_scratch, mip_bytes, &chain)) {
+        if (!((source.flags & 4u) != 0u
+                  ? gfx_mip_build_normal(
+                        rgba, width, height,
+                        render->decoded[index].mip_scratch, mip_bytes, &chain)
+                  : (source.flags & 2u) != 0u
+                        ? gfx_mip_build_linear(
+                              rgba, width, height,
+                              render->decoded[index].mip_scratch, mip_bytes,
+                              &chain)
+                        : gfx_mip_build(
+                              rgba, width, height,
+                              render->decoded[index].mip_scratch, mip_bytes,
+                              &chain))) {
             mdkr_modern_render_asset_shutdown(render);
             set_error(error, error_size, "could not build character texture mip chain");
             return 0;
