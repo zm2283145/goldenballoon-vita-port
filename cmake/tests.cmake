@@ -1923,6 +1923,47 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         target_link_libraries(mdkr_void_pairs_test PRIVATE m)
         add_test(NAME void_pairs COMMAND mdkr_void_pairs_test)
     endif()
+
+    # PAL video-mode height-raise idempotency (Return-to-Launcher -> Play
+    # vertical menu shift): the native persistent launcher calls video_init()
+    # once per in-process engine epoch, so the PAL height raise must not
+    # compound the persistent global table. Links the production helper; it is
+    # pure C (no engine closure), so no stubbing or dead-strip is needed.
+    if(NOT MSVC)
+        add_executable(mdkr_video_mode_table_test
+            ${CMAKE_SOURCE_DIR}/tests/test_video_mode_table.c
+            ${CMAKE_SOURCE_DIR}/game/src/video_mode_table.c)
+        target_include_directories(mdkr_video_mode_table_test PRIVATE
+            ${CMAKE_SOURCE_DIR}/game
+            ${CMAKE_SOURCE_DIR}/game/src
+            ${CMAKE_SOURCE_DIR}/game/include
+            ${CMAKE_SOURCE_DIR}/game/include/PR
+            ${CMAKE_SOURCE_DIR}/game/include/sys
+            ${CMAKE_SOURCE_DIR}/game/libultra
+            ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
+            ${CMAKE_SOURCE_DIR}/platform
+            ${CMAKE_SOURCE_DIR}/platform/fast3d
+            ${CMAKE_SOURCE_DIR}/platform/fast3d_shim)
+        target_compile_definitions(mdkr_video_mode_table_test PRIVATE
+            VERSION_us_v80
+            _LANGUAGE_C
+            MODERN_CC
+            NON_MATCHING=1
+            AVOID_UB=1
+            NATIVE_PORT=1
+            F3DDKR_GBI
+            _FINALROM)
+        target_compile_options(mdkr_video_mode_table_test PRIVATE
+            -fno-strict-aliasing
+            -fcommon)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+            target_compile_options(mdkr_video_mode_table_test PRIVATE
+                -Wno-everything
+                -fms-extensions
+                -Wno-c23-extensions)
+        endif()
+        add_test(NAME video_mode_table COMMAND mdkr_video_mode_table_test)
+    endif()
 endif()
 
 # Repository-publication policy is backend-independent and must run in every
