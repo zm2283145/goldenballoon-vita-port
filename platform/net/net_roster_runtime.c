@@ -8,12 +8,6 @@ static MdkrMatchLaunchDescriptorV1 sLaunch;
 static bool sActive;
 static bool sHaveLaunch;
 
-/* Owner token for the currently installed roster (0 == unowned). Only the
- * additive ownership guard below touches it; the install/clear reducer above is
- * unchanged so a non-beta build that never references the guard dead-strips this
- * state and the functions with it, staying byte-identical. */
-static uint64_t sOwnerToken;
-
 static bool roster_valid(const MdkrNetRoster *roster) {
     unsigned index;
     if (roster == NULL || roster->canonical_player_count < 2u ||
@@ -156,25 +150,6 @@ bool mdkr_net_roster_runtime_canonical_to_local(
             *local_seat = (uint8_t)index;
             return true;
         }
-    }
-    return false;
-}
-
-void mdkr_net_roster_runtime_set_owner(uint64_t owner_token) {
-    /* Owning a roster is only meaningful while one is installed; a token set
-     * without an active roster would linger past the next clear(). */
-    sOwnerToken = sActive ? owner_token : 0u;
-}
-
-uint64_t mdkr_net_roster_runtime_owner(void) {
-    return sActive ? sOwnerToken : 0u;
-}
-
-bool mdkr_net_roster_runtime_guard_owner(uint64_t owner_token) {
-    if (sActive && (owner_token == 0u || sOwnerToken != owner_token)) {
-        mdkr_net_roster_runtime_clear();
-        sOwnerToken = 0u;
-        return true;
     }
     return false;
 }

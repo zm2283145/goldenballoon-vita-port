@@ -733,7 +733,7 @@ int runEngineSession(AppHost &host, SessionRuntime &session,
      * network input a local race never sends. Historically the roster was only
      * cleared on engine EXIT and never checked on ENTRY. Force-clear any roster
      * this local boot does not own BEFORE booting, not only after. */
-    if (!online && mdkr_net_roster_runtime_guard_owner(0u)) {
+    if (!online && OnlineRoom_guardRosterOwner(0u)) {
         std::fprintf(stderr,
                      "[session] discarded a stray online roster before a local "
                      "boot (ownership guard)\n");
@@ -773,7 +773,7 @@ int runEngineSession(AppHost &host, SessionRuntime &session,
     /* Tag the roster this online session installed so a subsequent local-Play
      * boot's ownership guard clears it rather than silently inheriting it. */
     if (networkRoster != nullptr) {
-        mdkr_net_roster_runtime_set_owner(session.state().session_id);
+        OnlineRoom_setRosterOwner(session.state().session_id);
     }
 #endif
     MatchInputProviderContext matchInputContext{};
@@ -1214,7 +1214,7 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
      * later local-Play boot's guard force-clears it instead of inheriting it. */
     const std::uint64_t ownerToken =
         UINT64_C(0x4f4e4c49564500) ^ static_cast<std::uint64_t>(info.matchEpoch);
-    mdkr_net_roster_runtime_set_owner(ownerToken);
+    OnlineRoom_setRosterOwner(ownerToken);
 
     LiveMatchInputContext context;
     context.visible = visible;

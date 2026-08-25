@@ -244,6 +244,13 @@ bool OnlineRoom_liveInvite(IMdkrOnlineAdapter *adapter, std::string *code,
  * ======================================================================== */
 namespace {
 IMdkrOnlineAdapter *sPendingEngineRaceBoot = nullptr;
+/* Explicit owner of the process-global engine roster. It lives HERE, in the
+ * beta-only wiring TU, rather than in platform/net/net_roster_runtime.c: that
+ * file is compiled into every build without the MDKR_ENABLE_ONLINE_BETA macro,
+ * so state or state-mutating functions added there would leak into the
+ * OFF/release binary. Only online boots install a roster, so the token belongs
+ * with the online code and the release build stays byte-identical. */
+uint64_t sRosterOwnerToken = 0u;
 }  // namespace
 
 void OnlineRoom_publishEngineRaceBoot(IMdkrOnlineAdapter *adapter) {
@@ -258,6 +265,25 @@ IMdkrOnlineAdapter *OnlineRoom_pollEngineRaceBoot(void) {
     IMdkrOnlineAdapter *pending = sPendingEngineRaceBoot;
     sPendingEngineRaceBoot = nullptr; /* consume once: boot exactly one race */
     return pending;
+}
+
+void OnlineRoom_setRosterOwner(uint64_t token) {
+    /* Ownership is meaningful only while a roster is installed. */
+    sRosterOwnerToken = mdkr_net_roster_runtime_active() ? token : 0u;
+}
+
+uint64_t OnlineRoom_rosterOwner(void) {
+    return mdkr_net_roster_runtime_active() ? sRosterOwnerToken : 0u;
+}
+
+bool OnlineRoom_guardRosterOwner(uint64_t token) {
+    if (mdkr_net_roster_guard_decides_clear(mdkr_net_roster_runtime_active(),
+                                            sRosterOwnerToken, token)) {
+        mdkr_net_roster_runtime_clear();
+        sRosterOwnerToken = 0u;
+        return true;
+    }
+    return false;
 }
 
 /* ======================================================================== *

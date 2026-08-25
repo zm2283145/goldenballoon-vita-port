@@ -476,6 +476,22 @@ void OnlineRoom_publishEngineRaceBoot(IMdkrOnlineAdapter *adapter);
 void OnlineRoom_retractEngineRaceBoot(IMdkrOnlineAdapter *adapter);
 IMdkrOnlineAdapter *OnlineRoom_pollEngineRaceBoot(void);
 
+/* ---- Engine-roster ownership guard (local-Play beach-ball fix, beta only) -- *
+ *
+ * The process-global engine roster (platform/net/net_roster_runtime) is installed
+ * by an online boot and must never be inherited by a later local-Play boot, which
+ * would flip the engine into online-race mode and stall on network input a local
+ * race never sends. The owner token lives in the beta wiring layer (not in the
+ * always-compiled net_roster TU) so the OFF/release build stays byte-identical;
+ * the pure decision is mdkr_net_roster_guard_decides_clear() in
+ * net_roster_runtime.h. Defined in platform/app/online_live_wiring.cpp. */
+void OnlineRoom_setRosterOwner(uint64_t token);
+uint64_t OnlineRoom_rosterOwner(void);
+/* Force-clear the installed roster BEFORE booting when this boot (owner `token`;
+ * 0 == "installs no roster", ordinary local Play) does not own it. Returns true
+ * if a foreign roster was discarded so the boot starts clean. */
+bool OnlineRoom_guardRosterOwner(uint64_t token);
+
 /* ---- Test-only in-process loopback race pair (MDKR_APP_TEST_ONLINE_LIVE) --- *
  *
  * Builds two real live adapters over the O-T2 loopback signal hub + an
