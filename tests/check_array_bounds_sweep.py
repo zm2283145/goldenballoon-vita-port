@@ -173,6 +173,17 @@ SHAPE_TRIAGE = {
         "caller (stubs_dkr.c presentation subloop) passes ARRAY_COUNT of a "
         "local GfxShadowReplayViewProjection views[4], matching "
         "GFX_SHADOW_MAX_VIEWS. NULL out returns 0.",
+    ("bare-pointer", "game/src/video_mode_table.c",
+     "mdkr_video_apply_pal_height_raise:modes"):
+        "BOUNDED BY THE CALLER'S OWN LAST INDEX: the loop is `for (i = 0; i <= "
+        "lastIndex; i++)` writing modes[i], and the sole game caller (video.c "
+        "video_init) passes NUM_RESOLUTION_MODES == sizeof(gVideoModeResolutions)"
+        "/sizeof(VideoModeResolution) - 1 -- the array's own last valid index, "
+        "derived from the array itself -- so modes[lastIndex] is the final of the "
+        "8 elements, never past it. Byte-identical to the retail `for (i = 0; i "
+        "<= NUM_RESOLUTION_MODES; i++)` PAL height loop it replaced; the only "
+        "added behaviour is the *raised once-flag that makes the raise idempotent "
+        "across in-process launcher epochs. NULL modes returns early.",
     ("bare-pointer", "game/src/tracks.c", "get_inside_segment_count_xz:arg2"):
         "BOUNDED (this commit): maxOut added; caller passes ARRAY_COUNT"
         "(segmentsInside[8]). Peak 4 of 8, min slack 4, 0 calls at the bound.",
@@ -598,6 +609,24 @@ SHAPE_TRIAGE = {
     ("bare-pointer", "platform/stubs_dkr.c", "osContGetReadData:pad"):
         "BOUNDED BY LITERAL: same shape -- `i < MAXCONTROLLERS` writing pad[i], "
         "sole caller passes joypad.c's gControllerCurrData[MAXCONTROLLERS].",
+    # -- the ghost-bank window/directory codecs (1.5.2). --------------------
+    ("bare-pointer", "platform/ghost_bank.c", "window_stage_records:records"):
+        "BOUNDED BY CONSTRUCTION: the loop is `for (i = 0; i < "
+        "MDKR_GHOST_WINDOW_SLOTS; i++)` and `count` advances at most once per "
+        "iteration (occupied slots only -- empty slots `continue`), so count <= "
+        "MDKR_GHOST_WINDOW_SLOTS (6) and the highest records[count] write index "
+        "is 5. Both callers (mdkr_ghost_window_remove, mdkr_ghost_window_insert) "
+        "pass a local GhostWindowRecord records[MDKR_GHOST_WINDOW_SLOTS]. The "
+        "bound-ish size/scratch_capacity params guard the PARALLEL scratch copy "
+        "(`used + len > scratch_capacity` returns -1), NOT the records array -- "
+        "its bound is the loop's own slot count.",
+    ("bare-pointer", "platform/ghost_bank.c", "collect_records:pairs"):
+        "BOUNDED BY PARAMETER: the loop condition `while (count < capacity && "
+        "(entry = readdir(...)))` is a pre-check evaluated before every "
+        "pairs[count] write, and count has a single increment on the write path "
+        "-- so it cannot pass `capacity` without equalling it. Both callers "
+        "(wipe_library, reconcile's on_disk sweep) pass GHOST_BANK_SWEEP_MAX "
+        "(1024) with a matching local GhostBankSweepPair[GHOST_BANK_SWEEP_MAX].",
     ("shift-count", "platform/fast3d/gfx_pc_dkr.c", "dkr_generate_cc:MIPS-MASK-IDIOM"):
         "NOT UB: the enumerator's added-constant heuristic assumes a 32-bit "
         "operand, and `cc_id` is a uint64_t parameter. The loop is `i < 2 && (i "
@@ -752,7 +781,18 @@ SHAPE_INFO_MAX = {
     # already-counted files (gfx_pc_dkr.c effect-recipe paths, menu.c,
     # object_functions.c). Ceiling set to the measured population, not a
     # guess, per the standing rule.
-    "shift-count": 367,
+    #
+    # 367 -> 368, 2026-08-25 (release-1.5.2, issue #52). One new var-count
+    # shift, in platform/fast3d/gfx_pc_dkr.c: the inverted-rectangle
+    # span-invalid rule (dkr_dp_fill_rectangle / dkr_dp_texture_rectangle)
+    # reads the cycle type via `rdp.other_mode_h & (3U << G_MDSFT_CYCLETYPE)`
+    # to gate the fixed-point FILL/COPY `+1 << 2` coordinate adjustment before
+    # deciding whether an inverted rect draws. G_MDSFT_CYCLETYPE == 20
+    # (game/include/PR/gbi.h), so it is a compile-time-constant `3U << 20`
+    # into a u32 -- flagged var-count only because the count is a macro, not a
+    # numeric literal, and covered at runtime by -fsanitize=shift-exponent.
+    # Measured 368 with tools/sweep_bug_shapes.py, not summed.
+    "shift-count": 368,
 }
 
 # Only array-bounds is load-bearing for this class. pointer-overflow is kept
