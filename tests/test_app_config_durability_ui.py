@@ -26,11 +26,15 @@ def main() -> int:
     require("persistResultApplied" in HEADER,
             "visible-but-unconfirmed writes need one shared applied predicate")
 
-    # Both the initial UI-scale commit and its Retry action must retire their
-    # dirty/error state after a visible replacement, while presenting a warning
-    # instead of claiming a durable save.
-    require(SETTINGS.count("AppConfig::persistResultApplied(persist)") == 2,
-            "both UI-scale save paths must accept visible unconfirmed writes")
+    # Every shell-preference save path in the settings panel must accept a
+    # visible-but-unconfirmed write through the shared applied predicate:
+    # the initial UI-scale commit, its Retry action, and the menu-button
+    # combo (drawMenuToggleButton). A fourth path added without updating
+    # this count is a path someone wrote without deciding its durability
+    # story, which is exactly what this contract exists to force.
+    require(SETTINGS.count("AppConfig::persistResultApplied(persist)") == 3,
+            "all three settings-panel save paths must accept visible "
+            "unconfirmed writes")
     require(SETTINGS.count("PersistResult::DurabilityUnconfirmed") >= 2,
             "both UI-scale save paths must distinguish durability uncertainty")
     # Pin the CLAIM, not the sentence. This assertion used to pin exact prose,
@@ -41,6 +45,13 @@ def main() -> int:
     for fragment in ("UI scale applied", "could not confirm"):
         require(fragment in SETTINGS,
                 f"UI-scale warning must still say {fragment!r}")
+    # Same claim honesty for the menu-button row: applied, but unconfirmed --
+    # and its failure copy must say the value did NOT change, because
+    # AppConfig only promotes the in-memory value once the write applied.
+    require("Menu button applied" in SETTINGS,
+            "menu-button warning must say the choice was applied")
+    require("could not be saved and was not" in SETTINGS,
+            "menu-button failure copy must say the value did not change")
 
     # A freshly validated replacement and Forget both act on a path only once
     # it was applied. Retry deliberately re-enters that same validation and

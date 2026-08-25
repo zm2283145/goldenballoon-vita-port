@@ -237,6 +237,12 @@ AppUiSettingsSection AppUi_shellPreferenceSection(AppUiShellPreference key) {
         // told to look for.
         case AppUiShellPreference::UiScale:
             return AppUiSettingsSection::Accessibility;
+        // The button that opens the in-game menu belongs beside the other
+        // controller rows. A player whose pad opens the menu on its own
+        // (issue #55: SDL's fallback for the NSO N64 pad lands C-Right on
+        // BACK) looks under Controls, not under an access-needs section.
+        case AppUiShellPreference::MenuToggleButton:
+            return AppUiSettingsSection::Category;
     }
     return AppUiSettingsSection::Category;
 }

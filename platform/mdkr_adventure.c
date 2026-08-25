@@ -837,6 +837,83 @@ static void mdkr_adv_steer(Object_Racer *racer, f32 dx, f32 dz, s32 reverse) {
     gCurrentRacerInput = reverse ? B_BUTTON : A_BUTTON;
 }
 
+/* --------------------------------------------- forced exit-latch test seam */
+
+/**
+ * MDKR_FORCE_EXIT_LATCH=<destId>[:<delay>] -- trip a BHV_EXIT latch without
+ * the human trick (issue #55: Hot Top Volcano's destination -1 exit sits ~114
+ * units BELOW the drivable surface, reachable only by an out-of-bounds clip,
+ * so no scripted or closed-loop route can drive into it).  After <delay>
+ * calls of this hook inside a level that contains a BHV_EXIT whose
+ * destinationMapId matches <destId> (255 selects the byte that reads back as
+ * -1), this performs exactly the two writes obj_loop_exit() makes when a
+ * human crosses the trigger:
+ *
+ *     racer->exitObj = obj;  racer->transitionTimer = -120;
+ *
+ * Everything downstream -- racer_enter_door()'s captive drive, the door
+ * fade, func_8006D968()'s level-settings copy, and update_game()'s
+ * destination routing -- is production code.  One-shot; a no-op unless the
+ * variable is set, the same contract as every other hook in this file.
+ * After the latch, the first hook call in a DIFFERENT level reports the live
+ * trophy globals, which is what lets a check assert that the community's
+ * "trophy storage" survives the destination -1 reload (the RED hang never
+ * reaches another level, so the post row doubles as the recovery witness).
+ */
+static void mdkr_force_exit_latch(Object_Racer *racer, s32 levelId) {
+    static s32 sInited, sDest = -1, sDelay, sTicks, sConsumed, sPosted;
+    static s32 sPrevLevel = -1, sLatchLevel = -1;
+    Object *target;
+
+    if (!sInited) {
+        const char *value = getenv("MDKR_FORCE_EXIT_LATCH");
+        sInited = TRUE;
+        if (value != NULL && value[0] != '\0') {
+            char *end = NULL;
+            sDest = (s32) strtol(value, &end, 10);
+            sDelay = (end != NULL && *end == ':') ? atoi(end + 1) : 0;
+            if (sDest < 0) {
+                sDest = -1;
+            }
+        }
+    }
+    if (sDest < 0) {
+        return;
+    }
+    if (sConsumed) {
+        if (!sPosted && levelId != sLatchLevel && mdkr_trace_enabled()) {
+            sPosted = TRUE;
+            mdkr_trace("force_exit_latch: post level=%d trophyWorld=%d trophyRound=%d @frame~%d",
+                       (int) levelId, (int) get_trophy_race_world_id(), (int) gTrophyRaceRound, g_frameCounter);
+        }
+        return;
+    }
+    if (levelId != sPrevLevel) {
+        sPrevLevel = levelId;
+        sTicks = 0;
+    }
+    sTicks++;
+    if (sTicks <= sDelay || racer->exitObj != NULL) {
+        return;
+    }
+    target = mdkr_adv_find(BHV_EXIT, sDest);
+    if (target == NULL) {
+        return;
+    }
+    /* The two writes obj_loop_exit() performs on a latched human racer. */
+    racer->exitObj = target;
+    racer->transitionTimer = -120;
+    sConsumed = TRUE;
+    sLatchLevel = levelId;
+    if (mdkr_trace_enabled()) {
+        mdkr_trace("force_exit_latch: level=%d dest=%d exit=(%.1f, %.1f, %.1f) trophyWorld=%d trophyRound=%d "
+                   "@frame~%d",
+                   (int) levelId, (int) sDest, target->trans.x_position, target->trans.y_position,
+                   target->trans.z_position, (int) get_trophy_race_world_id(), (int) gTrophyRaceRound,
+                   g_frameCounter);
+    }
+}
+
 /**
  * The hook.  Called once per frame from update_player_racer() for the human
  * racer, after the normal input dispatch and after the MDKR_AUTOPILOT hook.
@@ -855,6 +932,12 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
     mdkr_taj_p2_lead_prepare(racer);
     mdkr_taj_p2_lead_trace(racer);
     mdkr_adv_init();
+    {
+        Settings *latchSettings = get_settings();
+        if (latchSettings != NULL) {
+            mdkr_force_exit_latch(racer, latchSettings->courseId);
+        }
+    }
     if (sAdvLevelCount == 0 && !sAdvObjdump && !sAdvBossRoute && !sAdvSilverRoute) {
         return;
     }

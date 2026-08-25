@@ -777,6 +777,10 @@ CHECKS = (
     Check("postrace_door_fling", "check_postrace_door_fling.py", "native",
           "post-race lobby returns stay grounded on the quit paths, with the "
           "rising-door carry-frame legacy control"),
+    Check("track_exit_storage", "check_track_exit_storage.py", "native",
+          "Hot Top Volcano's destination -1 exit reloads the central hub "
+          "through the measured retail us.v80 path with trophy storage "
+          "intact, instead of the menu-8 dead-end hang (issue #55)"),
     Check("trophy_series", "check_trophy_series.py", "native",
           "all four Adventure trophy championships, quit/retry, and EEPROM reload"),
     Check("race_finish_time", "check_race_finish_time.py", "native",
@@ -800,6 +804,9 @@ CHECKS = (
           "perturbed-boost-constant positive controls"),
     Check("save_failsafe", "check_save_failsafe.py", "native",
           "EEPROM recovery and persistence"),
+    Check("save_write_notice", "check_save_write_notice.py", "native",
+          "a failed durable save surfaces one player notice instead of losing "
+          "progress silently (issue #54 Run B)"),
     Check("save_100_entry", "check_save_100_entry.py", "native",
           "a 100%-complete save is actually enterable through the FILE_SELECT "
           "input gate, with the AT2-config-bit defect as a positive control"),
@@ -995,6 +1002,9 @@ CHECKS = (
 # role arguments. ``rom_free_units`` owns their execution.
 CTEST_COMPANION_SCRIPTS = {
     "check_multiplayer_boundaries.py",
+    # Registered as the gamecontrollerdb_lint CTest (cmake/tests.cmake); a
+    # plain source lint with no artifacts, run once by the ctest task.
+    "check_gamecontrollerdb.py",
     "check_controller_settings_persistence.py",
     "check_host_input_focus.py",
     "check_launcher_tabs.py",

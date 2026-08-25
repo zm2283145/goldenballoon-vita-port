@@ -293,6 +293,15 @@ int main() {
     expect(AppUi_shellPreferenceSection(AppUiShellPreference::UiScale) !=
                AppUiSettingsSection::Category,
            "UI scale is no longer drawn under Interface as well");
+    // The menu toggle button is the other schema-less shell preference
+    // (mdkr64_app.ini menu_toggle_button, read by Overlay_gamepadToggleButton).
+    // Category means its natural home: the Controls section, beside the other
+    // controller rows -- which is where a player whose pad opens the menu on
+    // its own (issue #55) goes looking first.
+    expect(AppUi_shellPreferenceSection(
+               AppUiShellPreference::MenuToggleButton) ==
+               AppUiSettingsSection::Category,
+           "the menu toggle button is drawn under Controls, its category home");
     // An accessibility choice is not one of "the extras", so the reset beside
     // the enhancements must not switch a player's voice or reduced motion off.
     for (MdkrVideoKey key : accessibilityKeys) {

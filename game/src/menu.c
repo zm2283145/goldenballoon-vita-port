@@ -3566,7 +3566,43 @@ s32 menu_loop(Gfx **currDisplayList, Mtx **currHudMat, Vertex **currHudVerts, Tr
             break;
 #ifdef AVOID_UB
         default:
+#ifdef NATIVE_PORT
+            /* AVOID_UB resolved to the measured us.v80 value (issue #55).
+             *
+             * MENU_UNUSED_8 is where update_game() routes a BHV_EXIT whose
+             * destinationMapId is -1 (Hot Top Volcano's out-of-bounds exit,
+             * the community's "trophy storage" glitch). The menu has no init
+             * and no loop case, so retail returns `ret` UNINITIALIZED here --
+             * authored UB whose resolution is a per-build accident: US 1.1
+             * recovers, US 1.0 black-screens. This port ships us.v80, so the
+             * us.v80 accident is the contract.
+             *
+             * Measured on retail us.v80 in the instrumented ares oracle
+             * (docs/ORACLE.md, issue-#55 poke + menu-result lanes,
+             * 2026-08-24): menu_loop returns v0 = 0x8006CA60 for menuId 8,
+             * every time. Encode the whole 32-bit value, not a cleaned-up
+             * flag: mode_menu() consumes it through the MENU_RESULT_FLAGS_200
+             * arm (0x8006CA60 & 0x200), loads level 0x8006CA60 & 0x7F == 96,
+             * and level_load()'s own "LOADLEVEL Error: Level out of range"
+             * guard substitutes ASSET_LEVEL_CENTRALAREAHUB -- central hub,
+             * in-game, trophy globals untouched. Exactly the console
+             * behavior, glitch preserved. A generic "safe" value here is what
+             * produced 1.5.1's indefinite black screen (MENU_RESULT_CONTINUE
+             * forever, nothing drawn, input ignored).
+             *
+             * Same precedent as the D_800DCDA0[8] read in racer.c: measure
+             * what the shipped us.v80 build actually does and name that
+             * value. Every other caseless menu id keeps the neutral
+             * CONTINUE -- only menu 8's value has a measurement behind it.
+             * Witness: tests/check_track_exit_storage.py. */
+            if (gCurrentMenuId == MENU_UNUSED_8) {
+                ret = (s32) 0x8006CA60u;
+            } else {
+                ret = MENU_RESULT_CONTINUE;
+            }
+#else
             ret = MENU_RESULT_CONTINUE;
+#endif
 #endif
     }
     *currDisplayList = sMenuCurrDisplayList;
