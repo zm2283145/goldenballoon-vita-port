@@ -185,6 +185,26 @@ static int semantic_lookup(const MdkrModernCharacterAsset *asset,
     return *animation >= 0;
 }
 
+int mdkr_modern_pose_has_semantic(const MdkrModernPose *pose,
+                                  const char *semantic) {
+    const MdkrModernSectionView *semantics;
+    uint32_t index;
+    if (pose == NULL || !pose->valid || semantic == NULL) return 0;
+    semantics = mdkr_modern_character_asset_section(
+        pose->asset, MDKR_MDKC_SEMANTICS);
+    if (semantics == NULL) return 0;
+    for (index = 0u; index < semantics->count; index++) {
+        MdkrModernSemantic mapping;
+        const char *name;
+        (void)mdkr_modern_character_asset_semantic(
+            pose->asset, index, &mapping);
+        name = mdkr_modern_character_asset_string(pose->asset,
+                                                   mapping.semantic);
+        if (name != NULL && strcmp(name, semantic) == 0) return 1;
+    }
+    return 0;
+}
+
 static void bind_pose(const MdkrModernCharacterAsset *asset,
                       MdkrModernTrs *output, uint32_t count) {
     uint32_t index;
@@ -421,8 +441,9 @@ int mdkr_modern_pose_set_semantic(MdkrModernPose *pose, const char *semantic,
     return 1;
 }
 
-int mdkr_modern_pose_advance(MdkrModernPose *pose, float seconds,
-                             char *error, size_t error_size) {
+static int pose_advance(MdkrModernPose *pose, float seconds,
+                        int phase_driven, float normalized_phase,
+                        char *error, size_t error_size) {
     MdkrModernAnimation animation;
     float blend_amount;
     uint32_t node;
@@ -434,10 +455,14 @@ int mdkr_modern_pose_advance(MdkrModernPose *pose, float seconds,
     }
     memcpy(pose->world_previous, pose->world_current,
            (size_t)pose->node_count * 16u * sizeof(float));
-    pose->time += seconds;
-    if ((pose->animation_flags & 1u) != 0u) {
+    if (phase_driven) {
+        pose->time = clamp01(normalized_phase) * animation.duration;
+    } else {
+        pose->time += seconds;
+    }
+    if (!phase_driven && (pose->animation_flags & 1u) != 0u) {
         if (animation.duration > 0.0f) pose->time = fmodf(pose->time, animation.duration);
-    } else if (pose->time > animation.duration) {
+    } else if (!phase_driven && pose->time > animation.duration) {
         pose->time = animation.duration;
     }
     if (!evaluate_local(pose, pose->sampled, error, error_size)) return 0;
@@ -460,6 +485,23 @@ int mdkr_modern_pose_advance(MdkrModernPose *pose, float seconds,
     if (!evaluate_world(pose, pose->world_current, error, error_size)) return 0;
     set_error(error, error_size, "");
     return 1;
+}
+
+int mdkr_modern_pose_advance(MdkrModernPose *pose, float seconds,
+                             char *error, size_t error_size) {
+    return pose_advance(pose, seconds, 0, 0.0f, error, error_size);
+}
+
+int mdkr_modern_pose_advance_phase(MdkrModernPose *pose, float seconds,
+                                   float normalized_phase,
+                                   char *error, size_t error_size) {
+    if (!isfinite(normalized_phase)) {
+        set_error(error, error_size,
+                  "pose normalized phase must be finite");
+        return 0;
+    }
+    return pose_advance(pose, seconds, 1, normalized_phase,
+                        error, error_size);
 }
 
 const float *mdkr_modern_pose_node_matrix(const MdkrModernPose *pose,

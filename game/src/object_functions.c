@@ -2421,6 +2421,30 @@ void obj_loop_char_select(Object *charSelectObj, s32 updateRate) {
                 taj_visual_select_apply_authored_actor(charSelectObj, i);
                 wizpig_visual_select_apply_authored_actor(charSelectObj, i);
                 terry_visual_select_apply_authored_actor(charSelectObj, i);
+                if (i == 1) { /* Diddy is row one in every retail roster. */
+                    u32 hoverMask = 0u;
+                    u32 confirmedMask = 0u;
+                    s32 controller;
+                    s32 logicalPlayer = 0;
+                    s8 *selectStatus = charselect_status();
+                    for (controller = 0; controller < MAXCONTROLLERS;
+                         controller++) {
+                        const s32 selectedIndex =
+                            get_player_character(controller);
+                        if (selectedIndex < 0) continue;
+                        if (selectedIndex == i) {
+                            hoverMask |= 1u << logicalPlayer;
+                            if (selectStatus[controller] !=
+                                CHARSELECT_STATUS_UNCONFIRMED) {
+                                confirmedMask |= 1u << logicalPlayer;
+                            }
+                        }
+                        logicalPlayer++;
+                    }
+                    obj_modern_character_select_update(
+                        charSelectObj, hoverMask, confirmedMask,
+                        (f32)updateRate / 60.0f);
+                }
 #endif
                 charSelectObj->animationID = 1;
                 for (playerIndex = 0, numCursors = 0; playerIndex < MAXCONTROLLERS; playerIndex++) {

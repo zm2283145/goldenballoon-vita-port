@@ -44,9 +44,14 @@ class CharacterPackageManagerTests(unittest.TestCase):
             active = [entry for entry in listing["entries"] if entry["active"]]
             self.assertEqual(1, len(active))
             self.assertTrue(active[0]["source_present"])
+            collision = installed / (
+                "org.example.pipeline-proof.other." + "a" * 64 + ".json"
+            )
+            collision.write_text("unrelated prefix package\n", encoding="utf-8")
             removed = manager.remove("org.example.pipeline-proof", installed)
             self.assertEqual(3, len(removed["removed"]))
             self.assertFalse((installed / "org.example.pipeline-proof.mdkc").exists())
+            self.assertTrue(collision.is_file())
 
     def test_invalid_package_never_publishes_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -57,6 +62,20 @@ class CharacterPackageManagerTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 manager.install(bad, installed)
             self.assertEqual([], list(installed.glob("*.mdkc")))
+
+    def test_prepare_builds_a_self_contained_portable_package(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = self.make_package(root)
+            portable = root / "portable.mdkrchar"
+            prepared = manager.prepare(source, portable)
+            self.assertEqual("org.example.pipeline-proof", prepared["id"])
+            verified = probe.verify_package(portable)
+            self.assertTrue(verified["valid"], verified["errors"])
+            self.assertTrue(verified["portable"])
+            installed = root / "installed"
+            report = manager.install(portable, installed)
+            self.assertEqual(prepared["compiled_sha256"], report["compiled_sha256"])
 
 
 if __name__ == "__main__":

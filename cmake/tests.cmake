@@ -338,6 +338,7 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_executable(mdkr_modern_character_asset_test
         ${CMAKE_SOURCE_DIR}/tests/test_modern_character_asset.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_asset.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_install.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_registry.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_pose.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_render.c
@@ -345,12 +346,15 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform/modern_character_donor.c
         ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_mipgen.c
         ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c
-        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c)
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c)
     target_include_directories(mdkr_modern_character_asset_test PRIVATE
         ${CMAKE_SOURCE_DIR}/game/include
         ${CMAKE_SOURCE_DIR}/platform
         ${CMAKE_SOURCE_DIR}/platform/fast3d
-        ${CMAKE_SOURCE_DIR}/lib/stb)
+        ${CMAKE_SOURCE_DIR}/lib/stb
+        ${CMAKE_SOURCE_DIR}/lib/miniz)
     if(NOT MSVC)
         target_link_libraries(mdkr_modern_character_asset_test PRIVATE m)
     endif()
@@ -361,6 +365,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME character_package_manager
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_character_package_manager.py)
+    add_test(NAME character_manifest_wizard
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_manifest_wizard.py)
     add_test(NAME collada_to_glb
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_collada_to_glb.py)

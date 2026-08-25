@@ -44,6 +44,10 @@ bool isAvailable();
 // which is fine because ImGui state is retained across the modal.
 bool openRom(std::string &out);
 
+// Choose a custom-character source package. The launcher validates and imports
+// it after the panel returns; selecting a file never installs bytes by itself.
+bool openCharacterPackage(std::string &out);
+
 }  // namespace filedialog
 
 #endif  // MDKR64_FILE_DIALOG_H

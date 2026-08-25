@@ -215,6 +215,12 @@ def rewrite_glb_document(data: bytes, update) -> bytes:
 
 
 class CharacterAssetProbeTests(unittest.TestCase):
+    def test_semantic_playback_policy_is_engine_owned(self) -> None:
+        self.assertEqual((0, 0.15), compiler._semantic_policy("race.land"))
+        self.assertEqual((0, 0.15), compiler._semantic_policy("select.confirm"))
+        self.assertEqual((1, 0.08), compiler._semantic_policy("race.steer"))
+        self.assertEqual((1, 0.15), compiler._semantic_policy("fallback"))
+
     def test_generated_glb_is_character_ready(self) -> None:
         report = probe.inspect_glb_bytes(make_animated_glb(), require_character=True)
         self.assertEqual([], report["errors"])
@@ -276,6 +282,8 @@ class CharacterAssetProbeTests(unittest.TestCase):
         self.assertEqual(1, first_report["triangles"])
         self.assertEqual(2, first_report["joints"])
         self.assertEqual(1, first_report["animations"])
+        self.assertEqual(1, first_report["motion_channels"])
+        self.assertEqual([], first_report["static_animations"])
         self.assertEqual(2, first_report["sockets"])
         self.assertEqual(4, first_report["decoded_texture_bytes"])
 

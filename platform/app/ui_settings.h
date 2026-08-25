@@ -22,6 +22,12 @@ struct SDL_Window;
 // re-read live state).
 bool Settings_draw(SDL_Window *window, bool compact = false);
 
+// Validate and install a package through the same native-first path used by
+// the Custom Characters section. This is also the window-wide drag-and-drop
+// entry point, so Linux builds without a native picker still have a direct
+// package workflow. The Settings panel owns and displays the detailed report.
+bool Settings_importCharacterPackage(const char *path);
+
 // Discard any in-progress audible Audio slider preview. Used when navigation
 // removes the settings panel before ImGui can emit a normal deactivation.
 void Settings_cancelAudioPreview();

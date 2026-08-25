@@ -109,6 +109,8 @@ class ColladaAdapterTests(unittest.TestCase):
         )
         self.assertTrue(compiled.startswith(compiler.MDKC_MAGIC))
         self.assertEqual(1, compiled_report["triangles"])
+        self.assertEqual(0, compiled_report["motion_channels"])
+        self.assertEqual(["idle"], compiled_report["static_animations"])
 
     def test_authored_dae_animation_fails_closed(self) -> None:
         animated = DAE.replace(

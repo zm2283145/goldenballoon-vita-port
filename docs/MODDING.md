@@ -214,8 +214,13 @@ game never saw — check the directory location above.
 The custom-character branch contains a WebGPU-only vertical slice. The stable
 author handoff is a self-contained GLB 2.0 plus a declarative manifest and
 license text, packaged as `.mdkrchar`. It does not require a second ROM. Install
-and removal are currently developer CLI operations; Settings can rescan and
-select installed caches for P1-P4.
+and removal are available in **Settings → Content → Custom Characters**. That
+workshop can browse, drag-and-drop, or accept a typed package path,
+validate/import, rescan, assign a different presentation to P1-P4, remove it,
+and edit package-specific size, seat XYZ, rotation XYZ, animation speed, LOD
+preference, and car/hover/plane pairing. Package-specific fit follows the same
+character when it is assigned to another player. Those settings never alter
+physics or the vehicle selected by the game.
 
 ```sh
 # Optional convenience path for the adapter's deliberately bounded DAE subset.
@@ -224,10 +229,24 @@ python3 tools/collada_to_glb.py source.dae --output model.glb
 # Inspect before packaging; --require-character applies the renderer contract.
 python3 tools/character_asset_probe.py probe model.glb --require-character
 
+# Optional: generate a reviewable manifest from named clips/nodes rather than
+# memorizing semantic and socket names. Review and edit the emitted JSON.
+python3 tools/character_manifest_wizard.py model.glb \
+  --id org.example.character-name --display-name "Character Name" \
+  --spdx CC-BY-4.0 --attribution "Creator Name" \
+  --source-url https://example.invalid/source --output manifest.json
+
 python3 tools/character_asset_probe.py pack \
   --model model.glb --manifest manifest.json --license LICENSE.txt \
   --output character.mdkrchar
 python3 tools/character_asset_probe.py verify character.mdkrchar
+
+# Make the same package player-portable by embedding the deterministic cache.
+# A packaged launcher imports this natively and does not need Python.
+python3 tools/character_package_manager.py prepare \
+  character.mdkrchar character-portable.mdkrchar
+
+# Source-checkout/developer install remains useful for source-only packages.
 python3 tools/character_package_manager.py \
   --directory characters install character.mdkrchar
 
@@ -239,9 +258,34 @@ python3 tools/character_package_manager.py \
 
 The runtime never reads DAE, GLB, JSON, or PNG source packages during a frame.
 Installation validates and compiles them into a bounded `.mdkc`; the launcher
-discovers that cache on its next scan. The manifest must match the complete
+discovers that cache on its next scan. A portable package carries the exact
+validated `.mdkc` generated from its source. The packaged launcher validates
+that cache and cryptographically binds it to the exact manifest, model, and
+license bytes; it does not compile GLB at runtime. The developer package manager
+recompiles and byte-compares portable caches, while a source-only package invokes
+that compiler when it is available and otherwise explains what the author must
+prepare. The manifest must match the complete
 example and schema in the architecture document, and every named animation or
 socket must exist in the GLB.
+
+Animation names are mapped to engine intent, not hard-coded frame numbers. The
+recommended race states are `race.steer`, `race.reverse`, `race.boost`,
+`race.damage`, `race.item`, `race.spin`, `race.airborne`, `race.land`,
+`race.finish_win`, and `race.finish_lose`; selection clips are `select.idle`,
+`select.hover`, and `select.confirm`. Missing optional states use the required
+`fallback` clip. Author `race.steer` as a pose strip: phase 0 full left, 0.5
+neutral, and 1 full right. Damage, land, and selection confirmation are
+one-shots; landing is driven for 0.2 seconds after an airborne-to-grounded
+edge. The launcher names missing mappings, reports which mapped clips actually
+move, and shows seat/head/hand socket readiness. A positive-duration
+identity clip remains a T-pose—it proves timing plumbing, not authored motion.
+
+In character select, a configured Diddy-family package replaces the exact
+fingerprint-qualified Diddy actor while the numbered player placard remains.
+Its `select.idle`, `select.hover`, and `select.confirm` mapping follows the real
+cursor state. The current virtual-presentation tier still uses Diddy's roster
+tile, name, voice, and gameplay profile; custom named tiles and portraits are a
+separate local-identity layer, not physics authority.
 
 Only the Diddy vehicle-model family has an exact qualified replacement seam.
 Other donor declarations remain visible but unavailable, and OpenGL keeps the

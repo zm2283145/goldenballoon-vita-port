@@ -17,6 +17,7 @@
 #include "SDL.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cassert>
 #include <cstdlib>
@@ -119,9 +120,28 @@ void selectPanelFromEnvironment(int &activePanel) {
     }
 }
 
-void acceptDroppedRom(AppHost &host, LauncherState &state, int &activePanel) {
+bool hasCharacterPackageExtension(const std::string &path) {
+    static constexpr char kExtension[] = ".mdkrchar";
+    constexpr size_t kExtensionLength = sizeof(kExtension) - 1u;
+    if (path.size() < kExtensionLength) return false;
+    const size_t offset = path.size() - kExtensionLength;
+    for (size_t i = 0; i < kExtensionLength; ++i) {
+        const unsigned char actual =
+            static_cast<unsigned char>(path[offset + i]);
+        if (std::tolower(actual) != kExtension[i]) return false;
+    }
+    return true;
+}
+
+void acceptDroppedFile(AppHost &host, LauncherState &state, int &activePanel) {
     const std::string dropped = host.takeDroppedFile();
     if (dropped.empty()) return;
+
+    if (hasCharacterPackageExtension(dropped)) {
+        (void)Settings_importCharacterPackage(dropped.c_str());
+        activePanel = kLauncherPanelSettings;  // show controls and full report
+        return;
+    }
 
     RomPanel_ensureInit(state);
     RomPanel_setRom(state, dropped.c_str());
@@ -967,9 +987,9 @@ LauncherAction Launcher::draw(AppHost &host) {
         }
     }
 
-    // A file dropped on the window always means "use this ROM", whichever panel
-    // is showing; switch to the ROM panel so the verdict is visible.
-    acceptDroppedRom(host, state_, active_);
+    // A dropped character package opens its workshop/importer report. Every
+    // other file keeps the established ROM flow and its full-image validation.
+    acceptDroppedFile(host, state_, active_);
     // Navigation carries the global readiness/action state, so initialize the
     // remembered ROM even when a design-review hook opens another panel first.
     RomPanel_ensureInit(state_);

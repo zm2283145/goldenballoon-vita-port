@@ -1,9 +1,11 @@
 #include "modern_character_asset.h"
 #include "modern_character_registry.h"
+#include "modern_character_install.h"
 #include "modern_character_pose.h"
 #include "modern_character_render.h"
 #include "modern_character_runtime.h"
 #include "modern_character_donor.h"
+#include "fs_utf8.h"
 #include "fast3d/gfx_pc_dkr.h"
 #include "asset_enums.h"
 
@@ -21,6 +23,7 @@ static void require(int condition, const char *message) {
 
 static uint32_t registered_draws;
 static uint32_t released_assets;
+static float last_model_matrix[16];
 
 bool gfx_modern_character_supported(void) {
     return true;
@@ -48,6 +51,7 @@ uint32_t gfx_modern_character_register_draw(
                     draw->previous_bone_matrices != NULL,
                 "runtime retains both immutable skinning endpoints");
     }
+    memcpy(last_model_matrix, draw->model_matrix, sizeof(last_model_matrix));
     return ++registered_draws;
 }
 
@@ -130,11 +134,13 @@ int main(int argc, char **argv) {
     MdkrModernCharacterAsset refused;
     MdkrModernCharacterDefinition definition;
     MdkrModernCharacterStats stats;
+    MdkrModernCharacterTuning tuning;
     MdkrModernAnimation animation;
     MdkrModernChannel channel;
     MdkrModernKey key;
     MdkrModernSocket socket;
     MdkrModernCharacterRegistry registry;
+    MdkrModernCharacterInstallResult install_result;
     MdkrModernPose pose;
     MdkrModernRenderAsset render;
     float socket_matrix[16];
@@ -144,9 +150,13 @@ int main(int argc, char **argv) {
     size_t size;
     Gfx commands[8];
     Gfx *command_cursor = commands;
+    char import_lock[4096];
+    char prefix_witness[4096];
+    FILE *lock_file;
+    int player;
 
-    require(argc == 3,
-            "usage: test_modern_character_asset <generated.mdkc> <directory>");
+    require(argc == 8,
+            "usage: test_modern_character_asset <generated.mdkc> <directory> <source.mdkrchar> <portable.mdkrchar> <install-directory> <corrupt-portable.mdkrchar> <mismatched-portable.mdkrchar>");
     test_retained_pose_interpolation();
     require(mdkr_modern_character_asset_load_file(argv[1], &asset,
                                                    error, sizeof(error)),
@@ -171,6 +181,15 @@ int main(int argc, char **argv) {
     require(!mdkr_modern_donor_model_ready(
                 0, 0, ASSET_OBJECTMODEL_KREMCAR_0, 0, 309, 240, 29),
             "unqualified donor families fail visible");
+    require(mdkr_modern_donor_select_model_ready(
+                9, ASSET_OBJECTMODEL_DIDDYSELECT, 343, 297, 28) &&
+                !mdkr_modern_donor_select_model_ready(
+                    9, ASSET_OBJECTMODEL_DIDDYSELECT, 344, 297, 28),
+            "Diddy select actor requires its exact qualified fingerprint");
+    require(mdkr_modern_donor_select_batch_visible(9, 0) &&
+                !mdkr_modern_donor_select_batch_visible(9, 1) &&
+                mdkr_modern_donor_select_batch_visible(0, 1),
+            "select replacement retains only the qualified player placard");
     require(!mdkr_modern_donor_batch_visible(9, 0, 0, 0) &&
                 mdkr_modern_donor_batch_visible(9, 0, 0, 18) &&
                 !mdkr_modern_donor_batch_visible(9, 0, 0, 27),
@@ -230,6 +249,13 @@ int main(int argc, char **argv) {
     require(mdkr_modern_character_registry_find(
                 &registry, "org.example.pipeline-proof") == 0,
             "registry lookup by stable package id");
+    require((registry.entries[0].semantic_mask &
+             MDKR_CHARACTER_SEMANTIC_FALLBACK) != 0u &&
+                (registry.entries[0].moving_semantic_mask &
+                 MDKR_CHARACTER_SEMANTIC_FALLBACK) != 0u &&
+                (registry.entries[0].socket_mask &
+                 MDKR_CHARACTER_SOCKET_SEAT) != 0u,
+            "registry summarizes animation and socket authoring health");
     require(mdkr_modern_character_registry_load(&registry, 0, &asset,
                                                  error, sizeof(error)),
             "load selected registry character");
@@ -241,6 +267,21 @@ int main(int argc, char **argv) {
             "resolve animated head socket");
     require(socket_matrix[0] > 0.90f && socket_matrix[0] < 0.95f,
             "half-time quaternion sampling reaches the expected angle");
+    require(mdkr_modern_pose_has_semantic(&pose, "idle") &&
+                !mdkr_modern_pose_has_semantic(&pose, "race.steer"),
+            "pose distinguishes an explicit semantic from fallback");
+    require(mdkr_modern_pose_advance_phase(
+                &pose, 0.0f, 0.0f, error, sizeof(error)) &&
+                mdkr_modern_pose_socket_matrix(
+                    &pose, "head", 0, socket_matrix) &&
+                socket_matrix[0] > 0.99f,
+            "normalized phase zero samples the left endpoint exactly");
+    require(mdkr_modern_pose_advance_phase(
+                &pose, 0.0f, 1.0f, error, sizeof(error)) &&
+                mdkr_modern_pose_socket_matrix(
+                    &pose, "head", 0, socket_matrix) &&
+                socket_matrix[0] > 0.70f && socket_matrix[0] < 0.72f,
+            "normalized phase one samples the right endpoint exactly");
     require(mdkr_modern_pose_skin_palette(&pose, 0u, 2u, 0,
                                            palette, 2u,
                                            error, sizeof(error)),
@@ -263,6 +304,62 @@ int main(int argc, char **argv) {
     mdkr_modern_character_asset_unload(&asset);
     mdkr_modern_character_registry_shutdown(&registry);
 
+    require(!mdkr_modern_character_install_portable(
+                argv[3], argv[5], &install_result) &&
+                install_result.needs_compiler,
+            "native importer identifies a valid source-only package without publishing it");
+    require(snprintf(import_lock, sizeof(import_lock),
+                     "%s/.character-import.lock", argv[5]) > 0,
+            "construct native import lock path");
+    lock_file = mdkr_fopen_utf8(import_lock, "wb");
+    require(lock_file != NULL && fclose(lock_file) == 0,
+            "create an active-import witness lock");
+    require(!mdkr_modern_character_install_portable(
+                argv[4], argv[5], &install_result),
+            "native importer respects an existing cross-tool lock");
+    lock_file = mdkr_fopen_utf8(import_lock, "rb");
+    require(lock_file != NULL && fclose(lock_file) == 0,
+            "refused native import never removes another owner's lock");
+    require(mdkr_remove_utf8(import_lock) == 0,
+            "retire the import witness lock");
+    require(!mdkr_modern_character_install_portable(
+                argv[6], argv[5], &install_result) &&
+                strstr(install_result.message, "checksum") != NULL,
+            "native portable import rejects a corrupt embedded cache before publication");
+    require(!mdkr_modern_character_install_portable(
+                argv[7], argv[5], &install_result) &&
+                strstr(install_result.message, "does not match") != NULL,
+            "native portable import binds a valid cache to its exact source members");
+    require(mdkr_modern_character_install_portable(
+                argv[4], argv[5], &install_result),
+            install_result.message);
+    require(strcmp(install_result.id, "org.example.pipeline-proof") == 0,
+            "native portable import publishes the compiled package identity");
+    require(mdkr_modern_character_registry_init(&registry, argv[5]) == 0 &&
+                mdkr_modern_character_registry_count(&registry) == 1,
+            "native portable import is immediately discoverable");
+    mdkr_modern_character_registry_shutdown(&registry);
+    require(snprintf(prefix_witness, sizeof(prefix_witness),
+                     "%s/org.example.pipeline-proof.other.%064x.json",
+                     argv[5], 0) > 0,
+            "construct prefix-collision provenance witness");
+    lock_file = mdkr_fopen_utf8(prefix_witness, "wb");
+    require(lock_file != NULL && fputs("unrelated prefix package\n", lock_file) >= 0 &&
+                fclose(lock_file) == 0,
+            "create unrelated longer-id provenance witness");
+    require(mdkr_modern_character_remove_installed(
+                "org.example.pipeline-proof", argv[5], &install_result),
+            install_result.message);
+    require(mdkr_modern_character_registry_init(&registry, argv[5]) == 0 &&
+                mdkr_modern_character_registry_count(&registry) == 0,
+            "native removal retires the cache and retained package source");
+    mdkr_modern_character_registry_shutdown(&registry);
+    lock_file = mdkr_fopen_utf8(prefix_witness, "rb");
+    require(lock_file != NULL && fclose(lock_file) == 0,
+            "native removal preserves provenance for a longer package id");
+    require(mdkr_remove_utf8(prefix_witness) == 0,
+            "retire prefix-collision provenance witness");
+
     require(mdkr_modern_characters_init(argv[2]),
             "initialize process-level character runtime");
     require(mdkr_modern_character_assign_player(
@@ -270,16 +367,59 @@ int main(int argc, char **argv) {
             error);
     require(mdkr_modern_character_matches(0, 9, 0),
             "runtime assignment retains donor and vehicle characteristics");
+    mdkr_modern_character_tuning_defaults(&tuning);
+    tuning.scale = 1.5f;
+    tuning.translation[0] = 12.0f;
+    tuning.rotation_degrees[1] = 15.0f;
+    tuning.animation_speed = 0.5f;
+    tuning.lod_bias = 1.0f;
+    tuning.vehicle_mask = 1u;
+    require(mdkr_modern_character_set_tuning(0, &tuning,
+                                              error, sizeof(error)),
+            error);
+    memset(&tuning, 0, sizeof(tuning));
+    require(mdkr_modern_character_get_tuning(0, &tuning) &&
+                tuning.scale == 1.5f && tuning.vehicle_mask == 1u,
+            "runtime retains bounded presentation-only tuning");
+    require(mdkr_modern_character_matches(0, 9, 0) &&
+                !mdkr_modern_character_matches(0, 9, 1),
+            "player vehicle pairing narrows package-qualified bodies");
+    tuning.scale = 9.0f;
+    require(!mdkr_modern_character_set_tuning(0, &tuning,
+                                               error, sizeof(error)),
+            "unsafe editor tuning fails closed");
+    tuning.scale = 1.5f;
     require(mdkr_modern_character_tick(0, "race.boost", 0.25f,
                                        error, sizeof(error)),
             "runtime semantic uses package fallback when optional state is absent");
+    require(mdkr_modern_character_tick_phase(
+                0, "race.steer", 0.25f, 1.0f,
+                error, sizeof(error)),
+            "missing phase-driven semantic advances fallback instead of scrubbing it");
     require(mdkr_modern_character_emit(0, 0.0f, &command_cursor,
                                        error, sizeof(error)),
             error);
     require(command_cursor == commands + 1 && registered_draws == 1u,
             "runtime emits one retained command per selected primitive");
+    require(fabsf(last_model_matrix[12]) > 1.0f,
+            "runtime draw includes the player seat-offset adjustment");
     require(commands[0].words.w1 == 1u,
             "display list embeds immutable draw token rather than a pointer");
+    for (player = 1; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        require(mdkr_modern_character_assign_player(
+                    player, "org.example.pipeline-proof",
+                    error, sizeof(error)),
+                "all four local player slots share one installed package");
+        require(mdkr_modern_character_matches(player, 9, 0) &&
+                    mdkr_modern_character_tick(
+                        player, "select.confirm", 0.1f,
+                        error, sizeof(error)),
+                "each local player owns an independent semantic pose");
+    }
+    require(mdkr_modern_character_emit(3, 0.0f, &command_cursor,
+                                       error, sizeof(error)) &&
+                command_cursor == commands + 2 && registered_draws == 2u,
+            "four-player assignment reuses GPU ownership and emits independently");
     mdkr_modern_characters_shutdown();
     require(released_assets == 1u,
             "runtime retires GPU ownership before freeing CPU asset bytes");

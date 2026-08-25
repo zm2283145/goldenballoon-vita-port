@@ -20,6 +20,7 @@ import struct
 import sys
 import unicodedata
 import zipfile
+import zlib
 from pathlib import Path, PurePosixPath
 from typing import Any
 from xml.etree import ElementTree
@@ -40,6 +41,7 @@ MAX_TRIANGLES = 100_000
 MAX_MATERIALS = 16
 PACKAGE_SCHEMA = "mdkr-character-source-v1"
 PACKAGE_MEMBERS = ("manifest.json", "model.glb", "LICENSE.txt")
+PORTABLE_PACKAGE_MEMBERS = PACKAGE_MEMBERS + ("compiled.mdkc",)
 PACKAGE_EPOCH = (1980, 1, 1, 0, 0, 0)
 MODEL_SUFFIXES = {".glb", ".gltf", ".dae", ".fbx", ".obj"}
 LICENSE_NAMES = {
@@ -62,6 +64,14 @@ GAMEPLAY_DONORS = {
     "krunch", "pipsy", "timber", "tiptup", "tt",
 }
 VEHICLE_NAMES = {"car", "hovercraft", "plane"}
+RECOMMENDED_RACE_SEMANTICS = (
+    "race.steer", "race.reverse", "race.boost", "race.damage", "race.item",
+    "race.spin", "race.airborne", "race.land", "race.finish_win",
+    "race.finish_lose",
+)
+RECOMMENDED_SELECT_SEMANTICS = (
+    "select.idle", "select.hover", "select.confirm",
+)
 REQUIRED_PRESENTATION_SOCKETS = {"seat", "head"}
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")
 SEMANTIC_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
@@ -735,7 +745,8 @@ def _zip_entry(name: str, data: bytes) -> tuple[zipfile.ZipInfo, bytes]:
     return info, data
 
 
-def build_package(model_path: Path, manifest_path: Path, license_path: Path, output_path: Path) -> dict[str, Any]:
+def build_package(model_path: Path, manifest_path: Path, license_path: Path,
+                  output_path: Path, compiled_cache_path: Path | None = None) -> dict[str, Any]:
     model = _read_bounded(model_path, MAX_INPUT_BYTES, "GLB input")
     report = inspect_glb_bytes(model, require_character=True)
     if report["errors"]:
@@ -765,9 +776,17 @@ def build_package(model_path: Path, manifest_path: Path, license_path: Path, out
         "model.glb": model,
         "LICENSE.txt": license_text,
     }
+    package_members = PACKAGE_MEMBERS
+    if compiled_cache_path is not None:
+        compiled = _read_bounded(compiled_cache_path, MAX_INPUT_BYTES,
+                                 "compiled character cache")
+        if not _compiled_cache_valid(compiled):
+            raise ProbeError("compiled character cache is invalid")
+        members["compiled.mdkc"] = compiled
+        package_members = PORTABLE_PACKAGE_MEMBERS
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output_path, "w", allowZip64=False) as archive:
-        for name in PACKAGE_MEMBERS:
+        for name in package_members:
             info, payload = _zip_entry(name, members[name])
             archive.writestr(info, payload)
     package_bytes = output_path.read_bytes()
@@ -776,6 +795,42 @@ def build_package(model_path: Path, manifest_path: Path, license_path: Path, out
         "bytes": len(package_bytes),
         "sha256": _sha256(package_bytes),
         "model": report,
+        "portable": compiled_cache_path is not None,
+    }
+
+
+def _compiled_cache_valid(data: bytes) -> bool:
+    if len(data) < 832:
+        return False
+    magic, version, header_bytes, file_bytes = struct.unpack_from("<4sIIQ", data, 0)
+    if magic != b"MDKC" or version != 1 or header_bytes != 832 or file_bytes != len(data):
+        return False
+    expected_crc = struct.unpack_from("<I", data, 52)[0]
+    return (zlib.crc32(data[header_bytes:]) & 0xFFFFFFFF) == expected_crc
+
+
+def add_compiled_cache(package_path: Path, compiled: bytes,
+                       output_path: Path) -> dict[str, Any]:
+    verified = verify_package(package_path)
+    if not verified["valid"]:
+        raise ProbeError("source package is invalid: " + "; ".join(verified["errors"]))
+    if not _compiled_cache_valid(compiled):
+        raise ProbeError("compiled character cache is invalid")
+    with zipfile.ZipFile(package_path) as source:
+        members = {name: source.read(name) for name in PACKAGE_MEMBERS}
+    members["compiled.mdkc"] = compiled
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(output_path, "w", allowZip64=False) as archive:
+        for name in PORTABLE_PACKAGE_MEMBERS:
+            info, payload = _zip_entry(name, members[name])
+            archive.writestr(info, payload)
+    package_bytes = output_path.read_bytes()
+    return {
+        "output": str(output_path),
+        "bytes": len(package_bytes),
+        "sha256": _sha256(package_bytes),
+        "portable": True,
+        "model": verified["model"],
     }
 
 
@@ -787,12 +842,16 @@ def verify_package(path: Path) -> dict[str, Any]:
         raise ProbeError(f"invalid character package: {exc}") from exc
     infos = archive.infolist()
     names = tuple(info.filename for info in infos)
-    if names != PACKAGE_MEMBERS:
-        raise ProbeError(f"package members must be exactly {PACKAGE_MEMBERS!r}, in order")
+    if names not in (PACKAGE_MEMBERS, PORTABLE_PACKAGE_MEMBERS):
+        raise ProbeError(
+            f"package members must be exactly {PACKAGE_MEMBERS!r} or "
+            f"{PORTABLE_PACKAGE_MEMBERS!r}, in order"
+        )
     member_caps = {
         "manifest.json": MAX_MANIFEST_BYTES,
         "model.glb": MAX_INPUT_BYTES,
         "LICENSE.txt": MAX_LICENSE_BYTES,
+        "compiled.mdkc": MAX_INPUT_BYTES,
     }
     for info in infos:
         safe_name = _safe_archive_name(info.filename)
@@ -816,6 +875,33 @@ def verify_package(path: Path) -> dict[str, Any]:
         errors.append("manifest model_sha256 does not match model.glb")
     if not license_text.strip():
         errors.append("LICENSE.txt is empty")
+    portable = names == PORTABLE_PACKAGE_MEMBERS
+    if portable and not _compiled_cache_valid(archive.read("compiled.mdkc")):
+        errors.append("compiled.mdkc is invalid")
+    animation_info = manifest.get("animations", {})
+    states = animation_info.get("states", {}) if isinstance(animation_info, dict) else {}
+    sockets = manifest.get("sockets", {})
+    missing_states = [semantic for semantic in RECOMMENDED_RACE_SEMANTICS
+                      if semantic not in states]
+    missing_select_states = [
+        semantic for semantic in RECOMMENDED_SELECT_SEMANTICS
+        if semantic not in states
+    ]
+    author_warnings = []
+    if missing_states:
+        author_warnings.append(
+            f"{len(missing_states)} recommended race animation states use fallback"
+        )
+    if missing_select_states:
+        author_warnings.append(
+            f"{len(missing_select_states)} recommended select animation states use fallback"
+        )
+    if isinstance(sockets, dict) and "hand" not in sockets:
+        author_warnings.append("optional hand socket is not authored")
+    if not portable:
+        author_warnings.append(
+            "source-only package needs the developer compiler; prepare a portable package for launcher-only import"
+        )
     return {
         "format": PACKAGE_SCHEMA,
         "bytes": len(data),
@@ -824,6 +910,21 @@ def verify_package(path: Path) -> dict[str, Any]:
         "model": report,
         "errors": errors,
         "valid": not errors,
+        "portable": portable,
+        "authoring": {
+            "fallback_clip": animation_info.get("fallback")
+                if isinstance(animation_info, dict) else None,
+            "mapped_recommended_states": [semantic for semantic in RECOMMENDED_RACE_SEMANTICS
+                                           if semantic in states],
+            "missing_recommended_states": missing_states,
+            "mapped_select_states": [
+                semantic for semantic in RECOMMENDED_SELECT_SEMANTICS
+                if semantic in states
+            ],
+            "missing_select_states": missing_select_states,
+            "sockets": sorted(sockets) if isinstance(sockets, dict) else [],
+            "warnings": author_warnings,
+        },
     }
 
 
@@ -843,6 +944,7 @@ def _parser() -> argparse.ArgumentParser:
     pack.add_argument("--manifest", required=True, type=Path)
     pack.add_argument("--license", required=True, type=Path)
     pack.add_argument("--output", required=True, type=Path)
+    pack.add_argument("--compiled-cache", type=Path)
     verify = sub.add_parser("verify", help="verify an existing .mdkrchar source package")
     verify.add_argument("input", type=Path)
     return parser
@@ -852,7 +954,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if args.command == "pack":
-            report = build_package(args.model, args.manifest, args.license, args.output)
+            report = build_package(args.model, args.manifest, args.license,
+                                   args.output, args.compiled_cache)
         elif args.command == "verify":
             report = verify_package(args.input)
         else:

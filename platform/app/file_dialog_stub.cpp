@@ -21,4 +21,9 @@ bool openRom(std::string &out) {
     return false;
 }
 
+bool openCharacterPackage(std::string &out) {
+    (void)out;
+    return false;
+}
+
 }  // namespace filedialog

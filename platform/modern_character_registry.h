@@ -20,6 +20,29 @@ extern "C" {
 #define MDKR_MODERN_CHARACTER_PATH_MAX 4096
 #define MDKR_MODERN_CHARACTER_SKIP_REASON_MAX 192
 
+enum MdkrModernCharacterSemanticBits {
+    MDKR_CHARACTER_SEMANTIC_FALLBACK = 1u << 0,
+    MDKR_CHARACTER_SEMANTIC_RACE_STEER = 1u << 1,
+    MDKR_CHARACTER_SEMANTIC_RACE_REVERSE = 1u << 2,
+    MDKR_CHARACTER_SEMANTIC_RACE_BOOST = 1u << 3,
+    MDKR_CHARACTER_SEMANTIC_RACE_DAMAGE = 1u << 4,
+    MDKR_CHARACTER_SEMANTIC_RACE_ITEM = 1u << 5,
+    MDKR_CHARACTER_SEMANTIC_RACE_SPIN = 1u << 6,
+    MDKR_CHARACTER_SEMANTIC_RACE_AIRBORNE = 1u << 7,
+    MDKR_CHARACTER_SEMANTIC_RACE_LAND = 1u << 8,
+    MDKR_CHARACTER_SEMANTIC_RACE_FINISH_WIN = 1u << 9,
+    MDKR_CHARACTER_SEMANTIC_RACE_FINISH_LOSE = 1u << 10,
+    MDKR_CHARACTER_SEMANTIC_SELECT_IDLE = 1u << 11,
+    MDKR_CHARACTER_SEMANTIC_SELECT_HOVER = 1u << 12,
+    MDKR_CHARACTER_SEMANTIC_SELECT_CONFIRM = 1u << 13,
+};
+
+enum MdkrModernCharacterSocketBits {
+    MDKR_CHARACTER_SOCKET_SEAT = 1u << 0,
+    MDKR_CHARACTER_SOCKET_HEAD = 1u << 1,
+    MDKR_CHARACTER_SOCKET_HAND = 1u << 2,
+};
+
 typedef struct MdkrModernCharacterEntry {
     char id[MDKR_MODERN_CHARACTER_ID_MAX];
     char display_name[MDKR_MODERN_CHARACTER_NAME_MAX];
@@ -27,6 +50,10 @@ typedef struct MdkrModernCharacterEntry {
     uint8_t source_sha256[32];
     uint32_t donor;
     uint32_t vehicle_mask;
+    uint32_t semantic_mask;
+    uint32_t moving_semantic_mask;
+    uint32_t socket_mask;
+    uint32_t motion_channels;
     MdkrModernCharacterStats stats;
 } MdkrModernCharacterEntry;
 

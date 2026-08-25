@@ -44,6 +44,18 @@ int mdkr_modern_pose_set_semantic(MdkrModernPose *pose, const char *semantic,
 int mdkr_modern_pose_advance(MdkrModernPose *pose, float seconds,
                              char *error, size_t error_size);
 
+/* Advance blending by `seconds` while sampling the current clip at an
+ * engine-owned normalized phase. Used by `race.steer`: authors place full-left
+ * at 0, neutral at 0.5, and full-right at 1. Missing semantic mappings are not
+ * phase-driven by the runtime, so a fallback idle clip keeps playing normally. */
+int mdkr_modern_pose_advance_phase(MdkrModernPose *pose, float seconds,
+                                   float normalized_phase,
+                                   char *error, size_t error_size);
+
+/* True only for an explicitly authored mapping; fallback does not count. */
+int mdkr_modern_pose_has_semantic(const MdkrModernPose *pose,
+                                  const char *semantic);
+
 const float *mdkr_modern_pose_node_matrix(const MdkrModernPose *pose,
                                           uint32_t node, int previous);
 int mdkr_modern_pose_socket_matrix(const MdkrModernPose *pose,

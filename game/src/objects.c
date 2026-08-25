@@ -68,6 +68,7 @@
 #include "tracks.h"
 #include "types.h"
 #ifdef NATIVE_PORT
+#include <math.h>
 #include <stdio.h>
 #endif
 #include "vehicle_misc.h"
@@ -97,21 +98,97 @@ static const ObjectModel *sModernCharacterReplacementModel;
 static s32 sModernCharacterReplacementDonor;
 static s32 sModernCharacterReplacementVehicle;
 static s32 sModernCharacterReplacementLod;
+static s32 sModernCharacterReplacementSelect;
 static u32 sModernCharacterWarningBits;
+static const Object *sModernCharacterSelectObject;
+static s32 sModernCharacterSelectPlayer = -1;
+static u8 sModernCharacterWasAirborne[MDKR_MODERN_CHARACTER_PLAYERS];
+static s16 sModernCharacterLandTicks[MDKR_MODERN_CHARACTER_PLAYERS];
 
 static void modern_character_warn_once(s32 player, u32 reason,
                                        const char *message) {
     u32 bit;
     if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
-        reason >= 4) {
+        reason >= 8) {
         return;
     }
-    bit = 1u << (player * 4 + reason);
+    bit = 1u << (player * 8 + reason);
     if ((sModernCharacterWarningBits & bit) != 0) {
         return;
     }
     sModernCharacterWarningBits |= bit;
     fprintf(stderr, "[modern-character] P%d %s\n", player + 1, message);
+}
+
+static s32 modern_character_select_model_ready(
+    s32 donor, s32 modelId, const ObjectModel *model) {
+    const TriangleBatchInfo *batches;
+    s32 index;
+    if (model == NULL || model->batches == 0 ||
+        !mdkr_modern_donor_select_model_ready(
+            donor, modelId, model->numberOfVertices,
+            model->numberOfTriangles, model->numberOfBatches)) return FALSE;
+    batches = DKR_PTR(const TriangleBatchInfo, model->batches);
+    /* The shared US/PAL actor's batch zero is exactly the four-vertex,
+     * two-triangle numbered placard. Every subsequent batch belongs to Diddy.
+     * Validate this topology before the platform mask is ever consumed. */
+    if (batches[0].textureIndex >= 4 ||
+        batches[0].verticesOffset != 0 || batches[0].facesOffset != 0 ||
+        batches[1].verticesOffset != 4 || batches[1].facesOffset != 2) {
+        return FALSE;
+    }
+    for (index = 1; index < model->numberOfBatches; index++) {
+        if (batches[index].textureIndex < 4) return FALSE;
+    }
+    return TRUE;
+}
+
+void obj_modern_character_select_update(Object *obj, u32 hoverMask,
+                                        u32 confirmedMask, f32 seconds) {
+    s32 player;
+    s32 selected = -1;
+    const char *semantic;
+    char error[192];
+    if (obj == NULL || !isfinite(seconds) || seconds < 0.0f) return;
+    /* Prefer the matching package whose player is actually pointing at Diddy.
+     * With no cursor on that actor, show the first configured Diddy-family
+     * package so the roster still previews the local replacement. */
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        if (mdkr_modern_character_player_package(player) == NULL ||
+            mdkr_modern_character_player_donor(player) != CHARACTER_DIDDY) {
+            continue;
+        }
+        if (selected < 0) selected = player;
+        if ((hoverMask & (1u << player)) != 0u) {
+            selected = player;
+            break;
+        }
+    }
+    if (selected < 0) {
+        if (sModernCharacterSelectObject == obj) {
+            sModernCharacterSelectObject = NULL;
+            sModernCharacterSelectPlayer = -1;
+        }
+        return;
+    }
+    semantic = (confirmedMask & (1u << selected)) != 0u
+        ? "select.confirm"
+        : (hoverMask & (1u << selected)) != 0u
+            ? "select.hover" : "select.idle";
+    if (!mdkr_modern_character_tick(selected, semantic, seconds,
+                                    error, sizeof(error))) {
+        modern_character_warn_once(selected, 4, error);
+        return;
+    }
+    sModernCharacterSelectObject = obj;
+    sModernCharacterSelectPlayer = selected;
+}
+
+void obj_modern_character_select_forget(const Object *obj) {
+    if (obj != NULL && sModernCharacterSelectObject == obj) {
+        sModernCharacterSelectObject = NULL;
+        sModernCharacterSelectPlayer = -1;
+    }
 }
 
 static void bonus_visual_trace_transform_bypass(const Object *obj) {
@@ -1727,6 +1804,14 @@ void clear_object_pointers(void) {
     D_8011AE01 = TRUE;
     D_8011AD53 = 0;
     gOverrideDoors = FALSE;
+#ifdef NATIVE_PORT
+    sModernCharacterSelectObject = NULL;
+    sModernCharacterSelectPlayer = -1;
+    memset(sModernCharacterWasAirborne, 0,
+           sizeof(sModernCharacterWasAirborne));
+    memset(sModernCharacterLandTicks, 0,
+           sizeof(sModernCharacterLandTicks));
+#endif
 }
 
 /**
@@ -4708,6 +4793,7 @@ Object *obj_spawn_attachment(s32 objID) {
  */
 void free_object(Object *object) {
 #ifdef NATIVE_PORT
+    obj_modern_character_select_forget(object);
     taj_visual_on_object_free(object);
     wizpig_visual_on_object_free(object);
     terry_visual_on_object_free(object);
@@ -4812,6 +4898,7 @@ void obj_destroy(Object *obj, s32 arg1) {
     s32 modelType;
 
 #ifdef NATIVE_PORT
+    obj_modern_character_select_forget(obj);
     taj_visual_on_object_destroy(obj);
     wizpig_visual_on_object_destroy(obj);
     terry_visual_on_object_destroy(obj);
@@ -5145,12 +5232,39 @@ void obj_update(s32 updateRate) {
         Object *modernOwner = (*gRacers)[i];
         Object_Racer *modernRacer = modernOwner != NULL ? modernOwner->racer : NULL;
         const char *semantic = "race.steer";
+        s32 modernPlayer;
+        s32 airborne;
+        s32 landing;
+        f32 steerPhase;
         char modernError[192];
         if (modernRacer == NULL || modernRacer->playerIndex < 0 ||
-            modernRacer->playerIndex >= MDKR_MODERN_CHARACTER_PLAYERS ||
-            !mdkr_modern_character_matches(
-                modernRacer->playerIndex, modernRacer->characterId,
-                modernRacer->vehicleIDPrev)) continue;
+            modernRacer->playerIndex >= MDKR_MODERN_CHARACTER_PLAYERS) {
+            continue;
+        }
+        modernPlayer = modernRacer->playerIndex;
+        if (!mdkr_modern_character_matches(
+                modernPlayer, modernRacer->characterId,
+                modernRacer->vehicleIDPrev)) {
+            sModernCharacterWasAirborne[modernPlayer] = FALSE;
+            sModernCharacterLandTicks[modernPlayer] = 0;
+            continue;
+        }
+        airborne = modernRacer->vehicleIDPrev == VEHICLE_CAR &&
+                   modernRacer->groundedWheels == 0 &&
+                   modernRacer->buoyancy == 0.0f;
+        if (sModernCharacterWasAirborne[modernPlayer] && !airborne) {
+            /* A bounded 0.2-second reaction window. An exact race.land clip
+             * plays once; a package without it safely uses fallback. */
+            sModernCharacterLandTicks[modernPlayer] = 12;
+        }
+        sModernCharacterWasAirborne[modernPlayer] = airborne;
+        landing = sModernCharacterLandTicks[modernPlayer] > 0;
+        if (landing) {
+            sModernCharacterLandTicks[modernPlayer] -= updateRate;
+            if (sModernCharacterLandTicks[modernPlayer] < 0) {
+                sModernCharacterLandTicks[modernPlayer] = 0;
+            }
+        }
         if (modernRacer->raceFinished) {
             semantic = modernRacer->finishPosition == 1
                 ? "race.finish_win" : "race.finish_lose";
@@ -5162,13 +5276,24 @@ void obj_update(s32 updateRate) {
             semantic = "race.damage";
         } else if (modernRacer->boostTimer) semantic = "race.boost";
         else if (modernRacer->held_obj != NULL) semantic = "race.item";
-        else if (modernRacer->vehicleIDPrev == VEHICLE_CAR &&
-                 modernRacer->groundedWheels == 0 &&
-                 modernRacer->buoyancy == 0.0f) semantic = "race.airborne";
+        else if (landing) semantic = "race.land";
+        else if (airborne) semantic = "race.airborne";
         else if (modernRacer->velocity > 2.0f) semantic = "race.reverse";
-        (void)mdkr_modern_character_tick(
-            modernRacer->playerIndex, semantic,
-            (float)updateRate / 60.0f, modernError, sizeof(modernError));
+        steerPhase = ((f32)modernRacer->steerAngle + 127.0f) / 254.0f;
+        if (steerPhase < 0.0f) steerPhase = 0.0f;
+        if (steerPhase > 1.0f) steerPhase = 1.0f;
+        if (strcmp(semantic, "race.steer") == 0) {
+            if (!mdkr_modern_character_tick_phase(
+                    modernPlayer, semantic, (f32)updateRate / 60.0f,
+                    steerPhase, modernError, sizeof(modernError))) {
+                modern_character_warn_once(modernPlayer, 7, modernError);
+            }
+        } else if (!mdkr_modern_character_tick(
+                       modernPlayer, semantic,
+                       (f32)updateRate / 60.0f,
+                       modernError, sizeof(modernError))) {
+            modern_character_warn_once(modernPlayer, 7, modernError);
+        }
     }
 #endif
     if (level_type() == RACETYPE_DEFAULT) {
@@ -6015,6 +6140,7 @@ void render_3d_model(Object *obj) {
 #ifdef NATIVE_PORT
     sModernCharacterReplacementObject = NULL;
     sModernCharacterReplacementModel = NULL;
+    sModernCharacterReplacementSelect = FALSE;
     modernModelIndex = object_render_model_index(obj);
     modInst = obj->modelInstances[modernModelIndex];
 #else
@@ -6113,6 +6239,34 @@ void render_3d_model(Object *obj) {
 #endif
         mtx_cam_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, &obj->trans, gObjectModelScaleY, 0.0f);
 #ifdef NATIVE_PORT
+        if (obj == sModernCharacterSelectObject &&
+            sModernCharacterSelectPlayer >= 0) {
+            const s32 player = sModernCharacterSelectPlayer;
+            const s32 donor = mdkr_modern_character_player_donor(player);
+            const s32 modelId =
+                DKR_PTR(s32, obj->header->modelIds)[modernModelIndex];
+            if (!modern_character_select_model_ready(
+                    donor, modelId, objModel)) {
+                modern_character_warn_once(
+                    player, 5,
+                    "select fallback: retail actor fingerprint is unqualified");
+            } else {
+                char modernError[192];
+                if (mdkr_modern_character_emit(
+                        player, obj->distanceToCamera,
+                        &gObjectCurrDisplayList,
+                        modernError, sizeof(modernError))) {
+                    sModernCharacterReplacementObject = obj;
+                    sModernCharacterReplacementModel = objModel;
+                    sModernCharacterReplacementDonor = donor;
+                    sModernCharacterReplacementVehicle = -1;
+                    sModernCharacterReplacementLod = 0;
+                    sModernCharacterReplacementSelect = TRUE;
+                } else {
+                    modern_character_warn_once(player, 6, modernError);
+                }
+            }
+        }
         if (racerObj != NULL && racerObj->playerIndex >= 0 &&
             racerObj->playerIndex < MDKR_MODERN_CHARACTER_PLAYERS &&
             mdkr_modern_character_player_package(racerObj->playerIndex) != NULL) {
@@ -6158,6 +6312,7 @@ void render_3d_model(Object *obj) {
                     sModernCharacterReplacementDonor = racerObj->characterId;
                     sModernCharacterReplacementVehicle = racerObj->vehicleIDPrev;
                     sModernCharacterReplacementLod = modernModelIndex;
+                    sModernCharacterReplacementSelect = FALSE;
                 } else {
                     modern_character_warn_once(player, 3, modernError);
                 }
@@ -6355,6 +6510,7 @@ void render_3d_model(Object *obj) {
 #ifdef NATIVE_PORT
         sModernCharacterReplacementObject = NULL;
         sModernCharacterReplacementModel = NULL;
+        sModernCharacterReplacementSelect = FALSE;
 #endif
         if (hasOpacity || obj->header->directionalPointLighting) {
             gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255, 255);
@@ -7435,10 +7591,13 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
         }
         if (obj == sModernCharacterReplacementObject &&
             objModel == sModernCharacterReplacementModel &&
-            !mdkr_modern_donor_batch_visible(
-                sModernCharacterReplacementDonor,
-                sModernCharacterReplacementVehicle,
-                sModernCharacterReplacementLod, i)) {
+            !(sModernCharacterReplacementSelect
+                  ? mdkr_modern_donor_select_batch_visible(
+                        sModernCharacterReplacementDonor, i)
+                  : mdkr_modern_donor_batch_visible(
+                        sModernCharacterReplacementDonor,
+                        sModernCharacterReplacementVehicle,
+                        sModernCharacterReplacementLod, i))) {
             mdkr_modern_character_note_hidden_donor_batch();
             i++;
             continue;

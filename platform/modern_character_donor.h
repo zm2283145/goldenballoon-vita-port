@@ -21,6 +21,17 @@ int mdkr_modern_donor_batch_visible(int donor, int vehicle, int lod,
  * 4 at the presentation seam preserves a complete vehicle to carve. */
 int mdkr_modern_donor_cap_lod(int donor, int vehicle, int lod);
 
+/* Character-select actor qualification is deliberately separate from vehicle
+ * qualification: the supported Diddy select mesh contains a four-vertex
+ * numbered placard in batch zero and body geometry in every later batch. */
+int mdkr_modern_donor_select_model_ready(int donor, int model_id,
+                                         int vertices, int triangles,
+                                         int batches);
+
+/* Call only after select_model_ready succeeds. Keeps the numbered placard and
+ * removes the retail body after the modern draw has registered atomically. */
+int mdkr_modern_donor_select_batch_visible(int donor, int batch);
+
 #ifdef __cplusplus
 }
 #endif

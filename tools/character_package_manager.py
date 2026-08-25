@@ -34,6 +34,17 @@ class ManagerError(ValueError):
     pass
 
 
+def _compiler_source_digest(archive: zipfile.ZipFile) -> bytes:
+    digest = hashlib.sha256()
+    digest.update(COMPILER_ID.encode("ascii") + b"\0")
+    for name in probe.PACKAGE_MEMBERS:
+        payload = archive.read(name)
+        digest.update(name.encode("ascii") + b"\0")
+        digest.update(struct.pack("<Q", len(payload)))
+        digest.update(payload)
+    return digest.digest()
+
+
 def _write_exclusive(path: Path, payload: bytes) -> None:
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
@@ -110,17 +121,20 @@ def install(package_path: Path, directory: Path) -> dict[str, Any]:
     if not isinstance(package_id, str) or probe.ID_RE.fullmatch(package_id) is None:
         raise ManagerError("validated package has an unsafe id")
     source_sha = hashlib.sha256(package).hexdigest()
-    compiler_digest = hashlib.sha256(
-        COMPILER_ID.encode("ascii") + b"\0" + package
-    ).digest()
     with zipfile.ZipFile(package_path) as archive:
         manifest = probe.json_loads_strict(
             archive.read("manifest.json"), "manifest"
         )
         model = archive.read("model.glb")
+        compiler_digest = _compiler_source_digest(archive)
+        embedded = archive.read("compiled.mdkc") if verification.get("portable") else None
     compiled, compile_report = compiler.compile_character(
         model, manifest, compiler_digest
     )
+    if embedded is not None and embedded != compiled:
+        raise ManagerError(
+            "portable package cache does not match its source model and manifest"
+        )
     if not _cache_valid(compiled):
         raise ManagerError("compiler produced an invalid cache")
     compiled_sha = hashlib.sha256(compiled).hexdigest()
@@ -163,6 +177,9 @@ def list_installed(directory: Path) -> dict[str, Any]:
             if report.get("schema") != MANAGER_SCHEMA:
                 continue
             package_id = report["id"]
+            source_sha = report.get("source_sha256", "")
+            if report_path.name != f"{package_id}.{source_sha}.json":
+                continue
             cache = root / f"{package_id}.mdkc"
             source = root / report["source_file"]
             cache_data = cache.read_bytes() if cache.is_file() else b""
@@ -174,7 +191,7 @@ def list_installed(directory: Path) -> dict[str, Any]:
                 {
                     "id": package_id,
                     "display_name": report.get("display_name", package_id),
-                    "source_sha256": report.get("source_sha256", ""),
+                    "source_sha256": source_sha,
                     "compiler": report.get("compiler", ""),
                     "active": active,
                     "source_present": source.is_file(),
@@ -188,6 +205,36 @@ def list_installed(directory: Path) -> dict[str, Any]:
     return {"schema": MANAGER_SCHEMA, "directory": str(root), "entries": entries}
 
 
+def prepare(package_path: Path, output_path: Path) -> dict[str, Any]:
+    verification = probe.verify_package(package_path)
+    if not verification["valid"]:
+        raise ManagerError("invalid source package: " + "; ".join(verification["errors"]))
+    with zipfile.ZipFile(package_path) as archive:
+        manifest = probe.json_loads_strict(archive.read("manifest.json"), "manifest")
+        model = archive.read("model.glb")
+        digest = _compiler_source_digest(archive)
+    compiled, compile_report = compiler.compile_character(model, manifest, digest)
+    package_report = probe.add_compiled_cache(package_path, compiled, output_path)
+    return {
+        "schema": MANAGER_SCHEMA,
+        "id": manifest["id"],
+        "display_name": manifest["display_name"],
+        "portable_package": str(output_path),
+        "package_sha256": package_report["sha256"],
+        "compiled_sha256": hashlib.sha256(compiled).hexdigest(),
+        "report": compile_report,
+    }
+
+
+def _owned_provenance_name(name: str, package_id: str, suffix: str) -> bool:
+    prefix = package_id + "."
+    if not name.startswith(prefix) or not name.endswith(suffix):
+        return False
+    digest = name[len(prefix):-len(suffix)]
+    return len(digest) == 64 and all(character in "0123456789abcdef"
+                                     for character in digest)
+
+
 def remove(package_id: str, directory: Path) -> dict[str, Any]:
     if probe.ID_RE.fullmatch(package_id) is None:
         raise ManagerError("invalid package id")
@@ -199,6 +246,11 @@ def remove(package_id: str, directory: Path) -> dict[str, Any]:
         candidates.extend(sorted(root.glob(f"{package_id}.*.json")))
         for path in candidates:
             if path.parent != root or not path.is_file() or path.is_symlink():
+                continue
+            if path.name != f"{package_id}.mdkc" and not (
+                _owned_provenance_name(path.name, package_id, ".mdkrchar") or
+                _owned_provenance_name(path.name, package_id, ".json")
+            ):
                 continue
             path.unlink()
             removed.append(path.name)
@@ -232,13 +284,23 @@ def clean(directory: Path) -> dict[str, Any]:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--directory", required=True, type=Path)
+    parser.add_argument("--directory", type=Path)
+    parser.add_argument(
+        "--result-file",
+        type=Path,
+        help="write the same bounded JSON result for a native launcher caller",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     install_parser = sub.add_parser("install")
     install_parser.add_argument("package", type=Path)
     sub.add_parser("list")
     remove_parser = sub.add_parser("remove")
     remove_parser.add_argument("id")
+    prepare_parser = sub.add_parser(
+        "prepare", help="embed a verified deterministic cache for player import"
+    )
+    prepare_parser.add_argument("package", type=Path)
+    prepare_parser.add_argument("output", type=Path)
     sub.add_parser("clean")
     return parser
 
@@ -246,20 +308,35 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.command != "prepare" and args.directory is None:
+            raise ManagerError("--directory is required for this command")
         if args.command == "install":
             report = install(args.package, args.directory)
+        elif args.command == "prepare":
+            report = prepare(args.package, args.output)
         elif args.command == "remove":
             report = remove(args.id, args.directory)
         elif args.command == "clean":
             report = clean(args.directory)
         else:
             report = list_installed(args.directory)
-        print(json.dumps(report, indent=2, sort_keys=True))
-        return 0
+        report = {"ok": True, **report}
+        status = 0
     except (OSError, zipfile.BadZipFile, json.JSONDecodeError, probe.ProbeError,
             compiler.CompileError, ManagerError) as exc:
-        print(json.dumps({"error": str(exc)}, indent=2, sort_keys=True))
-        return 2
+        report = {"ok": False, "error": str(exc)}
+        status = 2
+    payload = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    print(payload.decode("utf-8"), end="")
+    if args.result_file is not None:
+        try:
+            if args.directory is None or args.result_file.parent != args.directory:
+                raise ManagerError("result file must be directly inside the character directory")
+            _write_atomic(args.result_file, payload)
+        except (OSError, ManagerError) as exc:
+            print(json.dumps({"ok": False, "error": f"could not write launcher result: {exc}"}))
+            return 2
+    return status
 
 
 if __name__ == "__main__":

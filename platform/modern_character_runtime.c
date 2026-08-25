@@ -5,6 +5,7 @@
 #include "modern_character_pose.h"
 #include "modern_character_render.h"
 
+#include <errno.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +26,7 @@ typedef struct MdkrModernRuntimePool {
 typedef struct MdkrModernRuntimePlayer {
     int pool;
     MdkrModernPose pose;
+    MdkrModernCharacterTuning tuning;
     char semantic[96];
     float palette[MODERN_RUNTIME_MAX_BONES * 16u];
     float previous_palette[MODERN_RUNTIME_MAX_BONES * 16u];
@@ -48,6 +50,44 @@ static void set_error(char *error, size_t size, const char *message) {
 static void matrix_identity(float output[16]) {
     memset(output, 0, sizeof(float) * 16u);
     output[0] = output[5] = output[10] = output[15] = 1.0f;
+}
+
+void mdkr_modern_character_tuning_defaults(MdkrModernCharacterTuning *out) {
+    if (out == NULL) return;
+    memset(out, 0, sizeof(*out));
+    out->scale = 1.0f;
+    out->animation_speed = 1.0f;
+    out->vehicle_mask = 0x7u;
+}
+
+int mdkr_modern_character_tuning_validate(MdkrModernCharacterTuning *tuning,
+                                          char *error, size_t error_size) {
+    unsigned axis;
+    if (tuning == NULL || !isfinite(tuning->scale) ||
+        tuning->scale < 0.1f || tuning->scale > 5.0f ||
+        !isfinite(tuning->animation_speed) ||
+        tuning->animation_speed < 0.05f || tuning->animation_speed > 4.0f ||
+        !isfinite(tuning->lod_bias) || tuning->lod_bias < -3.0f ||
+        tuning->lod_bias > 3.0f || (tuning->vehicle_mask & ~0x7u) != 0u ||
+        tuning->vehicle_mask == 0u) {
+        set_error(error, error_size,
+                  "character tuning is outside its safe range");
+        return 0;
+    }
+    for (axis = 0u; axis < 3u; axis++) {
+        if (!isfinite(tuning->translation[axis]) ||
+            tuning->translation[axis] < -500.0f ||
+            tuning->translation[axis] > 500.0f ||
+            !isfinite(tuning->rotation_degrees[axis]) ||
+            tuning->rotation_degrees[axis] < -180.0f ||
+            tuning->rotation_degrees[axis] > 180.0f) {
+            set_error(error, error_size,
+                      "character translation or rotation is outside its safe range");
+            return 0;
+        }
+    }
+    set_error(error, error_size, "");
+    return 1;
 }
 
 static void matrix_multiply(const float left[16], const float right[16],
@@ -119,15 +159,46 @@ static int matrix_affine_inverse(const float input[16], float output[16]) {
     return 1;
 }
 
+static void quaternion_multiply(const float left[4], const float right[4],
+                                float output[4]) {
+    float result[4];
+    result[0] = left[3] * right[0] + left[0] * right[3] +
+                left[1] * right[2] - left[2] * right[1];
+    result[1] = left[3] * right[1] - left[0] * right[2] +
+                left[1] * right[3] + left[2] * right[0];
+    result[2] = left[3] * right[2] + left[0] * right[1] -
+                left[1] * right[0] + left[2] * right[3];
+    result[3] = left[3] * right[3] - left[0] * right[0] -
+                left[1] * right[1] - left[2] * right[2];
+    memcpy(output, result, sizeof(result));
+}
+
 static void definition_matrix(const MdkrModernCharacterDefinition *definition,
+                              const MdkrModernCharacterTuning *tuning,
                               float output[16]) {
-    float x = definition->rotation[0];
-    float y = definition->rotation[1];
-    float z = definition->rotation[2];
-    float w = definition->rotation[3];
-    float sx = definition->scale[0];
-    float sy = definition->scale[1];
-    float sz = definition->scale[2];
+    const float radians = 0.00872664625997164788f;
+    float half_x = tuning->rotation_degrees[0] * radians;
+    float half_y = tuning->rotation_degrees[1] * radians;
+    float half_z = tuning->rotation_degrees[2] * radians;
+    float cx = cosf(half_x), sxr = sinf(half_x);
+    float cy = cosf(half_y), syr = sinf(half_y);
+    float cz = cosf(half_z), szr = sinf(half_z);
+    float adjustment[4] = {
+        sxr * cy * cz - cx * syr * szr,
+        cx * syr * cz + sxr * cy * szr,
+        cx * cy * szr - sxr * syr * cz,
+        cx * cy * cz + sxr * syr * szr,
+    };
+    float rotation[4];
+    float x, y, z, w;
+    float sx = definition->scale[0] * tuning->scale;
+    float sy = definition->scale[1] * tuning->scale;
+    float sz = definition->scale[2] * tuning->scale;
+    quaternion_multiply(adjustment, definition->rotation, rotation);
+    x = rotation[0];
+    y = rotation[1];
+    z = rotation[2];
+    w = rotation[3];
     matrix_identity(output);
     output[0] = (1.0f - 2.0f * (y * y + z * z)) * sx;
     output[1] = (2.0f * (x * y + z * w)) * sx;
@@ -138,9 +209,73 @@ static void definition_matrix(const MdkrModernCharacterDefinition *definition,
     output[8] = (2.0f * (x * z + y * w)) * sz;
     output[9] = (2.0f * (y * z - x * w)) * sz;
     output[10] = (1.0f - 2.0f * (x * x + y * y)) * sz;
-    output[12] = definition->translation[0];
-    output[13] = definition->translation[1];
-    output[14] = definition->translation[2];
+    output[12] = definition->translation[0] + tuning->translation[0];
+    output[13] = definition->translation[1] + tuning->translation[1];
+    output[14] = definition->translation[2] + tuning->translation[2];
+}
+
+static int parse_environment_float(int player, const char *suffix,
+                                   float minimum, float maximum, float *output) {
+    char name[80];
+    char *end = NULL;
+    const char *text;
+    float value;
+    (void)snprintf(name, sizeof(name), "MDKR_CUSTOM_CHARACTER_P%d_%s",
+                   player + 1, suffix);
+    text = getenv(name);
+    if (text == NULL || text[0] == '\0') return 1;
+    if (text[0] == ' ' || text[0] == '\t' || text[0] == '\r' ||
+        text[0] == '\n') return 0;
+    errno = 0;
+    value = strtof(text, &end);
+    if (errno != 0 || end == text || *end != '\0' || !isfinite(value) ||
+        value < minimum || value > maximum) return 0;
+    *output = value;
+    return 1;
+}
+
+static void player_tuning_from_environment(int player,
+                                           MdkrModernCharacterTuning *tuning) {
+    char name[80];
+    char *end = NULL;
+    const char *text;
+    unsigned long mask;
+    int valid = 1;
+    mdkr_modern_character_tuning_defaults(tuning);
+    valid &= parse_environment_float(player, "SCALE", 0.1f, 5.0f,
+                                     &tuning->scale);
+    valid &= parse_environment_float(player, "OFFSET_X", -500.0f, 500.0f,
+                                     &tuning->translation[0]);
+    valid &= parse_environment_float(player, "OFFSET_Y", -500.0f, 500.0f,
+                                     &tuning->translation[1]);
+    valid &= parse_environment_float(player, "OFFSET_Z", -500.0f, 500.0f,
+                                     &tuning->translation[2]);
+    valid &= parse_environment_float(player, "ROTATION_X", -180.0f, 180.0f,
+                                     &tuning->rotation_degrees[0]);
+    valid &= parse_environment_float(player, "ROTATION_Y", -180.0f, 180.0f,
+                                     &tuning->rotation_degrees[1]);
+    valid &= parse_environment_float(player, "ROTATION_Z", -180.0f, 180.0f,
+                                     &tuning->rotation_degrees[2]);
+    valid &= parse_environment_float(player, "ANIMATION_SPEED", 0.05f, 4.0f,
+                                     &tuning->animation_speed);
+    valid &= parse_environment_float(player, "LOD_BIAS", -3.0f, 3.0f,
+                                     &tuning->lod_bias);
+    (void)snprintf(name, sizeof(name), "MDKR_CUSTOM_CHARACTER_P%d_VEHICLE_MASK",
+                   player + 1);
+    text = getenv(name);
+    if (text != NULL && text[0] != '\0') {
+        errno = 0;
+        mask = strtoul(text, &end, 10);
+        if (errno != 0 || text[0] == ' ' || text[0] == '\t' ||
+            text[0] == '\r' || text[0] == '\n' || end == text ||
+            *end != '\0' || mask == 0u || mask > 7u) valid = 0;
+        else tuning->vehicle_mask = (uint32_t)mask;
+    }
+    if (!valid) {
+        fprintf(stderr,
+                "[modern-character] P%d ignored one or more invalid tuning values\n",
+                player + 1);
+    }
 }
 
 static void pool_release(int index) {
@@ -213,6 +348,7 @@ int mdkr_modern_characters_init(const char *directory) {
     }
     for (index = 0; index < MDKR_MODERN_CHARACTER_PLAYERS; index++) {
         s_players[index].pool = -1;
+        mdkr_modern_character_tuning_defaults(&s_players[index].tuning);
     }
     if (mdkr_modern_character_registry_init(&s_registry, directory) != 0) return 0;
     s_initialized = 1;
@@ -278,6 +414,7 @@ void mdkr_modern_character_clear_player(int player) {
     mdkr_modern_pose_shutdown(&slot->pose);
     memset(slot, 0, sizeof(*slot));
     slot->pool = -1;
+    mdkr_modern_character_tuning_defaults(&slot->tuning);
     pool_release(pool);
 }
 
@@ -306,6 +443,11 @@ int mdkr_modern_character_assign_player(int player, const char *package_id,
     if (pool < 0) return 0;
     slot = &s_players[player];
     slot->pool = pool;
+    player_tuning_from_environment(player, &slot->tuning);
+    slot->tuning.vehicle_mask &= s_pools[pool].definition.vehicle_mask;
+    if (slot->tuning.vehicle_mask == 0u) {
+        slot->tuning.vehicle_mask = s_pools[pool].definition.vehicle_mask;
+    }
     if (!mdkr_modern_pose_init(&slot->pose, &s_pools[pool].asset,
                                error, error_size)) {
         slot->pool = -1;
@@ -336,6 +478,37 @@ int mdkr_modern_character_player_donor(int player) {
     return (int)s_pools[s_players[player].pool].definition.donor;
 }
 
+int mdkr_modern_character_set_tuning(int player,
+                                     const MdkrModernCharacterTuning *tuning,
+                                     char *error, size_t error_size) {
+    MdkrModernCharacterTuning checked;
+    if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        tuning == NULL || s_players[player].pool < 0) {
+        set_error(error, error_size, "character tuning target is unavailable");
+        return 0;
+    }
+    checked = *tuning;
+    if (!mdkr_modern_character_tuning_validate(&checked, error, error_size)) {
+        return 0;
+    }
+    checked.vehicle_mask &= s_pools[s_players[player].pool].definition.vehicle_mask;
+    if (checked.vehicle_mask == 0u) {
+        set_error(error, error_size,
+                  "character tuning selects no package-qualified vehicle");
+        return 0;
+    }
+    s_players[player].tuning = checked;
+    return 1;
+}
+
+int mdkr_modern_character_get_tuning(int player,
+                                     MdkrModernCharacterTuning *out) {
+    if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS || out == NULL ||
+        s_players[player].pool < 0) return 0;
+    *out = s_players[player].tuning;
+    return 1;
+}
+
 int mdkr_modern_character_matches(int player, int donor, int vehicle) {
     MdkrModernRuntimePlayer *slot;
     MdkrModernRuntimePool *pool;
@@ -345,7 +518,8 @@ int mdkr_modern_character_matches(int player, int donor, int vehicle) {
     if (slot->pool < 0) return 0;
     pool = &s_pools[slot->pool];
     return (int)pool->definition.donor == donor &&
-           (pool->definition.vehicle_mask & (1u << (unsigned)vehicle)) != 0u;
+           (pool->definition.vehicle_mask & slot->tuning.vehicle_mask &
+            (1u << (unsigned)vehicle)) != 0u;
 }
 
 int mdkr_modern_character_tick(int player, const char *semantic,
@@ -362,7 +536,35 @@ int mdkr_modern_character_tick(int player, const char *semantic,
                                            error, error_size)) return 0;
         (void)snprintf(slot->semantic, sizeof(slot->semantic), "%s", semantic);
     }
-    return mdkr_modern_pose_advance(&slot->pose, seconds, error, error_size);
+    return mdkr_modern_pose_advance(&slot->pose,
+                                    seconds * slot->tuning.animation_speed,
+                                    error, error_size);
+}
+
+int mdkr_modern_character_tick_phase(int player, const char *semantic,
+                                     float seconds, float normalized_phase,
+                                     char *error, size_t error_size) {
+    MdkrModernRuntimePlayer *slot;
+    if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        (slot = &s_players[player])->pool < 0 || semantic == NULL ||
+        !isfinite(seconds) || seconds < 0.0f ||
+        !isfinite(normalized_phase)) {
+        set_error(error, error_size,
+                  "modern character phase tick arguments are invalid");
+        return 0;
+    }
+    if (strcmp(slot->semantic, semantic) != 0) {
+        if (!mdkr_modern_pose_set_semantic(&slot->pose, semantic,
+                                           error, error_size)) return 0;
+        (void)snprintf(slot->semantic, sizeof(slot->semantic), "%s", semantic);
+    }
+    seconds *= slot->tuning.animation_speed;
+    if (!mdkr_modern_pose_has_semantic(&slot->pose, semantic)) {
+        return mdkr_modern_pose_advance(&slot->pose, seconds,
+                                        error, error_size);
+    }
+    return mdkr_modern_pose_advance_phase(
+        &slot->pose, seconds, normalized_phase, error, error_size);
 }
 
 int mdkr_modern_character_emit(int player, float view_distance,
@@ -401,7 +603,8 @@ int mdkr_modern_character_emit(int player, float view_distance,
         : view_distance >= 1300.0f ? 2u
         : view_distance >= 650.0f ? 1u : 0u;
     {
-        int biased = (int)selected_lod - (int)lroundf(pool->definition.lod_bias);
+        int biased = (int)selected_lod -
+            (int)lroundf(pool->definition.lod_bias + slot->tuning.lod_bias);
         if (biased < 0) biased = 0;
         if ((uint32_t)biased > available_lod) biased = (int)available_lod;
         selected_lod = (uint32_t)biased;
@@ -432,7 +635,7 @@ int mdkr_modern_character_emit(int player, float view_distance,
                   "character seat socket has a singular transform");
         return 0;
     }
-    definition_matrix(&pool->definition, package_transform);
+    definition_matrix(&pool->definition, &slot->tuning, package_transform);
     /* A character package defines its own seated origin. Cancelling that
      * socket before applying the author adjustment keeps root-motion clips and
      * differently-authored rigs attached to the vehicle origin. */

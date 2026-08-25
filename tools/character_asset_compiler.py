@@ -97,6 +97,16 @@ MIME_IDS = {"image/png": 1}
 MAX_TEXTURE_DIMENSION = 4096
 MAX_DECODED_TEXTURE_BYTES = 512 * 1024 * 1024
 
+# Engine-owned semantic behavior. Packages map names to clips; they do not get
+# to redefine whether a damage/landing/confirmation reaction loops forever.
+ONE_SHOT_SEMANTICS = {
+    "race.damage", "race.land", "select.confirm",
+}
+
+
+def _semantic_policy(semantic: str) -> tuple[int, float]:
+    return (0 if semantic in ONE_SHOT_SEMANTICS else 1, 0.08 if semantic == "race.steer" else 0.15)
+
 
 class CompileError(ValueError):
     """A deterministic asset compiler rejection."""
@@ -736,11 +746,14 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
     key_records = []
     channel_records = []
     animation_records = []
+    motion_channels = 0
+    static_animations = []
     for animation_index, animation in enumerate(_array(document, "animations")):
         if not isinstance(animation, dict):
             raise CompileError(f"animation[{animation_index}] must be an object")
         first_channel = len(channel_records)
         duration = 0.0
+        animation_moves = False
         samplers_in_animation = animation.get("samplers", [])
         for channel in animation.get("channels", []):
             if not isinstance(channel, dict):
@@ -771,6 +784,8 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
                 raise CompileError("animation sampler input/output counts do not match")
             first_key = len(key_records)
             previous_time = -math.inf
+            first_value = None
+            channel_moves = False
             for key_index, time_value in enumerate(times):
                 time = float(time_value[0])
                 if not math.isfinite(time) or time < 0.0 or time <= previous_time:
@@ -787,6 +802,12 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
                     outgoing = (0.0,) * component_count
                 if len(value) != component_count:
                     raise CompileError("animation output has the wrong component count")
+                if first_value is None:
+                    first_value = tuple(value)
+                elif tuple(value) != first_value:
+                    channel_moves = True
+                if any(component != 0.0 for component in (*incoming, *outgoing)):
+                    channel_moves = True
                 pad = 4 - component_count
                 key_records.append((time, *value, *(0.0,) * pad,
                                     *incoming, *(0.0,) * pad,
@@ -794,6 +815,13 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             channel_records.append((target_node, PATH_IDS[path_name],
                                     INTERPOLATION_IDS[interpolation_name],
                                     first_key, len(times), component_count))
+            if channel_moves:
+                motion_channels += 1
+                animation_moves = True
+        if not animation_moves:
+            static_animations.append(
+                animation.get("name") or f"animation_{animation_index}"
+            )
         animation_records.append((strings.add(animation.get("name") or f"animation_{animation_index}"),
                                   duration, first_channel, len(channel_records) - first_channel))
 
@@ -809,9 +837,12 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
     )
     semantic_records = []
     animations_manifest = manifest["animations"]
-    semantic_records.append((strings.add("fallback"), strings.add(animations_manifest["fallback"]), 1, 0.15))
+    fallback_flags, fallback_blend = _semantic_policy("fallback")
+    semantic_records.append((strings.add("fallback"), strings.add(animations_manifest["fallback"]),
+                             fallback_flags, fallback_blend))
     for semantic, clip in sorted(animations_manifest.get("states", {}).items()):
-        semantic_records.append((strings.add(semantic), strings.add(clip), 1, 0.15))
+        flags, blend = _semantic_policy(semantic)
+        semantic_records.append((strings.add(semantic), strings.add(clip), flags, blend))
     socket_records = []
     for semantic, node_name in sorted(manifest["sockets"].items()):
         if node_name not in node_names:
@@ -860,6 +891,8 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         "joints": len(joint_records),
         "animations": len(animation_records),
         "animation_channels": len(channel_records),
+        "motion_channels": motion_channels,
+        "static_animations": static_animations,
         "animation_keys": len(key_records),
         "semantics": len(semantic_records),
         "sockets": len(socket_records),

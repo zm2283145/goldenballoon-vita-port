@@ -1,7 +1,8 @@
 # Custom character asset pipeline spike
 
 Status: implemented vertical-slice spike, 2026-08-25. The source contract,
-compiler/cache, transactional local install, launcher selection, retained
+compiler/cache, native transactional portable-package install, launcher
+workshop and per-player fit controls, retained
 WebGPU GPU-skinned renderer, animation sampler, PBR-like materials, authored
 LODs, and one fingerprint-qualified retail donor seam are executable. This
 document does not approve or propose bundling any imported character asset.
@@ -23,7 +24,7 @@ This gives three deliberately separate formats:
 | Layer | Format | Stability promise | Owner |
 |---|---|---|---|
 | Authoring | Blender/Maya/etc.; optional FBX or DAE handoff | None | Creator and their DCC tools |
-| Portable source package | `.mdkrchar`: deterministic ZIP containing `manifest.json`, `model.glb`, and `LICENSE.txt` | Public, versioned | Community tools and launcher |
+| Portable source package | `.mdkrchar`: deterministic ZIP containing `manifest.json`, `model.glb`, `LICENSE.txt`, and optionally a verified `compiled.mdkc` for Python-free player import | Public, versioned | Community tools and launcher |
 | Runtime cache | `.mdkc`: validated, GPU-oriented sections plus a source digest | Private to an engine cache version | Import compiler and renderer |
 
 ## What the spike actually implements
@@ -42,17 +43,27 @@ This gives three deliberately separate formats:
   directional/ambient/fog response, core metallic-roughness inputs, role-aware
   mip generation, alpha masks, and explicit resource release/recreation;
 - a copied retained draw command and seat-socket attachment at the retail racer
-  render seam, including exact-alpha previous/current pose replay;
-- a presentation-only race semantic adapter for steer, reverse, boost, item,
-  airborne, spin, damage, and win/lose finish states, with package fallback for
-  clips an author does not provide;
+  and character-select seams, including exact-alpha previous/current pose
+  replay;
+- a presentation-only semantic adapter for phase-driven steering, reverse,
+  boost, item, airborne/landing edges, spin, damage, win/lose finish, and
+  character-select idle/hover/confirm, with package fallback for clips an
+  author does not provide;
 - exact US/PAL Diddy car/hover/plane LOD fingerprints and driver-batch masks,
   so replacement is atomic and vehicle/effect geometry remains authored;
-- launcher discovery, diagnostics and P1-P4 selection of installed caches.
+- launcher discovery, drag-and-drop/import diagnostics and P1-P4 selection of
+  installed caches;
+- native browse/import/removal for portable packages, with a developer compiler
+  fallback for source-only packages;
+- package-specific scale, seat offset, rotation, animation-rate, vehicle-body
+  and LOD tuning layered over package defaults without entering gameplay
+  authority;
+- an author manifest wizard plus launcher diagnostics for motionless clips,
+  recommended semantic coverage, and seat/head/hand sockets.
 
 This is deliberately a vertical slice, not a claim of production readiness.
 Only the Diddy donor family is qualified, OpenGL intentionally falls back to
-the retail driver, source import/removal is still CLI-driven, portraits and
+the retail driver, portraits and
 custom roster identity are not wired, and the COLLADA adapter synthesizes a
 motionless one-second witness clip when the source has no animation.
 
@@ -106,7 +117,8 @@ self-contained GLB 2.0
     v
 deterministic .mdkrchar source package
     |
-    | launcher import, provenance confirmation, compile and optimize
+    | author compiler embeds portable cache, or developer import compiles source
+    | launcher validates and transactionally installs
     v
 local versioned .mdkc cache
     |
@@ -131,8 +143,10 @@ retail `Character` enum value. Selecting a package for P1 and then selecting its
 Diddy donor in the game keeps `characterId == CHARACTER_DIDDY`; only that
 player's qualified driver batches are replaced. This is enough to ship Dixie or
 Tiny as visually distinct local characters with an explicit familiar stats
-profile, but the remaining roster UX still has to expose them as named tiles
-and render them in character select, portraits and results.
+profile. The exact Diddy select actor is also replaced while its numbered
+placard remains authored. The remaining roster UX still has to expose packages
+as independently named tiles and supply portraits/results identity rather than
+presenting them through the donor's tile.
 
 This separation avoids corrupting assumptions that are genuinely fixed at ten:
 
@@ -177,12 +191,20 @@ The spike implements the smallest useful envelope in
 manifest.json
 model.glb
 LICENSE.txt
+[compiled.mdkc]  # optional author-prepared cache for native player import
 ```
 
 Entries have a fixed order, are stored without compression, timestamped at the
 ZIP epoch, and restricted to regular files. `manifest.json` records the SHA-256 of
 `model.glb`. This makes repeated builds byte-identical and gives the cache,
 multiplayer compatibility layer, and bug reports one stable content identity.
+`character_package_manager.py prepare` adds `compiled.mdkc` as the fourth
+canonical stored member. The Python manager recompiles and byte-compares that
+member when developing; the native launcher applies the same complete MDKC
+validator and checks its compiler digest against the exact three source members
+before atomically publishing it, so packaged players need no Python and the
+native launcher needs no runtime GLB compiler.
+Source-only packages remain the provenance-first authoring form.
 
 A minimal manifest is:
 
@@ -419,8 +441,12 @@ Initial semantic states should include:
 
 Each semantic row defines priority, interruptibility, loop behavior, normalized
 phase source, playback rate, and blend duration in engine code. A package only
-maps semantic names to clips. Missing optional mappings use `fallback`; missing
-fallback or a zero-duration mapped clip rejects the package.
+maps semantic names to clips. `race.steer` is sampled continuously: phase 0 is
+full left, 0.5 is neutral, and 1 is full right. `race.damage`, `race.land`, and
+`select.confirm` clamp as one-shots; persistent states loop. A landing edge owns
+a bounded 0.2-second reaction window. Missing optional mappings use `fallback`
+with ordinary playback (never parameter scrubbing); missing fallback or a
+zero-duration mapped clip rejects the package.
 
 Sockets are similarly semantic. The importer resolves manifest socket names to
 joint/node indices once. Gameplay references `seat`, `head`, or `hand` without
@@ -507,6 +533,10 @@ The executable proof provides:
 - the bounded DAE convenience path in `tools/collada_to_glb.py`;
 - native `.mdkc` validation, pose sampling, GPU resource construction and
   retained character commands in `platform/modern_character_*`;
+- native portable-package import/removal and source retention in
+  `platform/modern_character_install.c`;
+- deterministic manifest inference from clip/node names in
+  `tools/character_manifest_wizard.py`;
 - actual WebGPU upload/draw and fingerprint-qualified Diddy replacement.
 
 `tests/test_character_asset_probe.py` generates a tiny license-clean GLB in
@@ -529,14 +559,20 @@ fall back through N64 vertices or display lists; it remains below the explicit
 100k v1 admission ceiling so the test also exercises the intended modern tier.
 
 The private Dixie fixture completed the same chain without contributing any
-tracked bytes: DAE -> self-contained GLB -> `.mdkrchar` -> `.mdkc` -> live race.
+tracked bytes: DAE -> self-contained GLB -> source and portable `.mdkrchar` ->
+`.mdkc` -> live character select and race.
 The resulting cache contained 2,517 vertices, 3,489 triangles, 35 joints, two
 materials, four PNG textures and 1,922,384 decoded RGBA+mip bytes. In a scripted
 Ancient Lake WebGPU run, diagnostics recorded 1 asset upload, 1,238 complete
 model draws (4,319,382 triangles), 23,541 suppressed qualified donor batches,
 and zero refused modern draws. A private frame showed the driver attached at a
-plausible scale. The T-pose is expected: the archive has no animation channels,
-so the bounded adapter can prove plumbing only, not invent production motion.
+plausible scale. The T-pose is expected: the adapter supplied one
+positive-duration but motionless witness channel because the archive has no
+authored clips. The compiler and launcher now report that distinction instead
+of mistaking “one clip exists” for real motion.
+The character-select run independently recorded 153 complete replacements and
+zero refused draws while retaining Diddy's numbered placard; this proves the
+select lifecycle/semantic seam, not a polished select pose for that fixture.
 
 ### Higher-fidelity answer and firm v1 limits
 
@@ -579,7 +615,7 @@ unfinished pieces into unbounded memory or GPU work.
 Gate: identical inputs produce identical packages/reports on macOS, Linux,
 Windows, and wasm-capable tooling; hostile corpus is bounded and sanitizer-clean.
 
-### P1 - Static modern mesh vertical slice (race seam complete for Diddy)
+### P1 - Static modern mesh vertical slice (race/select seams complete for Diddy)
 
 - Add a retained native scene command and immutable resource handle.
 - Generalize `GfxModernMesh` to multiple primitives/materials, mip chains,
@@ -638,9 +674,10 @@ Gate: no frame-budget regression outside the written target, no unbounded cache
 growth, no visible LOD oscillation, and fallback engages before allocation or
 GPU limits are exceeded.
 
-### P6 - Launcher, content packs and community release (selection only)
+### P6 - Launcher, content packs and community release (workshop baseline complete)
 
-- Build import/diagnostic/removal UI and a local package directory.
+- Import/diagnostic/removal UI, native portable-package install, local package
+  directory, P1-P4 assignment, vehicle pairing and fit/motion controls are complete.
 - Generate portraits or accept validated package portraits with fallbacks.
 - Add local enable/order policy and online digest/fallback diagnostics.
 - Publish an SDK containing schemas, the generated animated fixture, validator,

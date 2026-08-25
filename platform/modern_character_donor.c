@@ -92,3 +92,16 @@ int mdkr_modern_donor_cap_lod(int donor, int vehicle, int lod) {
     }
     return lod;
 }
+
+int mdkr_modern_donor_select_model_ready(int donor, int model_id,
+                                         int vertices, int triangles,
+                                         int batches) {
+    return donor == MDKR_DONOR_DIDDY &&
+           model_id == ASSET_OBJECTMODEL_DIDDYSELECT &&
+           vertices == 343 && triangles == 297 && batches == 28;
+}
+
+int mdkr_modern_donor_select_batch_visible(int donor, int batch) {
+    if (donor != MDKR_DONOR_DIDDY || batch < 0 || batch >= 28) return 1;
+    return batch == 0;
+}

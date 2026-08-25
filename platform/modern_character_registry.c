@@ -50,6 +50,39 @@ static int has_cache_suffix(const char *name) {
            ascii_lower((unsigned char)name[length - 1u]) == 'c';
 }
 
+static uint32_t semantic_bit(const char *name) {
+    static const struct { const char *name; uint32_t bit; } table[] = {
+        {"fallback", MDKR_CHARACTER_SEMANTIC_FALLBACK},
+        {"race.steer", MDKR_CHARACTER_SEMANTIC_RACE_STEER},
+        {"race.reverse", MDKR_CHARACTER_SEMANTIC_RACE_REVERSE},
+        {"race.boost", MDKR_CHARACTER_SEMANTIC_RACE_BOOST},
+        {"race.damage", MDKR_CHARACTER_SEMANTIC_RACE_DAMAGE},
+        {"race.item", MDKR_CHARACTER_SEMANTIC_RACE_ITEM},
+        {"race.spin", MDKR_CHARACTER_SEMANTIC_RACE_SPIN},
+        {"race.airborne", MDKR_CHARACTER_SEMANTIC_RACE_AIRBORNE},
+        {"race.land", MDKR_CHARACTER_SEMANTIC_RACE_LAND},
+        {"race.finish_win", MDKR_CHARACTER_SEMANTIC_RACE_FINISH_WIN},
+        {"race.finish_lose", MDKR_CHARACTER_SEMANTIC_RACE_FINISH_LOSE},
+        {"select.idle", MDKR_CHARACTER_SEMANTIC_SELECT_IDLE},
+        {"select.hover", MDKR_CHARACTER_SEMANTIC_SELECT_HOVER},
+        {"select.confirm", MDKR_CHARACTER_SEMANTIC_SELECT_CONFIRM},
+    };
+    size_t index;
+    if (name == NULL) return 0u;
+    for (index = 0u; index < sizeof(table) / sizeof(table[0]); index++) {
+        if (strcmp(name, table[index].name) == 0) return table[index].bit;
+    }
+    return 0u;
+}
+
+static uint32_t socket_bit(const char *name) {
+    if (name == NULL) return 0u;
+    if (strcmp(name, "seat") == 0) return MDKR_CHARACTER_SOCKET_SEAT;
+    if (strcmp(name, "head") == 0) return MDKR_CHARACTER_SOCKET_HEAD;
+    if (strcmp(name, "hand") == 0) return MDKR_CHARACTER_SOCKET_HAND;
+    return 0u;
+}
+
 static void add_skip(MdkrModernCharacterRegistry *registry,
                      const char *name, const char *reason) {
     int slot;
@@ -128,6 +161,92 @@ int mdkr_modern_character_registry_init(MdkrModernCharacterRegistry *registry,
         entry.donor = definition.donor;
         entry.vehicle_mask = definition.vehicle_mask;
         mdkr_modern_character_asset_stats(&asset, &entry.stats);
+        {
+            uint32_t index;
+            uint8_t animation_moves[64] = {0};
+            for (index = 0u; index < entry.stats.sockets; index++) {
+                MdkrModernSocket socket;
+                if (mdkr_modern_character_asset_socket(&asset, index, &socket)) {
+                    entry.socket_mask |= socket_bit(
+                        mdkr_modern_character_asset_string(&asset,
+                                                           socket.semantic));
+                }
+            }
+            for (index = 0u; index < entry.stats.animations; index++) {
+                MdkrModernAnimation animation;
+                uint32_t channel_offset;
+                (void)mdkr_modern_character_asset_animation(
+                    &asset, index, &animation);
+                for (channel_offset = 0u;
+                     channel_offset < animation.channel_count;
+                     channel_offset++) {
+                    MdkrModernChannel channel;
+                    MdkrModernKey first;
+                    uint32_t key_index;
+                    int moves = 0;
+                    if (!mdkr_modern_character_asset_channel(
+                            &asset, animation.first_channel + channel_offset,
+                            &channel) ||
+                        !mdkr_modern_character_asset_key(
+                            &asset, channel.first_key, &first)) continue;
+                    for (key_index = 1u;
+                         key_index < channel.key_count && !moves;
+                         key_index++) {
+                        MdkrModernKey key;
+                        uint32_t component;
+                        (void)mdkr_modern_character_asset_key(
+                            &asset, channel.first_key + key_index, &key);
+                        for (component = 0u;
+                             component < channel.components; component++) {
+                            if (key.value[component] != first.value[component] ||
+                                key.incoming[component] != 0.0f ||
+                                key.outgoing[component] != 0.0f ||
+                                first.incoming[component] != 0.0f ||
+                                first.outgoing[component] != 0.0f) {
+                                moves = 1;
+                                break;
+                            }
+                        }
+                    }
+                    if (moves) {
+                        animation_moves[index] = 1u;
+                        entry.motion_channels++;
+                    }
+                }
+            }
+            for (index = 0u; index < entry.stats.semantics; index++) {
+                MdkrModernSemantic semantic;
+                const char *name;
+                const char *clip;
+                uint32_t bit;
+                uint32_t animation_index;
+                if (!mdkr_modern_character_asset_semantic(
+                        &asset, index, &semantic)) continue;
+                name = mdkr_modern_character_asset_string(
+                    &asset, semantic.semantic);
+                clip = mdkr_modern_character_asset_string(
+                    &asset, semantic.clip);
+                bit = semantic_bit(name);
+                entry.semantic_mask |= bit;
+                for (animation_index = 0u;
+                     animation_index < entry.stats.animations;
+                     animation_index++) {
+                    MdkrModernAnimation animation;
+                    const char *animation_name;
+                    (void)mdkr_modern_character_asset_animation(
+                        &asset, animation_index, &animation);
+                    animation_name = mdkr_modern_character_asset_string(
+                        &asset, animation.name);
+                    if (clip != NULL && animation_name != NULL &&
+                        strcmp(clip, animation_name) == 0) {
+                        if (animation_moves[animation_index]) {
+                            entry.moving_semantic_mask |= bit;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
         mdkr_modern_character_asset_unload(&asset);
         if (registry->count >= MDKR_MODERN_CHARACTER_MAX) {
             add_skip(registry, item->d_name, "the 64-character local registry is full");

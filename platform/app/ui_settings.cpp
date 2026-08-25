@@ -4,11 +4,14 @@
 #include "app_theme.h"
 #include "app_ui_policy.h"
 #include "app_window.h"
+#include "file_dialog.h"
 #include "ui_common.h"
 
 #include "controller_mapping.h"
 #include "enhancement_registry.h"
+#include "fs_utf8.h"
 #include "mod_registry.h"
+#include "modern_character_install.h"
 #include "modern_character_registry.h"
 #include "user_paths.h"
 #include "video_config.h"
@@ -17,9 +20,12 @@
 #include "imgui.h"
 
 #include <array>
+#include <cerrno>
+#include <cmath>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
 
 namespace {
@@ -1811,6 +1817,200 @@ bool drawContentSection(SDL_Window *window, bool compact,
 MdkrModernCharacterRegistry g_characterRegistry{};
 bool g_characterRegistryLoaded = false;
 std::string g_characterRegistryDirectory;
+char g_characterImportPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
+std::string g_characterManagerReport;
+std::string g_characterPendingRemoval;
+
+struct CharacterTuningEdit {
+    bool loaded = false;
+    float scale = 1.0f;
+    float offset[3] = {0.0f, 0.0f, 0.0f};
+    float rotation[3] = {0.0f, 0.0f, 0.0f};
+    float animationSpeed = 1.0f;
+    float lodBias = 0.0f;
+    unsigned vehicleMask = 7u;
+};
+
+std::map<std::string, CharacterTuningEdit> g_characterTuning;
+
+void refreshCharacterRegistry();
+
+float characterConfigFloat(int player, const char *packageId,
+                           const char *suffix, float fallback,
+                           float minimum, float maximum) {
+    const std::string profileKey = "custom_character_profile_" +
+        std::string(packageId) + "_" + suffix;
+    const std::string legacyKey = "custom_character_p" +
+        std::to_string(player + 1) + "_" + suffix;
+    const std::string text = AppConfig::get(profileKey,
+                                             AppConfig::get(legacyKey));
+    if (text.empty()) return fallback;
+    char *end = nullptr;
+    errno = 0;
+    const float value = std::strtof(text.c_str(), &end);
+    return errno == 0 && end != text.c_str() && *end == '\0' &&
+            std::isfinite(value) && value >= minimum && value <= maximum
+        ? value : fallback;
+}
+
+CharacterTuningEdit &loadCharacterTuning(int player, const char *packageId) {
+    CharacterTuningEdit &edit = g_characterTuning[packageId];
+    if (edit.loaded) return edit;
+    edit.scale = characterConfigFloat(player, packageId, "scale", 1.0f, 0.1f, 5.0f);
+    edit.offset[0] = characterConfigFloat(player, packageId, "offset_x", 0.0f, -500.0f, 500.0f);
+    edit.offset[1] = characterConfigFloat(player, packageId, "offset_y", 0.0f, -500.0f, 500.0f);
+    edit.offset[2] = characterConfigFloat(player, packageId, "offset_z", 0.0f, -500.0f, 500.0f);
+    edit.rotation[0] = characterConfigFloat(player, packageId, "rotation_x", 0.0f, -180.0f, 180.0f);
+    edit.rotation[1] = characterConfigFloat(player, packageId, "rotation_y", 0.0f, -180.0f, 180.0f);
+    edit.rotation[2] = characterConfigFloat(player, packageId, "rotation_z", 0.0f, -180.0f, 180.0f);
+    edit.animationSpeed = characterConfigFloat(player, packageId, "animation_speed", 1.0f, 0.05f, 4.0f);
+    edit.lodBias = characterConfigFloat(player, packageId, "lod_bias", 0.0f, -3.0f, 3.0f);
+    const float mask = characterConfigFloat(player, packageId, "vehicle_mask", 7.0f, 1.0f, 7.0f);
+    edit.vehicleMask = static_cast<unsigned>(mask);
+    if (edit.vehicleMask == 0u || edit.vehicleMask > 7u) edit.vehicleMask = 7u;
+    edit.loaded = true;
+    return edit;
+}
+
+std::string characterFloatText(float value) {
+    char text[48];
+    std::snprintf(text, sizeof(text), "%.7g", static_cast<double>(value));
+    return text;
+}
+
+bool persistCharacterTuning(const char *packageId,
+                            const CharacterTuningEdit &edit) {
+    const std::string prefix = "custom_character_profile_" +
+        std::string(packageId) + "_";
+    AppConfig::set(prefix + "scale", characterFloatText(edit.scale));
+    AppConfig::set(prefix + "offset_x", characterFloatText(edit.offset[0]));
+    AppConfig::set(prefix + "offset_y", characterFloatText(edit.offset[1]));
+    AppConfig::set(prefix + "offset_z", characterFloatText(edit.offset[2]));
+    AppConfig::set(prefix + "rotation_x", characterFloatText(edit.rotation[0]));
+    AppConfig::set(prefix + "rotation_y", characterFloatText(edit.rotation[1]));
+    AppConfig::set(prefix + "rotation_z", characterFloatText(edit.rotation[2]));
+    AppConfig::set(prefix + "animation_speed", characterFloatText(edit.animationSpeed));
+    AppConfig::set(prefix + "lod_bias", characterFloatText(edit.lodBias));
+    AppConfig::set(prefix + "vehicle_mask", std::to_string(edit.vehicleMask));
+    const AppConfig::PersistResult result = AppConfig::save();
+    if (AppConfig::persistResultApplied(result)) {
+        setStatus("Character fit settings saved; they apply on play.",
+                  AppTheme::good());
+        return true;
+    }
+    setStatus("Character fit settings could not be saved.", AppTheme::bad());
+    return false;
+}
+
+std::string readCharacterManagerResult(const std::string &path) {
+    std::FILE *file = mdkr_fopen_utf8(path.c_str(), "rb");
+    if (file == nullptr) return {};
+    std::string text;
+    char buffer[1024];
+    size_t count;
+    while (text.size() < 64u * 1024u &&
+           (count = std::fread(buffer, 1u, sizeof(buffer), file)) != 0u) {
+        const size_t room = 64u * 1024u - text.size();
+        text.append(buffer, count < room ? count : room);
+    }
+    std::fclose(file);
+    return text;
+}
+
+bool runCharacterManager(const char *command, const std::string &argument) {
+    char toolPath[MDKR_MODERN_CHARACTER_PATH_MAX];
+    int regular = 0;
+    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
+    if (g_characterRegistryDirectory.empty()) {
+        g_characterManagerReport = "No writable character directory is available.";
+        return false;
+    }
+    const char *overrideTool = std::getenv("MDKR_CHARACTER_MANAGER");
+    if (overrideTool != nullptr && overrideTool[0] != '\0') {
+        std::snprintf(toolPath, sizeof(toolPath), "%s", overrideTool);
+    } else if (!mdkr_user_resource_path("tools/character_package_manager.py",
+                                        toolPath, sizeof(toolPath))) {
+        g_characterManagerReport = "The character importer could not be located.";
+        return false;
+    }
+    if (mdkr_path_query_utf8(toolPath, nullptr, &regular, nullptr) != 0 || !regular) {
+        g_characterManagerReport =
+            "This build does not include the character compiler. Install from a source build or set MDKR_CHARACTER_MANAGER.";
+        return false;
+    }
+    const std::string resultPath = g_characterRegistryDirectory +
+        "/.launcher-character-result.json";
+    (void)mdkr_remove_utf8(resultPath.c_str());
+    const char *pythonOverride = std::getenv("MDKR_CHARACTER_PYTHON");
+    const char *interpreters[] = {
+        pythonOverride != nullptr && pythonOverride[0] != '\0'
+            ? pythonOverride : "python3",
+        "python",
+    };
+    int launchError = 0;
+    int exitCode = -1;
+    bool launched = false;
+    for (const char *interpreter : interpreters) {
+        const char *arguments[] = {
+            toolPath,
+            "--directory", g_characterRegistryDirectory.c_str(),
+            "--result-file", resultPath.c_str(),
+            command, argument.c_str(), nullptr,
+        };
+        launchError = mdkr_spawn_wait_utf8(interpreter, arguments, &exitCode);
+        if (launchError == 0) {
+            launched = true;
+            break;
+        }
+        if (pythonOverride != nullptr && pythonOverride[0] != '\0') break;
+    }
+    g_characterManagerReport = readCharacterManagerResult(resultPath);
+    (void)mdkr_remove_utf8(resultPath.c_str());
+    if (!launched) {
+        g_characterManagerReport =
+            "Python 3 could not be started for the bundled character compiler (error " +
+            std::to_string(launchError) + ").";
+        return false;
+    }
+    if (g_characterManagerReport.empty()) {
+        g_characterManagerReport = exitCode == 0
+            ? "The importer completed without a diagnostic report."
+            : "The importer failed without a diagnostic report.";
+    }
+    if (exitCode == 0) refreshCharacterRegistry();
+    return exitCode == 0;
+}
+
+bool importCharacterPackage(const std::string &path) {
+    MdkrModernCharacterInstallResult result{};
+    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
+    if (!g_characterRegistryDirectory.empty() &&
+        mdkr_modern_character_install_portable(
+            path.c_str(), g_characterRegistryDirectory.c_str(), &result)) {
+        g_characterManagerReport = result.message;
+        refreshCharacterRegistry();
+        return true;
+    }
+    g_characterManagerReport = result.message;
+    if (result.needs_compiler) {
+        return runCharacterManager("install", path);
+    }
+    return false;
+}
+
+bool removeCharacterPackage(const std::string &id) {
+    MdkrModernCharacterInstallResult result{};
+    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
+    if (!g_characterRegistryDirectory.empty() &&
+        mdkr_modern_character_remove_installed(
+            id.c_str(), g_characterRegistryDirectory.c_str(), &result)) {
+        g_characterManagerReport = result.message;
+        refreshCharacterRegistry();
+        return true;
+    }
+    g_characterManagerReport = result.message;
+    return false;
+}
 
 void refreshCharacterRegistry() {
     char directory[MDKR_MODERN_CHARACTER_PATH_MAX];
@@ -1832,27 +2032,188 @@ const char *donorName(uint32_t donor) {
     return donor < std::size(names) ? names[donor] : "Unknown";
 }
 
+unsigned countCharacterBits(uint32_t value) {
+    unsigned count = 0u;
+    while (value != 0u) {
+        count += value & 1u;
+        value >>= 1u;
+    }
+    return count;
+}
+
+struct CharacterSemanticLabel {
+    const char *name;
+    uint32_t bit;
+};
+
+const CharacterSemanticLabel kRaceCharacterSemantics[] = {
+    {"race.steer", MDKR_CHARACTER_SEMANTIC_RACE_STEER},
+    {"race.reverse", MDKR_CHARACTER_SEMANTIC_RACE_REVERSE},
+    {"race.boost", MDKR_CHARACTER_SEMANTIC_RACE_BOOST},
+    {"race.damage", MDKR_CHARACTER_SEMANTIC_RACE_DAMAGE},
+    {"race.item", MDKR_CHARACTER_SEMANTIC_RACE_ITEM},
+    {"race.spin", MDKR_CHARACTER_SEMANTIC_RACE_SPIN},
+    {"race.airborne", MDKR_CHARACTER_SEMANTIC_RACE_AIRBORNE},
+    {"race.land", MDKR_CHARACTER_SEMANTIC_RACE_LAND},
+    {"race.finish_win", MDKR_CHARACTER_SEMANTIC_RACE_FINISH_WIN},
+    {"race.finish_lose", MDKR_CHARACTER_SEMANTIC_RACE_FINISH_LOSE},
+};
+
+const CharacterSemanticLabel kSelectCharacterSemantics[] = {
+    {"select.idle", MDKR_CHARACTER_SEMANTIC_SELECT_IDLE},
+    {"select.hover", MDKR_CHARACTER_SEMANTIC_SELECT_HOVER},
+    {"select.confirm", MDKR_CHARACTER_SEMANTIC_SELECT_CONFIRM},
+};
+
+template <size_t Count>
+std::string missingCharacterSemantics(
+    uint32_t mask, const CharacterSemanticLabel (&semantics)[Count]) {
+    std::string missing;
+    for (const CharacterSemanticLabel &semantic : semantics) {
+        if ((mask & semantic.bit) != 0u) continue;
+        if (!missing.empty()) missing += ", ";
+        missing += semantic.name;
+    }
+    return missing;
+}
+
+bool drawCharacterTuningEditor(int player,
+                               const MdkrModernCharacterEntry *entry) {
+    static const char *vehicleNames[] = {"Car", "Hovercraft", "Plane"};
+    bool changed = false;
+    CharacterTuningEdit &edit = loadCharacterTuning(player, entry->id);
+    edit.vehicleMask &= entry->vehicle_mask;
+    if (edit.vehicleMask == 0u) edit.vehicleMask = entry->vehicle_mask;
+
+    ImGui::TextUnformatted("Use this look on");
+    for (unsigned vehicle = 0u; vehicle < 3u; ++vehicle) {
+        if (vehicle != 0u) ImGui::SameLine();
+        const unsigned bit = 1u << vehicle;
+        const bool qualified = (entry->vehicle_mask & bit) != 0u;
+        bool enabled = (edit.vehicleMask & bit) != 0u;
+        if (!qualified) ImGui::BeginDisabled();
+        const std::string label = std::string(vehicleNames[vehicle]) +
+            "##vehicle-" + std::to_string(vehicle);
+        if (ImGui::Checkbox(label.c_str(), &enabled)) {
+            const unsigned candidate = enabled
+                ? edit.vehicleMask | bit : edit.vehicleMask & ~bit;
+            if ((candidate & entry->vehicle_mask) != 0u) {
+                edit.vehicleMask = candidate;
+                changed |= persistCharacterTuning(entry->id, edit);
+            } else {
+                setStatus("Keep at least one qualified vehicle pairing enabled.",
+                          AppTheme::bad());
+            }
+        }
+        if (!qualified) ImGui::EndDisabled();
+    }
+    ui::TextSubtleWrapped(
+        "This controls presentation only. The in-game vehicle choice still owns physics and handling.");
+
+    (void)ImGui::SliderFloat("Character size", &edit.scale, 0.1f, 5.0f,
+                             "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        changed |= persistCharacterTuning(entry->id, edit);
+    }
+    (void)ImGui::DragFloat3("Seat position", edit.offset, 0.25f,
+                            -500.0f, 500.0f, "%.2f",
+                            ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        changed |= persistCharacterTuning(entry->id, edit);
+    }
+    (void)ImGui::DragFloat3("Rotation", edit.rotation, 0.5f,
+                            -180.0f, 180.0f, "%.1f deg",
+                            ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        changed |= persistCharacterTuning(entry->id, edit);
+    }
+    (void)ImGui::SliderFloat("Animation speed", &edit.animationSpeed,
+                             0.05f, 4.0f, "%.2fx",
+                             ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        changed |= persistCharacterTuning(entry->id, edit);
+    }
+    (void)ImGui::SliderFloat("Detail preference", &edit.lodBias,
+                             -3.0f, 3.0f, "%+.0f",
+                             ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        changed |= persistCharacterTuning(entry->id, edit);
+    }
+    ui::TextSubtleWrapped(
+        "Higher detail preference holds authored high-detail LODs farther away; it cannot invent detail missing from the package.");
+    if (ImGui::Button("Reset fit and motion")) {
+        edit = CharacterTuningEdit{};
+        edit.loaded = true;
+        edit.vehicleMask = entry->vehicle_mask;
+        changed |= persistCharacterTuning(entry->id, edit);
+    }
+    return changed;
+}
+
 bool drawCustomCharactersSection(bool compact) {
     bool changed = false;
     if (!g_characterRegistryLoaded) refreshCharacterRegistry();
     ui::Gap(ui::kGapS);
     if (!compact) {
         ui::TextSubtleWrapped(
-            "Private .mdkrchar packages are compiled offline into this local "
-            "folder. The game never needs a second ROM and never puts these "
-            "presentation choices into saves, ghosts, or network authority. "
-            "A package appears in a race when that player selects its listed "
-            "built-in donor; this spike has qualified Diddy only.");
+            "Import a self-contained .mdkrchar package, assign it per player, "
+            "then tune its fit, motion, and vehicle pairing. The game never "
+            "needs a second ROM and never puts these local presentation choices "
+            "into saves, ghosts, physics, or network authority. This spike has "
+            "fingerprint-qualified Diddy's car, hovercraft, and plane bodies.");
     }
     ImGui::Indent(ui::kGapM);
+
+    if (mdkr_render_backend() != MDKR_BACKEND_WEBGPU) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+        ImGui::TextWrapped(
+            "Modern characters require the WebGPU renderer. This backend will "
+            "keep the built-in racer visible, so packages remain safe but will "
+            "not appear in-game.");
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##character-package-path",
+                             "/path/to/character.mdkrchar",
+                             g_characterImportPath,
+                             sizeof(g_characterImportPath));
+    if (filedialog::isAvailable()) {
+        if (ImGui::Button("Browse for package...")) {
+            std::string picked;
+            if (filedialog::openCharacterPackage(picked)) {
+                std::snprintf(g_characterImportPath,
+                              sizeof(g_characterImportPath), "%s",
+                              picked.c_str());
+            }
+        }
+        ImGui::SameLine();
+    }
+    const bool canImport = g_characterImportPath[0] != '\0';
+    if (!canImport) ImGui::BeginDisabled();
+    if (ImGui::Button("Validate and import")) {
+        if (Settings_importCharacterPackage(g_characterImportPath)) {
+            changed = true;
+        }
+    }
+    if (!canImport) ImGui::EndDisabled();
+    ImGui::SameLine();
     if (ImGui::Button("Rescan installed characters")) {
         refreshCharacterRegistry();
     }
     if (!g_characterRegistryDirectory.empty()) {
-        ImGui::TextWrapped("Folder: %s", g_characterRegistryDirectory.c_str());
+        ImGui::TextDisabled("%d installed · Folder: %s",
+            mdkr_modern_character_registry_count(&g_characterRegistry),
+            g_characterRegistryDirectory.c_str());
+    }
+    if (!g_characterManagerReport.empty() &&
+        ImGui::TreeNode("Last importer report")) {
+        ImGui::TextWrapped("%s", g_characterManagerReport.c_str());
+        ImGui::TreePop();
     }
 
     for (int player = 0; player < 4; ++player) {
+        ImGui::PushID(player);
         const std::string key =
             "custom_character_p" + std::to_string(player + 1);
         const std::string selected = AppConfig::get(key);
@@ -1907,10 +2268,115 @@ bool drawCustomCharactersSection(bool compact) {
         }
         if (selectedEntry != nullptr) {
             ImGui::TextDisabled(
-                "%s donor · %u triangles · %u joints · %u materials",
+                "%s donor · %u triangles · %u joints · %u materials · %u clips",
                 donorName(selectedEntry->donor), selectedEntry->stats.triangles,
-                selectedEntry->stats.joints, selectedEntry->stats.materials);
+                selectedEntry->stats.joints, selectedEntry->stats.materials,
+                selectedEntry->stats.animations);
+            ImGui::TextDisabled(
+                "Roster pairing: choose %s in-game; that racer keeps its stats and voice.",
+                donorName(selectedEntry->donor));
+            constexpr uint32_t raceStates =
+                (MDKR_CHARACTER_SEMANTIC_SELECT_IDLE - 1u) &
+                ~MDKR_CHARACTER_SEMANTIC_FALLBACK;
+            constexpr uint32_t selectStates =
+                MDKR_CHARACTER_SEMANTIC_SELECT_IDLE |
+                MDKR_CHARACTER_SEMANTIC_SELECT_HOVER |
+                MDKR_CHARACTER_SEMANTIC_SELECT_CONFIRM;
+            const unsigned mappedRaceStates = countCharacterBits(
+                selectedEntry->semantic_mask & raceStates);
+            const unsigned mappedSelectStates = countCharacterBits(
+                selectedEntry->semantic_mask & selectStates);
+            ImGui::TextDisabled(
+                "%u/10 race states · %u/3 select states · %u/%u mapped clips move",
+                mappedRaceStates, mappedSelectStates,
+                countCharacterBits(selectedEntry->moving_semantic_mask &
+                                   (raceStates | selectStates)),
+                mappedRaceStates + mappedSelectStates);
+            if (selectedEntry->stats.animations == 0u ||
+                selectedEntry->motion_channels == 0u) {
+                ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+                ImGui::TextWrapped(
+                    "Static bind pose: this model has no changing animation keys. "
+                    "Geometry and fit work, but it will remain posed like the source "
+                    "until real clips are authored or retargeted.");
+                ImGui::PopStyleColor();
+            } else if ((selectedEntry->moving_semantic_mask &
+                        MDKR_CHARACTER_SEMANTIC_FALLBACK) == 0u) {
+                ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+                ImGui::TextWrapped(
+                    "The fallback clip is static. Mapped motion can still play, "
+                    "but every missing state will hold the fallback pose.");
+                ImGui::PopStyleColor();
+            }
+            const std::string missingRace = missingCharacterSemantics(
+                selectedEntry->semantic_mask, kRaceCharacterSemantics);
+            const std::string missingSelect = missingCharacterSemantics(
+                selectedEntry->semantic_mask, kSelectCharacterSemantics);
+            if (!missingRace.empty()) {
+                ImGui::TextWrapped("Fallback covers missing race states: %s",
+                                   missingRace.c_str());
+            }
+            if (!missingSelect.empty()) {
+                ImGui::TextWrapped("Fallback covers missing select states: %s",
+                                   missingSelect.c_str());
+            }
+            ImGui::TextDisabled(
+                "Sockets: seat %s · head %s · hand %s",
+                (selectedEntry->socket_mask & MDKR_CHARACTER_SOCKET_SEAT)
+                    ? "authored" : "required fallback",
+                (selectedEntry->socket_mask & MDKR_CHARACTER_SOCKET_HEAD)
+                    ? "authored" : "absent",
+                (selectedEntry->socket_mask & MDKR_CHARACTER_SOCKET_HAND)
+                    ? "authored" : "absent");
+            if ((selectedEntry->semantic_mask &
+                 MDKR_CHARACTER_SEMANTIC_RACE_STEER) != 0u) {
+                ImGui::TextDisabled(
+                    "race.steer phase: 0 full left · 0.5 neutral · 1 full right");
+            }
+            const std::string editorLabel =
+                "Fit, motion, and vehicle pairing##character-editor";
+            if (ImGui::TreeNodeEx(editorLabel.c_str(),
+                                  player == 0 ? ImGuiTreeNodeFlags_DefaultOpen
+                                              : ImGuiTreeNodeFlags_None)) {
+                changed |= drawCharacterTuningEditor(player, selectedEntry);
+                ui::Gap(ui::kGapS);
+                if (ImGui::Button("Remove package from this computer...")) {
+                    g_characterPendingRemoval = selectedEntry->id;
+                    ImGui::OpenPopup("Remove custom character?");
+                }
+                if (ImGui::BeginPopupModal("Remove custom character?", nullptr,
+                                           ImGuiWindowFlags_AlwaysAutoResize)) {
+                    ImGui::TextWrapped(
+                        "Remove %s and its local compiled cache? The original file you imported is not touched.",
+                        selectedEntry->display_name);
+                    if (ImGui::Button("Remove")) {
+                        const std::string removedId = g_characterPendingRemoval;
+                        if (removeCharacterPackage(removedId)) {
+                            for (int slot = 0; slot < 4; ++slot) {
+                                const std::string slotKey = "custom_character_p" +
+                                    std::to_string(slot + 1);
+                                if (AppConfig::get(slotKey) == removedId) {
+                                    AppConfig::set(slotKey, "");
+                                }
+                            }
+                            const AppConfig::PersistResult result = AppConfig::save();
+                            changed |= AppConfig::persistResultApplied(result);
+                            setStatus("Custom character removed from this computer.",
+                                      AppTheme::good());
+                        } else {
+                            setStatus("Character removal failed; open the importer report.",
+                                      AppTheme::bad());
+                        }
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+                    ImGui::EndPopup();
+                }
+                ImGui::TreePop();
+            }
         }
+        ImGui::PopID();
     }
 
     const int skipped =
@@ -1932,6 +2398,25 @@ bool drawCustomCharactersSection(bool compact) {
 }
 
 }  // namespace
+
+bool Settings_importCharacterPackage(const char *path) {
+    if (path == nullptr || path[0] == '\0') {
+        g_characterManagerReport = "Choose a .mdkrchar package first.";
+        setStatus("Character import needs a package path.", AppTheme::bad());
+        return false;
+    }
+    std::snprintf(g_characterImportPath, sizeof(g_characterImportPath), "%s",
+                  path);
+    if (!importCharacterPackage(path)) {
+        setStatus("Character import failed; open the importer report below.",
+                  AppTheme::bad());
+        return false;
+    }
+    g_characterImportPath[0] = '\0';
+    setStatus("Character package validated, compiled, and installed.",
+              AppTheme::good());
+    return true;
+}
 
 void Settings_cancelAudioPreview() {
     mdkr_audio_config_runtime_cancel_preview();

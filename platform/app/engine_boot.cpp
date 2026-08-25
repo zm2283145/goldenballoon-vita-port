@@ -19,6 +19,28 @@
 namespace {
 
 std::array<std::string, 4> s_launcherCharacterEnvironment;
+constexpr size_t kCharacterTuningCount = 10;
+std::array<std::array<std::string, kCharacterTuningCount>, 4>
+    s_launcherCharacterTuningEnvironment;
+
+struct CharacterTuningKey {
+    const char *environment_suffix;
+    const char *preference_suffix;
+    const char *fallback;
+};
+
+constexpr CharacterTuningKey kCharacterTuningKeys[kCharacterTuningCount] = {
+    {"SCALE", "scale", "1"},
+    {"OFFSET_X", "offset_x", "0"},
+    {"OFFSET_Y", "offset_y", "0"},
+    {"OFFSET_Z", "offset_z", "0"},
+    {"ROTATION_X", "rotation_x", "0"},
+    {"ROTATION_Y", "rotation_y", "0"},
+    {"ROTATION_Z", "rotation_z", "0"},
+    {"ANIMATION_SPEED", "animation_speed", "1"},
+    {"LOD_BIAS", "lod_bias", "0"},
+    {"VEHICLE_MASK", "vehicle_mask", "7"},
+};
 
 const char *modeFlag(int mode) {
     switch (mode) {
@@ -136,14 +158,39 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             "MDKR_CUSTOM_CHARACTER_P" + std::to_string(player + 1);
         const bool hasExisting =
             AppRestart_getEnv(variable.c_str(), existing) && !existing.empty();
-        if (hasExisting && existing != s_launcherCharacterEnvironment[player]) {
-            continue;
-        }
         const std::string key =
             "custom_character_p" + std::to_string(player + 1);
-        const std::string selected = AppConfig::get(key);
-        AppRestart_setEnv(variable.c_str(), selected.c_str());
-        s_launcherCharacterEnvironment[player] = selected;
+        std::string activeSelection;
+        if (!hasExisting || existing == s_launcherCharacterEnvironment[player]) {
+            const std::string selected = AppConfig::get(key);
+            AppRestart_setEnv(variable.c_str(), selected.c_str());
+            s_launcherCharacterEnvironment[player] = selected;
+            activeSelection = selected;
+        } else {
+            activeSelection = existing;
+        }
+
+        for (size_t tuning = 0; tuning < kCharacterTuningCount; ++tuning) {
+            const CharacterTuningKey &mapping = kCharacterTuningKeys[tuning];
+            const std::string tuningVariable = variable + "_" +
+                                               mapping.environment_suffix;
+            const bool tuningHasExisting =
+                AppRestart_getEnv(tuningVariable.c_str(), existing) &&
+                !existing.empty();
+            if (tuningHasExisting &&
+                existing != s_launcherCharacterTuningEnvironment[player][tuning]) {
+                continue;
+            }
+            const std::string profileKey = "custom_character_profile_" +
+                activeSelection + "_" + mapping.preference_suffix;
+            const std::string legacyKey = key + "_" + mapping.preference_suffix;
+            const std::string value = activeSelection.empty()
+                ? mapping.fallback
+                : AppConfig::get(profileKey,
+                                 AppConfig::get(legacyKey, mapping.fallback));
+            AppRestart_setEnv(tuningVariable.c_str(), value.c_str());
+            s_launcherCharacterTuningEnvironment[player][tuning] = value;
+        }
     }
 
     std::fprintf(stderr, "[app] boot:");

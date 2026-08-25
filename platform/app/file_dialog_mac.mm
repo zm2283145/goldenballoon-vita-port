@@ -70,4 +70,31 @@ bool openRom(std::string &out) {
     }
 }
 
+bool openCharacterPackage(std::string &out) {
+    @autoreleasepool {
+        if (![NSThread isMainThread]) return false;
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        panel.title = @"Import a custom character";
+        panel.message = @"Choose a self-contained Golden Balloon character package (.mdkrchar).";
+        panel.prompt = @"Import";
+        panel.allowsMultipleSelection = NO;
+        panel.canChooseDirectories = NO;
+        panel.canChooseFiles = YES;
+        panel.resolvesAliases = YES;
+        panel.treatsFilePackagesAsDirectories = NO;
+        panel.showsHiddenFiles = NO;
+        UTType *type = [UTType typeWithFilenameExtension:@"mdkrchar"];
+        if (type != nil) panel.allowedContentTypes = @[ type ];
+        panel.allowsOtherFileTypes = NO;
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([panel runModal] != NSModalResponseOK) return false;
+        NSURL *url = panel.URLs.firstObject;
+        if (url == nil || !url.isFileURL) return false;
+        const char *path = url.fileSystemRepresentation;
+        if (path == nullptr || path[0] == '\0') return false;
+        out = path;
+        return true;
+    }
+}
+
 }  // namespace filedialog
