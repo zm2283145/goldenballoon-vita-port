@@ -121,8 +121,12 @@ std::unique_ptr<IMdkrOnlineAdapter> makeAdapter(
     const MdkrOnlineCompatibilityV1 &compatibility) {
 #if MDKR_ENABLE_ONLINE_ROOM_PREVIEW
     if (mdkr_online_live_lobby_gate_open()) {
+        // M1 core: the panel creates a room. The create/join chooser + 6-digit
+        // code entry (which would pass JOIN + the code here) is the follow-up
+        // panel task; the live adapter is built with a fixed journey.
         std::unique_ptr<IMdkrOnlineAdapter> live =
-            OnlineRoom_makeGatedLiveAdapter(compatibility);
+            OnlineRoom_makeGatedLiveAdapter(
+                compatibility, MDKR_ONLINE_JOURNEY_CREATE, std::string());
         if (live) return live;
     }
 #endif
