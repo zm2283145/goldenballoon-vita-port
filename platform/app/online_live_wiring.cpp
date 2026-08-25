@@ -809,4 +809,277 @@ void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race) {
     delete race;
 }
 
+/* ======================================================================== *
+ * Test-only single-adapter CLOUD race driver (MDKR_APP_TEST_ONLINE_LIVE_CLOUD)
+ *
+ * Drives ONE production-shaped live adapter -- OnlineRoom_makeGatedLiveAdapter
+ * against the compiled-in MDKR_PARTY_ORIGIN, the exact factory the real Online
+ * Room panel calls -- through create/join, secure setup, selection and loading
+ * to a READY race transport. The state machine mirrors
+ * tests/test_online_live_transport_e2e_driver.cpp's main() exactly (same
+ * command sequence, same compatibility fixture); the difference is that this
+ * copy hands the resulting adapter back to a caller that boots the VISIBLE
+ * engine on it instead of running a headless tick loop.
+ * ======================================================================== */
+namespace {
+
+uint64_t cloudNowMs() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+
+MdkrOnlineViewModel cloudView(IMdkrOnlineAdapter *a) {
+    MdkrOnlineViewModel m{};
+    a->view(&m);
+    return m;
+}
+
+MdkrOnlineAdapterCommand cloudCmd(IMdkrOnlineAdapter *a,
+                                 MdkrOnlineViewAction action,
+                                 unsigned seat = 0u, unsigned value = 0u) {
+    static uint64_t nextId = 1u;
+    MdkrOnlineAdapterCommand c;
+    c.expectedRevision = a->revision();
+    c.requestId = nextId++;
+    c.action = action;
+    c.seat = seat;
+    c.value = value;
+    return c;
+}
+
+/* Pump the adapter until `done` holds or the absolute deadline elapses --
+ * mirrors the e2e driver's pumpUntil() but with an explicit deadline instead
+ * of a global, so this can share a process with other timing concerns. */
+bool cloudPumpUntil(IMdkrOnlineAdapter *a, uint64_t deadlineMs,
+                    const std::function<bool()> &done) {
+    while (cloudNowMs() < deadlineMs) {
+        a->service();
+        if (done()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    a->service();
+    return done();
+}
+
+bool cloudSubmitWhenOffered(IMdkrOnlineAdapter *a, uint64_t deadlineMs,
+                            MdkrOnlineViewAction action, unsigned seat,
+                            unsigned value) {
+    if (!cloudPumpUntil(a, deadlineMs, [&]() {
+            return cloudView(a).primary.action == action;
+        })) {
+        return false;
+    }
+    return a->submit(cloudCmd(a, action, seat, value)).accepted;
+}
+
+}  // namespace
+
+struct MdkrOnlineTestCloudLiveSession {
+    /* Owns the wrapper (STUN-only belt + OwningLiveAdapter) for its lifetime;
+     * never dereferenced through the race_* seam (see the comment at the
+     * OnlineRoom_pollEngineRaceBoot() poll site). */
+    std::unique_ptr<IMdkrOnlineAdapter> adapter;
+    /* The raw LiveAdapter*, borrowed from OnlineRoom_pollEngineRaceBoot() once
+     * the race transport is ready; this is what race_* calls and the engine
+     * boot itself must use. Lifetime is owned by `adapter` above (the
+     * wrapper's inner_). */
+    IMdkrOnlineAdapter *raceAdapter = nullptr;
+};
+
+MdkrOnlineTestCloudLiveSession *OnlineRoom_makeTestCloudLiveSession(
+    MdkrOnlineJourney journey, const std::string &joinCode, unsigned character,
+    unsigned track, unsigned vehicleMask, uint64_t timeoutMs,
+    std::string *error) {
+    auto set_err = [&](const std::string &m) {
+        if (error != nullptr) *error = m;
+        std::fprintf(stderr, "[online-live-cloud] result=error message=%s\n",
+                     m.c_str());
+    };
+    const uint64_t deadline = cloudNowMs() + timeoutMs;
+    const bool isCreate = journey == MDKR_ONLINE_JOURNEY_CREATE;
+
+    /* Same compatibility fixture as the loopback race and the e2e driver
+     * (compatibilityFixture() there, loopbackCompatibility() here): both sides
+     * must agree byte-for-byte or the lobby reducer refuses the join. */
+    std::unique_ptr<IMdkrOnlineAdapter> adapter =
+        OnlineRoom_makeGatedLiveAdapter(loopbackCompatibility(), journey,
+                                        joinCode);
+    if (!adapter) {
+        set_err("gated live adapter construction refused (missing/invalid "
+                "compiled-in MDKR_PARTY_ORIGIN?)");
+        return nullptr;
+    }
+    IMdkrOnlineAdapter *a = adapter.get();
+    std::fprintf(stderr, "[online-live-cloud] role=%s origin=%s\n",
+                 isCreate ? "create" : "join", MDKR_PARTY_ORIGIN);
+
+    /* 1. Create or join the room. */
+    const MdkrOnlineViewAction entryAction =
+        isCreate ? MDKR_ONLINE_VIEW_ACTION_CREATE_ROOM
+                 : MDKR_ONLINE_VIEW_ACTION_JOIN_ROOM;
+    if (!a->submit(cloudCmd(a, entryAction)).accepted) {
+        set_err("entry action refused");
+        return nullptr;
+    }
+    if (!cloudPumpUntil(a, deadline, [&]() {
+            return cloudView(a).kind == MDKR_ONLINE_VIEW_ROOM ||
+                   cloudView(a).kind == MDKR_ONLINE_VIEW_RECOVERY;
+        })) {
+        set_err("room never opened");
+        return nullptr;
+    }
+    if (cloudView(a).kind == MDKR_ONLINE_VIEW_RECOVERY) {
+        set_err("room entry failed failure=" +
+                std::to_string(static_cast<int>(cloudView(a).failure)));
+        return nullptr;
+    }
+    if (isCreate) {
+        std::string code, inviteUrl;
+        if (!cloudPumpUntil(a, deadline, [&]() {
+                return OnlineRoom_liveInvite(a, &code, &inviteUrl);
+            })) {
+            set_err("create succeeded but the invite never became ready");
+            return nullptr;
+        }
+        std::fprintf(stderr, "[online-live-cloud] code=%s\n", code.c_str());
+    } else {
+        std::fprintf(stderr, "[online-live-cloud] joined\n");
+    }
+
+    /* 2. Wait for both endpoints present. */
+    if (!cloudPumpUntil(a, deadline, [&]() {
+            return cloudView(a).member_count >= 2u;
+        })) {
+        set_err("second endpoint never joined");
+        return nullptr;
+    }
+    std::fprintf(stderr, "[online-live-cloud] members=2\n");
+
+    /* 3. Secure-setup: bring up the mesh, compute + confirm the phrase. */
+    if (!a->submit(cloudCmd(a, MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP)).accepted) {
+        set_err("check setup refused");
+        return nullptr;
+    }
+    if (!cloudPumpUntil(a, deadline, [&]() {
+            return cloudView(a).verification_phrase[0] != '\0' ||
+                   cloudView(a).kind == MDKR_ONLINE_VIEW_RECOVERY;
+        })) {
+        set_err("verification phrase never appeared");
+        return nullptr;
+    }
+    if (cloudView(a).kind == MDKR_ONLINE_VIEW_RECOVERY) {
+        set_err("secure setup failed failure=" +
+                std::to_string(static_cast<int>(cloudView(a).failure)));
+        return nullptr;
+    }
+    std::fprintf(stderr, "[online-live-cloud] phrase=%s\n",
+                 cloudView(a).verification_phrase);
+
+    if (!a->submit(cloudCmd(a, MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE))
+             .accepted) {
+        set_err("confirm phrase refused");
+        return nullptr;
+    }
+    if (!cloudPumpUntil(a, deadline, [&]() {
+            return cloudView(a).kind == MDKR_ONLINE_VIEW_SELECTING;
+        })) {
+        set_err("never reached selection");
+        return nullptr;
+    }
+    std::fprintf(stderr, "[online-live-cloud] selecting\n");
+
+    /* 4. Selections + ready. */
+    if (!cloudSubmitWhenOffered(a, deadline,
+                               MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER, 0u,
+                               character) ||
+        !cloudSubmitWhenOffered(a, deadline,
+                               MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE, 0u,
+                               0u) ||
+        !cloudSubmitWhenOffered(a, deadline, MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK,
+                               0u, track) ||
+        !cloudSubmitWhenOffered(a, deadline, MDKR_ONLINE_VIEW_ACTION_READY, 0u,
+                               1u)) {
+        set_err("selection/ready flow stalled");
+        return nullptr;
+    }
+    if (!cloudPumpUntil(a, deadline, [&]() {
+            return cloudView(a).ready_count >= 2u;
+        })) {
+        set_err("both endpoints never readied");
+        return nullptr;
+    }
+    std::fprintf(stderr, "[online-live-cloud] ready=2\n");
+
+    /* 5. The leader starts the race; both follow the LOADING phase. START_RACE's
+     * value becomes the lobby's selected_vehicle_mask, which the O-T5 clamp
+     * freezes into the manifest -- it MUST equal the ROM's usable-vehicle mask
+     * for the voted track or the engine's online race admission rejects the
+     * boot (see OnlineRoom_makeTestLoopbackRace's identical comment). */
+    if (isCreate) {
+        if (!cloudSubmitWhenOffered(a, deadline,
+                                   MDKR_ONLINE_VIEW_ACTION_START_RACE, 0u,
+                                   vehicleMask)) {
+            set_err("start race refused");
+            return nullptr;
+        }
+    }
+    std::fprintf(stderr, "[online-live-cloud] loading\n");
+
+    /* 6. Preflight consensus, install, and race-ready.
+     *
+     * mdkr_online_live_adapter_race_info/race_advance/race_inputs_for_tick
+     * and friends all dynamic_cast their argument to the CONCRETE LiveAdapter;
+     * `a` here is OwningLiveAdapter (the STUN-only belt + owning wrapper
+     * OnlineRoom_makeGatedLiveAdapter returns) -- a DIFFERENT concrete type
+     * that only delegates through the IMdkrOnlineAdapter virtual interface --
+     * so calling them directly on `a` always fails closed (dynamic_cast
+     * returns null). The real Online Room panel never hits this: the moment
+     * the race transport becomes ready, LiveAdapter::setUpRace() publishes
+     * ITSELF -- the raw LiveAdapter*, not the wrapper -- via
+     * OnlineRoom_publishEngineRaceBoot(this), the exact O-T6b handoff
+     * main_app.cpp's interactive loop polls (OnlineRoom_pollEngineRaceBoot())
+     * before booting the visible engine. Poll the SAME handoff here instead
+     * of race_info() on `a`, and use the polled raw pointer for every
+     * subsequent race_* call and for the engine boot itself. */
+    IMdkrOnlineAdapter *raceBoot = nullptr;
+    if (!cloudPumpUntil(a, deadline, [&]() {
+            raceBoot = OnlineRoom_pollEngineRaceBoot();
+            return raceBoot != nullptr;
+        })) {
+        set_err("race transport never came up");
+        return nullptr;
+    }
+    if (!mdkr_net_roster_runtime_active()) {
+        set_err("engine roster was not installed at race-ready");
+        return nullptr;
+    }
+    MdkrOnlineLiveRaceInfo info{};
+    (void)mdkr_online_live_adapter_race_info(raceBoot, &info);
+    std::fprintf(stderr,
+                 "[online-live-cloud] race-ready epoch=%u firstTick=%u "
+                 "active=0x%02x local=0x%02x remote=0x%02x\n",
+                 static_cast<unsigned>(info.matchEpoch),
+                 static_cast<unsigned>(info.firstTick),
+                 static_cast<unsigned>(info.activeSlotMask),
+                 static_cast<unsigned>(info.localSlotMask),
+                 static_cast<unsigned>(info.remoteSlotMask));
+
+    auto *session = new MdkrOnlineTestCloudLiveSession();
+    session->adapter = std::move(adapter);
+    session->raceAdapter = raceBoot;
+    return session;
+}
+
+IMdkrOnlineAdapter *OnlineRoom_testCloudLiveAdapter(
+    MdkrOnlineTestCloudLiveSession *session) {
+    return session != nullptr ? session->raceAdapter : nullptr;
+}
+
+void OnlineRoom_destroyTestCloudLiveSession(
+    MdkrOnlineTestCloudLiveSession *session) {
+    delete session;
+}
+
 #endif /* MDKR_ENABLE_ONLINE_BETA */

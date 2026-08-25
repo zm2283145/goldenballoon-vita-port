@@ -507,6 +507,42 @@ IMdkrOnlineAdapter *OnlineRoom_testLoopbackVisible(
 IMdkrOnlineAdapter *OnlineRoom_testLoopbackPeer(
     MdkrOnlineTestLoopbackRace *race);
 void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race);
+
+/* ---- Test-only single-adapter CLOUD race driver ---------------------------
+ * (MDKR_APP_TEST_ONLINE_LIVE_CLOUD) ------------------------------------------
+ *
+ * The loopback race above proves the engine-boot wiring with BOTH endpoints
+ * (and both live adapters) inside one process over an in-process signal hub.
+ * This one drives a SINGLE production-shaped live adapter -- built by the
+ * SAME OnlineRoom_makeGatedLiveAdapter factory the real Online Room panel
+ * uses, against the compiled-in MDKR_PARTY_ORIGIN -- through create/join,
+ * secure setup, selection and loading to a READY race transport. It is
+ * exactly the state machine tests/test_online_live_transport_e2e_driver.cpp
+ * already proves against a real MatchRoom Worker (and, via
+ * tools/online/cloud_two_session_smoke.py, against the real deployed cloud
+ * origin), so a companion PROCESS running the peer role over the SAME real
+ * cloud origin supplies the other endpoint's input over the mesh and
+ * `runOnlineLiveEngineSession(host, config, adapter, nullptr)` can boot the
+ * visible engine on a genuinely independent, real adapter instance -- the
+ * `peer == nullptr` production path liveDrainMatchInput() already implements.
+ *
+ * Narrates each phase as `[online-live-cloud] key=value` lines on stderr for
+ * a driving harness to scrape (the room code line lets a two-process launcher
+ * hand the code to the joiner). `timeoutMs` bounds the ENTIRE setup dance (a
+ * single steady-clock deadline, matching the e2e driver's own budget model);
+ * it does NOT bound the race itself, which the caller's autoplay tick/frame
+ * limit and the launching harness's process timeout already bound. Returns
+ * nullptr on failure or timeout (*error set). Ordinary play never calls this.
+ * Defined in platform/app/online_live_wiring.cpp. */
+struct MdkrOnlineTestCloudLiveSession; /* opaque owner of the live adapter */
+MdkrOnlineTestCloudLiveSession *OnlineRoom_makeTestCloudLiveSession(
+    MdkrOnlineJourney journey, const std::string &joinCode, unsigned character,
+    unsigned track, unsigned vehicleMask, uint64_t timeoutMs,
+    std::string *error);
+IMdkrOnlineAdapter *OnlineRoom_testCloudLiveAdapter(
+    MdkrOnlineTestCloudLiveSession *session);
+void OnlineRoom_destroyTestCloudLiveSession(
+    MdkrOnlineTestCloudLiveSession *session);
 #else
 inline std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
     const MdkrOnlineCompatibilityV1 & /*compatibility*/,
