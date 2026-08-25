@@ -3,7 +3,9 @@
 #include "modern_character_pose.h"
 #include "modern_character_render.h"
 #include "modern_character_runtime.h"
+#include "modern_character_donor.h"
 #include "fast3d/gfx_pc_dkr.h"
+#include "asset_enums.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -100,6 +102,22 @@ int main(int argc, char **argv) {
             "compiled display name");
     require(definition.donor == 9u && definition.vehicle_mask == 7u,
             "donor and vehicle characteristics");
+    require(mdkr_modern_donor_model_ready(
+                9, 0, ASSET_OBJECTMODEL_DIDDYCAR_0, 0, 325, 257, 30),
+            "qualified Diddy car schema permits transactional replacement");
+    require(!mdkr_modern_donor_model_ready(
+                9, 0, ASSET_OBJECTMODEL_DIDDYCAR_0, 0, 326, 257, 30),
+            "changed donor geometry fails visible");
+    require(!mdkr_modern_donor_model_ready(
+                0, 0, ASSET_OBJECTMODEL_KREMCAR_0, 0, 309, 240, 29),
+            "unqualified donor families fail visible");
+    require(!mdkr_modern_donor_batch_visible(9, 0, 0, 0) &&
+                mdkr_modern_donor_batch_visible(9, 0, 0, 18) &&
+                !mdkr_modern_donor_batch_visible(9, 0, 0, 27),
+            "Diddy driver mask retains vehicle batches");
+    require(mdkr_modern_donor_cap_lod(9, 0, 5) == 4 &&
+                mdkr_modern_donor_cap_lod(0, 0, 5) == 5,
+            "only the qualified donor avoids its collapsed far LOD");
 
     mdkr_modern_character_asset_stats(&asset, &stats);
     require(stats.vertices == 3u && stats.triangles == 1u &&

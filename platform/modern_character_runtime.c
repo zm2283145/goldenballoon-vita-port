@@ -88,6 +88,33 @@ static int matrix_normal_transform(const float input[16], float output[16]) {
     return 1;
 }
 
+static int matrix_affine_inverse(const float input[16], float output[16]) {
+    float a00 = input[0], a01 = input[4], a02 = input[8];
+    float a10 = input[1], a11 = input[5], a12 = input[9];
+    float a20 = input[2], a21 = input[6], a22 = input[10];
+    float tx = input[12], ty = input[13], tz = input[14];
+    float determinant = a00 * (a11 * a22 - a12 * a21) -
+                        a01 * (a10 * a22 - a12 * a20) +
+                        a02 * (a10 * a21 - a11 * a20);
+    float inverse;
+    if (!isfinite(determinant) || fabsf(determinant) < 1.0e-12f) return 0;
+    inverse = 1.0f / determinant;
+    matrix_identity(output);
+    output[0] = (a11 * a22 - a12 * a21) * inverse;
+    output[4] = (a02 * a21 - a01 * a22) * inverse;
+    output[8] = (a01 * a12 - a02 * a11) * inverse;
+    output[1] = (a12 * a20 - a10 * a22) * inverse;
+    output[5] = (a00 * a22 - a02 * a20) * inverse;
+    output[9] = (a02 * a10 - a00 * a12) * inverse;
+    output[2] = (a10 * a21 - a11 * a20) * inverse;
+    output[6] = (a01 * a20 - a00 * a21) * inverse;
+    output[10] = (a00 * a11 - a01 * a10) * inverse;
+    output[12] = -(output[0] * tx + output[4] * ty + output[8] * tz);
+    output[13] = -(output[1] * tx + output[5] * ty + output[9] * tz);
+    output[14] = -(output[2] * tx + output[6] * ty + output[10] * tz);
+    return 1;
+}
+
 static void definition_matrix(const MdkrModernCharacterDefinition *definition,
                               float output[16]) {
     float x = definition->rotation[0];
@@ -325,6 +352,9 @@ int mdkr_modern_character_emit(int player, float view_distance,
     MdkrModernRuntimePlayer *slot;
     MdkrModernRuntimePool *pool;
     float package_transform[16];
+    float seat_transform[16];
+    float inverse_seat[16];
+    float anchored_transform[16];
     uint32_t primitive_index;
     uint32_t selected_lod;
     uint32_t available_lod = 0u;
@@ -369,7 +399,18 @@ int mdkr_modern_character_emit(int player, float view_distance,
         if (found || selected_lod == 0u) break;
         selected_lod--;
     }
+    if (!mdkr_modern_pose_socket_matrix(&slot->pose, "seat", 0,
+                                        seat_transform) ||
+        !matrix_affine_inverse(seat_transform, inverse_seat)) {
+        set_error(error, error_size,
+                  "character seat socket has a singular transform");
+        return 0;
+    }
     definition_matrix(&pool->definition, package_transform);
+    /* A character package defines its own seated origin. Cancelling that
+     * socket before applying the author adjustment keeps root-motion clips and
+     * differently-authored rigs attached to the vehicle origin. */
+    matrix_multiply(package_transform, inverse_seat, anchored_transform);
     for (primitive_index = 0u;
          primitive_index < pool->render.gpu.primitive_count;
          primitive_index++) {
@@ -388,7 +429,7 @@ int mdkr_modern_character_emit(int player, float view_distance,
         }
         draw.asset = &pool->render.gpu;
         draw.primitive = primitive_index;
-        matrix_multiply(package_transform, node_world, draw.model_matrix);
+        matrix_multiply(anchored_transform, node_world, draw.model_matrix);
         if (!matrix_normal_transform(draw.model_matrix, draw.normal_matrix)) {
             set_error(error, error_size,
                       "character primitive has a singular normal transform");

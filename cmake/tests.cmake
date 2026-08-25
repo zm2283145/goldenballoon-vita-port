@@ -342,6 +342,7 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform/modern_character_pose.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_render.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_donor.c
         ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_mipgen.c
         ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c
         ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c)

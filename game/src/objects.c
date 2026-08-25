@@ -21,6 +21,7 @@
 #include "gameplay_event_trace.h"
 #include "rollback/rollback_game_runtime.h"
 #include "fast3d/gfx_level_lighting.h"
+#include "modern_character_donor.h"
 #include "modern_character_runtime.h"
 #endif
 /* The level-object-map header is 16 bytes; gObjectMap[] is s32*, so the entries
@@ -85,6 +86,15 @@ static s32 bonus_visual_is_presentation_actor(const Object *obj) {
 }
 
 #ifdef NATIVE_PORT
+/* Synchronous draw-local transaction. This is armed only after the exact
+ * donor model passes its schema and every modern primitive has registered a
+ * retained command. render_mesh() can then carve this object and no other. */
+static const Object *sModernCharacterReplacementObject;
+static const ObjectModel *sModernCharacterReplacementModel;
+static s32 sModernCharacterReplacementDonor;
+static s32 sModernCharacterReplacementVehicle;
+static s32 sModernCharacterReplacementLod;
+
 static void bonus_visual_trace_transform_bypass(const Object *obj) {
     static u32 sTracedIdentities;
     const char *identity = NULL;
@@ -5968,9 +5978,15 @@ void render_3d_model(Object *obj) {
     Object_Racer *racerObj;
     ObjectModel *objModel;
     Sprite *something;
+#ifdef NATIVE_PORT
+    s32 modernModelIndex;
+#endif
 
 #ifdef NATIVE_PORT
-    modInst = obj->modelInstances[object_render_model_index(obj)];
+    sModernCharacterReplacementObject = NULL;
+    sModernCharacterReplacementModel = NULL;
+    modernModelIndex = object_render_model_index(obj);
+    modInst = obj->modelInstances[modernModelIndex];
 #else
     modInst = obj->modelInstances[obj->modelIndex];
 #endif
@@ -6071,14 +6087,26 @@ void render_3d_model(Object *obj) {
             racerObj->playerIndex < MDKR_MODERN_CHARACTER_PLAYERS &&
             mdkr_modern_character_matches(
                 racerObj->playerIndex, racerObj->characterId,
-                racerObj->vehicleIDPrev)) {
+                racerObj->vehicleIDPrev) && modernModelIndex >= 0 &&
+            modernModelIndex < obj->header->numberOfModelIds &&
+            mdkr_modern_donor_model_ready(
+                racerObj->characterId, racerObj->vehicleIDPrev,
+                DKR_PTR(s32, obj->header->modelIds)[modernModelIndex],
+                modernModelIndex, objModel->numberOfVertices,
+                objModel->numberOfTriangles, objModel->numberOfBatches)) {
             char modernError[192];
-            (void)mdkr_modern_character_emit(
-                racerObj->playerIndex,
-                gSceneDrawDistanceValid ? gSceneDrawDistance
-                                        : obj->distanceToCamera,
-                &gObjectCurrDisplayList,
-                modernError, sizeof(modernError));
+            if (mdkr_modern_character_emit(
+                    racerObj->playerIndex,
+                    gSceneDrawDistanceValid ? gSceneDrawDistance
+                                            : obj->distanceToCamera,
+                    &gObjectCurrDisplayList,
+                    modernError, sizeof(modernError))) {
+                sModernCharacterReplacementObject = obj;
+                sModernCharacterReplacementModel = objModel;
+                sModernCharacterReplacementDonor = racerObj->characterId;
+                sModernCharacterReplacementVehicle = racerObj->vehicleIDPrev;
+                sModernCharacterReplacementLod = modernModelIndex;
+            }
         }
 #endif
         vertOffset = FALSE;
@@ -6269,6 +6297,10 @@ void render_3d_model(Object *obj) {
                 directional_lighting_off();
             }
         }
+#ifdef NATIVE_PORT
+        sModernCharacterReplacementObject = NULL;
+        sModernCharacterReplacementModel = NULL;
+#endif
         if (hasOpacity || obj->header->directionalPointLighting) {
             gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255, 255);
         }
@@ -6555,6 +6587,14 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
     if (allowLodBias) {
         modelIndex = wizpig_visual_cap_donor_lod(obj, modelIndex);
         modelIndex = terry_visual_cap_donor_lod(obj, modelIndex);
+        if (racer->playerIndex >= 0 &&
+            racer->playerIndex < MDKR_MODERN_CHARACTER_PLAYERS &&
+            mdkr_modern_character_matches(
+                racer->playerIndex, racer->characterId,
+                racer->vehicleIDPrev)) {
+            modelIndex = mdkr_modern_donor_cap_lod(
+                racer->characterId, racer->vehicleIDPrev, modelIndex);
+        }
     }
     if (modelIndex < firstModel) {
         modelIndex = firstModel;
@@ -7335,6 +7375,15 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
             continue;
         }
         if (!terry_visual_batch_visible(objModel, obj, i)) {
+            i++;
+            continue;
+        }
+        if (obj == sModernCharacterReplacementObject &&
+            objModel == sModernCharacterReplacementModel &&
+            !mdkr_modern_donor_batch_visible(
+                sModernCharacterReplacementDonor,
+                sModernCharacterReplacementVehicle,
+                sModernCharacterReplacementLod, i)) {
             i++;
             continue;
         }
