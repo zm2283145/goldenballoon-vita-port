@@ -5111,6 +5111,8 @@ struct GfxRenderingAPI gfx_opengl_api = {
     .end_frame = gfx_opengl_end_frame,
     .finish_render = gfx_opengl_finish_render,
     .draw_modern_mesh = NULL,
+    .draw_modern_skinned = NULL,
+    .release_modern_asset = NULL,
     .upload_texture_mipped = gfx_opengl_upload_texture_mipped,
     .shutdown = gfx_opengl_shutdown,
 };

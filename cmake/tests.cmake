@@ -330,6 +330,34 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME mod_registry COMMAND mdkr_mod_registry_test
              ${CMAKE_CURRENT_BINARY_DIR}/mod_registry_scratch)
 
+    # Generic modern-character caches are generated from a tiny license-clean
+    # animated GLB at test time. The native half proves that the engine-facing
+    # loader consumes the exact compiler output and rejects corrupt headers and
+    # payloads before publishing any section pointer.
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_executable(mdkr_modern_character_asset_test
+        ${CMAKE_SOURCE_DIR}/tests/test_modern_character_asset.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_asset.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_registry.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_pose.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_render.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_mipgen.c
+        ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c)
+    target_include_directories(mdkr_modern_character_asset_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/fast3d
+        ${CMAKE_SOURCE_DIR}/lib/stb)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_modern_character_asset_test PRIVATE m)
+    endif()
+    add_test(NAME modern_character_asset
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/run_modern_character_asset_test.py
+                --loader $<TARGET_FILE:mdkr_modern_character_asset_test>)
+
     # When a pack PNG is refused, relative to when it is decoded. A pack is a
     # file a player downloaded from a stranger, so the cache cap is only a
     # defence if it is consulted before the decoder is handed the bytes --

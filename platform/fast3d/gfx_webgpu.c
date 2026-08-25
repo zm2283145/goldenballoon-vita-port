@@ -518,6 +518,19 @@ static int        s_modern_ubo_cap  = 0;   /* slots in s_modern_ubo */
 static int        s_modern_ubo_used = 0;   /* slots consumed this frame */
 static uint32_t   s_modern_ubo_gen  = 0;   /* bumped on (re)create; stamps cached bgs */
 
+/* Generic skeletal characters use one 8,352-byte uniform per primitive draw:
+ * transform/material/fog/light parameters followed by 128 mat4 skin entries.
+ * Slots are 256-byte aligned and never rewritten within a frame. */
+#define WGPU_SKINNED_MAX_BONES 128u
+#define WGPU_SKINNED_UNIFORM_FLOATS (56u + WGPU_SKINNED_MAX_BONES * 16u)
+#define WGPU_SKINNED_UNIFORM_BYTES (WGPU_SKINNED_UNIFORM_FLOATS * sizeof(float))
+#define WGPU_SKINNED_SLOT_BYTES 8448u
+#define WGPU_SKINNED_UBO_INIT 16
+static WGPUBuffer s_skinned_ubo = NULL;
+static int s_skinned_ubo_cap = 0;
+static int s_skinned_ubo_used = 0;
+static uint32_t s_skinned_ubo_gen = 0;
+
 /* Dynamic depth / viewport / scissor state. WebGPU bakes depth into the
  * pipeline, so the depth fields feed the pipeline cache key; viewport/scissor are
  * render-pass encoder state applied per draw. */
@@ -1941,6 +1954,7 @@ static bool wgpu_start_frame(void) {
     s_noise_ubo_used = 0; /* E28: reset the per-frame noise-UBO ring */
     s_resolve_ubo_used = 0; /* reset the per-frame resolve-UBO ring */
     s_modern_ubo_used = 0; /* WEB-052: reset the per-frame modern-mesh UBO ring */
+    s_skinned_ubo_used = 0; /* fresh immutable skin/material slots per draw */
     wgpu_reset_pass_dynamic_state(); /* WEB-023-lite: fresh pass = no rect applied yet */
     if (!s_ready) {
         return false;
@@ -8574,6 +8588,473 @@ static void wgpu_draw_modern_mesh(struct GfxModernMesh *mesh, const float mvp[4]
      * release here (the encoder retains referenced resources until submit). */
 }
 
+/* ------------------------------------------------------------------------
+ * Generic modern skeletal characters: multi-material PBR-like shading and
+ * vertex-shader skinning. This is separate from the legacy scene-decor mesh so
+ * high-poly character resources do not inherit its one-texture/static layout.
+ * ---------------------------------------------------------------------- */
+static const char *kSkinnedWGSL =
+    "struct VIn {\n"
+    " @location(0) pos:vec3<f32>, @location(1) nrm:vec3<f32>,\n"
+    " @location(2) tan:vec4<f32>, @location(3) uv:vec2<f32>,\n"
+    " @location(4) joints:vec4<u32>, @location(5) weights:vec4<f32> };\n"
+    "struct U { mvp:mat4x4<f32>, model:mat4x4<f32>, fog:vec4<f32>, fogParams:vec4<f32>,\n"
+    " light:vec4<f32>, base:vec4<f32>, emissiveMetal:vec4<f32>,\n"
+    " material:vec4<f32>, bones:array<mat4x4<f32>,128> };\n"
+    "@group(0) @binding(0) var<uniform> u:U;\n"
+    "@group(0) @binding(1) var baseTex:texture_2d<f32>;\n"
+    "@group(0) @binding(2) var mrTex:texture_2d<f32>;\n"
+    "@group(0) @binding(3) var normalTex:texture_2d<f32>;\n"
+    "@group(0) @binding(4) var occTex:texture_2d<f32>;\n"
+    "@group(0) @binding(5) var emissiveTex:texture_2d<f32>;\n"
+    "@group(0) @binding(6) var texSampler:sampler;\n"
+    "struct VOut { @builtin(position) position:vec4<f32>, @location(0) uv:vec2<f32>,\n"
+    " @location(1) nrm:vec3<f32>, @location(2) tan:vec3<f32>,\n"
+    " @location(3) handed:f32, @location(4) fogA:f32 };\n"
+    "@vertex fn vs_main(v:VIn)->VOut {\n"
+    " let skin=u.bones[v.joints.x]*v.weights.x+u.bones[v.joints.y]*v.weights.y+\n"
+    "          u.bones[v.joints.z]*v.weights.z+u.bones[v.joints.w]*v.weights.w;\n"
+    " let local=skin*vec4<f32>(v.pos,1.0); let p=u.model*local; var clip=u.mvp*p; var fogA=0.0;\n"
+    " if(u.fogParams.z>0.5){ var ww=clip.w; if(abs(ww)<0.001){ww=0.001;}\n"
+    "  let wi=1.0/ww; let coord=select(clip.z*wi,clip.z*32767.0,wi<0.0);\n"
+    "  fogA=clamp(coord*u.fogParams.x+u.fogParams.y,0.0,255.0)/255.0;}\n"
+    " if(u.fogParams.w>0.5 && clip.z>clip.w){clip.z=clip.w;}\n"
+    " clip.z=(clip.z+clip.w)*0.5; var o:VOut; o.position=clip; o.uv=v.uv;\n"
+    " o.nrm=normalize((u.model*skin*vec4<f32>(v.nrm,0.0)).xyz);\n"
+    " o.tan=normalize((u.model*skin*vec4<f32>(v.tan.xyz,0.0)).xyz);\n"
+    " o.handed=v.tan.w; o.fogA=fogA; return o; }\n"
+    "fn shade(v:VOut)->vec4<f32>{\n"
+    " let baseSample=textureSample(baseTex,texSampler,v.uv);\n"
+    " let base=vec4<f32>(pow(baseSample.rgb,vec3<f32>(2.2)),baseSample.a)*u.base;\n"
+    " var nts=textureSample(normalTex,texSampler,v.uv).xyz*2.0-vec3<f32>(1.0);\n"
+    " nts=normalize(vec3<f32>(nts.xy*u.material.y,nts.z));\n"
+    " let n0=normalize(v.nrm); let t=normalize(v.tan-n0*dot(n0,v.tan));\n"
+    " let b=cross(n0,t)*v.handed; let n=normalize(mat3x3<f32>(t,b,n0)*nts);\n"
+    " let l=normalize(-u.light.xyz); let view=vec3<f32>(0.0,0.0,1.0);\n"
+    " let h=normalize(l+view); let ndl=max(dot(n,l),0.0); let ndh=max(dot(n,h),0.0);\n"
+    " let mr=textureSample(mrTex,texSampler,v.uv);\n"
+    " let rough=clamp(u.material.x*mr.g,0.04,1.0); let metal=clamp(u.emissiveMetal.w*mr.b,0.0,1.0);\n"
+    " let ao=mix(1.0,textureSample(occTex,texSampler,v.uv).r,u.material.z);\n"
+    " let f0=mix(vec3<f32>(0.04),base.rgb,metal);\n"
+    " let spec=f0*pow(ndh,mix(128.0,2.0,rough))*ndl;\n"
+    " let diffuse=base.rgb*(1.0-metal)*(u.light.w+ndl);\n"
+    " let emit=pow(textureSample(emissiveTex,texSampler,v.uv).rgb,vec3<f32>(2.2))*u.emissiveMetal.rgb;\n"
+    " var rgb=(diffuse+spec)*ao+emit; rgb=mix(rgb,u.fog.rgb,v.fogA);\n"
+    " rgb=pow(max(rgb,vec3<f32>(0.0)),vec3<f32>(1.0/2.2)); return vec4<f32>(rgb,base.a); }\n"
+    "@fragment fn fs_opaque(v:VOut)->@location(0) vec4<f32>{let c=shade(v);return vec4<f32>(c.rgb,1.0);}\n"
+    "@fragment fn fs_mask(v:VOut)->@location(0) vec4<f32>{let c=shade(v);if(c.a<u.material.w){discard;}return vec4<f32>(c.rgb,1.0);}\n"
+    "@fragment fn fs_blend(v:VOut)->@location(0) vec4<f32>{return shade(v);}\n";
+
+static WGPUShaderModule s_skinned_mod = NULL;
+static WGPUBindGroupLayout s_skinned_bgl = NULL;
+static WGPUPipelineLayout s_skinned_pl = NULL;
+static WGPURenderPipeline s_skinned_pipe[6] = {NULL}; /* alpha mode * 2 + double-sided */
+static WGPUSampler s_skinned_sampler = NULL;
+static WGPUTexture s_skinned_fallback_tex[5] = {NULL};
+static WGPUTextureView s_skinned_fallback_view[5] = {NULL};
+
+struct WgpuSkinnedEntry {
+    uint64_t asset_id;
+    WGPUBuffer vbuf;
+    WGPUBuffer ibuf;
+    WGPUTexture *textures;
+    WGPUTextureView *views;
+    uint32_t texture_count;
+    WGPUBindGroup *material_bg;
+    uint32_t *material_bg_gen;
+    uint32_t material_count;
+};
+#define WGPU_SKINNED_CACHE_MAX 16
+static struct WgpuSkinnedEntry s_skinned_cache[WGPU_SKINNED_CACHE_MAX];
+static int s_skinned_count = 0;
+
+static void wgpu_skinned_entry_release(struct WgpuSkinnedEntry *entry) {
+    uint32_t index;
+    if (entry == NULL) return;
+    for (index = 0u; index < entry->material_count; index++) {
+        if (entry->material_bg != NULL && entry->material_bg[index] != NULL) {
+            wgpuBindGroupRelease(entry->material_bg[index]);
+        }
+    }
+    for (index = 0u; index < entry->texture_count; index++) {
+        if (entry->views != NULL && entry->views[index] != NULL) wgpuTextureViewRelease(entry->views[index]);
+        if (entry->textures != NULL && entry->textures[index] != NULL) wgpuTextureRelease(entry->textures[index]);
+    }
+    if (entry->vbuf != NULL) wgpuBufferRelease(entry->vbuf);
+    if (entry->ibuf != NULL) wgpuBufferRelease(entry->ibuf);
+    free(entry->textures);
+    free(entry->views);
+    free(entry->material_bg);
+    free(entry->material_bg_gen);
+    memset(entry, 0, sizeof(*entry));
+}
+
+static void wgpu_release_modern_asset(uint64_t asset_id) {
+    int index;
+    for (index = 0; index < s_skinned_count; index++) {
+        if (s_skinned_cache[index].asset_id != asset_id) continue;
+        wgpu_skinned_entry_release(&s_skinned_cache[index]);
+        if (index + 1 < s_skinned_count) {
+            memmove(&s_skinned_cache[index], &s_skinned_cache[index + 1],
+                    (size_t)(s_skinned_count - index - 1) * sizeof(s_skinned_cache[0]));
+        }
+        s_skinned_count--;
+        memset(&s_skinned_cache[s_skinned_count], 0, sizeof(s_skinned_cache[0]));
+        return;
+    }
+}
+
+static bool wgpu_skinned_fallbacks(void) {
+    static const uint8_t pixels[5][4] = {
+        {255, 255, 255, 255}, {255, 255, 0, 255}, {128, 128, 255, 255},
+        {255, 255, 255, 255}, {0, 0, 0, 255}
+    };
+    int index;
+    for (index = 0; index < 5; index++) {
+        if (s_skinned_fallback_view[index] != NULL) continue;
+        WGPUTextureDescriptor descriptor = {0};
+        WGPUTexelCopyTextureInfo destination = {0};
+        WGPUTexelCopyBufferLayout layout = {0};
+        WGPUExtent3D extent = {1u, 1u, 1u};
+        descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+        descriptor.dimension = WGPUTextureDimension_2D;
+        descriptor.size = extent;
+        descriptor.format = WGPUTextureFormat_RGBA8Unorm;
+        descriptor.mipLevelCount = 1u;
+        descriptor.sampleCount = 1u;
+        s_skinned_fallback_tex[index] = WGPU_FAULT_CREATE(
+            SKINNED_TEXTURE, wgpuDeviceCreateTexture(s_device, &descriptor));
+        if (s_skinned_fallback_tex[index] == NULL) return false;
+        destination.texture = s_skinned_fallback_tex[index];
+        destination.aspect = WGPUTextureAspect_All;
+        layout.bytesPerRow = 4u;
+        layout.rowsPerImage = 1u;
+        wgpuQueueWriteTexture(s_queue, &destination, pixels[index], 4u,
+                              &layout, &extent);
+        s_skinned_fallback_view[index] = WGPU_FAULT_CREATE(
+            SKINNED_VIEW, wgpuTextureCreateView(s_skinned_fallback_tex[index], NULL));
+        if (s_skinned_fallback_view[index] == NULL) return false;
+    }
+    if (s_skinned_sampler == NULL) {
+        WGPUSamplerDescriptor descriptor = {0};
+        descriptor.addressModeU = descriptor.addressModeV = descriptor.addressModeW = WGPUAddressMode_Repeat;
+        descriptor.magFilter = descriptor.minFilter = WGPUFilterMode_Linear;
+        descriptor.mipmapFilter = WGPUMipmapFilterMode_Linear;
+        descriptor.maxAnisotropy = 4u;
+        s_skinned_sampler = WGPU_FAULT_CREATE(
+            SKINNED_SAMPLER, wgpuDeviceCreateSampler(s_device, &descriptor));
+    }
+    return s_skinned_sampler != NULL;
+}
+
+static bool wgpu_skinned_layout(void) {
+    if (s_skinned_mod != NULL) return true;
+    {
+        WGPUShaderSourceWGSL source = {0};
+        WGPUShaderModuleDescriptor module_descriptor = {0};
+        WGPUBindGroupLayoutEntry entries[7] = {0};
+        WGPUBindGroupLayoutDescriptor bgl_descriptor = {0};
+        WGPUPipelineLayoutDescriptor layout_descriptor = {0};
+        source.chain.sType = WGPUSType_ShaderSourceWGSL;
+        source.code = wgpu_sv(kSkinnedWGSL);
+        module_descriptor.nextInChain = (WGPUChainedStruct *)&source;
+        s_skinned_mod = WGPU_FAULT_CREATE(
+            SKINNED_MODULE, wgpuDeviceCreateShaderModule(s_device, &module_descriptor));
+        if (s_skinned_mod == NULL) return false;
+        entries[0].binding = 0u;
+        entries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+        entries[0].buffer.type = WGPUBufferBindingType_Uniform;
+        entries[0].buffer.hasDynamicOffset = true;
+        entries[0].buffer.minBindingSize = WGPU_SKINNED_UNIFORM_BYTES;
+        for (uint32_t index = 1u; index <= 5u; index++) {
+            entries[index].binding = index;
+            entries[index].visibility = WGPUShaderStage_Fragment;
+            entries[index].texture.sampleType = WGPUTextureSampleType_Float;
+            entries[index].texture.viewDimension = WGPUTextureViewDimension_2D;
+        }
+        entries[6].binding = 6u;
+        entries[6].visibility = WGPUShaderStage_Fragment;
+        entries[6].sampler.type = WGPUSamplerBindingType_Filtering;
+        bgl_descriptor.entryCount = 7u;
+        bgl_descriptor.entries = entries;
+        s_skinned_bgl = WGPU_FAULT_CREATE(
+            SKINNED_BGL, wgpuDeviceCreateBindGroupLayout(s_device, &bgl_descriptor));
+        if (s_skinned_bgl == NULL) return false;
+        layout_descriptor.bindGroupLayoutCount = 1u;
+        layout_descriptor.bindGroupLayouts = &s_skinned_bgl;
+        s_skinned_pl = WGPU_FAULT_CREATE(
+            SKINNED_LAYOUT, wgpuDeviceCreatePipelineLayout(s_device, &layout_descriptor));
+    }
+    return s_skinned_pl != NULL;
+}
+
+static WGPURenderPipeline wgpu_skinned_pipeline(uint32_t material_flags) {
+    uint32_t alpha_mode = material_flags & 3u;
+    uint32_t double_sided = (material_flags & 4u) != 0u ? 1u : 0u;
+    uint32_t key;
+    WGPUVertexAttribute attributes[6] = {0};
+    WGPUVertexBufferLayout vertex_layout = {0};
+    WGPUColorTargetState color = {0};
+    WGPUBlendState blend = {0};
+    WGPUFragmentState fragment = {0};
+    WGPUDepthStencilState depth = {0};
+    WGPURenderPipelineDescriptor descriptor = {0};
+    if (alpha_mode > 2u || !wgpu_skinned_layout()) return NULL;
+    key = alpha_mode * 2u + double_sided;
+    if (s_skinned_pipe[key] != NULL) return s_skinned_pipe[key];
+    attributes[0] = (WGPUVertexAttribute){ .format = WGPUVertexFormat_Float32x3, .offset = 0u, .shaderLocation = 0u };
+    attributes[1] = (WGPUVertexAttribute){ .format = WGPUVertexFormat_Float32x3, .offset = 12u, .shaderLocation = 1u };
+    attributes[2] = (WGPUVertexAttribute){ .format = WGPUVertexFormat_Float32x4, .offset = 24u, .shaderLocation = 2u };
+    attributes[3] = (WGPUVertexAttribute){ .format = WGPUVertexFormat_Float32x2, .offset = 40u, .shaderLocation = 3u };
+    attributes[4] = (WGPUVertexAttribute){ .format = WGPUVertexFormat_Uint16x4, .offset = 48u, .shaderLocation = 4u };
+    attributes[5] = (WGPUVertexAttribute){ .format = WGPUVertexFormat_Float32x4, .offset = 56u, .shaderLocation = 5u };
+    vertex_layout.arrayStride = 72u;
+    vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
+    vertex_layout.attributeCount = 6u;
+    vertex_layout.attributes = attributes;
+    color.format = s_surface_format;
+    color.writeMask = WGPUColorWriteMask_All;
+    if (alpha_mode == 2u) {
+        blend.color.operation = WGPUBlendOperation_Add;
+        blend.color.srcFactor = WGPUBlendFactor_SrcAlpha;
+        blend.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+        blend.alpha = blend.color;
+        color.blend = &blend;
+    }
+    fragment.module = s_skinned_mod;
+    fragment.entryPoint = wgpu_sv(alpha_mode == 0u ? "fs_opaque" :
+                                  alpha_mode == 1u ? "fs_mask" : "fs_blend");
+    fragment.targetCount = 1u;
+    fragment.targets = &color;
+    depth.format = WGPU_DEPTH_FORMAT;
+    depth.depthCompare = WGPUCompareFunction_LessEqual;
+    depth.depthWriteEnabled = alpha_mode == 2u ? WGPUOptionalBool_False : WGPUOptionalBool_True;
+    depth.stencilFront.compare = WGPUCompareFunction_Always;
+    depth.stencilFront.failOp = depth.stencilFront.depthFailOp = depth.stencilFront.passOp = WGPUStencilOperation_Keep;
+    depth.stencilBack = depth.stencilFront;
+    descriptor.layout = s_skinned_pl;
+    descriptor.vertex.module = s_skinned_mod;
+    descriptor.vertex.entryPoint = wgpu_sv("vs_main");
+    descriptor.vertex.bufferCount = 1u;
+    descriptor.vertex.buffers = &vertex_layout;
+    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    descriptor.primitive.frontFace = WGPUFrontFace_CCW;
+    descriptor.primitive.cullMode = double_sided ? WGPUCullMode_None : WGPUCullMode_Back;
+    descriptor.primitive.unclippedDepth = s_unclipped_depth_supported ? WGPU_TRUE : WGPU_FALSE;
+    descriptor.depthStencil = &depth;
+    descriptor.multisample.count = 1u;
+    descriptor.multisample.mask = 0xFFFFFFFFu;
+    descriptor.fragment = &fragment;
+    s_skinned_pipe[key] = WGPU_FAULT_CREATE(
+        SKINNED_PIPELINE, wgpuDeviceCreateRenderPipeline(s_device, &descriptor));
+    return s_skinned_pipe[key];
+}
+
+static bool wgpu_skinned_ubo_reserve(int need_slots) {
+    int capacity;
+    WGPUBufferDescriptor descriptor = {0};
+    WGPUBuffer buffer;
+    if (s_skinned_ubo != NULL && need_slots <= s_skinned_ubo_cap) return true;
+    capacity = s_skinned_ubo_cap != 0 ? s_skinned_ubo_cap : WGPU_SKINNED_UBO_INIT;
+    while (capacity < need_slots) capacity *= 2;
+    descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+    descriptor.size = (uint64_t)capacity * WGPU_SKINNED_SLOT_BYTES;
+    buffer = WGPU_FAULT_CREATE(
+        SKINNED_UNIFORM, wgpuDeviceCreateBuffer(s_device, &descriptor));
+    if (buffer == NULL) return false;
+    if (s_skinned_ubo != NULL) wgpuBufferRelease(s_skinned_ubo);
+    s_skinned_ubo = buffer;
+    s_skinned_ubo_cap = capacity;
+    s_skinned_ubo_gen++;
+    return true;
+}
+
+static struct WgpuSkinnedEntry *wgpu_skinned_resources(
+    const struct GfxModernSkinnedAsset *asset) {
+    int cache_index;
+    struct WgpuSkinnedEntry *entry;
+    uint64_t vertex_bytes;
+    uint64_t index_bytes;
+    WGPUBufferDescriptor vertex_descriptor = {0};
+    WGPUBufferDescriptor index_descriptor = {0};
+    for (cache_index = 0; cache_index < s_skinned_count; cache_index++) {
+        if (s_skinned_cache[cache_index].asset_id == asset->asset_id) return &s_skinned_cache[cache_index];
+    }
+    if (s_skinned_count >= WGPU_SKINNED_CACHE_MAX) {
+        for (cache_index = 0; cache_index < s_skinned_count; cache_index++) wgpu_skinned_entry_release(&s_skinned_cache[cache_index]);
+        s_skinned_count = 0;
+    }
+    vertex_bytes = (uint64_t)asset->vertex_count * 72u;
+    index_bytes = (uint64_t)asset->index_count * 4u;
+    if (asset->asset_id == 0u || asset->vertices == NULL || asset->indices == NULL ||
+        vertex_bytes == 0u || index_bytes == 0u || vertex_bytes > UINT32_MAX || index_bytes > UINT32_MAX) return NULL;
+    entry = &s_skinned_cache[s_skinned_count];
+    memset(entry, 0, sizeof(*entry));
+    entry->asset_id = asset->asset_id;
+    entry->texture_count = asset->texture_count;
+    entry->material_count = asset->material_count;
+    vertex_descriptor.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst;
+    vertex_descriptor.size = vertex_bytes;
+    index_descriptor.usage = WGPUBufferUsage_Index | WGPUBufferUsage_CopyDst;
+    index_descriptor.size = index_bytes;
+    entry->vbuf = WGPU_FAULT_CREATE(SKINNED_VERTEX_BUFFER,
+        wgpuDeviceCreateBuffer(s_device, &vertex_descriptor));
+    entry->ibuf = WGPU_FAULT_CREATE(SKINNED_INDEX_BUFFER,
+        wgpuDeviceCreateBuffer(s_device, &index_descriptor));
+    if (entry->vbuf == NULL || entry->ibuf == NULL) goto fail;
+    wgpuQueueWriteBuffer(s_queue, entry->vbuf, 0u, asset->vertices, (size_t)vertex_bytes);
+    wgpuQueueWriteBuffer(s_queue, entry->ibuf, 0u, asset->indices, (size_t)index_bytes);
+    if (entry->texture_count != 0u) {
+        entry->textures = (WGPUTexture *)calloc(entry->texture_count, sizeof(*entry->textures));
+        entry->views = (WGPUTextureView *)calloc(entry->texture_count, sizeof(*entry->views));
+        if (entry->textures == NULL || entry->views == NULL) goto fail;
+    }
+    if (entry->material_count != 0u) {
+        entry->material_bg = (WGPUBindGroup *)calloc(entry->material_count, sizeof(*entry->material_bg));
+        entry->material_bg_gen = (uint32_t *)calloc(entry->material_count, sizeof(*entry->material_bg_gen));
+        if (entry->material_bg == NULL || entry->material_bg_gen == NULL) goto fail;
+    }
+    for (uint32_t texture_index = 0u; texture_index < entry->texture_count; texture_index++) {
+        const struct GfxModernTexture *source = &asset->textures[texture_index];
+        WGPUTextureDescriptor descriptor = {0};
+        if (source->level_count <= 0 || source->level_count > 13 || source->level_rgba[0] == NULL ||
+            source->level_width[0] <= 0 || source->level_height[0] <= 0 ||
+            (uint32_t)source->level_width[0] > s_max_tex_dim ||
+            (uint32_t)source->level_height[0] > s_max_tex_dim) goto fail;
+        descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+        descriptor.dimension = WGPUTextureDimension_2D;
+        descriptor.size.width = (uint32_t)source->level_width[0];
+        descriptor.size.height = (uint32_t)source->level_height[0];
+        descriptor.size.depthOrArrayLayers = 1u;
+        descriptor.format = WGPUTextureFormat_RGBA8Unorm;
+        descriptor.mipLevelCount = (uint32_t)source->level_count;
+        descriptor.sampleCount = 1u;
+        entry->textures[texture_index] = WGPU_FAULT_CREATE(
+            SKINNED_TEXTURE, wgpuDeviceCreateTexture(s_device, &descriptor));
+        if (entry->textures[texture_index] == NULL) goto fail;
+        for (int level = 0; level < source->level_count; level++) {
+            WGPUTexelCopyTextureInfo destination = {0};
+            WGPUTexelCopyBufferLayout layout = {0};
+            WGPUExtent3D extent = {(uint32_t)source->level_width[level],
+                                   (uint32_t)source->level_height[level], 1u};
+            destination.texture = entry->textures[texture_index];
+            destination.mipLevel = (uint32_t)level;
+            destination.aspect = WGPUTextureAspect_All;
+            layout.bytesPerRow = extent.width * 4u;
+            layout.rowsPerImage = extent.height;
+            wgpuQueueWriteTexture(s_queue, &destination, source->level_rgba[level],
+                                  (size_t)extent.width * extent.height * 4u, &layout, &extent);
+        }
+        entry->views[texture_index] = WGPU_FAULT_CREATE(
+            SKINNED_VIEW, wgpuTextureCreateView(entry->textures[texture_index], NULL));
+        if (entry->views[texture_index] == NULL) goto fail;
+    }
+    s_skinned_count++;
+    return entry;
+fail:
+    wgpu_skinned_entry_release(entry);
+    return NULL;
+}
+
+static WGPUBindGroup wgpu_skinned_material_bg(
+    struct WgpuSkinnedEntry *entry, const struct GfxModernSkinnedAsset *asset,
+    uint32_t material_index) {
+    WGPUBindGroupEntry bindings[7] = {0};
+    WGPUBindGroupDescriptor descriptor = {0};
+    const struct GfxModernMaterial *material = &asset->materials[material_index];
+    if (entry->material_bg[material_index] != NULL &&
+        entry->material_bg_gen[material_index] == s_skinned_ubo_gen) {
+        return entry->material_bg[material_index];
+    }
+    if (entry->material_bg[material_index] != NULL) {
+        wgpuBindGroupRelease(entry->material_bg[material_index]);
+        entry->material_bg[material_index] = NULL;
+    }
+    bindings[0].binding = 0u;
+    bindings[0].buffer = s_skinned_ubo;
+    bindings[0].size = WGPU_SKINNED_UNIFORM_BYTES;
+    for (uint32_t slot = 0u; slot < 5u; slot++) {
+        int texture_index = material->texture[slot];
+        bindings[slot + 1u].binding = slot + 1u;
+        bindings[slot + 1u].textureView =
+            texture_index >= 0 && (uint32_t)texture_index < entry->texture_count
+                ? entry->views[texture_index] : s_skinned_fallback_view[slot];
+    }
+    bindings[6].binding = 6u;
+    bindings[6].sampler = s_skinned_sampler;
+    descriptor.layout = s_skinned_bgl;
+    descriptor.entryCount = 7u;
+    descriptor.entries = bindings;
+    entry->material_bg[material_index] = WGPU_FAULT_CREATE(
+        SKINNED_BIND_GROUP, wgpuDeviceCreateBindGroup(s_device, &descriptor));
+    entry->material_bg_gen[material_index] = s_skinned_ubo_gen;
+    return entry->material_bg[material_index];
+}
+
+static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
+                                     const float mvp[4][4],
+                                     const float fog_color[3], float fog_mul,
+                                     float fog_offset, int fog_enabled) {
+    const struct GfxModernSkinnedAsset *asset;
+    const struct GfxModernPrimitive *primitive;
+    const struct GfxModernMaterial *material;
+    struct WgpuSkinnedEntry *resources;
+    WGPURenderPipeline pipeline;
+    WGPUBindGroup bind_group;
+    float uniform[WGPU_SKINNED_UNIFORM_FLOATS] = {0};
+    uint32_t dynamic_offset;
+    uint32_t slot;
+    if (!s_ready || !s_frame_open || s_pass == NULL || draw == NULL ||
+        (asset = draw->asset) == NULL || draw->primitive >= asset->primitive_count ||
+        draw->bone_count > WGPU_SKINNED_MAX_BONES) return;
+    primitive = &asset->primitives[draw->primitive];
+    if (primitive->material >= asset->material_count || primitive->index_count == 0u ||
+        primitive->first_index > asset->index_count ||
+        primitive->index_count > asset->index_count - primitive->first_index) return;
+    material = &asset->materials[primitive->material];
+    pipeline = wgpu_skinned_pipeline(material->flags);
+    if (pipeline == NULL || !wgpu_skinned_fallbacks()) return;
+    resources = wgpu_skinned_resources(asset);
+    if (resources == NULL || !wgpu_skinned_ubo_reserve(s_skinned_ubo_used + 1)) return;
+    memcpy(uniform, mvp, sizeof(float) * 16u);
+    memcpy(&uniform[16], draw->model_matrix, sizeof(float) * 16u);
+    uniform[32] = fog_color[0]; uniform[33] = fog_color[1]; uniform[34] = fog_color[2];
+    uniform[36] = fog_mul; uniform[37] = fog_offset; uniform[38] = fog_enabled ? 1.0f : 0.0f;
+    uniform[39] = s_unclipped_depth_supported ? 0.0f : 1.0f;
+    uniform[40] = draw->light_direction[0]; uniform[41] = draw->light_direction[1];
+    uniform[42] = draw->light_direction[2]; uniform[43] = draw->ambient;
+    memcpy(&uniform[44], material->base_color, sizeof(float) * 4u);
+    memcpy(&uniform[48], material->emissive, sizeof(float) * 3u);
+    uniform[51] = material->metallic;
+    uniform[52] = material->roughness; uniform[53] = material->normal_scale;
+    uniform[54] = material->occlusion_strength; uniform[55] = material->alpha_cutoff;
+    for (uint32_t bone = 0u; bone < WGPU_SKINNED_MAX_BONES; bone++) {
+        float *matrix = &uniform[56u + bone * 16u];
+        matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
+    }
+    if (draw->bone_matrices != NULL && draw->bone_count != 0u) {
+        memcpy(&uniform[56], draw->bone_matrices,
+               (size_t)draw->bone_count * 16u * sizeof(float));
+    }
+    slot = (uint32_t)s_skinned_ubo_used++;
+    dynamic_offset = slot * WGPU_SKINNED_SLOT_BYTES;
+    wgpuQueueWriteBuffer(s_queue, s_skinned_ubo, dynamic_offset,
+                         uniform, sizeof(uniform));
+    bind_group = wgpu_skinned_material_bg(resources, asset, primitive->material);
+    if (bind_group == NULL) return;
+    wgpuRenderPassEncoderSetPipeline(s_pass, pipeline);
+    wgpuRenderPassEncoderSetBindGroup(s_pass, 0u, bind_group, 1u, &dynamic_offset);
+    s_pipe_applied = pipeline;
+    s_bg_applied = NULL;
+    wgpuRenderPassEncoderSetVertexBuffer(s_pass, 0u, resources->vbuf, 0u,
+                                         (uint64_t)asset->vertex_count * 72u);
+    wgpuRenderPassEncoderSetIndexBuffer(s_pass, resources->ibuf,
+                                        WGPUIndexFormat_Uint32, 0u,
+                                        (uint64_t)asset->index_count * 4u);
+    wgpuRenderPassEncoderDrawIndexed(s_pass, primitive->index_count, 1u,
+                                     primitive->first_index, 0, 0u);
+}
+
 /* WebGPU clip space is 0..1 (like Metal/D3D, unlike GL's -1..1). The frontend
  * also queries gfx_webgpu_unclipped_depth_supported() and clamps homogeneous z
  * in software when the optional DepthClipControl feature is absent. */
@@ -8658,6 +9139,10 @@ static void wgpu_release_device_objects(void) {
             wgpuBindGroupRelease(s_modern_cache[i].bg);
         }
     }
+    for (int i = 0; i < s_skinned_count; i++) {
+        wgpu_skinned_entry_release(&s_skinned_cache[i]);
+    }
+    s_skinned_count = 0;
 
     for (size_t i = 0; i < s_shader_count; i++) {
         struct ShaderProgram *prg = s_shaders[i];
@@ -8679,6 +9164,9 @@ static void wgpu_release_device_objects(void) {
             wgpuRenderPipelineRelease(s_modern_pipe[i]);
         }
     }
+    for (int i = 0; i < 6; i++) {
+        if (s_skinned_pipe[i] != NULL) wgpuRenderPipelineRelease(s_skinned_pipe[i]);
+    }
 
     if (s_resolve_bgl != NULL) wgpuBindGroupLayoutRelease(s_resolve_bgl);
     if (s_post_bgl != NULL) wgpuBindGroupLayoutRelease(s_post_bgl);
@@ -8686,6 +9174,9 @@ static void wgpu_release_device_objects(void) {
     if (s_modern_bgl != NULL) wgpuBindGroupLayoutRelease(s_modern_bgl);
     if (s_modern_pl != NULL) wgpuPipelineLayoutRelease(s_modern_pl);
     if (s_modern_mod != NULL) wgpuShaderModuleRelease(s_modern_mod);
+    if (s_skinned_bgl != NULL) wgpuBindGroupLayoutRelease(s_skinned_bgl);
+    if (s_skinned_pl != NULL) wgpuPipelineLayoutRelease(s_skinned_pl);
+    if (s_skinned_mod != NULL) wgpuShaderModuleRelease(s_skinned_mod);
 
     for (int i = 0; i < s_modern_count; i++) {
         if (s_modern_cache[i].view != NULL) {
@@ -8700,6 +9191,10 @@ static void wgpu_release_device_objects(void) {
         if (s_modern_cache[i].ibuf != NULL) {
             wgpuBufferRelease(s_modern_cache[i].ibuf);
         }
+    }
+    for (int i = 0; i < 5; i++) {
+        if (s_skinned_fallback_view[i] != NULL) wgpuTextureViewRelease(s_skinned_fallback_view[i]);
+        if (s_skinned_fallback_tex[i] != NULL) wgpuTextureRelease(s_skinned_fallback_tex[i]);
     }
     if (s_tex != NULL) {
         for (size_t i = 0; i < s_tex_hi; i++) {
@@ -8754,6 +9249,7 @@ static void wgpu_release_device_objects(void) {
     }
     if (s_light_ubo != NULL) wgpuBufferRelease(s_light_ubo);
     if (s_modern_ubo != NULL) wgpuBufferRelease(s_modern_ubo);
+    if (s_skinned_ubo != NULL) wgpuBufferRelease(s_skinned_ubo);
 
     if (s_resolve_samp != NULL) wgpuSamplerRelease(s_resolve_samp);
     if (s_post_sampN != NULL) wgpuSamplerRelease(s_post_sampN);
@@ -8761,6 +9257,7 @@ static void wgpu_release_device_objects(void) {
     if (s_snap_sampler != NULL) wgpuSamplerRelease(s_snap_sampler);
     if (s_default_sampler != NULL) wgpuSamplerRelease(s_default_sampler);
     if (s_modern_sampler != NULL) wgpuSamplerRelease(s_modern_sampler);
+    if (s_skinned_sampler != NULL) wgpuSamplerRelease(s_skinned_sampler);
     for (int i = 0; i < s_sampler_n; i++) {
         if (s_samplers[i].sampler != NULL) {
             wgpuSamplerRelease(s_samplers[i].sampler);
@@ -8818,6 +9315,10 @@ static void wgpu_release_device_objects(void) {
     s_modern_ubo_cap = 0;
     s_modern_ubo_used = 0;
     s_modern_ubo_gen++;
+    s_skinned_ubo = NULL;
+    s_skinned_ubo_cap = 0;
+    s_skinned_ubo_used = 0;
+    s_skinned_ubo_gen++;
     s_post_pipe = NULL;
     s_post_bgl = NULL;
     s_post_ubuf = NULL;
@@ -8861,6 +9362,15 @@ static void wgpu_release_device_objects(void) {
     s_modern_sampler = NULL;
     memset(s_modern_cache, 0, sizeof(s_modern_cache));
     s_modern_count = 0;
+    s_skinned_mod = NULL;
+    s_skinned_bgl = NULL;
+    s_skinned_pl = NULL;
+    memset(s_skinned_pipe, 0, sizeof(s_skinned_pipe));
+    s_skinned_sampler = NULL;
+    memset(s_skinned_fallback_tex, 0, sizeof(s_skinned_fallback_tex));
+    memset(s_skinned_fallback_view, 0, sizeof(s_skinned_fallback_view));
+    memset(s_skinned_cache, 0, sizeof(s_skinned_cache));
+    s_skinned_count = 0;
 
     s_cfg_w = 0;
     s_cfg_h = 0;
@@ -9247,6 +9757,8 @@ struct GfxRenderingAPI gfx_webgpu_api = {
     .end_frame = wgpu_end_frame,
     .finish_render = wgpu_finish_render,
     .draw_modern_mesh = wgpu_draw_modern_mesh,
+    .draw_modern_skinned = wgpu_draw_modern_skinned,
+    .release_modern_asset = wgpu_release_modern_asset,
     .upload_texture_mipped = wgpu_upload_texture_mipped,
     .shutdown = wgpu_shutdown,
     .get_status = wgpu_get_status,

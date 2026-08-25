@@ -302,6 +302,11 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/mod_texture_key.c  # published texture content digest
     ${CMAKE_SOURCE_DIR}/platform/mod_texture_store.c # decoded override textures (stb PNG)
     ${CMAKE_SOURCE_DIR}/platform/mod_music.c        # decoded override music (dr_wav)
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_asset.c # validated private .mdkc character cache
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_registry.c # bounded local generic-character discovery
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_pose.c # semantic clips, cross-fades, sockets, skin palettes
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_render.c # bounded PNG decode and immutable GPU resources
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_runtime.c # assignments, animation instances, retained draw commands
     ${CMAKE_SOURCE_DIR}/platform/enhancement_registry.c # enhancements + authority class
     ${CMAKE_SOURCE_DIR}/platform/enh_speedometer.c  # speed readout (presentation only)
     ${CMAKE_SOURCE_DIR}/platform/enh_draw_distance.c # draw distance + LOD bias (presentation only)

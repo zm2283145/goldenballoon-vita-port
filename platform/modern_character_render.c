@@ -1,0 +1,213 @@
+#include "modern_character_render.h"
+
+#include "fast3d/gfx_mipgen.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define STBI_ONLY_PNG
+#define STBI_NO_STDIO
+#include "stb_image.h"
+
+#define MODERN_TEXTURE_DIMENSION_MAX 4096
+#define MODERN_DECODED_TEXTURE_BYTES_MAX (512u * 1024u * 1024u)
+
+static void set_error(char *error, size_t size, const char *message) {
+    if (error != NULL && size != 0u) {
+        (void)snprintf(error, size, "%s", message != NULL ? message : "unknown error");
+    }
+}
+
+static uint32_t read_u32(const uint8_t *bytes) {
+    return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
+           ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
+}
+
+static uint64_t digest_id(const uint8_t digest[32]) {
+    uint64_t value = 0u;
+    unsigned index;
+    for (index = 0u; index < 8u; index++) value |= (uint64_t)digest[index] << (index * 8u);
+    return value != 0u ? value : 1u;
+}
+
+static int allocate_arrays(MdkrModernRenderAsset *render,
+                           const MdkrModernCharacterAsset *asset) {
+    const MdkrModernSectionView *vertices = mdkr_modern_character_asset_section(asset, MDKR_MDKC_VERTICES);
+    const MdkrModernSectionView *indices = mdkr_modern_character_asset_section(asset, MDKR_MDKC_INDICES);
+    const MdkrModernSectionView *primitives = mdkr_modern_character_asset_section(asset, MDKR_MDKC_PRIMITIVES);
+    const MdkrModernSectionView *materials = mdkr_modern_character_asset_section(asset, MDKR_MDKC_MATERIALS);
+    const MdkrModernSectionView *textures = mdkr_modern_character_asset_section(asset, MDKR_MDKC_TEXTURES);
+    render->vertices = (struct GfxModernSkinnedVertex *)calloc(vertices->count, sizeof(*render->vertices));
+    render->indices = (uint32_t *)calloc(indices->count, sizeof(*render->indices));
+    render->primitives = (struct GfxModernPrimitive *)calloc(primitives->count, sizeof(*render->primitives));
+    render->materials = (struct GfxModernMaterial *)calloc(materials->count, sizeof(*render->materials));
+    if (textures->count != 0u) {
+        render->textures = (struct GfxModernTexture *)calloc(textures->count, sizeof(*render->textures));
+        render->decoded = (MdkrModernDecodedTexture *)calloc(textures->count, sizeof(*render->decoded));
+    }
+    return render->vertices != NULL && render->indices != NULL &&
+           render->primitives != NULL && render->materials != NULL &&
+           (textures->count == 0u || (render->textures != NULL && render->decoded != NULL));
+}
+
+int mdkr_modern_render_asset_init(MdkrModernRenderAsset *render,
+                                  const MdkrModernCharacterAsset *asset,
+                                  char *error, size_t error_size) {
+    const MdkrModernSectionView *vertex_section;
+    const MdkrModernSectionView *index_section;
+    const MdkrModernSectionView *primitive_section;
+    const MdkrModernSectionView *material_section;
+    const MdkrModernSectionView *texture_section;
+    const MdkrModernSectionView *texture_data;
+    uint32_t index;
+    if (render == NULL || asset == NULL || asset->owned_bytes == NULL) {
+        set_error(error, error_size, "render asset requires a validated character");
+        return 0;
+    }
+    memset(render, 0, sizeof(*render));
+    vertex_section = mdkr_modern_character_asset_section(asset, MDKR_MDKC_VERTICES);
+    index_section = mdkr_modern_character_asset_section(asset, MDKR_MDKC_INDICES);
+    primitive_section = mdkr_modern_character_asset_section(asset, MDKR_MDKC_PRIMITIVES);
+    material_section = mdkr_modern_character_asset_section(asset, MDKR_MDKC_MATERIALS);
+    texture_section = mdkr_modern_character_asset_section(asset, MDKR_MDKC_TEXTURES);
+    texture_data = mdkr_modern_character_asset_section(asset, MDKR_MDKC_TEXTURE_DATA);
+    if (!allocate_arrays(render, asset)) {
+        mdkr_modern_render_asset_shutdown(render);
+        set_error(error, error_size, "could not allocate immutable character render data");
+        return 0;
+    }
+    /* Establish cleanup ownership before the first decode can fail. */
+    render->gpu.texture_count = texture_section->count;
+    for (index = 0u; index < vertex_section->count; index++) {
+        MdkrModernVertex source;
+        struct GfxModernSkinnedVertex *destination = &render->vertices[index];
+        (void)mdkr_modern_character_asset_vertex(asset, index, &source);
+        memcpy(destination->position, source.position, sizeof(source.position));
+        memcpy(destination->normal, source.normal, sizeof(source.normal));
+        memcpy(destination->tangent, source.tangent, sizeof(source.tangent));
+        memcpy(destination->uv, source.uv, sizeof(source.uv));
+        memcpy(destination->joints, source.joints, sizeof(source.joints));
+        memcpy(destination->weights, source.weights, sizeof(source.weights));
+    }
+    for (index = 0u; index < index_section->count; index++) {
+        render->indices[index] = read_u32(index_section->data + (size_t)index * 4u);
+    }
+    for (index = 0u; index < primitive_section->count; index++) {
+        MdkrModernPrimitive source;
+        struct GfxModernPrimitive *destination = &render->primitives[index];
+        (void)mdkr_modern_character_asset_primitive(asset, index, &source);
+        destination->first_index = source.first_index;
+        destination->index_count = source.index_count;
+        destination->material = (uint32_t)source.material;
+        destination->node = source.node;
+        destination->skin = source.skin;
+        destination->lod = source.lod;
+    }
+    for (index = 0u; index < material_section->count; index++) {
+        MdkrModernMaterial source;
+        struct GfxModernMaterial *destination = &render->materials[index];
+        (void)mdkr_modern_character_asset_material(asset, index, &source);
+        memcpy(destination->texture, source.textures, sizeof(source.textures));
+        memcpy(destination->base_color, source.base_color, sizeof(source.base_color));
+        memcpy(destination->emissive, source.emissive, sizeof(source.emissive));
+        destination->metallic = source.metallic;
+        destination->roughness = source.roughness;
+        destination->normal_scale = source.normal_scale;
+        destination->occlusion_strength = source.occlusion_strength;
+        destination->alpha_cutoff = source.alpha_cutoff;
+        destination->flags = source.flags;
+    }
+    for (index = 0u; index < texture_section->count; index++) {
+        MdkrModernTexture source;
+        struct GfxModernTexture *destination = &render->textures[index];
+        GfxMipChain chain;
+        size_t level_zero_bytes;
+        size_t mip_bytes;
+        int width;
+        int height;
+        int components;
+        uint8_t *rgba;
+        (void)mdkr_modern_character_asset_texture(asset, index, &source);
+        if (source.mime != 1u) {
+            mdkr_modern_render_asset_shutdown(render);
+            set_error(error, error_size, "KTX2 texture decode is unavailable in this build");
+            return 0;
+        }
+        rgba = stbi_load_from_memory(texture_data->data + source.data_offset,
+                                    (int)source.data_size, &width, &height,
+                                    &components, 4);
+        if (rgba == NULL || width <= 0 || height <= 0 ||
+            width > MODERN_TEXTURE_DIMENSION_MAX || height > MODERN_TEXTURE_DIMENSION_MAX) {
+            stbi_image_free(rgba);
+            mdkr_modern_render_asset_shutdown(render);
+            set_error(error, error_size, "character PNG failed bounded RGBA decode");
+            return 0;
+        }
+        level_zero_bytes = (size_t)width * (size_t)height * 4u;
+        mip_bytes = gfx_mip_chain_bytes(width, height);
+        if (level_zero_bytes > MODERN_DECODED_TEXTURE_BYTES_MAX - render->decoded_texture_bytes ||
+            mip_bytes > MODERN_DECODED_TEXTURE_BYTES_MAX - render->decoded_texture_bytes - level_zero_bytes) {
+            stbi_image_free(rgba);
+            mdkr_modern_render_asset_shutdown(render);
+            set_error(error, error_size, "decoded character textures exceed the 512 MiB budget");
+            return 0;
+        }
+        render->decoded[index].rgba = rgba;
+        if (mip_bytes != 0u) {
+            render->decoded[index].mip_scratch = (uint8_t *)malloc(mip_bytes);
+            if (render->decoded[index].mip_scratch == NULL) {
+                mdkr_modern_render_asset_shutdown(render);
+                set_error(error, error_size, "could not allocate character texture mip chain");
+                return 0;
+            }
+        }
+        if (!gfx_mip_build(rgba, width, height,
+                           render->decoded[index].mip_scratch, mip_bytes, &chain)) {
+            mdkr_modern_render_asset_shutdown(render);
+            set_error(error, error_size, "could not build character texture mip chain");
+            return 0;
+        }
+        destination->level_count = chain.level_count;
+        memcpy(destination->level_rgba, chain.level, sizeof(chain.level));
+        memcpy(destination->level_width, chain.width, sizeof(chain.width));
+        memcpy(destination->level_height, chain.height, sizeof(chain.height));
+        destination->wrap_s = source.wrap_s;
+        destination->wrap_t = source.wrap_t;
+        destination->min_filter = source.min_filter;
+        destination->mag_filter = source.mag_filter;
+        render->decoded_texture_bytes += level_zero_bytes + mip_bytes;
+    }
+    render->gpu.asset_id = digest_id(asset->source_sha256);
+    render->gpu.vertices = render->vertices;
+    render->gpu.vertex_count = vertex_section->count;
+    render->gpu.indices = render->indices;
+    render->gpu.index_count = index_section->count;
+    render->gpu.primitives = render->primitives;
+    render->gpu.primitive_count = primitive_section->count;
+    render->gpu.materials = render->materials;
+    render->gpu.material_count = material_section->count;
+    render->gpu.textures = render->textures;
+    render->gpu.texture_count = texture_section->count;
+    render->valid = 1;
+    set_error(error, error_size, "");
+    return 1;
+}
+
+void mdkr_modern_render_asset_shutdown(MdkrModernRenderAsset *render) {
+    uint32_t index;
+    if (render == NULL) return;
+    if (render->decoded != NULL) {
+        for (index = 0u; index < render->gpu.texture_count; index++) {
+            stbi_image_free(render->decoded[index].rgba);
+            free(render->decoded[index].mip_scratch);
+        }
+    }
+    free(render->decoded);
+    free(render->textures);
+    free(render->materials);
+    free(render->primitives);
+    free(render->indices);
+    free(render->vertices);
+    memset(render, 0, sizeof(*render));
+}

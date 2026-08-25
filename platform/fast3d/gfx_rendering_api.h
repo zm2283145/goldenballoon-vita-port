@@ -51,6 +51,77 @@ struct GfxModernMesh {
     void *backend_handle;
 };
 
+/* Generic high-fidelity character resources. These are immutable after
+ * publication; a backend caches uploads by asset_id and release_modern_asset()
+ * retires them before the CPU owner frees any bytes. */
+struct GfxModernSkinnedVertex {
+    float position[3];
+    float normal[3];
+    float tangent[4];
+    float uv[2];
+    uint16_t joints[4];
+    float weights[4];
+};
+
+struct GfxModernTexture {
+    const uint8_t *level_rgba[13];
+    int level_width[13];
+    int level_height[13];
+    int level_count;
+    int wrap_s;
+    int wrap_t;
+    int min_filter;
+    int mag_filter;
+};
+
+struct GfxModernMaterial {
+    int texture[5]; /* base, metallic/roughness, normal, occlusion, emissive */
+    float base_color[4];
+    float emissive[3];
+    float metallic;
+    float roughness;
+    float normal_scale;
+    float occlusion_strength;
+    float alpha_cutoff;
+    uint32_t flags; /* bits 0..1 alpha mode, bit 2 double-sided */
+};
+
+struct GfxModernPrimitive {
+    uint32_t first_index;
+    uint32_t index_count;
+    uint32_t material;
+    uint32_t node;
+    int32_t skin;
+    uint32_t lod;
+};
+
+struct GfxModernSkinnedAsset {
+    uint64_t asset_id;
+    const struct GfxModernSkinnedVertex *vertices;
+    uint32_t vertex_count;
+    const uint32_t *indices;
+    uint32_t index_count;
+    const struct GfxModernPrimitive *primitives;
+    uint32_t primitive_count;
+    const struct GfxModernMaterial *materials;
+    uint32_t material_count;
+    const struct GfxModernTexture *textures;
+    uint32_t texture_count;
+};
+
+struct GfxModernSkinnedDraw {
+    const struct GfxModernSkinnedAsset *asset;
+    uint32_t primitive;
+    /* Primitive-local glTF node transform, including the package's authored
+     * presentation transform. Column-major, applied after skinning and before
+     * the display-list object's MVP. */
+    float model_matrix[16];
+    const float *bone_matrices; /* bone_count column-major mat4 values */
+    uint32_t bone_count;
+    float light_direction[3];   /* normalized in asset/model space */
+    float ambient;
+};
+
 struct GfxRenderingAPI {
     bool (*z_is_from_0_to_1)(void);
     void (*unload_shader)(struct ShaderProgram *old_prg);
@@ -95,6 +166,11 @@ struct GfxRenderingAPI {
     void (*draw_modern_mesh)(struct GfxModernMesh *mesh, const float mvp[4][4],
                              const float fog_color[3], float fog_mul,
                              float fog_offset, int fog_enabled);
+    void (*draw_modern_skinned)(const struct GfxModernSkinnedDraw *draw,
+                                const float mvp[4][4],
+                                const float fog_color[3], float fog_mul,
+                                float fog_offset, int fog_enabled);
+    void (*release_modern_asset)(uint64_t asset_id);
     /* OPTIONAL (NULL when the backend has no mip support — call sites must
      * guard). Uploads a complete mip chain built by platform/fast3d/gfx_mipgen.c. */
     bool (*upload_texture_mipped)(const uint8_t *const *level_rgba,

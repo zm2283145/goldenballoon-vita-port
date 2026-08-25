@@ -175,6 +175,7 @@
 #define G_MW_DKR_REMASTER_TARGET 0x0C
 #define G_MW_DKR_SMOOTH_NORMALS 0x0E
 #define G_MW_DKR_WORLD_REGION 0x10
+#define G_MW_DKR_MODERN_CHARACTER 0x12
 #define G_VTX_APPEND 1
 
 #define gDkrEnableBillboard(pkt)            \
@@ -205,6 +206,8 @@
     gMoveWd(pkt, G_MW_DKR_REMASTER_TARGET, 0, (packedDirectionAndClass))
 #define gDkrSetSmoothNormals(pkt, normals) \
     gMoveWd(pkt, G_MW_DKR_SMOOTH_NORMALS, 0, (normals))
+#define gDkrDrawModernCharacter(pkt, drawToken) \
+    gMoveWd(pkt, G_MW_DKR_MODERN_CHARACTER, 0, (drawToken))
 #endif
 
 #define TRIN_DISABLE_TEXTURE 0

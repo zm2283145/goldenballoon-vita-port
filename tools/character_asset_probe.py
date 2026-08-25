@@ -54,6 +54,12 @@ SUPPORTED_REQUIRED_EXTENSIONS = {
     "KHR_mesh_quantization",
     "KHR_texture_basisu",
 }
+GAMEPLAY_DONORS = {
+    "banjo", "bumper", "conker", "diddy", "drumstick",
+    "krunch", "pipsy", "timber", "tiptup", "tt",
+}
+VEHICLE_NAMES = {"car", "hovercraft", "plane"}
+REQUIRED_PRESENTATION_SOCKETS = {"seat", "head"}
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")
 
 
@@ -446,6 +452,80 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
         for semantic, clip in states.items():
             if not isinstance(semantic, str) or not isinstance(clip, str) or clip not in clip_names:
                 errors.append(f"animation mapping {semantic!r} does not name a GLB animation")
+
+    gameplay = manifest.get("gameplay")
+    if not isinstance(gameplay, dict):
+        errors.append("manifest.gameplay object is required")
+    else:
+        donor = gameplay.get("donor")
+        if donor not in GAMEPLAY_DONORS:
+            errors.append(
+                "manifest.gameplay.donor must name a built-in racer: "
+                + ", ".join(sorted(GAMEPLAY_DONORS))
+            )
+        vehicles = gameplay.get("vehicles")
+        if not isinstance(vehicles, list) or not vehicles:
+            errors.append("manifest.gameplay.vehicles must be a non-empty array")
+        elif any(vehicle not in VEHICLE_NAMES for vehicle in vehicles):
+            errors.append("manifest.gameplay.vehicles contains an unsupported vehicle")
+        elif len(set(vehicles)) != len(vehicles):
+            errors.append("manifest.gameplay.vehicles must not contain duplicates")
+
+    presentation = manifest.get("presentation")
+    if not isinstance(presentation, dict):
+        errors.append("manifest.presentation object is required")
+    else:
+        vector_fields = {
+            "scale": (3, 0.001, 1000.0),
+            "translation_m": (3, -1000.0, 1000.0),
+            "rotation_xyzw": (4, -1.0, 1.0),
+        }
+        for field, (length, minimum, maximum) in vector_fields.items():
+            value = presentation.get(field)
+            if (
+                not isinstance(value, list)
+                or len(value) != length
+                or any(
+                    isinstance(component, bool)
+                    or not isinstance(component, (int, float))
+                    or not minimum <= float(component) <= maximum
+                    for component in value
+                )
+            ):
+                errors.append(
+                    f"manifest.presentation.{field} must contain {length} finite bounded numbers"
+                )
+        rotation = presentation.get("rotation_xyzw")
+        if isinstance(rotation, list) and len(rotation) == 4 and all(
+            isinstance(component, (int, float)) and not isinstance(component, bool)
+            for component in rotation
+        ):
+            length_squared = sum(float(component) ** 2 for component in rotation)
+            if not 0.999 <= length_squared <= 1.001:
+                errors.append("manifest.presentation.rotation_xyzw must be normalized")
+        lod_bias = presentation.get("lod_bias", 0.0)
+        if (
+            isinstance(lod_bias, bool)
+            or not isinstance(lod_bias, (int, float))
+            or not -4.0 <= float(lod_bias) <= 4.0
+        ):
+            errors.append("manifest.presentation.lod_bias must be between -4 and 4")
+
+    sockets = manifest.get("sockets")
+    if not isinstance(sockets, dict):
+        errors.append("manifest.sockets object is required")
+    else:
+        missing_sockets = sorted(REQUIRED_PRESENTATION_SOCKETS - set(sockets))
+        if missing_sockets:
+            errors.append("manifest.sockets is missing: " + ", ".join(missing_sockets))
+        for semantic, node_name in sockets.items():
+            if (
+                not isinstance(semantic, str)
+                or not semantic.strip()
+                or not isinstance(node_name, str)
+                or not node_name.strip()
+            ):
+                errors.append("manifest.sockets must map non-empty semantic names to node names")
     return errors
 
 

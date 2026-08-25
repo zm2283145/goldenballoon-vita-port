@@ -7,9 +7,11 @@ import importlib.util
 import io
 import json
 import struct
+import sys
 import tempfile
 import unittest
 import zipfile
+import zlib
 from pathlib import Path
 
 
@@ -20,6 +22,8 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC is not None and SPEC.loader is not None
 probe = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(probe)
+sys.path.insert(0, str(ROOT / "tools"))
+import character_asset_compiler as compiler  # noqa: E402
 
 
 def _align(data: bytearray, alignment: int = 4) -> None:
@@ -76,6 +80,27 @@ def make_animated_glb(external_buffer: bool = False) -> bytes:
         2,
     )
     _align(binary)
+    png_offset = len(binary)
+    png_signature = b"\x89PNG\r\n\x1a\n"
+
+    def png_chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    png = (
+        png_signature
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+        + png_chunk(b"IDAT", zlib.compress(b"\x00\xff\x80\x40\xff"))
+        + png_chunk(b"IEND", b"")
+    )
+    binary.extend(png)
+    png_view = len(views)
+    views.append({"buffer": 0, "byteOffset": png_offset, "byteLength": len(png)})
+    _align(binary)
     document = {
         "asset": {"version": "2.0", "generator": "mdkr-test-fixture"},
         "scene": 0,
@@ -98,9 +123,12 @@ def make_animated_glb(external_buffer: bool = False) -> bytes:
         }]}],
         "materials": [{"name": "body", "pbrMetallicRoughness": {
             "baseColorFactor": [0.7, 0.2, 0.1, 1.0],
+            "baseColorTexture": {"index": 0},
             "metallicFactor": 0.0,
             "roughnessFactor": 0.8,
         }}],
+        "images": [{"name": "body", "mimeType": "image/png", "bufferView": png_view}],
+        "textures": [{"name": "body", "source": 0}],
         "skins": [{"name": "rig", "joints": [0, 1], "skeleton": 0,
                    "inverseBindMatrices": inverse_bind}],
         "animations": [{
@@ -123,6 +151,32 @@ def make_animated_glb(external_buffer: bool = False) -> bytes:
     return bytes(output)
 
 
+def make_manifest() -> dict[str, object]:
+    return {
+        "schema": probe.PACKAGE_SCHEMA,
+        "id": "org.example.pipeline-proof",
+        "display_name": "Pipeline Proof",
+        "renderer_profile": "modern-skeletal-v1",
+        "license": {
+            "spdx": "CC0-1.0",
+            "attribution": "Generated MDKR test fixture",
+            "source_url": "https://example.invalid/pipeline-proof",
+        },
+        "animations": {"fallback": "idle", "states": {"idle": "idle"}},
+        "gameplay": {
+            "donor": "diddy",
+            "vehicles": ["car", "hovercraft", "plane"],
+        },
+        "presentation": {
+            "scale": [1.0, 1.0, 1.0],
+            "translation_m": [0.0, 0.0, 0.0],
+            "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "lod_bias": 0.0,
+        },
+        "sockets": {"seat": "root", "head": "head"},
+    }
+
+
 class CharacterAssetProbeTests(unittest.TestCase):
     def test_generated_glb_is_character_ready(self) -> None:
         report = probe.inspect_glb_bytes(make_animated_glb(), require_character=True)
@@ -142,18 +196,7 @@ class CharacterAssetProbeTests(unittest.TestCase):
             model = root / "model.glb"
             model.write_bytes(make_animated_glb())
             manifest = root / "manifest.json"
-            manifest.write_text(json.dumps({
-                "schema": probe.PACKAGE_SCHEMA,
-                "id": "org.example.pipeline-proof",
-                "display_name": "Pipeline Proof",
-                "renderer_profile": "modern-skeletal-v1",
-                "license": {
-                    "spdx": "CC0-1.0",
-                    "attribution": "Generated MDKR test fixture",
-                    "source_url": "https://example.invalid/pipeline-proof",
-                },
-                "animations": {"fallback": "idle", "states": {"idle": "idle"}},
-            }), encoding="utf-8")
+            manifest.write_text(json.dumps(make_manifest()), encoding="utf-8")
             license_file = root / "LICENSE.txt"
             license_file.write_text("CC0-1.0 test fixture\n", encoding="utf-8")
             first = root / "first.mdkrchar"
@@ -163,6 +206,31 @@ class CharacterAssetProbeTests(unittest.TestCase):
             self.assertEqual(first.read_bytes(), second.read_bytes())
             verified = probe.verify_package(first)
             self.assertTrue(verified["valid"], verified["errors"])
+
+    def test_compiled_cache_is_deterministic_and_sectioned(self) -> None:
+        model = make_animated_glb()
+        manifest = make_manifest()
+        source_digest = bytes(range(32))
+        first, first_report = compiler.compile_character(model, manifest, source_digest)
+        second, second_report = compiler.compile_character(model, manifest, source_digest)
+        self.assertEqual(first, second)
+        self.assertEqual(first_report, second_report)
+        magic, version, header_bytes, file_bytes = struct.unpack_from("<4sIIQ", first, 0)
+        self.assertEqual(compiler.MDKC_MAGIC, magic)
+        self.assertEqual(compiler.MDKC_VERSION, version)
+        self.assertEqual(compiler.MDKC_HEADER_BYTES, header_bytes)
+        self.assertEqual(len(first), file_bytes)
+        self.assertEqual(3, first_report["vertices"])
+        self.assertEqual(1, first_report["triangles"])
+        self.assertEqual(2, first_report["joints"])
+        self.assertEqual(1, first_report["animations"])
+        self.assertEqual(2, first_report["sockets"])
+
+    def test_compiler_rejects_missing_socket_node(self) -> None:
+        manifest = make_manifest()
+        manifest["sockets"] = {"seat": "missing", "head": "head"}
+        with self.assertRaises(compiler.CompileError):
+            compiler.compile_character(make_animated_glb(), manifest, bytes(32))
 
     def test_archive_inventory_fails_closed_without_license(self) -> None:
         dae = b'''<?xml version="1.0"?><COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1"><asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset><library_geometries><geometry/></library_geometries></COLLADA>'''

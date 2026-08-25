@@ -33,6 +33,7 @@ extern "C" {
 #endif
 
 struct GfxRenderingAPI;
+struct GfxModernSkinnedDraw;
 
 /* Mirrors mgb64's gfx_pc.h struct layout exactly so the vendored backends
  * (gfx_opengl.c / gfx_metal.mm), which include "../gfx_pc.h", can share this
@@ -64,6 +65,24 @@ void gfx_shutdown(void);
 void gfx_reset_renderer_caches(void);
 /* Initialize and publish a replacement backend after a live backend switch. */
 bool gfx_rebind_renderer(struct GfxRenderingAPI *rapi);
+
+/** True when the active backend can draw generic GPU-skinned characters. */
+bool gfx_modern_character_supported(void);
+
+/**
+ * Retain one immutable modern-character draw for a display-list command.
+ *
+ * The draw descriptor and its bone palette are copied into a bounded frontend
+ * ring. The returned nonzero token is embedded with
+ * gDkrDrawModernCharacter(), so presentation replay never follows a pointer
+ * into mutable game/runtime state. A zero result means the command must not be
+ * emitted; the caller should leave its retail donor visible.
+ */
+uint32_t gfx_modern_character_register_draw(
+    const struct GfxModernSkinnedDraw *draw);
+
+/** Retire backend resources before the CPU owner frees an immutable asset. */
+void gfx_modern_character_release_asset(uint64_t asset_id);
 
 /** Update the drawable dimensions (window/framebuffer pixels). Safe to call
  *  every frame; defaults to 320x240 until set. The backends read

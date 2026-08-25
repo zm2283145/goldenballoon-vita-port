@@ -69,6 +69,11 @@ int mdkr_user_save_directory(char *output, size_t output_size);
  * Unlike saves and config there is no environment override, because nothing
  * needs to relocate the folder a player is told to drop packs into. */
 int mdkr_user_mods_directory(char *output, size_t output_size);
+/* Locally imported custom characters and their disposable compiled caches.
+ * Separate from mods/: ordinary content packs are read-only override sources,
+ * while character import is a launcher-owned transaction with provenance and
+ * cache invalidation. Nothing from this directory is bundled or synchronized. */
+int mdkr_user_characters_directory(char *output, size_t output_size);
 int mdkr_user_resource_path(const char *relative_path,
                             char *output, size_t output_size);
 

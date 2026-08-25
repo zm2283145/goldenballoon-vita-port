@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goldenballoon.example/schema/mdkr-character-source-v1.schema.json",
+  "title": "Golden Balloon custom character source manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "display_name",
+    "renderer_profile",
+    "license",
+    "animations",
+    "gameplay",
+    "presentation",
+    "sockets"
+  ],
+  "properties": {
+    "schema": { "const": "mdkr-character-source-v1" },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+    },
+    "display_name": { "type": "string", "minLength": 1, "maxLength": 96 },
+    "renderer_profile": { "const": "modern-skeletal-v1" },
+    "license": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spdx", "attribution", "source_url"],
+      "properties": {
+        "spdx": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "attribution": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "source_url": { "type": "string", "format": "uri", "maxLength": 2048 }
+      }
+    },
+    "animations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fallback", "states"],
+      "properties": {
+        "fallback": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "states": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z][a-z0-9_.-]{0,63}$" },
+          "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "maxProperties": 64
+        }
+      }
+    },
+    "gameplay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["donor", "vehicles"],
+      "properties": {
+        "donor": {
+          "enum": [
+            "banjo", "bumper", "conker", "diddy", "drumstick",
+            "krunch", "pipsy", "timber", "tiptup", "tt"
+          ]
+        },
+        "vehicles": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": { "enum": ["car", "hovercraft", "plane"] }
+        }
+      }
+    },
+    "presentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scale", "translation_m", "rotation_xyzw"],
+      "properties": {
+        "scale": { "$ref": "#/$defs/positiveVec3" },
+        "translation_m": { "$ref": "#/$defs/translationVec3" },
+        "rotation_xyzw": { "$ref": "#/$defs/quaternion" },
+        "lod_bias": { "type": "number", "minimum": -4, "maximum": 4 }
+      }
+    },
+    "sockets": {
+      "type": "object",
+      "required": ["seat", "head"],
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_.-]{0,63}$" },
+      "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 128 },
+      "maxProperties": 32
+    },
+    "model": { "const": "model.glb" },
+    "model_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "license_file": { "const": "LICENSE.txt" }
+  },
+  "$defs": {
+    "positiveVec3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        { "type": "number", "exclusiveMinimum": 0, "maximum": 1000 },
+        { "type": "number", "exclusiveMinimum": 0, "maximum": 1000 },
+        { "type": "number", "exclusiveMinimum": 0, "maximum": 1000 }
+      ]
+    },
+    "translationVec3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        { "type": "number", "minimum": -1000, "maximum": 1000 },
+        { "type": "number", "minimum": -1000, "maximum": 1000 },
+        { "type": "number", "minimum": -1000, "maximum": 1000 }
+      ]
+    },
+    "quaternion": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "prefixItems": [
+        { "type": "number", "minimum": -1, "maximum": 1 },
+        { "type": "number", "minimum": -1, "maximum": 1 },
+        { "type": "number", "minimum": -1, "maximum": 1 },
+        { "type": "number", "minimum": -1, "maximum": 1 }
+      ],
+      "$comment": "The importer additionally requires a unit-length quaternion."
+    }
+  }
+}

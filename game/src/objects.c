@@ -21,6 +21,7 @@
 #include "gameplay_event_trace.h"
 #include "rollback/rollback_game_runtime.h"
 #include "fast3d/gfx_level_lighting.h"
+#include "modern_character_runtime.h"
 #endif
 /* The level-object-map header is 16 bytes; gObjectMap[] is s32*, so the entries
  * begin 4 s32-elements in. The original code wrote this as sizeof(uintptr_t),
@@ -5108,6 +5109,27 @@ void obj_update(s32 updateRate) {
     taj_visual_tick(updateRate);
     wizpig_visual_tick(updateRate);
     terry_visual_tick(updateRate);
+    /* Presentation-only semantic animation. The built-in donor remains the
+     * sole physics/audio/save identity; this sidecar consumes its finished
+     * state once per authoritative tick and never writes Object_Racer. */
+    for (i = 0; i < gNumRacers; i++) {
+        Object *modernOwner = (*gRacers)[i];
+        Object_Racer *modernRacer = modernOwner != NULL ? modernOwner->racer : NULL;
+        const char *semantic = "race.steer";
+        char modernError[192];
+        if (modernRacer == NULL || modernRacer->playerIndex < 0 ||
+            modernRacer->playerIndex >= MDKR_MODERN_CHARACTER_PLAYERS ||
+            !mdkr_modern_character_matches(
+                modernRacer->playerIndex, modernRacer->characterId,
+                modernRacer->vehicleIDPrev)) continue;
+        if (modernRacer->raceFinished) semantic = "race.finish";
+        else if (modernRacer->spinout_timer || modernRacer->squish_timer ||
+                 modernRacer->attackType != ATTACK_NONE) semantic = "race.damage";
+        else if (modernRacer->boostTimer) semantic = "race.boost";
+        (void)mdkr_modern_character_tick(
+            modernRacer->playerIndex, semantic,
+            (float)updateRate / 60.0f, modernError, sizeof(modernError));
+    }
 #endif
     if (level_type() == RACETYPE_DEFAULT) {
         for (i = 0; i < gNumRacers; i++) {
@@ -6044,6 +6066,18 @@ void render_3d_model(Object *obj) {
         }
 #endif
         mtx_cam_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, &obj->trans, gObjectModelScaleY, 0.0f);
+#ifdef NATIVE_PORT
+        if (racerObj != NULL && racerObj->playerIndex >= 0 &&
+            racerObj->playerIndex < MDKR_MODERN_CHARACTER_PLAYERS &&
+            mdkr_modern_character_matches(
+                racerObj->playerIndex, racerObj->characterId,
+                racerObj->vehicleIDPrev)) {
+            char modernError[192];
+            (void)mdkr_modern_character_emit(
+                racerObj->playerIndex, &gObjectCurrDisplayList,
+                modernError, sizeof(modernError));
+        }
+#endif
         vertOffset = FALSE;
         if (racerObj != NULL) {
             object_undo_player_tumble(obj);

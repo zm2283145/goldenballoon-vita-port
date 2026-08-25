@@ -107,6 +107,8 @@
 #define DKR_VBO_STRIDE_MAX 32          /* floats per vertex (generous)        */
 #define DKR_DL_MAX_DEPTH   16          /* nested G_DL / G_DMADL recursion cap */
 #define DKR_FONT_UPSCALE   4
+#define DKR_MODERN_DRAW_RING 2048u
+#define DKR_MODERN_MAX_BONES 128u
 
 enum { DKR_PRESENTATION_PARTICLE_KIND_POINT = 4 };
 
@@ -116,6 +118,70 @@ enum { DKR_PRESENTATION_PARTICLE_KIND_POINT = 4 };
 #define SCALE_3_8(v_) ((v_) * 0x24)
 
 static GfxFontRegistry dkr_font_registry;
+static struct GfxRenderingAPI *gfx_rapi;
+static void gfx_flush(void);
+
+typedef struct DkrModernDrawEntry {
+    uint32_t token;
+    struct GfxModernSkinnedDraw draw;
+    float bones[DKR_MODERN_MAX_BONES * 16u];
+} DkrModernDrawEntry;
+
+/*
+ * A bounded immutable command payload ring. Display-list construction may run
+ * ahead of a presentation replay, so the command stores a generation-bearing
+ * token rather than an address. At the maximum expected split-screen load the
+ * ring retains many authored ticks; an exceptionally delayed/overfull replay
+ * fails visible by dropping the custom draw, never by reading a newer pose.
+ */
+static DkrModernDrawEntry dkr_modern_draw_ring[DKR_MODERN_DRAW_RING];
+static uint32_t dkr_modern_draw_serial = 1u;
+
+bool gfx_modern_character_supported(void) {
+    return gfx_rapi != NULL && gfx_rapi->draw_modern_skinned != NULL;
+}
+
+uint32_t gfx_modern_character_register_draw(
+    const struct GfxModernSkinnedDraw *draw) {
+    DkrModernDrawEntry *entry;
+    uint32_t token;
+    if (!gfx_modern_character_supported() || draw == NULL || draw->asset == NULL ||
+        draw->primitive >= draw->asset->primitive_count ||
+        draw->bone_count > DKR_MODERN_MAX_BONES ||
+        (draw->bone_count != 0u && draw->bone_matrices == NULL)) {
+        return 0u;
+    }
+    token = dkr_modern_draw_serial++;
+    if (token == 0u) token = dkr_modern_draw_serial++;
+    entry = &dkr_modern_draw_ring[token % DKR_MODERN_DRAW_RING];
+    memset(entry, 0, sizeof(*entry));
+    entry->token = token;
+    entry->draw = *draw;
+    if (draw->bone_count != 0u) {
+        memcpy(entry->bones, draw->bone_matrices,
+               (size_t)draw->bone_count * 16u * sizeof(float));
+        entry->draw.bone_matrices = entry->bones;
+    } else {
+        entry->draw.bone_matrices = NULL;
+    }
+    return token;
+}
+
+void gfx_modern_character_release_asset(uint64_t asset_id) {
+    uint32_t index;
+    for (index = 0u; index < DKR_MODERN_DRAW_RING; index++) {
+        if (dkr_modern_draw_ring[index].token != 0u &&
+            dkr_modern_draw_ring[index].draw.asset != NULL &&
+            dkr_modern_draw_ring[index].draw.asset->asset_id == asset_id) {
+            memset(&dkr_modern_draw_ring[index], 0,
+                   sizeof(dkr_modern_draw_ring[index]));
+        }
+    }
+    if (gfx_rapi != NULL && gfx_rapi->release_modern_asset != NULL) {
+        gfx_flush();
+        gfx_rapi->release_modern_asset(asset_id);
+    }
+}
 
 uint32_t gfx_dkr_font_sdf_uploads;
 uint32_t gfx_dkr_font_outline_uploads;
@@ -1087,7 +1153,6 @@ struct GfxDimensions gfx_output_dimensions = { DESIRED_SCREEN_WIDTH, DESIRED_SCR
 struct GfxDimensions gfx_current_dimensions = { DESIRED_SCREEN_WIDTH, DESIRED_SCREEN_HEIGHT,
                                                 (float)DESIRED_SCREEN_WIDTH / DESIRED_SCREEN_HEIGHT };
 
-static struct GfxRenderingAPI *gfx_rapi;
 static bool dkr_output_overlay_active;
 static bool dkr_output_overlay_suppressed;
 static uint32_t dkr_output_overlay_frame_draws;
@@ -3362,6 +3427,34 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
     return bind_ok[0] && bind_ok[1];
 }
 
+static void dkr_draw_modern_character(uint32_t token) {
+    const DkrModernDrawEntry *entry;
+    float fog_color[3];
+    bool fog_enabled;
+    if (token == 0u || !gfx_modern_character_supported() ||
+        rsp.active_slot < 0 || rsp.active_slot >= 3) {
+        return;
+    }
+    entry = &dkr_modern_draw_ring[token % DKR_MODERN_DRAW_RING];
+    if (entry->token != token || entry->draw.asset == NULL) {
+        /* The bounded ring was overtaken. Dropping the custom command leaves
+         * memory and replay ownership safe; callers keep the donor visible
+         * unless every command registration succeeded. */
+        return;
+    }
+    (void)dkr_setup_draw_state(false);
+    gfx_flush();
+    fog_color[0] = (float)rdp.fog_color.r / 255.0f;
+    fog_color[1] = (float)rdp.fog_color.g / 255.0f;
+    fog_color[2] = (float)rdp.fog_color.b / 255.0f;
+    fog_enabled = (rdp.other_mode_l >> 30) == G_BL_CLR_FOG;
+    dkr_begin_primitive(rsp.draw_space != G_MTX_DKR_SPACE_WORLD);
+    gfx_rapi->draw_modern_skinned(
+        &entry->draw, rsp.mtx[rsp.active_slot], fog_color,
+        (float)rsp.fog_mul, (float)rsp.fog_offset,
+        fog_enabled ? 1 : 0);
+}
+
 /* ------------------------------------------------------------------------- */
 /* Triangle emission                                                         */
 /* ------------------------------------------------------------------------- */
@@ -4241,6 +4334,9 @@ static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
             }
             break;
         }
+        case G_MW_DKR_MODERN_CHARACTER:
+            dkr_draw_modern_character(data);
+            break;
         case G_MW_FOG:          /* 0x08 — fog_mul (hi 16) / fog_offset (lo 16) */
             rsp.fog_mul = (int16_t)(data >> 16);
             rsp.fog_offset = (int16_t)(data & 0xffff);

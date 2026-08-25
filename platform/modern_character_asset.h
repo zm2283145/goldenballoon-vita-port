@@ -1,0 +1,237 @@
+/* Validated runtime view of a compiled custom-character cache (.mdkc).
+ *
+ * This is the only custom-character file format the engine consumes. GLB and
+ * manifest JSON stop at the offline compiler. Every offset, count, reference,
+ * float, and checksum is checked before a view is published; callers never
+ * retain pointers into an unvalidated package or source archive.
+ */
+#ifndef MDKR64_MODERN_CHARACTER_ASSET_H
+#define MDKR64_MODERN_CHARACTER_ASSET_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define MDKR_MDKC_VERSION 1u
+#define MDKR_MDKC_HEADER_BYTES 832u
+#define MDKR_MDKC_SECTION_SLOTS 24u
+#define MDKR_MDKC_FILE_MAX (1024u * 1024u * 1024u)
+
+typedef enum MdkrModernSectionType {
+    MDKR_MDKC_STRINGS = 1,
+    MDKR_MDKC_VERTICES = 2,
+    MDKR_MDKC_INDICES = 3,
+    MDKR_MDKC_PRIMITIVES = 4,
+    MDKR_MDKC_MATERIALS = 5,
+    MDKR_MDKC_TEXTURES = 6,
+    MDKR_MDKC_TEXTURE_DATA = 7,
+    MDKR_MDKC_NODES = 8,
+    MDKR_MDKC_SKINS = 9,
+    MDKR_MDKC_JOINTS = 10,
+    MDKR_MDKC_ANIMATIONS = 11,
+    MDKR_MDKC_CHANNELS = 12,
+    MDKR_MDKC_KEYS = 13,
+    MDKR_MDKC_CHARACTER = 14,
+    MDKR_MDKC_SEMANTICS = 15,
+    MDKR_MDKC_SOCKETS = 16,
+    MDKR_MDKC_SECTION_LAST = MDKR_MDKC_SOCKETS
+} MdkrModernSectionType;
+
+typedef struct MdkrModernSectionView {
+    const uint8_t *data;
+    uint64_t size;
+    uint32_t count;
+    uint32_t stride;
+    uint32_t flags;
+} MdkrModernSectionView;
+
+typedef struct MdkrModernVertex {
+    float position[3];
+    float normal[3];
+    float tangent[4];
+    float uv[2];
+    uint16_t joints[4];
+    float weights[4];
+} MdkrModernVertex;
+
+typedef struct MdkrModernPrimitive {
+    uint32_t first_vertex;
+    uint32_t vertex_count;
+    uint32_t first_index;
+    uint32_t index_count;
+    int32_t material;
+    uint32_t node;
+    int32_t skin;
+    uint32_t lod;
+} MdkrModernPrimitive;
+
+typedef struct MdkrModernMaterial {
+    uint32_t name;
+    uint32_t flags;
+    int32_t textures[5]; /* base, metallic/roughness, normal, occlusion, emissive */
+    float base_color[4];
+    float emissive[3];
+    float metallic;
+    float roughness;
+    float normal_scale;
+    float occlusion_strength;
+    float alpha_cutoff;
+} MdkrModernMaterial;
+
+typedef struct MdkrModernTexture {
+    uint32_t name;
+    uint32_t mime; /* 1 PNG, 2 KTX2 */
+    uint32_t data_offset;
+    uint32_t data_size;
+    int32_t wrap_s;
+    int32_t wrap_t;
+    int32_t min_filter;
+    int32_t mag_filter;
+    uint32_t flags;
+} MdkrModernTexture;
+
+typedef struct MdkrModernNode {
+    uint32_t name;
+    int32_t parent;
+    float translation[3];
+    float rotation[4];
+    float scale[3];
+} MdkrModernNode;
+
+typedef struct MdkrModernSkin {
+    uint32_t name;
+    uint32_t first_joint;
+    uint32_t joint_count;
+    uint32_t skeleton;
+} MdkrModernSkin;
+
+typedef struct MdkrModernJoint {
+    uint32_t node;
+    float inverse_bind[16];
+} MdkrModernJoint;
+
+typedef struct MdkrModernAnimation {
+    uint32_t name;
+    float duration;
+    uint32_t first_channel;
+    uint32_t channel_count;
+} MdkrModernAnimation;
+
+typedef struct MdkrModernChannel {
+    uint32_t node;
+    uint32_t path;          /* translation, rotation, scale, weights */
+    uint32_t interpolation; /* linear, step, cubic spline */
+    uint32_t first_key;
+    uint32_t key_count;
+    uint32_t components;
+} MdkrModernChannel;
+
+typedef struct MdkrModernKey {
+    float time;
+    float value[4];
+    float incoming[4];
+    float outgoing[4];
+} MdkrModernKey;
+
+typedef struct MdkrModernCharacterDefinition {
+    uint32_t id;
+    uint32_t display_name;
+    uint32_t donor;
+    uint32_t renderer_profile;
+    float scale[3];
+    float translation[3];
+    float rotation[4];
+    float lod_bias;
+    uint32_t vehicle_mask;
+} MdkrModernCharacterDefinition;
+
+typedef struct MdkrModernSemantic {
+    uint32_t semantic;
+    uint32_t clip;
+    uint32_t flags;
+    float blend_seconds;
+} MdkrModernSemantic;
+
+typedef struct MdkrModernSocket {
+    uint32_t semantic;
+    uint32_t node;
+} MdkrModernSocket;
+
+typedef struct MdkrModernCharacterAsset {
+    uint8_t *owned_bytes;
+    size_t size;
+    uint8_t source_sha256[32];
+    MdkrModernSectionView sections[MDKR_MDKC_SECTION_LAST + 1];
+} MdkrModernCharacterAsset;
+
+typedef struct MdkrModernCharacterStats {
+    uint32_t vertices;
+    uint32_t triangles;
+    uint32_t primitives;
+    uint32_t materials;
+    uint32_t textures;
+    uint32_t nodes;
+    uint32_t skins;
+    uint32_t joints;
+    uint32_t animations;
+    uint32_t animation_channels;
+    uint32_t animation_keys;
+    uint32_t semantics;
+    uint32_t sockets;
+    uint64_t encoded_texture_bytes;
+} MdkrModernCharacterStats;
+
+/* Copies and validates `bytes`; a failed load leaves `out` empty. */
+int mdkr_modern_character_asset_load_memory(const void *bytes, size_t size,
+                                            MdkrModernCharacterAsset *out,
+                                            char *error, size_t error_size);
+/* Reads through the port's UTF-8 filesystem boundary, then applies the same
+ * validator. The file-size cap is checked before allocation. */
+int mdkr_modern_character_asset_load_file(const char *path,
+                                          MdkrModernCharacterAsset *out,
+                                          char *error, size_t error_size);
+void mdkr_modern_character_asset_unload(MdkrModernCharacterAsset *asset);
+
+const MdkrModernSectionView *mdkr_modern_character_asset_section(
+    const MdkrModernCharacterAsset *asset, MdkrModernSectionType type);
+const char *mdkr_modern_character_asset_string(
+    const MdkrModernCharacterAsset *asset, uint32_t offset);
+
+int mdkr_modern_character_asset_vertex(const MdkrModernCharacterAsset *asset,
+                                       uint32_t index, MdkrModernVertex *out);
+int mdkr_modern_character_asset_primitive(const MdkrModernCharacterAsset *asset,
+                                          uint32_t index, MdkrModernPrimitive *out);
+int mdkr_modern_character_asset_material(const MdkrModernCharacterAsset *asset,
+                                         uint32_t index, MdkrModernMaterial *out);
+int mdkr_modern_character_asset_texture(const MdkrModernCharacterAsset *asset,
+                                        uint32_t index, MdkrModernTexture *out);
+int mdkr_modern_character_asset_node(const MdkrModernCharacterAsset *asset,
+                                     uint32_t index, MdkrModernNode *out);
+int mdkr_modern_character_asset_skin(const MdkrModernCharacterAsset *asset,
+                                     uint32_t index, MdkrModernSkin *out);
+int mdkr_modern_character_asset_joint(const MdkrModernCharacterAsset *asset,
+                                      uint32_t index, MdkrModernJoint *out);
+int mdkr_modern_character_asset_animation(const MdkrModernCharacterAsset *asset,
+                                          uint32_t index, MdkrModernAnimation *out);
+int mdkr_modern_character_asset_channel(const MdkrModernCharacterAsset *asset,
+                                        uint32_t index, MdkrModernChannel *out);
+int mdkr_modern_character_asset_key(const MdkrModernCharacterAsset *asset,
+                                    uint32_t index, MdkrModernKey *out);
+int mdkr_modern_character_asset_definition(
+    const MdkrModernCharacterAsset *asset, MdkrModernCharacterDefinition *out);
+int mdkr_modern_character_asset_semantic(const MdkrModernCharacterAsset *asset,
+                                         uint32_t index, MdkrModernSemantic *out);
+int mdkr_modern_character_asset_socket(const MdkrModernCharacterAsset *asset,
+                                       uint32_t index, MdkrModernSocket *out);
+
+void mdkr_modern_character_asset_stats(const MdkrModernCharacterAsset *asset,
+                                       MdkrModernCharacterStats *out);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* MDKR64_MODERN_CHARACTER_ASSET_H */
