@@ -569,6 +569,7 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
     if not materials:
         materials = [{}]
     texture_roles = [0] * len(textures_source)  # 1 sRGB, 2 linear data, 4 normal
+    texture_cutoffs: list[float | None] = [None] * len(textures_source)
     for material_index, material in enumerate(materials):
         if not isinstance(material, dict):
             raise CompileError(f"material[{material_index}] must be an object")
@@ -592,6 +593,18 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
                     f"texture[{texture_index}] is reused across incompatible color/data roles"
                 )
             texture_roles[texture_index] = role
+        if material.get("alphaMode", "OPAQUE") == "MASK":
+            base_texture = uses[0][0]
+            cutoff = float(material.get("alphaCutoff", 0.5))
+            if not math.isfinite(cutoff) or not 0.0 <= cutoff <= 1.0:
+                raise CompileError(f"material[{material_index}] has an invalid alphaCutoff")
+            if base_texture >= 0:
+                previous = texture_cutoffs[base_texture]
+                if previous is not None and abs(previous - cutoff) > (0.5 / 255.0):
+                    raise CompileError(
+                        f"texture[{base_texture}] is reused with conflicting alpha cutoffs"
+                    )
+                texture_cutoffs[base_texture] = cutoff
 
     texture_data = bytearray()
     texture_records = []

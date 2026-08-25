@@ -2,6 +2,7 @@
 
 #include "fast3d/gfx_mipgen.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -127,7 +128,9 @@ int mdkr_modern_render_asset_init(MdkrModernRenderAsset *render,
         int width;
         int height;
         int components;
+        int cutout_threshold = -1;
         uint8_t *rgba;
+        uint32_t material_index;
         (void)mdkr_modern_character_asset_texture(asset, index, &source);
         if (source.mime != 1u) {
             mdkr_modern_render_asset_shutdown(render);
@@ -162,7 +165,30 @@ int mdkr_modern_render_asset_init(MdkrModernRenderAsset *render,
                 return 0;
             }
         }
-        if (!((source.flags & 4u) != 0u
+        for (material_index = 0u; material_index < material_section->count;
+             material_index++) {
+            const struct GfxModernMaterial *material =
+                &render->materials[material_index];
+            if ((material->flags & 3u) == 1u &&
+                material->texture[0] == (int)index) {
+                int threshold = (int)lroundf(material->alpha_cutoff * 255.0f);
+                if (threshold < 0) threshold = 0;
+                if (threshold > 255) threshold = 255;
+                if (cutout_threshold >= 0 && cutout_threshold != threshold) {
+                    mdkr_modern_render_asset_shutdown(render);
+                    set_error(error, error_size,
+                              "one base texture uses conflicting alpha cutoffs");
+                    return 0;
+                }
+                cutout_threshold = threshold;
+            }
+        }
+        if (!(cutout_threshold >= 0
+                  ? gfx_mip_build_cutout(
+                        rgba, width, height,
+                        render->decoded[index].mip_scratch, mip_bytes,
+                        (uint8_t)cutout_threshold, &chain)
+                  : (source.flags & 4u) != 0u
                   ? gfx_mip_build_normal(
                         rgba, width, height,
                         render->decoded[index].mip_scratch, mip_bytes, &chain)
