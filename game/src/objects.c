@@ -6074,7 +6074,10 @@ void render_3d_model(Object *obj) {
                 racerObj->vehicleIDPrev)) {
             char modernError[192];
             (void)mdkr_modern_character_emit(
-                racerObj->playerIndex, &gObjectCurrDisplayList,
+                racerObj->playerIndex,
+                gSceneDrawDistanceValid ? gSceneDrawDistance
+                                        : obj->distanceToCamera,
+                &gObjectCurrDisplayList,
                 modernError, sizeof(modernError));
         }
 #endif

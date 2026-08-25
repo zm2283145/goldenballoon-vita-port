@@ -116,6 +116,7 @@ struct GfxModernSkinnedDraw {
      * presentation transform. Column-major, applied after skinning and before
      * the display-list object's MVP. */
     float model_matrix[16];
+    float normal_matrix[16]; /* inverse-transpose(model), column-major */
     const float *bone_matrices; /* bone_count column-major mat4 values */
     uint32_t bone_count;
     float light_direction[3];   /* normalized in asset/model space */

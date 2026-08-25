@@ -444,6 +444,8 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
 
     nodes = _array(document, "nodes")
     parents = [-1] * len(nodes)
+    node_lods = [0] * len(nodes)
+    lod_assigned: set[int] = set()
     for parent_index, node in enumerate(nodes):
         if not isinstance(node, dict):
             raise CompileError(f"node[{parent_index}] must be an object")
@@ -453,6 +455,23 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             if parents[child] != -1:
                 raise CompileError(f"node[{child}] has multiple parents")
             parents[child] = parent_index
+        extensions = node.get("extensions", {})
+        lod_extension = extensions.get("MSFT_lod") if isinstance(extensions, dict) else None
+        if lod_extension is not None:
+            ids = lod_extension.get("ids") if isinstance(lod_extension, dict) else None
+            if not isinstance(ids, list) or not ids or len(ids) > 3:
+                raise CompileError(f"node[{parent_index}] has an invalid MSFT_lod chain")
+            for level, lod_node in enumerate(ids, start=1):
+                if (
+                    not isinstance(lod_node, int)
+                    or lod_node < 0
+                    or lod_node >= len(nodes)
+                    or lod_node == parent_index
+                    or lod_node in lod_assigned
+                ):
+                    raise CompileError(f"node[{parent_index}] MSFT_lod target is invalid or reused")
+                node_lods[lod_node] = level
+                lod_assigned.add(lod_node)
     node_records = []
     node_names: dict[str, int] = {}
     for index, node in enumerate(nodes):
@@ -539,7 +558,8 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         for first_vertex, vertex_count, first_index, index_count, material in mesh_primitive_records[mesh_index]:
             primitive_records.append((first_vertex, vertex_count, first_index, index_count,
                                       material if material >= 0 else 0xFFFFFFFF,
-                                      node_index, skin if skin >= 0 else 0xFFFFFFFF, 0))
+                                      node_index, skin if skin >= 0 else 0xFFFFFFFF,
+                                      node_lods[node_index]))
     if not primitive_records:
         raise CompileError("no scene node instantiates a mesh")
 
@@ -765,6 +785,7 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         "indices": len(indices_output),
         "triangles": len(indices_output) // 3,
         "primitives": len(primitive_records),
+        "lod_levels": max(node_lods, default=0) + 1,
         "materials": len(material_records),
         "textures": len(texture_records),
         "nodes": len(node_records),

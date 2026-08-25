@@ -36,6 +36,8 @@ uint32_t gfx_modern_character_register_draw(
     for (component = 0u; component < 16u; component++) {
         require(isfinite(draw->model_matrix[component]),
                 "runtime model transform is finite");
+        require(isfinite(draw->normal_matrix[component]),
+                "runtime normal transform is finite");
     }
     return ++registered_draws;
 }
@@ -193,7 +195,7 @@ int main(int argc, char **argv) {
     require(mdkr_modern_character_tick(0, "race.boost", 0.25f,
                                        error, sizeof(error)),
             "runtime semantic uses package fallback when optional state is absent");
-    require(mdkr_modern_character_emit(0, &command_cursor,
+    require(mdkr_modern_character_emit(0, 0.0f, &command_cursor,
                                        error, sizeof(error)),
             error);
     require(command_cursor == commands + 1 && registered_draws == 1u,

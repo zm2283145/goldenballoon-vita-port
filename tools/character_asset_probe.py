@@ -53,6 +53,7 @@ SUPPORTED_REQUIRED_EXTENSIONS = {
     "KHR_materials_specular",
     "KHR_mesh_quantization",
     "KHR_texture_basisu",
+    "MSFT_lod",
 }
 GAMEPLAY_DONORS = {
     "banjo", "bumper", "conker", "diddy", "drumstick",

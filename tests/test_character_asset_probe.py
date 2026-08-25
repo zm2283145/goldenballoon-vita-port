@@ -30,7 +30,24 @@ def _align(data: bytearray, alignment: int = 4) -> None:
     data.extend(b"\0" * ((-len(data)) % alignment))
 
 
-def make_animated_glb(external_buffer: bool = False) -> bytes:
+def _compiled_sections(compiled: bytes) -> dict[int, dict[str, int]]:
+    section_count = struct.unpack_from("<I", compiled, 56)[0]
+    sections: dict[int, dict[str, int]] = {}
+    for index in range(section_count):
+        kind, flags, offset, size, count, stride = struct.unpack_from(
+            "<IIQQII", compiled, 64 + index * compiler.MDKC_SECTION_ENTRY_BYTES
+        )
+        sections[kind] = {
+            "flags": flags,
+            "offset": offset,
+            "size": size,
+            "count": count,
+            "stride": stride,
+        }
+    return sections
+
+
+def make_animated_glb(external_buffer: bool = False, with_lod: bool = False) -> bytes:
     binary = bytearray()
     views: list[dict[str, int]] = []
     accessors: list[dict[str, object]] = []
@@ -140,6 +157,13 @@ def make_animated_glb(external_buffer: bool = False) -> bytes:
         "accessors": accessors,
         "buffers": [{"byteLength": len(binary)}],
     }
+    if with_lod:
+        document["extensionsUsed"] = ["MSFT_lod"]
+        document["nodes"][2]["extensions"] = {"MSFT_lod": {"ids": [3]}}
+        document["nodes"].append(
+            {"name": "character_lod1", "mesh": 1, "skin": 0}
+        )
+        document["meshes"].append(document["meshes"][0].copy())
     if external_buffer:
         document["buffers"][0]["uri"] = "mesh.bin"
     json_chunk = json.dumps(document, separators=(",", ":")).encode("utf-8")
@@ -189,6 +213,21 @@ class CharacterAssetProbeTests(unittest.TestCase):
     def test_external_resource_is_rejected(self) -> None:
         report = probe.inspect_glb_bytes(make_animated_glb(external_buffer=True), require_character=True)
         self.assertTrue(any("external" in error for error in report["errors"]))
+
+    def test_msft_lod_chain_compiles_to_distinct_primitive_levels(self) -> None:
+        compiled, report = compiler.compile_character(
+            make_animated_glb(with_lod=True), make_manifest(), bytes(range(32))
+        )
+        self.assertEqual(2, report["lod_levels"])
+        sections = _compiled_sections(compiled)
+        primitive = sections[compiler.SECTION_PRIMITIVES]
+        stride = struct.calcsize(compiler.PRIMITIVE_FORMAT)
+        first = struct.unpack_from(compiler.PRIMITIVE_FORMAT, compiled, primitive["offset"])
+        second = struct.unpack_from(
+            compiler.PRIMITIVE_FORMAT, compiled, primitive["offset"] + stride
+        )
+        self.assertEqual(0, first[7])
+        self.assertEqual(1, second[7])
 
     def test_package_is_deterministic_and_verifies(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

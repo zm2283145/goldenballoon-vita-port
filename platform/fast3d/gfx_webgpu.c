@@ -522,9 +522,9 @@ static uint32_t   s_modern_ubo_gen  = 0;   /* bumped on (re)create; stamps cache
  * transform/material/fog/light parameters followed by 128 mat4 skin entries.
  * Slots are 256-byte aligned and never rewritten within a frame. */
 #define WGPU_SKINNED_MAX_BONES 128u
-#define WGPU_SKINNED_UNIFORM_FLOATS (56u + WGPU_SKINNED_MAX_BONES * 16u)
+#define WGPU_SKINNED_UNIFORM_FLOATS (72u + WGPU_SKINNED_MAX_BONES * 16u)
 #define WGPU_SKINNED_UNIFORM_BYTES (WGPU_SKINNED_UNIFORM_FLOATS * sizeof(float))
-#define WGPU_SKINNED_SLOT_BYTES 8448u
+#define WGPU_SKINNED_SLOT_BYTES 8704u
 #define WGPU_SKINNED_UBO_INIT 16
 static WGPUBuffer s_skinned_ubo = NULL;
 static int s_skinned_ubo_cap = 0;
@@ -8598,7 +8598,7 @@ static const char *kSkinnedWGSL =
     " @location(0) pos:vec3<f32>, @location(1) nrm:vec3<f32>,\n"
     " @location(2) tan:vec4<f32>, @location(3) uv:vec2<f32>,\n"
     " @location(4) joints:vec4<u32>, @location(5) weights:vec4<f32> };\n"
-    "struct U { mvp:mat4x4<f32>, model:mat4x4<f32>, fog:vec4<f32>, fogParams:vec4<f32>,\n"
+    "struct U { mvp:mat4x4<f32>, model:mat4x4<f32>, normalModel:mat4x4<f32>, fog:vec4<f32>, fogParams:vec4<f32>,\n"
     " light:vec4<f32>, base:vec4<f32>, emissiveMetal:vec4<f32>,\n"
     " material:vec4<f32>, bones:array<mat4x4<f32>,128> };\n"
     "@group(0) @binding(0) var<uniform> u:U;\n"
@@ -8620,8 +8620,8 @@ static const char *kSkinnedWGSL =
     "  fogA=clamp(coord*u.fogParams.x+u.fogParams.y,0.0,255.0)/255.0;}\n"
     " if(u.fogParams.w>0.5 && clip.z>clip.w){clip.z=clip.w;}\n"
     " clip.z=(clip.z+clip.w)*0.5; var o:VOut; o.position=clip; o.uv=v.uv;\n"
-    " o.nrm=normalize((u.model*skin*vec4<f32>(v.nrm,0.0)).xyz);\n"
-    " o.tan=normalize((u.model*skin*vec4<f32>(v.tan.xyz,0.0)).xyz);\n"
+    " o.nrm=normalize((u.normalModel*skin*vec4<f32>(v.nrm,0.0)).xyz);\n"
+    " o.tan=normalize((u.normalModel*skin*vec4<f32>(v.tan.xyz,0.0)).xyz);\n"
     " o.handed=v.tan.w; o.fogA=fogA; return o; }\n"
     "fn shade(v:VOut)->vec4<f32>{\n"
     " let baseSample=textureSample(baseTex,texSampler,v.uv);\n"
@@ -9018,22 +9018,23 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
     if (resources == NULL || !wgpu_skinned_ubo_reserve(s_skinned_ubo_used + 1)) return;
     memcpy(uniform, mvp, sizeof(float) * 16u);
     memcpy(&uniform[16], draw->model_matrix, sizeof(float) * 16u);
-    uniform[32] = fog_color[0]; uniform[33] = fog_color[1]; uniform[34] = fog_color[2];
-    uniform[36] = fog_mul; uniform[37] = fog_offset; uniform[38] = fog_enabled ? 1.0f : 0.0f;
-    uniform[39] = s_unclipped_depth_supported ? 0.0f : 1.0f;
-    uniform[40] = draw->light_direction[0]; uniform[41] = draw->light_direction[1];
-    uniform[42] = draw->light_direction[2]; uniform[43] = draw->ambient;
-    memcpy(&uniform[44], material->base_color, sizeof(float) * 4u);
-    memcpy(&uniform[48], material->emissive, sizeof(float) * 3u);
-    uniform[51] = material->metallic;
-    uniform[52] = material->roughness; uniform[53] = material->normal_scale;
-    uniform[54] = material->occlusion_strength; uniform[55] = material->alpha_cutoff;
+    memcpy(&uniform[32], draw->normal_matrix, sizeof(float) * 16u);
+    uniform[48] = fog_color[0]; uniform[49] = fog_color[1]; uniform[50] = fog_color[2];
+    uniform[52] = fog_mul; uniform[53] = fog_offset; uniform[54] = fog_enabled ? 1.0f : 0.0f;
+    uniform[55] = s_unclipped_depth_supported ? 0.0f : 1.0f;
+    uniform[56] = draw->light_direction[0]; uniform[57] = draw->light_direction[1];
+    uniform[58] = draw->light_direction[2]; uniform[59] = draw->ambient;
+    memcpy(&uniform[60], material->base_color, sizeof(float) * 4u);
+    memcpy(&uniform[64], material->emissive, sizeof(float) * 3u);
+    uniform[67] = material->metallic;
+    uniform[68] = material->roughness; uniform[69] = material->normal_scale;
+    uniform[70] = material->occlusion_strength; uniform[71] = material->alpha_cutoff;
     for (uint32_t bone = 0u; bone < WGPU_SKINNED_MAX_BONES; bone++) {
-        float *matrix = &uniform[56u + bone * 16u];
+        float *matrix = &uniform[72u + bone * 16u];
         matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
     }
     if (draw->bone_matrices != NULL && draw->bone_count != 0u) {
-        memcpy(&uniform[56], draw->bone_matrices,
+        memcpy(&uniform[72], draw->bone_matrices,
                (size_t)draw->bone_count * 16u * sizeof(float));
     }
     slot = (uint32_t)s_skinned_ubo_used++;

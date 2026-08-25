@@ -64,6 +64,30 @@ static void matrix_multiply(const float left[16], const float right[16],
     memcpy(output, result, sizeof(result));
 }
 
+static int matrix_normal_transform(const float input[16], float output[16]) {
+    float a00 = input[0], a01 = input[4], a02 = input[8];
+    float a10 = input[1], a11 = input[5], a12 = input[9];
+    float a20 = input[2], a21 = input[6], a22 = input[10];
+    float determinant = a00 * (a11 * a22 - a12 * a21) -
+                        a01 * (a10 * a22 - a12 * a20) +
+                        a02 * (a10 * a21 - a11 * a20);
+    float inverse;
+    if (!isfinite(determinant) || fabsf(determinant) < 1.0e-12f) return 0;
+    inverse = 1.0f / determinant;
+    matrix_identity(output);
+    /* Inverse transpose of the upper-left 3x3, stored column-major. */
+    output[0] = (a11 * a22 - a12 * a21) * inverse;
+    output[1] = (a02 * a21 - a01 * a22) * inverse;
+    output[2] = (a01 * a12 - a02 * a11) * inverse;
+    output[4] = (a12 * a20 - a10 * a22) * inverse;
+    output[5] = (a00 * a22 - a02 * a20) * inverse;
+    output[6] = (a02 * a10 - a00 * a12) * inverse;
+    output[8] = (a10 * a21 - a11 * a20) * inverse;
+    output[9] = (a01 * a20 - a00 * a21) * inverse;
+    output[10] = (a00 * a11 - a01 * a10) * inverse;
+    return 1;
+}
+
 static void definition_matrix(const MdkrModernCharacterDefinition *definition,
                               float output[16]) {
     float x = definition->rotation[0];
@@ -295,20 +319,56 @@ int mdkr_modern_character_tick(int player, const char *semantic,
     return mdkr_modern_pose_advance(&slot->pose, seconds, error, error_size);
 }
 
-int mdkr_modern_character_emit(int player, Gfx **display_list,
+int mdkr_modern_character_emit(int player, float view_distance,
+                               Gfx **display_list,
                                char *error, size_t error_size) {
     MdkrModernRuntimePlayer *slot;
     MdkrModernRuntimePool *pool;
     float package_transform[16];
     uint32_t primitive_index;
+    uint32_t selected_lod;
+    uint32_t available_lod = 0u;
+    uint32_t emitted = 0u;
     if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
         display_list == NULL || *display_list == NULL ||
         (slot = &s_players[player])->pool < 0 ||
-        !gfx_modern_character_supported()) {
+        !gfx_modern_character_supported() || !isfinite(view_distance)) {
         set_error(error, error_size, "modern character draw is unavailable");
         return 0;
     }
     pool = &s_pools[slot->pool];
+    for (primitive_index = 0u;
+         primitive_index < pool->render.gpu.primitive_count;
+         primitive_index++) {
+        if (pool->render.gpu.primitives[primitive_index].lod > available_lod) {
+            available_lod = pool->render.gpu.primitives[primitive_index].lod;
+        }
+    }
+    if (view_distance < 0.0f) view_distance = 0.0f;
+    selected_lod = view_distance >= 2400.0f ? 3u
+        : view_distance >= 1300.0f ? 2u
+        : view_distance >= 650.0f ? 1u : 0u;
+    {
+        int biased = (int)selected_lod - (int)lroundf(pool->definition.lod_bias);
+        if (biased < 0) biased = 0;
+        if ((uint32_t)biased > available_lod) biased = (int)available_lod;
+        selected_lod = (uint32_t)biased;
+    }
+    /* Sparse authoring is legal: select the closest more-detailed complete
+     * level rather than drawing nothing at an absent distance band. */
+    for (;;) {
+        int found = 0;
+        for (primitive_index = 0u;
+             primitive_index < pool->render.gpu.primitive_count;
+             primitive_index++) {
+            if (pool->render.gpu.primitives[primitive_index].lod == selected_lod) {
+                found = 1;
+                break;
+            }
+        }
+        if (found || selected_lod == 0u) break;
+        selected_lod--;
+    }
     definition_matrix(&pool->definition, package_transform);
     for (primitive_index = 0u;
          primitive_index < pool->render.gpu.primitive_count;
@@ -317,6 +377,7 @@ int mdkr_modern_character_emit(int player, Gfx **display_list,
         struct GfxModernSkinnedDraw draw;
         const float *node_world;
         memset(&draw, 0, sizeof(draw));
+        if (pool->render.gpu.primitives[primitive_index].lod != selected_lod) continue;
         (void)mdkr_modern_character_asset_primitive(
             &pool->asset, primitive_index, &primitive);
         node_world = mdkr_modern_pose_node_matrix(&slot->pose,
@@ -328,6 +389,11 @@ int mdkr_modern_character_emit(int player, Gfx **display_list,
         draw.asset = &pool->render.gpu;
         draw.primitive = primitive_index;
         matrix_multiply(package_transform, node_world, draw.model_matrix);
+        if (!matrix_normal_transform(draw.model_matrix, draw.normal_matrix)) {
+            set_error(error, error_size,
+                      "character primitive has a singular normal transform");
+            return 0;
+        }
         draw.light_direction[0] = 0.35f;
         draw.light_direction[1] = -0.85f;
         draw.light_direction[2] = 0.38f;
@@ -344,16 +410,19 @@ int mdkr_modern_character_emit(int player, Gfx **display_list,
             draw.bone_matrices = slot->palette;
             draw.bone_count = skin.joint_count;
         }
-        slot->tokens[primitive_index] =
+        slot->tokens[emitted] =
             gfx_modern_character_register_draw(&draw);
-        if (slot->tokens[primitive_index] == 0u) {
+        if (slot->tokens[emitted] == 0u) {
             set_error(error, error_size, "renderer refused a modern character command");
             return 0;
         }
+        emitted++;
     }
-    for (primitive_index = 0u;
-         primitive_index < pool->render.gpu.primitive_count;
-         primitive_index++) {
+    if (emitted == 0u) {
+        set_error(error, error_size, "selected character LOD contains no primitives");
+        return 0;
+    }
+    for (primitive_index = 0u; primitive_index < emitted; primitive_index++) {
         gMoveWd((*display_list)++, G_MW_DKR_MODERN_CHARACTER, 0,
                 slot->tokens[primitive_index]);
     }

@@ -37,7 +37,8 @@ int mdkr_modern_character_tick(int player, const char *semantic,
 
 /* Emit at the current object matrix in the authored display list. Returns one
  * only when the complete selected LOD was registered and emitted. */
-int mdkr_modern_character_emit(int player, Gfx **display_list,
+int mdkr_modern_character_emit(int player, float view_distance,
+                               Gfx **display_list,
                                char *error, size_t error_size);
 
 #ifdef __cplusplus
