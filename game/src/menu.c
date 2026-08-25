@@ -16505,6 +16505,41 @@ s32 is_in_tracks_mode(void) {
     return gIsInTracksMode;
 }
 
+#if MDKR_ENABLE_ONLINE_BETA
+/**
+ * Online direct-boot: set the menu-owned globals that the front-end's
+ * tracks-mode versus route (Character Select -> Track Select -> GO) would leave
+ * behind just before load_next_ingame_level(). The engine can then start the
+ * online race without ever entering, rendering, or accepting input on any menu.
+ *
+ * Per-seat characters and vehicles already come from the online manifest through
+ * get_character_id_from_slot() / get_player_selected_vehicle(); this fills in the
+ * mode/track/count state those readers do not cover. gNumberOfActivePlayers is
+ * the CANONICAL racer count (not the local viewport count): it drives the
+ * fixed-tick authority layout that must be identical on every endpoint, while
+ * the number of locally presented viewports comes from the roster's
+ * viewport_count during the race (tracks.c). This matches, exactly, the state
+ * the proven race_2p_split.txt menu walk produced.
+ */
+void menu_online_versus_race_setup(s32 trackId, s32 canonicalPlayers) {
+    gIsInTracksMode = TRUE;
+    gIsInAdventureTwo = FALSE;
+    gIsInTwoPlayerAdventure = FALSE;
+    set_time_trial_enabled(FALSE);
+    gNumberOfActivePlayers = canonicalPlayers;
+    /* Racer-count select maps 0->2, 1->4, 2->6 racers. Pick the smallest bucket
+     * that seats every canonical racer (v1 = 2 players => bucket 0, no AI). */
+    gMultiplayerSelectedNumberOfRacers =
+        canonicalPlayers > 4 ? 2 : (canonicalPlayers > 2 ? 1 : 0);
+    gMultiplayerSelectedNumberOfRacersCopy = gMultiplayerSelectedNumberOfRacers;
+    reset_character_id_slots();
+    gTrackIdForPreview = trackId;
+    gTrackIdToLoad = trackId;
+    gTrackSpecifiedWithTrackIdToLoad = 1;
+    set_level_default_vehicle((Vehicle) get_player_selected_vehicle(PLAYER_ONE));
+}
+#endif
+
 /**
  * Sets the active & unlocked magic code flags.
  */

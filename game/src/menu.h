@@ -627,6 +627,9 @@ s8 *charselect_status(void);
 s8 get_player_character(s32 controllerIndex);
 void enable_tracks_mode(s32 boolean);
 s32 is_in_tracks_mode(void);
+#if MDKR_ENABLE_ONLINE_BETA
+void menu_online_versus_race_setup(s32 trackId, s32 canonicalPlayers);
+#endif
 void set_magic_code_flags(s32 flags);
 s32 get_filtered_cheats(void);
 s32 get_number_of_active_players(void);

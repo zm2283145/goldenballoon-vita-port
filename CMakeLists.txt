@@ -589,6 +589,16 @@ target_compile_definitions(${MDKR_TARGET} PRIVATE
     SDL_MAIN_HANDLED
 )
 
+# The online-beta direct-boot seam (mode_intro -> straight into the online race)
+# lives in the game/decomp translation units that compile into ${MDKR_TARGET}.
+# It is entirely #if MDKR_ENABLE_ONLINE_BETA, so a normal (beta OFF) build never
+# sees the macro and the engine object stays byte-identical to the release build.
+# Beta-only, matching the mdkr64_app definition below; no PLATFORM_SOURCES or
+# decomp TU keys on this macro today, so turning it on activates only that seam.
+if(MDKR_ENABLE_ONLINE_BETA)
+    target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_ENABLE_ONLINE_BETA=1)
+endif()
+
 # --- Version stamping (PK-1, macOS packaging) ------------------------------
 # Single source of truth for the packaged release version. Wired to a real
 # surface (`mdkr64 --version`, platform/main_pc.c) and to the app bundle's

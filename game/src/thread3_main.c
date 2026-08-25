@@ -2158,6 +2158,43 @@ void set_frame_blackout_timer(void) {
 /**
  * Give the player 8 frames to enter the CPak menu with start, then load the intro sequence.
  */
+#if MDKR_ENABLE_ONLINE_BETA
+/**
+ * Boot straight into the online race described by the installed launch
+ * descriptor, bypassing the entire single-player front-end (title screen,
+ * Wizpig hub, Adventure/Time-Trial select, tracks menu, in-game character
+ * select). The player never drives or even sees those screens.
+ *
+ * This reuses the game's own tracks-mode versus race-start rather than
+ * re-implementing it: menu_online_versus_race_setup() lays down the same
+ * mode/track/count globals the menu walk left behind, init_racer_headers()
+ * bakes the manifest's per-seat characters into the racer table, and the
+ * ordinary in-game loader (load_next_ingame_level -> load_level_game ->
+ * level_load) does the rest. gGameCurrentCutscene stays CUTSCENE_NONE (0) so
+ * the launch-descriptor seam in level_load() applies the manifest track/vehicle.
+ */
+static void mdkr_online_boot_direct_race(
+    const MdkrMatchLaunchDescriptorV1 *launch) {
+    s32 canonicalPlayers = (s32) mdkr_net_roster_runtime_canonical_player_count(2u);
+    s32 trackId = (s32) launch->manifest.track_id;
+
+    if (canonicalPlayers < 1) {
+        canonicalPlayers = 1;
+    }
+
+    fprintf(stderr, "[online-boot] direct race: track=%d players=%d\n", trackId,
+            canonicalPlayers);
+
+    menu_online_versus_race_setup(trackId, canonicalPlayers);
+    init_racer_headers();
+
+    gGameCurrentEntrance = 0;
+    gGameCurrentCutscene = CUTSCENE_NONE;
+    gGameMode = GAMEMODE_INGAME;
+    load_next_ingame_level(canonicalPlayers, -1, get_level_default_vehicle());
+}
+#endif
+
 void mode_intro(void) {
     s32 i;
     s32 buttonInputs = 0;
@@ -2170,6 +2207,19 @@ void mode_intro(void) {
     }
     sBootDelayTimer++;
     if (sBootDelayTimer >= 8) {
+#if MDKR_ENABLE_ONLINE_BETA
+        /* A validated online roster + launch descriptor is installed only by the
+         * beta online-wiring layer, and only for a real online match. When one
+         * is present, skip the front-end entirely and load the manifest race. */
+        {
+            const MdkrMatchLaunchDescriptorV1 *launch =
+                mdkr_net_roster_runtime_launch_descriptor();
+            if (launch != NULL && mdkr_net_roster_runtime_active()) {
+                mdkr_online_boot_direct_race(launch);
+                return;
+            }
+        }
+#endif
         load_menu_with_level_background(MENU_BOOT, ASSET_LEVEL_OPTIONSBACKGROUND, 2);
     }
 }
