@@ -209,14 +209,27 @@ game never saw — check the directory location above.
 - Override textures upload a single mip level. A pack texture replacing a
   mipmapped original will alias at distance.
 
-## What does not work yet
+## Experimental custom characters
 
-Stated plainly so you do not spend an evening on it:
+The custom-character branch contains a WebGPU-only vertical slice. The stable
+author handoff is a self-contained GLB 2.0 plus a declarative manifest and
+license text, packaged as `.mdkrchar`. It does not require a second ROM. Install
+and removal are currently developer CLI operations; Settings can rescan and
+select installed caches for P1-P4.
 
-- **Custom models** and **custom characters**. Not implemented.
+```sh
+python3 tools/character_asset_probe.py pack \
+  --model model.glb --manifest manifest.json --license LICENSE.txt \
+  --output character.mdkrchar
+python3 tools/character_package_manager.py \
+  --directory characters install character.mdkrchar
+```
 
-The scope and order of the remaining work is in
-[`sprints/S1-content-pipeline.md`](sprints/S1-content-pipeline.md).
+Only the Diddy vehicle-model family has an exact qualified replacement seam.
+Other donor declarations remain visible but unavailable, and OpenGL keeps the
+retail visual. Packages are local-only; the game does not transfer them to
+peers. See [`architecture/custom-character-pipeline.md`](architecture/custom-character-pipeline.md)
+for the format, limits, security model, current proof and remaining gates.
 
 ## For contributors
 

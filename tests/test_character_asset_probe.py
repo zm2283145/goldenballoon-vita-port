@@ -264,6 +264,14 @@ class CharacterAssetProbeTests(unittest.TestCase):
         self.assertEqual(2, first_report["joints"])
         self.assertEqual(1, first_report["animations"])
         self.assertEqual(2, first_report["sockets"])
+        self.assertEqual(4, first_report["decoded_texture_bytes"])
+
+    def test_compiler_rejects_png_dimensions_before_decode(self) -> None:
+        header = (b"\x89PNG\r\n\x1a\n" + struct.pack(
+            ">I4sII", 13, b"IHDR", compiler.MAX_TEXTURE_DIMENSION + 1, 1
+        ))
+        with self.assertRaisesRegex(compiler.CompileError, "dimensions"):
+            compiler._png_dimensions(header, 0)
 
     def test_compiler_rejects_missing_socket_node(self) -> None:
         manifest = make_manifest()

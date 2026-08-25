@@ -137,6 +137,17 @@ int mdkr_modern_render_asset_init(MdkrModernRenderAsset *render,
             set_error(error, error_size, "KTX2 texture decode is unavailable in this build");
             return 0;
         }
+        if (!stbi_info_from_memory(texture_data->data + source.data_offset,
+                                   (int)source.data_size, &width, &height,
+                                   &components) ||
+            width <= 0 || height <= 0 ||
+            width > MODERN_TEXTURE_DIMENSION_MAX ||
+            height > MODERN_TEXTURE_DIMENSION_MAX) {
+            mdkr_modern_render_asset_shutdown(render);
+            set_error(error, error_size,
+                      "character PNG failed bounded header inspection");
+            return 0;
+        }
         rgba = stbi_load_from_memory(texture_data->data + source.data_offset,
                                     (int)source.data_size, &width, &height,
                                     &components, 4);

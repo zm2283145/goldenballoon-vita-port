@@ -8667,6 +8667,10 @@ struct WgpuSkinnedEntry {
 #define WGPU_SKINNED_CACHE_MAX 16
 static struct WgpuSkinnedEntry s_skinned_cache[WGPU_SKINNED_CACHE_MAX];
 static int s_skinned_count = 0;
+static uint64_t s_skinned_asset_uploads = 0u;
+static uint64_t s_skinned_draws = 0u;
+static uint64_t s_skinned_triangles = 0u;
+static uint64_t s_skinned_refused_draws = 0u;
 
 static void wgpu_skinned_entry_release(struct WgpuSkinnedEntry *entry) {
     uint32_t index;
@@ -8950,6 +8954,7 @@ static struct WgpuSkinnedEntry *wgpu_skinned_resources(
         if (entry->views[texture_index] == NULL) goto fail;
     }
     s_skinned_count++;
+    s_skinned_asset_uploads++;
     return entry;
 fail:
     wgpu_skinned_entry_release(entry);
@@ -9006,16 +9011,28 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
     uint32_t slot;
     if (!s_ready || !s_frame_open || s_pass == NULL || draw == NULL ||
         (asset = draw->asset) == NULL || draw->primitive >= asset->primitive_count ||
-        draw->bone_count > WGPU_SKINNED_MAX_BONES) return;
+        draw->bone_count > WGPU_SKINNED_MAX_BONES) {
+        s_skinned_refused_draws++;
+        return;
+    }
     primitive = &asset->primitives[draw->primitive];
     if (primitive->material >= asset->material_count || primitive->index_count == 0u ||
         primitive->first_index > asset->index_count ||
-        primitive->index_count > asset->index_count - primitive->first_index) return;
+        primitive->index_count > asset->index_count - primitive->first_index) {
+        s_skinned_refused_draws++;
+        return;
+    }
     material = &asset->materials[primitive->material];
     pipeline = wgpu_skinned_pipeline(material->flags);
-    if (pipeline == NULL || !wgpu_skinned_fallbacks()) return;
+    if (pipeline == NULL || !wgpu_skinned_fallbacks()) {
+        s_skinned_refused_draws++;
+        return;
+    }
     resources = wgpu_skinned_resources(asset);
-    if (resources == NULL || !wgpu_skinned_ubo_reserve(s_skinned_ubo_used + 1)) return;
+    if (resources == NULL || !wgpu_skinned_ubo_reserve(s_skinned_ubo_used + 1)) {
+        s_skinned_refused_draws++;
+        return;
+    }
     memcpy(uniform, mvp, sizeof(float) * 16u);
     memcpy(&uniform[16], draw->model_matrix, sizeof(float) * 16u);
     memcpy(&uniform[32], draw->normal_matrix, sizeof(float) * 16u);
@@ -9042,7 +9059,10 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
     wgpuQueueWriteBuffer(s_queue, s_skinned_ubo, dynamic_offset,
                          uniform, sizeof(uniform));
     bind_group = wgpu_skinned_material_bg(resources, asset, primitive->material);
-    if (bind_group == NULL) return;
+    if (bind_group == NULL) {
+        s_skinned_refused_draws++;
+        return;
+    }
     wgpuRenderPassEncoderSetPipeline(s_pass, pipeline);
     wgpuRenderPassEncoderSetBindGroup(s_pass, 0u, bind_group, 1u, &dynamic_offset);
     s_pipe_applied = pipeline;
@@ -9054,6 +9074,8 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
                                         (uint64_t)asset->index_count * 4u);
     wgpuRenderPassEncoderDrawIndexed(s_pass, primitive->index_count, 1u,
                                      primitive->first_index, 0, 0u);
+    s_skinned_draws++;
+    s_skinned_triangles += primitive->index_count / 3u;
 }
 
 /* WebGPU clip space is 0..1 (like Metal/D3D, unlike GL's -1..1). The frontend
@@ -9507,6 +9529,17 @@ static void wgpu_shutdown(void) {
             "pendingPipelines=%d liveChildren=0 cpuArrays=0\n",
             owned_roots ? "owned" : "borrowed",
             shaders, textures, pending);
+    fprintf(stderr,
+            "[WGPU-MODERN-CHARACTER] assetUploads=%llu draws=%llu "
+            "triangles=%llu refusedDraws=%llu\n",
+            (unsigned long long)s_skinned_asset_uploads,
+            (unsigned long long)s_skinned_draws,
+            (unsigned long long)s_skinned_triangles,
+            (unsigned long long)s_skinned_refused_draws);
+    s_skinned_asset_uploads = 0u;
+    s_skinned_draws = 0u;
+    s_skinned_triangles = 0u;
+    s_skinned_refused_draws = 0u;
     fprintf(stderr,
             "[WORLD-SHADOW] backend=webgpu attempted=%llu complete=%llu "
             "fallback=%llu resourceFailures=%llu latched=%d\n",

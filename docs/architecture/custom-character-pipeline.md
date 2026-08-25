@@ -1,8 +1,10 @@
 # Custom character asset pipeline spike
 
-Status: pipeline contract and ROM-free tooling proof, 2026-08-25. This document
-does not approve a bundled character asset and does not claim that the current
-renderer can display the proposed package.
+Status: implemented vertical-slice spike, 2026-08-25. The source contract,
+compiler/cache, transactional local install, launcher selection, retained
+WebGPU GPU-skinned renderer, animation sampler, PBR-like materials, authored
+LODs, and one fingerprint-qualified retail donor seam are executable. This
+document does not approve or propose bundling any imported character asset.
 
 ## Decision
 
@@ -23,6 +25,33 @@ This gives three deliberately separate formats:
 | Authoring | Blender/Maya/etc.; optional FBX or DAE handoff | None | Creator and their DCC tools |
 | Portable source package | `.mdkrchar`: deterministic ZIP containing `manifest.json`, `model.glb`, and `LICENSE.txt` | Public, versioned | Community tools and launcher |
 | Runtime cache | Proposed `.mdkc`: validated, GPU-oriented sections plus a source digest | Private to an engine cache version | Import compiler and renderer |
+
+## What the spike actually implements
+
+- deterministic `.mdkrchar` build/verify and a strict JSON manifest schema;
+- a dependency-free, fail-closed COLLADA 1.4 subset adapter for one skinned
+  triangle mesh, including centimeter/Z-up conversion and embedded PNGs;
+- deterministic `.mdkc` compilation with content/compiler identity, sections,
+  tangents, animation tracks, semantics, sockets, materials and authored
+  `MSFT_lod` levels;
+- locked, transactional local install/list/remove/clean operations that retain
+  source and provenance but publish only a final validated cache filename;
+- bounded native cache loading, shared immutable render assets and per-player
+  pose instances;
+- WebGPU GPU skinning for up to 128 joints, four weights, multiple primitives,
+  directional/ambient/fog response, core metallic-roughness inputs, role-aware
+  mip generation, alpha masks, and explicit resource release/recreation;
+- a copied retained draw command and seat-socket attachment at the retail racer
+  render seam;
+- exact US/PAL Diddy car/hover/plane LOD fingerprints and driver-batch masks,
+  so replacement is atomic and vehicle/effect geometry remains authored;
+- launcher discovery, diagnostics and P1-P4 selection of installed caches.
+
+This is deliberately a vertical slice, not a claim of production readiness.
+Only the Diddy donor family is qualified, OpenGL intentionally falls back to
+the retail driver, source import/removal is still CLI-driven, portraits and
+custom roster identity are not wired, and the COLLADA adapter synthesizes a
+motionless one-second witness clip when the source has no animation.
 
 The game must not parse FBX or DAE, execute scripts from a character package,
 or put imported mesh/pose buffers in authoritative or rollback state.
@@ -134,7 +163,7 @@ A minimal manifest is:
 }
 ```
 
-The production schema should add, without changing the principles above:
+Later schema versions should add, without changing the principles above:
 
 - package version and minimum/maximum engine asset API;
 - optional creator, homepage, description, and attribution display fields;
@@ -226,8 +255,8 @@ worker should compile validated GLB into a private, versioned cache with:
 6. animation table: semantic/name hash, duration, resampled/compressed TRS tracks
    and optional morph weights;
 7. material table: factors, alpha mode, double-sided flag and texture indices;
-8. texture table: KTX2/BasisU payloads with complete mip chains, dimensions,
-   role/color-space metadata and decoded-size accounting;
+8. texture table: v1 PNG payloads with generated complete mip chains,
+   dimensions, role/color-space metadata and decoded-size accounting;
 9. provenance/diagnostic summary for the launcher, not the render loop.
 
 Cache files are disposable. A compiler/schema/backend capability change
@@ -235,11 +264,13 @@ invalidates and rebuilds them from the source package. Failed compilation is
 transactional: write a temporary file, fully validate it, then rename it into
 the cache. The last known-good cache remains available until replacement.
 
-`KHR_texture_basisu` is the preferred portable texture payload because KTX2 can
-carry mip levels and transcode to a GPU-supported block format. PNG remains a
-source fallback. `EXT_meshopt_compression` is a later source option only after
-the decoder and decompression-size gates exist; the private cache may use
-meshoptimizer directly without requiring a glTF extension at runtime.
+V1 deliberately accepts embedded PNG only. KTX2/BasisU is the preferred future
+portable texture payload because it can carry mip levels and transcode to a
+GPU-supported block format, but accepting it before a bounded transcoder exists
+would create a package that compiles and then fails at runtime. Likewise,
+`EXT_meshopt_compression` is a later source option only after the decoder and
+decompression-size gates exist; the private cache may eventually use
+meshoptimizer without requiring a glTF extension at runtime.
 
 ## Renderer scope
 
@@ -384,19 +415,15 @@ Archive inventory:
 - DAE metadata says OpenCOLLADA for 3ds Max, centimeters, Z-up, author `Ziella`;
 - the DAE has no animation channels.
 
-The legacy adapter experiment used locally built Assimp 6.0.5, glTF-Transform
-4.4.2, gltfpack 1.0.1, and Khronos Validator 2.0.0-dev.3.10:
-
-| Route | Preserved | Lost or invalid | Result |
-|---|---|---|---|
-| DAE -> Assimp GLB | 3,489 triangles, skin, four images including two normal maps | No clips; approximately 100x scale discrepancy; invalid zero tangents; external images until repacked | Can be made GLB-valid by embedding resources and removing invalid tangents, but not character-ready |
-| FBX -> Assimp GLB | 3,489 triangles, plausible meter scale, 34-joint normalized skin, two base-color images | Normal maps are lost; Windows path separators need normalization; `Take 001` has zero duration | Khronos-valid after repacking, but rejected as a character because it has no positive-duration clip |
-
-The final FBX-derived normalized GLB measured 2,444 vertices, 3,489 triangles,
-two draw primitives, two materials, two textures, one skin with 34 joints, and a
-single nine-channel zero-duration animation. The Khronos validator reported no
-errors and one skin-root warning. The MDKR policy validator correctly rejected
-it for having no animation with positive duration.
+The bounded DAE adapter preserved 3,489 triangles as 2,517 unified vertices,
+35 joints, two primitives/materials, two base-color maps and two normal maps.
+It embedded every resource and put the declared centimeter scale and Z-up to
+meter/Y-up conversion on one shared root. The policy probe consequently
+reported the true scene-world height of only 0.01448 m, rather than silently
+discarding the exporter metadata; the private manifest used an explicit 100x
+presentation scale. Because the DAE contains no animation channels, the
+adapter generated only a named one-second motionless witness clip. Authored
+COLLADA animation fails closed and must be exported as GLB from a DCC tool.
 
 This is why “the converter succeeded” is not an acceptance criterion. The two
 source representations disagree about scale, animation, and material content.
@@ -407,7 +434,7 @@ Mario Kart Tour-labelled files are redistributable.
 
 ## Proof delivered by this spike
 
-`tools/character_asset_probe.py` provides:
+The executable proof provides:
 
 - bounded, recursive ZIP inventory without extraction;
 - traversal, symlink, encrypted-member, nesting, member-count, and expanded-size
@@ -416,7 +443,13 @@ Mario Kart Tour-labelled files are redistributable.
 - GLB header/chunk parsing and an MDKR v1 geometry, skin, animation, extension,
   self-containment, and budget policy check;
 - deterministic `.mdkrchar` packaging with GLB digest and required provenance;
-- package verification.
+- package verification;
+- deterministic compilation by `tools/character_asset_compiler.py`;
+- transactional local management by `tools/character_package_manager.py`;
+- the bounded DAE convenience path in `tools/collada_to_glb.py`;
+- native `.mdkc` validation, pose sampling, GPU resource construction and
+  retained character commands in `platform/modern_character_*`;
+- actual WebGPU upload/draw and fingerprint-qualified Diddy replacement.
 
 `tests/test_character_asset_probe.py` generates a tiny license-clean GLB in
 memory with indexed geometry, a two-joint skin, PBR factors, and a one-second
@@ -425,13 +458,50 @@ bytes, round-trip verification, rejection of external GLB resources, rejection
 of missing archive provenance, and ZIP traversal protection. The generated GLB
 also passes the pinned Khronos validator with zero errors and zero warnings.
 
-This proves the portable source/package boundary. It intentionally does not
-pretend that a Python policy probe is the runtime compiler or that a triangle
-fixture proves the renderer.
+`tests/test_collada_to_glb.py` independently generates a license-clean DAE and
+proves unit/up-axis conversion, GLB policy acceptance, cache compilation, and
+fail-closed authored-animation/polylist handling. The native loader test then
+consumes the exact compiler result and covers corrupt-cache rejection, pose,
+sockets, render ownership and retained-command lifetime.
+
+The private Dixie fixture completed the same chain without contributing any
+tracked bytes: DAE -> self-contained GLB -> `.mdkrchar` -> `.mdkc` -> live race.
+The resulting cache contained 2,517 vertices, 3,489 triangles, 35 joints, two
+materials, four PNG textures and 1,922,384 decoded RGBA+mip bytes. In a scripted
+Ancient Lake WebGPU run, diagnostics recorded 1 asset upload, 1,238 complete
+model draws (4,319,382 triangles), 23,541 suppressed qualified donor batches,
+and zero refused modern draws. A private frame showed the driver attached at a
+plausible scale. The T-pose is expected: the archive has no animation channels,
+so the bounded adapter can prove plumbing only, not invent production motion.
+
+### Higher-fidelity answer and firm v1 limits
+
+There is no N64 display-list or vertex-format ceiling on this path: modern
+vertices, 32-bit indices, bone palettes and textures bypass `ObjectModel` and
+go directly to WebGPU. A substantially higher-fidelity character is therefore
+possible. The limits below are deliberate admission/performance policy, not
+legacy-engine representation blockers:
+
+| Capability | Spike v1 | What must change for a cinematic/AAA profile |
+|---|---|---|
+| Geometry | 100k triangles and 100k unique vertices per source | Profile/device-tier budgets, measured LODs, culling and GPU timing; importing a multi-million-poly sculpt directly remains inappropriate |
+| Skin | 128 joints, four linear influences, GPU skinned | Normal palettes or rejection for non-uniform animated joint scale; dual-quaternion skinning only if art requires it |
+| Textures | Embedded PNG, max 4096 per side, 512 MiB decoded with full generated mips | Bounded KTX2/BasisU transcode and GPU block compression before allowing larger sets |
+| Materials | Core PBR-like factors/maps plus DKR fog/sun/ambient; OPAQUE/MASK/BLEND | IBL, calibrated tone mapping, shadow receive/cast, transparent ordering, then optional hair/clearcoat/subsurface profiles |
+| Animation | TRS tracks, LINEAR/STEP/CUBICSPLINE, cross-fade, semantic clips | Real authored clips, previous/current pose interpolation, additive masks, root-motion policy and possibly morph/facial animation |
+| Morphs | Rejected | Cache v2 storage, bounded weight tracks and shader path |
+| LOD | Authored `MSFT_lod`, per-viewport distance bands | Projected-size thresholds, hysteresis, optional offline simplification and measured 4P targets |
+| Backends | WebGPU; retail fallback on OpenGL | Implement GL parity or formally ship the modern profile as WebGPU-only |
+
+The closest thing to a firm blocker is not polygon count. It is finishing the
+resource/performance contracts around that count: compressed textures, robust
+LOD/culling, shadow integration, animated normal correctness, and device-tier
+qualification. The spike keeps hard caps so a user asset cannot turn those
+unfinished pieces into unbounded memory or GPU work.
 
 ## Implementation plan and acceptance gates
 
-### P0 - Freeze the source contract
+### P0 - Freeze the source contract (partly complete)
 
 - Review and version the manifest schema and semantic animation/socket lists.
 - Add JSON Schema, duplicate-key detection, SPDX expression parsing, Unicode
@@ -443,7 +513,7 @@ fixture proves the renderer.
 Gate: identical inputs produce identical packages/reports on macOS, Linux,
 Windows, and wasm-capable tooling; hostile corpus is bounded and sanitizer-clean.
 
-### P1 - Static modern mesh vertical slice
+### P1 - Static modern mesh vertical slice (race seam complete for Diddy)
 
 - Add a retained native scene command and immutable resource handle.
 - Generalize `GfxModernMesh` to multiple primitives/materials, mip chains,
@@ -456,7 +526,7 @@ Gate: ROM-free generated fixture plus one license-clean reference mesh renders
 in 1P and 4P, character select, resize, device recovery, and GL fallback without
 affecting authoritative hashes.
 
-### P2 - Runtime compiler and cache
+### P2 - Runtime compiler and cache (baseline complete; optimization pending)
 
 - Implement `cgltf`-based validated loading or another small pinned glTF parser.
 - Generate the sectioned `.mdkc` cache transactionally.
@@ -466,7 +536,7 @@ affecting authoritative hashes.
 Gate: cache round-trip is deterministic; corrupt/truncated/oversized sections
 fail before GPU allocation; decoded cost accounting matches actual allocations.
 
-### P3 - Skeletal animation
+### P3 - Skeletal animation (baseline complete; qualification pending)
 
 - Add skeleton/clip compilation, semantic state adapter, TRS sampling,
   cross-fades, presentation endpoint retention, and WebGPU GPU skinning.
@@ -477,7 +547,7 @@ Gate: generated two-joint fixture and a license-clean production-scale rig pass
 clip switching, rollback correction, uncapped interpolation, split-screen,
 pause, replay, character select, and device recovery with no CPU vertex stream.
 
-### P4 - Material and shadow profile
+### P4 - Material and shadow profile (core inputs complete; shadows pending)
 
 - Implement the constrained core glTF PBR inputs, correct color spaces, complete
   mips, alpha mask, sun/ambient response, fog, shadow receive and shadow cast.
@@ -489,7 +559,7 @@ Gate: material reference spheres and character fixtures match bounded offline
 references on WebGPU native/browser and GL fallback; no missing mip, NaN,
 pipeline explosion or transparent ordering regression.
 
-### P5 - LOD and performance qualification
+### P5 - LOD and performance qualification (authored LODs only)
 
 - Compile authored LODs first; optionally generate lower LODs with recorded
   simplification error.
@@ -502,7 +572,7 @@ Gate: no frame-budget regression outside the written target, no unbounded cache
 growth, no visible LOD oscillation, and fallback engages before allocation or
 GPU limits are exceeded.
 
-### P6 - Launcher, content packs and community release
+### P6 - Launcher, content packs and community release (selection only)
 
 - Build import/diagnostic/removal UI and a local package directory.
 - Generate portraits or accept validated package portraits with fallbacks.

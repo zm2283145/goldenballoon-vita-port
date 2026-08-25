@@ -83,7 +83,7 @@ typedef struct MdkrModernMaterial {
 
 typedef struct MdkrModernTexture {
     uint32_t name;
-    uint32_t mime; /* 1 PNG, 2 KTX2 */
+    uint32_t mime; /* 1 PNG; other encodings are reserved for later profiles */
     uint32_t data_offset;
     uint32_t data_size;
     int32_t wrap_s;

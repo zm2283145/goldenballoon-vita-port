@@ -67,6 +67,9 @@
 #include "thread3_main.h"
 #include "tracks.h"
 #include "types.h"
+#ifdef NATIVE_PORT
+#include <stdio.h>
+#endif
 #include "vehicle_misc.h"
 #include "video.h"
 #include "waves.h"
@@ -94,6 +97,22 @@ static const ObjectModel *sModernCharacterReplacementModel;
 static s32 sModernCharacterReplacementDonor;
 static s32 sModernCharacterReplacementVehicle;
 static s32 sModernCharacterReplacementLod;
+static u32 sModernCharacterWarningBits;
+
+static void modern_character_warn_once(s32 player, u32 reason,
+                                       const char *message) {
+    u32 bit;
+    if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        reason >= 4) {
+        return;
+    }
+    bit = 1u << (player * 4 + reason);
+    if ((sModernCharacterWarningBits & bit) != 0) {
+        return;
+    }
+    sModernCharacterWarningBits |= bit;
+    fprintf(stderr, "[modern-character] P%d %s\n", player + 1, message);
+}
 
 static void bonus_visual_trace_transform_bypass(const Object *obj) {
     static u32 sTracedIdentities;
@@ -6085,27 +6104,52 @@ void render_3d_model(Object *obj) {
 #ifdef NATIVE_PORT
         if (racerObj != NULL && racerObj->playerIndex >= 0 &&
             racerObj->playerIndex < MDKR_MODERN_CHARACTER_PLAYERS &&
-            mdkr_modern_character_matches(
-                racerObj->playerIndex, racerObj->characterId,
-                racerObj->vehicleIDPrev) && modernModelIndex >= 0 &&
-            modernModelIndex < obj->header->numberOfModelIds &&
-            mdkr_modern_donor_model_ready(
-                racerObj->characterId, racerObj->vehicleIDPrev,
-                DKR_PTR(s32, obj->header->modelIds)[modernModelIndex],
-                modernModelIndex, objModel->numberOfVertices,
-                objModel->numberOfTriangles, objModel->numberOfBatches)) {
-            char modernError[192];
-            if (mdkr_modern_character_emit(
-                    racerObj->playerIndex,
-                    gSceneDrawDistanceValid ? gSceneDrawDistance
-                                            : obj->distanceToCamera,
-                    &gObjectCurrDisplayList,
-                    modernError, sizeof(modernError))) {
-                sModernCharacterReplacementObject = obj;
-                sModernCharacterReplacementModel = objModel;
-                sModernCharacterReplacementDonor = racerObj->characterId;
-                sModernCharacterReplacementVehicle = racerObj->vehicleIDPrev;
-                sModernCharacterReplacementLod = modernModelIndex;
+            mdkr_modern_character_player_package(racerObj->playerIndex) != NULL) {
+            s32 player = racerObj->playerIndex;
+            if (!mdkr_modern_character_matches(
+                    player, racerObj->characterId,
+                    racerObj->vehicleIDPrev)) {
+                char message[160];
+                snprintf(message, sizeof(message),
+                         "fallback: selected donor=%d but racer identity=%d vehicle=%d",
+                         mdkr_modern_character_player_donor(player),
+                         racerObj->characterId, racerObj->vehicleIDPrev);
+                modern_character_warn_once(player, 0, message);
+            } else if (modernModelIndex < 0 ||
+                       modernModelIndex >= obj->header->numberOfModelIds) {
+                modern_character_warn_once(
+                    player, 1, "fallback: retail donor model index is invalid");
+            } else if (!mdkr_modern_donor_model_ready(
+                           racerObj->characterId, racerObj->vehicleIDPrev,
+                           DKR_PTR(s32, obj->header->modelIds)[modernModelIndex],
+                           modernModelIndex, objModel->numberOfVertices,
+                           objModel->numberOfTriangles,
+                           objModel->numberOfBatches)) {
+                char message[192];
+                snprintf(message, sizeof(message),
+                         "fallback: unqualified donor model id=%d lod=%d "
+                         "vertices=%d triangles=%d batches=%d",
+                         DKR_PTR(s32, obj->header->modelIds)[modernModelIndex],
+                         modernModelIndex, objModel->numberOfVertices,
+                         objModel->numberOfTriangles,
+                         objModel->numberOfBatches);
+                modern_character_warn_once(player, 2, message);
+            } else {
+                char modernError[192];
+                if (mdkr_modern_character_emit(
+                        player,
+                        gSceneDrawDistanceValid ? gSceneDrawDistance
+                                                : obj->distanceToCamera,
+                        &gObjectCurrDisplayList,
+                        modernError, sizeof(modernError))) {
+                    sModernCharacterReplacementObject = obj;
+                    sModernCharacterReplacementModel = objModel;
+                    sModernCharacterReplacementDonor = racerObj->characterId;
+                    sModernCharacterReplacementVehicle = racerObj->vehicleIDPrev;
+                    sModernCharacterReplacementLod = modernModelIndex;
+                } else {
+                    modern_character_warn_once(player, 3, modernError);
+                }
             }
         }
 #endif
@@ -7384,6 +7428,7 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
                 sModernCharacterReplacementDonor,
                 sModernCharacterReplacementVehicle,
                 sModernCharacterReplacementLod, i)) {
+            mdkr_modern_character_note_hidden_donor_batch();
             i++;
             continue;
         }

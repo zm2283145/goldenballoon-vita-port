@@ -34,6 +34,9 @@ static MdkrModernCharacterRegistry s_registry;
 static MdkrModernRuntimePool s_pools[MODERN_RUNTIME_POOLS];
 static MdkrModernRuntimePlayer s_players[MDKR_MODERN_CHARACTER_PLAYERS];
 static int s_initialized;
+static uint64_t s_replacement_draws;
+static uint64_t s_replacement_primitives;
+static uint64_t s_hidden_donor_batches;
 
 static void set_error(char *error, size_t size, const char *message) {
     if (error != NULL && size != 0u) {
@@ -201,6 +204,9 @@ int mdkr_modern_characters_init(const char *directory) {
     char error[256];
     const char *base;
     mdkr_modern_characters_shutdown();
+    s_replacement_draws = 0u;
+    s_replacement_primitives = 0u;
+    s_hidden_donor_batches = 0u;
     for (index = 0; index < MODERN_RUNTIME_POOLS; index++) {
         s_pools[index].registry_index = -1;
     }
@@ -232,6 +238,14 @@ int mdkr_modern_characters_init(const char *directory) {
 
 void mdkr_modern_characters_shutdown(void) {
     int index;
+    if (s_replacement_draws != 0u || s_hidden_donor_batches != 0u) {
+        fprintf(stderr,
+                "[MODERN-CHARACTER] replacements=%llu primitives=%llu "
+                "hiddenDonorBatches=%llu\n",
+                (unsigned long long)s_replacement_draws,
+                (unsigned long long)s_replacement_primitives,
+                (unsigned long long)s_hidden_donor_batches);
+    }
     for (index = 0; index < MDKR_MODERN_CHARACTER_PLAYERS; index++) {
         mdkr_modern_character_clear_player(index);
     }
@@ -244,6 +258,10 @@ void mdkr_modern_characters_shutdown(void) {
     }
     mdkr_modern_character_registry_shutdown(&s_registry);
     s_initialized = 0;
+}
+
+void mdkr_modern_character_note_hidden_donor_batch(void) {
+    s_hidden_donor_batches++;
 }
 
 const MdkrModernCharacterRegistry *mdkr_modern_characters_registry(void) {
@@ -467,6 +485,8 @@ int mdkr_modern_character_emit(int player, float view_distance,
         gMoveWd((*display_list)++, G_MW_DKR_MODERN_CHARACTER, 0,
                 slot->tokens[primitive_index]);
     }
+    s_replacement_draws++;
+    s_replacement_primitives += emitted;
     set_error(error, error_size, "");
     return 1;
 }

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Inspect and package user-supplied modern character assets.
 
-This spike deliberately does not convert FBX or COLLADA. Those formats belong
-behind an offline adapter such as Assimp or Blender. The stable input contract
-is a self-contained glTF 2.0 binary (GLB); this tool adds MDKR policy checks and
-builds a deterministic, data-only source package around that GLB.
+The stable input contract is a self-contained glTF 2.0 binary (GLB); this tool
+adds MDKR policy checks and builds a deterministic, data-only source package
+around that GLB. A bounded, dependency-free COLLADA convenience adapter lives
+in collada_to_glb.py. Richer DAE/FBX authoring still belongs in Blender or an
+equivalent DCC exporter, with GLB as the handoff boundary.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import argparse
 import hashlib
 import io
 import json
+import math
 import re
 import struct
 import sys
@@ -52,7 +54,6 @@ SUPPORTED_REQUIRED_EXTENSIONS = {
     "KHR_materials_emissive_strength",
     "KHR_materials_specular",
     "KHR_mesh_quantization",
-    "KHR_texture_basisu",
     "MSFT_lod",
 }
 GAMEPLAY_DONORS = {
@@ -276,6 +277,115 @@ def _accessor(document: dict[str, Any], index: Any) -> dict[str, Any] | None:
     return accessors[index] if isinstance(index, int) and 0 <= index < len(accessors) else None
 
 
+def _matrix_multiply(left: list[float], right: list[float]) -> list[float]:
+    return [sum(left[inner * 4 + row] * right[column * 4 + inner]
+                for inner in range(4))
+            for column in range(4) for row in range(4)]
+
+
+def _node_matrix(node: dict[str, Any]) -> list[float]:
+    if "matrix" in node:
+        values = node["matrix"]
+        if (not isinstance(values, list) or len(values) != 16 or
+                not all(isinstance(value, (int, float)) and math.isfinite(value)
+                        for value in values)):
+            raise ProbeError("node matrix must contain 16 finite numbers")
+        return [float(value) for value in values]
+    translation = node.get("translation", [0.0, 0.0, 0.0])
+    rotation = node.get("rotation", [0.0, 0.0, 0.0, 1.0])
+    scale = node.get("scale", [1.0, 1.0, 1.0])
+    if (not all(isinstance(value, list) for value in (translation, rotation, scale)) or
+            len(translation) != 3 or len(rotation) != 4 or len(scale) != 3 or
+            not all(isinstance(component, (int, float)) and math.isfinite(component)
+                    for value in (translation, rotation, scale) for component in value)):
+        raise ProbeError("node TRS is malformed or non-finite")
+    x, y, z, w = (float(value) for value in rotation)
+    length = math.sqrt(x * x + y * y + z * z + w * w)
+    if length < 1.0e-12:
+        raise ProbeError("node quaternion has zero length")
+    x, y, z, w = x / length, y / length, z / length, w / length
+    sx, sy, sz = (float(value) for value in scale)
+    return [
+        (1 - 2 * (y * y + z * z)) * sx,
+        (2 * (x * y + z * w)) * sx,
+        (2 * (x * z - y * w)) * sx, 0.0,
+        (2 * (x * y - z * w)) * sy,
+        (1 - 2 * (x * x + z * z)) * sy,
+        (2 * (y * z + x * w)) * sy, 0.0,
+        (2 * (x * z + y * w)) * sz,
+        (2 * (y * z - x * w)) * sz,
+        (1 - 2 * (x * x + y * y)) * sz, 0.0,
+        float(translation[0]), float(translation[1]), float(translation[2]), 1.0,
+    ]
+
+
+def _world_bounds(document: dict[str, Any],
+                  mesh_bounds: list[tuple[list[float], list[float]] | None],
+                  errors: list[str]) -> tuple[list[float] | None, list[float] | None]:
+    nodes = _array(document, "nodes")
+    scenes = _array(document, "scenes")
+    scene_index = document.get("scene", 0)
+    if not isinstance(scene_index, int) or not 0 <= scene_index < len(scenes):
+        errors.append("default scene index is invalid")
+        return None, None
+    scene = scenes[scene_index]
+    roots = scene.get("nodes", []) if isinstance(scene, dict) else []
+    if not isinstance(roots, list):
+        errors.append("default scene node list is invalid")
+        return None, None
+    identity = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    output_min: list[float] | None = None
+    output_max: list[float] | None = None
+
+    def visit(index: Any, parent: list[float], ancestry: set[int]) -> None:
+        nonlocal output_min, output_max
+        if not isinstance(index, int) or not 0 <= index < len(nodes):
+            errors.append("scene graph references an invalid node")
+            return
+        if index in ancestry:
+            errors.append("scene graph contains a node cycle")
+            return
+        node = nodes[index]
+        if not isinstance(node, dict):
+            errors.append(f"nodes[{index}] must be an object")
+            return
+        try:
+            world = _matrix_multiply(parent, _node_matrix(node))
+        except ProbeError as exc:
+            errors.append(f"nodes[{index}]: {exc}")
+            return
+        mesh_index = node.get("mesh")
+        if isinstance(mesh_index, int) and 0 <= mesh_index < len(mesh_bounds):
+            bounds = mesh_bounds[mesh_index]
+            if bounds is not None:
+                local_min, local_max = bounds
+                for x in (local_min[0], local_max[0]):
+                    for y in (local_min[1], local_max[1]):
+                        for z in (local_min[2], local_max[2]):
+                            point = [
+                                world[0] * x + world[4] * y + world[8] * z + world[12],
+                                world[1] * x + world[5] * y + world[9] * z + world[13],
+                                world[2] * x + world[6] * y + world[10] * z + world[14],
+                            ]
+                            if output_min is None:
+                                output_min, output_max = list(point), list(point)
+                            else:
+                                output_min = [min(output_min[i], point[i]) for i in range(3)]
+                                output_max = [max(output_max[i], point[i]) for i in range(3)]
+        next_ancestry = ancestry | {index}
+        children = node.get("children", [])
+        if not isinstance(children, list):
+            errors.append(f"nodes[{index}].children must be an array")
+            return
+        for child in children:
+            visit(child, world, next_ancestry)
+
+    for root_index in roots:
+        visit(root_index, identity, set())
+    return output_min, output_max
+
+
 def inspect_glb_bytes(data: bytes, require_character: bool = False) -> dict[str, Any]:
     document, bin_chunk = parse_glb(data)
     errors: list[str] = []
@@ -302,8 +412,12 @@ def inspect_glb_bytes(data: bytes, require_character: bool = False) -> dict[str,
     primitive_materials: set[int] = set()
     bbox_min: list[float] | None = None
     bbox_max: list[float] | None = None
+    meshes = _array(document, "meshes")
+    mesh_bounds: list[tuple[list[float], list[float]] | None] = [None] * len(meshes)
     skinned_primitive_count = 0
-    for mesh_index, mesh in enumerate(_array(document, "meshes")):
+    for mesh_index, mesh in enumerate(meshes):
+        mesh_min: list[float] | None = None
+        mesh_max: list[float] | None = None
         if not isinstance(mesh, dict):
             errors.append(f"meshes[{mesh_index}] must be an object")
             continue
@@ -339,7 +453,15 @@ def inspect_glb_bytes(data: bytes, require_character: bool = False) -> dict[str,
             if position is not None:
                 vertex_count += int(position.get("count", 0))
                 pmin, pmax = position.get("min"), position.get("max")
-                if isinstance(pmin, list) and isinstance(pmax, list) and len(pmin) == len(pmax) == 3:
+                if (isinstance(pmin, list) and isinstance(pmax, list) and
+                        len(pmin) == len(pmax) == 3 and
+                        all(isinstance(value, (int, float)) and math.isfinite(value)
+                            for value in pmin + pmax)):
+                    if mesh_min is None:
+                        mesh_min, mesh_max = list(pmin), list(pmax)
+                    else:
+                        mesh_min = [min(mesh_min[i], pmin[i]) for i in range(3)]
+                        mesh_max = [max(mesh_max[i], pmax[i]) for i in range(3)]
                     if bbox_min is None:
                         bbox_min, bbox_max = list(pmin), list(pmax)
                     else:
@@ -347,6 +469,11 @@ def inspect_glb_bytes(data: bytes, require_character: bool = False) -> dict[str,
                         bbox_max = [max(bbox_max[i], pmax[i]) for i in range(3)]
             if isinstance(primitive.get("material"), int):
                 primitive_materials.add(primitive["material"])
+        mesh_bounds[mesh_index] = ((mesh_min, mesh_max)
+                                   if mesh_min is not None and mesh_max is not None
+                                   else None)
+
+    world_bbox_min, world_bbox_max = _world_bounds(document, mesh_bounds, errors)
 
     skins = _array(document, "skins")
     max_joints = max((len(skin.get("joints", [])) for skin in skins if isinstance(skin, dict)), default=0)
@@ -374,11 +501,11 @@ def inspect_glb_bytes(data: bytes, require_character: bool = False) -> dict[str,
         errors.append(f"material count exceeds the v1 budget {MAX_MATERIALS}")
     if max_joints > MAX_JOINTS:
         errors.append(f"joint count {max_joints} exceeds the v1 budget {MAX_JOINTS}")
-    if bbox_min is not None and bbox_max is not None:
-        height = bbox_max[1] - bbox_min[1]
+    if world_bbox_min is not None and world_bbox_max is not None:
+        height = world_bbox_max[1] - world_bbox_min[1]
         if height < 0.25 or height > 4.0:
             warnings.append(
-                f"mesh-local Y extent is {height:.6g} meters; verify root transforms, scale, and seat placement"
+                f"scene-world Y extent is {height:.6g} meters; verify root transforms, scale, and seat placement"
             )
 
     if require_character:
@@ -407,8 +534,10 @@ def inspect_glb_bytes(data: bytes, require_character: bool = False) -> dict[str,
         "skin_count": len(skins),
         "max_joints": max_joints,
         "animations": animations,
-        "bbox_min": bbox_min,
-        "bbox_max": bbox_max,
+        "bbox_min": world_bbox_min,
+        "bbox_max": world_bbox_max,
+        "mesh_local_bbox_min": bbox_min,
+        "mesh_local_bbox_max": bbox_max,
         "binary_bytes": len(bin_chunk or b""),
         "errors": errors,
         "warnings": warnings,

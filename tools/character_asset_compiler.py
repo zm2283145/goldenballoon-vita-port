@@ -93,7 +93,9 @@ DONOR_IDS = {
 VEHICLE_BITS = {"car": 1, "hovercraft": 2, "plane": 4}
 PATH_IDS = {"translation": 0, "rotation": 1, "scale": 2, "weights": 3}
 INTERPOLATION_IDS = {"LINEAR": 0, "STEP": 1, "CUBICSPLINE": 2}
-MIME_IDS = {"image/png": 1, "image/ktx2": 2}
+MIME_IDS = {"image/png": 1}
+MAX_TEXTURE_DIMENSION = 4096
+MAX_DECODED_TEXTURE_BYTES = 512 * 1024 * 1024
 
 
 class CompileError(ValueError):
@@ -349,7 +351,32 @@ def _pack_records(format_string: str, records: Iterable[tuple[Any, ...]]) -> byt
     return bytes(output)
 
 
-def _image_bytes(document: dict[str, Any], binary: bytes, image_index: int) -> tuple[bytes, int]:
+def _png_dimensions(payload: bytes, image_index: int) -> tuple[int, int]:
+    if (len(payload) < 24 or not payload.startswith(b"\x89PNG\r\n\x1a\n") or
+            payload[12:16] != b"IHDR"):
+        raise CompileError(f"image[{image_index}] is not a bounded PNG payload")
+    width, height = struct.unpack_from(">II", payload, 16)
+    if (width == 0 or height == 0 or width > MAX_TEXTURE_DIMENSION or
+            height > MAX_TEXTURE_DIMENSION):
+        raise CompileError(
+            f"image[{image_index}] dimensions {width}x{height} exceed the "
+            f"{MAX_TEXTURE_DIMENSION}x{MAX_TEXTURE_DIMENSION} v1 limit"
+        )
+    return width, height
+
+
+def _rgba_mip_bytes(width: int, height: int) -> int:
+    total = 0
+    while True:
+        total += width * height * 4
+        if width == 1 and height == 1:
+            return total
+        width = max(1, width // 2)
+        height = max(1, height // 2)
+
+
+def _image_bytes(document: dict[str, Any], binary: bytes,
+                 image_index: int) -> tuple[bytes, int, int, int]:
     image = _item(_array(document, "images"), image_index, "image")
     if "uri" in image:
         raise CompileError(f"image[{image_index}] is external")
@@ -362,16 +389,18 @@ def _image_bytes(document: dict[str, Any], binary: bytes, image_index: int) -> t
     if not isinstance(offset, int) or not isinstance(size, int) or offset < 0 or size <= 0 or offset + size > len(binary):
         raise CompileError(f"image[{image_index}] exceeds the GLB BIN chunk")
     payload = binary[offset:offset + size]
-    if mime == "image/png" and not payload.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise CompileError(f"image[{image_index}] is not a PNG payload")
-    if mime == "image/ktx2" and not payload.startswith(b"\xabKTX 20\xbb\r\n\x1a\n"):
-        raise CompileError(f"image[{image_index}] is not a KTX2 payload")
-    return payload, MIME_IDS[mime]
+    width, height = _png_dimensions(payload, image_index)
+    return payload, MIME_IDS[mime], width, height
 
 
 def _texture_source(texture: dict[str, Any]) -> int:
     basis = texture.get("extensions", {}).get("KHR_texture_basisu")
-    source = basis.get("source") if isinstance(basis, dict) else texture.get("source")
+    if isinstance(basis, dict):
+        raise CompileError(
+            "KHR_texture_basisu is reserved for a later renderer profile; "
+            "modern-skeletal-v1 requires embedded PNG images"
+        )
+    source = texture.get("source")
     if not isinstance(source, int):
         raise CompileError("texture does not name an image source")
     return source
@@ -608,11 +637,17 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
 
     texture_data = bytearray()
     texture_records = []
+    decoded_texture_bytes = 0
     samplers = _array(document, "samplers")
     for texture_index, texture in enumerate(textures_source):
         if not isinstance(texture, dict):
             raise CompileError(f"texture[{texture_index}] must be an object")
-        payload, mime_id = _image_bytes(document, binary, _texture_source(texture))
+        payload, mime_id, width, height = _image_bytes(
+            document, binary, _texture_source(texture)
+        )
+        decoded_texture_bytes += _rgba_mip_bytes(width, height)
+        if decoded_texture_bytes > MAX_DECODED_TEXTURE_BYTES:
+            raise CompileError("decoded RGBA character textures exceed the 512 MiB v1 budget")
         data_offset = len(texture_data)
         texture_data.extend(payload)
         sampler_index = texture.get("sampler")
@@ -803,6 +838,7 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         "lod_levels": max(node_lods, default=0) + 1,
         "materials": len(material_records),
         "textures": len(texture_records),
+        "decoded_texture_bytes": decoded_texture_bytes,
         "nodes": len(node_records),
         "skins": len(skin_records),
         "joints": len(joint_records),

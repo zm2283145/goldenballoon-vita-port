@@ -41,6 +41,10 @@ int mdkr_modern_character_emit(int player, float view_distance,
                                Gfx **display_list,
                                char *error, size_t error_size);
 
+/* Draw-local donor replacement evidence. The object renderer calls this only
+ * when a fingerprint-qualified retail driver batch is intentionally skipped. */
+void mdkr_modern_character_note_hidden_donor_batch(void);
+
 #ifdef __cplusplus
 }
 #endif
