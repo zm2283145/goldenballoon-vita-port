@@ -121,6 +121,50 @@ may change appearance, display name, portraits, and voice presentation, but its
 physics profile remains an explicit built-in donor unless a separately reviewed
 gameplay-mod system is introduced.
 
+## Presentation identity versus a new gameplay profile
+
+The implemented spike is a **virtual presentation identity**, not an eleventh
+retail `Character` enum value. Selecting a package for P1 and then selecting its
+Diddy donor in the game keeps `characterId == CHARACTER_DIDDY`; only that
+player's qualified driver batches are replaced. This is enough to ship Dixie or
+Tiny as visually distinct local characters with an explicit familiar stats
+profile, but the remaining roster UX still has to expose them as named tiles
+and render them in character select, portraits and results.
+
+This separation avoids corrupting assumptions that are genuinely fixed at ten:
+
+- `Character`, `NUM_CHARACTERS`, the 10-by-3 `gRacerObjectTable`, and several
+  ROM misc tables for weight, handling, steering response, scale and effects;
+- acceleration curves reached through each donor vehicle `ObjectHeader`;
+- HUD portrait/minimap colours, character voices and character-select graph;
+- ghost validation, whose stored character field currently permits 0..9;
+- online lobby and match-launch descriptors whose character count is frozen at
+  ten; and
+- rollback/simulation hashes, which include the retail `characterId`.
+
+There are two sensible product tiers:
+
+1. **Visual character (recommended first release).** Keep the donor as the sole
+   authoritative identity. Add data-driven launcher/character-select tiles that
+   resolve to `(package digest, donor)`, generated or supplied portraits, local
+   display name/voice fallbacks, duplicate-donor policy, and graceful fallback
+   for peers that lack the package. Existing saves, ghosts and online gameplay
+   remain compatible because the visual choice never enters authority.
+2. **Custom gameplay profile (separate mod category).** Define a bounded,
+   versioned profile for weight, handling, steering response, acceleration
+   curve, hitbox/effect choices and vehicle availability. Compile it to a
+   canonical byte representation, include its digest in match preflight and
+   replay/save metadata, require every peer to possess identical bytes, feed
+   every physics lookup through one profile resolver, and mark records/ghosts
+   modded. This is not a harmless extension of the visual manifest and should
+   not be enabled by default matchmaking.
+
+Adding two hard-coded enum rows would be quicker for one fork but is the wrong
+community pipeline: it multiplies ROM-table bounds, UI layouts and protocol
+versions for every character. A virtual identity registry over donor assets is
+the scalable design; a canonical gameplay-profile registry can be added later
+without pretending custom stats are cosmetic.
+
 ## Source package contract (`mdkr-character-source-v1`)
 
 The spike implements the smallest useful envelope in

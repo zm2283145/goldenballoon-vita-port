@@ -1840,7 +1840,9 @@ bool drawCustomCharactersSection(bool compact) {
         ui::TextSubtleWrapped(
             "Private .mdkrchar packages are compiled offline into this local "
             "folder. The game never needs a second ROM and never puts these "
-            "presentation choices into saves, ghosts, or network authority.");
+            "presentation choices into saves, ghosts, or network authority. "
+            "A package appears in a race when that player selects its listed "
+            "built-in donor; this spike has qualified Diddy only.");
     }
     ImGui::Indent(ui::kGapM);
     if (ImGui::Button("Rescan installed characters")) {
