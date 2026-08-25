@@ -1450,6 +1450,25 @@ scenarios refuse a wrong six-digit code before pairing on the right one, trip th
 room's shared code bucket with thirteen rapid wrong codes, and require the phone
 to show `host_closed` when the host closes the room.
 
+`tests/check_online_live_transport_e2e.py` is the O-T6 capstone: it races TWO
+`mdkr_online_live_transport_e2e_driver` native processes (one creator, one
+joiner-by-code) against a live local MatchRoom Worker (`wrangler dev --local`
+with real Durable Objects) over the entire production online path -- real HTTP
+create/join/code/command over the MatchRoom lobby routes and the authenticated
+`/connect` state WebSocket, the O-T1 match-signal client, the O-T2 peer mesh
+negotiating real WebRTC DataChannels (libdatachannel DTLS), the O-T3 live
+adapter (selections, the auto-confirmed transcript verification phrase,
+preflight consensus, and descriptor install through the O-T5 retail-identity
+clamp), and the O-T6 per-tick feed that seals local input into 3-frame bundles,
+fans them out on the mesh, and drains authored ticks through
+`mdkr_match_transport_receive`. Each process races at least 1800 confirmed
+authored ticks; the golden path requires both verification phrases to match,
+both descriptors installed, and the two end-of-race FNV state hashes to be
+byte-identical. DEV lane, not release-required: the drivers speak plain
+`ws://`/`http://` to the loopback Worker only under the shared
+`MDKR_INTERNAL_TEST_TOKEN`, the same loopback-transport token the party e2e and
+signal-client tests use.
+
 `tests/check_lan_controller_assets.py` keeps the local-play controller asset set
 identical across the three places that must never disagree: the C++
 `kControllerAssets` manifest in `lan_party_launch.cpp` that the embedded server
