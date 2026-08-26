@@ -3300,8 +3300,11 @@ static void wgpu_end_frame(void) {
              * gates -- which pass a non-presentable (MDKR64_HIDDEN) window
              * straight through here -- keep exercising their injected results.
              */
-            st.status = (WGPUSurfaceGetCurrentTextureStatus)
-                            WGPUSurfaceGetCurrentTextureStatus_Occluded;
+            /* 0x00030001 == wgpu-native's Occluded status, spelled numerically
+             * because Emscripten's webgpu.h does not define the enumerator (the
+             * web surface never takes this branch; the value only matters on
+             * native, where it is exactly what wgpu-native would return). */
+            st.status = (WGPUSurfaceGetCurrentTextureStatus)0x00030001;
         } else {
             wgpuSurfaceGetCurrentTexture(s_surface, &st);
         }
