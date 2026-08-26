@@ -857,7 +857,29 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/platform/online/match_live_transport.cpp
                 ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
                 ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
                 ${CMAKE_SOURCE_DIR}/platform/app/online_live_wiring.cpp)
+
+            if(BUILD_TESTING)
+                # The launcher-side track/cup table (display order, picker
+                # narrowing, trophy cups) pinned against the independent v80
+                # ROM decode. Pure static data: ROM-, GPU- and network-free.
+                add_executable(mdkr_online_track_table_test
+                    ${CMAKE_SOURCE_DIR}/tests/test_online_track_table.c
+                    ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c)
+                target_include_directories(mdkr_online_track_table_test PRIVATE
+                    ${CMAKE_SOURCE_DIR}
+                    ${CMAKE_SOURCE_DIR}/platform)
+                if(MSVC)
+                    target_compile_options(mdkr_online_track_table_test PRIVATE
+                        /W4 /WX)
+                else()
+                    target_compile_options(mdkr_online_track_table_test PRIVATE
+                        -Wall -Wextra -Wpedantic -Werror)
+                endif()
+                add_test(NAME online_track_table
+                    COMMAND mdkr_online_track_table_test)
+            endif()
         endif()
 
         add_library(mdkr_qrcodegen STATIC
