@@ -323,13 +323,31 @@ else
             echo "    CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ZONE_ID=... $RATE_LIMIT_SCRIPT"
             printf '%s' "$RESET"
             ;;
-        *)
-            RATE_LIMIT_STATUS="UNVERIFIED (API unreachable or token lacks Zone WAF read scope; rc=$RATE_LIMIT_RC)"
+        3)
+            RATE_LIMIT_STATUS="UNVERIFIED (API unreachable, or token lacks Zone WAF read scope, or zone id not routable)"
             printf '%s' "$YELLOW"
             echo "  WARNING: the edge rate-limit rule could NOT be verified (the API"
-            echo "  was unreachable or the token lacks Zone WAF read scope). This is"
-            echo "  not a pass; the rule's status is unknown. Re-verify with a"
-            echo "  least-privilege Zone WAF token once connectivity/scope is fixed."
+            echo "  was unreachable, the token lacks Zone WAF read scope, or the zone"
+            echo "  id is not routable). This is not a pass; the rule's status is"
+            echo "  unknown. Re-verify with a least-privilege Zone WAF token and the"
+            echo "  correct CLOUDFLARE_ZONE_ID once connectivity/scope is fixed."
+            printf '%s' "$RESET"
+            ;;
+        4)
+            RATE_LIMIT_STATUS="UNVERIFIED (reviewed payload $RATE_LIMIT_RULE missing from checkout)"
+            printf '%s' "$YELLOW"
+            echo "  WARNING: the edge rate-limit rule could NOT be verified because"
+            echo "  the reviewed payload $RATE_LIMIT_RULE is missing from this"
+            echo "  checkout. This is a local repo-integrity problem, NOT a zone"
+            echo "  status -- restore the file from version control and re-verify."
+            printf '%s' "$RESET"
+            ;;
+        *)
+            RATE_LIMIT_STATUS="UNVERIFIED (checker returned an unexpected code rc=$RATE_LIMIT_RC)"
+            printf '%s' "$YELLOW"
+            echo "  WARNING: the edge rate-limit checker returned an unexpected exit"
+            echo "  code ($RATE_LIMIT_RC); the rule's status is unknown. This is not"
+            echo "  a pass. Investigate $RATE_LIMIT_SCRIPT."
             printf '%s' "$RESET"
             ;;
     esac
@@ -362,8 +380,11 @@ cat <<EOF
 deploy_party: PASS -- commit $COMMIT deployed to https://$PARTY_DOMAIN
 
 Run the verification now. It pairs a synthetic phone over WSS and exits
-nonzero on any failure:
+nonzero on any failure. The --*-status flags carry this run's rate-limit and
+secrets findings into its consolidated summary:
 
-    python3 tools/verify_party_deploy.py --origin https://$PARTY_DOMAIN
+    python3 tools/verify_party_deploy.py --origin https://$PARTY_DOMAIN \\
+        --rate-limit-status '$RATE_LIMIT_STATUS' \\
+        --secrets-status '$SECRETS_STATUS'
 
 EOF

@@ -184,14 +184,17 @@ lifecycle change; this is why additive class migrations are isolated.
     After promotion, assert the rule is live with
     `services/party/ops/verify-edge-rate-limit.sh` (environment-provided
     `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ZONE_ID`; without credentials it exits 2,
-    on an unreachable/under-scoped API it exits 3, and only a zone that answers
-    with the rule missing/disabled/diverged is a hard 1 — the first two refuse
-    to claim success rather than pass). `tools/deploy_party.sh` runs exactly this
-    checker as its final step on every deploy (a hard 1 fails the run; 2/3
-    degrade to a warning; `--skip-rate-limit-check` bypasses it), so the rule is
-    asserted beside the `tests/check_party_production_config.py` origin gate
-    automatically: the rule is hand-applied zone state, not Worker code, so
-    nothing else notices when it silently disappears. In the same pass run
+    on an unreachable/under-scoped API or unroutable zone id it exits 3, on a
+    missing local payload file it exits 4, and a zone that answers
+    authoritatively — the rule missing/disabled/diverged, or a 404 "ruleset not
+    found" for the never-created phase entrypoint — is a hard 1; only the hard 1
+    is a real failure, the rest refuse to claim success rather than pass).
+    `tools/deploy_party.sh` runs exactly this checker as its final step on every
+    deploy (a hard 1 fails the run; 2/3/4 degrade to a warning;
+    `--skip-rate-limit-check` bypasses it), so the rule is asserted beside the
+    `tests/check_party_production_config.py` origin gate automatically: the rule
+    is hand-applied zone state, not Worker code, so nothing else notices when it
+    silently disappears. In the same pass run
     `PARTY_DOMAIN=… services/party/ops/verify-controller-csp.sh` and require
     `PASS`: the controller page's CSP is static-host header state that is just
     as silent when it stops arriving, and without a reachable origin the probe
