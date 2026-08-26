@@ -15,7 +15,8 @@
 #define MANIFEST_MAX (1024u * 1024u)
 #define LICENSE_MAX (1024u * 1024u)
 #define PORTRAIT_MAX (8u * 1024u * 1024u)
-#define COMPILER_ID "mdkr-character-compiler/4"
+#define COMPILER_ID "mdkr-character-compiler/5"
+#define LEGACY_COMPILER_ID_V4 "mdkr-character-compiler/4"
 #define LEGACY_COMPILER_ID_V3 "mdkr-character-compiler/3"
 #define LEGACY_COMPILER_ID_V2 "mdkr-character-compiler/2"
 #define LEGACY_COMPILER_ID_V1 "mdkr-character-compiler/1"
@@ -353,6 +354,7 @@ static int portable_package_operation(
     mz_uint64 member_sizes[5] = {0u, 0u, 0u, 0u, 0u};
     uint8_t source_digest[32];
     uint8_t legacy_source_digest_v3[32];
+    uint8_t legacy_source_digest_v4[32];
     uint8_t legacy_source_digest_v2[32];
     uint8_t legacy_source_digest_v1[32];
     char cache_source_digest[65] = {0};
@@ -487,6 +489,9 @@ static int portable_package_operation(
     if (!archive_source_digest(&archive, names, member_sizes, source_count,
                                COMPILER_ID, source_digest) ||
         !archive_source_digest(&archive, names, member_sizes, source_count,
+                               LEGACY_COMPILER_ID_V4,
+                               legacy_source_digest_v4) ||
+        !archive_source_digest(&archive, names, member_sizes, source_count,
                                LEGACY_COMPILER_ID_V3,
                                legacy_source_digest_v3) ||
         (legacy_digest_allowed &&
@@ -511,6 +516,8 @@ static int portable_package_operation(
         goto done;
     }
     if (memcmp(asset.source_sha256, source_digest, sizeof(source_digest)) != 0 &&
+        memcmp(asset.source_sha256, legacy_source_digest_v4,
+               sizeof(legacy_source_digest_v4)) != 0 &&
         memcmp(asset.source_sha256, legacy_source_digest_v3,
                sizeof(legacy_source_digest_v3)) != 0 &&
         (!legacy_digest_allowed ||
@@ -576,6 +583,7 @@ static int portable_package_operation(
             {
                 MdkrModernIdentity identity;
                 MdkrModernRig rig;
+                MdkrModernProvenance provenance;
                 result->identity_present =
                     mdkr_modern_character_asset_identity(
                         &asset, &identity, NULL) && identity.portrait_size != 0u;
@@ -584,6 +592,32 @@ static int portable_package_operation(
                     result->rig_mode = rig.mode + 1u;
                     result->rig_reviewed =
                         (rig.flags & MDKR_MODERN_RIG_REVIEWED) != 0u;
+                }
+                if (mdkr_modern_character_asset_provenance(
+                        &asset, &provenance)) {
+                    const char *spdx = mdkr_modern_character_asset_string(
+                        &asset, provenance.spdx);
+                    const char *attribution =
+                        mdkr_modern_character_asset_string(
+                            &asset, provenance.attribution);
+                    const char *source_url =
+                        mdkr_modern_character_asset_string(
+                            &asset, provenance.source_url);
+                    if (spdx == NULL || attribution == NULL ||
+                        source_url == NULL) {
+                        result_message(result,
+                            "embedded character provenance is unavailable");
+                        goto done;
+                    }
+                    result->provenance_present = 1u;
+                    (void)snprintf(result->license_spdx,
+                                   sizeof(result->license_spdx), "%s", spdx);
+                    (void)snprintf(result->attribution,
+                                   sizeof(result->attribution), "%s",
+                                   attribution);
+                    (void)snprintf(result->source_url,
+                                   sizeof(result->source_url), "%s",
+                                   source_url);
                 }
             }
         }

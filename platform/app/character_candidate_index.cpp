@@ -48,9 +48,9 @@ int hexNibble(char byte) {
     return -1;
 }
 
-bool validDisplayUtf8(const std::string &text) {
+bool validUtf8Text(const std::string &text, size_t maximumBytes) {
     size_t index = 0u;
-    if (text.empty() || text.size() > 96u) return false;
+    if (text.empty() || text.size() > maximumBytes) return false;
     while (index < text.size()) {
         const unsigned char first = static_cast<unsigned char>(text[index++]);
         uint32_t codepoint;
@@ -82,13 +82,19 @@ bool validDisplayUtf8(const std::string &text) {
             (continuation == 3u && codepoint < 0x10000u) ||
             codepoint > 0x10FFFFu ||
             (codepoint >= 0xD800u && codepoint <= 0xDFFFu) ||
-            codepoint < 0x20u || codepoint == 0x7Fu) return false;
+            codepoint < 0x20u || (codepoint >= 0x7Fu && codepoint <= 0x9Fu) ||
+            (codepoint >= 0x200Bu && codepoint <= 0x200Fu) ||
+            (codepoint >= 0x2028u && codepoint <= 0x202Eu) ||
+            (codepoint >= 0x2060u && codepoint <= 0x206Fu) ||
+            codepoint == 0xFEFFu) return false;
     }
     return true;
 }
 
-bool decodeDisplay(const std::string &hex, std::string &display) {
-    if (hex.empty() || (hex.size() & 1u) != 0u || hex.size() > 192u) {
+bool decodeText(const std::string &hex, size_t maximumBytes,
+                std::string &text) {
+    if (hex.empty() || (hex.size() & 1u) != 0u ||
+        hex.size() > maximumBytes * 2u) {
         return false;
     }
     std::string decoded;
@@ -99,8 +105,8 @@ bool decodeDisplay(const std::string &hex, std::string &display) {
         if (high < 0 || low < 0) return false;
         decoded.push_back(static_cast<char>((high << 4) | low));
     }
-    if (!validDisplayUtf8(decoded)) return false;
-    display = std::move(decoded);
+    if (!validUtf8Text(decoded, maximumBytes)) return false;
+    text = std::move(decoded);
     return true;
 }
 
@@ -114,7 +120,7 @@ bool splitFields(const std::string &line, std::vector<std::string> &fields) {
         if (tab == std::string::npos) break;
         begin = tab + 1u;
     }
-    return fields.size() == 36u;
+    return fields.size() == 40u;
 }
 
 }  // namespace
@@ -122,7 +128,7 @@ bool splitFields(const std::string &line, std::vector<std::string> &fields) {
 namespace CharacterCandidateIndex {
 
 bool parse(const std::string &text, Candidate &output) {
-    static const std::string header = "mdkr-character-candidate-v1\n";
+    static const std::string header = "mdkr-character-candidate-v2\n";
     Candidate parsed;
     std::vector<std::string> fields;
     uint64_t numbers[32] = {};
@@ -131,7 +137,8 @@ bool parse(const std::string &text, Candidate &output) {
         text.find('\n', header.size()) != text.size() - 1u ||
         !splitFields(text.substr(
             header.size(), text.size() - header.size() - 1u), fields) ||
-        !idValid(fields[0]) || !decodeDisplay(fields[1], parsed.displayName) ||
+        !idValid(fields[0]) ||
+        !decodeText(fields[1], 96u, parsed.displayName) ||
         !digestValid(fields[2]) || !digestValid(fields[3])) return false;
     for (size_t index = 0u; index < 32u; ++index) {
         const uint64_t maximum = index == 18u || index == 19u
@@ -155,6 +162,17 @@ bool parse(const std::string &text, Candidate &output) {
     for (size_t lod = static_cast<size_t>(numbers[5]); lod < 4u; ++lod) {
         if (numbers[20u + lod] != 0u || numbers[24u + lod] != 0u ||
             numbers[28u + lod] != 0u) return false;
+    }
+    uint64_t provenancePresent = 0u;
+    if (!parseUnsigned(fields[36], 1u, provenancePresent)) return false;
+    if (provenancePresent != 0u) {
+        if (!decodeText(fields[37], 128u, parsed.licenseSpdx) ||
+            !decodeText(fields[38], 256u, parsed.attribution) ||
+            !decodeText(fields[39], 2048u, parsed.sourceUrl)) return false;
+        parsed.provenancePresent = true;
+    } else if (!fields[37].empty() || !fields[38].empty() ||
+               !fields[39].empty()) {
+        return false;
     }
     parsed.id = fields[0];
     parsed.packageSha256 = fields[2];

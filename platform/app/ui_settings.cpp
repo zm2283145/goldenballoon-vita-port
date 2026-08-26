@@ -2341,6 +2341,12 @@ CharacterCandidateIndex::Candidate installedCharacterSummary(
     summary.rigRoles = entry.stats.rig_roles;
     summary.encodedTextureBytes = entry.stats.encoded_texture_bytes;
     summary.decodedTextureBytes = entry.stats.decoded_texture_bytes;
+    summary.provenancePresent = entry.provenance_present != 0u;
+    if (summary.provenancePresent) {
+        summary.licenseSpdx = entry.license_spdx;
+        summary.attribution = entry.attribution;
+        summary.sourceUrl = entry.source_url;
+    }
     for (size_t lod = 0u; lod < 4u; ++lod) {
         summary.lodVertices[lod] = entry.lod_vertices[lod];
         summary.lodTriangles[lod] = entry.lod_triangles[lod];
@@ -2376,6 +2382,12 @@ CharacterCandidateIndex::Candidate nativeCharacterSummary(
     summary.rigRoles = result.rig_roles;
     summary.encodedTextureBytes = result.encoded_texture_bytes;
     summary.decodedTextureBytes = result.decoded_texture_bytes;
+    summary.provenancePresent = result.provenance_present != 0u;
+    if (summary.provenancePresent) {
+        summary.licenseSpdx = result.license_spdx;
+        summary.attribution = result.attribution;
+        summary.sourceUrl = result.source_url;
+    }
     for (size_t lod = 0u; lod < 4u; ++lod) {
         summary.lodVertices[lod] = result.lod_vertices[lod];
         summary.lodTriangles[lod] = result.lod_triangles[lod];
@@ -4800,6 +4812,17 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
     ui::TextSubtleWrapped(
         "The package owns local presentation. Its selected retail donor still "
         "owns simulation, collision, race audio, ghost identity, and network/rollback authority; ordinary records and saves never embed the package.");
+    ImGui::SeparatorText("Provenance");
+    if (entry->provenance_present != 0u) {
+        ImGui::TextWrapped("License declaration: %s", entry->license_spdx);
+        ImGui::TextWrapped("Creator / attribution: %s", entry->attribution);
+        ImGui::TextWrapped("Source: %s", entry->source_url);
+        ui::TextSubtleWrapped(
+            "These declarations and the exact LICENSE.txt bytes are authenticated by the active source digest. They describe the package; the importer cannot independently establish copyright, trademark, attribution, or redistribution rights.");
+    } else {
+        ImGui::TextDisabled(
+            "Metadata unavailable in this legacy cache. Workshop-installed source history retains and authenticates its exact LICENSE.txt when available; rebuild from that source with current authoring tools to make SPDX, attribution, and source declarations reviewable here.");
+    }
     if (entry->enabled == 0u) {
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
         ImGui::TextWrapped(
@@ -5287,6 +5310,27 @@ bool drawCharacterCandidateReview(bool compact) {
     std::vector<CandidateComparisonRow> rows;
     addCandidateTextRow(rows, "Display name", current.displayName,
                         next.displayName, review.installed);
+    addCandidateTextRow(
+        rows, "License (SPDX)",
+        current.provenancePresent ? current.licenseSpdx
+                                  : "Unavailable (legacy cache)",
+        next.provenancePresent ? next.licenseSpdx
+                               : "Unavailable (legacy cache)",
+        review.installed);
+    addCandidateTextRow(
+        rows, "Creator / attribution",
+        current.provenancePresent ? current.attribution
+                                  : "Unavailable (legacy cache)",
+        next.provenancePresent ? next.attribution
+                               : "Unavailable (legacy cache)",
+        review.installed);
+    addCandidateTextRow(
+        rows, "Source",
+        current.provenancePresent ? current.sourceUrl
+                                  : "Unavailable (legacy cache)",
+        next.provenancePresent ? next.sourceUrl
+                               : "Unavailable (legacy cache)",
+        review.installed);
     addCandidateTextRow(rows, "Portrait",
         current.identityPresent ? "Authored" : "Generated fallback",
         next.identityPresent ? "Authored" : "Generated fallback",
@@ -5379,6 +5423,12 @@ bool drawCharacterCandidateReview(bool compact) {
             "Humanoid mappings are present but not author-reviewed; automatic retargeting remains unavailable until Rig Studio review.");
         ImGui::PopStyleColor();
     }
+    if (!next.provenancePresent) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+        ImGui::TextWrapped(
+            "Legacy portable cache — its exact LICENSE.txt remains bound to the compiled source, but this cache predates reviewable SPDX, attribution, and source metadata. Rebuild it with the current authoring tools to show those declarations here.");
+        ImGui::PopStyleColor();
+    }
 
     const bool wide = !compact && ImGui::GetContentRegionAvail().x >=
         700.0f * AppTheme::uiScale();
@@ -5417,6 +5467,10 @@ bool drawCharacterCandidateReview(bool compact) {
                            next.packageSha256.c_str());
         ImGui::TextWrapped("Compiled source digest: %s",
                            next.sourceDigest.c_str());
+        ImGui::TextWrapped(
+            "Provenance metadata: %s",
+            next.provenancePresent ? "authenticated and reviewable"
+                                   : "unavailable in legacy cache");
         ImGui::TextWrapped("Encoded texture data: %s",
                            candidateBytes(next.encodedTextureBytes).c_str());
         ImGui::Text("Nodes: %u · Skins: %u", next.nodes, next.skins);

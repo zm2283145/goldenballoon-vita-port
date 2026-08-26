@@ -262,6 +262,19 @@ before atomically publishing it, so packaged players need no Python and the
 native launcher needs no runtime GLB compiler.
 Source-only packages remain the provenance-first authoring form.
 
+Compiler v5 also copies the manifest's bounded SPDX declaration, creator /
+attribution text, and source URL into one optional compiled-cache provenance
+record. The source digest still authenticates the complete, exact
+`LICENSE.txt`; the record exists so a Python-free launcher and the runtime
+inventory can present those declarations without parsing source JSON. The
+launcher shows all three fields in the installed-versus-candidate review and
+the installed package inspector, alongside the explicit warning that declared
+metadata is not proof of rights. Compiler-v1 through compiler-v4 portable
+caches remain readable and source-authenticated. Because those older caches do
+not carry the record, the UI says that review metadata is unavailable and
+recommends a current rebuild from retained or user-provided source instead of
+inventing it or blocking local installation.
+
 A minimal manifest is:
 
 ```json
@@ -444,7 +457,8 @@ authors do not have to edit package JSON to correct inference or approve a map.
 Later schema versions should add, without changing the principles above:
 
 - package version and minimum/maximum engine asset API;
-- optional creator, homepage, description, and attribution display fields;
+- optional homepage and package-description display fields beyond the
+  authenticated SPDX, attribution, and source declarations already present;
 - projected-size LOD thresholds and hysteresis (v1 already reads authored
   `MSFT_lod` chains and a package LOD bias);
 - per-semantic loop/once behavior, playback scale, blend duration, normalized

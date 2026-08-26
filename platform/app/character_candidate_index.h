@@ -31,6 +31,10 @@ struct Candidate {
     uint32_t rigRoles = 0u;
     uint64_t encodedTextureBytes = 0u;
     uint64_t decodedTextureBytes = 0u;
+    bool provenancePresent = false;
+    std::string licenseSpdx;
+    std::string attribution;
+    std::string sourceUrl;
     uint32_t lodVertices[4] = {};
     uint32_t lodTriangles[4] = {};
     uint32_t lodPrimitives[4] = {};

@@ -22,6 +22,9 @@ extern "C" {
 #define MDKR_MODERN_CHARACTER_SKIP_REASON_MAX 192
 #define MDKR_MODERN_CHARACTER_LOD_LEVELS 4
 #define MDKR_MODERN_CHARACTER_NODE_NAME_MAX 129
+#define MDKR_MODERN_CHARACTER_SPDX_MAX 129
+#define MDKR_MODERN_CHARACTER_ATTRIBUTION_MAX 257
+#define MDKR_MODERN_CHARACTER_SOURCE_URL_MAX 2049
 
 enum MdkrModernCharacterSemanticBits {
     MDKR_CHARACTER_SEMANTIC_FALLBACK = 1u << 0,
@@ -103,6 +106,10 @@ typedef struct MdkrModernCharacterEntry {
     uint32_t identity_flags;
     uint32_t portrait_bytes;
     uint32_t minimap_rgba;
+    uint32_t provenance_present;
+    char license_spdx[MDKR_MODERN_CHARACTER_SPDX_MAX];
+    char attribution[MDKR_MODERN_CHARACTER_ATTRIBUTION_MAX];
+    char source_url[MDKR_MODERN_CHARACTER_SOURCE_URL_MAX];
     uint8_t portrait_rgba[MDKR_MODERN_PORTRAIT_BYTES];
     uint32_t lod_vertices[MDKR_MODERN_CHARACTER_LOD_LEVELS];
     uint32_t lod_triangles[MDKR_MODERN_CHARACTER_LOD_LEVELS];

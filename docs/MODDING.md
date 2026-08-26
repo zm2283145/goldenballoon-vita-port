@@ -306,6 +306,14 @@ socket must exist in the GLB.
 
 Validation and installation are deliberately separate. Candidate review binds
 the exact package-file SHA-256 and the installed cache's canonical source digest.
+It also shows the package's authenticated SPDX declaration, creator /
+attribution, and source URL beside the installed revision. The exact
+`LICENSE.txt` is included in the same source digest, but neither those bytes nor
+the manifest declarations establish that the person importing the package has
+the necessary rights; the final local-use confirmation therefore remains
+required. Compiler-v1 through compiler-v4 portable caches continue to work and
+are labeled as legacy when their cache cannot expose these review fields; use
+`prepare` with current tools to add them.
 At commit, both are checked again under the shared import lock. If the package
 changed, an update of the same ID appeared, or the installed revision changed
 after review, nothing is published and the Workshop requires a fresh review.

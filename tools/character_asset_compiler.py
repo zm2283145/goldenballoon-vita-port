@@ -30,7 +30,7 @@ MDKC_HEADER_BYTES = 832
 MDKC_SECTION_SLOTS = 24
 MDKC_SECTION_ENTRY_BYTES = 32
 MDKC_FILE_MAX = 1024 * 1024 * 1024
-COMPILER_ID = "mdkr-character-compiler/4"
+COMPILER_ID = "mdkr-character-compiler/5"
 
 SECTION_STRINGS = 1
 SECTION_VERTICES = 2
@@ -54,6 +54,7 @@ SECTION_IDENTITY = 19
 SECTION_IDENTITY_DATA = 20
 SECTION_RIG = 21
 SECTION_RIG_ROLES = 22
+SECTION_PROVENANCE = 23
 
 VERTEX_FORMAT = "<3f3f4f2f4H4f"
 PRIMITIVE_FORMAT = "<8I"
@@ -73,6 +74,7 @@ CALIBRATION_FORMAT = "<3f3f3ffII4f"
 IDENTITY_FORMAT = "<6I"
 RIG_FORMAT = "<4I"
 RIG_ROLE_FORMAT = "<4I4f3f"
+PROVENANCE_FORMAT = "<4I"
 
 COMPONENTS = {
     5120: ("b", 1, True),
@@ -160,10 +162,11 @@ class CompileError(ValueError):
     """A deterministic asset compiler rejection."""
 
 
-def source_digest(members: Iterable[tuple[str, bytes]]) -> bytes:
+def source_digest(members: Iterable[tuple[str, bytes]],
+                  compiler_id: str = COMPILER_ID) -> bytes:
     """Bind a cache to canonical source members and this exact compiler."""
     digest = hashlib.sha256()
-    digest.update(COMPILER_ID.encode("ascii") + b"\0")
+    digest.update(compiler_id.encode("ascii") + b"\0")
     for name, payload in members:
         digest.update(name.encode("ascii") + b"\0")
         digest.update(struct.pack("<Q", len(payload)))
@@ -1040,6 +1043,14 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         identity_data = portrait
         identity_records.append((1, 1, 0, len(portrait), minimap_rgba, 0))
 
+    license_manifest = manifest["license"]
+    provenance_record = (
+        strings.add(license_manifest["spdx"]),
+        strings.add(license_manifest["attribution"]),
+        strings.add(license_manifest["source_url"]),
+        1,  # exact LICENSE.txt bytes are included in the source digest
+    )
+
     sections = [
         Section(SECTION_STRINGS, len(strings.data), 1, bytes(strings.data)),
         Section(SECTION_VERTICES, len(vertex_records), struct.calcsize(VERTEX_FORMAT), _pack_records(VERTEX_FORMAT, vertex_records)),
@@ -1074,6 +1085,10 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
                     struct.calcsize(RIG_ROLE_FORMAT),
                     _pack_records(RIG_ROLE_FORMAT, rig_role_records)),
         ))
+    sections.append(Section(
+        SECTION_PROVENANCE, 1, struct.calcsize(PROVENANCE_FORMAT),
+        _pack_records(PROVENANCE_FORMAT, (provenance_record,)),
+    ))
     compiled = _assemble(sections, source_digest)
     lod_vertices = [0, 0, 0, 0]
     lod_triangles = [0, 0, 0, 0]

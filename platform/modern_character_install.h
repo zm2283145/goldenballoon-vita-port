@@ -20,6 +20,10 @@ typedef struct MdkrModernCharacterInstallResult {
     char display_name[97];
     char package_sha256[65];
     char source_digest[65];
+    uint32_t provenance_present;
+    char license_spdx[129];
+    char attribution[257];
+    char source_url[2049];
     uint32_t donor;
     uint32_t vehicle_mask;
     uint32_t vertices;

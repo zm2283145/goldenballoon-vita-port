@@ -393,7 +393,7 @@ last known-good assembly remains available if an update fails.
 
 | Capability | Current spike | Required product state |
 |---|---|---|
-| Secure GLB/package import | Mutation-free portable/source-only candidate staging, exact installed-versus-candidate identity/rig/donor/vehicle/LOD0/animation/memory comparison, explicit local-rights confirmation, drag/drop parity, and package/base optimistic reviewed commit are executable | Add resumable named drafts, author/license/source metadata inventory, and raw-GLB convenience intake |
+| Secure GLB/package import | Mutation-free portable/source-only candidate staging, exact installed-versus-candidate identity/rig/donor/vehicle/LOD/animation/memory and authenticated SPDX/attribution/source comparison, installed provenance inventory, explicit legacy-cache state, local-rights confirmation, drag/drop parity, and package/base optimistic reviewed commit are executable | Add resumable named drafts and raw-GLB convenience intake |
 | Height/front/ground/seat calibration | Executable v2 | Add exact embedded preview and manipulators |
 | Per-context corrections | One package-keyed editor shared by every local assignment, with independent select/car/hovercraft/plane transforms and contact offsets | Add direct spatial transform/target manipulators |
 | Animation semantics | Executable sampling/diagnostics plus source-v4 compiled role contract, inference provenance/confidence, transactional 16-role skin-joint editor with bind-pose hierarchy canvas, rest/bend controls and automatic review invalidation, native hierarchy validation, reviewed engine-reference fallback motion, and bounded idempotent vehicle contact solving | Add richer reference clips, target overlays and joint-limit inspection |

@@ -12,7 +12,7 @@
 
 static const uint32_t s_expected_strides[MDKR_MDKC_SECTION_LAST + 1] = {
     0u, 1u, 72u, 4u, 32u, 80u, 40u, 1u, 48u, 16u, 68u,
-    16u, 24u, 52u, 64u, 16u, 8u, 48u, 64u, 24u, 1u, 16u, 44u
+    16u, 24u, 52u, 64u, 16u, 8u, 48u, 64u, 24u, 1u, 16u, 44u, 16u
 };
 
 static void set_error(char *error, size_t error_size, const char *message) {
@@ -63,6 +63,71 @@ static int add_overflow_u64(uint64_t left, uint64_t right, uint64_t *out) {
     if (right > UINT64_MAX - left) return 1;
     *out = left + right;
     return 0;
+}
+
+static int compiled_id_valid(const char *text) {
+    size_t index;
+    const size_t length = text != NULL ? strlen(text) : 0u;
+    if (length < 2u || length > 64u ||
+        !((text[0] >= 'a' && text[0] <= 'z') ||
+          (text[0] >= '0' && text[0] <= '9'))) return 0;
+    for (index = 1u; index < length; index++) {
+        const char byte = text[index];
+        if (!((byte >= 'a' && byte <= 'z') ||
+              (byte >= '0' && byte <= '9') || byte == '.' ||
+              byte == '_' || byte == '-')) return 0;
+    }
+    return 1;
+}
+
+static int bounded_printable_utf8(const char *text, size_t maximum_bytes) {
+    const unsigned char *bytes = (const unsigned char *)text;
+    size_t remaining;
+    if (text == NULL) return 0;
+    remaining = strlen(text);
+    if (remaining == 0u || remaining > maximum_bytes) return 0;
+    while (remaining != 0u) {
+        uint32_t codepoint;
+        uint32_t minimum;
+        unsigned continuation;
+        const unsigned char first = *bytes++;
+        remaining--;
+        if (first < 0x80u) {
+            codepoint = first;
+            minimum = 0u;
+            continuation = 0u;
+        } else if (first >= 0xC2u && first <= 0xDFu) {
+            codepoint = first & 0x1Fu;
+            minimum = 0x80u;
+            continuation = 1u;
+        } else if (first >= 0xE0u && first <= 0xEFu) {
+            codepoint = first & 0x0Fu;
+            minimum = 0x800u;
+            continuation = 2u;
+        } else if (first >= 0xF0u && first <= 0xF4u) {
+            codepoint = first & 0x07u;
+            minimum = 0x10000u;
+            continuation = 3u;
+        } else {
+            return 0;
+        }
+        if ((size_t)continuation > remaining) return 0;
+        while (continuation-- != 0u) {
+            const unsigned char next = *bytes++;
+            remaining--;
+            if ((next & 0xC0u) != 0x80u) return 0;
+            codepoint = (codepoint << 6u) | (next & 0x3Fu);
+        }
+        if (codepoint < minimum || codepoint > 0x10FFFFu ||
+            (codepoint >= 0xD800u && codepoint <= 0xDFFFu) ||
+            codepoint < 0x20u ||
+            (codepoint >= 0x7Fu && codepoint <= 0x9Fu) ||
+            (codepoint >= 0x200Bu && codepoint <= 0x200Fu) ||
+            (codepoint >= 0x2028u && codepoint <= 0x202Eu) ||
+            (codepoint >= 0x2060u && codepoint <= 0x206Fu) ||
+            codepoint == 0xFEFFu) return 0;
+    }
+    return 1;
 }
 
 static int multiply_overflow_u64(uint64_t left, uint64_t right, uint64_t *out) {
@@ -446,6 +511,17 @@ int mdkr_modern_character_asset_rig_role(
     return 1;
 }
 
+int mdkr_modern_character_asset_provenance(
+    const MdkrModernCharacterAsset *asset, MdkrModernProvenance *out) {
+    const uint8_t *data = record(asset, MDKR_MDKC_PROVENANCE, 0u);
+    if (data == NULL || out == NULL) return 0;
+    out->spdx = read_u32(data);
+    out->attribution = read_u32(data + 4u);
+    out->source_url = read_u32(data + 8u);
+    out->flags = read_u32(data + 12u);
+    return 1;
+}
+
 static int finite_array(const float *values, size_t count) {
     size_t index;
     for (index = 0u; index < count; index++) {
@@ -707,15 +783,24 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
     }
     {
         MdkrModernCharacterDefinition definition;
+        const char *id;
+        const char *display_name;
+        const char *renderer_profile;
         float quaternion_length;
         (void)mdkr_modern_character_asset_definition(asset, &definition);
         quaternion_length = definition.rotation[0] * definition.rotation[0] +
                             definition.rotation[1] * definition.rotation[1] +
                             definition.rotation[2] * definition.rotation[2] +
                             definition.rotation[3] * definition.rotation[3];
-        if (mdkr_modern_character_asset_string(asset, definition.id) == NULL ||
-            mdkr_modern_character_asset_string(asset, definition.display_name) == NULL ||
-            mdkr_modern_character_asset_string(asset, definition.renderer_profile) == NULL ||
+        id = mdkr_modern_character_asset_string(asset, definition.id);
+        display_name = mdkr_modern_character_asset_string(
+            asset, definition.display_name);
+        renderer_profile = mdkr_modern_character_asset_string(
+            asset, definition.renderer_profile);
+        if (!compiled_id_valid(id) ||
+            !bounded_printable_utf8(display_name, 96u) ||
+            renderer_profile == NULL ||
+            strcmp(renderer_profile, "modern-skeletal-v1") != 0 ||
             definition.donor >= 10u || definition.vehicle_mask == 0u ||
             (definition.vehicle_mask & ~7u) != 0u || !finite_array(definition.scale, 3u) ||
             !finite_array(definition.translation, 3u) || !finite_array(definition.rotation, 4u) ||
@@ -944,6 +1029,28 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
                           "compiled character rig hierarchy is invalid");
                 return 0;
             }
+        }
+    }
+    if (asset->sections[MDKR_MDKC_PROVENANCE].data != NULL) {
+        MdkrModernProvenance provenance;
+        const char *spdx;
+        const char *attribution;
+        const char *source_url;
+        if (asset->sections[MDKR_MDKC_PROVENANCE].count != 1u ||
+            !mdkr_modern_character_asset_provenance(asset, &provenance) ||
+            provenance.flags != MDKR_MODERN_PROVENANCE_LICENSE_TEXT_BOUND ||
+            (spdx = mdkr_modern_character_asset_string(
+                asset, provenance.spdx)) == NULL || spdx[0] == '\0' ||
+            !bounded_printable_utf8(spdx, 128u) ||
+            (attribution = mdkr_modern_character_asset_string(
+                asset, provenance.attribution)) == NULL ||
+            !bounded_printable_utf8(attribution, 256u) ||
+            (source_url = mdkr_modern_character_asset_string(
+                asset, provenance.source_url)) == NULL ||
+            !bounded_printable_utf8(source_url, 2048u)) {
+            set_error(error, error_size,
+                      "compiled character provenance is invalid");
+            return 0;
         }
     }
     return 1;

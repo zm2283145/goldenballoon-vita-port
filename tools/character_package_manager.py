@@ -30,6 +30,9 @@ import character_asset_probe as probe
 
 MANAGER_SCHEMA = "mdkr-character-install-v1"
 COMPILER_ID = compiler.COMPILER_ID
+LEGACY_COMPILER_IDS = tuple(
+    f"mdkr-character-compiler/{version}" for version in range(4, 0, -1)
+)
 LOCK_NAME = ".character-import.lock"
 MAX_REPORT_BYTES = 64 * 1024
 MAX_UI_REVISIONS = 256
@@ -39,12 +42,22 @@ class ManagerError(ValueError):
     pass
 
 
-def _compiler_source_digest(archive: zipfile.ZipFile) -> bytes:
+def _compiler_source_digest(archive: zipfile.ZipFile,
+                            compiler_id: str = COMPILER_ID) -> bytes:
     manifest = probe.json_loads_strict(archive.read("manifest.json"), "manifest")
-    return compiler.source_digest(
+    members = (
         (name, archive.read(name))
         for name in probe.package_members_for_schema(manifest.get("schema"))
     )
+    return compiler.source_digest(members, compiler_id)
+
+
+def _compatible_source_digests(archive: zipfile.ZipFile) -> set[str]:
+    """Authenticate retained caches emitted by every supported compiler."""
+    return {
+        _compiler_source_digest(archive, compiler_id).hex()
+        for compiler_id in (COMPILER_ID, *LEGACY_COMPILER_IDS)
+    }
 
 
 def _write_exclusive(path: Path, payload: bytes) -> None:
@@ -217,6 +230,7 @@ def inspect(package_path: Path) -> dict[str, Any]:
     """Publish exact compiled candidate facts without installing any bytes."""
     candidate = _compile_candidate(package_path)
     report = candidate["compile_report"]
+    license_info = candidate["manifest"]["license"]
     return {
         "schema": MANAGER_SCHEMA,
         "action": "inspect",
@@ -227,6 +241,9 @@ def inspect(package_path: Path) -> dict[str, Any]:
         "compiled_sha256": candidate["compiled_sha256"],
         "compiler": COMPILER_ID,
         "portable": candidate["portable"],
+        "license_spdx": license_info["spdx"],
+        "attribution": license_info["attribution"],
+        "source_url": license_info["source_url"],
         "report": report,
     }
 
@@ -270,9 +287,13 @@ def write_candidate_index(package_path: Path, directory: Path,
         *(str(value) for value in report["lod_vertices"]),
         *(str(value) for value in report["lod_triangles"]),
         *(str(value) for value in report["lod_primitives"]),
+        "1",
+        candidate["license_spdx"].encode("utf-8").hex(),
+        candidate["attribution"].encode("utf-8").hex(),
+        candidate["source_url"].encode("utf-8").hex(),
     ]
     payload = (
-        "mdkr-character-candidate-v1\n" + "\t".join(fields) + "\n"
+        "mdkr-character-candidate-v2\n" + "\t".join(fields) + "\n"
     ).encode("ascii")
     _write_atomic(index_path, payload)
     return {
@@ -406,7 +427,7 @@ def _active_source_snapshot(package_id: str, root: Path) -> tuple[bytes, str, st
                 if hashlib.sha256(package).hexdigest() != source_sha:
                     continue
                 with zipfile.ZipFile(io.BytesIO(package)) as archive:
-                    if _compiler_source_digest(archive).hex() != active_digest:
+                    if active_digest not in _compatible_source_digests(archive):
                         continue
                     portable = "compiled.mdkc" in archive.namelist()
                 candidates.append((portable, source_sha, package))

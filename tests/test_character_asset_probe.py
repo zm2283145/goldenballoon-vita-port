@@ -525,6 +525,30 @@ class CharacterAssetProbeTests(unittest.TestCase):
         sections = _compiled_sections(first)
         self.assertEqual(4, sections[compiler.SECTION_ATTACHMENTS]["count"])
         self.assertEqual(1, sections[compiler.SECTION_CALIBRATION]["count"])
+        provenance = sections[compiler.SECTION_PROVENANCE]
+        self.assertEqual(1, provenance["count"])
+        self.assertEqual(
+            struct.calcsize(compiler.PROVENANCE_FORMAT), provenance["stride"]
+        )
+        spdx, attribution, source_url, flags = struct.unpack_from(
+            compiler.PROVENANCE_FORMAT, first, provenance["offset"]
+        )
+        strings = sections[compiler.SECTION_STRINGS]
+
+        def compiled_string(offset: int) -> str:
+            begin = strings["offset"] + offset
+            end = first.index(b"\0", begin)
+            return first[begin:end].decode("utf-8")
+
+        self.assertEqual("CC0-1.0", compiled_string(spdx))
+        self.assertEqual(
+            "Generated MDKR test fixture", compiled_string(attribution)
+        )
+        self.assertEqual(
+            "https://example.invalid/pipeline-proof",
+            compiled_string(source_url),
+        )
+        self.assertEqual(1, flags)
         self.assertEqual(4, first_report["decoded_texture_bytes"])
 
     def test_v1_manifest_remains_valid_and_gets_safe_context_defaults(self) -> None:
@@ -593,6 +617,27 @@ class CharacterAssetProbeTests(unittest.TestCase):
             )
         )
         self.assertTrue(any("NFC-normalized Unicode" in error for error in errors))
+
+    def test_review_text_uses_the_native_bounded_printable_profile(self) -> None:
+        report = probe.inspect_glb_bytes(
+            make_animated_glb(), require_character=True
+        )
+        for field, value in (
+            ("spdx", "S" * 129),
+            ("attribution", "author\nspoofed label"),
+            ("source_url", "https://example.invalid/\u2066spoof"),
+        ):
+            manifest = make_manifest()
+            manifest["license"][field] = value
+            errors = probe.validate_manifest(manifest, report)
+            self.assertTrue(
+                any(f"manifest.license.{field}" in error for error in errors),
+                (field, errors),
+            )
+        manifest = make_manifest()
+        manifest["display_name"] = "\U0001f3c1" * 25
+        errors = probe.validate_manifest(manifest, report)
+        self.assertTrue(any("printable UTF-8 bytes" in error for error in errors))
 
     def test_archive_inventory_fails_closed_without_license(self) -> None:
         dae = b'''<?xml version="1.0"?><COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1"><asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset><library_geometries><geometry/></library_geometries></COLLADA>'''

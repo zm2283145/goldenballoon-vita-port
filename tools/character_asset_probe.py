@@ -151,6 +151,24 @@ def _manifest_unicode_errors(value: Any, path: str = "manifest") -> list[str]:
     return errors
 
 
+def _bounded_printable_text(value: str, maximum_bytes: int) -> bool:
+    """Match the native cache/UI text profile without restricting scripts."""
+    return (
+        len(value.encode("utf-8")) <= maximum_bytes
+        and all(
+            not (
+                ord(character) < 0x20
+                or 0x7F <= ord(character) <= 0x9F
+                or 0x200B <= ord(character) <= 0x200F
+                or 0x2028 <= ord(character) <= 0x202E
+                or 0x2060 <= ord(character) <= 0x206F
+                or ord(character) == 0xFEFF
+            )
+            for character in value
+        )
+    )
+
+
 def _read_bounded(path: Path, maximum: int, label: str) -> bytes:
     size = path.stat().st_size
     if size > maximum:
@@ -718,8 +736,10 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
         errors.append("manifest.id must be a 2-64 character lowercase slug")
     if (not isinstance(manifest.get("display_name"), str) or
             not manifest["display_name"].strip() or
-            len(manifest["display_name"]) > 96):
-        errors.append("manifest.display_name is required")
+            not _bounded_printable_text(manifest["display_name"], 96)):
+        errors.append(
+            "manifest.display_name must be 1-96 printable UTF-8 bytes"
+        )
     if manifest.get("renderer_profile") != "modern-skeletal-v1":
         errors.append("manifest.renderer_profile must be 'modern-skeletal-v1'")
     identity = manifest.get("identity")
@@ -866,6 +886,14 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
         for field in ("spdx", "attribution", "source_url"):
             if not isinstance(license_info.get(field), str) or not license_info[field].strip():
                 errors.append(f"manifest.license.{field} is required")
+        limits = {"spdx": 128, "attribution": 256, "source_url": 2048}
+        for field, maximum in limits.items():
+            value = license_info.get(field)
+            if isinstance(value, str) and not _bounded_printable_text(
+                    value, maximum):
+                errors.append(
+                    f"manifest.license.{field} exceeds its bounded printable profile"
+                )
     animation_info = manifest.get("animations")
     clip_names = {animation["name"] for animation in glb_report.get("animations", [])}
     if not isinstance(animation_info, dict) or not isinstance(animation_info.get("fallback"), str):

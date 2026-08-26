@@ -204,6 +204,14 @@ class CharacterPackageManagerTests(unittest.TestCase):
             self.assertEqual("inspect", inspected["action"])
             self.assertEqual("org.example.pipeline-proof", inspected["id"])
             self.assertEqual("Pipeline Proof", inspected["display_name"])
+            self.assertEqual("CC0-1.0", inspected["license_spdx"])
+            self.assertEqual(
+                "Generated MDKR test fixture", inspected["attribution"]
+            )
+            self.assertEqual(
+                "https://example.invalid/pipeline-proof",
+                inspected["source_url"],
+            )
             self.assertEqual(3, inspected["report"]["vertices"])
             self.assertEqual(1, inspected["report"]["triangles"])
             self.assertEqual(2, inspected["report"]["joints"])
@@ -215,9 +223,9 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 source, character_dir, index_path
             )
             index_lines = index_path.read_text(encoding="ascii").splitlines()
-            self.assertEqual("mdkr-character-candidate-v1", index_lines[0])
+            self.assertEqual("mdkr-character-candidate-v2", index_lines[0])
             fields = index_lines[1].split("\t")
-            self.assertEqual(36, len(fields))
+            self.assertEqual(40, len(fields))
             self.assertEqual(inspected["id"], fields[0])
             self.assertEqual(inspected["display_name"], bytes.fromhex(
                 fields[1]
@@ -243,6 +251,19 @@ class CharacterPackageManagerTests(unittest.TestCase):
             self.assertEqual(
                 inspected["report"]["lod_primitives"],
                 [int(value) for value in fields[32:36]],
+            )
+            self.assertEqual("1", fields[36])
+            self.assertEqual(
+                inspected["license_spdx"],
+                bytes.fromhex(fields[37]).decode("utf-8"),
+            )
+            self.assertEqual(
+                inspected["attribution"],
+                bytes.fromhex(fields[38]).decode("utf-8"),
+            )
+            self.assertEqual(
+                inspected["source_url"],
+                bytes.fromhex(fields[39]).decode("utf-8"),
             )
             with self.assertRaisesRegex(manager.ManagerError, "exact file"):
                 manager.write_candidate_index(
@@ -436,6 +457,37 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 manager.restore_revision(
                     original["id"], "NOT-A-DIGEST", installed
                 )
+
+    def test_legacy_compiler_source_remains_editable_and_upgrades(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            original = manager.install(self.make_package(root), installed)
+            source_path = installed / original["source_file"]
+            with zipfile.ZipFile(source_path) as archive:
+                legacy_digest = manager._compiler_source_digest(
+                    archive, "mdkr-character-compiler/4"
+                ).hex()
+            cache_path = installed / f"{original['id']}.mdkc"
+            legacy_cache = bytearray(cache_path.read_bytes())
+            legacy_cache[20:52] = bytes.fromhex(legacy_digest)
+            cache_path.write_bytes(legacy_cache)
+            report_path = installed / (
+                f"{original['id']}.{original['source_sha256']}.json"
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["cache_source_digest"] = legacy_digest
+            report_path.write_text(
+                json.dumps(report, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            portrait = root / "legacy-upgrade.png"
+            portrait.write_bytes(make_portrait_png(17))
+            revised = manager.revise_identity(
+                original["id"], portrait, (11, 22, 33), installed
+            )
+            self.assertNotEqual(legacy_digest, revised["cache_source_digest"])
+            self.assertEqual(manager.COMPILER_ID, revised["compiler"])
 
     def test_identity_revision_losslessly_migrates_uniform_v1_transform(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

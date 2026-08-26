@@ -270,6 +270,30 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
             }
         }
         {
+            MdkrModernProvenance provenance;
+            if (mdkr_modern_character_asset_provenance(
+                    &asset, &provenance)) {
+                const char *spdx = mdkr_modern_character_asset_string(
+                    &asset, provenance.spdx);
+                const char *attribution = mdkr_modern_character_asset_string(
+                    &asset, provenance.attribution);
+                const char *source_url = mdkr_modern_character_asset_string(
+                    &asset, provenance.source_url);
+                if (!copy_string(entry.license_spdx,
+                                 sizeof(entry.license_spdx), spdx) ||
+                    !copy_string(entry.attribution,
+                                 sizeof(entry.attribution), attribution) ||
+                    !copy_string(entry.source_url,
+                                 sizeof(entry.source_url), source_url)) {
+                    mdkr_modern_character_asset_unload(&asset);
+                    add_skip(registry, item->d_name,
+                             "compiled provenance exceeds the registry bound");
+                    continue;
+                }
+                entry.provenance_present = 1u;
+            }
+        }
+        {
             MdkrModernCalibration calibration;
             const MdkrModernSectionView *attachments =
                 mdkr_modern_character_asset_section(

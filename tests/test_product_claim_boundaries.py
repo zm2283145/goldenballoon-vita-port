@@ -178,6 +178,10 @@ def main() -> int:
         "I confirm I have the right to use this package locally",
         "the importer cannot verify copyright, trademark, attribution, or redistribution rights",
         "The package or installed character may have changed; validate and review it again.",
+        "License (SPDX)",
+        "Creator / attribution",
+        "Unavailable (legacy cache)",
+        "These declarations and the exact LICENSE.txt bytes are authenticated by the active source digest.",
     ):
         require_contains("platform/app/ui_settings.cpp", claim)
     require_contains(

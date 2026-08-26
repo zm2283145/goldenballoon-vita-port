@@ -44,7 +44,8 @@ typedef enum MdkrModernSectionType {
     MDKR_MDKC_IDENTITY_DATA = 20,
     MDKR_MDKC_RIG = 21,
     MDKR_MDKC_RIG_ROLES = 22,
-    MDKR_MDKC_SECTION_LAST = MDKR_MDKC_RIG_ROLES
+    MDKR_MDKC_PROVENANCE = 23,
+    MDKR_MDKC_SECTION_LAST = MDKR_MDKC_PROVENANCE
 } MdkrModernSectionType;
 
 typedef struct MdkrModernSectionView {
@@ -249,6 +250,20 @@ typedef struct MdkrModernRigRole {
     float bend_axis[3];
 } MdkrModernRigRole;
 
+enum MdkrModernProvenanceFlags {
+    MDKR_MODERN_PROVENANCE_LICENSE_TEXT_BOUND = 1u << 0
+};
+
+/* Optional compiler-v5 source metadata. The cache source digest separately
+ * authenticates the complete LICENSE.txt bytes; these bounded string offsets
+ * make the manifest's human-readable provenance available without JSON. */
+typedef struct MdkrModernProvenance {
+    uint32_t spdx;
+    uint32_t attribution;
+    uint32_t source_url;
+    uint32_t flags;
+} MdkrModernProvenance;
+
 typedef struct MdkrModernCharacterAsset {
     uint8_t *owned_bytes;
     size_t size;
@@ -333,6 +348,8 @@ int mdkr_modern_character_asset_rig(const MdkrModernCharacterAsset *asset,
 int mdkr_modern_character_asset_rig_role(
     const MdkrModernCharacterAsset *asset, uint32_t index,
     MdkrModernRigRole *out);
+int mdkr_modern_character_asset_provenance(
+    const MdkrModernCharacterAsset *asset, MdkrModernProvenance *out);
 int mdkr_modern_character_asset_socket(const MdkrModernCharacterAsset *asset,
                                        uint32_t index, MdkrModernSocket *out);
 int mdkr_modern_character_asset_attachment(

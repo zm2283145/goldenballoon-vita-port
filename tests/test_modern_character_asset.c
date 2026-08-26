@@ -206,6 +206,7 @@ int main(int argc, char **argv) {
     MdkrModernIdentity identity;
     MdkrModernRig rig;
     MdkrModernRigRole rig_role;
+    MdkrModernProvenance provenance;
     MdkrModernCharacterIdentityView identity_view;
     MdkrModernCharacterRuntimeMetrics runtime_metrics;
     const uint8_t *portrait_data;
@@ -234,8 +235,8 @@ int main(int argc, char **argv) {
     int player;
     float select_model_y;
 
-    require(argc == 8,
-            "usage: test_modern_character_asset <generated.mdkc> <directory> <source.mdkrchar> <portable.mdkrchar> <install-directory> <corrupt-portable.mdkrchar> <mismatched-portable.mdkrchar>");
+    require(argc == 9,
+            "usage: test_modern_character_asset <generated.mdkc> <directory> <source.mdkrchar> <portable.mdkrchar> <install-directory> <corrupt-portable.mdkrchar> <mismatched-portable.mdkrchar> <legacy-portable.mdkrchar>");
     test_retained_pose_interpolation();
     require(mdkr_modern_character_asset_load_file(argv[1], &asset,
                                                    error, sizeof(error)),
@@ -408,6 +409,18 @@ int main(int argc, char **argv) {
                     &asset, 0u, &rig_role) && rig_role.node == 0u &&
                 rig_role.flags == 0u && rig_role.confidence_milli == 1000u,
             "read bounded source-v4 rig role contract");
+    require(mdkr_modern_character_asset_provenance(&asset, &provenance) &&
+                provenance.flags ==
+                    MDKR_MODERN_PROVENANCE_LICENSE_TEXT_BOUND &&
+                strcmp(mdkr_modern_character_asset_string(
+                           &asset, provenance.spdx), "CC0-1.0") == 0 &&
+                strcmp(mdkr_modern_character_asset_string(
+                           &asset, provenance.attribution),
+                       "Generated MDKR test fixture") == 0 &&
+                strcmp(mdkr_modern_character_asset_string(
+                           &asset, provenance.source_url),
+                       "https://example.invalid/pipeline-proof") == 0,
+            "read authenticated human-review provenance from the cache");
     require(mdkr_modern_character_asset_node_bind_position(
                 &asset, 3u, bind_position) &&
                 fabsf(bind_position[0]) < 1.0e-6f &&
@@ -449,6 +462,38 @@ int main(int argc, char **argv) {
                                                       error, sizeof(error)) &&
                 strstr(error, "header") != NULL,
             "header corruption is rejected before publication");
+    free(bytes);
+
+    bytes = read_file(argv[1], &size);
+    {
+        unsigned char *strings = section_payload(bytes, MDKR_MDKC_STRINGS);
+        unsigned char *provenance_bytes = section_payload(
+            bytes, MDKR_MDKC_PROVENANCE);
+        require(strings != NULL && provenance_bytes != NULL,
+                "locate compiled provenance strings for mutation test");
+        strings[read_u32_le(provenance_bytes)] = 0x01u;
+        refresh_payload_crc(bytes, size);
+        require(!mdkr_modern_character_asset_load_memory(
+                    bytes, size, &refused, error, sizeof(error)) &&
+                    strstr(error, "provenance") != NULL,
+                "native admission rejects forged provenance control text");
+    }
+    free(bytes);
+
+    bytes = read_file(argv[1], &size);
+    {
+        unsigned char *strings = section_payload(bytes, MDKR_MDKC_STRINGS);
+        unsigned char *definition_bytes = section_payload(
+            bytes, MDKR_MDKC_CHARACTER);
+        require(strings != NULL && definition_bytes != NULL,
+                "locate compiled character identity for mutation test");
+        strings[read_u32_le(definition_bytes)] = 'O';
+        refresh_payload_crc(bytes, size);
+        require(!mdkr_modern_character_asset_load_memory(
+                    bytes, size, &refused, error, sizeof(error)) &&
+                    strstr(error, "definition") != NULL,
+                "direct cache admission enforces the lowercase identity slug");
+    }
     free(bytes);
 
     bytes = read_file(argv[1], &size);
@@ -540,6 +585,12 @@ int main(int argc, char **argv) {
                 registry.entries[0].lod_triangles[0] == 1u &&
                 registry.entries[0].lod_primitives[0] == 1u &&
                 registry.entries[0].lod_palette_matrices[0] == 16u &&
+                registry.entries[0].provenance_present == 1u &&
+                strcmp(registry.entries[0].license_spdx, "CC0-1.0") == 0 &&
+                strcmp(registry.entries[0].attribution,
+                       "Generated MDKR test fixture") == 0 &&
+                strcmp(registry.entries[0].source_url,
+                       "https://example.invalid/pipeline-proof") == 0 &&
                 (registry.entries[0].minimap_rgba & 0xFFFFFFu) == 0x9048DCu,
             "registry summarizes per-LOD authoring health and identity preview");
     require(mdkr_modern_character_registry_load(&registry, 0, &asset,
@@ -708,11 +759,29 @@ int main(int argc, char **argv) {
                 install_result.rig_mode == 2u &&
                 install_result.rig_reviewed == 1u &&
                 install_result.rig_roles == 16u &&
+                install_result.provenance_present == 1u &&
+                strcmp(install_result.license_spdx, "CC0-1.0") == 0 &&
+                strcmp(install_result.attribution,
+                       "Generated MDKR test fixture") == 0 &&
+                strcmp(install_result.source_url,
+                       "https://example.invalid/pipeline-proof") == 0 &&
                 install_result.lod_vertices[0] == 3u &&
                 install_result.lod_triangles[0] == 1u &&
                 install_result.lod_primitives[0] == 1u &&
                 install_result.decoded_texture_bytes == 4u,
             "mutation-free portable inspection publishes exact compiled comparison data");
+    require(mdkr_modern_character_inspect_portable(
+                argv[8], &install_result) &&
+                strcmp(install_result.id,
+                       "org.example.pipeline-proof") == 0 &&
+                install_result.provenance_present == 0u &&
+                install_result.license_spdx[0] == '\0' &&
+                install_result.attribution[0] == '\0' &&
+                install_result.source_url[0] == '\0',
+            "compiler-v4 portable caches remain inspectable with explicit legacy provenance absence");
+    require(mdkr_modern_character_inspect_portable(
+                argv[4], &install_result),
+            "restore the current portable review after legacy inspection");
     (void)snprintf(reviewed_package_sha, sizeof(reviewed_package_sha), "%s",
                    install_result.package_sha256);
     (void)snprintf(reviewed_source_digest, sizeof(reviewed_source_digest), "%s",
