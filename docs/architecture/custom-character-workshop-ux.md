@@ -377,7 +377,7 @@ last known-good assembly remains available if an update fails.
 |---|---|---|
 | Secure GLB/package import | Executable | Preserve, add resumable draft and inventory screen |
 | Height/front/ground/seat calibration | Executable v2 | Add exact embedded preview and manipulators |
-| Per-context corrections | Executable | Move from four repeated player panels to one package editor |
+| Per-context corrections | One package-keyed editor shared by every local assignment, with independent select/car/hovercraft/plane transforms and contact offsets | Add direct spatial transform/target manipulators |
 | Animation semantics | Executable sampling/diagnostics plus source-v4 compiled role contract, inference provenance/confidence, transactional 16-role skin-joint editor with bind-pose hierarchy canvas, rest/bend controls and automatic review invalidation, native hierarchy validation, reviewed engine-reference fallback motion, and bounded idempotent vehicle contact solving | Add richer reference clips, target overlays and joint-limit inspection |
 | Portrait/roster identity | Source-v3 import, transactional Portrait Studio revision, exact 40x40 preview/editor with pencil/eraser/fill/eyedropper/mirror/undo, HUD/results/rankings/minimap resolver, and independent 64-entry paginated select browser with per-player portrait/name identity executable | Add model capture, advanced selection/style tools, localization-aware game-font shaping, and remaining identity-surface audit |
 | Donor selection | All ten revision-1 donor seams are fingerprint-qualified and selectable through transactional source revisions; the engine publishes a bounded GPU-free installed-character catalog for virtual roster consumers | Add game-table comparison bars |

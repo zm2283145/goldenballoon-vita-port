@@ -184,12 +184,16 @@ This separation avoids corrupting assumptions that are genuinely fixed at ten:
 
 There are two sensible product tiers:
 
-1. **Visual character (recommended first release).** Keep the donor as the sole
-   authoritative identity. Add data-driven launcher/character-select tiles that
-   resolve to `(package digest, donor)`, generated or supplied portraits, local
-   display name/voice fallbacks, duplicate-donor policy, and graceful fallback
-   for peers that lack the package. Existing saves, ghosts and online gameplay
-   remain compatible because the visual choice never enters authority.
+1. **Visual character (implemented baseline).** The donor remains the sole
+   authoritative gameplay identity. Data-driven launcher/character-select
+   tiles resolve stable package identity plus donor, supplied or locally edited
+   portraits and local display names; multiple packages may deliberately share
+   one donor, and a missing/invalid assignment fails back to the retail actor.
+   Donor voice/horn remains during a race and selection audio stays neutral.
+   Existing saves, ghosts and online gameplay remain compatible because the
+   visual choice never enters authority. Package-digest negotiation and a
+   graceful peer-side missing-package presentation are still future online
+   policy, not implied by the local implementation.
 2. **Custom gameplay profile (separate mod category).** Define a bounded,
    versioned profile for weight, handling, steering response, acceleration
    curve, hitbox/effect choices and vehicle availability. Compile it to a
