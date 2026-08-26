@@ -19,6 +19,24 @@ race on the agreed track, sustained authored ticks off the live match-input
 source, folded real peer input, no stall, clean teardown, exit 0, and the two
 endpoints converged byte-for-byte), plus it emits the [online-boot] direct-race
 witness and asserts the menu-nav script was NOT used.
+
+--track <id> re-aims the same gate at any of the 20 standard race tracks: the
+loopback leader fixes the track with SET_CONFIG_TRACK (env seam
+MDKR_APP_TEST_ONLINE_TRACK in platform/app/online_live_wiring.cpp; a
+configured session skips the track-vote step in the view exactly like retail,
+so the config alone drives the manifest), the wiring derives the track's raw
+ROM vehicle mask + default vehicle, and this check asserts the engine booted
+THAT track. --mask 0x<mm> additionally pins the exact START_RACE
+vehicle mask the wiring froze, which the engine's admission equality
+(manifest mask == leveltable_vehicle_usable(track)) then proves end-to-end by
+booting at all. The narrow-mask lane is:
+
+    check_online_engine_boot_direct.py --track 8 --mask 0x2
+
+Whale Bay: hovercraft-only (mask 0x2), non-Car default vehicle -- the
+zero-coverage admission path (mask != 0x07, default != Car). Without --track
+the invocation, environment and assertions are byte-identical to the
+historical Ancient Lake gate, so registered lanes stay stable.
 """
 
 from __future__ import annotations
@@ -56,6 +74,12 @@ DIRECT_BOOT_RE = re.compile(
     r"^\[online-boot\] direct race: track=(\d+) players=(\d+)$",
     re.MULTILINE,
 )
+# Printed by the wiring only when a session-config env seam is set (--track).
+CONFIG_TRACK_RE = re.compile(
+    r"^\[online-live\] loopback config mode=single track=(\d+) "
+    r"startMask=0x([0-9a-f]{2}) vehicle=(\d+)$",
+    re.MULTILINE,
+)
 
 
 def fail(message: str, output: str = "") -> int:
@@ -80,8 +104,18 @@ def main() -> int:
     parser.add_argument("--rom", type=Path, default="baserom.us.v80.z64")
     parser.add_argument("--ticks", type=int, default=TICKS)
     parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument(
+        "--track", type=int, default=None,
+        help="leader-configured track id (env seam MDKR_APP_TEST_ONLINE_TRACK);"
+             " omitted keeps the historical vote-track-5 flow byte-identical")
+    parser.add_argument(
+        "--mask", type=lambda text: int(text, 0), default=None,
+        help="assert the wiring froze exactly this START_RACE vehicle mask"
+             " (requires --track)")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
+    if args.mask is not None and args.track is None:
+        parser.error("--mask requires --track")
 
     binary = Path(resolve_binary(args.build)).expanduser().resolve()
     rom = args.rom.expanduser().resolve()
@@ -115,6 +149,8 @@ def main() -> int:
             MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
             MDKR64_HIDDEN="1",
         )
+        if args.track is not None:
+            environment["MDKR_APP_TEST_ONLINE_TRACK"] = str(args.track)
         if args.verbose:
             print(f"$ {binary}", flush=True)
         try:
@@ -152,14 +188,39 @@ def main() -> int:
         return fail("the visible engine was never booted on the live transport",
                     output)
 
+    expected_track = "5" if args.track is None else str(args.track)
+    config_mask = None
+    if args.track is not None:
+        # The wiring must witness the leader config it froze, on the right
+        # track, and (with --mask) with exactly the expected narrow mask.
+        config = CONFIG_TRACK_RE.findall(output)
+        if len(config) != 1:
+            return fail("the loopback session-config witness never fired "
+                        "(MDKR_APP_TEST_ONLINE_TRACK seam)", output)
+        config_track, config_mask_hex, config_vehicle = config[0]
+        config_mask = int(config_mask_hex, 16)
+        if config_track != expected_track:
+            return fail(f"the wiring configured track {config_track}, "
+                        f"expected {expected_track}", output)
+        if args.mask is not None and config_mask != args.mask:
+            return fail(
+                f"the wiring froze START_RACE mask {config_mask:#04x}, "
+                f"expected {args.mask:#04x}", output)
+        direct_track_witness = direct[0][0]
+        if direct_track_witness != expected_track:
+            return fail(f"direct-boot witness fired for track "
+                        f"{direct_track_witness}, expected {expected_track}",
+                        output)
+
     online_race = ONLINE_RACE_RE.findall(output)
     if not online_race:
         return fail("the engine never entered an ONLINE rollback race", output)
     loaded_track, race_type, authored_hz = online_race[0]
-    if loaded_track != "5" or race_type != "0":
+    if loaded_track != expected_track or race_type != "0":
         return fail(
             f"online race loaded the wrong contest track={loaded_track} "
-            f"type={race_type} (expected Ancient Lake 5, standard 0)", output)
+            f"type={race_type} (expected track {expected_track}, standard 0)",
+            output)
 
     stats = ENGINE_LIVE_RE.findall(output)
     if len(stats) != 1:
@@ -198,6 +259,11 @@ def main() -> int:
             f"hashPeer={hash_peer})", output)
 
     direct_track, direct_players = direct[0]
+    narrow = ""
+    if args.track is not None:
+        narrow = (f" -- leader-configured track={expected_track} "
+                  f"mask={config_mask:#04x} (admission equality manifest mask "
+                  "== leveltable mask held end-to-end, non-default lane)")
     print(
         "PASS online engine boot (direct): the VISIBLE engine reached the online "
         f"race with NO menu-nav script -- direct-boot track={direct_track} "
@@ -206,7 +272,7 @@ def main() -> int:
         f"inputEnvelopes={envelopes} transportAccepted={accepted} "
         f"transportDrained={drained} corrected={corrected} "
         f"convergedTicks={fold_visible} hash={hash_visible} "
-        "engineExit=clean noStall=1"
+        "engineExit=clean noStall=1" + narrow
     )
     return 0
 

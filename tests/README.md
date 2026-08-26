@@ -1038,12 +1038,14 @@ and clean-teardown contracts.
 
 `online_lobby_core` is the socket-free launcher room reducer. Native C and the
 service TypeScript reducer both consume
-`tests/fixtures/online_lobby_reducer_v1.tsv`: one 43-command lifecycle fixture
+`tests/fixtures/online_lobby_reducer_v1.tsv`: one 94-row lifecycle fixture
 that asserts the result/error and canonical lobby state after every valid or
 invalid transition. Its tests cover
 membership, exact compatibility, seat ownership, unique per-seat character and
 vehicle selections, selection revisions, Ready invalidation, voting, barriers,
-reconnect, leader custody, CAS and retry idempotency. `match_launch_descriptor`
+reconnect, leader custody, CAS and retry idempotency, plus the session-config
+and tournament columns (mode, configured track, cup, race_index, trophy
+points, last placements). `match_launch_descriptor`
 then freezes the Loading lobby into a fixed 148-byte manifest+selection record.
 It requires stable canonical seat order, a neutral unused tail, legal vehicles,
 unique characters and exact lobby/manifest epoch/track/mask/count agreement;
@@ -1468,6 +1470,55 @@ byte-identical. DEV lane, not release-required: the drivers speak plain
 `ws://`/`http://` to the loopback Worker only under the shared
 `MDKR_INTERNAL_TEST_TOKEN`, the same loopback-transport token the party e2e and
 signal-client tests use.
+
+`tests/check_online_engine_boot_direct.py` boots the VISIBLE engine into a
+live loopback online race (`MDKR_APP_TEST_ONLINE_LIVE`, two real adapters over
+the in-process hub, real libdatachannel DTLS) with NO menu-nav input script:
+the direct-boot seam must reach the race purely from the installed manifest,
+converge byte-for-byte with the peer and tear down cleanly. Its default
+invocation is the historical Ancient Lake lane (vote track 5, Car, mask 0x7)
+and stays byte-identical. `--track <id>` re-aims the same gate at any of the
+20 standard race tracks: the loopback leader fixes the track with
+SET_CONFIG_TRACK (env seam `MDKR_APP_TEST_ONLINE_TRACK` in
+`platform/app/online_live_wiring.cpp`; a configured session skips the
+track-vote step in the view exactly like retail, so the config alone drives
+the manifest) and the wiring derives that track's raw ROM vehicle mask and
+default vehicle. `--mask 0x<mm>` additionally pins the
+exact START_RACE mask the wiring froze. The narrow-mask lane is
+`--track 8 --mask 0x2`: Whale Bay is hovercraft-only with a non-Car default,
+so the previously zero-coverage admission arm (manifest mask ==
+`leveltable_vehicle_usable(track)` with mask != 0x07) plus per-seat vehicle
+legality (descriptor validation and BEGIN_LOADING both check the chosen
+vehicle bit against the mask) must hold end-to-end for the boot to happen at
+all.
+
+`tests/check_online_tournament.py` drives a FULL 4-race Dino Domain cup (mode
+tournament, cup 0: tracks 5, 3, 29, 7) through ONE loopback room
+(`MDKR_APP_TEST_ONLINE_MODE=tournament` + `MDKR_APP_TEST_ONLINE_CUP=0`). The
+loopback branch boots the visible engine exactly once per process, so the
+proof splits honestly and the PASS line says which is which: race 1 is
+ENGINE-proven -- the visible engine boots cup round 1 (track 5) off the live
+transport, converges (`[ENGINE-ONLINE-LIVE] converged=1`), races to the
+finish, ends its session ~2.5 s later (`[online-postrace]`), records real
+placements (`[online-results]`) and the launcher reports them accepted=1 --
+while races 2-4 are TRANSPORT-proven through the same live adapters (the
+`test_online_live_adapter.cpp` lifecycle-rig approach, run by the wiring's
+tournament continuation): the leader's REMATCH advances race_index, each
+round's frozen manifest must carry the cup schedule's track and raw ROM mask
+on a fresh epoch with byte-identical descriptors on both endpoints, at least
+30 authored ticks seal/drain hash-equal across the mesh, and the leader
+publishes fixed 0/1 placements through the launcher's exact report seam.
+Round 4 (Hot Top Volcano, mask 0x6) is a narrow-mask, no-Car round inside the
+cup. Final standings must equal the authentic 9/7/5/3/1 trophy accrual --
+36/28 when the visible endpoint also wins race 1, and otherwise exactly what
+the real race-1 placements plus three 9/7 rounds produce. Expect roughly 2-4
+minutes wall time (the engine race runs near real time to the finish; the
+default `--ticks 9000` is only a stall bound because the engine exits itself
+at the postrace witness). Both of these engine gates are timing-sensitive:
+run them one at a time, never concurrently with builds. Neither is
+CTest-registered -- like the other `MDKR_APP_TEST_ONLINE_LIVE` engine boots
+they need the local US 1.1 ROM -- so run them standalone with
+`--build <dir> --rom <path>`.
 
 `tests/check_lan_controller_assets.py` keeps the local-play controller asset set
 identical across the three places that must never disagree: the C++
