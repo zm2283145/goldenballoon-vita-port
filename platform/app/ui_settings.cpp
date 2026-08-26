@@ -2027,6 +2027,9 @@ bool persistCharacterTuning(const char *packageId,
     }
     const AppConfig::PersistResult result = AppConfig::save();
     if (AppConfig::persistResultApplied(result)) {
+        /* Exact-preview evidence describes the saved tuning at capture time.
+         * Never leave it looking current after any fit or solver edit. */
+        g_characterPreviewResults.erase(packageId);
         setStatus("Character fit settings saved; they apply on play.",
                   AppTheme::good());
         return true;
@@ -2231,6 +2234,9 @@ bool removeCharacterPackage(const std::string &id) {
 void refreshCharacterRegistry() {
     char directory[MDKR_MODERN_CHARACTER_PATH_MAX];
     mdkr_modern_character_registry_shutdown(&g_characterRegistry);
+    /* Identity, donor, rig, or source changes invalidate every session-local
+     * measurement associated with the prior registry snapshot. */
+    g_characterPreviewResults.clear();
     g_characterRegistryDirectory.clear();
     if (mdkr_user_characters_directory(directory, sizeof(directory))) {
         g_characterRegistryDirectory = directory;
@@ -2509,6 +2515,10 @@ std::string missingCharacterSemantics(
     return missing;
 }
 
+void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
+                             MdkrCharacterPreviewContext context,
+                             int players);
+
 bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
     CharacterRigEdit &edit = loadCharacterRigEdit(entry);
     if (!edit.error.empty()) {
@@ -2656,11 +2666,19 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
 }
 
 bool drawCharacterTuningEditor(int player,
-                               const MdkrModernCharacterEntry *entry) {
+                               const MdkrModernCharacterEntry *entry,
+                               bool compact) {
     static const char *vehicleNames[] = {"Car", "Hovercraft", "Plane"};
     static const char *contextNames[MDKR_CHARACTER_CONTEXT_COUNT] = {
         "Character select", "Car", "Hovercraft", "Plane"
     };
+    static const MdkrCharacterPreviewContext previewContexts[
+        MDKR_CHARACTER_CONTEXT_COUNT] = {
+            MDKR_CHARACTER_PREVIEW_SELECT,
+            MDKR_CHARACTER_PREVIEW_CAR,
+            MDKR_CHARACTER_PREVIEW_HOVERCRAFT,
+            MDKR_CHARACTER_PREVIEW_PLANE,
+        };
     static const char *forwardNames[] = {"+Z", "-Z", "+X", "-X"};
     bool changed = false;
     const bool contactReady = entry->rig_present != 0u &&
@@ -2821,6 +2839,47 @@ bool drawCharacterTuningEditor(int player,
                     ImGui::EndDisabled();
                     ui::TextSubtleWrapped(
                         "Contact controls require a complete, reviewed source-v4 humanoid map.");
+                }
+                const MdkrCharacterPreviewContext previewContext =
+                    previewContexts[context];
+                const auto result = g_characterPreviewResults.find(entry->id);
+                if (result != g_characterPreviewResults.end() &&
+                    result->second.version ==
+                        MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
+                    result->second.context == previewContext &&
+                    result->second.warmup_complete) {
+                    if (result->second.contact_solves != 0u) {
+                        ImGui::Text(
+                            "Last exact test: %.2f mm mean · %.2f mm maximum across %llu solves",
+                            result->second.contact_error_mean_micrometres /
+                                1000.0,
+                            result->second.contact_error_max_micrometres /
+                                1000.0,
+                            result->second.contact_solves);
+                    } else {
+                        ImGui::TextDisabled(
+                            "Last exact test: no procedural contacts (authored clip or solver locked)");
+                    }
+                }
+                if (!compact) {
+                    int &testPlayers = g_characterTestPlayers[entry->id];
+                    if (testPlayers < 1 || testPlayers > 4) testPlayers = 1;
+                    const bool enabled =
+                        (edit.vehicleMask & (1u << (context - 1u))) != 0u;
+                    if (!enabled) ImGui::BeginDisabled();
+                    const std::string testLabel = std::string("Test ") +
+                        contextNames[context] + " fit in exact renderer";
+                    if (ImGui::Button(testLabel.c_str()) && enabled &&
+                        persistCharacterTuning(entry->id, edit)) {
+                        requestCharacterPreview(
+                            entry, previewContext, testPlayers);
+                    }
+                    if (!enabled) ImGui::EndDisabled();
+                    ui::SpeakFocusedItem(
+                        testLabel.c_str(),
+                        enabled ? nullptr
+                                : "Enable this vehicle for the package first.",
+                        "Saves the current fit and opens the real game context for contact review.");
                 }
             }
             ImGui::PopID();
@@ -3676,7 +3735,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             ? "authored clips only"
             : !humanoidRolesComplete
                 ? "roles incomplete"
-                : !rigReviewed ? "review required" : "reference/IK fallback ready";
+                : !rigReviewed ? "review required" : "reference/contact fallback ready";
     const bool motionReady =
         (effectiveMovingStates & requiredMotionStates) == requiredMotionStates;
     const bool qualified = mdkr_modern_donor_qualified(
@@ -3969,7 +4028,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
     }
 
     ImGui::SeparatorText("Fit, motion, vehicles, and performance");
-    changed |= drawCharacterTuningEditor(0, entry);
+    changed |= drawCharacterTuningEditor(0, entry, compact);
     ImGui::SeparatorText("Performance assembly");
     drawCharacterPerformanceAssembly(entry);
     ImGui::SeparatorText("Test in the exact game renderer");

@@ -226,9 +226,11 @@ silently change competitive authority.
 
 ## Rig and motion workspace
 
-The rig view presents a human-readable role diagram and the actual skeleton at
-the same time. Inferred mappings show confidence and the matched node name.
-Selecting a row highlights that bone and its children.
+The implemented Rig Studio presents the human-readable role list beside each
+exact skin-joint number and name. Inferred mappings show provenance and
+confidence. A spatial skeleton view, selection highlighting, and target/pole
+overlays remain explicit follow-up work; the current editor does not pretend a
+combo list is a visual rig debugger.
 
 Required humanoid roles for retargeting are hips, spine/chest/head, upper/lower
 arm/hand and upper/lower leg/foot on each side. Seat and head remain required
@@ -240,10 +242,12 @@ has Play, Loop/Once, Slow motion and Reset controls plus a fallback indicator.
 Steering includes a -1/0/+1 scrub. The editor distinguishes no clip, static
 clip, moving clip and moving-but-unmapped clip.
 
-Retargeting uses reviewed role mappings and optional rest-axis corrections.
-Hand/foot IK uses engine-owned vehicle targets, per-package bend planes and
-bounded joint limits. Authored context clips win over retargeting; retargeting
-wins over IK-only fallback; source bind pose is last and visibly incomplete.
+Reference motion uses reviewed role mappings and optional rest-axis
+corrections. Hand/foot contact solving uses engine-owned vehicle targets,
+package-local tuning offsets and optional bend preferences. Authored context
+clips win; reviewed reference motion plus contacts covers missing semantics;
+source fallback/bind pose is last and visibly incomplete. The current solver
+bounds each CCD step but does not yet claim anatomical joint-limit profiles.
 
 ## Fit and vehicle workspace
 
@@ -376,7 +380,7 @@ last known-good assembly remains available if an update fails.
 | Animation semantics | Executable sampling/diagnostics plus source-v4 compiled role contract, inference provenance/confidence, transactional 16-role skin-joint editor with rest/bend controls and automatic review invalidation, native hierarchy validation, reviewed engine-reference fallback motion, and bounded idempotent vehicle contact solving | Add richer reference clips, skeleton visualization, target overlays and joint-limit inspection |
 | Portrait/roster identity | Source-v3 import, transactional Portrait Studio revision, exact 40x40 preview/editor with pencil/eraser/fill/eyedropper/mirror/undo, HUD/results/rankings/minimap resolver, and independent 64-entry paginated select browser with per-player portrait/name identity executable | Add model capture, advanced selection/style tools, localization-aware game-font shaping, and remaining identity-surface audit |
 | Donor selection | All ten revision-1 donor seams are fingerprint-qualified and selectable through transactional source revisions; the engine publishes a bounded GPU-free installed-character catalog for virtual roster consumers | Add game-table comparison bars and exact-context review status |
-| Vehicle support | Source-backed compatibility revision, runtime enable subset, independent transforms, persisted per-vehicle hand/foot target offsets, and warmed exact-context solve-count/mean/max contact-error feedback | Add visual target manipulators and complete vehicle test matrix |
+| Vehicle support | Source-backed compatibility revision, runtime enable subset, independent transforms, persisted per-vehicle hand/foot target offsets, warmed exact-context solve-count/mean/max contact-error feedback, stale-result invalidation, and contextual one-click save/retest loops | Add visual target manipulators and complete vehicle test matrix |
 | Performance controls | Import caps, authored LOD bias, exact per-LOD draw accounting, 1P-4P worst-visible assembly counts, exact one-click WebGPU stress routes, and a returned post-warm-up wall-cadence percentile/result card with synthetic/short-sample refusal | Add GPU timestamps, repeatable comparison baselines, representative scene matrix and device profiles |
 | Gameplay tuning | Correctly absent from visual package | Build separate opt-in hashed gameplay-profile system |
 | Preview | One-click typed requests launch select or all three vehicles through real game initialization in any 1-4P layout after ROM revalidation; requests are assignment-neutral, return a warmed structured result, and a generated non-Diddy package passes the complete WebGPU route/pixel/stress/result gate | Embed the renderer, add semantic pose/camera/lighting controls, screenshots/contact sheets and persist per-context author review |
@@ -395,39 +399,46 @@ Gate: import, resume, edit, assign, disable and remove are understandable at
 320x568 and 200% text with keyboard/controller only; no edit is lost or applied
 to a different package.
 
-### W1 — Exact preview and Portrait Studio
+### W1 — Exact launch preview and Portrait Studio (baseline complete)
 
-Embed the WebGPU model renderer, context cameras and overlays. Add deterministic
-capture/import/pixel editing, style conversion and required derivatives. Extend
-the package/cache with versioned identity media and integrate a dynamic local
-identity resolver across select, HUD, results and minimap.
+The exact-game preview request/result path, deterministic portrait import and
+40x40 pixel editor, versioned identity media, and dynamic local identity
+resolver across select, HUD, results/rankings portraits and minimap are
+implemented. An embedded renderer, model capture, style conversion, camera and
+lighting controls, and contact overlays remain.
 
 Gate: no donor name/portrait leaks on any audited identity surface; every output
 is deterministic and readable at original 320x240 presentation.
 
-### W2 — Rig review, retargeting and IK
+### W2 — Rig review, reference motion and contacts (baseline complete)
 
-Build the visual role-map review UI on the compiled source-v4 contract, then
-add project-owned reference clips, runtime rest-axis corrections, context
-precedence, two-bone IK and vehicle targets.
+The transactional role-map review UI, compiled source-v4 contract, bounded
+engine-owned reference poses, runtime rest-basis corrections, authored-motion
+precedence and idempotent CCD vehicle contacts are implemented. Richer
+reference animation, a spatial skeleton/target view, and anatomical limit
+profiles remain.
 
 Gate: humanoid fixtures of different scales/proportions pass select and all
 three vehicle tests without T-pose, mirrored limbs, knee/elbow inversion or
 seat drift; non-humanoid authored-only fallback remains intact.
 
-### W3 — Performance assemblies
+### W3 — Performance assemblies (structural and cadence baseline complete)
 
-Add complete cost accounting, per-category tiers, authored/generated LOD
-inspection, target assemblies, four-player stress scenes and measured timing.
+Exact per-LOD structural accounting, authored LOD control, one-to-four-player
+worst-visible assemblies, real WebGPU stress routes and post-warm-up wall
+cadence results are implemented. GPU timestamps, representative scene/device
+baselines, projected-size LOD hysteresis and optional offline simplification
+remain.
 
 Gate: the displayed counts equal GPU allocations; target builds remain inside
 published device budgets and fail explicitly when they cannot.
 
-### W4 — Qualified donor library and virtual roster
+### W4 — Qualified donor library and virtual roster (baseline complete)
 
-Move qualified donor frames/batch masks/stats/voice policy into a data-driven
-engine registry. Add custom tiles that resolve to a package plus donor without
-extending retail ten-wide simulation tables.
+All ten donor seams are fingerprint-qualified, and the independent paginated
+custom-racer browser resolves package identity plus donor without extending
+retail ten-wide simulation tables. Richer profile comparison cards and a
+complete remaining identity-surface audit remain.
 
 Gate: multiple packages may share a donor, four players can select distinct
 virtual identities, and retail saves/ghosts/online authority remain unchanged.

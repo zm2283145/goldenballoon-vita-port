@@ -135,18 +135,18 @@ deterministic .mdkrchar source package
     v
 local versioned .mdkc cache
     |
-    | async resource load
+    | validated registry activation and lazy renderer upload
     v
 presentation-only character instance
     |
     +-- package supplies local presentation identity
     +-- authoritative donor supplies physics, vehicle and simulation state
     +-- animation adapter selects semantic clips and blend parameters
-    +-- WebGPU/GL renderer performs GPU skinning and material rendering
+    +-- WebGPU renderer performs GPU skinning/material rendering; OpenGL keeps retail fallback
 ```
 
 No source package crosses the gameplay authority boundary. A custom character
-may change appearance, display name, portraits, and voice presentation, but its
+may change appearance, display name, portraits, and minimap colour, but its
 physics profile remains an explicit built-in donor unless a separately reviewed
 gameplay-mod system is introduced.
 
@@ -648,32 +648,35 @@ A root transform can correct scale, floor/seat placement, and facing; it cannot
 turn a T-pose into a believable driving pose. Treating those as one “rotation”
 knob was the central failure exposed by the first private screenshots.
 
-The current spike therefore distinguishes three outcomes in its diagnostics:
+The current spike distinguishes four independent outcomes in its diagnostics:
 
 - **normalized and anchored:** geometry is the right size, direction, and place;
-- **rig mapped:** seat/head plus independent left/right hands and feet are named;
-- **motion ready:** mapped semantic clips contain changing animation keys.
+- **sockets mapped:** seat/head and optional attachment sockets are named;
+- **rig reviewed:** the 16 semantic skin-joint roles, rest corrections, bend
+  preferences and hierarchy have explicit author approval; and
+- **motion ready:** every required state has either a changing authored mapping
+  or reviewed engine-reference coverage.
 
-The supplied static fixture reaches the first two and deliberately reports the
-third as incomplete. A production general-purpose pose stage should add a
-versioned humanoid role map (`hips`, spine/chest/head, upper/lower arm/hand and
-upper/lower leg/foot per side), validate hierarchy and limb lengths, then use
-this precedence:
+Source-v4 and Rig Studio implement the role map, provenance/confidence, review
+lock and hierarchy validation. The runtime uses this precedence:
 
 1. use an authored context clip when supplied;
-2. retarget a project-owned reference clip through the role map;
-3. apply bounded two-bone IK for hands to wheel/grip targets and feet to pedal/
-   footrest targets, with author-declared bend planes;
+2. apply a bounded project-owned semantic reference pose through the reviewed
+   rest-basis corrections when the mapping is missing;
+3. apply four-iteration bounded CCD contacts for hands and feet in vehicle
+   contexts, using optional author bend preferences and persisted target
+   offsets; and
 4. fall back to the source clip/bind pose with an explicit incomplete warning.
 
-IK targets belong to the qualified donor vehicle profile, not to a community
-package. Bone mappings and optional twist/rest-axis corrections belong to the
-package. Solver output is presentation-only, clamped to joint limits, blended
-at semantic transitions, and must never affect physics. Automatic bone-name
-matching can propose a map, as the wizard already does for six sockets, but the
-author must be able to review every inferred role. Models with missing limbs,
-non-humanoid anatomy, mirrored bones, or unusable bind axes must be allowed to
-choose authored animation only rather than being distorted by mandatory IK.
+Base contact targets are engine-owned by vehicle context; package-local
+Workshop offsets tune proportions without entering gameplay authority. Bone
+mappings and optional rest/bend corrections live in the source revision.
+Solver output is presentation-only, per-step angularly bounded, transition
+blended, and never affects physics. Anatomical joint-limit profiles and visual
+pole/target manipulators remain follow-up work and are not claimed by the
+current CCD implementation. Models with missing limbs, non-humanoid anatomy,
+mirrored bones, or unusable bind axes can choose authored-clips-only rather
+than being distorted by mandatory solving.
 
 ## Rollback and multiplayer
 
@@ -901,13 +904,13 @@ unfinished pieces into unbounded memory or GPU work.
 Gate: identical inputs produce identical packages/reports on macOS, Linux,
 Windows, and wasm-capable tooling; hostile corpus is bounded and sanitizer-clean.
 
-### P1 - Static modern mesh vertical slice (race/select seams complete for Diddy)
+### P1 - Static modern mesh vertical slice (race/select seams complete for all donors)
 
-- Add a retained native scene command and immutable resource handle.
-- Generalize `GfxModernMesh` to multiple primitives/materials, mip chains,
-  lifecycle-safe caches, and WebGPU device recovery.
-- Attach one static GLB-derived mesh to a donor in race and character select.
-- Implement correct depth, fog, viewport, culling, and fallback behavior.
+- Retained native scene commands, immutable resources, multiple
+  primitives/materials, complete mip chains, lifecycle-safe caches and WebGPU
+  device recovery are implemented.
+- Race and select attach validated packages at every qualified donor seam with
+  depth, fog, viewport, culling and retail fallback behavior.
 - Add OpenGL parity or formally qualify WebGPU-only fallback behavior.
 
 Gate: ROM-free generated fixture plus one license-clean reference mesh renders
@@ -916,20 +919,23 @@ affecting authoritative hashes.
 
 ### P2 - Runtime compiler and cache (baseline complete; optimization pending)
 
-- Implement `cgltf`-based validated loading or another small pinned glTF parser.
-- Generate the sectioned `.mdkc` cache transactionally.
+- Validated GLB loading and transactional sectioned `.mdkc` cache generation
+  are implemented through the bounded offline/package-manager toolchain.
 - Integrate meshoptimizer and KTX2/BasisU behind bounded compilation stages.
-- Add content-addressed cache invalidation, quarantine reports, and teardown.
+- Content-addressed cache invalidation, diagnostic reports and teardown are
+  implemented; add a dedicated quarantine inventory and recovery workflow.
 
 Gate: cache round-trip is deterministic; corrupt/truncated/oversized sections
 fail before GPU allocation; decoded cost accounting matches actual allocations.
 
-### P3 - Skeletal animation (baseline complete; qualification pending)
+### P3 - Skeletal animation and reviewed reference solving (baseline complete; qualification pending)
 
-- Add skeleton/clip compilation, semantic state adapter, TRS sampling,
-  cross-fades, presentation endpoint retention, and WebGPU GPU skinning.
+- Skeleton/clip compilation, semantic state adaptation, TRS sampling,
+  cross-fades, presentation endpoint retention, WebGPU GPU skinning, reviewed
+  humanoid fallback poses, and vehicle contacts are implemented.
 - Skin normals/tangents correctly and validate conservative animated bounds.
-- Add sockets for the vehicle seat, head, hands and effects.
+- Expand the implemented seat/head/hand/foot socket contract to named effect
+  sockets only when an actual game consumer exists.
 
 Gate: generated two-joint fixture and a license-clean production-scale rig pass
 clip switching, rollback correction, uncapped interpolation, split-screen,

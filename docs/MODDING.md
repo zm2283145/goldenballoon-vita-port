@@ -316,6 +316,12 @@ return the number of bounded solves plus mean and maximum endpoint-to-target
 error in physical units. This is fit evidence, not an import limit: unusual
 proportions or intentionally unreachable tuned targets may legitimately report
 larger distances.
+Each vehicle placement tab keeps the matching last warmed result beside its
+contact controls and offers a one-click save-and-test action into the real
+renderer, so authors do not have to shuttle between unrelated Workshop panels.
+Changing any fit/solver setting or revising a package invalidates the prior
+session result; stale measurements are never presented as evidence for the
+new configuration.
 
 The Workshop's Rig Studio loads the exact skin-joint inventory from the active
 cache, shows every semantic role with its compiled node number, name,
