@@ -1015,7 +1015,12 @@ private:
         racePeerLost_ = false;
         raceDegraded_ = false;
         lastPreflightGate_ = -1;
-        if (failure_ == MDKR_ONLINE_VIEW_FAILURE_ENGINE_FAILED) {
+        if (failure_ == MDKR_ONLINE_VIEW_FAILURE_ENGINE_FAILED
+#if MDKR_ENABLE_ONLINE_BETA
+            || failure_ == MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT
+            || failure_ == MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED
+#endif
+        ) {
             failure_ = MDKR_ONLINE_VIEW_FAILURE_NONE; /* race-scoped failure */
         }
 #if MDKR_ENABLE_ONLINE_BETA
@@ -1898,6 +1903,19 @@ public:
             (raceReady_ && mdkr_match_transport_recovery(&raceTransport_, &rec));
     }
 
+    /* Cheap drain-facing peer-loss latch (see the header): the engine-session
+     * drain polls this every service iteration to end the visible race the
+     * moment the opponent vanishes. */
+    bool racePeerLost() const { return racePeerLost_; }
+
+    /* Route a race-scoped recovery failure onto the lobby-facing view after the
+     * engine session ends (see the header). Race-scoped, so resetRaceLatches
+     * clears it when the room returns to LOBBY. */
+    void setRaceEndFailure(MdkrOnlineViewFailure failure) {
+        failure_ = failure;
+        bump();
+    }
+
     /* Seal + fan out this endpoint's local input for `newestTick` and the two
      * ticks before it (the 3-frame redundancy window). Deterministic from the
      * local script, so a retransmit re-derives byte-identical frames. */
@@ -2405,6 +2423,21 @@ bool mdkr_online_live_adapter_race_info(const IMdkrOnlineAdapter *adapter,
     const LiveAdapter *live = dynamic_cast<const LiveAdapter *>(adapter);
     if (live == nullptr) return false;
     live->raceInfo(out);
+    return true;
+}
+
+bool mdkr_online_live_adapter_race_peer_lost(const IMdkrOnlineAdapter *adapter) {
+    if (adapter == nullptr) return false;
+    const LiveAdapter *live = dynamic_cast<const LiveAdapter *>(adapter);
+    return live != nullptr && live->racePeerLost();
+}
+
+bool mdkr_online_live_adapter_set_race_end_failure(
+    IMdkrOnlineAdapter *adapter, MdkrOnlineViewFailure failure) {
+    if (adapter == nullptr) return false;
+    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    if (live == nullptr) return false;
+    live->setRaceEndFailure(failure);
     return true;
 }
 

@@ -972,6 +972,14 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_include_directories(mdkr_online_lobby_view_model_test PRIVATE
         ${CMAKE_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/platform)
+    # In a beta build, compile the beta-gated race-scoped recovery cards
+    # (OPPONENT_LEFT / OPPONENT_NEVER_STARTED) into lobby_view_model.c so this
+    # test can pin their copy. A release (beta OFF) build leaves the macro unset
+    # and lobby_view_model.o stays byte-identical.
+    if(MDKR_ENABLE_ONLINE_BETA)
+        target_compile_definitions(mdkr_online_lobby_view_model_test PRIVATE
+            MDKR_ENABLE_ONLINE_BETA=1)
+    endif()
     add_test(NAME online_lobby_view_model
         COMMAND mdkr_online_lobby_view_model_test)
 

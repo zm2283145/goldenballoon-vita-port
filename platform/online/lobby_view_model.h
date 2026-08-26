@@ -54,6 +54,18 @@ typedef enum MdkrOnlineViewFailure {
     MDKR_ONLINE_VIEW_FAILURE_EPOCH_MISMATCH,
     /* Local authenticated-transcript ceremony; never sourced from service data. */
     MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH,
+#if MDKR_ENABLE_ONLINE_BETA
+    /* Race-scoped recovery reasons owned by the beta online-live engine
+     * session (platform/app/main_app.cpp), routed to the post-race panel
+     * after the visible engine ends. Gated behind the beta macro so the
+     * OFF/release build's MdkrOnlineViewFailure layout -- and every switch /
+     * range check keyed on _COUNT -- stays byte-identical. OPPONENT_LEFT: a
+     * roster peer vanished mid-race. OPPONENT_NEVER_STARTED: the race-start
+     * barrier aborted before the first authored tick (peer never delivered
+     * tick-1 input, or the 30 s barrier expired). */
+    MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT,
+    MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED,
+#endif
     MDKR_ONLINE_VIEW_FAILURE_COUNT
 } MdkrOnlineViewFailure;
 

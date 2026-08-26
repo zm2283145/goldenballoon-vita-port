@@ -327,6 +327,22 @@ static void recovery_model(MdkrOnlineViewFailure failure,
             model->cancel = control(MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM,
                                     "Leave Room", true);
             break;
+#if MDKR_ENABLE_ONLINE_BETA
+        case MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT:
+            model->title = "Opponent disconnected";
+            model->explanation =
+                "Your opponent lost connection. You're back in the room -- you can wait for them to rejoin or leave.";
+            model->primary = control(MDKR_ONLINE_VIEW_ACTION_RETURN_TO_LOBBY,
+                                     "Return to Lobby", true);
+            break;
+        case MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED:
+            model->title = "Your opponent couldn't start";
+            model->explanation =
+                "Your opponent never made it to the starting line, so the race did not begin. You're back in the room.";
+            model->primary = control(MDKR_ONLINE_VIEW_ACTION_RETURN_TO_LOBBY,
+                                     "Return to Lobby", true);
+            break;
+#endif
         case MDKR_ONLINE_VIEW_FAILURE_NONE:
         case MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE:
         case MDKR_ONLINE_VIEW_FAILURE_COUNT:

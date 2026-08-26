@@ -520,6 +520,27 @@ bool mdkr_online_live_adapter_race_ai_mask(IMdkrOnlineAdapter *adapter,
 bool mdkr_online_live_adapter_race_remote_ready(IMdkrOnlineAdapter *adapter,
                                                 uint32_t tick);
 
+/* Cheap drain-facing latch: true once a roster peer was lost (typed PeerLost
+ * from the mesh) since the race transport came up, cleared when the room
+ * returns to the lobby phase. The launcher's engine-session drain
+ * (platform/app/main_app.cpp liveDrainMatchInput) polls this every service
+ * iteration to END the visible race the instant the opponent vanishes -- instead
+ * of predicting against a frozen ghost to the finish line. Equivalent to
+ * MdkrOnlineLiveRaceInfo.peerLost but without filling the whole struct. Returns
+ * false for a non-live adapter. */
+bool mdkr_online_live_adapter_race_peer_lost(const IMdkrOnlineAdapter *adapter);
+
+/* Latch a race-scoped recovery failure onto the adapter's lobby-facing view
+ * AFTER the visible engine session ends. The launcher's post-session handling
+ * (platform/app/main_app.cpp) calls this to route a peer-loss / start-barrier
+ * abort to its dedicated card (OPPONENT_LEFT / OPPONENT_NEVER_STARTED) rather
+ * than leaving the generic connection-lost copy the in-race PeerLost latch
+ * mapped. Race-scoped: cleared by the adapter when the room returns to the
+ * lobby phase, exactly like the ENGINE_FAILED latch. Returns false for a
+ * non-live adapter. */
+bool mdkr_online_live_adapter_set_race_end_failure(IMdkrOnlineAdapter *adapter,
+                                                   MdkrOnlineViewFailure failure);
+
 /* ---- Internal-test-token gate for the live adapter ---------------------- *
  *
  * Fail-closed, mirroring platform/party/native_party_host.h's loopback gate:

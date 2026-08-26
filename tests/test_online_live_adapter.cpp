@@ -554,6 +554,14 @@ struct FullRunResult {
     uint32_t resendSweepsB = 0u;
     uint32_t resendBundlesA = 0u;
     uint32_t resendBundlesB = 0u;
+    /* Mid-race severance witnesses (severAfterTicks > 0): B's transport is cut
+     * after A confirmed `racedBeforeSever` ticks; the survivor A must latch peer
+     * loss and no results must reach the room. */
+    bool severed = false;
+    uint32_t racedBeforeSever = 0u;
+    bool survivorPeerLostAccessor = false; /* mdkr_..._race_peer_lost(A) */
+    bool survivorPeerLostInfo = false;     /* raceInfo(A).peerLost */
+    bool roomEnteredResults = false;       /* any PUBLISH_RESULTS landed */
 };
 
 /* One net_impairment matrix cell: a named carrier profile + a deterministic
@@ -612,7 +620,8 @@ void foldFrame(uint64_t &hash, uint32_t tick, uint8_t activeMask,
 
 FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
                                const ImpairmentSpec *imp = nullptr,
-                               bool realInput = false) {
+                               bool realInput = false,
+                               unsigned severAfterTicks = 0u) {
     FullRunResult result;
     mdkr_net_roster_runtime_clear();
 
@@ -789,9 +798,47 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
                 }
                 foldReady(A.get(), cursorA, ia.activeSlotMask, hA);
                 foldReady(B.get(), cursorB, ib.activeSlotMask, hB);
+                /* Mid-race severance warm-up: race normally until A has
+                 * confirmed enough ticks that the race is genuinely underway,
+                 * then hand off to the severance phase below. */
+                if (severAfterTicks > 0u &&
+                    cursorA >= ia.firstTick + severAfterTicks) {
+                    break;
+                }
                 if (cursorA > target && cursorB > target) break;
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 clock.nowMs += 2u;
+            }
+            if (severAfterTicks > 0u) {
+                /* The opponent's transport dies mid-race: B goes silent (we stop
+                 * servicing it, so it never answers A's reliable control ping),
+                 * then A's fake-clock ping ladder is advanced past the stale
+                 * deadline exactly like test_match_peer_transport's typed
+                 * PingTimeout proof. The survivor A must latch peer loss on both
+                 * the drain-facing accessor and the race-info struct, and -- since
+                 * the race never finished -- nothing may reach the room's RESULTS
+                 * phase. */
+                result.severed = true;
+                result.racedBeforeSever =
+                    cursorA > ia.firstTick ? cursorA - ia.firstTick : 0u;
+                clock.nowMs += kMdkrMatchControlPingIntervalMs + 1u;
+                A->service(); /* A sends the ping B will never answer. */
+                clock.nowMs += kMdkrMatchControlPingTimeoutMs + 1u;
+                for (unsigned step = 0u; step < 5000u; ++step) {
+                    A->service();
+                    if (mdkr_online_live_adapter_race_peer_lost(A.get())) break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    clock.nowMs += 2u;
+                }
+                result.survivorPeerLostAccessor =
+                    mdkr_online_live_adapter_race_peer_lost(A.get());
+                MdkrOnlineLiveRaceInfo endA{};
+                mdkr_online_live_adapter_race_info(A.get(), &endA);
+                result.survivorPeerLostInfo = endA.peerLost;
+                result.roomEnteredResults =
+                    room.lobby.phase == MDKR_ONLINE_RESULTS;
+                result.racedTicks = result.racedBeforeSever;
+                return result;
             }
             result.racedTicks =
                 (cursorA <= cursorB ? cursorA : cursorB) - ia.firstTick;
@@ -1034,6 +1081,36 @@ void test_two_endpoint_race_respects_real_input() {
                      "stick=(%d,%d) slotB(%u) buttons=%04x stick=(%d,%d)\n",
                      r.localSlotA, a.buttons, a.stick_x, a.stick_y,
                      r.localSlotB, b.buttons, b.stick_x, b.stick_y);
+    }
+    mdkr_net_roster_runtime_clear();
+}
+
+/* P1-T1: end the ghost race. When the opponent's transport dies mid-race, the
+ * survivor must LATCH peer loss on the exact accessor the launcher's engine
+ * drain polls (mdkr_online_live_adapter_race_peer_lost) so the drain ends the
+ * session instead of predicting against a frozen ghost to the finish -- and no
+ * fabricated placements may reach the room. */
+void test_midrace_peer_loss_ends_survivor() {
+    const FullRunResult r =
+        driveTwoAdapters(/*bonusIdentityOnA=*/false, /*raceTicks=*/240u,
+                         /*imp=*/nullptr, /*realInput=*/false,
+                         /*severAfterTicks=*/12u);
+    CHECK(r.raceRun);
+    CHECK(r.severed);
+    /* The race genuinely started before the cut. */
+    CHECK(r.racedBeforeSever >= 12u);
+    /* The drain-facing accessor reports the loss (the make-or-break signal). */
+    CHECK(r.survivorPeerLostAccessor);
+    /* And the race-info struct agrees. */
+    CHECK(r.survivorPeerLostInfo);
+    /* No fabricated placements for the vanished peer reached the room: a severed
+     * race never advances the lobby to RESULTS. */
+    CHECK(!r.roomEnteredResults);
+    if (!r.survivorPeerLostAccessor) {
+        std::fprintf(stderr,
+                     "survivor did not latch peer loss after severance "
+                     "(racedBeforeSever=%u)\n",
+                     r.racedBeforeSever);
     }
     mdkr_net_roster_runtime_clear();
 }
@@ -1860,6 +1937,7 @@ int main(int argc, char **argv) {
     test_full_flow_installs_through_builder();
     test_two_endpoint_race_converges();
     test_two_endpoint_race_respects_real_input();
+    test_midrace_peer_loss_ends_survivor();
     test_clamp_refuses_bonus_identity();
     test_reverify_after_post_confirmation_rewelcome();
     test_multi_race_lifecycle();

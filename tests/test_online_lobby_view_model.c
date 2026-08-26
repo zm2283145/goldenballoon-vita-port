@@ -596,12 +596,70 @@ static void test_failure_catalog_and_atomicity(void) {
     }
 }
 
+#if MDKR_ENABLE_ONLINE_BETA
+/* The beta online-live engine session routes an abnormal race end to its own
+ * recovery card (platform/app/main_app.cpp -> set_race_end_failure). Both cards
+ * must read as a named title + plain cause + a Return to Lobby primary, and
+ * must NOT reuse the generic CONNECTION_CHECK "could not establish a playable
+ * connection" copy. */
+static void test_race_scoped_recovery_cards(void) {
+    MdkrSessionCore session;
+    MdkrOnlineViewInput input;
+    MdkrOnlineViewModel model;
+
+    mdkr_session_core_init(&session, 7u);
+    session_command(&session, MDKR_SESSION_COMMAND_BEGIN_ONLINE, 0u);
+    input = input_for(&session, NULL);
+
+    input.failure = MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT;
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           model.kind == MDKR_ONLINE_VIEW_RECOVERY &&
+           model.failure == MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT &&
+           model.title != NULL &&
+           strcmp(model.title, "Opponent disconnected") == 0 &&
+           model.explanation != NULL &&
+           strstr(model.explanation, "lost connection") != NULL &&
+           strstr(model.explanation,
+                  "wait for them to rejoin or leave") != NULL &&
+           model.primary.action == MDKR_ONLINE_VIEW_ACTION_RETURN_TO_LOBBY &&
+           model.primary.label != NULL &&
+           strcmp(model.primary.label, "Return to Lobby") == 0,
+           "mid-race opponent disconnect routes to its own Return to Lobby card");
+    expect_complete(&model,
+                    "opponent-left recovery copy/control contract is complete");
+    expect(strstr(model.explanation,
+                  "could not establish a playable connection") == NULL,
+           "opponent-left card is distinct from the CONNECTION_CHECK copy");
+
+    input.failure = MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED;
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           model.kind == MDKR_ONLINE_VIEW_RECOVERY &&
+           model.failure == MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED &&
+           model.title != NULL &&
+           strcmp(model.title, "Your opponent couldn't start") == 0 &&
+           model.explanation != NULL && model.explanation[0] != '\0' &&
+           model.primary.action == MDKR_ONLINE_VIEW_ACTION_RETURN_TO_LOBBY &&
+           model.primary.label != NULL &&
+           strcmp(model.primary.label, "Return to Lobby") == 0,
+           "start-barrier abort routes to its own Return to Lobby card");
+    expect_complete(
+        &model,
+        "opponent-never-started recovery copy/control contract is complete");
+    expect(strstr(model.explanation,
+                  "could not establish a playable connection") == NULL,
+           "opponent-never-started card is distinct from CONNECTION_CHECK copy");
+}
+#endif
+
 int main(void) {
     test_entry_connecting_and_timeouts();
     test_room_selection_and_release_gate();
     test_loading_racing_and_results();
     test_host_config_and_tournament();
     test_failure_catalog_and_atomicity();
+#if MDKR_ENABLE_ONLINE_BETA
+    test_race_scoped_recovery_cards();
+#endif
     if (failures != 0) {
         fprintf(stderr, "%d online lobby view-model test(s) failed\n", failures);
         return 1;

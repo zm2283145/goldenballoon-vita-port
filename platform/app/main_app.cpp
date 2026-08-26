@@ -1050,6 +1050,17 @@ int runEngineSession(AppHost &host, SessionRuntime &session,
  * seals real input over the mesh for the visible endpoint. In production `peer`
  * is null and the real remote process supplies that input.
  * ======================================================================== */
+/* Why the online-live engine session ended, so post-session handling can route
+ * the survivor to the right recovery card instead of a ghost race. Completed is
+ * the normal engine exit (race finished or the player left through the race
+ * chrome); the rest are the abnormal drain exits liveDrainMatchInput forces. */
+enum class LiveRaceEndReason {
+    Completed = 0,        /* engine exited normally */
+    AdvanceFailed,        /* race_advance() failed (pre-existing hard exit) */
+    OpponentLeft,         /* peer-loss latch fired mid-race */
+    OpponentNeverStarted, /* start barrier aborted before the first authored tick */
+};
+
 struct LiveMatchInputContext {
     IMdkrOnlineAdapter *visible = nullptr;
     IMdkrOnlineAdapter *peer = nullptr;   /* loopback proof only; null in prod */
@@ -1058,6 +1069,10 @@ struct LiveMatchInputContext {
     std::uint32_t racedTicks = 0u;        /* highest authored tick drained */
     std::uint64_t drainCalls = 0u;
     bool advanceFailed = false;
+    /* Set by liveDrainMatchInput when it forces an abnormal session end (peer
+     * loss mid-race, or a start-barrier abort). runOnlineLiveEngineSession reads
+     * it to route the post-race view and to suppress fabricated results. */
+    LiveRaceEndReason endReason = LiveRaceEndReason::Completed;
     /* Cross-process test-only real-time pacing (see runOnlineLiveEngineSession's
      * paceAdvanceHz parameter, default 0 == disabled/current behavior). Headless
      * autoplay drains authored ticks as fast as the CPU allows; interactive play
@@ -1126,6 +1141,21 @@ bool liveDrainMatchInput(void *opaque, std::uint32_t /*epoch*/,
     const std::uint32_t lead = static_cast<std::uint32_t>(info.inputDelay) + 2u;
     for (unsigned guard = 0u; info.nextTick <= tick && guard < 100000u; ++guard) {
         const std::uint32_t drainTick = info.nextTick;
+        /* End the visible race the instant a roster peer is lost mid-race,
+         * rather than silently predicting against a frozen ghost all the way to
+         * the finish line. The start barrier (drainTick == firstTick) reports
+         * its own OpponentNeverStarted reason below, so only a loss AFTER the
+         * opening tick counts as OpponentLeft here. Serviced every engine frame
+         * by liveOverlayService, so the latch is at most one frame stale. */
+        if (drainTick > info.firstTick &&
+            mdkr_online_live_adapter_race_peer_lost(ctx->visible)) {
+            ctx->endReason = LiveRaceEndReason::OpponentLeft;
+            std::fprintf(stderr,
+                         "[online-live] peer lost mid-race at tick %u; ending "
+                         "session (no ghost race)\n",
+                         drainTick);
+            return false;
+        }
         if (ctx->peer != nullptr) {
             /* Advance the peer ahead: each advance seals its deterministic input
              * for (nextTick + inputDelay) and fans it out, so ticks up to
@@ -1197,10 +1227,18 @@ bool liveDrainMatchInput(void *opaque, std::uint32_t /*epoch*/,
                  * when the first send goes out. */
                 (void)mdkr_online_live_adapter_race_prime_start(ctx->visible);
                 bool remoteArrived = false;
+                bool peerLostAtBarrier = false;
                 for (unsigned spin = 0u; spin < 30000u; ++spin) {
                     if (mdkr_online_live_adapter_race_remote_ready(ctx->visible,
                                                                    drainTick)) {
                         remoteArrived = true;
+                        break;
+                    }
+                    /* The opponent's transport died before ever delivering
+                     * tick-1: stop waiting immediately rather than burning the
+                     * full 30 s budget. */
+                    if (mdkr_online_live_adapter_race_peer_lost(ctx->visible)) {
+                        peerLostAtBarrier = true;
                         break;
                     }
                     if ((spin % 200u) == 199u) {
@@ -1210,11 +1248,25 @@ bool liveDrainMatchInput(void *opaque, std::uint32_t /*epoch*/,
                     ctx->visible->service();
                     SDL_Delay(1u);
                 }
+                if (!remoteArrived) {
+                    /* NEVER author the opening tick against a peer that never
+                     * started. Aborting here (before the first race_advance)
+                     * keeps the local player out of a one-sided ghost race and
+                     * routes them to the OPPONENT_NEVER_STARTED recovery card.
+                     * The witness line is kept truthful for the test lanes. */
+                    ctx->endReason = LiveRaceEndReason::OpponentNeverStarted;
+                    std::fprintf(stderr,
+                                 "[START] race-start barrier: remote tick-%u "
+                                 "input %s; aborting to the room\n",
+                                 drainTick,
+                                 peerLostAtBarrier ? "peer lost"
+                                                   : "TIMED OUT");
+                    return false;
+                }
                 std::fprintf(stderr,
                              "[START] race-start barrier: remote tick-%u input "
-                             "%s\n",
-                             drainTick,
-                             remoteArrived ? "arrived" : "TIMED OUT (predicting)");
+                             "arrived\n",
+                             drainTick);
             }
             if (ctx->paceAdvanceHz > 0u) {
                 /* Test-only (see LiveMatchInputContext::paceAdvanceHz): hold this
@@ -1235,6 +1287,7 @@ bool liveDrainMatchInput(void *opaque, std::uint32_t /*epoch*/,
         }
         if (!mdkr_online_live_adapter_race_advance(ctx->visible)) {
             ctx->advanceFailed = true;
+            ctx->endReason = LiveRaceEndReason::AdvanceFailed;
             return false;
         }
         (void)mdkr_online_live_adapter_race_info(ctx->visible, &info);
@@ -1303,7 +1356,9 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
                                IMdkrOnlineAdapter *visible,
                                IMdkrOnlineAdapter *peer,
                                unsigned paceAdvanceHz = 0u,
-                               bool syntheticInput = false) {
+                               bool syntheticInput = false,
+                               LiveRaceEndReason *endReasonOut = nullptr) {
+    if (endReasonOut != nullptr) *endReasonOut = LiveRaceEndReason::Completed;
     if (visible == nullptr) return 2;
     if (!mdkr_net_roster_runtime_active()) {
         std::fprintf(stderr,
@@ -1470,6 +1525,21 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
         static_cast<unsigned long long>(hashVisible),
         static_cast<unsigned long long>(hashPeer), converged ? 1 : 0);
 
+    /* Post-session view routing (make-or-break: the panel is the only surface
+     * the player sees after the engine ends). An abnormal drain exit gets its
+     * OWN recovery card rather than the generic connection-lost copy the in-race
+     * PeerLost latch mapped: peer loss mid-race -> "Opponent disconnected",
+     * start-barrier abort -> "Your opponent couldn't start". A normal finish
+     * leaves whatever the adapter latched (usually nothing) untouched. */
+    if (context.endReason == LiveRaceEndReason::OpponentLeft) {
+        mdkr_online_live_adapter_set_race_end_failure(
+            visible, MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT);
+    } else if (context.endReason == LiveRaceEndReason::OpponentNeverStarted) {
+        mdkr_online_live_adapter_set_race_end_failure(
+            visible, MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED);
+    }
+    if (endReasonOut != nullptr) *endReasonOut = context.endReason;
+
     platformSetOverlayHooks(nullptr);
     platformSetHostWebGpuRecovery(nullptr, nullptr);
     platformSetHostWebGpu(nullptr, nullptr, nullptr, nullptr, nullptr, 0);
@@ -1492,11 +1562,18 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
  * adapter exactly once: the LEADER publishes PUBLISH_RESULTS to the room and
  * a joiner's local session syncs from the RESULTS snapshot. An aborted or
  * unfinished race recorded nothing -- the poll returns false and the no-op is
- * logged, never treated as an error. If the session ended because a peer was
- * lost, note it here; the adapter already latched the matching lobby-facing
- * failure when the mesh reported PeerLost, so the panel fronts the
- * connection-lost recovery without any nudge from this side. */
-void reportOnlineRaceResults(IMdkrOnlineAdapter *adapter) {
+ * logged, never treated as an error.
+ *
+ * `endReason` says WHY the session ended. When the race did not genuinely
+ * finish -- a peer vanished mid-race, or the start barrier aborted -- we must
+ * NOT publish placements: the survivor's local sim raced (at most) a frozen
+ * ghost, so any captured placement for the vanished peer is fabricated. Skip
+ * the publish entirely in that case (the adapter's peer-loss latch already
+ * fronts the recovery card). Only a genuine completion (or a normal engine
+ * exit) publishes. */
+void reportOnlineRaceResults(
+    IMdkrOnlineAdapter *adapter,
+    LiveRaceEndReason endReason = LiveRaceEndReason::Completed) {
     if (adapter == nullptr) return;
     MdkrOnlineLiveRaceInfo endInfo{};
     if (mdkr_online_live_adapter_race_info(adapter, &endInfo) &&
@@ -1504,6 +1581,14 @@ void reportOnlineRaceResults(IMdkrOnlineAdapter *adapter) {
         std::fprintf(stderr,
                      "[online-live] race ended with peerLost=1 "
                      "(adapter latched the lobby-facing failure)\n");
+    }
+    if (endReason == LiveRaceEndReason::OpponentLeft ||
+        endReason == LiveRaceEndReason::OpponentNeverStarted) {
+        std::fprintf(stderr,
+                     "[online-live] race did not genuinely finish "
+                     "(endReason=%d); suppressing results publish\n",
+                     static_cast<int>(endReason));
+        return;
     }
     uint8_t placements[MDKR_ONLINE_RACE_RESULT_SLOTS];
     if (!mdkr_online_race_results_poll(placements)) {
@@ -2785,13 +2870,16 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             host.shutdown();
             return 2;
         }
+        LiveRaceEndReason liveEndReason = LiveRaceEndReason::Completed;
         const int liveResult = runOnlineLiveEngineSession(
             host, config, OnlineRoom_testLoopbackVisible(race),
-            OnlineRoom_testLoopbackPeer(race), 0u, /*syntheticInput=*/true);
+            OnlineRoom_testLoopbackPeer(race), 0u, /*syntheticInput=*/true,
+            &liveEndReason);
         /* Same race-end seam as the interactive handoff: the results poll +
          * report must fire whenever the online engine session returns, and
          * this loopback proof is the fixture that witnesses it. */
-        reportOnlineRaceResults(OnlineRoom_testLoopbackVisible(race));
+        reportOnlineRaceResults(OnlineRoom_testLoopbackVisible(race),
+                                liveEndReason);
         OnlineRoom_destroyTestLoopbackRace(race);
         host.shutdown();
         return liveResult;
@@ -3141,13 +3229,17 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
             onlineConfig.video_mode = -1;
             std::fprintf(stderr,
                          "[online-live] engine race-boot handoff accepted\n");
-            const int liveResult =
-                runOnlineLiveEngineSession(host, onlineConfig, raceBoot, nullptr);
+            LiveRaceEndReason liveEndReason = LiveRaceEndReason::Completed;
+            const int liveResult = runOnlineLiveEngineSession(
+                host, onlineConfig, raceBoot, nullptr, 0u,
+                /*syntheticInput=*/false, &liveEndReason);
             /* Race-end handoff back to the ROOM: the lobby (Online Room panel)
              * is still live and owns the RESULTS/standings view, so hand it the
              * finished race's placements and simply fall back into the launcher
-             * UI loop. Nothing is torn down here. */
-            reportOnlineRaceResults(raceBoot);
+             * UI loop. Nothing is torn down here. A peer-loss / barrier abort
+             * suppresses the publish and the panel already fronts the
+             * OPPONENT_LEFT / OPPONENT_NEVER_STARTED recovery card. */
+            reportOnlineRaceResults(raceBoot, liveEndReason);
             if (liveResult != 0) {
                 /* M7: a failed ONLINE boot must never quit the whole app -- that
                  * tore down the adapter/mesh and stranded the peer in a dead
