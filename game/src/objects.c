@@ -43,6 +43,7 @@
 #include "menu.h"
 #include "network_player_authority.h"
 #include "net/net_roster_runtime.h"
+#include "net/online_race_results.h"
 #include "object_functions.h"
 #include "object_layout.h"
 #include "object_models.h"
@@ -10168,6 +10169,32 @@ void race_check_finish(s32 updateRate) {
                         settings->racers[racerPos].starting_position = racer[racerPos]->finishPosition - 1;
                     }
 
+#if MDKR_ENABLE_ONLINE_BETA
+                    /* Online results capture, challenge/battle variant of the
+                     * tracks-race hook below (search [online-results]): the
+                     * loop above is THIS path's finish-order write, placement
+                     * = finishPosition - 1. Protocol v1 only admits standard
+                     * races, so this stays dormant until battle modes go
+                     * online; offline it is dead (roster inactive). */
+                    if (mdkr_net_roster_runtime_active()) {
+                        uint8_t onlinePlacements[MDKR_ONLINE_RACE_RESULT_SLOTS] = {
+                            MDKR_ONLINE_RACE_RESULT_NONE, MDKR_ONLINE_RACE_RESULT_NONE,
+                            MDKR_ONLINE_RACE_RESULT_NONE, MDKR_ONLINE_RACE_RESULT_NONE};
+                        for (racerPos = 0; racerPos < gNumRacers; racerPos++) {
+                            s32 onlinePlace = racer[racerPos]->finishPosition - 1;
+                            if (racer[racerPos]->playerIndex != PLAYER_COMPUTER &&
+                                racer[racerPos]->playerIndex >= 0 &&
+                                racer[racerPos]->playerIndex < (s32) MDKR_ONLINE_RACE_RESULT_SLOTS &&
+                                onlinePlace >= 0 &&
+                                onlinePlace < (s32) MDKR_ONLINE_RACE_RESULT_NONE) {
+                                onlinePlacements[racer[racerPos]->playerIndex] =
+                                    (uint8_t) onlinePlace;
+                            }
+                        }
+                        mdkr_online_race_results_publish(onlinePlacements);
+                    }
+#endif
+
                     music_play(newStartingPosition);
                     newStartingPosition = 4;
                     for (prevRacerPos = 0; prevRacerPos < 8; prevRacerPos++) {
@@ -10469,6 +10496,33 @@ void race_check_finish(s32 updateRate) {
                     i++;
                 } while (i < gNumRacers);
             }
+#if MDKR_ENABLE_ONLINE_BETA
+            /* Online results capture: the loop above is where DKR commits the
+             * race's final finish order (row i of gRacersByPosition is
+             * placement i; every racer was already force-finished at race end,
+             * so non-finishers sit in their padded rows). Online, the launcher
+             * owns the results/standings UI, so OBSERVE that same order here
+             * -- never alter it -- keyed by CANONICAL slot: for an online race
+             * playerIndex IS the canonical slot, and PLAYER_COMPUTER rows are
+             * ignored. One publish per race; the launcher reads it back
+             * through mdkr_online_race_results_poll() after the session ends.
+             * Offline this block is dead: mdkr_net_roster_runtime_active() is
+             * false there, and non-beta builds do not compile it at all. */
+            if (mdkr_net_roster_runtime_active()) {
+                uint8_t onlinePlacements[MDKR_ONLINE_RACE_RESULT_SLOTS] = {
+                    MDKR_ONLINE_RACE_RESULT_NONE, MDKR_ONLINE_RACE_RESULT_NONE,
+                    MDKR_ONLINE_RACE_RESULT_NONE, MDKR_ONLINE_RACE_RESULT_NONE};
+                for (i = 0; i < gNumRacers; i++) {
+                    curRacer = gRacersByPosition[i]->racer;
+                    if (curRacer->playerIndex != PLAYER_COMPUTER &&
+                        curRacer->playerIndex >= 0 &&
+                        curRacer->playerIndex < (s32) MDKR_ONLINE_RACE_RESULT_SLOTS) {
+                        onlinePlacements[curRacer->playerIndex] = (uint8_t) i;
+                    }
+                }
+                mdkr_online_race_results_publish(onlinePlacements);
+            }
+#endif
             gSwapLeadPlayer = FALSE;
             flags[2] = raceType;
             if (is_in_two_player_adventure() &&
