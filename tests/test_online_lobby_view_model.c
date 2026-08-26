@@ -361,6 +361,190 @@ static void test_loading_racing_and_results(void) {
            model.primary.action == MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN &&
            model.secondary.action == MDKR_ONLINE_VIEW_ACTION_CHANGE_TRACK,
            "results keep the party and offer a clear rematch path");
+    expect_complete(&model, "leader results copy/control contract is complete");
+
+    /* Only the room leader can send REMATCH: a guest's results view must
+     * never offer a dead Race Again button, and it names the next actor. */
+    input.local_endpoint_id = 20u;
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           model.kind == MDKR_ONLINE_VIEW_RESULTS &&
+           !model.local_member_is_leader &&
+           model.primary.action ==
+               MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS &&
+           model.secondary.action != MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN &&
+           model.status != NULL &&
+           strcmp(model.status, "Waiting for the Host") == 0,
+           "guest results wait on the host instead of offering REMATCH");
+    expect_complete(&model, "guest results copy/control contract is complete");
+    input.local_endpoint_id = 10u;
+}
+
+static void test_host_config_and_tournament(void) {
+    MdkrOnlineCompatibilityV1 compat = compatibility();
+    MdkrSessionCore session;
+    MdkrOnlineLobby lobby;
+    MdkrOnlineViewInput input;
+    MdkrOnlineViewModel model;
+    uint64_t host_cmd = 1u;
+    uint64_t guest_cmd = 2u; /* the JOIN consumed command id 1 */
+    unsigned round;
+
+    mdkr_session_core_init(&session, 5u);
+    session_command(&session, MDKR_SESSION_COMMAND_BEGIN_ONLINE, 0u);
+    mdkr_online_lobby_init(&lobby, 101u, 10u, &compat, 1u);
+    lobby_join(&lobby, 20u, 1u, &compat);
+    session_command(&session, MDKR_SESSION_COMMAND_SET_ROOM_PHASE,
+                    MDKR_ROOM_SELECTING);
+    input = input_for(&session, &lobby);
+    input.race_admission_enabled = true;
+
+    /* A host-configured single race removes the per-seat track vote step:
+     * character + vehicle go straight to Ready. */
+    expect(lobby_command(&lobby, host_cmd++, MDKR_ONLINE_SET_CONFIG_TRACK,
+                         0u, 5u).accepted,
+           "leader configures the session track");
+    expect(lobby_command(&lobby, host_cmd++, MDKR_ONLINE_SET_CHARACTER,
+                         0u, 1u).accepted &&
+           lobby_command(&lobby, host_cmd++, MDKR_ONLINE_SET_VEHICLE,
+                         0u, 0u).accepted,
+           "leader picks racer and vehicle");
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           model.kind == MDKR_ONLINE_VIEW_SELECTING &&
+           model.primary.action == MDKR_ONLINE_VIEW_ACTION_READY,
+           "a host-configured track skips the track vote straight to Ready");
+
+    /* Trophy Tournament never asks for a track vote either. */
+    expect(lobby_command(&lobby, host_cmd++, MDKR_ONLINE_SET_MODE,
+                         0u, 1u).accepted,
+           "leader switches the session to Trophy Tournament");
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           model.primary.action == MDKR_ONLINE_VIEW_ACTION_READY,
+           "tournament mode skips the track vote straight to Ready");
+
+    /* Everyone ready but no cup chosen: Start Race would be refused, so the
+     * view names the missing host decision instead of a dead button. */
+    expect(lobby_command(&lobby, host_cmd++, MDKR_ONLINE_SET_READY,
+                         0u, 1u).accepted,
+           "leader readies without a cup");
+    expect(lobby_command_as(&lobby, 20u, guest_cmd++,
+                            MDKR_ONLINE_SET_CHARACTER, 1u, 2u).accepted &&
+           lobby_command_as(&lobby, 20u, guest_cmd++,
+                            MDKR_ONLINE_SET_VEHICLE, 1u, 0u).accepted &&
+           lobby_command_as(&lobby, 20u, guest_cmd++,
+                            MDKR_ONLINE_SET_READY, 1u, 1u).accepted,
+           "guest completes selections and readies");
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           model.status != NULL &&
+           strcmp(model.status, "Pick a Cup to Start") == 0 &&
+           model.primary.action !=
+               MDKR_ONLINE_VIEW_ACTION_START_RACE,
+           "everyone ready without a cup names the missing host decision");
+
+    /* Choosing the cup clears Ready (expected); re-ready arms Start Race. */
+    expect(lobby_command(&lobby, host_cmd++, MDKR_ONLINE_SET_CUP,
+                         0u, 1u).accepted,
+           "leader picks the Snowflake Mountain Cup");
+    expect(lobby_command(&lobby, host_cmd++, MDKR_ONLINE_SET_READY,
+                         0u, 1u).accepted &&
+           lobby_command_as(&lobby, 20u, guest_cmd++,
+                            MDKR_ONLINE_SET_READY, 1u, 1u).accepted,
+           "both players re-ready after the cup choice");
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           model.primary.action == MDKR_ONLINE_VIEW_ACTION_START_RACE,
+           "a chosen cup re-arms Start Race for the leader");
+
+    /* Four scheduled rounds; the leader's seat wins every race 9-7. */
+    for (round = 0u; round < 4u; round++) {
+        if (round != 0u) {
+            expect(session_command(&session,
+                                   MDKR_SESSION_COMMAND_RETURN_TO_LOBBY,
+                                   0u).accepted,
+                   "session returns to the lobby between rounds");
+            expect(lobby_command(&lobby, host_cmd++, MDKR_ONLINE_REMATCH,
+                                 0u, 0u).accepted,
+                   "leader advances the tournament round");
+            expect(lobby_command(&lobby, host_cmd++, MDKR_ONLINE_SET_READY,
+                                 0u, 1u).accepted &&
+                   lobby_command_as(&lobby, 20u, guest_cmd++,
+                                    MDKR_ONLINE_SET_READY, 1u, 1u).accepted,
+                   "both players re-ready for the next round");
+        }
+        expect(lobby_command(&lobby, host_cmd++, MDKR_ONLINE_BEGIN_LOADING,
+                             0u, 0x07u).accepted,
+               "tournament round begins loading");
+        session_command(&session, MDKR_SESSION_COMMAND_SET_ROOM_PHASE,
+                        MDKR_ROOM_LOADING);
+        expect(session_command(&session, MDKR_SESSION_COMMAND_REQUEST_RACE,
+                               0u).accepted,
+               "session boots the round's engine loan");
+        lobby_command(&lobby, host_cmd++, MDKR_ONLINE_ACK_LOADED, 0u, 0u);
+        lobby_command_as(&lobby, 20u, guest_cmd++, MDKR_ONLINE_ACK_LOADED,
+                         0u, 0u);
+        lobby_command(&lobby, host_cmd++, MDKR_ONLINE_BEGIN_RACE, 0u, 0u);
+        session_command(&session, MDKR_SESSION_COMMAND_SET_ENGINE_PHASE,
+                        MDKR_ENGINE_READY);
+        session_command(&session, MDKR_SESSION_COMMAND_SET_ENGINE_PHASE,
+                        MDKR_ENGINE_RACING);
+        lobby_command(&lobby, host_cmd++, MDKR_ONLINE_PUBLISH_RESULTS, 0u,
+                      0xFFFF0100u);
+        session_command(&session, MDKR_SESSION_COMMAND_SET_ENGINE_PHASE,
+                        MDKR_ENGINE_FINISHED);
+
+        if (round == 0u) {
+            /* Mid-series results: race_index/points-aware copy, leader gets
+             * the scheduled Next Race, the guest waits on the host. */
+            expect(lobby.race_index == 0u && lobby.points[0] == 9u &&
+                   lobby.points[1] == 7u,
+                   "authentic DKR points land after round 1");
+            expect(mdkr_online_view_model_build(&input, &model) &&
+                   model.kind == MDKR_ONLINE_VIEW_RESULTS &&
+                   model.primary.action ==
+                       MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN &&
+                   strcmp(model.primary.label, "Next Race") == 0 &&
+                   model.status != NULL &&
+                   strcmp(model.status, "Standings Updated") == 0,
+                   "leader tournament results advance the scheduled series");
+            expect_complete(&model, "tournament results contract is complete");
+            input.local_endpoint_id = 20u;
+            expect(mdkr_online_view_model_build(&input, &model) &&
+                   model.primary.action ==
+                       MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS &&
+                   model.status != NULL &&
+                   strcmp(model.status, "Waiting for the Host") == 0,
+                   "guest tournament results wait on the host");
+            input.local_endpoint_id = 10u;
+        }
+    }
+
+    /* Final-round results: the champion is named and the leader can wrap the
+     * series into a fresh tournament. */
+    expect(lobby.race_index == 3u && lobby.points[0] == 36u &&
+           lobby.points[1] == 28u,
+           "cumulative points reach the four-round totals");
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           model.kind == MDKR_ONLINE_VIEW_RESULTS &&
+           model.primary.action == MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN &&
+           strcmp(model.primary.label, "New Tournament") == 0 &&
+           model.status != NULL &&
+           strcmp(model.status, "You Are the Champion") == 0,
+           "final round crowns the leading seat and offers a new tournament");
+    input.local_endpoint_id = 20u;
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           model.primary.action ==
+               MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS &&
+           model.status != NULL &&
+           strcmp(model.status, "Your Friend Takes the Trophy") == 0,
+           "the guest sees the champion result without a dead rematch");
+    input.local_endpoint_id = 10u;
+
+    /* The series wrap: REMATCH after race 4 resets to race 1, zero points. */
+    expect(session_command(&session, MDKR_SESSION_COMMAND_RETURN_TO_LOBBY,
+                           0u).accepted &&
+           lobby_command(&lobby, host_cmd++, MDKR_ONLINE_REMATCH,
+                         0u, 0u).accepted &&
+           lobby.race_index == 0u && lobby.points[0] == 0u &&
+           lobby.points[1] == 0u,
+           "New Tournament wraps the series back to race 1 with fresh points");
 }
 
 static void test_failure_catalog_and_atomicity(void) {
@@ -416,6 +600,7 @@ int main(void) {
     test_entry_connecting_and_timeouts();
     test_room_selection_and_release_gate();
     test_loading_racing_and_results();
+    test_host_config_and_tournament();
     test_failure_catalog_and_atomicity();
     if (failures != 0) {
         fprintf(stderr, "%d online lobby view-model test(s) failed\n", failures);
