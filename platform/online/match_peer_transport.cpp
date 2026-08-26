@@ -12,12 +12,25 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <map>
 #include <mutex>
 #include <utility>
 #include <variant>
+
+// Always-on (beta) [MESH] diagnostics for the WebRTC bring-up: ICE connection
+// state, STATE/control DataChannel open, channelsReady and peer-lost reasons.
+// The classic real-two-machine stall is the unordered STATE channel never
+// opening across NATs, so channelsReady never reaches the roster and the race
+// never boots -- these lines make that visible in a stderr capture. Compiled out
+// of any non-beta build of this TU (e.g. the standalone transport test).
+#if MDKR_ENABLE_ONLINE_BETA
+#define MDKR_MESH_LOG(...) std::fprintf(stderr, __VA_ARGS__)
+#else
+#define MDKR_MESH_LOG(...) ((void)0)
+#endif
 
 /*
  * Composition-only: every byte of key schedule, sealing and phrase logic
@@ -313,6 +326,10 @@ struct MdkrMatchPeerMesh::State
 
     void peerLost(PeerRuntime &peer, MdkrMatchPeerLostReason reason) {
         if (peer.lost) return;
+        MDKR_MESH_LOG(
+            "[MESH] peer LOST ep=%llu reason=%d channelsReady=%u offerer=%u\n",
+            (unsigned long long)peer.endpointId, static_cast<int>(reason),
+            peer.channelsReady ? 1u : 0u, peer.offerer ? 1u : 0u);
         peer.lost = true;
         silentTeardown(peer);
         MdkrMatchPeerMeshEvent event;
@@ -455,6 +472,10 @@ struct MdkrMatchPeerMesh::State
             });
         peer.connection->onStateChange(
             [weak, endpointId, attempt](rtc::PeerConnection::State value) {
+                MDKR_MESH_LOG(
+                    "[MESH] ice/connection state ep=%llu attempt=%u state=%d\n",
+                    (unsigned long long)endpointId, attempt,
+                    static_cast<int>(value));
                 if (value != rtc::PeerConnection::State::Disconnected &&
                     value != rtc::PeerConnection::State::Failed &&
                     value != rtc::PeerConnection::State::Closed) {
@@ -557,6 +578,11 @@ struct MdkrMatchPeerMesh::State
     void createConnection(PeerRuntime &peer) {
         peer.attempt++;
         peer.answerApplied = false;
+        MDKR_MESH_LOG(
+            "[MESH] creating peer connection ep=%llu attempt=%u offerAttempts=%u "
+            "(offerer, creating STATE+control channels)\n",
+            (unsigned long long)peer.endpointId, peer.attempt,
+            peer.offerAttempts);
         /* M4: a machine where construction itself keeps throwing must not
          * recreate every tick forever -- bounded like everything else. */
         const auto buildFailed = [this, &peer]() {
@@ -946,10 +972,18 @@ struct MdkrMatchPeerMesh::State
     void channelOpened(PeerRuntime &peer, bool isState) {
         if (isState) peer.stateOpen = true;
         else peer.controlOpen = true;
+        MDKR_MESH_LOG(
+            "[MESH] DataChannel open ep=%llu channel=%s stateOpen=%u "
+            "controlOpen=%u\n",
+            (unsigned long long)peer.endpointId, isState ? "STATE" : "control",
+            peer.stateOpen ? 1u : 0u, peer.controlOpen ? 1u : 0u);
         if (!peer.channelsReady && peer.stateOpen && peer.controlOpen) {
             peer.channelsReady = true;
             peer.pingOutstandingSinceMs = 0u;
             peer.nextPingAtMs = now() + kMdkrMatchControlPingIntervalMs;
+            MDKR_MESH_LOG(
+                "[MESH] channels ready ep=%llu (STATE+control both open)\n",
+                (unsigned long long)peer.endpointId);
             MdkrMatchPeerMeshEvent event;
             event.type = MdkrMatchPeerMeshEventType::PeerChannelsReady;
             event.endpointId = peer.endpointId;

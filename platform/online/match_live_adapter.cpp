@@ -54,13 +54,94 @@
 #include "session/session_core.h"
 
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <set>
 #include <string>
 #include <vector>
 
+// Always-on (beta) diagnostics for the Start Race -> race-ready chain. Every
+// tagged line ([ROOM-PHASE] [ONLINE] [START] [MESH] [PREFLIGHT] [LOADING]) is
+// grep-able so the owner's two-machine capture pinpoints exactly which gate a
+// stall sits behind. Compiled out of any non-beta build of this TU.
+#if MDKR_ENABLE_ONLINE_BETA
+#define MDKR_ONLINE_LOG(...) std::fprintf(stderr, __VA_ARGS__)
+#else
+#define MDKR_ONLINE_LOG(...) ((void)0)
+#endif
+
 namespace {
+
+const char *roomPhaseName(MdkrRoomPhase room) {
+    switch (room) {
+        case MDKR_ROOM_NONE: return "NONE";
+        case MDKR_ROOM_OPEN: return "OPEN";
+        case MDKR_ROOM_PREFLIGHT: return "PREFLIGHT";
+        case MDKR_ROOM_SELECTING: return "SELECTING";
+        case MDKR_ROOM_LOADING: return "LOADING";
+        case MDKR_ROOM_COUNTDOWN: return "COUNTDOWN";
+        case MDKR_ROOM_RACING: return "RACING";
+        case MDKR_ROOM_RESULTS: return "RESULTS";
+        case MDKR_ROOM_CLOSED: return "CLOSED";
+    }
+    return "?";
+}
+
+const char *lobbyPhaseName(MdkrOnlinePhase phase) {
+    switch (phase) {
+        case MDKR_ONLINE_LOBBY: return "LOBBY";
+        case MDKR_ONLINE_LOADING: return "LOADING";
+        case MDKR_ONLINE_RACING: return "RACING";
+        case MDKR_ONLINE_RESULTS: return "RESULTS";
+        case MDKR_ONLINE_CLOSED: return "CLOSED";
+    }
+    return "?";
+}
+
+const char *lobbyErrorName(MdkrOnlineError e) {
+    switch (e) {
+        case MDKR_ONLINE_OK: return "OK";
+        case MDKR_ONLINE_ERROR_PROTOCOL: return "PROTOCOL";
+        case MDKR_ONLINE_ERROR_STALE_REVISION: return "STALE_REVISION";
+        case MDKR_ONLINE_ERROR_STALE_COMMAND: return "STALE_COMMAND";
+        case MDKR_ONLINE_ERROR_COMMAND_CONFLICT: return "COMMAND_CONFLICT";
+        case MDKR_ONLINE_ERROR_INVALID_STATE: return "INVALID_STATE";
+        case MDKR_ONLINE_ERROR_UNAUTHORIZED: return "UNAUTHORIZED";
+        case MDKR_ONLINE_ERROR_NOT_FOUND: return "NOT_FOUND";
+        case MDKR_ONLINE_ERROR_ALREADY_JOINED: return "ALREADY_JOINED";
+        case MDKR_ONLINE_ERROR_INCOMPATIBLE: return "INCOMPATIBLE";
+        case MDKR_ONLINE_ERROR_CAPACITY: return "CAPACITY";
+        case MDKR_ONLINE_ERROR_NOT_READY: return "NOT_READY";
+        case MDKR_ONLINE_ERROR_DISCONNECTED: return "DISCONNECTED";
+        case MDKR_ONLINE_ERROR_SELECTION_CONFLICT: return "SELECTION_CONFLICT";
+        case MDKR_ONLINE_ERROR_ILLEGAL_VEHICLE: return "ILLEGAL_VEHICLE";
+    }
+    return "?";
+}
+
+const char *lobbyCommandName(MdkrOnlineCommandType t) {
+    switch (t) {
+        case MDKR_ONLINE_JOIN: return "JOIN";
+        case MDKR_ONLINE_LEAVE: return "LEAVE";
+        case MDKR_ONLINE_DISCONNECT: return "DISCONNECT";
+        case MDKR_ONLINE_RECONNECT: return "RECONNECT";
+        case MDKR_ONLINE_SET_READY: return "SET_READY";
+        case MDKR_ONLINE_SET_VOTE: return "SET_VOTE";
+        case MDKR_ONLINE_BEGIN_LOADING: return "BEGIN_LOADING";
+        case MDKR_ONLINE_ACK_LOADED: return "ACK_LOADED";
+        case MDKR_ONLINE_BEGIN_RACE: return "BEGIN_RACE";
+        case MDKR_ONLINE_PUBLISH_RESULTS: return "PUBLISH_RESULTS";
+        case MDKR_ONLINE_REMATCH: return "REMATCH";
+        case MDKR_ONLINE_TRANSFER_LEADER: return "TRANSFER_LEADER";
+        case MDKR_ONLINE_CLOSE: return "CLOSE";
+        case MDKR_ONLINE_SET_CHARACTER: return "SET_CHARACTER";
+        case MDKR_ONLINE_SET_VEHICLE: return "SET_VEHICLE";
+        case MDKR_ONLINE_CANCEL_LOADING: return "CANCEL_LOADING";
+    }
+    return "?";
+}
 
 uint64_t steadyNowMs() {
     return static_cast<uint64_t>(
@@ -151,6 +232,13 @@ public:
         mdkr_session_core_init(&session_, opts.sessionId);
         journey_ = opts.journey;
         nowMs_ = opts.nowMs ? opts.nowMs : &steadyNowMs;
+        if (const char *t = std::getenv("MDKR_ONLINE_VIEW_TIMEOUT_MS")) {
+            char *end = nullptr;
+            const unsigned long v = std::strtoul(t, &end, 10);
+            if (end != t && *end == '\0' && v >= 1000u) {
+                viewTimeoutMs_ = static_cast<uint64_t>(v);
+            }
+        }
     }
 
     ~LiveAdapter() override {
@@ -232,6 +320,7 @@ public:
         pumpMesh();
         runLoadingBarrier();
         runPreflight();
+        logPhaseAndTimeoutAnchor();
     }
 
     uint32_t revision() const override { return revision_; }
@@ -241,7 +330,15 @@ public:
     bool raceAdmissionEnabled() const override {
         return opts_.raceAdmissionEnabled;
     }
-    bool timeoutExpired() const override { return false; }
+    /* Non-silent: once the current view surface has not progressed within
+     * viewTimeoutMs_, report the timeout so the view model's already-present
+     * timeout card ("Room Took Too Long", "Setup Check Took Too Long", "Race Did
+     * Not Load" -> Return to Lobby / Try Again) surfaces instead of an endless
+     * spinner. The anchor is reset on every surface change; selection screens
+     * carry no timeout card so a true expiry there is inert. */
+    bool timeoutExpired() const override {
+        return viewAnchorMs_ != 0u && nowMs_() - viewAnchorMs_ >= viewTimeoutMs_;
+    }
 
     /* ---- Test probe --------------------------------------------------- */
     void fillProbe(MdkrOnlineLiveLaunchProbe *p) const {
@@ -269,6 +366,42 @@ private:
     void bump() {
         ++revision_;
         if (revision_ == 0u) revision_ = 1u;
+    }
+
+    unsigned readyCount() const {
+        if (!haveLobby_) return 0u;
+        unsigned n = 0u;
+        for (unsigned i = 0u; i < MDKR_ONLINE_MAX_ENDPOINTS; ++i) {
+            if (lobby_.members[i].occupied && lobby_.members[i].ready) ++n;
+        }
+        return n;
+    }
+
+    /* Emit one [ROOM-PHASE] line whenever the presented surface changes -- the
+     * spine the owner greps to see OPEN -> PREFLIGHT -> SELECTING -> LOADING ->
+     * RACING and where it stops -- and re-anchor the non-silent view timeout. */
+    void logPhaseAndTimeoutAnchor() {
+        const uint64_t key =
+            (static_cast<uint64_t>(session_.state.room) << 8) |
+            (haveLobby_ ? static_cast<uint64_t>(lobby_.phase) : 0u) |
+            (haveLobby_ ? 0u : UINT64_C(0x10000)) |
+            (failure_ != MDKR_ONLINE_VIEW_FAILURE_NONE ? UINT64_C(0x20000) : 0u) |
+            (reVerify_ ? UINT64_C(0x40000) : 0u);
+        if (key == lastPhaseKey_) return;
+        lastPhaseKey_ = key;
+        viewAnchorMs_ = nowMs_();
+        MDKR_ONLINE_LOG(
+            "[ROOM-PHASE] role=%s room=%s lobbyPhase=%s rev=%u epoch=%u "
+            "members=%u ready=%u track=%u vmask=0x%02x failure=%u reverify=%u\n",
+            journey_ == MDKR_ONLINE_JOURNEY_JOIN ? "join" : "create",
+            roomPhaseName(session_.state.room),
+            haveLobby_ ? lobbyPhaseName(lobby_.phase) : "(none)",
+            haveLobby_ ? lobby_.revision : 0u,
+            haveLobby_ ? lobby_.match_epoch : 0u,
+            haveLobby_ ? lobby_.member_count : 0u, readyCount(),
+            haveLobby_ ? lobby_.selected_track : 0u,
+            haveLobby_ ? lobby_.selected_vehicle_mask : 0u,
+            static_cast<unsigned>(failure_), reVerify_ ? 1u : 0u);
     }
 
     bool sessionDispatch(MdkrSessionCommandType type, uint32_t value) {
@@ -406,10 +539,23 @@ private:
                 return sendLobbyCommand(MDKR_ONLINE_SET_READY, 0u, 1u);
             case MDKR_ONLINE_VIEW_ACTION_CHANGE_SELECTION:
                 return sendLobbyCommand(MDKR_ONLINE_SET_READY, 0u, 0u);
-            case MDKR_ONLINE_VIEW_ACTION_START_RACE:
+            case MDKR_ONLINE_VIEW_ACTION_START_RACE: {
                 /* Leader begins loading; both peers follow lobby.phase LOADING
-                 * (syncPhase) into the Loading barrier. */
-                return sendLobbyCommand(MDKR_ONLINE_BEGIN_LOADING, 0u, value);
+                 * (syncPhase) into the Loading barrier. The value is the usable
+                 * vehicle mask for the voted track (see the panel note); it must
+                 * equal leveltable_vehicle_usable(track) or the engine admission
+                 * rejects the boot. */
+                const bool sent =
+                    sendLobbyCommand(MDKR_ONLINE_BEGIN_LOADING, 0u, value);
+                MDKR_ONLINE_LOG(
+                    "[START] START_RACE -> BEGIN_LOADING vehicleMask=0x%02x "
+                    "leader=%u sentToCloud=%u rev=%u\n",
+                    value,
+                    (haveLobby_ &&
+                     lobby_.leader_endpoint_id == localEndpointId_) ? 1u : 0u,
+                    sent ? 1u : 0u, haveLobby_ ? lobby_.revision : 0u);
+                return sent;
+            }
             case MDKR_ONLINE_VIEW_ACTION_RETURN_TO_LOBBY:
                 if (!sendLobbyCommand(MDKR_ONLINE_CANCEL_LOADING, 0u, 0u))
                     return false;
@@ -473,20 +619,47 @@ private:
                      * seat needs no join command. */
                     nextCommandId_ =
                         journey_ == MDKR_ONLINE_JOURNEY_JOIN ? 2u : 1u;
+                    MDKR_ONLINE_LOG(
+                        "[ONLINE] room ready role=%s localEp=%llu members=%u\n",
+                        journey_ == MDKR_ONLINE_JOURNEY_JOIN ? "join" : "create",
+                        (unsigned long long)localEndpointId_,
+                        haveLobby_ ? lobby_.member_count : 0u);
                     bump();
                     break;
                 case MdkrOnlineRoomEvent::Type::State:
                     if (ev.haveLobby) {
                         lobby_ = ev.lobby;
                         haveLobby_ = true;
+                        MDKR_ONLINE_LOG(
+                            "[ONLINE] room state rev=%u lobbyPhase=%s members=%u "
+                            "ready=%u track=%u vmask=0x%02x epoch=%u\n",
+                            lobby_.revision, lobbyPhaseName(lobby_.phase),
+                            lobby_.member_count, readyCount(),
+                            lobby_.selected_track, lobby_.selected_vehicle_mask,
+                            lobby_.match_epoch);
                         syncPhase();
                         bump();
                     }
                     break;
                 case MdkrOnlineRoomEvent::Type::CommandResult:
+                    /* The BEGIN_LOADING result is the make-or-break Start Race
+                     * signal: whether the cloud MatchRoom accepted the leader's
+                     * start, and with what error if not. Always logged. */
+                    if (haveLast_ && lastType_ == MDKR_ONLINE_BEGIN_LOADING) {
+                        MDKR_ONLINE_LOG(
+                            "[START] BEGIN_LOADING result accepted=%u error=%s "
+                            "rev=%u\n",
+                            ev.step.accepted ? 1u : 0u,
+                            lobbyErrorName(ev.step.error), ev.step.revision);
+                    }
                     if (ev.step.accepted) {
                         staleRetries_ = 0u;
                     } else if (ev.step.error == MDKR_ONLINE_ERROR_INCOMPATIBLE) {
+                        MDKR_ONLINE_LOG(
+                            "[ONLINE] command REJECTED lastType=%s error=%s "
+                            "-> DIFFERENT_BUILD\n",
+                            haveLast_ ? lobbyCommandName(lastType_) : "?",
+                            lobbyErrorName(ev.step.error));
                         failure_ = MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_BUILD;
                         bump();
                     } else if ((ev.step.error == MDKR_ONLINE_ERROR_STALE_REVISION ||
@@ -497,7 +670,21 @@ private:
                          * carrying that advance was applied earlier in this same
                          * drain, so re-send against the fresh revision. */
                         ++staleRetries_;
+                        MDKR_ONLINE_LOG(
+                            "[ONLINE] command stale lastType=%s error=%s retry=%u "
+                            "(re-sending against fresh revision)\n",
+                            lobbyCommandName(lastType_),
+                            lobbyErrorName(ev.step.error), staleRetries_);
                         (void)sendLobbyCommandRaw(lastType_, lastSeat_, lastValue_);
+                    } else {
+                        /* Non-silent: any other refusal (e.g. NOT_READY,
+                         * ILLEGAL_VEHICLE, exhausted stale retries) is logged so a
+                         * refused command never vanishes without a trace. */
+                        MDKR_ONLINE_LOG(
+                            "[ONLINE] command REJECTED lastType=%s error=%s "
+                            "(no auto-recovery)\n",
+                            haveLast_ ? lobbyCommandName(lastType_) : "?",
+                            lobbyErrorName(ev.step.error));
                     }
                     break;
                 case MdkrOnlineRoomEvent::Type::Failure:
@@ -506,6 +693,8 @@ private:
                     failure_ = ev.failure != MDKR_ONLINE_VIEW_FAILURE_NONE
                                    ? ev.failure
                                    : MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE;
+                    MDKR_ONLINE_LOG("[ONLINE] room failure=%u\n",
+                                    static_cast<unsigned>(failure_));
                     pending_ = Pending::None;
                     bump();
                     break;
@@ -523,6 +712,11 @@ private:
         if (reVerify_) return;
         if (lobby_.phase == MDKR_ONLINE_LOADING &&
             session_.state.room != MDKR_ROOM_LOADING) {
+            MDKR_ONLINE_LOG(
+                "[START] room entered LOADING (following leader) rev=%u epoch=%u "
+                "track=%u vmask=0x%02x\n",
+                lobby_.revision, lobby_.match_epoch, lobby_.selected_track,
+                lobby_.selected_vehicle_mask);
             (void)sessionDispatch(MDKR_SESSION_COMMAND_SET_ROOM_PHASE,
                                   MDKR_ROOM_LOADING);
             (void)sessionDispatch(MDKR_SESSION_COMMAND_REQUEST_RACE, 0u);
@@ -535,12 +729,19 @@ private:
         if (meshUp_ || !opts_.meshBackend || !haveLobby_) return;
         buildMeshRoster();
         meshEpoch_ = lobby_.leader_generation; /* stable nonzero keying epoch */
+        MDKR_ONLINE_LOG(
+            "[MESH] bringUpMesh roster=%u epoch=%u iceServers=%u localEp=%llu\n",
+            static_cast<unsigned>(meshRoster_.size()), meshEpoch_,
+            static_cast<unsigned>(iceServers_.size()),
+            (unsigned long long)localEndpointId_);
         /* localGeneration 0 == adopt the welcome's assigned generation: against
          * the real signal service the server owns the per-endpoint monotonic
          * generation, so the launcher must not hardcode 1. */
         MdkrMatchPeerSignalFeed *feed = opts_.meshBackend->beginSignaling(
             localEndpointId_, 0u, roomIdStr_, credential_, iceServers_);
         if (feed == nullptr) {
+            MDKR_ONLINE_LOG(
+                "[MESH] beginSignaling FAILED -> CONNECTION_CHECK\n");
             failure_ = MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK;
             return;
         }
@@ -557,10 +758,13 @@ private:
         std::string err;
         mesh_ = MdkrMatchPeerMesh::create(o, &err);
         if (!mesh_) {
+            MDKR_ONLINE_LOG("[MESH] mesh create FAILED err=%s -> CONNECTION_CHECK\n",
+                            err.c_str());
             failure_ = MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK;
             return;
         }
         meshUp_ = true;
+        MDKR_ONLINE_LOG("[MESH] mesh up (peer connections starting)\n");
     }
 
     void buildMeshRoster() {
@@ -679,12 +883,24 @@ private:
                          * the welcome has been processed; it is bound into the
                          * graph and the local attestation. */
                         meshGeneration_ = mesh_->connectionGeneration();
+                        MDKR_ONLINE_LOG(
+                            "[MESH] phrase ready gen=%u (SAS phrase available for "
+                            "comparison)\n",
+                            meshGeneration_);
                         bump();
                     }
                     break;
                 }
                 case MdkrMatchPeerMeshEventType::PeerChannelsReady:
                     channelsReady_.insert(ev.endpointId);
+                    MDKR_ONLINE_LOG(
+                        "[MESH] peer channels ready ep=%llu channelsReady=%u/%u "
+                        "(state+control DataChannels open)\n",
+                        (unsigned long long)ev.endpointId,
+                        static_cast<unsigned>(channelsReady_.size()),
+                        meshRoster_.empty()
+                            ? 0u
+                            : static_cast<unsigned>(meshRoster_.size() - 1u));
                     bump();
                     break;
                 case MdkrMatchPeerMeshEventType::PreflightFragment:
@@ -692,17 +908,32 @@ private:
                     break;
                 case MdkrMatchPeerMeshEventType::PeerLost:
                     failure_ = mapLostReason(ev.lostReason);
+                    MDKR_ONLINE_LOG(
+                        "[MESH] peer LOST ep=%llu reason=%d -> failure=%u\n",
+                        (unsigned long long)ev.endpointId,
+                        static_cast<int>(ev.lostReason),
+                        static_cast<unsigned>(failure_));
                     bump();
                     break;
                 case MdkrMatchPeerMeshEventType::Failure:
                     /* SignalLost with healthy channels is a status, not a
                      * failure (docs: "Room updates reconnecting"). */
                     if (ev.failure != MdkrMatchPeerMeshFailure::SignalLost) {
+                        MDKR_ONLINE_LOG(
+                            "[MESH] mesh failure=%d -> VERIFICATION_MISMATCH\n",
+                            static_cast<int>(ev.failure));
                         failure_ = MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH;
                         bump();
+                    } else {
+                        MDKR_ONLINE_LOG(
+                            "[MESH] signal lost (channels healthy; reconnecting)\n");
                     }
                     break;
                 case MdkrMatchPeerMeshEventType::InputEnvelope:
+                    if (inputEnvelopes_ == 0u) {
+                        MDKR_ONLINE_LOG(
+                            "[MESH] first race input envelope received\n");
+                    }
                     ++inputEnvelopes_;
                     feedInputEnvelope(ev);
                     break;
@@ -748,9 +979,16 @@ private:
          * is built directly from it with no opportunity for roster mutation
          * between the barrier and the build. */
         loadingBuildDone_ = true;
+        MDKR_ONLINE_LOG(
+            "[LOADING] barrier: building descriptor track=%u vmask=0x%02x "
+            "seats=%u epoch=%u\n",
+            lobby_.selected_track, lobby_.selected_vehicle_mask,
+            lobby_.seat_count, lobby_.match_epoch);
         MdkrMatchManifestV1 manifest;
         if (!manifestFromLobby(lobby_, opts_.compatibility, opts_.inputDelay,
                                &manifest)) {
+            MDKR_ONLINE_LOG(
+                "[LOADING] manifest build FAILED -> ENGINE_FAILED (race blocked)\n");
             refusal_ = MDKR_MATCH_LAUNCH_REFUSE_SNAPSHOT;
             failure_ = MDKR_ONLINE_VIEW_FAILURE_ENGINE_FAILED;
             bump();
@@ -761,12 +999,17 @@ private:
                 &refusal_)) {
             /* Retail-identity clamp (or a snapshot/selection refusal) fired:
              * fail closed, install nothing, keep the room. */
+            MDKR_ONLINE_LOG(
+                "[LOADING] descriptor REFUSED refusal=%d -> ENGINE_FAILED "
+                "(race blocked)\n",
+                static_cast<int>(refusal_));
             descriptorBuilt_ = false;
             failure_ = MDKR_ONLINE_VIEW_FAILURE_ENGINE_FAILED;
             bump();
             return;
         }
         descriptorBuilt_ = true;
+        MDKR_ONLINE_LOG("[LOADING] descriptor built (advancing to preflight)\n");
         bump();
     }
 
@@ -780,23 +1023,44 @@ private:
          * preflightReady_ latches true at READY and only the barrier ever
          * clears it. */
         if (!descriptorBuilt_ || preflightReady_) return;
-        if (!meshUp_ || !mesh_) return;
+        /* Past the descriptor barrier we are actively trying to reach consensus;
+         * log the first blocking gate on change so a LOADING stall's cause is
+         * obvious in the capture (the classic 2-machine failure is the STATE/
+         * control channel never opening -> channelsReady stuck below roster). */
+        if (!meshUp_ || !mesh_) { logPreflightGate(2, "peer mesh not up yet"); return; }
         /* Every roster peer's channels must be ready before consensus. */
-        if (channelsReady_.size() + 1u < meshRoster_.size()) return;
-        if (!phraseConfirmed_ || !havePhrase_) return;
+        if (channelsReady_.size() + 1u < meshRoster_.size()) {
+            logPreflightGate(3, "waiting for peer STATE+control channels");
+            return;
+        }
+        if (!phraseConfirmed_ || !havePhrase_) {
+            logPreflightGate(4, "waiting for safety-phrase confirmation");
+            return;
+        }
+        logPreflightGate(0, "all gates open; running consensus");
 
         if (!preflightInit_) {
             buildGraph();
             uint8_t transcriptDigest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES];
             if (!mesh_ || !mesh_->transcriptDigest(transcriptDigest)) {
+                logPreflightGate(5, "waiting for transcript digest");
                 return; /* phrase/digest not ready yet; retry next service() */
             }
             if (!mdkr_match_preflight_init(&preflight_, &descriptor_, &graph_,
                                            transcriptDigest, localEndpointId_,
                                            meshGeneration_)) {
+                logPreflightGate(6, "preflight init refused");
                 return;
             }
             preflightInit_ = true;
+            if (!preflightInitLogged_) {
+                preflightInitLogged_ = true;
+                MDKR_ONLINE_LOG(
+                    "[PREFLIGHT] init epoch=%u gen=%u romVerified=%u "
+                    "phraseConfirmed=%u\n",
+                    descriptor_.manifest.match_epoch, meshGeneration_,
+                    opts_.romVerified ? 1u : 0u, phraseConfirmed_ ? 1u : 0u);
+            }
             /* Any peer attestations that arrived before init are now applied. */
             for (const auto &kv : pendingPeerAtts_) {
                 (void)mdkr_match_preflight_submit(&preflight_, kv.first,
@@ -813,16 +1077,38 @@ private:
                 MDKR_MATCH_PREFLIGHT_SUBMIT_ACCEPTED) {
                 sendOwnFragments(att);
                 ownSubmitted_ = true;
+                MDKR_ONLINE_LOG(
+                    "[PREFLIGHT] own attestation submitted "
+                    "(flags rom=%u phrase=%u channels=1); fragments sent\n",
+                    opts_.romVerified ? 1u : 0u, phraseConfirmed_ ? 1u : 0u);
             }
         }
 
         const MdkrMatchPreflightStatus status =
             mdkr_match_preflight_evaluate(&preflight_);
         if (status.state == MDKR_MATCH_PREFLIGHT_READY) {
+            MDKR_ONLINE_LOG(
+                "[PREFLIGHT] consensus READY (descriptor+transcript+graph agree; "
+                "installing race)\n");
             preflightReady_ = true;
             install();
             bump();
         }
+    }
+
+    /* De-duplicated blocking-gate note for the preflight/loading stall. */
+    void logPreflightGate(int gate, const char *why) {
+        if (gate == lastPreflightGate_) return;
+        lastPreflightGate_ = gate;
+        MDKR_ONLINE_LOG(
+            "[PREFLIGHT] %s (channelsReady=%u/%u phraseConfirmed=%u havePhrase=%u "
+            "meshUp=%u descriptorBuilt=%u)\n",
+            why, static_cast<unsigned>(channelsReady_.size()),
+            meshRoster_.empty()
+                ? 0u
+                : static_cast<unsigned>(meshRoster_.size() - 1u),
+            phraseConfirmed_ ? 1u : 0u, havePhrase_ ? 1u : 0u, meshUp_ ? 1u : 0u,
+            descriptorBuilt_ ? 1u : 0u);
     }
 
     void buildGraph() {
@@ -912,6 +1198,10 @@ private:
             mdkr_match_preflight_fragment_submit(&it->second, &ev.context,
                                                  ev.payload.data(), &att);
         if (r != MDKR_MATCH_PREFLIGHT_FRAGMENT_COMPLETE) return;
+        MDKR_ONLINE_LOG(
+            "[PREFLIGHT] peer attestation complete ep=%llu (%s)\n",
+            (unsigned long long)peer,
+            preflightInit_ ? "submitted" : "queued until init");
         if (preflightInit_) {
             (void)mdkr_match_preflight_submit(
                 &preflight_, peer, ev.context.key.source_generation, &att);
@@ -943,6 +1233,11 @@ private:
                 mdkr_net_roster_runtime_install_launch(&descriptor_,
                                                        &roster)) {
                 installed_ = true;
+                MDKR_ONLINE_LOG(
+                    "[START] engine roster installed localSlots=%u\n", localCount);
+            } else {
+                MDKR_ONLINE_LOG(
+                    "[START] engine roster install FAILED (race cannot boot)\n");
             }
         }
         /* The race transport is per-endpoint (its own session bridge), so it is
@@ -976,6 +1271,9 @@ private:
                                                   MDKR_ENGINE_BOOTING) ||
             !mdkr_session_bridge_set_engine_phase(&raceBridge_,
                                                   MDKR_ENGINE_READY)) {
+            MDKR_ONLINE_LOG(
+                "[START] setUpRace FAILED: session bridge launch/phase rejected "
+                "(race transport not ready, no boot handoff)\n");
             return;
         }
         raceEpoch_ = descriptor_.manifest.match_epoch;
@@ -983,6 +1281,9 @@ private:
         raceNextTick_ = raceFirstTick_;
         if (!mdkr_match_transport_init(&raceTransport_, &raceBridge_,
                                        raceFirstTick_)) {
+            MDKR_ONLINE_LOG(
+                "[START] setUpRace FAILED: match transport init rejected "
+                "(no boot handoff)\n");
             return;
         }
         peerSlotMask_.clear();
@@ -992,6 +1293,14 @@ private:
         }
         raceInputDelay_ = opts_.inputDelay != 0u ? opts_.inputDelay : 2u;
         raceReady_ = true;
+        if (!raceReadyLogged_) {
+            raceReadyLogged_ = true;
+            MDKR_ONLINE_LOG(
+                "[START] race transport READY epoch=%u firstTick=%u local=0x%02x "
+                "remote=0x%02x -> publishing engine race-boot handoff\n",
+                raceEpoch_, raceFirstTick_, raceTransport_.local_slot_mask,
+                raceTransport_.remote_slot_mask);
+        }
 #if MDKR_ENABLE_ONLINE_BETA
         /* Make-or-break handoff: the visual race-start point has been reached.
          * Publish THIS adapter so main_app's interactive loop can boot the
@@ -1275,6 +1584,17 @@ private:
     MdkrMatchPeerGraph graph_{};
     std::map<uint64_t, MdkrMatchPreflightFragmentState> fragStates_;
     std::map<uint64_t, MdkrMatchPreflightAttestationV1> pendingPeerAtts_;
+
+    /* Diagnostics + non-silent view timeout (see logPhaseAndTimeoutAnchor /
+     * timeoutExpired). lastPhaseKey_ de-dups the [ROOM-PHASE] spine;
+     * lastPreflightGate_ de-dups the [PREFLIGHT] gate note; the *Logged_ flags
+     * de-dup the one-shot [LOADING]/[START] milestones. */
+    uint64_t lastPhaseKey_ = UINT64_MAX;
+    uint64_t viewAnchorMs_ = 0u;
+    uint64_t viewTimeoutMs_ = 30000u;
+    int lastPreflightGate_ = -1;
+    bool preflightInitLogged_ = false;
+    bool raceReadyLogged_ = false;
 };
 
 }  // namespace
