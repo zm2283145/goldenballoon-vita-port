@@ -24,6 +24,7 @@
 #include "taj_physics.h"
 #include "taj_visual.h"
 #include "net/net_roster_runtime.h"
+#include "modern_character_runtime.h"
 #include "video_config.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -1287,18 +1288,23 @@ static void hud_render_identity_portrait(HudElement *portrait, s32 character,
     static u32 tracedEpoch;
     u32 playerBit;
     DrawTexture *bonusPortrait;
+    s32 customPortrait;
 
     if (tracedEpoch != taj_visual_trace_epoch()) {
         tracedEpoch = taj_visual_trace_epoch();
         memset(tracedPlayers, 0, sizeof(tracedPlayers));
     }
-    if (identity <= MOD_RACER_RETAIL ||
-        identity >= MOD_RACER_IDENTITY_COUNT) {
+    bonusPortrait = menu_custom_character_portrait(playerIndex);
+    customPortrait = bonusPortrait != NULL &&
+                     bonusPortrait[0].texture != NULL;
+    if (!customPortrait &&
+        (identity <= MOD_RACER_RETAIL ||
+         identity >= MOD_RACER_IDENTITY_COUNT)) {
         portrait->spriteID = character + HUD_SPRITE_PORTRAIT;
         hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, portrait);
         return;
     }
-    bonusPortrait = menu_mod_portrait(identity);
+    if (!customPortrait) bonusPortrait = menu_mod_portrait(identity);
     if (bonusPortrait != NULL && bonusPortrait[0].texture != NULL) {
         /* The same conventions hud_element_render() gives every retail
          * portrait at this anchor: pos is the top-left corner, the anchor's
@@ -1330,6 +1336,7 @@ static void hud_render_identity_portrait(HudElement *portrait, s32 character,
                             y, portrait->scale, yScale,
                             gHudColour, TEXRECT_POINT);
     }
+    if (customPortrait) return;
     playerBit = taj_mod_player_bit(playerIndex);
     if (playerBit != 0 && !(tracedPlayers[identity] & playerBit)) {
         tracedPlayers[identity] |= playerBit;
@@ -5263,7 +5270,14 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
             {
                 ModRacerIdentity identity =
                     (ModRacerIdentity)mod_racer_physics_identity(someRacer);
-                if (identity != MOD_RACER_RETAIL) {
+                MdkrModernCharacterIdentityView customIdentity;
+                if (mdkr_modern_character_player_identity(
+                        someRacer->playerIndex, &customIdentity)) {
+                    gDPSetPrimColor(gHudDL++, 0, 0,
+                                    customIdentity.minimap_rgba[0],
+                                    customIdentity.minimap_rgba[1],
+                                    customIdentity.minimap_rgba[2], opacity);
+                } else if (identity != MOD_RACER_RETAIL) {
                     s32 red = 255;
                     s32 green = 0;
                     s32 blue = 255;

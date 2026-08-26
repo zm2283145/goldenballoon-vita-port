@@ -30,7 +30,7 @@ MDKC_HEADER_BYTES = 832
 MDKC_SECTION_SLOTS = 24
 MDKC_SECTION_ENTRY_BYTES = 32
 MDKC_FILE_MAX = 1024 * 1024 * 1024
-COMPILER_ID = "mdkr-character-compiler/2"
+COMPILER_ID = "mdkr-character-compiler/3"
 
 SECTION_STRINGS = 1
 SECTION_VERTICES = 2
@@ -50,6 +50,8 @@ SECTION_SEMANTICS = 15
 SECTION_SOCKETS = 16
 SECTION_ATTACHMENTS = 17
 SECTION_CALIBRATION = 18
+SECTION_IDENTITY = 19
+SECTION_IDENTITY_DATA = 20
 
 VERTEX_FORMAT = "<3f3f4f2f4H4f"
 PRIMITIVE_FORMAT = "<8I"
@@ -66,6 +68,7 @@ SEMANTIC_FORMAT = "<IIIf"
 SOCKET_FORMAT = "<II"
 ATTACHMENT_FORMAT = "<II3f4ffII"
 CALIBRATION_FORMAT = "<3f3f3ffII4f"
+IDENTITY_FORMAT = "<6I"
 
 COMPONENTS = {
     5120: ("b", 1, True),
@@ -122,6 +125,17 @@ def _semantic_policy(semantic: str) -> tuple[int, float]:
 
 class CompileError(ValueError):
     """A deterministic asset compiler rejection."""
+
+
+def source_digest(members: Iterable[tuple[str, bytes]]) -> bytes:
+    """Bind a cache to canonical source members and this exact compiler."""
+    digest = hashlib.sha256()
+    digest.update(COMPILER_ID.encode("ascii") + b"\0")
+    for name, payload in members:
+        digest.update(name.encode("ascii") + b"\0")
+        digest.update(struct.pack("<Q", len(payload)))
+        digest.update(payload)
+    return digest.digest()
 
 
 @dataclass(frozen=True)
@@ -483,7 +497,8 @@ def _assemble(sections: list[Section], source_digest: bytes) -> bytes:
     return bytes(output)
 
 
-def compile_character(model: bytes, manifest: dict[str, Any], source_digest: bytes) -> tuple[bytes, dict[str, Any]]:
+def compile_character(model: bytes, manifest: dict[str, Any], source_digest: bytes,
+                      portrait: bytes | None = None) -> tuple[bytes, dict[str, Any]]:
     policy = probe.inspect_glb_bytes(model, require_character=True)
     errors = list(policy["errors"])
     errors.extend(probe.validate_manifest(manifest, policy))
@@ -851,7 +866,9 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
     if not math.isfinite(source_height) or source_height <= 1.0e-6:
         raise CompileError("character scene height is too small to calibrate")
     source_forward = "+z"
-    explicit_calibration = manifest["schema"] == probe.PACKAGE_SCHEMA
+    explicit_calibration = manifest["schema"] in (
+        probe.PACKAGE_SCHEMA, probe.PACKAGE_SCHEMA_V3
+    )
     if explicit_calibration:
         source_forward = presentation["source_forward"]
         target_height = float(presentation["target_height_m"])
@@ -921,6 +938,25 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         source_height * definition_scale[1], target_height, 0.0, 0.0,
     )
 
+    identity_records = []
+    identity_data = b""
+    identity_manifest = manifest.get("identity")
+    if manifest["schema"] == probe.PACKAGE_SCHEMA_V3:
+        if portrait is None:
+            raise CompileError("source-v3 package omits portrait.png")
+        try:
+            probe.inspect_portrait_png(portrait)
+        except probe.ProbeError as exc:
+            raise CompileError(str(exc)) from exc
+        if not isinstance(identity_manifest, dict):
+            raise CompileError("source-v3 package omits identity metadata")
+        if hashlib.sha256(portrait).hexdigest() != identity_manifest["portrait_sha256"]:
+            raise CompileError("portrait.png digest does not match the manifest")
+        red, green, blue = identity_manifest["minimap_rgb"]
+        minimap_rgba = red | (green << 8) | (blue << 16) | (255 << 24)
+        identity_data = portrait
+        identity_records.append((1, 1, 0, len(portrait), minimap_rgba, 0))
+
     sections = [
         Section(SECTION_STRINGS, len(strings.data), 1, bytes(strings.data)),
         Section(SECTION_VERTICES, len(vertex_records), struct.calcsize(VERTEX_FORMAT), _pack_records(VERTEX_FORMAT, vertex_records)),
@@ -941,6 +977,12 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         Section(SECTION_ATTACHMENTS, len(attachment_records), struct.calcsize(ATTACHMENT_FORMAT), _pack_records(ATTACHMENT_FORMAT, attachment_records)),
         Section(SECTION_CALIBRATION, 1, struct.calcsize(CALIBRATION_FORMAT), _pack_records(CALIBRATION_FORMAT, (calibration_record,))),
     ]
+    if identity_records:
+        sections.extend((
+            Section(SECTION_IDENTITY, 1, struct.calcsize(IDENTITY_FORMAT),
+                    _pack_records(IDENTITY_FORMAT, identity_records)),
+            Section(SECTION_IDENTITY_DATA, len(identity_data), 1, identity_data),
+        ))
     compiled = _assemble(sections, source_digest)
     report = {
         "compiler": COMPILER_ID,
@@ -977,6 +1019,12 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         "ground_anchor_m": list(ground),
         "attachment_contexts": sorted(context_manifest, key=lambda name: CONTEXT_IDS[name]),
         "calibration_explicit": explicit_calibration,
+        "identity_portrait": bool(identity_records),
+        "identity_portrait_bytes": len(identity_data),
+        "minimap_rgb": (
+            identity_manifest.get("minimap_rgb")
+            if isinstance(identity_manifest, dict) else None
+        ),
     }
     return compiled, report
 
@@ -985,13 +1033,22 @@ def compile_package(package_path: Path, output_path: Path) -> dict[str, Any]:
     verification = probe.verify_package(package_path)
     if not verification["valid"]:
         raise CompileError("invalid source package: " + "; ".join(verification["errors"]))
-    package = package_path.read_bytes()
     with zipfile.ZipFile(package_path) as archive:
         manifest = probe.json_loads_strict(
             archive.read("manifest.json"), "manifest"
         )
         model = archive.read("model.glb")
-    compiled, report = compile_character(model, manifest, hashlib.sha256(package).digest())
+        portrait = (
+            archive.read("portrait.png")
+            if manifest.get("schema") == probe.PACKAGE_SCHEMA_V3 else None
+        )
+        digest = source_digest(
+            (name, archive.read(name))
+            for name in probe.package_members_for_schema(manifest.get("schema"))
+        )
+    compiled, report = compile_character(
+        model, manifest, digest, portrait
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_name(output_path.name + ".tmp")
     temporary.write_bytes(compiled)

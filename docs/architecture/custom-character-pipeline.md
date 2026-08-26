@@ -60,12 +60,15 @@ This gives three deliberately separate formats:
   rotation, animation-rate, vehicle-body and LOD tuning without entering
   gameplay authority;
 - an author manifest wizard plus launcher diagnostics for motionless clips,
-  recommended semantic coverage, and seat/head/hand sockets.
+  recommended semantic coverage, and seat/head/hand sockets;
+- source-v3 identity media: a bounded CRC-checked portrait, authored minimap
+  colour, dedicated cache sections, one-time pool decode, deterministic 40x40
+  resampling, and revisioned HUD/results/rankings/minimap resolution.
 
 This is deliberately a vertical slice, not a claim of production readiness.
 Only the Diddy donor family is qualified, OpenGL intentionally falls back to
-the retail driver, portraits and
-custom roster identity are not wired, and the COLLADA adapter synthesizes a
+the retail driver, full independent character-select tiles and dynamic
+game-font names are not yet wired, and the COLLADA adapter synthesizes a
 motionless one-second witness clip when the source has no animation.
 
 The game must not parse FBX or DAE, execute scripts from a character package,
@@ -183,7 +186,7 @@ versions for every character. A virtual identity registry over donor assets is
 the scalable design; a canonical gameplay-profile registry can be added later
 without pretending custom stats are cosmetic.
 
-## Source package contract (`mdkr-character-source-v2`)
+## Source package contracts (`mdkr-character-source-v2` and `v3`)
 
 The spike implements the smallest useful envelope in
 `tools/character_asset_probe.py`:
@@ -191,18 +194,19 @@ The spike implements the smallest useful envelope in
 ```text
 manifest.json
 model.glb
+[portrait.png] # required by v3; absent from v1/v2
 LICENSE.txt
 [compiled.mdkc]  # optional author-prepared cache for native player import
 ```
 
 Entries have a fixed order, are stored without compression, timestamped at the
 ZIP epoch, and restricted to regular files. `manifest.json` records the SHA-256 of
-`model.glb`. This makes repeated builds byte-identical and gives the cache,
+`model.glb`; v3 also records the SHA-256 of `portrait.png`. This makes repeated builds byte-identical and gives the cache,
 multiplayer compatibility layer, and bug reports one stable content identity.
-`character_package_manager.py prepare` adds `compiled.mdkc` as the fourth
+`character_package_manager.py prepare` adds `compiled.mdkc` as the last
 canonical stored member. The Python manager recompiles and byte-compares that
 member when developing; the native launcher applies the same complete MDKC
-validator and checks its compiler digest against the exact three source members
+validator and checks its compiler digest against every exact source member
 before atomically publishing it, so packaged players need no Python and the
 native launcher needs no runtime GLB compiler.
 Source-only packages remain the provenance-first authoring form.
@@ -266,6 +270,22 @@ A minimal manifest is:
 }
 ```
 
+For authored local identity, v3 adds `portrait.png` and this manifest member:
+
+```json
+"identity": {
+  "portrait_file": "portrait.png",
+  "portrait_sha256": "<64 lowercase hex characters>",
+  "minimap_rgb": [220, 72, 144]
+}
+```
+
+The portrait profile is square, 16–1024 pixels, non-interlaced 8-bit RGB or
+RGBA PNG, at most 8 MiB, non-animated, and fully chunk/CRC checked offline.
+The runtime independently bounds and decodes it, then uses integer
+premultiplied-alpha bilinear filtering to produce the game-owned 40x40 card.
+Legacy v1/v2 packages retain donor portrait and minimap fallbacks.
+
 `source_forward` is deliberately explicit because arbitrary geometry does not
 contain a reliable semantic front. The wizard accepts `+z`, `-z`, `+x`, or
 `-x`, records that decision in its review report, and the launcher offers a
@@ -300,7 +320,8 @@ invalid heights fail visibly and retain the retail character.
 
 The older `mdkr-character-source-v1` presentation transform remains accepted
 for installed packages. It is marked legacy/uncalibrated in diagnostics and
-receives safe default context anchors; new authoring always emits v2.
+receives safe default context anchors. New authoring emits v2 without identity
+media and v3 when the wizard is given `--portrait` and `--minimap-rgb`.
 
 Later schema versions should add, without changing the principles above:
 
@@ -313,7 +334,8 @@ Later schema versions should add, without changing the principles above:
 - declarative humanoid bone roles and optional pole vectors for pose retargeting
   and two-bone hand/foot IK;
 - optional material variants and eye/mouth morph mappings;
-- portrait/icon references, with generated fallback renders;
+- generated portrait captures, pixel editing, and icon derivatives beyond the
+  implemented imported primary portrait;
 - feature requirements such as morph targets or alpha blending.
 
 The schema is declarative. JavaScript, Lua, native libraries, Blender Python,

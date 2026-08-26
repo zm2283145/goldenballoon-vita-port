@@ -374,7 +374,7 @@ last known-good assembly remains available if an update fails.
 | Height/front/ground/seat calibration | Executable v2 | Add exact embedded preview and manipulators |
 | Per-context corrections | Executable | Move from four repeated player panels to one package editor |
 | Animation semantics | Executable sampling and diagnostics | Add role-map editor, retargeting and IK |
-| Portrait/roster identity | Donor fallback only | Implement Portrait Studio and dynamic local identity resolver |
+| Portrait/roster identity | Source-v3 import, cache, HUD/results/rankings/minimap resolver executable | Add capture/pixel editor, independent select tile, and font-safe game name |
 | Donor selection | Manifest accepts ten; Diddy is the only qualified seam | Present only qualified profile cards; qualify donors incrementally |
 | Vehicle support | Mask and independent transforms | Add test matrix, hand/foot targets and reviewed status |
 | Performance controls | Import caps, authored LOD bias | Add per-category budget report, assembly targets and stress test |

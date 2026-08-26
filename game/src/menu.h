@@ -593,6 +593,8 @@ void menu_racer_portraits(void);
 /* Project-owned bonus portraits shared by Rankings and portrait-bearing HUDs. */
 DrawTexture *menu_taj_portrait(void);
 DrawTexture *menu_mod_portrait(ModRacerIdentity identity);
+/* Assigned source-v3 identity, or NULL so callers retain donor/bonus fallback. */
+DrawTexture *menu_custom_character_portrait(s32 playerIndex);
 #endif
 void postrace_music_fade(s32 updateRate);
 void postrace_free(void);

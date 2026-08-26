@@ -1,6 +1,7 @@
 #include "modern_character_registry.h"
 
 #include "fs_utf8.h"
+#include "modern_character_identity.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -135,6 +136,7 @@ int mdkr_modern_character_registry_init(MdkrModernCharacterRegistry *registry,
         MdkrModernCharacterAsset asset;
         MdkrModernCharacterDefinition definition;
         MdkrModernCharacterEntry entry;
+        MdkrModernDecodedIdentity decoded_identity;
         const char *id;
         const char *display_name;
         char path[MDKR_MODERN_CHARACTER_PATH_MAX];
@@ -147,6 +149,12 @@ int mdkr_modern_character_registry_init(MdkrModernCharacterRegistry *registry,
             continue;
         }
         if (!mdkr_modern_character_asset_load_file(path, &asset, error, sizeof(error))) {
+            add_skip(registry, item->d_name, error);
+            continue;
+        }
+        if (!mdkr_modern_identity_init(&asset, &decoded_identity,
+                                       error, sizeof(error))) {
+            mdkr_modern_character_asset_unload(&asset);
             add_skip(registry, item->d_name, error);
             continue;
         }
@@ -164,6 +172,14 @@ int mdkr_modern_character_registry_init(MdkrModernCharacterRegistry *registry,
         memcpy(entry.source_sha256, asset.source_sha256, sizeof(entry.source_sha256));
         entry.donor = definition.donor;
         entry.vehicle_mask = definition.vehicle_mask;
+        {
+            MdkrModernIdentity identity;
+            if (mdkr_modern_character_asset_identity(&asset, &identity, NULL)) {
+                entry.identity_flags = identity.flags;
+                entry.portrait_bytes = identity.portrait_size;
+                entry.minimap_rgba = identity.minimap_rgba;
+            }
+        }
         {
             MdkrModernCalibration calibration;
             const MdkrModernSectionView *attachments =

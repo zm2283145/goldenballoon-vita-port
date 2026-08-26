@@ -14,6 +14,7 @@
 #include "taj_mod_state_file.h"
 #include "video_config.h"
 #include "net/net_roster_runtime.h"
+#include "modern_character_runtime.h"
 extern int g_frameCounter;
 #endif
 #include "asset_enums.h"
@@ -1723,6 +1724,10 @@ static Gfx *sTerryPortraitCommands;
 static s32 sTajPortraitInitialized;
 static s32 sWizpigPortraitInitialized;
 static s32 sTerryPortraitInitialized;
+static TajPortraitTexture sCustomPortraitTextures[MDKR_MODERN_CHARACTER_PLAYERS];
+static Gfx *sCustomPortraitCommands[MDKR_MODERN_CHARACTER_PLAYERS];
+static DrawTexture sCustomPortraits[MDKR_MODERN_CHARACTER_PLAYERS][2];
+static u64 sCustomPortraitRevisions[MDKR_MODERN_CHARACTER_PLAYERS];
 
 /* Taj has no retail results portrait. This small native RGBA card is original
  * port artwork assembled from geometric pixel primitives: it stays inside the
@@ -1795,7 +1800,7 @@ static TextureHeader *bonus_portrait_finish(TajPortraitTexture *texture,
     taj_portrait_resample(texture);
     texture->header.width = TAJ_PORTRAIT_SIZE;
     texture->header.height = TAJ_PORTRAIT_SIZE;
-    texture->header.format = (OPAQUE << 4) | TEX_FORMAT_RGBA32;
+    texture->header.format = (TRANSPARENT << 4) | TEX_FORMAT_RGBA32;
     texture->header.numberOfInstances = 1;
     texture->header.flags = RENDER_CLAMP_X | RENDER_CLAMP_Y;
     texture->header.numOfTextures = 1;
@@ -1804,6 +1809,21 @@ static TextureHeader *bonus_portrait_finish(TajPortraitTexture *texture,
     material_init(&texture->header, commands);
     dkr_dl_register_host_ptr(texture->texels);
     *initialized = TRUE;
+    return &texture->header;
+}
+
+static TextureHeader *custom_portrait_finish(TajPortraitTexture *texture,
+                                             Gfx *commands) {
+    texture->header.width = TAJ_PORTRAIT_SIZE;
+    texture->header.height = TAJ_PORTRAIT_SIZE;
+    texture->header.format = (OPAQUE << 4) | TEX_FORMAT_RGBA32;
+    texture->header.numberOfInstances = 1;
+    texture->header.flags = RENDER_CLAMP_X | RENDER_CLAMP_Y;
+    texture->header.numOfTextures = 1;
+    texture->header.textureSize =
+        sizeof(TextureHeader) + sizeof(texture->texels);
+    material_init(&texture->header, commands);
+    dkr_dl_register_host_ptr(texture->texels);
     return &texture->header;
 }
 
@@ -2089,6 +2109,47 @@ DrawTexture *menu_mod_portrait(ModRacerIdentity identity) {
         default:
             return NULL;
     }
+}
+
+DrawTexture *menu_custom_character_portrait(s32 playerIndex) {
+    MdkrModernCharacterIdentityView identity;
+    TajPortraitTexture *texture;
+    DrawTexture *portrait;
+    if (playerIndex < 0 || playerIndex >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        !mdkr_modern_character_player_identity(playerIndex, &identity) ||
+        identity.portrait_rgba == NULL ||
+        identity.portrait_width != TAJ_PORTRAIT_SIZE ||
+        identity.portrait_height != TAJ_PORTRAIT_SIZE ||
+        identity.portrait_stride != TAJ_PORTRAIT_SIZE * 4u) {
+        return NULL;
+    }
+    texture = &sCustomPortraitTextures[playerIndex];
+    portrait = sCustomPortraits[playerIndex];
+    if (sCustomPortraitCommands[playerIndex] == NULL) {
+        sCustomPortraitCommands[playerIndex] = mempool_alloc_safe(
+            TAJ_PORTRAIT_COMMANDS * sizeof(*sCustomPortraitCommands[playerIndex]),
+            COLOUR_TAG_MAGENTA);
+    }
+    if (sCustomPortraitRevisions[playerIndex] != identity.revision ||
+        portrait[0].texture == NULL) {
+        memset(texture, 0, sizeof(*texture));
+        memcpy(texture->texels, identity.portrait_rgba,
+               sizeof(texture->texels));
+        portrait[0].texture = custom_portrait_finish(
+            texture, sCustomPortraitCommands[playerIndex]);
+        portrait[0].xOffset = 0;
+        portrait[0].yOffset = 0;
+        portrait[1].texture = NULL;
+        sCustomPortraitRevisions[playerIndex] = identity.revision;
+        MDKR_TRACE(
+            "custom_character_portrait: player=%d name=%s revision=%llu size=%ux%u",
+            playerIndex, identity.display_name,
+            (unsigned long long)identity.revision,
+            identity.portrait_width, identity.portrait_height);
+    } else {
+        dkr_dl_register_host_ptr(texture->texels);
+    }
+    return portrait;
 }
 #endif
 
@@ -12903,6 +12964,8 @@ static DrawTexture *menu_racer_portrait_for_player(s32 playerIndex,
     ModRacerIdentity identity = mod_racer_player_identity(playerIndex);
     u32 playerBit = taj_mod_player_bit(playerIndex);
     DrawTexture *portrait;
+    portrait = menu_custom_character_portrait(playerIndex);
+    if (portrait != NULL && portrait[0].texture != NULL) return portrait;
     if (tracedEpoch != taj_visual_trace_epoch()) {
         tracedEpoch = taj_visual_trace_epoch();
         memset(tracedPlayers, 0, sizeof(tracedPlayers));

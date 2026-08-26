@@ -35,14 +35,11 @@ class ManagerError(ValueError):
 
 
 def _compiler_source_digest(archive: zipfile.ZipFile) -> bytes:
-    digest = hashlib.sha256()
-    digest.update(COMPILER_ID.encode("ascii") + b"\0")
-    for name in probe.PACKAGE_MEMBERS:
-        payload = archive.read(name)
-        digest.update(name.encode("ascii") + b"\0")
-        digest.update(struct.pack("<Q", len(payload)))
-        digest.update(payload)
-    return digest.digest()
+    manifest = probe.json_loads_strict(archive.read("manifest.json"), "manifest")
+    return compiler.source_digest(
+        (name, archive.read(name))
+        for name in probe.package_members_for_schema(manifest.get("schema"))
+    )
 
 
 def _write_exclusive(path: Path, payload: bytes) -> None:
@@ -126,10 +123,14 @@ def install(package_path: Path, directory: Path) -> dict[str, Any]:
             archive.read("manifest.json"), "manifest"
         )
         model = archive.read("model.glb")
+        portrait = (
+            archive.read("portrait.png")
+            if manifest.get("schema") == probe.PACKAGE_SCHEMA_V3 else None
+        )
         compiler_digest = _compiler_source_digest(archive)
         embedded = archive.read("compiled.mdkc") if verification.get("portable") else None
     compiled, compile_report = compiler.compile_character(
-        model, manifest, compiler_digest
+        model, manifest, compiler_digest, portrait
     )
     if embedded is not None and embedded != compiled:
         raise ManagerError(
@@ -212,8 +213,14 @@ def prepare(package_path: Path, output_path: Path) -> dict[str, Any]:
     with zipfile.ZipFile(package_path) as archive:
         manifest = probe.json_loads_strict(archive.read("manifest.json"), "manifest")
         model = archive.read("model.glb")
+        portrait = (
+            archive.read("portrait.png")
+            if manifest.get("schema") == probe.PACKAGE_SCHEMA_V3 else None
+        )
         digest = _compiler_source_digest(archive)
-    compiled, compile_report = compiler.compile_character(model, manifest, digest)
+    compiled, compile_report = compiler.compile_character(
+        model, manifest, digest, portrait
+    )
     package_report = probe.add_compiled_cache(package_path, compiled, output_path)
     return {
         "schema": MANAGER_SCHEMA,

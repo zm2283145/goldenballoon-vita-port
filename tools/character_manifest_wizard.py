@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate an editable v2 character manifest from names already in a GLB.
+"""Generate an editable v2/v3 character manifest from names already in a GLB.
 
 This is intentionally a deterministic naming assistant, not an animation
 retargeter. It reports every inferred clip/socket so authors can review the
@@ -9,6 +9,7 @@ small manifest instead of guessing the runtime semantic vocabulary.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -66,7 +67,9 @@ def build_manifest(model: Path, package_id: str, display_name: str,
                    spdx: str, attribution: str, source_url: str,
                    donor: str, vehicles: list[str], *,
                    source_forward: str = "+z",
-                   target_height_m: float = 1.25) -> tuple[dict, dict]:
+                   target_height_m: float = 1.25,
+                   portrait: Path | None = None,
+                   minimap_rgb: list[int] | None = None) -> tuple[dict, dict]:
     data = model.read_bytes()
     report = probe.inspect_glb_bytes(data, require_character=True)
     if report["errors"]:
@@ -134,6 +137,22 @@ def build_manifest(model: Path, package_id: str, display_name: str,
         },
         "sockets": sockets,
     }
+    portrait_report = None
+    if portrait is None and minimap_rgb is not None:
+        raise probe.ProbeError("--minimap-rgb requires --portrait")
+    if portrait is not None:
+        portrait_bytes = portrait.read_bytes()
+        portrait_report = probe.inspect_portrait_png(portrait_bytes)
+        if minimap_rgb is None:
+            raise probe.ProbeError(
+                "a portrait requires an explicit three-byte minimap colour"
+            )
+        manifest["schema"] = probe.PACKAGE_SCHEMA_V3
+        manifest["identity"] = {
+            "portrait_file": "portrait.png",
+            "portrait_sha256": hashlib.sha256(portrait_bytes).hexdigest(),
+            "minimap_rgb": minimap_rgb,
+        }
     errors = probe.validate_manifest(manifest, report)
     if errors:
         raise probe.ProbeError("generated manifest is invalid: " + "; ".join(errors))
@@ -164,6 +183,7 @@ def build_manifest(model: Path, package_id: str, display_name: str,
             "Select is ground-anchored; vehicle contexts are pelvis/seat-anchored independently",
         ],
         "warnings": report["warnings"],
+        "identity_portrait": portrait_report,
     }
     return manifest, decisions
 
@@ -187,6 +207,14 @@ def main(argv: list[str] | None = None) -> int:
         "--target-height", default=1.25, type=float,
         help="normalized standing height in engine meters (default: 1.25)",
     )
+    parser.add_argument(
+        "--portrait", type=Path,
+        help="square identity PNG; selecting it emits source-v3",
+    )
+    parser.add_argument(
+        "--minimap-rgb", nargs=3, type=int, metavar=("R", "G", "B"),
+        help="required with --portrait; each component is 0..255",
+    )
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
@@ -196,6 +224,8 @@ def main(argv: list[str] | None = None) -> int:
             args.attribution, args.source_url, args.donor, args.vehicles,
             source_forward=args.source_forward,
             target_height_m=args.target_height,
+            portrait=args.portrait,
+            minimap_rgb=args.minimap_rgb,
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",

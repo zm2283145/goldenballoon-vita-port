@@ -47,6 +47,27 @@ def _compiled_sections(compiled: bytes) -> dict[int, dict[str, int]]:
     return sections
 
 
+def make_portrait_png(size: int = 16) -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload)) + kind + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    # Emit RGBA scanlines without relying on an image library.
+    scanlines = bytearray()
+    for y in range(size):
+        scanlines.append(0)
+        for x in range(size):
+            scanlines.extend((x * 13 & 255, y * 17 & 255, 160, 255))
+    return (
+        probe.PNG_SIGNATURE
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(bytes(scanlines)))
+        + chunk(b"IEND", b"")
+    )
+
+
 def make_animated_glb(external_buffer: bool = False, with_lod: bool = False) -> bytes:
     binary = bytearray()
     views: list[dict[str, int]] = []
@@ -280,6 +301,52 @@ class CharacterAssetProbeTests(unittest.TestCase):
             self.assertEqual(first.read_bytes(), second.read_bytes())
             verified = probe.verify_package(first)
             self.assertTrue(verified["valid"], verified["errors"])
+
+    def test_v3_identity_media_is_canonical_bounded_and_compiled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "model.glb"
+            model.write_bytes(make_animated_glb())
+            portrait = root / "portrait.png"
+            portrait.write_bytes(make_portrait_png())
+            manifest_data = make_manifest()
+            manifest_data["schema"] = probe.PACKAGE_SCHEMA_V3
+            manifest_data["identity"] = {"minimap_rgb": [220, 72, 144]}
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps(manifest_data), encoding="utf-8")
+            license_file = root / "LICENSE.txt"
+            license_file.write_text("CC0-1.0 test fixture\n", encoding="utf-8")
+            package = root / "identity.mdkrchar"
+            probe.build_package(
+                model, manifest, license_file, package, portrait_path=portrait
+            )
+            verified = probe.verify_package(package)
+            self.assertTrue(verified["valid"], verified["errors"])
+            self.assertEqual(16, verified["portrait"]["width"])
+            with zipfile.ZipFile(package) as archive:
+                canonical = probe.json_loads_strict(archive.read("manifest.json"))
+                compiled, report = compiler.compile_character(
+                    archive.read("model.glb"), canonical, bytes(32),
+                    archive.read("portrait.png"),
+                )
+            sections = _compiled_sections(compiled)
+            self.assertEqual(1, sections[compiler.SECTION_IDENTITY]["count"])
+            self.assertEqual(
+                len(make_portrait_png()), sections[compiler.SECTION_IDENTITY_DATA]["size"]
+            )
+            self.assertTrue(report["identity_portrait"])
+            self.assertEqual([220, 72, 144], report["minimap_rgb"])
+
+    def test_portrait_profile_rejects_corrupt_or_animated_png(self) -> None:
+        bad_crc = bytearray(make_portrait_png())
+        bad_crc[-5] ^= 1
+        with self.assertRaisesRegex(probe.ProbeError, "checksum"):
+            probe.inspect_portrait_png(bytes(bad_crc))
+        animated = make_portrait_png().replace(
+            b"IDAT", b"acTL", 1
+        )
+        with self.assertRaises(probe.ProbeError):
+            probe.inspect_portrait_png(animated)
 
     def test_compiled_cache_is_deterministic_and_sectioned(self) -> None:
         model = make_animated_glb()

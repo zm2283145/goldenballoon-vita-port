@@ -141,6 +141,9 @@ int main(int argc, char **argv) {
     MdkrModernSocket socket;
     MdkrModernAttachment attachment;
     MdkrModernCalibration calibration;
+    MdkrModernIdentity identity;
+    MdkrModernCharacterIdentityView identity_view;
+    const uint8_t *portrait_data;
     MdkrModernCharacterRegistry registry;
     MdkrModernCharacterInstallResult install_result;
     MdkrModernPose pose;
@@ -261,6 +264,11 @@ int main(int argc, char **argv) {
                 attachment.context == MDKR_CHARACTER_CONTEXT_SELECT &&
                 (attachment.flags & 1u) != 0u,
             "read explicit height, ground, facing, and context calibration");
+    require(mdkr_modern_character_asset_identity(
+                &asset, &identity, &portrait_data) && portrait_data != NULL &&
+                identity.portrait_mime == 1u && identity.portrait_size > 64u &&
+                (identity.minimap_rgba & 0xFFFFFFu) == 0x9048DCu,
+            "read validated source-v3 identity media and minimap colour");
     mdkr_modern_character_asset_unload(&asset);
     mdkr_modern_character_asset_unload(&asset);
 
@@ -284,8 +292,8 @@ int main(int argc, char **argv) {
             "scan generated character directory");
     require(mdkr_modern_character_registry_count(&registry) == 1,
             "duplicate package identity is collapsed");
-    require(mdkr_modern_character_registry_skipped(&registry) == 2,
-            "corrupt and duplicate caches are diagnosed");
+    require(mdkr_modern_character_registry_skipped(&registry) == 3,
+            "corrupt, undecodable-identity, and duplicate caches are diagnosed");
     require(mdkr_modern_character_registry_find(
                 &registry, "org.example.pipeline-proof") == 0,
             "registry lookup by stable package id");
@@ -300,7 +308,10 @@ int main(int argc, char **argv) {
                 registry.entries[0].normalized_height > 0.99f &&
                 registry.entries[0].normalized_height < 1.01f &&
                 registry.entries[0].target_height > 1.24f &&
-                registry.entries[0].target_height < 1.26f,
+                registry.entries[0].target_height < 1.26f &&
+                registry.entries[0].identity_flags == 1u &&
+                registry.entries[0].portrait_bytes > 64u &&
+                (registry.entries[0].minimap_rgba & 0xFFFFFFu) == 0x9048DCu,
             "registry summarizes animation and socket authoring health");
     require(mdkr_modern_character_registry_load(&registry, 0, &asset,
                                                  error, sizeof(error)),
@@ -413,6 +424,18 @@ int main(int argc, char **argv) {
             error);
     require(mdkr_modern_character_matches(0, 9, 0),
             "runtime assignment retains donor and vehicle characteristics");
+    require(mdkr_modern_character_player_identity(0, &identity_view) &&
+                strcmp(identity_view.display_name, "Pipeline Proof") == 0 &&
+                identity_view.portrait_rgba != NULL &&
+                identity_view.portrait_width == 40u &&
+                identity_view.portrait_height == 40u &&
+                identity_view.portrait_stride == 160u &&
+                identity_view.minimap_rgba[0] == 220u &&
+                identity_view.minimap_rgba[1] == 72u &&
+                identity_view.minimap_rgba[2] == 144u &&
+                identity_view.minimap_rgba[3] == 255u &&
+                identity_view.revision != 0u,
+            "runtime publishes one decoded game-ready identity view");
     mdkr_modern_character_tuning_defaults(&tuning);
     tuning.scale = 1.5f;
     tuning.translation[0] = 12.0f;

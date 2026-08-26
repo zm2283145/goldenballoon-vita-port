@@ -12,7 +12,7 @@
 
 static const uint32_t s_expected_strides[MDKR_MDKC_SECTION_LAST + 1] = {
     0u, 1u, 72u, 4u, 32u, 80u, 40u, 1u, 48u, 16u, 68u,
-    16u, 24u, 52u, 64u, 16u, 8u, 48u, 64u
+    16u, 24u, 52u, 64u, 16u, 8u, 48u, 64u, 24u, 1u
 };
 
 static void set_error(char *error, size_t error_size, const char *message) {
@@ -308,6 +308,29 @@ int mdkr_modern_character_asset_calibration(
     out->flags = read_u32(data + 44u);
     out->normalized_height = read_f32(data + 48u);
     out->target_height = read_f32(data + 52u);
+    return 1;
+}
+
+int mdkr_modern_character_asset_identity(
+    const MdkrModernCharacterAsset *asset, MdkrModernIdentity *out,
+    const uint8_t **portrait_data) {
+    const uint8_t *data = record(asset, MDKR_MDKC_IDENTITY, 0u);
+    const MdkrModernSectionView *media;
+    uint64_t end;
+    if (data == NULL || out == NULL || asset == NULL) return 0;
+    media = &asset->sections[MDKR_MDKC_IDENTITY_DATA];
+    out->flags = read_u32(data);
+    out->portrait_mime = read_u32(data + 4u);
+    out->portrait_offset = read_u32(data + 8u);
+    out->portrait_size = read_u32(data + 12u);
+    out->minimap_rgba = read_u32(data + 16u);
+    out->short_name = read_u32(data + 20u);
+    if (media->data == NULL ||
+        add_overflow_u64(out->portrait_offset, out->portrait_size, &end) ||
+        end > media->size) return 0;
+    if (portrait_data != NULL) {
+        *portrait_data = media->data + out->portrait_offset;
+    }
     return 1;
 }
 
@@ -636,6 +659,36 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
         set_error(error, error_size,
                   "compiled character calibration sections are incomplete");
         return 0;
+    }
+    if ((asset->sections[MDKR_MDKC_IDENTITY].data == NULL) !=
+        (asset->sections[MDKR_MDKC_IDENTITY_DATA].data == NULL)) {
+        set_error(error, error_size,
+                  "compiled character identity sections are incomplete");
+        return 0;
+    }
+    if (asset->sections[MDKR_MDKC_IDENTITY].data != NULL) {
+        MdkrModernIdentity identity;
+        const uint8_t *portrait = NULL;
+        const char *short_name;
+        if (asset->sections[MDKR_MDKC_IDENTITY].count != 1u ||
+            asset->sections[MDKR_MDKC_IDENTITY_DATA].size == 0u ||
+            !mdkr_modern_character_asset_identity(asset, &identity,
+                                                   &portrait) ||
+            identity.flags != 1u || identity.portrait_mime != 1u ||
+            identity.portrait_size == 0u ||
+            identity.portrait_size > 8u * 1024u * 1024u || portrait == NULL ||
+            (identity.minimap_rgba >> 24u) != 255u) {
+            set_error(error, error_size,
+                      "compiled character identity is invalid");
+            return 0;
+        }
+        short_name = mdkr_modern_character_asset_string(asset,
+                                                        identity.short_name);
+        if (short_name == NULL) {
+            set_error(error, error_size,
+                      "compiled character identity name is invalid");
+            return 0;
+        }
     }
     return 1;
 }

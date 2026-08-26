@@ -5,6 +5,7 @@
 #include "modern_character_pose.h"
 #include "modern_character_render.h"
 #include "modern_character_donor.h"
+#include "modern_character_identity.h"
 
 #include <errno.h>
 #include <math.h>
@@ -22,6 +23,7 @@ typedef struct MdkrModernRuntimePool {
     MdkrModernCharacterAsset asset;
     MdkrModernRenderAsset render;
     MdkrModernCharacterDefinition definition;
+    MdkrModernDecodedIdentity identity;
 } MdkrModernRuntimePool;
 
 typedef struct MdkrModernRuntimePlayer {
@@ -32,6 +34,7 @@ typedef struct MdkrModernRuntimePlayer {
     float palette[MODERN_RUNTIME_MAX_BONES * 16u];
     float previous_palette[MODERN_RUNTIME_MAX_BONES * 16u];
     uint32_t tokens[MODERN_RUNTIME_MAX_PRIMITIVES];
+    uint64_t identity_revision;
 } MdkrModernRuntimePlayer;
 
 static MdkrModernCharacterRegistry s_registry;
@@ -41,6 +44,7 @@ static int s_initialized;
 static uint64_t s_replacement_draws;
 static uint64_t s_replacement_primitives;
 static uint64_t s_hidden_donor_batches;
+static uint64_t s_identity_revision;
 
 static void set_error(char *error, size_t size, const char *message) {
     if (error != NULL && size != 0u) {
@@ -428,6 +432,8 @@ static int pool_acquire(int registry_index, char *error, size_t error_size) {
                 &s_registry, registry_index, &pool->asset, error, error_size) ||
             !mdkr_modern_character_asset_definition(&pool->asset,
                                                      &pool->definition) ||
+            !mdkr_modern_identity_init(&pool->asset, &pool->identity,
+                                       error, error_size) ||
             !mdkr_modern_render_asset_init(&pool->render, &pool->asset,
                                            error, error_size)) {
             mdkr_modern_render_asset_shutdown(&pool->render);
@@ -560,6 +566,10 @@ int mdkr_modern_character_assign_player(int player, const char *package_id,
     if (pool < 0) return 0;
     slot = &s_players[player];
     slot->pool = pool;
+    slot->identity_revision = ++s_identity_revision;
+    if (slot->identity_revision == 0u) {
+        slot->identity_revision = ++s_identity_revision;
+    }
     player_tuning_from_environment(player, &slot->tuning);
     slot->tuning.vehicle_mask &= s_pools[pool].definition.vehicle_mask;
     if (slot->tuning.vehicle_mask == 0u) {
@@ -593,6 +603,32 @@ int mdkr_modern_character_player_donor(int player) {
     if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
         s_players[player].pool < 0) return -1;
     return (int)s_pools[s_players[player].pool].definition.donor;
+}
+
+int mdkr_modern_character_player_identity(
+    int player, MdkrModernCharacterIdentityView *out) {
+    MdkrModernRuntimePlayer *slot;
+    MdkrModernRuntimePool *pool;
+    const char *display_name;
+    if (out == NULL || player < 0 ||
+        player >= MDKR_MODERN_CHARACTER_PLAYERS) return 0;
+    memset(out, 0, sizeof(*out));
+    slot = &s_players[player];
+    if (slot->pool < 0) return 0;
+    pool = &s_pools[slot->pool];
+    if (!pool->identity.has_portrait) return 0;
+    display_name = mdkr_modern_character_asset_string(
+        &pool->asset, pool->definition.display_name);
+    if (display_name == NULL || display_name[0] == '\0') return 0;
+    out->display_name = display_name;
+    out->portrait_rgba = pool->identity.portrait_rgba;
+    out->portrait_width = MDKR_MODERN_PORTRAIT_SIZE;
+    out->portrait_height = MDKR_MODERN_PORTRAIT_SIZE;
+    out->portrait_stride = MDKR_MODERN_PORTRAIT_SIZE * 4u;
+    memcpy(out->minimap_rgba, pool->identity.minimap_rgba,
+           sizeof(out->minimap_rgba));
+    out->revision = slot->identity_revision;
+    return 1;
 }
 
 int mdkr_modern_character_set_tuning(int player,

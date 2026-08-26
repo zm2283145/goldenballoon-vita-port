@@ -61,6 +61,9 @@ typedef struct MdkrModernCharacterEntry {
     uint32_t attachment_context_mask;
     uint32_t calibration_flags;
     uint32_t source_forward;
+    uint32_t identity_flags;
+    uint32_t portrait_bytes;
+    uint32_t minimap_rgba;
     float bounds_min[3];
     float bounds_max[3];
     float ground[3];

@@ -14,8 +14,10 @@
 #define SOURCE_PACKAGE_MAX (512u * 1024u * 1024u)
 #define MANIFEST_MAX (1024u * 1024u)
 #define LICENSE_MAX (1024u * 1024u)
-#define COMPILER_ID "mdkr-character-compiler/2"
-#define LEGACY_COMPILER_ID "mdkr-character-compiler/1"
+#define PORTRAIT_MAX (8u * 1024u * 1024u)
+#define COMPILER_ID "mdkr-character-compiler/3"
+#define LEGACY_COMPILER_ID_V2 "mdkr-character-compiler/2"
+#define LEGACY_COMPILER_ID_V1 "mdkr-character-compiler/1"
 
 static unsigned s_stage_serial;
 
@@ -45,6 +47,34 @@ static int id_valid(const char *id) {
               (byte >= '0' && byte <= '9') || byte == '.' ||
               byte == '_' || byte == '-')) return 0;
     }
+    return 1;
+}
+
+static int json_escape(char *output, size_t capacity, const char *input) {
+    static const char hex[] = "0123456789abcdef";
+    size_t write = 0u;
+    const unsigned char *read = (const unsigned char *)input;
+    if (output == NULL || capacity == 0u || input == NULL) return 0;
+    while (*read != 0u) {
+        unsigned char byte = *read++;
+        if (byte == '"' || byte == '\\') {
+            if (write + 2u >= capacity) return 0;
+            output[write++] = '\\';
+            output[write++] = (char)byte;
+        } else if (byte < 0x20u) {
+            if (write + 6u >= capacity) return 0;
+            output[write++] = '\\';
+            output[write++] = 'u';
+            output[write++] = '0';
+            output[write++] = '0';
+            output[write++] = hex[byte >> 4u];
+            output[write++] = hex[byte & 15u];
+        } else {
+            if (write + 1u >= capacity) return 0;
+            output[write++] = (char)byte;
+        }
+    }
+    output[write] = '\0';
     return 1;
 }
 
@@ -214,17 +244,16 @@ static size_t digest_extract(void *opaque, mz_uint64 offset,
 }
 
 static int archive_source_digest(mz_zip_archive *archive,
-                                 const mz_uint64 sizes[4],
+                                 const char *const *names,
+                                 const mz_uint64 *sizes,
+                                 unsigned count,
                                  const char *compiler_id,
                                  uint8_t output[32]) {
-    static const char *names[] = {
-        "manifest.json", "model.glb", "LICENSE.txt"
-    };
     MdkrSha256 digest;
     unsigned index;
     mdkr_sha256_init(&digest);
     mdkr_sha256_update(&digest, compiler_id, strlen(compiler_id) + 1u);
-    for (index = 0u; index < 3u; index++) {
+    for (index = 0u; index < count; index++) {
         uint8_t length[8];
         unsigned byte;
         DigestExtractState state;
@@ -246,11 +275,19 @@ static int archive_source_digest(mz_zip_archive *archive,
 int mdkr_modern_character_install_portable(
     const char *package_path, const char *directory,
     MdkrModernCharacterInstallResult *result) {
-    static const char *names[] = {
+    static const char *const names_v2[] = {
         "manifest.json", "model.glb", "LICENSE.txt", "compiled.mdkc"
     };
-    static const mz_uint64 caps[] = {
+    static const mz_uint64 caps_v2[] = {
         MANIFEST_MAX, SOURCE_PACKAGE_MAX, LICENSE_MAX, MDKR_MDKC_FILE_MAX
+    };
+    static const char *const names_v3[] = {
+        "manifest.json", "model.glb", "portrait.png", "LICENSE.txt",
+        "compiled.mdkc"
+    };
+    static const mz_uint64 caps_v3[] = {
+        MANIFEST_MAX, SOURCE_PACKAGE_MAX, PORTRAIT_MAX, LICENSE_MAX,
+        MDKR_MDKC_FILE_MAX
     };
     FILE *package = NULL;
     FILE *lock = NULL;
@@ -270,17 +307,26 @@ int mdkr_modern_character_install_portable(
     char cache_path[4096] = {0};
     char lock_path[4096] = {0};
     mz_uint64 package_size = 0u;
-    mz_uint64 member_sizes[4] = {0u, 0u, 0u, 0u};
+    mz_uint64 member_sizes[5] = {0u, 0u, 0u, 0u, 0u};
     uint8_t source_digest[32];
-    uint8_t legacy_source_digest[32];
+    uint8_t legacy_source_digest_v2[32];
+    uint8_t legacy_source_digest_v1[32];
     char cache_source_digest[65] = {0};
     char installed_id[65] = {0};
+    char installed_display_name[97] = {0};
+    char escaped_display_name[577] = {0};
     char report_text[2048];
     int regular = 0;
     int okay = 0;
     int lock_owned = 0;
     mz_uint file_count;
     mz_uint index;
+    const char *const *names = NULL;
+    const mz_uint64 *caps = NULL;
+    unsigned source_count = 0u;
+    unsigned compiled_index = 0u;
+    int source_only = 0;
+    int legacy_digest_allowed = 0;
     result_reset(result);
     error[0] = '\0';
     memset(&archive, 0, sizeof(archive));
@@ -311,42 +357,71 @@ int mdkr_modern_character_install_portable(
     }
     file_count = mz_zip_reader_get_num_files(&archive);
     if (file_count == 3u) {
-        for (index = 0u; index < 3u; index++) {
-            if (!archive_entry(&archive, index, names[index], caps[index],
-                               &stat)) {
-                result_message(
-                    result,
-                    "source package members are unsafe, reordered, compressed, or oversized");
-                goto done;
-            }
+        names = names_v2;
+        caps = caps_v2;
+        source_count = 3u;
+        source_only = 1;
+        legacy_digest_allowed = 1;
+    } else if (file_count == 4u) {
+        if (!mz_zip_reader_file_stat(&archive, 2u, &stat)) {
+            result_message(result, "character package inventory could not be read");
+            goto done;
         }
+        if (strcmp(stat.m_filename, "portrait.png") == 0) {
+            names = names_v3;
+            caps = caps_v3;
+            source_count = 4u;
+            source_only = 1;
+        } else {
+            names = names_v2;
+            caps = caps_v2;
+            source_count = 3u;
+            compiled_index = 3u;
+            legacy_digest_allowed = 1;
+        }
+    } else if (file_count == 5u) {
+        names = names_v3;
+        caps = caps_v3;
+        source_count = 4u;
+        compiled_index = 4u;
+    } else {
+        result_message(result,
+                       "package does not match a canonical source or portable layout");
+        goto done;
+    }
+    for (index = 0u; index < file_count; index++) {
+        if (!archive_entry(&archive, index, names[index], caps[index], &stat)) {
+            result_message(result,
+                           "package members are unsafe, reordered, compressed, or oversized");
+            goto done;
+        }
+        member_sizes[index] = stat.m_uncomp_size;
+        if (!source_only && index == compiled_index) {
+            compiled_size = (size_t)stat.m_uncomp_size;
+        }
+    }
+    if (source_only) {
         if (result != NULL) result->needs_compiler = 1;
         result_message(result,
             "This source-only package needs the author compiler; ask its author for a portable package or import from a developer checkout.");
         goto done;
     }
-    if (file_count != 4u) {
-        result_message(result, "portable package must contain exactly four canonical files");
-        goto done;
-    }
-    for (index = 0u; index < 4u; index++) {
-        if (!archive_entry(&archive, index, names[index], caps[index], &stat)) {
-            result_message(result, "portable package members are unsafe, reordered, compressed, or oversized");
-            goto done;
-        }
-        member_sizes[index] = stat.m_uncomp_size;
-        if (index == 3u) compiled_size = (size_t)stat.m_uncomp_size;
-    }
-    if (!archive_source_digest(&archive, member_sizes, COMPILER_ID,
-                               source_digest) ||
-        !archive_source_digest(&archive, member_sizes, LEGACY_COMPILER_ID,
-                               legacy_source_digest)) {
+    if (!archive_source_digest(&archive, names, member_sizes, source_count,
+                               COMPILER_ID, source_digest) ||
+        (legacy_digest_allowed &&
+         (!archive_source_digest(&archive, names, member_sizes, source_count,
+                                 LEGACY_COMPILER_ID_V2,
+                                 legacy_source_digest_v2) ||
+          !archive_source_digest(&archive, names, member_sizes, source_count,
+                                 LEGACY_COMPILER_ID_V1,
+                                 legacy_source_digest_v1)))) {
         result_message(result, "portable package source members could not be hashed");
         goto done;
     }
     compiled = malloc(compiled_size != 0u ? compiled_size : 1u);
     if (compiled == NULL ||
-        !mz_zip_reader_extract_to_mem(&archive, 3u, compiled, compiled_size, 0u) ||
+        !mz_zip_reader_extract_to_mem(&archive, compiled_index, compiled,
+                                      compiled_size, 0u) ||
         !mdkr_modern_character_asset_load_memory(compiled, compiled_size,
                                                   &asset, error, sizeof(error)) ||
         !mdkr_modern_character_asset_definition(&asset, &definition)) {
@@ -355,10 +430,13 @@ int mdkr_modern_character_install_portable(
         goto done;
     }
     if (memcmp(asset.source_sha256, source_digest, sizeof(source_digest)) != 0 &&
-        memcmp(asset.source_sha256, legacy_source_digest,
-               sizeof(legacy_source_digest)) != 0) {
+        (!legacy_digest_allowed ||
+         (memcmp(asset.source_sha256, legacy_source_digest_v2,
+                 sizeof(legacy_source_digest_v2)) != 0 &&
+          memcmp(asset.source_sha256, legacy_source_digest_v1,
+                 sizeof(legacy_source_digest_v1)) != 0))) {
         result_message(result,
-            "embedded cache does not match this package's manifest, model, and license");
+            "embedded cache does not match this package's canonical source members");
         goto done;
     }
     {
@@ -376,6 +454,13 @@ int mdkr_modern_character_install_portable(
                            "%s", display);
         }
         (void)snprintf(installed_id, sizeof(installed_id), "%s", id);
+        (void)snprintf(installed_display_name,
+                       sizeof(installed_display_name), "%s", display);
+        if (!json_escape(escaped_display_name, sizeof(escaped_display_name),
+                         installed_display_name)) {
+            result_message(result, "embedded character display name cannot be recorded safely");
+            goto done;
+        }
         (void)snprintf(source_leaf, sizeof(source_leaf), "%s.%s.mdkrchar", id, hash);
         if (!path_join(source_path, sizeof(source_path), directory, source_leaf)) {
             result_message(result, "content-addressed source path is too long");
@@ -407,7 +492,7 @@ int mdkr_modern_character_install_portable(
             "  \"compiler\": \"portable-embedded-mdkc/1\",\n"
             "  \"source_file\": \"%s\"\n"
             "}\n",
-            installed_id, installed_id,
+            installed_id, escaped_display_name,
             hash, cache_source_digest, source_leaf);
         if (report_length < 0 || (size_t)report_length >= sizeof(report_text)) {
             result_message(result, "character provenance report exceeds its bound");

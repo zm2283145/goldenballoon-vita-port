@@ -2362,6 +2362,8 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         countCharacterBits(entry->moving_semantic_mask &
                            (raceStates | selectStates)) == 13u;
     const bool qualified = entry->donor == 9u;
+    const bool identityReady = (entry->identity_flags & 1u) != 0u &&
+        entry->portrait_bytes != 0u;
 
     ImGui::PushID(entry->id);
     ImGui::SeparatorText("Overview");
@@ -2371,8 +2373,17 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         donorName(entry->donor));
     ui::TextSubtleWrapped(
         "The built-in profile still owns stats, handling, hitbox, voice, horn, records, ghosts, and ordinary online authority.");
-    ImGui::TextDisabled(
-        "Roster identity: donor fallback · Portrait: donor fallback · Custom identity media: not authored");
+    if (identityReady) {
+        ImGui::TextDisabled(
+            "Roster identity: %s · Portrait: authored (%u encoded bytes) · Minimap: #%02X%02X%02X",
+            entry->display_name, entry->portrait_bytes,
+            entry->minimap_rgba & 0xFFu,
+            (entry->minimap_rgba >> 8u) & 0xFFu,
+            (entry->minimap_rgba >> 16u) & 0xFFu);
+    } else {
+        ImGui::TextDisabled(
+            "Roster identity: donor fallback · Portrait: donor fallback · Import a source-v3 package to author identity media");
+    }
     ImGui::TextDisabled(
         "Performance guide: %s · %u triangles · %u vertices · %u draw parts · %u materials · %u joints · %u texture(s) · %u LOD(s)",
         characterPerformanceTier(entry), entry->stats.triangles,
@@ -2384,12 +2395,13 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
 
     ImGui::SeparatorText("Readiness");
     ImGui::TextDisabled(
-        "Geometry ready · Normalized %s · Anchored %s · Rig %s · Motion %s · Donor %s · Identity missing",
+        "Geometry ready · Normalized %s · Anchored %s · Rig %s · Motion %s · Donor %s · Identity %s",
         normalized ? "ready" : "review",
         anchored ? "ready" : "missing",
         rigMapped ? "ready" : "missing",
         motionReady ? "ready" : "incomplete",
-        qualified ? "qualified" : "pending");
+        qualified ? "qualified" : "pending",
+        identityReady ? "ready" : "missing");
     ImGui::TextDisabled(
         "%u/10 race states · %u/3 select states · %u/%u mapped clips move",
         mappedRaceStates, mappedSelectStates,

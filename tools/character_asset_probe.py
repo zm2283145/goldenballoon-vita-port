@@ -32,6 +32,7 @@ GLB_BIN_CHUNK = 0x004E4942
 MAX_INPUT_BYTES = 512 * 1024 * 1024
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_LICENSE_BYTES = 1024 * 1024
+MAX_PORTRAIT_BYTES = 8 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 4096
 MAX_NESTED_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_ARCHIVE_DEPTH = 2
@@ -41,9 +42,14 @@ MAX_TRIANGLES = 100_000
 MAX_MATERIALS = 16
 PACKAGE_SCHEMA_V1 = "mdkr-character-source-v1"
 PACKAGE_SCHEMA = "mdkr-character-source-v2"
-PACKAGE_SCHEMAS = {PACKAGE_SCHEMA_V1, PACKAGE_SCHEMA}
+PACKAGE_SCHEMA_V3 = "mdkr-character-source-v3"
+PACKAGE_SCHEMAS = {PACKAGE_SCHEMA_V1, PACKAGE_SCHEMA, PACKAGE_SCHEMA_V3}
 PACKAGE_MEMBERS = ("manifest.json", "model.glb", "LICENSE.txt")
 PORTABLE_PACKAGE_MEMBERS = PACKAGE_MEMBERS + ("compiled.mdkc",)
+PACKAGE_MEMBERS_V3 = (
+    "manifest.json", "model.glb", "portrait.png", "LICENSE.txt"
+)
+PORTABLE_PACKAGE_MEMBERS_V3 = PACKAGE_MEMBERS_V3 + ("compiled.mdkc",)
 PACKAGE_EPOCH = (1980, 1, 1, 0, 0, 0)
 MODEL_SUFFIXES = {".glb", ".gltf", ".dae", ".fbx", ".obj"}
 LICENSE_NAMES = {
@@ -79,6 +85,7 @@ RECOMMENDED_SELECT_SEMANTICS = (
 REQUIRED_PRESENTATION_SOCKETS = {"seat", "head"}
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")
 SEMANTIC_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 class ProbeError(ValueError):
@@ -140,6 +147,78 @@ def _read_bounded(path: Path, maximum: int, label: str) -> bytes:
     if len(data) > maximum:
         raise ProbeError(f"{label} exceeds {maximum} bytes")
     return data
+
+
+def inspect_portrait_png(data: bytes) -> dict[str, int]:
+    """Validate the deliberately narrow, portable identity-image profile.
+
+    Portrait Studio exports this profile directly. Restricting the package
+    boundary to non-interlaced 8-bit RGB/RGBA avoids decoder-dependent first
+    frames, palettes, colour-key transparency, and high-bit-depth conversion.
+    The runtime still decodes independently and fails closed.
+    """
+    if len(data) > MAX_PORTRAIT_BYTES:
+        raise ProbeError(f"portrait.png exceeds {MAX_PORTRAIT_BYTES} bytes")
+    if len(data) < 8 or data[:8] != PNG_SIGNATURE:
+        raise ProbeError("portrait.png is not a PNG")
+    offset = 8
+    chunks = 0
+    saw_ihdr = False
+    saw_idat = False
+    width = height = colour_type = 0
+    while offset < len(data):
+        if len(data) - offset < 12:
+            raise ProbeError("portrait.png has a truncated chunk")
+        length = struct.unpack_from(">I", data, offset)[0]
+        kind = data[offset + 4:offset + 8]
+        end = offset + 12 + length
+        if end > len(data):
+            raise ProbeError("portrait.png chunk exceeds the file")
+        payload = data[offset + 8:offset + 8 + length]
+        expected_crc = struct.unpack_from(">I", data, offset + 8 + length)[0]
+        if (zlib.crc32(kind + payload) & 0xFFFFFFFF) != expected_crc:
+            raise ProbeError("portrait.png has a bad chunk checksum")
+        chunks += 1
+        if chunks > 4096:
+            raise ProbeError("portrait.png has too many chunks")
+        if kind == b"IHDR":
+            if saw_ihdr or offset != 8 or length != 13:
+                raise ProbeError("portrait.png has an invalid IHDR")
+            width, height, bit_depth, colour_type, compression, filtering, interlace = (
+                struct.unpack(">IIBBBBB", payload)
+            )
+            if not 16 <= width <= 1024 or not 16 <= height <= 1024:
+                raise ProbeError("portrait.png dimensions must be between 16 and 1024")
+            if width != height:
+                raise ProbeError("portrait.png must be square")
+            if bit_depth != 8 or colour_type not in (2, 6):
+                raise ProbeError("portrait.png must use 8-bit RGB or RGBA pixels")
+            if compression != 0 or filtering != 0 or interlace != 0:
+                raise ProbeError("portrait.png must use standard non-interlaced PNG encoding")
+            saw_ihdr = True
+        elif kind == b"acTL":
+            raise ProbeError("animated portrait PNGs are unsupported")
+        elif kind == b"IDAT":
+            if not saw_ihdr:
+                raise ProbeError("portrait.png IDAT precedes IHDR")
+            saw_idat = True
+        elif kind == b"IEND":
+            if length != 0 or not saw_ihdr or not saw_idat or end != len(data):
+                raise ProbeError("portrait.png has an invalid IEND")
+            return {
+                "width": width,
+                "height": height,
+                "colour_type": colour_type,
+                "bytes": len(data),
+            }
+        offset = end
+    raise ProbeError("portrait.png is missing IEND")
+
+
+def package_members_for_schema(schema: object, portable: bool = False) -> tuple[str, ...]:
+    if schema == PACKAGE_SCHEMA_V3:
+        return PORTABLE_PACKAGE_MEMBERS_V3 if portable else PACKAGE_MEMBERS_V3
+    return PORTABLE_PACKAGE_MEMBERS if portable else PACKAGE_MEMBERS
 
 
 def _safe_archive_name(raw_name: str) -> str:
@@ -613,7 +692,7 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
     allowed = {
         "schema", "id", "display_name", "renderer_profile", "license",
         "animations", "gameplay", "presentation", "sockets", "model",
-        "model_sha256", "license_file",
+        "model_sha256", "license_file", "identity",
     }
     for field in sorted(set(manifest) - allowed):
         errors.append(f"manifest contains unknown field {field!r}")
@@ -631,6 +710,37 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
         errors.append("manifest.display_name is required")
     if manifest.get("renderer_profile") != "modern-skeletal-v1":
         errors.append("manifest.renderer_profile must be 'modern-skeletal-v1'")
+    identity = manifest.get("identity")
+    if schema == PACKAGE_SCHEMA_V3:
+        if not isinstance(identity, dict):
+            errors.append("manifest.identity object is required for v3")
+        else:
+            for field in sorted(set(identity) - {
+                "portrait_file", "portrait_sha256", "minimap_rgb"
+            }):
+                errors.append(f"manifest.identity contains unknown field {field!r}")
+            if identity.get("portrait_file") != "portrait.png":
+                errors.append("manifest.identity.portrait_file must be 'portrait.png'")
+            portrait_digest = identity.get("portrait_sha256")
+            if (
+                not isinstance(portrait_digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", portrait_digest) is None
+            ):
+                errors.append("manifest.identity.portrait_sha256 must be lowercase SHA-256")
+            minimap_rgb = identity.get("minimap_rgb")
+            if (
+                not isinstance(minimap_rgb, list)
+                or len(minimap_rgb) != 3
+                or any(
+                    isinstance(component, bool)
+                    or not isinstance(component, int)
+                    or not 0 <= component <= 255
+                    for component in minimap_rgb
+                )
+            ):
+                errors.append("manifest.identity.minimap_rgb must contain three bytes")
+    elif identity is not None:
+        errors.append("manifest.identity requires mdkr-character-source-v3")
     license_info = manifest.get("license")
     if not isinstance(license_info, dict):
         errors.append("manifest.license object is required")
@@ -683,7 +793,7 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
     presentation = manifest.get("presentation")
     if not isinstance(presentation, dict):
         errors.append("manifest.presentation object is required")
-    elif schema == PACKAGE_SCHEMA:
+    elif schema in (PACKAGE_SCHEMA, PACKAGE_SCHEMA_V3):
         for field in sorted(set(presentation) - {
             "source_forward", "target_height_m", "contexts", "lod_bias"
         }):
@@ -864,7 +974,8 @@ def _zip_entry(name: str, data: bytes) -> tuple[zipfile.ZipInfo, bytes]:
 
 
 def build_package(model_path: Path, manifest_path: Path, license_path: Path,
-                  output_path: Path, compiled_cache_path: Path | None = None) -> dict[str, Any]:
+                  output_path: Path, compiled_cache_path: Path | None = None,
+                  portrait_path: Path | None = None) -> dict[str, Any]:
     model = _read_bounded(model_path, MAX_INPUT_BYTES, "GLB input")
     report = inspect_glb_bytes(model, require_character=True)
     if report["errors"]:
@@ -878,6 +989,23 @@ def build_package(model_path: Path, manifest_path: Path, license_path: Path,
         raise ProbeError(f"cannot read manifest: {exc}") from exc
     if not isinstance(manifest, dict):
         raise ProbeError("manifest root must be an object")
+    portrait = None
+    portrait_report = None
+    if manifest.get("schema") == PACKAGE_SCHEMA_V3:
+        if portrait_path is None:
+            raise ProbeError("v3 packages require --portrait")
+        portrait = _read_bounded(portrait_path, MAX_PORTRAIT_BYTES, "portrait.png")
+        portrait_report = inspect_portrait_png(portrait)
+        identity = manifest.get("identity")
+        if not isinstance(identity, dict):
+            identity = {}
+        identity = dict(identity)
+        identity["portrait_file"] = "portrait.png"
+        identity["portrait_sha256"] = _sha256(portrait)
+        manifest = dict(manifest)
+        manifest["identity"] = identity
+    elif portrait_path is not None:
+        raise ProbeError("--portrait requires mdkr-character-source-v3")
     manifest_errors = validate_manifest(manifest, report)
     if manifest_errors:
         raise ProbeError("invalid manifest: " + "; ".join(manifest_errors))
@@ -894,14 +1022,16 @@ def build_package(model_path: Path, manifest_path: Path, license_path: Path,
         "model.glb": model,
         "LICENSE.txt": license_text,
     }
-    package_members = PACKAGE_MEMBERS
+    if portrait is not None:
+        members["portrait.png"] = portrait
+    package_members = package_members_for_schema(manifest["schema"])
     if compiled_cache_path is not None:
         compiled = _read_bounded(compiled_cache_path, MAX_INPUT_BYTES,
                                  "compiled character cache")
         if not _compiled_cache_valid(compiled):
             raise ProbeError("compiled character cache is invalid")
         members["compiled.mdkc"] = compiled
-        package_members = PORTABLE_PACKAGE_MEMBERS
+        package_members = package_members_for_schema(manifest["schema"], portable=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output_path, "w", allowZip64=False) as archive:
         for name in package_members:
@@ -913,6 +1043,7 @@ def build_package(model_path: Path, manifest_path: Path, license_path: Path,
         "bytes": len(package_bytes),
         "sha256": _sha256(package_bytes),
         "model": report,
+        "portrait": portrait_report,
         "portable": compiled_cache_path is not None,
     }
 
@@ -935,11 +1066,13 @@ def add_compiled_cache(package_path: Path, compiled: bytes,
     if not _compiled_cache_valid(compiled):
         raise ProbeError("compiled character cache is invalid")
     with zipfile.ZipFile(package_path) as source:
-        members = {name: source.read(name) for name in PACKAGE_MEMBERS}
+        manifest = json_loads_strict(source.read("manifest.json"), "manifest")
+        source_members = package_members_for_schema(manifest.get("schema"))
+        members = {name: source.read(name) for name in source_members}
     members["compiled.mdkc"] = compiled
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output_path, "w", allowZip64=False) as archive:
-        for name in PORTABLE_PACKAGE_MEMBERS:
+        for name in package_members_for_schema(manifest.get("schema"), portable=True):
             info, payload = _zip_entry(name, members[name])
             archive.writestr(info, payload)
     package_bytes = output_path.read_bytes()
@@ -960,15 +1093,19 @@ def verify_package(path: Path) -> dict[str, Any]:
         raise ProbeError(f"invalid character package: {exc}") from exc
     infos = archive.infolist()
     names = tuple(info.filename for info in infos)
-    if names not in (PACKAGE_MEMBERS, PORTABLE_PACKAGE_MEMBERS):
+    valid_member_sets = (
+        PACKAGE_MEMBERS, PORTABLE_PACKAGE_MEMBERS,
+        PACKAGE_MEMBERS_V3, PORTABLE_PACKAGE_MEMBERS_V3,
+    )
+    if names not in valid_member_sets:
         raise ProbeError(
-            f"package members must be exactly {PACKAGE_MEMBERS!r} or "
-            f"{PORTABLE_PACKAGE_MEMBERS!r}, in order"
+            "package members do not match a canonical source or portable layout"
         )
     member_caps = {
         "manifest.json": MAX_MANIFEST_BYTES,
         "model.glb": MAX_INPUT_BYTES,
         "LICENSE.txt": MAX_LICENSE_BYTES,
+        "portrait.png": MAX_PORTRAIT_BYTES,
         "compiled.mdkc": MAX_INPUT_BYTES,
     }
     for info in infos:
@@ -984,6 +1121,11 @@ def verify_package(path: Path) -> dict[str, Any]:
     manifest = json_loads_strict(archive.read("manifest.json"), "manifest")
     if not isinstance(manifest, dict):
         raise ProbeError("manifest root must be an object")
+    expected_members = package_members_for_schema(
+        manifest.get("schema"), portable="compiled.mdkc" in names
+    )
+    if names != expected_members:
+        raise ProbeError("package members do not match manifest.schema")
     model = archive.read("model.glb")
     license_text = archive.read("LICENSE.txt")
     report = inspect_glb_bytes(model, require_character=True)
@@ -991,9 +1133,22 @@ def verify_package(path: Path) -> dict[str, Any]:
     errors.extend(validate_manifest(manifest, report))
     if manifest.get("model_sha256") != _sha256(model):
         errors.append("manifest model_sha256 does not match model.glb")
+    portrait_report = None
+    if manifest.get("schema") == PACKAGE_SCHEMA_V3:
+        portrait = archive.read("portrait.png")
+        try:
+            portrait_report = inspect_portrait_png(portrait)
+        except ProbeError as exc:
+            errors.append(str(exc))
+        identity = manifest.get("identity", {})
+        if (
+            isinstance(identity, dict)
+            and identity.get("portrait_sha256") != _sha256(portrait)
+        ):
+            errors.append("manifest portrait_sha256 does not match portrait.png")
     if not license_text.strip():
         errors.append("LICENSE.txt is empty")
-    portable = names == PORTABLE_PACKAGE_MEMBERS
+    portable = names in (PORTABLE_PACKAGE_MEMBERS, PORTABLE_PACKAGE_MEMBERS_V3)
     if portable and not _compiled_cache_valid(archive.read("compiled.mdkc")):
         errors.append("compiled.mdkc is invalid")
     animation_info = manifest.get("animations", {})
@@ -1030,6 +1185,7 @@ def verify_package(path: Path) -> dict[str, Any]:
         "sha256": _sha256(data),
         "id": manifest.get("id"),
         "model": report,
+        "portrait": portrait_report,
         "errors": errors,
         "valid": not errors,
         "portable": portable,
@@ -1082,6 +1238,10 @@ def _parser() -> argparse.ArgumentParser:
     pack.add_argument("--license", required=True, type=Path)
     pack.add_argument("--output", required=True, type=Path)
     pack.add_argument("--compiled-cache", type=Path)
+    pack.add_argument(
+        "--portrait", type=Path,
+        help="square 8-bit RGB/RGBA PNG required by source-v3",
+    )
     verify = sub.add_parser("verify", help="verify an existing .mdkrchar source package")
     verify.add_argument("input", type=Path)
     return parser
@@ -1091,8 +1251,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if args.command == "pack":
-            report = build_package(args.model, args.manifest, args.license,
-                                   args.output, args.compiled_cache)
+            report = build_package(
+                args.model, args.manifest, args.license, args.output,
+                args.compiled_cache, args.portrait,
+            )
         elif args.command == "verify":
             report = verify_package(args.input)
         else:

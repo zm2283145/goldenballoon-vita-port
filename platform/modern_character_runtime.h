@@ -38,6 +38,16 @@ typedef struct MdkrModernCharacterTuning {
     MdkrModernCharacterAdjustment context[MDKR_CHARACTER_CONTEXT_COUNT];
 } MdkrModernCharacterTuning;
 
+typedef struct MdkrModernCharacterIdentityView {
+    const char *display_name;
+    const uint8_t *portrait_rgba;
+    uint32_t portrait_width;
+    uint32_t portrait_height;
+    uint32_t portrait_stride;
+    uint8_t minimap_rgba[4];
+    uint64_t revision;
+} MdkrModernCharacterIdentityView;
+
 void mdkr_modern_character_tuning_defaults(MdkrModernCharacterTuning *out);
 int mdkr_modern_character_tuning_validate(MdkrModernCharacterTuning *tuning,
                                           char *error, size_t error_size);
@@ -53,6 +63,10 @@ int mdkr_modern_character_assign_player(int player, const char *package_id,
 void mdkr_modern_character_clear_player(int player);
 const char *mdkr_modern_character_player_package(int player);
 int mdkr_modern_character_player_donor(int player);
+/* Borrowed pointers remain valid until that player's assignment changes or
+ * the runtime shuts down. Returns zero for an unassigned or legacy package. */
+int mdkr_modern_character_player_identity(
+    int player, MdkrModernCharacterIdentityView *out);
 int mdkr_modern_character_set_tuning(int player,
                                      const MdkrModernCharacterTuning *tuning,
                                      char *error, size_t error_size);

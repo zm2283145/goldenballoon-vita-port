@@ -39,7 +39,9 @@ typedef enum MdkrModernSectionType {
     MDKR_MDKC_SOCKETS = 16,
     MDKR_MDKC_ATTACHMENTS = 17,
     MDKR_MDKC_CALIBRATION = 18,
-    MDKR_MDKC_SECTION_LAST = MDKR_MDKC_CALIBRATION
+    MDKR_MDKC_IDENTITY = 19,
+    MDKR_MDKC_IDENTITY_DATA = 20,
+    MDKR_MDKC_SECTION_LAST = MDKR_MDKC_IDENTITY_DATA
 } MdkrModernSectionType;
 
 typedef struct MdkrModernSectionView {
@@ -193,6 +195,17 @@ typedef struct MdkrModernCalibration {
     float target_height;
 } MdkrModernCalibration;
 
+/* Optional source-v3 presentation identity. The encoded portrait remains
+ * immutable cache data; a bounded runtime adapter owns decoded pixels. */
+typedef struct MdkrModernIdentity {
+    uint32_t flags; /* bit zero: authored portrait and minimap colour */
+    uint32_t portrait_mime; /* 1 = PNG */
+    uint32_t portrait_offset;
+    uint32_t portrait_size;
+    uint32_t minimap_rgba; /* R in least-significant byte */
+    uint32_t short_name; /* reserved string offset; zero means display_name */
+} MdkrModernIdentity;
+
 typedef struct MdkrModernCharacterAsset {
     uint8_t *owned_bytes;
     size_t size;
@@ -258,6 +271,9 @@ int mdkr_modern_character_asset_definition(
     const MdkrModernCharacterAsset *asset, MdkrModernCharacterDefinition *out);
 int mdkr_modern_character_asset_semantic(const MdkrModernCharacterAsset *asset,
                                          uint32_t index, MdkrModernSemantic *out);
+int mdkr_modern_character_asset_identity(
+    const MdkrModernCharacterAsset *asset, MdkrModernIdentity *out,
+    const uint8_t **portrait_data);
 int mdkr_modern_character_asset_socket(const MdkrModernCharacterAsset *asset,
                                        uint32_t index, MdkrModernSocket *out);
 int mdkr_modern_character_asset_attachment(

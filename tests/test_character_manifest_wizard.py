@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import character_asset_probe as probe  # noqa: E402
 import character_manifest_wizard as wizard  # noqa: E402
-from test_character_asset_probe import make_animated_glb  # noqa: E402
+from test_character_asset_probe import make_animated_glb, make_portrait_png  # noqa: E402
 
 
 class CharacterManifestWizardTests(unittest.TestCase):
@@ -58,6 +58,27 @@ class CharacterManifestWizardTests(unittest.TestCase):
             self.assertEqual("-z", manifest["presentation"]["source_forward"])
             self.assertEqual(1.4, manifest["presentation"]["target_height_m"])
             self.assertEqual("-z", decisions["source_forward"])
+
+    def test_portrait_promotes_manifest_to_v3_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model = Path(temporary) / "model.glb"
+            portrait = Path(temporary) / "portrait.png"
+            model.write_bytes(make_animated_glb())
+            portrait.write_bytes(make_portrait_png())
+            manifest, decisions = wizard.build_manifest(
+                model, "org.example.identity", "Identity Character", "CC0-1.0",
+                "Generated fixture", "https://example.invalid/identity",
+                "diddy", ["car"], portrait=portrait,
+                minimap_rgb=[12, 34, 56],
+            )
+            self.assertEqual(probe.PACKAGE_SCHEMA_V3, manifest["schema"])
+            self.assertEqual([12, 34, 56], manifest["identity"]["minimap_rgb"])
+            self.assertEqual(16, decisions["identity_portrait"]["width"])
+            self.assertEqual(
+                [], probe.validate_manifest(
+                    manifest, probe.inspect_glb(model, require_character=True)
+                )
+            )
 
 
 if __name__ == "__main__":
