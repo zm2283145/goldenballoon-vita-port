@@ -14,6 +14,7 @@
 #include <string>
 
 #include "engine_entry.h"
+#include "modern_character_gameplay_profile.h"
 
 struct SDL_Window;
 
@@ -31,6 +32,13 @@ struct SettingsCharacterPreviewRequest {
 // Returns true when any setting was changed this frame (the caller may want to
 // re-read live state).
 bool Settings_draw(SDL_Window *window, bool compact = false);
+
+// Publish the immutable numeric donor summary extracted while the launcher
+// validates the player's ROM. The settings UI never owns or re-reads ROM bytes.
+// Passing null or an invalid/version-mismatched summary clears the comparison.
+void Settings_setDonorGameplayProfiles(
+    const MdkrDonorGameplayProfiles *profiles,
+    const char *unavailableReason = nullptr);
 
 // Validate and install a package through the same native-first path used by
 // the Custom Characters section. This is also the window-wide drag-and-drop

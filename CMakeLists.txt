@@ -310,6 +310,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/modern_character_identity.c # bounded identity decode and game-ready portrait resampling
     ${CMAKE_SOURCE_DIR}/platform/modern_character_runtime.c # assignments, animation instances, retained draw commands
     ${CMAKE_SOURCE_DIR}/platform/modern_character_donor.c # fail-visible retail driver/vehicle separation
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_gameplay_profile.c # exact bounded ROM donor summaries
     ${CMAKE_SOURCE_DIR}/platform/enhancement_registry.c # enhancements + authority class
     ${CMAKE_SOURCE_DIR}/platform/enh_speedometer.c  # speed readout (presentation only)
     ${CMAKE_SOURCE_DIR}/platform/enh_draw_distance.c # draw distance + LOD bias (presentation only)
@@ -1408,11 +1409,13 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/tests/test_app_shell.cpp
                 ${CMAKE_SOURCE_DIR}/platform/app/arg_triage.cpp
                 ${CMAKE_SOURCE_DIR}/platform/app/rom_validate.cpp
+                ${CMAKE_SOURCE_DIR}/platform/modern_character_gameplay_profile.c
                 ${CMAKE_SOURCE_DIR}/platform/rom_id.c
                 ${CMAKE_SOURCE_DIR}/platform/rom_validation.c
                 ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
                 ${CMAKE_SOURCE_DIR}/platform/sha256.c)
             target_include_directories(mdkr_app_shell_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/game/include
                 ${CMAKE_SOURCE_DIR}/platform
                 ${CMAKE_SOURCE_DIR}/platform/app)
             target_compile_features(mdkr_app_shell_test PRIVATE cxx_std_17)

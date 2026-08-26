@@ -178,15 +178,24 @@ them.
 
 The default product is explicit: **Appearance: custom; gameplay: built-in**.
 The user selects from fingerprint-qualified donor profiles, not raw character
-IDs. A profile card shows:
+IDs. The current Workshop reads a bounded numeric summary during the launcher's
+existing validated-ROM pass; no ROM bytes, table pointers, or copied tables are
+retained. Its profile comparison shows:
 
-- portrait/name of the built-in gameplay character;
-- weight, handling, acceleration and top-speed comparison bars sourced from the
-  game tables;
+- the name of the built-in gameplay character;
+- exact effective-weight and handling coefficients with relative roster-range
+  bars sourced from the verified game tables;
+- the exact 14 authored acceleration multipliers for car, hovercraft, and plane
+  as consistently scaled plots, hover values, and a keyboard-readable value
+  table rather than a fabricated one-number rating;
 - voice/horn/effect fallbacks;
 - car/hovercraft/plane qualification state;
 - records, ghosts, saves and online status;
-- why a profile is unavailable.
+- a visible evidence-unavailable state when no supported ROM has been verified.
+
+The bars describe range position, never “better” or “worse.” Top speed is not
+presented as a donor scalar because the live result is contextual game logic,
+not a single authoritative value in this comparison path.
 
 The implementation exposes qualified geometry seams for every retail donor.
 Profile cards can therefore present all ten choices without a hidden Diddy-only
@@ -380,7 +389,7 @@ last known-good assembly remains available if an update fails.
 | Per-context corrections | One package-keyed editor shared by every local assignment, with independent select/car/hovercraft/plane transforms and contact offsets | Add direct spatial transform/target manipulators |
 | Animation semantics | Executable sampling/diagnostics plus source-v4 compiled role contract, inference provenance/confidence, transactional 16-role skin-joint editor with bind-pose hierarchy canvas, rest/bend controls and automatic review invalidation, native hierarchy validation, reviewed engine-reference fallback motion, and bounded idempotent vehicle contact solving | Add richer reference clips, target overlays and joint-limit inspection |
 | Portrait/roster identity | Source-v3 import, transactional Portrait Studio revision, exact 40x40 preview/editor with pencil/eraser/fill/eyedropper/mirror/undo, HUD/results/rankings/minimap resolver, and independent 64-entry paginated select browser with per-player portrait/name identity executable | Add model capture, advanced selection/style tools, localization-aware game-font shaping, and remaining identity-surface audit |
-| Donor selection | All ten revision-1 donor seams are fingerprint-qualified and selectable through transactional source revisions; the engine publishes a bounded GPU-free installed-character catalog for virtual roster consumers | Add game-table comparison bars |
+| Donor selection | All ten revision-1 donor seams are fingerprint-qualified and selectable through transactional source revisions; the engine publishes a bounded GPU-free installed-character catalog for virtual roster consumers; the launcher publishes exact bounded ROM-derived weight, handling, and vehicle-specific 14-sample acceleration evidence without retaining ROM bytes | Add portrait-led profile cards and complete voice/horn/effect explanation audit |
 | Vehicle support | Source-backed compatibility revision, runtime enable subset, independent transforms, persisted per-vehicle hand/foot target offsets, warmed exact-context solve-count/mean/max contact-error feedback, stale-result invalidation, contextual one-click save/retest loops, and source/tuning-bound per-context review | Add visual target manipulators and complete vehicle test matrix |
 | Performance controls | Import caps, authored LOD bias, exact per-LOD draw accounting, 1P-4P worst-visible assembly counts, exact one-click WebGPU stress routes, and a returned post-warm-up wall-cadence percentile/result card with synthetic/short-sample refusal | Add GPU timestamps, repeatable comparison baselines, representative scene matrix and device profiles |
 | Gameplay tuning | Correctly absent from visual package | Build separate opt-in hashed gameplay-profile system |

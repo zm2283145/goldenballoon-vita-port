@@ -150,6 +150,21 @@ may change appearance, display name, portraits, and minimap colour, but its
 physics profile remains an explicit built-in donor unless a separately reviewed
 gameplay-mod system is introduced.
 
+For authoring clarity, the launcher derives a versioned, fixed-size donor
+summary from the normalized image it already owns during supported-ROM
+validation. The bounded reader follows the revision's master asset LUT into
+`ASSET_MISC` and its word-offset table, rejects truncated sections and
+non-finite values, applies the same authored 0.45 weight coefficient as the
+simulation, and copies handling plus the 14 acceleration samples consumed over
+clamped speed indices 0–13. Each car, hovercraft, and plane curve is resolved
+through the racer object ID, level-object translation table, bounded object
+header, and its `unk5C` misc-asset reference—the same data path the simulation
+uses. The ROM buffer is then released normally. Only this
+immutable numeric evidence reaches the Workshop; no ROM bytes, mutable game
+tables, or profile values enter a character package or configuration file.
+Failure to prove the optional summary withholds the comparison without changing
+the base ROM's independent boot verdict.
+
 ## Presentation identity versus a new gameplay profile
 
 The implemented spike is a **virtual presentation identity**, not an eleventh
@@ -402,6 +417,9 @@ absent calibrated vehicle creates a neutral seat-anchored context; disabling it
 retains the authored context for a later revision. Existing portrait and
 license bytes remain exact. This changes which retail actor the appearance can
 replace, never the donor's simulation tables or normal vehicle-selection rules.
+The Workshop annotates this choice with the validated-ROM summary above, but
+the annotation is read-only evidence: saving still records only the donor ID
+and compatibility mask.
 
 `revise-rig` uses that transaction for an exact bounded rig draft. It accepts
 only the dedicated draft schema, rejects non-regular or oversized input,

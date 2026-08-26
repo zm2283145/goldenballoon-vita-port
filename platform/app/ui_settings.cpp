@@ -1849,9 +1849,12 @@ struct CharacterProfileEdit {
     uint8_t sourceSha256[32] = {0};
     uint32_t donor = 9u;
     uint32_t vehicleMask = 7u;
+    uint32_t comparisonVehicle = MDKR_DONOR_VEHICLE_CAR;
 };
 
 std::map<std::string, CharacterProfileEdit> g_characterProfileEdits;
+MdkrDonorGameplayProfiles g_donorGameplayProfiles{};
+std::string g_donorGameplayProfilesUnavailableReason;
 std::map<std::string, int> g_characterAssemblyPlayers;
 std::map<std::string, int> g_characterTestPlayers;
 std::map<std::string, MdkrCharacterPreviewResult> g_characterPreviewResults;
@@ -2346,6 +2349,189 @@ const char *donorName(uint32_t donor) {
         "Banjo", "Drumstick", "Pipsy", "T.T.", "Diddy",
     };
     return donor < std::size(names) ? names[donor] : "Unknown";
+}
+
+bool donorProfilesAvailable() {
+    return g_donorGameplayProfiles.available == 1u &&
+        g_donorGameplayProfiles.version ==
+            MDKR_DONOR_GAMEPLAY_PROFILE_VERSION &&
+        g_donorGameplayProfiles.donor_count ==
+            MDKR_DONOR_GAMEPLAY_PROFILE_COUNT;
+}
+
+std::string donorChoiceLabel(uint32_t donor) {
+    if (!donorProfilesAvailable() ||
+        donor >= MDKR_DONOR_GAMEPLAY_PROFILE_COUNT) {
+        return donorName(donor);
+    }
+    const MdkrDonorGameplayProfile &profile =
+        g_donorGameplayProfiles.donor[donor];
+    char label[128];
+    std::snprintf(label, sizeof(label), "%s  ·  W %.3f  ·  H %.3f",
+                  donorName(donor), static_cast<double>(profile.weight),
+                  static_cast<double>(profile.handling));
+    return label;
+}
+
+void donorMetricRange(float MdkrDonorGameplayProfile::*member,
+                      float &minimum, float &maximum) {
+    minimum = g_donorGameplayProfiles.donor[0].*member;
+    maximum = minimum;
+    for (uint32_t donor = 1u;
+         donor < MDKR_DONOR_GAMEPLAY_PROFILE_COUNT; ++donor) {
+        const float value = g_donorGameplayProfiles.donor[donor].*member;
+        minimum = std::min(minimum, value);
+        maximum = std::max(maximum, value);
+    }
+}
+
+void drawDonorMetricRow(const char *label, float value,
+                        float minimum, float maximum) {
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(label);
+    ImGui::TableNextColumn();
+    ImGui::Text("%.4f", static_cast<double>(value));
+    ImGui::TableNextColumn();
+    const float range = maximum - minimum;
+    const float normalized = range > 0.0f
+        ? std::clamp((value - minimum) / range, 0.0f, 1.0f) : 0.5f;
+    char overlay[96];
+    std::snprintf(overlay, sizeof(overlay), "roster %.4f – %.4f",
+                  static_cast<double>(minimum),
+                  static_cast<double>(maximum));
+    ImGui::ProgressBar(normalized, ImVec2(-1.0f, 0.0f), overlay);
+}
+
+void drawDonorGameplayComparison(uint32_t donor, uint32_t &vehicle) {
+    if (!donorProfilesAvailable() ||
+        donor >= MDKR_DONOR_GAMEPLAY_PROFILE_COUNT) {
+        if (!g_donorGameplayProfilesUnavailableReason.empty()) {
+            ui::TextSubtleWrapped(
+                "Exact comparison unavailable: %s. Donor selection and "
+                "package saving remain available.",
+                g_donorGameplayProfilesUnavailableReason.c_str());
+        } else {
+            ui::TextSubtleWrapped(
+                "Select and verify a supported base ROM on the Play page to "
+                "compare exact built-in coefficients. Donor selection and "
+                "package saving remain available without this optional "
+                "evidence view.");
+        }
+        return;
+    }
+    const MdkrDonorGameplayProfile &profile =
+        g_donorGameplayProfiles.donor[donor];
+    ui::TextSubtleWrapped(
+        "Exact values from the verified base ROM. Relative bars show where "
+        "this profile sits within the built-in roster; they do not rank, copy, "
+        "or alter gameplay data.");
+    float weightMinimum = 0.0f;
+    float weightMaximum = 0.0f;
+    float handlingMinimum = 0.0f;
+    float handlingMaximum = 0.0f;
+    donorMetricRange(&MdkrDonorGameplayProfile::weight,
+                     weightMinimum, weightMaximum);
+    donorMetricRange(&MdkrDonorGameplayProfile::handling,
+                     handlingMinimum, handlingMaximum);
+    if (ImGui::BeginTable(
+            "##donor-gameplay-comparison", 3,
+            ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
+            ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Coefficient");
+        ImGui::TableSetupColumn("Exact value");
+        ImGui::TableSetupColumn("Built-in roster range");
+        ImGui::TableHeadersRow();
+        drawDonorMetricRow("Effective weight", profile.weight,
+                           weightMinimum, weightMaximum);
+        drawDonorMetricRow("Handling", profile.handling,
+                           handlingMinimum, handlingMaximum);
+        ImGui::EndTable();
+    }
+
+    ui::Gap(ui::kGapS);
+    ImGui::TextUnformatted("Acceleration curve by vehicle");
+    static const char *vehicleNames[MDKR_DONOR_VEHICLE_COUNT] = {
+        "Car", "Hovercraft", "Plane",
+    };
+    if (vehicle >= MDKR_DONOR_VEHICLE_COUNT) {
+        vehicle = MDKR_DONOR_VEHICLE_CAR;
+    }
+    for (uint32_t candidate = 0u; candidate < MDKR_DONOR_VEHICLE_COUNT;
+         ++candidate) {
+        if (candidate != 0u) ImGui::SameLine();
+        const std::string label = std::string(vehicleNames[candidate]) +
+            "##donor-curve-vehicle-" + std::to_string(candidate);
+        int selectedVehicle = static_cast<int>(vehicle);
+        if (ImGui::RadioButton(label.c_str(), &selectedVehicle,
+                               static_cast<int>(candidate))) {
+            vehicle = static_cast<uint32_t>(selectedVehicle);
+        }
+        ui::SpeakFocusedItem(
+            vehicleNames[candidate],
+            candidate == vehicle ? "selected" : "not selected",
+            "Choose which retail vehicle's exact acceleration curve to compare.");
+    }
+    ui::TextSubtleWrapped(
+        "The game interpolates these 14 authored multipliers across its "
+        "clamped speed indices 0–13. The plot uses the whole roster's range, "
+        "so switching profiles remains directly comparable.");
+    float curveMinimum =
+        g_donorGameplayProfiles.donor[0].acceleration[vehicle][0];
+    float curveMaximum = curveMinimum;
+    for (uint32_t candidate = 0u;
+         candidate < MDKR_DONOR_GAMEPLAY_PROFILE_COUNT; ++candidate) {
+        for (uint32_t sample = 0u;
+             sample < MDKR_DONOR_ACCELERATION_SAMPLES; ++sample) {
+            const float value = g_donorGameplayProfiles.donor[candidate]
+                .acceleration[vehicle][sample];
+            curveMinimum = std::min(curveMinimum, value);
+            curveMaximum = std::max(curveMaximum, value);
+        }
+    }
+    ImGui::PlotLines("##donor-acceleration-curve",
+                     profile.acceleration[vehicle],
+                     MDKR_DONOR_ACCELERATION_SAMPLES, 0, nullptr,
+                     curveMinimum, curveMaximum,
+                     ImVec2(-1.0f, 92.0f));
+    if (ImGui::IsItemHovered()) {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const ImVec2 min = ImGui::GetItemRectMin();
+        const ImVec2 max = ImGui::GetItemRectMax();
+        const float width = std::max(max.x - min.x, 1.0f);
+        const int sample = std::clamp(
+            static_cast<int>(((mouse.x - min.x) / width) *
+                             MDKR_DONOR_ACCELERATION_SAMPLES),
+            0, static_cast<int>(MDKR_DONOR_ACCELERATION_SAMPLES) - 1);
+        ImGui::SetTooltip("Speed index %d\nExact multiplier %.4f", sample,
+                          static_cast<double>(
+                              profile.acceleration[vehicle][sample]));
+    }
+    const bool exactValuesOpen = ImGui::TreeNode("Exact 14-sample values");
+    ui::SpeakFocusedItem(
+        "Exact acceleration values",
+        exactValuesOpen ? "expanded" : "collapsed",
+        "Expand to read all 14 speed-index multipliers as text.");
+    if (exactValuesOpen) {
+        if (ImGui::BeginTable("##donor-acceleration-values", 2,
+                              ImGuiTableFlags_RowBg |
+                              ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Speed index");
+            ImGui::TableSetupColumn("Multiplier");
+            ImGui::TableHeadersRow();
+            for (uint32_t sample = 0u;
+                 sample < MDKR_DONOR_ACCELERATION_SAMPLES; ++sample) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::Text("%u", sample);
+                ImGui::TableNextColumn();
+                ImGui::Text("%.4f", static_cast<double>(
+                    profile.acceleration[vehicle][sample]));
+            }
+            ImGui::EndTable();
+        }
+        ImGui::TreePop();
+    }
 }
 
 unsigned countCharacterBits(uint32_t value) {
@@ -3657,17 +3843,43 @@ bool drawCharacterProfileStudio(const MdkrModernCharacterEntry *entry) {
     }
     ui::TextSubtleWrapped(
         "Choose which built-in racer supplies gameplay and which vehicle scenes this appearance supports. This never copies or edits stats: handling, weight, acceleration, hitbox, voice, horn, records, ghosts, saves, and ordinary online authority remain the selected built-in profile's own data.");
-    ImGui::SetNextItemWidth(std::min(360.0f, ImGui::GetContentRegionAvail().x));
-    if (ImGui::BeginCombo("Built-in gameplay profile", donorName(edit.donor))) {
+    ImGui::SetNextItemWidth(std::min(440.0f, ImGui::GetContentRegionAvail().x));
+    const std::string selectedLabel = donorChoiceLabel(edit.donor);
+    const bool profileComboOpen = ImGui::BeginCombo(
+        "Built-in gameplay profile", selectedLabel.c_str());
+    ui::SpeakFocusedItem(
+        "Built-in gameplay profile", donorName(edit.donor),
+        "Choose the built-in racer that supplies authoritative gameplay. "
+        "The appearance package does not replace simulation stats.");
+    if (profileComboOpen) {
         for (uint32_t donor = 0u; donor < 10u; ++donor) {
             const bool selected = edit.donor == donor;
-            if (ImGui::Selectable(donorName(donor), selected)) {
+            const std::string optionLabel = donorChoiceLabel(donor);
+            if (ImGui::Selectable(optionLabel.c_str(), selected)) {
                 edit.donor = donor;
             }
+            char spoken[160];
+            if (donorProfilesAvailable()) {
+                const MdkrDonorGameplayProfile &profile =
+                    g_donorGameplayProfiles.donor[donor];
+                std::snprintf(
+                    spoken, sizeof(spoken),
+                    "effective weight %.4f, handling %.4f%s",
+                    static_cast<double>(profile.weight),
+                    static_cast<double>(profile.handling),
+                    selected ? ", selected" : "");
+            } else {
+                std::snprintf(spoken, sizeof(spoken), "%s",
+                              selected ? "selected" : "available");
+            }
+            ui::SpeakFocusedItem(
+                donorName(donor), spoken,
+                "Select this built-in authoritative gameplay profile.");
             if (selected) ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
     }
+    drawDonorGameplayComparison(edit.donor, edit.comparisonVehicle);
     ImGui::TextColored(
         AppTheme::good(),
         "%s: fingerprint-qualified select, car, hovercraft, and plane seams",
@@ -4607,6 +4819,39 @@ bool drawCustomCharactersSection(bool compact) {
 }
 
 }  // namespace
+
+void Settings_setDonorGameplayProfiles(
+    const MdkrDonorGameplayProfiles *profiles,
+    const char *unavailableReason) {
+    std::memset(&g_donorGameplayProfiles, 0,
+                sizeof(g_donorGameplayProfiles));
+    g_donorGameplayProfilesUnavailableReason =
+        unavailableReason != nullptr ? unavailableReason : "";
+    if (profiles == nullptr || profiles->available != 1u ||
+        profiles->version != MDKR_DONOR_GAMEPLAY_PROFILE_VERSION ||
+        profiles->donor_count != MDKR_DONOR_GAMEPLAY_PROFILE_COUNT) {
+        return;
+    }
+    for (uint32_t donor = 0u;
+         donor < MDKR_DONOR_GAMEPLAY_PROFILE_COUNT; ++donor) {
+        if (!std::isfinite(profiles->donor[donor].weight) ||
+            !std::isfinite(profiles->donor[donor].handling)) {
+            return;
+        }
+        for (uint32_t sample = 0u;
+             sample < MDKR_DONOR_ACCELERATION_SAMPLES; ++sample) {
+            for (uint32_t vehicle = 0u;
+                 vehicle < MDKR_DONOR_VEHICLE_COUNT; ++vehicle) {
+                if (!std::isfinite(profiles->donor[donor]
+                                       .acceleration[vehicle][sample])) {
+                    return;
+                }
+            }
+        }
+    }
+    g_donorGameplayProfiles = *profiles;
+    g_donorGameplayProfilesUnavailableReason.clear();
+}
 
 bool Settings_importCharacterPackage(const char *path) {
     if (path == nullptr || path[0] == '\0') {

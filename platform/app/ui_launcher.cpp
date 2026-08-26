@@ -932,6 +932,8 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
             tracedSettingsAction = true;
         }
     }
+    Settings_setDonorGameplayProfiles(
+        &s.romInfo.donor_profiles, s.romInfo.donor_profiles_message);
     Settings_draw(s.hostWindow, /*compact=*/false);
     SettingsCharacterPreviewRequest preview;
     if (Settings_takeCharacterPreviewRequest(preview)) {

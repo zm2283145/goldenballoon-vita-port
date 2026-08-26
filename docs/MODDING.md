@@ -356,6 +356,19 @@ player placard remains. The package name, portrait, minimap colour, and
 assignment identity remain independent of that donor; donor voice and music
 are deliberately neutral during custom selection.
 
+The Workshop's gameplay-profile picker compares all ten qualified donors using
+exact coefficients extracted during the launcher's existing supported-ROM
+validation pass. It shows effective weight (including the game's authored 0.45
+scale), signed handling, and all 14 acceleration-curve samples. Relative bars
+only locate a value within the built-in roster; they are not ratings and do not
+change gameplay. Car, hovercraft, and plane curves are resolved independently
+through the same object-header translation path used by the game. The plot has
+an exact text table for keyboard and screen-reader use. The summary contains
+only finite numeric values and never
+stores ROM bytes in the package, configuration, or installed-character cache.
+If no supported ROM is currently verified, package selection and saving remain
+available while the comparison explicitly says its evidence is unavailable.
+
 `MDKR_CUSTOM_CHARACTER_DIRECTORY` is a diagnostic and automated-test override
 for launching against an isolated catalog. Ordinary players should use the
 workshop-managed per-user character directory; the override does not bypass
