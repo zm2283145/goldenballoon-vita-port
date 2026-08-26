@@ -242,11 +242,11 @@ describe("MatchRoom protocol-v1 reducer", () => {
       .toMatchObject({accepted: false, error: "not_ready"});
     expect(send("set_vote", "10", 5, "0").accepted).toBe(true);
     expect(send("set_vote", "20", 5, "1").accepted).toBe(true);
-    expect(send("set_config_track", "10", 12).accepted).toBe(true);
+    expect(send("set_config_track", "10", 13).accepted).toBe(true);
     expect(send("set_ready", "10", 1).accepted).toBe(true);
     expect(send("set_ready", "20", 1).accepted).toBe(true);
     expect(send("begin_loading", "10", 1).accepted).toBe(true);
-    expect(lobby.selectedTrack).toBe(12);
+    expect(lobby.selectedTrack).toBe(13);
 
     const tournament = twoSeatRoom();
     expect(tournament.send("set_mode", "10", 1).accepted).toBe(true);
@@ -316,6 +316,74 @@ describe("MatchRoom protocol-v1 reducer", () => {
     expect(lobby.points).toEqual([0, 0, 0, 0]);
     expect(lobby.lastPlacements).toEqual(Array(4).fill(MATCH_NO_PLACEMENT));
     expect(validMatchLobby(lobby)).toBe(true);
+  });
+
+  it("compacts seats and series state on leave and resets refilled seats", () => {
+    const {lobby, send} = twoSeatRoom();
+    expect(send("set_mode", "10", 1).accepted).toBe(true);
+    expect(send("set_cup", "10", 0).accepted).toBe(true);
+    runRoundToRacing(send);
+    expect(send("publish_results", "10", 0xffff_0100).accepted).toBe(true);
+    expect(lobby.points).toEqual([9, 7, 0, 0]);
+
+    /* Leader 10 (seat 0) leaves during results: seat 1 shifts down together
+     * with its points and last placement, mirroring remove_member in
+     * platform/online/lobby_core.c. */
+    expect(send("leave", "10")).toMatchObject({accepted: true,
+      leaderChanged: true, leaderEndpointId: "20"});
+    expect(lobby.seats).toHaveLength(1);
+    expect(lobby.seats[0]!.endpointId).toBe("20");
+    expect(lobby.points).toEqual([7, 0, 0, 0]);
+    expect(lobby.lastPlacements).toEqual([1, MATCH_NO_PLACEMENT,
+      MATCH_NO_PLACEMENT, MATCH_NO_PLACEMENT]);
+
+    expect(send("rematch", "20").accepted).toBe(true);
+    expect(lobby.raceIndex).toBe(1);
+    let newcomerId = 1;
+    const newcomer = (type: MatchCommandType, value = 0, target = "0",
+                      compat = blankCompatibility()) =>
+      dispatchMatchCommand(lobby, command(type, "30", newcomerId++,
+        lobby.revision, value, target, compat));
+    expect(newcomer("join", 1, "0", structuredClone(compatibility))
+      .accepted).toBe(true);
+    expect(lobby.seats[1]!.endpointId).toBe("30");
+    expect(lobby.points[1], "no inherited trophy points").toBe(0);
+    expect(lobby.lastPlacements[1], "no inherited placement")
+      .toBe(MATCH_NO_PLACEMENT);
+    expect(newcomer("set_character", 1, "1").accepted).toBe(true);
+    expect(newcomer("set_vehicle", 0, "1").accepted).toBe(true);
+    expect(send("set_ready", "20", 1).accepted).toBe(true);
+    expect(newcomer("set_ready", 1).accepted).toBe(true);
+    expect(send("begin_loading", "20", 1).accepted).toBe(true);
+    expect(send("ack_loaded", "20").accepted).toBe(true);
+    expect(newcomer("ack_loaded").accepted).toBe(true);
+    expect(send("begin_race", "20").accepted).toBe(true);
+    expect(send("publish_results", "20", 0xffff_01ff),
+      "packed bytes shaped for the old in-place seat hole")
+      .toMatchObject({accepted: false, error: "invalid_state"});
+    expect(send("publish_results", "20", 0xffff_0100).accepted).toBe(true);
+    expect(lobby.points, "attribution follows the compacted seats")
+      .toEqual([16, 7, 0, 0]);
+    expect(lobby.lastPlacements.slice(0, 2)).toEqual([0, 1]);
+    expect(validMatchLobby(lobby)).toBe(true);
+  });
+
+  it("accepts only the 20 cup-schedule race tracks for set_config_track", () => {
+    /* Byte-mirrored from kCupTracks in platform/online/lobby_core.c. */
+    const raceTracks = [5, 3, 29, 7, 13, 6, 9, 28, 8, 4, 10, 30,
+      19, 18, 20, 31, 17, 32, 33, 15];
+    const {lobby, send} = twoSeatRoom();
+    const before = JSON.stringify(lobby);
+    for (const hostile of [0, 34, 26]) {
+      expect(send("set_config_track", "10", hostile), `hostile id ${hostile}`)
+        .toMatchObject({accepted: false, error: "invalid_state"});
+    }
+    expect(JSON.stringify(lobby), "rejections stay atomic").toBe(before);
+    for (const track of raceTracks) {
+      expect(send("set_config_track", "10", track).accepted,
+        `race id ${track}`).toBe(true);
+      expect(lobby.configuredTrack).toBe(track);
+    }
   });
 
   it("rejects stale, conflicting, unauthorized and illegal work atomically", () => {

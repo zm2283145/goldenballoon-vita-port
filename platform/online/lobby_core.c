@@ -22,6 +22,20 @@ uint16_t mdkr_online_cup_track(unsigned cup, unsigned round) {
     return kCupTracks[cup][round];
 }
 
+/* The 20 race tracks reachable through the cup schedule are the only ids a
+ * leader may configure. Hub, cutscene, trophy-ceremony and battle ids fail
+ * here like any other invalid argument instead of surfacing at engine boot. */
+static bool known_race_track(uint32_t value) {
+    unsigned cup;
+    unsigned round;
+    for (cup = 0u; cup < MDKR_ONLINE_CUP_COUNT; cup++) {
+        for (round = 0u; round < MDKR_ONLINE_CUP_ROUNDS; round++) {
+            if (kCupTracks[cup][round] == value) return true;
+        }
+    }
+    return false;
+}
+
 static bool any_nonzero(const uint8_t *bytes, size_t size) {
     uint8_t value = 0u;
     size_t index;
@@ -98,6 +112,10 @@ static bool add_member(
         seat->character_id = MDKR_ONLINE_NO_CHARACTER;
         seat->vehicle_id = MDKR_ONLINE_NO_VEHICLE;
         seat->occupied = true;
+        /* A newly filled seat starts a fresh series entry: a newcomer must
+         * never inherit a previous occupant's trophy points or placement. */
+        lobby->points[seat_index] = 0u;
+        lobby->last_placements[seat_index] = MDKR_ONLINE_NO_PLACEMENT;
     }
     lobby->member_count++;
     lobby->seat_count = (uint8_t)(lobby->seat_count + seat_count);
@@ -399,19 +417,44 @@ static void clear_round(MdkrOnlineLobby *lobby) {
 }
 
 static bool remove_member(MdkrOnlineLobby *lobby, uint64_t endpoint_id) {
-    MdkrOnlineMember *item = member(lobby, endpoint_id);
     unsigned index;
-    if (item == NULL || lobby->member_count <= 1u) return false;
+    unsigned kept = 0u;
+    if (member(lobby, endpoint_id) == NULL || lobby->member_count <= 1u)
+        return false;
+    /* Compact the seat array order-preserving and shift the parallel
+     * per-seat series state (points/last placements) with the same
+     * permutation, zeroing the vacated tail. The service reducer stores
+     * seats densely, so seat i must mean the same racer on both sides. */
     for (index = 0u; index < MDKR_ONLINE_MAX_SEATS; index++) {
-        if (lobby->seats[index].occupied &&
-            lobby->seats[index].endpoint_id == endpoint_id) {
-            memset(&lobby->seats[index], 0, sizeof(lobby->seats[index]));
-            lobby->seats[index].vote_track = MDKR_ONLINE_NO_VOTE;
-            lobby->seat_count--;
+        if (!lobby->seats[index].occupied ||
+            lobby->seats[index].endpoint_id == endpoint_id) continue;
+        if (kept != index) {
+            lobby->seats[kept] = lobby->seats[index];
+            lobby->points[kept] = lobby->points[index];
+            lobby->last_placements[kept] = lobby->last_placements[index];
         }
+        kept++;
     }
-    memset(item, 0, sizeof(*item));
-    lobby->member_count--;
+    for (index = kept; index < MDKR_ONLINE_MAX_SEATS; index++) {
+        memset(&lobby->seats[index], 0, sizeof(lobby->seats[index]));
+        lobby->seats[index].vote_track = MDKR_ONLINE_NO_VOTE;
+        lobby->points[index] = 0u;
+        lobby->last_placements[index] = MDKR_ONLINE_NO_PLACEMENT;
+    }
+    lobby->seat_count = (uint8_t)kept;
+    /* Compact the member table the same way so a later join appends after
+     * the survivors on both sides instead of refilling the native hole.
+     * Leader re-election stays keyed off endpoint ids, never table slots. */
+    kept = 0u;
+    for (index = 0u; index < MDKR_ONLINE_MAX_ENDPOINTS; index++) {
+        if (!lobby->members[index].occupied ||
+            lobby->members[index].endpoint_id == endpoint_id) continue;
+        if (kept != index) lobby->members[kept] = lobby->members[index];
+        kept++;
+    }
+    for (index = kept; index < MDKR_ONLINE_MAX_ENDPOINTS; index++)
+        memset(&lobby->members[index], 0, sizeof(lobby->members[index]));
+    lobby->member_count = (uint8_t)kept;
     return true;
 }
 
@@ -696,7 +739,7 @@ MdkrOnlineStep mdkr_online_lobby_dispatch(
                 (command->type == MDKR_ONLINE_SET_MODE &&
                  command->value > MDKR_ONLINE_MODE_TOURNAMENT) ||
                 (command->type == MDKR_ONLINE_SET_CONFIG_TRACK &&
-                 command->value > 255u) ||
+                 !known_race_track(command->value)) ||
                 (command->type == MDKR_ONLINE_SET_CUP &&
                  command->value >= MDKR_ONLINE_CUP_COUNT))
                 return step_for(lobby, false, false, false,
