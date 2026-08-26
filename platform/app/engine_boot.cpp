@@ -27,6 +27,16 @@ std::array<std::array<std::string, kCharacterTuningCount>, 4>
     s_launcherCharacterTuningEnvironment;
 std::map<std::string, std::string> s_launcherPackageTuningEnvironment;
 
+const char *characterPreviewContextName(MdkrCharacterPreviewContext context) {
+    switch (context) {
+        case MDKR_CHARACTER_PREVIEW_SELECT: return "select";
+        case MDKR_CHARACTER_PREVIEW_CAR: return "car";
+        case MDKR_CHARACTER_PREVIEW_HOVERCRAFT: return "hovercraft";
+        case MDKR_CHARACTER_PREVIEW_PLANE: return "plane";
+        default: return nullptr;
+    }
+}
+
 struct CharacterTuningKey {
     const char *environment_suffix;
     const char *preference_suffix;
@@ -145,12 +155,24 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
     // the whole engine run, and the engine keeps pointers into it (romPath is
     // stored, not copied, by main_pc.c).
     std::vector<std::string> owned;
+    AppEnvironmentTransaction previewEnvironment;
     owned.push_back("mdkr64");
 
     if (cfg != nullptr) {
         if (cfg->automation_ticks > 0 && cfg->automation_frames > 0) {
             std::fprintf(stderr,
                          "[app] boot rejected conflicting tick/frame limits\n");
+            return 2;
+        }
+        if (cfg->character_preview_context != MDKR_CHARACTER_PREVIEW_NONE &&
+            (cfg->character_preview_package == nullptr ||
+             cfg->character_preview_package[0] == '\0' ||
+             characterPreviewContextName(cfg->character_preview_context) ==
+                 nullptr ||
+             cfg->character_preview_players < 1 ||
+             cfg->character_preview_players > 4)) {
+            std::fprintf(stderr,
+                         "[app] boot rejected invalid character preview\n");
             return 2;
         }
         if (cfg->rom_path != nullptr && cfg->rom_path[0] != '\0') {
@@ -276,9 +298,45 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
         }
     }
 
+    if (cfg != nullptr &&
+        cfg->character_preview_context != MDKR_CHARACTER_PREVIEW_NONE) {
+        const char *context =
+            characterPreviewContextName(cfg->character_preview_context);
+        bool environmentReady = previewEnvironment.set(
+            "MDKR_CHARACTER_WORKSHOP_PREVIEW", context) &&
+            previewEnvironment.set(
+                "MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS",
+                std::to_string(cfg->character_preview_players).c_str());
+        for (int player = 0; player < 4; ++player) {
+            const std::string variable =
+                "MDKR_CUSTOM_CHARACTER_P" + std::to_string(player + 1);
+            environmentReady = previewEnvironment.set(
+                variable.c_str(), player < cfg->character_preview_players
+                    ? cfg->character_preview_package : "") && environmentReady;
+        }
+        if (!environmentReady) {
+            (void)previewEnvironment.restore();
+            std::fprintf(stderr,
+                         "[app] character preview environment failed\n");
+            return 2;
+        }
+        std::fprintf(
+            stderr,
+            "[app] character preview: package=%s context=%s players=%d\n",
+            cfg->character_preview_package, context,
+            cfg->character_preview_players);
+    }
+
     std::fprintf(stderr, "[app] boot:");
     for (size_t i = 1; i < owned.size(); ++i) std::fprintf(stderr, " %s", owned[i].c_str());
     std::fprintf(stderr, "\n");
 
-    return mdkr64_headless_main((int)owned.size(), argv.data());
+    const int result =
+        mdkr64_headless_main((int)owned.size(), argv.data());
+    if (!previewEnvironment.restore()) {
+        std::fprintf(stderr,
+                     "[app] character preview environment restore failed\n");
+        return result == 0 ? 2 : result;
+    }
+    return result;
 }

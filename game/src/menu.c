@@ -9343,6 +9343,16 @@ void menu_character_select_init(void) {
         }
     }
     charselect_custom_init();
+    /* A launcher assignment is already a package identity, not a request to
+     * display Diddy until the player opens the custom browser. Anchor the 3D
+     * select actor to that package's exact donor immediately. Locked donors
+     * retain the documented neutral Diddy scene anchor. */
+    for (i = 0; i < ARRAY_COUNT(gActivePlayersArray); i++) {
+        if (gActivePlayersArray[i] && sCustomCharacterSelection[i] >= 0) {
+            gPlayersCharacterArray[i] = charselect_custom_donor_table_index(
+                sCustomCharacterSelection[i]);
+        }
+    }
     sTajUnlockBannerTimer = taj_mod_consume_unlock_announcement() ? 300 : 0;
     sWizpigUnlockBannerTimer =
         mod_racer_consume_unlock_announcement(MOD_RACER_WIZPIG) ? 300 : 0;
@@ -9927,6 +9937,73 @@ void charselect_assign_ai(s32 charSlot) {
         } while (foundIt);
     }
 }
+
+#ifdef NATIVE_PORT
+s32 mdkr_workshop_preview_prepare(s32 players, s32 vehicle) {
+    s32 donors[MAXCONTROLLERS];
+    s32 candidate;
+    s32 player;
+    s32 slot;
+    if (players < 1 || players > MAXCONTROLLERS ||
+        vehicle < -1 || vehicle > VEHICLE_PLANE) {
+        return FALSE;
+    }
+    for (player = 0; player < players; player++) {
+        donors[player] = mdkr_modern_character_player_donor(player);
+        if (donors[player] < CHARACTER_KRUNCH ||
+            donors[player] > CHARACTER_DIDDY ||
+            mdkr_modern_character_player_package(player) == NULL ||
+            (vehicle >= VEHICLE_CAR &&
+             !mdkr_modern_character_matches(player, donors[player], vehicle))) {
+            return FALSE;
+        }
+    }
+
+    reset_character_id_slots();
+    gNumberOfActivePlayers = players;
+    gNumberOfReadyPlayers = 0;
+    for (player = 0; player < MAXCONTROLLERS; player++) {
+        const s32 active = player < players;
+        gActivePlayersArray[player] = active;
+        /* Index 1 is Diddy's stable entry in every retail select table. The
+         * package-specific donor row is resolved after that table is built. */
+        gPlayersCharacterArray[player] = active ? 1 : -1;
+        gCharselectStatus[player] = CHARSELECT_STATUS_UNCONFIRMED;
+        if (!active) continue;
+        gCharacterIdSlots[player] = (s8)donors[player];
+        mod_racer_set_player_identity(player, MOD_RACER_RETAIL);
+        if (vehicle >= VEHICLE_CAR) {
+            set_player_selected_vehicle(player, vehicle);
+        }
+    }
+    /* The ordinary AI helper reads the character-select navigation table,
+     * which does not exist yet on a direct boot. Fill the non-player slots
+     * deterministically from the canonical donor IDs instead. Duplicate local
+     * players are intentional; AI avoid every slot already published. */
+    candidate = CHARACTER_KRUNCH;
+    for (slot = players; slot < 8; slot++) {
+        s32 used;
+        do {
+            used = FALSE;
+            for (player = 0; player < slot; player++) {
+                if (gCharacterIdSlots[player] == candidate) {
+                    used = TRUE;
+                    break;
+                }
+            }
+            if (used) candidate = (candidate + 1) % NUMBER_OF_CHARACTERS;
+        } while (used);
+        gCharacterIdSlots[slot] = (s8)candidate;
+        candidate = (candidate + 1) % NUMBER_OF_CHARACTERS;
+    }
+    charselect_assign_players(gActivePlayersArray);
+    enable_tracks_mode(TRUE);
+    MDKR_TRACE(
+        "character_workshop_preview: prepared players=%d vehicle=%d donor0=%d",
+        players, vehicle, donors[0]);
+    return TRUE;
+}
+#endif
 
 /**
  * Handle the character select menu, letting players pick their character.

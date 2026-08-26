@@ -29,6 +29,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -1851,6 +1852,9 @@ struct CharacterProfileEdit {
 
 std::map<std::string, CharacterProfileEdit> g_characterProfileEdits;
 std::map<std::string, int> g_characterAssemblyPlayers;
+std::map<std::string, int> g_characterTestPlayers;
+SettingsCharacterPreviewRequest g_characterPreviewRequest;
+bool g_characterPreviewRequested = false;
 
 struct CharacterTuningEdit {
     bool loaded = false;
@@ -2432,11 +2436,11 @@ const char *characterPerformanceTier(
 void drawCharacterPerformanceAssembly(
     const MdkrModernCharacterEntry *entry) {
     int &players = g_characterAssemblyPlayers[entry->id];
-    if (players != 1 && players != 2 && players != 4) players = 4;
+    if (players < 1 || players > 4) players = 4;
     ui::TextSubtleWrapped(
         "Inspect the selected package repeated across local players. The worst-visible case assumes every custom racer is visible in every split-screen viewport at LOD0. Immutable mesh and texture uploads remain shared once for this package.");
     ImGui::TextUnformatted("Local-player assembly");
-    for (int option : {1, 2, 4}) {
+    for (int option : {1, 2, 3, 4}) {
         if (option != 1) ImGui::SameLine();
         const std::string label = std::to_string(option) +
             (option == 1 ? " player" : " players");
@@ -2498,6 +2502,80 @@ void drawCharacterPerformanceAssembly(
     }
     ui::TextSubtleWrapped(
         "These are exact structural counts, not a frame-time prediction. Materials, transparency, overdraw, skinning, driver visibility, camera framing, GPU, resolution, and other racers still affect measured performance; the Workshop must not turn a budget guide into an artificial import ceiling.");
+}
+
+void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
+                             MdkrCharacterPreviewContext context,
+                             int players) {
+    g_characterPreviewRequest.packageId = entry->id;
+    g_characterPreviewRequest.context = context;
+    g_characterPreviewRequest.players = players;
+    g_characterPreviewRequested = true;
+    setStatus("Checking the selected ROM, then opening the exact game context.",
+              AppTheme::good());
+}
+
+void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
+                             bool compact) {
+    if (compact) {
+        ui::TextSubtleWrapped(
+            "Return to the launcher Workshop to start an exact game-context test. A running engine cannot safely start a second engine inside itself.");
+        return;
+    }
+    int &players = g_characterTestPlayers[entry->id];
+    const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
+    if (players < 1 || players > 4) players = 1;
+    ui::TextSubtleWrapped(
+        "Launch this package directly into the real game renderer with its saved fit. The test is temporary: it does not replace Player assignments or skip the final ROM integrity check. Use F1 to return to the launcher when finished.");
+    ImGui::TextUnformatted("Test layout");
+    for (int option : {1, 2, 3, 4}) {
+        if (option != 1) ImGui::SameLine();
+        const std::string label = std::to_string(option) +
+            (option == 1 ? " player##character-test-" :
+                           " players##character-test-") +
+            std::to_string(option);
+        (void)ImGui::RadioButton(label.c_str(), &players, option);
+    }
+    if (ImGui::Button("Character select")) {
+        requestCharacterPreview(entry, MDKR_CHARACTER_PREVIEW_SELECT,
+                                players);
+    }
+    ui::SpeakFocusedItem(
+        "Character select", nullptr,
+        "Tests the selected package in the exact character select scene.");
+    ImGui::SameLine();
+    const bool carQualified = (tuning.vehicleMask & 1u) != 0u;
+    if (!carQualified) ImGui::BeginDisabled();
+    if (ImGui::Button("Car") && carQualified) {
+        requestCharacterPreview(entry, MDKR_CHARACTER_PREVIEW_CAR,
+                                players);
+    }
+    if (!carQualified) ImGui::EndDisabled();
+    ui::SpeakFocusedItem("Car",
+                         carQualified ? nullptr : "Disabled for this package.",
+                         "Tests the selected package in a real car race.");
+    ImGui::SameLine();
+    const bool hoverQualified = (tuning.vehicleMask & 2u) != 0u;
+    if (!hoverQualified) ImGui::BeginDisabled();
+    if (ImGui::Button("Hovercraft") && hoverQualified) {
+        requestCharacterPreview(
+            entry, MDKR_CHARACTER_PREVIEW_HOVERCRAFT, players);
+    }
+    if (!hoverQualified) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Hovercraft", hoverQualified ? nullptr : "Not supported by this package.",
+        "Tests the selected package in a real hovercraft race.");
+    ImGui::SameLine();
+    const bool planeQualified = (tuning.vehicleMask & 4u) != 0u;
+    if (!planeQualified) ImGui::BeginDisabled();
+    if (ImGui::Button("Plane") && planeQualified) {
+        requestCharacterPreview(entry, MDKR_CHARACTER_PREVIEW_PLANE,
+                                players);
+    }
+    if (!planeQualified) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Plane", planeQualified ? nullptr : "Not supported by this package.",
+        "Tests the selected package in a real plane race.");
 }
 
 void drawCharacterPortraitPreview(const MdkrModernCharacterEntry *entry) {
@@ -3121,6 +3199,8 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
     changed |= drawCharacterTuningEditor(0, entry);
     ImGui::SeparatorText("Performance assembly");
     drawCharacterPerformanceAssembly(entry);
+    ImGui::SeparatorText("Test in the exact game renderer");
+    drawCharacterExactTests(entry, compact);
     ui::Gap(ui::kGapS);
     if (ImGui::Button("Remove package from this computer...")) {
         g_characterPendingRemoval = entry->id;
@@ -3371,6 +3451,15 @@ bool Settings_importCharacterPackage(const char *path) {
     g_characterImportPath[0] = '\0';
     setStatus("Character package validated, compiled, and installed.",
               AppTheme::good());
+    return true;
+}
+
+bool Settings_takeCharacterPreviewRequest(
+    SettingsCharacterPreviewRequest &request) {
+    if (!g_characterPreviewRequested) return false;
+    request = std::move(g_characterPreviewRequest);
+    g_characterPreviewRequest = SettingsCharacterPreviewRequest{};
+    g_characterPreviewRequested = false;
     return true;
 }
 

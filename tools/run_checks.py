@@ -194,6 +194,7 @@ GPU_SERIAL_NAMES = frozenset({
     "taj_challenges",
     "bonus_character_select",
     "custom_character_roster",
+    "custom_character_workshop_preview",
     "bonus_results_portraits",
     "taj_character_select",
     "taj_character_select_webgpu",
@@ -725,6 +726,10 @@ CHECKS = (
     Check("custom_character_roster", "check_custom_character_roster.py", "native",
           "isolated generated custom package, independent paginated browser, "
           "portrait composition, and real controller entry route"),
+    Check("custom_character_workshop_preview",
+          "check_custom_character_workshop_preview.py", "native",
+          "script-free exact select/car/hovercraft/plane launches and real "
+          "one-to-four-player WebGPU character stress with fail-closed inputs"),
     Check("bonus_results_portraits", "check_bonus_results_portraits.py", "native",
           "real post-race Wizpig/Terry portrait ownership, retail dimensions, "
           "and distinct card pixels"),

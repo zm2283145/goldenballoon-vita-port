@@ -313,6 +313,23 @@ for launching against an isolated catalog. Ordinary players should use the
 workshop-managed per-user character directory; the override does not bypass
 package validation or installation policy.
 
+The launcher Workshop's **Test in the exact game renderer** section starts the
+selected package directly in character select or an Ancient Lake car,
+hovercraft, or plane race. Choose any one- through four-player layout first;
+all requested local seats temporarily use the package so split-screen cost and
+fit are visible. The launcher still performs its final full ROM integrity check
+before starting. These tests use the real select/race initialization and WebGPU
+character path without controller scripts, do not change saved P1-P4
+assignments, and restore pre-existing diagnostic environment values when the
+engine returns. Vehicle buttons are unavailable when that package's saved
+compatibility profile excludes the vehicle. Press **F1** to return to the
+launcher and the same package inspector.
+
+This is an exact in-game test route, not yet the planned embedded renderer or a
+benchmark report. Context cameras, semantic-animation controls, frame-time/GPU
+timing capture, screenshots/contact sheets, review status, and device profiles
+remain product work.
+
 All ten retail vehicle-model families now have exact revision-1 fingerprint and
 driver-batch profiles for car, hovercraft, plane, and character select. Their
 collapsed/merged far LOD is capped before carving. Unknown models or changed

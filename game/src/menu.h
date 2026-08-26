@@ -619,6 +619,11 @@ void credits_free(void);
 void menu_camera_centre(void);
 void reset_controller_sticks(void);
 void reset_character_id_slots(void);
+#ifdef NATIVE_PORT
+/* Prepare a temporary exact-context Character Workshop session. `vehicle` is
+ * -1 for character select or the ordinary 0..2 Vehicle value for a race. */
+s32 mdkr_workshop_preview_prepare(s32 players, s32 vehicle);
+#endif
 s32 get_save_file_index(void);
 s32 get_track_id_to_load(void);
 s8 get_character_id_from_slot(s32 slot);

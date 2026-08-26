@@ -59,6 +59,7 @@
 #ifdef NATIVE_PORT
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "net/net_roster_runtime.h"
 #include "platform_os.h"
 #include "app_overlay_hooks.h"
@@ -2155,6 +2156,70 @@ void set_frame_blackout_timer(void) {
     gDrawFrameTimer = 2;
 }
 
+#ifdef NATIVE_PORT
+static s32 workshop_preview_start(void) {
+    const char *context = getenv("MDKR_CHARACTER_WORKSHOP_PREVIEW");
+    const char *playersText;
+    s32 players = 1;
+    s32 vehicle = -1;
+    if (context == NULL || context[0] == '\0') return FALSE;
+    playersText = getenv("MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS");
+    if (playersText != NULL && playersText[0] != '\0') {
+        char *end = NULL;
+        long parsed = strtol(playersText, &end, 10);
+        if (end == playersText || *end != '\0' || parsed < 1 || parsed > 4) {
+            fprintf(stderr,
+                    "[FATAL] invalid Character Workshop player count: %s\n",
+                    playersText);
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        players = (s32)parsed;
+    }
+    if (strcmp(context, "car") == 0) {
+        vehicle = VEHICLE_CAR;
+    } else if (strcmp(context, "hovercraft") == 0) {
+        vehicle = VEHICLE_HOVERCRAFT;
+    } else if (strcmp(context, "plane") == 0) {
+        vehicle = VEHICLE_PLANE;
+    } else if (strcmp(context, "select") != 0) {
+        fprintf(stderr,
+                "[FATAL] invalid Character Workshop context: %s\n",
+                context);
+        platform_request_exit(EXIT_FAILURE);
+        return TRUE;
+    }
+    if (!mdkr_workshop_preview_prepare(players, vehicle)) {
+        fprintf(stderr,
+                "[FATAL] Character Workshop package assignment is unavailable\n");
+        platform_request_exit(EXIT_FAILURE);
+        return TRUE;
+    }
+    if (vehicle < 0) {
+        charselect_prev(1, NULL);
+        load_menu_with_level_background(
+            MENU_CHARACTER_SELECT, ASSET_LEVEL_CHARACTERSELECT, 0);
+    } else {
+        set_time_trial_enabled(FALSE);
+        init_racer_headers();
+        gPlayableMapId = ASSET_LEVEL_ANCIENTLAKE;
+        gGameNumPlayers = players - 1;
+        gGameCurrentEntrance = 0;
+        gGameCurrentCutscene = CUTSCENE_NONE;
+        gLevelDefaultVehicleID = (Vehicle)vehicle;
+        gGameMode = GAMEMODE_INGAME;
+        gIsPaused = FALSE;
+        gPostRaceViewPort = FALSE;
+        load_level_game(gPlayableMapId, gGameNumPlayers,
+                        gGameCurrentEntrance, gLevelDefaultVehicleID);
+    }
+    MDKR_TRACE(
+        "character_workshop_preview: started context=%s players=%d vehicle=%d",
+        context, players, vehicle);
+    return TRUE;
+}
+#endif
+
 /**
  * Give the player 8 frames to enter the CPak menu with start, then load the intro sequence.
  */
@@ -2162,6 +2227,9 @@ void mode_intro(void) {
     s32 i;
     s32 buttonInputs = 0;
 
+#ifdef NATIVE_PORT
+    if (workshop_preview_start()) return;
+#endif
     for (i = 0; i < MAXCONTROLLERS; i++) {
         buttonInputs |= input_held(i);
     }

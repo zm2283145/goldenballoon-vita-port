@@ -11,7 +11,17 @@
 #ifndef MDKR64_UI_SETTINGS_H
 #define MDKR64_UI_SETTINGS_H
 
+#include <string>
+
+#include "engine_entry.h"
+
 struct SDL_Window;
+
+struct SettingsCharacterPreviewRequest {
+    std::string packageId;
+    MdkrCharacterPreviewContext context = MDKR_CHARACTER_PREVIEW_SELECT;
+    int players = 1;
+};
 
 // Draw the settings sections (one per MdkrVideoCategory) inside the current
 // content region. Shared verbatim by the launcher and the in-game F1 overlay;
@@ -27,6 +37,12 @@ bool Settings_draw(SDL_Window *window, bool compact = false);
 // entry point, so Linux builds without a native picker still have a direct
 // package workflow. The Settings panel owns and displays the detailed report.
 bool Settings_importCharacterPackage(const char *path);
+
+// Consume the one-shot exact-game preview requested by the launcher Workshop.
+// The in-game compact Settings view never produces one: starting another engine
+// inside a running engine would violate the host/session lifetime contract.
+bool Settings_takeCharacterPreviewRequest(
+    SettingsCharacterPreviewRequest &request);
 
 // Discard any in-progress audible Audio slider preview. Used when navigation
 // removes the settings panel before ImGui can emit a normal deactivation.

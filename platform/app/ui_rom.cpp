@@ -443,6 +443,7 @@ static void requestValidation(LauncherState &s, ValidationPurpose purpose,
  * a completed replacement/remembered result cannot publish after Cancel Change
  * or Forget Saved Path has returned the launcher to its previous state. */
 static void cancelValidation(LauncherState &s, bool clearUnusableSelection) {
+    const bool cancelledPlay = s.romPlayValidationPending;
     const std::string checkingPath = s.romValidationPath;
     if (s.romValidationPending) {
         validationWorker().cancel();
@@ -458,9 +459,36 @@ static void cancelValidation(LauncherState &s, bool clearUnusableSelection) {
     s.romValidationPending = false;
     s.romPlayValidationPending = false;
     s.romPlayValidationPassed = false;
+    if (cancelledPlay) {
+        s.characterPreviewPackage.clear();
+        s.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
+        s.characterPreviewPlayers = 0;
+        s.characterPreviewDispatched = false;
+    }
     s.romValidationPath.clear();
     s.romValidationBytes = 0u;
     s.romValidationTotal = 0u;
+}
+
+static const char *characterPreviewContextLabel(
+    MdkrCharacterPreviewContext context) {
+    switch (context) {
+        case MDKR_CHARACTER_PREVIEW_SELECT: return "character select";
+        case MDKR_CHARACTER_PREVIEW_CAR: return "a car race";
+        case MDKR_CHARACTER_PREVIEW_HOVERCRAFT: return "a hovercraft race";
+        case MDKR_CHARACTER_PREVIEW_PLANE: return "a plane race";
+        default: return "the game";
+    }
+}
+
+static void cancelCharacterPreview(LauncherState &s) {
+    if (s.romPlayValidationPending) {
+        cancelValidation(s, /*clearUnusableSelection=*/false);
+    }
+    s.characterPreviewPackage.clear();
+    s.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
+    s.characterPreviewPlayers = 0;
+    s.characterPreviewDispatched = false;
 }
 
 void RomPanel_setRom(LauncherState &s, const char *path) {
@@ -506,6 +534,10 @@ void RomPanel_serviceValidation(LauncherState &s) {
                 "reconnect the drive or choose another file.",
                 result.info.message);
             s.bootErrorVisible = true;
+            s.characterPreviewPackage.clear();
+            s.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
+            s.characterPreviewPlayers = 0;
+            s.characterPreviewDispatched = false;
             /* Service priority: this pass can run after the navigation controls
              * have already drawn, so a plain assignment here would erase a tab
              * the player pressed during the in-flight Play check. The recovery
@@ -589,6 +621,34 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
 
     const bool haveRom = !s.romPath.empty();
     const bool ready   = haveRom && s.romInfo.valid;
+
+    if (!s.characterPreviewPackage.empty() &&
+        s.characterPreviewContext != MDKR_CHARACTER_PREVIEW_NONE) {
+        ui::Gap(ui::kGapS);
+        if (ui::CardBegin("##character-preview-request", AppTheme::accent(),
+                          0.0f)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+            ImGui::PushFont(AppTheme::fonts().title);
+            ImGui::TextUnformatted("Custom Character Test");
+            ImGui::PopFont();
+            ImGui::PopStyleColor();
+            ImGui::TextWrapped(
+                "Opening %s with %d local %s after the final ROM check.",
+                characterPreviewContextLabel(s.characterPreviewContext),
+                s.characterPreviewPlayers,
+                s.characterPreviewPlayers == 1 ? "player" : "players");
+            ui::TextSubtleUnformattedWrapped(
+                s.characterPreviewPackage.c_str());
+            if (ImGui::Button("Cancel Test", ui::kBtnSecondary())) {
+                cancelCharacterPreview(s);
+            }
+            ui::SpeakFocusedItem(
+                "Cancel Test", nullptr,
+                "Cancels this custom character test without changing saved player assignments.");
+        }
+        ui::CardEnd();
+        ui::Gap(ui::kGapS);
+    }
 
     /* What pressing Play will actually do, named on the home screen so the
      * player never has to open Settings to find out. Reads the EFFECTIVE

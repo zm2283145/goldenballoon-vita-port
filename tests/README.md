@@ -4809,6 +4809,29 @@ python3 tests/check_custom_character_roster.py \
 The gate is registered as `custom_character_roster` in `tools/run_checks.py`
 and is serialized with the other native GPU/pixel checks.
 
+## Exact Character Workshop contexts — `tests/check_custom_character_workshop_preview.py`
+
+This gate generates and transactionally installs a license-clean package with
+a Bumper donor into a temporary isolated catalog. It directly starts the real
+character-select scene and Ancient Lake car, hovercraft, and plane races without
+an input script. The matrix includes one-, three-, and four-player layouts and
+requires the package's non-Diddy donor, one shared WebGPU asset upload, nonzero
+modern draws and triangles, zero refused draws, nonempty captures, and real
+four-player viewport dividers. Four-player rendering must materially multiply
+the one-player character work. Negative arms require invalid context/player
+values, a missing package assignment, and an unsupported vehicle to fail closed
+with the precise refusal.
+
+```bash
+python3 tests/check_custom_character_workshop_preview.py \
+  --build build-character-tests --rom baserom.us.v80.z64
+```
+
+The gate is registered as `custom_character_workshop_preview` and GPU-serialized
+in `tools/run_checks.py`. The ROM-free `app_lifecycle` CTest separately proves
+that its scoped launcher environment handoff restores both absent variables and
+exact caller-supplied values after repeated writes.
+
 ## Bonus results portraits — `tests/check_bonus_results_portraits.py`
 
 This real-ROM gate completes a time-trial post-race flow once as Wizpig and

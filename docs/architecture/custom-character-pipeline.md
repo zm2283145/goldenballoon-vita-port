@@ -742,13 +742,37 @@ expects complete LOD assemblies for ordinary play.
 
 Workshop performance accounting follows the runtime LOD contract: it records
 vertices, triangles, draw parts, and skin palette matrices per LOD instead of
-misclassifying the sum of every authored LOD as one frame's cost. Its 1P/2P/4P
+misclassifying the sum of every authored LOD as one frame's cost. Its 1P-4P
 assembly view uses the exact worst-visible `players × viewports` instance count,
 including current/previous bone palettes, while reporting immutable geometry
 and decoded texture uploads once because a repeated package shares its runtime
 pool. These structural counts are deliberately advisory rather than import
 ceilings; measured frame time still belongs to exact-context device stress
 tests.
+
+The launcher now has a typed, one-shot exact-context test request for character
+select and car, hovercraft, or plane races in every one- through four-player
+layout. It enters the ordinary select or Ancient Lake race initialization
+directly—there is no menu-navigation input script—and temporarily publishes the
+selected package to each requested local player. A scoped environment
+transaction preserves the exact existence/value of all preview and P1-P4
+variables and restores them after the blocking engine session, so a test cannot
+replace saved assignments or leak into the next launch. The select actor is
+anchored to the package's real donor row immediately rather than showing Diddy
+until the custom browser opens.
+
+`tests/check_custom_character_workshop_preview.py` builds and installs a
+license-clean generated package with a non-Diddy donor into an isolated catalog,
+then exercises select plus every vehicle, including three- and four-player
+split screen, through the real WebGPU path. It requires one shared asset upload,
+nonzero modern draws/triangles, zero refused draws, the exact donor, visible
+captures and four-player viewport dividers. The app lifecycle unit test covers
+present, absent, repeated-write and idempotent restoration cases for the scoped
+handoff. Invalid context/player values, a missing assignment, and a vehicle
+excluded by package tuning must all fail closed with a precise diagnostic. This
+qualifies the direct game route and stress seam; embedded
+offscreen preview, GPU/frame timing results, semantic-pose controls and exported
+review reports remain open.
 
 The private Dixie fixture completed the same chain without contributing any
 tracked bytes: DAE -> self-contained GLB -> source and portable `.mdkrchar` ->

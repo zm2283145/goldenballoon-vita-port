@@ -89,6 +89,14 @@ struct LauncherState {
     bool romValidationPending = false;
     bool romPlayValidationPending = false;
     bool romPlayValidationPassed = false;
+    // A Workshop preview uses the same mandatory final ROM check as Play. It
+    // remains pending only for that asynchronous check, then is copied into the
+    // one-shot boot config or cleared on cancellation/failure.
+    std::string characterPreviewPackage;
+    MdkrCharacterPreviewContext characterPreviewContext =
+        MDKR_CHARACTER_PREVIEW_NONE;
+    int characterPreviewPlayers = 0;
+    bool characterPreviewDispatched = false;
     // No discovery state: the launcher never searches the disk. The ROM arrives
     // by drag-and-drop, a native open-panel, a typed path, or the remembered
     // choice in the app's own prefs. See ui_rom.cpp's header for why.

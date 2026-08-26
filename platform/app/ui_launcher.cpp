@@ -22,6 +22,7 @@
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 
 namespace {
 
@@ -97,6 +98,13 @@ void fillBootConfig(const LauncherState &state, MdkrBootConfig &boot) {
     boot.video_mode = -1;
     boot.override_count =
         Settings_collectStagedOverrides(boot.overrides, MDKR_BOOT_MAX_OVERRIDES);
+    if (!state.characterPreviewPackage.empty() &&
+        state.characterPreviewContext != MDKR_CHARACTER_PREVIEW_NONE) {
+        boot.character_preview_package =
+            state.characterPreviewPackage.c_str();
+        boot.character_preview_context = state.characterPreviewContext;
+        boot.character_preview_players = state.characterPreviewPlayers;
+    }
 }
 
 void selectPanelFromEnvironment(int &activePanel) {
@@ -923,6 +931,13 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
         }
     }
     Settings_draw(s.hostWindow, /*compact=*/false);
+    SettingsCharacterPreviewRequest preview;
+    if (Settings_takeCharacterPreviewRequest(preview)) {
+        s.characterPreviewPackage = std::move(preview.packageId);
+        s.characterPreviewContext = preview.context;
+        s.characterPreviewPlayers = preview.players;
+        Launcher_requestTab(s, kLauncherPanelPlay, kLauncherTabPlayer);
+    }
     ui::TouchScrollCurrentWindow();
     g_smokeSettingsScrollMin = ImGui::GetWindowPos();
     const ImVec2 scrollSize = ImGui::GetWindowSize();
@@ -963,6 +978,12 @@ void drawAboutPanel(LauncherState &s, LauncherAction &out) {
 }  // namespace
 
 LauncherAction Launcher::draw(AppHost &host) {
+    if (state_.characterPreviewDispatched) {
+        state_.characterPreviewPackage.clear();
+        state_.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
+        state_.characterPreviewPlayers = 0;
+        state_.characterPreviewDispatched = false;
+    }
     state_.hostWindow = host.window();
     phoneParty_->service(static_cast<uint64_t>(SDL_GetTicks64()));
     refreshLanControls();
@@ -994,10 +1015,20 @@ LauncherAction Launcher::draw(AppHost &host) {
     // remembered ROM even when a design-review hook opens another panel first.
     RomPanel_ensureInit(state_);
     RomPanel_serviceValidation(state_);
+    if (!state_.characterPreviewPackage.empty() &&
+        state_.characterPreviewContext != MDKR_CHARACTER_PREVIEW_NONE &&
+        !state_.romValidationPending &&
+        !state_.romPlayValidationPending &&
+        !state_.romPath.empty() && state_.romInfo.valid) {
+        RomPanel_requestPlayValidation(state_);
+    }
     if (state_.romPlayValidationPassed) {
         state_.romPlayValidationPassed = false;
         action.type = LauncherActionType::Play;
         fillBootConfig(state_, action.boot);
+        state_.characterPreviewDispatched =
+            action.boot.character_preview_context !=
+                MDKR_CHARACTER_PREVIEW_NONE;
     }
 
     const ImGuiViewport *vp = ImGui::GetMainViewport();

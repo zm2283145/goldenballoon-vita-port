@@ -29,6 +29,14 @@ int mdkr64_headless_main(int argc, char **argv);
 // carries.
 #define MDKR_BOOT_MAX_OVERRIDES 16
 
+typedef enum {
+    MDKR_CHARACTER_PREVIEW_NONE = 0,
+    MDKR_CHARACTER_PREVIEW_SELECT,
+    MDKR_CHARACTER_PREVIEW_CAR,
+    MDKR_CHARACTER_PREVIEW_HOVERCRAFT,
+    MDKR_CHARACTER_PREVIEW_PLANE,
+} MdkrCharacterPreviewContext;
+
 typedef struct {
     const char *rom_path;      // NULL/empty => engine default (baserom.us.v80.z64)
     int   video_mode;          // MdkrVideoMode, or -1 for "don't pass a preset"
@@ -37,6 +45,11 @@ typedef struct {
     int   automation_ticks;    // <= 0 => interactive; launcher regression seam
     int   automation_frames;   // mutually exclusive presentation-frame seam
     const char *input_script;  // automation-only deterministic controller fixture
+    // One-shot Character Workshop route. The engine enters the exact authored
+    // select or race context without menu-navigation scripts; zero disables it.
+    const char *character_preview_package;
+    MdkrCharacterPreviewContext character_preview_context;
+    int character_preview_players;  // 1..4
     // Staged RESTART-scope settings, as "Video.Key=Value" strings. The settings
     // panel writes these when the player changes a restart-scope key before
     // pressing Play, so the choice takes effect on THIS boot rather than
