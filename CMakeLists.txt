@@ -780,6 +780,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/character_candidate_index.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_edit_history.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_studio.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_raw_draft_store.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_raw_intake_index.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_revision_index.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_draft_store.cpp
@@ -1489,6 +1490,17 @@ if(NOT EMSCRIPTEN)
             target_compile_features(mdkr_character_raw_intake_index_test PRIVATE cxx_std_17)
             add_test(NAME character_raw_intake_index
                 COMMAND mdkr_character_raw_intake_index_test)
+
+            add_executable(mdkr_character_raw_draft_store_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_raw_draft_store.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_raw_draft_store.cpp
+                ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+            target_include_directories(mdkr_character_raw_draft_store_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_raw_draft_store_test PRIVATE cxx_std_17)
+            add_test(NAME character_raw_draft_store
+                COMMAND mdkr_character_raw_draft_store_test)
 
             add_executable(mdkr_character_draft_store_test
                 ${CMAKE_SOURCE_DIR}/tests/test_character_draft_store.cpp

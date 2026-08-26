@@ -9,6 +9,7 @@
 #include "character_draft_store.h"
 #include "character_edit_history.h"
 #include "character_portrait_studio.h"
+#include "character_raw_draft_store.h"
 #include "character_raw_intake_index.h"
 #include "character_revision_index.h"
 #include "character_workshop_model.h"
@@ -1852,6 +1853,7 @@ struct CharacterImportCandidate {
     bool installedEnabled = false;
     bool rightsConfirmed = false;
     bool disposableRawCandidate = false;
+    std::string rawDraftId;
     std::string packagePath;
     std::string reviewedInstalledDigest;
     CharacterCandidateIndex::Candidate next;
@@ -1863,6 +1865,7 @@ CharacterImportCandidate g_characterImportCandidate;
 struct CharacterRawIntake {
     bool loaded = false;
     bool inspected = false;
+    std::string draftId;
     char modelPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
     char licensePath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
     char packageId[65] = {0};
@@ -1877,11 +1880,30 @@ struct CharacterRawIntake {
     int fallback = -1;
     int seat = -1;
     int head = -1;
+    std::string savedMappingModelSha256;
+    std::string savedFallback;
+    std::string savedSeat;
+    std::string savedHead;
     CharacterRawIntakeIndex::Inventory inventory;
 };
 
 CharacterRawIntake g_characterRawIntake;
 bool g_characterRawIntakeTracePrinted = false;
+// Token-gated rendered-test actions. They call the same transactional paths as
+// the widgets; the two-frame install delay ensures the ordinary candidate
+// review is submitted and rendered before the test confirms local rights.
+bool g_characterRawDraftSmokeActionApplied = false;
+int g_characterRawDraftSmokeInstallFrames = 0;
+CharacterRawDraftStore::Inventory g_characterRawDrafts;
+bool g_characterRawDraftsLoaded = false;
+bool g_characterRawDraftsWritable = false;
+bool g_characterRawDraftStoreTracePrinted = false;
+bool g_characterRawDraftClosedTracePrinted = false;
+bool g_characterRawEditorOpen = false;
+std::string g_characterRawDraftError;
+MdkrTextStateFileSpec g_characterRawDraftFileSpec{
+    "character_raw_drafts-v1.tsv", nullptr, nullptr,
+};
 
 using CharacterRevisionRow = CharacterRevisionIndex::Row;
 
@@ -2617,114 +2639,402 @@ bool characterPathHasExtension(const std::string &path,
     return true;
 }
 
-void loadCharacterRawIntake() {
+MdkrTextStateStorage characterRawDraftStorage() {
+    return MdkrTextStateStorage{
+        &g_characterRawDraftFileSpec,
+        mdkr_text_state_file_read,
+        mdkr_text_state_file_write,
+    };
+}
+
+bool setCharacterRawEditorOpen(bool open) {
+    g_characterRawEditorOpen = open;
+    return AppConfig::persistResultApplied(AppConfig::setAndSave(
+        "character_raw_editor_open", open ? "1" : "0"));
+}
+
+std::string newCharacterRawDraftId(const std::string &modelPath) {
+    static uint64_t serial;
+    std::string seed = modelPath;
+    seed.push_back('\0');
+    seed += std::to_string(static_cast<uint64_t>(std::time(nullptr)));
+    seed.push_back('\0');
+    seed += std::to_string(++serial);
+    char digest[MDKR_SHA256_HEX_SIZE];
+    mdkr_sha256_hex(seed.data(), seed.size(), digest);
+    return std::string("raw-") + std::string(digest, 24u);
+}
+
+void applyCharacterRawDraft(const CharacterRawDraftStore::Draft *draft) {
+    g_characterRawIntake = CharacterRawIntake{};
     CharacterRawIntake &intake = g_characterRawIntake;
-    if (intake.loaded) return;
     intake.loaded = true;
-    auto loadText = [](const char *key, char *output, size_t size) {
-        const std::string value = AppConfig::get(key);
-        std::snprintf(output, size, "%s", value.c_str());
+    g_characterRawIntakeTracePrinted = false;
+    if (draft == nullptr) return;
+    intake.draftId = draft->id;
+    const auto copy = [](char *target, size_t capacity,
+                         const std::string &value) {
+        std::snprintf(target, capacity, "%s", value.c_str());
     };
-    loadText("character_raw_intake_model", intake.modelPath,
-             sizeof(intake.modelPath));
-    loadText("character_raw_intake_license", intake.licensePath,
-             sizeof(intake.licensePath));
-    loadText("character_raw_intake_id", intake.packageId,
-             sizeof(intake.packageId));
-    loadText("character_raw_intake_display_name", intake.displayName,
-             sizeof(intake.displayName));
-    loadText("character_raw_intake_spdx", intake.spdx,
-             sizeof(intake.spdx));
-    loadText("character_raw_intake_attribution", intake.attribution,
-             sizeof(intake.attribution));
-    loadText("character_raw_intake_source_url", intake.sourceUrl,
-             sizeof(intake.sourceUrl));
-    const auto boundedInteger = [](const char *key, int fallback,
-                                   int minimum, int maximum) {
-        const std::string text = AppConfig::get(key);
-        if (text.empty()) return fallback;
-        char *end = nullptr;
-        errno = 0;
-        const long value = std::strtol(text.c_str(), &end, 10);
-        return errno == 0 && end != text.c_str() && *end == '\0' &&
-                       value >= minimum && value <= maximum
-            ? static_cast<int>(value) : fallback;
-    };
-    intake.donor = boundedInteger("character_raw_intake_donor", 9, 0, 9);
-    const int vehicleMask = boundedInteger(
-        "character_raw_intake_vehicles", 7, 0, 7);
+    copy(intake.modelPath, sizeof(intake.modelPath), draft->modelPath);
+    copy(intake.licensePath, sizeof(intake.licensePath), draft->licensePath);
+    copy(intake.packageId, sizeof(intake.packageId), draft->packageId);
+    copy(intake.displayName, sizeof(intake.displayName), draft->displayName);
+    copy(intake.spdx, sizeof(intake.spdx), draft->spdx);
+    copy(intake.attribution, sizeof(intake.attribution), draft->attribution);
+    copy(intake.sourceUrl, sizeof(intake.sourceUrl), draft->sourceUrl);
+    intake.donor = static_cast<int>(draft->donor);
     for (int vehicle = 0; vehicle < 3; ++vehicle) {
-        intake.vehicles[vehicle] = (vehicleMask & (1 << vehicle)) != 0;
+        intake.vehicles[vehicle] =
+            (draft->vehicleMask & (1u << vehicle)) != 0u;
     }
-    intake.sourceForward = boundedInteger(
-        "character_raw_intake_forward", 0, 0, 3);
+    intake.sourceForward = static_cast<int>(draft->sourceForward);
+    intake.targetHeight = draft->targetHeight;
+    intake.savedMappingModelSha256 = draft->mappingModelSha256;
+    intake.savedFallback = draft->fallback;
+    intake.savedSeat = draft->seat;
+    intake.savedHead = draft->head;
+}
+
+bool replaceCharacterRawDraftInventory(
+    CharacterRawDraftStore::Inventory inventory) {
+    std::sort(
+        inventory.drafts.begin(), inventory.drafts.end(),
+        [](const CharacterRawDraftStore::Draft &left,
+           const CharacterRawDraftStore::Draft &right) {
+            if (left.updatedUnix != right.updatedUnix) {
+                return left.updatedUnix > right.updatedUnix;
+            }
+            return left.id < right.id;
+        });
+    if (!g_characterRawDraftsWritable ||
+        !CharacterRawDraftStore::save(
+            characterRawDraftStorage(), inventory,
+            g_characterRawDraftError)) {
+        return false;
+    }
+    g_characterRawDrafts = std::move(inventory);
+    return true;
+}
+
+int legacyRawDraftInteger(const char *key, int fallback,
+                          int minimum, int maximum) {
+    const std::string text = AppConfig::get(key);
+    if (text.empty()) return fallback;
+    char *end = nullptr;
+    errno = 0;
+    const long value = std::strtol(text.c_str(), &end, 10);
+    return errno == 0 && end != text.c_str() && *end == '\0' &&
+                   value >= minimum && value <= maximum
+        ? static_cast<int>(value) : fallback;
+}
+
+CharacterRawDraftStore::Draft legacyCharacterRawDraft() {
+    CharacterRawDraftStore::Draft draft;
+    draft.id = newCharacterRawDraftId(
+        AppConfig::get("character_raw_intake_model"));
+    const std::time_t now = std::time(nullptr);
+    draft.updatedUnix = now >= 0 ? static_cast<uint64_t>(now) : 0u;
+    draft.modelPath = AppConfig::get("character_raw_intake_model");
+    draft.licensePath = AppConfig::get("character_raw_intake_license");
+    draft.packageId = AppConfig::get("character_raw_intake_id");
+    draft.displayName = AppConfig::get("character_raw_intake_display_name");
+    draft.spdx = AppConfig::get("character_raw_intake_spdx");
+    draft.attribution = AppConfig::get("character_raw_intake_attribution");
+    draft.sourceUrl = AppConfig::get("character_raw_intake_source_url");
+    draft.donor = static_cast<uint32_t>(legacyRawDraftInteger(
+        "character_raw_intake_donor", 9, 0, 9));
+    draft.vehicleMask = static_cast<uint32_t>(legacyRawDraftInteger(
+        "character_raw_intake_vehicles", 7, 0, 7));
+    draft.sourceForward = static_cast<uint32_t>(legacyRawDraftInteger(
+        "character_raw_intake_forward", 0, 0, 3));
     const std::string height = AppConfig::get("character_raw_intake_height");
     if (!height.empty()) {
         char *end = nullptr;
         errno = 0;
         const float parsed = std::strtof(height.c_str(), &end);
-        if (errno == 0 && end != height.c_str() && *end == '\0' &&
+        if (errno == 0 && end == height.c_str() + height.size() &&
             std::isfinite(parsed) && parsed >= 0.1f && parsed <= 10.0f) {
-            intake.targetHeight = parsed;
+            draft.targetHeight = parsed;
         }
     }
+    draft.mappingModelSha256 =
+        AppConfig::get("character_raw_intake_mapping_sha256");
+    draft.fallback = AppConfig::get("character_raw_intake_fallback");
+    draft.seat = AppConfig::get("character_raw_intake_seat");
+    draft.head = AppConfig::get("character_raw_intake_head");
+    return draft;
 }
 
-bool saveCharacterRawIntake() {
-    const CharacterRawIntake &intake = g_characterRawIntake;
-    AppConfig::set("character_raw_intake_model", intake.modelPath);
-    AppConfig::set("character_raw_intake_license", intake.licensePath);
-    AppConfig::set("character_raw_intake_id", intake.packageId);
-    AppConfig::set("character_raw_intake_display_name", intake.displayName);
-    AppConfig::set("character_raw_intake_spdx", intake.spdx);
-    AppConfig::set("character_raw_intake_attribution", intake.attribution);
-    AppConfig::set("character_raw_intake_source_url", intake.sourceUrl);
-    AppConfig::set("character_raw_intake_donor", std::to_string(intake.donor));
-    int vehicleMask = 0;
-    for (int vehicle = 0; vehicle < 3; ++vehicle) {
-        if (intake.vehicles[vehicle]) vehicleMask |= 1 << vehicle;
+void loadCharacterRawIntake() {
+    if (g_characterRawDraftsLoaded) return;
+    g_characterRawDraftsLoaded = true;
+    CharacterRawDraftStore::Inventory inventory;
+    const CharacterRawDraftStore::LoadResult result =
+        CharacterRawDraftStore::load(
+            characterRawDraftStorage(), inventory,
+            g_characterRawDraftError);
+    g_characterRawDraftsWritable =
+        result == CharacterRawDraftStore::LoadResult::Loaded ||
+        result == CharacterRawDraftStore::LoadResult::Missing;
+    if (!g_characterRawDraftsWritable) {
+        g_characterRawIntake.loaded = true;
+        return;
     }
-    AppConfig::set("character_raw_intake_vehicles",
-                   std::to_string(vehicleMask));
-    AppConfig::set("character_raw_intake_forward",
-                   std::to_string(intake.sourceForward));
-    char height[32];
-    std::snprintf(height, sizeof(height), "%.6g",
-                  static_cast<double>(intake.targetHeight));
-    AppConfig::set("character_raw_intake_height", height);
+    g_characterRawDrafts = std::move(inventory);
+
+    // Version-zero migration is committed to the transactional inventory
+    // before the old independent preference keys are forgotten.
+    if (result == CharacterRawDraftStore::LoadResult::Missing &&
+        !AppConfig::get("character_raw_intake_model").empty()) {
+        CharacterRawDraftStore::Draft legacy = legacyCharacterRawDraft();
+        CharacterRawDraftStore::Inventory replacement;
+        std::string error;
+        if (CharacterRawDraftStore::upsert(replacement, legacy, error)) {
+            replacement.selectedId = legacy.id;
+        }
+        if (!error.empty() ||
+            !replaceCharacterRawDraftInventory(std::move(replacement))) {
+            if (!error.empty()) g_characterRawDraftError = error;
+            g_characterRawIntake.loaded = true;
+            return;
+        }
+        (void)AppConfig::erasePrefix("character_raw_intake_");
+        (void)AppConfig::save();
+    }
+    applyCharacterRawDraft(CharacterRawDraftStore::find(
+        g_characterRawDrafts, g_characterRawDrafts.selectedId));
+    const std::string savedOpen = AppConfig::get(
+        "character_raw_editor_open");
+    g_characterRawEditorOpen =
+        !g_characterRawDrafts.selectedId.empty() && savedOpen != "0";
+}
+
+CharacterRawDraftStore::Draft captureCharacterRawDraft() {
+    const CharacterRawIntake &intake = g_characterRawIntake;
+    CharacterRawDraftStore::Draft draft;
+    draft.id = intake.draftId;
+    const CharacterRawDraftStore::Draft *saved =
+        CharacterRawDraftStore::find(g_characterRawDrafts, draft.id);
+    const std::time_t now = std::time(nullptr);
+    draft.updatedUnix = now >= 0
+        ? static_cast<uint64_t>(now)
+        : (saved != nullptr ? saved->updatedUnix : 0u);
+    draft.modelPath = intake.modelPath;
+    draft.licensePath = intake.licensePath;
+    draft.packageId = intake.packageId;
+    draft.displayName = intake.displayName;
+    draft.spdx = intake.spdx;
+    draft.attribution = intake.attribution;
+    draft.sourceUrl = intake.sourceUrl;
+    draft.donor = static_cast<uint32_t>(intake.donor);
+    draft.vehicleMask = 0u;
+    for (int vehicle = 0; vehicle < 3; ++vehicle) {
+        if (intake.vehicles[vehicle]) draft.vehicleMask |= 1u << vehicle;
+    }
+    draft.sourceForward = static_cast<uint32_t>(intake.sourceForward);
+    draft.targetHeight = intake.targetHeight;
+    draft.mappingModelSha256 = intake.savedMappingModelSha256;
+    draft.fallback = intake.savedFallback;
+    draft.seat = intake.savedSeat;
+    draft.head = intake.savedHead;
     if (intake.inspected) {
         const auto selectedName = [](const std::vector<std::string> &choices,
                                      int selected) -> std::string {
             return selected >= 0 && selected < static_cast<int>(choices.size())
                 ? choices[static_cast<size_t>(selected)] : "";
         };
-        AppConfig::set(
-            "character_raw_intake_fallback",
-            selectedName(intake.inventory.clips, intake.fallback));
-        AppConfig::set(
-            "character_raw_intake_seat",
-            selectedName(intake.inventory.nodes, intake.seat));
-        AppConfig::set(
-            "character_raw_intake_head",
-            selectedName(intake.inventory.nodes, intake.head));
-        AppConfig::set("character_raw_intake_mapping_sha256",
-                       intake.inventory.modelSha256);
+        draft.mappingModelSha256 = intake.inventory.modelSha256;
+        draft.fallback = selectedName(intake.inventory.clips, intake.fallback);
+        draft.seat = selectedName(intake.inventory.nodes, intake.seat);
+        draft.head = selectedName(intake.inventory.nodes, intake.head);
     }
-    return AppConfig::persistResultApplied(AppConfig::save());
+    return draft;
 }
 
-void clearCharacterRawIntake() {
-    const std::string modelPath = g_characterRawIntake.modelPath;
-    g_characterRawIntake = CharacterRawIntake{};
-    g_characterRawIntake.loaded = true;
-    (void)AppConfig::erasePrefix("character_raw_intake_");
-    (void)AppConfig::save();
-    if (!g_characterRegistryDirectory.empty()) {
+bool saveCharacterRawIntake() {
+    if (g_characterRawIntake.draftId.empty() ||
+        !g_characterRawDraftsWritable) return false;
+    CharacterRawDraftStore::Inventory replacement = g_characterRawDrafts;
+    CharacterRawDraftStore::Draft draft = captureCharacterRawDraft();
+    std::string error;
+    if (!CharacterRawDraftStore::upsert(replacement, draft, error)) {
+        g_characterRawDraftError = error;
+        return false;
+    }
+    replacement.selectedId = draft.id;
+    if (!replaceCharacterRawDraftInventory(std::move(replacement))) {
+        return false;
+    }
+    g_characterRawIntake.savedMappingModelSha256 =
+        draft.mappingModelSha256;
+    g_characterRawIntake.savedFallback = draft.fallback;
+    g_characterRawIntake.savedSeat = draft.seat;
+    g_characterRawIntake.savedHead = draft.head;
+    return true;
+}
+
+void removeDisposableRawCandidate(const std::string &draftId) {
+    const bool matchingRawCandidate =
+        g_characterImportCandidate.disposableRawCandidate &&
+        (draftId.empty() ||
+         g_characterImportCandidate.rawDraftId == draftId);
+    if (matchingRawCandidate) {
+        if (!g_characterImportCandidate.packagePath.empty()) {
+            (void)mdkr_remove_utf8(
+                g_characterImportCandidate.packagePath.c_str());
+        }
+        g_characterImportCandidate = CharacterImportCandidate{};
+    } else if (draftId.empty() && g_characterImportCandidate.ready) {
+        // Selecting a different source closes an ordinary mutation-free
+        // review as well. Its caller-owned package bytes remain untouched.
+        g_characterImportCandidate = CharacterImportCandidate{};
+    }
+    if ((draftId.empty() || matchingRawCandidate) &&
+        !g_characterRegistryDirectory.empty()) {
         const std::string candidate = g_characterRegistryDirectory +
             "/.launcher-character-raw-candidate.mdkrchar";
         (void)mdkr_remove_utf8(candidate.c_str());
     }
-    if (modelPath == g_characterImportPath) g_characterImportPath[0] = '\0';
+}
+
+bool activateCharacterRawDraft(std::string draftId) {
+    const CharacterRawDraftStore::Draft *draft =
+        CharacterRawDraftStore::find(g_characterRawDrafts, draftId);
+    if (draft == nullptr) return false;
+    CharacterRawDraftStore::Inventory replacement = g_characterRawDrafts;
+    replacement.selectedId = draftId;
+    if (!replaceCharacterRawDraftInventory(std::move(replacement))) {
+        return false;
+    }
+    removeDisposableRawCandidate("");
+    applyCharacterRawDraft(CharacterRawDraftStore::find(
+        g_characterRawDrafts, draftId));
+    (void)setCharacterRawEditorOpen(true);
+    std::snprintf(g_characterImportPath, sizeof(g_characterImportPath), "%s",
+                  g_characterRawIntake.modelPath);
+    return true;
+}
+
+bool deleteCharacterRawDraft(std::string draftId) {
+    const CharacterRawDraftStore::Draft *current =
+        CharacterRawDraftStore::find(g_characterRawDrafts, draftId);
+    if (current == nullptr) return false;
+    const std::string modelPath = current->modelPath;
+    CharacterRawDraftStore::Inventory replacement = g_characterRawDrafts;
+    if (!CharacterRawDraftStore::erase(replacement, draftId)) return false;
+    if (!replaceCharacterRawDraftInventory(std::move(replacement))) {
+        return false;
+    }
+    removeDisposableRawCandidate(draftId);
+    applyCharacterRawDraft(CharacterRawDraftStore::find(
+        g_characterRawDrafts, g_characterRawDrafts.selectedId));
+    (void)setCharacterRawEditorOpen(
+        !g_characterRawDrafts.selectedId.empty());
+    if (modelPath == g_characterImportPath) {
+        if (g_characterRawIntake.modelPath[0] != '\0') {
+            std::snprintf(g_characterImportPath,
+                          sizeof(g_characterImportPath), "%s",
+                          g_characterRawIntake.modelPath);
+        } else {
+            g_characterImportPath[0] = '\0';
+        }
+    }
+    return true;
+}
+
+bool clearCharacterRawIntake() {
+    return !g_characterRawIntake.draftId.empty() &&
+        deleteCharacterRawDraft(g_characterRawIntake.draftId);
+}
+
+bool beginCharacterRawDraft(const std::string &modelPath) {
+    loadCharacterRawIntake();
+    if (!g_characterRawDraftsWritable) return false;
+    if (modelPath == g_characterRawIntake.modelPath &&
+        CharacterRawDraftStore::find(
+            g_characterRawDrafts, g_characterRawIntake.draftId) != nullptr) {
+        return activateCharacterRawDraft(g_characterRawIntake.draftId);
+    }
+    const auto existing = std::find_if(
+        g_characterRawDrafts.drafts.begin(),
+        g_characterRawDrafts.drafts.end(),
+        [&modelPath](const CharacterRawDraftStore::Draft &draft) {
+            return draft.modelPath == modelPath;
+        });
+    if (existing != g_characterRawDrafts.drafts.end()) {
+        return activateCharacterRawDraft(existing->id);
+    }
+    CharacterRawDraftStore::Draft draft;
+    for (size_t attempt = 0u;
+         attempt <= CharacterRawDraftStore::kMaximumDrafts; ++attempt) {
+        draft.id = newCharacterRawDraftId(modelPath);
+        if (CharacterRawDraftStore::find(g_characterRawDrafts, draft.id) ==
+            nullptr) break;
+    }
+    if (CharacterRawDraftStore::find(g_characterRawDrafts, draft.id) !=
+        nullptr) {
+        g_characterRawDraftError =
+            "Could not allocate a unique raw authoring draft id.";
+        return false;
+    }
+    const std::time_t now = std::time(nullptr);
+    draft.updatedUnix = now >= 0 ? static_cast<uint64_t>(now) : 0u;
+    draft.modelPath = modelPath;
+    CharacterRawDraftStore::Inventory replacement = g_characterRawDrafts;
+    std::string error;
+    if (!CharacterRawDraftStore::upsert(replacement, draft, error)) {
+        g_characterRawDraftError = error;
+        return false;
+    }
+    replacement.selectedId = draft.id;
+    if (!replaceCharacterRawDraftInventory(std::move(replacement))) {
+        return false;
+    }
+    removeDisposableRawCandidate("");
+    applyCharacterRawDraft(CharacterRawDraftStore::find(
+        g_characterRawDrafts, draft.id));
+    (void)setCharacterRawEditorOpen(true);
+    return true;
+}
+
+bool duplicateCharacterRawDraft() {
+    if (!saveCharacterRawIntake()) return false;
+    const CharacterRawDraftStore::Draft *source =
+        CharacterRawDraftStore::find(
+            g_characterRawDrafts, g_characterRawIntake.draftId);
+    if (source == nullptr) return false;
+    CharacterRawDraftStore::Draft duplicate = *source;
+    for (size_t attempt = 0u;
+         attempt <= CharacterRawDraftStore::kMaximumDrafts; ++attempt) {
+        duplicate.id = newCharacterRawDraftId(source->modelPath);
+        if (CharacterRawDraftStore::find(
+                g_characterRawDrafts, duplicate.id) == nullptr) break;
+    }
+    if (CharacterRawDraftStore::find(g_characterRawDrafts, duplicate.id) !=
+        nullptr) {
+        g_characterRawDraftError =
+            "Could not allocate a unique id for the duplicated raw draft.";
+        return false;
+    }
+    const std::time_t now = std::time(nullptr);
+    duplicate.updatedUnix = now >= 0
+        ? static_cast<uint64_t>(now) : source->updatedUnix;
+    CharacterRawDraftStore::Inventory replacement = g_characterRawDrafts;
+    std::string error;
+    if (!CharacterRawDraftStore::upsert(replacement, duplicate, error)) {
+        g_characterRawDraftError = error;
+        return false;
+    }
+    replacement.selectedId = duplicate.id;
+    if (!replaceCharacterRawDraftInventory(std::move(replacement))) {
+        return false;
+    }
+    removeDisposableRawCandidate("");
+    applyCharacterRawDraft(CharacterRawDraftStore::find(
+        g_characterRawDrafts, duplicate.id));
+    (void)setCharacterRawEditorOpen(true);
+    return true;
 }
 
 std::string characterLauncherHex(const std::string &value) {
@@ -2775,34 +3085,40 @@ bool inspectCharacterRawGlb(const std::string &path) {
     std::snprintf(intake.modelPath, sizeof(intake.modelPath), "%s",
                   path.c_str());
     intake.inventory = std::move(inventory);
-    const bool sameFingerprint =
-        AppConfig::get("character_raw_intake_mapping_sha256") ==
+    const bool sameFingerprint = intake.savedMappingModelSha256 ==
         intake.inventory.modelSha256;
     const auto restoredChoice = [sameFingerprint](
-                                   const char *key,
+                                   const std::string &savedMapping,
                                    const std::vector<std::string> &choices,
                                    const std::string &inferred) {
-        const std::string saved = sameFingerprint ? AppConfig::get(key) : "";
+        const std::string saved = sameFingerprint ? savedMapping : "";
         const int restored = characterChoiceIndex(choices, saved);
         return restored >= 0 ? restored
                              : characterChoiceIndex(choices, inferred);
     };
     intake.fallback = restoredChoice(
-        "character_raw_intake_fallback", intake.inventory.clips,
+        intake.savedFallback, intake.inventory.clips,
         intake.inventory.fallback);
     intake.seat = restoredChoice(
-        "character_raw_intake_seat", intake.inventory.nodes,
+        intake.savedSeat, intake.inventory.nodes,
         intake.inventory.seat);
     intake.head = restoredChoice(
-        "character_raw_intake_head", intake.inventory.nodes,
+        intake.savedHead, intake.inventory.nodes,
         intake.inventory.head);
     intake.inspected = true;
-    (void)saveCharacterRawIntake();
+    if (!saveCharacterRawIntake()) {
+        intake.inspected = false;
+        g_characterManagerReport =
+            "The GLB passed inspection, but its source-bound mappings could not be committed to the raw draft inventory: " +
+            g_characterRawDraftError;
+        return false;
+    }
     return true;
 }
 
 bool buildCharacterRawGlbCandidate() {
     CharacterRawIntake &intake = g_characterRawIntake;
+    if (!saveCharacterRawIntake()) return false;
     if (!intake.inspected || intake.fallback < 0 || intake.seat < 0 ||
         intake.head < 0 || intake.fallback >=
             static_cast<int>(intake.inventory.clips.size()) ||
@@ -2847,6 +3163,7 @@ bool buildCharacterRawGlbCandidate() {
         "/.launcher-character-raw-candidate.mdkrchar";
     if (!stageCharacterPackage(candidate)) return false;
     g_characterImportCandidate.disposableRawCandidate = true;
+    g_characterImportCandidate.rawDraftId = intake.draftId;
     return true;
 }
 
@@ -2928,7 +3245,12 @@ bool installReviewedCharacterPackage() {
     }
     if (reviewed.disposableRawCandidate) {
         (void)mdkr_remove_utf8(reviewed.packagePath.c_str());
-        clearCharacterRawIntake();
+        if (reviewed.rawDraftId.empty() ||
+            !deleteCharacterRawDraft(reviewed.rawDraftId)) {
+            g_characterManagerReport +=
+                " The character was installed, but its completed local raw authoring draft could not be removed.";
+        }
+        (void)setCharacterRawEditorOpen(false);
     }
     g_characterWorkshopSelection = reviewed.next.id;
     g_characterWorkshopSelectionLoaded = true;
@@ -8036,6 +8358,29 @@ void addCandidateNumberRow(std::vector<CandidateComparisonRow> &rows,
 
 bool drawCharacterCandidateReview(bool compact) {
     if (!g_characterImportCandidate.ready) return false;
+    if (g_characterRawDraftSmokeInstallFrames > 0 &&
+        g_characterImportCandidate.disposableRawCandidate) {
+        --g_characterRawDraftSmokeInstallFrames;
+        if (g_characterRawDraftSmokeInstallFrames == 0) {
+            const std::string draftId =
+                g_characterImportCandidate.rawDraftId;
+            const std::string packageId =
+                g_characterImportCandidate.next.id;
+            g_characterImportCandidate.rightsConfirmed = true;
+            const bool installed = installReviewedCharacterPackage();
+            std::fprintf(
+                stderr,
+                "[app-ui] raw-reviewed-install reviewed=1 installed=%d draft=%s package=%s remaining=%zu\n",
+                installed ? 1 : 0, draftId.c_str(), packageId.c_str(),
+                g_characterRawDrafts.drafts.size());
+            setStatus(
+                installed
+                    ? "Reviewed raw-source character installed; only its completed authoring draft was removed."
+                    : "Automated reviewed raw-source install failed; a fresh review is required.",
+                installed ? AppTheme::good() : AppTheme::bad());
+            return installed;
+        }
+    }
     const CharacterImportCandidate           &review     = g_characterImportCandidate;
     const CharacterCandidateIndex::Candidate &next       = review.next;
     const CharacterCandidateIndex::Candidate &current    = review.current;
@@ -8142,10 +8487,15 @@ bool drawCharacterCandidateReview(bool compact) {
                     4,
                     ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                         ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Property");
-        ImGui::TableSetupColumn(review.installed ? "Installed" : "Current");
-        ImGui::TableSetupColumn("Candidate");
-        ImGui::TableSetupColumn("Change");
+        ImGui::TableSetupColumn(
+            "Property", ImGuiTableColumnFlags_WidthStretch, 0.24f);
+        ImGui::TableSetupColumn(
+            review.installed ? "Installed" : "Current",
+            ImGuiTableColumnFlags_WidthStretch, 0.24f);
+        ImGui::TableSetupColumn(
+            "Candidate", ImGuiTableColumnFlags_WidthStretch, 0.30f);
+        ImGui::TableSetupColumn(
+            "Change", ImGuiTableColumnFlags_WidthStretch, 0.22f);
         ImGui::TableHeadersRow();
         for (const CandidateComparisonRow &row : rows) {
             ImGui::TableNextRow();
@@ -8301,27 +8651,147 @@ void drawCharacterRawIntakeEditor(bool rail) {
     loadCharacterRawIntake();
     CharacterRawIntake &intake = g_characterRawIntake;
     if (intake.modelPath[0] == '\0') return;
+    const char *smokeAction = std::getenv(
+        "MDKR_APP_SMOKE_RAW_DRAFT_ACTION");
+    const char *smokeToken = std::getenv(
+        "MDKR_APP_SMOKE_RAW_DRAFT_ACTION_TOKEN");
+    if (!g_characterRawDraftSmokeActionApplied && smokeAction != nullptr &&
+        smokeToken != nullptr &&
+        std::strcmp(smokeToken, "mdkr64-app-raw-draft-v1") == 0 &&
+        std::strcmp(smokeAction, "build-reviewed-install") != 0) {
+        g_characterRawDraftSmokeActionApplied = true;
+        bool applied = false;
+        if (std::strncmp(smokeAction, "select-sha:", 11u) == 0) {
+            const std::string digest = smokeAction + 11u;
+            const auto matching = std::find_if(
+                g_characterRawDrafts.drafts.begin(),
+                g_characterRawDrafts.drafts.end(),
+                [&digest](const CharacterRawDraftStore::Draft &draft) {
+                    return draft.mappingModelSha256 == digest;
+                });
+            if (matching != g_characterRawDrafts.drafts.end()) {
+                const std::string matchingId = matching->id;
+                applied = activateCharacterRawDraft(matchingId);
+            }
+        } else if (std::strcmp(smokeAction, "delete-selected") == 0) {
+            applied = clearCharacterRawIntake();
+        } else if (std::strcmp(smokeAction, "duplicate-selected") == 0) {
+            applied = duplicateCharacterRawDraft();
+        } else if (std::strcmp(smokeAction, "close-editor") == 0) {
+            applied = setCharacterRawEditorOpen(false);
+        }
+        std::fprintf(
+            stderr,
+            "[app-ui] raw-draft-action action=%s applied=%d drafts=%zu selected=%s\n",
+            smokeAction, applied ? 1 : 0,
+            g_characterRawDrafts.drafts.size(),
+            g_characterRawDrafts.selectedId.c_str());
+        if (intake.modelPath[0] == '\0') return;
+    }
     if (!g_characterRawIntakeTracePrinted &&
         std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
         std::fprintf(
             stderr,
-            "[app-ui] raw-intake resumed=1 inspected=%d mappings=%d\n",
+            "[app-ui] raw-intake resumed=1 inspected=%d mappings=%d drafts=%zu selected=%s\n",
             intake.inspected ? 1 : 0,
             intake.fallback >= 0 && intake.seat >= 0 && intake.head >= 0
-                ? 1 : 0);
+                ? 1 : 0,
+            g_characterRawDrafts.drafts.size(), intake.draftId.c_str());
         g_characterRawIntakeTracePrinted = true;
     }
     ImGui::SeparatorText("Raw GLB authoring draft");
     ui::TextSubtleWrapped(
         "This resumable draft creates a source-only package, then hands it to the same mutation-free review and local-rights confirmation as every other import. Nothing here changes the installed library.");
+    const std::string activeLabel = intake.displayName[0] != '\0'
+        ? intake.displayName : intake.modelPath;
+    ImGui::SetNextItemWidth(-1.0f);
+    const bool draftListOpen = ImGui::BeginCombo(
+        "Raw authoring draft", activeLabel.c_str());
+    ui::SpeakFocusedItem(
+        "Raw authoring draft", activeLabel.c_str(),
+        "Switches among independently saved source authoring sessions. Switching closes a disposable candidate review and requires the selected source to be inspected again; it never changes external files.");
+    std::string switchToDraft;
+    if (draftListOpen) {
+        for (const CharacterRawDraftStore::Draft &draft :
+             g_characterRawDrafts.drafts) {
+            const std::string label =
+                (draft.displayName.empty() ? draft.modelPath
+                                           : draft.displayName) +
+                "##raw-draft-" + draft.id;
+            if (ImGui::Selectable(
+                    label.c_str(), draft.id == intake.draftId)) {
+                switchToDraft = draft.id;
+            }
+            const std::string state = draft.id == intake.draftId
+                ? "selected" : "saved";
+            ui::SpeakFocusedItem(
+                draft.displayName.empty() ? draft.modelPath.c_str()
+                                          : draft.displayName.c_str(),
+                state.c_str(),
+                "Selects this exact local authoring draft. Its model and license files are not copied, modified, or deleted.");
+        }
+        ImGui::EndCombo();
+    }
+    if (!switchToDraft.empty() && switchToDraft != intake.draftId) {
+        if (activateCharacterRawDraft(switchToDraft)) {
+            setStatus(
+                "Raw authoring draft selected; inspect its exact GLB before building.",
+                AppTheme::good());
+        } else {
+            setStatus(
+                "The selected raw authoring draft could not be persisted; the current draft remains active.",
+                AppTheme::bad());
+        }
+    }
+    ImGui::TextDisabled(
+        "%zu of %zu local raw drafts · Draft ID: %s",
+        g_characterRawDrafts.drafts.size(),
+        CharacterRawDraftStore::kMaximumDrafts,
+        intake.draftId.c_str());
+    const bool rawDraftCapacityAvailable =
+        g_characterRawDrafts.drafts.size() <
+        CharacterRawDraftStore::kMaximumDrafts;
+    if (!rawDraftCapacityAvailable) ImGui::BeginDisabled();
+    if (ImGui::Button("Duplicate as a new raw draft")) {
+        if (duplicateCharacterRawDraft()) {
+            setStatus(
+                "Independent raw draft created; inspect its source and change the copied package ID if this branch should install as a separate character.",
+                AppTheme::good());
+        } else {
+            setStatus(
+                "The raw draft could not be duplicated; the source draft remains unchanged.",
+                AppTheme::bad());
+        }
+    }
+    if (!rawDraftCapacityAvailable) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Duplicate as a new raw draft",
+        rawDraftCapacityAvailable ? nullptr : "The bounded draft library is full.",
+        "Creates an independent authoring branch from this model and its saved choices without copying or changing external files. Reinspection is required. The package ID is copied; change it to install a separate character.");
+    if (ImGui::Button("Close raw editor")) {
+        if (setCharacterRawEditorOpen(false)) {
+            setStatus(
+                "Raw authoring closed; every draft remains saved and can be resumed from the import area.",
+                AppTheme::subtle());
+        } else {
+            setStatus(
+                "Raw authoring closed for this session, but the launcher could not remember that navigation state.",
+                AppTheme::accent());
+        }
+    }
+    ui::SpeakFocusedItem(
+        "Close raw editor", nullptr,
+        "Returns to the installed character library without deleting this draft, its authoring choices, or external source files. Resume it from the import area.");
+    ui::TextSubtleWrapped(
+        "Choose another GLB in the source field above to create or resume another draft. Each model keeps independent identity, provenance, donor, vehicle, axis, scale, and source-bound mapping choices.");
     ImGui::TextWrapped("Model: %s", intake.modelPath);
     bool changed = false;
     if (!intake.inspected) {
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
         ImGui::TextWrapped(
             "Inspection is required%s. It fingerprints the current GLB and inventories exact animation and node names; changing the file invalidates the build.",
-            AppConfig::get("character_raw_intake_model").empty()
-                ? "" : " to resume this saved draft");
+            intake.savedMappingModelSha256.empty()
+                ? "" : " to resume and verify this saved draft");
         ImGui::PopStyleColor();
         if (ImGui::Button("Inspect GLB model")) {
             if (inspectCharacterRawGlb(intake.modelPath)) {
@@ -8457,7 +8927,8 @@ void drawCharacterRawIntakeEditor(bool rail) {
     }
 
     if (changed && !saveCharacterRawIntake()) {
-        setStatus("Raw import draft changed but could not be persisted.",
+        setStatus(("Raw import draft changed but could not be persisted: " +
+                   g_characterRawDraftError).c_str(),
                   AppTheme::bad());
     }
     const bool hasVehicle = intake.vehicles[0] || intake.vehicles[1] ||
@@ -8470,8 +8941,23 @@ void drawCharacterRawIntakeEditor(bool rail) {
         intake.targetHeight >= 0.1f && intake.targetHeight <= 10.0f &&
         intake.fallback >= 0 && intake.seat >= 0 && intake.head >= 0;
     if (!ready) ImGui::BeginDisabled();
-    if (ImGui::Button("Build source package for review") && ready) {
-        if (buildCharacterRawGlbCandidate()) {
+    bool buildRequested = ImGui::Button("Build source package for review") &&
+                          ready;
+    const bool smokeBuildRequested =
+        !g_characterRawDraftSmokeActionApplied && ready &&
+        smokeAction != nullptr && smokeToken != nullptr &&
+        std::strcmp(smokeAction, "build-reviewed-install") == 0 &&
+        std::strcmp(smokeToken, "mdkr64-app-raw-draft-v1") == 0;
+    if (smokeBuildRequested) {
+        g_characterRawDraftSmokeActionApplied = true;
+        buildRequested = true;
+    }
+    if (buildRequested) {
+        const bool built = buildCharacterRawGlbCandidate();
+        if (built) {
+            if (smokeBuildRequested) {
+                g_characterRawDraftSmokeInstallFrames = 2;
+            }
             setStatus(
                 "Source package built from the inspected GLB; review its exact diff and provenance before installing.",
                 AppTheme::good());
@@ -8480,6 +8966,14 @@ void drawCharacterRawIntakeEditor(bool rail) {
                 "Raw GLB build failed; no installed character changed. Open the manager report.",
                 AppTheme::bad());
         }
+        if (smokeBuildRequested) {
+            std::fprintf(
+                stderr,
+                "[app-ui] raw-draft-action action=%s applied=%d drafts=%zu selected=%s\n",
+                smokeAction, built ? 1 : 0,
+                g_characterRawDrafts.drafts.size(),
+                g_characterRawDrafts.selectedId.c_str());
+        }
     }
     if (!ready) ImGui::EndDisabled();
     ui::SpeakFocusedItem(
@@ -8487,24 +8981,32 @@ void drawCharacterRawIntakeEditor(bool rail) {
         ready ? nullptr : "Complete inspection, identity, provenance, vehicle, calibration, and required mappings first.",
         "Snapshots the GLB and license, builds a deterministic source package, and opens the ordinary mutation-free package review. It does not install the character.");
     if (!rail) ImGui::SameLine();
-    if (ImGui::Button("Clear raw import draft...")) {
-        ImGui::OpenPopup("Clear raw character import draft?");
+    if (ImGui::Button("Delete raw authoring draft...")) {
+        ImGui::OpenPopup("Delete raw character authoring draft?");
     }
     ui::SpeakFocusedItem(
-        "Clear raw import draft", nullptr,
-        "Opens a confirmation to forget these local form values and the disposable generated candidate. External model and license files are never deleted.");
+        "Delete raw authoring draft", nullptr,
+        "Opens a confirmation to delete only this local authoring record and its disposable generated candidate. Other drafts and external model and license files are never deleted.");
     if (ImGui::BeginPopupModal(
-            "Clear raw character import draft?", nullptr,
+            "Delete raw character authoring draft?", nullptr,
             ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextWrapped(
-            "Clear this raw import draft and its disposable generated candidate? The external GLB and license file are not changed or deleted.");
-        if (ImGui::Button("Clear draft")) {
-            clearCharacterRawIntake();
-            ImGui::CloseCurrentPopup();
+            "Delete only this saved authoring draft and its disposable generated candidate? The other raw drafts, installed characters, external GLB, and license file are not changed or deleted.");
+        if (ImGui::Button("Delete this draft")) {
+            if (clearCharacterRawIntake()) {
+                setStatus(
+                    "Raw authoring draft deleted; source files and other drafts remain unchanged.",
+                    AppTheme::good());
+                ImGui::CloseCurrentPopup();
+            } else {
+                setStatus(
+                    "The raw authoring draft could not be deleted; no draft changed.",
+                    AppTheme::bad());
+            }
         }
         ui::SpeakFocusedItem(
-            "Clear draft", nullptr,
-            "Forgets the saved intake fields and generated candidate without touching external source files or installed characters.");
+            "Delete this draft", nullptr,
+            "Deletes this exact local authoring record and generated candidate without touching other drafts, source files, or installed characters.");
         ImGui::SameLine();
         if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
         ui::SpeakFocusedItem("Cancel", nullptr,
@@ -8515,6 +9017,79 @@ void drawCharacterRawIntakeEditor(bool rail) {
 
 void drawCharacterImportControls(bool rail) {
     loadCharacterRawIntake();
+    if (!g_characterRawDraftsWritable &&
+        !g_characterRawDraftError.empty()) {
+        if (!g_characterRawDraftStoreTracePrinted &&
+            std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] raw-draft-store writable=0 error=%s\n",
+                g_characterRawDraftError.c_str());
+            g_characterRawDraftStoreTracePrinted = true;
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+        ImGui::TextWrapped(
+            "Raw authoring drafts are read-only because their local inventory failed validation: %s",
+            g_characterRawDraftError.c_str());
+        ImGui::PopStyleColor();
+        ui::TextSubtleWrapped(
+            "Installed characters and external source files are unaffected. Preserve or repair the inventory before starting another raw draft; malformed bytes are never partially loaded or overwritten.");
+    }
+    if (!g_characterRawEditorOpen &&
+        !g_characterRawDrafts.selectedId.empty()) {
+        const char *smokeAction = std::getenv(
+            "MDKR_APP_SMOKE_RAW_DRAFT_ACTION");
+        const char *smokeToken = std::getenv(
+            "MDKR_APP_SMOKE_RAW_DRAFT_ACTION_TOKEN");
+        if (!g_characterRawDraftClosedTracePrinted &&
+            std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] raw-draft-library open=0 drafts=%zu selected=%s\n",
+                g_characterRawDrafts.drafts.size(),
+                g_characterRawDrafts.selectedId.c_str());
+            g_characterRawDraftClosedTracePrinted = true;
+        }
+        if (!g_characterRawDraftSmokeActionApplied &&
+            smokeAction != nullptr && smokeToken != nullptr &&
+            std::strcmp(smokeAction, "resume-selected") == 0 &&
+            std::strcmp(smokeToken, "mdkr64-app-raw-draft-v1") == 0) {
+            g_characterRawDraftSmokeActionApplied = true;
+            const bool applied = activateCharacterRawDraft(
+                g_characterRawDrafts.selectedId);
+            std::fprintf(
+                stderr,
+                "[app-ui] raw-draft-action action=%s applied=%d drafts=%zu selected=%s\n",
+                smokeAction, applied ? 1 : 0,
+                g_characterRawDrafts.drafts.size(),
+                g_characterRawDrafts.selectedId.c_str());
+        }
+        const CharacterRawDraftStore::Draft *saved =
+            CharacterRawDraftStore::find(
+                g_characterRawDrafts, g_characterRawDrafts.selectedId);
+        const std::string resumeLabel =
+            "Resume raw draft (" +
+            std::to_string(g_characterRawDrafts.drafts.size()) +
+            " saved)";
+        if (ImGui::Button(resumeLabel.c_str(), ui::kBtnFullWidth())) {
+            if (activateCharacterRawDraft(
+                    g_characterRawDrafts.selectedId)) {
+                setStatus(
+                    "Raw authoring resumed; inspect the exact GLB before building.",
+                    AppTheme::good());
+            } else {
+                setStatus(
+                    "The saved raw authoring draft could not be opened; no draft changed.",
+                    AppTheme::bad());
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Resume raw authoring draft",
+            saved != nullptr && !saved->displayName.empty()
+                ? saved->displayName.c_str()
+                : "Saved source draft",
+            "Opens the selected local raw draft and closes any uninstalled candidate review. External model and license files remain unchanged; source reinspection is required.");
+    }
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputTextWithHint("##character-package-path",
                              "/path/to/character.mdkrchar or model.glb",
@@ -8609,7 +9184,11 @@ const MdkrModernCharacterEntry *resolveCharacterWorkshopSelection() {
 }
 
 void selectCharacterWorkshopEntry(const MdkrModernCharacterEntry *entry) {
-    if (entry == nullptr || g_characterWorkshopSelection == entry->id) return;
+    if (entry == nullptr) return;
+    if (g_characterRawEditorOpen) {
+        (void)setCharacterRawEditorOpen(false);
+    }
+    if (g_characterWorkshopSelection == entry->id) return;
     g_characterWorkshopSelection          = entry->id;
     const AppConfig::PersistResult result = AppConfig::setAndSave(
         "character_workshop_last_selected",
@@ -8851,15 +9430,19 @@ bool drawCustomCharactersSection(bool compact) {
     if (!rail) {
         ImGui::Indent(ui::kGapM);
         drawCharacterImportControls(false);
+        bool editorRouteRendered = false;
         if (g_characterImportCandidate.ready) {
+            editorRouteRendered = true;
             changed |= drawCharacterCandidateReview(compact);
-        } else if (g_characterRawIntake.modelPath[0] != '\0') {
+        } else if (g_characterRawEditorOpen &&
+                   g_characterRawIntake.modelPath[0] != '\0') {
+            editorRouteRendered = true;
             drawCharacterRawIntakeEditor(false);
         }
         const MdkrModernCharacterEntry *entry =
             drawCharacterLibrary(false);
-        if (!g_characterImportCandidate.ready &&
-            g_characterRawIntake.modelPath[0] == '\0' && entry != nullptr) {
+        if (!editorRouteRendered && !g_characterImportCandidate.ready &&
+            !g_characterRawEditorOpen && entry != nullptr) {
             changed |= drawCharacterPackageInspector(entry, compact);
         }
         changed |= drawCharacterAssignments();
@@ -8906,7 +9489,8 @@ bool drawCustomCharactersSection(bool compact) {
             ImGuiWindowFlags_AlwaysVerticalScrollbar);
         if (g_characterImportCandidate.ready) {
             changed |= drawCharacterCandidateReview(false);
-        } else if (g_characterRawIntake.modelPath[0] != '\0') {
+        } else if (g_characterRawEditorOpen &&
+                   g_characterRawIntake.modelPath[0] != '\0') {
             drawCharacterRawIntakeEditor(false);
         } else if (entry != nullptr) {
             changed |= drawCharacterPackageInspector(entry, false);
@@ -9032,11 +9616,15 @@ bool Settings_importCharacterPackage(const char *path) {
     std::snprintf(g_characterImportPath, sizeof(g_characterImportPath), "%s",
                   path);
     if (characterPathHasExtension(path, ".glb")) {
-        loadCharacterRawIntake();
-        std::snprintf(g_characterRawIntake.modelPath,
-                      sizeof(g_characterRawIntake.modelPath), "%s", path);
-        g_characterRawIntake.inspected = false;
-        (void)saveCharacterRawIntake();
+        if (!beginCharacterRawDraft(path)) {
+            g_characterManagerReport =
+                "The raw authoring draft could not be created or selected: " +
+                g_characterRawDraftError;
+            setStatus(
+                "GLB authoring could not start; no existing draft or installed character changed.",
+                AppTheme::bad());
+            return false;
+        }
         const bool inspected = inspectCharacterRawGlb(path);
         setStatus(
             inspected

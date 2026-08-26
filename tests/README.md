@@ -4832,13 +4832,20 @@ script, and captures never touch the player's normal library.
 
 ## Raw GLB Workshop intake — `tests/check_character_raw_intake_ui.py`
 
-This ROM-free WebGPU gate drops a generated, license-clean, self-contained GLB
-onto the real launcher. It requires Workshop routing, bounded model inspection,
-resolved fallback/seat/head mappings, persisted authoring fields, and a rendered
-capture without publishing a package candidate or runtime cache. A fresh process
-must resume the saved pre-package draft while requiring reinspection, so stale
-model bytes never inherit an in-memory fingerprint. The same flow also renders
-at 640x480 with 200% UI scale and touch scrolling.
+This ROM-free WebGPU gate drops two distinct generated, license-clean,
+self-contained GLBs onto one real launcher profile. It requires Workshop routing,
+bounded model inspection, two independently authenticated source drafts, durable
+selection, an independently identified same-source branch, source-fingerprint-
+bound fallback/seat/head mapping restoration, explicit switching and exact
+deletion, durable close/resume navigation that does not monopolize installed
+editing, legacy singleton migration, and rendered captures without publishing a
+package candidate or runtime cache. A fresh
+process and every switch require reinspection, so stale model bytes never inherit
+an in-memory fingerprint. A checksum-corrupt inventory is rendered read-only and
+must remain byte-for-byte untouched. The gate also drives reviewed installation,
+requires exact completed-draft/candidate cleanup, hashes both external GLBs and
+the license before and after the lifecycle, keyboard-walks the spoken draft
+controls, and renders at 640x480 with 200% UI scale and touch scrolling.
 
 ```bash
 python3 tests/check_character_raw_intake_ui.py \

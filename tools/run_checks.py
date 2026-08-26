@@ -735,8 +735,11 @@ CHECKS = (
           "generated package donor authority plus authored minimap colour and "
           "portrait pixels across a real race and post-race flow"),
     Check("character_raw_intake_ui", "check_character_raw_intake_ui.py", "native",
-          "ROM-free GLB drop, bounded mapping inventory, restart resume, "
-          "keyboard speech, and 200% compact Workshop rendering"),
+          "ROM-free multi-draft GLB intake, same-source branching, source-bound "
+          "mapping restore, close/resume navigation, exact switch/delete/install "
+          "cleanup, legacy migration, source-byte "
+          "purity, corruption refusal, keyboard speech, and 200% compact "
+          "Workshop rendering"),
     Check("character_workshop_history_ui",
           "check_character_workshop_history_ui.py", "native",
           "ROM-free exact-source Identity/Profile/Rig/Fit/Performance/Test "

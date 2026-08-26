@@ -829,12 +829,25 @@ than being distorted by mandatory solving.
     uses an authenticated snapshot and optimistic cache digest; failure retains
     the last-known-good cache and enabled/disabled state.
 13. Raw GLB intake fingerprints and inventories a self-contained character-ready
-    model before authoring. Its resumable draft requires explicit identity,
-    exact license bytes, provenance, donor, vehicles, forward/height calibration,
-    fallback clip and seat/head nodes. Inference is reviewable, duplicate names
-    are rejected as ambiguous, and changed model bytes require reinspection. A
-    successful build creates only a disposable source-package candidate, which
-    must pass steps 2–7 like any externally authored package.
+    model before authoring. Up to 64 independent source drafts live in one
+    bounded, per-record authenticated, atomically replaced inventory; selection,
+    switching, same-source branching, exact deletion, and legacy-singleton
+    migration are durable. Open/closed editor state is independent from saved
+    draft existence, so an artist can return to installed-package work and
+    explicitly resume the selected raw draft without deleting it. A duplicated
+    branch copies authoring decisions but
+    receives a new stable draft ID and requires reinspection; the UI explicitly
+    warns that its copied package ID must change to install independently. Each
+    draft requires explicit identity, exact license bytes, provenance, donor,
+    vehicles, forward/height calibration, fallback clip and seat/head nodes.
+    Mapping names are bound to that draft's exact model SHA-256, inference is
+    reviewable, duplicate names are rejected as ambiguous, and a process restart,
+    source switch, or changed model requires reinspection. Switching closes only
+    disposable review state. Installing or deleting removes the exact selected
+    authoring record while preserving peer drafts and never mutates the external
+    GLB/license. A successful build creates only a draft-bound disposable
+    source-package candidate, which must pass steps 2–7 like any externally
+    authored package.
 
 ## Supplied Dixie archive: objective result
 
