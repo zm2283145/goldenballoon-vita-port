@@ -829,14 +829,57 @@ static bool reconcile_network_inputs(
     uint32_t dirty;
     uint32_t tick;
     if (!mdkr_match_input_runtime_take_dirty(&dirty)) return true;
-    if (dirty == 0u || dirty > last_tick ||
-        last_tick - dirty + 1u >= MDKR_ROLLBACK_LAB_SLOTS ||
-        !mdkr_rollback_ring_has(&runtime->ring, dirty - 1u)) {
+    /* A correction target that is zero or ahead of the committed frontier is
+     * nonsensical (a healthy transport never emits one). Skip it rather than
+     * fail the frame: thread3_main turns a failed prepare into abort(), and a
+     * malformed dirty marker must never crash a shipping online race. The
+     * confirmed frontier keeps advancing and re-drives real corrections. */
+    if (dirty == 0u || dirty > last_tick) {
         fprintf(stderr,
-                "[ROLLBACK] online correction outside retained window "
-                "dirty=%u current=%u capacity=%u\n",
-                dirty, last_tick, MDKR_ROLLBACK_LAB_SLOTS);
-        return false;
+                "[ROLLBACK] online correction target out of range "
+                "dirty=%u current=%u (skipped)\n",
+                dirty, last_tick);
+        return true;
+    }
+    /* GRACEFUL DEEP-CORRECTION DEGRADATION (fall-behind robustness).
+     *
+     * The client retains MDKR_ROLLBACK_LAB_SLOTS boundary snapshots, so it can
+     * rewind at most SLOTS-1 authored ticks. A correction reaching further back
+     * -- a real WAN latency spike, or an endpoint that fell far behind and is
+     * catching up -- previously FAILED the frame, and thread3_main escalates a
+     * failed prepare_tick into abort(): a hard crash on exactly the fall-behind
+     * path online play has to survive. (Reproduced deterministically with a
+     * per-tick main-loop stall on one endpoint: the peer's correction depth
+     * climbs 1 tick/frame until it crosses the 32-snapshot horizon and aborts.)
+     *
+     * Instead, clamp the rewind to the deepest retained boundary and reconcile
+     * the tail that IS still snapshotted. The un-rewindable older prefix keeps
+     * its already-committed (predicted) state -- a bounded visual pop, healed by
+     * the ongoing confirmed stream -- rather than taking the whole engine down.
+     * Worst case is a stutter or a brief desync, never a crash or a corrupt
+     * buffer.
+     *
+     * This branch only engages once a single correction reaches the 32-snapshot
+     * horizon. In-sync online play corrects a few ticks at a time and never gets
+     * here, so the faithful base sim and ordinary small-depth rollback are
+     * behaviour-identical. */
+    if (last_tick - dirty + 1u >= MDKR_ROLLBACK_LAB_SLOTS) {
+        const uint32_t clamped = last_tick - (MDKR_ROLLBACK_LAB_SLOTS - 2u);
+        fprintf(stderr,
+                "[ROLLBACK] online correction clamped to retained window "
+                "dirty=%u->%u current=%u capacity=%u\n",
+                dirty, clamped, last_tick, MDKR_ROLLBACK_LAB_SLOTS);
+        dirty = clamped;
+    }
+    /* The boundary snapshot immediately before the (possibly clamped) rewind
+     * point must still be retained. If it was evicted anyway, skip the
+     * correction gracefully instead of failing the frame. */
+    if (!mdkr_rollback_ring_has(&runtime->ring, dirty - 1u)) {
+        fprintf(stderr,
+                "[ROLLBACK] online correction boundary evicted "
+                "dirty=%u current=%u (skipped)\n",
+                dirty, last_tick);
+        return true;
     }
     for (tick = dirty; tick <= last_tick; tick++) {
         MdkrInputSet frame;
