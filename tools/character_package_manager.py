@@ -36,6 +36,7 @@ LEGACY_COMPILER_IDS = tuple(
 LOCK_NAME = ".character-import.lock"
 MAX_REPORT_BYTES = 64 * 1024
 MAX_UI_REVISIONS = 256
+MAX_WORKSHOP_DRAFT_BYTES = 256 * 1024
 
 
 class ManagerError(ValueError):
@@ -754,21 +755,22 @@ def revise_profile(package_id: str, donor: str, vehicles: tuple[str, ...],
     }
 
 
-def revise_rig(package_id: str, rig_draft_path: Path,
-               directory: Path) -> dict[str, Any]:
-    """Create and atomically activate a reviewed skeleton-map revision."""
-    if rig_draft_path.is_symlink() or not rig_draft_path.is_file():
-        raise ManagerError("rig draft must be a regular JSON file")
-    if rig_draft_path.stat().st_size > 128 * 1024:
-        raise ManagerError("rig draft exceeds 128 KiB")
-    draft_payload = rig_draft_path.read_bytes()
-    if len(draft_payload) > 128 * 1024:
-        raise ManagerError("rig draft exceeds 128 KiB")
-    draft = probe.json_loads_strict(
-        draft_payload, "rig draft"
-    )
-    if not isinstance(draft, dict):
-        raise ManagerError("rig draft must be an object")
+def _read_bounded_json_object(path: Path, maximum: int,
+                              description: str) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise ManagerError(f"{description} must be a regular JSON file")
+    if path.stat().st_size > maximum:
+        raise ManagerError(f"{description} exceeds {maximum} bytes")
+    payload = path.read_bytes()
+    if len(payload) > maximum:
+        raise ManagerError(f"{description} exceeds {maximum} bytes")
+    value = probe.json_loads_strict(payload, description)
+    if not isinstance(value, dict):
+        raise ManagerError(f"{description} must be an object")
+    return value
+
+
+def _validated_rig_draft(draft: dict[str, Any]) -> dict[str, Any]:
     expected = {"schema", "mode", "reviewed", "roles"}
     unknown = set(draft) - expected
     missing = expected - set(draft)
@@ -781,11 +783,20 @@ def revise_rig(package_id: str, rig_draft_path: Path,
         if draft.get("schema") != "mdkr-character-rig-draft-v1":
             detail.append("unsupported schema")
         raise ManagerError("invalid rig draft (" + "; ".join(detail) + ")")
-    rig = {
+    return {
         "mode": draft["mode"],
         "reviewed": draft["reviewed"],
         "roles": draft["roles"],
     }
+
+
+def revise_rig(package_id: str, rig_draft_path: Path,
+               directory: Path) -> dict[str, Any]:
+    """Create and atomically activate a reviewed skeleton-map revision."""
+    draft = _read_bounded_json_object(
+        rig_draft_path, 128 * 1024, "rig draft"
+    )
+    rig = _validated_rig_draft(draft)
 
     def transform(manifest: dict[str, Any], _: dict[str, Any]) -> dict[str, Any]:
         schema = manifest.get("schema")
@@ -805,6 +816,150 @@ def revise_rig(package_id: str, rig_draft_path: Path,
         **installed,
         "action": "revise-rig",
         "based_on_source_sha256": based_on_sha,
+        "rig_mode": rig["mode"],
+        "rig_reviewed": rig["reviewed"],
+        "rig_roles": len(rig["roles"]) if isinstance(rig["roles"], dict) else 0,
+    }
+
+
+def build_workshop_draft(package_id: str, draft_path: Path,
+                         directory: Path) -> dict[str, Any]:
+    """Build identity, gameplay and rig edits as one optimistic revision."""
+    if probe.ID_RE.fullmatch(package_id) is None:
+        raise ManagerError("invalid package id")
+    draft = _read_bounded_json_object(
+        draft_path, MAX_WORKSHOP_DRAFT_BYTES, "Workshop build draft"
+    )
+    expected = {
+        "schema", "base_cache_source_digest", "donor", "vehicles",
+        "portrait_rgba_hex", "minimap_rgb", "rig_draft",
+    }
+    unknown = set(draft) - expected
+    missing = expected - set(draft)
+    if unknown or missing or draft.get("schema") != "mdkr-workshop-build-v1":
+        detail = []
+        if unknown:
+            detail.append("unknown: " + ", ".join(sorted(unknown)))
+        if missing:
+            detail.append("missing: " + ", ".join(sorted(missing)))
+        if draft.get("schema") != "mdkr-workshop-build-v1":
+            detail.append("unsupported schema")
+        raise ManagerError(
+            "invalid Workshop build draft (" + "; ".join(detail) + ")"
+        )
+    base_digest = draft["base_cache_source_digest"]
+    if (not isinstance(base_digest, str) or len(base_digest) != 64 or
+            any(character not in "0123456789abcdef"
+                for character in base_digest)):
+        raise ManagerError("Workshop draft base digest is invalid")
+    donor = draft["donor"]
+    vehicles = draft["vehicles"]
+    if not isinstance(donor, str) or donor not in probe.GAMEPLAY_DONORS:
+        raise ManagerError("gameplay donor must name a built-in racer")
+    if (not isinstance(vehicles, list) or not vehicles or
+            any(not isinstance(vehicle, str) for vehicle in vehicles) or
+            len(set(vehicles)) != len(vehicles) or
+            any(vehicle not in probe.VEHICLE_NAMES for vehicle in vehicles)):
+        raise ManagerError(
+            "vehicle compatibility must contain one or more unique car, "
+            "hovercraft, or plane entries"
+        )
+    minimap = draft["minimap_rgb"]
+    if (not isinstance(minimap, list) or len(minimap) != 3 or
+            any(isinstance(component, bool) or not isinstance(component, int)
+                or not 0 <= component <= 255 for component in minimap)):
+        raise ManagerError("minimap RGB must contain three bytes")
+    rgba_hex = draft["portrait_rgba_hex"]
+    if (not isinstance(rgba_hex, str) or len(rgba_hex) != 40 * 40 * 8 or
+            any(character not in "0123456789abcdef"
+                for character in rgba_hex)):
+        raise ManagerError(
+            "portrait RGBA must be exactly 12,800 lowercase hex characters"
+        )
+    rig_draft = draft["rig_draft"]
+    if not isinstance(rig_draft, dict):
+        raise ManagerError("rig_draft must be an object")
+    rig = _validated_rig_draft(rig_draft)
+
+    root = _prepare_directory(directory)
+    package, based_on_sha, based_on_digest = _active_source_snapshot(
+        package_id, root
+    )
+    if based_on_digest != base_digest:
+        raise ManagerError(
+            "the installed character changed after this draft was resumed; "
+            "restore its exact base or review the latest source"
+        )
+    with tempfile.TemporaryDirectory(
+            prefix="mdkr-workshop-build-") as temporary:
+        work = Path(temporary)
+        snapshot = work / "source.mdkrchar"
+        snapshot.write_bytes(package)
+        verification = probe.verify_package(snapshot)
+        if not verification["valid"] or verification.get("id") != package_id:
+            raise ManagerError("active source package failed verification")
+        with zipfile.ZipFile(io.BytesIO(package)) as archive:
+            manifest = probe.json_loads_strict(
+                archive.read("manifest.json"), "manifest"
+            )
+            model = archive.read("model.glb")
+            license_text = archive.read("LICENSE.txt")
+        if not isinstance(manifest, dict):
+            raise ManagerError("active source manifest is not an object")
+        revised, migration = _upgrade_identity_manifest(
+            manifest, verification["model"], tuple(minimap)
+        )
+        revised["gameplay"] = {
+            "donor": donor,
+            "vehicles": list(vehicles),
+        }
+        presentation = revised.get("presentation")
+        if not isinstance(presentation, dict):
+            raise ManagerError("active source has no calibrated presentation")
+        presentation = dict(presentation)
+        contexts = presentation.get("contexts")
+        if not isinstance(contexts, dict):
+            raise ManagerError("active source has no presentation contexts")
+        contexts = dict(contexts)
+        for vehicle in vehicles:
+            contexts.setdefault(vehicle, {
+                "anchor": "seat",
+                "translation_m": [0.0, 0.0, 0.0],
+                "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "scale": 1.0,
+            })
+        presentation["contexts"] = contexts
+        revised["presentation"] = presentation
+        revised["schema"] = probe.PACKAGE_SCHEMA_V4
+        revised["rig"] = rig
+
+        model_path = work / "model.glb"
+        manifest_path = work / "manifest.json"
+        license_path = work / "LICENSE.txt"
+        portrait_path = work / "portrait.png"
+        revised_package = work / "revision.mdkrchar"
+        model_path.write_bytes(model)
+        manifest_path.write_text(
+            json.dumps(revised, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        license_path.write_bytes(license_text)
+        portrait_path.write_bytes(_portrait_png_from_rgba(bytes.fromhex(rgba_hex)))
+        probe.build_package(
+            model_path, manifest_path, license_path, revised_package,
+            portrait_path=portrait_path,
+        )
+        installed = install(
+            revised_package, root, expected_active_digest=based_on_digest
+        )
+    return {
+        **installed,
+        "action": "build-workshop-draft",
+        "based_on_source_sha256": based_on_sha,
+        "based_on_cache_source_digest": based_on_digest,
+        "migration": migration,
+        "donor": donor,
+        "vehicles": list(vehicles),
         "rig_mode": rig["mode"],
         "rig_reviewed": rig["reviewed"],
         "rig_roles": len(rig["roles"]) if isinstance(rig["roles"], dict) else 0,
@@ -1233,6 +1388,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     rig_parser.add_argument("id")
     rig_parser.add_argument("draft", type=Path)
+    build_draft_parser = sub.add_parser(
+        "build-draft",
+        help="compile one reviewed Workshop draft as a single source revision",
+    )
+    build_draft_parser.add_argument("id")
+    build_draft_parser.add_argument("draft", type=Path)
     sub.add_parser("clean")
     return parser
 
@@ -1282,6 +1443,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "revise-rig":
             report = revise_rig(args.id, args.draft, args.directory)
+        elif args.command == "build-draft":
+            report = build_workshop_draft(
+                args.id, args.draft, args.directory
+            )
         elif args.command == "remove":
             report = remove(args.id, args.directory)
         elif args.command == "revisions":

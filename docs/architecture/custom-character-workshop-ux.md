@@ -393,7 +393,7 @@ last known-good assembly remains available if an update fails.
 
 | Capability | Current spike | Required product state |
 |---|---|---|
-| Secure GLB/package import | Mutation-free portable/source-only candidate staging, exact installed-versus-candidate identity/rig/donor/vehicle/LOD/animation/memory and authenticated SPDX/attribution/source comparison, installed provenance inventory, explicit legacy-cache state, local-rights confirmation, drag/drop parity, and package/base optimistic reviewed commit are executable | Add resumable named drafts and raw-GLB convenience intake |
+| Secure GLB/package import | Mutation-free portable/source-only candidate staging, exact installed-versus-candidate identity/rig/donor/vehicle/LOD/animation/memory and authenticated SPDX/attribution/source comparison, installed provenance inventory, explicit legacy-cache state, local-rights confirmation, drag/drop parity, and package/base optimistic reviewed commit are executable | Add raw-GLB convenience intake |
 | Height/front/ground/seat calibration | Executable v2 | Add exact embedded preview and manipulators |
 | Per-context corrections | One package-keyed editor shared by every local assignment, with independent select/car/hovercraft/plane transforms and contact offsets | Add direct spatial transform/target manipulators |
 | Animation semantics | Executable sampling/diagnostics plus source-v4 compiled role contract, inference provenance/confidence, transactional 16-role skin-joint editor with bind-pose hierarchy canvas, rest/bend controls and automatic review invalidation, native hierarchy validation, reviewed engine-reference fallback motion, and bounded idempotent vehicle contact solving | Add richer reference clips, target overlays and joint-limit inspection |
@@ -403,16 +403,19 @@ last known-good assembly remains available if an update fails.
 | Performance controls | Import caps, authored LOD bias, exact per-LOD draw accounting, 1P-4P worst-visible assembly counts, exact one-click WebGPU stress routes, and a returned post-warm-up wall-cadence percentile/result card with synthetic/short-sample refusal | Add GPU timestamps, repeatable comparison baselines, representative scene matrix and device profiles |
 | Gameplay tuning | Correctly absent from visual package | Build separate opt-in hashed gameplay-profile system |
 | Preview | One-click typed requests launch select or all three vehicles through real game initialization in any 1-4P layout after ROM revalidation; requests are assignment-neutral, return a warmed structured result, persist source/tuning-bound per-context author review, and a generated non-Diddy package passes the complete WebGPU route/pixel/stress/result gate | Embed the renderer and add semantic pose/camera/lighting controls plus screenshots/contact sheets |
-| Packaging/update/removal | Mutation-free review plus package/base-bound transactional install/update, responsive installed-versus-candidate diff, reversible runtime disable with retained assignments/settings/source history, disabled-state-preserving Portrait/Rig/Profile revisions, authenticated revision-history UI with arbitrary transactional restore and no-overwrite source export, exact revision/report inventory, and recoverability-aware permanent deletion with package-preference cleanup are executable | Add named draft lifecycle |
+| Packaging/update/removal | Mutation-free review plus package/base-bound transactional install/update, responsive installed-versus-candidate diff, reversible runtime disable, authenticated revision restore/export, and recoverability-aware deletion are executable. Named full-editor snapshots are bounded, authenticated, atomically persisted, independently resumable/deletable, exact-base locked, and autosaved. A combined optimistic build publishes portrait/profile/rig as one retained revision; launcher-owned fit is separately disclosed and confirmed. The last selected package persists locally. | Add the dedicated library/tab shell, portable export/rebuild actions, per-tool undo coverage, and polished first-import resume flow |
 | Accessibility | Inherits launcher fundamentals | Qualify every editor tool at keyboard/controller/200%/screen reader |
 
 ## Delivery sequence and gates
 
-### W0 — Workshop shell and draft model
+### W0 — Workshop shell and draft model (draft durability baseline complete)
 
-Create the dedicated library/editor layout, package-keyed draft with undo/redo,
-one editor independent of P1-P4 assignments, readiness model and next-action
-resolver. Keep the existing safe importer and runtime unchanged.
+The package-keyed named draft, full bounded snapshot, autosave/resume/delete,
+exact-base protection, combined source build, last-selected package, and one
+editor independent of P1-P4 assignments are implemented inside the current
+responsive inspector. Create the dedicated library/tab layout, broaden
+undo/redo beyond the portrait and rig surfaces, and add the readiness
+next-action resolver without changing the safe importer/runtime boundary.
 
 Gate: import, resume, edit, assign, disable and remove are understandable at
 320x568 and 200% text with keyboard/controller only; no edit is lost or applied

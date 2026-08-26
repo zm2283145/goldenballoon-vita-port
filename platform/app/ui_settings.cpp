@@ -5,6 +5,8 @@
 #include "app_ui_policy.h"
 #include "app_window.h"
 #include "character_candidate_index.h"
+#include "character_draft_snapshot.h"
+#include "character_draft_store.h"
 #include "character_revision_index.h"
 #include "file_dialog.h"
 #include "ui_common.h"
@@ -1830,6 +1832,7 @@ char g_characterImportPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
 std::string g_characterManagerReport;
 std::string g_characterPendingRemoval;
 std::string g_characterWorkshopSelection;
+bool g_characterWorkshopSelectionLoaded = false;
 
 struct CharacterImportCandidate {
     bool ready = false;
@@ -1940,6 +1943,58 @@ struct CharacterRigEdit {
 };
 
 std::map<std::string, CharacterRigEdit> g_characterRigEdits;
+
+CharacterDraftStore::Inventory g_characterDrafts;
+bool g_characterDraftsLoaded = false;
+bool g_characterDraftsWritable = false;
+std::string g_characterDraftError;
+std::map<std::string, std::string> g_characterActiveDrafts;
+struct CharacterDraftReviewState {
+    uint32_t mask = 0u;
+    std::string signature[MDKR_CHARACTER_CONTEXT_COUNT];
+};
+std::map<std::string, CharacterDraftReviewState> g_characterDraftReviews;
+std::map<std::string, bool> g_characterPendingDraftFit;
+std::string g_characterPendingDraftRemoval;
+char g_characterDraftName[CharacterDraftStore::kMaximumNameBytes + 1u] = {};
+std::string g_characterDraftNameOwner;
+MdkrTextStateFileSpec g_characterDraftFileSpec{
+    "character_workshop_drafts-v1.tsv", nullptr, nullptr,
+};
+
+MdkrTextStateStorage characterDraftStorage() {
+    return MdkrTextStateStorage{
+        &g_characterDraftFileSpec,
+        mdkr_text_state_file_read,
+        mdkr_text_state_file_write,
+    };
+}
+
+void loadCharacterDraftInventory() {
+    if (g_characterDraftsLoaded) return;
+    CharacterDraftStore::Inventory inventory;
+    const CharacterDraftStore::LoadResult result =
+        CharacterDraftStore::load(
+            characterDraftStorage(), inventory, g_characterDraftError);
+    g_characterDraftsLoaded = true;
+    g_characterDraftsWritable =
+        result == CharacterDraftStore::LoadResult::Loaded ||
+        result == CharacterDraftStore::LoadResult::Missing;
+    if (g_characterDraftsWritable) {
+        g_characterDrafts = std::move(inventory);
+    }
+}
+
+bool replaceCharacterDraftInventory(
+    CharacterDraftStore::Inventory inventory) {
+    if (!g_characterDraftsWritable ||
+        !CharacterDraftStore::save(
+            characterDraftStorage(), inventory, g_characterDraftError)) {
+        return false;
+    }
+    g_characterDrafts = std::move(inventory);
+    return true;
+}
 
 void refreshCharacterRegistry();
 
@@ -2069,9 +2124,19 @@ bool characterFitReviewed(const MdkrModernCharacterEntry *entry,
                           unsigned context) {
     const std::string signature = characterFitReviewSignature(
         entry, edit, context);
+    const auto activeDraft = g_characterActiveDrafts.find(entry->id);
+    const auto draftReview = g_characterDraftReviews.find(entry->id);
+    if (activeDraft != g_characterActiveDrafts.end() &&
+        draftReview != g_characterDraftReviews.end()) {
+        return context < MDKR_CHARACTER_CONTEXT_COUNT &&
+            (draftReview->second.mask & (1u << context)) != 0u &&
+            draftReview->second.signature[context] == signature;
+    }
     return !signature.empty() &&
         AppConfig::get(characterFitReviewKey(entry->id, context)) == signature;
 }
+
+bool autosaveActiveCharacterDraft(const MdkrModernCharacterEntry *entry);
 
 bool persistCharacterFitReview(const MdkrModernCharacterEntry *entry,
                                const CharacterTuningEdit &edit,
@@ -2079,6 +2144,20 @@ bool persistCharacterFitReview(const MdkrModernCharacterEntry *entry,
     const std::string signature = characterFitReviewSignature(
         entry, edit, context);
     if (signature.empty()) return false;
+    if (g_characterActiveDrafts.find(entry->id) !=
+        g_characterActiveDrafts.end()) {
+        CharacterDraftReviewState &review =
+            g_characterDraftReviews[entry->id];
+        review.mask |= 1u << context;
+        review.signature[context] = signature;
+        if (autosaveActiveCharacterDraft(entry)) {
+            setStatus("Exact-context review autosaved in the named draft.",
+                      AppTheme::good());
+            return true;
+        }
+        setStatus("Draft review could not be autosaved.", AppTheme::bad());
+        return false;
+    }
     AppConfig::set(characterFitReviewKey(entry->id, context), signature);
     const AppConfig::PersistResult result = AppConfig::save();
     if (AppConfig::persistResultApplied(result)) {
@@ -2094,6 +2173,21 @@ bool persistCharacterFitReview(const MdkrModernCharacterEntry *entry,
 bool clearCharacterFitReview(const MdkrModernCharacterEntry *entry,
                              unsigned context) {
     if (entry == nullptr || context >= MDKR_CHARACTER_CONTEXT_COUNT) {
+        return false;
+    }
+    if (g_characterActiveDrafts.find(entry->id) !=
+        g_characterActiveDrafts.end()) {
+        CharacterDraftReviewState &review =
+            g_characterDraftReviews[entry->id];
+        review.mask &= ~(1u << context);
+        review.signature[context].clear();
+        if (autosaveActiveCharacterDraft(entry)) {
+            setStatus("Fit review reopened in the named draft.",
+                      AppTheme::accent());
+            return true;
+        }
+        setStatus("Draft review change could not be autosaved.",
+                  AppTheme::bad());
         return false;
     }
     AppConfig::set(characterFitReviewKey(entry->id, context), "");
@@ -2112,6 +2206,12 @@ bool persistCharacterTuning(const char *packageId,
     static const char *contextNames[MDKR_CHARACTER_CONTEXT_COUNT] = {
         "select", "car", "hovercraft", "plane"
     };
+    if (g_characterActiveDrafts.find(packageId) !=
+        g_characterActiveDrafts.end()) {
+        g_characterPreviewResults.erase(packageId);
+        setStatus("Fit change staged in the named draft.", AppTheme::good());
+        return true;
+    }
     const std::string prefix = "custom_character_profile_" +
         std::string(packageId) + "_";
     AppConfig::set(prefix + "scale", characterFloatText(edit.scale));
@@ -2473,6 +2573,10 @@ bool installReviewedCharacterPackage() {
         return false;
     }
     g_characterWorkshopSelection = reviewed.next.id;
+    g_characterWorkshopSelectionLoaded = true;
+    AppConfig::set("character_workshop_last_selected",
+                   g_characterWorkshopSelection);
+    (void)AppConfig::save();
     g_characterImportCandidate = CharacterImportCandidate{};
     g_characterImportPath[0] = '\0';
     return true;
@@ -2601,10 +2705,41 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterAssemblyPlayers.erase(id);
     g_characterTestPlayers.erase(id);
     g_characterPreviewResults.erase(id);
+    g_characterActiveDrafts.erase(id);
+    g_characterDraftReviews.erase(id);
+    g_characterPendingDraftFit.erase(id);
+    if (g_characterDraftNameOwner == id) {
+        g_characterDraftNameOwner.clear();
+        g_characterDraftName[0] = '\0';
+    }
     if (g_characterWorkshopSelection == id) {
         g_characterWorkshopSelection.clear();
+        AppConfig::set("character_workshop_last_selected", "");
     }
     return AppConfig::save();
+}
+
+size_t characterPackageDraftCount(const std::string &id) {
+    loadCharacterDraftInventory();
+    return static_cast<size_t>(std::count_if(
+        g_characterDrafts.drafts.begin(), g_characterDrafts.drafts.end(),
+        [&id](const CharacterDraftStore::Draft &draft) {
+            return draft.packageId == id;
+        }));
+}
+
+bool forgetCharacterPackageDrafts(const std::string &id) {
+    loadCharacterDraftInventory();
+    if (!g_characterDraftsWritable) return false;
+    CharacterDraftStore::Inventory replacement = g_characterDrafts;
+    replacement.drafts.erase(
+        std::remove_if(
+            replacement.drafts.begin(), replacement.drafts.end(),
+            [&id](const CharacterDraftStore::Draft &draft) {
+                return draft.packageId == id;
+            }),
+        replacement.drafts.end());
+    return replaceCharacterDraftInventory(std::move(replacement));
 }
 
 void refreshCharacterRegistry() {
@@ -3403,7 +3538,9 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
         "Only an explicit author review unlocks engine reference motion and vehicle contacts.");
     const bool canSave = edit.mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY ||
         hierarchyError.empty();
-    if (!canSave) ImGui::BeginDisabled();
+    const bool stagingDraft = g_characterActiveDrafts.find(entry->id) !=
+        g_characterActiveDrafts.end();
+    if (!canSave || stagingDraft) ImGui::BeginDisabled();
     bool saved = false;
     if (ImGui::Button("Save rig revision")) {
         saved = reviseCharacterRig(entry->id, characterRigDraftJson(edit));
@@ -3412,13 +3549,17 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
                   : "Rig revision failed; the active character was not changed.",
             saved ? AppTheme::good() : AppTheme::bad());
     }
-    if (!canSave) ImGui::EndDisabled();
+    if (!canSave || stagingDraft) ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Discard draft")) {
         g_characterRigEdits.erase(entry->id);
         setStatus("Rig draft restored from the active package.",
                   AppTheme::subtle());
         return false;
+    }
+    if (stagingDraft) {
+        ui::TextSubtleWrapped(
+            "Rig changes are part of the resumed named draft. Build from Named drafts to compile identity, profile, and rig as one source revision; this panel cannot publish a partial revision while that draft is open.");
     }
     return saved;
 }
@@ -4178,8 +4319,8 @@ void drawCharacterProfileAuthorityCard(
         "identity and presentation fallback.");
 }
 
-bool drawCharacterProfileStudio(const MdkrModernCharacterEntry *entry) {
-    static const char *vehicleNames[] = {"Car", "Hovercraft", "Plane"};
+CharacterProfileEdit &loadCharacterProfileEdit(
+    const MdkrModernCharacterEntry *entry) {
     CharacterProfileEdit &edit = g_characterProfileEdits[entry->id];
     if (!edit.loaded ||
         std::memcmp(edit.sourceSha256, entry->source_sha256,
@@ -4190,6 +4331,12 @@ bool drawCharacterProfileStudio(const MdkrModernCharacterEntry *entry) {
                     sizeof(edit.sourceSha256));
         edit.loaded = true;
     }
+    return edit;
+}
+
+bool drawCharacterProfileStudio(const MdkrModernCharacterEntry *entry) {
+    static const char *vehicleNames[] = {"Car", "Hovercraft", "Plane"};
+    CharacterProfileEdit &edit = loadCharacterProfileEdit(entry);
     ui::TextSubtleWrapped(
         "Choose which built-in racer supplies authoritative gameplay and which vehicle scenes this appearance supports. The package never copies or edits the donor's simulation tables.");
     ImGui::SetNextItemWidth(std::min(440.0f, ImGui::GetContentRegionAvail().x));
@@ -4260,7 +4407,9 @@ bool drawCharacterProfileStudio(const MdkrModernCharacterEntry *entry) {
         donorName(edit.donor));
     const bool dirty = edit.donor != entry->donor ||
         edit.vehicleMask != entry->vehicle_mask;
-    if (!dirty) ImGui::BeginDisabled();
+    const bool stagingDraft = g_characterActiveDrafts.find(entry->id) !=
+        g_characterActiveDrafts.end();
+    if (!dirty || stagingDraft) ImGui::BeginDisabled();
     bool saved = false;
     if (ImGui::Button("Save gameplay and compatibility revision")) {
         const std::string packageId = entry->id;
@@ -4282,9 +4431,13 @@ bool drawCharacterProfileStudio(const MdkrModernCharacterEntry *entry) {
                 AppTheme::bad());
         }
     }
-    if (!dirty) ImGui::EndDisabled();
+    if (!dirty || stagingDraft) ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::TextDisabled(dirty ? "unsaved source revision" : "saved in package");
+    if (stagingDraft) {
+        ui::TextSubtleWrapped(
+            "Gameplay and compatibility changes are staged in the named draft and will be compiled together with its identity and rig.");
+    }
     return saved;
 }
 
@@ -4488,7 +4641,9 @@ bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
     const bool minimapDirty = (entry->identity_flags & 1u) != 0u &&
         authoredMinimap != (entry->minimap_rgba & 0xFFFFFFu);
     const bool canSaveCanvas = edit.canvasDirty || minimapDirty;
-    if (!canSaveCanvas) ImGui::BeginDisabled();
+    const bool stagingDraft = g_characterActiveDrafts.find(entry->id) !=
+        g_characterActiveDrafts.end();
+    if (!canSaveCanvas || stagingDraft) ImGui::BeginDisabled();
     if (ImGui::Button("Save pixel canvas revision")) {
         saved = reviseCharacterIdentityRgba(
             entry->id, edit.canvas, edit.minimapRgb);
@@ -4497,11 +4652,16 @@ bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
                 : "Pixel portrait failed; the active character was not changed.",
             saved ? AppTheme::good() : AppTheme::bad());
     }
-    if (!canSaveCanvas) ImGui::EndDisabled();
+    if (!canSaveCanvas || stagingDraft) ImGui::EndDisabled();
+    if (stagingDraft) {
+        ui::TextSubtleWrapped(
+            "The exact canvas and minimap colour are staged in the named draft. Build it from Named drafts to avoid publishing a partial source revision.");
+    }
     return saved;
 }
 
-bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
+CharacterIdentityEdit &loadCharacterIdentityEdit(
+    const MdkrModernCharacterEntry *entry) {
     static const uint8_t donorColours[][3] = {
         {194, 72, 58}, {54, 120, 197}, {66, 166, 110}, {76, 153, 190},
         {232, 145, 49}, {143, 91, 53}, {224, 93, 52}, {220, 80, 151},
@@ -4537,6 +4697,13 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
                     sizeof(edit.sourceSha256));
         edit.loaded = true;
     }
+    return edit;
+}
+
+bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
+    CharacterIdentityEdit &edit = loadCharacterIdentityEdit(entry);
+    const bool stagingDraft = g_characterActiveDrafts.find(entry->id) !=
+        g_characterActiveDrafts.end();
     ui::TextSubtleWrapped(
         "Choose square PNG artwork and a readable minimap colour. The importer validates the source, downsamples it once to the exact 40 × 40 game format, and atomically activates a new local package revision. The model, license, gameplay profile, and previous source revision are preserved.");
     ImGui::SetNextItemWidth(-1.0f);
@@ -4558,7 +4725,7 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
             ImGuiColorEditFlags_PickerHueWheel);
     ui::TextSubtleWrapped(
         "PNG profile: 16–1024 px square, 8-bit RGB/RGBA, non-animated and non-interlaced. Transparency is preserved. The exact current in-game pixels and colour are shown in Overview above.");
-    const bool canSave = edit.portraitPath[0] != '\0';
+    const bool canSave = edit.portraitPath[0] != '\0' && !stagingDraft;
     if (!canSave) ImGui::BeginDisabled();
     bool saved = false;
     if (ImGui::Button("Save identity revision")) {
@@ -4578,6 +4745,10 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     if (!canSave) ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::TextDisabled("non-destructive local revision");
+    if (stagingDraft) {
+        ui::TextSubtleWrapped(
+            "A named draft builds from its exact 40 × 40 canvas. Use the pixel editor below while the draft is open; close the draft first if you want the PNG revision shortcut.");
+    }
     if (saved) return true;
     if (ImGui::TreeNodeEx(
             "Pixel editor##character-portrait-pixels",
@@ -4589,6 +4760,661 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
         if (pixelSaved) return true;
     }
     return saved;
+}
+
+bool captureCharacterDraftSnapshot(
+    const MdkrModernCharacterEntry *entry,
+    CharacterDraftSnapshot::Snapshot &snapshot, std::string &error) {
+    if (entry == nullptr) {
+        error = "No character is selected for the draft.";
+        return false;
+    }
+    CharacterProfileEdit &profile = loadCharacterProfileEdit(entry);
+    CharacterIdentityEdit &identity = loadCharacterIdentityEdit(entry);
+    CharacterRigEdit &rig = loadCharacterRigEdit(entry);
+    CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
+    if (!rig.error.empty()) {
+        error = "The active rig could not be captured: " + rig.error;
+        return false;
+    }
+    snapshot = CharacterDraftSnapshot::Snapshot{};
+    snapshot.donor = profile.donor;
+    snapshot.packageVehicleMask = profile.vehicleMask;
+    snapshot.enabledVehicleMask = tuning.vehicleMask & profile.vehicleMask;
+    if (snapshot.enabledVehicleMask == 0u) {
+        snapshot.enabledVehicleMask = profile.vehicleMask &
+            (0u - profile.vehicleMask);
+    }
+    for (size_t component = 0u; component < 3u; ++component) {
+        snapshot.minimapRgb[component] = static_cast<uint8_t>(std::lround(
+            std::clamp(identity.minimapRgb[component], 0.0f, 1.0f) * 255.0f));
+        snapshot.offset[component] = tuning.offset[component];
+        snapshot.rotation[component] = tuning.rotation[component];
+    }
+    snapshot.portrait = identity.canvas;
+    snapshot.portraitSourcePath = identity.portraitPath;
+    snapshot.scale = tuning.scale;
+    snapshot.animationSpeed = tuning.animationSpeed;
+    snapshot.lodBias = tuning.lodBias;
+    snapshot.rigMode = static_cast<uint32_t>(rig.mode);
+    snapshot.rigReviewed = rig.reviewed;
+    for (size_t context = 0u;
+         context < CharacterDraftSnapshot::kContexts; ++context) {
+        snapshot.contexts[context].scale = tuning.context[context].scale;
+        std::copy(std::begin(tuning.context[context].offset),
+                  std::end(tuning.context[context].offset),
+                  snapshot.contexts[context].offset);
+        std::copy(std::begin(tuning.context[context].rotation),
+                  std::end(tuning.context[context].rotation),
+                  snapshot.contexts[context].rotation);
+        std::memcpy(snapshot.contexts[context].contacts,
+                    tuning.context[context].contacts,
+                    sizeof(snapshot.contexts[context].contacts));
+        if (characterFitReviewed(entry, tuning, context)) {
+            snapshot.reviewedContexts |= 1u << context;
+        }
+    }
+    for (size_t slot = 0u;
+         slot < CharacterDraftSnapshot::kRoles; ++slot) {
+        const CharacterRigEdit::Role &source = rig.roles[slot];
+        CharacterDraftSnapshot::RigRole &target = snapshot.roles[slot];
+        if (source.joint >= 0 &&
+            source.joint < static_cast<int>(rig.joints.size())) {
+            target.node = rig.joints[source.joint].node;
+        }
+        target.inferred = source.inferred;
+        target.confidence = source.confidence;
+        std::copy(std::begin(source.rest), std::end(source.rest), target.rest);
+        std::copy(std::begin(source.bend), std::end(source.bend), target.bend);
+    }
+    int assemblyPlayers = g_characterAssemblyPlayers[entry->id];
+    int testPlayers = g_characterTestPlayers[entry->id];
+    snapshot.assemblyPlayers = assemblyPlayers >= 1 && assemblyPlayers <= 4
+        ? assemblyPlayers : 4;
+    snapshot.testPlayers = testPlayers >= 1 && testPlayers <= 4
+        ? testPlayers : 1;
+    error.clear();
+    return true;
+}
+
+bool applyCharacterDraftSnapshot(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterDraftStore::Draft &draft, std::string &error) {
+    if (entry == nullptr || draft.packageId != entry->id ||
+        draft.baseSourceDigest != characterDigestHex(entry->source_sha256)) {
+        error = "Draft base does not match the active character source.";
+        return false;
+    }
+    CharacterDraftSnapshot::Snapshot snapshot;
+    if (!CharacterDraftSnapshot::decode(draft.payload, snapshot, error)) {
+        return false;
+    }
+    CharacterRigEdit rig = loadCharacterRigEdit(entry);
+    if (!rig.error.empty()) {
+        error = "The active rig could not be loaded: " + rig.error;
+        return false;
+    }
+    for (size_t slot = 0u;
+         slot < CharacterDraftSnapshot::kRoles; ++slot) {
+        const CharacterDraftSnapshot::RigRole &source = snapshot.roles[slot];
+        CharacterRigEdit::Role &target = rig.roles[slot];
+        target = CharacterRigEdit::Role{};
+        if (source.node != CharacterDraftSnapshot::kNoNode) {
+            const auto joint = std::find_if(
+                rig.joints.begin(), rig.joints.end(),
+                [&source](const CharacterRigEdit::Joint &candidate) {
+                    return candidate.node == source.node;
+                });
+            if (joint == rig.joints.end()) {
+                error = "A draft rig node is absent from its exact base source.";
+                return false;
+            }
+            target.joint = static_cast<int>(
+                std::distance(rig.joints.begin(), joint));
+        }
+        target.inferred = source.inferred;
+        target.confidence = source.confidence;
+        std::copy(std::begin(source.rest), std::end(source.rest), target.rest);
+        std::copy(std::begin(source.bend), std::end(source.bend), target.bend);
+    }
+    rig.mode = static_cast<int>(snapshot.rigMode);
+    rig.reviewed = snapshot.rigReviewed;
+
+    CharacterTuningEdit tuning{};
+    tuning.loaded = true;
+    tuning.scale = snapshot.scale;
+    tuning.animationSpeed = snapshot.animationSpeed;
+    tuning.lodBias = snapshot.lodBias;
+    tuning.vehicleMask = snapshot.enabledVehicleMask;
+    for (size_t component = 0u; component < 3u; ++component) {
+        tuning.offset[component] = snapshot.offset[component];
+        tuning.rotation[component] = snapshot.rotation[component];
+    }
+    for (size_t context = 0u;
+         context < CharacterDraftSnapshot::kContexts; ++context) {
+        tuning.context[context].scale = snapshot.contexts[context].scale;
+        std::copy(std::begin(snapshot.contexts[context].offset),
+                  std::end(snapshot.contexts[context].offset),
+                  tuning.context[context].offset);
+        std::copy(std::begin(snapshot.contexts[context].rotation),
+                  std::end(snapshot.contexts[context].rotation),
+                  tuning.context[context].rotation);
+        std::memcpy(tuning.context[context].contacts,
+                    snapshot.contexts[context].contacts,
+                    sizeof(tuning.context[context].contacts));
+    }
+
+    CharacterProfileEdit profile{};
+    profile.loaded = true;
+    profile.donor = snapshot.donor;
+    profile.vehicleMask = snapshot.packageVehicleMask;
+    std::memcpy(profile.sourceSha256, entry->source_sha256,
+                sizeof(profile.sourceSha256));
+    CharacterIdentityEdit identity{};
+    identity.loaded = true;
+    identity.canvas = snapshot.portrait;
+    identity.minimapRgb[0] = snapshot.minimapRgb[0] / 255.0f;
+    identity.minimapRgb[1] = snapshot.minimapRgb[1] / 255.0f;
+    identity.minimapRgb[2] = snapshot.minimapRgb[2] / 255.0f;
+    identity.canvasDirty =
+        (entry->identity_flags & 1u) == 0u ||
+        !std::equal(identity.canvas.begin(), identity.canvas.end(),
+                    std::begin(entry->portrait_rgba));
+    std::snprintf(identity.portraitPath, sizeof(identity.portraitPath), "%s",
+                  snapshot.portraitSourcePath.c_str());
+    std::memcpy(identity.sourceSha256, entry->source_sha256,
+                sizeof(identity.sourceSha256));
+
+    g_characterTuning[entry->id] = std::move(tuning);
+    g_characterProfileEdits[entry->id] = std::move(profile);
+    g_characterIdentityEdits[entry->id] = std::move(identity);
+    g_characterRigEdits[entry->id] = std::move(rig);
+    g_characterAssemblyPlayers[entry->id] = snapshot.assemblyPlayers;
+    g_characterTestPlayers[entry->id] = snapshot.testPlayers;
+    CharacterDraftReviewState review;
+    review.mask = snapshot.reviewedContexts;
+    for (size_t context = 0u;
+         context < CharacterDraftSnapshot::kContexts; ++context) {
+        review.signature[context] = characterFitReviewSignature(
+            entry, g_characterTuning[entry->id], context);
+    }
+    g_characterDraftReviews[entry->id] = std::move(review);
+    g_characterActiveDrafts[entry->id] = draft.id;
+    g_characterDraftNameOwner = entry->id;
+    std::snprintf(g_characterDraftName, sizeof(g_characterDraftName), "%s",
+                  draft.name.c_str());
+    g_characterPreviewResults.erase(entry->id);
+    error.clear();
+    return true;
+}
+
+std::string newCharacterDraftId(const MdkrModernCharacterEntry *entry,
+                                const std::string &name) {
+    static uint64_t serial;
+    std::string seed = entry->id;
+    seed.push_back('\0');
+    seed += name;
+    seed.push_back('\0');
+    seed += std::to_string(static_cast<uint64_t>(std::time(nullptr)));
+    seed.push_back('\0');
+    seed += std::to_string(++serial);
+    char digest[MDKR_SHA256_HEX_SIZE];
+    mdkr_sha256_hex(seed.data(), seed.size(), digest);
+    return std::string("draft-") + std::string(digest, 24u);
+}
+
+bool saveCharacterDraft(const MdkrModernCharacterEntry *entry,
+                        bool saveAsNew) {
+    loadCharacterDraftInventory();
+    if (!g_characterDraftsWritable) return false;
+    CharacterDraftSnapshot::Snapshot snapshot;
+    std::string error;
+    std::string payload;
+    if (!captureCharacterDraftSnapshot(entry, snapshot, error) ||
+        !CharacterDraftSnapshot::encode(snapshot, payload, error)) {
+        g_characterDraftError = error;
+        return false;
+    }
+    const std::string name = g_characterDraftName;
+    CharacterDraftStore::Draft draft;
+    const auto active = g_characterActiveDrafts.find(entry->id);
+    if (!saveAsNew && active != g_characterActiveDrafts.end()) {
+        draft.id = active->second;
+    } else {
+        for (size_t attempt = 0u;
+             attempt <= CharacterDraftStore::kMaximumDrafts; ++attempt) {
+            draft.id = newCharacterDraftId(entry, name);
+            if (CharacterDraftStore::find(g_characterDrafts, draft.id) ==
+                nullptr) break;
+        }
+        if (CharacterDraftStore::find(g_characterDrafts, draft.id) != nullptr) {
+            g_characterDraftError =
+                "Could not allocate a unique id for the new draft.";
+            return false;
+        }
+    }
+    draft.packageId = entry->id;
+    draft.baseSourceDigest = characterDigestHex(entry->source_sha256);
+    const std::time_t now = std::time(nullptr);
+    draft.updatedUnix = now >= 0 ? static_cast<uint64_t>(now) : 0u;
+    draft.name = name;
+    draft.payload = std::move(payload);
+    CharacterDraftStore::Inventory replacement = g_characterDrafts;
+    if (!CharacterDraftStore::upsert(replacement, draft, error) ||
+        !replaceCharacterDraftInventory(std::move(replacement))) {
+        if (!error.empty()) g_characterDraftError = error;
+        return false;
+    }
+    g_characterActiveDrafts[entry->id] = draft.id;
+    CharacterDraftReviewState review;
+    review.mask = snapshot.reviewedContexts;
+    CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
+    for (size_t context = 0u;
+         context < CharacterDraftSnapshot::kContexts; ++context) {
+        review.signature[context] = characterFitReviewSignature(
+            entry, tuning, context);
+    }
+    g_characterDraftReviews[entry->id] = std::move(review);
+    g_characterDraftNameOwner = entry->id;
+    g_characterDraftError.clear();
+    return true;
+}
+
+bool autosaveActiveCharacterDraft(const MdkrModernCharacterEntry *entry) {
+    if (entry == nullptr) return false;
+    loadCharacterDraftInventory();
+    const auto active = g_characterActiveDrafts.find(entry->id);
+    if (active == g_characterActiveDrafts.end()) return true;
+    const CharacterDraftStore::Draft *saved =
+        CharacterDraftStore::find(g_characterDrafts, active->second);
+    if (!g_characterDraftsWritable || saved == nullptr ||
+        saved->baseSourceDigest != characterDigestHex(entry->source_sha256)) {
+        return false;
+    }
+    CharacterDraftSnapshot::Snapshot snapshot;
+    std::string payload;
+    std::string error;
+    if (!captureCharacterDraftSnapshot(entry, snapshot, error) ||
+        !CharacterDraftSnapshot::encode(snapshot, payload, error)) {
+        g_characterDraftError = error;
+        return false;
+    }
+    if (payload == saved->payload) return true;
+    CharacterDraftStore::Draft replacementDraft = *saved;
+    replacementDraft.payload = std::move(payload);
+    const std::time_t now = std::time(nullptr);
+    replacementDraft.updatedUnix = now >= 0
+        ? static_cast<uint64_t>(now) : replacementDraft.updatedUnix;
+    CharacterDraftStore::Inventory replacement = g_characterDrafts;
+    if (!CharacterDraftStore::upsert(
+            replacement, std::move(replacementDraft), error) ||
+        !replaceCharacterDraftInventory(std::move(replacement))) {
+        if (!error.empty()) g_characterDraftError = error;
+        return false;
+    }
+    g_characterDraftError.clear();
+    return true;
+}
+
+void closeCharacterDraftEditor(const std::string &packageId,
+                               bool preserveFitEditor) {
+    g_characterActiveDrafts.erase(packageId);
+    g_characterDraftReviews.erase(packageId);
+    g_characterProfileEdits.erase(packageId);
+    g_characterIdentityEdits.erase(packageId);
+    g_characterRigEdits.erase(packageId);
+    if (!preserveFitEditor) {
+        g_characterTuning.erase(packageId);
+        g_characterAssemblyPlayers.erase(packageId);
+        g_characterTestPlayers.erase(packageId);
+        g_characterPendingDraftFit.erase(packageId);
+    } else {
+        g_characterPendingDraftFit[packageId] = true;
+    }
+    g_characterPreviewResults.erase(packageId);
+    if (g_characterDraftNameOwner == packageId) {
+        g_characterDraftNameOwner.clear();
+        g_characterDraftName[0] = '\0';
+    }
+}
+
+bool buildCharacterDraftSource(const MdkrModernCharacterEntry *entry) {
+    static const char *donorIds[] = {
+        "krunch", "bumper", "tiptup", "conker", "timber",
+        "banjo", "drumstick", "pipsy", "tt", "diddy",
+    };
+    static const char *vehicleIds[] = {"car", "hovercraft", "plane"};
+    if (entry == nullptr || g_characterRegistryDirectory.empty()) return false;
+    CharacterProfileEdit &profile = loadCharacterProfileEdit(entry);
+    CharacterIdentityEdit &identity = loadCharacterIdentityEdit(entry);
+    CharacterRigEdit &rig = loadCharacterRigEdit(entry);
+    if (profile.donor >= std::size(donorIds) || profile.vehicleMask == 0u ||
+        (profile.vehicleMask & ~7u) != 0u || !rig.error.empty()) {
+        g_characterManagerReport =
+            "The staged profile or rig is not valid enough to build.";
+        return false;
+    }
+    static const char hexDigits[] = "0123456789abcdef";
+    std::string portraitHex(identity.canvas.size() * 2u, '0');
+    for (size_t index = 0u; index < identity.canvas.size(); ++index) {
+        portraitHex[index * 2u] = hexDigits[identity.canvas[index] >> 4u];
+        portraitHex[index * 2u + 1u] =
+            hexDigits[identity.canvas[index] & 0xFu];
+    }
+    std::string vehicles;
+    for (size_t vehicle = 0u; vehicle < std::size(vehicleIds); ++vehicle) {
+        if ((profile.vehicleMask & (1u << vehicle)) == 0u) continue;
+        if (!vehicles.empty()) vehicles += ", ";
+        vehicles += "\"" + std::string(vehicleIds[vehicle]) + "\"";
+    }
+    int minimap[3];
+    for (size_t component = 0u; component < 3u; ++component) {
+        minimap[component] = static_cast<int>(std::lround(
+            std::clamp(identity.minimapRgb[component], 0.0f, 1.0f) *
+            255.0f));
+    }
+    std::string json =
+        "{\n  \"schema\": \"mdkr-workshop-build-v1\",\n"
+        "  \"base_cache_source_digest\": \"" +
+        characterDigestHex(entry->source_sha256) + "\",\n"
+        "  \"donor\": \"" + donorIds[profile.donor] + "\",\n"
+        "  \"vehicles\": [" + vehicles + "],\n"
+        "  \"portrait_rgba_hex\": \"" + portraitHex + "\",\n"
+        "  \"minimap_rgb\": [" + std::to_string(minimap[0]) + ", " +
+        std::to_string(minimap[1]) + ", " + std::to_string(minimap[2]) +
+        "],\n  \"rig_draft\": " + characterRigDraftJson(rig) + "\n}\n";
+    if (json.size() > 256u * 1024u) {
+        g_characterManagerReport = "The bounded Workshop build draft is too large.";
+        return false;
+    }
+    const std::string packageId = entry->id;
+    const std::string draftPath = g_characterRegistryDirectory + "/." +
+        packageId + ".launcher-workshop-build.json";
+    (void)mdkr_remove_utf8(draftPath.c_str());
+    std::FILE *file = mdkr_fopen_utf8(draftPath.c_str(), "wbx");
+    if (file == nullptr) {
+        g_characterManagerReport =
+            "Could not create the bounded Workshop build draft.";
+        return false;
+    }
+    const bool payloadWritten =
+        std::fwrite(json.data(), 1u, json.size(), file) == json.size();
+    const bool flushed = std::fflush(file) == 0;
+    const bool closed = std::fclose(file) == 0;
+    if (!payloadWritten || !flushed || !closed) {
+        (void)mdkr_remove_utf8(draftPath.c_str());
+        g_characterManagerReport =
+            "Could not finish the bounded Workshop build draft.";
+        return false;
+    }
+    const bool built = runCharacterManager(
+        "build-draft", {packageId, draftPath});
+    (void)mdkr_remove_utf8(draftPath.c_str());
+    if (built) {
+        /* The named snapshot remains retained against its exact old base. The
+         * source editors must reload the new revision, while fit stays in its
+         * editor so the user can explicitly apply that separate local state. */
+        closeCharacterDraftEditor(packageId, true);
+    }
+    return built;
+}
+
+std::string characterRevisionTimestamp(uint64_t installedUnix);
+
+bool drawCharacterDraftLifecycle(const MdkrModernCharacterEntry *entry) {
+    loadCharacterDraftInventory();
+    ui::TextSubtleWrapped(
+        "Named drafts preserve portrait pixels, profile choices, rig mapping, fit/contact tuning, quality layout, and review acknowledgements without compiling or replacing the playable last-known-good character.");
+    if (!g_characterDraftsWritable) {
+        ImGui::TextColored(
+            AppTheme::bad(), "Draft inventory unavailable: %s",
+            g_characterDraftError.c_str());
+        ui::TextSubtleWrapped(
+            "The existing file is left untouched. Draft saving stays disabled so corrupt or unreadable work is never overwritten silently.");
+        return false;
+    }
+    const std::string currentDigest = characterDigestHex(entry->source_sha256);
+    if (g_characterDraftNameOwner != entry->id) {
+        g_characterDraftNameOwner = entry->id;
+        g_characterDraftName[0] = '\0';
+        const auto selected = g_characterActiveDrafts.find(entry->id);
+        const CharacterDraftStore::Draft *selectedDraft =
+            selected != g_characterActiveDrafts.end()
+            ? CharacterDraftStore::find(g_characterDrafts, selected->second)
+            : nullptr;
+        if (selectedDraft != nullptr) {
+            std::snprintf(g_characterDraftName,
+                          sizeof(g_characterDraftName), "%s",
+                          selectedDraft->name.c_str());
+        }
+    }
+    const auto active = g_characterActiveDrafts.find(entry->id);
+    const CharacterDraftStore::Draft *activeDraft = active !=
+            g_characterActiveDrafts.end()
+        ? CharacterDraftStore::find(g_characterDrafts, active->second)
+        : nullptr;
+    if (activeDraft != nullptr) {
+        ImGui::TextColored(AppTheme::good(), "Editing draft: %s",
+                           activeDraft->name.c_str());
+        ImGui::TextDisabled("Base source: %.12s… · saved %s",
+                            activeDraft->baseSourceDigest.c_str(),
+                            characterRevisionTimestamp(
+                                activeDraft->updatedUnix).c_str());
+    } else {
+        ImGui::TextDisabled(
+            "No draft resumed — editors currently reflect the active package and saved local fit.");
+    }
+    if (g_characterPendingDraftFit.find(entry->id) !=
+        g_characterPendingDraftFit.end()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+        ImGui::TextWrapped(
+            "The source revision built successfully. Its draft fit, contact, motion-speed, LOD, and vehicle-enable settings are still staged locally and have not changed play.");
+        ImGui::PopStyleColor();
+        if (ImGui::Button("Apply staged local fit")) {
+            const auto staged = g_characterTuning.find(entry->id);
+            if (staged != g_characterTuning.end() &&
+                persistCharacterTuning(entry->id, staged->second)) {
+                g_characterPendingDraftFit.erase(entry->id);
+                setStatus(
+                    "Draft source and local fit are now active. Exact-context reviews must be repeated for the new source digest.",
+                    AppTheme::good());
+            } else {
+                setStatus(
+                    "Local fit could not be applied; it remains staged and the built source stays recoverable.",
+                    AppTheme::bad());
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Apply staged local fit", nullptr,
+            "Saves only package-local presentation settings. It does not change gameplay authority, physics, records, or player assignment.");
+        ImGui::SameLine();
+        if (ImGui::Button("Discard staged fit")) {
+            g_characterPendingDraftFit.erase(entry->id);
+            g_characterTuning.erase(entry->id);
+            g_characterPreviewResults.erase(entry->id);
+            setStatus(
+                "Staged fit discarded from the editor; its values remain recoverable in the retained named draft.",
+                AppTheme::subtle());
+        }
+        ui::SpeakFocusedItem(
+            "Discard staged fit", nullptr,
+            "Restores the active saved local fit in the editor. The named draft remains retained.");
+    }
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint(
+        "Draft name##character-draft-name", "e.g. Vehicle fit polish",
+        g_characterDraftName, sizeof(g_characterDraftName));
+    const bool named = g_characterDraftName[0] != '\0';
+    if (!named) ImGui::BeginDisabled();
+    if (ImGui::Button(activeDraft != nullptr ? "Save draft" : "Save new draft")) {
+        if (saveCharacterDraft(entry, activeDraft == nullptr)) {
+            setStatus(
+                "Draft saved atomically; the playable character was not changed.",
+                AppTheme::good());
+            return false;
+        } else {
+            setStatus("Draft save failed; the prior saved draft is intact.",
+                      AppTheme::bad());
+        }
+    }
+    if (activeDraft != nullptr) {
+        ImGui::SameLine();
+        if (ImGui::Button("Save as new draft")) {
+            if (saveCharacterDraft(entry, true)) {
+                setStatus(
+                    "New named draft saved; the original draft and playable character were retained.",
+                    AppTheme::good());
+                return false;
+            } else {
+                setStatus("New draft could not be saved.", AppTheme::bad());
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Close draft")) {
+            if (!autosaveActiveCharacterDraft(entry)) {
+                setStatus(
+                    "Draft could not be closed because its latest state was not saved.",
+                    AppTheme::bad());
+                return false;
+            }
+            closeCharacterDraftEditor(entry->id, false);
+            setStatus(
+                "Draft closed after autosave; the editors now follow the active package and local fit settings.",
+                AppTheme::good());
+            return false;
+        }
+        ui::SpeakFocusedItem(
+            "Close draft", nullptr,
+            "Autosaves and closes only the editor session. The named draft and playable character are retained.");
+    }
+    if (!named) ImGui::EndDisabled();
+    if (!g_characterDraftError.empty()) {
+        ImGui::TextColored(AppTheme::bad(), "%s",
+                           g_characterDraftError.c_str());
+    }
+
+    std::vector<const CharacterDraftStore::Draft *> packageDrafts;
+    for (const CharacterDraftStore::Draft &draft : g_characterDrafts.drafts) {
+        if (draft.packageId == entry->id) packageDrafts.push_back(&draft);
+    }
+    const bool canBuild = activeDraft != nullptr &&
+        activeDraft->baseSourceDigest == currentDigest;
+    if (!canBuild) ImGui::BeginDisabled();
+    if (ImGui::Button("Build and activate draft")) {
+        if (!autosaveActiveCharacterDraft(entry)) {
+            setStatus(
+                "Draft build stopped because the latest editor state could not be saved.",
+                AppTheme::bad());
+            if (!canBuild) ImGui::EndDisabled();
+            return false;
+        }
+        if (buildCharacterDraftSource(entry)) {
+            setStatus(
+                "Draft identity, gameplay profile, and rig were compiled and activated as one retained source revision.",
+                AppTheme::good());
+            if (!canBuild) ImGui::EndDisabled();
+            return true;
+        }
+        setStatus(
+            "Draft build failed; the playable source and retained draft were not replaced.",
+            AppTheme::bad());
+        /* A compare-and-swap failure can mean another process changed the
+         * installed base. Rescan before drawing any more controls that hold a
+         * pointer into the old registry allocation. */
+        refreshCharacterRegistry();
+        if (!canBuild) ImGui::EndDisabled();
+        return true;
+    }
+    if (!canBuild) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Build and activate draft",
+        canBuild ? nullptr : "Resume a draft based on the current source first.",
+        "Autosaves the editor snapshot, validates every staged source-owned field, and publishes one new retained source revision only after the complete compile succeeds. Local fit settings remain in the named draft until explicitly applied.");
+    if (packageDrafts.empty()) return false;
+    ImGui::TextUnformatted("Saved drafts");
+    for (const CharacterDraftStore::Draft *draft : packageDrafts) {
+        ImGui::PushID(draft->id.c_str());
+        const bool currentBase = draft->baseSourceDigest == currentDigest;
+        const bool resumed = activeDraft != nullptr &&
+            activeDraft->id == draft->id;
+        ImGui::TextWrapped("%s%s", draft->name.c_str(),
+                           resumed ? " · resumed" : "");
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s · %.12s…",
+                            currentBase ? "current base" : "retained base",
+                            draft->baseSourceDigest.c_str());
+        if (!currentBase) ImGui::BeginDisabled();
+        if (ImGui::Button("Resume") && currentBase) {
+            std::string error;
+            if (applyCharacterDraftSnapshot(entry, *draft, error)) {
+                setStatus(
+                    "Draft resumed against its exact source; the playable character remains unchanged.",
+                    AppTheme::good());
+            } else {
+                g_characterDraftError = error;
+                setStatus("Draft could not be resumed safely.", AppTheme::bad());
+            }
+        }
+        if (!currentBase) ImGui::EndDisabled();
+        ui::SpeakFocusedItem(
+            "Resume draft",
+            currentBase ? (resumed ? "currently resumed" : nullptr)
+                        : "Restore this draft's retained source revision first.",
+            "Loads editor state only; it does not build, activate, assign, or change the playable cache.");
+        ImGui::SameLine();
+        const std::string deleteLabel = "Delete draft...##" + draft->id;
+        if (ImGui::Button(deleteLabel.c_str())) {
+            g_characterPendingDraftRemoval = draft->id;
+            ImGui::OpenPopup("Delete named draft?");
+        }
+        ui::SpeakFocusedItem(
+            "Delete draft", nullptr,
+            "Deletes only this named editor snapshot. Source revisions, installed assembly, settings, and player assignments remain.");
+        if (g_characterPendingDraftRemoval == draft->id &&
+            ImGui::BeginPopupModal(
+                "Delete named draft?", nullptr,
+                ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextWrapped(
+                "Delete the named draft “%s”? This removes only its editor snapshot based on %.12s….",
+                draft->name.c_str(), draft->baseSourceDigest.c_str());
+            ui::TextSubtleWrapped(
+                "The playable cache, retained source revisions, package settings, exact-context evidence, and player assignments are not changed.");
+            if (ImGui::Button("Delete this draft")) {
+                CharacterDraftStore::Inventory replacement =
+                    g_characterDrafts;
+                if (CharacterDraftStore::erase(replacement, draft->id) &&
+                    replaceCharacterDraftInventory(std::move(replacement))) {
+                    if (resumed) {
+                        closeCharacterDraftEditor(entry->id, false);
+                    }
+                    g_characterPendingDraftRemoval.clear();
+                    setStatus(
+                        "Named draft deleted; source revisions and the playable assembly were retained.",
+                        AppTheme::good());
+                    ImGui::CloseCurrentPopup();
+                    ImGui::EndPopup();
+                    ImGui::PopID();
+                    break;
+                }
+                setStatus(
+                    "Draft deletion failed; its saved bytes remain intact.",
+                    AppTheme::bad());
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) {
+                g_characterPendingDraftRemoval.clear();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+        if (!currentBase) {
+            ui::TextSubtleWrapped(
+                "Resume is locked because the active source changed. Restore the matching retained source in Revision history, then resume; no automatic rebase can apply rig nodes to the wrong model.");
+        }
+        ImGui::PopID();
+    }
+    return false;
 }
 
 std::string characterRevisionTimestamp(uint64_t installedUnix) {
@@ -4822,6 +5648,12 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
     } else {
         ImGui::TextDisabled(
             "Metadata unavailable in this legacy cache. Workshop-installed source history retains and authenticates its exact LICENSE.txt when available; rebuild from that source with current authoring tools to make SPDX, attribution, and source declarations reviewable here.");
+    }
+    ImGui::SeparatorText("Named drafts");
+    if (drawCharacterDraftLifecycle(entry)) {
+        /* Building refreshes the registry and invalidates `entry`. */
+        ImGui::PopID();
+        return true;
     }
     if (entry->enabled == 0u) {
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
@@ -5138,8 +5970,9 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         return true;
     }
     ImGui::SeparatorText("Package lifecycle");
+    const size_t packageDrafts = characterPackageDraftCount(entry->id);
     ui::TextSubtleWrapped(
-        "Disable is reversible and retains every Workshop revision, fit setting, review, and player assignment. Permanent deletion removes this package's local cache, retained revisions, provenance, and package-owned settings.");
+        "Disable is reversible and retains every Workshop revision, fit setting, review, and player assignment. It also retains every named draft. Permanent deletion removes this package's local cache, named drafts, retained revisions, provenance, and package-owned settings.");
     if (entry->enabled != 0u) {
         if (ImGui::Button("Disable without deleting")) {
             const std::string id = entry->id;
@@ -5158,19 +5991,25 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             "Uses the built-in racer in game while retaining all package sources, settings, reviews, and player assignments.");
     }
     ui::Gap(ui::kGapS);
+    if (!g_characterDraftsWritable) ImGui::BeginDisabled();
     if (ImGui::Button("Permanently delete package...")) {
         g_characterPendingRemoval = entry->id;
         ImGui::OpenPopup("Permanently delete custom character?");
     }
+    if (!g_characterDraftsWritable) ImGui::EndDisabled();
     ui::SpeakFocusedItem(
         "Permanently delete package", nullptr,
-        "Opens a confirmation for destructive deletion of the local cache, retained Workshop source revisions, provenance reports, and package-owned settings.");
+        "Opens a confirmation for destructive deletion of the local cache, named editor drafts, retained Workshop source revisions, provenance reports, and package-owned settings.");
+    if (!g_characterDraftsWritable) {
+        ui::TextSubtleWrapped(
+            "Permanent deletion is locked because the named-draft inventory cannot be read or atomically replaced. Repair that local state first so package-owned work is never orphaned or silently omitted from the confirmation scope.");
+    }
     if (ImGui::BeginPopupModal("Permanently delete custom character?", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextWrapped(
-            "Permanently delete %s from this computer? This removes its %s cache, %u retained Workshop source revision(s), %u provenance report(s), fit settings, review evidence, and player assignments.",
+            "Permanently delete %s from this computer? This removes its %s cache, %zu named draft(s), %u retained Workshop source revision(s), %u provenance report(s), fit settings, review evidence, and player assignments.",
             entry->display_name, entry->enabled != 0u ? "enabled" : "disabled",
-            entry->source_revisions, entry->provenance_reports);
+            packageDrafts, entry->source_revisions, entry->provenance_reports);
         ui::TextSubtleWrapped(
             "The external .mdkrchar file you originally chose is not touched. A revision created only inside the Workshop may have no other copy. This action cannot be undone here.");
         if (ImGui::Button("Delete package and revisions")) {
@@ -5180,11 +6019,14 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                     forgetCharacterPackagePreferences(removedId);
                 const bool preferencesSaved =
                     AppConfig::persistResultApplied(persist);
+                const bool draftsRemoved =
+                    forgetCharacterPackageDrafts(removedId);
                 setStatus(
-                    preferencesSaved
-                        ? "Custom character, retained revisions, and package settings permanently deleted."
-                        : "Character files were deleted, but preference cleanup could not be saved yet.",
-                    preferencesSaved ? AppTheme::good() : AppTheme::bad());
+                    preferencesSaved && draftsRemoved
+                        ? "Custom character, named drafts, retained revisions, and package settings permanently deleted."
+                        : "Character files were deleted, but some local draft or preference cleanup could not be saved yet.",
+                    preferencesSaved && draftsRemoved
+                        ? AppTheme::good() : AppTheme::bad());
                 g_characterPendingRemoval.clear();
                 ImGui::CloseCurrentPopup();
                 ImGui::EndPopup();
@@ -5207,6 +6049,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             "Closes this confirmation without changing the package.");
         ImGui::EndPopup();
     }
+    (void)autosaveActiveCharacterDraft(entry);
     ImGui::PopID();
     (void)compact;
     return changed;
@@ -5601,6 +6444,11 @@ bool drawCustomCharactersSection(bool compact) {
         mdkr_modern_character_registry_count(&g_characterRegistry);
     const MdkrModernCharacterEntry *workshopEntry = nullptr;
     if (characterCount > 0) {
+        if (!g_characterWorkshopSelectionLoaded) {
+            g_characterWorkshopSelection = AppConfig::get(
+                "character_workshop_last_selected");
+            g_characterWorkshopSelectionLoaded = true;
+        }
         int workshopIndex = mdkr_modern_character_registry_find(
             &g_characterRegistry, g_characterWorkshopSelection.c_str());
         if (workshopIndex < 0) {
@@ -5608,6 +6456,9 @@ bool drawCustomCharactersSection(bool compact) {
             const MdkrModernCharacterEntry *first =
                 mdkr_modern_character_registry_entry(&g_characterRegistry, 0);
             g_characterWorkshopSelection = first != nullptr ? first->id : "";
+            AppConfig::set("character_workshop_last_selected",
+                           g_characterWorkshopSelection);
+            (void)AppConfig::save();
         }
         workshopEntry = mdkr_modern_character_registry_entry(
             &g_characterRegistry, workshopIndex);
@@ -5634,6 +6485,9 @@ bool drawCustomCharactersSection(bool compact) {
                         item.c_str(),
                         g_characterWorkshopSelection == entry->id)) {
                     g_characterWorkshopSelection = entry->id;
+                    AppConfig::set("character_workshop_last_selected",
+                                   g_characterWorkshopSelection);
+                    (void)AppConfig::save();
                     workshopEntry = entry;
                 }
             }

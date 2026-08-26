@@ -454,6 +454,28 @@ ancestor contract, and preserves the model, portrait, license, profile, and
 old source revision. The launcher builds this draft from its skin-joint picker;
 authors do not have to edit package JSON to correct inference or approve a map.
 
+The launcher also owns a Python-independent named-draft store. Its strict
+`mdkr-character-drafts-v1` inventory is atomically replaced, caps names,
+records, and opaque payloads, rejects unsafe UTF-8 controls, authenticates each
+record, and never mutates the last loaded inventory after a malformed read.
+The versioned binary editor snapshot captures the exact portrait canvas,
+minimap colour, donor and vehicle choices, stable rig node roles and solver
+bases, global/context/contact tuning, assembly/test player counts, and
+source/tuning-bound review state. A draft resumes only against its exact cache
+source digest; restoring the retained base is required instead of guessing how
+old joint node ids map onto a changed model.
+
+`build-draft` is the corresponding single source transaction. It validates a
+bounded strict build document, checks the active cache digest against the
+resumed base, applies portrait, gameplay compatibility, and rig edits to one
+source snapshot, then publishes one retained revision only after package
+validation and compilation succeed. Fit, contact, animation-speed, LOD, and
+runtime vehicle-enable values intentionally remain a separately confirmed
+launcher setting because they are not authenticated source-package fields. The
+UI states that boundary and requires a second explicit apply instead of
+claiming cross-file atomicity. Failed or stale builds preserve both the named
+draft and playable last-known-good cache.
+
 Later schema versions should add, without changing the principles above:
 
 - package version and minimum/maximum engine asset API;
@@ -762,15 +784,20 @@ than being distorted by mandatory solving.
    use the same optimistic commit pair through the author compiler.
 7. A successful cache becomes selectable; failed validation or commit retains
    the last-known-good installed cache and requires a fresh visible review.
-8. Disabling atomically renames `<id>.mdkc` to `<id>.mdkc.disabled`; runtime
+8. Named drafts autosave a bounded full editor snapshot without changing the
+   playable cache. A build consumes the exact current-base snapshot and
+   publishes identity/profile/rig as one optimistic source revision. Local fit
+   is shown and applied separately; source-bound reviews must be repeated.
+9. Disabling atomically renames `<id>.mdkc` to `<id>.mdkc.disabled`; runtime
    scans ignore it while Workshop inventory and source-backed editors retain it.
    Updates preserve this state. Player assignments and package-owned fit/review
    preferences remain, and presentation degrades to the built-in racer.
-9. Permanent deletion resolves the exact cache and content-addressed source/
-   provenance paths, reports their counts before confirmation, then clears
-   package-owned local preferences. Ordinary saves, records, ghosts, physics,
-   and roster identity never embed the package.
-10. Revision recovery authenticates the exact source and provenance pair.
+10. Permanent deletion resolves the exact cache and content-addressed source/
+   provenance paths, counts named drafts in the confirmation, and clears both
+   drafts and package-owned local preferences. It is locked if draft state
+   cannot be read safely. Ordinary saves, records, ghosts, physics, and roster
+   identity never embed the package.
+11. Revision recovery authenticates the exact source and provenance pair.
    Restore snapshots those bytes, recompiles against an optimistic current-cache
    digest, and preserves enabled/disabled state; export uses exclusive creation
    and never overwrites an existing destination.

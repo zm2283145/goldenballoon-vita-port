@@ -758,6 +758,109 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 manager.revise_profile(
                     original["id"], "diddy", (), installed
                 )
+
+    def test_workshop_draft_builds_all_source_edits_as_one_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            source = make_v4_manifest(make_portrait_png(), humanoid=True)
+            original = manager.install(
+                self.make_package(root, source, make_humanoid_glb()), installed
+            )
+            rgba = bytes(
+                (index * 37 + 11) & 0xFF for index in range(40 * 40 * 4)
+            )
+            rig = json.loads(json.dumps(source["rig"]))
+            rig["reviewed"] = True
+            draft = root / "workshop-draft.json"
+            draft.write_text(json.dumps({
+                "schema": "mdkr-workshop-build-v1",
+                "base_cache_source_digest": original["cache_source_digest"],
+                "donor": "banjo",
+                "vehicles": ["car", "plane"],
+                "portrait_rgba_hex": rgba.hex(),
+                "minimap_rgb": [19, 83, 211],
+                "rig_draft": {
+                    "schema": "mdkr-character-rig-draft-v1",
+                    **rig,
+                },
+            }), encoding="utf-8")
+
+            built = manager.build_workshop_draft(
+                original["id"], draft, installed
+            )
+            self.assertEqual("build-workshop-draft", built["action"])
+            self.assertEqual(
+                original["cache_source_digest"],
+                built["based_on_cache_source_digest"],
+            )
+            self.assertEqual("banjo", built["report"]["donor"])
+            self.assertEqual(5, built["report"]["vehicle_mask"])
+            self.assertEqual([19, 83, 211], built["report"]["minimap_rgb"])
+            self.assertTrue(built["report"]["rig_reviewed"])
+            self.assertEqual(2, len(list(installed.glob("*.mdkrchar"))))
+            self.assertEqual(2, len(manager.list_revisions(
+                original["id"], installed
+            )["revisions"]))
+            with zipfile.ZipFile(self.active_source(installed)) as archive:
+                manifest = probe.json_loads_strict(
+                    archive.read("manifest.json"), "manifest"
+                )
+                self.assertEqual(probe.PACKAGE_SCHEMA_V4, manifest["schema"])
+                self.assertEqual("banjo", manifest["gameplay"]["donor"])
+                self.assertEqual(
+                    ["car", "plane"], manifest["gameplay"]["vehicles"]
+                )
+                self.assertEqual(rig, manifest["rig"])
+                self.assertEqual(
+                    manager._portrait_png_from_rgba(rgba),
+                    archive.read("portrait.png"),
+                )
+
+    def test_invalid_or_stale_workshop_draft_never_publishes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            source = make_v4_manifest(make_portrait_png(), humanoid=True)
+            original = manager.install(
+                self.make_package(root, source, make_humanoid_glb()), installed
+            )
+            cache = installed / f"{original['id']}.mdkc"
+            before = cache.read_bytes()
+            before_files = sorted(path.name for path in installed.iterdir())
+            rig = json.loads(json.dumps(source["rig"]))
+            payload = {
+                "schema": "mdkr-workshop-build-v1",
+                "base_cache_source_digest": "0" * 64,
+                "donor": "diddy",
+                "vehicles": ["car"],
+                "portrait_rgba_hex": bytes(40 * 40 * 4).hex(),
+                "minimap_rgb": [1, 2, 3],
+                "rig_draft": {
+                    "schema": "mdkr-character-rig-draft-v1",
+                    **rig,
+                },
+            }
+            draft = root / "workshop-draft.json"
+            draft.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(manager.ManagerError, "changed"):
+                manager.build_workshop_draft(original["id"], draft, installed)
+            self.assertEqual(before, cache.read_bytes())
+            self.assertEqual(
+                before_files, sorted(path.name for path in installed.iterdir())
+            )
+
+            payload["base_cache_source_digest"] = original[
+                "cache_source_digest"
+            ]
+            payload["rig_draft"]["surprise"] = True
+            draft.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(manager.ManagerError, "unknown"):
+                manager.build_workshop_draft(original["id"], draft, installed)
+            self.assertEqual(before, cache.read_bytes())
+            self.assertEqual(
+                before_files, sorted(path.name for path in installed.iterdir())
+            )
             self.assertEqual(before, cache.read_bytes())
 
     def test_exact_rgba_canvas_round_trips_through_identity_revision(self) -> None:
