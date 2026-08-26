@@ -734,9 +734,35 @@ void drawRoomPanel(LauncherState &state) {
 // touched here.
 // ===========================================================================
 
-// Restrict the join-code field to the 6 digits the fallback code uses.
+// Restrict the join-code field to the 6 digits the fallback code uses. This
+// same filter also sanitizes PASTE: ImGui runs every clipboard character
+// through the CallbackCharFilter (imgui_widgets.cpp InputTextFilterCharacter,
+// input_source_is_clipboard=true), so pasting "123-456" or "code 123456" keeps
+// only the digits, and the 7-byte betaJoinCode buffer (6 digits + NUL) clamps
+// the result to the first 6 -- exactly the "strip non-digits, take first 6"
+// contract, with no extra buffer bookkeeping.
 int betaDigitsOnlyFilter(ImGuiInputTextCallbackData *data) {
     return (data->EventChar < '0' || data->EventChar > '9') ? 1 : 0;
+}
+
+// A time-based cycling ellipsis (".", "..", "..."), so every "waiting" status
+// line and the pre-code invite placeholder read as motion instead of a frozen
+// spinner. A pure function of the ImGui frame clock -- no per-widget state to
+// store or reset.
+const char *betaEllipsis() {
+    static const char *const kFrames[] = {".", "..", "..."};
+    const int step = static_cast<int>(ImGui::GetTime() / 0.35) % 3;
+    return kFrames[step < 0 ? 0 : step];
+}
+
+// If a composed status line ends in the "…" the copy catalog uses, swap that
+// static ellipsis for the animated dot run above so a waiting line visibly
+// animates. Any line that does not end in an ellipsis is left untouched.
+void betaAnimateEllipsis(char *line, std::size_t size) {
+    const std::size_t len = std::strlen(line);
+    static const char kEllipsis[] = "\xE2\x80\xA6";  // U+2026 HORIZONTAL ELLIPSIS
+    if (len < 3u || std::memcmp(line + len - 3u, kEllipsis, 3u) != 0) return;
+    std::snprintf(line + (len - 3u), size - (len - 3u), "%s", betaEllipsis());
 }
 
 // Record a specific, user-facing build refusal for the chooser's existing
@@ -881,15 +907,50 @@ void drawBetaChooser(LauncherState &state) {
         if (ui::CardBegin("##beta-join", AppTheme::accent(), 0.0f)) {
             ImGui::TextUnformatted("Enter the 6-digit code from your host");
             ui::Gap(ui::kGapS);
+            const std::size_t typed = std::strlen(g_online.betaJoinCode);
+            // Grouped ECHO ("123 456") drawn ABOVE a plain 6-digit field, in the
+            // same title font as the host's invite card so both sides read the
+            // code the same way. The editable buffer stays the RAW digits on
+            // purpose: inserting the group space into the buffer itself would
+            // fight ImGui's cursor bookkeeping (the space sits at a fixed index,
+            // so a mid-string edit or a backspace desyncs it) and break the
+            // "value is exactly 6 digits" contract the Join path relies on. A
+            // read-only echo gives the grouping affordance with none of that
+            // risk. Unfilled positions show a "·" placeholder.
+            std::string echo;
+            for (unsigned i = 0u; i < 6u; ++i) {
+                if (i == 3u) echo += ' ';
+                if (i < typed) echo += g_online.betaJoinCode[i];
+                else echo += "\xC2\xB7";  // U+00B7 MIDDLE DOT placeholder
+            }
+            ImGui::PushFont(AppTheme::fonts().title);
+            ImGui::TextUnformatted(echo.c_str());
+            ImGui::PopFont();
+            ui::Gap(ui::kGapXS);
             ImGui::SetNextItemWidth(ui::kControlWidth());
+            // CallbackCharFilter sanitizes both typing AND paste (see
+            // betaDigitsOnlyFilter); the 7-byte buffer keeps the first 6 digits.
             ImGui::InputText("##beta-join-code", g_online.betaJoinCode,
                              sizeof(g_online.betaJoinCode),
                              ImGuiInputTextFlags_CallbackCharFilter,
                              betaDigitsOnlyFilter);
-            ui::SpeakFocusedItem("Race code", g_online.betaJoinCode,
-                                 "Type the 6 digits your host reads to you.");
+            char spoken[64];
+            if (typed == 0u) {
+                std::snprintf(spoken, sizeof(spoken), "No digits entered yet");
+            } else {
+                std::snprintf(spoken, sizeof(spoken), "%s, %u of 6",
+                              g_online.betaJoinCode, static_cast<unsigned>(typed));
+            }
+            ui::SpeakFocusedItem(
+                "Race code", spoken,
+                "Type or paste the 6 digits your host reads to you.");
+            // "N of 6" progress hint under the field, until the code is complete.
+            const bool ready = typed == 6u;
+            if (!ready) {
+                ui::TextSubtle("%u of 6 — type or paste your host's code",
+                               static_cast<unsigned>(typed));
+            }
             ui::Gap(ui::kGapS);
-            const bool ready = std::strlen(g_online.betaJoinCode) == 6u;
             ImGui::BeginDisabled(!ready);
             if (ui::BrandPrimaryButton("Join", ui::kBtnFullWidth())) {
                 buildBetaLiveAdapter(state, MDKR_ONLINE_JOURNEY_JOIN,
@@ -950,11 +1011,21 @@ const char *betaFailureCopy(MdkrOnlineViewFailure failure) {
     case MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE:
     case MDKR_ONLINE_VIEW_FAILURE_SERVICE_BUDGET_SAFE:
         return "The matchmaking service is unavailable right now. Try again shortly.";
+    // The four compatibility families each name their own fix, aligned with the
+    // view-model's per-family primary action (UPDATE_GAME for build/update,
+    // CHOOSE_ROM for the ROM, USE_ROOM_SETTINGS for gameplay settings), so the
+    // status sentence and the recovery button never disagree.
     case MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_BUILD:
+        return "You're on different game versions — both Macs need the same "
+               "build.";
     case MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_ROM:
+        return "You're using different game ROMs — use the same ROM file on "
+               "both.";
     case MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_SETTINGS:
+        return "Your gameplay settings differ — match the room's settings on "
+               "both Macs.";
     case MDKR_ONLINE_VIEW_FAILURE_UPDATE_REQUIRED:
-        return "You and your friend are on different game versions. Use the same build.";
+        return "This build is too old to join — update to the newer build.";
     case MDKR_ONLINE_VIEW_FAILURE_CONTROLLER_NEEDED:
         return "Set up a controller before racing online.";
     case MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK:
@@ -963,7 +1034,8 @@ const char *betaFailureCopy(MdkrOnlineViewFailure failure) {
         return "Couldn't connect directly. Check both networks and retry from a "
                "fresh invite.";
     case MDKR_ONLINE_VIEW_FAILURE_HOST_CLOSED:
-        return "The host closed the room.";
+        return "The host closed the room. Create a room of your own, or ask "
+               "them for a fresh code.";
     case MDKR_ONLINE_VIEW_FAILURE_ROOM_EXPIRED:
         return "The room expired. Create or join a new one.";
     case MDKR_ONLINE_VIEW_FAILURE_ENGINE_FAILED:
@@ -1064,11 +1136,49 @@ void betaComposeStatusLine(const MdkrOnlineViewModel &model,
     }
 }
 
+// A left-to-right breadcrumb of the boot-ramp phases the view model actually
+// surfaces (CONNECTING -> ROOM -> PREFLIGHT -> SELECTING): connect to the room,
+// confirm the safety phrase, then pick racers. Drawn only while the room is
+// still on that ramp; the active phase is the accent color and the rest stay
+// subtle. No transport state is invented -- every crumb IS a real view kind the
+// adapter already reports, so this only surfaces progress the model knows.
+void drawBetaBootRampBreadcrumb(const MdkrOnlineViewModel &model) {
+    struct Crumb { MdkrOnlineViewKind kind; const char *label; };
+    static const Crumb kCrumbs[] = {
+        {MDKR_ONLINE_VIEW_CONNECTING, "Connect"},
+        {MDKR_ONLINE_VIEW_ROOM, "Room"},
+        {MDKR_ONLINE_VIEW_PREFLIGHT, "Safety Check"},
+        {MDKR_ONLINE_VIEW_SELECTING, "Pick Racers"},
+    };
+    constexpr unsigned kCount = sizeof(kCrumbs) / sizeof(kCrumbs[0]);
+    unsigned active = kCount;
+    for (unsigned i = 0u; i < kCount; ++i) {
+        if (kCrumbs[i].kind == model.kind) active = i;
+    }
+    if (active == kCount) return;  // not on the boot ramp
+    for (unsigned i = 0u; i < kCount; ++i) {
+        if (i != 0u) {
+            ImGui::SameLine(0.0f, 0.0f);
+            ImGui::TextDisabled("  ·  ");
+            ImGui::SameLine(0.0f, 0.0f);
+        }
+        if (i == active) {
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+            ImGui::TextUnformatted(kCrumbs[i].label);
+            ImGui::PopStyleColor();
+        } else {
+            ImGui::TextDisabled("%s", kCrumbs[i].label);
+        }
+    }
+}
+
 void drawBetaStatusLine(const MdkrOnlineViewModel &model,
                         const MdkrOnlineLobby *lobby) {
     if (ui::CardBegin("##beta-status-line", AppTheme::brandSky(), 0.0f)) {
         char line[192];
         betaComposeStatusLine(model, lobby, line, sizeof(line));
+        // Motion for every waiting line: any status that ends in "…" animates.
+        betaAnimateEllipsis(line, sizeof(line));
         ImGui::PushTextWrapPos(0.0f);
         ImGui::TextUnformatted(line);
         ImGui::PopTextWrapPos();
@@ -1076,6 +1186,7 @@ void drawBetaStatusLine(const MdkrOnlineViewModel &model,
             model.failure != MDKR_ONLINE_VIEW_FAILURE_NONE) {
             ui::TextSubtleWrapped("%s", betaFailureCopy(model.failure));
         } else {
+            drawBetaBootRampBreadcrumb(model);
             ui::TextSubtle("%u of 2 players • %u ready", model.member_count,
                            model.ready_count);
         }
@@ -1119,12 +1230,39 @@ void drawBetaQr(const std::string &text) {
 }
 
 // The creator's invite card: big shareable code + Copy + a QR of the invite
-// link. Renders nothing for a joiner or until the room is Ready.
-void drawBetaInviteCard() {
+// link. A joiner (isHost false) renders nothing. The host ALWAYS renders the
+// same card frame -- before the fallback code has been learned it shows an
+// animated "Getting your room code…" placeholder, then swaps in the real code +
+// QR + Copy buttons the instant OnlineRoom_liveInvite reports ready. This is why
+// the host is never left staring at a bare "Connecting…" with nothing to share
+// or anticipate.
+void drawBetaInviteCard(bool isHost) {
     std::string code;
     std::string url;
-    if (!OnlineRoom_liveInvite(g_online.adapter.get(), &code, &url) ||
-        code.empty()) {
+    const bool ready =
+        OnlineRoom_liveInvite(g_online.adapter.get(), &code, &url) &&
+        !code.empty();
+    if (!ready) {
+        if (!isHost) return;  // a joiner has no room of its own to share
+        ui::Gap(ui::kGapM);
+        if (ui::CardBegin("##beta-invite", AppTheme::accent(), 0.0f)) {
+            ImGui::TextUnformatted("Invite a Friend");
+            ui::TextSubtleWrapped(
+                "Your private room code is on its way — share it the moment it "
+                "appears.");
+            ui::Gap(ui::kGapS);
+            char waiting[48];
+            std::snprintf(waiting, sizeof(waiting), "Getting your room code%s",
+                          betaEllipsis());
+            ImGui::PushFont(AppTheme::fonts().title);
+            ImGui::TextUnformatted(waiting);
+            ImGui::PopFont();
+            ui::Gap(ui::kGapS);
+            ui::TextSubtleWrapped(
+                "Invite-only and expires. Keep this window open — the code and "
+                "its QR appear here in a moment.");
+        }
+        ui::CardEnd();
         return;
     }
     ui::Gap(ui::kGapM);
@@ -2215,7 +2353,7 @@ void drawBetaRoom(LauncherState &state) {
     ui::SectionHeader(model.title, model.explanation);
 
     if (model.kind == MDKR_ONLINE_VIEW_ROOM) {
-        drawBetaInviteCard();
+        drawBetaInviteCard(model.local_member_is_leader);
         if (haveLobby) {
             ui::Gap(ui::kGapM);
             drawBetaRosterStrip(
