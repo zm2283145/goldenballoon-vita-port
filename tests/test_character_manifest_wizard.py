@@ -61,6 +61,30 @@ class CharacterManifestWizardTests(unittest.TestCase):
             self.assertEqual(1.4, manifest["presentation"]["target_height_m"])
             self.assertEqual("-z", decisions["source_forward"])
 
+    def test_author_can_override_required_clip_and_socket_inference(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model = Path(temporary) / "model.glb"
+            model.write_bytes(make_animated_glb())
+            manifest, decisions = wizard.build_manifest(
+                model, "org.example.manual", "Manual Mapping", "CC0-1.0",
+                "Generated fixture", "https://example.invalid/manual",
+                "diddy", ["car"], fallback_clip="idle",
+                socket_overrides={"seat": "head", "head": "root"},
+            )
+            self.assertEqual("idle", decisions["fallback"])
+            self.assertEqual(
+                {"seat": "head", "head": "root"}, manifest["sockets"]
+            )
+            with self.assertRaisesRegex(
+                    probe.ProbeError, "does not exist in the GLB"):
+                wizard.build_manifest(
+                    model, "org.example.invalid", "Invalid Mapping",
+                    "CC0-1.0", "Generated fixture",
+                    "https://example.invalid/invalid", "diddy", ["car"],
+                    fallback_clip="missing",
+                    socket_overrides={"seat": "root", "head": "head"},
+                )
+
     def test_portrait_promotes_manifest_to_v3_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             model = Path(temporary) / "model.glb"

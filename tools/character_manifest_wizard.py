@@ -125,6 +125,8 @@ def build_manifest(model: Path, package_id: str, display_name: str,
                    donor: str, vehicles: list[str], *,
                    source_forward: str = "+z",
                    target_height_m: float = 1.25,
+                   fallback_clip: str | None = None,
+                   socket_overrides: dict[str, str] | None = None,
                    portrait: Path | None = None,
                    minimap_rgb: list[int] | None = None,
                    rig_mode: str | None = None) -> tuple[dict, dict]:
@@ -139,7 +141,13 @@ def build_manifest(model: Path, package_id: str, display_name: str,
     nodes = [node.get("name") for node in document.get("nodes", [])
              if isinstance(node, dict) and isinstance(node.get("name"), str)
              and node["name"].strip()]
-    fallback = choose(clips, ("idle", "default", "fallback", "rest"))
+    fallback = fallback_clip
+    if fallback is not None and fallback not in clips:
+        raise probe.ProbeError(
+            f"selected fallback animation {fallback!r} does not exist in the GLB"
+        )
+    if fallback is None:
+        fallback = choose(clips, ("idle", "default", "fallback", "rest"))
     if fallback is None:
         fallback = clips[0] if clips else None
     if fallback is None:
@@ -153,6 +161,18 @@ def build_manifest(model: Path, package_id: str, display_name: str,
     for semantic, aliases in SOCKET_ALIASES.items():
         node = choose(nodes, aliases)
         if node is not None:
+            sockets[semantic] = node
+    if socket_overrides is not None:
+        unknown = sorted(set(socket_overrides) - set(SOCKET_ALIASES))
+        if unknown:
+            raise probe.ProbeError(
+                "unknown socket override(s): " + ", ".join(unknown)
+            )
+        for semantic, node in socket_overrides.items():
+            if node not in nodes:
+                raise probe.ProbeError(
+                    f"selected {semantic} socket node {node!r} does not exist in the GLB"
+                )
             sockets[semantic] = node
     missing = [name for name in ("seat", "head") if name not in sockets]
     if missing:

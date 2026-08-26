@@ -70,22 +70,50 @@ bool openRom(std::string &out) {
     }
 }
 
-bool openCharacterPackage(std::string &out) {
+bool openCharacterSource(std::string &out) {
     @autoreleasepool {
         if (![NSThread isMainThread]) return false;
         NSOpenPanel *panel = [NSOpenPanel openPanel];
         panel.title = @"Import a custom character";
-        panel.message = @"Choose a self-contained Golden Balloon character package (.mdkrchar).";
-        panel.prompt = @"Import";
+        panel.message = @"Choose a Golden Balloon package (.mdkrchar) or self-contained GLB 2.0 authoring source (.glb).";
+        panel.prompt = @"Choose Source";
         panel.allowsMultipleSelection = NO;
         panel.canChooseDirectories = NO;
         panel.canChooseFiles = YES;
         panel.resolvesAliases = YES;
         panel.treatsFilePackagesAsDirectories = NO;
         panel.showsHiddenFiles = NO;
-        UTType *type = [UTType typeWithFilenameExtension:@"mdkrchar"];
-        if (type != nil) panel.allowedContentTypes = @[ type ];
+        UTType *packageType = [UTType typeWithFilenameExtension:@"mdkrchar"];
+        UTType *glbType = [UTType typeWithFilenameExtension:@"glb"];
+        if (packageType != nil && glbType != nil) {
+            panel.allowedContentTypes = @[ packageType, glbType ];
+        }
         panel.allowsOtherFileTypes = NO;
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([panel runModal] != NSModalResponseOK) return false;
+        NSURL *url = panel.URLs.firstObject;
+        if (url == nil || !url.isFileURL) return false;
+        const char *path = url.fileSystemRepresentation;
+        if (path == nullptr || path[0] == '\0') return false;
+        out = path;
+        return true;
+    }
+}
+
+bool openCharacterLicense(std::string &out) {
+    @autoreleasepool {
+        if (![NSThread isMainThread]) return false;
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        panel.title = @"Choose the character license or notice file";
+        panel.message = @"Choose the exact LICENSE, COPYING, or notice text to embed in the source package.";
+        panel.prompt = @"Choose License";
+        panel.allowsMultipleSelection = NO;
+        panel.canChooseDirectories = NO;
+        panel.canChooseFiles = YES;
+        panel.resolvesAliases = YES;
+        panel.treatsFilePackagesAsDirectories = NO;
+        panel.showsHiddenFiles = NO;
+        panel.allowsOtherFileTypes = YES;
         [NSApp activateIgnoringOtherApps:YES];
         if ([panel runModal] != NSModalResponseOK) return false;
         NSURL *url = panel.URLs.firstObject;

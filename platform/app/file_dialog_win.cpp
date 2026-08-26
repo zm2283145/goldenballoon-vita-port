@@ -78,9 +78,11 @@ bool openRom(std::string &out) {
     return true;
 }
 
-bool openCharacterPackage(std::string &out) {
+bool openCharacterSource(std::string &out) {
     static const wchar_t kFilter[] =
-        L"Golden Balloon character packages\0*.mdkrchar\0"
+        L"Character sources (*.mdkrchar;*.glb)\0*.mdkrchar;*.glb\0"
+        L"Golden Balloon packages (*.mdkrchar)\0*.mdkrchar\0"
+        L"glTF binary models (*.glb)\0*.glb\0"
         L"\0";
     std::vector<wchar_t> file(32768, L'\0');
     OPENFILENAMEW ofn;
@@ -99,7 +101,36 @@ bool openCharacterPackage(std::string &out) {
     ofn.lpstrFile = file.data();
     ofn.nMaxFile = (DWORD)file.size();
     ofn.lpstrTitle = L"Import a custom character";
-    ofn.lpstrDefExt = L"mdkrchar";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
+                OFN_EXPLORER | OFN_HIDEREADONLY;
+    if (!GetOpenFileNameW(&ofn)) return false;
+    std::string picked = toUtf8(file.data());
+    if (picked.empty()) return false;
+    out = picked;
+    return true;
+}
+
+bool openCharacterLicense(std::string &out) {
+    static const wchar_t kFilter[] =
+        L"License and notice files\0LICENSE*;COPYING*;NOTICE*;*.txt;*.md\0"
+        L"All files\0*.*\0\0";
+    std::vector<wchar_t> file(32768, L'\0');
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    SDL_Window *window = SDL_GetKeyboardFocus();
+    if (window == nullptr) window = SDL_GetMouseFocus();
+    SDL_SysWMinfo windowInfo;
+    SDL_VERSION(&windowInfo.version);
+    if (window != nullptr && SDL_GetWindowWMInfo(window, &windowInfo) == SDL_TRUE &&
+        windowInfo.subsystem == SDL_SYSWM_WINDOWS) {
+        ofn.hwndOwner = windowInfo.info.win.window;
+    }
+    ofn.lpstrFilter = kFilter;
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFile = file.data();
+    ofn.nMaxFile = (DWORD)file.size();
+    ofn.lpstrTitle = L"Choose the character license or notice file";
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
                 OFN_EXPLORER | OFN_HIDEREADONLY;
     if (!GetOpenFileNameW(&ofn)) return false;

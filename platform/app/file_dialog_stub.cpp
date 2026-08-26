@@ -21,7 +21,12 @@ bool openRom(std::string &out) {
     return false;
 }
 
-bool openCharacterPackage(std::string &out) {
+bool openCharacterSource(std::string &out) {
+    (void)out;
+    return false;
+}
+
+bool openCharacterLicense(std::string &out) {
     (void)out;
     return false;
 }

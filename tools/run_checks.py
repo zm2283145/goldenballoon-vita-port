@@ -194,6 +194,7 @@ GPU_SERIAL_NAMES = frozenset({
     "taj_challenges",
     "bonus_character_select",
     "custom_character_roster",
+    "character_raw_intake_ui",
     "custom_character_workshop_preview",
     "bonus_results_portraits",
     "taj_character_select",
@@ -726,6 +727,9 @@ CHECKS = (
     Check("custom_character_roster", "check_custom_character_roster.py", "native",
           "isolated generated custom package, independent paginated browser, "
           "portrait composition, and real controller entry route"),
+    Check("character_raw_intake_ui", "check_character_raw_intake_ui.py", "native",
+          "ROM-free GLB drop, bounded mapping inventory, restart resume, "
+          "keyboard speech, and 200% compact Workshop rendering"),
     Check("custom_character_workshop_preview",
           "check_custom_character_workshop_preview.py", "native",
           "script-free exact select/car/hovercraft/plane launches and real "

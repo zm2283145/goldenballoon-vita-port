@@ -7,6 +7,7 @@
 #include "character_candidate_index.h"
 #include "character_draft_snapshot.h"
 #include "character_draft_store.h"
+#include "character_raw_intake_index.h"
 #include "character_revision_index.h"
 #include "character_workshop_model.h"
 #include "file_dialog.h"
@@ -28,6 +29,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
@@ -1845,6 +1847,7 @@ struct CharacterImportCandidate {
     bool installed = false;
     bool installedEnabled = false;
     bool rightsConfirmed = false;
+    bool disposableRawCandidate = false;
     std::string packagePath;
     std::string reviewedInstalledDigest;
     CharacterCandidateIndex::Candidate next;
@@ -1852,6 +1855,29 @@ struct CharacterImportCandidate {
 };
 
 CharacterImportCandidate g_characterImportCandidate;
+
+struct CharacterRawIntake {
+    bool loaded = false;
+    bool inspected = false;
+    char modelPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
+    char licensePath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
+    char packageId[65] = {0};
+    char displayName[97] = {0};
+    char spdx[129] = {0};
+    char attribution[257] = {0};
+    char sourceUrl[2049] = {0};
+    int donor = 9;
+    bool vehicles[3] = {true, true, true};
+    int sourceForward = 0;
+    float targetHeight = 1.25f;
+    int fallback = -1;
+    int seat = -1;
+    int head = -1;
+    CharacterRawIntakeIndex::Inventory inventory;
+};
+
+CharacterRawIntake g_characterRawIntake;
+bool g_characterRawIntakeTracePrinted = false;
 
 using CharacterRevisionRow = CharacterRevisionIndex::Row;
 
@@ -2527,6 +2553,254 @@ CharacterCandidateIndex::Candidate nativeCharacterSummary(
     return summary;
 }
 
+bool characterPathHasExtension(const std::string &path,
+                               const char        *extension) {
+    const size_t length = std::strlen(extension);
+    if (path.size() < length) return false;
+    const size_t offset = path.size() - length;
+    for (size_t index = 0u; index < length; ++index) {
+        const unsigned char byte =
+            static_cast<unsigned char>(path[offset + index]);
+        if (static_cast<char>(std::tolower(byte)) != extension[index]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void loadCharacterRawIntake() {
+    CharacterRawIntake &intake = g_characterRawIntake;
+    if (intake.loaded) return;
+    intake.loaded = true;
+    auto loadText = [](const char *key, char *output, size_t size) {
+        const std::string value = AppConfig::get(key);
+        std::snprintf(output, size, "%s", value.c_str());
+    };
+    loadText("character_raw_intake_model", intake.modelPath,
+             sizeof(intake.modelPath));
+    loadText("character_raw_intake_license", intake.licensePath,
+             sizeof(intake.licensePath));
+    loadText("character_raw_intake_id", intake.packageId,
+             sizeof(intake.packageId));
+    loadText("character_raw_intake_display_name", intake.displayName,
+             sizeof(intake.displayName));
+    loadText("character_raw_intake_spdx", intake.spdx,
+             sizeof(intake.spdx));
+    loadText("character_raw_intake_attribution", intake.attribution,
+             sizeof(intake.attribution));
+    loadText("character_raw_intake_source_url", intake.sourceUrl,
+             sizeof(intake.sourceUrl));
+    const auto boundedInteger = [](const char *key, int fallback,
+                                   int minimum, int maximum) {
+        const std::string text = AppConfig::get(key);
+        if (text.empty()) return fallback;
+        char *end = nullptr;
+        errno = 0;
+        const long value = std::strtol(text.c_str(), &end, 10);
+        return errno == 0 && end != text.c_str() && *end == '\0' &&
+                       value >= minimum && value <= maximum
+            ? static_cast<int>(value) : fallback;
+    };
+    intake.donor = boundedInteger("character_raw_intake_donor", 9, 0, 9);
+    const int vehicleMask = boundedInteger(
+        "character_raw_intake_vehicles", 7, 0, 7);
+    for (int vehicle = 0; vehicle < 3; ++vehicle) {
+        intake.vehicles[vehicle] = (vehicleMask & (1 << vehicle)) != 0;
+    }
+    intake.sourceForward = boundedInteger(
+        "character_raw_intake_forward", 0, 0, 3);
+    const std::string height = AppConfig::get("character_raw_intake_height");
+    if (!height.empty()) {
+        char *end = nullptr;
+        errno = 0;
+        const float parsed = std::strtof(height.c_str(), &end);
+        if (errno == 0 && end != height.c_str() && *end == '\0' &&
+            std::isfinite(parsed) && parsed >= 0.1f && parsed <= 10.0f) {
+            intake.targetHeight = parsed;
+        }
+    }
+}
+
+bool saveCharacterRawIntake() {
+    const CharacterRawIntake &intake = g_characterRawIntake;
+    AppConfig::set("character_raw_intake_model", intake.modelPath);
+    AppConfig::set("character_raw_intake_license", intake.licensePath);
+    AppConfig::set("character_raw_intake_id", intake.packageId);
+    AppConfig::set("character_raw_intake_display_name", intake.displayName);
+    AppConfig::set("character_raw_intake_spdx", intake.spdx);
+    AppConfig::set("character_raw_intake_attribution", intake.attribution);
+    AppConfig::set("character_raw_intake_source_url", intake.sourceUrl);
+    AppConfig::set("character_raw_intake_donor", std::to_string(intake.donor));
+    int vehicleMask = 0;
+    for (int vehicle = 0; vehicle < 3; ++vehicle) {
+        if (intake.vehicles[vehicle]) vehicleMask |= 1 << vehicle;
+    }
+    AppConfig::set("character_raw_intake_vehicles",
+                   std::to_string(vehicleMask));
+    AppConfig::set("character_raw_intake_forward",
+                   std::to_string(intake.sourceForward));
+    char height[32];
+    std::snprintf(height, sizeof(height), "%.6g",
+                  static_cast<double>(intake.targetHeight));
+    AppConfig::set("character_raw_intake_height", height);
+    if (intake.inspected) {
+        const auto selectedName = [](const std::vector<std::string> &choices,
+                                     int selected) -> std::string {
+            return selected >= 0 && selected < static_cast<int>(choices.size())
+                ? choices[static_cast<size_t>(selected)] : "";
+        };
+        AppConfig::set(
+            "character_raw_intake_fallback",
+            selectedName(intake.inventory.clips, intake.fallback));
+        AppConfig::set(
+            "character_raw_intake_seat",
+            selectedName(intake.inventory.nodes, intake.seat));
+        AppConfig::set(
+            "character_raw_intake_head",
+            selectedName(intake.inventory.nodes, intake.head));
+        AppConfig::set("character_raw_intake_mapping_sha256",
+                       intake.inventory.modelSha256);
+    }
+    return AppConfig::persistResultApplied(AppConfig::save());
+}
+
+void clearCharacterRawIntake() {
+    const std::string modelPath = g_characterRawIntake.modelPath;
+    g_characterRawIntake = CharacterRawIntake{};
+    g_characterRawIntake.loaded = true;
+    (void)AppConfig::erasePrefix("character_raw_intake_");
+    (void)AppConfig::save();
+    if (!g_characterRegistryDirectory.empty()) {
+        const std::string candidate = g_characterRegistryDirectory +
+            "/.launcher-character-raw-candidate.mdkrchar";
+        (void)mdkr_remove_utf8(candidate.c_str());
+    }
+    if (modelPath == g_characterImportPath) g_characterImportPath[0] = '\0';
+}
+
+std::string characterLauncherHex(const std::string &value) {
+    static const char digits[] = "0123456789abcdef";
+    std::string encoded(value.size() * 2u, '0');
+    for (size_t index = 0u; index < value.size(); ++index) {
+        const unsigned char byte = static_cast<unsigned char>(value[index]);
+        encoded[index * 2u] = digits[byte >> 4u];
+        encoded[index * 2u + 1u] = digits[byte & 0xFu];
+    }
+    return encoded;
+}
+
+int characterChoiceIndex(const std::vector<std::string> &choices,
+                         const std::string              &choice) {
+    const auto found = std::find(choices.begin(), choices.end(), choice);
+    return found == choices.end()
+        ? -1 : static_cast<int>(found - choices.begin());
+}
+
+bool stageCharacterPackage(const std::string &path);
+
+bool inspectCharacterRawGlb(const std::string &path) {
+    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
+    if (g_characterRegistryDirectory.empty()) return false;
+    CharacterRawIntake &intake = g_characterRawIntake;
+    intake.inspected = false;
+    intake.inventory = CharacterRawIntakeIndex::Inventory{};
+    intake.fallback = -1;
+    intake.seat = -1;
+    intake.head = -1;
+    const std::string indexPath = g_characterRegistryDirectory +
+        "/.launcher-character-glb-intake.tsv";
+    (void)mdkr_remove_utf8(indexPath.c_str());
+    const bool indexed = runCharacterManager(
+        "write-raw-glb-index", {path, indexPath}, false);
+    const std::string text = indexed
+        ? readCharacterManagerResult(indexPath) : "";
+    (void)mdkr_remove_utf8(indexPath.c_str());
+    CharacterRawIntakeIndex::Inventory inventory;
+    if (!indexed || !CharacterRawIntakeIndex::parse(text, inventory)) {
+        if (indexed) {
+            g_characterManagerReport =
+                "The raw GLB inventory was malformed; no authoring action was enabled.";
+        }
+        return false;
+    }
+    std::snprintf(intake.modelPath, sizeof(intake.modelPath), "%s",
+                  path.c_str());
+    intake.inventory = std::move(inventory);
+    const bool sameFingerprint =
+        AppConfig::get("character_raw_intake_mapping_sha256") ==
+        intake.inventory.modelSha256;
+    const auto restoredChoice = [sameFingerprint](
+                                   const char *key,
+                                   const std::vector<std::string> &choices,
+                                   const std::string &inferred) {
+        const std::string saved = sameFingerprint ? AppConfig::get(key) : "";
+        const int restored = characterChoiceIndex(choices, saved);
+        return restored >= 0 ? restored
+                             : characterChoiceIndex(choices, inferred);
+    };
+    intake.fallback = restoredChoice(
+        "character_raw_intake_fallback", intake.inventory.clips,
+        intake.inventory.fallback);
+    intake.seat = restoredChoice(
+        "character_raw_intake_seat", intake.inventory.nodes,
+        intake.inventory.seat);
+    intake.head = restoredChoice(
+        "character_raw_intake_head", intake.inventory.nodes,
+        intake.inventory.head);
+    intake.inspected = true;
+    (void)saveCharacterRawIntake();
+    return true;
+}
+
+bool buildCharacterRawGlbCandidate() {
+    CharacterRawIntake &intake = g_characterRawIntake;
+    if (!intake.inspected || intake.fallback < 0 || intake.seat < 0 ||
+        intake.head < 0 || intake.fallback >=
+            static_cast<int>(intake.inventory.clips.size()) ||
+        intake.seat >= static_cast<int>(intake.inventory.nodes.size()) ||
+        intake.head >= static_cast<int>(intake.inventory.nodes.size())) {
+        return false;
+    }
+    static const char *donors[] = {
+        "krunch", "bumper", "tiptup", "conker", "timber",
+        "banjo", "drumstick", "pipsy", "tt", "diddy",
+    };
+    static const char *forwards[] = {"+z", "-z", "+x", "-x"};
+    int vehicleMask = 0;
+    for (int vehicle = 0; vehicle < 3; ++vehicle) {
+        if (intake.vehicles[vehicle]) vehicleMask |= 1 << vehicle;
+    }
+    if (intake.donor < 0 || intake.donor >= 10 ||
+        intake.sourceForward < 0 || intake.sourceForward >= 4 ||
+        vehicleMask == 0) return false;
+    std::vector<std::string> arguments = {
+        characterLauncherHex(intake.modelPath),
+        characterLauncherHex(intake.licensePath),
+        characterLauncherHex(intake.packageId),
+        characterLauncherHex(intake.displayName),
+        characterLauncherHex(intake.spdx),
+        characterLauncherHex(intake.attribution),
+        characterLauncherHex(intake.sourceUrl),
+        characterLauncherHex(donors[intake.donor]),
+        characterLauncherHex(forwards[intake.sourceForward]),
+        characterLauncherHex(intake.inventory.clips[
+            static_cast<size_t>(intake.fallback)]),
+        characterLauncherHex(intake.inventory.nodes[
+            static_cast<size_t>(intake.seat)]),
+        characterLauncherHex(intake.inventory.nodes[
+            static_cast<size_t>(intake.head)]),
+        intake.inventory.modelSha256,
+        std::to_string(vehicleMask),
+        std::to_string(intake.targetHeight),
+    };
+    if (!runCharacterManager("build-raw-glb", arguments, false)) return false;
+    const std::string candidate = g_characterRegistryDirectory +
+        "/.launcher-character-raw-candidate.mdkrchar";
+    if (!stageCharacterPackage(candidate)) return false;
+    g_characterImportCandidate.disposableRawCandidate = true;
+    return true;
+}
+
 bool stageCharacterPackage(const std::string &path) {
     MdkrModernCharacterInstallResult nativeResult{};
     CharacterImportCandidate staged;
@@ -2602,6 +2876,10 @@ bool installReviewedCharacterPackage() {
          * may have changed, and retrying requires a fresh visible review. */
         g_characterImportCandidate = CharacterImportCandidate{};
         return false;
+    }
+    if (reviewed.disposableRawCandidate) {
+        (void)mdkr_remove_utf8(reviewed.packagePath.c_str());
+        clearCharacterRawIntake();
     }
     g_characterWorkshopSelection = reviewed.next.id;
     g_characterWorkshopSelectionLoaded = true;
@@ -6853,32 +7131,307 @@ bool drawCharacterCandidateReview(bool compact) {
         nullptr,
         "Commits only the exact package bytes and installed base shown in this review. Gameplay authority remains with the named built-in donor.");
     ImGui::SameLine();
+    const bool disposableCandidate =
+        g_characterImportCandidate.disposableRawCandidate;
     if (ImGui::Button("Discard candidate")) {
+        if (disposableCandidate &&
+            !g_characterImportCandidate.packagePath.empty()) {
+            (void)mdkr_remove_utf8(
+                g_characterImportCandidate.packagePath.c_str());
+        }
         g_characterImportCandidate = CharacterImportCandidate{};
-        setStatus("Candidate review discarded; no installed files changed.",
-                  AppTheme::subtle());
+        setStatus(
+            disposableCandidate
+                ? "Generated candidate removed; the raw draft and external source files remain unchanged."
+                : "Candidate review discarded; no installed files changed.",
+            AppTheme::subtle());
         return false;
     }
     ui::SpeakFocusedItem(
         "Discard candidate",
         nullptr,
-        "Closes this review without installing or deleting any files.");
+        disposableCandidate
+            ? "Closes this review and removes only the disposable generated package. The raw draft and external model and license remain unchanged."
+            : "Closes this review without installing or deleting any files.");
     return false;
 }
 
+bool characterRawPackageIdValid(const char *value) {
+    if (value == nullptr) return false;
+    const size_t length = std::strlen(value);
+    if (length < 2u || length > 64u ||
+        !((value[0] >= 'a' && value[0] <= 'z') ||
+          (value[0] >= '0' && value[0] <= '9'))) return false;
+    for (size_t index = 1u; index < length; ++index) {
+        const char byte = value[index];
+        if (!((byte >= 'a' && byte <= 'z') ||
+              (byte >= '0' && byte <= '9') || byte == '.' ||
+              byte == '_' || byte == '-')) return false;
+    }
+    return true;
+}
+
+bool drawCharacterRawChoice(const char *label,
+                            const std::vector<std::string> &choices,
+                            int &selected, const char *help) {
+    const char *preview = selected >= 0 &&
+            selected < static_cast<int>(choices.size())
+        ? choices[static_cast<size_t>(selected)].c_str() : "Choose mapping";
+    ImGui::SetNextItemWidth(-1.0f);
+    const bool open = ImGui::BeginCombo(label, preview);
+    ui::SpeakFocusedItem(label, preview, help);
+    bool changed = false;
+    if (open) {
+        ImGuiListClipper clipper;
+        clipper.Begin(static_cast<int>(choices.size()));
+        while (clipper.Step()) {
+            for (int index = clipper.DisplayStart;
+                 index < clipper.DisplayEnd; ++index) {
+                ImGui::PushID(index);
+                if (ImGui::Selectable(
+                        choices[static_cast<size_t>(index)].c_str(),
+                        selected == index)) {
+                    selected = index;
+                    changed = true;
+                }
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    return changed;
+}
+
+void drawCharacterRawIntakeEditor(bool rail) {
+    loadCharacterRawIntake();
+    CharacterRawIntake &intake = g_characterRawIntake;
+    if (intake.modelPath[0] == '\0') return;
+    if (!g_characterRawIntakeTracePrinted &&
+        std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        std::fprintf(
+            stderr,
+            "[app-ui] raw-intake resumed=1 inspected=%d mappings=%d\n",
+            intake.inspected ? 1 : 0,
+            intake.fallback >= 0 && intake.seat >= 0 && intake.head >= 0
+                ? 1 : 0);
+        g_characterRawIntakeTracePrinted = true;
+    }
+    ImGui::SeparatorText("Raw GLB authoring draft");
+    ui::TextSubtleWrapped(
+        "This resumable draft creates a source-only package, then hands it to the same mutation-free review and local-rights confirmation as every other import. Nothing here changes the installed library.");
+    ImGui::TextWrapped("Model: %s", intake.modelPath);
+    bool changed = false;
+    if (!intake.inspected) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+        ImGui::TextWrapped(
+            "Inspection is required%s. It fingerprints the current GLB and inventories exact animation and node names; changing the file invalidates the build.",
+            AppConfig::get("character_raw_intake_model").empty()
+                ? "" : " to resume this saved draft");
+        ImGui::PopStyleColor();
+        if (ImGui::Button("Inspect GLB model")) {
+            if (inspectCharacterRawGlb(intake.modelPath)) {
+                setStatus("GLB inspected; review every inferred authoring choice.",
+                          AppTheme::good());
+            } else {
+                setStatus("GLB inspection failed; open the manager report.",
+                          AppTheme::bad());
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Inspect GLB model", nullptr,
+            "Validates and fingerprints the model, then inventories animation and node names without building or installing a package.");
+    } else {
+        ImGui::TextDisabled(
+            "%u vertices · %u triangles · %u joints · %.3g m source height",
+            intake.inventory.vertices, intake.inventory.triangles,
+            intake.inventory.joints, intake.inventory.sourceHeightM);
+        ImGui::TextDisabled("Inspected GLB SHA-256: %s",
+                            intake.inventory.modelSha256.c_str());
+    }
+
+    ImGui::TextUnformatted("Package ID");
+    ImGui::SetNextItemWidth(-1.0f);
+    changed |= ImGui::InputTextWithHint(
+        "##raw-package-id", "org.example.character", intake.packageId,
+        sizeof(intake.packageId));
+    ui::SpeakFocusedItem(
+        "Package ID", intake.packageId,
+        "A stable 2 to 64 character lowercase identifier. Updating the same ID preserves package-owned settings and assignments.");
+    if (intake.packageId[0] != '\0' &&
+        !characterRawPackageIdValid(intake.packageId)) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "Use 2–64 lowercase letters, digits, dots, underscores, or hyphens.");
+    }
+    ImGui::TextUnformatted("Display name");
+    ImGui::SetNextItemWidth(-1.0f);
+    changed |= ImGui::InputText(
+        "##raw-display-name", intake.displayName, sizeof(intake.displayName));
+    ui::SpeakFocusedItem("Display name", intake.displayName,
+                         "The authored roster and Workshop name.");
+
+    ImGui::TextUnformatted("Exact license or notice file");
+    ImGui::SetNextItemWidth(-1.0f);
+    changed |= ImGui::InputTextWithHint(
+        "##raw-license-path", "/path/to/LICENSE", intake.licensePath,
+        sizeof(intake.licensePath));
+    ui::SpeakFocusedItem(
+        "License file", intake.licensePath,
+        "The exact bounded text bytes embedded and authenticated in the package.");
+    if (filedialog::isAvailable()) {
+        if (ImGui::Button("Browse for license...")) {
+            std::string picked;
+            if (filedialog::openCharacterLicense(picked)) {
+                std::snprintf(intake.licensePath, sizeof(intake.licensePath),
+                              "%s", picked.c_str());
+                changed = true;
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Browse for license", nullptr,
+            "Chooses the exact LICENSE, COPYING, or notice file to embed. It does not infer or grant rights.");
+    }
+    ImGui::TextUnformatted("SPDX license expression");
+    ImGui::SetNextItemWidth(-1.0f);
+    changed |= ImGui::InputTextWithHint(
+        "##raw-spdx", "CC-BY-4.0", intake.spdx, sizeof(intake.spdx));
+    ui::SpeakFocusedItem(
+        "SPDX license expression", intake.spdx,
+        "A declaration supplied by the author; the Workshop does not guess it from the license file.");
+    ImGui::TextUnformatted("Creator / attribution");
+    ImGui::SetNextItemWidth(-1.0f);
+    changed |= ImGui::InputText(
+        "##raw-attribution", intake.attribution,
+        sizeof(intake.attribution));
+    ui::SpeakFocusedItem("Creator and attribution", intake.attribution,
+                         "The credit authenticated in the package manifest.");
+    ImGui::TextUnformatted("Source URL");
+    ImGui::SetNextItemWidth(-1.0f);
+    changed |= ImGui::InputText(
+        "##raw-source-url", intake.sourceUrl, sizeof(intake.sourceUrl));
+    ui::SpeakFocusedItem("Source URL", intake.sourceUrl,
+                         "The author-declared origin of these model bytes.");
+
+    static const char *donors[] = {
+        "Krunch", "Bumper", "Tiptup", "Conker", "Timber",
+        "Banjo", "Drumstick", "Pipsy", "T.T.", "Diddy",
+    };
+    ImGui::SetNextItemWidth(-1.0f);
+    changed |= ImGui::Combo(
+        "Gameplay donor", &intake.donor, donors,
+        static_cast<int>(std::size(donors)));
+    ui::SpeakFocusedItem(
+        "Gameplay donor", donors[intake.donor],
+        "Chooses the built-in racer that remains authoritative for physics, collision, audio, ghosts, records, and network identity.");
+    ImGui::TextUnformatted("Supported vehicles");
+    static const char *vehicles[] = {"Car", "Hovercraft", "Plane"};
+    for (int vehicle = 0; vehicle < 3; ++vehicle) {
+        changed |= ImGui::Checkbox(vehicles[vehicle], &intake.vehicles[vehicle]);
+        ui::SpeakFocusedItem(
+            vehicles[vehicle], intake.vehicles[vehicle] ? "Supported" : "Excluded",
+            "Declares whether this source package exposes an authoring and test context for the vehicle.");
+        if (!rail && vehicle != 2) ImGui::SameLine();
+    }
+
+    static const char *forwards[] = {"+Z", "-Z", "+X", "-X"};
+    ImGui::SetNextItemWidth(-1.0f);
+    changed |= ImGui::Combo(
+        "Model faces", &intake.sourceForward, forwards,
+        static_cast<int>(std::size(forwards)));
+    ui::SpeakFocusedItem(
+        "Model faces", forwards[intake.sourceForward],
+        "Declares the model's unmodified horizontal forward axis. Geometry cannot infer facing reliably.");
+    ImGui::SetNextItemWidth(-1.0f);
+    changed |= ImGui::InputFloat(
+        "Standing height in metres", &intake.targetHeight, 0.01f, 0.1f,
+        "%.3f");
+    ui::SpeakFocusedItem(
+        "Standing height in metres", nullptr,
+        "Sets normalized authored height from 0.1 to 10 metres; vehicle placement is calibrated separately after import.");
+
+    if (intake.inspected) {
+        changed |= drawCharacterRawChoice(
+            "Fallback animation", intake.inventory.clips, intake.fallback,
+            "Required motion source used when a semantic clip is absent.");
+        changed |= drawCharacterRawChoice(
+            "Seat or pelvis node", intake.inventory.nodes, intake.seat,
+            "Required vehicle anchor. Review the inference; a root node is not always the pelvis.");
+        changed |= drawCharacterRawChoice(
+            "Head node", intake.inventory.nodes, intake.head,
+            "Required head anchor used by presentation and camera-aware placement.");
+    }
+
+    if (changed && !saveCharacterRawIntake()) {
+        setStatus("Raw import draft changed but could not be persisted.",
+                  AppTheme::bad());
+    }
+    const bool hasVehicle = intake.vehicles[0] || intake.vehicles[1] ||
+                            intake.vehicles[2];
+    const bool ready = intake.inspected &&
+        characterRawPackageIdValid(intake.packageId) &&
+        intake.displayName[0] != '\0' && intake.licensePath[0] != '\0' &&
+        intake.spdx[0] != '\0' && intake.attribution[0] != '\0' &&
+        intake.sourceUrl[0] != '\0' && hasVehicle &&
+        intake.targetHeight >= 0.1f && intake.targetHeight <= 10.0f &&
+        intake.fallback >= 0 && intake.seat >= 0 && intake.head >= 0;
+    if (!ready) ImGui::BeginDisabled();
+    if (ImGui::Button("Build source package for review") && ready) {
+        if (buildCharacterRawGlbCandidate()) {
+            setStatus(
+                "Source package built from the inspected GLB; review its exact diff and provenance before installing.",
+                AppTheme::good());
+        } else {
+            setStatus(
+                "Raw GLB build failed; no installed character changed. Open the manager report.",
+                AppTheme::bad());
+        }
+    }
+    if (!ready) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Build source package for review",
+        ready ? nullptr : "Complete inspection, identity, provenance, vehicle, calibration, and required mappings first.",
+        "Snapshots the GLB and license, builds a deterministic source package, and opens the ordinary mutation-free package review. It does not install the character.");
+    if (!rail) ImGui::SameLine();
+    if (ImGui::Button("Clear raw import draft...")) {
+        ImGui::OpenPopup("Clear raw character import draft?");
+    }
+    ui::SpeakFocusedItem(
+        "Clear raw import draft", nullptr,
+        "Opens a confirmation to forget these local form values and the disposable generated candidate. External model and license files are never deleted.");
+    if (ImGui::BeginPopupModal(
+            "Clear raw character import draft?", nullptr,
+            ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped(
+            "Clear this raw import draft and its disposable generated candidate? The external GLB and license file are not changed or deleted.");
+        if (ImGui::Button("Clear draft")) {
+            clearCharacterRawIntake();
+            ImGui::CloseCurrentPopup();
+        }
+        ui::SpeakFocusedItem(
+            "Clear draft", nullptr,
+            "Forgets the saved intake fields and generated candidate without touching external source files or installed characters.");
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ui::SpeakFocusedItem("Cancel", nullptr,
+                             "Keeps the raw import draft unchanged.");
+        ImGui::EndPopup();
+    }
+}
+
 void drawCharacterImportControls(bool rail) {
+    loadCharacterRawIntake();
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputTextWithHint("##character-package-path",
-                             "/path/to/character.mdkrchar",
+                             "/path/to/character.mdkrchar or model.glb",
                              g_characterImportPath,
                              sizeof(g_characterImportPath));
     const bool inlineActions = !rail &&
                                ImGui::GetContentRegionAvail().x >=
                                    760.0f * AppTheme::uiScale();
     if (filedialog::isAvailable()) {
-        if (ImGui::Button("Browse for package...")) {
+        if (ImGui::Button("Browse for source...")) {
             std::string picked;
-            if (filedialog::openCharacterPackage(picked)) {
+            if (filedialog::openCharacterSource(picked)) {
                 std::snprintf(g_characterImportPath,
                               sizeof(g_characterImportPath),
                               "%s",
@@ -6886,21 +7439,26 @@ void drawCharacterImportControls(bool rail) {
             }
         }
         ui::SpeakFocusedItem(
-            "Browse for package",
+            "Browse for character source",
             nullptr,
-            "Chooses a local mdkrchar package. Nothing is installed until validation, review, and explicit confirmation succeed.");
+            "Chooses a local mdkrchar package or self-contained GLB. Nothing is installed until validation, review, and explicit confirmation succeed.");
         if (inlineActions) ImGui::SameLine();
     }
     const bool canImport = g_characterImportPath[0] != '\0';
     if (!canImport) ImGui::BeginDisabled();
-    if (ImGui::Button("Validate and review")) {
+    const bool rawGlb = characterPathHasExtension(
+        g_characterImportPath, ".glb");
+    if (ImGui::Button(rawGlb ? "Inspect GLB and continue"
+                             : "Validate and review")) {
         (void)Settings_importCharacterPackage(g_characterImportPath);
     }
     if (!canImport) ImGui::EndDisabled();
     ui::SpeakFocusedItem(
-        "Validate and review",
-        canImport ? nullptr : "Choose or enter a package path first.",
-        "Stages a mutation-free inventory and installed-version comparison. It does not install the package.");
+        rawGlb ? "Inspect GLB and continue" : "Validate and review",
+        canImport ? nullptr : "Choose or enter a character source path first.",
+        rawGlb
+            ? "Validates and fingerprints the raw model, then opens a resumable package-authoring draft. It does not build or install yet."
+            : "Stages a mutation-free inventory and installed-version comparison. It does not install the package.");
     if (inlineActions) ImGui::SameLine();
     if (ImGui::Button("Rescan installed characters")) {
         refreshCharacterRegistry();
@@ -7198,10 +7756,15 @@ bool drawCustomCharactersSection(bool compact) {
     if (!rail) {
         ImGui::Indent(ui::kGapM);
         drawCharacterImportControls(false);
-        changed |= drawCharacterCandidateReview(compact);
+        if (g_characterImportCandidate.ready) {
+            changed |= drawCharacterCandidateReview(compact);
+        } else if (g_characterRawIntake.modelPath[0] != '\0') {
+            drawCharacterRawIntakeEditor(false);
+        }
         const MdkrModernCharacterEntry *entry =
             drawCharacterLibrary(false);
-        if (entry != nullptr) {
+        if (!g_characterImportCandidate.ready &&
+            g_characterRawIntake.modelPath[0] == '\0' && entry != nullptr) {
             changed |= drawCharacterPackageInspector(entry, compact);
         }
         changed |= drawCharacterAssignments();
@@ -7248,6 +7811,8 @@ bool drawCustomCharactersSection(bool compact) {
             ImGuiWindowFlags_AlwaysVerticalScrollbar);
         if (g_characterImportCandidate.ready) {
             changed |= drawCharacterCandidateReview(false);
+        } else if (g_characterRawIntake.modelPath[0] != '\0') {
+            drawCharacterRawIntakeEditor(false);
         } else if (entry != nullptr) {
             changed |= drawCharacterPackageInspector(entry, false);
         } else {
@@ -7358,12 +7923,33 @@ void Settings_setDonorGameplayProfiles(
 
 bool Settings_importCharacterPackage(const char *path) {
     if (path == nullptr || path[0] == '\0') {
-        g_characterManagerReport = "Choose a .mdkrchar package first.";
-        setStatus("Character import needs a package path.", AppTheme::bad());
+        g_characterManagerReport =
+            "Choose a .mdkrchar package or self-contained .glb source first.";
+        setStatus("Character import needs a source path.", AppTheme::bad());
+        return false;
+    }
+    if (std::strlen(path) >= sizeof(g_characterImportPath)) {
+        g_characterManagerReport =
+            "The character source path exceeds the launcher's bounded path profile.";
+        setStatus("Character source path is too long.", AppTheme::bad());
         return false;
     }
     std::snprintf(g_characterImportPath, sizeof(g_characterImportPath), "%s",
                   path);
+    if (characterPathHasExtension(path, ".glb")) {
+        loadCharacterRawIntake();
+        std::snprintf(g_characterRawIntake.modelPath,
+                      sizeof(g_characterRawIntake.modelPath), "%s", path);
+        g_characterRawIntake.inspected = false;
+        (void)saveCharacterRawIntake();
+        const bool inspected = inspectCharacterRawGlb(path);
+        setStatus(
+            inspected
+                ? "GLB inspected; complete and review the resumable authoring draft."
+                : "GLB inspection failed; no package was built or installed.",
+            inspected ? AppTheme::good() : AppTheme::bad());
+        return inspected;
+    }
     if (!stageCharacterPackage(path)) {
         g_characterImportCandidate = CharacterImportCandidate{};
         setStatus("Character validation failed; open the importer report below.",

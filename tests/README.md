@@ -4809,6 +4809,25 @@ python3 tests/check_custom_character_roster.py \
 The gate is registered as `custom_character_roster` in `tools/run_checks.py`
 and is serialized with the other native GPU/pixel checks.
 
+## Raw GLB Workshop intake — `tests/check_character_raw_intake_ui.py`
+
+This ROM-free WebGPU gate drops a generated, license-clean, self-contained GLB
+onto the real launcher. It requires Workshop routing, bounded model inspection,
+resolved fallback/seat/head mappings, persisted authoring fields, and a rendered
+capture without publishing a package candidate or runtime cache. A fresh process
+must resume the saved pre-package draft while requiring reinspection, so stale
+model bytes never inherit an in-memory fingerprint. The same flow also renders
+at 640x480 with 200% UI scale and touch scrolling.
+
+```bash
+python3 tests/check_character_raw_intake_ui.py \
+  --build build-character-tests
+```
+
+The gate is registered as the `app_character_raw_intake` CTest and the
+`character_raw_intake_ui` run-check; it needs neither a ROM nor a community
+model.
+
 ## Exact Character Workshop contexts — `tests/check_custom_character_workshop_preview.py`
 
 This gate generates and transactionally installs a license-clean package with

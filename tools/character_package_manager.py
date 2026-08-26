@@ -13,7 +13,9 @@ import argparse
 import hashlib
 import io
 import json
+import math
 import os
+import stat
 import struct
 import sys
 import tempfile
@@ -27,6 +29,7 @@ from typing import Any, Callable, Iterator
 
 import character_asset_compiler as compiler
 import character_asset_probe as probe
+import character_manifest_wizard as wizard
 
 
 MANAGER_SCHEMA = "mdkr-character-install-v1"
@@ -38,10 +41,48 @@ LOCK_NAME = ".character-import.lock"
 MAX_REPORT_BYTES = 64 * 1024
 MAX_UI_REVISIONS = 256
 MAX_WORKSHOP_DRAFT_BYTES = 256 * 1024
+RAW_INTAKE_INDEX_NAME = ".launcher-character-glb-intake.tsv"
+RAW_INTAKE_CANDIDATE_NAME = ".launcher-character-raw-candidate.mdkrchar"
+RAW_INTAKE_MAX_CLIPS = 256
+RAW_INTAKE_MAX_NODES = 4096
+RAW_INTAKE_MAX_CHOICE_BYTES = 256
 
 
 class ManagerError(ValueError):
     pass
+
+
+def _bounded_authoring_input(path: Path, maximum: int, label: str) -> bytes:
+    try:
+        flags = os.O_RDONLY
+        for flag in ("O_BINARY", "O_CLOEXEC", "O_NONBLOCK"):
+            flags |= getattr(os, flag, 0)
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            information = os.fstat(stream.fileno())
+            if not stat.S_ISREG(information.st_mode):
+                raise ManagerError(f"{label} must resolve to a regular file")
+            if information.st_size > maximum:
+                raise ManagerError(f"{label} exceeds {maximum} bytes")
+            payload = stream.read(maximum + 1)
+    except OSError as exc:
+        raise ManagerError(f"cannot read {label}: {exc}") from exc
+    if len(payload) > maximum:
+        raise ManagerError(f"{label} exceeds {maximum} bytes")
+    return payload
+
+
+def _decode_launcher_hex(value: str, maximum: int, label: str) -> str:
+    if (len(value) > maximum * 2 or len(value) % 2 != 0 or
+            any(character not in "0123456789abcdef" for character in value)):
+        raise ManagerError(f"{label} has invalid bounded hex encoding")
+    try:
+        decoded = bytes.fromhex(value).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ManagerError(f"{label} is not valid UTF-8") from exc
+    if not decoded or "\x00" in decoded:
+        raise ManagerError(f"{label} must not be empty or contain NUL")
+    return decoded
 
 
 def _workshop_identity_name(value: Any, label: str,
@@ -1259,6 +1300,235 @@ def export_portable_revision(package_id: str, source_sha: str,
     }
 
 
+def inspect_raw_glb(model_path: Path) -> dict[str, Any]:
+    """Return the bounded author-facing choices needed before packaging."""
+    if model_path.suffix.lower() != ".glb":
+        raise ManagerError("raw character intake requires a .glb file")
+    payload = _bounded_authoring_input(
+        model_path, probe.MAX_INPUT_BYTES, "GLB model"
+    )
+    report = probe.inspect_glb_bytes(payload, require_character=True)
+    if report["errors"]:
+        raise ManagerError(
+            "GLB is not character-ready: " + "; ".join(report["errors"])
+        )
+    document, _ = probe.parse_glb(payload)
+    clips: list[str] = []
+    for index, animation in enumerate(document.get("animations", [])):
+        if not isinstance(animation, dict):
+            continue
+        source_name = animation.get("name")
+        if source_name is not None and not isinstance(source_name, str):
+            raise ManagerError(
+                f"animation {index} name must be a string when present"
+            )
+        clips.append(source_name or f"animation_{index}")
+    nodes: list[str] = []
+    for index, node in enumerate(document.get("nodes", [])):
+        if not isinstance(node, dict):
+            continue
+        source_name = node.get("name")
+        if source_name is not None and not isinstance(source_name, str):
+            raise ManagerError(
+                f"node {index} name must be a string when present"
+            )
+        if source_name:
+            nodes.append(source_name)
+    if len(clips) > RAW_INTAKE_MAX_CLIPS:
+        raise ManagerError(
+            f"GLB exposes {len(clips)} animations; raw intake supports at "
+            f"most {RAW_INTAKE_MAX_CLIPS} reviewable choices"
+        )
+    if len(nodes) > RAW_INTAKE_MAX_NODES:
+        raise ManagerError(
+            f"GLB exposes {len(nodes)} named nodes; raw intake supports at "
+            f"most {RAW_INTAKE_MAX_NODES} reviewable choices"
+        )
+    for label, choices in (("animation", clips), ("node", nodes)):
+        for choice in choices:
+            if (not choice.strip() or not probe._bounded_printable_text(
+                    choice, RAW_INTAKE_MAX_CHOICE_BYTES)):
+                raise ManagerError(
+                    f"{label} name {choice!r} exceeds the bounded printable "
+                    "authoring profile"
+                )
+
+    def duplicates(values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        repeated: set[str] = set()
+        for value in values:
+            if value in seen:
+                repeated.add(value)
+            seen.add(value)
+        return sorted(repeated)
+
+    duplicate_clips = duplicates(clips)
+    duplicate_nodes = duplicates(nodes)
+    if duplicate_clips or duplicate_nodes:
+        details = []
+        if duplicate_clips:
+            details.append("animation names: " + ", ".join(duplicate_clips))
+        if duplicate_nodes:
+            details.append("node names: " + ", ".join(duplicate_nodes))
+        raise ManagerError(
+            "GLB names used for author mappings must be unique (" +
+            "; ".join(details) + "); rename duplicates in the source model"
+        )
+    fallback = wizard.choose(
+        clips, ("idle", "default", "fallback", "rest")
+    )
+    if fallback is None and clips:
+        fallback = clips[0]
+    inferred_sockets = {
+        semantic: node
+        for semantic, aliases in wizard.SOCKET_ALIASES.items()
+        if (node := wizard.choose(nodes, aliases)) is not None
+    }
+    bounds_min = report["bbox_min"]
+    bounds_max = report["bbox_max"]
+    if (not isinstance(bounds_min, list) or len(bounds_min) != 3 or
+            not isinstance(bounds_max, list) or len(bounds_max) != 3):
+        raise ManagerError(
+            "GLB has no finite scene-world bounds; export POSITION min/max "
+            "metadata before authoring"
+        )
+    source_height_m = float(bounds_max[1]) - float(bounds_min[1])
+    if not math.isfinite(source_height_m) or source_height_m <= 1.0e-6:
+        raise ManagerError(
+            "GLB scene-world height is too small to calibrate"
+        )
+    return {
+        "schema": "mdkr-character-glb-intake-v1",
+        "model": str(model_path.resolve()),
+        "model_sha256": hashlib.sha256(payload).hexdigest(),
+        "vertices": report["vertex_count"],
+        "triangles": report["triangle_count"],
+        "materials": report["material_count"],
+        "textures": report["texture_count"],
+        "skins": report["skin_count"],
+        "joints": report["max_joints"],
+        "source_height_m": source_height_m,
+        "clips": clips,
+        "nodes": nodes,
+        "fallback": fallback,
+        "seat": inferred_sockets.get("seat"),
+        "head": inferred_sockets.get("head"),
+        "warnings": report["warnings"],
+    }
+
+
+def write_raw_glb_index(model_path: Path, directory: Path,
+                        index_path: Path) -> dict[str, Any]:
+    """Write the launcher's fixed-field, hex-escaped raw-model inventory."""
+    root = _prepare_directory(directory)
+    if (index_path.parent.resolve() != root or
+            index_path.name != RAW_INTAKE_INDEX_NAME):
+        raise ManagerError(
+            "raw GLB index must use the launcher's exact file inside the "
+            "character directory"
+        )
+    inventory = inspect_raw_glb(model_path)
+
+    def encoded(value: str | None) -> str:
+        return "-" if value is None else value.encode("utf-8").hex()
+
+    lines = [
+        "\t".join((
+            inventory["schema"], inventory["model_sha256"],
+            str(inventory["vertices"]), str(inventory["triangles"]),
+            str(inventory["materials"]), str(inventory["textures"]),
+            str(inventory["skins"]), str(inventory["joints"]),
+            format(inventory["source_height_m"], ".9g"),
+            str(len(inventory["clips"])), str(len(inventory["nodes"])),
+        )) + "\n",
+        "defaults\t" + "\t".join((
+            encoded(inventory["fallback"]), encoded(inventory["seat"]),
+            encoded(inventory["head"]),
+        )) + "\n",
+    ]
+    lines.extend(
+        f"clip\t{encoded(name)}\n" for name in inventory["clips"]
+    )
+    lines.extend(
+        f"node\t{encoded(name)}\n" for name in inventory["nodes"]
+    )
+    _write_atomic(index_path, "".join(lines).encode("ascii"))
+    return {
+        **inventory,
+        "index_file": index_path.name,
+    }
+
+
+def build_raw_glb_candidate(
+        model_path: Path, license_path: Path, package_id: str,
+        display_name: str, spdx: str, attribution: str, source_url: str,
+        donor: str, vehicles: tuple[str, ...], source_forward: str,
+        target_height_m: float, fallback_clip: str, seat_node: str,
+        head_node: str, directory: Path, *,
+        expected_model_sha256: str | None = None) -> dict[str, Any]:
+    """Build one self-consistent source package for normal reviewed import."""
+    root = _prepare_directory(directory)
+    model_payload = _bounded_authoring_input(
+        model_path, probe.MAX_INPUT_BYTES, "GLB model"
+    )
+    model_sha256 = hashlib.sha256(model_payload).hexdigest()
+    if expected_model_sha256 is not None:
+        if (len(expected_model_sha256) != 64 or any(
+                character not in "0123456789abcdef"
+                for character in expected_model_sha256)):
+            raise ManagerError("inspected GLB digest is invalid")
+        if model_sha256 != expected_model_sha256:
+            raise ManagerError(
+                "the GLB changed after inspection; inspect the new bytes before building"
+            )
+    license_payload = _bounded_authoring_input(
+        license_path, probe.MAX_LICENSE_BYTES, "license file"
+    )
+    with tempfile.TemporaryDirectory(
+            prefix="mdkr-character-raw-intake-") as temporary:
+        temporary_root = Path(temporary)
+        model = temporary_root / "model.glb"
+        license_file = temporary_root / "LICENSE.txt"
+        manifest_file = temporary_root / "manifest.json"
+        candidate = temporary_root / "candidate.mdkrchar"
+        model.write_bytes(model_payload)
+        license_file.write_bytes(license_payload)
+        manifest, decisions = wizard.build_manifest(
+            model, package_id, display_name, spdx, attribution, source_url,
+            donor, list(vehicles), source_forward=source_forward,
+            target_height_m=target_height_m, fallback_clip=fallback_clip,
+            socket_overrides={"seat": seat_node, "head": head_node},
+        )
+        manifest_file.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        built = probe.build_package(
+            model, manifest_file, license_file, candidate
+        )
+        candidate_payload = candidate.read_bytes()
+        verification = probe.verify_package(candidate)
+        if not verification["valid"]:
+            raise ManagerError(
+                "generated raw-GLB package failed verification: " +
+                "; ".join(verification["errors"])
+            )
+    destination = root / RAW_INTAKE_CANDIDATE_NAME
+    _write_atomic(destination, candidate_payload)
+    return {
+        "schema": MANAGER_SCHEMA,
+        "action": "build-raw-glb-candidate",
+        "id": package_id,
+        "candidate": str(destination),
+        "package_sha256": hashlib.sha256(candidate_payload).hexdigest(),
+        "model_sha256": model_sha256,
+        "license_sha256": hashlib.sha256(license_payload).hexdigest(),
+        "bytes": len(candidate_payload),
+        "decisions": decisions,
+        "package": built,
+    }
+
+
 def write_revision_index(package_id: str, directory: Path,
                          index_path: Path) -> dict[str, Any]:
     """Write the launcher's bounded, fixed-field revision inventory."""
@@ -1466,6 +1736,22 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("list")
     revisions_parser = sub.add_parser("revisions")
     revisions_parser.add_argument("id")
+    raw_index_parser = sub.add_parser("write-raw-glb-index")
+    raw_index_parser.add_argument("model", type=Path)
+    raw_index_parser.add_argument("output", type=Path)
+    raw_build_parser = sub.add_parser(
+        "build-raw-glb",
+        help="build a reviewed source-only candidate from launcher intake fields",
+    )
+    for field in (
+        "model_hex", "license_hex", "id_hex", "display_name_hex",
+        "spdx_hex", "attribution_hex", "source_url_hex", "donor_hex",
+        "source_forward_hex", "fallback_hex", "seat_hex", "head_hex",
+    ):
+        raw_build_parser.add_argument(field)
+    raw_build_parser.add_argument("expected_model_sha256")
+    raw_build_parser.add_argument("vehicle_mask", type=int)
+    raw_build_parser.add_argument("target_height", type=float)
     restore_parser = sub.add_parser("restore")
     restore_parser.add_argument("id")
     restore_parser.add_argument("source_sha256")
@@ -1590,6 +1876,43 @@ def main(argv: list[str] | None = None) -> int:
             report = remove(args.id, args.directory)
         elif args.command == "revisions":
             report = list_revisions(args.id, args.directory)
+        elif args.command == "write-raw-glb-index":
+            report = write_raw_glb_index(
+                args.model, args.directory, args.output
+            )
+        elif args.command == "build-raw-glb":
+            vehicle_mask = args.vehicle_mask
+            if vehicle_mask < 1 or vehicle_mask > 7:
+                raise ManagerError("raw intake vehicle mask must be 1-7")
+            report = build_raw_glb_candidate(
+                Path(_decode_launcher_hex(
+                    args.model_hex, 4096, "model path")),
+                Path(_decode_launcher_hex(
+                    args.license_hex, 4096, "license path")),
+                _decode_launcher_hex(args.id_hex, 64, "package id"),
+                _decode_launcher_hex(
+                    args.display_name_hex, 96, "display name"),
+                _decode_launcher_hex(args.spdx_hex, 128, "SPDX"),
+                _decode_launcher_hex(
+                    args.attribution_hex, 256, "attribution"),
+                _decode_launcher_hex(
+                    args.source_url_hex, 2048, "source URL"),
+                _decode_launcher_hex(args.donor_hex, 16, "donor"),
+                tuple(
+                    vehicle for bit, vehicle in enumerate(
+                        ("car", "hovercraft", "plane")
+                    ) if vehicle_mask & (1 << bit)
+                ),
+                _decode_launcher_hex(
+                    args.source_forward_hex, 2, "source forward"),
+                args.target_height,
+                _decode_launcher_hex(
+                    args.fallback_hex, 256, "fallback clip"),
+                _decode_launcher_hex(args.seat_hex, 256, "seat node"),
+                _decode_launcher_hex(args.head_hex, 256, "head node"),
+                args.directory,
+                expected_model_sha256=args.expected_model_sha256,
+            )
         elif args.command == "restore":
             report = restore_revision(
                 args.id, args.source_sha256, args.directory

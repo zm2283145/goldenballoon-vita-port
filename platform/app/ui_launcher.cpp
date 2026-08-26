@@ -137,24 +137,26 @@ void selectPanelFromEnvironment(int &activePanel) {
     }
 }
 
-bool hasCharacterPackageExtension(const std::string &path) {
-    static constexpr char kExtension[] = ".mdkrchar";
-    constexpr size_t kExtensionLength = sizeof(kExtension) - 1u;
-    if (path.size() < kExtensionLength) return false;
-    const size_t offset = path.size() - kExtensionLength;
-    for (size_t i = 0; i < kExtensionLength; ++i) {
-        const unsigned char actual =
-            static_cast<unsigned char>(path[offset + i]);
-        if (std::tolower(actual) != kExtension[i]) return false;
-    }
-    return true;
+bool hasCharacterSourceExtension(const std::string &path) {
+    const auto matches = [&path](const char *extension) {
+        const size_t extensionLength = std::strlen(extension);
+        if (path.size() < extensionLength) return false;
+        const size_t offset = path.size() - extensionLength;
+        for (size_t index = 0u; index < extensionLength; ++index) {
+            const unsigned char actual =
+                static_cast<unsigned char>(path[offset + index]);
+            if (std::tolower(actual) != extension[index]) return false;
+        }
+        return true;
+    };
+    return matches(".mdkrchar") || matches(".glb");
 }
 
 void acceptDroppedFile(AppHost &host, LauncherState &state, int &activePanel) {
     const std::string dropped = host.takeDroppedFile();
     if (dropped.empty()) return;
 
-    if (hasCharacterPackageExtension(dropped)) {
+    if (hasCharacterSourceExtension(dropped)) {
         (void)Settings_importCharacterPackage(dropped.c_str());
         activePanel = kLauncherPanelCharacterWorkshop;
         return;

@@ -822,9 +822,18 @@ than being distorted by mandatory solving.
    Restore snapshots those bytes, recompiles against an optimistic current-cache
    digest, and preserves enabled/disabled state; export uses exclusive creation
    and never overwrites an existing destination.
-
-Raw GLB convenience import can have the launcher generate a manifest template,
-but it still requires explicit license/provenance fields before activation.
+12. Portable export recompiles any selected authenticated source revision with
+    the current compiler in temporary storage, then exclusively publishes the
+    shareable package without touching installed state. Current-source rebuild
+    uses an authenticated snapshot and optimistic cache digest; failure retains
+    the last-known-good cache and enabled/disabled state.
+13. Raw GLB intake fingerprints and inventories a self-contained character-ready
+    model before authoring. Its resumable draft requires explicit identity,
+    exact license bytes, provenance, donor, vehicles, forward/height calibration,
+    fallback clip and seat/head nodes. Inference is reviewable, duplicate names
+    are rejected as ambiguous, and changed model bytes require reinspection. A
+    successful build creates only a disposable source-package candidate, which
+    must pass steps 2–7 like any externally authored package.
 
 ## Supplied Dixie archive: objective result
 

@@ -44,9 +44,15 @@ bool isAvailable();
 // which is fine because ImGui state is retained across the modal.
 bool openRom(std::string &out);
 
-// Choose a custom-character source package. The launcher validates and imports
-// it after the panel returns; selecting a file never installs bytes by itself.
-bool openCharacterPackage(std::string &out);
+// Choose either a reviewable package or a raw GLB authoring source. The
+// launcher inspects the suffix and never installs bytes merely because the
+// user selected them.
+bool openCharacterSource(std::string &out);
+
+// Choose the exact license/notice text embedded beside a raw GLB. Extension is
+// intentionally unrestricted: conventional files are often named LICENSE or
+// COPYING without a suffix.
+bool openCharacterLicense(std::string &out);
 
 // Choose a still PNG for custom-character portrait authoring. Validation and
 // resampling happen in the Workshop; the dialog grants no import authority.

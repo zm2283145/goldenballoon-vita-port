@@ -51,11 +51,11 @@ void Settings_setDonorGameplayProfiles(
     const MdkrDonorGameplayProfiles *profiles,
     const char *unavailableReason = nullptr);
 
-// Validate and stage a mutation-free package review through the same
-// native-first path used by the Custom Characters section. This is also the
-// window-wide drag-and-drop entry point, so Linux builds without a native
-// picker can inspect a package before explicitly committing it. The Settings
-// panel owns the comparison, final install action, and detailed report.
+// Validate a package or begin a resumable raw-GLB authoring draft. This is also
+// the window-wide drag-and-drop entry point, so platforms without a native
+// picker retain both flows. GLB intake creates a source package first; every
+// resulting package still enters the ordinary mutation-free comparison and
+// explicit commit boundary.
 bool Settings_importCharacterPackage(const char *path);
 
 // Consume the one-shot exact-game preview requested by the launcher Workshop.

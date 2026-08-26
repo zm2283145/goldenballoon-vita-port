@@ -27,6 +27,7 @@ from test_character_asset_probe import (  # noqa: E402
     make_manifest,
     make_portrait_png,
     make_v4_manifest,
+    rewrite_glb_document,
 )
 
 
@@ -196,6 +197,137 @@ class CharacterPackageManagerTests(unittest.TestCase):
             installed = root / "installed"
             report = manager.install(portable, installed)
             self.assertEqual(prepared["compiled_sha256"], report["compiled_sha256"])
+
+    def test_raw_glb_intake_inventory_and_candidate_are_reviewable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model = root / "author-model.glb"
+            license_file = root / "LICENSE.txt"
+            characters = root / "characters"
+            model.write_bytes(make_animated_glb())
+            license_file.write_text(
+                "Creative Commons test license\n", encoding="utf-8"
+            )
+            inventory = manager.inspect_raw_glb(model)
+            self.assertEqual("idle", inventory["fallback"])
+            self.assertEqual("root", inventory["seat"])
+            self.assertEqual("head", inventory["head"])
+            self.assertEqual(["idle"], inventory["clips"])
+            self.assertIn("root", inventory["nodes"])
+
+            index = characters / manager.RAW_INTAKE_INDEX_NAME
+            indexed = manager.write_raw_glb_index(model, characters, index)
+            self.assertEqual(inventory["model_sha256"], indexed["model_sha256"])
+            lines = index.read_text(encoding="ascii").splitlines()
+            self.assertTrue(lines[0].startswith(
+                "mdkr-character-glb-intake-v1\t" + inventory["model_sha256"]
+            ))
+            self.assertEqual("defaults\t69646c65\t726f6f74\t68656164", lines[1])
+            with self.assertRaisesRegex(manager.ManagerError, "exact file"):
+                manager.write_raw_glb_index(
+                    model, characters, root / "outside.tsv"
+                )
+
+            report = manager.build_raw_glb_candidate(
+                model, license_file, "org.example.raw-intake", "Raw Intake",
+                "CC-BY-4.0", "Fixture Artist",
+                "https://example.invalid/raw-intake", "diddy",
+                ("car", "plane"), "-z", 1.4, "idle", "root", "head",
+                characters, expected_model_sha256=inventory["model_sha256"],
+            )
+            candidate = Path(report["candidate"])
+            self.assertEqual(manager.RAW_INTAKE_CANDIDATE_NAME, candidate.name)
+            verification = probe.verify_package(candidate)
+            self.assertTrue(verification["valid"], verification["errors"])
+            with zipfile.ZipFile(candidate) as archive:
+                manifest = probe.json_loads_strict(archive.read("manifest.json"))
+                self.assertEqual("org.example.raw-intake", manifest["id"])
+                self.assertEqual("-z", manifest["presentation"]["source_forward"])
+                self.assertEqual(1.4, manifest["presentation"]["target_height_m"])
+                self.assertEqual(["car", "plane"], manifest["gameplay"]["vehicles"])
+                self.assertEqual(
+                    license_file.read_bytes(), archive.read("LICENSE.txt")
+                )
+            inspected = manager.inspect(candidate)
+            self.assertEqual("Fixture Artist", inspected["attribution"])
+            self.assertFalse(inspected["portable"])
+            installed = manager.install_reviewed(
+                candidate, characters, inspected["source_sha256"], "absent"
+            )
+            self.assertEqual("install-reviewed", installed["action"])
+            self.assertTrue(
+                (characters / "org.example.raw-intake.mdkc").is_file()
+            )
+            with self.assertRaisesRegex(
+                    manager.ManagerError, "changed after inspection"):
+                manager.build_raw_glb_candidate(
+                    model, license_file, "org.example.raw-intake", "Raw Intake",
+                    "CC-BY-4.0", "Fixture Artist",
+                    "https://example.invalid/raw-intake", "diddy", ("car",),
+                    "+z", 1.25, "idle", "root", "head", characters,
+                    expected_model_sha256="0" * 64,
+                )
+
+            def encode(value: str) -> str:
+                return value.encode("utf-8").hex()
+            with redirect_stdout(io.StringIO()):
+                status = manager.main([
+                    "--directory", str(characters), "build-raw-glb",
+                    encode(str(model)), encode(str(license_file)),
+                    encode("org.example.raw-cli"), encode("Raw CLI"),
+                    encode("CC-BY-4.0"), encode("Fixture Artist"),
+                    encode("https://example.invalid/raw-cli"),
+                    encode("diddy"), encode("+z"), encode("idle"),
+                    encode("root"), encode("head"),
+                    inventory["model_sha256"], "7", "1.25",
+                ])
+            self.assertEqual(0, status)
+            with zipfile.ZipFile(
+                    characters / manager.RAW_INTAKE_CANDIDATE_NAME) as archive:
+                manifest = probe.json_loads_strict(archive.read("manifest.json"))
+            self.assertEqual("org.example.raw-cli", manifest["id"])
+
+    def test_raw_glb_intake_rejects_ambiguous_or_uncalibrated_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = make_animated_glb()
+
+            def set_malformed_animation_name(document: dict) -> None:
+                document["animations"][0]["name"] = 7
+
+            malformed_name = root / "malformed-name.glb"
+            malformed_name.write_bytes(rewrite_glb_document(
+                original, set_malformed_animation_name
+            ))
+            with self.assertRaisesRegex(
+                    manager.ManagerError, "name must be a string"):
+                manager.inspect_raw_glb(malformed_name)
+
+            def duplicate_root_node_name(document: dict) -> None:
+                document["nodes"][1]["name"] = "root"
+
+            duplicate_node = root / "duplicate-node.glb"
+            duplicate_node.write_bytes(rewrite_glb_document(
+                original, duplicate_root_node_name
+            ))
+            with self.assertRaisesRegex(
+                    manager.ManagerError, "must be unique"):
+                manager.inspect_raw_glb(duplicate_node)
+
+            def remove_position_bounds(document: dict) -> None:
+                primitive = document["meshes"][0]["primitives"][0]
+                position = primitive["attributes"]["POSITION"]
+                accessors = document["accessors"]
+                accessors[position].pop("min", None)
+                accessors[position].pop("max", None)
+
+            unbounded = root / "unbounded.glb"
+            unbounded.write_bytes(rewrite_glb_document(
+                original, remove_position_bounds
+            ))
+            with self.assertRaisesRegex(
+                    manager.ManagerError, "no finite scene-world bounds"):
+                manager.inspect_raw_glb(unbounded)
 
     def test_candidate_inspection_is_exact_and_mutation_free(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

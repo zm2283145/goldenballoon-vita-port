@@ -344,6 +344,21 @@ only its disposable cache after successful compilation and validation. A
 disabled character stays disabled, and any failure leaves the last known-good
 cache and all source history intact.
 
+The Workshop also accepts a self-contained GLB 2.0 file as an authoring source.
+This is not an install shortcut. A resumable first-import draft fingerprints and
+inventories the bounded GLB, then requires a stable package ID, display name,
+exact license/notice file, SPDX expression, attribution, source URL, built-in
+gameplay donor, vehicle scope, forward axis, standing height, fallback clip,
+seat/pelvis node, and head node. Inferred clip/socket names are starting points,
+not truth, and remain directly selectable from the exact model inventory.
+Duplicate animation or node names fail explicitly because a name-based manifest
+could not identify them unambiguously. If the GLB changes after inspection,
+Build refuses it and requires a new inventory. The deterministic source-only
+candidate then enters the same package diff, provenance review, local-use rights
+confirmation, and optimistic install transaction described above. Clearing the
+draft removes only launcher-owned form data and its disposable candidate; it
+never deletes the external GLB or license file.
+
 The wizard emits `mdkr-character-source-v2` by default, v3 when identity media
 is supplied, and v4 when `--rig-mode` is also selected. `--source-forward` declares which
 local horizontal axis the model's face points toward (`+z`, `-z`, `+x`, or
