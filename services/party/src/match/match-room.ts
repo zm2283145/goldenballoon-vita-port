@@ -144,6 +144,30 @@ function commandFrom(value: Record<string, unknown>,
     compatibility: blankCompatibility()};
 }
 
+/* A /command response echoes the request's `commandId` so the native transport
+ * can attribute an answer to a specific in-flight command instead of the most
+ * recent send. platform/online/match_live_transport.cpp (drainCommands) tags
+ * every command with a decimal u64 `commandId` string and, since b07362a,
+ * parses this echoed field (string- or number-typed), falling back to send
+ * order when it is absent. The echo is purely additive and transport-level:
+ * the value is mirrored verbatim, never invented, so old clients ignore the
+ * extra field and the new client falls back cleanly when it is missing. A
+ * legitimate id is a short decimal string (a u64 is <= 20 digits); bound it so
+ * a hostile body can neither crash the handler nor make a response mirror an
+ * oversized scalar, and omit anything absent or the wrong shape (absent in the
+ * request stays absent in the response). */
+const MATCH_COMMAND_ID_ECHO_BYTES = 64;
+
+export function commandIdEcho(body: Record<string, unknown>):
+    {commandId?: string | number} {
+  const value = body.commandId;
+  if (typeof value === "string" && !utf8Exceeds(value, MATCH_COMMAND_ID_ECHO_BYTES)) {
+    return {commandId: value};
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return {commandId: value};
+  return {};
+}
+
 export class MatchRoom extends DurableObject<Env> {
   private async record(): Promise<StoredMatchRoomV1 | undefined> {
     const value = await this.ctx.storage.get<StoredMatchRoomV1>("match");
@@ -313,10 +337,14 @@ export class MatchRoom extends DurableObject<Env> {
       MATCH_LIMITS.maxCommandBytes);
     const command = commandFrom(body, credential.endpointId);
     if (!command) return json({error: "invalid_command"}, 400);
+    /* Additive transport echo: mirror the request's commandId verbatim on the
+     * resolved (accepted or refused) response so a client with two in-flight
+     * commands attributes each answer to the right one. */
+    const echo = commandIdEcho(body);
     const before = record.lobby.revision;
     const result = dispatchMatchCommand(record.lobby, command);
     if (!result.accepted) return json({error: result.error,
-      revision: result.revision}, result.error === "stale_revision" ? 412 : 409);
+      revision: result.revision, ...echo}, result.error === "stale_revision" ? 412 : 409);
     if (!result.duplicate) {
       appendControl(record, result);
       if (command.type === "leave") {
@@ -340,7 +368,7 @@ export class MatchRoom extends DurableObject<Env> {
           closeSocket(socket, 4000, "host_closed");
       }
     }
-    return json({...result, previousRevision: before});
+    return json({...result, previousRevision: before, ...echo});
   }
 
   private async upgradeState(request: Request, record: StoredMatchRoomV1): Promise<Response> {

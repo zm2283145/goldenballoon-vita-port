@@ -3,6 +3,7 @@ import {SELF, abortAllDurableObjects, evictDurableObject,
   runDurableObjectAlarm, runInDurableObject} from "cloudflare:test";
 import {describe, expect, it} from "vitest";
 import {MATCH_LIMITS} from "../src/match/protocol";
+import {commandIdEcho} from "../src/match/match-room";
 import type {Env} from "../src/types";
 
 const origin = "https://party.example.invalid";
@@ -389,4 +390,77 @@ describe("MatchRoom local Durable Object adapter", () => {
     expect(expired.status).toBe(404);
   });
 
+  it("echoes the request commandId on an accepted command response", async () => {
+    const host = await create();
+    const accepted = await post(`/api/match/${host.roomId}/command`,
+      command(host.lobby.revision, "770", "set_character", 0, "0"), host.credential);
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({accepted: true, commandId: "770"});
+  });
+
+  it("echoes the request commandId on a refused command response", async () => {
+    const host = await create();
+    /* Advance the revision so a fresh command at the old revision is refused
+     * with stale_revision, then confirm the refusal still carries its id. */
+    const first = await post(`/api/match/${host.roomId}/command`,
+      command(host.lobby.revision, "1", "set_character", 0, "0"), host.credential);
+    expect(first.status).toBe(200);
+    const stale = await post(`/api/match/${host.roomId}/command`,
+      command(host.lobby.revision, "880", "set_vehicle", 0, "0"), host.credential);
+    expect(stale.status).toBe(412);
+    expect(await stale.json()).toMatchObject({error: "stale_revision",
+      commandId: "880"});
+  });
+
+  it("never invents a commandId for a request that omits or malforms it", async () => {
+    const host = await create();
+    /* Absent in the request -> absent in the response: a command missing its id
+     * is rejected before authority and the body carries no commandId. */
+    const {commandId: _omitted, ...withoutId} =
+      command(host.lobby.revision, "1", "set_ready", 1);
+    const absent = await post(`/api/match/${host.roomId}/command`, withoutId,
+      host.credential);
+    expect(absent.status).toBe(400);
+    expect(await absent.json()).toEqual({error: "invalid_command"});
+
+    /* Oversized (but within the body cap) and wrong-typed ids are rejected the
+     * same way: no crash, and the server never reflects the hostile value back.
+     * A megabyte-scale id is refused earlier still by the body-size cap (413);
+     * commandIdEcho's own bound is covered by the unit tests below. */
+    for (const hostile of ["9".repeat(200), {nested: true}, [1, 2, 3], true]) {
+      const bad = await post(`/api/match/${host.roomId}/command`,
+        {...command(host.lobby.revision, "1", "set_ready", 1), commandId: hostile},
+        host.credential);
+      expect(bad.status).toBe(400);
+      const body = await bad.json() as Record<string, any>;
+      expect(body).not.toHaveProperty("commandId");
+    }
+  });
+
+});
+
+describe("commandIdEcho transport hygiene", () => {
+  it("mirrors a legitimate decimal u64 id string verbatim", () => {
+    expect(commandIdEcho({commandId: "18446744073709551615"}))
+      .toEqual({commandId: "18446744073709551615"});
+    expect(commandIdEcho({commandId: "0"})).toEqual({commandId: "0"});
+  });
+
+  it("tolerates a finite number-typed id, matching the client parser", () => {
+    expect(commandIdEcho({commandId: 42})).toEqual({commandId: 42});
+  });
+
+  it("omits an absent id so absence never becomes invention", () => {
+    expect(commandIdEcho({})).toEqual({});
+    expect(commandIdEcho({commandId: undefined})).toEqual({});
+  });
+
+  it("ignores oversized and wrong-typed ids without echoing garbage", () => {
+    expect(commandIdEcho({commandId: "9".repeat(100_000)})).toEqual({});
+    expect(commandIdEcho({commandId: Infinity})).toEqual({});
+    expect(commandIdEcho({commandId: {nested: true}})).toEqual({});
+    expect(commandIdEcho({commandId: [1, 2, 3]})).toEqual({});
+    expect(commandIdEcho({commandId: true})).toEqual({});
+    expect(commandIdEcho({commandId: null})).toEqual({});
+  });
 });
