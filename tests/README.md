@@ -4792,6 +4792,23 @@ playability journeys. It specifically protects the shared expandable-roster
 layout and the two new ROM-authored presentation assets. It is registered as
 `bonus_character_select` in `tools/run_checks.py`.
 
+## Independent custom-character browser — `tests/check_custom_character_roster.py`
+
+This real WebGPU gate generates a tiny license-clean GLB and portrait, packages
+and transactionally installs them into a temporary isolated character catalog,
+then enters the actual custom-racer browser through its controller route. It
+requires the runtime catalog trace, opaque modal coverage, centered portrait
+pixels, a clean exit, and no fatal/sanitizer marker. It never reads or changes
+the player's normal character library.
+
+```bash
+python3 tests/check_custom_character_roster.py \
+  --build build-character-tests --rom baserom.us.v80.z64
+```
+
+The gate is registered as `custom_character_roster` in `tools/run_checks.py`
+and is serialized with the other native GPU/pixel checks.
+
 ## Bonus results portraits — `tests/check_bonus_results_portraits.py`
 
 This real-ROM gate completes a time-trial post-race flow once as Wizpig and

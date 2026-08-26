@@ -297,13 +297,21 @@ Root rotation and seat offsets cannot repair that. A model needs real authored
 semantic clips or a future humanoid role-map/retargeting/IK stage; the current
 importer refuses to disguise a static clip as animation readiness.
 
-In character select, a configured package replaces its exact
-fingerprint-qualified donor actor while the numbered player placard remains.
-Its `select.idle`, `select.hover`, and `select.confirm` mapping follows the real
-cursor state. The current virtual-presentation tier still uses the donor's
-roster tile, voice, and gameplay profile. Authored portraits/names resolve in
-HUD and results surfaces; an independent select tile and dynamic game-font name
-remain separate local-identity work, not physics authority.
+In character select, press **R** for an unconfirmed player to open that player's
+independent custom-racer browser. It shows eight portrait/name tiles per page,
+supports all 64 bounded local catalog entries, centers partial pages, and keeps
+each local player's choice separate; players may also choose the same package.
+The selected package's declared donor remains its clearly labelled gameplay
+profile. Its `select.idle`, `select.hover`, and `select.confirm` mapping then
+drives the exact fingerprint-qualified donor actor seam while the numbered
+player placard remains. The package name, portrait, minimap colour, and
+assignment identity remain independent of that donor; donor voice and music
+are deliberately neutral during custom selection.
+
+`MDKR_CUSTOM_CHARACTER_DIRECTORY` is a diagnostic and automated-test override
+for launching against an isolated catalog. Ordinary players should use the
+workshop-managed per-user character directory; the override does not bypass
+package validation or installation policy.
 
 All ten retail vehicle-model families now have exact revision-1 fingerprint and
 driver-batch profiles for car, hovercraft, plane, and character select. Their

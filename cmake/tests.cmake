@@ -335,6 +335,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     # loader consumes the exact compiler output and rejects corrupt headers and
     # payloads before publishing any section pointer.
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME character_asset_probe
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_asset_probe.py)
     add_executable(mdkr_modern_character_asset_test
         ${CMAKE_SOURCE_DIR}/tests/test_modern_character_asset.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_asset.c

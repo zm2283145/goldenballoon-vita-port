@@ -9012,11 +9012,46 @@ void titlescreen_controller_assign(s32 controllerIndex) {
 }
 
 #ifdef NATIVE_PORT
+static void charselect_custom_fit_text(const char *source, char *output,
+                                       size_t outputSize, s32 maxWidth) {
+    size_t input = 0u;
+    size_t used = 0u;
+    s32 truncated;
+    if (output == NULL || outputSize == 0u) return;
+    if (source == NULL) source = "";
+    while (source[input] != '\0' && used + 1u < outputSize) {
+        unsigned char character = (unsigned char)source[input++];
+        if (character >= 0x80u) {
+            while (((unsigned char)source[input] & 0xC0u) == 0x80u) input++;
+            character = '?';
+        } else if (character < 0x20u || character == 0x7Fu) {
+            character = ' ';
+        }
+        output[used++] = (char)character;
+    }
+    truncated = source[input] != '\0';
+    output[used] = '\0';
+    while (used > 0u &&
+           get_text_width(output, 0, ASSET_FONTS_FUNFONT) > maxWidth) {
+        used--;
+        output[used] = '\0';
+        truncated = TRUE;
+    }
+    if (truncated && used > 0u) {
+        output[used - 1u] = '.';
+    }
+}
+
 static void charselect_custom_draw_panel(void) {
     static const u8 playerColours[MAXCONTROLLERS][3] = {
         {96, 160, 255}, {255, 96, 96}, {255, 224, 64}, {80, 224, 112}
     };
+    static const char *const donorNames[10] = {
+        "KRUNCH", "BUMPER", "TIPTUP", "CONKER", "TIMBER",
+        "BANJO", "DRUMSTICK", "PIPSY", "T.T.", "DIDDY"
+    };
     MdkrCustomRosterCursor *cursor;
+    const MdkrCustomRosterItem *selected;
     const MdkrCustomRosterItem *item;
     DrawTexture *portrait;
     char text[128];
@@ -9024,7 +9059,11 @@ static void charselect_custom_draw_panel(void) {
     s32 owner = sCustomCharacterRosterOwner;
     s32 page;
     s32 pageStart;
+    s32 visibleCount;
     s32 slot;
+    s32 rowSlot;
+    s32 rowCount;
+    s32 rowStart;
     s32 player;
     s32 x;
     s32 y;
@@ -9033,12 +9072,17 @@ static void charselect_custom_draw_panel(void) {
     mdkr_custom_roster_cursor_sync(&sCustomCharacterRoster, cursor);
     page = mdkr_custom_roster_page(&sCustomCharacterRoster, cursor);
     pageStart = page * MDKR_CUSTOM_ROSTER_PAGE_SIZE;
+    visibleCount = sCustomCharacterRoster.count - pageStart;
+    if (visibleCount > MDKR_CUSTOM_ROSTER_PAGE_SIZE) {
+        visibleCount = MDKR_CUSTOM_ROSTER_PAGE_SIZE;
+    }
+    selected = mdkr_custom_roster_current(&sCustomCharacterRoster, cursor);
 
     gSPDisplayList(sMenuCurrDisplayList++, dCreditsFade);
-    gDPSetPrimColor(sMenuCurrDisplayList++, 0, 0, 8, 12, 24, 232);
+    gDPSetPrimColor(sMenuCurrDisplayList++, 0, 0, 8, 12, 24, 255);
     gDPSetCombineMode(sMenuCurrDisplayList++, G_CC_PRIMITIVE,
                      G_CC_PRIMITIVE);
-    gDPFillRectangle(sMenuCurrDisplayList++, 8, 42, SCREEN_WIDTH - 8, 226);
+    gDPFillRectangle(sMenuCurrDisplayList++, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
     gDPPipeSync(sMenuCurrDisplayList++);
     rendermode_reset(&sMenuCurrDisplayList);
 
@@ -9047,20 +9091,27 @@ static void charselect_custom_draw_panel(void) {
     set_text_colour(playerColours[owner][0], playerColours[owner][1],
                     playerColours[owner][2], 0, 255);
     (void)snprintf(text, sizeof(text), "P%d CUSTOM RACERS", owner + 1);
-    draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 50, text,
+    draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 16, text,
               ALIGN_MIDDLE_CENTER);
     set_text_colour(208, 216, 232, 0, 255);
-    (void)snprintf(text, sizeof(text), "PAGE %d/%d", page + 1,
+    (void)snprintf(text, sizeof(text), "PAGE %d OF %d", page + 1,
                    mdkr_custom_roster_page_count(&sCustomCharacterRoster));
-    draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 62, text,
+    draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 29, text,
               ALIGN_MIDDLE_CENTER);
 
-    for (slot = 0; slot < MDKR_CUSTOM_ROSTER_PAGE_SIZE; slot++) {
+    for (slot = 0; slot < visibleCount; slot++) {
         s32 itemIndex = pageStart + slot;
-        if (itemIndex >= sCustomCharacterRoster.count) break;
         item = &sCustomCharacterRoster.items[itemIndex];
-        x = 20 + (slot % MDKR_CUSTOM_ROSTER_PAGE_COLUMNS) * 76;
-        y = 70 + (slot / MDKR_CUSTOM_ROSTER_PAGE_COLUMNS) * 66;
+        rowSlot = slot % MDKR_CUSTOM_ROSTER_PAGE_COLUMNS;
+        rowCount = visibleCount -
+                   (slot / MDKR_CUSTOM_ROSTER_PAGE_COLUMNS) *
+                       MDKR_CUSTOM_ROSTER_PAGE_COLUMNS;
+        if (rowCount > MDKR_CUSTOM_ROSTER_PAGE_COLUMNS) {
+            rowCount = MDKR_CUSTOM_ROSTER_PAGE_COLUMNS;
+        }
+        rowStart = (SCREEN_WIDTH - rowCount * 64) / 2;
+        x = rowStart + rowSlot * 64 + 12;
+        y = 45 + (slot / MDKR_CUSTOM_ROSTER_PAGE_COLUMNS) * 66;
         portrait = menu_custom_roster_portrait(item, slot);
         if (portrait != NULL && portrait[0].texture != NULL) {
             texrect_draw(&sMenuCurrDisplayList, portrait, x, y,
@@ -9070,8 +9121,8 @@ static void charselect_custom_draw_panel(void) {
             draw_text(&sMenuCurrDisplayList, x + 20, y + 18,
                       "UPDATE", ALIGN_MIDDLE_CENTER);
         }
-        (void)snprintf(shortName, sizeof(shortName), "%.14s",
-                       item->display_name);
+        charselect_custom_fit_text(item->display_name, shortName,
+                                   sizeof(shortName), 54);
         if (itemIndex == cursor->item) {
             set_text_colour(playerColours[owner][0],
                             playerColours[owner][1],
@@ -9084,7 +9135,7 @@ static void charselect_custom_draw_panel(void) {
             set_text_colour(240, 240, 240, 0, 255);
             (void)snprintf(text, sizeof(text), "%s", shortName);
         }
-        draw_text(&sMenuCurrDisplayList, x + 20, y + 45, text,
+        draw_text(&sMenuCurrDisplayList, x + 20, y + 44, text,
                   ALIGN_MIDDLE_CENTER);
         text[0] = '\0';
         for (player = 0; player < MAXCONTROLLERS; player++) {
@@ -9097,20 +9148,37 @@ static void charselect_custom_draw_panel(void) {
         }
         if (text[0] != '\0') {
             set_text_colour(160, 208, 255, 0, 255);
-            draw_text(&sMenuCurrDisplayList, x + 20, y + 55, text,
+            draw_text(&sMenuCurrDisplayList, x + 20, y + 54, text,
                       ALIGN_MIDDLE_CENTER);
         }
     }
     if (sCustomCharacterRosterErrorTimer > 0) {
         set_text_colour(255, 96, 64, 0, 255);
-        draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 202,
+        draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 190,
                   sCustomCharacterRosterError, ALIGN_MIDDLE_CENTER);
-    } else {
-        set_text_colour(208, 216, 232, 0, 255);
-        draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 202,
-                  "STICK: MOVE  L/R: PAGE  A: CHOOSE  B: BACK",
+    } else if (selected != NULL) {
+        set_text_colour(playerColours[owner][0], playerColours[owner][1],
+                        playerColours[owner][2], 0, 255);
+        charselect_custom_fit_text(selected->display_name, text,
+                                   sizeof(text), SCREEN_WIDTH - 24);
+        draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 184,
+                  text, ALIGN_MIDDLE_CENTER);
+        set_text_colour(184, 192, 208, 0, 255);
+        (void)snprintf(text, sizeof(text), "GAMEPLAY PROFILE: %s",
+            selected->donor < 10u ? donorNames[selected->donor] : "INVALID");
+        draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 196, text,
+                  ALIGN_MIDDLE_CENTER);
+        (void)snprintf(text, sizeof(text), "VEHICLES: %s%s%s",
+            (selected->vehicle_mask & 1u) != 0u ? "CAR " : "",
+            (selected->vehicle_mask & 2u) != 0u ? "HOVER " : "",
+            (selected->vehicle_mask & 4u) != 0u ? "PLANE" : "");
+        draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 207, text,
                   ALIGN_MIDDLE_CENTER);
     }
+    set_text_colour(208, 216, 232, 0, 255);
+    draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 224,
+              "STICK: MOVE  L/R: PAGE  A: CHOOSE  B: BACK",
+              ALIGN_MIDDLE_CENTER);
     rendermode_reset(&sMenuCurrDisplayList);
 }
 

@@ -193,6 +193,7 @@ GPU_SERIAL_NAMES = frozenset({
     "challenge_modes",
     "taj_challenges",
     "bonus_character_select",
+    "custom_character_roster",
     "bonus_results_portraits",
     "taj_character_select",
     "taj_character_select_webgpu",
@@ -721,6 +722,9 @@ CHECKS = (
     Check("bonus_character_select", "check_bonus_character_select.py", "native",
           "contiguous 13-racer picker with independent Taj, Wizpig, and Terry "
           "actor/placard composition, pose states, and controller navigation"),
+    Check("custom_character_roster", "check_custom_character_roster.py", "native",
+          "isolated generated custom package, independent paginated browser, "
+          "portrait composition, and real controller entry route"),
     Check("bonus_results_portraits", "check_bonus_results_portraits.py", "native",
           "real post-race Wizpig/Terry portrait ownership, retail dimensions, "
           "and distinct card pixels"),

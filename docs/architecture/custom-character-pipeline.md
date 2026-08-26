@@ -67,10 +67,11 @@ This gives three deliberately separate formats:
   resampling, and revisioned HUD/results/rankings/minimap resolution.
 
 This is deliberately a vertical slice, not a claim of production readiness.
-OpenGL intentionally falls back to the retail driver, full independent
-character-select tiles and dynamic
-game-font names are not yet wired, and the COLLADA adapter synthesizes a
-motionless one-second witness clip when the source has no animation.
+OpenGL intentionally falls back to the retail driver, while WebGPU now has an
+independent paginated custom-character select browser with package portraits,
+font-width-bounded local names, and per-player identity. The COLLADA adapter
+still synthesizes a motionless one-second witness clip when the source has no
+animation.
 
 The game must not parse FBX or DAE, execute scripts from a character package,
 or put imported mesh/pose buffers in authoritative or rollback state.
@@ -131,7 +132,8 @@ local versioned .mdkc cache
     v
 presentation-only character instance
     |
-    +-- authoritative donor supplies identity, physics, vehicle and state
+    +-- package supplies local presentation identity
+    +-- authoritative donor supplies physics, vehicle and simulation state
     +-- animation adapter selects semantic clips and blend parameters
     +-- WebGPU/GL renderer performs GPU skinning and material rendering
 ```
@@ -874,8 +876,11 @@ GPU limits are exceeded.
 ### P6 - Launcher, content packs and community release (workshop baseline complete)
 
 - Import/diagnostic/removal UI, native portable-package install, local package
-  directory, P1-P4 assignment, vehicle pairing and fit/motion controls are complete.
-- Generate portraits or accept validated package portraits with fallbacks.
+  directory, P1-P4 assignment, independent in-game custom browser, vehicle
+  pairing and fit/motion controls are complete.
+- Validated package portraits, exact pixel editing, identity revisions and
+  game-surface fallbacks are complete; renderer capture and advanced style
+  generation remain.
 - Add local enable/order policy and online digest/fallback diagnostics.
 - Publish an SDK containing schemas, the generated animated fixture, validator,
   packer, semantic state reference, and examples that contain no Nintendo asset.
