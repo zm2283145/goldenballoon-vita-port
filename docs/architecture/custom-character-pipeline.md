@@ -144,14 +144,23 @@ gameplay-mod system is introduced.
 ## Presentation identity versus a new gameplay profile
 
 The implemented spike is a **virtual presentation identity**, not an eleventh
-retail `Character` enum value. Selecting a package for P1 and then selecting its
-declared donor in the game keeps the corresponding retail `characterId`; only
-that player's qualified driver batches are replaced. This is enough to ship a
-visually distinct local character with an explicit familiar stats profile. The
-exact donor select actor is also replaced while its numbered
-placard remains authored. The remaining roster UX still has to expose packages
-as independently named tiles and supply portraits/results identity rather than
-presenting them through the donor's tile.
+retail `Character` enum value. The native character-select menu now exposes
+validated packages through an independent, alphabetized custom-racer browser:
+eight portrait/name tiles per page, all 64 bounded catalog entries, stable
+package-ID cursor rebinding, per-controller selection markers, explicit legacy
+identity-upgrade states, and exact package assignment in sparse-controller
+race-player order. Multiple local players may select the same package or
+different packages. The package's declared donor becomes the authoritative
+retail `characterId` only when race setup commits, while package identity owns
+the visible name and portrait and donor voice/music are kept neutral during
+character selection.
+
+The selected package still replaces its fingerprint-qualified donor actor in
+the authored 3D select scene after the browser closes; a locked donor uses
+Diddy only as a neutral scene anchor while retaining the package's exact donor
+for gameplay. This is enough to ship a visually distinct local character with
+an explicit familiar stats profile without expanding fixed ROM tables or
+pretending a donor tile is the custom identity.
 
 This separation avoids corrupting assumptions that are genuinely fixed at ten:
 
@@ -450,8 +459,13 @@ runtime catalog view containing stable package/display identity, decoded 40x40
 portrait, minimap colour, donor, vehicle mask, and source revision. Catalog
 inspection retains no GPU mesh or texture ownership; selecting an entry by
 index resolves back through the registry and then uses the ordinary validated
-player-assignment path. This is the identity-token foundation for paginated
-custom roster tiles, rather than aliasing package rows to retail character IDs.
+player-assignment path. The select browser copies only bounded identity tokens,
+sorts deterministically by display name and ID, never enters an empty grid
+cell, preserves columns across partial pages, and derives a tested race plan
+from potentially sparse controller slots. Selection loads the real package
+before confirmation; a load failure restores the previous selection, while an
+unexpected commit-time failure falls back all affected presentation identities
+to retail rather than pairing a custom donor with a missing model.
 
 Launcher-authored fit and motion tuning crosses the process boundary under the
 stable package ID, not the player slot that happened to own it at startup. A

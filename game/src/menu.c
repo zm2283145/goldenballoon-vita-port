@@ -14,6 +14,7 @@
 #include "taj_mod_state_file.h"
 #include "video_config.h"
 #include "net/net_roster_runtime.h"
+#include "custom_character_roster.h"
 #include "modern_character_runtime.h"
 extern int g_frameCounter;
 #endif
@@ -1078,6 +1079,13 @@ static s32 sTajPersistenceWarningShown;
 static s8 sTajTraceCharacter[MAXCONTROLLERS];
 static s8 sTajTraceVisualStatus[MAXCONTROLLERS];
 static s8 sTajTraceSignVisible[MAXCONTROLLERS];
+static MdkrCustomRoster sCustomCharacterRoster;
+static MdkrCustomRosterCursor sCustomCharacterCursors[MAXCONTROLLERS];
+static s32 sCustomCharacterSelection[MAXCONTROLLERS];
+static s32 sCustomCharacterDefaultSelection[MAXCONTROLLERS];
+static s32 sCustomCharacterRosterOwner = -1;
+static s32 sCustomCharacterRosterErrorTimer;
+static char sCustomCharacterRosterError[128];
 
 enum TajCharacterSelectSound {
     TAJ_CHARSELECT_HIGHLIGHT,
@@ -1101,6 +1109,132 @@ static s32 charselect_index_is_terry(s32 index) {
            sTerryCharacterSelectIndex >= 0 && index == sTerryCharacterSelectIndex;
 }
 
+static s32 charselect_custom_find_package(const char *packageId) {
+    s32 i;
+    if (packageId == NULL || packageId[0] == '\0') return -1;
+    for (i = 0; i < sCustomCharacterRoster.count; i++) {
+        if (strcmp(sCustomCharacterRoster.items[i].id, packageId) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static s32 charselect_custom_race_slot(s32 controller) {
+    s32 i;
+    s32 slot = 0;
+    for (i = 0; i < controller && i < MAXCONTROLLERS; i++) {
+        if (gActivePlayersArray[i]) slot++;
+    }
+    return slot;
+}
+
+static s32 charselect_custom_donor_table_index(s32 rosterIndex) {
+    s32 donor;
+    s32 i;
+    if (rosterIndex < 0 || rosterIndex >= sCustomCharacterRoster.count) {
+        return DIDDY;
+    }
+    donor = (s32)sCustomCharacterRoster.items[rosterIndex].donor;
+    for (i = 0; i < sCharacterSelectBaseCount; i++) {
+        if (CHARSELECT_DATA(i).voiceID == donor) return i;
+    }
+    /* Locked donor characters remain valid gameplay profiles, but their
+     * authored select actor is unavailable. Diddy is only a neutral scene
+     * anchor; race setup still uses the package's exact donor below. */
+    return DIDDY;
+}
+
+static void charselect_custom_set_error(const char *message) {
+    (void)snprintf(sCustomCharacterRosterError,
+                   sizeof(sCustomCharacterRosterError), "%s",
+                   message != NULL && message[0] != '\0'
+                       ? message : "CUSTOM RACER IS UNAVAILABLE");
+    sCustomCharacterRosterErrorTimer = 240;
+}
+
+/* Rebuild all runtime assignments in race-player order. This makes sparse
+ * controller layouts and late joins deterministic and prevents an old
+ * launcher assignment from surviving after its player chooses retail. */
+static s32 charselect_custom_sync_runtime(char *error, size_t errorSize) {
+    MdkrCustomRosterRaceSelection plan[MDKR_MODERN_CHARACTER_PLAYERS];
+    int active[MDKR_MODERN_CHARACTER_PLAYERS];
+    int selection[MDKR_MODERN_CHARACTER_PLAYERS];
+    s32 controller;
+    s32 count;
+    s32 raceSlot;
+    for (controller = 0; controller < MDKR_MODERN_CHARACTER_PLAYERS;
+         controller++) {
+        active[controller] = gActivePlayersArray[controller] != 0;
+        selection[controller] = sCustomCharacterSelection[controller];
+    }
+    count = mdkr_custom_roster_race_plan(
+        &sCustomCharacterRoster, active, selection, plan);
+    if (count < 0) {
+        if (error != NULL && errorSize > 0u) {
+            (void)snprintf(error, errorSize,
+                           "custom racer selection is no longer valid");
+        }
+        return FALSE;
+    }
+    for (raceSlot = 0; raceSlot < MDKR_MODERN_CHARACTER_PLAYERS;
+         raceSlot++) {
+        mdkr_modern_character_clear_player(raceSlot);
+    }
+    for (raceSlot = 0; raceSlot < count; raceSlot++) {
+        if (plan[raceSlot].catalog_index >= 0 &&
+            !mdkr_modern_character_assign_player_index(
+                raceSlot, plan[raceSlot].catalog_index, error, errorSize)) {
+            return FALSE;
+        }
+    }
+    if (error != NULL && errorSize > 0u) error[0] = '\0';
+    return TRUE;
+}
+
+static void charselect_custom_init(void) {
+    MdkrModernCharacterCatalogView view;
+    const char *packageId;
+    s32 activeSlot = 0;
+    s32 catalogCount;
+    s32 controller;
+    s32 i;
+    mdkr_custom_roster_reset(&sCustomCharacterRoster);
+    catalogCount = mdkr_modern_character_catalog_count();
+    for (i = 0; i < catalogCount; i++) {
+        if (mdkr_modern_character_catalog_entry(i, &view)) {
+            (void)mdkr_custom_roster_add(&sCustomCharacterRoster, i, &view);
+        }
+    }
+    mdkr_custom_roster_sort(&sCustomCharacterRoster);
+    for (i = 0; i < MAXCONTROLLERS; i++) {
+        memset(&sCustomCharacterCursors[i], 0,
+               sizeof(sCustomCharacterCursors[i]));
+        sCustomCharacterCursors[i].item = -1;
+        sCustomCharacterSelection[i] = -1;
+        packageId = mdkr_modern_character_player_package(i);
+        sCustomCharacterDefaultSelection[i] =
+            charselect_custom_find_package(packageId);
+    }
+    for (controller = 0; controller < MAXCONTROLLERS; controller++) {
+        if (!gActivePlayersArray[controller]) continue;
+        sCustomCharacterSelection[controller] =
+            sCustomCharacterDefaultSelection[activeSlot++];
+        sCustomCharacterCursors[controller].item =
+            sCustomCharacterSelection[controller];
+        mdkr_custom_roster_cursor_sync(
+            &sCustomCharacterRoster,
+            &sCustomCharacterCursors[controller]);
+    }
+    sCustomCharacterRosterOwner = -1;
+    sCustomCharacterRosterErrorTimer = 0;
+    sCustomCharacterRosterError[0] = '\0';
+    MDKR_TRACE("custom_roster: catalog=%d visible=%d rejected=%d pages=%d",
+               catalogCount, sCustomCharacterRoster.count,
+               sCustomCharacterRoster.rejected,
+               mdkr_custom_roster_page_count(&sCustomCharacterRoster));
+}
+
 static ModRacerIdentity charselect_identity_for_index(s32 index) {
     if (charselect_index_is_taj(index)) return MOD_RACER_TAJ;
     if (charselect_index_is_wizpig(index)) return MOD_RACER_WIZPIG;
@@ -1115,6 +1249,14 @@ static s32 charselect_music_channel_for_index(s32 index) {
     return charselect_identity_for_index(index) != MOD_RACER_RETAIL
                ? -1
                : CHARSELECT_DATA(index).voiceID;
+}
+
+static s32 charselect_music_channel_for_player(s32 player) {
+    if (player < 0 || player >= MAXCONTROLLERS ||
+        sCustomCharacterSelection[player] >= 0) {
+        return -1;
+    }
+    return charselect_music_channel_for_index(gPlayersCharacterArray[player]);
 }
 
 static s32 charselect_taj_is_selectable(void) {
@@ -1291,6 +1433,9 @@ static u16 charselect_taj_sound(s32 playerIndex, u16 fallback, s32 event) {
     if (playerIndex < 0 || playerIndex >= MAXCONTROLLERS) {
         return fallback;
     }
+    if (sCustomCharacterSelection[playerIndex] >= 0) {
+        return SOUND_SELECT2;
+    }
     if (charselect_index_is_wizpig(gPlayersCharacterArray[playerIndex])) {
         return event == TAJ_CHARSELECT_DESELECT
                    ? SOUND_VOICE_WIZPIG_LAUGH_SHORT3
@@ -1324,6 +1469,10 @@ enum TajCharacterSelectSound {
 
 static s32 charselect_music_channel_for_index(s32 index) {
     return CHARSELECT_DATA(index).voiceID;
+}
+
+static s32 charselect_music_channel_for_player(s32 player) {
+    return charselect_music_channel_for_index(gPlayersCharacterArray[player]);
 }
 
 static u16 charselect_taj_sound(UNUSED s32 playerIndex, u16 fallback, UNUSED s32 event) {
@@ -1728,6 +1877,12 @@ static TajPortraitTexture sCustomPortraitTextures[MDKR_MODERN_CHARACTER_PLAYERS]
 static Gfx *sCustomPortraitCommands[MDKR_MODERN_CHARACTER_PLAYERS];
 static DrawTexture sCustomPortraits[MDKR_MODERN_CHARACTER_PLAYERS][2];
 static u64 sCustomPortraitRevisions[MDKR_MODERN_CHARACTER_PLAYERS];
+static TajPortraitTexture sCustomRosterPortraitTextures[
+    MDKR_CUSTOM_ROSTER_PAGE_SIZE];
+static Gfx *sCustomRosterPortraitCommands[MDKR_CUSTOM_ROSTER_PAGE_SIZE];
+static DrawTexture sCustomRosterPortraits[MDKR_CUSTOM_ROSTER_PAGE_SIZE][2];
+static u64 sCustomRosterPortraitRevisions[MDKR_CUSTOM_ROSTER_PAGE_SIZE];
+static s32 sCustomRosterPortraitCatalogIndices[MDKR_CUSTOM_ROSTER_PAGE_SIZE];
 
 /* Taj has no retail results portrait. This small native RGBA card is original
  * port artwork assembled from geometric pixel primitives: it stays inside the
@@ -2146,6 +2301,48 @@ DrawTexture *menu_custom_character_portrait(s32 playerIndex) {
             playerIndex, identity.display_name,
             (unsigned long long)identity.revision,
             identity.portrait_width, identity.portrait_height);
+    } else {
+        dkr_dl_register_host_ptr(texture->texels);
+    }
+    return portrait;
+}
+
+static DrawTexture *menu_custom_roster_portrait(
+    const MdkrCustomRosterItem *item, s32 pageSlot) {
+    MdkrModernCharacterCatalogView view;
+    TajPortraitTexture *texture;
+    DrawTexture *portrait;
+    if (item == NULL || pageSlot < 0 ||
+        pageSlot >= MDKR_CUSTOM_ROSTER_PAGE_SIZE ||
+        item->availability != MDKR_CUSTOM_ROSTER_AVAILABLE ||
+        !mdkr_modern_character_catalog_entry(item->catalog_index, &view) ||
+        view.portrait_rgba == NULL ||
+        view.portrait_width != TAJ_PORTRAIT_SIZE ||
+        view.portrait_height != TAJ_PORTRAIT_SIZE ||
+        view.portrait_stride != TAJ_PORTRAIT_SIZE * 4u) {
+        return NULL;
+    }
+    texture = &sCustomRosterPortraitTextures[pageSlot];
+    portrait = sCustomRosterPortraits[pageSlot];
+    if (sCustomRosterPortraitCommands[pageSlot] == NULL) {
+        sCustomRosterPortraitCommands[pageSlot] = mempool_alloc_safe(
+            TAJ_PORTRAIT_COMMANDS *
+                sizeof(*sCustomRosterPortraitCommands[pageSlot]),
+            COLOUR_TAG_MAGENTA);
+    }
+    if (sCustomRosterPortraitCatalogIndices[pageSlot] != item->catalog_index ||
+        sCustomRosterPortraitRevisions[pageSlot] != view.revision ||
+        portrait[0].texture == NULL) {
+        memset(texture, 0, sizeof(*texture));
+        memcpy(texture->texels, view.portrait_rgba,
+               sizeof(texture->texels));
+        portrait[0].texture = custom_portrait_finish(
+            texture, sCustomRosterPortraitCommands[pageSlot]);
+        portrait[0].xOffset = 0;
+        portrait[0].yOffset = 0;
+        portrait[1].texture = NULL;
+        sCustomRosterPortraitCatalogIndices[pageSlot] = item->catalog_index;
+        sCustomRosterPortraitRevisions[pageSlot] = view.revision;
     } else {
         dkr_dl_register_host_ptr(texture->texels);
     }
@@ -8814,6 +9011,205 @@ void titlescreen_controller_assign(s32 controllerIndex) {
     }
 }
 
+#ifdef NATIVE_PORT
+static void charselect_custom_draw_panel(void) {
+    static const u8 playerColours[MAXCONTROLLERS][3] = {
+        {96, 160, 255}, {255, 96, 96}, {255, 224, 64}, {80, 224, 112}
+    };
+    MdkrCustomRosterCursor *cursor;
+    const MdkrCustomRosterItem *item;
+    DrawTexture *portrait;
+    char text[128];
+    char shortName[20];
+    s32 owner = sCustomCharacterRosterOwner;
+    s32 page;
+    s32 pageStart;
+    s32 slot;
+    s32 player;
+    s32 x;
+    s32 y;
+    if (owner < 0 || owner >= MAXCONTROLLERS) return;
+    cursor = &sCustomCharacterCursors[owner];
+    mdkr_custom_roster_cursor_sync(&sCustomCharacterRoster, cursor);
+    page = mdkr_custom_roster_page(&sCustomCharacterRoster, cursor);
+    pageStart = page * MDKR_CUSTOM_ROSTER_PAGE_SIZE;
+
+    gSPDisplayList(sMenuCurrDisplayList++, dCreditsFade);
+    gDPSetPrimColor(sMenuCurrDisplayList++, 0, 0, 8, 12, 24, 232);
+    gDPSetCombineMode(sMenuCurrDisplayList++, G_CC_PRIMITIVE,
+                     G_CC_PRIMITIVE);
+    gDPFillRectangle(sMenuCurrDisplayList++, 8, 42, SCREEN_WIDTH - 8, 226);
+    gDPPipeSync(sMenuCurrDisplayList++);
+    rendermode_reset(&sMenuCurrDisplayList);
+
+    set_text_font(ASSET_FONTS_FUNFONT);
+    set_text_background_colour(0, 0, 0, 0);
+    set_text_colour(playerColours[owner][0], playerColours[owner][1],
+                    playerColours[owner][2], 0, 255);
+    (void)snprintf(text, sizeof(text), "P%d CUSTOM RACERS", owner + 1);
+    draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 50, text,
+              ALIGN_MIDDLE_CENTER);
+    set_text_colour(208, 216, 232, 0, 255);
+    (void)snprintf(text, sizeof(text), "PAGE %d/%d", page + 1,
+                   mdkr_custom_roster_page_count(&sCustomCharacterRoster));
+    draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 62, text,
+              ALIGN_MIDDLE_CENTER);
+
+    for (slot = 0; slot < MDKR_CUSTOM_ROSTER_PAGE_SIZE; slot++) {
+        s32 itemIndex = pageStart + slot;
+        if (itemIndex >= sCustomCharacterRoster.count) break;
+        item = &sCustomCharacterRoster.items[itemIndex];
+        x = 20 + (slot % MDKR_CUSTOM_ROSTER_PAGE_COLUMNS) * 76;
+        y = 70 + (slot / MDKR_CUSTOM_ROSTER_PAGE_COLUMNS) * 66;
+        portrait = menu_custom_roster_portrait(item, slot);
+        if (portrait != NULL && portrait[0].texture != NULL) {
+            texrect_draw(&sMenuCurrDisplayList, portrait, x, y,
+                         255, 255, 255, 255);
+        } else {
+            set_text_colour(255, 112, 80, 0, 255);
+            draw_text(&sMenuCurrDisplayList, x + 20, y + 18,
+                      "UPDATE", ALIGN_MIDDLE_CENTER);
+        }
+        (void)snprintf(shortName, sizeof(shortName), "%.14s",
+                       item->display_name);
+        if (itemIndex == cursor->item) {
+            set_text_colour(playerColours[owner][0],
+                            playerColours[owner][1],
+                            playerColours[owner][2], 0, 255);
+            (void)snprintf(text, sizeof(text), "> %s <", shortName);
+        } else if (item->availability != MDKR_CUSTOM_ROSTER_AVAILABLE) {
+            set_text_colour(160, 160, 168, 0, 255);
+            (void)snprintf(text, sizeof(text), "%s", shortName);
+        } else {
+            set_text_colour(240, 240, 240, 0, 255);
+            (void)snprintf(text, sizeof(text), "%s", shortName);
+        }
+        draw_text(&sMenuCurrDisplayList, x + 20, y + 45, text,
+                  ALIGN_MIDDLE_CENTER);
+        text[0] = '\0';
+        for (player = 0; player < MAXCONTROLLERS; player++) {
+            if (gActivePlayersArray[player] &&
+                sCustomCharacterSelection[player] == itemIndex) {
+                size_t used = strlen(text);
+                (void)snprintf(text + used, sizeof(text) - used,
+                               "%sP%d", used == 0u ? "" : " ", player + 1);
+            }
+        }
+        if (text[0] != '\0') {
+            set_text_colour(160, 208, 255, 0, 255);
+            draw_text(&sMenuCurrDisplayList, x + 20, y + 55, text,
+                      ALIGN_MIDDLE_CENTER);
+        }
+    }
+    if (sCustomCharacterRosterErrorTimer > 0) {
+        set_text_colour(255, 96, 64, 0, 255);
+        draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 202,
+                  sCustomCharacterRosterError, ALIGN_MIDDLE_CENTER);
+    } else {
+        set_text_colour(208, 216, 232, 0, 255);
+        draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 202,
+                  "STICK: MOVE  L/R: PAGE  A: CHOOSE  B: BACK",
+                  ALIGN_MIDDLE_CENTER);
+    }
+    rendermode_reset(&sMenuCurrDisplayList);
+}
+
+static s32 charselect_custom_input(void) {
+    MdkrCustomRosterCursor *cursor;
+    const MdkrCustomRosterItem *item;
+    char error[192];
+    s32 owner = sCustomCharacterRosterOwner;
+    s32 oldSelection;
+    s32 donorIndex;
+    s32 moved = FALSE;
+    s32 i;
+    if (owner < 0) {
+        if (sCustomCharacterRoster.count <= 0) return FALSE;
+        for (i = 0; i < MAXCONTROLLERS; i++) {
+            if (gActivePlayersArray[i] &&
+                gCharselectStatus[i] == CHARSELECT_STATUS_UNCONFIRMED &&
+                (gMenuButtons[i] & R_TRIG)) {
+                sCustomCharacterRosterOwner = i;
+                cursor = &sCustomCharacterCursors[i];
+                if (sCustomCharacterSelection[i] >= 0) {
+                    cursor->item = sCustomCharacterSelection[i];
+                    cursor->package_id[0] = '\0';
+                }
+                mdkr_custom_roster_cursor_sync(&sCustomCharacterRoster,
+                                               cursor);
+                sound_play(SOUND_SELECT2, NULL);
+                return TRUE;
+            }
+        }
+        return FALSE;
+    }
+    if (owner >= MAXCONTROLLERS || !gActivePlayersArray[owner] ||
+        gCharselectStatus[owner] != CHARSELECT_STATUS_UNCONFIRMED) {
+        sCustomCharacterRosterOwner = -1;
+        return TRUE;
+    }
+    cursor = &sCustomCharacterCursors[owner];
+    if (gMenuButtons[owner] & B_BUTTON) {
+        sCustomCharacterRosterOwner = -1;
+        sound_play(SOUND_MENU_BACK3, NULL);
+        return TRUE;
+    }
+    if (gMenuButtons[owner] & L_TRIG) {
+        moved = mdkr_custom_roster_change_page(
+            &sCustomCharacterRoster, cursor, -1);
+    } else if (gMenuButtons[owner] & R_TRIG) {
+        moved = mdkr_custom_roster_change_page(
+            &sCustomCharacterRoster, cursor, 1);
+    } else if (gMenuStickY[owner] > 0) {
+        moved = mdkr_custom_roster_move(
+            &sCustomCharacterRoster, cursor, 0, -1);
+    } else if (gMenuStickY[owner] < 0) {
+        moved = mdkr_custom_roster_move(
+            &sCustomCharacterRoster, cursor, 0, 1);
+    } else if (gMenuStickX[owner] < 0) {
+        moved = mdkr_custom_roster_move(
+            &sCustomCharacterRoster, cursor, -1, 0);
+    } else if (gMenuStickX[owner] > 0) {
+        moved = mdkr_custom_roster_move(
+            &sCustomCharacterRoster, cursor, 1, 0);
+    }
+    if (moved) sound_play(SOUND_MENU_PICK3, NULL);
+    if (!(gMenuButtons[owner] & (A_BUTTON | START_BUTTON))) return TRUE;
+    item = mdkr_custom_roster_current(&sCustomCharacterRoster, cursor);
+    if (item == NULL ||
+        item->availability != MDKR_CUSTOM_ROSTER_AVAILABLE) {
+        charselect_custom_set_error(
+            "IDENTITY ART REQUIRED - UPDATE IN WORKSHOP");
+        sound_play(SOUND_HORN_DRUMSTICK, NULL);
+        return TRUE;
+    }
+    oldSelection = sCustomCharacterSelection[owner];
+    sCustomCharacterSelection[owner] = cursor->item;
+    error[0] = '\0';
+    if (!charselect_custom_sync_runtime(error, sizeof(error))) {
+        sCustomCharacterSelection[owner] = oldSelection;
+        (void)charselect_custom_sync_runtime(NULL, 0u);
+        charselect_custom_set_error(error);
+        sound_play(SOUND_HORN_DRUMSTICK, NULL);
+        return TRUE;
+    }
+    donorIndex = charselect_custom_donor_table_index(cursor->item);
+    gPlayersCharacterArray[owner] = donorIndex;
+    gMenuCurrentCharacter.channelIndex = -1;
+    gMenuCurrentCharacter.unk2 = 0;
+    gMenuCurrentCharacter.unk1 = 20;
+    gCharselectStatus[owner] = CHARSELECT_STATUS_CONFIRMED;
+    gNumberOfReadyPlayers++;
+    sCustomCharacterRosterOwner = -1;
+    sound_play(SOUND_SELECT2, &gMenuSoundMasks[owner]);
+    MDKR_TRACE(
+        "custom_roster_select: controller=%d race_player=%d package=%s donor=%u catalog=%d",
+        owner, charselect_custom_race_slot(owner), item->id, item->donor,
+        item->catalog_index);
+    return TRUE;
+}
+#endif
+
 /**
  * Initialises the character select menu. Checks which characters are available and sets the vars used for selection.
  * Sets up sound channels with the background music based on which characters are selected.
@@ -8878,6 +9274,7 @@ void menu_character_select_init(void) {
             gPlayersCharacterArray[i] = gActivePlayersArray[i] ? DIDDY : -1;
         }
     }
+    charselect_custom_init();
     sTajUnlockBannerTimer = taj_mod_consume_unlock_announcement() ? 300 : 0;
     sWizpigUnlockBannerTimer =
         mod_racer_consume_unlock_announcement(MOD_RACER_WIZPIG) ? 300 : 0;
@@ -8912,7 +9309,7 @@ void menu_character_select_init(void) {
         if (gActivePlayersArray[i] != 0) {
             breakTheLoop = TRUE;
             gMenuCurrentCharacter.channelIndex =
-                charselect_music_channel_for_index(gPlayersCharacterArray[i]);
+                charselect_music_channel_for_player(i);
             gMenuCurrentCharacter.unk2 = 0x7F;
             gMenuCurrentCharacter.unk1 = 1;
         }
@@ -9065,6 +9462,39 @@ void charselect_render_text(UNUSED s32 updateRate) {
             draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, yPos, "OK?", ALIGN_MIDDLE_CENTER);
 #endif
         }
+#ifdef NATIVE_PORT
+        if (sCustomCharacterRosterErrorTimer > 0) {
+            sCustomCharacterRosterErrorTimer -= updateRate;
+            if (sCustomCharacterRosterErrorTimer < 0) {
+                sCustomCharacterRosterErrorTimer = 0;
+            }
+        }
+        if (sCustomCharacterRosterOwner >= 0) {
+            charselect_custom_draw_panel();
+        } else if (sCustomCharacterRoster.count > 0 &&
+                   gNumberOfReadyPlayers < gNumberOfActivePlayers) {
+            s32 player;
+            char selectedName[24];
+            set_text_font(ASSET_FONTS_FUNFONT);
+            for (player = 0; player < MAXCONTROLLERS; player++) {
+                s32 selection = sCustomCharacterSelection[player];
+                if (!gActivePlayersArray[player] || selection < 0 ||
+                    selection >= sCustomCharacterRoster.count) {
+                    continue;
+                }
+                (void)snprintf(
+                    selectedName, sizeof(selectedName), "P%d %.10s",
+                    player + 1,
+                    sCustomCharacterRoster.items[selection].display_name);
+                set_text_colour(184, 216, 255, 0, 255);
+                draw_text(&sMenuCurrDisplayList, 40 + player * 80, 184,
+                          selectedName, ALIGN_MIDDLE_CENTER);
+            }
+            set_text_colour(208, 224, 255, 0, 255);
+            draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 196,
+                      "R: CUSTOM RACERS", ALIGN_MIDDLE_CENTER);
+        }
+#endif
         rendermode_reset(&sMenuCurrDisplayList);
         cam_set_fov(40.0f);
     }
@@ -9096,8 +9526,31 @@ void charselect_new_player(void) {
                 gPlayersCharacterArray[i] = var_a2;
                 gActivePlayersArray[i] = TRUE;
                 gNumberOfActivePlayers++;
+#ifdef NATIVE_PORT
+                {
+                    char error[192];
+                    s32 raceSlot = charselect_custom_race_slot(i);
+                    sCustomCharacterSelection[i] =
+                        raceSlot >= 0 &&
+                                raceSlot < MDKR_MODERN_CHARACTER_PLAYERS
+                            ? sCustomCharacterDefaultSelection[raceSlot]
+                            : -1;
+                    sCustomCharacterCursors[i].item =
+                        sCustomCharacterSelection[i];
+                    sCustomCharacterCursors[i].package_id[0] = '\0';
+                    mdkr_custom_roster_cursor_sync(
+                        &sCustomCharacterRoster,
+                        &sCustomCharacterCursors[i]);
+                    if (!charselect_custom_sync_runtime(error,
+                                                        sizeof(error))) {
+                        sCustomCharacterSelection[i] = -1;
+                        (void)charselect_custom_sync_runtime(NULL, 0u);
+                        charselect_custom_set_error(error);
+                    }
+                }
+#endif
                 gMenuCurrentCharacter.channelIndex =
-                    charselect_music_channel_for_index(gPlayersCharacterArray[i]);
+                    charselect_music_channel_for_player(i);
                 gMenuCurrentCharacter.unk2 = 0;
                 gMenuCurrentCharacter.unk1 = 20;
                 sound_play(SOUND_SELECT2, NULL);
@@ -9182,6 +9635,7 @@ void charselect_input(s8 *activePlayers) {
     s32 j;
 #ifdef NATIVE_PORT
     s32 previousMusicChannel;
+    s32 previousTableIndex;
 
     if (taj_mod_persistence_failed() &&
         taj_mod_persistence_issue() != TAJ_MOD_PERSISTENCE_LOAD) {
@@ -9220,15 +9674,13 @@ void charselect_input(s8 *activePlayers) {
                     gActivePlayersArray[i] = 0;
                     if (gNumberOfActivePlayers > 0) {
                         if (gMenuSelectedCharacter.channelIndex ==
-                            charselect_music_channel_for_index(
-                                gPlayersCharacterArray[i])) {
+                            charselect_music_channel_for_player(i)) {
                             if (gMenuCurrentCharacter.unk1 <= 0) {
                                 for (found = FALSE, j = 0; j < ARRAY_COUNT(gActivePlayersArray) && !found; j++) {
                                     if (gActivePlayersArray[j]) {
                                         found = TRUE;
                                         gMenuCurrentCharacter.channelIndex =
-                                            charselect_music_channel_for_index(
-                                                gPlayersCharacterArray[j]);
+                                            charselect_music_channel_for_player(j);
                                         gMenuCurrentCharacter.unk2 = 0;
                                         gMenuCurrentCharacter.unk1 = 20;
                                     }
@@ -9237,6 +9689,12 @@ void charselect_input(s8 *activePlayers) {
                         }
                     }
                     gPlayersCharacterArray[i] = -1;
+#ifdef NATIVE_PORT
+                    sCustomCharacterSelection[i] = -1;
+                    sCustomCharacterCursors[i].item = -1;
+                    sCustomCharacterCursors[i].package_id[0] = '\0';
+                    (void)charselect_custom_sync_runtime(NULL, 0u);
+#endif
                     if (gNumberOfActivePlayers <= 0) {
                         gMenuDelay = -1;
                         transition_begin(&sMenuTransitionFadeIn);
@@ -9263,8 +9721,8 @@ void charselect_input(s8 *activePlayers) {
                     charSelectData = &CHARSELECT_DATA(gPlayersCharacterArray[i]);
 #ifdef NATIVE_PORT
                     previousMusicChannel =
-                        charselect_music_channel_for_index(
-                            gPlayersCharacterArray[i]);
+                        charselect_music_channel_for_player(i);
+                    previousTableIndex = gPlayersCharacterArray[i];
 #endif
                     if (gMenuStickY[i] > 0) {
                         charselect_move(i, charSelectData->upInput, ARRAY_COUNT(charSelectData->upInput),
@@ -9280,12 +9738,19 @@ void charselect_input(s8 *activePlayers) {
                                         SOUND_MENU_PICK3, SOUND_HORN_DRUMSTICK);
                     }
 #ifdef NATIVE_PORT
+                    if (previousTableIndex != gPlayersCharacterArray[i] &&
+                        sCustomCharacterSelection[i] >= 0) {
+                        sCustomCharacterSelection[i] = -1;
+                        mdkr_modern_character_clear_player(
+                            charselect_custom_race_slot(i));
+                        MDKR_TRACE(
+                            "custom_roster_select: controller=%d source=retail cleared=1",
+                            i);
+                    }
                     if (previousMusicChannel !=
-                        charselect_music_channel_for_index(
-                            gPlayersCharacterArray[i])) {
+                        charselect_music_channel_for_player(i)) {
                         gMenuCurrentCharacter.channelIndex =
-                            charselect_music_channel_for_index(
-                                gPlayersCharacterArray[i]);
+                            charselect_music_channel_for_player(i);
                         if (charselect_index_is_taj(
                                 gPlayersCharacterArray[i])) {
                             MDKR_TRACE(
@@ -9407,11 +9872,16 @@ s32 menu_character_select_loop(s32 updateRate) {
     s32 j;
 
 #ifdef NATIVE_PORT
+    char customSyncError[192];
+    s32 customInputHandled;
     charselect_update_taj_visual_state();
 #endif
     charselect_render_text(updateRate);
     charselect_music_channels(updateRate);
     menu_input();
+#ifdef NATIVE_PORT
+    customInputHandled = charselect_custom_input();
+#endif
 
     for (i = 0; i < ARRAY_COUNT(gCharselectStatus); i++) {
         // Automatically advance all "confirmed" character selections to "ready".
@@ -9426,6 +9896,9 @@ s32 menu_character_select_loop(s32 updateRate) {
         // THIS MUST BE ON ONE LINE!
         for (i = 0; i < ARRAY_COUNT(gActivePlayersArray); i++) { activePlayers[i] = gActivePlayersArray[i]; }
         // clang-format on
+#ifdef NATIVE_PORT
+        if (customInputHandled) return MENU_RESULT_CONTINUE;
+#endif
         charselect_new_player();
         if (gNumberOfReadyPlayers == gNumberOfActivePlayers) {
             charselect_pick(); // Cancel/Confirm selected character?
@@ -9444,9 +9917,23 @@ s32 menu_character_select_loop(s32 updateRate) {
                     confirmOffset++;
                 }
             }
+            charSlot = 0;
+#ifdef NATIVE_PORT
+            customSyncError[0] = '\0';
+            if (!charselect_custom_sync_runtime(customSyncError,
+                                                sizeof(customSyncError))) {
+                for (j = 0; j < MAXCONTROLLERS; j++) {
+                    sCustomCharacterSelection[j] = -1;
+                    mdkr_modern_character_clear_player(j);
+                }
+                MDKR_TRACE(
+                    "custom_roster_commit: fallback=retail error=%s",
+                    customSyncError[0] != '\0' ? customSyncError
+                                                : "assignment unavailable");
+            }
+#endif
             charselect_free();
 
-            charSlot = 0;
 #ifdef NATIVE_PORT
             taj_mod_reset_player_selections();
             /* Menu-scene service point: bindings from the previous race are
@@ -9459,11 +9946,29 @@ s32 menu_character_select_loop(s32 updateRate) {
                 if (gActivePlayersArray[j]) {
 #ifdef NATIVE_PORT
                     s32 selectedIndex = gPlayersCharacterArray[j];
-                    ModRacerIdentity identity =
-                        charselect_identity_for_index(selectedIndex);
-                    mod_racer_set_player_identity(charSlot, identity);
-                    gCharacterIdSlots[charSlot] = (s8)mod_racer_resolve_race_character(
-                        charSlot, CHARSELECT_DATA(selectedIndex).voiceID);
+                    ModRacerIdentity identity;
+                    if (sCustomCharacterSelection[j] >= 0 &&
+                        sCustomCharacterSelection[j] <
+                            sCustomCharacterRoster.count) {
+                        const MdkrCustomRosterItem *custom =
+                            &sCustomCharacterRoster.items[
+                                sCustomCharacterSelection[j]];
+                        identity = MOD_RACER_RETAIL;
+                        mod_racer_set_player_identity(charSlot, identity);
+                        gCharacterIdSlots[charSlot] = (s8)custom->donor;
+                        MDKR_TRACE(
+                            "custom_roster_commit: player=%d controller=%d package=%s donor=%d revision=%llu",
+                            charSlot, j, custom->id,
+                            gCharacterIdSlots[charSlot],
+                            (unsigned long long)custom->revision);
+                    } else {
+                        identity = charselect_identity_for_index(selectedIndex);
+                        mod_racer_set_player_identity(charSlot, identity);
+                        gCharacterIdSlots[charSlot] =
+                            (s8)mod_racer_resolve_race_character(
+                                charSlot,
+                                CHARSELECT_DATA(selectedIndex).voiceID);
+                    }
                     MDKR_TRACE(
                         "mod_racer_select: player=%d controller=%d identity=%d donor=%d",
                         charSlot, j, identity, gCharacterIdSlots[charSlot]);

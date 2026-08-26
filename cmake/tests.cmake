@@ -608,6 +608,17 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         NATIVE_PORT=1 VERSION_us_v80 _LANGUAGE_C MODERN_CC)
     add_test(NAME taj_select_layout COMMAND mdkr_taj_select_layout_test)
 
+    add_executable(mdkr_custom_character_roster_test
+        ${CMAKE_SOURCE_DIR}/tests/test_custom_character_roster.c
+        ${CMAKE_SOURCE_DIR}/game/src/custom_character_roster.c)
+    target_include_directories(mdkr_custom_character_roster_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/game/src
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_definitions(mdkr_custom_character_roster_test PRIVATE
+        NATIVE_PORT=1 VERSION_us_v80 _LANGUAGE_C MODERN_CC)
+    add_test(NAME custom_character_roster COMMAND mdkr_custom_character_roster_test)
+
     add_executable(mdkr_taj_mod_state_file_test
         ${CMAKE_SOURCE_DIR}/tests/test_taj_mod_state_file.c
         ${CMAKE_SOURCE_DIR}/platform/magic_codes_state.c
