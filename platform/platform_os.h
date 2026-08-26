@@ -359,7 +359,13 @@ int platform_frame_dump_prepare_due(void);
  * before returning to the launcher, which then validates the finished PNG. */
 int platform_frame_capture_request_once(const char *png_path,
                                         char *error, size_t error_size);
+/* WebGPU-only isolated modern-character pass. It preserves exact render pose,
+ * camera, fit, materials and character light while omitting the composed
+ * world/vehicle/HUD, and writes a straight-RGBA PNG. */
+int platform_modern_character_capture_request_once(
+    const char *png_path, char *error, size_t error_size);
 int platform_frame_capture_pending(void);
+int platform_modern_character_capture_pending(void);
 
 /* ===== Content packs (platform_sdl_min.c) =============================== *
  * Host-side ownership of the pack registry (platform/mod_registry.h) and the

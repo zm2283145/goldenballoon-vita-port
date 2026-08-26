@@ -31,7 +31,7 @@ FRAMES = 180
 PRODUCT_CAPTURE_FRAMES = 360
 
 
-def read_png_rgb(path: Path) -> tuple[int, int, bytes]:
+def read_png(path: Path, expected_colour_type: int) -> tuple[int, int, bytes]:
     payload = path.read_bytes()
     if len(payload) < 57 or payload[:8] != b"\x89PNG\r\n\x1a\n":
         raise ValueError("capture is not a complete PNG")
@@ -55,9 +55,11 @@ def read_png_rgb(path: Path) -> tuple[int, int, bytes]:
             (width, height, bit_depth, colour_type, compression,
              filtering, interlace) = struct.unpack(">IIBBBBB", data)
             if (width == 0 or height == 0 or bit_depth != 8 or
-                    colour_type != 2 or compression != 0 or filtering != 0 or
+                    colour_type != expected_colour_type or compression != 0 or
                     interlace != 0):
-                raise ValueError("capture is not a canonical RGB PNG")
+                raise ValueError(
+                    "capture has the wrong canonical PNG colour contract"
+                )
             saw_ihdr = True
         elif kind == b"IDAT":
             if not saw_ihdr or saw_iend:
@@ -76,10 +78,11 @@ def read_png_rgb(path: Path) -> tuple[int, int, bytes]:
         filtered = zlib.decompress(bytes(idat))
     except zlib.error as error:
         raise ValueError("capture has invalid compressed pixels") from error
-    stride = width * 3
+    channels = 3 if expected_colour_type == 2 else 4
+    stride = width * channels
     if len(filtered) != height * (stride + 1):
         raise ValueError("capture has the wrong decompressed pixel size")
-    pixels = bytearray(width * height * 3)
+    pixels = bytearray(width * height * channels)
     previous = bytearray(stride)
     source = 0
     for y in range(height):
@@ -88,9 +91,11 @@ def read_png_rgb(path: Path) -> tuple[int, int, bytes]:
         row = bytearray(filtered[source:source + stride])
         source += stride
         for index in range(stride):
-            left = row[index - 3] if index >= 3 else 0
+            left = row[index - channels] if index >= channels else 0
             above = previous[index]
-            upper_left = previous[index - 3] if index >= 3 else 0
+            upper_left = (
+                previous[index - channels] if index >= channels else 0
+            )
             if filter_kind == 1:
                 predictor = left
             elif filter_kind == 2:
@@ -114,6 +119,14 @@ def read_png_rgb(path: Path) -> tuple[int, int, bytes]:
         pixels[y * stride:(y + 1) * stride] = row
         previous = row
     return width, height, bytes(pixels)
+
+
+def read_png_rgb(path: Path) -> tuple[int, int, bytes]:
+    return read_png(path, 2)
+
+
+def read_png_rgba(path: Path) -> tuple[int, int, bytes]:
+    return read_png(path, 6)
 
 
 def require_fixture_composition(width: int, height: int, pixels: bytes) -> None:
@@ -174,6 +187,45 @@ def require_fixture_composition(width: int, height: int, pixels: bytes) -> None:
             "generated character is absent, clipped, or outside the central "
             f"inspection frame (area={largest_area}, bounds={largest_bounds})"
         )
+
+
+def require_model_alpha_composition(
+        width: int, height: int, pixels: bytes) -> None:
+    total = width * height
+    alpha = pixels[3::4]
+    transparent = sum(value == 0 for value in alpha)
+    visible = [index for index, value in enumerate(alpha) if value != 0]
+    if transparent < total // 2 or len(visible) < total // 500 or \
+            len(visible) > total * 2 // 3:
+        raise ValueError(
+            "model-only capture lacks a bounded subject and genuinely "
+            f"transparent background (transparent={transparent}, "
+            f"visible={len(visible)}, total={total})"
+        )
+    if any(
+        pixels[index * 4:index * 4 + 3] != b"\x00\x00\x00"
+        for index, value in enumerate(alpha) if value == 0
+    ):
+        raise ValueError("transparent pixels retain hidden matte colour")
+    xs = [index % width for index in visible]
+    ys = [index // width for index in visible]
+    bounds = (min(xs), min(ys), max(xs), max(ys))
+    centre_x = (bounds[0] + bounds[2]) / 2.0
+    centre_y = (bounds[1] + bounds[3]) / 2.0
+    if (bounds[0] < width * 5 // 100 or
+            bounds[2] > width * 95 // 100 or
+            bounds[1] < height * 5 // 100 or
+            bounds[3] > height * 95 // 100 or
+            abs(centre_x - width / 2.0) > width * 20 // 100 or
+            abs(centre_y - height / 2.0) > height * 20 // 100):
+        raise ValueError(
+            "model-only subject is clipped or outside the inspection frame "
+            f"(bounds={bounds})"
+        )
+    rgb = bytearray(total * 3)
+    for index in range(total):
+        rgb[index * 3:index * 3 + 3] = pixels[index * 4:index * 4 + 3]
+    require_fixture_composition(width, height, bytes(rgb))
 
 
 def run(command: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -249,18 +301,20 @@ def main() -> int:
             failures.append("temporary catalog install failed")
 
     arms = [
-        ("select", 1, True, None, None, False, None, None, None, False),
-        ("car", 1, False, None, None, False, None, None, None, False),
-        ("hovercraft", 1, False, None, None, False, None, None, None, False),
-        ("plane", 1, False, None, None, False, None, None, None, False),
-        ("car", 3, False, None, None, False, None, None, None, False),
-        ("car", 4, True, None, None, False, None, None, None, False),
+        ("select", 1, True, None, None, False, None, None, None, None),
+        ("car", 1, False, None, None, False, None, None, None, None),
+        ("hovercraft", 1, False, None, None, False, None, None, None, None),
+        ("plane", 1, False, None, None, False, None, None, None, None),
+        ("car", 3, False, None, None, False, None, None, None, None),
+        ("car", 4, True, None, None, False, None, None, None, None),
         ("car", 1, False, "select.idle", "250", False,
-         None, None, None, False),
+         None, None, None, None),
         ("car", 1, False, "race.finish_win", "750", True,
-         None, None, None, False),
+         None, None, None, None),
         ("car", 1, False, "select.idle", "500", False,
-         180, 15, "bright", True),
+         180, 15, "bright", "scene"),
+        ("car", 1, False, "select.idle", "500", False,
+         180, 15, "bright", "model-alpha"),
     ]
     arm_draws: dict[str, int] = {}
     captures: dict[str, Path] = {}
@@ -269,11 +323,11 @@ def main() -> int:
     if not failures:
         for (context, players, capture, pose, pose_phase,
              expect_fallback, view_yaw, view_pitch, lighting,
-             product_capture) in arms:
+             capture_kind) in arms:
             label = (f"{context}-{players}p" if pose is None else
                      f"{context}-{players}p-pose" +
                      ("-fallback" if expect_fallback else "") +
-                     ("-visual-capture" if product_capture else ""))
+                     (f"-{capture_kind}-capture" if capture_kind else ""))
             arm_dir = evidence / label
             arm_dir.mkdir(parents=True, exist_ok=True)
             env = {key: value for key, value in os.environ.items()
@@ -298,11 +352,14 @@ def main() -> int:
                 env["MDKR_CHARACTER_WORKSHOP_VIEW_YAW_DEGREES"] = str(view_yaw)
                 env["MDKR_CHARACTER_WORKSHOP_VIEW_PITCH_DEGREES"] = str(view_pitch)
                 env["MDKR_CHARACTER_WORKSHOP_LIGHTING"] = str(lighting)
-            if product_capture:
+            if capture_kind is not None:
                 env["MDKR_CHARACTER_WORKSHOP_CAPTURE_PNG"] = str(
                     product_capture_path
                 )
-            run_frames = PRODUCT_CAPTURE_FRAMES if product_capture else FRAMES
+                env["MDKR_CHARACTER_WORKSHOP_CAPTURE_KIND"] = capture_kind
+            run_frames = (
+                PRODUCT_CAPTURE_FRAMES if capture_kind is not None else FRAMES
+            )
             command = [
                 str(binary), "--headless-frames", str(run_frames), "--rom",
                 str(rom), "--window-size", "1280x960", "--restored",
@@ -342,10 +399,12 @@ def main() -> int:
                     failures.append(
                         f"{label} unexpectedly used source fallback"
                     )
-            if product_capture:
+            if capture_kind is not None:
+                kind_value = 1 if capture_kind == "model-alpha" else 0
                 visual_match = re.search(
                     r"view=180,15 lighting=1 cameraTicks=(\d+) "
                     r"lightingDraws=(\d+) capture=1/[01]/[01] "
+                    rf"kind={kind_value} "
                     r"captureStableFrames=(\d+) bytes=\d+",
                     arm_output,
                 )
@@ -358,11 +417,13 @@ def main() -> int:
                         f"{label} did not prove camera and character-light application"
                     )
                 armed_match = re.search(
-                    r"character_workshop_capture: armed stableFrames=(\d+) "
+                    rf"character_workshop_capture: armed kind={capture_kind} "
+                    r"stableFrames=(\d+) "
                     r"countdown=\d+ ", arm_output,
                 )
                 result_capture_match = re.search(
                     r"character_workshop_result: .*capture=1/1/0 "
+                    rf"kind={kind_value} "
                     r"captureStableFrames=(\d+) bytes=0 ",
                     arm_output,
                 )
@@ -487,17 +548,26 @@ def main() -> int:
                     failures.append(f"{label} produced {len(dumps)} captures")
                 else:
                     captures[label] = dumps[0]
-            if product_capture:
+            if capture_kind is not None:
                 try:
-                    png_width, png_height, png_pixels = read_png_rgb(
-                        product_capture_path
-                    )
-                    require_fixture_composition(
-                        png_width, png_height, png_pixels
-                    )
+                    if capture_kind == "model-alpha":
+                        png_width, png_height, png_pixels = read_png_rgba(
+                            product_capture_path
+                        )
+                        require_model_alpha_composition(
+                            png_width, png_height, png_pixels
+                        )
+                    else:
+                        png_width, png_height, png_pixels = read_png_rgb(
+                            product_capture_path
+                        )
+                        require_fixture_composition(
+                            png_width, png_height, png_pixels
+                        )
                 except (OSError, ValueError) as error:
                     failures.append(
-                        f"{label} did not write a composed product PNG: {error}"
+                        f"{label} did not write its requested product PNG: "
+                        f"{error}"
                     )
                 else:
                     png_dimensions = (png_width, png_height)
@@ -507,6 +577,21 @@ def main() -> int:
                             f"{label} PNG dimensions {png_dimensions!r} do not "
                             "match the exact renderer output"
                         )
+                expected_queue = (
+                    "kind=modern-character-alpha channels=4"
+                    if capture_kind == "model-alpha"
+                    else "kind=scene channels=3"
+                )
+                if expected_queue not in arm_output:
+                    failures.append(
+                        f"{label} did not queue the typed capture product"
+                    )
+                if capture_kind == "model-alpha" and (
+                    "[WGPU-CHARACTER-CAPTURE] ready=1" not in arm_output
+                ):
+                    failures.append(
+                        f"{label} did not prove isolated renderer capture"
+                    )
 
     rejection_arms = [
         ("invalid-context", "boat", "1", True, None, None, None,
@@ -558,29 +643,38 @@ def main() -> int:
 
     visual_rejection_arms = [
         ("unpaired-view", "car", "race.steer", "500", "90", None,
-         None, None, 60,
+         None, None, None, 60,
          "view and lighting fields must be provided together"),
         ("invalid-view-yaw", "car", "race.steer", "500", "181", "0",
-         "neutral", None, 60, "invalid Character Workshop view request"),
+         "neutral", None, None, 60, "invalid Character Workshop view request"),
         ("invalid-lighting", "car", "race.steer", "500", "0", "0",
-         "studio", None, 60, "invalid Character Workshop view request"),
+         "studio", None, None, 60, "invalid Character Workshop view request"),
         ("select-camera-orbit", "select", "select.idle", "500", "90", "0",
-         "neutral", None, 60, "invalid Character Workshop view request"),
+         "neutral", None, None, 60, "invalid Character Workshop view request"),
         ("visual-on-live", "car", None, None, "0", "0", "bright", None,
-         60, "view and lighting fields must be provided together"),
+         None, 60, "view and lighting fields must be provided together"),
         ("capture-on-live", "car", None, None, None, None, None,
-         "live-capture.png", 60,
+         "live-capture.png", "scene", 60,
          "invalid Character Workshop capture request"),
         ("uppercase-capture", "car", "race.steer", "500", None, None,
-         None, "inspection.PNG", 60,
+         None, "inspection.PNG", "scene", 60,
          "invalid Character Workshop capture request"),
         ("existing-capture", "car", "race.steer", "500", "0", "0",
-         "neutral", "existing.png", 180,
+         "neutral", "existing.png", "scene", 180,
          "Character Workshop capture could not be armed"),
+        ("missing-capture-kind", "car", "race.steer", "500", "0", "0",
+         "neutral", "missing-kind.png", None, 60,
+         "capture path and kind must be provided together"),
+        ("capture-kind-without-path", "car", "race.steer", "500", "0", "0",
+         "neutral", None, "scene", 60,
+         "capture path and kind must be provided together"),
+        ("invalid-capture-kind", "car", "race.steer", "500", "0", "0",
+         "neutral", "invalid-kind.png", "matte", 60,
+         "invalid Character Workshop capture kind: matte"),
     ]
     if not failures:
         for (label, context, pose, phase, yaw, pitch, lighting,
-             capture_name, frames, marker) in visual_rejection_arms:
+             capture_name, capture_kind, frames, marker) in visual_rejection_arms:
             arm_dir = evidence / label
             arm_dir.mkdir(parents=True, exist_ok=True)
             env = {key: value for key, value in os.environ.items()
@@ -609,6 +703,8 @@ def main() -> int:
                 if label == "existing-capture":
                     capture_path.write_bytes(b"preserve me")
                 env["MDKR_CHARACTER_WORKSHOP_CAPTURE_PNG"] = str(capture_path)
+            if capture_kind is not None:
+                env["MDKR_CHARACTER_WORKSHOP_CAPTURE_KIND"] = capture_kind
             process = run([
                 str(binary), "--headless-frames", str(frames), "--rom",
                 str(rom), "--window-size", "1280x960", "--restored",
@@ -665,7 +761,8 @@ def main() -> int:
         "select/car/hovercraft/plane routes, exact semantic-phase inspection "
         "with honest fallback accounting, deterministic camera/light controls, "
         "target-frame anchor/bounds/facing measurements, exclusive stabilized "
-        "PNG capture, one-to-four-player WebGPU stress, and fail-closed invalid "
+        "RGB gameplay and transparent RGBA model-only PNG capture, "
+        "one-to-four-player WebGPU stress, and fail-closed invalid "
         "requests"
     )
     if args.evidence_dir is not None:

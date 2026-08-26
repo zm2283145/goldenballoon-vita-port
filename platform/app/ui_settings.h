@@ -32,6 +32,8 @@ struct SettingsCharacterPreviewRequest {
     MdkrWorkshopPreviewLighting lighting =
         MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
     std::string capturePng;
+    MdkrCharacterPreviewCaptureKind captureKind =
+        MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
 };
 
 // Draw the settings sections (one per MdkrVideoCategory) inside the current

@@ -12,6 +12,11 @@ namespace CharacterVisualReport {
  * matrices without silently truncating an author's qualification set. */
 constexpr size_t kMaximumCaptures = 1024u;
 
+enum class RenderProduct : uint8_t {
+    Scene = 0,
+    ModelAlpha,
+};
+
 struct Capture {
     std::string pngPath;
     std::string sourceSha256;
@@ -19,6 +24,7 @@ struct Capture {
     std::string context;
     std::string pose;
     std::string lighting;
+    RenderProduct renderProduct = RenderProduct::Scene;
     uint32_t players = 1u;
     uint32_t phaseMilli = 0u;
     int32_t viewYawDegrees = 0;

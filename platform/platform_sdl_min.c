@@ -1335,6 +1335,7 @@ void platform_sdl_sync_drawable_size(void) {
 static int s_dumpFrom = -2;
 static int s_dumpEvery = 1;
 static int s_frameCapturePending;
+static int s_frameCaptureModernCharacter;
 static char s_frameCapturePath[1024];
 void platform_frame_dump_drain(void); /* defined with the writer below */
 /* F9 capture toggle: every-present dumps + per-frame [CAPTURE*] rows for as
@@ -1425,6 +1426,7 @@ typedef struct DumpJob {
     int w, h;
     char path[1024];
     int png;
+    int components;
 } DumpJob;
 static DumpJob s_dumpQueue[DUMP_QUEUE_DEPTH];
 static int s_dumpQueueHead, s_dumpQueueLen;
@@ -1453,7 +1455,8 @@ static int dump_write_job(DumpJob *job) {
         return 0;
     }
     if (job->png) {
-        const size_t rowBytes = (size_t)job->w * 3u;
+        const size_t rowBytes =
+            (size_t)job->w * (size_t)job->components;
         unsigned char *scratch = (unsigned char *)malloc(rowBytes);
         int y;
         int encoded;
@@ -1473,7 +1476,7 @@ static int dump_write_job(DumpJob *job) {
         }
         free(scratch);
         encoded = stbi_write_png_to_func(
-            dump_png_write, &output, job->w, job->h, 3,
+            dump_png_write, &output, job->w, job->h, job->components,
             job->pix, (int)rowBytes);
         if (fflush(f) != 0 || mdkr_file_sync(f) != 0) output.failed = 1;
         if (fclose(f) != 0) output.failed = 1;
@@ -1531,7 +1534,12 @@ static int dump_writer_main(void *arg) {
 
 /* Returns 1 when the job (and ownership of pix) was accepted. */
 static int dump_writer_enqueue(unsigned char *pix, int w, int h,
-                               const char *path, int png) {
+                               const char *path, int png, int components) {
+    if (pix == NULL || w <= 0 || h <= 0 ||
+        (components != 3 && components != 4) ||
+        (!png && components != 3) || w > INT_MAX / components) {
+        return 0;
+    }
     if (s_dumpMutex == NULL) {
         s_dumpMutex = SDL_CreateMutex();
         s_dumpCond = SDL_CreateCond();
@@ -1574,6 +1582,7 @@ static int dump_writer_enqueue(unsigned char *pix, int w, int h,
         job->h = h;
         snprintf(job->path, sizeof(job->path), "%s", path);
         job->png = png;
+        job->components = components;
         s_dumpQueueLen++;
     }
     SDL_CondSignal(s_dumpCond);
@@ -1623,20 +1632,39 @@ static void platform_dump_frame(void) {
      * next frame while readback still contains the previous one. WebGPU may
      * additionally debounce its committed output target for a few frames.
      */
+    const int modern_character =
+        s_frameCapturePending && s_frameCaptureModernCharacter;
     uint32_t capture_width = 0, capture_height = 0;
-    if (!gfx_get_capture_dimensions(&capture_width, &capture_height) ||
+    if ((modern_character
+             ? !gfx_get_modern_character_capture_dimensions(
+                   &capture_width, &capture_height)
+             : !gfx_get_capture_dimensions(
+                   &capture_width, &capture_height)) ||
         capture_width > INT_MAX || capture_height > INT_MAX) {
         return;
     }
     int w = (int)capture_width;
     int h = (int)capture_height;
-    size_t rowBytes = (size_t) w * 3u;
+    const int components = modern_character ? 4 : 3;
+    if (w <= 0 || h <= 0 ||
+        (size_t)w > SIZE_MAX / (size_t)components ||
+        (size_t)w * (size_t)components > SIZE_MAX / (size_t)h ||
+        (size_t)w * (size_t)components > INT_MAX) {
+        return;
+    }
+    size_t rowBytes = (size_t)w * (size_t)components;
     unsigned char *pix = (unsigned char *) malloc(rowBytes * (size_t) h);
     if (!pix) {
         return;
     }
 #ifdef MDKR_WEBGPU_BACKEND
-    if (is_webgpu) {
+    if (modern_character) {
+        if (!is_webgpu ||
+            !gfx_read_modern_character_capture_rgba(w, h, pix)) {
+            free(pix);
+            return;
+        }
+    } else if (is_webgpu) {
         /* gfx_read_framebuffer_rgb (gfx_pc_dkr.c) delegates to the active
          * backend's read_framebuffer_rgb. On failure, leave the (uninitialised)
          * buffer unwritten — skip the frame rather than dump garbage. */
@@ -1675,21 +1703,26 @@ static void platform_dump_frame(void) {
         snprintf(path, sizeof(path), "%s/frame_%04d.ppm",
                  g_dumpFramesDir, g_frameCounter);
     }
-    if (!dump_writer_enqueue(pix, w, h, path, oneShot)) {
+    if (!dump_writer_enqueue(
+            pix, w, h, path, oneShot, components)) {
         /* Writer saturated or unavailable: drop rather than stall the
          * present thread (counted, reported at CAPTURE-STOP/drain). */
         free(pix);
     } else if (oneShot) {
         s_frameCapturePending = 0;
+        s_frameCaptureModernCharacter = 0;
         s_frameCapturePath[0] = '\0';
         fprintf(stderr,
-                "[WORKSHOP-CAPTURE] queued frame=%d path=%s\n",
-                g_frameCounter, path);
+                "[WORKSHOP-CAPTURE] queued frame=%d kind=%s channels=%d path=%s\n",
+                g_frameCounter,
+                modern_character ? "modern-character-alpha" : "scene",
+                components, path);
     }
 }
 
-int platform_frame_capture_request_once(const char *png_path,
-                                        char *error, size_t error_size) {
+static int platform_frame_capture_request(
+    const char *png_path, int modern_character,
+    char *error, size_t error_size) {
     int exists = 0;
     const size_t length = png_path != NULL ? strlen(png_path) : 0u;
     const int suffix = length >= 4u &&
@@ -1697,6 +1730,16 @@ int platform_frame_capture_request_once(const char *png_path,
     const char *message = "";
     if (s_frameCapturePending) {
         message = "a Workshop frame capture is already pending";
+#ifdef MDKR_WEBGPU_BACKEND
+    } else if (modern_character &&
+               mdkr_render_backend() != MDKR_BACKEND_WEBGPU) {
+        message =
+            "transparent model-only capture requires the WebGPU renderer";
+#else
+    } else if (modern_character) {
+        message =
+            "transparent model-only capture is unavailable in this build";
+#endif
     } else if (length == 0u || length >= sizeof(s_frameCapturePath) ||
                !suffix) {
         message = "the Workshop capture path must be a bounded PNG path";
@@ -1713,6 +1756,7 @@ int platform_frame_capture_request_once(const char *png_path,
             (void)snprintf(s_frameCapturePath,
                            sizeof(s_frameCapturePath), "%s", png_path);
             s_frameCapturePending = 1;
+            s_frameCaptureModernCharacter = modern_character ? 1 : 0;
         }
     }
     if (error != NULL && error_size != 0u) {
@@ -1721,8 +1765,24 @@ int platform_frame_capture_request_once(const char *png_path,
     return message[0] == '\0';
 }
 
+int platform_frame_capture_request_once(const char *png_path,
+                                        char *error, size_t error_size) {
+    return platform_frame_capture_request(
+        png_path, 0, error, error_size);
+}
+
+int platform_modern_character_capture_request_once(
+    const char *png_path, char *error, size_t error_size) {
+    return platform_frame_capture_request(
+        png_path, 1, error, error_size);
+}
+
 int platform_frame_capture_pending(void) {
     return s_frameCapturePending;
+}
+
+int platform_modern_character_capture_pending(void) {
+    return s_frameCapturePending && s_frameCaptureModernCharacter;
 }
 
 /* ---- Content packs (see platform_os.h) ---------------------------------- *
@@ -6323,6 +6383,7 @@ int platform_engine_session_begin(void) {
     s_dumpFrom = -2;
     s_dumpEvery = 1;
     s_frameCapturePending = 0;
+    s_frameCaptureModernCharacter = 0;
     s_frameCapturePath[0] = '\0';
 
     /* Settings can scan packs while the shell is home. Retire that view before

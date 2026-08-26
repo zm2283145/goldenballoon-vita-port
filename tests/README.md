@@ -4941,8 +4941,12 @@ and a semantic/phase pair with one member missing. A further positive arm holds
 `select.idle` at phase `500/1000`, applies a 180-degree yaw/15-degree pitch
 absolute racer-relative fitted-bounds orbit and bright character-only light,
 suppresses the scripted camera bank, requires nonzero warmed camera/light
-application counts plus 12 consecutive eligible rendered frames, and
-exclusively creates one complete, output-sized PNG. The gate decodes every PNG
+application counts plus 12 consecutive eligible rendered frames, and proves
+both exclusive output-sized PNG products. The gameplay product is canonical RGB
+and contains the composed world, vehicle, character, and HUD. The model-only
+product is canonical RGBA from the isolated WebGPU replay; it contains a
+nonempty centered character over real transparency, excludes scene matte
+colors, and has zero RGB in every zero-alpha pixel. The gate decodes every PNG
 filter and requires the generated character's contiguous material component to
 be large, unclipped, and inside a central safe frame. Negative visual arms reject unpaired fields, out-of-range
 yaw, unknown lighting, a select-camera orbit, visual fields or capture in live
@@ -5002,12 +5006,15 @@ through the production result boundary and requires its session result to stay
 available for fit review while the durable evidence file remains byte-exact.
 Its paired fallback arm proves that unavailable semantic motion is reported but
 cannot unlock fit approval, while still leaving durable evidence byte-exact.
-The rendered keyboard/speech arm publishes a successful camera/light/capture
-inspection into the session report tray and requires its removal, report path,
-exclusive export, and list-clear controls to remain reachable at 200% scale.
+The rendered keyboard/speech arm publishes a successful transparent model-only
+camera/light/capture inspection into the session report tray and requires both
+render-product choices, its removal, report path, exclusive export, and
+list-clear controls to remain reachable at 200% scale.
 The pure `character_visual_report` test independently proves embedded PNG/JSON
 output, digest binding, HTML/script escaping, source-path privacy, PNG
-completeness/dimension checks, and overwrite refusal; `workshop_preview_runtime`
+completeness/dimension/product checks, schema-v2 scene/model-alpha metadata,
+checkerboard transparency presentation, and overwrite refusal;
+`workshop_preview_runtime`
 proves visual bounds, failure-without-mutation, and measurement epochs.
 The pure `character_test_evidence_store` unit separately covers canonical parsing,
 whole-inventory and row authentication, strict unsigned/signed numeric and UTF-8

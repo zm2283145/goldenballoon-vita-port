@@ -196,6 +196,7 @@ static char sWorkshopPreviewCapturePath[1024];
 static u64 sWorkshopPreviewCaptureStableFrames;
 static u64 sWorkshopPreviewCaptureLastReplacementDraws;
 static s32 sWorkshopPreviewCaptureArmed;
+static MdkrCharacterPreviewCaptureKind sWorkshopPreviewCaptureKind;
 
 static s32 workshop_preview_quantize_micrometres(
     f32 value, long long *out) {
@@ -355,7 +356,7 @@ static void workshop_preview_measurement_finish(void) {
         "fitAnchorUm=%lld,%lld,%lld fitBoundsYUm=%lld,%lld "
         "fitForwardMilli=%d,%d,%d pose=%d phase=%u "
         "poseTicks=%llu poseFallback=%llu view=%d,%d lighting=%d "
-        "cameraTicks=%llu lightingDraws=%llu capture=%d/%d/%d "
+        "cameraTicks=%llu lightingDraws=%llu capture=%d/%d/%d kind=%d "
         "captureStableFrames=%llu bytes=%llu "
         "backend=%s adapter=%s driver=%s "
         "vendor=%08x device=%08x output=%ux%u render=%ux%u",
@@ -380,6 +381,7 @@ static void workshop_preview_measurement_finish(void) {
         (int)result->lighting, result->camera_override_ticks,
         result->lighting_override_draws, result->capture_requested,
         result->capture_armed, result->capture_written,
+        (int)result->capture_kind,
         result->capture_stable_frames, result->capture_png_bytes,
         result->renderer_backend,
         result->adapter[0] != '\0' ? result->adapter : "unknown",
@@ -427,9 +429,16 @@ static void workshop_preview_capture_service(void) {
     if (sWorkshopPreviewCaptureStableFrames >=
             MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES) {
         char captureError[192] = { 0 };
-        if (!platform_frame_capture_request_once(
-                sWorkshopPreviewCapturePath,
-                captureError, sizeof(captureError))) {
+        const s32 captureRequested =
+            sWorkshopPreviewCaptureKind ==
+                    MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA
+                ? platform_modern_character_capture_request_once(
+                      sWorkshopPreviewCapturePath,
+                      captureError, sizeof(captureError))
+                : platform_frame_capture_request_once(
+                      sWorkshopPreviewCapturePath,
+                      captureError, sizeof(captureError));
+        if (!captureRequested) {
             fprintf(stderr,
                     "[FATAL] Character Workshop capture could not be armed: %s\n",
                     captureError[0] != '\0'
@@ -440,7 +449,10 @@ static void workshop_preview_capture_service(void) {
         sWorkshopPreviewCaptureArmed = TRUE;
         result->capture_armed = TRUE;
         MDKR_TRACE(
-            "character_workshop_capture: armed stableFrames=%llu countdown=%d replacements=%llu cameraTicks=%llu lightingDraws=%llu",
+            "character_workshop_capture: armed kind=%s stableFrames=%llu countdown=%d replacements=%llu cameraTicks=%llu lightingDraws=%llu",
+            sWorkshopPreviewCaptureKind ==
+                    MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA
+                ? "model-alpha" : "scene",
             (unsigned long long)sWorkshopPreviewCaptureStableFrames,
             result->context == MDKR_CHARACTER_PREVIEW_SELECT
                 ? 0 : gRaceStartTimer,
@@ -566,6 +578,8 @@ void thread3_main(UNUSED void *unused) {
     sWorkshopPreviewCaptureStableFrames = 0u;
     sWorkshopPreviewCaptureLastReplacementDraws = 0u;
     sWorkshopPreviewCaptureArmed = FALSE;
+    sWorkshopPreviewCaptureKind =
+        MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
     mdkr_workshop_preview_visual_clear();
     mdkr_workshop_preview_visual_metrics_reset();
 #endif
@@ -2561,6 +2575,7 @@ static s32 workshop_preview_start(void) {
     const char *pitchText;
     const char *lightingText;
     const char *captureText;
+    const char *captureKindText;
     MdkrCharacterPreviewPose pose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
     unsigned posePhaseMilli = 0u;
     int viewYawDegrees = 0;
@@ -2622,6 +2637,7 @@ static s32 workshop_preview_start(void) {
     pitchText = getenv("MDKR_CHARACTER_WORKSHOP_VIEW_PITCH_DEGREES");
     lightingText = getenv("MDKR_CHARACTER_WORKSHOP_LIGHTING");
     captureText = getenv("MDKR_CHARACTER_WORKSHOP_CAPTURE_PNG");
+    captureKindText = getenv("MDKR_CHARACTER_WORKSHOP_CAPTURE_KIND");
     if ((yawText != NULL && yawText[0] != '\0') ||
         (pitchText != NULL && pitchText[0] != '\0') ||
         (lightingText != NULL && lightingText[0] != '\0')) {
@@ -2665,6 +2681,13 @@ static s32 workshop_preview_start(void) {
     } else {
         mdkr_workshop_preview_visual_clear();
     }
+    if ((captureText != NULL && captureText[0] != '\0') !=
+        (captureKindText != NULL && captureKindText[0] != '\0')) {
+        fprintf(stderr,
+                "[FATAL] Character Workshop capture path and kind must be provided together\n");
+        platform_request_exit(EXIT_FAILURE);
+        return TRUE;
+    }
     if (captureText != NULL && captureText[0] != '\0') {
         const size_t captureLength = strlen(captureText);
         if (pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
@@ -2676,10 +2699,25 @@ static s32 workshop_preview_start(void) {
             platform_request_exit(EXIT_FAILURE);
             return TRUE;
         }
+        if (strcmp(captureKindText, "scene") == 0) {
+            sWorkshopPreviewCaptureKind =
+                MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+        } else if (strcmp(captureKindText, "model-alpha") == 0) {
+            sWorkshopPreviewCaptureKind =
+                MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA;
+        } else {
+            fprintf(stderr,
+                    "[FATAL] invalid Character Workshop capture kind: %s\n",
+                    captureKindText);
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
         (void)snprintf(sWorkshopPreviewCapturePath,
                        sizeof(sWorkshopPreviewCapturePath), "%s", captureText);
     } else {
         sWorkshopPreviewCapturePath[0] = '\0';
+        sWorkshopPreviewCaptureKind =
+            MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
     }
     if (strcmp(context, "car") == 0) {
         vehicle = VEHICLE_CAR;
@@ -2721,6 +2759,8 @@ static s32 workshop_preview_start(void) {
         g_mdkrCharacterPreviewResult->lighting = lighting;
         g_mdkrCharacterPreviewResult->capture_requested =
             sWorkshopPreviewCapturePath[0] != '\0';
+        g_mdkrCharacterPreviewResult->capture_kind =
+            sWorkshopPreviewCaptureKind;
     }
     if (vehicle < 0) {
         charselect_prev(1, NULL);
@@ -2742,11 +2782,14 @@ static s32 workshop_preview_start(void) {
     }
     MDKR_TRACE(
         "character_workshop_preview: started context=%s players=%d "
-        "vehicle=%d pose=%s phase=%u view=%d,%d lighting=%d capture=%d",
+        "vehicle=%d pose=%s phase=%u view=%d,%d lighting=%d capture=%d kind=%s",
         context, players, vehicle,
         pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ? "live" : poseText,
         posePhaseMilli, viewYawDegrees, viewPitchDegrees, (int)lighting,
-        sWorkshopPreviewCapturePath[0] != '\0');
+        sWorkshopPreviewCapturePath[0] != '\0',
+        sWorkshopPreviewCaptureKind ==
+                MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA
+            ? "model-alpha" : "scene");
     return TRUE;
 }
 #endif

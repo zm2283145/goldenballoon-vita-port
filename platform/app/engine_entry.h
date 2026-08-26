@@ -53,6 +53,16 @@ typedef enum {
     MDKR_CHARACTER_PREVIEW_POSE_COUNT,
 } MdkrCharacterPreviewPose;
 
+/* One-shot inspection captures are explicit render products. SCENE preserves
+ * the ordinary composed gameplay frame. MODEL_ALPHA asks the modern-character
+ * backend to replay only validated replacement draws into a transparent
+ * target; it never hides world geometry in the visible frame. */
+typedef enum {
+    MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE = 0,
+    MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA,
+    MDKR_CHARACTER_PREVIEW_CAPTURE_COUNT,
+} MdkrCharacterPreviewCaptureKind;
+
 // Measured evidence returned by an exact Character Workshop session. Interval
 // values describe displayed wall cadence after a 120-authored-tick warm-up;
 // they are not GPU timestamp queries. A short session can legitimately return
@@ -98,6 +108,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned long long camera_override_ticks;
     unsigned long long lighting_override_draws;
     int capture_requested;
+    MdkrCharacterPreviewCaptureKind capture_kind;
     int capture_armed;
     unsigned long long capture_stable_frames;
     int capture_written;
@@ -116,7 +127,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 8u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 9u
 #define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u
 
 // Owned by the C engine entry module and non-NULL only during a launcher-owned
@@ -143,6 +154,7 @@ typedef struct {
     int character_preview_view_pitch_degrees;     // -45..45
     MdkrWorkshopPreviewLighting character_preview_lighting;
     const char *character_preview_capture_png;    // optional, create-only
+    MdkrCharacterPreviewCaptureKind character_preview_capture_kind;
     MdkrCharacterPreviewResult *character_preview_result;
     // Staged RESTART-scope settings, as "Video.Key=Value" strings. The settings
     // panel writes these when the player changes a restart-scope key before

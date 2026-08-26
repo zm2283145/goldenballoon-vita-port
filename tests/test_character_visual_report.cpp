@@ -22,12 +22,26 @@ constexpr unsigned char kOnePixelPng[] = {
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
     0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
     0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-    0x08, 0x04, 0x00, 0x00, 0x00, 0xb5, 0x1c, 0x0c,
-    0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41,
-    0x54, 0x78, 0xda, 0x63, 0x64, 0xf8, 0x0f, 0x00,
-    0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66,
+    0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+    0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41,
+    0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+    0x00, 0x03, 0x01, 0x01, 0x00, 0xc9, 0xfe, 0x92,
+    0xef,
     0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
     0xae, 0x42, 0x60, 0x82,
+};
+
+constexpr unsigned char kOnePixelRgbaPng[] = {
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+    0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xd0,
+    0x00, 0x00, 0x04, 0x81, 0x01, 0x80, 0x2c, 0x55,
+    0xce, 0xb0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+    0x4e,
+    0x44, 0xae, 0x42, 0x60, 0x82,
 };
 
 bool writeBytes(const std::string &path, const unsigned char *bytes,
@@ -59,6 +73,8 @@ int main() {
     const std::string pngPath = "character-visual-report-input.png";
     const std::string truncatedPath =
         "character-visual-report-truncated.png";
+    const std::string rgbaPath =
+        "character-visual-report-alpha.png";
     const std::string corruptPath =
         "character-visual-report-corrupt.png";
     const std::string reportPath = "character-visual-report-output.html";
@@ -66,6 +82,7 @@ int main() {
         "character-visual-report-other.html";
     (void)mdkr_remove_utf8(pngPath.c_str());
     (void)mdkr_remove_utf8(truncatedPath.c_str());
+    (void)mdkr_remove_utf8(rgbaPath.c_str());
     (void)mdkr_remove_utf8(corruptPath.c_str());
     (void)mdkr_remove_utf8(reportPath.c_str());
     (void)mdkr_remove_utf8(otherReportPath.c_str());
@@ -74,6 +91,9 @@ int main() {
     expect(writeBytes(truncatedPath, kOnePixelPng,
                       sizeof(kOnePixelPng) - 12u),
            "truncated PNG fixture is written");
+    expect(writeBytes(
+               rgbaPath, kOnePixelRgbaPng, sizeof(kOnePixelRgbaPng)),
+           "RGBA PNG fixture is written");
     std::vector<unsigned char> corrupt(
         std::begin(kOnePixelPng), std::end(kOnePixelPng));
     corrupt[45] ^= 0x40u;
@@ -95,12 +115,19 @@ int main() {
     capture.height = 1u;
     capture.stableFrames = 12u;
     capture.exactPose = true;
-    std::vector<Capture> captures{capture};
+    Capture alphaCapture = capture;
+    alphaCapture.pngPath = rgbaPath;
+    alphaCapture.renderProduct = RenderProduct::ModelAlpha;
+    std::vector<Capture> captures{capture, alphaCapture};
     std::string error;
     const std::string hostileName =
         "Dixie </script><script>alert('x')</script> & friends";
-    expect(exportHtml(reportPath, "dixie.cc0", hostileName,
-                      captures, error),
+    const bool initialExport = exportHtml(
+        reportPath, "dixie.cc0", hostileName, captures, error);
+    if (!initialExport) {
+        std::fprintf(stderr, "report export error: %s\n", error.c_str());
+    }
+    expect(initialExport,
            "valid captures export to an exclusive self-contained report");
     const std::string report = readText(reportPath);
     char pngSha[MDKR_SHA256_HEX_SIZE];
@@ -115,7 +142,11 @@ int main() {
                    std::string::npos &&
                report.find("</script><script>alert") == std::string::npos,
            "display metadata is safe in both HTML and embedded JSON contexts");
-    expect(report.find("\"version\":1") != std::string::npos &&
+    expect(report.find("\"version\":2") != std::string::npos &&
+               report.find("\"renderProduct\":\"scene\"") !=
+                   std::string::npos &&
+               report.find("\"renderProduct\":\"model-alpha\"") !=
+                   std::string::npos &&
                report.find("\"sourceSha256\":\"") != std::string::npos &&
                report.find("\"fitSha256\":\"") != std::string::npos &&
                report.find("\"stableFrames\":12") != std::string::npos &&
@@ -135,6 +166,11 @@ int main() {
     expect(!exportHtml(otherReportPath, "dixie.cc0", "Dixie",
                        {invalid}, error),
            "truncated PNGs cannot enter a report");
+    invalid = capture;
+    invalid.renderProduct = RenderProduct::ModelAlpha;
+    expect(!exportHtml(otherReportPath, "dixie.cc0", "Dixie",
+                       {invalid}, error),
+           "render-product metadata cannot mislabel an RGB scene as RGBA");
     invalid = capture;
     invalid.pngPath = corruptPath;
     expect(!exportHtml(otherReportPath, "dixie.cc0", "Dixie",
@@ -182,6 +218,7 @@ int main() {
 
     (void)mdkr_remove_utf8(pngPath.c_str());
     (void)mdkr_remove_utf8(truncatedPath.c_str());
+    (void)mdkr_remove_utf8(rgbaPath.c_str());
     (void)mdkr_remove_utf8(corruptPath.c_str());
     (void)mdkr_remove_utf8(reportPath.c_str());
     (void)mdkr_remove_utf8(otherReportPath.c_str());

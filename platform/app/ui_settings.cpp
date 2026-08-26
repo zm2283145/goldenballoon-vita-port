@@ -2010,6 +2010,8 @@ std::map<std::string, int> g_characterTestLighting;
 
 struct CharacterCaptureEdit {
     bool enabled = false;
+    MdkrCharacterPreviewCaptureKind kind =
+        MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
     char pngPath[1024] = {0};
     char reportPath[1024] = {0};
 };
@@ -4455,7 +4457,9 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              int viewPitchDegrees = 0,
                              MdkrWorkshopPreviewLighting lighting =
                                  MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
-                             const char *capturePng = nullptr);
+                             const char *capturePng = nullptr,
+                             MdkrCharacterPreviewCaptureKind captureKind =
+                                 MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE);
 
 bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
     CharacterRigEdit &edit = loadCharacterRigEdit(entry);
@@ -4653,6 +4657,13 @@ bool characterPreviewSessionMatchesFit(
            session.result.replacement_draws != 0u &&
            session.result.fit_diagnostics_valid != 0 &&
            characterPreviewFitDiagnosticsValid(session.result) &&
+           (session.result.capture_requested
+                ? session.result.capture_kind >=
+                      MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE &&
+                      session.result.capture_kind <
+                          MDKR_CHARACTER_PREVIEW_CAPTURE_COUNT
+                : session.result.capture_kind ==
+                      MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE) &&
            ((session.result.pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
              session.result.pose_phase_milli == 0u &&
              session.result.inspection_pose_ticks == 0u &&
@@ -5659,7 +5670,8 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              int viewYawDegrees,
                              int viewPitchDegrees,
                              MdkrWorkshopPreviewLighting lighting,
-                             const char *capturePng) {
+                             const char *capturePng,
+                             MdkrCharacterPreviewCaptureKind captureKind) {
     const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
     const std::string fitSignature = characterFitReviewSignature(
         entry, tuning, static_cast<unsigned>(context - 1));
@@ -5683,6 +5695,10 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
         viewPitchDegrees < -45 || viewPitchDegrees > 45 ||
         lighting < MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
         lighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT ||
+        captureKind < MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE ||
+        captureKind >= MDKR_CHARACTER_PREVIEW_CAPTURE_COUNT ||
+        (!capture && captureKind !=
+             MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE) ||
         (!inspection && (viewYawDegrees != 0 || viewPitchDegrees != 0 ||
                          lighting !=
                              MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
@@ -5725,6 +5741,8 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
     g_characterPreviewRequest.lighting = inspection
         ? lighting : MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
     if (capture) g_characterPreviewRequest.capturePng = capturePng;
+    g_characterPreviewRequest.captureKind = capture
+        ? captureKind : MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
     g_characterPreviewRequested = true;
     setStatus(
         pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
@@ -5970,6 +5988,18 @@ const CharacterInspectionLighting *characterInspectionLighting(
     return found != std::end(kCharacterInspectionLighting) ? &*found : nullptr;
 }
 
+const char *characterPreviewCaptureKindLabel(
+    MdkrCharacterPreviewCaptureKind kind) {
+    switch (kind) {
+        case MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE:
+            return "Gameplay frame";
+        case MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA:
+            return "Model only · transparent";
+        default:
+            return nullptr;
+    }
+}
+
 void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
     const auto found = g_characterPreviewResults.find(entry->id);
     if (found == g_characterPreviewResults.end()) return;
@@ -6009,6 +6039,8 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
             characterInspectionPose(result.pose);
         const CharacterInspectionLighting *lighting =
             characterInspectionLighting(result.lighting);
+        const char *captureKind = characterPreviewCaptureKindLabel(
+            result.capture_kind);
         if (pose == nullptr || result.pose_phase_milli > 1000u ||
             lighting == nullptr || result.view_yaw_degrees < -180 ||
             result.view_yaw_degrees > 180 ||
@@ -6030,6 +6062,10 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
              result.camera_override_ticks == 0u) ||
             (result.capture_requested !=
              !found->second.capturePng.empty()) ||
+            (result.capture_requested
+                 ? captureKind == nullptr
+                 : result.capture_kind !=
+                       MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE) ||
             (!result.capture_requested &&
              (result.capture_armed || result.capture_stable_frames != 0u ||
               result.capture_written || result.capture_png_bytes != 0u)) ||
@@ -6101,6 +6137,7 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
                 result.lighting_override_draws);
         }
         if (result.capture_requested) {
+            ImGui::Text("Capture product: %s", captureKind);
             if (result.capture_written) {
                 ImGui::TextColored(
                     AppTheme::good(),
@@ -6148,6 +6185,7 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         result.lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
         result.camera_override_ticks != 0u ||
         result.lighting_override_draws != 0u ||
+        result.capture_kind != MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE ||
         result.capture_requested || result.capture_armed ||
         result.capture_stable_frames != 0u || result.capture_written ||
         result.capture_png_bytes != 0u) {
@@ -6278,7 +6316,11 @@ void drawCharacterVisualCaptureTray(
                         capture.context.c_str(), capture.pose.c_str(),
                         capture.phaseMilli / 10.0);
             ImGui::TextDisabled(
-                "%s light · view %d°/%d° · %u×%u · %s",
+                "%s · %s light · view %d°/%d° · %u×%u · %s",
+                capture.renderProduct ==
+                        CharacterVisualReport::RenderProduct::ModelAlpha
+                    ? "Model only · transparent"
+                    : "Gameplay frame",
                 capture.lighting.c_str(), capture.viewYawDegrees,
                 capture.viewPitchDegrees, capture.width, capture.height,
                 capture.exactPose ? "exact semantic" : "source fallback");
@@ -6553,6 +6595,11 @@ void drawCharacterTestEvidenceMatrix(
                 result.inspection_pose_fallback_ticks =
                     inspectionFallback ? 180u : 0u;
                 if (inspectionCapture) {
+                    CharacterCaptureEdit &captureEdit =
+                        g_characterCaptureEdits[entry->id];
+                    captureEdit.enabled = true;
+                    captureEdit.kind =
+                        MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA;
                     result.view_yaw_degrees = 90;
                     result.view_pitch_degrees = 15;
                     result.lighting =
@@ -6560,6 +6607,8 @@ void drawCharacterTestEvidenceMatrix(
                     result.camera_override_ticks = 180u;
                     result.lighting_override_draws = 720u;
                     result.capture_requested = 1;
+                    result.capture_kind =
+                        MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA;
                     result.capture_armed = 1;
                     result.capture_stable_frames =
                         MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES;
@@ -7021,11 +7070,15 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         inspectionLighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT) {
         inspectionLighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
     }
+    if (capture.kind < MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE ||
+        capture.kind >= MDKR_CHARACTER_PREVIEW_CAPTURE_COUNT) {
+        capture.kind = MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+    }
     if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
         g_characterPoseInspectionTracePackages.insert(entry->id).second) {
         std::fprintf(
             stderr,
-            "[app-ui] character-pose-inspector package=%s semantics=%zu defaultPose=%d defaultPhase=%d view=%d,%d lighting=%d capture=png-create-only performanceEvidence=session-excluded\n",
+            "[app-ui] character-pose-inspector package=%s semantics=%zu defaultPose=%d defaultPhase=%d view=%d,%d lighting=%d capture=scene-or-model-alpha-png-create-only performanceEvidence=session-excluded\n",
             entry->id, std::size(kCharacterInspectionPoses),
             inspectionPose, inspectionPhase, viewYaw, viewPitch,
             inspectionLighting);
@@ -7193,6 +7246,47 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         capture.enabled && capture.pngPath[0] == '\0'
             ? "Choose a new PNG filename before starting." : nullptr,
         "Creates exactly one PNG after 120 warm-up ticks and 12 consecutive fully rendered character/view/light frames; it never overwrites an existing file.");
+    if (capture.enabled) {
+        ui::TextSubtleWrapped(
+            "Choose the render product deliberately. Both use this exact pose, camera, fit, materials, and character light.");
+        int captureKind = static_cast<int>(capture.kind);
+        const float captureWidth = ImGui::GetContentRegionAvail().x;
+        const int captureColumns =
+            captureWidth >= ui::kPairMinWidth() * 2.0f ? 2 : 1;
+        if (ImGui::BeginTable(
+                "##character-capture-kind", captureColumns,
+                ImGuiTableFlags_SizingStretchSame)) {
+            ImGui::TableNextColumn();
+            if (ui::CardBegin(
+                    "##character-capture-scene", AppTheme::surface(), 0.0f)) {
+                (void)ImGui::RadioButton(
+                    "Gameplay frame", &captureKind,
+                    MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE);
+                ui::SpeakFocusedItem(
+                    "Gameplay frame", nullptr,
+                    "Saves the composed world, vehicle, character, and game interface exactly as displayed.");
+                ui::TextSubtleWrapped(
+                    "World + vehicle + character + HUD. Best for fit and in-game presentation review.");
+            }
+            ui::CardEnd();
+            ImGui::TableNextColumn();
+            if (ui::CardBegin(
+                    "##character-capture-alpha", AppTheme::surface(), 0.0f)) {
+                (void)ImGui::RadioButton(
+                    "Model only", &captureKind,
+                    MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA);
+                ui::SpeakFocusedItem(
+                    "Model only · transparent", nullptr,
+                    "Saves only the custom character against true transparency, excluding the donor, vehicle, world, and game interface.");
+                ui::TextSubtleWrapped(
+                    "Custom character + transparent background. Best for portraits and external layout work.");
+            }
+            ui::CardEnd();
+            ImGui::EndTable();
+        }
+        capture.kind = static_cast<MdkrCharacterPreviewCaptureKind>(
+            captureKind);
+    }
     ImGui::SetNextItemWidth(
         filedialog::isAvailable()
             ? std::max(120.0f, ImGui::GetContentRegionAvail().x -
@@ -7234,7 +7328,10 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
                 vehicle ? viewPitch : 0,
                 static_cast<MdkrWorkshopPreviewLighting>(
                     inspectionLighting),
-                capture.enabled ? capture.pngPath : nullptr);
+                capture.enabled ? capture.pngPath : nullptr,
+                capture.enabled
+                    ? capture.kind
+                    : MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE);
             if (g_characterPreviewRequested && capture.enabled) {
                 capture.enabled = false;
             }
@@ -13217,6 +13314,10 @@ void Settings_publishCharacterPreviewResult(
                 result.started && result.warmup_complete &&
                 characterPreviewFitDiagnosticsValid(result) &&
                 result.capture_requested && result.capture_armed &&
+                result.capture_kind >=
+                    MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE &&
+                result.capture_kind <
+                    MDKR_CHARACTER_PREVIEW_CAPTURE_COUNT &&
                 result.capture_stable_frames >=
                     MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES &&
                 result.capture_png_bytes != 0u &&
@@ -13266,6 +13367,11 @@ void Settings_publishCharacterPreviewResult(
                 capture.context = characterPreviewResultContext(result.context);
                 capture.pose = pose->label;
                 capture.lighting = lighting->label;
+                capture.renderProduct =
+                    result.capture_kind ==
+                            MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA
+                        ? CharacterVisualReport::RenderProduct::ModelAlpha
+                        : CharacterVisualReport::RenderProduct::Scene;
                 capture.players = static_cast<uint32_t>(result.players);
                 capture.phaseMilli = result.pose_phase_milli;
                 capture.viewYawDegrees = result.view_yaw_degrees;
@@ -13290,10 +13396,11 @@ void Settings_publishCharacterPreviewResult(
         if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
             std::fprintf(
                 stderr,
-                "[app-ui] character-pose-inspection session-only=1 package=%s context=%u players=%d pose=%d phase=%u capture=%d tray=%zu\n",
+                "[app-ui] character-pose-inspection session-only=1 package=%s context=%u players=%d pose=%d phase=%u capture=%d kind=%d tray=%zu\n",
                 packageId.c_str(), static_cast<unsigned>(result.context),
                 result.players, static_cast<int>(result.pose),
                 result.pose_phase_milli, result.capture_written,
+                static_cast<int>(result.capture_kind),
                 g_characterVisualCaptures[packageId].size());
         }
         return;
@@ -13306,6 +13413,7 @@ void Settings_publishCharacterPreviewResult(
         result.lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
         result.camera_override_ticks != 0u ||
         result.lighting_override_draws != 0u ||
+        result.capture_kind != MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE ||
         result.capture_requested || result.capture_armed ||
         result.capture_stable_frames != 0u || result.capture_written ||
         result.capture_png_bytes != 0u || !capturePng.empty()) {

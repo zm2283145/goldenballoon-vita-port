@@ -81,6 +81,28 @@ bool textValid(const std::string &value, size_t maximum, bool required) {
     });
 }
 
+const char *renderProductName(
+    CharacterVisualReport::RenderProduct product) {
+    switch (product) {
+        case CharacterVisualReport::RenderProduct::Scene:
+            return "Gameplay frame";
+        case CharacterVisualReport::RenderProduct::ModelAlpha:
+            return "Model only · transparent";
+        default:
+            return nullptr;
+    }
+}
+
+const char *renderProductToken(
+    CharacterVisualReport::RenderProduct product) {
+    switch (product) {
+        case CharacterVisualReport::RenderProduct::Scene: return "scene";
+        case CharacterVisualReport::RenderProduct::ModelAlpha:
+            return "model-alpha";
+        default: return nullptr;
+    }
+}
+
 bool readPng(const CharacterVisualReport::Capture &capture,
              std::vector<unsigned char> &bytes, std::string &sha,
              std::string &error) {
@@ -106,10 +128,22 @@ bool readPng(const CharacterVisualReport::Capture &capture,
     const bool readOk = std::ferror(file) == 0;
     const bool closeOk = std::fclose(file) == 0;
     CharacterPngValidation::Info info;
-    if (!readOk || !closeOk || !CharacterPngValidation::validate(
+    if (!readOk || !closeOk) {
+        error = "A capture PNG could not be read completely.";
+        return false;
+    }
+    if (!CharacterPngValidation::validate(
             loaded.data(), loaded.size(), capture.width, capture.height,
             info, error)) {
         if (error.empty()) error = "A capture is not a complete PNG.";
+        return false;
+    }
+    const uint8_t expectedColourType =
+        capture.renderProduct ==
+                CharacterVisualReport::RenderProduct::ModelAlpha
+            ? 6u : 2u;
+    if (info.colourType != expectedColourType) {
+        error = "A capture PNG does not match its recorded render product.";
         return false;
     }
     char digest[MDKR_SHA256_HEX_SIZE];
@@ -191,6 +225,7 @@ bool captureValid(const CharacterVisualReport::Capture &capture) {
            textValid(capture.context, 32u, true) &&
            textValid(capture.pose, 64u, true) &&
            textValid(capture.lighting, 32u, true) &&
+           renderProductName(capture.renderProduct) != nullptr &&
            capture.players >= 1u && capture.players <= 4u &&
            capture.phaseMilli <= 1000u &&
            capture.viewYawDegrees >= -180 &&
@@ -250,7 +285,7 @@ bool exportHtml(const std::string &outputPath,
     html += "main{max-width:1600px;margin:auto;padding:24px}h1{margin:.2em 0}.sub{color:#aeb9c7;word-break:break-all}";
     html += ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;margin-top:24px}";
     html += "figure{margin:0;background:#1d2530;border:1px solid #344252;border-radius:12px;overflow:hidden}";
-    html += "img{display:block;width:100%;height:auto;background:#000}figcaption{padding:14px;line-height:1.45}";
+    html += "img{display:block;width:100%;height:auto;background-color:#161b22;background-image:linear-gradient(45deg,#303844 25%,transparent 25%),linear-gradient(-45deg,#303844 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#303844 75%),linear-gradient(-45deg,transparent 75%,#303844 75%);background-size:24px 24px;background-position:0 0,0 12px,12px -12px,-12px 0}figcaption{padding:14px;line-height:1.45}";
     html += ".ok{color:#8ee6a8}.warn{color:#ffd37a}code{font-size:.8em;word-break:break-all}";
     html += "@media print{body{background:white;color:black}figure{break-inside:avoid;border-color:#aaa}.sub{color:#444}}</style></head><body>";
     html += "<main><h1>" + htmlEscape(displayName) + "</h1>";
@@ -263,6 +298,8 @@ bool exportHtml(const std::string &outputPath,
             "\" src=\"data:image/png;base64," + base64(item.png) + "\">";
         html += "<figcaption><strong>" + htmlEscape(capture.context) +
             " · " + htmlEscape(capture.pose) + "</strong><br>";
+        html += htmlEscape(renderProductName(capture.renderProduct)) +
+            " · ";
         html += "Phase " + std::to_string(capture.phaseMilli) +
             "/1000 · " + htmlEscape(capture.lighting) +
             " light · view " + std::to_string(capture.viewYawDegrees) +
@@ -275,7 +312,7 @@ bool exportHtml(const std::string &outputPath,
         html += "<br><code>PNG SHA-256 " + item.sha + "</code></figcaption></figure>";
     }
     html += "</div><script id=\"mdkr-character-visual-report\" type=\"application/json\">{";
-    html += "\"version\":1,\"packageId\":\"" + jsonEscape(packageId) +
+    html += "\"version\":2,\"packageId\":\"" + jsonEscape(packageId) +
         "\",\"displayName\":\"" + jsonEscape(displayName) +
         "\",\"captures\":[";
     for (size_t index = 0u; index < loaded.size(); ++index) {
@@ -283,6 +320,8 @@ bool exportHtml(const std::string &outputPath,
         if (index != 0u) html += ',';
         html += "{\"context\":\"" + jsonEscape(capture.context) +
             "\",\"players\":" + std::to_string(capture.players) +
+            ",\"renderProduct\":\"" +
+            renderProductToken(capture.renderProduct) + "\"" +
             ",\"pose\":\"" + jsonEscape(capture.pose) +
             "\",\"phaseMilli\":" + std::to_string(capture.phaseMilli) +
             ",\"lighting\":\"" + jsonEscape(capture.lighting) +

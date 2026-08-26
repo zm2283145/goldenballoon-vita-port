@@ -149,6 +149,13 @@ struct GfxRenderingAPI {
     void (*set_blend_mode)(enum GfxBlendMode mode);
     void (*draw_triangles)(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris);
     bool (*read_framebuffer_rgb)(int x, int y, int width, int height, uint8_t *rgb_out);
+    /* Optional exact modern-character-only capture. The backend replays its
+     * validated character commands into an isolated transparent target and
+     * returns bottom-left-origin straight RGBA. */
+    bool (*get_modern_character_capture_dimensions)(uint32_t *width,
+                                                     uint32_t *height);
+    bool (*read_modern_character_capture_rgba)(int width, int height,
+                                                uint8_t *rgba_out);
     /* Return false when the backend cannot create a usable device/context.
      * Startup must never enter game code with an inert renderer. */
     bool (*init)(void);

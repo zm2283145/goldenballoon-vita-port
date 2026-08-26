@@ -473,6 +473,8 @@ static void cancelValidation(LauncherState &s, bool clearUnusableSelection) {
         s.characterPreviewLighting =
             MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
         s.characterPreviewCapturePng.clear();
+        s.characterPreviewCaptureKind =
+            MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
         s.characterPreviewDispatched = false;
     }
     s.romValidationPath.clear();
@@ -508,6 +510,8 @@ static void cancelCharacterPreview(LauncherState &s) {
     s.characterPreviewLighting =
         MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
     s.characterPreviewCapturePng.clear();
+    s.characterPreviewCaptureKind =
+        MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
     s.characterPreviewDispatched = false;
 }
 
@@ -567,6 +571,8 @@ void RomPanel_serviceValidation(LauncherState &s) {
             s.characterPreviewLighting =
                 MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
             s.characterPreviewCapturePng.clear();
+            s.characterPreviewCaptureKind =
+                MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
             s.characterPreviewDispatched = false;
             /* Service priority: this pass can run after the navigation controls
              * have already drawn, so a plain assignment here would erase a tab

@@ -111,6 +111,13 @@ void gfx_dkr_set_logical_surface(uint32_t width, uint32_t height);
  */
 bool gfx_get_capture_dimensions(uint32_t *width, uint32_t *height);
 
+/** Return and read the last isolated modern-character capture target. The
+ * image is exact output-sized, bottom-left-origin, straight RGBA. */
+bool gfx_get_modern_character_capture_dimensions(uint32_t *width,
+                                                  uint32_t *height);
+int gfx_read_modern_character_capture_rgba(int width, int height,
+                                            uint8_t *rgba_out);
+
 /** Begin a frame transaction for one immutable game-authored task. False means
  * no display list may be submitted. authored_tick was latched when the game
  * began building task.data_ptr; it is never reconstructed from host time. */

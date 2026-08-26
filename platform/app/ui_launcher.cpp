@@ -122,6 +122,8 @@ void fillBootConfig(LauncherState &state, MdkrBootConfig &boot) {
         boot.character_preview_capture_png =
             state.characterPreviewCapturePng.empty()
                 ? nullptr : state.characterPreviewCapturePng.c_str();
+        boot.character_preview_capture_kind =
+            state.characterPreviewCaptureKind;
         state.characterPreviewResult = MdkrCharacterPreviewResult{};
         boot.character_preview_result = &state.characterPreviewResult;
     }
@@ -983,6 +985,7 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
         s.characterPreviewViewPitchDegrees = preview.viewPitchDegrees;
         s.characterPreviewLighting = preview.lighting;
         s.characterPreviewCapturePng = std::move(preview.capturePng);
+        s.characterPreviewCaptureKind = preview.captureKind;
         Launcher_requestTab(s, kLauncherPanelPlay, kLauncherTabPlayer);
     }
     ui::TouchScrollCurrentWindow();
@@ -1021,6 +1024,7 @@ void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out) {
         s.characterPreviewViewPitchDegrees = preview.viewPitchDegrees;
         s.characterPreviewLighting = preview.lighting;
         s.characterPreviewCapturePng = std::move(preview.capturePng);
+        s.characterPreviewCaptureKind = preview.captureKind;
         Launcher_requestTab(s, kLauncherPanelPlay, kLauncherTabPlayer);
     }
 }
@@ -1077,6 +1081,8 @@ LauncherAction Launcher::draw(AppHost &host) {
         state_.characterPreviewLighting =
             MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
         state_.characterPreviewCapturePng.clear();
+        state_.characterPreviewCaptureKind =
+            MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
         state_.characterPreviewDispatched = false;
     }
     state_.hostWindow = host.window();

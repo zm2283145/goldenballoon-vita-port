@@ -8144,6 +8144,15 @@ bool gfx_get_capture_dimensions(uint32_t *width, uint32_t *height) {
     return true;
 }
 
+bool gfx_get_modern_character_capture_dimensions(uint32_t *width,
+                                                  uint32_t *height) {
+    if (width == NULL || height == NULL || gfx_rapi == NULL ||
+        gfx_rapi->get_modern_character_capture_dimensions == NULL) {
+        return false;
+    }
+    return gfx_rapi->get_modern_character_capture_dimensions(width, height);
+}
+
 bool gfx_start_frame(uint64_t authored_tick) {
     if (gfx_rapi == NULL || gfx_rapi->start_frame == NULL ||
         !gfx_rapi->start_frame()) {
@@ -8673,6 +8682,16 @@ void gfx_dkr_replay_get_reject_stats(
 int gfx_read_framebuffer_rgb(int x, int y, int width, int height, uint8_t *rgb_out) {
     if (gfx_rapi && gfx_rapi->read_framebuffer_rgb) {
         return gfx_rapi->read_framebuffer_rgb(x, y, width, height, rgb_out) ? 1 : 0;
+    }
+    return 0;
+}
+
+int gfx_read_modern_character_capture_rgba(int width, int height,
+                                            uint8_t *rgba_out) {
+    if (gfx_rapi != NULL &&
+        gfx_rapi->read_modern_character_capture_rgba != NULL) {
+        return gfx_rapi->read_modern_character_capture_rgba(
+            width, height, rgba_out) ? 1 : 0;
     }
     return 0;
 }

@@ -62,6 +62,16 @@ const char *characterPreviewLightingName(
     }
 }
 
+const char *characterPreviewCaptureKindName(
+    MdkrCharacterPreviewCaptureKind kind) {
+    switch (kind) {
+        case MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE: return "scene";
+        case MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA:
+            return "model-alpha";
+        default: return nullptr;
+    }
+}
+
 bool characterPreviewCapturePathValid(const char *path) {
     if (path == nullptr || path[0] == '\0') return true;
     const size_t length = std::strlen(path);
@@ -76,6 +86,7 @@ bool characterPreviewCapturePathValid(const char *path) {
 
 bool characterPreviewPng(const char *path, unsigned expectedWidth,
                          unsigned expectedHeight,
+                         unsigned expectedColourType,
                          unsigned long long &bytes) {
     constexpr size_t kMaximumCaptureBytes = 32u * 1024u * 1024u;
     std::array<unsigned char, 8192> block{};
@@ -104,7 +115,7 @@ bool characterPreviewPng(const char *path, unsigned expectedWidth,
     if (!bounded || !readOk || !closeOk ||
         !CharacterPngValidation::validate(
             payload.data(), payload.size(), expectedWidth, expectedHeight,
-            info, error)) return false;
+            info, error) || info.colourType != expectedColourType) return false;
     bytes = payload.size();
     return true;
 }
@@ -291,8 +302,14 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
              cfg->character_preview_view_pitch_degrees > 45 ||
              characterPreviewLightingName(
                  cfg->character_preview_lighting) == nullptr ||
+             characterPreviewCaptureKindName(
+                 cfg->character_preview_capture_kind) == nullptr ||
              !characterPreviewCapturePathValid(
                  cfg->character_preview_capture_png) ||
+             ((cfg->character_preview_capture_png == nullptr ||
+               cfg->character_preview_capture_png[0] == '\0') &&
+              cfg->character_preview_capture_kind !=
+                  MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE) ||
              (cfg->character_preview_context ==
                   MDKR_CHARACTER_PREVIEW_SELECT &&
               (cfg->character_preview_view_yaw_degrees != 0 ||
@@ -445,6 +462,11 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             characterPreviewPoseSemantic(cfg->character_preview_pose);
         const char *lighting = characterPreviewLightingName(
             cfg->character_preview_lighting);
+        const char *captureKind = characterPreviewCaptureKindName(
+            cfg->character_preview_capture_kind);
+        const bool captureRequested =
+            cfg->character_preview_capture_png != nullptr &&
+            cfg->character_preview_capture_png[0] != '\0';
         bool environmentReady = previewEnvironment.set(
             "MDKR_CHARACTER_WORKSHOP_PREVIEW", context) &&
             previewEnvironment.set(
@@ -480,6 +502,9 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
                 pose != nullptr &&
                         cfg->character_preview_capture_png != nullptr
                     ? cfg->character_preview_capture_png : "") &&
+            previewEnvironment.set(
+                "MDKR_CHARACTER_WORKSHOP_CAPTURE_KIND",
+                pose != nullptr && captureRequested ? captureKind : "") &&
             environmentReady;
         for (int player = 0; player < 4; ++player) {
             const std::string variable =
@@ -497,7 +522,8 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
         std::fprintf(
             stderr,
             "[app] character preview: package=%s context=%s players=%d "
-            "pose=%s phase=%u view=%d,%d lighting=%s capture=%s\n",
+            "pose=%s phase=%u view=%d,%d lighting=%s captureKind=%s "
+            "capture=%s\n",
             cfg->character_preview_package, context,
             cfg->character_preview_players,
             pose != nullptr ? pose : "live",
@@ -505,6 +531,7 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             cfg->character_preview_view_yaw_degrees,
             cfg->character_preview_view_pitch_degrees,
             lighting != nullptr ? lighting : "neutral",
+            captureRequested ? captureKind : "none",
             cfg->character_preview_capture_png != nullptr &&
                     cfg->character_preview_capture_png[0] != '\0'
                 ? cfg->character_preview_capture_png : "none");
@@ -527,8 +554,9 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             cfg->character_preview_result->lighting =
                 cfg->character_preview_lighting;
             cfg->character_preview_result->capture_requested =
-                cfg->character_preview_capture_png != nullptr &&
-                cfg->character_preview_capture_png[0] != '\0';
+                captureRequested;
+            cfg->character_preview_result->capture_kind =
+                cfg->character_preview_capture_kind;
             g_mdkrCharacterPreviewResult = cfg->character_preview_result;
         }
     }
@@ -549,12 +577,17 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
                 cfg->character_preview_capture_png,
                 cfg->character_preview_result->output_width,
                 cfg->character_preview_result->output_height,
+                cfg->character_preview_result->capture_kind ==
+                        MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA
+                    ? 6u : 2u,
                 bytes) ? 1 : 0;
         cfg->character_preview_result->capture_png_bytes =
             cfg->character_preview_result->capture_written ? bytes : 0u;
         std::fprintf(
             stderr,
-            "[app] character preview capture: requested=1 armed=%d stableFrames=%llu written=%d bytes=%llu output=%ux%u path=%s\n",
+            "[app] character preview capture: requested=1 kind=%s armed=%d stableFrames=%llu written=%d bytes=%llu output=%ux%u path=%s\n",
+            characterPreviewCaptureKindName(
+                cfg->character_preview_result->capture_kind),
             cfg->character_preview_result->capture_armed,
             cfg->character_preview_result->capture_stable_frames,
             cfg->character_preview_result->capture_written,

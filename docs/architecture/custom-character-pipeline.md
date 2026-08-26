@@ -517,9 +517,9 @@ Later schema versions should add, without changing the principles above:
 - expanded project-owned reference clips, per-context author target offsets,
   and richer joint/pole constraints over the bounded contact solver;
 - optional material variants and eye/mouth morph mappings;
-- model-only transparent portrait capture, freeform subject selection, richer
-  background/frame presets, contact overlays, and icon derivatives beyond the
-  implemented imported/exact-renderer portrait, six-treatment comparison
+- freeform subject selection, richer background/frame presets, contact
+  overlays, and icon derivatives beyond the implemented imported/exact-renderer
+  portrait, transparent model-only render product, six-treatment comparison
   sheet, exact 40x40 pixel editor, rectangular move/copy and deterministic
   framing, resampling, palette, dithering, outline and cleanup recipe;
 - feature requirements such as morph targets or alpha blending.
@@ -1001,17 +1001,23 @@ existing destinations must all fail closed with a precise diagnostic. The gate
 also holds an exact semantic phase while applying a deterministic absolute
 racer-relative fitted-bounds orbit and character-only light, suppresses a
 transient scripted camera bank, requires 12 consecutive fully rendered frames
-after warm-up, writes a complete output-sized PNG, decodes its filtered RGB
-pixels, and requires the generated character material to form a large
-contiguous component inside the central safe frame. It also proves an existing
-capture stays byte-identical.
+after warm-up, and writes one of two explicit output-sized products. Gameplay
+frame capture is the unchanged composed RGB scene. Model-only capture replays
+only the validated modern-character commands from that same authored frame into
+an isolated transparent WebGPU color/depth target, reads it back as straight
+RGBA, and excludes the donor, vehicle, world, and HUD without changing the
+visible frame. The gate decodes every PNG filter, requires the generated
+character material to form a large contiguous component inside the central safe
+frame, and proves the RGBA product has a nonempty bounded subject, a genuinely
+transparent background, and no hidden matte color in zero-alpha pixels. It also
+proves an existing capture stays byte-identical.
 This qualifies the direct game route, visual inspection controls, capture seam,
 and stress seam; embedded offscreen preview and GPU timestamp/headroom
 isolation remain open.
 
 Launcher-owned previews also arm the existing bounded presentation census. The
 game discards a 120-authored-tick warm-up, resets only the observational timing
-window, and freezes a structured version-8 result when the F1 overlay opens (or
+window, and freezes a structured version-9 result when the F1 overlay opens (or
 at engine shutdown). The surviving launcher publishes that result back to the
 same package inspector: displayed interval sample count, median/p95/p99/mean/max,
 authored tick-wall sample/mean, and warmed replacement/part/donor-suppression
@@ -1019,14 +1025,16 @@ counts, vehicle-contact error, target-frame ground/seat anchor, calibrated
 fitted volume and normalized facing from the actual replacement transform,
 selected backend/adapter/driver and physical
 output versus scene-render dimensions, held-pose/fallback ticks, camera/light
-application counters, and requested/armed/written capture state, stable-frame
-count, and byte count. Fewer than 60 intervals
+application counters, and requested/armed/written capture state, typed render
+product, stable-frame count, and byte count. Fewer than 60 intervals
 and synthetic pacing are explicitly diagnostic-only. Visual-inspection results
 remain session-only and cannot contaminate durable timing evidence.
 
-The launcher collects only version-8 captures armed after at least 12 eligible
+The launcher collects only version-9 captures armed after at least 12 eligible
 frames in bounded session metadata and can export a self-contained HTML
-qualification report. The launcher and exporter share strict bounded PNG
+qualification report. Report schema v2 records `scene` or `model-alpha` for
+every item, displays transparency over a checkerboard, and refuses RGB/RGBA
+files that contradict the recorded product. The launcher and exporter share strict bounded PNG
 validation for chunk ordering, names, CRCs, canonical IHDR dimensions, palette
 requirements, nonempty image data, and terminal IEND; the exporter also checks canonical source/fit digests,
 metadata bounds, total byte budget and destination suffix; it escapes HTML and
@@ -1186,9 +1194,10 @@ GPU limits are exceeded.
   directory, P1-P4 assignment, independent in-game custom browser, vehicle
   pairing and fit/motion controls are complete.
 - Validated package portraits, exact and selection-based pixel editing,
-  deterministic style recipes, identity revisions and game-surface fallbacks
-  are complete; renderer capture, freeform subject selection and derivative
-  background/frame presets remain.
+  deterministic style recipes, identity revisions, game-surface fallbacks,
+  composed gameplay capture, and transparent model-only renderer capture are
+  complete; freeform subject selection and derivative background/frame presets
+  remain.
 - Add local ordering policy and online digest/fallback diagnostics.
 - Publish an SDK containing schemas, the generated animated fixture, validator,
   packer, semantic state reference, and examples that contain no Nintendo asset.
