@@ -32,6 +32,7 @@
 #include "online/lobby_view_model.h"
 #if MDKR_ENABLE_ONLINE_BETA
 #include "online/match_live_adapter.h"  // O-T6b visible-engine race-boot handoff
+#include "net/online_race_results.h"    // finished-race placements poll (one-shot)
 #endif
 #include "platform_os.h"
 #include "present_sched.h"
@@ -1435,9 +1436,50 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
     platformSetHostWindow(nullptr, nullptr);
     g_liveMatchInput = nullptr;
     mdkr_match_input_runtime_clear();
-    /* This boot owned the roster: retire it so nothing downstream inherits it. */
+    /* This boot owned the roster: retire it so nothing downstream inherits it.
+     * Multi-race rooms REQUIRE this clear: the runtime install is once-only
+     * while a roster is installed, and the adapter re-arms its own install
+     * latch (resetRaceLatches -> installed_ = false, "the launcher clears the
+     * process-global roster between races") when the lobby returns to LOBBY,
+     * so the next BEGIN_LOADING re-installs a fresh roster for race 2. */
     mdkr_net_roster_runtime_clear();
     return result;
+}
+
+/* Race-end results handoff (launcher -> room), shared by the interactive
+ * race-boot handoff and the loopback proof. After runOnlineLiveEngineSession
+ * returns, hand the finished race's per-canonical-slot placements to the
+ * adapter exactly once: the LEADER publishes PUBLISH_RESULTS to the room and
+ * a joiner's local session syncs from the RESULTS snapshot. An aborted or
+ * unfinished race recorded nothing -- the poll returns false and the no-op is
+ * logged, never treated as an error. If the session ended because a peer was
+ * lost, note it here; the adapter already latched the matching lobby-facing
+ * failure when the mesh reported PeerLost, so the panel fronts the
+ * connection-lost recovery without any nudge from this side. */
+void reportOnlineRaceResults(IMdkrOnlineAdapter *adapter) {
+    if (adapter == nullptr) return;
+    MdkrOnlineLiveRaceInfo endInfo{};
+    if (mdkr_online_live_adapter_race_info(adapter, &endInfo) &&
+        endInfo.peerLost) {
+        std::fprintf(stderr,
+                     "[online-live] race ended with peerLost=1 "
+                     "(adapter latched the lobby-facing failure)\n");
+    }
+    uint8_t placements[MDKR_ONLINE_RACE_RESULT_SLOTS];
+    if (!mdkr_online_race_results_poll(placements)) {
+        std::fprintf(stderr,
+                     "[online-live] race results: no results captured\n");
+        return;
+    }
+    const bool reported =
+        mdkr_online_live_adapter_report_results(adapter, placements);
+    std::fprintf(stderr,
+                 "[online-live] race results reported placements=%u,%u,%u,%u "
+                 "accepted=%d\n",
+                 static_cast<unsigned>(placements[0]),
+                 static_cast<unsigned>(placements[1]),
+                 static_cast<unsigned>(placements[2]),
+                 static_cast<unsigned>(placements[3]), reported ? 1 : 0);
 }
 #endif /* MDKR_ENABLE_ONLINE_BETA */
 
@@ -2706,6 +2748,10 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         const int liveResult = runOnlineLiveEngineSession(
             host, config, OnlineRoom_testLoopbackVisible(race),
             OnlineRoom_testLoopbackPeer(race), 0u, /*syntheticInput=*/true);
+        /* Same race-end seam as the interactive handoff: the results poll +
+         * report must fire whenever the online engine session returns, and
+         * this loopback proof is the fixture that witnesses it. */
+        reportOnlineRaceResults(OnlineRoom_testLoopbackVisible(race));
         OnlineRoom_destroyTestLoopbackRace(race);
         host.shutdown();
         return liveResult;
@@ -3055,11 +3101,27 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
             onlineConfig.video_mode = -1;
             std::fprintf(stderr,
                          "[online-live] engine race-boot handoff accepted\n");
-            exitCode =
+            const int liveResult =
                 runOnlineLiveEngineSession(host, onlineConfig, raceBoot, nullptr);
-            if (exitCode != 0) {
-                describeBootFailure(host, exitCode, bootRecoveryMessage);
-                running = false;
+            /* Race-end handoff back to the ROOM: the lobby (Online Room panel)
+             * is still live and owns the RESULTS/standings view, so hand it the
+             * finished race's placements and simply fall back into the launcher
+             * UI loop. Nothing is torn down here. */
+            reportOnlineRaceResults(raceBoot);
+            if (liveResult != 0) {
+                /* M7: a failed ONLINE boot must never quit the whole app -- that
+                 * tore down the adapter/mesh and stranded the peer in a dead
+                 * room. Stay in the launcher loop: the panel keeps servicing
+                 * the adapter and surfaces the recovery itself (a PeerLost /
+                 * mesh failure card immediately, otherwise the 30s view-timeout
+                 * card -- "Race Did Not Load" -> Return to Lobby -- or the race
+                 * chrome's Leave Race). Local/offline boots below keep their
+                 * fatal describeBootFailure handling unchanged. */
+                std::fprintf(stderr,
+                             "[online-live] engine session failed result=%d; "
+                             "staying in the Online Room (panel surfaces "
+                             "recovery)\n",
+                             liveResult);
             }
             continue;
         }
