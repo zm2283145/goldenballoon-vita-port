@@ -122,6 +122,15 @@ int mdkr_modern_character_set_tuning(int player,
 int mdkr_modern_character_get_tuning(int player,
                                      MdkrModernCharacterTuning *out);
 
+/* Returns the most recently rendered fitted bounds in racer-object local
+ * space. The Workshop camera consumes the previous complete render rather
+ * than guessing a focus height from a donor or source-model convention.
+ * A tuning/assignment change invalidates every context until it renders
+ * successfully again. */
+int mdkr_modern_character_player_focus(
+    int player, MdkrModernCharacterContext context,
+    float center[3], float *radius);
+
 /* Presentation-only adapter. Vehicle is 0 car, 1 hovercraft, 2 plane. */
 int mdkr_modern_character_matches(int player, int donor, int vehicle);
 int mdkr_modern_character_tick(int player, const char *semantic,

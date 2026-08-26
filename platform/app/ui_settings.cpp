@@ -14,6 +14,7 @@
 #include "character_raw_intake_index.h"
 #include "character_revision_index.h"
 #include "character_test_evidence_store.h"
+#include "character_visual_report.h"
 #include "character_workshop_model.h"
 #include "file_dialog.h"
 #include "ui_common.h"
@@ -1966,6 +1967,16 @@ std::map<std::string, int> g_characterAssemblyPlayers;
 std::map<std::string, int> g_characterTestPlayers;
 std::map<std::string, int> g_characterTestPoses;
 std::map<std::string, int> g_characterTestPosePhases;
+std::map<std::string, int> g_characterTestViewYawDegrees;
+std::map<std::string, int> g_characterTestViewPitchDegrees;
+std::map<std::string, int> g_characterTestLighting;
+
+struct CharacterCaptureEdit {
+    bool enabled = false;
+    char pngPath[1024] = {0};
+    char reportPath[1024] = {0};
+};
+std::map<std::string, CharacterCaptureEdit> g_characterCaptureEdits;
 std::set<std::string> g_characterPoseInspectionTracePackages;
 
 struct CharacterInspectionPose {
@@ -1986,14 +1997,37 @@ static_assert(std::size(kCharacterInspectionPoses) ==
                   std::size(kCharacterInspectionPoses) + 1u ==
                       MDKR_CHARACTER_PREVIEW_POSE_COUNT,
               "pose inspector must expose every exact-renderer semantic");
+
+struct CharacterInspectionLighting {
+    MdkrWorkshopPreviewLighting lighting;
+    const char *label;
+    const char *help;
+};
+
+constexpr CharacterInspectionLighting kCharacterInspectionLighting[] = {
+    {MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL, "Neutral",
+     "Balanced character light used during ordinary play."},
+    {MDKR_WORKSHOP_PREVIEW_LIGHTING_BRIGHT, "Bright",
+     "High ambient fill for finding texture, normal, and silhouette defects."},
+    {MDKR_WORKSHOP_PREVIEW_LIGHTING_LOW_KEY, "Low key",
+     "Low ambient fill for checking facial and costume readability in shadow."},
+    {MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT, "Backlit",
+     "Light from behind the model for checking outline and thin geometry."},
+};
+static_assert(std::size(kCharacterInspectionLighting) ==
+                  MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT,
+              "lighting inspector must expose every runtime preset");
 struct CharacterPreviewSessionResult {
     MdkrCharacterPreviewResult result{};
     std::string sourceSha256;
     std::string fitSha256;
     std::string presentationSha256;
+    std::string capturePng;
 };
 std::map<std::string, CharacterPreviewSessionResult>
     g_characterPreviewResults;
+std::map<std::string, std::vector<CharacterVisualReport::Capture>>
+    g_characterVisualCaptures;
 SettingsCharacterPreviewRequest g_characterPreviewRequest;
 bool g_characterPreviewRequested = false;
 CharacterTestEvidenceStore::Inventory g_characterTestEvidence;
@@ -2660,6 +2694,14 @@ std::string characterDigestHex(const uint8_t digest[32]) {
         text[index * 2u + 1u] = digits[digest[index] & 0xFu];
     }
     return text;
+}
+
+bool characterDigestTextValid(const std::string &digest) {
+    return digest.size() == 64u &&
+        std::all_of(digest.begin(), digest.end(), [](char byte) {
+            return (byte >= '0' && byte <= '9') ||
+                   (byte >= 'a' && byte <= 'f');
+        });
 }
 
 CharacterCandidateIndex::Candidate installedCharacterSummary(
@@ -3514,6 +3556,11 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterTestPlayers.erase(id);
     g_characterTestPoses.erase(id);
     g_characterTestPosePhases.erase(id);
+    g_characterTestViewYawDegrees.erase(id);
+    g_characterTestViewPitchDegrees.erase(id);
+    g_characterTestLighting.erase(id);
+    g_characterCaptureEdits.erase(id);
+    g_characterVisualCaptures.erase(id);
     g_characterPoseInspectionTracePackages.erase(id);
     g_characterPreviewResults.erase(id);
     g_characterTestEvidenceSelectedCell.erase(id);
@@ -4241,7 +4288,12 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              int players,
                              MdkrCharacterPreviewPose pose =
                                  MDKR_CHARACTER_PREVIEW_POSE_LIVE,
-                             unsigned posePhaseMilli = 0u);
+                             unsigned posePhaseMilli = 0u,
+                             int viewYawDegrees = 0,
+                             int viewPitchDegrees = 0,
+                             MdkrWorkshopPreviewLighting lighting =
+                                 MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
+                             const char *capturePng = nullptr);
 
 bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
     CharacterRigEdit &edit = loadCharacterRigEdit(entry);
@@ -4433,12 +4485,59 @@ bool characterPreviewSessionMatchesFit(
            ((session.result.pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
              session.result.pose_phase_milli == 0u &&
              session.result.inspection_pose_ticks == 0u &&
-             session.result.inspection_pose_fallback_ticks == 0u) ||
+             session.result.inspection_pose_fallback_ticks == 0u &&
+             session.result.view_yaw_degrees == 0 &&
+             session.result.view_pitch_degrees == 0 &&
+             session.result.lighting ==
+                 MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL &&
+             session.result.camera_override_ticks == 0u &&
+             session.result.lighting_override_draws == 0u &&
+             !session.result.capture_requested &&
+             !session.result.capture_armed &&
+             session.result.capture_stable_frames == 0u &&
+             !session.result.capture_written &&
+             session.result.capture_png_bytes == 0u) ||
             (session.result.pose > MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
              session.result.pose < MDKR_CHARACTER_PREVIEW_POSE_COUNT &&
              session.result.pose_phase_milli <= 1000u &&
+             session.result.view_yaw_degrees >= -180 &&
+             session.result.view_yaw_degrees <= 180 &&
+             session.result.view_pitch_degrees >= -45 &&
+             session.result.view_pitch_degrees <= 45 &&
+             session.result.lighting >=
+                 MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL &&
+             session.result.lighting <
+                 MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT &&
+             (session.result.lighting ==
+                      MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL
+                  ? session.result.lighting_override_draws == 0u
+                  : session.result.lighting_override_draws != 0u) &&
+             ((session.result.view_yaw_degrees == 0 &&
+               session.result.view_pitch_degrees == 0)
+                  ? session.result.camera_override_ticks == 0u
+                  : session.result.camera_override_ticks != 0u) &&
+             (context != MDKR_CHARACTER_PREVIEW_SELECT ||
+              (session.result.view_yaw_degrees == 0 &&
+               session.result.view_pitch_degrees == 0 &&
+               session.result.camera_override_ticks == 0u)) &&
              session.result.inspection_pose_ticks != 0u &&
              session.result.inspection_pose_fallback_ticks == 0u)) &&
+           (session.result.capture_requested ==
+                !session.capturePng.empty()) &&
+           (session.result.capture_requested
+                ? ((session.result.capture_armed
+                        ? session.result.capture_stable_frames >=
+                              MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES
+                        : session.result.capture_stable_frames <
+                              MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES) &&
+                   (session.result.capture_written
+                        ? session.result.capture_armed &&
+                              session.result.capture_png_bytes != 0u
+                        : session.result.capture_png_bytes == 0u))
+                : (!session.result.capture_armed &&
+                   session.result.capture_stable_frames == 0u &&
+                   !session.result.capture_written &&
+                   session.result.capture_png_bytes == 0u)) &&
            session.sourceSha256 ==
                characterDigestHex(entry->source_sha256) &&
            session.fitSha256 == characterFitReviewSignature(
@@ -4935,7 +5034,11 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              MdkrCharacterPreviewContext context,
                              int players,
                              MdkrCharacterPreviewPose pose,
-                             unsigned posePhaseMilli) {
+                             unsigned posePhaseMilli,
+                             int viewYawDegrees,
+                             int viewPitchDegrees,
+                             MdkrWorkshopPreviewLighting lighting,
+                             const char *capturePng) {
     const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
     const std::string fitSignature = characterFitReviewSignature(
         entry, tuning, static_cast<unsigned>(context - 1));
@@ -4944,6 +5047,35 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
     if (fitSignature.empty() || presentationSignature.empty()) {
         setStatus(
             "The exact test could not bind its source, fit, and presentation settings; no test was started.",
+            AppTheme::bad());
+        return;
+    }
+    const bool inspection = pose != MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    const bool capture = capturePng != nullptr && capturePng[0] != '\0';
+    int captureExists = 0;
+    const size_t captureLength = capture ? std::strlen(capturePng) : 0u;
+    if (capture) {
+        (void)mdkr_path_query_utf8(
+            capturePng, &captureExists, nullptr, nullptr);
+    }
+    if (viewYawDegrees < -180 || viewYawDegrees > 180 ||
+        viewPitchDegrees < -45 || viewPitchDegrees > 45 ||
+        lighting < MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
+        lighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT ||
+        (!inspection && (viewYawDegrees != 0 || viewPitchDegrees != 0 ||
+                         lighting !=
+                             MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
+                         capture)) ||
+        (context == MDKR_CHARACTER_PREVIEW_SELECT &&
+         (viewYawDegrees != 0 || viewPitchDegrees != 0)) ||
+        (capture &&
+         (captureLength < 4u || captureLength >= 1024u ||
+          std::strcmp(capturePng + captureLength - 4u, ".png") != 0 ||
+          captureExists))) {
+        setStatus(
+            capture
+                ? "Choose a new writable .png filename; captures never overwrite an existing file."
+                : "The inspection view or lighting request was invalid; no preview was started.",
             AppTheme::bad());
         return;
     }
@@ -4964,12 +5096,21 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
     g_characterPreviewRequest.players = players;
     g_characterPreviewRequest.pose = pose;
     g_characterPreviewRequest.posePhaseMilli =
-        pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ? 0u : posePhaseMilli;
+        inspection ? posePhaseMilli : 0u;
+    g_characterPreviewRequest.viewYawDegrees =
+        inspection ? viewYawDegrees : 0;
+    g_characterPreviewRequest.viewPitchDegrees =
+        inspection ? viewPitchDegrees : 0;
+    g_characterPreviewRequest.lighting = inspection
+        ? lighting : MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+    if (capture) g_characterPreviewRequest.capturePng = capturePng;
     g_characterPreviewRequested = true;
     setStatus(
         pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
             ? "Checking the selected ROM, then opening the exact game context."
-            : "Checking the selected ROM, then opening the exact game context with the inspection pose held.",
+            : capture
+                ? "Checking the selected ROM, then opening the held inspection pose and saving one stabilized PNG."
+                : "Checking the selected ROM, then opening the exact game context with the inspection pose held.",
         AppTheme::good());
 }
 
@@ -5054,6 +5195,17 @@ const CharacterInspectionPose *characterInspectionPose(
     return found != std::end(kCharacterInspectionPoses) ? &*found : nullptr;
 }
 
+const CharacterInspectionLighting *characterInspectionLighting(
+    MdkrWorkshopPreviewLighting lighting) {
+    const auto found = std::find_if(
+        std::begin(kCharacterInspectionLighting),
+        std::end(kCharacterInspectionLighting),
+        [lighting](const CharacterInspectionLighting &candidate) {
+            return candidate.lighting == lighting;
+        });
+    return found != std::end(kCharacterInspectionLighting) ? &*found : nullptr;
+}
+
 void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
     const auto found = g_characterPreviewResults.find(entry->id);
     if (found == g_characterPreviewResults.end()) return;
@@ -5081,7 +5233,42 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
     if (result.pose != MDKR_CHARACTER_PREVIEW_POSE_LIVE) {
         const CharacterInspectionPose *pose =
             characterInspectionPose(result.pose);
+        const CharacterInspectionLighting *lighting =
+            characterInspectionLighting(result.lighting);
         if (pose == nullptr || result.pose_phase_milli > 1000u ||
+            lighting == nullptr || result.view_yaw_degrees < -180 ||
+            result.view_yaw_degrees > 180 ||
+            result.view_pitch_degrees < -45 ||
+            result.view_pitch_degrees > 45 ||
+            (result.context == MDKR_CHARACTER_PREVIEW_SELECT &&
+             (result.view_yaw_degrees != 0 ||
+              result.view_pitch_degrees != 0 ||
+              result.camera_override_ticks != 0u)) ||
+            (result.lighting == MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL &&
+             result.lighting_override_draws != 0u) ||
+            (result.warmup_complete && result.replacement_draws != 0u &&
+             result.lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL &&
+             result.lighting_override_draws == 0u) ||
+            (result.warmup_complete &&
+             result.context != MDKR_CHARACTER_PREVIEW_SELECT &&
+             (result.view_yaw_degrees != 0 ||
+              result.view_pitch_degrees != 0) &&
+             result.camera_override_ticks == 0u) ||
+            (result.capture_requested !=
+             !found->second.capturePng.empty()) ||
+            (!result.capture_requested &&
+             (result.capture_armed || result.capture_stable_frames != 0u ||
+              result.capture_written || result.capture_png_bytes != 0u)) ||
+            (result.capture_armed &&
+             result.capture_stable_frames <
+                 MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES) ||
+            (!result.capture_armed &&
+             result.capture_stable_frames >=
+                 MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES) ||
+            (!result.capture_written && result.capture_png_bytes != 0u) ||
+            (result.capture_written &&
+             (!result.capture_armed || result.capture_png_bytes == 0u ||
+              found->second.capturePng.empty())) ||
             result.inspection_pose_fallback_ticks >
                 result.inspection_pose_ticks) {
             ImGui::TextColored(
@@ -5094,6 +5281,10 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         }
         ImGui::Text("%s  •  phase %.1f%%",
                     pose->label, result.pose_phase_milli / 10.0);
+        ImGui::Text(
+            "%s light  •  vehicle view yaw %d° · pitch %d°",
+            lighting->label, result.view_yaw_degrees,
+            result.view_pitch_degrees);
         const bool renderedCharacter = result.replacement_draws != 0u;
         const bool poseMeasured = result.inspection_pose_ticks != 0u;
         const bool exactPose = poseMeasured &&
@@ -5113,7 +5304,7 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         ImGui::PopStyleColor();
         if (!result.warmup_complete) {
             ui::TextSubtleWrapped(
-                "The scene ended before the 120-tick stabilization boundary. Keep the inspection open longer before returning with F1.");
+                "The scene ended before the 120-tick warm-up boundary. Keep the inspection open longer before returning with F1.");
         }
         ImGui::Text("%llu replacement draws · %llu rendered parts · %llu inspected ticks",
                     result.replacement_draws,
@@ -5123,6 +5314,42 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
             ImGui::Text(
                 "%llu ticks used source fallback instead of phase-scrubbable motion",
                 result.inspection_pose_fallback_ticks);
+        }
+        if (result.view_yaw_degrees != 0 ||
+            result.view_pitch_degrees != 0) {
+            ImGui::Text(
+                "%llu vehicle-camera override ticks",
+                result.camera_override_ticks);
+        }
+        if (result.lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL) {
+            ImGui::Text(
+                "%llu replacement draws used the inspection light",
+                result.lighting_override_draws);
+        }
+        if (result.capture_requested) {
+            if (result.capture_written) {
+                ImGui::TextColored(
+                    AppTheme::good(),
+                    "PNG saved  •  %llu bytes  •  %llu stable frames",
+                    result.capture_png_bytes,
+                    result.capture_stable_frames);
+                ui::TextSubtleUnformattedWrapped(
+                    found->second.capturePng.c_str());
+            } else if (!result.capture_armed) {
+                ImGui::TextColored(
+                    AppTheme::accent(),
+                    "PNG not taken  •  camera settled for %llu / %u frames",
+                    result.capture_stable_frames,
+                    MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES);
+                ui::TextSubtleWrapped(
+                    "Keep the inspection open through warm-up and 12 consecutive fully rendered character/view/light frames. No file was created or replaced.");
+            } else {
+                ImGui::TextColored(
+                    AppTheme::bad(),
+                    "PNG capture failed — no existing file was replaced");
+                ui::TextSubtleWrapped(
+                    "Choose a new writable filename and run the inspection again.");
+            }
         }
         if (result.context != MDKR_CHARACTER_PREVIEW_SELECT &&
             result.contact_solves != 0u) {
@@ -5141,7 +5368,15 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
     }
     if (result.pose_phase_milli != 0u ||
         result.inspection_pose_ticks != 0u ||
-        result.inspection_pose_fallback_ticks != 0u) {
+        result.inspection_pose_fallback_ticks != 0u ||
+        result.view_yaw_degrees != 0 ||
+        result.view_pitch_degrees != 0 ||
+        result.lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
+        result.camera_override_ticks != 0u ||
+        result.lighting_override_draws != 0u ||
+        result.capture_requested || result.capture_armed ||
+        result.capture_stable_frames != 0u || result.capture_written ||
+        result.capture_png_bytes != 0u) {
         ImGui::TextColored(
             AppTheme::bad(),
             "Mixed live-test and pose-inspection result — diagnostic only");
@@ -5241,6 +5476,126 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
     ui::CardEnd();
 }
 
+void drawCharacterVisualCaptureTray(
+    const MdkrModernCharacterEntry *entry,
+    CharacterCaptureEdit &edit) {
+    auto &captures = g_characterVisualCaptures[entry->id];
+    ImGui::SeparatorText("Visual qualification report");
+    if (captures.empty()) {
+        ui::TextSubtleWrapped(
+            "Successful one-shot inspections appear here with their exact context, pose, view, light, source, and fit identity. Capture several views, then export one portable contact sheet.");
+        return;
+    }
+
+    ImGui::Text("%zu captured %s in this Workshop session",
+                captures.size(), captures.size() == 1u ? "view" : "views");
+    ui::TextSubtleWrapped(
+        "The list is session-only metadata. Its PNG files are independent local documents; removing an entry or closing the Workshop never deletes them.");
+
+    const size_t shown = std::min<size_t>(captures.size(), 8u);
+    size_t removeIndex = captures.size();
+    for (size_t row = 0u; row < shown; ++row) {
+        const size_t index = captures.size() - 1u - row;
+        const CharacterVisualReport::Capture &capture = captures[index];
+        ImGui::PushID(static_cast<int>(index));
+        if (ui::CardBegin("##character-visual-capture", AppTheme::surface(),
+                          0.0f)) {
+            ImGui::Text("%s · %s · phase %.1f%%",
+                        capture.context.c_str(), capture.pose.c_str(),
+                        capture.phaseMilli / 10.0);
+            ImGui::TextDisabled(
+                "%s light · view %d°/%d° · %u×%u · %s",
+                capture.lighting.c_str(), capture.viewYawDegrees,
+                capture.viewPitchDegrees, capture.width, capture.height,
+                capture.exactPose ? "exact semantic" : "source fallback");
+            ImGui::TextDisabled("Source %.8s · fit %.8s",
+                                capture.sourceSha256.c_str(),
+                                capture.fitSha256.c_str());
+            ui::TextSubtleUnformattedWrapped(capture.pngPath.c_str());
+            if (ImGui::Button("Remove from report")) removeIndex = index;
+            ui::SpeakFocusedItem(
+                "Remove from report", nullptr,
+                "Removes only this session's report entry. The PNG file remains untouched.");
+            ui::CardEnd();
+        } else {
+            ui::CardEnd();
+        }
+        ImGui::PopID();
+    }
+    if (captures.size() > shown) {
+        ImGui::TextDisabled(
+            "%zu earlier views are included in export but collapsed here.",
+            captures.size() - shown);
+    }
+    if (removeIndex < captures.size()) {
+        captures.erase(captures.begin() +
+                       static_cast<std::ptrdiff_t>(removeIndex));
+        setStatus(
+            "Capture removed from the session report; its PNG file was not deleted.",
+            AppTheme::subtle());
+    }
+
+    ImGui::SetNextItemWidth(
+        filedialog::isAvailable()
+            ? std::max(120.0f, ImGui::GetContentRegionAvail().x -
+                                  ui::kBtnSecondary().x - ui::kGapS)
+            : -1.0f);
+    ImGui::InputTextWithHint(
+        "##character-visual-report-path",
+        "/path/to/character-visual-report.html",
+        edit.reportPath, sizeof(edit.reportPath));
+    ui::SpeakFocusedItem(
+        "Visual report path", nullptr,
+        "Names a new self-contained HTML report. Existing files are always preserved.");
+    if (filedialog::isAvailable()) {
+        ImGui::SameLine();
+        if (ImGui::Button("Choose report...", ui::kBtnSecondary())) {
+            std::string path;
+            if (filedialog::saveCharacterReport(path)) {
+                std::snprintf(edit.reportPath, sizeof(edit.reportPath), "%s",
+                              path.c_str());
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Choose report", nullptr,
+            "Opens the operating system save panel for a new portable HTML contact sheet.");
+    }
+    const bool reportPathReady = edit.reportPath[0] != '\0';
+    if (!reportPathReady) ImGui::BeginDisabled();
+    if (ImGui::Button("Export self-contained report") && reportPathReady) {
+        const std::string destination = edit.reportPath;
+        std::string error;
+        if (CharacterVisualReport::exportHtml(
+                destination, entry->id, entry->display_name,
+                captures, error)) {
+            edit.reportPath[0] = '\0';
+            setStatus(
+                ("Visual report exported without model or ROM bytes: " +
+                 destination).c_str(),
+                AppTheme::good());
+        } else {
+            setStatus(
+                ("Visual report was not created: " + error).c_str(),
+                AppTheme::bad());
+        }
+    }
+    if (!reportPathReady) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Export self-contained report",
+        reportPathReady ? nullptr : "Choose a new HTML filename first.",
+        "Embeds every listed PNG and machine-readable qualification metadata in one portable HTML file. It contains no model, package, or ROM bytes.");
+    ImGui::SameLine();
+    if (ImGui::Button("Clear capture list")) {
+        captures.clear();
+        setStatus(
+            "Session capture list cleared; no PNG or report file was deleted.",
+            AppTheme::subtle());
+    }
+    ui::SpeakFocusedItem(
+        "Clear capture list", nullptr,
+        "Clears only the session report entries and never deletes the PNG files.");
+}
+
 bool characterTestEvidenceCurrent(
     const MdkrModernCharacterEntry *entry,
     const CharacterTuningEdit &tuning,
@@ -5334,6 +5689,8 @@ void drawCharacterTestEvidenceMatrix(
         if (std::strcmp(smokeAction, "publish-qualified") == 0 ||
             std::strcmp(smokeAction, "publish-inspection") == 0 ||
             std::strcmp(
+                smokeAction, "publish-inspection-capture") == 0 ||
+            std::strcmp(
                 smokeAction, "publish-inspection-fallback") == 0 ||
             std::strcmp(smokeAction, "publish-mixed-mode") == 0 ||
             std::strcmp(
@@ -5377,7 +5734,11 @@ void drawCharacterTestEvidenceMatrix(
             const bool inspection =
                 std::strcmp(smokeAction, "publish-inspection") == 0 ||
                 std::strcmp(
+                    smokeAction, "publish-inspection-capture") == 0 ||
+                std::strcmp(
                     smokeAction, "publish-inspection-fallback") == 0;
+            const bool inspectionCapture = std::strcmp(
+                smokeAction, "publish-inspection-capture") == 0;
             const bool inspectionFallback = std::strcmp(
                 smokeAction, "publish-inspection-fallback") == 0;
             const bool mixedMode = std::strcmp(
@@ -5388,6 +5749,31 @@ void drawCharacterTestEvidenceMatrix(
                 result.inspection_pose_ticks = 180u;
                 result.inspection_pose_fallback_ticks =
                     inspectionFallback ? 180u : 0u;
+                if (inspectionCapture) {
+                    result.view_yaw_degrees = 90;
+                    result.view_pitch_degrees = 15;
+                    result.lighting =
+                        MDKR_WORKSHOP_PREVIEW_LIGHTING_BRIGHT;
+                    result.camera_override_ticks = 180u;
+                    result.lighting_override_draws = 720u;
+                    result.capture_requested = 1;
+                    result.capture_armed = 1;
+                    result.capture_stable_frames =
+                        MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES;
+                    result.capture_written = 1;
+                    result.capture_png_bytes = 123u;
+                    result.output_width = 40u;
+                    result.output_height = 40u;
+                    const char *smokeReportPath = std::getenv(
+                        "MDKR_APP_SMOKE_CHARACTER_VISUAL_REPORT");
+                    if (smokeReportPath != nullptr) {
+                        std::snprintf(
+                            g_characterCaptureEdits[entry->id].reportPath,
+                            sizeof(g_characterCaptureEdits[entry->id]
+                                       .reportPath),
+                            "%s", smokeReportPath);
+                    }
+                }
             } else if (mixedMode) {
                 result.inspection_pose_ticks = 180u;
             }
@@ -5401,8 +5787,14 @@ void drawCharacterTestEvidenceMatrix(
                       entry, tuning, MDKR_CHARACTER_CONTEXT_CAR);
             const std::string presentation =
                 characterTestPresentationSignature();
+            const char *smokeCapturePath = inspectionCapture
+                ? std::getenv(
+                      "MDKR_APP_SMOKE_CHARACTER_INSPECTION_CAPTURE")
+                : nullptr;
+            const std::string capturePath = smokeCapturePath != nullptr
+                ? smokeCapturePath : std::string();
             Settings_publishCharacterPreviewResult(
-                entry->id, source, fit, presentation, result);
+                entry->id, source, fit, presentation, capturePath, result);
             const auto session = g_characterPreviewResults.find(entry->id);
             const CharacterTestEvidenceStore::Evidence *latest =
                 CharacterTestEvidenceStore::find(
@@ -5421,7 +5813,10 @@ void drawCharacterTestEvidenceMatrix(
                     latest == nullptr &&
                     session->second.result.pose ==
                         MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER &&
-                    (inspectionFallback ? !sessionMatches : sessionMatches);
+                    (inspectionFallback ? !sessionMatches : sessionMatches) &&
+                    (!inspectionCapture ||
+                     (!capturePath.empty() &&
+                      g_characterVisualCaptures[entry->id].size() == 1u));
             } else {
                 applied = session != g_characterPreviewResults.end() &&
                     latest != nullptr && (!staleFit || !sessionMatches);
@@ -5773,6 +6168,13 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         entry->id, MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER).first->second;
     int &inspectionPhase = g_characterTestPosePhases.try_emplace(
         entry->id, 500).first->second;
+    int &viewYaw = g_characterTestViewYawDegrees.try_emplace(
+        entry->id, 0).first->second;
+    int &viewPitch = g_characterTestViewPitchDegrees.try_emplace(
+        entry->id, 0).first->second;
+    int &inspectionLighting = g_characterTestLighting.try_emplace(
+        entry->id, MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL).first->second;
+    CharacterCaptureEdit &capture = g_characterCaptureEdits[entry->id];
     const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
     if (players < 1 || players > 4) players = 1;
     if (inspectionPose <= MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
@@ -5782,13 +6184,20 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
     if (inspectionPhase < 0 || inspectionPhase > 1000) {
         inspectionPhase = 500;
     }
+    if (viewYaw < -180 || viewYaw > 180) viewYaw = 0;
+    if (viewPitch < -45 || viewPitch > 45) viewPitch = 0;
+    if (inspectionLighting < MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
+        inspectionLighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT) {
+        inspectionLighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+    }
     if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
         g_characterPoseInspectionTracePackages.insert(entry->id).second) {
         std::fprintf(
             stderr,
-            "[app-ui] character-pose-inspector package=%s semantics=%zu defaultPose=%d defaultPhase=%d performanceEvidence=session-excluded\n",
+            "[app-ui] character-pose-inspector package=%s semantics=%zu defaultPose=%d defaultPhase=%d view=%d,%d lighting=%d capture=png-create-only performanceEvidence=session-excluded\n",
             entry->id, std::size(kCharacterInspectionPoses),
-            inspectionPose, inspectionPhase);
+            inspectionPose, inspectionPhase, viewYaw, viewPitch,
+            inspectionLighting);
     }
     CharacterHistoryFrame history = beginCharacterHistory(
         entry, CharacterHistoryTool::Test);
@@ -5893,16 +6302,111 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         "Scrubs from the beginning to the end of the selected semantic without changing animation speed.");
     ImGui::TextDisabled("Runtime semantic: %s", pose.semantic);
 
+    ImGui::SeparatorText("Inspection view and light");
+    ui::TextSubtleWrapped(
+        "Gameplay view uses the ordinary vehicle camera. Every other preset is an absolute racer-relative orbit around the imported model's fitted bounds, automatically pulls back for the full vehicle, suppresses transient cutscene cameras, and still passes through the existing obstruction resolver. Character select keeps its authored camera. Lighting changes only the imported character, never the course, vehicle, simulation, or saved package.");
+    (void)ImGui::SliderInt(
+        "Vehicle camera yaw", &viewYaw, -180, 180, "%d degrees",
+        ImGuiSliderFlags_AlwaysClamp);
+    ui::SpeakFocusedItem(
+        "Vehicle camera yaw", nullptr,
+        "Sets a repeatable racer-relative inspection angle. Zero with zero pitch uses the ordinary gameplay camera; saved fit is unchanged.");
+    (void)ImGui::SliderInt(
+        "Vehicle camera pitch", &viewPitch, -45, 45, "%d degrees",
+        ImGuiSliderFlags_AlwaysClamp);
+    ui::SpeakFocusedItem(
+        "Vehicle camera pitch", nullptr,
+        "Moves the exact vehicle camera above or below its ordinary view without changing saved fit.");
+    if (ImGui::BeginTable(
+            "##character-view-presets",
+            testActionColumns,
+            ImGuiTableFlags_SizingStretchSame)) {
+        const auto viewPreset = [&](const char *label, int yaw, int pitch) {
+            ImGui::TableNextColumn();
+            if (ImGui::Button(label, ui::kBtnFullWidth())) {
+                viewYaw = yaw;
+                viewPitch = pitch;
+            }
+            ui::SpeakFocusedItem(
+                label, nullptr,
+                "Sets a repeatable vehicle inspection orbit; the saved character transform is unchanged.");
+        };
+        viewPreset("Gameplay view", 0, 0);
+        viewPreset("Front view", 180, 0);
+        viewPreset("Left view", -90, 0);
+        viewPreset("Right view", 90, 0);
+        ImGui::EndTable();
+    }
+    const CharacterInspectionLighting &selectedLighting =
+        kCharacterInspectionLighting[inspectionLighting];
+    if (ImGui::BeginCombo("Character lighting", selectedLighting.label)) {
+        for (const CharacterInspectionLighting &candidate :
+             kCharacterInspectionLighting) {
+            const bool selected = candidate.lighting == inspectionLighting;
+            if (ImGui::Selectable(candidate.label, selected)) {
+                inspectionLighting = candidate.lighting;
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ui::SpeakFocusedItem(
+        "Character lighting", selectedLighting.help,
+        "Chooses a deterministic light applied only to the custom character in the exact renderer.");
+
+    ImGui::SeparatorText("One-shot capture");
+    (void)ImGui::Checkbox(
+        "Save stabilized PNG during next inspection", &capture.enabled);
+    ui::SpeakFocusedItem(
+        "Save stabilized PNG during next inspection",
+        capture.enabled && capture.pngPath[0] == '\0'
+            ? "Choose a new PNG filename before starting." : nullptr,
+        "Creates exactly one PNG after 120 warm-up ticks and 12 consecutive fully rendered character/view/light frames; it never overwrites an existing file.");
+    ImGui::SetNextItemWidth(
+        filedialog::isAvailable()
+            ? std::max(120.0f, ImGui::GetContentRegionAvail().x -
+                                  ui::kBtnSecondary().x - ui::kGapS)
+            : -1.0f);
+    ImGui::InputTextWithHint(
+        "##character-inspection-capture-path",
+        "/path/to/character-inspection.png",
+        capture.pngPath, sizeof(capture.pngPath));
+    ui::SpeakFocusedItem(
+        "Capture PNG path", nullptr,
+        "Names a new local PNG; an existing file is always preserved.");
+    if (filedialog::isAvailable()) {
+        ImGui::SameLine();
+        if (ImGui::Button("Choose PNG...", ui::kBtnSecondary())) {
+            std::string path;
+            if (filedialog::saveCharacterCapture(path)) {
+                std::snprintf(capture.pngPath, sizeof(capture.pngPath), "%s",
+                              path.c_str());
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Choose PNG", nullptr,
+            "Opens the operating system save panel for a new inspection capture.");
+    }
+
     const auto inspectButton = [&](const char *label,
                                    MdkrCharacterPreviewContext context,
                                    bool enabled, const char *disabledReason) {
         ImGui::TableNextColumn();
         if (!enabled) ImGui::BeginDisabled();
         if (ImGui::Button(label, ui::kBtnFullWidth()) && enabled) {
+            const bool vehicle = context != MDKR_CHARACTER_PREVIEW_SELECT;
             requestCharacterPreview(
                 entry, context, players,
                 static_cast<MdkrCharacterPreviewPose>(inspectionPose),
-                static_cast<unsigned>(inspectionPhase));
+                static_cast<unsigned>(inspectionPhase),
+                vehicle ? viewYaw : 0,
+                vehicle ? viewPitch : 0,
+                static_cast<MdkrWorkshopPreviewLighting>(
+                    inspectionLighting),
+                capture.enabled ? capture.pngPath : nullptr);
+            if (g_characterPreviewRequested && capture.enabled) {
+                capture.enabled = false;
+            }
         }
         if (!enabled) ImGui::EndDisabled();
         ui::SpeakFocusedItem(
@@ -5924,6 +6428,7 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
                       planeQualified, "Plane is disabled for this package.");
         ImGui::EndTable();
     }
+    drawCharacterVisualCaptureTray(entry, capture);
     finishCharacterHistory(entry, history);
 }
 
@@ -7051,16 +7556,28 @@ bool captureCharacterHistoryPayload(
         int players = g_characterTestPlayers[entry->id];
         int pose = g_characterTestPoses[entry->id];
         int phase = g_characterTestPosePhases[entry->id];
+        int yaw = g_characterTestViewYawDegrees[entry->id];
+        int pitch = g_characterTestViewPitchDegrees[entry->id];
+        int lighting = g_characterTestLighting[entry->id];
         if (players < 1 || players > 4) players = 1;
         if (pose <= MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
             pose >= MDKR_CHARACTER_PREVIEW_POSE_COUNT) {
             pose = MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER;
         }
         if (phase < 0 || phase > 1000) phase = 500;
-        payload = "mdkr-test-history-v2\n";
+        if (yaw < -180 || yaw > 180) yaw = 0;
+        if (pitch < -45 || pitch > 45) pitch = 0;
+        if (lighting < MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
+            lighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT) {
+            lighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+        }
+        payload = "mdkr-test-history-v3\n";
         appendCharacterHistoryValue(payload, players);
         appendCharacterHistoryValue(payload, pose);
         appendCharacterHistoryValue(payload, phase);
+        appendCharacterHistoryValue(payload, yaw);
+        appendCharacterHistoryValue(payload, pitch);
+        appendCharacterHistoryValue(payload, lighting);
     } else {
         return false;
     }
@@ -7432,28 +7949,43 @@ bool applyCharacterHistoryPayload(
         }
         g_characterAssemblyPlayers[entry->id] = players;
     } else if (tool == CharacterHistoryTool::Test) {
-        const bool current = consumeHeader("mdkr-test-history-v2\n");
-        if (!current && !consumeHeader("mdkr-test-history-v1\n")) {
+        const bool current = consumeHeader("mdkr-test-history-v3\n");
+        const bool poseVersion = current ||
+            consumeHeader("mdkr-test-history-v2\n");
+        if (!poseVersion && !consumeHeader("mdkr-test-history-v1\n")) {
             error = "Test history header is invalid.";
             return false;
         }
         int players = 0;
         int pose = MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER;
         int phase = 500;
+        int yaw = 0;
+        int pitch = 0;
+        int lighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
         if (!readCharacterHistoryValue(payload, offset, players) ||
-            (current &&
+            (poseVersion &&
              (!readCharacterHistoryValue(payload, offset, pose) ||
               !readCharacterHistoryValue(payload, offset, phase))) ||
+            (current &&
+             (!readCharacterHistoryValue(payload, offset, yaw) ||
+              !readCharacterHistoryValue(payload, offset, pitch) ||
+              !readCharacterHistoryValue(payload, offset, lighting))) ||
             offset != payload.size() || players < 1 || players > 4 ||
             pose <= MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
             pose >= MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
-            phase < 0 || phase > 1000) {
+            phase < 0 || phase > 1000 || yaw < -180 || yaw > 180 ||
+            pitch < -45 || pitch > 45 ||
+            lighting < MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
+            lighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT) {
             error = "Test history values are invalid.";
             return false;
         }
         g_characterTestPlayers[entry->id] = players;
         g_characterTestPoses[entry->id] = pose;
         g_characterTestPosePhases[entry->id] = phase;
+        g_characterTestViewYawDegrees[entry->id] = yaw;
+        g_characterTestViewPitchDegrees[entry->id] = pitch;
+        g_characterTestLighting[entry->id] = lighting;
     } else {
         error = "Unknown character history tool.";
         return false;
@@ -7645,6 +8177,12 @@ bool captureCharacterDraftSnapshot(
         entry->id, MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER).first->second;
     int testPosePhase = g_characterTestPosePhases.try_emplace(
         entry->id, 500).first->second;
+    int testViewYaw = g_characterTestViewYawDegrees.try_emplace(
+        entry->id, 0).first->second;
+    int testViewPitch = g_characterTestViewPitchDegrees.try_emplace(
+        entry->id, 0).first->second;
+    int testLighting = g_characterTestLighting.try_emplace(
+        entry->id, MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL).first->second;
     snapshot.assemblyPlayers = assemblyPlayers >= 1 && assemblyPlayers <= 4
         ? assemblyPlayers : 4;
     snapshot.testPlayers = testPlayers >= 1 && testPlayers <= 4
@@ -7657,6 +8195,16 @@ bool captureCharacterDraftSnapshot(
     snapshot.testPosePhaseMilli =
         testPosePhase >= 0 && testPosePhase <= 1000
             ? static_cast<uint32_t>(testPosePhase) : 500u;
+    snapshot.testViewYawDegrees =
+        testViewYaw >= -180 && testViewYaw <= 180 ? testViewYaw : 0;
+    snapshot.testViewPitchDegrees =
+        testViewPitch >= -45 && testViewPitch <= 45 ? testViewPitch : 0;
+    snapshot.testLighting =
+        testLighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL &&
+                testLighting < MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT
+            ? static_cast<uint32_t>(testLighting)
+            : static_cast<uint32_t>(
+                  MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL);
     error.clear();
     return true;
 }
@@ -7777,6 +8325,12 @@ bool applyCharacterDraftSnapshot(
     g_characterTestPoses[entry->id] = static_cast<int>(snapshot.testPose);
     g_characterTestPosePhases[entry->id] =
         static_cast<int>(snapshot.testPosePhaseMilli);
+    g_characterTestViewYawDegrees[entry->id] =
+        snapshot.testViewYawDegrees;
+    g_characterTestViewPitchDegrees[entry->id] =
+        snapshot.testViewPitchDegrees;
+    g_characterTestLighting[entry->id] =
+        static_cast<int>(snapshot.testLighting);
     CharacterDraftReviewState review;
     review.mask = snapshot.reviewedContexts;
     for (size_t context = 0u;
@@ -7917,6 +8471,10 @@ void closeCharacterDraftEditor(const std::string &packageId,
         g_characterTestPlayers.erase(packageId);
         g_characterTestPoses.erase(packageId);
         g_characterTestPosePhases.erase(packageId);
+        g_characterTestViewYawDegrees.erase(packageId);
+        g_characterTestViewPitchDegrees.erase(packageId);
+        g_characterTestLighting.erase(packageId);
+        g_characterCaptureEdits.erase(packageId);
         g_characterPendingDraftFit.erase(packageId);
     } else {
         g_characterPendingDraftFit[packageId] = true;
@@ -10756,25 +11314,115 @@ void Settings_publishCharacterPreviewResult(
     const std::string &sourceSha256,
     const std::string &fitSha256,
     const std::string &presentationSha256,
+    const std::string &capturePng,
     const MdkrCharacterPreviewResult &result) {
     if (packageId.empty()) return;
     g_characterPreviewResults[packageId] = CharacterPreviewSessionResult{
-        result, sourceSha256, fitSha256, presentationSha256,
+        result, sourceSha256, fitSha256, presentationSha256, capturePng,
     };
     if (result.pose != MDKR_CHARACTER_PREVIEW_POSE_LIVE) {
+        const CharacterInspectionPose *pose =
+            characterInspectionPose(result.pose);
+        const CharacterInspectionLighting *lighting =
+            characterInspectionLighting(result.lighting);
+        if (result.capture_written) {
+            auto &captures = g_characterVisualCaptures[packageId];
+            const bool recordValid =
+                result.version == MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
+                result.started && result.warmup_complete &&
+                result.capture_requested && result.capture_armed &&
+                result.capture_stable_frames >=
+                    MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES &&
+                result.capture_png_bytes != 0u &&
+                !capturePng.empty() && pose != nullptr && lighting != nullptr &&
+                result.context >= MDKR_CHARACTER_PREVIEW_SELECT &&
+                result.context <= MDKR_CHARACTER_PREVIEW_PLANE &&
+                result.players >= 1 && result.players <= 4 &&
+                result.pose_phase_milli <= 1000u &&
+                result.inspection_pose_ticks != 0u &&
+                result.inspection_pose_fallback_ticks <=
+                    result.inspection_pose_ticks &&
+                result.view_yaw_degrees >= -180 &&
+                result.view_yaw_degrees <= 180 &&
+                result.view_pitch_degrees >= -45 &&
+                result.view_pitch_degrees <= 45 &&
+                (result.context != MDKR_CHARACTER_PREVIEW_SELECT ||
+                 (result.view_yaw_degrees == 0 &&
+                  result.view_pitch_degrees == 0 &&
+                  result.camera_override_ticks == 0u)) &&
+                ((result.view_yaw_degrees == 0 &&
+                  result.view_pitch_degrees == 0) ||
+                 result.camera_override_ticks != 0u) &&
+                result.lighting >=
+                    MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL &&
+                result.lighting < MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT &&
+                (result.lighting ==
+                     MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL
+                     ? result.lighting_override_draws == 0u
+                     : result.lighting_override_draws != 0u) &&
+                result.output_width >= 1u &&
+                result.output_width <= 16384u &&
+                result.output_height >= 1u &&
+                result.output_height <= 16384u &&
+                characterDigestTextValid(sourceSha256) &&
+                characterDigestTextValid(fitSha256);
+            const bool alreadyListed = std::any_of(
+                captures.begin(), captures.end(),
+                [&capturePng](const CharacterVisualReport::Capture &capture) {
+                    return capture.pngPath == capturePng;
+                });
+            if (recordValid && !alreadyListed &&
+                captures.size() < CharacterVisualReport::kMaximumCaptures) {
+                CharacterVisualReport::Capture capture{};
+                capture.pngPath = capturePng;
+                capture.sourceSha256 = sourceSha256;
+                capture.fitSha256 = fitSha256;
+                capture.context = characterPreviewResultContext(result.context);
+                capture.pose = pose->label;
+                capture.lighting = lighting->label;
+                capture.players = static_cast<uint32_t>(result.players);
+                capture.phaseMilli = result.pose_phase_milli;
+                capture.viewYawDegrees = result.view_yaw_degrees;
+                capture.viewPitchDegrees = result.view_pitch_degrees;
+                capture.width = result.output_width;
+                capture.height = result.output_height;
+                capture.stableFrames = result.capture_stable_frames;
+                capture.exactPose = result.inspection_pose_ticks != 0u &&
+                    result.inspection_pose_fallback_ticks == 0u;
+                captures.push_back(std::move(capture));
+                setStatus(
+                    "Inspection PNG saved and added to the visual report tray.",
+                    AppTheme::good());
+            } else if (!alreadyListed) {
+                setStatus(
+                    recordValid
+                        ? "The PNG was saved, but the session report reached its safety capacity; export or clear the tray before capturing more."
+                        : "The PNG was saved, but inconsistent inspection metadata prevented adding it to the report tray.",
+                    AppTheme::accent());
+            }
+        }
         if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
             std::fprintf(
                 stderr,
-                "[app-ui] character-pose-inspection session-only=1 package=%s context=%u players=%d pose=%d phase=%u\n",
+                "[app-ui] character-pose-inspection session-only=1 package=%s context=%u players=%d pose=%d phase=%u capture=%d tray=%zu\n",
                 packageId.c_str(), static_cast<unsigned>(result.context),
                 result.players, static_cast<int>(result.pose),
-                result.pose_phase_milli);
+                result.pose_phase_milli, result.capture_written,
+                g_characterVisualCaptures[packageId].size());
         }
         return;
     }
     if (result.pose_phase_milli != 0u ||
         result.inspection_pose_ticks != 0u ||
-        result.inspection_pose_fallback_ticks != 0u) {
+        result.inspection_pose_fallback_ticks != 0u ||
+        result.view_yaw_degrees != 0 ||
+        result.view_pitch_degrees != 0 ||
+        result.lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
+        result.camera_override_ticks != 0u ||
+        result.lighting_override_draws != 0u ||
+        result.capture_requested || result.capture_armed ||
+        result.capture_stable_frames != 0u || result.capture_written ||
+        result.capture_png_bytes != 0u || !capturePng.empty()) {
         if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
             std::fprintf(
                 stderr,

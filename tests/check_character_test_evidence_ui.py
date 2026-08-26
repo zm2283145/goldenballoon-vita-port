@@ -115,6 +115,8 @@ def run(
     action: str | None = None,
     compact: bool = False,
     accessible: bool = False,
+    inspection_capture: Path | None = None,
+    visual_report: Path | None = None,
 ) -> str:
     prefs = root / "prefs"
     saves = root / "saves"
@@ -165,6 +167,14 @@ def run(
                 "MDKR_APP_SMOKE_CHARACTER_TEST_EVIDENCE_ACTION": action,
                 "MDKR_APP_SMOKE_CHARACTER_TEST_EVIDENCE_TOKEN": TOKEN,
             }
+        )
+    if inspection_capture is not None:
+        environment["MDKR_APP_SMOKE_CHARACTER_INSPECTION_CAPTURE"] = str(
+            inspection_capture
+        )
+    if visual_report is not None:
+        environment["MDKR_APP_SMOKE_CHARACTER_VISUAL_REPORT"] = str(
+            visual_report
         )
     if compact and not accessible:
         environment.update(
@@ -244,7 +254,7 @@ def main() -> int:
                 or rows[0][0] != "0"
                 or rows[0][1] != PACKAGE_ID
                 or (rows[0][7], rows[0][8]) != ("2", "4")
-                or rows[0][9] != "5"
+                or rows[0][9] != "7"
                 or bytes.fromhex(rows[0][29]).decode("utf-8")
                 != "webgpu-test"
                 or bytes.fromhex(rows[0][30]).decode("utf-8")
@@ -283,6 +293,19 @@ def main() -> int:
                     "text=Clear pinned baseline",
                     "text=Semantic pose",
                     "text=Normalized phase",
+                    "text=Vehicle camera yaw",
+                    "text=Vehicle camera pitch",
+                    "text=Gameplay view",
+                    "text=Front view",
+                    "text=Left view",
+                    "text=Right view",
+                    "text=Character lighting",
+                    "text=Save stabilized PNG during next inspection",
+                    "text=Capture PNG path",
+                    "text=Remove from report",
+                    "text=Visual report path",
+                    "text=Export self-contained report",
+                    "text=Clear capture list",
                     "text=Inspect character select",
                     "text=Inspect car",
                     "text=Inspect hovercraft",
@@ -290,6 +313,9 @@ def main() -> int:
                 ),
                 compact=True,
                 accessible=True,
+                action="publish-inspection-capture",
+                inspection_capture=root / "source" / "portrait.png",
+                visual_report=root / "visual-report.html",
             )
 
             run(

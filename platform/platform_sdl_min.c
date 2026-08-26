@@ -178,6 +178,8 @@ uint64_t platform_perf_monotonic_ns(void) {
 #include "fast3d/gfx_shadow_cascade.h"
 #include "fast3d/gfx_shadow_frame.h"
 #include "fast3d/gfx_uniforms.h"
+#define STBI_WRITE_NO_STDIO
+#include <stb_image_write.h>
 #ifndef __EMSCRIPTEN__
 #include "fast3d/gfx_opengl.h"
 #endif
@@ -1327,11 +1329,13 @@ void platform_sdl_sync_drawable_size(void) {
     gfx_set_dimensions((uint32_t)width, (uint32_t)height);
 }
 
-/* Capture the last completed frame to DIR/frame_%04d.ppm as binary P6.
- * Backend readback returns rows bottom-up; PPM is top-down, so rows are flipped
- * on write. No external deps. */
+/* Capture the last completed frame either to the diagnostic PPM sequence or
+ * one exclusive Workshop PNG. Backend readback returns rows bottom-up; both
+ * encoders require top-down rows, so the flip is shared. */
 static int s_dumpFrom = -2;
 static int s_dumpEvery = 1;
+static int s_frameCapturePending;
+static char s_frameCapturePath[1024];
 void platform_frame_dump_drain(void); /* defined with the writer below */
 /* F9 capture toggle: every-present dumps + per-frame [CAPTURE*] rows for as
  * long as the player holds the defect on screen. See the keydown handler. */
@@ -1372,6 +1376,7 @@ static void platform_frame_dump_filter_init(void) {
 }
 
 int platform_frame_dump_due(void) {
+    if (s_frameCapturePending) return 1;
     if (!g_dumpFramesDir) return 0;
     if (s_captureActive) return 1;
     platform_frame_dump_filter_init();
@@ -1387,6 +1392,7 @@ int platform_frame_dump_prepare_due(void) {
     enum { DUMP_ADMISSION_PREROLL = 8 };
     int distance;
 
+    if (s_frameCapturePending) return 1;
     if (!g_dumpFramesDir) return 0;
     if (s_captureActive) return 1;
     platform_frame_dump_filter_init();
@@ -1418,6 +1424,7 @@ typedef struct DumpJob {
     unsigned char *pix; /* bottom-up rows, owned by the job */
     int w, h;
     char path[1024];
+    int png;
 } DumpJob;
 static DumpJob s_dumpQueue[DUMP_QUEUE_DEPTH];
 static int s_dumpQueueHead, s_dumpQueueLen;
@@ -1427,20 +1434,69 @@ static SDL_Thread *s_dumpThread;
 static int s_dumpThreadStop;
 static uint64_t s_dumpWritten, s_dumpDropped;
 
-static void dump_write_ppm(const DumpJob *job) {
-    FILE *f = mdkr_fopen_utf8(job->path, "wb");
-    if (f == NULL) {
-        return;
+typedef struct DumpPngFile {
+    FILE *file;
+    int failed;
+} DumpPngFile;
+
+static void dump_png_write(void *context, void *data, int size) {
+    DumpPngFile *output = (DumpPngFile *)context;
+    if (output->failed || size <= 0) return;
+    if (fwrite(data, 1u, (size_t)size, output->file) != (size_t)size) {
+        output->failed = 1;
     }
-    fprintf(f, "P6\n%d %d\n255\n", job->w, job->h);
+}
+
+static int dump_write_job(DumpJob *job) {
+    FILE *f = mdkr_fopen_utf8(job->path, job->png ? "wbx" : "wb");
+    if (f == NULL) {
+        return 0;
+    }
+    if (job->png) {
+        const size_t rowBytes = (size_t)job->w * 3u;
+        unsigned char *scratch = (unsigned char *)malloc(rowBytes);
+        int y;
+        int encoded;
+        DumpPngFile output = { f, 0 };
+        if (scratch == NULL) {
+            (void)fclose(f);
+            (void)mdkr_remove_utf8(job->path);
+            return 0;
+        }
+        for (y = 0; y < job->h / 2; ++y) {
+            unsigned char *top = job->pix + (size_t)y * rowBytes;
+            unsigned char *bottom =
+                job->pix + (size_t)(job->h - 1 - y) * rowBytes;
+            memcpy(scratch, top, rowBytes);
+            memcpy(top, bottom, rowBytes);
+            memcpy(bottom, scratch, rowBytes);
+        }
+        free(scratch);
+        encoded = stbi_write_png_to_func(
+            dump_png_write, &output, job->w, job->h, 3,
+            job->pix, (int)rowBytes);
+        if (fflush(f) != 0 || mdkr_file_sync(f) != 0) output.failed = 1;
+        if (fclose(f) != 0) output.failed = 1;
+        if (!encoded || output.failed) {
+            (void)mdkr_remove_utf8(job->path);
+            return 0;
+        }
+        (void)mdkr_parent_directory_sync_utf8(job->path);
+        return 1;
+    }
     {
+        int written = fprintf(f, "P6\n%d %d\n255\n", job->w, job->h) > 0;
         const size_t rowBytes = (size_t)job->w * 3u;
         int y;
-        for (y = job->h - 1; y >= 0; y--) {
-            fwrite(job->pix + (size_t)y * rowBytes, 1, rowBytes, f);
+        for (y = job->h - 1; y >= 0 && written; y--) {
+            written = fwrite(
+                job->pix + (size_t)y * rowBytes,
+                1u, rowBytes, f) == rowBytes;
         }
+        if (fclose(f) != 0) written = 0;
+        if (!written) (void)mdkr_remove_utf8(job->path);
+        return written;
     }
-    fclose(f);
 }
 
 static int dump_writer_main(void *arg) {
@@ -1459,10 +1515,14 @@ static int dump_writer_main(void *arg) {
             s_dumpQueueLen--;
             SDL_CondBroadcast(s_dumpCond); /* wake a space-waiting producer */
             SDL_UnlockMutex(s_dumpMutex);
-            dump_write_ppm(&job);
+            const int written = dump_write_job(&job);
             free(job.pix);
             SDL_LockMutex(s_dumpMutex);
-            s_dumpWritten++;
+            if (written) {
+                s_dumpWritten++;
+            } else {
+                s_dumpDropped++;
+            }
         }
     }
     SDL_UnlockMutex(s_dumpMutex);
@@ -1471,11 +1531,15 @@ static int dump_writer_main(void *arg) {
 
 /* Returns 1 when the job (and ownership of pix) was accepted. */
 static int dump_writer_enqueue(unsigned char *pix, int w, int h,
-                               const char *path) {
+                               const char *path, int png) {
     if (s_dumpMutex == NULL) {
         s_dumpMutex = SDL_CreateMutex();
         s_dumpCond = SDL_CreateCond();
         if (s_dumpMutex == NULL || s_dumpCond == NULL) {
+            if (s_dumpCond != NULL) SDL_DestroyCond(s_dumpCond);
+            if (s_dumpMutex != NULL) SDL_DestroyMutex(s_dumpMutex);
+            s_dumpCond = NULL;
+            s_dumpMutex = NULL;
             return 0;
         }
     }
@@ -1509,6 +1573,7 @@ static int dump_writer_enqueue(unsigned char *pix, int w, int h,
         job->w = w;
         job->h = h;
         snprintf(job->path, sizeof(job->path), "%s", path);
+        job->png = png;
         s_dumpQueueLen++;
     }
     SDL_CondSignal(s_dumpCond);
@@ -1603,12 +1668,61 @@ static void platform_dump_frame(void) {
     }
 
     char path[1024];
-    snprintf(path, sizeof(path), "%s/frame_%04d.ppm", g_dumpFramesDir, g_frameCounter);
-    if (!dump_writer_enqueue(pix, w, h, path)) {
+    const int oneShot = s_frameCapturePending;
+    if (oneShot) {
+        (void)snprintf(path, sizeof(path), "%s", s_frameCapturePath);
+    } else {
+        snprintf(path, sizeof(path), "%s/frame_%04d.ppm",
+                 g_dumpFramesDir, g_frameCounter);
+    }
+    if (!dump_writer_enqueue(pix, w, h, path, oneShot)) {
         /* Writer saturated or unavailable: drop rather than stall the
          * present thread (counted, reported at CAPTURE-STOP/drain). */
         free(pix);
+    } else if (oneShot) {
+        s_frameCapturePending = 0;
+        s_frameCapturePath[0] = '\0';
+        fprintf(stderr,
+                "[WORKSHOP-CAPTURE] queued frame=%d path=%s\n",
+                g_frameCounter, path);
     }
+}
+
+int platform_frame_capture_request_once(const char *png_path,
+                                        char *error, size_t error_size) {
+    int exists = 0;
+    const size_t length = png_path != NULL ? strlen(png_path) : 0u;
+    const int suffix = length >= 4u &&
+        strcmp(png_path + length - 4u, ".png") == 0;
+    const char *message = "";
+    if (s_frameCapturePending) {
+        message = "a Workshop frame capture is already pending";
+    } else if (length == 0u || length >= sizeof(s_frameCapturePath) ||
+               !suffix) {
+        message = "the Workshop capture path must be a bounded PNG path";
+    } else {
+        /* POSIX reports a missing path as a failed stat while Windows reports
+         * a successful query with exists=0. Missing is precisely what the
+         * exclusive writer requires, so only a positively observed entry is
+         * a refusal here. The writer remains final authority for permissions,
+         * parent availability, and races. */
+        (void)mdkr_path_query_utf8(png_path, &exists, NULL, NULL);
+        if (exists) {
+            message = "the Workshop capture path already exists";
+        } else {
+            (void)snprintf(s_frameCapturePath,
+                           sizeof(s_frameCapturePath), "%s", png_path);
+            s_frameCapturePending = 1;
+        }
+    }
+    if (error != NULL && error_size != 0u) {
+        (void)snprintf(error, error_size, "%s", message);
+    }
+    return message[0] == '\0';
+}
+
+int platform_frame_capture_pending(void) {
+    return s_frameCapturePending;
 }
 
 /* ---- Content packs (see platform_os.h) ---------------------------------- *
@@ -6208,6 +6322,8 @@ int platform_engine_session_begin(void) {
     s_initialWindowHeight = DEFAULT_WIN_H;
     s_dumpFrom = -2;
     s_dumpEvery = 1;
+    s_frameCapturePending = 0;
+    s_frameCapturePath[0] = '\0';
 
     /* Settings can scan packs while the shell is home. Retire that view before
      * the engine binds a fresh store using this epoch's resolved settings. */

@@ -12,6 +12,7 @@
  * the C engine and C++ shell cannot drift. */
 #include "../host_window.h"
 #include "../modern_character_semantics.h"
+#include "../workshop_preview_runtime.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -83,6 +84,16 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned long long contact_error_max_micrometres;
     unsigned long long inspection_pose_ticks;
     unsigned long long inspection_pose_fallback_ticks;
+    int view_yaw_degrees;
+    int view_pitch_degrees;
+    MdkrWorkshopPreviewLighting lighting;
+    unsigned long long camera_override_ticks;
+    unsigned long long lighting_override_draws;
+    int capture_requested;
+    int capture_armed;
+    unsigned long long capture_stable_frames;
+    int capture_written;
+    unsigned long long capture_png_bytes;
     /* Exact comparison environment captured inside the engine session. Text
      * comes from the bounded GPU diagnostic record; dimensions distinguish
      * output resolution from RenderScale's actual scene resolution. */
@@ -97,7 +108,8 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 5u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 7u
+#define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u
 
 // Owned by the C engine entry module and non-NULL only during a launcher-owned
 // preview boot. The game writes through it before engine teardown resets the
@@ -119,6 +131,10 @@ typedef struct {
     int character_preview_players;  // 1..4
     MdkrCharacterPreviewPose character_preview_pose;
     unsigned character_preview_pose_phase_milli;  // 0..1000
+    int character_preview_view_yaw_degrees;       // -180..180
+    int character_preview_view_pitch_degrees;     // -45..45
+    MdkrWorkshopPreviewLighting character_preview_lighting;
+    const char *character_preview_capture_png;    // optional, create-only
     MdkrCharacterPreviewResult *character_preview_result;
     // Staged RESTART-scope settings, as "Video.Key=Value" strings. The settings
     // panel writes these when the player changes a restart-scope key before

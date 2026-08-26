@@ -120,6 +120,7 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
         marker = (
             "character-pose-inspector package=" + PACKAGE_ID +
             " semantics=13 defaultPose=4 defaultPhase=500 "
+            "view=0,0 lighting=0 capture=png-create-only "
             "performanceEvidence=session-excluded"
         )
         if marker not in process.stdout:

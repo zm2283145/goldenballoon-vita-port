@@ -7,9 +7,12 @@ import argparse
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import tempfile
+import zlib
+from collections import deque
 from pathlib import Path
 
 from harness_utils import DEFAULT_BUILD_DIR, read_ppm, resolve_binary
@@ -25,6 +28,152 @@ from test_character_asset_probe import make_animated_glb, make_portrait_png  # n
 
 PACKAGE_ID = "org.mdkr.context-proof"
 FRAMES = 180
+PRODUCT_CAPTURE_FRAMES = 360
+
+
+def read_png_rgb(path: Path) -> tuple[int, int, bytes]:
+    payload = path.read_bytes()
+    if len(payload) < 57 or payload[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("capture is not a complete PNG")
+    offset = 8
+    width = height = 0
+    idat = bytearray()
+    saw_ihdr = saw_iend = False
+    while offset + 12 <= len(payload):
+        size = struct.unpack_from(">I", payload, offset)[0]
+        kind = payload[offset + 4:offset + 8]
+        end = offset + 12 + size
+        if end > len(payload):
+            raise ValueError("capture has a truncated PNG chunk")
+        data = payload[offset + 8:offset + 8 + size]
+        expected_crc = struct.unpack_from(">I", payload, offset + 8 + size)[0]
+        if zlib.crc32(kind + data) & 0xFFFFFFFF != expected_crc:
+            raise ValueError("capture has a corrupt PNG chunk")
+        if kind == b"IHDR":
+            if saw_ihdr or size != 13 or offset != 8:
+                raise ValueError("capture has an invalid PNG header")
+            (width, height, bit_depth, colour_type, compression,
+             filtering, interlace) = struct.unpack(">IIBBBBB", data)
+            if (width == 0 or height == 0 or bit_depth != 8 or
+                    colour_type != 2 or compression != 0 or filtering != 0 or
+                    interlace != 0):
+                raise ValueError("capture is not a canonical RGB PNG")
+            saw_ihdr = True
+        elif kind == b"IDAT":
+            if not saw_ihdr or saw_iend:
+                raise ValueError("capture has an out-of-order PNG data chunk")
+            idat.extend(data)
+        elif kind == b"IEND":
+            if size != 0 or not saw_ihdr or not idat:
+                raise ValueError("capture has an invalid PNG terminator")
+            saw_iend = True
+            offset = end
+            break
+        offset = end
+    if not saw_iend or offset != len(payload):
+        raise ValueError("capture is not a complete PNG")
+    try:
+        filtered = zlib.decompress(bytes(idat))
+    except zlib.error as error:
+        raise ValueError("capture has invalid compressed pixels") from error
+    stride = width * 3
+    if len(filtered) != height * (stride + 1):
+        raise ValueError("capture has the wrong decompressed pixel size")
+    pixels = bytearray(width * height * 3)
+    previous = bytearray(stride)
+    source = 0
+    for y in range(height):
+        filter_kind = filtered[source]
+        source += 1
+        row = bytearray(filtered[source:source + stride])
+        source += stride
+        for index in range(stride):
+            left = row[index - 3] if index >= 3 else 0
+            above = previous[index]
+            upper_left = previous[index - 3] if index >= 3 else 0
+            if filter_kind == 1:
+                predictor = left
+            elif filter_kind == 2:
+                predictor = above
+            elif filter_kind == 3:
+                predictor = (left + above) // 2
+            elif filter_kind == 4:
+                candidate = left + above - upper_left
+                left_error = abs(candidate - left)
+                above_error = abs(candidate - above)
+                diagonal_error = abs(candidate - upper_left)
+                predictor = (left if left_error <= above_error and
+                             left_error <= diagonal_error else
+                             above if above_error <= diagonal_error else
+                             upper_left)
+            elif filter_kind == 0:
+                predictor = 0
+            else:
+                raise ValueError("capture uses an invalid PNG row filter")
+            row[index] = (row[index] + predictor) & 0xFF
+        pixels[y * stride:(y + 1) * stride] = row
+        previous = row
+    return width, height, bytes(pixels)
+
+
+def require_fixture_composition(width: int, height: int, pixels: bytes) -> None:
+    """Find the generated fixture's contiguous brown-red material on screen.
+
+    The threshold intentionally allows normal GPU/lighting variation. The
+    fixture is the only large contiguous surface in this hue range; checking a
+    component rather than a global pixel count prevents course scenery or a
+    donor's few red texels from passing a missing/off-screen character.
+    """
+    mask = bytearray(width * height)
+    for pixel in range(width * height):
+        red, green, blue = pixels[pixel * 3:pixel * 3 + 3]
+        if (120 <= red <= 220 and 20 <= green <= 75 and blue <= 35 and
+                red >= green * 2.5):
+            mask[pixel] = 1
+    visited = bytearray(width * height)
+    largest_area = 0
+    largest_bounds = (0, 0, 0, 0)
+    for seed, present in enumerate(mask):
+        if not present or visited[seed]:
+            continue
+        queue = deque([seed])
+        visited[seed] = 1
+        area = 0
+        min_x = max_x = seed % width
+        min_y = max_y = seed // width
+        while queue:
+            current = queue.popleft()
+            y, x = divmod(current, width)
+            area += 1
+            min_x, max_x = min(min_x, x), max(max_x, x)
+            min_y, max_y = min(min_y, y), max(max_y, y)
+            for neighbour in (current - 1, current + 1,
+                              current - width, current + width):
+                if (neighbour < 0 or neighbour >= len(mask) or
+                        visited[neighbour] or not mask[neighbour]):
+                    continue
+                neighbour_y, neighbour_x = divmod(neighbour, width)
+                if abs(neighbour_x - x) + abs(neighbour_y - y) != 1:
+                    continue
+                visited[neighbour] = 1
+                queue.append(neighbour)
+        if area > largest_area:
+            largest_area = area
+            largest_bounds = (min_x, min_y, max_x, max_y)
+    min_x, min_y, max_x, max_y = largest_bounds
+    centre_x = (min_x + max_x) / 2.0
+    centre_y = (min_y + max_y) / 2.0
+    if (largest_area < width * height // 500 or
+            max_x - min_x < width * 3 // 100 or
+            max_y - min_y < height * 3 // 100 or
+            min_x < width * 15 // 100 or max_x > width * 85 // 100 or
+            min_y < height * 15 // 100 or max_y > height * 80 // 100 or
+            abs(centre_x - width / 2.0) > width * 15 // 100 or
+            abs(centre_y - height / 2.0) > height * 15 // 100):
+        raise ValueError(
+            "generated character is absent, clipped, or outside the central "
+            f"inspection frame (area={largest_area}, bounds={largest_bounds})"
+        )
 
 
 def run(command: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -100,14 +249,18 @@ def main() -> int:
             failures.append("temporary catalog install failed")
 
     arms = [
-        ("select", 1, True, None, None, False),
-        ("car", 1, False, None, None, False),
-        ("hovercraft", 1, False, None, None, False),
-        ("plane", 1, False, None, None, False),
-        ("car", 3, False, None, None, False),
-        ("car", 4, True, None, None, False),
-        ("car", 1, False, "select.idle", "250", False),
-        ("car", 1, False, "race.finish_win", "750", True),
+        ("select", 1, True, None, None, False, None, None, None, False),
+        ("car", 1, False, None, None, False, None, None, None, False),
+        ("hovercraft", 1, False, None, None, False, None, None, None, False),
+        ("plane", 1, False, None, None, False, None, None, None, False),
+        ("car", 3, False, None, None, False, None, None, None, False),
+        ("car", 4, True, None, None, False, None, None, None, False),
+        ("car", 1, False, "select.idle", "250", False,
+         None, None, None, False),
+        ("car", 1, False, "race.finish_win", "750", True,
+         None, None, None, False),
+        ("car", 1, False, "select.idle", "500", False,
+         180, 15, "bright", True),
     ]
     arm_draws: dict[str, int] = {}
     captures: dict[str, Path] = {}
@@ -115,10 +268,12 @@ def main() -> int:
     comparison_environment: tuple[str, str, str, str, str] | None = None
     if not failures:
         for (context, players, capture, pose, pose_phase,
-             expect_fallback) in arms:
+             expect_fallback, view_yaw, view_pitch, lighting,
+             product_capture) in arms:
             label = (f"{context}-{players}p" if pose is None else
                      f"{context}-{players}p-pose" +
-                     ("-fallback" if expect_fallback else ""))
+                     ("-fallback" if expect_fallback else "") +
+                     ("-visual-capture" if product_capture else ""))
             arm_dir = evidence / label
             arm_dir.mkdir(parents=True, exist_ok=True)
             env = {key: value for key, value in os.environ.items()
@@ -138,12 +293,22 @@ def main() -> int:
             if pose is not None and pose_phase is not None:
                 env["MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE"] = pose
                 env["MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE"] = pose_phase
+            product_capture_path = arm_dir / "stabilized.png"
+            if view_yaw is not None:
+                env["MDKR_CHARACTER_WORKSHOP_VIEW_YAW_DEGREES"] = str(view_yaw)
+                env["MDKR_CHARACTER_WORKSHOP_VIEW_PITCH_DEGREES"] = str(view_pitch)
+                env["MDKR_CHARACTER_WORKSHOP_LIGHTING"] = str(lighting)
+            if product_capture:
+                env["MDKR_CHARACTER_WORKSHOP_CAPTURE_PNG"] = str(
+                    product_capture_path
+                )
+            run_frames = PRODUCT_CAPTURE_FRAMES if product_capture else FRAMES
             command = [
-                str(binary), "--headless-frames", str(FRAMES), "--rom",
+                str(binary), "--headless-frames", str(run_frames), "--rom",
                 str(rom), "--window-size", "1280x960", "--restored",
             ]
             if capture:
-                env.update(MDKR_DUMP_FROM=str(FRAMES - 2),
+                env.update(MDKR_DUMP_FROM=str(run_frames - 2),
                            MDKR_DUMP_EVERY="10000")
                 command.extend(["--dump-frames", str(arm_dir)])
             process = run(command, env=env)
@@ -158,7 +323,7 @@ def main() -> int:
                 failures.append(f"{label} did not enter its direct context")
             if pose is not None:
                 expected_pose = 12 if expect_fallback else 1
-                expected_phase = 750 if expect_fallback else 250
+                expected_phase = int(pose_phase)
                 pose_match = re.search(
                     rf"pose={expected_pose} phase={expected_phase} "
                     r"poseTicks=(\d+) poseFallback=(\d+)",
@@ -176,6 +341,39 @@ def main() -> int:
                 elif int(pose_match.group(2)) != 0:
                     failures.append(
                         f"{label} unexpectedly used source fallback"
+                    )
+            if product_capture:
+                visual_match = re.search(
+                    r"view=180,15 lighting=1 cameraTicks=(\d+) "
+                    r"lightingDraws=(\d+) capture=1/[01]/[01] "
+                    r"captureStableFrames=(\d+) bytes=\d+",
+                    arm_output,
+                )
+                if (
+                    visual_match is None
+                    or int(visual_match.group(1)) <= 0
+                    or int(visual_match.group(2)) <= 0
+                ):
+                    failures.append(
+                        f"{label} did not prove camera and character-light application"
+                    )
+                armed_match = re.search(
+                    r"character_workshop_capture: armed stableFrames=(\d+) "
+                    r"countdown=\d+ ", arm_output,
+                )
+                result_capture_match = re.search(
+                    r"character_workshop_result: .*capture=1/1/0 "
+                    r"captureStableFrames=(\d+) bytes=0 ",
+                    arm_output,
+                )
+                if (
+                    armed_match is None
+                    or int(armed_match.group(1)) < 12
+                    or result_capture_match is None
+                    or int(result_capture_match.group(1)) < 12
+                ):
+                    failures.append(
+                        f"{label} did not wait for and save a stable visible frame"
                     )
             if "donor0=1" not in arm_output:
                 failures.append(f"{label} lost the non-Diddy donor profile")
@@ -249,6 +447,26 @@ def main() -> int:
                     failures.append(f"{label} produced {len(dumps)} captures")
                 else:
                     captures[label] = dumps[0]
+            if product_capture:
+                try:
+                    png_width, png_height, png_pixels = read_png_rgb(
+                        product_capture_path
+                    )
+                    require_fixture_composition(
+                        png_width, png_height, png_pixels
+                    )
+                except (OSError, ValueError) as error:
+                    failures.append(
+                        f"{label} did not write a composed product PNG: {error}"
+                    )
+                else:
+                    png_dimensions = (png_width, png_height)
+                    reported = reported_dimensions.get(label)
+                    if reported is None or png_dimensions != reported[0:2]:
+                        failures.append(
+                            f"{label} PNG dimensions {png_dimensions!r} do not "
+                            "match the exact renderer output"
+                        )
 
     rejection_arms = [
         ("invalid-context", "boat", "1", True, None, None, None,
@@ -298,6 +516,72 @@ def main() -> int:
             if marker not in arm_output:
                 failures.append(f"{label} did not report its exact refusal")
 
+    visual_rejection_arms = [
+        ("unpaired-view", "car", "race.steer", "500", "90", None,
+         None, None, 60,
+         "view and lighting fields must be provided together"),
+        ("invalid-view-yaw", "car", "race.steer", "500", "181", "0",
+         "neutral", None, 60, "invalid Character Workshop view request"),
+        ("invalid-lighting", "car", "race.steer", "500", "0", "0",
+         "studio", None, 60, "invalid Character Workshop view request"),
+        ("select-camera-orbit", "select", "select.idle", "500", "90", "0",
+         "neutral", None, 60, "invalid Character Workshop view request"),
+        ("visual-on-live", "car", None, None, "0", "0", "bright", None,
+         60, "view and lighting fields must be provided together"),
+        ("capture-on-live", "car", None, None, None, None, None,
+         "live-capture.png", 60,
+         "invalid Character Workshop capture request"),
+        ("uppercase-capture", "car", "race.steer", "500", None, None,
+         None, "inspection.PNG", 60,
+         "invalid Character Workshop capture request"),
+        ("existing-capture", "car", "race.steer", "500", "0", "0",
+         "neutral", "existing.png", 180,
+         "Character Workshop capture could not be armed"),
+    ]
+    if not failures:
+        for (label, context, pose, phase, yaw, pitch, lighting,
+             capture_name, frames, marker) in visual_rejection_arms:
+            arm_dir = evidence / label
+            arm_dir.mkdir(parents=True, exist_ok=True)
+            env = {key: value for key, value in os.environ.items()
+                   if not key.startswith(("MDKR", "GE007_"))}
+            env.update(
+                LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
+                MDKR_RENDERER="webgpu", MDKR_VIDEO_CONFIG_PATH=os.devnull,
+                MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
+                MDKR_CHARACTER_WORKSHOP_PREVIEW=context,
+                MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS="1",
+                MDKR_CUSTOM_CHARACTER_P1=PACKAGE_ID,
+                MDKR64_HIDDEN="1",
+            )
+            if pose is not None:
+                env["MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE"] = pose
+            if phase is not None:
+                env["MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE"] = phase
+            if yaw is not None:
+                env["MDKR_CHARACTER_WORKSHOP_VIEW_YAW_DEGREES"] = yaw
+            if pitch is not None:
+                env["MDKR_CHARACTER_WORKSHOP_VIEW_PITCH_DEGREES"] = pitch
+            if lighting is not None:
+                env["MDKR_CHARACTER_WORKSHOP_LIGHTING"] = lighting
+            if capture_name is not None:
+                capture_path = arm_dir / capture_name
+                if label == "existing-capture":
+                    capture_path.write_bytes(b"preserve me")
+                env["MDKR_CHARACTER_WORKSHOP_CAPTURE_PNG"] = str(capture_path)
+            process = run([
+                str(binary), "--headless-frames", str(frames), "--rom",
+                str(rom), "--window-size", "1280x960", "--restored",
+            ], env=env)
+            arm_output = process.stdout or ""
+            output += f"\n===== {label} =====\n{arm_output}"
+            if process.returncode == 0:
+                failures.append(f"{label} did not fail closed")
+            if marker not in arm_output:
+                failures.append(f"{label} did not report its exact refusal")
+            if label == "existing-capture" and capture_path.read_bytes() != b"preserve me":
+                failures.append("existing capture was modified despite refusal")
+
     if ("car-1p" in arm_draws and "car-4p" in arm_draws and
             arm_draws["car-4p"] <= arm_draws["car-1p"] * 3):
         failures.append("four-player stress did not multiply real character draws")
@@ -339,7 +623,8 @@ def main() -> int:
     print(
         "check_custom_character_workshop_preview: PASS -- direct "
         "select/car/hovercraft/plane routes, exact semantic-phase inspection "
-        "with honest fallback accounting, one-to-four-player WebGPU stress, "
+        "with honest fallback accounting, deterministic camera/light controls, "
+        "exclusive stabilized PNG capture, one-to-four-player WebGPU stress, "
         "and fail-closed invalid requests"
     )
     if args.evidence_dir is not None:

@@ -16,6 +16,8 @@
 
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <iterator>
 
 namespace filedialog {
 
@@ -163,6 +165,68 @@ bool openPortraitImage(std::string &out) {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
                 OFN_EXPLORER | OFN_HIDEREADONLY;
     if (!GetOpenFileNameW(&ofn)) return false;
+    std::string picked = toUtf8(file.data());
+    if (picked.empty()) return false;
+    out = picked;
+    return true;
+}
+
+bool saveCharacterCapture(std::string &out) {
+    static const wchar_t kFilter[] = L"PNG images\0*.png\0\0";
+    std::vector<wchar_t> file(32768, L'\0');
+    const wchar_t initial[] = L"character-inspection.png";
+    std::copy(std::begin(initial), std::end(initial), file.begin());
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    SDL_Window *window = SDL_GetKeyboardFocus();
+    if (window == nullptr) window = SDL_GetMouseFocus();
+    SDL_SysWMinfo windowInfo;
+    SDL_VERSION(&windowInfo.version);
+    if (window != nullptr &&
+        SDL_GetWindowWMInfo(window, &windowInfo) == SDL_TRUE &&
+        windowInfo.subsystem == SDL_SYSWM_WINDOWS) {
+        ofn.hwndOwner = windowInfo.info.win.window;
+    }
+    ofn.lpstrFilter = kFilter;
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFile = file.data();
+    ofn.nMaxFile = (DWORD)file.size();
+    ofn.lpstrTitle = L"Save a custom character inspection";
+    ofn.lpstrDefExt = L"png";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+    if (!GetSaveFileNameW(&ofn)) return false;
+    std::string picked = toUtf8(file.data());
+    if (picked.empty()) return false;
+    out = picked;
+    return true;
+}
+
+bool saveCharacterReport(std::string &out) {
+    static const wchar_t kFilter[] = L"HTML documents\0*.html\0\0";
+    std::vector<wchar_t> file(32768, L'\0');
+    const wchar_t initial[] = L"character-visual-report.html";
+    std::copy(std::begin(initial), std::end(initial), file.begin());
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    SDL_Window *window = SDL_GetKeyboardFocus();
+    if (window == nullptr) window = SDL_GetMouseFocus();
+    SDL_SysWMinfo windowInfo;
+    SDL_VERSION(&windowInfo.version);
+    if (window != nullptr &&
+        SDL_GetWindowWMInfo(window, &windowInfo) == SDL_TRUE &&
+        windowInfo.subsystem == SDL_SYSWM_WINDOWS) {
+        ofn.hwndOwner = windowInfo.info.win.window;
+    }
+    ofn.lpstrFilter = kFilter;
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFile = file.data();
+    ofn.nMaxFile = (DWORD)file.size();
+    ofn.lpstrTitle = L"Export custom character visual report";
+    ofn.lpstrDefExt = L"html";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+    if (!GetSaveFileNameW(&ofn)) return false;
     std::string picked = toUtf8(file.data());
     if (picked.empty()) return false;
     out = picked;

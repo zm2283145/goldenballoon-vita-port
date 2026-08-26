@@ -1,0 +1,324 @@
+#include "character_visual_report.h"
+
+#include "engine_entry.h"
+#include "character_png_validation.h"
+#include "fs_utf8.h"
+#include "sha256.h"
+
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <cstring>
+#include <limits>
+#include <utility>
+
+namespace {
+
+constexpr size_t kMaximumPngBytes = 32u * 1024u * 1024u;
+constexpr size_t kMaximumTotalPngBytes = 128u * 1024u * 1024u;
+
+bool digestValid(const std::string &value) {
+    return value.size() == 64u &&
+        std::all_of(value.begin(), value.end(), [](char byte) {
+            return (byte >= '0' && byte <= '9') ||
+                   (byte >= 'a' && byte <= 'f');
+        });
+}
+
+bool slugValid(const std::string &value) {
+    if (value.size() < 2u || value.size() > 64u) return false;
+    return std::all_of(value.begin(), value.end(), [](char byte) {
+        return (byte >= 'a' && byte <= 'z') ||
+               (byte >= '0' && byte <= '9') || byte == '.' ||
+               byte == '_' || byte == '-';
+    });
+}
+
+bool utf8Valid(const std::string &value) {
+    size_t offset = 0u;
+    while (offset < value.size()) {
+        const unsigned char first =
+            static_cast<unsigned char>(value[offset]);
+        size_t continuation = 0u;
+        uint32_t codepoint = 0u;
+        if (first <= 0x7Fu) {
+            ++offset;
+            continue;
+        } else if (first >= 0xC2u && first <= 0xDFu) {
+            continuation = 1u;
+            codepoint = first & 0x1Fu;
+        } else if (first >= 0xE0u && first <= 0xEFu) {
+            continuation = 2u;
+            codepoint = first & 0x0Fu;
+        } else if (first >= 0xF0u && first <= 0xF4u) {
+            continuation = 3u;
+            codepoint = first & 0x07u;
+        } else {
+            return false;
+        }
+        if (continuation > value.size() - offset - 1u) return false;
+        for (size_t index = 1u; index <= continuation; ++index) {
+            const unsigned char byte =
+                static_cast<unsigned char>(value[offset + index]);
+            if ((byte & 0xC0u) != 0x80u) return false;
+            codepoint = (codepoint << 6u) | (byte & 0x3Fu);
+        }
+        if ((continuation == 2u && codepoint < 0x800u) ||
+            (continuation == 3u && codepoint < 0x10000u) ||
+            (codepoint >= 0xD800u && codepoint <= 0xDFFFu) ||
+            codepoint > 0x10FFFFu) return false;
+        offset += continuation + 1u;
+    }
+    return true;
+}
+
+bool textValid(const std::string &value, size_t maximum, bool required) {
+    if (value.size() > maximum || (required && value.empty()) ||
+        !utf8Valid(value)) return false;
+    return std::none_of(value.begin(), value.end(), [](char byte) {
+        const unsigned char value = static_cast<unsigned char>(byte);
+        return value < 0x20u && value != '\t';
+    });
+}
+
+bool readPng(const CharacterVisualReport::Capture &capture,
+             std::vector<unsigned char> &bytes, std::string &sha,
+             std::string &error) {
+    FILE *file = mdkr_fopen_utf8(capture.pngPath.c_str(), "rb");
+    if (file == nullptr) {
+        error = "A capture PNG could not be opened.";
+        return false;
+    }
+    std::vector<unsigned char> loaded;
+    std::array<unsigned char, 8192> block{};
+    for (;;) {
+        const size_t count = std::fread(block.data(), 1u, block.size(), file);
+        if (count != 0u) {
+            if (loaded.size() > kMaximumPngBytes - count) {
+                (void)std::fclose(file);
+                error = "A capture PNG exceeds the 32 MiB report limit.";
+                return false;
+            }
+            loaded.insert(loaded.end(), block.begin(), block.begin() + count);
+        }
+        if (count != block.size()) break;
+    }
+    const bool readOk = std::ferror(file) == 0;
+    const bool closeOk = std::fclose(file) == 0;
+    CharacterPngValidation::Info info;
+    if (!readOk || !closeOk || !CharacterPngValidation::validate(
+            loaded.data(), loaded.size(), capture.width, capture.height,
+            info, error)) {
+        if (error.empty()) error = "A capture is not a complete PNG.";
+        return false;
+    }
+    char digest[MDKR_SHA256_HEX_SIZE];
+    mdkr_sha256_hex(loaded.data(), loaded.size(), digest);
+    sha = digest;
+    bytes = std::move(loaded);
+    return true;
+}
+
+std::string htmlEscape(const std::string &value) {
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (char byte : value) {
+        switch (byte) {
+            case '&': escaped += "&amp;"; break;
+            case '<': escaped += "&lt;"; break;
+            case '>': escaped += "&gt;"; break;
+            case '"': escaped += "&quot;"; break;
+            case '\'': escaped += "&#39;"; break;
+            default: escaped.push_back(byte); break;
+        }
+    }
+    return escaped;
+}
+
+std::string jsonEscape(const std::string &value) {
+    static const char digits[] = "0123456789abcdef";
+    std::string escaped;
+    for (unsigned char byte : value) {
+        switch (byte) {
+            case '"': escaped += "\\\""; break;
+            case '\\': escaped += "\\\\"; break;
+            case '\b': escaped += "\\b"; break;
+            case '\f': escaped += "\\f"; break;
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            case '<': escaped += "\\u003c"; break;
+            case '>': escaped += "\\u003e"; break;
+            case '&': escaped += "\\u0026"; break;
+            default:
+                if (byte < 0x20u) {
+                    escaped += "\\u00";
+                    escaped.push_back(digits[byte >> 4u]);
+                    escaped.push_back(digits[byte & 0xFu]);
+                } else {
+                    escaped.push_back(static_cast<char>(byte));
+                }
+                break;
+        }
+    }
+    return escaped;
+}
+
+std::string base64(const std::vector<unsigned char> &bytes) {
+    static const char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string output;
+    output.reserve(((bytes.size() + 2u) / 3u) * 4u);
+    for (size_t offset = 0u; offset < bytes.size(); offset += 3u) {
+        const uint32_t a = bytes[offset];
+        const uint32_t b = offset + 1u < bytes.size() ? bytes[offset + 1u] : 0u;
+        const uint32_t c = offset + 2u < bytes.size() ? bytes[offset + 2u] : 0u;
+        const uint32_t value = (a << 16u) | (b << 8u) | c;
+        output.push_back(alphabet[(value >> 18u) & 63u]);
+        output.push_back(alphabet[(value >> 12u) & 63u]);
+        output.push_back(offset + 1u < bytes.size()
+                             ? alphabet[(value >> 6u) & 63u] : '=');
+        output.push_back(offset + 2u < bytes.size()
+                             ? alphabet[value & 63u] : '=');
+    }
+    return output;
+}
+
+bool captureValid(const CharacterVisualReport::Capture &capture) {
+    return textValid(capture.pngPath, 4095u, true) &&
+           digestValid(capture.sourceSha256) &&
+           digestValid(capture.fitSha256) &&
+           textValid(capture.context, 32u, true) &&
+           textValid(capture.pose, 64u, true) &&
+           textValid(capture.lighting, 32u, true) &&
+           capture.players >= 1u && capture.players <= 4u &&
+           capture.phaseMilli <= 1000u &&
+           capture.viewYawDegrees >= -180 &&
+           capture.viewYawDegrees <= 180 &&
+           capture.viewPitchDegrees >= -45 &&
+           capture.viewPitchDegrees <= 45 &&
+           capture.width >= 1u && capture.width <= 16384u &&
+           capture.height >= 1u && capture.height <= 16384u &&
+           capture.stableFrames >=
+               MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES;
+}
+
+} // namespace
+
+namespace CharacterVisualReport {
+
+bool exportHtml(const std::string &outputPath,
+                const std::string &packageId,
+                const std::string &displayName,
+                const std::vector<Capture> &captures,
+                std::string &error) {
+    const bool htmlSuffix = outputPath.size() >= 5u &&
+        outputPath.compare(outputPath.size() - 5u, 5u, ".html") == 0;
+    if (!htmlSuffix || outputPath.size() > 4095u ||
+        !slugValid(packageId) || !textValid(displayName, 96u, true) ||
+        captures.empty() || captures.size() > kMaximumCaptures ||
+        !std::all_of(captures.begin(), captures.end(), captureValid)) {
+        error = "The visual report request is invalid or empty.";
+        return false;
+    }
+    struct Loaded {
+        const Capture *capture;
+        std::vector<unsigned char> png;
+        std::string sha;
+    };
+    std::vector<Loaded> loaded;
+    size_t totalBytes = 0u;
+    for (const Capture &capture : captures) {
+        Loaded item{&capture, {}, {}};
+        if (!readPng(capture, item.png, item.sha, error) ||
+            totalBytes > kMaximumTotalPngBytes - item.png.size()) {
+            if (error.empty()) {
+                error = "The contact sheet exceeds the 128 MiB image limit.";
+            }
+            return false;
+        }
+        totalBytes += item.png.size();
+        loaded.push_back(std::move(item));
+    }
+
+    std::string html;
+    html.reserve(totalBytes * 4u / 3u + loaded.size() * 2048u + 4096u);
+    html += "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">";
+    html += "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">";
+    html += "<title>" + htmlEscape(displayName) + " — visual qualification</title>";
+    html += "<style>body{margin:0;background:#11151b;color:#edf2f7;font:16px system-ui,sans-serif}";
+    html += "main{max-width:1600px;margin:auto;padding:24px}h1{margin:.2em 0}.sub{color:#aeb9c7;word-break:break-all}";
+    html += ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;margin-top:24px}";
+    html += "figure{margin:0;background:#1d2530;border:1px solid #344252;border-radius:12px;overflow:hidden}";
+    html += "img{display:block;width:100%;height:auto;background:#000}figcaption{padding:14px;line-height:1.45}";
+    html += ".ok{color:#8ee6a8}.warn{color:#ffd37a}code{font-size:.8em;word-break:break-all}";
+    html += "@media print{body{background:white;color:black}figure{break-inside:avoid;border-color:#aaa}.sub{color:#444}}</style></head><body>";
+    html += "<main><h1>" + htmlEscape(displayName) + "</h1>";
+    html += "<div class=\"sub\">Package " + htmlEscape(packageId) +
+        " · self-contained exact-renderer contact sheet · no model or ROM bytes</div><div class=\"grid\">";
+    for (const Loaded &item : loaded) {
+        const Capture &capture = *item.capture;
+        html += "<figure><img alt=\"" + htmlEscape(
+            capture.context + ", " + capture.pose) +
+            "\" src=\"data:image/png;base64," + base64(item.png) + "\">";
+        html += "<figcaption><strong>" + htmlEscape(capture.context) +
+            " · " + htmlEscape(capture.pose) + "</strong><br>";
+        html += "Phase " + std::to_string(capture.phaseMilli) +
+            "/1000 · " + htmlEscape(capture.lighting) +
+            " light · view " + std::to_string(capture.viewYawDegrees) +
+            "°/" + std::to_string(capture.viewPitchDegrees) +
+            "° · " + std::to_string(capture.stableFrames) +
+            " stable frames<br>";
+        html += capture.exactPose
+            ? "<span class=\"ok\">Exact semantic phase</span>"
+            : "<span class=\"warn\">Source fallback shown</span>";
+        html += "<br><code>PNG SHA-256 " + item.sha + "</code></figcaption></figure>";
+    }
+    html += "</div><script id=\"mdkr-character-visual-report\" type=\"application/json\">{";
+    html += "\"version\":1,\"packageId\":\"" + jsonEscape(packageId) +
+        "\",\"displayName\":\"" + jsonEscape(displayName) +
+        "\",\"captures\":[";
+    for (size_t index = 0u; index < loaded.size(); ++index) {
+        const Capture &capture = *loaded[index].capture;
+        if (index != 0u) html += ',';
+        html += "{\"context\":\"" + jsonEscape(capture.context) +
+            "\",\"players\":" + std::to_string(capture.players) +
+            ",\"pose\":\"" + jsonEscape(capture.pose) +
+            "\",\"phaseMilli\":" + std::to_string(capture.phaseMilli) +
+            ",\"lighting\":\"" + jsonEscape(capture.lighting) +
+            "\",\"viewYawDegrees\":" +
+            std::to_string(capture.viewYawDegrees) +
+            ",\"viewPitchDegrees\":" +
+            std::to_string(capture.viewPitchDegrees) +
+            ",\"width\":" + std::to_string(capture.width) +
+            ",\"height\":" + std::to_string(capture.height) +
+            ",\"stableFrames\":" +
+            std::to_string(capture.stableFrames) +
+            ",\"exactPose\":" +
+            std::string(capture.exactPose ? "true" : "false") +
+            ",\"sourceSha256\":\"" + capture.sourceSha256 +
+            "\",\"fitSha256\":\"" + capture.fitSha256 +
+            "\",\"pngSha256\":\"" + loaded[index].sha + "\"}";
+    }
+    html += "]}</script></main></body></html>\n";
+
+    FILE *file = mdkr_fopen_utf8(outputPath.c_str(), "wbx");
+    if (file == nullptr) {
+        error = "The report destination exists or cannot be created.";
+        return false;
+    }
+    bool written = std::fwrite(html.data(), 1u, html.size(), file) ==
+        html.size();
+    if (std::fflush(file) != 0 || mdkr_file_sync(file) != 0) written = false;
+    if (std::fclose(file) != 0) written = false;
+    if (!written) {
+        (void)mdkr_remove_utf8(outputPath.c_str());
+        error = "The contact sheet could not be written completely.";
+        return false;
+    }
+    (void)mdkr_parent_directory_sync_utf8(outputPath.c_str());
+    error.clear();
+    return true;
+}
+
+} // namespace CharacterVisualReport

@@ -151,4 +151,48 @@ bool openPortraitImage(std::string &out) {
     }
 }
 
+bool saveCharacterCapture(std::string &out) {
+    @autoreleasepool {
+        if (![NSThread isMainThread]) return false;
+        NSSavePanel *panel = [NSSavePanel savePanel];
+        panel.title = @"Save a custom character inspection";
+        panel.message = @"Choose a new PNG filename. Golden Balloon never overwrites an existing capture.";
+        panel.prompt = @"Choose Filename";
+        panel.nameFieldStringValue = @"character-inspection.png";
+        panel.canCreateDirectories = YES;
+        panel.allowedContentTypes = @[ UTTypePNG ];
+        panel.allowsOtherFileTypes = NO;
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([panel runModal] != NSModalResponseOK) return false;
+        NSURL *url = panel.URL;
+        if (url == nil || !url.isFileURL) return false;
+        const char *path = url.fileSystemRepresentation;
+        if (path == nullptr || path[0] == '\0') return false;
+        out = path;
+        return true;
+    }
+}
+
+bool saveCharacterReport(std::string &out) {
+    @autoreleasepool {
+        if (![NSThread isMainThread]) return false;
+        NSSavePanel *panel = [NSSavePanel savePanel];
+        panel.title = @"Export custom character visual report";
+        panel.message = @"Choose a new HTML filename. The report embeds its PNGs and never overwrites an existing file.";
+        panel.prompt = @"Choose Filename";
+        panel.nameFieldStringValue = @"character-visual-report.html";
+        panel.canCreateDirectories = YES;
+        panel.allowedContentTypes = @[ UTTypeHTML ];
+        panel.allowsOtherFileTypes = NO;
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([panel runModal] != NSModalResponseOK) return false;
+        NSURL *url = panel.URL;
+        if (url == nil || !url.isFileURL) return false;
+        const char *path = url.fileSystemRepresentation;
+        if (path == nullptr || path[0] == '\0') return false;
+        out = path;
+        return true;
+    }
+}
+
 }  // namespace filedialog

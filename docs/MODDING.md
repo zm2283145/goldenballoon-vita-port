@@ -487,12 +487,28 @@ pacing, the card reports median, 95th/99th percentile and worst displayed
 cadence, authored tick-wall mean, and modern-character replacement/part counts.
 Short or synthetic runs remain visible but are labelled diagnostic-only.
 
-This is an exact in-game test route, not yet the planned embedded renderer or a
+This is an exact in-game test route, not an embedded renderer or a
 character-only GPU benchmark. The wall-cadence result includes the complete
 scene, presentation policy, resolution and device; it is neither a GPU
-timestamp nor spare-headroom measurement. Context cameras, semantic-animation
-controls, GPU timestamp capture, screenshots/contact sheets, persistent review
-status, comparisons and device profiles remain product work.
+timestamp nor spare-headroom measurement. The adjacent pose inspector can hold
+every supported animation semantic at an exact normalized phase. Zero
+yaw/pitch uses the ordinary gameplay camera. Every nonzero vehicle view is an
+absolute racer-relative orbit around the imported model's fitted bounds, with
+automatic vehicle-aware pull-back and transient cutscene-camera suppression;
+the existing obstruction resolver still owns the final camera. Neutral,
+bright, low-key, and backlit presets change only the custom
+character light; they never change the world, vehicle, simulation, or saved
+fit. Character select deliberately keeps its authored camera.
+
+An inspection may exclusively create one output-sized PNG after the 120-tick
+warm-up and 12 consecutive frames with a completed replacement draw, requested
+pose, view, and character light. Successful captures enter a session-only report tray
+with exact source/fit digests, context, pose/phase, view, light, dimensions,
+and exact-versus-fallback state. The tray exports a self-contained responsive
+HTML contact sheet containing base64 PNGs and machine-readable JSON, but no
+model, package, ROM, or original capture-path bytes. Existing PNG or HTML files
+are never overwritten. GPU timestamps, representative scene variants, an
+embedded renderer, and maintained device profiles remain product work.
 
 All ten retail vehicle-model families now have exact revision-1 fingerprint and
 driver-batch profiles for car, hovercraft, plane, and character select. Their

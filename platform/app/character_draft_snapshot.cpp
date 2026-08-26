@@ -8,7 +8,8 @@
 
 namespace {
 
-constexpr uint32_t kVersion = 4u;
+constexpr uint32_t kVersion = 5u;
+constexpr uint32_t kPoseInspectionVersion = 4u;
 constexpr uint32_t kPortraitStyleVersion = 3u;
 constexpr uint32_t kNamesVersion = 2u;
 constexpr uint32_t kLegacyVersion = 1u;
@@ -22,7 +23,8 @@ constexpr size_t kLegacyFixedBytes = kHeaderBytes + kTuningBytes + kRigBytes +
 constexpr size_t kPortraitRecipeBytes = 9u * 4u;
 constexpr size_t kPortraitStyleFixedBytes = kLegacyFixedBytes +
     CharacterPortraitStudio::kBytes + kPortraitRecipeBytes;
-constexpr size_t kFixedBytes = kPortraitStyleFixedBytes + 8u;
+constexpr size_t kPoseInspectionFixedBytes = kPortraitStyleFixedBytes + 8u;
+constexpr size_t kFixedBytes = kPoseInspectionFixedBytes + 12u;
 constexpr size_t kMaximumPathBytes = 4095u;
 constexpr size_t kMaximumNameBytes = 96u;
 constexpr size_t kMaximumShortNameBytes = 96u;
@@ -200,6 +202,11 @@ bool snapshotValid(const CharacterDraftSnapshot::Snapshot &snapshot,
         snapshot.testPose >
             MDKR_MODERN_CHARACTER_INSPECTION_SEMANTIC_COUNT ||
         snapshot.testPosePhaseMilli > 1000u ||
+        snapshot.testViewYawDegrees < -180 ||
+        snapshot.testViewYawDegrees > 180 ||
+        snapshot.testViewPitchDegrees < -45 ||
+        snapshot.testViewPitchDegrees > 45 ||
+        snapshot.testLighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT ||
         (snapshot.reviewedContexts & ~0xFu) != 0u) {
         error = "draft test or review state is invalid";
         return false;
@@ -356,6 +363,11 @@ bool encode(const Snapshot &snapshot, std::string &payload,
     appendU32(result, snapshot.portraitRecipe.fillPinholes ? 1u : 0u);
     appendU32(result, snapshot.testPose);
     appendU32(result, snapshot.testPosePhaseMilli);
+    appendU32(result,
+              static_cast<uint32_t>(snapshot.testViewYawDegrees + 180));
+    appendU32(result,
+              static_cast<uint32_t>(snapshot.testViewPitchDegrees + 45));
+    appendU32(result, snapshot.testLighting);
     if (result.size() != kFixedBytes + 16u +
             snapshot.portraitSourcePath.size() + namesBytes) {
         error = "draft snapshot encoder size invariant failed";
@@ -378,7 +390,8 @@ bool decode(const std::string &payload, Snapshot &snapshot,
     if (payload.size() < kLegacyFixedBytes ||
         payload.compare(0u, 4u, "MDWD") != 0 ||
         !readU32(payload, offset, version) ||
-        (version != kVersion && version != kPortraitStyleVersion &&
+        (version != kVersion && version != kPoseInspectionVersion &&
+         version != kPortraitStyleVersion &&
          version != kNamesVersion &&
          version != kLegacyVersion) ||
         !readU32(payload, offset, declaredSize) ||
@@ -503,10 +516,22 @@ bool decode(const std::string &payload, Snapshot &snapshot,
     } else {
         parsed.portraitStyleSource = parsed.portrait;
     }
-    if (version >= kVersion &&
+    if (version >= kPoseInspectionVersion &&
         (!readU32(payload, offset, parsed.testPose) ||
          !readU32(payload, offset, parsed.testPosePhaseMilli))) {
         goto malformed;
+    }
+    if (version >= kVersion) {
+        uint32_t yaw;
+        uint32_t pitch;
+        if (!readU32(payload, offset, yaw) ||
+            !readU32(payload, offset, pitch) ||
+            !readU32(payload, offset, parsed.testLighting)) {
+            goto malformed;
+        }
+        if (yaw > 360u || pitch > 90u) goto malformed;
+        parsed.testViewYawDegrees = static_cast<int32_t>(yaw) - 180;
+        parsed.testViewPitchDegrees = static_cast<int32_t>(pitch) - 45;
     }
     if (offset != payload.size() ||
         !snapshotValid(parsed, error, version == kLegacyVersion)) return false;

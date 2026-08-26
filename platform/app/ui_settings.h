@@ -27,6 +27,11 @@ struct SettingsCharacterPreviewRequest {
     int players = 1;
     MdkrCharacterPreviewPose pose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
     unsigned posePhaseMilli = 0u;
+    int viewYawDegrees = 0;
+    int viewPitchDegrees = 0;
+    MdkrWorkshopPreviewLighting lighting =
+        MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+    std::string capturePng;
 };
 
 // Draw the settings sections (one per MdkrVideoCategory) inside the current
@@ -73,6 +78,7 @@ void Settings_publishCharacterPreviewResult(
     const std::string &sourceSha256,
     const std::string &fitSha256,
     const std::string &presentationSha256,
+    const std::string &capturePng,
     const MdkrCharacterPreviewResult &result);
 
 // Discard any in-progress audible Audio slider preview. Used when navigation

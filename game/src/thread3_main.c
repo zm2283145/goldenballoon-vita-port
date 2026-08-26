@@ -75,6 +75,7 @@
 #include "taj_mod.h"
 
 extern int platform_pace_is_synthetic(void);
+extern s32 gRaceStartTimer;
 #endif
 
 /************ .rodata ************/
@@ -189,10 +190,16 @@ static s32 sWorkshopPreviewMeasurementStarted;
 static s32 sWorkshopPreviewMeasurementFinished;
 static MdkrCharacterPreviewResult sWorkshopPreviewDiagnosticResult;
 static MdkrModernCharacterRuntimeMetrics sWorkshopPreviewCharacterBaseline;
+static MdkrWorkshopPreviewVisualMetrics sWorkshopPreviewVisualBaseline;
+static char sWorkshopPreviewCapturePath[1024];
+static u64 sWorkshopPreviewCaptureStableFrames;
+static u64 sWorkshopPreviewCaptureLastReplacementDraws;
+static s32 sWorkshopPreviewCaptureArmed;
 
 static void workshop_preview_measurement_finish(void) {
     MdkrPresentPerfSnapshot present;
     MdkrModernCharacterRuntimeMetrics character;
+    MdkrWorkshopPreviewVisualMetrics visual;
     MdkrCharacterPreviewResult *result = g_mdkrCharacterPreviewResult;
     const MdkrGpuInfo *gpu;
     if (result == NULL || sWorkshopPreviewMeasurementFinished) return;
@@ -275,13 +282,27 @@ static void workshop_preview_measurement_finish(void) {
                       sWorkshopPreviewCharacterBaseline
                           .inspection_pose_fallback_ticks
                 : 0u;
+        mdkr_workshop_preview_visual_metrics(&visual);
+        result->camera_override_ticks = visual.camera_override_ticks >=
+                sWorkshopPreviewVisualBaseline.camera_override_ticks
+            ? visual.camera_override_ticks -
+                  sWorkshopPreviewVisualBaseline.camera_override_ticks
+            : 0u;
+        result->lighting_override_draws = visual.lighting_override_draws >=
+                sWorkshopPreviewVisualBaseline.lighting_override_draws
+            ? visual.lighting_override_draws -
+                  sWorkshopPreviewVisualBaseline.lighting_override_draws
+            : 0u;
     }
     sWorkshopPreviewMeasurementFinished = TRUE;
     MDKR_TRACE(
         "character_workshop_result: warmup=%d realtime=%d samples=%llu "
         "p50us=%llu p95us=%llu p99us=%llu maxus=%llu replacements=%llu "
         "contacts=%llu contactMaxUm=%llu pose=%d phase=%u "
-        "poseTicks=%llu poseFallback=%llu backend=%s adapter=%s driver=%s "
+        "poseTicks=%llu poseFallback=%llu view=%d,%d lighting=%d "
+        "cameraTicks=%llu lightingDraws=%llu capture=%d/%d/%d "
+        "captureStableFrames=%llu bytes=%llu "
+        "backend=%s adapter=%s driver=%s "
         "vendor=%08x device=%08x output=%ux%u render=%ux%u",
         result->warmup_complete, result->realtime,
         result->interval_samples, result->interval_p50_us,
@@ -291,6 +312,11 @@ static void workshop_preview_measurement_finish(void) {
         (int)result->pose, result->pose_phase_milli,
         result->inspection_pose_ticks,
         result->inspection_pose_fallback_ticks,
+        result->view_yaw_degrees, result->view_pitch_degrees,
+        (int)result->lighting, result->camera_override_ticks,
+        result->lighting_override_draws, result->capture_requested,
+        result->capture_armed, result->capture_written,
+        result->capture_stable_frames, result->capture_png_bytes,
         result->renderer_backend,
         result->adapter[0] != '\0' ? result->adapter : "unknown",
         result->driver[0] != '\0' ? result->driver : "unknown",
@@ -299,10 +325,95 @@ static void workshop_preview_measurement_finish(void) {
         result->render_width, result->render_height);
 }
 
+static void workshop_preview_capture_service(void) {
+    MdkrCharacterPreviewResult *result = g_mdkrCharacterPreviewResult;
+    MdkrModernCharacterRuntimeMetrics character;
+    MdkrWorkshopPreviewVisualMetrics visual;
+    s32 ready;
+    if (result == NULL || sWorkshopPreviewCapturePath[0] == '\0' ||
+        sWorkshopPreviewCaptureArmed) return;
+    mdkr_modern_character_runtime_metrics(&character);
+    mdkr_workshop_preview_visual_metrics(&visual);
+    /* The inspection camera is an exact look-at around the renderer's fitted
+     * character volume, so it remains correctly composed even while an
+     * authored start camera is moving. Do not wait on the HUD-owned race
+     * countdown: headless and paused inspection sessions may intentionally
+     * leave that state machine held forever. Instead require consecutive
+     * frames in which every requested presentation layer actually rendered. */
+    ready =
+        character.replacement_draws >
+            sWorkshopPreviewCaptureLastReplacementDraws &&
+        character.inspection_pose_ticks >
+            sWorkshopPreviewCharacterBaseline.inspection_pose_ticks &&
+        ((result->view_yaw_degrees == 0 &&
+          result->view_pitch_degrees == 0) ||
+         visual.camera_override_ticks >
+            sWorkshopPreviewVisualBaseline.camera_override_ticks) &&
+        (result->lighting == MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
+         visual.lighting_override_draws >
+            sWorkshopPreviewVisualBaseline.lighting_override_draws);
+    sWorkshopPreviewCaptureLastReplacementDraws =
+        character.replacement_draws;
+    if (ready) {
+        sWorkshopPreviewCaptureStableFrames++;
+    } else {
+        sWorkshopPreviewCaptureStableFrames = 0u;
+    }
+    result->capture_stable_frames = sWorkshopPreviewCaptureStableFrames;
+    if (sWorkshopPreviewCaptureStableFrames >=
+            MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES) {
+        char captureError[192] = { 0 };
+        if (!platform_frame_capture_request_once(
+                sWorkshopPreviewCapturePath,
+                captureError, sizeof(captureError))) {
+            fprintf(stderr,
+                    "[FATAL] Character Workshop capture could not be armed: %s\n",
+                    captureError[0] != '\0'
+                        ? captureError : "unknown capture error");
+            platform_request_exit(EXIT_FAILURE);
+            return;
+        }
+        sWorkshopPreviewCaptureArmed = TRUE;
+        result->capture_armed = TRUE;
+        MDKR_TRACE(
+            "character_workshop_capture: armed stableFrames=%llu countdown=%d replacements=%llu cameraTicks=%llu lightingDraws=%llu",
+            (unsigned long long)sWorkshopPreviewCaptureStableFrames,
+            result->context == MDKR_CHARACTER_PREVIEW_SELECT
+                ? 0 : gRaceStartTimer,
+            (unsigned long long)character.replacement_draws,
+            (unsigned long long)visual.camera_override_ticks,
+            (unsigned long long)visual.lighting_override_draws);
+    }
+}
+
+/* Vehicle inspection is a deliberate gameplay-camera presentation. Course
+ * scripts are still allowed to author their cutscene bank, but displaying that
+ * bank would make a deterministic character view point at a different subject.
+ * Clear only the one-frame selection latch after authored HUD/camera work; the
+ * game restores its ordinary lifecycle on the next tick and after this isolated
+ * engine session ends. */
+static void workshop_preview_camera_bank_service(void) {
+    const MdkrCharacterPreviewResult *result =
+        g_mdkrCharacterPreviewResult;
+    if (result != NULL && result->started &&
+        result->context != MDKR_CHARACTER_PREVIEW_SELECT &&
+        result->pose > MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+        result->pose < MDKR_CHARACTER_PREVIEW_POSE_COUNT) {
+        disable_cutscene_camera();
+    }
+}
+
 static void workshop_preview_measurement_service(s32 overlayPaused) {
     MdkrCharacterPreviewResult *result = g_mdkrCharacterPreviewResult;
-    if (result == NULL || !result->started ||
-        sWorkshopPreviewMeasurementFinished) {
+    if (result == NULL || !result->started) {
+        return;
+    }
+    /* Evidence capture is allowed to wait longer than the bounded performance
+     * sample. Race-start cameras and transitions can legitimately outlive that
+     * sample, and arming early would preserve a transient rather than the
+     * authored inspection view. */
+    if (sWorkshopPreviewMeasurementFinished) {
+        if (!overlayPaused) workshop_preview_capture_service();
         return;
     }
     if (!sWorkshopPreviewMeasurementStarted) {
@@ -313,6 +424,10 @@ static void workshop_preview_measurement_service(s32 overlayPaused) {
             mdkr_modern_character_contact_metrics_reset();
             mdkr_modern_character_runtime_metrics(
                 &sWorkshopPreviewCharacterBaseline);
+            mdkr_workshop_preview_visual_metrics(
+                &sWorkshopPreviewVisualBaseline);
+            sWorkshopPreviewCaptureLastReplacementDraws =
+                sWorkshopPreviewCharacterBaseline.replacement_draws;
             sWorkshopPreviewMeasurementStarted = TRUE;
             result->warmup_complete = TRUE;
             MDKR_TRACE(
@@ -322,6 +437,7 @@ static void workshop_preview_measurement_service(s32 overlayPaused) {
         if (overlayPaused) workshop_preview_measurement_finish();
         return;
     }
+    if (!overlayPaused) workshop_preview_capture_service();
     if (overlayPaused) workshop_preview_measurement_finish();
 }
 #endif
@@ -380,6 +496,14 @@ void thread3_main(UNUSED void *unused) {
     sWorkshopPreviewMeasurementFinished = FALSE;
     bzero(&sWorkshopPreviewCharacterBaseline,
           sizeof(sWorkshopPreviewCharacterBaseline));
+    bzero(&sWorkshopPreviewVisualBaseline,
+          sizeof(sWorkshopPreviewVisualBaseline));
+    sWorkshopPreviewCapturePath[0] = '\0';
+    sWorkshopPreviewCaptureStableFrames = 0u;
+    sWorkshopPreviewCaptureLastReplacementDraws = 0u;
+    sWorkshopPreviewCaptureArmed = FALSE;
+    mdkr_workshop_preview_visual_clear();
+    mdkr_workshop_preview_visual_metrics_reset();
 #endif
     init_game();
     gSaveDataFlags = input_update(gSaveDataFlags, 0);
@@ -414,6 +538,7 @@ void thread3_main(UNUSED void *unused) {
     }
 #ifdef NATIVE_PORT
     workshop_preview_measurement_finish();
+    mdkr_workshop_preview_visual_clear();
 #endif
 }
 
@@ -929,6 +1054,9 @@ void mode_game(s32 updateRate) {
      * RAW rate, not pause-gated: this group runs while paused today.
      */
     hud_tick(updateRate);
+#ifdef NATIVE_PORT
+    workshop_preview_camera_bank_service();
+#endif
     /* The three-player TT spectator camera used to advance from render_scene.
      * It feeds this tick's final sort/LOD/visibility basis, so advance it once
      * from fixed-tick authority before any of those consumers. */
@@ -1528,6 +1656,9 @@ void update_menu_scene(s32 updateRate) {
     /* The HUD's authoritative half. Runs FIRST -- see the tick ordering contract
      * on the twin call in mode_game. */
     hud_tick(updateRate);
+#ifdef NATIVE_PORT
+    workshop_preview_camera_bank_service();
+#endif
     /* Fixed-tick ownership of the three-player TT spectator camera; see the
      * twin call and tracks.c's scene_tt_camera_tick contract. */
     scene_tt_camera_tick(updateRate);
@@ -2339,13 +2470,39 @@ static MdkrCharacterPreviewPose workshop_preview_pose_from_semantic(
     return MDKR_CHARACTER_PREVIEW_POSE_COUNT;
 }
 
+static MdkrWorkshopPreviewLighting workshop_preview_lighting_from_name(
+    const char *name) {
+    if (name == NULL) return MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT;
+    if (strcmp(name, "neutral") == 0) {
+        return MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+    }
+    if (strcmp(name, "bright") == 0) {
+        return MDKR_WORKSHOP_PREVIEW_LIGHTING_BRIGHT;
+    }
+    if (strcmp(name, "low-key") == 0) {
+        return MDKR_WORKSHOP_PREVIEW_LIGHTING_LOW_KEY;
+    }
+    if (strcmp(name, "backlit") == 0) {
+        return MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT;
+    }
+    return MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT;
+}
+
 static s32 workshop_preview_start(void) {
     const char *context = getenv("MDKR_CHARACTER_WORKSHOP_PREVIEW");
     const char *playersText;
     const char *poseText;
     const char *phaseText;
+    const char *yawText;
+    const char *pitchText;
+    const char *lightingText;
+    const char *captureText;
     MdkrCharacterPreviewPose pose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
     unsigned posePhaseMilli = 0u;
+    int viewYawDegrees = 0;
+    int viewPitchDegrees = 0;
+    MdkrWorkshopPreviewLighting lighting =
+        MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
     s32 players = 1;
     s32 vehicle = -1;
     if (context == NULL || context[0] == '\0') return FALSE;
@@ -2397,6 +2554,69 @@ static s32 workshop_preview_start(void) {
     } else {
         mdkr_modern_character_clear_inspection_pose();
     }
+    yawText = getenv("MDKR_CHARACTER_WORKSHOP_VIEW_YAW_DEGREES");
+    pitchText = getenv("MDKR_CHARACTER_WORKSHOP_VIEW_PITCH_DEGREES");
+    lightingText = getenv("MDKR_CHARACTER_WORKSHOP_LIGHTING");
+    captureText = getenv("MDKR_CHARACTER_WORKSHOP_CAPTURE_PNG");
+    if ((yawText != NULL && yawText[0] != '\0') ||
+        (pitchText != NULL && pitchText[0] != '\0') ||
+        (lightingText != NULL && lightingText[0] != '\0')) {
+        char *yawEnd = NULL;
+        char *pitchEnd = NULL;
+        long parsedYaw;
+        long parsedPitch;
+        char visualError[192] = { 0 };
+        if (pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+            yawText == NULL || yawText[0] == '\0' ||
+            pitchText == NULL || pitchText[0] == '\0' ||
+            lightingText == NULL || lightingText[0] == '\0') {
+            fprintf(stderr,
+                    "[FATAL] Character Workshop view and lighting fields must be provided together for pose inspection\n");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        parsedYaw = strtol(yawText, &yawEnd, 10);
+        parsedPitch = strtol(pitchText, &pitchEnd, 10);
+        lighting = workshop_preview_lighting_from_name(lightingText);
+        if (yawEnd == yawText || *yawEnd != '\0' ||
+            pitchEnd == pitchText || *pitchEnd != '\0' ||
+            parsedYaw < -180 || parsedYaw > 180 ||
+            parsedPitch < -45 || parsedPitch > 45 ||
+            (strcmp(context, "select") == 0 &&
+             (parsedYaw != 0 || parsedPitch != 0)) ||
+            lighting == MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT ||
+            !mdkr_workshop_preview_visual_set(
+                (int)parsedYaw, (int)parsedPitch, lighting,
+                visualError, sizeof(visualError))) {
+            fprintf(stderr,
+                    "[FATAL] invalid Character Workshop view request: %s,%s %s (%s)\n",
+                    yawText, pitchText, lightingText,
+                    visualError[0] != '\0'
+                        ? visualError : "invalid contract");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        viewYawDegrees = (int)parsedYaw;
+        viewPitchDegrees = (int)parsedPitch;
+    } else {
+        mdkr_workshop_preview_visual_clear();
+    }
+    if (captureText != NULL && captureText[0] != '\0') {
+        const size_t captureLength = strlen(captureText);
+        if (pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+            captureLength >= sizeof(sWorkshopPreviewCapturePath) ||
+            captureLength < 4u ||
+            strcmp(captureText + captureLength - 4u, ".png") != 0) {
+            fprintf(stderr,
+                    "[FATAL] invalid Character Workshop capture request\n");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        (void)snprintf(sWorkshopPreviewCapturePath,
+                       sizeof(sWorkshopPreviewCapturePath), "%s", captureText);
+    } else {
+        sWorkshopPreviewCapturePath[0] = '\0';
+    }
     if (strcmp(context, "car") == 0) {
         vehicle = VEHICLE_CAR;
     } else if (strcmp(context, "hovercraft") == 0) {
@@ -2432,6 +2652,11 @@ static s32 workshop_preview_start(void) {
         g_mdkrCharacterPreviewResult->started = TRUE;
         g_mdkrCharacterPreviewResult->pose = pose;
         g_mdkrCharacterPreviewResult->pose_phase_milli = posePhaseMilli;
+        g_mdkrCharacterPreviewResult->view_yaw_degrees = viewYawDegrees;
+        g_mdkrCharacterPreviewResult->view_pitch_degrees = viewPitchDegrees;
+        g_mdkrCharacterPreviewResult->lighting = lighting;
+        g_mdkrCharacterPreviewResult->capture_requested =
+            sWorkshopPreviewCapturePath[0] != '\0';
     }
     if (vehicle < 0) {
         charselect_prev(1, NULL);
@@ -2453,10 +2678,11 @@ static s32 workshop_preview_start(void) {
     }
     MDKR_TRACE(
         "character_workshop_preview: started context=%s players=%d "
-        "vehicle=%d pose=%s phase=%u",
+        "vehicle=%d pose=%s phase=%u view=%d,%d lighting=%d capture=%d",
         context, players, vehicle,
         pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ? "live" : poseText,
-        posePhaseMilli);
+        posePhaseMilli, viewYawDegrees, viewPitchDegrees, (int)lighting,
+        sWorkshopPreviewCapturePath[0] != '\0');
     return TRUE;
 }
 #endif

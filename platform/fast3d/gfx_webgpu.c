@@ -3177,7 +3177,8 @@ static bool wgpu_readback_possible(void) {
     extern int g_autoScreenshotGameTimer;
     extern const char *g_dumpFramesDir;
     if (g_screenshotFrameSessionActive || g_autoScreenshotFrame >= 0 ||
-        g_autoScreenshotGameTimer >= 0 || g_dumpFramesDir != NULL) {
+        g_autoScreenshotGameTimer >= 0 || g_dumpFramesDir != NULL ||
+        platform_frame_capture_pending()) {
         s_readback_latched = true;
         return true;
     }
@@ -8714,7 +8715,7 @@ static void wgpu_skinned_entry_release(struct WgpuSkinnedEntry *entry) {
     if (entry == NULL) return;
     for (index = 0u; index < entry->material_count; index++) {
         if (entry->material_bg != NULL && entry->material_bg[index] != NULL) {
-            wgpuBindGroupRelease(entry->material_bg[index]);
+            wgpu_release_cached_bind_group(entry->material_bg[index]);
         }
     }
     for (index = 0u; index < entry->texture_count; index++) {
@@ -9009,7 +9010,7 @@ static WGPUBindGroup wgpu_skinned_material_bg(
         return entry->material_bg[material_index];
     }
     if (entry->material_bg[material_index] != NULL) {
-        wgpuBindGroupRelease(entry->material_bg[material_index]);
+        wgpu_release_cached_bind_group(entry->material_bg[material_index]);
         entry->material_bg[material_index] = NULL;
     }
     bindings[0].binding = 0u;

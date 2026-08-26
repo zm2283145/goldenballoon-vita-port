@@ -7,6 +7,7 @@
 #include <string>
 
 #include "../modern_character_semantics.h"
+#include "../workshop_preview_runtime.h"
 #include "character_portrait_studio.h"
 
 namespace CharacterDraftSnapshot {
@@ -49,6 +50,9 @@ struct Snapshot {
     int testPlayers = 1;
     uint32_t testPose = MDKR_MODERN_CHARACTER_INSPECTION_DEFAULT_POSE;
     uint32_t testPosePhaseMilli = 500u;
+    int32_t testViewYawDegrees = 0;
+    int32_t testViewPitchDegrees = 0;
+    uint32_t testLighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
     uint32_t reviewedContexts = 0u;
 
     float scale = 1.0f;

@@ -756,7 +756,8 @@ CHECKS = (
           "keyboard speech"),
     Check("custom_character_workshop_preview",
           "check_custom_character_workshop_preview.py", "native",
-          "script-free exact select/car/hovercraft/plane launches and real "
+          "script-free exact select/car/hovercraft/plane launches, semantic "
+          "camera/light inspection, exclusive stabilized PNG capture, and real "
           "one-to-four-player WebGPU character stress with fail-closed inputs"),
     Check("bonus_results_portraits", "check_bonus_results_portraits.py", "native",
           "real post-race Wizpig/Terry portrait ownership, retail dimensions, "

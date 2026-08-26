@@ -34,6 +34,9 @@ int main() {
     source.testPlayers = 4;
     source.testPose = 12u;
     source.testPosePhaseMilli = 875u;
+    source.testViewYawDegrees = -135;
+    source.testViewPitchDegrees = 27;
+    source.testLighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT;
     source.reviewedContexts = 3u;
     source.scale = 1.25f;
     source.offset[1] = -12.5f;
@@ -80,6 +83,10 @@ int main() {
                parsed.assemblyPlayers == 3 && parsed.testPlayers == 4 &&
                parsed.testPose == 12u &&
                parsed.testPosePhaseMilli == 875u &&
+               parsed.testViewYawDegrees == -135 &&
+               parsed.testViewPitchDegrees == 27 &&
+               parsed.testLighting ==
+                   MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT &&
                parsed.reviewedContexts == 3u && parsed.scale == 1.25f &&
                parsed.offset[1] == -12.5f &&
                parsed.contexts[1].contacts[0][0] == -0.25f &&
@@ -110,7 +117,22 @@ int main() {
     const size_t identityTailBytes = 16u + source.displayName.size() +
         source.shortName.size() + source.narrationName.size() +
         source.sortLabel.size();
-    std::string versionThree = encoded.substr(0u, encoded.size() - 8u);
+    std::string versionFour = encoded.substr(0u, encoded.size() - 12u);
+    writeU32(versionFour, 4u, 4u);
+    writeU32(versionFour, 8u,
+             static_cast<uint32_t>(versionFour.size()));
+    Snapshot versionFourParsed;
+    expect(decode(versionFour, versionFourParsed, error) &&
+               versionFourParsed.testPose == source.testPose &&
+               versionFourParsed.testPosePhaseMilli ==
+                   source.testPosePhaseMilli &&
+               versionFourParsed.testViewYawDegrees == 0 &&
+               versionFourParsed.testViewPitchDegrees == 0 &&
+               versionFourParsed.testLighting ==
+                   MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
+           "version-four drafts retain pose state and gain safe visual defaults");
+
+    std::string versionThree = encoded.substr(0u, encoded.size() - 20u);
     writeU32(versionThree, 4u, 3u);
     writeU32(versionThree, 8u,
              static_cast<uint32_t>(versionThree.size()));
@@ -120,11 +142,15 @@ int main() {
                    source.portraitStyleSource &&
                versionThreeParsed.testPose ==
                    MDKR_MODERN_CHARACTER_INSPECTION_DEFAULT_POSE &&
-               versionThreeParsed.testPosePhaseMilli == 500u,
+               versionThreeParsed.testPosePhaseMilli == 500u &&
+               versionThreeParsed.testViewYawDegrees == 0 &&
+               versionThreeParsed.testViewPitchDegrees == 0 &&
+               versionThreeParsed.testLighting ==
+                   MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
            "version-three drafts gain safe pose-inspection defaults");
 
     const size_t styleTailBytes =
-        CharacterPortraitStudio::kBytes + 9u * 4u + 8u;
+        CharacterPortraitStudio::kBytes + 9u * 4u + 8u + 12u;
     std::string versionTwo = encoded.substr(
         0u, encoded.size() - styleTailBytes);
     writeU32(versionTwo, 4u, 2u);
@@ -176,6 +202,18 @@ int main() {
     hostile.testPosePhaseMilli = 1001u;
     expect(!encode(hostile, encoded, error),
            "out-of-range inspection phases are rejected from persisted state");
+    hostile = source;
+    hostile.testViewYawDegrees = 181;
+    expect(!encode(hostile, encoded, error),
+           "out-of-range inspection yaw is rejected from persisted state");
+    hostile = source;
+    hostile.testViewPitchDegrees = -46;
+    expect(!encode(hostile, encoded, error),
+           "out-of-range inspection pitch is rejected from persisted state");
+    hostile = source;
+    hostile.testLighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT;
+    expect(!encode(hostile, encoded, error),
+           "unknown inspection lighting is rejected from persisted state");
     hostile = source;
     hostile.portraitRecipe.paletteColors = 17u;
     expect(!encode(hostile, encoded, error),

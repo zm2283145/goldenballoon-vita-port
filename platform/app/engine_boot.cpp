@@ -8,6 +8,8 @@
 
 #include "app_restart.h"    // AppRestart_getEnv, AppRestart_setEnv
 #include "app_config.h"
+#include "character_png_validation.h"
+#include "fs_utf8.h"
 #include "modern_character_registry.h"
 #include "user_paths.h"
 #include "video_config.h"   // MdkrVideoMode, mdkr_video_schema
@@ -47,6 +49,64 @@ const char *characterPreviewPoseSemantic(MdkrCharacterPreviewPose pose) {
 #undef MDKR_CHARACTER_PREVIEW_POSE_CASE
         default: return nullptr;
     }
+}
+
+const char *characterPreviewLightingName(
+    MdkrWorkshopPreviewLighting lighting) {
+    switch (lighting) {
+        case MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL: return "neutral";
+        case MDKR_WORKSHOP_PREVIEW_LIGHTING_BRIGHT: return "bright";
+        case MDKR_WORKSHOP_PREVIEW_LIGHTING_LOW_KEY: return "low-key";
+        case MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT: return "backlit";
+        default: return nullptr;
+    }
+}
+
+bool characterPreviewCapturePathValid(const char *path) {
+    if (path == nullptr || path[0] == '\0') return true;
+    const size_t length = std::strlen(path);
+    int exists = 0;
+    if (length < 4u || length >= 1024u ||
+        std::strcmp(path + length - 4u, ".png") != 0) {
+        return false;
+    }
+    (void)mdkr_path_query_utf8(path, &exists, nullptr, nullptr);
+    return !exists;
+}
+
+bool characterPreviewPng(const char *path, unsigned expectedWidth,
+                         unsigned expectedHeight,
+                         unsigned long long &bytes) {
+    constexpr size_t kMaximumCaptureBytes = 32u * 1024u * 1024u;
+    std::array<unsigned char, 8192> block{};
+    std::vector<unsigned char> payload;
+    bytes = 0u;
+    if (path == nullptr || path[0] == '\0') return false;
+    FILE *file = mdkr_fopen_utf8(path, "rb");
+    if (file == nullptr) return false;
+    bool bounded = true;
+    for (;;) {
+        const size_t count =
+            std::fread(block.data(), 1u, block.size(), file);
+        if (count != 0u) {
+            if (payload.size() > kMaximumCaptureBytes - count) {
+                bounded = false;
+                break;
+            }
+            payload.insert(payload.end(), block.begin(), block.begin() + count);
+        }
+        if (count != block.size()) break;
+    }
+    const bool readOk = std::ferror(file) == 0;
+    const bool closeOk = std::fclose(file) == 0;
+    CharacterPngValidation::Info info;
+    std::string error;
+    if (!bounded || !readOk || !closeOk ||
+        !CharacterPngValidation::validate(
+            payload.data(), payload.size(), expectedWidth, expectedHeight,
+            info, error)) return false;
+    bytes = payload.size();
+    return true;
 }
 
 struct CharacterTuningKey {
@@ -225,9 +285,27 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
              cfg->character_preview_pose >=
                  MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
              cfg->character_preview_pose_phase_milli > 1000u ||
+             cfg->character_preview_view_yaw_degrees < -180 ||
+             cfg->character_preview_view_yaw_degrees > 180 ||
+             cfg->character_preview_view_pitch_degrees < -45 ||
+             cfg->character_preview_view_pitch_degrees > 45 ||
+             characterPreviewLightingName(
+                 cfg->character_preview_lighting) == nullptr ||
+             !characterPreviewCapturePathValid(
+                 cfg->character_preview_capture_png) ||
+             (cfg->character_preview_context ==
+                  MDKR_CHARACTER_PREVIEW_SELECT &&
+              (cfg->character_preview_view_yaw_degrees != 0 ||
+               cfg->character_preview_view_pitch_degrees != 0)) ||
              (cfg->character_preview_pose ==
                   MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
-              cfg->character_preview_pose_phase_milli != 0u) ||
+              (cfg->character_preview_pose_phase_milli != 0u ||
+               cfg->character_preview_view_yaw_degrees != 0 ||
+               cfg->character_preview_view_pitch_degrees != 0 ||
+               cfg->character_preview_lighting !=
+                   MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
+               (cfg->character_preview_capture_png != nullptr &&
+                cfg->character_preview_capture_png[0] != '\0'))) ||
              (cfg->character_preview_pose !=
                   MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
               characterPreviewPoseSemantic(cfg->character_preview_pose) ==
@@ -365,6 +443,8 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             characterPreviewContextName(cfg->character_preview_context);
         const char *pose =
             characterPreviewPoseSemantic(cfg->character_preview_pose);
+        const char *lighting = characterPreviewLightingName(
+            cfg->character_preview_lighting);
         bool environmentReady = previewEnvironment.set(
             "MDKR_CHARACTER_WORKSHOP_PREVIEW", context) &&
             previewEnvironment.set(
@@ -380,6 +460,27 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             previewEnvironment.set(
                 "MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE",
                 posePhase.c_str()) && environmentReady;
+        environmentReady = previewEnvironment.set(
+            "MDKR_CHARACTER_WORKSHOP_VIEW_YAW_DEGREES",
+            pose != nullptr
+                ? std::to_string(
+                      cfg->character_preview_view_yaw_degrees).c_str()
+                : "") &&
+            previewEnvironment.set(
+                "MDKR_CHARACTER_WORKSHOP_VIEW_PITCH_DEGREES",
+                pose != nullptr
+                    ? std::to_string(
+                          cfg->character_preview_view_pitch_degrees).c_str()
+                    : "") &&
+            previewEnvironment.set(
+                "MDKR_CHARACTER_WORKSHOP_LIGHTING",
+                pose != nullptr ? lighting : "") &&
+            previewEnvironment.set(
+                "MDKR_CHARACTER_WORKSHOP_CAPTURE_PNG",
+                pose != nullptr &&
+                        cfg->character_preview_capture_png != nullptr
+                    ? cfg->character_preview_capture_png : "") &&
+            environmentReady;
         for (int player = 0; player < 4; ++player) {
             const std::string variable =
                 "MDKR_CUSTOM_CHARACTER_P" + std::to_string(player + 1);
@@ -396,11 +497,17 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
         std::fprintf(
             stderr,
             "[app] character preview: package=%s context=%s players=%d "
-            "pose=%s phase=%u\n",
+            "pose=%s phase=%u view=%d,%d lighting=%s capture=%s\n",
             cfg->character_preview_package, context,
             cfg->character_preview_players,
             pose != nullptr ? pose : "live",
-            cfg->character_preview_pose_phase_milli);
+            cfg->character_preview_pose_phase_milli,
+            cfg->character_preview_view_yaw_degrees,
+            cfg->character_preview_view_pitch_degrees,
+            lighting != nullptr ? lighting : "neutral",
+            cfg->character_preview_capture_png != nullptr &&
+                    cfg->character_preview_capture_png[0] != '\0'
+                ? cfg->character_preview_capture_png : "none");
         if (cfg->character_preview_result != nullptr) {
             *cfg->character_preview_result = MdkrCharacterPreviewResult{};
             cfg->character_preview_result->version =
@@ -413,6 +520,15 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
                 cfg->character_preview_pose;
             cfg->character_preview_result->pose_phase_milli =
                 cfg->character_preview_pose_phase_milli;
+            cfg->character_preview_result->view_yaw_degrees =
+                cfg->character_preview_view_yaw_degrees;
+            cfg->character_preview_result->view_pitch_degrees =
+                cfg->character_preview_view_pitch_degrees;
+            cfg->character_preview_result->lighting =
+                cfg->character_preview_lighting;
+            cfg->character_preview_result->capture_requested =
+                cfg->character_preview_capture_png != nullptr &&
+                cfg->character_preview_capture_png[0] != '\0';
             g_mdkrCharacterPreviewResult = cfg->character_preview_result;
         }
     }
@@ -423,6 +539,30 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
 
     const int result =
         mdkr64_headless_main((int)owned.size(), argv.data());
+    if (cfg != nullptr && cfg->character_preview_result != nullptr &&
+        cfg->character_preview_capture_png != nullptr &&
+        cfg->character_preview_capture_png[0] != '\0') {
+        unsigned long long bytes = 0u;
+        cfg->character_preview_result->capture_written =
+            cfg->character_preview_result->capture_armed &&
+            characterPreviewPng(
+                cfg->character_preview_capture_png,
+                cfg->character_preview_result->output_width,
+                cfg->character_preview_result->output_height,
+                bytes) ? 1 : 0;
+        cfg->character_preview_result->capture_png_bytes =
+            cfg->character_preview_result->capture_written ? bytes : 0u;
+        std::fprintf(
+            stderr,
+            "[app] character preview capture: requested=1 armed=%d stableFrames=%llu written=%d bytes=%llu output=%ux%u path=%s\n",
+            cfg->character_preview_result->capture_armed,
+            cfg->character_preview_result->capture_stable_frames,
+            cfg->character_preview_result->capture_written,
+            cfg->character_preview_result->capture_png_bytes,
+            cfg->character_preview_result->output_width,
+            cfg->character_preview_result->output_height,
+            cfg->character_preview_capture_png);
+    }
     g_mdkrCharacterPreviewResult = nullptr;
     if (!previewEnvironment.restore()) {
         std::fprintf(stderr,

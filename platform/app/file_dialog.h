@@ -1,4 +1,4 @@
-// file_dialog.h — a user-driven native "open file" dialog, and nothing else.
+// file_dialog.h — user-driven native file selection and destination panels.
 //
 // WHY THIS EXISTS
 //
@@ -57,6 +57,16 @@ bool openCharacterLicense(std::string &out);
 // Choose a still PNG for custom-character portrait authoring. Validation and
 // resampling happen in the Workshop; the dialog grants no import authority.
 bool openPortraitImage(std::string &out);
+
+// Choose a destination for a new exact-renderer PNG. The capture writer still
+// opens it exclusively, so selecting an existing file never grants overwrite
+// authority; the Workshop asks for another name instead.
+bool saveCharacterCapture(std::string &out);
+
+// Choose a destination for a self-contained visual qualification report.
+// Like captures, reports are exclusive-create: choosing an existing file does
+// not authorize the Workshop to replace it.
+bool saveCharacterReport(std::string &out);
 
 }  // namespace filedialog
 

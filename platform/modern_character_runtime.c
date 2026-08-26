@@ -1,4 +1,5 @@
 #include "modern_character_runtime.h"
+#include "workshop_preview_runtime.h"
 
 #include "fast3d/gfx_pc_dkr.h"
 #include "f3ddkr.h"
@@ -35,6 +36,9 @@ typedef struct MdkrModernRuntimePlayer {
     float previous_palette[MODERN_RUNTIME_MAX_BONES * 16u];
     uint32_t tokens[MODERN_RUNTIME_MAX_PRIMITIVES];
     uint64_t identity_revision;
+    float focus_center[MDKR_CHARACTER_CONTEXT_COUNT][3];
+    float focus_radius[MDKR_CHARACTER_CONTEXT_COUNT];
+    uint32_t focus_valid_mask;
 } MdkrModernRuntimePlayer;
 
 static MdkrModernCharacterRegistry s_registry;
@@ -197,6 +201,60 @@ static void matrix_multiply(const float left[16], const float right[16],
         }
     }
     memcpy(output, result, sizeof(result));
+}
+
+static void matrix_transform_point(const float matrix[16],
+                                   const float point[3], float output[3]) {
+    output[0] = matrix[0] * point[0] + matrix[4] * point[1] +
+                matrix[8] * point[2] + matrix[12];
+    output[1] = matrix[1] * point[0] + matrix[5] * point[1] +
+                matrix[9] * point[2] + matrix[13];
+    output[2] = matrix[2] * point[0] + matrix[6] * point[1] +
+                matrix[10] * point[2] + matrix[14];
+}
+
+static int calibration_focus(const MdkrModernCalibration *calibration,
+                             const float transform[16], float center[3],
+                             float *radius) {
+    float source_center[3];
+    float maximum_distance_squared = 0.0f;
+    unsigned axis;
+    unsigned corner;
+    if (calibration == NULL || transform == NULL || center == NULL ||
+        radius == NULL) return 0;
+    for (axis = 0u; axis < 3u; axis++) {
+        if (!isfinite(calibration->bounds_min[axis]) ||
+            !isfinite(calibration->bounds_max[axis]) ||
+            calibration->bounds_min[axis] > calibration->bounds_max[axis]) {
+            return 0;
+        }
+        source_center[axis] =
+            (calibration->bounds_min[axis] +
+             calibration->bounds_max[axis]) * 0.5f;
+    }
+    matrix_transform_point(transform, source_center, center);
+    for (corner = 0u; corner < 8u; corner++) {
+        float source[3];
+        float fitted[3];
+        float distance_squared = 0.0f;
+        for (axis = 0u; axis < 3u; axis++) {
+            source[axis] = (corner & (1u << axis)) != 0u
+                ? calibration->bounds_max[axis]
+                : calibration->bounds_min[axis];
+        }
+        matrix_transform_point(transform, source, fitted);
+        for (axis = 0u; axis < 3u; axis++) {
+            const float delta = fitted[axis] - center[axis];
+            distance_squared += delta * delta;
+        }
+        if (!isfinite(distance_squared)) return 0;
+        if (distance_squared > maximum_distance_squared) {
+            maximum_distance_squared = distance_squared;
+        }
+    }
+    *radius = sqrtf(maximum_distance_squared);
+    return isfinite(center[0]) && isfinite(center[1]) &&
+           isfinite(center[2]) && isfinite(*radius) && *radius > 0.0f;
 }
 
 static int matrix_normal_transform(const float input[16], float output[16]) {
@@ -859,6 +917,7 @@ int mdkr_modern_character_set_tuning(int player,
         return 0;
     }
     s_players[player].tuning = checked;
+    s_players[player].focus_valid_mask = 0u;
     return 1;
 }
 
@@ -867,6 +926,25 @@ int mdkr_modern_character_get_tuning(int player,
     if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS || out == NULL ||
         s_players[player].pool < 0) return 0;
     *out = s_players[player].tuning;
+    return 1;
+}
+
+int mdkr_modern_character_player_focus(
+    int player, MdkrModernCharacterContext context,
+    float center[3], float *radius) {
+    const MdkrModernRuntimePlayer *slot;
+    if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        context < MDKR_CHARACTER_CONTEXT_SELECT ||
+        context >= MDKR_CHARACTER_CONTEXT_COUNT || center == NULL ||
+        radius == NULL) return 0;
+    slot = &s_players[player];
+    if (slot->pool < 0 ||
+        (slot->focus_valid_mask & (1u << (unsigned)context)) == 0u) {
+        return 0;
+    }
+    memcpy(center, slot->focus_center[context],
+           sizeof(slot->focus_center[context]));
+    *radius = slot->focus_radius[context];
     return 1;
 }
 
@@ -974,6 +1052,8 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
     uint32_t selected_lod;
     uint32_t available_lod = 0u;
     uint32_t emitted = 0u;
+    const MdkrWorkshopPreviewLighting inspection_lighting =
+        mdkr_workshop_preview_lighting();
     if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
         display_list == NULL || *display_list == NULL ||
         (slot = &s_players[player])->pool < 0 ||
@@ -1159,10 +1239,33 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
                       "character primitive has a singular normal transform");
             return 0;
         }
-        draw.light_direction[0] = 0.35f;
-        draw.light_direction[1] = -0.85f;
-        draw.light_direction[2] = 0.38f;
-        draw.ambient = 0.32f;
+        switch (inspection_lighting) {
+            case MDKR_WORKSHOP_PREVIEW_LIGHTING_BRIGHT:
+                draw.light_direction[0] = 0.20f;
+                draw.light_direction[1] = -0.95f;
+                draw.light_direction[2] = 0.23f;
+                draw.ambient = 0.55f;
+                break;
+            case MDKR_WORKSHOP_PREVIEW_LIGHTING_LOW_KEY:
+                draw.light_direction[0] = 0.65f;
+                draw.light_direction[1] = -0.40f;
+                draw.light_direction[2] = 0.65f;
+                draw.ambient = 0.12f;
+                break;
+            case MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT:
+                draw.light_direction[0] = 0.00f;
+                draw.light_direction[1] = -0.25f;
+                draw.light_direction[2] = -0.97f;
+                draw.ambient = 0.18f;
+                break;
+            case MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL:
+            default:
+                draw.light_direction[0] = 0.35f;
+                draw.light_direction[1] = -0.85f;
+                draw.light_direction[2] = 0.38f;
+                draw.ambient = 0.32f;
+                break;
+        }
         if (primitive.skin >= 0) {
             MdkrModernSkin skin;
             (void)mdkr_modern_character_asset_skin(
@@ -1195,6 +1298,16 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
     for (primitive_index = 0u; primitive_index < emitted; primitive_index++) {
         gMoveWd((*display_list)++, G_MW_DKR_MODERN_CHARACTER, 0,
                 slot->tokens[primitive_index]);
+    }
+    if (has_calibration && calibration_focus(
+            &calibration, anchored_transform,
+            slot->focus_center[context], &slot->focus_radius[context])) {
+        slot->focus_valid_mask |= 1u << (unsigned)context;
+    } else {
+        slot->focus_valid_mask &= ~(1u << (unsigned)context);
+    }
+    if (inspection_lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL) {
+        mdkr_workshop_preview_note_lighting_override();
     }
     s_replacement_draws++;
     s_replacement_primitives += emitted;

@@ -468,6 +468,11 @@ static void cancelValidation(LauncherState &s, bool clearUnusableSelection) {
         s.characterPreviewPlayers = 0;
         s.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
         s.characterPreviewPosePhaseMilli = 0u;
+        s.characterPreviewViewYawDegrees = 0;
+        s.characterPreviewViewPitchDegrees = 0;
+        s.characterPreviewLighting =
+            MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+        s.characterPreviewCapturePng.clear();
         s.characterPreviewDispatched = false;
     }
     s.romValidationPath.clear();
@@ -498,6 +503,11 @@ static void cancelCharacterPreview(LauncherState &s) {
     s.characterPreviewPlayers = 0;
     s.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
     s.characterPreviewPosePhaseMilli = 0u;
+    s.characterPreviewViewYawDegrees = 0;
+    s.characterPreviewViewPitchDegrees = 0;
+    s.characterPreviewLighting =
+        MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+    s.characterPreviewCapturePng.clear();
     s.characterPreviewDispatched = false;
 }
 
@@ -552,6 +562,11 @@ void RomPanel_serviceValidation(LauncherState &s) {
             s.characterPreviewPlayers = 0;
             s.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
             s.characterPreviewPosePhaseMilli = 0u;
+            s.characterPreviewViewYawDegrees = 0;
+            s.characterPreviewViewPitchDegrees = 0;
+            s.characterPreviewLighting =
+                MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+            s.characterPreviewCapturePng.clear();
             s.characterPreviewDispatched = false;
             /* Service priority: this pass can run after the navigation controls
              * have already drawn, so a plain assignment here would erase a tab

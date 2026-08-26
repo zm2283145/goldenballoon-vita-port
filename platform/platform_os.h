@@ -352,6 +352,15 @@ void platform_capture_toggle(void);
  * nonblocking opportunities each A/B arm happened to obtain. */
 int platform_frame_dump_prepare_due(void);
 
+/* Product-facing one-shot PNG capture. Unlike --dump-frames/F9 diagnostics,
+ * this writes exactly one completed presented frame to an explicit new path.
+ * The writer uses exclusive creation and never replaces an existing file.
+ * Requesting only arms the next viable present; the engine drains the writer
+ * before returning to the launcher, which then validates the finished PNG. */
+int platform_frame_capture_request_once(const char *png_path,
+                                        char *error, size_t error_size);
+int platform_frame_capture_pending(void);
+
 /* ===== Content packs (platform_sdl_min.c) =============================== *
  * Host-side ownership of the pack registry (platform/mod_registry.h) and the
  * decoded override textures the renderer reads through

@@ -5,6 +5,7 @@
 #include "modern_character_render.h"
 #include "modern_character_runtime.h"
 #include "modern_character_donor.h"
+#include "workshop_preview_runtime.h"
 #include "fs_utf8.h"
 #include "fast3d/gfx_pc_dkr.h"
 #include "asset_enums.h"
@@ -209,6 +210,7 @@ int main(int argc, char **argv) {
     MdkrModernProvenance provenance;
     MdkrModernCharacterIdentityView identity_view;
     MdkrModernCharacterRuntimeMetrics runtime_metrics;
+    MdkrWorkshopPreviewVisualMetrics visual_metrics;
     const uint8_t *portrait_data;
     MdkrModernCharacterRegistry registry;
     MdkrModernCharacterInstallResult install_result;
@@ -234,6 +236,8 @@ int main(int argc, char **argv) {
     FILE *lock_file;
     int player;
     float select_model_y;
+    float focus_center[3];
+    float focus_radius;
 
     require(argc == 10,
             "usage: test_modern_character_asset <generated.mdkc> <directory> <source.mdkrchar> <portable.mdkrchar> <install-directory> <corrupt-portable.mdkrchar> <mismatched-portable.mdkrchar> <legacy-portable.mdkrchar> <legacy-v5-portable.mdkrchar>");
@@ -1074,6 +1078,16 @@ int main(int argc, char **argv) {
                 0, "race.steer", 0.25f, 1.0f,
                 error, sizeof(error)),
             "clearing inspection restores ordinary gameplay pose selection");
+    mdkr_workshop_preview_visual_clear();
+    mdkr_workshop_preview_visual_metrics_reset();
+    require(!mdkr_modern_character_player_focus(
+                0, MDKR_CHARACTER_CONTEXT_SELECT,
+                focus_center, &focus_radius),
+            "focus is unavailable until the fitted context renders");
+    require(mdkr_workshop_preview_visual_set(
+                0, 0, MDKR_WORKSHOP_PREVIEW_LIGHTING_BRIGHT,
+                error, sizeof(error)),
+            "exact renderer accepts a bounded character-light preset");
     require(mdkr_modern_character_emit(0, MDKR_CHARACTER_CONTEXT_SELECT,
                                        NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)),
@@ -1083,6 +1097,22 @@ int main(int argc, char **argv) {
                                        NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)),
             error);
+    require(mdkr_modern_character_player_focus(
+                0, MDKR_CHARACTER_CONTEXT_SELECT,
+                focus_center, &focus_radius) &&
+                isfinite(focus_center[0]) && isfinite(focus_center[1]) &&
+                isfinite(focus_center[2]) && isfinite(focus_radius) &&
+                focus_radius > 0.0f &&
+                mdkr_modern_character_player_focus(
+                    0, MDKR_CHARACTER_CONTEXT_CAR,
+                    focus_center, &focus_radius) && focus_radius > 0.0f &&
+                !mdkr_modern_character_player_focus(
+                    0, MDKR_CHARACTER_CONTEXT_HOVERCRAFT,
+                    focus_center, &focus_radius) &&
+                !mdkr_modern_character_player_focus(
+                    -1, MDKR_CHARACTER_CONTEXT_CAR,
+                    focus_center, &focus_radius),
+            "runtime publishes only complete rendered fitted focus volumes");
     require(command_cursor == commands + 2 && registered_draws == 2u,
             "runtime emits one retained command per selected primitive");
     require(select_model_y - last_model_matrix[13] > 0.70f,
@@ -1091,6 +1121,10 @@ int main(int argc, char **argv) {
             "runtime draw includes the player seat-offset adjustment");
     require(commands[0].words.w1 == 1u && commands[1].words.w1 == 2u,
             "display list embeds immutable draw token rather than a pointer");
+    mdkr_workshop_preview_visual_metrics(&visual_metrics);
+    require(visual_metrics.lighting_override_draws == 2u,
+            "character-only lighting records one witness per successful replacement");
+    mdkr_workshop_preview_visual_clear();
     mdkr_modern_character_runtime_metrics(&runtime_metrics);
     require(runtime_metrics.replacement_draws == 2u &&
                 runtime_metrics.contact_solves == 1u &&

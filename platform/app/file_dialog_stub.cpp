@@ -36,4 +36,14 @@ bool openPortraitImage(std::string &out) {
     return false;
 }
 
+bool saveCharacterCapture(std::string &out) {
+    (void)out;
+    return false;
+}
+
+bool saveCharacterReport(std::string &out) {
+    (void)out;
+    return false;
+}
+
 }  // namespace filedialog

@@ -309,6 +309,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/modern_character_render.c # bounded PNG decode and immutable GPU resources
     ${CMAKE_SOURCE_DIR}/platform/modern_character_identity.c # bounded identity decode and game-ready portrait resampling
     ${CMAKE_SOURCE_DIR}/platform/modern_character_runtime.c # assignments, animation instances, retained draw commands
+    ${CMAKE_SOURCE_DIR}/platform/workshop_preview_runtime.c # presentation-only exact inspection view/light state
     ${CMAKE_SOURCE_DIR}/platform/modern_character_donor.c # fail-visible retail driver/vehicle separation
     ${CMAKE_SOURCE_DIR}/platform/modern_character_gameplay_profile.c # exact bounded ROM donor summaries
     ${CMAKE_SOURCE_DIR}/platform/enhancement_registry.c # enhancements + authority class
@@ -787,6 +788,8 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/character_test_evidence_store.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_draft_store.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_draft_snapshot.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_png_validation.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_visual_report.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_workshop_model.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/crash_screen.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/dev_tools.cpp
@@ -1535,6 +1538,28 @@ if(NOT EMSCRIPTEN)
             target_compile_features(mdkr_character_draft_snapshot_test PRIVATE cxx_std_17)
             add_test(NAME character_draft_snapshot
                 COMMAND mdkr_character_draft_snapshot_test)
+
+            add_executable(mdkr_workshop_preview_runtime_test
+                ${CMAKE_SOURCE_DIR}/tests/test_workshop_preview_runtime.c
+                ${CMAKE_SOURCE_DIR}/platform/workshop_preview_runtime.c)
+            target_include_directories(mdkr_workshop_preview_runtime_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform)
+            add_test(NAME workshop_preview_runtime
+                COMMAND mdkr_workshop_preview_runtime_test)
+
+            add_executable(mdkr_character_visual_report_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_visual_report.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_png_validation.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_visual_report.cpp
+                ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+                ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+            target_include_directories(mdkr_character_visual_report_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_visual_report_test PRIVATE
+                cxx_std_17)
+            add_test(NAME character_visual_report
+                COMMAND mdkr_character_visual_report_test)
 
             add_executable(mdkr_app_config_test
                 ${CMAKE_SOURCE_DIR}/tests/test_app_config.cpp

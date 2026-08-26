@@ -969,21 +969,45 @@ captures, four-player viewport dividers, and a stable exact backend, adapter,
 driver, vendor/device ID and physical output/render size. Capture dimensions
 must match the engine result even on HiDPI displays. The app lifecycle unit test covers
 present, absent, repeated-write and idempotent restoration cases for the scoped
-handoff. Invalid context/player values, a missing assignment, and a vehicle
-excluded by package tuning must all fail closed with a precise diagnostic. This
-qualifies the direct game route and stress seam; embedded offscreen preview,
-GPU timestamps/headroom isolation, semantic-pose controls and exported review
-reports remain open.
+handoff. Invalid context/player values, a missing assignment, a vehicle excluded
+by package tuning, incomplete view/light tuples, out-of-range or select-camera
+orbits, unknown lighting, live-mode capture, noncanonical capture suffixes, and
+existing destinations must all fail closed with a precise diagnostic. The gate
+also holds an exact semantic phase while applying a deterministic absolute
+racer-relative fitted-bounds orbit and character-only light, suppresses a
+transient scripted camera bank, requires 12 consecutive fully rendered frames
+after warm-up, writes a complete output-sized PNG, decodes its filtered RGB
+pixels, and requires the generated character material to form a large
+contiguous component inside the central safe frame. It also proves an existing
+capture stays byte-identical.
+This qualifies the direct game route, visual inspection controls, capture seam,
+and stress seam; embedded offscreen preview and GPU timestamp/headroom
+isolation remain open.
 
 Launcher-owned previews also arm the existing bounded presentation census. The
 game discards a 120-authored-tick warm-up, resets only the observational timing
-window, and freezes a structured version-3 result when the F1 overlay opens (or
+window, and freezes a structured version-7 result when the F1 overlay opens (or
 at engine shutdown). The surviving launcher publishes that result back to the
 same package inspector: displayed interval sample count, median/p95/p99/mean/max,
 authored tick-wall sample/mean, and warmed replacement/part/donor-suppression
 counts, vehicle-contact error, selected backend/adapter/driver and physical
-output versus scene-render dimensions. Fewer than 60 intervals and synthetic
-pacing are explicitly diagnostic-only.
+output versus scene-render dimensions, held-pose/fallback ticks, camera/light
+application counters, and requested/armed/written capture state, stable-frame
+count, and byte count. Fewer than 60 intervals
+and synthetic pacing are explicitly diagnostic-only. Visual-inspection results
+remain session-only and cannot contaminate durable timing evidence.
+
+The launcher collects only version-7 captures armed after at least 12 eligible
+frames in bounded session metadata and can export a self-contained HTML
+qualification report. The launcher and exporter share strict bounded PNG
+validation for chunk ordering, names, CRCs, canonical IHDR dimensions, palette
+requirements, nonempty image data, and terminal IEND; the exporter also checks canonical source/fit digests,
+metadata bounds, total byte budget and destination suffix; it escapes HTML and
+embedded JSON independently, embeds image digests, omits source paths, opens the
+destination exclusively, syncs it, and removes any partial write. Pure unit
+tests cover integrity, injection, privacy, dimensional drift and overwrite
+refusal; the rendered 200% keyboard/speech gate covers the complete tray and
+report action inventory.
 
 The launcher transactionally retains a bounded latest result and optional
 qualified baseline for every select/car/hovercraft/plane by 1P-4P cell. Records

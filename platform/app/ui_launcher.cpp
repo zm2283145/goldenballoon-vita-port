@@ -114,6 +114,14 @@ void fillBootConfig(LauncherState &state, MdkrBootConfig &boot) {
         boot.character_preview_pose = state.characterPreviewPose;
         boot.character_preview_pose_phase_milli =
             state.characterPreviewPosePhaseMilli;
+        boot.character_preview_view_yaw_degrees =
+            state.characterPreviewViewYawDegrees;
+        boot.character_preview_view_pitch_degrees =
+            state.characterPreviewViewPitchDegrees;
+        boot.character_preview_lighting = state.characterPreviewLighting;
+        boot.character_preview_capture_png =
+            state.characterPreviewCapturePng.empty()
+                ? nullptr : state.characterPreviewCapturePng.c_str();
         state.characterPreviewResult = MdkrCharacterPreviewResult{};
         boot.character_preview_result = &state.characterPreviewResult;
     }
@@ -966,6 +974,10 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
         s.characterPreviewPlayers = preview.players;
         s.characterPreviewPose = preview.pose;
         s.characterPreviewPosePhaseMilli = preview.posePhaseMilli;
+        s.characterPreviewViewYawDegrees = preview.viewYawDegrees;
+        s.characterPreviewViewPitchDegrees = preview.viewPitchDegrees;
+        s.characterPreviewLighting = preview.lighting;
+        s.characterPreviewCapturePng = std::move(preview.capturePng);
         Launcher_requestTab(s, kLauncherPanelPlay, kLauncherTabPlayer);
     }
     ui::TouchScrollCurrentWindow();
@@ -1000,6 +1012,10 @@ void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out) {
         s.characterPreviewPlayers = preview.players;
         s.characterPreviewPose = preview.pose;
         s.characterPreviewPosePhaseMilli = preview.posePhaseMilli;
+        s.characterPreviewViewYawDegrees = preview.viewYawDegrees;
+        s.characterPreviewViewPitchDegrees = preview.viewPitchDegrees;
+        s.characterPreviewLighting = preview.lighting;
+        s.characterPreviewCapturePng = std::move(preview.capturePng);
         Launcher_requestTab(s, kLauncherPanelPlay, kLauncherTabPlayer);
     }
 }
@@ -1039,6 +1055,7 @@ LauncherAction Launcher::draw(AppHost &host) {
             state_.characterPreviewSourceSha256,
             state_.characterPreviewFitSha256,
             state_.characterPreviewPresentationSha256,
+            state_.characterPreviewCapturePng,
             state_.characterPreviewResult);
         Launcher_requestTab(
             state_, kLauncherPanelCharacterWorkshop, kLauncherTabPlayer);
@@ -1050,6 +1067,11 @@ LauncherAction Launcher::draw(AppHost &host) {
         state_.characterPreviewPlayers = 0;
         state_.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
         state_.characterPreviewPosePhaseMilli = 0u;
+        state_.characterPreviewViewYawDegrees = 0;
+        state_.characterPreviewViewPitchDegrees = 0;
+        state_.characterPreviewLighting =
+            MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+        state_.characterPreviewCapturePng.clear();
         state_.characterPreviewDispatched = false;
     }
     state_.hostWindow = host.window();
