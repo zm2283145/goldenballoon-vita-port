@@ -1827,11 +1827,21 @@ std::string g_characterWorkshopSelection;
 
 struct CharacterIdentityEdit {
     bool loaded = false;
+    uint8_t sourceSha256[32] = {0};
     char portraitPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
     float minimapRgb[3] = {0.86f, 0.28f, 0.56f};
 };
 
 std::map<std::string, CharacterIdentityEdit> g_characterIdentityEdits;
+
+struct CharacterProfileEdit {
+    bool loaded = false;
+    uint8_t sourceSha256[32] = {0};
+    uint32_t donor = 9u;
+    uint32_t vehicleMask = 7u;
+};
+
+std::map<std::string, CharacterProfileEdit> g_characterProfileEdits;
 
 struct CharacterTuningEdit {
     bool loaded = false;
@@ -2069,6 +2079,24 @@ bool reviseCharacterIdentity(const char *packageId, const char *portraitPath,
     return runCharacterManager("revise-identity", arguments);
 }
 
+bool reviseCharacterProfile(const char *packageId, uint32_t donor,
+                            uint32_t vehicleMask) {
+    static const char *donorIds[] = {
+        "krunch", "bumper", "tiptup", "conker", "timber",
+        "banjo", "drumstick", "pipsy", "tt", "diddy",
+    };
+    static const char *vehicleIds[] = {"car", "hovercraft", "plane"};
+    if (donor >= std::size(donorIds) || vehicleMask == 0u ||
+        (vehicleMask & ~7u) != 0u) return false;
+    std::vector<std::string> arguments = {packageId, donorIds[donor]};
+    for (unsigned vehicle = 0u; vehicle < std::size(vehicleIds); ++vehicle) {
+        if ((vehicleMask & (1u << vehicle)) != 0u) {
+            arguments.emplace_back(vehicleIds[vehicle]);
+        }
+    }
+    return runCharacterManager("revise-profile", arguments);
+}
+
 bool removeCharacterPackage(const std::string &id) {
     MdkrModernCharacterInstallResult result{};
     if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
@@ -2160,7 +2188,7 @@ bool drawCharacterTuningEditor(int player,
     edit.vehicleMask &= entry->vehicle_mask;
     if (edit.vehicleMask == 0u) edit.vehicleMask = entry->vehicle_mask;
 
-    ImGui::TextUnformatted("Use this look on");
+    ImGui::TextUnformatted("Enable this appearance in game on");
     for (unsigned vehicle = 0u; vehicle < 3u; ++vehicle) {
         if (vehicle != 0u) ImGui::SameLine();
         const unsigned bit = 1u << vehicle;
@@ -2183,7 +2211,7 @@ bool drawCharacterTuningEditor(int player,
         if (!qualified) ImGui::EndDisabled();
     }
     ui::TextSubtleWrapped(
-        "This controls presentation only. The in-game vehicle choice still owns physics and handling.");
+        "This is a local enable/disable subset of the package compatibility saved above. The in-game vehicle choice still owns physics and handling.");
 
     ImGui::SeparatorText("Source normalization");
     if ((entry->calibration_flags & 1u) != 0u) {
@@ -2428,6 +2456,89 @@ void drawCharacterPortraitPreview(const MdkrModernCharacterEntry *entry) {
     }
 }
 
+bool drawCharacterProfileStudio(const MdkrModernCharacterEntry *entry) {
+    static const char *vehicleNames[] = {"Car", "Hovercraft", "Plane"};
+    CharacterProfileEdit &edit = g_characterProfileEdits[entry->id];
+    if (!edit.loaded ||
+        std::memcmp(edit.sourceSha256, entry->source_sha256,
+                    sizeof(edit.sourceSha256)) != 0) {
+        edit.donor = entry->donor;
+        edit.vehicleMask = entry->vehicle_mask;
+        std::memcpy(edit.sourceSha256, entry->source_sha256,
+                    sizeof(edit.sourceSha256));
+        edit.loaded = true;
+    }
+    ui::TextSubtleWrapped(
+        "Choose which built-in racer supplies gameplay and which vehicle scenes this appearance supports. This never copies or edits stats: handling, weight, acceleration, hitbox, voice, horn, records, ghosts, saves, and ordinary online authority remain the selected built-in profile's own data.");
+    ImGui::SetNextItemWidth(std::min(360.0f, ImGui::GetContentRegionAvail().x));
+    if (ImGui::BeginCombo("Built-in gameplay profile", donorName(edit.donor))) {
+        for (uint32_t donor = 0u; donor < 10u; ++donor) {
+            const bool selected = edit.donor == donor;
+            if (ImGui::Selectable(donorName(donor), selected)) {
+                edit.donor = donor;
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::TextColored(
+        AppTheme::good(),
+        "%s: fingerprint-qualified select, car, hovercraft, and plane seams",
+        donorName(edit.donor));
+    ImGui::TextUnformatted("Package compatibility");
+    for (unsigned vehicle = 0u; vehicle < 3u; ++vehicle) {
+        if (vehicle != 0u) ImGui::SameLine();
+        const uint32_t bit = 1u << vehicle;
+        bool enabled = (edit.vehicleMask & bit) != 0u;
+        const std::string label = std::string(vehicleNames[vehicle]) +
+            "##package-vehicle-" + std::to_string(vehicle);
+        if (ImGui::Checkbox(label.c_str(), &enabled)) {
+            const uint32_t candidate = enabled
+                ? edit.vehicleMask | bit : edit.vehicleMask & ~bit;
+            if (candidate != 0u) {
+                edit.vehicleMask = candidate;
+            } else {
+                setStatus(
+                    "A character package must support at least one vehicle.",
+                    AppTheme::bad());
+            }
+        }
+    }
+    ui::TextSubtleWrapped(
+        "Adding a vehicle creates a neutral seat-anchored context that you can tune independently below. Removing one preserves its authored context in revision history, so it can be restored later.");
+    ImGui::TextDisabled(
+        "In character select, choose %s to use this appearance.",
+        donorName(edit.donor));
+    const bool dirty = edit.donor != entry->donor ||
+        edit.vehicleMask != entry->vehicle_mask;
+    if (!dirty) ImGui::BeginDisabled();
+    bool saved = false;
+    if (ImGui::Button("Save gameplay and compatibility revision")) {
+        const std::string packageId = entry->id;
+        saved = reviseCharacterProfile(
+            packageId.c_str(), edit.donor, edit.vehicleMask);
+        if (saved) {
+            CharacterTuningEdit &tuning = loadCharacterTuning(
+                0, packageId.c_str());
+            tuning.vehicleMask = edit.vehicleMask;
+            const bool tuningSaved = persistCharacterTuning(
+                packageId.c_str(), tuning);
+            setStatus(tuningSaved
+                    ? "Built-in gameplay profile and vehicle compatibility activated."
+                    : "Package profile activated, but its local vehicle enablement could not be saved.",
+                tuningSaved ? AppTheme::good() : AppTheme::accent());
+        } else {
+            setStatus(
+                "Profile revision failed; the active character was not changed.",
+                AppTheme::bad());
+        }
+    }
+    if (!dirty) ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled(dirty ? "unsaved source revision" : "saved in package");
+    return saved;
+}
+
 bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     static const uint8_t donorColours[][3] = {
         {194, 72, 58}, {54, 120, 197}, {66, 166, 110}, {76, 153, 190},
@@ -2435,7 +2546,9 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
         {150, 99, 198}, {237, 186, 48},
     };
     CharacterIdentityEdit &edit = g_characterIdentityEdits[entry->id];
-    if (!edit.loaded) {
+    if (!edit.loaded ||
+        std::memcmp(edit.sourceSha256, entry->source_sha256,
+                    sizeof(edit.sourceSha256)) != 0) {
         const size_t donorIndex = entry->donor < std::size(donorColours)
             ? entry->donor : std::size(donorColours) - 1u;
         const uint32_t rgba = entry->identity_flags != 0u
@@ -2448,6 +2561,8 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
             static_cast<float>((rgba >> 8u) & 0xFFu) / 255.0f;
         edit.minimapRgb[2] =
             static_cast<float>((rgba >> 16u) & 0xFFu) / 255.0f;
+        std::memcpy(edit.sourceSha256, entry->source_sha256,
+                    sizeof(edit.sourceSha256));
         edit.loaded = true;
     }
     ui::TextSubtleWrapped(
@@ -2645,6 +2760,14 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
          MDKR_CHARACTER_SEMANTIC_RACE_STEER) != 0u) {
         ImGui::TextDisabled(
             "race.steer phase: 0 full left · 0.5 neutral · 1 full right");
+    }
+
+    ImGui::SeparatorText("Gameplay profile and vehicle compatibility");
+    if (drawCharacterProfileStudio(entry)) {
+        /* Saving refreshes the registry and invalidates `entry`; finish this
+         * inspector immediately and draw the replacement on the next frame. */
+        ImGui::PopID();
+        return true;
     }
 
     ImGui::SeparatorText("Portrait Studio");

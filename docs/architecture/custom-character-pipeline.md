@@ -335,6 +335,14 @@ losslessly into calibrated context transforms; non-uniform or out-of-range v1
 transforms are refused because v3 cannot represent them without a visible
 change.
 
+The same revision transaction backs `revise-profile`: all ten qualified retail
+donors can be selected as the built-in gameplay owner, and any non-empty subset
+of car, hovercraft, and plane can be declared compatible. Enabling a previously
+absent calibrated vehicle creates a neutral seat-anchored context; disabling it
+retains the authored context for a later revision. Existing portrait and
+license bytes remain exact. This changes which retail actor the appearance can
+replace, never the donor's simulation tables or normal vehicle-selection rules.
+
 Later schema versions should add, without changing the principles above:
 
 - package version and minimum/maximum engine asset API;

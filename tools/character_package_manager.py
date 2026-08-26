@@ -384,6 +384,98 @@ def revise_identity(package_id: str, portrait_path: Path,
     }
 
 
+def revise_profile(package_id: str, donor: str, vehicles: tuple[str, ...],
+                   directory: Path) -> dict[str, Any]:
+    """Create and atomically activate a donor/vehicle compatibility revision."""
+    if probe.ID_RE.fullmatch(package_id) is None:
+        raise ManagerError("invalid package id")
+    if donor not in probe.GAMEPLAY_DONORS:
+        raise ManagerError("gameplay donor must name a built-in racer")
+    if (
+        not vehicles
+        or len(set(vehicles)) != len(vehicles)
+        or any(vehicle not in probe.VEHICLE_NAMES for vehicle in vehicles)
+    ):
+        raise ManagerError(
+            "vehicle compatibility must contain one or more unique car, "
+            "hovercraft, or plane entries"
+        )
+    root = _prepare_directory(directory)
+    package, based_on_sha, based_on_digest = _active_source_snapshot(
+        package_id, root
+    )
+    with tempfile.TemporaryDirectory(prefix="mdkr-character-revision-") as temporary:
+        draft = Path(temporary)
+        snapshot = draft / "source.mdkrchar"
+        snapshot.write_bytes(package)
+        verification = probe.verify_package(snapshot)
+        if not verification["valid"] or verification.get("id") != package_id:
+            raise ManagerError("active source package failed verification")
+        with zipfile.ZipFile(io.BytesIO(package)) as archive:
+            manifest = probe.json_loads_strict(
+                archive.read("manifest.json"), "manifest"
+            )
+            model = archive.read("model.glb")
+            license_text = archive.read("LICENSE.txt")
+            portrait = (
+                archive.read("portrait.png")
+                if manifest.get("schema") == probe.PACKAGE_SCHEMA_V3 else None
+            )
+        if not isinstance(manifest, dict):
+            raise ManagerError("active source manifest is not an object")
+        revised = dict(manifest)
+        revised["gameplay"] = {
+            "donor": donor,
+            "vehicles": list(vehicles),
+        }
+        if revised.get("schema") in (probe.PACKAGE_SCHEMA,
+                                      probe.PACKAGE_SCHEMA_V3):
+            presentation = revised.get("presentation")
+            if not isinstance(presentation, dict):
+                raise ManagerError("active source has no calibrated presentation")
+            presentation = dict(presentation)
+            contexts = presentation.get("contexts")
+            if not isinstance(contexts, dict):
+                raise ManagerError("active source has no presentation contexts")
+            contexts = dict(contexts)
+            for vehicle in vehicles:
+                contexts.setdefault(vehicle, {
+                    "anchor": "seat",
+                    "translation_m": [0.0, 0.0, 0.0],
+                    "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    "scale": 1.0,
+                })
+            presentation["contexts"] = contexts
+            revised["presentation"] = presentation
+        model_path = draft / "model.glb"
+        manifest_path = draft / "manifest.json"
+        license_path = draft / "LICENSE.txt"
+        portrait_path = draft / "portrait.png"
+        revised_package = draft / "revision.mdkrchar"
+        model_path.write_bytes(model)
+        manifest_path.write_text(
+            json.dumps(revised, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        license_path.write_bytes(license_text)
+        if portrait is not None:
+            portrait_path.write_bytes(portrait)
+        probe.build_package(
+            model_path, manifest_path, license_path, revised_package,
+            portrait_path=portrait_path if portrait is not None else None,
+        )
+        installed = install(
+            revised_package, root, expected_active_digest=based_on_digest
+        )
+    return {
+        **installed,
+        "action": "revise-profile",
+        "based_on_source_sha256": based_on_sha,
+        "donor": donor,
+        "vehicles": list(vehicles),
+    }
+
+
 def list_installed(directory: Path) -> dict[str, Any]:
     root = _prepare_directory(directory)
     entries: list[dict[str, Any]] = []
@@ -532,6 +624,13 @@ def _parser() -> argparse.ArgumentParser:
     identity_parser.add_argument("red", type=int)
     identity_parser.add_argument("green", type=int)
     identity_parser.add_argument("blue", type=int)
+    profile_parser = sub.add_parser(
+        "revise-profile",
+        help="create and install a donor/vehicle compatibility revision",
+    )
+    profile_parser.add_argument("id")
+    profile_parser.add_argument("donor")
+    profile_parser.add_argument("vehicles", nargs="+")
     sub.add_parser("clean")
     return parser
 
@@ -549,6 +648,10 @@ def main(argv: list[str] | None = None) -> int:
             report = revise_identity(
                 args.id, args.portrait,
                 (args.red, args.green, args.blue), args.directory,
+            )
+        elif args.command == "revise-profile":
+            report = revise_profile(
+                args.id, args.donor, tuple(args.vehicles), args.directory,
             )
         elif args.command == "remove":
             report = remove(args.id, args.directory)

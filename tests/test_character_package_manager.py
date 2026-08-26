@@ -232,6 +232,75 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 )
             self.assertEqual(before, cache.read_bytes())
 
+    def test_profile_revision_changes_donor_and_expands_vehicle_contexts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = make_manifest()
+            source["gameplay"]["vehicles"] = ["car"]
+            source["presentation"]["contexts"] = {
+                "select": source["presentation"]["contexts"]["select"],
+                "car": source["presentation"]["contexts"]["car"],
+            }
+            installed = root / "characters"
+            original = manager.install(self.make_package(root, source), installed)
+            revised = manager.revise_profile(
+                original["id"], "banjo",
+                ("car", "hovercraft", "plane"), installed,
+            )
+            self.assertEqual("banjo", revised["report"]["donor"])
+            self.assertEqual(7, revised["report"]["vehicle_mask"])
+            with zipfile.ZipFile(self.active_source(installed)) as archive:
+                manifest = probe.json_loads_strict(archive.read("manifest.json"))
+            self.assertEqual("banjo", manifest["gameplay"]["donor"])
+            self.assertEqual(
+                ["car", "hovercraft", "plane"],
+                manifest["gameplay"]["vehicles"],
+            )
+            self.assertEqual(
+                {"select", "car", "hovercraft", "plane"},
+                set(manifest["presentation"]["contexts"]),
+            )
+            self.assertEqual(
+                "seat",
+                manifest["presentation"]["contexts"]["hovercraft"]["anchor"],
+            )
+
+    def test_profile_revision_preserves_authored_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            original = manager.install(self.make_package(root), installed)
+            portrait = root / "portrait.png"
+            portrait.write_bytes(make_portrait_png(32))
+            identity = manager.revise_identity(
+                original["id"], portrait, (90, 80, 70), installed
+            )
+            revised = manager.revise_profile(
+                original["id"], "tiptup", ("hovercraft",), installed
+            )
+            self.assertNotEqual(identity["source_sha256"], revised["source_sha256"])
+            self.assertTrue(revised["report"]["identity_portrait"])
+            self.assertEqual([90, 80, 70], revised["report"]["minimap_rgb"])
+            with zipfile.ZipFile(self.active_source(installed)) as archive:
+                self.assertEqual(portrait.read_bytes(), archive.read("portrait.png"))
+
+    def test_invalid_profile_revision_does_not_replace_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            original = manager.install(self.make_package(root), installed)
+            cache = installed / f"{original['id']}.mdkc"
+            before = cache.read_bytes()
+            with self.assertRaises(manager.ManagerError):
+                manager.revise_profile(
+                    original["id"], "not-a-racer", ("car",), installed
+                )
+            with self.assertRaises(manager.ManagerError):
+                manager.revise_profile(
+                    original["id"], "diddy", (), installed
+                )
+            self.assertEqual(before, cache.read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()
