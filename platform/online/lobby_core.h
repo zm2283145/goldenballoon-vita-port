@@ -17,9 +17,18 @@ extern "C" {
 #define MDKR_ONLINE_NO_VOTE UINT16_MAX
 #define MDKR_ONLINE_NO_CHARACTER UINT8_MAX
 #define MDKR_ONLINE_NO_VEHICLE UINT8_MAX
+#define MDKR_ONLINE_NO_CUP UINT8_MAX
+#define MDKR_ONLINE_NO_PLACEMENT UINT8_MAX
 #define MDKR_ONLINE_CHARACTER_COUNT 10u
 #define MDKR_ONLINE_PLAYER_VEHICLE_COUNT 3u
 #define MDKR_ONLINE_PLAYER_VEHICLE_MASK 0x07u
+#define MDKR_ONLINE_MODE_SINGLE_RACE 0u
+#define MDKR_ONLINE_MODE_TOURNAMENT 1u
+#define MDKR_ONLINE_CUP_COUNT 5u
+#define MDKR_ONLINE_CUP_ROUNDS 4u
+#define MDKR_ONLINE_PLACEMENT_COUNT 8u
+/* Four rounds of first place under gTrophyRacePointsArray. */
+#define MDKR_ONLINE_MAX_TOURNAMENT_POINTS 36u
 
 typedef enum MdkrOnlinePhase {
     MDKR_ONLINE_LOBBY = 1,
@@ -45,7 +54,10 @@ typedef enum MdkrOnlineCommandType {
     MDKR_ONLINE_CLOSE,
     MDKR_ONLINE_SET_CHARACTER,
     MDKR_ONLINE_SET_VEHICLE,
-    MDKR_ONLINE_CANCEL_LOADING
+    MDKR_ONLINE_CANCEL_LOADING,
+    MDKR_ONLINE_SET_MODE = 17,
+    MDKR_ONLINE_SET_CONFIG_TRACK = 18,
+    MDKR_ONLINE_SET_CUP = 19
 } MdkrOnlineCommandType;
 
 typedef enum MdkrOnlineError {
@@ -114,6 +126,14 @@ typedef struct MdkrOnlineLobby {
     MdkrOnlineSeat seats[MDKR_ONLINE_MAX_SEATS];
     MdkrOnlineCommandReceipt receipts[MDKR_ONLINE_RECEIPT_WINDOW];
     uint16_t selected_track;
+    /* Session configuration and tournament progress. Round transitions never
+     * clear these; only SET_MODE/SET_CUP (and the series wrap) reset them. */
+    uint16_t configured_track;
+    uint16_t points[MDKR_ONLINE_MAX_SEATS];
+    uint8_t mode;
+    uint8_t cup_id;
+    uint8_t race_index;
+    uint8_t last_placements[MDKR_ONLINE_MAX_SEATS];
     uint8_t selected_vehicle_mask;
     uint8_t member_count;
     uint8_t seat_count;
@@ -143,6 +163,10 @@ typedef struct MdkrOnlineStep {
     uint8_t selected_vehicle_mask;
 } MdkrOnlineStep;
 
+/* Canonical cup schedule (read-only): the track raced by `cup` at `round`.
+ * Returns MDKR_ONLINE_NO_VOTE when either index is out of range so the
+ * launcher/table module can cross-check without duplicating the table. */
+uint16_t mdkr_online_cup_track(unsigned cup, unsigned round);
 bool mdkr_online_compatibility_valid(const MdkrOnlineCompatibilityV1 *value);
 bool mdkr_online_lobby_valid(const MdkrOnlineLobby *lobby);
 bool mdkr_online_lobby_init(

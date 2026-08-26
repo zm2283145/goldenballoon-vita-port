@@ -3,6 +3,25 @@
 #include <stddef.h>
 #include <string.h>
 
+/* Cup schedules: Dino Domain, Snowflake Mountain, Sherbet Island, Dragon
+ * Forest, Future Fun Land. Byte-mirrored by services/party/src/match. */
+static const uint16_t kCupTracks[MDKR_ONLINE_CUP_COUNT][MDKR_ONLINE_CUP_ROUNDS] = {
+    {5u, 3u, 29u, 7u},
+    {13u, 6u, 9u, 28u},
+    {8u, 4u, 10u, 30u},
+    {19u, 18u, 20u, 31u},
+    {17u, 32u, 33u, 15u}};
+
+/* DKR's authentic trophy-race scoring (gTrophyRacePointsArray). */
+static const uint16_t kTrophyPoints[MDKR_ONLINE_PLACEMENT_COUNT] = {
+    9u, 7u, 5u, 3u, 1u, 0u, 0u, 0u};
+
+uint16_t mdkr_online_cup_track(unsigned cup, unsigned round) {
+    if (cup >= MDKR_ONLINE_CUP_COUNT || round >= MDKR_ONLINE_CUP_ROUNDS)
+        return MDKR_ONLINE_NO_VOTE;
+    return kCupTracks[cup][round];
+}
+
 static bool any_nonzero(const uint8_t *bytes, size_t size) {
     uint8_t value = 0u;
     size_t index;
@@ -86,6 +105,15 @@ static bool add_member(
     return assigned == seat_count;
 }
 
+static void reset_tournament_series(MdkrOnlineLobby *lobby) {
+    unsigned index;
+    lobby->race_index = 0u;
+    for (index = 0u; index < MDKR_ONLINE_MAX_SEATS; index++) {
+        lobby->points[index] = 0u;
+        lobby->last_placements[index] = MDKR_ONLINE_NO_PLACEMENT;
+    }
+}
+
 bool mdkr_online_lobby_init(
     MdkrOnlineLobby *lobby, uint64_t room_id, uint64_t leader_endpoint_id,
     const MdkrOnlineCompatibilityV1 *compatibility, unsigned leader_seats) {
@@ -100,6 +128,10 @@ bool mdkr_online_lobby_init(
     lobby->phase = MDKR_ONLINE_LOBBY;
     lobby->compatibility = *compatibility;
     lobby->selected_track = MDKR_ONLINE_NO_VOTE;
+    lobby->configured_track = MDKR_ONLINE_NO_VOTE;
+    lobby->mode = MDKR_ONLINE_MODE_SINGLE_RACE;
+    lobby->cup_id = MDKR_ONLINE_NO_CUP;
+    reset_tournament_series(lobby);
     if (!add_member(lobby, leader_endpoint_id, leader_seats, NULL)) {
         memset(lobby, 0, sizeof(*lobby));
         return false;
@@ -131,6 +163,20 @@ bool mdkr_online_lobby_valid(const MdkrOnlineLobby *lobby) {
           (lobby->selected_vehicle_mask &
            (uint8_t)~MDKR_ONLINE_PLAYER_VEHICLE_MASK) != 0u ||
           lobby->match_epoch == 0u))) return false;
+    /* Session configuration and tournament progress are legal in every phase:
+     * they persist across rounds instead of following the round lifecycle. */
+    if (lobby->mode > MDKR_ONLINE_MODE_TOURNAMENT ||
+        (lobby->cup_id != MDKR_ONLINE_NO_CUP &&
+         lobby->cup_id >= MDKR_ONLINE_CUP_COUNT) ||
+        lobby->race_index >= MDKR_ONLINE_CUP_ROUNDS ||
+        (lobby->configured_track != MDKR_ONLINE_NO_VOTE &&
+         lobby->configured_track > 255u)) return false;
+    for (index = 0u; index < MDKR_ONLINE_MAX_SEATS; index++) {
+        if (lobby->points[index] > MDKR_ONLINE_MAX_TOURNAMENT_POINTS ||
+            (lobby->last_placements[index] != MDKR_ONLINE_NO_PLACEMENT &&
+             lobby->last_placements[index] >= MDKR_ONLINE_PLACEMENT_COUNT))
+            return false;
+    }
     for (index = 0u; index < MDKR_ONLINE_MAX_ENDPOINTS; index++) {
         const MdkrOnlineMember *item = &lobby->members[index];
         unsigned owned = 0u;
@@ -530,10 +576,20 @@ MdkrOnlineStep mdkr_online_lobby_dispatch(
             if (next.phase != MDKR_ONLINE_LOBBY || !all_ready(&next))
                 return step_for(lobby, false, false, false,
                                 MDKR_ONLINE_ERROR_NOT_READY);
-            next.selected_track = select_track(&next);
-            if (next.selected_track == MDKR_ONLINE_NO_VOTE)
-                return step_for(lobby, false, false, false,
-                                MDKR_ONLINE_ERROR_NOT_READY);
+            if (next.mode == MDKR_ONLINE_MODE_TOURNAMENT) {
+                if (next.cup_id == MDKR_ONLINE_NO_CUP)
+                    return step_for(lobby, false, false, false,
+                                    MDKR_ONLINE_ERROR_NOT_READY);
+                next.selected_track =
+                    mdkr_online_cup_track(next.cup_id, next.race_index);
+            } else if (next.configured_track != MDKR_ONLINE_NO_VOTE) {
+                next.selected_track = next.configured_track;
+            } else {
+                next.selected_track = select_track(&next);
+                if (next.selected_track == MDKR_ONLINE_NO_VOTE)
+                    return step_for(lobby, false, false, false,
+                                    MDKR_ONLINE_ERROR_NOT_READY);
+            }
             if (!all_vehicles_legal(&next, (uint8_t)command->value))
                 return step_for(lobby, false, false, false,
                                 MDKR_ONLINE_ERROR_ILLEGAL_VEHICLE);
@@ -568,15 +624,46 @@ MdkrOnlineStep mdkr_online_lobby_dispatch(
             next.phase = MDKR_ONLINE_LOBBY;
             clear_round(&next);
             break;
-        case MDKR_ONLINE_PUBLISH_RESULTS:
+        case MDKR_ONLINE_PUBLISH_RESULTS: {
+            /* value packs one placement byte per seat, little-endian: seat i
+             * lives in bits i*8..i*8+7. Occupied seats race for a unique
+             * placement below MDKR_ONLINE_PLACEMENT_COUNT; unoccupied seats
+             * must carry MDKR_ONLINE_NO_PLACEMENT. */
+            uint8_t placements[MDKR_ONLINE_MAX_SEATS];
+            uint8_t used_placements = 0u;
             if (next.leader_endpoint_id != command->actor_endpoint_id)
                 return step_for(lobby, false, false, false,
                                 MDKR_ONLINE_ERROR_UNAUTHORIZED);
             if (next.phase != MDKR_ONLINE_RACING)
                 return step_for(lobby, false, false, false,
                                 MDKR_ONLINE_ERROR_INVALID_STATE);
+            for (index = 0u; index < MDKR_ONLINE_MAX_SEATS; index++) {
+                placements[index] = (uint8_t)(command->value >> (index * 8u));
+                if (next.seats[index].occupied) {
+                    if (placements[index] >= MDKR_ONLINE_PLACEMENT_COUNT ||
+                        (used_placements &
+                         (uint8_t)(1u << placements[index])) != 0u)
+                        return step_for(lobby, false, false, false,
+                                        MDKR_ONLINE_ERROR_INVALID_STATE);
+                    used_placements |= (uint8_t)(1u << placements[index]);
+                } else if (placements[index] != MDKR_ONLINE_NO_PLACEMENT) {
+                    return step_for(lobby, false, false, false,
+                                    MDKR_ONLINE_ERROR_INVALID_STATE);
+                }
+            }
+            for (index = 0u; index < MDKR_ONLINE_MAX_SEATS; index++) {
+                if (!next.seats[index].occupied) {
+                    next.last_placements[index] = MDKR_ONLINE_NO_PLACEMENT;
+                    continue;
+                }
+                next.last_placements[index] = placements[index];
+                if (next.mode == MDKR_ONLINE_MODE_TOURNAMENT)
+                    next.points[index] = (uint16_t)(
+                        next.points[index] + kTrophyPoints[placements[index]]);
+            }
             next.phase = MDKR_ONLINE_RESULTS;
             break;
+        }
         case MDKR_ONLINE_REMATCH:
             if (next.leader_endpoint_id != command->actor_endpoint_id)
                 return step_for(lobby, false, false, false,
@@ -586,6 +673,45 @@ MdkrOnlineStep mdkr_online_lobby_dispatch(
                                 MDKR_ONLINE_ERROR_INVALID_STATE);
             next.phase = MDKR_ONLINE_LOBBY;
             clear_round(&next);
+            if (next.mode == MDKR_ONLINE_MODE_TOURNAMENT &&
+                next.cup_id != MDKR_ONLINE_NO_CUP) {
+                if (next.race_index < MDKR_ONLINE_CUP_ROUNDS - 1u) {
+                    next.race_index++;
+                } else {
+                    /* The cup finished: the next round starts a fresh series. */
+                    reset_tournament_series(&next);
+                }
+            } else if (next.mode == MDKR_ONLINE_MODE_SINGLE_RACE) {
+                for (index = 0u; index < MDKR_ONLINE_MAX_SEATS; index++)
+                    next.last_placements[index] = MDKR_ONLINE_NO_PLACEMENT;
+            }
+            break;
+        case MDKR_ONLINE_SET_MODE:
+        case MDKR_ONLINE_SET_CONFIG_TRACK:
+        case MDKR_ONLINE_SET_CUP:
+            if (next.leader_endpoint_id != command->actor_endpoint_id)
+                return step_for(lobby, false, false, false,
+                                MDKR_ONLINE_ERROR_UNAUTHORIZED);
+            if (next.phase != MDKR_ONLINE_LOBBY ||
+                (command->type == MDKR_ONLINE_SET_MODE &&
+                 command->value > MDKR_ONLINE_MODE_TOURNAMENT) ||
+                (command->type == MDKR_ONLINE_SET_CONFIG_TRACK &&
+                 command->value > 255u) ||
+                (command->type == MDKR_ONLINE_SET_CUP &&
+                 command->value >= MDKR_ONLINE_CUP_COUNT))
+                return step_for(lobby, false, false, false,
+                                MDKR_ONLINE_ERROR_INVALID_STATE);
+            if (command->type == MDKR_ONLINE_SET_MODE) {
+                next.mode = (uint8_t)command->value;
+                reset_tournament_series(&next);
+            } else if (command->type == MDKR_ONLINE_SET_CONFIG_TRACK) {
+                next.configured_track = (uint16_t)command->value;
+            } else {
+                next.cup_id = (uint8_t)command->value;
+                reset_tournament_series(&next);
+            }
+            for (index = 0u; index < MDKR_ONLINE_MAX_ENDPOINTS; index++)
+                next.members[index].ready = false;
             break;
         case MDKR_ONLINE_TRANSFER_LEADER: {
             MdkrOnlineMember *target;
