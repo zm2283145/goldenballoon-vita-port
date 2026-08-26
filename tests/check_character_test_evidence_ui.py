@@ -42,7 +42,7 @@ def install_fixture(root: Path) -> Path:
     manifest_path = source / "manifest.json"
     license_path = source / "LICENSE.txt"
     package = source / "test-evidence-proof.mdkrchar"
-    model.write_bytes(make_animated_glb())
+    model.write_bytes(make_animated_glb(with_lod=True))
     portrait.write_bytes(make_portrait_png(40))
     manifest, _ = wizard.build_manifest(
         model,
@@ -444,6 +444,17 @@ def main() -> int:
                     "state=Stale latest=1 baseline=0 comparable=0",
                 ),
                 action="publish-stale-fit-session",
+            )
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "action=publish-stale-lod-session applied=1 "
+                    "records=1 baselines=0",
+                    "state=Stale latest=1 baseline=0 comparable=0",
+                ),
+                action="publish-stale-lod-session",
             )
             run(
                 binary,

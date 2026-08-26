@@ -78,6 +78,21 @@ struct CharacterWorkshopReadiness {
     const char          *nextActionLabel = "Inspect character";
 };
 
+enum class CharacterWorkshopPerformanceTarget : uint8_t {
+    Quality = 0,
+    Balanced,
+    Performance,
+    FourPlayer,
+    Count,
+};
+
+struct CharacterWorkshopPerformancePreset {
+    const char *label;
+    const char *description;
+    int players;
+    float lodBias;
+};
+
 CharacterWorkshopReadiness CharacterWorkshop_evaluate(
     const CharacterWorkshopFacts &facts);
 
@@ -88,5 +103,16 @@ const char          *CharacterWorkshop_readinessLabel(
     CharacterWorkshopReadinessId id);
 const char *CharacterWorkshop_statusLabel(
     CharacterWorkshopReadinessStatus status);
+const CharacterWorkshopPerformancePreset *
+CharacterWorkshop_performancePreset(
+    CharacterWorkshopPerformanceTarget target);
+CharacterWorkshopPerformanceTarget CharacterWorkshop_performanceTarget(
+    int players, float lodBias);
+/* Uses the renderer's shared policy: distance chooses a base band, source and
+ * local biases shift it, and sparse authored levels fall back toward the
+ * nearest more-detailed level. UINT32_MAX means invalid input. */
+uint32_t CharacterWorkshop_selectLod(
+    float viewDistance, float sourceLodBias, float localLodBias,
+    uint32_t authoredLodMask);
 
 #endif // MDKR64_CHARACTER_WORKSHOP_MODEL_H

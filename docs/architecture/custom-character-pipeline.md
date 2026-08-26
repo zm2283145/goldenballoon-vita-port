@@ -970,9 +970,16 @@ misclassifying the sum of every authored LOD as one frame's cost. Its 1P-4P
 assembly view uses the exact worst-visible `players × viewports` instance count,
 including current/previous bone palettes, while reporting immutable geometry
 and decoded texture uploads once because a repeated package shares its runtime
-pool. These structural counts are deliberately advisory rather than import
-ceilings; measured frame time still belongs to exact-context device stress
-tests.
+pool. Quality, Balanced, Performance, and Four-player are responsive named
+starting points over local-player layout and the bounded local shift of authored
+LOD distance bands; both controls remain directly editable. Near-view assembly
+selection mirrors the runtime's exact thresholds, compiled source bias, local
+bias, clamping, and sparse authored-level fallback instead of always reporting
+LOD0. One-LOD packages reject the false optimization affordance without being
+rejected at import. Performance history owns layout and LOD preference
+independently from vehicle Fit. These structural counts are deliberately
+advisory rather than import ceilings; measured frame time still belongs to
+exact-context device stress tests.
 
 The launcher now has a typed, one-shot exact-context test request for character
 select and car, hovercraft, or plane races in every one- through four-player
@@ -1047,12 +1054,16 @@ report action inventory.
 The launcher transactionally retains a bounded latest result and optional
 qualified baseline for every select/car/hovercraft/plane by 1P-4P cell. Records
 are authenticated, canonically ordered, atomically replaced, and bound to the
-exact package source, per-context fit, result contract, app build, presentation
-settings, dimensions and GPU identity. Source or fit revisions may be compared
-only on that otherwise identical environment; stale cells remain visible and
-never count as current. Baseline pinning, exact-cell deletion, package deletion,
-restart recovery and malformed-inventory preservation are covered by a rendered
-ROM-free lifecycle gate. Evidence schema v2 also retains the signed target-frame
+exact package source, per-context fit plus authored-LOD policy, result contract,
+app build, presentation settings, dimensions and GPU identity. The compatibility
+field remains named `fitSha256`, but its current canonical digest is the complete
+test-tuning signature rather than fit alone. A fit or LOD revision can therefore
+be compared only on an otherwise identical environment; stale cells remain
+visible and never count as current, while an LOD-only change does not revoke the
+separate vehicle-fit review. Baseline pinning, exact-cell deletion, package
+deletion, restart recovery, an actual LOD-policy stale transition, and
+malformed-inventory preservation are covered by a rendered ROM-free lifecycle
+gate. Evidence schema v2 also retains the signed target-frame
 bounds, ground/seat anchor, and normalized facing direction from the successful
 replacement draw, so Fit and Performance retain the same renderer measurement
 after restart. Authenticated v1 inventories load with an explicit unavailable

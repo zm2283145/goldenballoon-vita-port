@@ -566,6 +566,7 @@ int main(int argc, char **argv) {
                 registry.entries[0].normalized_height < 1.01f &&
                 registry.entries[0].target_height > 1.24f &&
                 registry.entries[0].target_height < 1.26f &&
+                registry.entries[0].source_lod_bias == 0.0f &&
                 registry.entries[0].identity_flags == 1u &&
                 registry.entries[0].rig_present == 1u &&
                 registry.entries[0].rig_mode ==

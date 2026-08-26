@@ -2001,6 +2001,8 @@ std::map<std::string, CharacterProfileEdit> g_characterProfileEdits;
 MdkrDonorGameplayProfiles g_donorGameplayProfiles{};
 std::string g_donorGameplayProfilesUnavailableReason;
 std::map<std::string, int> g_characterAssemblyPlayers;
+std::map<std::string, float> g_characterPerformanceLodGestureStarts;
+std::set<std::string> g_characterPerformanceTracePackages;
 std::map<std::string, int> g_characterTestPlayers;
 std::map<std::string, int> g_characterTestPoses;
 std::map<std::string, int> g_characterTestPosePhases;
@@ -2419,6 +2421,20 @@ std::string characterFitReviewSignature(
             for (float value : contact) appendFloat(value);
         }
     }
+    char digest[MDKR_SHA256_HEX_SIZE];
+    mdkr_sha256_hex(canonical.data(), canonical.size(), digest);
+    return digest;
+}
+
+std::string characterTestTuningSignature(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterTuningEdit &edit, unsigned context) {
+    const std::string fit = characterFitReviewSignature(
+        entry, edit, context);
+    if (fit.empty()) return {};
+    std::string canonical = "mdkr-character-test-tuning-v1\n" + fit + "\n";
+    canonical += characterFloatText(edit.lodBias);
+    canonical.push_back('\n');
     char digest[MDKR_SHA256_HEX_SIZE];
     mdkr_sha256_hex(canonical.data(), canonical.size(), digest);
     return digest;
@@ -3716,6 +3732,8 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterEditHistories.erase(id);
     g_characterTuning.erase(id);
     g_characterAssemblyPlayers.erase(id);
+    g_characterPerformanceLodGestureStarts.erase(id);
+    g_characterPerformanceTracePackages.erase(id);
     g_characterTestPlayers.erase(id);
     g_characterTestPoses.erase(id);
     g_characterTestPosePhases.erase(id);
@@ -4629,7 +4647,7 @@ MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
 void drawCharacterFitDiagnostics(
     const MdkrCharacterPreviewResult &result, bool compact);
 
-bool characterTestEvidenceMatchesFit(
+bool characterTestEvidenceMatchesTuning(
     const MdkrModernCharacterEntry *entry,
     const CharacterTuningEdit &tuning,
     const CharacterTestEvidenceStore::Evidence &evidence) {
@@ -4637,11 +4655,11 @@ bool characterTestEvidenceMatchesFit(
         return false;
     }
     return evidence.sourceSha256 == characterDigestHex(entry->source_sha256) &&
-           evidence.fitSha256 == characterFitReviewSignature(
+           evidence.fitSha256 == characterTestTuningSignature(
                entry, tuning, evidence.context - 1u);
 }
 
-bool characterPreviewSessionMatchesFit(
+bool characterPreviewSessionMatchesTuning(
     const MdkrModernCharacterEntry *entry,
     const CharacterTuningEdit &tuning,
     MdkrCharacterPreviewContext context,
@@ -4722,7 +4740,7 @@ bool characterPreviewSessionMatchesFit(
                    session.result.capture_png_bytes == 0u)) &&
            session.sourceSha256 ==
                characterDigestHex(entry->source_sha256) &&
-           session.fitSha256 == characterFitReviewSignature(
+           session.fitSha256 == characterTestTuningSignature(
                entry, tuning, static_cast<unsigned>(context - 1));
 }
 
@@ -4744,7 +4762,7 @@ const CharacterTestEvidenceStore::Evidence *currentRenderedCharacterTestEvidence
             evidence->started && evidence->warmupComplete &&
             evidence->replacementDraws != 0u &&
             evidence->fitDiagnosticsValid &&
-            characterTestEvidenceMatchesFit(entry, tuning, *evidence) &&
+            characterTestEvidenceMatchesTuning(entry, tuning, *evidence) &&
             (newest == nullptr ||
              evidence->capturedUnix > newest->capturedUnix)) {
             newest = evidence;
@@ -5358,7 +5376,7 @@ bool drawCharacterTuningEditor(int player,
             const auto result = g_characterPreviewResults.find(entry->id);
             const bool currentSessionResult =
                 result != g_characterPreviewResults.end() &&
-                characterPreviewSessionMatchesFit(
+                characterPreviewSessionMatchesTuning(
                     entry, edit, previewContext, result->second);
             const CharacterTestEvidenceStore::Evidence *durableResult =
                 currentRenderedCharacterTestEvidence(
@@ -5505,46 +5523,18 @@ bool drawCharacterTuningEditor(int player,
         ImGui::TreePop();
     }
 
-    ImGui::SeparatorText("Motion and detail");
+    ImGui::SeparatorText("Motion");
     (void)ImGui::SliderFloat("Animation speed", &edit.animationSpeed,
                              0.05f, 4.0f, "%.2fx",
                              ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         changed |= persistCharacterTuning(entry->id, edit);
     }
-    const bool hasMultipleLods = entry->stats.lod_levels > 1u;
-    if (!hasMultipleLods) ImGui::BeginDisabled();
-    (void)ImGui::SliderFloat("LOD preference", &edit.lodBias,
-                             -3.0f, 3.0f, "%+.0f",
-                             ImGuiSliderFlags_AlwaysClamp);
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        changed |= persistCharacterTuning(entry->id, edit);
-    }
-    if (!hasMultipleLods) ImGui::EndDisabled();
-    if (hasMultipleLods) {
-        if (ImGui::Button("Performance")) {
-            edit.lodBias = -2.0f;
-            changed |= persistCharacterTuning(entry->id, edit);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Balanced")) {
-            edit.lodBias = 0.0f;
-            changed |= persistCharacterTuning(entry->id, edit);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Quality")) {
-            edit.lodBias = 2.0f;
-            changed |= persistCharacterTuning(entry->id, edit);
-        }
-        ui::TextSubtleWrapped(
-            "These presets choose among authored LODs. They do not change physics or manufacture missing detail.");
-    } else {
-        ui::TextSubtleWrapped(
-            "One authored LOD: runtime quality controls cannot reduce this model's geometry. Re-export with LODs or build an offline simplified assembly.");
-    }
     if (ImGui::Button("Reset fit and motion")) {
+        const float retainedLodBias = edit.lodBias;
         edit = CharacterTuningEdit{};
         edit.loaded = true;
+        edit.lodBias = retainedLodBias;
         edit.vehicleMask = entry->vehicle_mask;
         changed |= persistCharacterTuning(entry->id, edit);
     }
@@ -5583,10 +5573,118 @@ void drawCharacterPerformanceAssembly(
     const MdkrModernCharacterEntry *entry) {
     int &players = g_characterAssemblyPlayers[entry->id];
     if (players < 1 || players > 4) players = 4;
+    CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
     CharacterHistoryFrame history = beginCharacterHistory(
         entry, CharacterHistoryTool::Performance);
+    const auto restoreTuning = [&](const CharacterTuningEdit &previous) {
+        tuning = previous;
+        if (g_characterActiveDrafts.find(entry->id) ==
+            g_characterActiveDrafts.end()) {
+            stageCharacterTuningConfig(entry->id, previous);
+        }
+    };
     ui::TextSubtleWrapped(
-        "Inspect the selected package repeated across local players. The worst-visible case assumes every custom racer is visible in every split-screen viewport at LOD0. Immutable mesh and texture uploads remain shared once for this package.");
+        "Choose a named starting point or tune the two independent facts directly: authored LOD preference and local-player layout. These settings affect presentation cost only; physics, handling, donor authority, and import limits never change.");
+    const bool hasMultipleLods = entry->stats.lod_levels > 1u;
+    CharacterWorkshopPerformanceTarget currentTarget =
+        CharacterWorkshop_performanceTarget(players, tuning.lodBias);
+    const float targetWidth = ImGui::GetContentRegionAvail().x;
+    const int targetColumns = targetWidth >= ui::kPairMinWidth() * 2.0f
+        ? 2 : 1;
+    if (!hasMultipleLods) ImGui::BeginDisabled();
+    if (ImGui::BeginTable(
+            "##character-performance-targets", targetColumns,
+            ImGuiTableFlags_SizingStretchSame)) {
+        for (size_t index = 0u;
+             index < static_cast<size_t>(
+                         CharacterWorkshopPerformanceTarget::Count);
+             ++index) {
+            const auto target = static_cast<
+                CharacterWorkshopPerformanceTarget>(index);
+            const CharacterWorkshopPerformancePreset *preset =
+                CharacterWorkshop_performancePreset(target);
+            if (preset == nullptr) continue;
+            ImGui::TableNextColumn();
+            ImGui::PushID(static_cast<int>(index));
+            if (ui::CardBegin(
+                    "##character-performance-target", AppTheme::surface(),
+                    0.0f)) {
+                int selected = static_cast<int>(currentTarget);
+                if (ImGui::RadioButton(
+                        preset->label, &selected,
+                        static_cast<int>(target))) {
+                    const int oldPlayers = players;
+                    const float oldLodBias = tuning.lodBias;
+                    players = preset->players;
+                    tuning.lodBias = preset->lodBias;
+                    if (persistCharacterTuning(entry->id, tuning)) {
+                        currentTarget = target;
+                        setStatus(
+                            "Performance target saved; exact-context evidence must be rerun for this LOD policy.",
+                            AppTheme::good());
+                    } else {
+                        players = oldPlayers;
+                        CharacterTuningEdit previous = tuning;
+                        previous.lodBias = oldLodBias;
+                        restoreTuning(previous);
+                    }
+                }
+                ui::SpeakFocusedItem(
+                    preset->label,
+                    currentTarget == target ? "selected" : "not selected",
+                    preset->description);
+                ui::TextSubtleWrapped(preset->description);
+                ImGui::TextDisabled(
+                    "%dP assembly · local LOD bias %+.0f",
+                    preset->players,
+                    static_cast<double>(preset->lodBias));
+            }
+            ui::CardEnd();
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (!hasMultipleLods) ImGui::EndDisabled();
+    if (!hasMultipleLods) {
+        ui::TextSubtleWrapped(
+            "Target profiles are unavailable because this package has one authored LOD. Re-export with LODs or build an offline simplified source; the Workshop will not pretend a slider can manufacture geometry.");
+    }
+    if (!hasMultipleLods) ImGui::BeginDisabled();
+    const float lodBiasBeforeFrame = tuning.lodBias;
+    (void)ImGui::SliderFloat(
+        "Authored LOD preference", &tuning.lodBias, -3.0f, 3.0f,
+        "%+.0f bands", ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemActivated()) {
+        g_characterPerformanceLodGestureStarts[entry->id] =
+            lodBiasBeforeFrame;
+    }
+    ui::SpeakFocusedItem(
+        "Authored LOD preference", nullptr,
+        "Shifts the package's authored distance bands without changing geometry, textures, physics, or import limits.");
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        const auto start = g_characterPerformanceLodGestureStarts.find(
+            entry->id);
+        CharacterTuningEdit previous = tuning;
+        previous.lodBias = start !=
+                g_characterPerformanceLodGestureStarts.end()
+            ? start->second : lodBiasBeforeFrame;
+        if (persistCharacterTuning(entry->id, tuning)) {
+            setStatus(
+                "Custom LOD preference saved; rerun exact-context performance evidence.",
+                AppTheme::good());
+        } else {
+            restoreTuning(previous);
+        }
+        g_characterPerformanceLodGestureStarts.erase(entry->id);
+    } else if (ImGui::IsItemDeactivated()) {
+        g_characterPerformanceLodGestureStarts.erase(entry->id);
+    }
+    if (!hasMultipleLods) ImGui::EndDisabled();
+    ImGui::TextDisabled(
+        "Package bias %+.1f + local bias %+.1f = %+.1f authored bands",
+        static_cast<double>(entry->source_lod_bias),
+        static_cast<double>(tuning.lodBias),
+        static_cast<double>(entry->source_lod_bias + tuning.lodBias));
     ImGui::TextUnformatted("Local-player assembly");
     for (int option : {1, 2, 3, 4}) {
         if (option != 1) ImGui::SameLine();
@@ -5594,16 +5692,29 @@ void drawCharacterPerformanceAssembly(
             (option == 1 ? " player" : " players");
         (void)ImGui::RadioButton(label.c_str(), &players, option);
     }
+    uint32_t authoredLodMask = 0u;
+    for (uint32_t lod = 0u;
+         lod < MDKR_MODERN_CHARACTER_LOD_LEVELS; ++lod) {
+        if (entry->lod_primitives[lod] != 0u) authoredLodMask |= 1u << lod;
+    }
+    const uint32_t selectedLod = CharacterWorkshop_selectLod(
+        0.0f, entry->source_lod_bias, tuning.lodBias, authoredLodMask);
+    const uint32_t assemblyLod = selectedLod <
+            MDKR_MODERN_CHARACTER_LOD_LEVELS
+        ? selectedLod : 0u;
     const uint64_t visibleInstances =
         static_cast<uint64_t>(players) * static_cast<uint64_t>(players);
     const uint64_t triangles =
-        static_cast<uint64_t>(entry->lod_triangles[0]) * visibleInstances;
+        static_cast<uint64_t>(entry->lod_triangles[assemblyLod]) *
+        visibleInstances;
     const uint64_t vertices =
-        static_cast<uint64_t>(entry->lod_vertices[0]) * visibleInstances;
+        static_cast<uint64_t>(entry->lod_vertices[assemblyLod]) *
+        visibleInstances;
     const uint64_t draws =
-        static_cast<uint64_t>(entry->lod_primitives[0]) * visibleInstances;
+        static_cast<uint64_t>(entry->lod_primitives[assemblyLod]) *
+        visibleInstances;
     const uint64_t paletteMatrices =
-        static_cast<uint64_t>(entry->lod_palette_matrices[0]) *
+        static_cast<uint64_t>(entry->lod_palette_matrices[assemblyLod]) *
         visibleInstances * 2u;
     const uint64_t geometryBytes =
         static_cast<uint64_t>(entry->stats.vertices) *
@@ -5637,8 +5748,12 @@ void drawCharacterPerformanceAssembly(
                 (1024.0 * 1024.0));
         };
         countRow("Worst-visible character instances", visibleInstances);
-        countRow("LOD0 triangles submitted", triangles);
-        countRow("LOD0 vertices referenced", vertices);
+        const std::string triangleLabel = "Near-view LOD" +
+            std::to_string(assemblyLod) + " triangles submitted";
+        const std::string vertexLabel = "Near-view LOD" +
+            std::to_string(assemblyLod) + " vertices referenced";
+        countRow(triangleLabel.c_str(), triangles);
+        countRow(vertexLabel.c_str(), vertices);
         countRow("Character draw submissions", draws);
         countRow("Current + previous bone matrices prepared", paletteMatrices);
         memoryRow("Shared geometry upload", geometryBytes);
@@ -5647,18 +5762,27 @@ void drawCharacterPerformanceAssembly(
         ImGui::EndTable();
     }
     ImGui::TextDisabled(
-        "LOD0 authoring guide: %s · timing still requires the exact-context stress test",
-        characterPerformanceTier(entry));
+        "LOD0 authoring guide: %s · near-view policy selects LOD%u · timing still requires the exact-context stress test",
+        characterPerformanceTier(entry), assemblyLod);
     for (uint32_t lod = 0u;
          lod < entry->stats.lod_levels &&
          lod < MDKR_MODERN_CHARACTER_LOD_LEVELS; ++lod) {
         ImGui::BulletText(
-            "LOD%u: %u triangles · %u vertices · %u draw part(s)",
-            lod, entry->lod_triangles[lod], entry->lod_vertices[lod],
+            "LOD%u%s: %u triangles · %u vertices · %u draw part(s)",
+            lod, lod == assemblyLod ? " · near-view selected" : "",
+            entry->lod_triangles[lod], entry->lod_vertices[lod],
             entry->lod_primitives[lod]);
     }
     ui::TextSubtleWrapped(
-        "These are exact structural counts, not a frame-time prediction. Materials, transparency, overdraw, skinning, driver visibility, camera framing, GPU, resolution, and other racers still affect measured performance; the Workshop must not turn a budget guide into an artificial import ceiling.");
+        "Near-view selection uses the same distance thresholds, package bias, local bias, clamping, and sparse-LOD fallback as the runtime. Farther cameras can select lower authored levels. These are exact structural counts, not a frame-time prediction: materials, transparency, overdraw, skinning, visibility, GPU, resolution, and other racers still require an exact-context test.");
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
+        g_characterPerformanceTracePackages.insert(entry->id).second) {
+        std::fprintf(
+            stderr,
+            "[app-ui] character-performance-targets package=%s targets=quality,balanced,performance,four-player custom=1 sourceBias=%.1f localBias=%.1f players=%d selectedLod=%u exactAssembly=1 importCeiling=unchanged history=performance\n",
+            entry->id, static_cast<double>(entry->source_lod_bias),
+            static_cast<double>(tuning.lodBias), players, assemblyLod);
+    }
     finishCharacterHistory(entry, history);
 }
 
@@ -5673,13 +5797,13 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              const char *capturePng,
                              MdkrCharacterPreviewCaptureKind captureKind) {
     const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
-    const std::string fitSignature = characterFitReviewSignature(
+    const std::string testTuningSignature = characterTestTuningSignature(
         entry, tuning, static_cast<unsigned>(context - 1));
     const std::string presentationSignature =
         characterTestPresentationSignature();
-    if (fitSignature.empty() || presentationSignature.empty()) {
+    if (testTuningSignature.empty() || presentationSignature.empty()) {
         setStatus(
-            "The exact test could not bind its source, fit, and presentation settings; no test was started.",
+            "The exact test could not bind its source, fit, LOD policy, and presentation settings; no test was started.",
             AppTheme::bad());
         return;
     }
@@ -5727,7 +5851,7 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
     g_characterPreviewRequest.packageId = entry->id;
     g_characterPreviewRequest.sourceSha256 =
         characterDigestHex(entry->source_sha256);
-    g_characterPreviewRequest.fitSha256 = fitSignature;
+    g_characterPreviewRequest.fitSha256 = testTuningSignature;
     g_characterPreviewRequest.presentationSha256 = presentationSignature;
     g_characterPreviewRequest.context = context;
     g_characterPreviewRequest.players = players;
@@ -6295,7 +6419,7 @@ void drawCharacterVisualCaptureTray(
     ImGui::SeparatorText("Visual qualification report");
     if (captures.empty()) {
         ui::TextSubtleWrapped(
-            "Successful one-shot inspections appear here with their exact context, pose, view, light, source, and fit identity. Capture several views, then export one portable contact sheet.");
+            "Successful one-shot inspections appear here with their exact context, pose, view, light, source, fit, and LOD-policy identity. Capture several views, then export one portable contact sheet.");
         return;
     }
 
@@ -6434,7 +6558,7 @@ bool characterTestEvidenceCurrent(
     return evidence.resultVersion == MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
            evidence.buildVersion == AppVersion() &&
            evidence.presentationSha256 == presentationSignature &&
-           characterTestEvidenceMatchesFit(entry, tuning, evidence);
+           characterTestEvidenceMatchesTuning(entry, tuning, evidence);
 }
 
 const char *characterTestEvidenceState(
@@ -6443,7 +6567,7 @@ const char *characterTestEvidenceState(
     const CharacterTestEvidenceStore::Evidence *evidence,
     const std::string &presentationSignature) {
     if (evidence == nullptr) return "Not run";
-    if (!characterTestEvidenceMatchesFit(entry, tuning, *evidence)) {
+    if (!characterTestEvidenceMatchesTuning(entry, tuning, *evidence)) {
         return "Stale";
     }
     if (evidence->resultVersion != MDKR_CHARACTER_PREVIEW_RESULT_VERSION ||
@@ -6525,7 +6649,9 @@ void drawCharacterTestEvidenceMatrix(
             std::strcmp(smokeAction, "publish-mixed-mode") == 0 ||
             std::strcmp(smokeAction, "publish-invalid-fit") == 0 ||
             std::strcmp(
-                smokeAction, "publish-stale-fit-session") == 0) {
+                smokeAction, "publish-stale-fit-session") == 0 ||
+            std::strcmp(
+                smokeAction, "publish-stale-lod-session") == 0) {
             MdkrCharacterPreviewResult result{};
             result.version = MDKR_CHARACTER_PREVIEW_RESULT_VERSION;
             result.started = 1;
@@ -6633,10 +6759,21 @@ void drawCharacterTestEvidenceMatrix(
                 characterDigestHex(entry->source_sha256);
             const bool staleFit = std::strcmp(
                 smokeAction, "publish-stale-fit-session") == 0;
+            const bool staleLod = std::strcmp(
+                smokeAction, "publish-stale-lod-session") == 0;
             const std::string fit = staleFit
                 ? std::string(64u, 'd')
-                : characterFitReviewSignature(
+                : characterTestTuningSignature(
                       entry, tuning, MDKR_CHARACTER_CONTEXT_CAR);
+            bool staleLodPersisted = true;
+            if (staleLod) {
+                CharacterTuningEdit &replacement =
+                    loadCharacterTuning(0, entry->id);
+                replacement.lodBias = replacement.lodBias >= 3.0f
+                    ? 2.0f : replacement.lodBias + 1.0f;
+                staleLodPersisted = persistCharacterTuning(
+                    entry->id, replacement);
+            }
             const std::string presentation =
                 characterTestPresentationSignature();
             const char *smokeCapturePath = inspectionCapture
@@ -6654,7 +6791,7 @@ void drawCharacterTestEvidenceMatrix(
                     CharacterTestEvidenceStore::Kind::Latest);
             const bool sessionMatches =
                 session != g_characterPreviewResults.end() &&
-                characterPreviewSessionMatchesFit(
+                characterPreviewSessionMatchesTuning(
                     entry, tuning, MDKR_CHARACTER_PREVIEW_CAR,
                     session->second);
             if (invalidFit) {
@@ -6674,7 +6811,8 @@ void drawCharacterTestEvidenceMatrix(
                       g_characterVisualCaptures[entry->id].size() == 1u));
             } else {
                 applied = session != g_characterPreviewResults.end() &&
-                    latest != nullptr && (!staleFit || !sessionMatches);
+                    latest != nullptr && staleLodPersisted &&
+                    (!(staleFit || staleLod) || !sessionMatches);
             }
         } else if (std::strcmp(smokeAction, "pin-car-4p") == 0) {
             const CharacterTestEvidenceStore::Evidence *latest =
@@ -6713,7 +6851,7 @@ void drawCharacterTestEvidenceMatrix(
     }
     ImGui::SeparatorText("Exact test evidence");
     ui::TextSubtleWrapped(
-        "Each cell is one real game context and local-player layout. Results are bound to the exact package source, fit, app build, presentation settings, render resolution, and GPU identity; stale or incomparable evidence stays visible instead of silently passing.");
+        "Each cell is one real game context and local-player layout. Results are bound to the exact package source, fit, authored-LOD policy, app build, presentation settings, render resolution, and GPU identity; stale or incomparable evidence stays visible instead of silently passing.");
     if (!g_characterTestEvidenceWritable) {
         if (!g_characterTestEvidenceErrorTracePrinted &&
             std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
@@ -9244,7 +9382,7 @@ bool captureCharacterHistoryPayload(
         }
     } else if (tool == CharacterHistoryTool::Fit) {
         const CharacterTuningEdit &edit = loadCharacterTuning(0, entry->id);
-        payload = "mdkr-fit-history-v1\n";
+        payload = "mdkr-fit-history-v2\n";
         appendCharacterHistoryValue(payload, edit.scale);
         for (float value : edit.offset) {
             appendCharacterHistoryValue(payload, value);
@@ -9253,7 +9391,6 @@ bool captureCharacterHistoryPayload(
             appendCharacterHistoryValue(payload, value);
         }
         appendCharacterHistoryValue(payload, edit.animationSpeed);
-        appendCharacterHistoryValue(payload, edit.lodBias);
         appendCharacterHistoryValue(payload, edit.vehicleMask);
         for (const CharacterTuningEdit::Context &context : edit.context) {
             appendCharacterHistoryValue(payload, context.scale);
@@ -9280,8 +9417,10 @@ bool captureCharacterHistoryPayload(
     } else if (tool == CharacterHistoryTool::Performance) {
         int players = g_characterAssemblyPlayers[entry->id];
         if (players < 1 || players > 4) players = 4;
-        payload = "mdkr-performance-history-v1\n";
+        const CharacterTuningEdit &edit = loadCharacterTuning(0, entry->id);
+        payload = "mdkr-performance-history-v2\n";
         appendCharacterHistoryValue(payload, players);
+        appendCharacterHistoryValue(payload, edit.lodBias);
     } else if (tool == CharacterHistoryTool::Test) {
         int players = g_characterTestPlayers[entry->id];
         int pose = g_characterTestPoses[entry->id];
@@ -9572,12 +9711,15 @@ bool applyCharacterHistoryPayload(
         }
         g_characterRigEdits[entry->id] = std::move(replacement);
     } else if (tool == CharacterHistoryTool::Fit) {
-        if (!consumeHeader("mdkr-fit-history-v1\n")) {
+        const bool current = consumeHeader("mdkr-fit-history-v2\n");
+        if (!current && !consumeHeader("mdkr-fit-history-v1\n")) {
             error = "Fit history header is invalid.";
             return false;
         }
         CharacterTuningEdit replacement{};
         replacement.loaded = true;
+        replacement.lodBias = loadCharacterTuning(
+            0, entry->id).lodBias;
         const auto readFloatArray = [&payload, &offset](float *values,
                                                         size_t count) {
             for (size_t index = 0u; index < count; ++index) {
@@ -9591,8 +9733,8 @@ bool applyCharacterHistoryPayload(
             !readFloatArray(replacement.rotation, 3u) ||
             !readCharacterHistoryValue(
                 payload, offset, replacement.animationSpeed) ||
-            !readCharacterHistoryValue(
-                payload, offset, replacement.lodBias) ||
+            (!current && !readCharacterHistoryValue(
+                payload, offset, replacement.lodBias)) ||
             !readCharacterHistoryValue(
                 payload, offset, replacement.vehicleMask)) {
             error = "Fit history global state is truncated.";
@@ -9735,13 +9877,43 @@ bool applyCharacterHistoryPayload(
         }
     } else if (tool == CharacterHistoryTool::Performance) {
         int players = 0;
-        if (!consumeHeader("mdkr-performance-history-v1\n") ||
-            !readCharacterHistoryValue(payload, offset, players) ||
+        const bool current = consumeHeader(
+            "mdkr-performance-history-v2\n");
+        if (!current && !consumeHeader(
+                "mdkr-performance-history-v1\n")) {
+            error = "Assembly history header is invalid.";
+            return false;
+        }
+        CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
+        const CharacterTuningEdit oldTuning = tuning;
+        const int oldPlayers = g_characterAssemblyPlayers[entry->id];
+        float lodBias = tuning.lodBias;
+        if (!readCharacterHistoryValue(payload, offset, players) ||
+            (current && !readCharacterHistoryValue(
+                payload, offset, lodBias)) ||
             offset != payload.size() || players < 1 || players > 4) {
             error = "Assembly history value is invalid.";
             return false;
         }
+        if (!std::isfinite(lodBias) || lodBias < -3.0f || lodBias > 3.0f) {
+            error = "Assembly LOD history value is invalid.";
+            return false;
+        }
         g_characterAssemblyPlayers[entry->id] = players;
+        if (current && lodBias != tuning.lodBias) {
+            tuning.lodBias = lodBias;
+            if (!persistCharacterTuning(entry->id, tuning)) {
+                tuning = oldTuning;
+                g_characterAssemblyPlayers[entry->id] = oldPlayers;
+                if (g_characterActiveDrafts.find(entry->id) ==
+                    g_characterActiveDrafts.end()) {
+                    stageCharacterTuningConfig(entry->id, oldTuning);
+                }
+                error =
+                    "Performance history could not be persisted; history was not consumed.";
+                return false;
+            }
+        }
     } else if (tool == CharacterHistoryTool::Test) {
         const bool current = consumeHeader("mdkr-test-history-v3\n");
         const bool poseVersion = current ||

@@ -1,5 +1,8 @@
 #include "character_workshop_model.h"
 
+#include "modern_character_lod.h"
+
+#include <cmath>
 #include <cstring>
 
 namespace {
@@ -175,4 +178,54 @@ const char *CharacterWorkshop_statusLabel(
     };
     const size_t index = static_cast<size_t>(status);
     return index < 4u ? kLabels[index] : "Unavailable";
+}
+
+const CharacterWorkshopPerformancePreset *
+CharacterWorkshop_performancePreset(
+    CharacterWorkshopPerformanceTarget target) {
+    static constexpr CharacterWorkshopPerformancePreset kPresets[] = {
+        {"Quality",
+         "Keeps the most detailed authored LOD longer for a one-player layout.",
+         1, 2.0f},
+        {"Balanced",
+         "Uses authored distance bands unchanged and inspects a two-player layout.",
+         2, 0.0f},
+        {"Performance",
+         "Moves two authored LOD bands toward lower geometry for a one-player layout.",
+         1, -2.0f},
+        {"Four-player",
+         "Uses the strongest bounded lower-detail preference and a four-player layout.",
+         4, -3.0f},
+    };
+    const size_t index = static_cast<size_t>(target);
+    return index < static_cast<size_t>(
+                       CharacterWorkshopPerformanceTarget::Count)
+        ? &kPresets[index] : nullptr;
+}
+
+CharacterWorkshopPerformanceTarget CharacterWorkshop_performanceTarget(
+    int players, float lodBias) {
+    if (!std::isfinite(lodBias)) {
+        return CharacterWorkshopPerformanceTarget::Count;
+    }
+    for (size_t index = 0u;
+         index < static_cast<size_t>(
+                     CharacterWorkshopPerformanceTarget::Count);
+         ++index) {
+        const CharacterWorkshopPerformancePreset *preset =
+            CharacterWorkshop_performancePreset(
+                static_cast<CharacterWorkshopPerformanceTarget>(index));
+        if (preset != nullptr && players == preset->players &&
+            std::fabs(lodBias - preset->lodBias) <= 1.0e-6f) {
+            return static_cast<CharacterWorkshopPerformanceTarget>(index);
+        }
+    }
+    return CharacterWorkshopPerformanceTarget::Count;
+}
+
+uint32_t CharacterWorkshop_selectLod(
+    float viewDistance, float sourceLodBias, float localLodBias,
+    uint32_t authoredLodMask) {
+    return mdkr_modern_character_select_lod(
+        viewDistance, sourceLodBias, localLodBias, authoredLodMask);
 }

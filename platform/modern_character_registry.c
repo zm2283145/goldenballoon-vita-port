@@ -294,6 +294,7 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
         entry.enabled = enabled ? 1u : 0u;
         entry.donor = definition.donor;
         entry.vehicle_mask = definition.vehicle_mask;
+        entry.source_lod_bias = definition.lod_bias;
         if (decoded_identity.has_portrait) {
             memcpy(entry.portrait_rgba, decoded_identity.portrait_rgba,
                    sizeof(entry.portrait_rgba));

@@ -141,12 +141,14 @@ The Portrait Studio offers three reversible starting points:
 
 The model capture exposes semantic pose, normalized animation time, fitted-bounds
 camera yaw/pitch and character lighting. Capture runs locally. The resulting
-gameplay frame is an ordinary RGB PNG rather than a synthetic transparent render;
-Portrait Studio supplies a square crop, optional edge-connected matte removal,
-and project-owned background frames. The draft stores the source kind, PNG digest,
-dimensions, deterministic conversion recipe, and exact framed result. The source
-path is only a reload convenience, so moving the original PNG cannot invalidate
-already-authored portrait work.
+product is chosen explicitly: either an ordinary composed RGB gameplay PNG or a
+straight-RGBA model-only PNG replayed by the exact renderer without donor,
+vehicle, world, or HUD. Portrait Studio supplies a square crop, optional
+edge-connected matte removal for composed sources, and project-owned background
+frames. The draft stores the source kind, PNG digest, dimensions, deterministic
+conversion recipe, and exact framed result. The source path is only a reload
+convenience, so moving the original PNG cannot invalidate already-authored
+portrait work.
 
 The pixel editor provides pencil, eraser, fill, eyedropper, lasso/move,
 horizontal mirror, palette replace, undo/redo, onion comparison against the
@@ -330,6 +332,18 @@ The current runtime LOD preference is useful only for packages with multiple
 authored LODs. The launcher must say “one LOD; re-export or generate LODs” when
 that control cannot improve performance.
 
+The executable first assembly layer exposes the four targets as named starting
+points over two honest inputs: local-player layout and a bounded shift of the
+package's authored distance bands. It also keeps both inputs directly editable,
+so a preset is never a ceiling. Near-view accounting uses the runtime's exact
+distance thresholds, source plus local bias, clamping, and sparse-level fallback
+to identify the selected authored LOD. Geometry and decoded textures remain one
+shared upload while triangles, referenced vertices, draw submissions, and
+current/previous pose palettes scale by the worst-visible `players × viewports`
+instances. Performance history owns the layout and local LOD preference;
+vehicle Fit history does not. Changing LOD policy invalidates exact timing
+evidence but does not revoke an independently reviewed vehicle fit.
+
 The interim workshop guide uses published, transparent bands while measured
 device profiles are collected:
 
@@ -422,7 +436,7 @@ last known-good assembly remains available if an update fails.
 | Portrait/roster identity | Source-v3 import, transactional Portrait Studio revision, exact 40x40 preview/editor with pencil/eraser/fill/eyedropper/mirror, numeric rectangular move/copy, tolerant palette replacement and source onion are executable. Portrait sources now include bounded 16-4096 px RGB/RGBA PNG decoding with strict CRC/chunk/APNG rejection, digest-bound square crop, crisp or premultiplied-area sampling, edge-connected matte removal, project-owned background frames, and a direct handoff from either composed or transparent model-only exact-renderer Test captures. Identity undo/redo and v6 named drafts preserve source kind/digest/dimensions/recipe plus the exact framed source and styled output without embedding or depending on the external PNG. The deterministic style recipe adds 16/32/64-colour median-cut palettes, ordered dithering, alpha cleanup, outlines, pinholes, textual quality checks, and a responsive six-treatment exact-output comparison sheet. HUD/results/rankings/minimap resolution, the independent 64-entry paginated select browser, explicit donor-owned ghost/save/network and scene-authored cinematic boundaries, and generated-package pixel/runtime proof across a real race and race-times page are executable. | Add freeform subject masks, portrait contact overlays, and localization-aware game-font shaping |
 | Donor selection | All ten revision-1 donor seams are fingerprint-qualified and selectable through transactional source revisions; the engine publishes a bounded GPU-free installed-character catalog for virtual roster consumers; the launcher publishes exact bounded ROM-derived weight, handling, and vehicle-specific 14-sample acceleration evidence without retaining ROM bytes; a responsive draft-aware authority card distinguishes package presentation, donor simulation/audio/ghost/network identity, ordinary save/record data, and future package negotiation | Add donor portrait treatment without bundling copyrighted art and complete remaining effect-surface audit |
 | Vehicle support | Source-backed compatibility revision, runtime enable subset, independent transforms, persisted per-vehicle hand/foot target offsets, direct colour-keyed front/side/top contact-offset manipulators, warmed exact-context solve-count/mean/max contact-error feedback, exact target-frame seat/bounds/facing evidence, stale-result invalidation, contextual one-click save/retest loops, source/tuning-bound per-context review, and a durable select/car/hovercraft/plane by 1P-4P exact-test matrix | Add renderer-backed base-target/end-effector/pole overlays and representative course/vehicle-condition variants |
-| Performance controls | Import caps, authored LOD bias, exact per-LOD draw accounting, 1P-4P worst-visible assembly counts, exact one-click WebGPU stress routes, and a returned post-warm-up wall-cadence percentile/result card with synthetic/short-sample refusal. Qualified latest results and explicitly pinned baselines survive restart with signed renderer fit diagnostics; they are bound to source, fit, result contract, app build, presentation settings, physical output/render size and GPU/driver identity, and show deltas only for an honest same-device comparison. Authenticated v1 evidence migrates to v2 without changing its established file location. | Add GPU timestamp/pass attribution, representative scene variants and a maintained device-profile corpus |
+| Performance controls | Import caps; responsive Quality/Balanced/Performance/Four-player starting points; direct authored-LOD preference and 1P-4P layout controls; separate Performance history; exact runtime-equivalent source/local-bias, clamping and sparse-LOD selection; exact selected-LOD draw/triangle/vertex/palette accounting; shared geometry/texture accounting; exact one-click WebGPU stress routes; and a returned post-warm-up wall-cadence percentile/result card with synthetic/short-sample refusal are executable. One-LOD packages explicitly refuse false optimization while retaining unrestricted import. Qualified latest results and explicitly pinned baselines survive restart with signed renderer fit diagnostics; they are bound to source, fit plus LOD policy, result contract, app build, presentation settings, physical output/render size and GPU/driver identity, and show deltas only for an honest same-device comparison. Authenticated v1 evidence migrates to v2 without changing its established file location. The target cards and exact slider are keyboard/speech qualified at 200% scale. | Add GPU timestamp/pass attribution, representative scene variants, transition visualization, a maintained device-profile corpus, projected-size hysteresis and optional recorded offline simplification |
 | Gameplay tuning | Correctly absent from visual package | Build separate opt-in hashed gameplay-profile system |
 | Preview | One-click typed requests launch select or all three vehicles through real game initialization in any 1-4P layout after ROM revalidation; requests are assignment-neutral and support all 13 select/race semantics held at an exact normalized phase. Zero yaw/pitch preserves the ordinary gameplay view; nonzero views are bounded absolute racer-relative orbits around renderer-published fitted bounds, use vehicle/split-screen-aware pull-back, suppress transient cutscene-camera selection, and retain ordinary obstruction resolution. Select keeps its authored camera. Four deterministic character-only lights preserve world/simulation state. Pose inspection is counted after warm-up, usable as exact session fit proof, saved in Test history and v6 named drafts, and explicitly excluded from durable performance evidence. A one-shot exclusive PNG waits for 12 consecutive fully rendered character/pose/view/light frames after warm-up, then explicitly produces either a composed RGB gameplay frame or a straight-RGBA model-only image from an isolated WebGPU replay that excludes the donor, vehicle, world, and HUD. Successful results enter a source/fit/product-bound session tray, can be sent directly to Portrait Studio, and export as a self-contained schema-v2 HTML/JSON contact sheet with no model/ROM/path bytes. Live tests return a warmed v9 result with exact device/physical render identity plus target-frame anchor, calibrated fitted bounds, floor clearance and normalized forward evidence from the successful replacement draw; they persist source/tuning-bound per-context author review plus the bounded 4x4 latest/baseline evidence matrix. A generated non-Diddy package passes the complete WebGPU route/pixel/composition/transparency/stress/result gate. | Embed the renderer; add dynamic end-effector/pole overlays, GPU timestamps, and representative scene variants |
 | Packaging/update/removal | Mutation-free review plus package/base-bound transactional install/update, responsive installed-versus-candidate diff, reversible runtime disable, authenticated revision restore/source export, current-compiler portable export, transactional current-source rebuild, and recoverability-aware deletion are executable. Portable publication refuses overwrite and does not mutate installed state; rebuild preserves enabled state and the last known-good cache on failure. Named full-editor snapshots are bounded, authenticated, atomically persisted, independently resumable/deletable, exact-base locked, and autosaved. A combined optimistic build publishes portrait/profile/rig as one retained revision; launcher-owned fit is separately disclosed and confirmed. A dedicated responsive launcher destination now owns a persistent library rail, seven editor tabs, named readiness rows, a deterministic best-next-action resolver, persisted package/tab selection, safe DAE/ZIP-to-GLB handoff, a multi-draft pre-package GLB authoring library, and independent bounded history for Identity, Profile, Rig, Fit/review, Performance, and Test setup; Settings retains its shortcut and assignment summary. | Add bulk draft export/import after the portable-package sharing contract is finalized |
@@ -498,15 +512,18 @@ seat drift; non-humanoid authored-only fallback remains intact.
 
 ### W3 — Performance assemblies (structural and cadence baseline complete)
 
-Exact per-LOD structural accounting, authored LOD control, one-to-four-player
-worst-visible assemblies, real WebGPU stress routes and post-warm-up wall
-cadence results are implemented. A bounded durable 4-context by 4-layout matrix
-retains exact-source/fit latest results and qualified pinned baselines. It
-refuses cross-build, cross-result-contract, cross-presentation, cross-resolution
-or cross-device deltas and preserves malformed storage byte-for-byte. GPU
-timestamp/pass attribution, representative scene variants, a maintained device
-profile corpus, projected-size LOD hysteresis and optional offline
-simplification remain.
+Exact per-LOD structural accounting, runtime-equivalent near-view LOD selection,
+source plus local bias disclosure, responsive named targets, directly editable
+one-to-four-player assemblies, independent bounded Performance history, real
+WebGPU stress routes and post-warm-up wall-cadence results are implemented. A
+bounded durable 4-context by 4-layout matrix retains exact-source/fit/LOD latest
+results and qualified pinned baselines. Changing only LOD policy makes existing
+timing evidence stale without invalidating vehicle-fit review. It refuses
+cross-build, cross-result-contract, cross-presentation, cross-resolution or
+cross-device deltas and preserves malformed storage byte-for-byte. GPU
+timestamp/pass attribution, representative scene variants, transition
+visualization, a maintained device profile corpus, projected-size LOD hysteresis
+and optional recorded offline simplification remain.
 
 Gate: the displayed counts equal GPU allocations; target builds remain inside
 published device budgets and fail explicitly when they cannot.

@@ -38,7 +38,7 @@ def install_fixture(root: Path) -> Path:
     manifest_path = source / "manifest.json"
     license_path = source / "LICENSE.txt"
     package = source / "history-proof.mdkrchar"
-    model.write_bytes(make_animated_glb())
+    model.write_bytes(make_animated_glb(with_lod=True))
     portrait.write_bytes(make_portrait_png(40))
     manifest, _ = wizard.build_manifest(
         model, PACKAGE_ID, "History Proof", "CC0-1.0",
@@ -74,18 +74,25 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
     saves = tab_root / "saves"
     prefs.mkdir(parents=True)
     saves.mkdir()
+    accessible = tab == "performance"
     (prefs / "mdkr64_app.ini").write_text(
         f"character_workshop_last_selected={PACKAGE_ID}\n"
-        f"character_workshop_last_tab={tab}\n",
+        f"character_workshop_last_tab={tab}\n" +
+        ("ui_scale=2.0\n" if accessible else ""),
         encoding="utf-8",
     )
+    if accessible:
+        (tab_root / "video.ini").write_text(
+            "[Accessibility]\nSpeech=1\n", encoding="utf-8"
+        )
     environment = {
         key: value for key, value in os.environ.items()
         if not key.startswith(("MDKR", "GE007_"))
     }
     environment.update({
         "LC_ALL": "C",
-        "MDKR_APP_SMOKE_FRAMES": "8",
+        "MDKR_APP_SMOKE_FRAMES": "520" if accessible else "8",
+        "MDKR_APP_SMOKE_WINDOW_SIZE": "1280x720",
         "MDKR_APP_PANEL": "Character Workshop",
         "MDKR_APP_UI_TRACE": "1",
         "MDKR_APP_PREFS_DIR": str(prefs),
@@ -99,6 +106,13 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
         "MDKR64_HIDDEN": "1",
         "MDKR_AUDIO": "0",
     })
+    if accessible:
+        environment.update({
+            "MDKR_APP_SMOKE_A11Y_WALK": "1",
+            "MDKR_APP_SMOKE_INPUT": "keyboard",
+            "MDKR_APP_SMOKE_INPUT_TOKEN": "mdkr64-app-ui-input-v1",
+            "MDKR_A11Y_TRACE": "1",
+        })
     process = subprocess.run(
         [str(binary)], cwd=root, env=environment, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -141,6 +155,27 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                 "test route did not render the complete session-only pose "
                 f"inspector contract\n{process.stdout[-8000:]}"
             )
+    if tab == "performance":
+        marker = (
+            "character-performance-targets package=" + PACKAGE_ID +
+            " targets=quality,balanced,performance,four-player custom=1 "
+            "sourceBias=0.0 localBias=0.0 players=4 selectedLod=0 "
+            "exactAssembly=1 importCeiling=unchanged history=performance"
+        )
+        if marker not in process.stdout:
+            raise RuntimeError(
+                "performance route did not use the exact runtime-equivalent "
+                f"target and assembly policy\n{process.stdout[-8000:]}"
+            )
+        for spoken in (
+            "text=Quality", "text=Balanced", "text=Performance",
+            "text=Four-player", "text=Authored LOD preference",
+        ):
+            if spoken not in process.stdout:
+                raise RuntimeError(
+                    "performance keyboard/speech walk missed " + spoken +
+                    "\n" + process.stdout[-8000:]
+                )
 
 
 def main() -> int:
@@ -176,8 +211,9 @@ def main() -> int:
         return 1
     print("check_character_workshop_history_ui: PASS -- exact-source Identity, "
           "Profile, Rig, Fit, Performance, Test history, spatial fit/contact "
-          "controls, and all semantic pose inspection controls render without "
-          "mutating installed bytes")
+          "controls, accessible performance targets with runtime-equivalent "
+          "LOD assembly math, and all semantic pose inspection controls render "
+          "without mutating installed bytes")
     return 0
 
 

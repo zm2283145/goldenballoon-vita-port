@@ -10,6 +10,7 @@
 
 #include "modern_character_asset.h"
 #include "modern_character_identity.h"
+#include "modern_character_lod.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -21,7 +22,6 @@ extern "C" {
 #define MDKR_MODERN_CHARACTER_SHORT_NAME_MAX 97
 #define MDKR_MODERN_CHARACTER_PATH_MAX 4096
 #define MDKR_MODERN_CHARACTER_SKIP_REASON_MAX 192
-#define MDKR_MODERN_CHARACTER_LOD_LEVELS 4
 #define MDKR_MODERN_CHARACTER_NODE_NAME_MAX 129
 #define MDKR_MODERN_CHARACTER_SPDX_MAX 129
 #define MDKR_MODERN_CHARACTER_ATTRIBUTION_MAX 257
@@ -125,6 +125,7 @@ typedef struct MdkrModernCharacterEntry {
     float source_height;
     float normalized_height;
     float target_height;
+    float source_lod_bias;
     MdkrModernCharacterStats stats;
 } MdkrModernCharacterEntry;
 

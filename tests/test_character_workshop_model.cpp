@@ -1,6 +1,7 @@
 #include "character_workshop_model.h"
 
 #include <cassert>
+#include <cmath>
 #include <cstring>
 
 namespace {
@@ -142,6 +143,52 @@ void testTabStorageRoundTrip() {
                        "Unavailable") == 0);
 }
 
+void testPerformanceTargets() {
+    using Target = CharacterWorkshopPerformanceTarget;
+    const auto *quality = CharacterWorkshop_performancePreset(Target::Quality);
+    const auto *balanced = CharacterWorkshop_performancePreset(Target::Balanced);
+    const auto *performance = CharacterWorkshop_performancePreset(
+        Target::Performance);
+    const auto *fourPlayer = CharacterWorkshop_performancePreset(
+        Target::FourPlayer);
+    assert(quality != nullptr && quality->players == 1 &&
+           quality->lodBias == 2.0f);
+    assert(balanced != nullptr && balanced->players == 2 &&
+           balanced->lodBias == 0.0f);
+    assert(performance != nullptr && performance->players == 1 &&
+           performance->lodBias == -2.0f);
+    assert(fourPlayer != nullptr && fourPlayer->players == 4 &&
+           fourPlayer->lodBias == -3.0f);
+    assert(CharacterWorkshop_performancePreset(Target::Count) == nullptr);
+    assert(CharacterWorkshop_performanceTarget(1, 2.0f) == Target::Quality);
+    assert(CharacterWorkshop_performanceTarget(2, 0.0f) == Target::Balanced);
+    assert(CharacterWorkshop_performanceTarget(1, -2.0f) ==
+           Target::Performance);
+    assert(CharacterWorkshop_performanceTarget(4, -3.0f) ==
+           Target::FourPlayer);
+    assert(CharacterWorkshop_performanceTarget(3, -3.0f) == Target::Count);
+    assert(CharacterWorkshop_performanceTarget(1, NAN) == Target::Count);
+}
+
+void testRuntimeEquivalentLodSelection() {
+    assert(CharacterWorkshop_selectLod(0.0f, 0.0f, 0.0f, 0xFu) == 0u);
+    assert(CharacterWorkshop_selectLod(650.0f, 0.0f, 0.0f, 0xFu) == 1u);
+    assert(CharacterWorkshop_selectLod(1300.0f, 0.0f, 0.0f, 0xFu) == 2u);
+    assert(CharacterWorkshop_selectLod(2400.0f, 0.0f, 0.0f, 0xFu) == 3u);
+    assert(CharacterWorkshop_selectLod(0.0f, 0.0f, -2.0f, 0xFu) == 2u);
+    assert(CharacterWorkshop_selectLod(2400.0f, 0.0f, 2.0f, 0xFu) == 1u);
+    assert(CharacterWorkshop_selectLod(0.0f, 0.0f, -3.0f, 0x3u) == 1u);
+    assert(CharacterWorkshop_selectLod(1300.0f, 0.0f, 0.0f, 0xBu) == 1u);
+    assert(CharacterWorkshop_selectLod(650.0f, 0.5f, 0.0f, 0xFu) == 0u);
+    assert(CharacterWorkshop_selectLod(-1.0f, 0.0f, 0.0f, 0x1u) == 0u);
+    assert(CharacterWorkshop_selectLod(0.0f, 0.0f, 0.0f, 0u) == UINT32_MAX);
+    assert(CharacterWorkshop_selectLod(0.0f, 0.0f, 0.0f, 0x10u) ==
+           UINT32_MAX);
+    assert(CharacterWorkshop_selectLod(NAN, 0.0f, 0.0f, 1u) == UINT32_MAX);
+    assert(CharacterWorkshop_selectLod(0.0f, 0.0f, NAN, 1u) == UINT32_MAX);
+    assert(CharacterWorkshop_selectLod(0.0f, 5.0f, 0.0f, 1u) == UINT32_MAX);
+}
+
 } // namespace
 
 int main() {
@@ -150,5 +197,7 @@ int main() {
     testVehicleReviewMaskAndOptionalPerformance();
     testAuthoredMotionDoesNotRequireOptionalRig();
     testTabStorageRoundTrip();
+    testPerformanceTargets();
+    testRuntimeEquivalentLodSelection();
     return 0;
 }

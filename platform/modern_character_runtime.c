@@ -7,6 +7,7 @@
 #include "modern_character_render.h"
 #include "modern_character_donor.h"
 #include "modern_character_identity.h"
+#include "modern_character_lod.h"
 
 #include <errno.h>
 #include <math.h>
@@ -1139,7 +1140,7 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
     uint64_t contact_error_micrometres = 0u;
     uint32_t primitive_index;
     uint32_t selected_lod;
-    uint32_t available_lod = 0u;
+    uint32_t authored_lod_mask = 0u;
     uint32_t emitted = 0u;
     const MdkrWorkshopPreviewLighting inspection_lighting =
         mdkr_workshop_preview_lighting();
@@ -1183,35 +1184,18 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
     for (primitive_index = 0u;
          primitive_index < pool->render.gpu.primitive_count;
          primitive_index++) {
-        if (pool->render.gpu.primitives[primitive_index].lod > available_lod) {
-            available_lod = pool->render.gpu.primitives[primitive_index].lod;
+        const uint32_t lod = pool->render.gpu.primitives[primitive_index].lod;
+        if (lod < MDKR_MODERN_CHARACTER_LOD_LEVELS) {
+            authored_lod_mask |= 1u << lod;
         }
     }
-    if (view_distance < 0.0f) view_distance = 0.0f;
-    selected_lod = view_distance >= 2400.0f ? 3u
-        : view_distance >= 1300.0f ? 2u
-        : view_distance >= 650.0f ? 1u : 0u;
-    {
-        int biased = (int)selected_lod -
-            (int)lroundf(pool->definition.lod_bias + slot->tuning.lod_bias);
-        if (biased < 0) biased = 0;
-        if ((uint32_t)biased > available_lod) biased = (int)available_lod;
-        selected_lod = (uint32_t)biased;
-    }
-    /* Sparse authoring is legal: select the closest more-detailed complete
-     * level rather than drawing nothing at an absent distance band. */
-    for (;;) {
-        int found = 0;
-        for (primitive_index = 0u;
-             primitive_index < pool->render.gpu.primitive_count;
-             primitive_index++) {
-            if (pool->render.gpu.primitives[primitive_index].lod == selected_lod) {
-                found = 1;
-                break;
-            }
-        }
-        if (found || selected_lod == 0u) break;
-        selected_lod--;
+    selected_lod = mdkr_modern_character_select_lod(
+        view_distance, pool->definition.lod_bias, slot->tuning.lod_bias,
+        authored_lod_mask);
+    if (selected_lod == UINT32_MAX) {
+        set_error(error, error_size,
+                  "character LOD policy or authored levels are invalid");
+        return 0;
     }
     if (!attachment_for_context(&pool->asset, context, &attachment)) {
         set_error(error, error_size,

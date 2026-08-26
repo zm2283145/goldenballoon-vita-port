@@ -4875,7 +4875,10 @@ Rig, Fit/review, Performance assembly, and Test setup, and verifies that merely
 rendering every route leaves the installed source and cache byte-for-byte
 unchanged. The Vehicles route additionally requires the front/side/top
 placement and contact planes, context yaw, vehicle-only copy boundary, and Fit
-undo contract to render. The Test route also requires all 13 semantic inspection choices,
+undo contract to render. The 200% keyboard/speech Performance route requires
+all four named targets, the exact authored-LOD control, runtime-equivalent
+source/local-bias selection, selected-LOD structural accounting, and independent
+Performance history to render. The Test route also requires all 13 semantic inspection choices,
 the safe midpoint phase default, neutral camera/light defaults, exclusive-
 capture disclosure, and the explicit session-only/no-performance-evidence
 contract to render. `character_edit_history` separately proves discrete edits,
@@ -4989,7 +4992,7 @@ exact caller-supplied values after repeated writes.
 This ROM-free rendered gate installs a generated CC0 animated package and
 exercises the Test workspace's durable 4-context by 4-player-layout matrix. It
 publishes a qualified Car 4P result through the production result boundary,
-checks exact source/fit/presentation fingerprints plus timing, device and
+checks exact source/fit/LOD/presentation fingerprints plus timing, device and
 physical-dimension fields on disk, and checks the v2 signed target-frame bounds,
 ground/seat anchor, and normalized facing fields from that replacement draw. It
 restarts the launcher, requires the same fit diagnosis to remain available, and
@@ -5001,6 +5004,10 @@ then clears the package's complete local evidence inventory. Finally it corrupts
 the authenticated store and requires the Workshop to become read-only without
 rewriting one byte. Every arm hashes the installed package before and after so
 test bookkeeping cannot mutate character source or compiled cache bytes. The
+generated package has multiple authored LODs; one rendered arm publishes a
+valid result, changes only the persisted local LOD policy, and requires the
+result to become visibly stale. The older fake-fit-digest arm remains as an
+independent rejection case. The
 empty-inventory arm also publishes a fully rendered held-pose inspection
 through the production result boundary and requires its session result to stay
 available for fit review while the durable evidence file remains byte-exact.
