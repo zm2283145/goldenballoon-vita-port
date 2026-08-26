@@ -9,6 +9,7 @@
 #define MDKR64_MODERN_CHARACTER_REGISTRY_H
 
 #include "modern_character_asset.h"
+#include "modern_character_identity.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -64,6 +65,7 @@ typedef struct MdkrModernCharacterEntry {
     uint32_t identity_flags;
     uint32_t portrait_bytes;
     uint32_t minimap_rgba;
+    uint8_t portrait_rgba[MDKR_MODERN_PORTRAIT_BYTES];
     float bounds_min[3];
     float bounds_max[3];
     float ground[3];

@@ -368,8 +368,9 @@ int main(int argc, char **argv) {
                 registry.entries[0].target_height < 1.26f &&
                 registry.entries[0].identity_flags == 1u &&
                 registry.entries[0].portrait_bytes > 64u &&
+                registry.entries[0].portrait_rgba[3] != 0u &&
                 (registry.entries[0].minimap_rgba & 0xFFFFFFu) == 0x9048DCu,
-            "registry summarizes animation and socket authoring health");
+            "registry summarizes authoring health and decoded identity preview");
     require(mdkr_modern_character_registry_load(&registry, 0, &asset,
                                                  error, sizeof(error)),
             "load selected registry character");

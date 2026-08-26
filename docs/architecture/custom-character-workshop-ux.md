@@ -374,7 +374,7 @@ last known-good assembly remains available if an update fails.
 | Height/front/ground/seat calibration | Executable v2 | Add exact embedded preview and manipulators |
 | Per-context corrections | Executable | Move from four repeated player panels to one package editor |
 | Animation semantics | Executable sampling and diagnostics | Add role-map editor, retargeting and IK |
-| Portrait/roster identity | Source-v3 import, cache, HUD/results/rankings/minimap resolver executable | Add capture/pixel editor, independent select tile, and font-safe game name |
+| Portrait/roster identity | Source-v3 import, transactional Portrait Studio revision, exact 40x40 Workshop preview, and HUD/results/rankings/minimap resolver executable | Add capture/pixel editor, independent select tile, and font-safe game name |
 | Donor selection | All ten revision-1 donor seams are fingerprint-qualified and selectable | Add full profile comparison cards and exact-context review status |
 | Vehicle support | Mask and independent transforms | Add test matrix, hand/foot targets and reviewed status |
 | Performance controls | Import caps, authored LOD bias | Add per-category budget report, assembly targets and stress test |

@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import struct
 import sys
+import tempfile
 import time
 import zipfile
 import zlib
@@ -108,7 +110,19 @@ def _cache_valid(data: bytes) -> bool:
     return (zlib.crc32(data[header_bytes:]) & 0xFFFFFFFF) == expected_crc
 
 
-def install(package_path: Path, directory: Path) -> dict[str, Any]:
+def _active_cache_digest(root: Path, package_id: str) -> str:
+    cache_path = root / f"{package_id}.mdkc"
+    try:
+        cache = cache_path.read_bytes()
+    except FileNotFoundError as exc:
+        raise ManagerError(f"character {package_id!r} is not installed") from exc
+    if not _cache_valid(cache):
+        raise ManagerError(f"installed cache for {package_id!r} is invalid")
+    return cache[20:52].hex()
+
+
+def install(package_path: Path, directory: Path, *,
+            expected_active_digest: str | None = None) -> dict[str, Any]:
     root = _prepare_directory(directory)
     package = package_path.read_bytes()
     verification = probe.verify_package(package_path)
@@ -156,6 +170,12 @@ def install(package_path: Path, directory: Path) -> dict[str, Any]:
     report_path = root / f"{package_id}.{source_sha}.json"
     cache_path = root / provenance["cache_file"]
     with _locked(root):
+        if (expected_active_digest is not None and
+                _active_cache_digest(root, package_id) != expected_active_digest):
+            raise ManagerError(
+                "the installed character changed while this revision was being built; "
+                "review the latest revision and try again"
+            )
         if not source_path.exists():
             _write_exclusive(source_path, package)
         elif source_path.read_bytes() != package:
@@ -167,6 +187,201 @@ def install(package_path: Path, directory: Path) -> dict[str, Any]:
         # Commit point. The engine scans only this stable filename.
         _write_atomic(cache_path, compiled)
     return provenance
+
+
+def _active_source_snapshot(package_id: str, root: Path) -> tuple[bytes, str, str]:
+    """Read the exact source behind the active cache under the import lock."""
+    with _locked(root):
+        active_digest = _active_cache_digest(root, package_id)
+        candidates: list[tuple[bool, str, bytes]] = []
+        for report_path in sorted(root.glob(f"{package_id}.*.json")):
+            try:
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                source_sha = report["source_sha256"]
+                expected_source = f"{package_id}.{source_sha}.mdkrchar"
+                if (
+                    report.get("schema") != MANAGER_SCHEMA
+                    or report.get("id") != package_id
+                    or report.get("cache_source_digest") != active_digest
+                    or report_path.name != f"{package_id}.{source_sha}.json"
+                    or report.get("source_file") != expected_source
+                    or len(source_sha) != 64
+                    or any(character not in "0123456789abcdef"
+                           for character in source_sha)
+                ):
+                    continue
+                source_path = root / expected_source
+                if source_path.is_symlink() or not source_path.is_file():
+                    continue
+                package = source_path.read_bytes()
+                if hashlib.sha256(package).hexdigest() != source_sha:
+                    continue
+                with zipfile.ZipFile(io.BytesIO(package)) as archive:
+                    if _compiler_source_digest(archive).hex() != active_digest:
+                        continue
+                    portable = "compiled.mdkc" in archive.namelist()
+                candidates.append((portable, source_sha, package))
+            except (OSError, KeyError, TypeError, ValueError,
+                    zipfile.BadZipFile, json.JSONDecodeError, probe.ProbeError):
+                continue
+        if not candidates:
+            raise ManagerError(
+                f"active source provenance for {package_id!r} is missing or invalid"
+            )
+        # Prefer the smaller source-only artifact when both it and a portable
+        # package describe the same active source; the canonical source members
+        # are protected by the digest comparison above.
+        candidates.sort(key=lambda candidate: (candidate[0], candidate[1]))
+        _, source_sha, package = candidates[0]
+        return package, source_sha, active_digest
+
+
+def _upgrade_identity_manifest(manifest: dict[str, Any],
+                               model_report: dict[str, Any],
+                               minimap_rgb: tuple[int, int, int]) -> tuple[dict[str, Any], str]:
+    upgraded = dict(manifest)
+    original_schema = upgraded.get("schema")
+    migration = "identity updated"
+    if original_schema == probe.PACKAGE_SCHEMA_V1:
+        presentation = upgraded.get("presentation")
+        if not isinstance(presentation, dict):
+            raise ManagerError("legacy v1 package has no presentation transform")
+        scale = presentation.get("scale")
+        if (
+            not isinstance(scale, list)
+            or len(scale) != 3
+            or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                   for value in scale)
+        ):
+            raise ManagerError("legacy v1 package has an invalid presentation scale")
+        uniform = float(scale[1])
+        tolerance = max(1.0, abs(uniform)) * 1.0e-6
+        if any(abs(float(value) - uniform) > tolerance for value in scale):
+            raise ManagerError(
+                "legacy v1 package uses non-uniform scale, which cannot be migrated "
+                "to the calibrated format without changing its appearance"
+            )
+        bounds_min = model_report.get("bbox_min")
+        bounds_max = model_report.get("bbox_max")
+        if (
+            not isinstance(bounds_min, list) or len(bounds_min) != 3
+            or not isinstance(bounds_max, list) or len(bounds_max) != 3
+        ):
+            raise ManagerError("legacy v1 package has no measurable model bounds")
+        target_height = (float(bounds_max[1]) - float(bounds_min[1])) * uniform
+        if not 0.1 <= target_height <= 10.0:
+            raise ManagerError(
+                "legacy v1 package's effective height is outside the calibrated "
+                "0.1–10 metre range"
+            )
+        gameplay = upgraded.get("gameplay", {})
+        vehicles = gameplay.get("vehicles", []) if isinstance(gameplay, dict) else []
+        translation = list(presentation.get("translation_m", []))
+        rotation = list(presentation.get("rotation_xyzw", []))
+        contexts: dict[str, Any] = {
+            "select": {
+                "anchor": "ground", "translation_m": translation,
+                "rotation_xyzw": rotation, "scale": 1.0,
+            }
+        }
+        for vehicle in vehicles:
+            contexts[vehicle] = {
+                "anchor": "seat", "translation_m": translation,
+                "rotation_xyzw": rotation, "scale": 1.0,
+            }
+        upgraded["presentation"] = {
+            "source_forward": "+z",
+            "target_height_m": target_height,
+            "contexts": contexts,
+            "lod_bias": presentation.get("lod_bias", 0.0),
+        }
+        migration = "legacy v1 transform migrated losslessly; identity added"
+    elif original_schema not in (probe.PACKAGE_SCHEMA, probe.PACKAGE_SCHEMA_V3):
+        raise ManagerError("installed package uses an unsupported source schema")
+    upgraded["schema"] = probe.PACKAGE_SCHEMA_V3
+    upgraded["identity"] = {
+        "portrait_file": "portrait.png",
+        # build_package replaces this placeholder with the canonical digest.
+        "portrait_sha256": "0" * 64,
+        "minimap_rgb": list(minimap_rgb),
+    }
+    return upgraded, migration
+
+
+def revise_identity(package_id: str, portrait_path: Path,
+                    minimap_rgb: tuple[int, int, int],
+                    directory: Path) -> dict[str, Any]:
+    """Create and atomically activate a source-v3 identity revision."""
+    if probe.ID_RE.fullmatch(package_id) is None:
+        raise ManagerError("invalid package id")
+    if (
+        not isinstance(minimap_rgb, tuple)
+        or len(minimap_rgb) != 3
+        or any(isinstance(component, bool) or not isinstance(component, int)
+               or not 0 <= component <= 255 for component in minimap_rgb)
+    ):
+        raise ManagerError("minimap RGB must contain three bytes")
+    # Validate before taking the shared install lock so a bad image cannot
+    # disturb the current cache or block other imports.
+    portrait_size = portrait_path.stat().st_size
+    if portrait_size > probe.MAX_PORTRAIT_BYTES:
+        raise ManagerError(
+            f"portrait.png exceeds {probe.MAX_PORTRAIT_BYTES} bytes"
+        )
+    portrait = portrait_path.read_bytes()
+    if len(portrait) > probe.MAX_PORTRAIT_BYTES:
+        raise ManagerError(
+            f"portrait.png exceeds {probe.MAX_PORTRAIT_BYTES} bytes"
+        )
+    probe.inspect_portrait_png(portrait)
+    root = _prepare_directory(directory)
+    package, based_on_sha, based_on_digest = _active_source_snapshot(
+        package_id, root
+    )
+    with tempfile.TemporaryDirectory(prefix="mdkr-character-revision-") as temporary:
+        draft = Path(temporary)
+        snapshot = draft / "source.mdkrchar"
+        snapshot.write_bytes(package)
+        verification = probe.verify_package(snapshot)
+        if not verification["valid"] or verification.get("id") != package_id:
+            raise ManagerError("active source package failed verification")
+        with zipfile.ZipFile(io.BytesIO(package)) as archive:
+            manifest = probe.json_loads_strict(
+                archive.read("manifest.json"), "manifest"
+            )
+            model = archive.read("model.glb")
+            license_text = archive.read("LICENSE.txt")
+        if not isinstance(manifest, dict):
+            raise ManagerError("active source manifest is not an object")
+        upgraded, migration = _upgrade_identity_manifest(
+            manifest, verification["model"], minimap_rgb
+        )
+        model_path = draft / "model.glb"
+        manifest_path = draft / "manifest.json"
+        license_path = draft / "LICENSE.txt"
+        portrait_copy = draft / "portrait.png"
+        revised_package = draft / "revision.mdkrchar"
+        model_path.write_bytes(model)
+        manifest_path.write_text(
+            json.dumps(upgraded, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        license_path.write_bytes(license_text)
+        portrait_copy.write_bytes(portrait)
+        probe.build_package(
+            model_path, manifest_path, license_path, revised_package,
+            portrait_path=portrait_copy,
+        )
+        installed = install(
+            revised_package, root, expected_active_digest=based_on_digest
+        )
+    return {
+        **installed,
+        "action": "revise-identity",
+        "based_on_source_sha256": based_on_sha,
+        "migration": migration,
+        "minimap_rgb": list(minimap_rgb),
+    }
 
 
 def list_installed(directory: Path) -> dict[str, Any]:
@@ -308,6 +523,15 @@ def _parser() -> argparse.ArgumentParser:
     )
     prepare_parser.add_argument("package", type=Path)
     prepare_parser.add_argument("output", type=Path)
+    identity_parser = sub.add_parser(
+        "revise-identity",
+        help="create and install a new portrait/minimap source revision",
+    )
+    identity_parser.add_argument("id")
+    identity_parser.add_argument("portrait", type=Path)
+    identity_parser.add_argument("red", type=int)
+    identity_parser.add_argument("green", type=int)
+    identity_parser.add_argument("blue", type=int)
     sub.add_parser("clean")
     return parser
 
@@ -321,6 +545,11 @@ def main(argv: list[str] | None = None) -> int:
             report = install(args.package, args.directory)
         elif args.command == "prepare":
             report = prepare(args.package, args.output)
+        elif args.command == "revise-identity":
+            report = revise_identity(
+                args.id, args.portrait,
+                (args.red, args.green, args.blue), args.directory,
+            )
         elif args.command == "remove":
             report = remove(args.id, args.directory)
         elif args.command == "clean":

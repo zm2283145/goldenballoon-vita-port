@@ -324,6 +324,17 @@ for installed packages. It is marked legacy/uncalibrated in diagnostics and
 receives safe default context anchors. New authoring emits v2 without identity
 media and v3 when the wizard is given `--portrait` and `--minimap-rgb`.
 
+The launcher's Portrait Studio can add or replace identity media on an
+installed package without asking the artist to rebuild it. `revise-identity`
+resolves the content-addressed source that exactly matches the live cache,
+validates the PNG, emits a deterministic source-v3 revision, compiles it, and
+activates it with a compare-and-swap check. The prior source and provenance
+remain retained; invalid input, stale provenance, or a concurrent edit cannot
+replace the live cache. V2 upgrades directly. A v1 uniform transform is moved
+losslessly into calibrated context transforms; non-uniform or out-of-range v1
+transforms are refused because v3 cannot represent them without a visible
+change.
+
 Later schema versions should add, without changing the principles above:
 
 - package version and minimum/maximum engine asset API;

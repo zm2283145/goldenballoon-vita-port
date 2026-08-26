@@ -20,6 +20,7 @@
 
 #include "imgui.h"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cmath>
@@ -28,6 +29,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -1823,6 +1825,14 @@ std::string g_characterManagerReport;
 std::string g_characterPendingRemoval;
 std::string g_characterWorkshopSelection;
 
+struct CharacterIdentityEdit {
+    bool loaded = false;
+    char portraitPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
+    float minimapRgb[3] = {0.86f, 0.28f, 0.56f};
+};
+
+std::map<std::string, CharacterIdentityEdit> g_characterIdentityEdits;
+
 struct CharacterTuningEdit {
     bool loaded = false;
     float scale = 1.0f;
@@ -1962,7 +1972,8 @@ std::string readCharacterManagerResult(const std::string &path) {
     return text;
 }
 
-bool runCharacterManager(const char *command, const std::string &argument) {
+bool runCharacterManager(const char *command,
+                         const std::vector<std::string> &commandArguments) {
     char toolPath[MDKR_MODERN_CHARACTER_PATH_MAX];
     int regular = 0;
     if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
@@ -1996,13 +2007,17 @@ bool runCharacterManager(const char *command, const std::string &argument) {
     int exitCode = -1;
     bool launched = false;
     for (const char *interpreter : interpreters) {
-        const char *arguments[] = {
-            toolPath,
-            "--directory", g_characterRegistryDirectory.c_str(),
-            "--result-file", resultPath.c_str(),
-            command, argument.c_str(), nullptr,
+        std::vector<const char *> arguments = {
+            toolPath, "--directory", g_characterRegistryDirectory.c_str(),
+            "--result-file", resultPath.c_str(), command,
         };
-        launchError = mdkr_spawn_wait_utf8(interpreter, arguments, &exitCode);
+        arguments.reserve(arguments.size() + commandArguments.size() + 1u);
+        for (const std::string &argument : commandArguments) {
+            arguments.push_back(argument.c_str());
+        }
+        arguments.push_back(nullptr);
+        launchError = mdkr_spawn_wait_utf8(
+            interpreter, arguments.data(), &exitCode);
         if (launchError == 0) {
             launched = true;
             break;
@@ -2038,9 +2053,20 @@ bool importCharacterPackage(const std::string &path) {
     }
     g_characterManagerReport = result.message;
     if (result.needs_compiler) {
-        return runCharacterManager("install", path);
+        return runCharacterManager("install", {path});
     }
     return false;
+}
+
+bool reviseCharacterIdentity(const char *packageId, const char *portraitPath,
+                             const float minimapRgb[3]) {
+    std::vector<std::string> arguments = {packageId, portraitPath};
+    for (unsigned component = 0u; component < 3u; ++component) {
+        const int byte = static_cast<int>(std::lround(
+            std::clamp(minimapRgb[component], 0.0f, 1.0f) * 255.0f));
+        arguments.push_back(std::to_string(byte));
+    }
+    return runCharacterManager("revise-identity", arguments);
 }
 
 bool removeCharacterPackage(const std::string &id) {
@@ -2340,6 +2366,134 @@ const char *characterPerformanceTier(
     return "Very heavy";
 }
 
+void drawCharacterPortraitPreview(const MdkrModernCharacterEntry *entry) {
+    const float pixelSize = std::max(
+        2.0f, std::floor(ImGui::GetFontSize() * 0.2f + 0.5f));
+    const float extent = pixelSize * MDKR_MODERN_PORTRAIT_SIZE;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    const unsigned checkerPixels = 4u;
+    unsigned y;
+    for (y = 0u; y < MDKR_MODERN_PORTRAIT_SIZE; y += checkerPixels) {
+        unsigned x;
+        for (x = 0u; x < MDKR_MODERN_PORTRAIT_SIZE; x += checkerPixels) {
+            const ImU32 colour = ((x / checkerPixels + y / checkerPixels) & 1u)
+                ? IM_COL32(73, 79, 89, 255)
+                : IM_COL32(48, 53, 62, 255);
+            draw->AddRectFilled(
+                ImVec2(origin.x + x * pixelSize,
+                       origin.y + y * pixelSize),
+                ImVec2(origin.x +
+                           std::min(x + checkerPixels,
+                                    MDKR_MODERN_PORTRAIT_SIZE) * pixelSize,
+                       origin.y +
+                           std::min(y + checkerPixels,
+                                    MDKR_MODERN_PORTRAIT_SIZE) * pixelSize),
+                colour);
+        }
+    }
+    /* Coalesce identical horizontal pixels. A 40x40 portrait remains crisp at
+     * every UI scale without creating a renderer-owned texture lifecycle. */
+    for (y = 0u; y < MDKR_MODERN_PORTRAIT_SIZE; ++y) {
+        unsigned x = 0u;
+        while (x < MDKR_MODERN_PORTRAIT_SIZE) {
+            const uint8_t *pixel = entry->portrait_rgba +
+                (y * MDKR_MODERN_PORTRAIT_SIZE + x) * 4u;
+            unsigned end = x + 1u;
+            if (pixel[3] == 0u) {
+                x = end;
+                continue;
+            }
+            while (end < MDKR_MODERN_PORTRAIT_SIZE &&
+                   std::memcmp(pixel, entry->portrait_rgba +
+                       (y * MDKR_MODERN_PORTRAIT_SIZE + end) * 4u, 4u) == 0) {
+                ++end;
+            }
+            draw->AddRectFilled(
+                ImVec2(origin.x + x * pixelSize,
+                       origin.y + y * pixelSize),
+                ImVec2(origin.x + end * pixelSize,
+                       origin.y + (y + 1u) * pixelSize),
+                IM_COL32(pixel[0], pixel[1], pixel[2], pixel[3]));
+            x = end;
+        }
+    }
+    draw->AddRect(origin, ImVec2(origin.x + extent, origin.y + extent),
+                  IM_COL32(255, 255, 255, 115), 0.0f, 0, 1.0f);
+    ImGui::Dummy(ImVec2(extent, extent));
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "%s\nExact 40 × 40 in-game portrait preview",
+            entry->display_name);
+    }
+}
+
+bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
+    static const uint8_t donorColours[][3] = {
+        {194, 72, 58}, {54, 120, 197}, {66, 166, 110}, {76, 153, 190},
+        {232, 145, 49}, {143, 91, 53}, {224, 93, 52}, {220, 80, 151},
+        {150, 99, 198}, {237, 186, 48},
+    };
+    CharacterIdentityEdit &edit = g_characterIdentityEdits[entry->id];
+    if (!edit.loaded) {
+        const size_t donorIndex = entry->donor < std::size(donorColours)
+            ? entry->donor : std::size(donorColours) - 1u;
+        const uint32_t rgba = entry->identity_flags != 0u
+            ? entry->minimap_rgba
+            : (static_cast<uint32_t>(donorColours[donorIndex][0]) |
+               static_cast<uint32_t>(donorColours[donorIndex][1]) << 8u |
+               static_cast<uint32_t>(donorColours[donorIndex][2]) << 16u);
+        edit.minimapRgb[0] = static_cast<float>(rgba & 0xFFu) / 255.0f;
+        edit.minimapRgb[1] =
+            static_cast<float>((rgba >> 8u) & 0xFFu) / 255.0f;
+        edit.minimapRgb[2] =
+            static_cast<float>((rgba >> 16u) & 0xFFu) / 255.0f;
+        edit.loaded = true;
+    }
+    ui::TextSubtleWrapped(
+        "Choose square PNG artwork and a readable minimap colour. The importer validates the source, downsamples it once to the exact 40 × 40 game format, and atomically activates a new local package revision. The model, license, gameplay profile, and previous source revision are preserved.");
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint(
+        "Portrait source PNG##character-portrait-path",
+        "/path/to/square-portrait.png", edit.portraitPath,
+        sizeof(edit.portraitPath));
+    if (filedialog::isAvailable() && ImGui::Button("Browse for portrait...")) {
+        std::string picked;
+        if (filedialog::openPortraitImage(picked)) {
+            std::snprintf(edit.portraitPath, sizeof(edit.portraitPath), "%s",
+                          picked.c_str());
+        }
+    }
+    ImGui::SetNextItemWidth(std::min(360.0f, ImGui::GetContentRegionAvail().x));
+    (void)ImGui::ColorEdit3(
+        "Minimap colour##character-minimap-colour", edit.minimapRgb,
+        ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_InputRGB |
+            ImGuiColorEditFlags_PickerHueWheel);
+    ui::TextSubtleWrapped(
+        "PNG profile: 16–1024 px square, 8-bit RGB/RGBA, non-animated and non-interlaced. Transparency is preserved. The exact current in-game pixels and colour are shown in Overview above.");
+    const bool canSave = edit.portraitPath[0] != '\0';
+    if (!canSave) ImGui::BeginDisabled();
+    bool saved = false;
+    if (ImGui::Button("Save identity revision")) {
+        saved = reviseCharacterIdentity(
+            entry->id, edit.portraitPath, edit.minimapRgb);
+        if (saved) {
+            edit.portraitPath[0] = '\0';
+            setStatus(
+                "Portrait and minimap identity compiled and activated.",
+                AppTheme::good());
+        } else {
+            setStatus(
+                "Identity revision failed; the active character was not changed.",
+                AppTheme::bad());
+        }
+    }
+    if (!canSave) ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("non-destructive local revision");
+    return saved;
+}
+
 bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                                    bool compact) {
     bool changed = false;
@@ -2383,12 +2537,26 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
     ui::TextSubtleWrapped(
         "The built-in profile still owns stats, handling, hitbox, voice, horn, records, ghosts, and ordinary online authority.");
     if (identityReady) {
-        ImGui::TextDisabled(
-            "Roster identity: %s · Portrait: authored (%u encoded bytes) · Minimap: #%02X%02X%02X",
-            entry->display_name, entry->portrait_bytes,
+        drawCharacterPortraitPreview(entry);
+        ImGui::SameLine(0.0f, ui::kGapM);
+        ImGui::BeginGroup();
+        ImGui::TextDisabled("Exact in-game portrait · 40 × 40");
+        ImGui::TextDisabled("%u encoded source bytes", entry->portrait_bytes);
+        const ImVec4 minimap(
+            static_cast<float>(entry->minimap_rgba & 0xFFu) / 255.0f,
+            static_cast<float>((entry->minimap_rgba >> 8u) & 0xFFu) / 255.0f,
+            static_cast<float>((entry->minimap_rgba >> 16u) & 0xFFu) / 255.0f,
+            1.0f);
+        ImGui::ColorButton(
+            "Minimap colour", minimap,
+            ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoDragDrop,
+            ImVec2(ImGui::GetFrameHeight(), ImGui::GetFrameHeight()));
+        ImGui::SameLine();
+        ImGui::TextDisabled("Minimap #%02X%02X%02X",
             entry->minimap_rgba & 0xFFu,
             (entry->minimap_rgba >> 8u) & 0xFFu,
             (entry->minimap_rgba >> 16u) & 0xFFu);
+        ImGui::EndGroup();
     } else {
         ImGui::TextDisabled(
             "Roster identity: donor fallback · Portrait: donor fallback · Import a source-v3 package to author identity media");
@@ -2477,6 +2645,14 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
          MDKR_CHARACTER_SEMANTIC_RACE_STEER) != 0u) {
         ImGui::TextDisabled(
             "race.steer phase: 0 full left · 0.5 neutral · 1 full right");
+    }
+
+    ImGui::SeparatorText("Portrait Studio");
+    if (drawCharacterPortraitStudio(entry)) {
+        /* Saving refreshes the registry and invalidates `entry`; finish this
+         * inspector immediately and draw the replacement on the next frame. */
+        ImGui::PopID();
+        return true;
     }
 
     ImGui::SeparatorText("Fit, motion, vehicles, and performance");

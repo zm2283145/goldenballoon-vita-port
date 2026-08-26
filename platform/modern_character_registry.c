@@ -172,6 +172,10 @@ int mdkr_modern_character_registry_init(MdkrModernCharacterRegistry *registry,
         memcpy(entry.source_sha256, asset.source_sha256, sizeof(entry.source_sha256));
         entry.donor = definition.donor;
         entry.vehicle_mask = definition.vehicle_mask;
+        if (decoded_identity.has_portrait) {
+            memcpy(entry.portrait_rgba, decoded_identity.portrait_rgba,
+                   sizeof(entry.portrait_rgba));
+        }
         {
             MdkrModernIdentity identity;
             if (mdkr_modern_character_asset_identity(&asset, &identity, NULL)) {

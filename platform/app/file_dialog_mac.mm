@@ -97,4 +97,30 @@ bool openCharacterPackage(std::string &out) {
     }
 }
 
+bool openPortraitImage(std::string &out) {
+    @autoreleasepool {
+        if (![NSThread isMainThread]) return false;
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        panel.title = @"Choose character portrait artwork";
+        panel.message = @"Choose a square PNG (16–1024 pixels). The Workshop previews the exact 40×40 in-game result.";
+        panel.prompt = @"Choose Portrait";
+        panel.allowsMultipleSelection = NO;
+        panel.canChooseDirectories = NO;
+        panel.canChooseFiles = YES;
+        panel.resolvesAliases = YES;
+        panel.treatsFilePackagesAsDirectories = NO;
+        panel.showsHiddenFiles = NO;
+        panel.allowedContentTypes = @[ UTTypePNG ];
+        panel.allowsOtherFileTypes = NO;
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([panel runModal] != NSModalResponseOK) return false;
+        NSURL *url = panel.URLs.firstObject;
+        if (url == nil || !url.isFileURL) return false;
+        const char *path = url.fileSystemRepresentation;
+        if (path == nullptr || path[0] == '\0') return false;
+        out = path;
+        return true;
+    }
+}
+
 }  // namespace filedialog

@@ -26,4 +26,9 @@ bool openCharacterPackage(std::string &out) {
     return false;
 }
 
+bool openPortraitImage(std::string &out) {
+    (void)out;
+    return false;
+}
+
 }  // namespace filedialog

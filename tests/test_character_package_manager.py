@@ -7,6 +7,7 @@ import json
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,20 +16,36 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import character_asset_probe as probe  # noqa: E402
 import character_package_manager as manager  # noqa: E402
-from test_character_asset_probe import make_animated_glb, make_manifest  # noqa: E402
+from test_character_asset_probe import (  # noqa: E402
+    make_animated_glb,
+    make_manifest,
+    make_portrait_png,
+)
 
 
 class CharacterPackageManagerTests(unittest.TestCase):
-    def make_package(self, root: Path) -> Path:
+    def make_package(self, root: Path,
+                     manifest_data: dict[str, object] | None = None) -> Path:
         model = root / "model.glb"
         manifest = root / "manifest.json"
         license_file = root / "LICENSE.txt"
         package = root / "fixture.mdkrchar"
         model.write_bytes(make_animated_glb())
-        manifest.write_text(json.dumps(make_manifest()), encoding="utf-8")
+        manifest.write_text(
+            json.dumps(manifest_data or make_manifest()), encoding="utf-8"
+        )
         license_file.write_text("CC0-1.0 test fixture\n", encoding="utf-8")
         probe.build_package(model, manifest, license_file, package)
         return package
+
+    def active_source(self, installed: Path) -> Path:
+        active = [entry for entry in manager.list_installed(installed)["entries"]
+                  if entry["active"]]
+        self.assertGreaterEqual(len(active), 1)
+        report = json.loads(
+            (installed / active[0]["report_file"]).read_text(encoding="utf-8")
+        )
+        return installed / report["source_file"]
 
     def test_install_is_atomic_idempotent_and_removable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -76,6 +93,144 @@ class CharacterPackageManagerTests(unittest.TestCase):
             installed = root / "installed"
             report = manager.install(portable, installed)
             self.assertEqual(prepared["compiled_sha256"], report["compiled_sha256"])
+
+    def test_identity_revision_is_deterministic_and_retains_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            original = manager.install(self.make_package(root), installed)
+            portrait = root / "portrait.png"
+            portrait.write_bytes(make_portrait_png(24))
+            first = manager.revise_identity(
+                original["id"], portrait, (12, 34, 56), installed
+            )
+            second = manager.revise_identity(
+                original["id"], portrait, (12, 34, 56), installed
+            )
+            self.assertEqual(first["source_sha256"], second["source_sha256"])
+            self.assertEqual(first["compiled_sha256"], second["compiled_sha256"])
+            self.assertEqual([12, 34, 56], second["report"]["minimap_rgb"])
+            self.assertTrue(second["report"]["identity_portrait"])
+            self.assertTrue(
+                (installed / original["source_file"]).is_file(),
+                "the pre-edit source remains available as revision history",
+            )
+            self.assertEqual(2, len(list(installed.glob("*.mdkrchar"))))
+            with zipfile.ZipFile(self.active_source(installed)) as archive:
+                manifest = probe.json_loads_strict(archive.read("manifest.json"))
+                self.assertEqual(probe.PACKAGE_SCHEMA_V3, manifest["schema"])
+                self.assertEqual([12, 34, 56], manifest["identity"]["minimap_rgb"])
+                self.assertEqual(portrait.read_bytes(), archive.read("portrait.png"))
+
+    def test_identity_revision_losslessly_migrates_uniform_v1_transform(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legacy = make_manifest()
+            legacy["schema"] = probe.PACKAGE_SCHEMA_V1
+            legacy["presentation"] = {
+                "scale": [1.25, 1.25, 1.25],
+                "translation_m": [0.1, -0.2, 0.3],
+                "rotation_xyzw": [0.0, 1.0, 0.0, 0.0],
+                "lod_bias": 0.5,
+            }
+            installed = root / "characters"
+            report = manager.install(self.make_package(root, legacy), installed)
+            portrait = root / "portrait.png"
+            portrait.write_bytes(make_portrait_png())
+            revised = manager.revise_identity(
+                report["id"], portrait, (200, 100, 50), installed
+            )
+            self.assertIn("losslessly", revised["migration"])
+            with zipfile.ZipFile(self.active_source(installed)) as archive:
+                manifest = probe.json_loads_strict(archive.read("manifest.json"))
+            presentation = manifest["presentation"]
+            self.assertEqual("+z", presentation["source_forward"])
+            self.assertAlmostEqual(1.25, presentation["target_height_m"])
+            for context in ("select", "car", "hovercraft", "plane"):
+                self.assertEqual(
+                    [0.1, -0.2, 0.3],
+                    presentation["contexts"][context]["translation_m"],
+                )
+                self.assertEqual(
+                    [0.0, 1.0, 0.0, 0.0],
+                    presentation["contexts"][context]["rotation_xyzw"],
+                )
+
+    def test_invalid_identity_edits_never_replace_active_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            report = manager.install(self.make_package(root), installed)
+            cache = installed / f"{report['id']}.mdkc"
+            before = cache.read_bytes()
+            corrupt = root / "portrait.png"
+            corrupt.write_bytes(b"not a PNG")
+            with self.assertRaises(probe.ProbeError):
+                manager.revise_identity(
+                    report["id"], corrupt, (1, 2, 3), installed
+                )
+            valid = root / "valid.png"
+            valid.write_bytes(make_portrait_png())
+            with self.assertRaises(manager.ManagerError):
+                manager.revise_identity(
+                    report["id"], valid, (1, -1, 3), installed
+                )
+            with self.assertRaises(manager.ManagerError):
+                manager.install(
+                    self.make_package(root), installed,
+                    expected_active_digest="0" * 64,
+                )
+            self.assertEqual(before, cache.read_bytes())
+
+    def test_nonuniform_v1_identity_migration_fails_visibly(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legacy = make_manifest()
+            legacy["schema"] = probe.PACKAGE_SCHEMA_V1
+            legacy["presentation"] = {
+                "scale": [1.0, 1.5, 1.0],
+                "translation_m": [0.0, 0.0, 0.0],
+                "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "lod_bias": 0.0,
+            }
+            installed = root / "characters"
+            report = manager.install(self.make_package(root, legacy), installed)
+            before = (installed / f"{report['id']}.mdkc").read_bytes()
+            portrait = root / "portrait.png"
+            portrait.write_bytes(make_portrait_png())
+            with self.assertRaisesRegex(manager.ManagerError, "non-uniform"):
+                manager.revise_identity(
+                    report["id"], portrait, (1, 2, 3), installed
+                )
+            self.assertEqual(before, (installed / f"{report['id']}.mdkc").read_bytes())
+
+    def test_stale_provenance_cannot_impersonate_active_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            original = manager.install(self.make_package(root), installed)
+            portrait = root / "portrait.png"
+            portrait.write_bytes(make_portrait_png())
+            revised = manager.revise_identity(
+                original["id"], portrait, (10, 20, 30), installed
+            )
+            active_report = installed / (
+                f"{original['id']}.{revised['source_sha256']}.json"
+            )
+            active_report.unlink()
+            stale_report_path = installed / (
+                f"{original['id']}.{original['source_sha256']}.json"
+            )
+            stale = json.loads(stale_report_path.read_text(encoding="utf-8"))
+            stale["cache_source_digest"] = revised["cache_source_digest"]
+            stale_report_path.write_text(json.dumps(stale), encoding="utf-8")
+            cache = installed / f"{original['id']}.mdkc"
+            before = cache.read_bytes()
+            with self.assertRaisesRegex(manager.ManagerError, "provenance"):
+                manager.revise_identity(
+                    original["id"], portrait, (40, 50, 60), installed
+                )
+            self.assertEqual(before, cache.read_bytes())
 
 
 if __name__ == "__main__":

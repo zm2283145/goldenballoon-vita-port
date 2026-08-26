@@ -48,6 +48,10 @@ bool openRom(std::string &out);
 // it after the panel returns; selecting a file never installs bytes by itself.
 bool openCharacterPackage(std::string &out);
 
+// Choose a still PNG for custom-character portrait authoring. Validation and
+// resampling happen in the Workshop; the dialog grants no import authority.
+bool openPortraitImage(std::string &out);
+
 }  // namespace filedialog
 
 #endif  // MDKR64_FILE_DIALOG_H
