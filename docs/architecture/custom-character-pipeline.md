@@ -517,10 +517,11 @@ Later schema versions should add, without changing the principles above:
 - expanded project-owned reference clips, per-context author target offsets,
   and richer joint/pole constraints over the bounded contact solver;
 - optional material variants and eye/mouth morph mappings;
-- generated portrait captures, freeform subject selection, background/frame
-  presets, and icon derivatives beyond the implemented imported portrait,
-  exact 40x40 pixel editor, rectangular move/copy and deterministic framing,
-  resampling, palette, dithering, outline and cleanup recipe;
+- model-only transparent portrait capture, freeform subject selection, richer
+  background/frame presets, contact overlays, and icon derivatives beyond the
+  implemented imported/exact-renderer portrait, six-treatment comparison
+  sheet, exact 40x40 pixel editor, rectangular move/copy and deterministic
+  framing, resampling, palette, dithering, outline and cleanup recipe;
 - feature requirements such as morph targets or alpha blending.
 
 The schema is declarative. JavaScript, Lua, native libraries, Blender Python,
@@ -933,8 +934,9 @@ The executable proof provides:
   strict local RGB/RGBA PNG decoding, digest-bound crop provenance,
   premultiplied-alpha reframing, edge-connected matte removal, project-owned
   background frames, deterministic median-cut palettes, ordered dithering,
-  silhouette cleanup, exact selection/palette operations, quality analysis,
-  versioned draft persistence and source-bound history in
+  silhouette cleanup, six exact-output treatment comparisons, exact
+  selection/palette operations, quality analysis, versioned draft persistence
+  and source-bound history in
   `platform/app/character_portrait_import.*` and
   `platform/app/character_portrait_studio.*`;
 - actual WebGPU upload/draw and fingerprint-qualified replacement for every

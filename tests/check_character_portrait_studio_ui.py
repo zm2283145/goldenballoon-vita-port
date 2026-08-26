@@ -55,7 +55,7 @@ def environment(root: Path, characters: Path, shot: Path, *,
     }
     result.update({
         "LC_ALL": "C",
-        "MDKR_APP_SMOKE_FRAMES": "760" if accessible else "16",
+        "MDKR_APP_SMOKE_FRAMES": "800" if accessible else "16",
         "MDKR_APP_SMOKE_WINDOW_SIZE": "1280x720" if accessible
         else "640x480",
         "MDKR_APP_SMOKE_SHOT": str(shot),
@@ -172,7 +172,9 @@ def main() -> int:
                             compact=True, accessible=False,
                             portrait_source=portrait_source),
                 ("active-panel=Character Workshop",
-                 "compact-layout dense=1 contained=1 "),
+                 "compact-layout dense=1 contained=1 ",
+                 "character-portrait-variants package=" + PACKAGE_ID +
+                 " count=6 source=canvas columns=1 scale=2.00"),
             )
             check_bmp(compact_shot, 640, 480)
 
@@ -185,6 +187,8 @@ def main() -> int:
                             compact=False, accessible=True,
                             portrait_source=portrait_source),
                 ("character-portrait-style package=" + PACKAGE_ID,
+                 "character-portrait-variants package=" + PACKAGE_ID +
+                 " count=6 source=canvas",
                  "character-portrait-source-action package=" + PACKAGE_ID +
                  " loaded=1 applied=0",
                  "character-portrait-source package=" + PACKAGE_ID,
@@ -199,6 +203,12 @@ def main() -> int:
                  "palette=32",
                  "text=Framing zoom",
                  "text=Palette target",
+                 "text=Use Clean 64",
+                 "text=Use Classic 32",
+                 "text=Use Bold 16",
+                 "text=Use Crisp 32",
+                 "text=Use Dithered 32",
+                 "text=Use Soft 64",
                  "text=Apply styled result to pixel canvas",
                  "text=Selection x, y, width, height",
                  "text=Replace matching colours with paint colour"),
@@ -214,8 +224,9 @@ def main() -> int:
               file=sys.stderr)
         return 1
     print("check_character_portrait_studio_ui: PASS -- deterministic style "
-          "lab, bounded PNG source/capture framing, advanced pixel tools, "
-          "200% compact rendering, keyboard speech, and installed-byte purity")
+          "lab and six-variant comparison sheet, bounded PNG source/capture "
+          "framing, advanced pixel tools, 200% compact rendering, keyboard "
+          "speech, and installed-byte purity")
     return 0
 
 

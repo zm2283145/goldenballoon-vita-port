@@ -17,6 +17,19 @@ enum class Sampling : uint32_t {
     Smooth = 1u,
 };
 
+enum class StylePreset : uint32_t {
+    Clean64 = 0u,
+    Classic32 = 1u,
+    Bold16 = 2u,
+    Crisp32 = 3u,
+    Dithered32 = 4u,
+    Soft64 = 5u,
+    Count = 6u,
+};
+
+constexpr size_t kStylePresetCount =
+    static_cast<size_t>(StylePreset::Count);
+
 struct Recipe {
     int zoomPercent = 100;
     int panX = 0;
@@ -55,6 +68,9 @@ struct Analysis {
 };
 
 bool validRecipe(const Recipe &recipe);
+/* Preserve framing/cleanup while replacing only the visual treatment fields.
+ * An invalid recipe or enum is returned field-for-field unchanged. */
+Recipe presetRecipe(const Recipe &base, StylePreset preset);
 Canvas applyRecipe(const Canvas &source, const Recipe &recipe);
 Analysis analyse(const Canvas &canvas, uint8_t visibleAlpha = 16u);
 

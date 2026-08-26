@@ -1941,6 +1941,14 @@ struct CharacterIdentityEdit {
     CharacterPortraitStudio::Canvas styleSource{};
     CharacterPortraitStudio::Canvas stylePreview{};
     CharacterPortraitStudio::Recipe styleRecipe{};
+    CharacterPortraitStudio::Canvas styleVariantSource{};
+    CharacterPortraitStudio::Recipe styleVariantRecipe{};
+    std::array<CharacterPortraitStudio::Canvas,
+               CharacterPortraitStudio::kStylePresetCount> styleVariants{};
+    std::array<CharacterPortraitStudio::Analysis,
+               CharacterPortraitStudio::kStylePresetCount>
+        styleVariantAnalyses{};
+    bool styleVariantsValid = false;
     CharacterPortraitImport::SourceRecord portraitSourceRecord{};
     char importPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
     CharacterPortraitImport::Image importImage{};
@@ -1970,6 +1978,7 @@ struct CharacterIdentityEdit {
 
 std::map<std::string, CharacterIdentityEdit> g_characterIdentityEdits;
 std::set<std::string> g_characterPortraitStyleTraceKeys;
+std::set<std::string> g_characterPortraitVariantTraceKeys;
 std::set<std::string> g_characterPortraitSourceTraceKeys;
 std::set<std::string> g_characterPortraitSourceSmokePackages;
 
@@ -8277,6 +8286,158 @@ void drawPortraitQualityReport(
         "Automatic checks cannot recognize a face or judge artistic likeness. Review the native-size result yourself before approving identity.");
 }
 
+struct PortraitStylePresetUi {
+    CharacterPortraitStudio::StylePreset preset;
+    const char *name;
+    const char *summary;
+};
+
+constexpr std::array<PortraitStylePresetUi,
+                     CharacterPortraitStudio::kStylePresetCount>
+    kPortraitStylePresets = {{
+        {CharacterPortraitStudio::StylePreset::Clean64, "Clean 64",
+         "Smooth · 64 colours · no dither · 1 px outline"},
+        {CharacterPortraitStudio::StylePreset::Classic32, "Classic 32",
+         "Smooth · 32 colours · light dither · 1 px outline"},
+        {CharacterPortraitStudio::StylePreset::Bold16, "Bold 16",
+         "Smooth · 16 colours · light dither · 2 px outline"},
+        {CharacterPortraitStudio::StylePreset::Crisp32, "Crisp 32",
+         "Crisp · 32 colours · no dither · 1 px outline"},
+        {CharacterPortraitStudio::StylePreset::Dithered32, "Dithered 32",
+         "Smooth · 32 colours · strong dither · 1 px outline"},
+        {CharacterPortraitStudio::StylePreset::Soft64, "Soft 64",
+         "Smooth · 64 colours · light dither · no outline"},
+    }};
+
+bool samePortraitStyleTreatment(
+    const CharacterPortraitStudio::Recipe &left,
+    const CharacterPortraitStudio::Recipe &right) {
+    return left.paletteColors == right.paletteColors &&
+        left.ditherStrength == right.ditherStrength &&
+        left.outlinePixels == right.outlinePixels &&
+        left.sampling == right.sampling;
+}
+
+bool samePortraitStyleRecipe(
+    const CharacterPortraitStudio::Recipe &left,
+    const CharacterPortraitStudio::Recipe &right) {
+    return left.zoomPercent == right.zoomPercent &&
+        left.panX == right.panX && left.panY == right.panY &&
+        samePortraitStyleTreatment(left, right) &&
+        left.alphaThreshold == right.alphaThreshold &&
+        left.fillPinholes == right.fillPinholes;
+}
+
+const char *portraitStyleSourceName(const CharacterIdentityEdit &edit) {
+    switch (edit.portraitSourceRecord.kind) {
+        case CharacterPortraitImport::SourceKind::ExactRenderer:
+            return "exact-renderer";
+        case CharacterPortraitImport::SourceKind::LocalPng:
+            return "local-png";
+        case CharacterPortraitImport::SourceKind::Canvas:
+        default:
+            return "canvas";
+    }
+}
+
+bool drawPortraitStyleComparisonSheet(
+    const MdkrModernCharacterEntry *entry, CharacterIdentityEdit &edit) {
+    ImGui::SeparatorText("Style comparison sheet");
+    ui::TextSubtleWrapped(
+        "Compare six deterministic treatments against the same source, framing, alpha cutoff, and pinhole cleanup. Choosing one updates only the draft recipe; it does not edit the pixel canvas or installed package.");
+    const float available = ImGui::GetContentRegionAvail().x;
+    const float scale = AppTheme::uiScale();
+    const int columns = available >= 720.0f * scale ? 3
+        : available >= 460.0f * scale ? 2 : 1;
+    if (!edit.styleVariantsValid ||
+        edit.styleVariantSource != edit.styleSource ||
+        !samePortraitStyleRecipe(
+            edit.styleVariantRecipe, edit.styleRecipe)) {
+        for (const PortraitStylePresetUi &item : kPortraitStylePresets) {
+            const size_t index = static_cast<size_t>(item.preset);
+            const CharacterPortraitStudio::Recipe candidate =
+                CharacterPortraitStudio::presetRecipe(
+                    edit.styleRecipe, item.preset);
+            edit.styleVariants[index] =
+                CharacterPortraitStudio::applyRecipe(
+                    edit.styleSource, candidate);
+            edit.styleVariantAnalyses[index] =
+                CharacterPortraitStudio::analyse(
+                    edit.styleVariants[index]);
+        }
+        edit.styleVariantSource = edit.styleSource;
+        edit.styleVariantRecipe = edit.styleRecipe;
+        edit.styleVariantsValid = true;
+    }
+    bool changed = false;
+    if (ImGui::BeginTable(
+            "##portrait-style-comparison", columns,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_PadOuterX |
+                ImGuiTableFlags_SizingStretchSame)) {
+        for (const PortraitStylePresetUi &item : kPortraitStylePresets) {
+            ImGui::TableNextColumn();
+            ImGui::PushID(static_cast<int>(item.preset));
+            const size_t index = static_cast<size_t>(item.preset);
+            const CharacterPortraitStudio::Recipe candidate =
+                CharacterPortraitStudio::presetRecipe(
+                    edit.styleRecipe, item.preset);
+            const CharacterPortraitStudio::Canvas &canvas =
+                edit.styleVariants[index];
+            const CharacterPortraitStudio::Analysis &analysis =
+                edit.styleVariantAnalyses[index];
+            const bool selected = samePortraitStyleTreatment(
+                edit.styleRecipe, candidate);
+            ImGui::TextUnformatted(item.name);
+            if (selected) {
+                ImGui::SameLine();
+                ImGui::TextColored(AppTheme::good(), "Selected");
+            }
+            drawPortraitStudioCanvas(canvas, item.name, 120.0f);
+            ImGui::TextWrapped("%s", item.summary);
+            if (analysis.empty) {
+                ImGui::TextColored(AppTheme::bad(), "No visible subject");
+            } else {
+                ImGui::TextDisabled(
+                    "%u visible px · %u colours",
+                    analysis.visiblePixels, analysis.uniqueVisibleColors);
+            }
+            const std::string button = std::string("Use ") + item.name;
+            if (ImGui::Button(button.c_str(), ui::kBtnFullWidth()) &&
+                !selected) {
+                edit.styleRecipe = candidate;
+                refreshPortraitStylePreview(edit);
+                changed = true;
+            }
+            const std::string state = selected ? "Selected. " : "Available. ";
+            const std::string consequence = state + item.summary +
+                ". Preserves framing and cleanup; changes only this draft recipe.";
+            ui::SpeakFocusedItem(
+                button.c_str(), selected ? "selected" : "not selected",
+                consequence.c_str());
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (entry != nullptr && std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        const std::string sourceIdentity =
+            edit.portraitSourceRecord.sha256.empty()
+                ? "canvas" : edit.portraitSourceRecord.sha256;
+        const char *sourceName = portraitStyleSourceName(edit);
+        const std::string traceKey = std::string(entry->id) + "\n" +
+            sourceName + "\n" + sourceIdentity;
+        if (g_characterPortraitVariantTraceKeys.insert(traceKey).second) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-portrait-variants package=%s count=%zu source=%s columns=%d scale=%.2f framing=%d,%d,%d mutation=draft-recipe-only\n",
+                entry->id, kPortraitStylePresets.size(),
+                sourceName, columns,
+                static_cast<double>(scale), edit.styleRecipe.zoomPercent,
+                edit.styleRecipe.panX, edit.styleRecipe.panY);
+        }
+    }
+    return changed;
+}
+
 bool drawPortraitStyleLab(const MdkrModernCharacterEntry *entry,
                           CharacterIdentityEdit &edit) {
     bool changed = false;
@@ -8404,8 +8565,13 @@ bool drawPortraitStyleLab(const MdkrModernCharacterEntry *entry,
                 analysis.enclosedTransparentPixels);
         }
     }
-    drawPortraitQualityReport(analysis, edit.styleRecipe.paletteColors);
-    const bool canApply = !analysis.empty && edit.stylePreview != edit.canvas;
+    changed |= drawPortraitStyleComparisonSheet(entry, edit);
+    const CharacterPortraitStudio::Analysis currentAnalysis =
+        CharacterPortraitStudio::analyse(edit.stylePreview);
+    drawPortraitQualityReport(
+        currentAnalysis, edit.styleRecipe.paletteColors);
+    const bool canApply =
+        !currentAnalysis.empty && edit.stylePreview != edit.canvas;
     if (!canApply) ImGui::BeginDisabled();
     bool applied = false;
     if (ImGui::Button("Apply styled result to pixel canvas")) {

@@ -336,6 +336,53 @@ bool validRecipe(const Recipe &recipe) {
             recipe.sampling == Sampling::Smooth);
 }
 
+Recipe presetRecipe(const Recipe &base, StylePreset preset) {
+    if (!validRecipe(base)) return base;
+    Recipe result = base;
+    switch (preset) {
+        case StylePreset::Clean64:
+            result.paletteColors = 64u;
+            result.ditherStrength = 0.0f;
+            result.outlinePixels = 1;
+            result.sampling = Sampling::Smooth;
+            break;
+        case StylePreset::Classic32:
+            result.paletteColors = 32u;
+            result.ditherStrength = 0.25f;
+            result.outlinePixels = 1;
+            result.sampling = Sampling::Smooth;
+            break;
+        case StylePreset::Bold16:
+            result.paletteColors = 16u;
+            result.ditherStrength = 0.15f;
+            result.outlinePixels = 2;
+            result.sampling = Sampling::Smooth;
+            break;
+        case StylePreset::Crisp32:
+            result.paletteColors = 32u;
+            result.ditherStrength = 0.0f;
+            result.outlinePixels = 1;
+            result.sampling = Sampling::Crisp;
+            break;
+        case StylePreset::Dithered32:
+            result.paletteColors = 32u;
+            result.ditherStrength = 0.65f;
+            result.outlinePixels = 1;
+            result.sampling = Sampling::Smooth;
+            break;
+        case StylePreset::Soft64:
+            result.paletteColors = 64u;
+            result.ditherStrength = 0.10f;
+            result.outlinePixels = 0;
+            result.sampling = Sampling::Smooth;
+            break;
+        case StylePreset::Count:
+        default:
+            return base;
+    }
+    return result;
+}
+
 Canvas applyRecipe(const Canvas &source, const Recipe &recipe) {
     if (!validRecipe(recipe)) return source;
     Canvas result = reframe(source, recipe);

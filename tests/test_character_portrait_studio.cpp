@@ -44,6 +44,17 @@ std::set<uint32_t> visibleColours(const Canvas &canvas) {
     return result;
 }
 
+bool sameRecipe(const Recipe &left, const Recipe &right) {
+    return left.zoomPercent == right.zoomPercent &&
+           left.panX == right.panX && left.panY == right.panY &&
+           left.paletteColors == right.paletteColors &&
+           left.ditherStrength == right.ditherStrength &&
+           left.outlinePixels == right.outlinePixels &&
+           left.alphaThreshold == right.alphaThreshold &&
+           left.sampling == right.sampling &&
+           left.fillPinholes == right.fillPinholes;
+}
+
 uint32_t pngCrc(const unsigned char *bytes, size_t size) {
     uint32_t crc = 0xFFFFFFFFu;
     for (size_t index = 0u; index < size; ++index) {
@@ -94,6 +105,59 @@ int main() {
     invalid.zoomPercent = 0;
     assert(!validRecipe(invalid));
 
+    const std::array<StylePreset, kStylePresetCount> stylePresets = {
+        StylePreset::Clean64,
+        StylePreset::Classic32,
+        StylePreset::Bold16,
+        StylePreset::Crisp32,
+        StylePreset::Dithered32,
+        StylePreset::Soft64,
+    };
+    Recipe framed = defaults;
+    framed.zoomPercent = 175;
+    framed.panX = -7;
+    framed.panY = 11;
+    framed.alphaThreshold = 29;
+    framed.fillPinholes = false;
+    for (StylePreset preset : stylePresets) {
+        const Recipe candidate = presetRecipe(framed, preset);
+        assert(validRecipe(candidate));
+        assert(candidate.zoomPercent == framed.zoomPercent);
+        assert(candidate.panX == framed.panX && candidate.panY == framed.panY);
+        assert(candidate.alphaThreshold == framed.alphaThreshold);
+        assert(candidate.fillPinholes == framed.fillPinholes);
+        const Recipe repeated = presetRecipe(framed, preset);
+        assert(sameRecipe(candidate, repeated));
+    }
+    const Recipe clean = presetRecipe(framed, StylePreset::Clean64);
+    assert(clean.paletteColors == 64u && clean.ditherStrength == 0.0f &&
+           clean.outlinePixels == 1 && clean.sampling == Sampling::Smooth);
+    const Recipe classic = presetRecipe(framed, StylePreset::Classic32);
+    assert(classic.paletteColors == 32u &&
+           classic.ditherStrength == 0.25f && classic.outlinePixels == 1 &&
+           classic.sampling == Sampling::Smooth);
+    const Recipe bold = presetRecipe(framed, StylePreset::Bold16);
+    assert(bold.paletteColors == 16u && bold.ditherStrength == 0.15f &&
+           bold.outlinePixels == 2 && bold.sampling == Sampling::Smooth);
+    const Recipe crispPreset = presetRecipe(framed, StylePreset::Crisp32);
+    assert(crispPreset.paletteColors == 32u &&
+           crispPreset.ditherStrength == 0.0f &&
+           crispPreset.outlinePixels == 1 &&
+           crispPreset.sampling == Sampling::Crisp);
+    const Recipe dithered = presetRecipe(framed, StylePreset::Dithered32);
+    assert(dithered.paletteColors == 32u &&
+           dithered.ditherStrength == 0.65f &&
+           dithered.outlinePixels == 1 &&
+           dithered.sampling == Sampling::Smooth);
+    const Recipe soft = presetRecipe(framed, StylePreset::Soft64);
+    assert(soft.paletteColors == 64u && soft.ditherStrength == 0.10f &&
+           soft.outlinePixels == 0 && soft.sampling == Sampling::Smooth);
+    const Recipe unknown = presetRecipe(
+        framed, static_cast<StylePreset>(UINT32_MAX));
+    assert(sameRecipe(unknown, framed));
+    const Recipe invalidPreset = presetRecipe(invalid, StylePreset::Clean64);
+    assert(sameRecipe(invalidPreset, invalid));
+
     Canvas gradient{};
     for (int y = 8; y < 32; ++y) {
         for (int x = 8; x < 32; ++x) {
@@ -103,6 +167,13 @@ int main() {
         }
     }
     assert(applyRecipe(gradient, invalid) == gradient);
+    for (StylePreset preset : stylePresets) {
+        const Recipe candidate = presetRecipe(framed, preset);
+        const Canvas styled = applyRecipe(gradient, candidate);
+        assert(styled == applyRecipe(gradient, candidate));
+        assert(!analyse(styled).empty);
+        assert(visibleColours(styled).size() <= candidate.paletteColors);
+    }
 
     Recipe reduced;
     reduced.paletteColors = 16u;
