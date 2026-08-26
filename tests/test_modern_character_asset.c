@@ -1046,6 +1046,34 @@ int main(int argc, char **argv) {
                 0, "race.steer", 0.25f, 1.0f,
                 error, sizeof(error)),
             "missing phase-driven semantic advances fallback instead of scrubbing it");
+    require(mdkr_modern_character_set_inspection_pose(
+                "race.finish_win", 0.75f, error, sizeof(error)) &&
+                mdkr_modern_character_tick(
+                    0, "select.idle", 0.25f, error, sizeof(error)),
+            "exact inspector overrides live semantics with a validated held phase");
+    mdkr_modern_character_runtime_metrics(&runtime_metrics);
+    require(runtime_metrics.inspection_pose_ticks == 1u &&
+                runtime_metrics.inspection_pose_fallback_ticks == 0u,
+            "reviewed humanoid reference motion satisfies missing authored inspection semantics");
+    require(mdkr_modern_character_set_inspection_pose(
+                "select.idle", 0.25f, error, sizeof(error)) &&
+                mdkr_modern_character_tick(
+                    0, "race.boost", 0.25f, error, sizeof(error)),
+            "inspector phase-scrubs an explicitly authored semantic");
+    mdkr_modern_character_runtime_metrics(&runtime_metrics);
+    require(runtime_metrics.inspection_pose_ticks == 2u &&
+                runtime_metrics.inspection_pose_fallback_ticks == 0u,
+            "exact authored inspection does not increment fallback evidence");
+    require(!mdkr_modern_character_set_inspection_pose(
+                "race.unknown", 0.5f, error, sizeof(error)) &&
+                !mdkr_modern_character_set_inspection_pose(
+                    "race.steer", 1.5f, error, sizeof(error)),
+            "exact inspector rejects unknown semantics and unsafe phases");
+    mdkr_modern_character_clear_inspection_pose();
+    require(mdkr_modern_character_tick_phase(
+                0, "race.steer", 0.25f, 1.0f,
+                error, sizeof(error)),
+            "clearing inspection restores ordinary gameplay pose selection");
     require(mdkr_modern_character_emit(0, MDKR_CHARACTER_CONTEXT_SELECT,
                                        NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)),

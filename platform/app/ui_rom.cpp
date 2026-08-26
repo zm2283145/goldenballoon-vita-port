@@ -466,6 +466,8 @@ static void cancelValidation(LauncherState &s, bool clearUnusableSelection) {
         s.characterPreviewPresentationSha256.clear();
         s.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
         s.characterPreviewPlayers = 0;
+        s.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+        s.characterPreviewPosePhaseMilli = 0u;
         s.characterPreviewDispatched = false;
     }
     s.romValidationPath.clear();
@@ -494,6 +496,8 @@ static void cancelCharacterPreview(LauncherState &s) {
     s.characterPreviewPresentationSha256.clear();
     s.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
     s.characterPreviewPlayers = 0;
+    s.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    s.characterPreviewPosePhaseMilli = 0u;
     s.characterPreviewDispatched = false;
 }
 
@@ -546,6 +550,8 @@ void RomPanel_serviceValidation(LauncherState &s) {
             s.characterPreviewPresentationSha256.clear();
             s.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
             s.characterPreviewPlayers = 0;
+            s.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+            s.characterPreviewPosePhaseMilli = 0u;
             s.characterPreviewDispatched = false;
             /* Service priority: this pass can run after the navigation controls
              * have already drawn, so a plain assignment here would erase a tab
@@ -638,7 +644,10 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
                           0.0f)) {
             ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
             ImGui::PushFont(AppTheme::fonts().title);
-            ImGui::TextUnformatted("Custom Character Test");
+            ImGui::TextUnformatted(
+                s.characterPreviewPose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                    ? "Custom Character Test"
+                    : "Custom Character Pose Inspection");
             ImGui::PopFont();
             ImGui::PopStyleColor();
             ImGui::TextWrapped(
@@ -649,13 +658,18 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
             ui::TextSubtleUnformattedWrapped(
                 s.characterPreviewPackage.c_str());
             ui::TextSubtleWrapped(
-                "The first 120 authored ticks warm the scene. Stay at least three seconds longer for a useful real-time sample; opening F1 freezes it.");
-            if (ImGui::Button("Cancel Test", ui::kBtnSecondary())) {
+                s.characterPreviewPose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                    ? "The first 120 authored ticks warm the scene. Stay at least three seconds longer for a useful real-time sample; opening F1 freezes it."
+                    : "The requested semantic is held at an exact phase when authored or supplied by a reviewed humanoid map. The result reports source fallback explicitly; inspection is session-only and cannot replace performance evidence.");
+            const char *cancelLabel =
+                s.characterPreviewPose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                    ? "Cancel Test" : "Cancel Inspection";
+            if (ImGui::Button(cancelLabel, ui::kBtnSecondary())) {
                 cancelCharacterPreview(s);
             }
             ui::SpeakFocusedItem(
-                "Cancel Test", nullptr,
-                "Cancels this custom character test without changing saved player assignments.");
+                cancelLabel, nullptr,
+                "Cancels this custom character preview without changing saved player assignments.");
         }
         ui::CardEnd();
         ui::Gap(ui::kGapS);

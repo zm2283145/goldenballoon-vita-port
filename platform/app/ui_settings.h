@@ -25,6 +25,8 @@ struct SettingsCharacterPreviewRequest {
     std::string presentationSha256;
     MdkrCharacterPreviewContext context = MDKR_CHARACTER_PREVIEW_SELECT;
     int players = 1;
+    MdkrCharacterPreviewPose pose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    unsigned posePhaseMilli = 0u;
 };
 
 // Draw the settings sections (one per MdkrVideoCategory) inside the current

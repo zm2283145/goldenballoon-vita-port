@@ -111,6 +111,9 @@ void fillBootConfig(LauncherState &state, MdkrBootConfig &boot) {
             state.characterPreviewPackage.c_str();
         boot.character_preview_context = state.characterPreviewContext;
         boot.character_preview_players = state.characterPreviewPlayers;
+        boot.character_preview_pose = state.characterPreviewPose;
+        boot.character_preview_pose_phase_milli =
+            state.characterPreviewPosePhaseMilli;
         state.characterPreviewResult = MdkrCharacterPreviewResult{};
         boot.character_preview_result = &state.characterPreviewResult;
     }
@@ -961,6 +964,8 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
             std::move(preview.presentationSha256);
         s.characterPreviewContext = preview.context;
         s.characterPreviewPlayers = preview.players;
+        s.characterPreviewPose = preview.pose;
+        s.characterPreviewPosePhaseMilli = preview.posePhaseMilli;
         Launcher_requestTab(s, kLauncherPanelPlay, kLauncherTabPlayer);
     }
     ui::TouchScrollCurrentWindow();
@@ -993,6 +998,8 @@ void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out) {
             std::move(preview.presentationSha256);
         s.characterPreviewContext = preview.context;
         s.characterPreviewPlayers = preview.players;
+        s.characterPreviewPose = preview.pose;
+        s.characterPreviewPosePhaseMilli = preview.posePhaseMilli;
         Launcher_requestTab(s, kLauncherPanelPlay, kLauncherTabPlayer);
     }
 }
@@ -1041,6 +1048,8 @@ LauncherAction Launcher::draw(AppHost &host) {
         state_.characterPreviewPresentationSha256.clear();
         state_.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
         state_.characterPreviewPlayers = 0;
+        state_.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+        state_.characterPreviewPosePhaseMilli = 0u;
         state_.characterPreviewDispatched = false;
     }
     state_.hostWindow = host.window();

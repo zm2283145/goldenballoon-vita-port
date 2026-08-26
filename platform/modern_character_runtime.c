@@ -48,11 +48,52 @@ static uint64_t s_contact_solves;
 static uint64_t s_contact_error_micrometres_sum;
 static uint64_t s_contact_error_micrometres_max;
 static uint64_t s_identity_revision;
+static uint64_t s_inspection_pose_ticks;
+static uint64_t s_inspection_pose_fallback_ticks;
+static char s_inspection_semantic[32];
+static float s_inspection_phase;
 
 static void set_error(char *error, size_t size, const char *message) {
     if (error != NULL && size != 0u) {
         (void)snprintf(error, size, "%s", message != NULL ? message : "unknown error");
     }
+}
+
+static int inspection_semantic_valid(const char *semantic) {
+    static const char *const known[] = {
+#define MDKR_CHARACTER_INSPECTION_SEMANTIC(suffix, value, label) value,
+        MDKR_MODERN_CHARACTER_INSPECTION_SEMANTICS(
+            MDKR_CHARACTER_INSPECTION_SEMANTIC)
+#undef MDKR_CHARACTER_INSPECTION_SEMANTIC
+    };
+    size_t index;
+    if (semantic == NULL || semantic[0] == '\0') return 0;
+    for (index = 0u; index < sizeof(known) / sizeof(known[0]); index++) {
+        if (strcmp(semantic, known[index]) == 0) return 1;
+    }
+    return 0;
+}
+
+int mdkr_modern_character_set_inspection_pose(
+    const char *semantic, float normalized_phase,
+    char *error, size_t error_size) {
+    if (!inspection_semantic_valid(semantic) ||
+        !isfinite(normalized_phase) || normalized_phase < 0.0f ||
+        normalized_phase > 1.0f) {
+        set_error(error, error_size,
+                  "character inspection pose or phase is invalid");
+        return 0;
+    }
+    (void)snprintf(s_inspection_semantic,
+                   sizeof(s_inspection_semantic), "%s", semantic);
+    s_inspection_phase = normalized_phase;
+    set_error(error, error_size, "");
+    return 1;
+}
+
+void mdkr_modern_character_clear_inspection_pose(void) {
+    s_inspection_semantic[0] = '\0';
+    s_inspection_phase = 0.0f;
 }
 
 static void matrix_identity(float output[16]) {
@@ -524,6 +565,8 @@ int mdkr_modern_characters_init(const char *directory) {
     s_contact_solves = 0u;
     s_contact_error_micrometres_sum = 0u;
     s_contact_error_micrometres_max = 0u;
+    s_inspection_pose_ticks = 0u;
+    s_inspection_pose_fallback_ticks = 0u;
     for (index = 0; index < MODERN_RUNTIME_POOLS; index++) {
         s_pools[index].registry_index = -1;
     }
@@ -575,6 +618,7 @@ void mdkr_modern_characters_shutdown(void) {
         s_pools[index].registry_index = -1;
     }
     mdkr_modern_character_registry_shutdown(&s_registry);
+    mdkr_modern_character_clear_inspection_pose();
     s_initialized = 0;
 }
 
@@ -589,6 +633,9 @@ void mdkr_modern_character_runtime_metrics(
         s_contact_error_micrometres_sum;
     out->contact_error_micrometres_max =
         s_contact_error_micrometres_max;
+    out->inspection_pose_ticks = s_inspection_pose_ticks;
+    out->inspection_pose_fallback_ticks =
+        s_inspection_pose_fallback_ticks;
 }
 
 void mdkr_modern_character_contact_metrics_reset(void) {
@@ -845,6 +892,11 @@ int mdkr_modern_character_tick(int player, const char *semantic,
         set_error(error, error_size, "modern character tick arguments are invalid");
         return 0;
     }
+    if (s_inspection_semantic[0] != '\0') {
+        return mdkr_modern_character_tick_phase(
+            player, s_inspection_semantic, seconds, s_inspection_phase,
+            error, error_size);
+    }
     if (strcmp(slot->semantic, semantic) != 0) {
         if (!mdkr_modern_pose_set_semantic(&slot->pose, semantic,
                                            error, error_size)) return 0;
@@ -859,6 +911,7 @@ int mdkr_modern_character_tick_phase(int player, const char *semantic,
                                      float seconds, float normalized_phase,
                                      char *error, size_t error_size) {
     MdkrModernRuntimePlayer *slot;
+    int inspection;
     if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
         (slot = &s_players[player])->pool < 0 || semantic == NULL ||
         !isfinite(seconds) || seconds < 0.0f ||
@@ -867,14 +920,21 @@ int mdkr_modern_character_tick_phase(int player, const char *semantic,
                   "modern character phase tick arguments are invalid");
         return 0;
     }
+    inspection = s_inspection_semantic[0] != '\0';
+    if (inspection) {
+        semantic = s_inspection_semantic;
+        normalized_phase = s_inspection_phase;
+    }
     if (strcmp(slot->semantic, semantic) != 0) {
         if (!mdkr_modern_pose_set_semantic(&slot->pose, semantic,
                                            error, error_size)) return 0;
         (void)snprintf(slot->semantic, sizeof(slot->semantic), "%s", semantic);
     }
+    if (inspection) s_inspection_pose_ticks++;
     seconds *= slot->tuning.animation_speed;
     if (!mdkr_modern_pose_has_semantic(&slot->pose, semantic) &&
         !mdkr_modern_pose_humanoid_retarget_ready(&slot->pose)) {
+        if (inspection) s_inspection_pose_fallback_ticks++;
         return mdkr_modern_pose_advance(&slot->pose, seconds,
                                         error, error_size);
     }

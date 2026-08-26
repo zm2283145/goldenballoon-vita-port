@@ -4863,7 +4863,9 @@ opens the exact saved Identity, Rig & Motion, Vehicles, Performance, and Test
 tabs. It requires source-digest-bound history controls for Identity, Profile,
 Rig, Fit/review, Performance assembly, and Test setup, and verifies that merely
 rendering every route leaves the installed source and cache byte-for-byte
-unchanged. `character_edit_history` separately proves discrete edits,
+unchanged. The Test route also requires all 13 semantic inspection choices,
+the safe midpoint phase default, and the explicit session-only/no-performance-
+evidence contract to render. `character_edit_history` separately proves discrete edits,
 continuous-gesture coalescing, deferred commit, divergent redo invalidation,
 and bounded eviction.
 
@@ -4909,7 +4911,14 @@ modern draws and triangles, zero refused draws, nonempty captures, and real
 four-player viewport dividers. Four-player rendering must materially multiply
 the one-player character work. Negative arms require invalid context/player
 values, a missing package assignment, and an unsupported vehicle to fail closed
-with the precise refusal.
+with the precise refusal. One positive arm holds `select.idle` at phase
+`250/1000` in the exact car scene and requires nonzero runtime held-pose ticks
+with zero fallback ticks. A paired authored-only
+`race.finish_win` arm requires every inspected tick to report source fallback,
+proving the result distinguishes an unavailable semantic from exact phase
+control.
+Additional negative arms reject an unknown semantic, an out-of-range phase,
+and a semantic/phase pair with one member missing.
 
 Every valid arm also enables the production presentation census. It must begin
 only after the 120-authored-tick warm-up and emit a bounded structured result
@@ -4921,6 +4930,12 @@ physical output size and actual scene-render size. With RenderScale 1, output
 and render dimensions must agree across every arm and with the captured PPM;
 the gate intentionally accepts the host's real HiDPI drawable rather than
 mistaking logical window pixels for the comparison environment.
+
+The pose arm is intentionally not performance qualification. The Workshop
+keeps it as session fit evidence and displays replacement/contact observations,
+but the production publish boundary refuses to write it into the durable 4x4
+latest/baseline matrix. Live game-driven animation remains the only evidence
+eligible for timing comparison.
 
 ```bash
 python3 tests/check_custom_character_workshop_preview.py \
@@ -4947,7 +4962,12 @@ then clears the package's complete local evidence inventory. Finally it corrupts
 the authenticated store and requires the Workshop to become read-only without
 rewriting one byte. Every arm hashes the installed package before and after so
 test bookkeeping cannot mutate character source or compiled cache bytes. The
-pure `character_test_evidence_store` unit separately covers canonical parsing,
+empty-inventory arm also publishes a fully rendered held-pose inspection
+through the production result boundary and requires its session result to stay
+available for fit review while the durable evidence file remains byte-exact.
+Its paired fallback arm proves that unavailable semantic motion is reported but
+cannot unlock fit approval, while still leaving durable evidence byte-exact.
+The pure `character_test_evidence_store` unit separately covers canonical parsing,
 whole-inventory and row authentication, strict numeric/UTF-8 bounds, exact key
 replacement, the 64-package/2048-record limits, transaction failures and honest
 baseline comparability.

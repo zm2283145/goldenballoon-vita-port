@@ -101,6 +101,9 @@ struct LauncherState {
     MdkrCharacterPreviewContext characterPreviewContext =
         MDKR_CHARACTER_PREVIEW_NONE;
     int characterPreviewPlayers = 0;
+    MdkrCharacterPreviewPose characterPreviewPose =
+        MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    unsigned characterPreviewPosePhaseMilli = 0u;
     bool characterPreviewDispatched = false;
     MdkrCharacterPreviewResult characterPreviewResult{};
     // No discovery state: the launcher never searches the disk. The ROM arrives

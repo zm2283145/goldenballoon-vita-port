@@ -262,18 +262,35 @@ static void workshop_preview_measurement_finish(void) {
         }
         result->contact_error_max_micrometres =
             character.contact_error_micrometres_max;
+        result->inspection_pose_ticks = character.inspection_pose_ticks >=
+                sWorkshopPreviewCharacterBaseline.inspection_pose_ticks
+            ? character.inspection_pose_ticks -
+                  sWorkshopPreviewCharacterBaseline.inspection_pose_ticks
+            : 0u;
+        result->inspection_pose_fallback_ticks =
+            character.inspection_pose_fallback_ticks >=
+                    sWorkshopPreviewCharacterBaseline
+                        .inspection_pose_fallback_ticks
+                ? character.inspection_pose_fallback_ticks -
+                      sWorkshopPreviewCharacterBaseline
+                          .inspection_pose_fallback_ticks
+                : 0u;
     }
     sWorkshopPreviewMeasurementFinished = TRUE;
     MDKR_TRACE(
         "character_workshop_result: warmup=%d realtime=%d samples=%llu "
         "p50us=%llu p95us=%llu p99us=%llu maxus=%llu replacements=%llu "
-        "contacts=%llu contactMaxUm=%llu backend=%s adapter=%s driver=%s "
+        "contacts=%llu contactMaxUm=%llu pose=%d phase=%u "
+        "poseTicks=%llu poseFallback=%llu backend=%s adapter=%s driver=%s "
         "vendor=%08x device=%08x output=%ux%u render=%ux%u",
         result->warmup_complete, result->realtime,
         result->interval_samples, result->interval_p50_us,
         result->interval_p95_us, result->interval_p99_us,
         result->interval_max_us, result->replacement_draws,
         result->contact_solves, result->contact_error_max_micrometres,
+        (int)result->pose, result->pose_phase_milli,
+        result->inspection_pose_ticks,
+        result->inspection_pose_fallback_ticks,
         result->renderer_backend,
         result->adapter[0] != '\0' ? result->adapter : "unknown",
         result->driver[0] != '\0' ? result->driver : "unknown",
@@ -2300,9 +2317,35 @@ void set_frame_blackout_timer(void) {
 }
 
 #ifdef NATIVE_PORT
+static MdkrCharacterPreviewPose workshop_preview_pose_from_semantic(
+    const char *semantic) {
+    static const struct {
+        const char *semantic;
+        MdkrCharacterPreviewPose pose;
+    } poses[] = {
+#define MDKR_WORKSHOP_PREVIEW_POSE_ROW(suffix, value, label) \
+        { value, MDKR_CHARACTER_PREVIEW_POSE_##suffix },
+        MDKR_MODERN_CHARACTER_INSPECTION_SEMANTICS(
+            MDKR_WORKSHOP_PREVIEW_POSE_ROW)
+#undef MDKR_WORKSHOP_PREVIEW_POSE_ROW
+    };
+    size_t index;
+    if (semantic == NULL) return MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    for (index = 0u; index < sizeof(poses) / sizeof(poses[0]); index++) {
+        if (strcmp(semantic, poses[index].semantic) == 0) {
+            return poses[index].pose;
+        }
+    }
+    return MDKR_CHARACTER_PREVIEW_POSE_COUNT;
+}
+
 static s32 workshop_preview_start(void) {
     const char *context = getenv("MDKR_CHARACTER_WORKSHOP_PREVIEW");
     const char *playersText;
+    const char *poseText;
+    const char *phaseText;
+    MdkrCharacterPreviewPose pose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    unsigned posePhaseMilli = 0u;
     s32 players = 1;
     s32 vehicle = -1;
     if (context == NULL || context[0] == '\0') return FALSE;
@@ -2318,6 +2361,41 @@ static s32 workshop_preview_start(void) {
             return TRUE;
         }
         players = (s32)parsed;
+    }
+    poseText = getenv("MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE");
+    phaseText = getenv("MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE");
+    if ((poseText != NULL && poseText[0] != '\0') ||
+        (phaseText != NULL && phaseText[0] != '\0')) {
+        char *end = NULL;
+        long parsed;
+        char poseError[192] = { 0 };
+        if (poseText == NULL || poseText[0] == '\0' ||
+            phaseText == NULL || phaseText[0] == '\0') {
+            fprintf(stderr,
+                    "[FATAL] Character Workshop pose and phase must be "
+                    "provided together\n");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        pose = workshop_preview_pose_from_semantic(poseText);
+        parsed = strtol(phaseText, &end, 10);
+        if (pose == MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
+            end == phaseText || *end != '\0' || parsed < 0 ||
+            parsed > 1000 ||
+            !mdkr_modern_character_set_inspection_pose(
+                poseText, (float)parsed / 1000.0f,
+                poseError, sizeof(poseError))) {
+            fprintf(stderr,
+                    "[FATAL] invalid Character Workshop pose request: "
+                    "%s at %s (%s)\n",
+                    poseText, phaseText,
+                    poseError[0] != '\0' ? poseError : "invalid contract");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        posePhaseMilli = (unsigned)parsed;
+    } else {
+        mdkr_modern_character_clear_inspection_pose();
     }
     if (strcmp(context, "car") == 0) {
         vehicle = VEHICLE_CAR;
@@ -2352,6 +2430,8 @@ static s32 workshop_preview_start(void) {
     }
     if (g_mdkrCharacterPreviewResult != NULL) {
         g_mdkrCharacterPreviewResult->started = TRUE;
+        g_mdkrCharacterPreviewResult->pose = pose;
+        g_mdkrCharacterPreviewResult->pose_phase_milli = posePhaseMilli;
     }
     if (vehicle < 0) {
         charselect_prev(1, NULL);
@@ -2372,8 +2452,11 @@ static s32 workshop_preview_start(void) {
                         gGameCurrentEntrance, gLevelDefaultVehicleID);
     }
     MDKR_TRACE(
-        "character_workshop_preview: started context=%s players=%d vehicle=%d",
-        context, players, vehicle);
+        "character_workshop_preview: started context=%s players=%d "
+        "vehicle=%d pose=%s phase=%u",
+        context, players, vehicle,
+        pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ? "live" : poseText,
+        posePhaseMilli);
     return TRUE;
 }
 #endif

@@ -37,6 +37,18 @@ const char *characterPreviewContextName(MdkrCharacterPreviewContext context) {
     }
 }
 
+const char *characterPreviewPoseSemantic(MdkrCharacterPreviewPose pose) {
+    switch (pose) {
+        case MDKR_CHARACTER_PREVIEW_POSE_LIVE: return nullptr;
+#define MDKR_CHARACTER_PREVIEW_POSE_CASE(suffix, semantic, label) \
+        case MDKR_CHARACTER_PREVIEW_POSE_##suffix: return semantic;
+        MDKR_MODERN_CHARACTER_INSPECTION_SEMANTICS(
+            MDKR_CHARACTER_PREVIEW_POSE_CASE)
+#undef MDKR_CHARACTER_PREVIEW_POSE_CASE
+        default: return nullptr;
+    }
+}
+
 struct CharacterTuningKey {
     const char *environment_suffix;
     const char *preference_suffix;
@@ -207,7 +219,19 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
              characterPreviewContextName(cfg->character_preview_context) ==
                  nullptr ||
              cfg->character_preview_players < 1 ||
-             cfg->character_preview_players > 4)) {
+             cfg->character_preview_players > 4 ||
+             cfg->character_preview_pose <
+                 MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+             cfg->character_preview_pose >=
+                 MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
+             cfg->character_preview_pose_phase_milli > 1000u ||
+             (cfg->character_preview_pose ==
+                  MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+              cfg->character_preview_pose_phase_milli != 0u) ||
+             (cfg->character_preview_pose !=
+                  MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+              characterPreviewPoseSemantic(cfg->character_preview_pose) ==
+                  nullptr))) {
             std::fprintf(stderr,
                          "[app] boot rejected invalid character preview\n");
             return 2;
@@ -339,12 +363,23 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
         cfg->character_preview_context != MDKR_CHARACTER_PREVIEW_NONE) {
         const char *context =
             characterPreviewContextName(cfg->character_preview_context);
+        const char *pose =
+            characterPreviewPoseSemantic(cfg->character_preview_pose);
         bool environmentReady = previewEnvironment.set(
             "MDKR_CHARACTER_WORKSHOP_PREVIEW", context) &&
             previewEnvironment.set(
                 "MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS",
                 std::to_string(cfg->character_preview_players).c_str()) &&
             previewEnvironment.set("MDKR_PRESENT_PERF", "1");
+        const std::string posePhase = pose != nullptr
+            ? std::to_string(cfg->character_preview_pose_phase_milli)
+            : std::string();
+        environmentReady = previewEnvironment.set(
+            "MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE",
+            pose != nullptr ? pose : "") &&
+            previewEnvironment.set(
+                "MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE",
+                posePhase.c_str()) && environmentReady;
         for (int player = 0; player < 4; ++player) {
             const std::string variable =
                 "MDKR_CUSTOM_CHARACTER_P" + std::to_string(player + 1);
@@ -360,9 +395,12 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
         }
         std::fprintf(
             stderr,
-            "[app] character preview: package=%s context=%s players=%d\n",
+            "[app] character preview: package=%s context=%s players=%d "
+            "pose=%s phase=%u\n",
             cfg->character_preview_package, context,
-            cfg->character_preview_players);
+            cfg->character_preview_players,
+            pose != nullptr ? pose : "live",
+            cfg->character_preview_pose_phase_milli);
         if (cfg->character_preview_result != nullptr) {
             *cfg->character_preview_result = MdkrCharacterPreviewResult{};
             cfg->character_preview_result->version =
@@ -371,6 +409,10 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
                 cfg->character_preview_context;
             cfg->character_preview_result->players =
                 cfg->character_preview_players;
+            cfg->character_preview_result->pose =
+                cfg->character_preview_pose;
+            cfg->character_preview_result->pose_phase_milli =
+                cfg->character_preview_pose_phase_milli;
             g_mdkrCharacterPreviewResult = cfg->character_preview_result;
         }
     }

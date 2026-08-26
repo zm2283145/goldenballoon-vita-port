@@ -116,6 +116,17 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                 f"{tab} did not render {tool} history controls\n"
                 f"{process.stdout[-8000:]}"
             )
+    if tab == "test":
+        marker = (
+            "character-pose-inspector package=" + PACKAGE_ID +
+            " semantics=13 defaultPose=4 defaultPhase=500 "
+            "performanceEvidence=session-excluded"
+        )
+        if marker not in process.stdout:
+            raise RuntimeError(
+                "test route did not render the complete session-only pose "
+                f"inspector contract\n{process.stdout[-8000:]}"
+            )
 
 
 def main() -> int:
@@ -150,8 +161,8 @@ def main() -> int:
               file=sys.stderr)
         return 1
     print("check_character_workshop_history_ui: PASS -- exact-source Identity, "
-          "Profile, Rig, Fit, Performance, and Test history controls render "
-          "without mutating installed bytes")
+          "Profile, Rig, Fit, Performance, Test history, and all semantic pose "
+          "inspection controls render without mutating installed bytes")
     return 0
 
 

@@ -1964,6 +1964,28 @@ MdkrDonorGameplayProfiles g_donorGameplayProfiles{};
 std::string g_donorGameplayProfilesUnavailableReason;
 std::map<std::string, int> g_characterAssemblyPlayers;
 std::map<std::string, int> g_characterTestPlayers;
+std::map<std::string, int> g_characterTestPoses;
+std::map<std::string, int> g_characterTestPosePhases;
+std::set<std::string> g_characterPoseInspectionTracePackages;
+
+struct CharacterInspectionPose {
+    MdkrCharacterPreviewPose pose;
+    const char *label;
+    const char *semantic;
+};
+
+constexpr CharacterInspectionPose kCharacterInspectionPoses[] = {
+#define MDKR_CHARACTER_INSPECTION_POSE_ROW(suffix, semantic, label) \
+    {MDKR_CHARACTER_PREVIEW_POSE_##suffix, label, semantic},
+    MDKR_MODERN_CHARACTER_INSPECTION_SEMANTICS(
+        MDKR_CHARACTER_INSPECTION_POSE_ROW)
+#undef MDKR_CHARACTER_INSPECTION_POSE_ROW
+};
+static_assert(std::size(kCharacterInspectionPoses) ==
+                  MDKR_MODERN_CHARACTER_INSPECTION_SEMANTIC_COUNT &&
+                  std::size(kCharacterInspectionPoses) + 1u ==
+                      MDKR_CHARACTER_PREVIEW_POSE_COUNT,
+              "pose inspector must expose every exact-renderer semantic");
 struct CharacterPreviewSessionResult {
     MdkrCharacterPreviewResult result{};
     std::string sourceSha256;
@@ -3490,6 +3512,9 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterTuning.erase(id);
     g_characterAssemblyPlayers.erase(id);
     g_characterTestPlayers.erase(id);
+    g_characterTestPoses.erase(id);
+    g_characterTestPosePhases.erase(id);
+    g_characterPoseInspectionTracePackages.erase(id);
     g_characterPreviewResults.erase(id);
     g_characterTestEvidenceSelectedCell.erase(id);
     g_characterActiveDrafts.erase(id);
@@ -4213,7 +4238,10 @@ std::string missingCharacterSemantics(
 
 void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              MdkrCharacterPreviewContext context,
-                             int players);
+                             int players,
+                             MdkrCharacterPreviewPose pose =
+                                 MDKR_CHARACTER_PREVIEW_POSE_LIVE,
+                             unsigned posePhaseMilli = 0u);
 
 bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
     CharacterRigEdit &edit = loadCharacterRigEdit(entry);
@@ -4402,6 +4430,15 @@ bool characterPreviewSessionMatchesFit(
            session.result.started && session.result.context == context &&
            session.result.warmup_complete &&
            session.result.replacement_draws != 0u &&
+           ((session.result.pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+             session.result.pose_phase_milli == 0u &&
+             session.result.inspection_pose_ticks == 0u &&
+             session.result.inspection_pose_fallback_ticks == 0u) ||
+            (session.result.pose > MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+             session.result.pose < MDKR_CHARACTER_PREVIEW_POSE_COUNT &&
+             session.result.pose_phase_milli <= 1000u &&
+             session.result.inspection_pose_ticks != 0u &&
+             session.result.inspection_pose_fallback_ticks == 0u)) &&
            session.sourceSha256 ==
                characterDigestHex(entry->source_sha256) &&
            session.fitSha256 == characterFitReviewSignature(
@@ -4896,7 +4933,9 @@ void drawCharacterPerformanceAssembly(
 
 void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              MdkrCharacterPreviewContext context,
-                             int players) {
+                             int players,
+                             MdkrCharacterPreviewPose pose,
+                             unsigned posePhaseMilli) {
     const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
     const std::string fitSignature = characterFitReviewSignature(
         entry, tuning, static_cast<unsigned>(context - 1));
@@ -4908,6 +4947,13 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
             AppTheme::bad());
         return;
     }
+    if (pose < MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+        pose >= MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
+        posePhaseMilli > 1000u) {
+        setStatus("The pose inspection request was invalid; no preview was started.",
+                  AppTheme::bad());
+        return;
+    }
     g_characterPreviewRequest = SettingsCharacterPreviewRequest{};
     g_characterPreviewRequest.packageId = entry->id;
     g_characterPreviewRequest.sourceSha256 =
@@ -4916,9 +4962,15 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
     g_characterPreviewRequest.presentationSha256 = presentationSignature;
     g_characterPreviewRequest.context = context;
     g_characterPreviewRequest.players = players;
+    g_characterPreviewRequest.pose = pose;
+    g_characterPreviewRequest.posePhaseMilli =
+        pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ? 0u : posePhaseMilli;
     g_characterPreviewRequested = true;
-    setStatus("Checking the selected ROM, then opening the exact game context.",
-              AppTheme::good());
+    setStatus(
+        pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
+            ? "Checking the selected ROM, then opening the exact game context."
+            : "Checking the selected ROM, then opening the exact game context with the inspection pose held.",
+        AppTheme::good());
 }
 
 std::string boundedCharacterPreviewText(const char *text, size_t capacity) {
@@ -4991,6 +5043,17 @@ const char *characterPreviewResultContext(
     }
 }
 
+const CharacterInspectionPose *characterInspectionPose(
+    MdkrCharacterPreviewPose pose) {
+    const auto found = std::find_if(
+        std::begin(kCharacterInspectionPoses),
+        std::end(kCharacterInspectionPoses),
+        [pose](const CharacterInspectionPose &candidate) {
+            return candidate.pose == pose;
+        });
+    return found != std::end(kCharacterInspectionPoses) ? &*found : nullptr;
+}
+
 void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
     const auto found = g_characterPreviewResults.find(entry->id);
     if (found == g_characterPreviewResults.end()) return;
@@ -5015,6 +5078,78 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
     ImGui::Text("%s  •  %d %s",
                 characterPreviewResultContext(result.context), result.players,
                 result.players == 1 ? "player" : "players");
+    if (result.pose != MDKR_CHARACTER_PREVIEW_POSE_LIVE) {
+        const CharacterInspectionPose *pose =
+            characterInspectionPose(result.pose);
+        if (pose == nullptr || result.pose_phase_milli > 1000u ||
+            result.inspection_pose_fallback_ticks >
+                result.inspection_pose_ticks) {
+            ImGui::TextColored(
+                AppTheme::bad(),
+                "The engine returned an invalid pose-inspection contract.");
+            ui::TextSubtleWrapped(
+                "No performance evidence or fit conclusion was saved.");
+            ui::CardEnd();
+            return;
+        }
+        ImGui::Text("%s  •  phase %.1f%%",
+                    pose->label, result.pose_phase_milli / 10.0);
+        const bool renderedCharacter = result.replacement_draws != 0u;
+        const bool poseMeasured = result.inspection_pose_ticks != 0u;
+        const bool exactPose = poseMeasured &&
+            result.inspection_pose_fallback_ticks == 0u;
+        ImGui::PushStyleColor(
+            ImGuiCol_Text,
+            renderedCharacter && exactPose
+                ? AppTheme::good() : AppTheme::accent());
+        ImGui::TextUnformatted(
+            !renderedCharacter
+                ? "No character replacement — inspection inconclusive"
+                : !poseMeasured
+                    ? "Inspection ended before held-pose evidence began"
+                : exactPose
+                    ? "Exact pose inspection captured"
+                    : "Requested semantic unavailable — source fallback shown");
+        ImGui::PopStyleColor();
+        if (!result.warmup_complete) {
+            ui::TextSubtleWrapped(
+                "The scene ended before the 120-tick stabilization boundary. Keep the inspection open longer before returning with F1.");
+        }
+        ImGui::Text("%llu replacement draws · %llu rendered parts · %llu inspected ticks",
+                    result.replacement_draws,
+                    result.replacement_primitives,
+                    result.inspection_pose_ticks);
+        if (result.inspection_pose_fallback_ticks != 0u) {
+            ImGui::Text(
+                "%llu ticks used source fallback instead of phase-scrubbable motion",
+                result.inspection_pose_fallback_ticks);
+        }
+        if (result.context != MDKR_CHARACTER_PREVIEW_SELECT &&
+            result.contact_solves != 0u) {
+            ImGui::Text(
+                "Contact reach: %.2f mm mean · %.2f mm maximum across %llu solves",
+                result.contact_error_mean_micrometres / 1000.0,
+                result.contact_error_max_micrometres / 1000.0,
+                result.contact_solves);
+        }
+        ui::TextSubtleWrapped(
+            exactPose
+                ? "This session-only visual proof may support fit review, but it is intentionally excluded from the durable performance matrix and pinned baselines. Run the live qualification route for timing evidence."
+                : "Fallback or pre-measurement inspection cannot approve the current fit. Map the semantic or review the humanoid rig, then inspect again; run the live qualification route for timing evidence.");
+        ui::CardEnd();
+        return;
+    }
+    if (result.pose_phase_milli != 0u ||
+        result.inspection_pose_ticks != 0u ||
+        result.inspection_pose_fallback_ticks != 0u) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "Mixed live-test and pose-inspection result — diagnostic only");
+        ui::TextSubtleWrapped(
+            "The engine result contract was internally inconsistent. It cannot approve fit, enter the performance matrix, or replace a pinned baseline.");
+        ui::CardEnd();
+        return;
+    }
     if (!result.warmup_complete) {
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
         ImGui::TextUnformatted("Ended during the 120-tick warm-up");
@@ -5197,6 +5332,10 @@ void drawCharacterTestEvidenceMatrix(
         g_characterTestEvidenceSmokeActionApplied = true;
         bool applied = false;
         if (std::strcmp(smokeAction, "publish-qualified") == 0 ||
+            std::strcmp(smokeAction, "publish-inspection") == 0 ||
+            std::strcmp(
+                smokeAction, "publish-inspection-fallback") == 0 ||
+            std::strcmp(smokeAction, "publish-mixed-mode") == 0 ||
             std::strcmp(
                 smokeAction, "publish-stale-fit-session") == 0) {
             MdkrCharacterPreviewResult result{};
@@ -5235,6 +5374,23 @@ void drawCharacterTestEvidenceMatrix(
             result.output_height = 960u;
             result.render_width = 2560u;
             result.render_height = 1920u;
+            const bool inspection =
+                std::strcmp(smokeAction, "publish-inspection") == 0 ||
+                std::strcmp(
+                    smokeAction, "publish-inspection-fallback") == 0;
+            const bool inspectionFallback = std::strcmp(
+                smokeAction, "publish-inspection-fallback") == 0;
+            const bool mixedMode = std::strcmp(
+                smokeAction, "publish-mixed-mode") == 0;
+            if (inspection) {
+                result.pose = MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER;
+                result.pose_phase_milli = 250u;
+                result.inspection_pose_ticks = 180u;
+                result.inspection_pose_fallback_ticks =
+                    inspectionFallback ? 180u : 0u;
+            } else if (mixedMode) {
+                result.inspection_pose_ticks = 180u;
+            }
             const std::string source =
                 characterDigestHex(entry->source_sha256);
             const bool staleFit = std::strcmp(
@@ -5248,14 +5404,28 @@ void drawCharacterTestEvidenceMatrix(
             Settings_publishCharacterPreviewResult(
                 entry->id, source, fit, presentation, result);
             const auto session = g_characterPreviewResults.find(entry->id);
-            applied = CharacterTestEvidenceStore::find(
-                g_characterTestEvidence, entry->id, 2u, 4u,
-                CharacterTestEvidenceStore::Kind::Latest) != nullptr &&
-                (!staleFit ||
-                 (session != g_characterPreviewResults.end() &&
-                  !characterPreviewSessionMatchesFit(
-                      entry, tuning, MDKR_CHARACTER_PREVIEW_CAR,
-                      session->second)));
+            const CharacterTestEvidenceStore::Evidence *latest =
+                CharacterTestEvidenceStore::find(
+                    g_characterTestEvidence, entry->id, 2u, 4u,
+                    CharacterTestEvidenceStore::Kind::Latest);
+            const bool sessionMatches =
+                session != g_characterPreviewResults.end() &&
+                characterPreviewSessionMatchesFit(
+                    entry, tuning, MDKR_CHARACTER_PREVIEW_CAR,
+                    session->second);
+            if (mixedMode) {
+                applied = session != g_characterPreviewResults.end() &&
+                    latest == nullptr && !sessionMatches;
+            } else if (inspection) {
+                applied = session != g_characterPreviewResults.end() &&
+                    latest == nullptr &&
+                    session->second.result.pose ==
+                        MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER &&
+                    (inspectionFallback ? !sessionMatches : sessionMatches);
+            } else {
+                applied = session != g_characterPreviewResults.end() &&
+                    latest != nullptr && (!staleFit || !sessionMatches);
+            }
         } else if (std::strcmp(smokeAction, "pin-car-4p") == 0) {
             const CharacterTestEvidenceStore::Evidence *latest =
                 CharacterTestEvidenceStore::find(
@@ -5599,8 +5769,27 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         return;
     }
     int &players = g_characterTestPlayers[entry->id];
+    int &inspectionPose = g_characterTestPoses.try_emplace(
+        entry->id, MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER).first->second;
+    int &inspectionPhase = g_characterTestPosePhases.try_emplace(
+        entry->id, 500).first->second;
     const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
     if (players < 1 || players > 4) players = 1;
+    if (inspectionPose <= MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+        inspectionPose >= MDKR_CHARACTER_PREVIEW_POSE_COUNT) {
+        inspectionPose = MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER;
+    }
+    if (inspectionPhase < 0 || inspectionPhase > 1000) {
+        inspectionPhase = 500;
+    }
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
+        g_characterPoseInspectionTracePackages.insert(entry->id).second) {
+        std::fprintf(
+            stderr,
+            "[app-ui] character-pose-inspector package=%s semantics=%zu defaultPose=%d defaultPhase=%d performanceEvidence=session-excluded\n",
+            entry->id, std::size(kCharacterInspectionPoses),
+            inspectionPose, inspectionPhase);
+    }
     CharacterHistoryFrame history = beginCharacterHistory(
         entry, CharacterHistoryTool::Test);
     ui::TextSubtleWrapped(
@@ -5616,46 +5805,125 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
             std::to_string(option);
         (void)ImGui::RadioButton(label.c_str(), &players, option);
     }
-    if (ImGui::Button("Character select")) {
-        requestCharacterPreview(entry, MDKR_CHARACTER_PREVIEW_SELECT,
-                                players);
-    }
-    ui::SpeakFocusedItem(
-        "Character select", nullptr,
-        "Tests the selected package in the exact character select scene.");
-    ImGui::SameLine();
+    const float testActionWidth = ImGui::GetContentRegionAvail().x;
+    const int testActionColumns =
+        testActionWidth >= ui::kPairMinWidth() * 4.0f ? 4
+        : testActionWidth >= ui::kPairMinWidth() * 2.0f ? 2 : 1;
     const bool carQualified = (tuning.vehicleMask & 1u) != 0u;
-    if (!carQualified) ImGui::BeginDisabled();
-    if (ImGui::Button("Car") && carQualified) {
-        requestCharacterPreview(entry, MDKR_CHARACTER_PREVIEW_CAR,
-                                players);
-    }
-    if (!carQualified) ImGui::EndDisabled();
-    ui::SpeakFocusedItem("Car",
-                         carQualified ? nullptr : "Disabled for this package.",
-                         "Tests the selected package in a real car race.");
-    ImGui::SameLine();
     const bool hoverQualified = (tuning.vehicleMask & 2u) != 0u;
-    if (!hoverQualified) ImGui::BeginDisabled();
-    if (ImGui::Button("Hovercraft") && hoverQualified) {
-        requestCharacterPreview(
-            entry, MDKR_CHARACTER_PREVIEW_HOVERCRAFT, players);
-    }
-    if (!hoverQualified) ImGui::EndDisabled();
-    ui::SpeakFocusedItem(
-        "Hovercraft", hoverQualified ? nullptr : "Not supported by this package.",
-        "Tests the selected package in a real hovercraft race.");
-    ImGui::SameLine();
     const bool planeQualified = (tuning.vehicleMask & 4u) != 0u;
-    if (!planeQualified) ImGui::BeginDisabled();
-    if (ImGui::Button("Plane") && planeQualified) {
-        requestCharacterPreview(entry, MDKR_CHARACTER_PREVIEW_PLANE,
-                                players);
+    if (ImGui::BeginTable(
+            "##character-live-test-actions", testActionColumns,
+            ImGuiTableFlags_SizingStretchSame)) {
+        ImGui::TableNextColumn();
+        if (ImGui::Button("Character select", ui::kBtnFullWidth())) {
+            requestCharacterPreview(entry, MDKR_CHARACTER_PREVIEW_SELECT,
+                                    players);
+        }
+        ui::SpeakFocusedItem(
+            "Character select", nullptr,
+            "Tests the selected package in the exact character select scene.");
+        ImGui::TableNextColumn();
+        if (!carQualified) ImGui::BeginDisabled();
+        if (ImGui::Button("Car", ui::kBtnFullWidth()) && carQualified) {
+            requestCharacterPreview(entry, MDKR_CHARACTER_PREVIEW_CAR,
+                                    players);
+        }
+        if (!carQualified) ImGui::EndDisabled();
+        ui::SpeakFocusedItem(
+            "Car", carQualified ? nullptr : "Disabled for this package.",
+            "Tests the selected package in a real car race.");
+        ImGui::TableNextColumn();
+        if (!hoverQualified) ImGui::BeginDisabled();
+        if (ImGui::Button("Hovercraft", ui::kBtnFullWidth()) &&
+            hoverQualified) {
+            requestCharacterPreview(
+                entry, MDKR_CHARACTER_PREVIEW_HOVERCRAFT, players);
+        }
+        if (!hoverQualified) ImGui::EndDisabled();
+        ui::SpeakFocusedItem(
+            "Hovercraft",
+            hoverQualified ? nullptr : "Not supported by this package.",
+            "Tests the selected package in a real hovercraft race.");
+        ImGui::TableNextColumn();
+        if (!planeQualified) ImGui::BeginDisabled();
+        if (ImGui::Button("Plane", ui::kBtnFullWidth()) && planeQualified) {
+            requestCharacterPreview(entry, MDKR_CHARACTER_PREVIEW_PLANE,
+                                    players);
+        }
+        if (!planeQualified) ImGui::EndDisabled();
+        ui::SpeakFocusedItem(
+            "Plane",
+            planeQualified ? nullptr : "Not supported by this package.",
+            "Tests the selected package in a real plane race.");
+        ImGui::EndTable();
     }
-    if (!planeQualified) ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Pose inspection");
+    ui::TextSubtleWrapped(
+        "Freeze any supported animation semantic at an exact normalized phase in the real game renderer. Use this to inspect grounding, facing, seat placement, silhouette, deformation, and hand or foot reach. Inspection results stay in this session and never replace performance evidence or pinned baselines.");
+    const auto selectedPose = std::find_if(
+        std::begin(kCharacterInspectionPoses),
+        std::end(kCharacterInspectionPoses),
+        [inspectionPose](const CharacterInspectionPose &candidate) {
+            return candidate.pose == inspectionPose;
+        });
+    const CharacterInspectionPose &pose =
+        selectedPose != std::end(kCharacterInspectionPoses)
+            ? *selectedPose : kCharacterInspectionPoses[3];
+    if (ImGui::BeginCombo("Semantic pose", pose.label)) {
+        for (const CharacterInspectionPose &candidate :
+             kCharacterInspectionPoses) {
+            const bool selected = candidate.pose == inspectionPose;
+            if (ImGui::Selectable(candidate.label, selected)) {
+                inspectionPose = candidate.pose;
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
     ui::SpeakFocusedItem(
-        "Plane", planeQualified ? nullptr : "Not supported by this package.",
-        "Tests the selected package in a real plane race.");
+        "Semantic pose", nullptr,
+        "Chooses the authored clip or reviewed humanoid reference motion to hold in the exact renderer.");
+    (void)ImGui::SliderInt(
+        "Normalized phase", &inspectionPhase, 0, 1000,
+        "%d / 1000", ImGuiSliderFlags_AlwaysClamp);
+    ui::SpeakFocusedItem(
+        "Normalized phase", nullptr,
+        "Scrubs from the beginning to the end of the selected semantic without changing animation speed.");
+    ImGui::TextDisabled("Runtime semantic: %s", pose.semantic);
+
+    const auto inspectButton = [&](const char *label,
+                                   MdkrCharacterPreviewContext context,
+                                   bool enabled, const char *disabledReason) {
+        ImGui::TableNextColumn();
+        if (!enabled) ImGui::BeginDisabled();
+        if (ImGui::Button(label, ui::kBtnFullWidth()) && enabled) {
+            requestCharacterPreview(
+                entry, context, players,
+                static_cast<MdkrCharacterPreviewPose>(inspectionPose),
+                static_cast<unsigned>(inspectionPhase));
+        }
+        if (!enabled) ImGui::EndDisabled();
+        ui::SpeakFocusedItem(
+            label, enabled ? nullptr : disabledReason,
+            "Opens the exact game scene and holds the selected semantic phase for visual fit review; no performance evidence is saved.");
+    };
+    if (ImGui::BeginTable(
+            "##character-pose-inspection-actions", testActionColumns,
+            ImGuiTableFlags_SizingStretchSame)) {
+        inspectButton("Inspect character select",
+                      MDKR_CHARACTER_PREVIEW_SELECT, true, nullptr);
+        inspectButton("Inspect car", MDKR_CHARACTER_PREVIEW_CAR,
+                      carQualified, "Car is disabled for this package.");
+        inspectButton("Inspect hovercraft",
+                      MDKR_CHARACTER_PREVIEW_HOVERCRAFT,
+                      hoverQualified,
+                      "Hovercraft is disabled for this package.");
+        inspectButton("Inspect plane", MDKR_CHARACTER_PREVIEW_PLANE,
+                      planeQualified, "Plane is disabled for this package.");
+        ImGui::EndTable();
+    }
     finishCharacterHistory(entry, history);
 }
 
@@ -6781,9 +7049,18 @@ bool captureCharacterHistoryPayload(
         appendCharacterHistoryValue(payload, players);
     } else if (tool == CharacterHistoryTool::Test) {
         int players = g_characterTestPlayers[entry->id];
+        int pose = g_characterTestPoses[entry->id];
+        int phase = g_characterTestPosePhases[entry->id];
         if (players < 1 || players > 4) players = 1;
-        payload = "mdkr-test-history-v1\n";
+        if (pose <= MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+            pose >= MDKR_CHARACTER_PREVIEW_POSE_COUNT) {
+            pose = MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER;
+        }
+        if (phase < 0 || phase > 1000) phase = 500;
+        payload = "mdkr-test-history-v2\n";
         appendCharacterHistoryValue(payload, players);
+        appendCharacterHistoryValue(payload, pose);
+        appendCharacterHistoryValue(payload, phase);
     } else {
         return false;
     }
@@ -7145,23 +7422,38 @@ bool applyCharacterHistoryPayload(
             error = "Fit history could not be persisted; history was not consumed.";
             return false;
         }
-    } else if (tool == CharacterHistoryTool::Performance ||
-               tool == CharacterHistoryTool::Test) {
-        const char *header = tool == CharacterHistoryTool::Performance
-            ? "mdkr-performance-history-v1\n"
-            : "mdkr-test-history-v1\n";
+    } else if (tool == CharacterHistoryTool::Performance) {
         int players = 0;
-        if (!consumeHeader(header) ||
+        if (!consumeHeader("mdkr-performance-history-v1\n") ||
             !readCharacterHistoryValue(payload, offset, players) ||
             offset != payload.size() || players < 1 || players > 4) {
             error = "Assembly history value is invalid.";
             return false;
         }
-        if (tool == CharacterHistoryTool::Performance) {
-            g_characterAssemblyPlayers[entry->id] = players;
-        } else {
-            g_characterTestPlayers[entry->id] = players;
+        g_characterAssemblyPlayers[entry->id] = players;
+    } else if (tool == CharacterHistoryTool::Test) {
+        const bool current = consumeHeader("mdkr-test-history-v2\n");
+        if (!current && !consumeHeader("mdkr-test-history-v1\n")) {
+            error = "Test history header is invalid.";
+            return false;
         }
+        int players = 0;
+        int pose = MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER;
+        int phase = 500;
+        if (!readCharacterHistoryValue(payload, offset, players) ||
+            (current &&
+             (!readCharacterHistoryValue(payload, offset, pose) ||
+              !readCharacterHistoryValue(payload, offset, phase))) ||
+            offset != payload.size() || players < 1 || players > 4 ||
+            pose <= MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+            pose >= MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
+            phase < 0 || phase > 1000) {
+            error = "Test history values are invalid.";
+            return false;
+        }
+        g_characterTestPlayers[entry->id] = players;
+        g_characterTestPoses[entry->id] = pose;
+        g_characterTestPosePhases[entry->id] = phase;
     } else {
         error = "Unknown character history tool.";
         return false;
@@ -7349,10 +7641,22 @@ bool captureCharacterDraftSnapshot(
     }
     int assemblyPlayers = g_characterAssemblyPlayers[entry->id];
     int testPlayers = g_characterTestPlayers[entry->id];
+    int testPose = g_characterTestPoses.try_emplace(
+        entry->id, MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER).first->second;
+    int testPosePhase = g_characterTestPosePhases.try_emplace(
+        entry->id, 500).first->second;
     snapshot.assemblyPlayers = assemblyPlayers >= 1 && assemblyPlayers <= 4
         ? assemblyPlayers : 4;
     snapshot.testPlayers = testPlayers >= 1 && testPlayers <= 4
         ? testPlayers : 1;
+    snapshot.testPose =
+        testPose > MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+                testPose < MDKR_CHARACTER_PREVIEW_POSE_COUNT
+            ? static_cast<uint32_t>(testPose)
+            : static_cast<uint32_t>(MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER);
+    snapshot.testPosePhaseMilli =
+        testPosePhase >= 0 && testPosePhase <= 1000
+            ? static_cast<uint32_t>(testPosePhase) : 500u;
     error.clear();
     return true;
 }
@@ -7470,6 +7774,9 @@ bool applyCharacterDraftSnapshot(
     g_characterRigEdits[entry->id] = std::move(rig);
     g_characterAssemblyPlayers[entry->id] = snapshot.assemblyPlayers;
     g_characterTestPlayers[entry->id] = snapshot.testPlayers;
+    g_characterTestPoses[entry->id] = static_cast<int>(snapshot.testPose);
+    g_characterTestPosePhases[entry->id] =
+        static_cast<int>(snapshot.testPosePhaseMilli);
     CharacterDraftReviewState review;
     review.mask = snapshot.reviewedContexts;
     for (size_t context = 0u;
@@ -7608,6 +7915,8 @@ void closeCharacterDraftEditor(const std::string &packageId,
         g_characterTuning.erase(packageId);
         g_characterAssemblyPlayers.erase(packageId);
         g_characterTestPlayers.erase(packageId);
+        g_characterTestPoses.erase(packageId);
+        g_characterTestPosePhases.erase(packageId);
         g_characterPendingDraftFit.erase(packageId);
     } else {
         g_characterPendingDraftFit[packageId] = true;
@@ -10452,6 +10761,33 @@ void Settings_publishCharacterPreviewResult(
     g_characterPreviewResults[packageId] = CharacterPreviewSessionResult{
         result, sourceSha256, fitSha256, presentationSha256,
     };
+    if (result.pose != MDKR_CHARACTER_PREVIEW_POSE_LIVE) {
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-pose-inspection session-only=1 package=%s context=%u players=%d pose=%d phase=%u\n",
+                packageId.c_str(), static_cast<unsigned>(result.context),
+                result.players, static_cast<int>(result.pose),
+                result.pose_phase_milli);
+        }
+        return;
+    }
+    if (result.pose_phase_milli != 0u ||
+        result.inspection_pose_ticks != 0u ||
+        result.inspection_pose_fallback_ticks != 0u) {
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-preview-result rejected-evidence=mixed-mode package=%s phase=%u poseTicks=%llu poseFallback=%llu\n",
+                packageId.c_str(), result.pose_phase_milli,
+                result.inspection_pose_ticks,
+                result.inspection_pose_fallback_ticks);
+        }
+        setStatus(
+            "The engine returned mixed live-test and pose-inspection fields; the session is visible for diagnosis but no durable performance evidence was saved.",
+            AppTheme::bad());
+        return;
+    }
     if (result.context >= MDKR_CHARACTER_PREVIEW_SELECT &&
         result.context <= MDKR_CHARACTER_PREVIEW_PLANE &&
         result.players >= 1 && result.players <= 4) {

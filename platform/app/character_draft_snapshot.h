@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <string>
 
+#include "../modern_character_semantics.h"
 #include "character_portrait_studio.h"
 
 namespace CharacterDraftSnapshot {
@@ -46,6 +47,8 @@ struct Snapshot {
     uint8_t minimapRgb[3] = {220u, 72u, 144u};
     int assemblyPlayers = 4;
     int testPlayers = 1;
+    uint32_t testPose = MDKR_MODERN_CHARACTER_INSPECTION_DEFAULT_POSE;
+    uint32_t testPosePhaseMilli = 500u;
     uint32_t reviewedContexts = 0u;
 
     float scale = 1.0f;

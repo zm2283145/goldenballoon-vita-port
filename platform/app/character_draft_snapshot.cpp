@@ -8,7 +8,8 @@
 
 namespace {
 
-constexpr uint32_t kVersion = 3u;
+constexpr uint32_t kVersion = 4u;
+constexpr uint32_t kPortraitStyleVersion = 3u;
 constexpr uint32_t kNamesVersion = 2u;
 constexpr uint32_t kLegacyVersion = 1u;
 constexpr size_t kHeaderBytes = 40u;
@@ -19,8 +20,9 @@ constexpr size_t kRigBytes = 8u +
 constexpr size_t kLegacyFixedBytes = kHeaderBytes + kTuningBytes + kRigBytes +
     CharacterDraftSnapshot::kPortraitBytes + 4u;
 constexpr size_t kPortraitRecipeBytes = 9u * 4u;
-constexpr size_t kFixedBytes = kLegacyFixedBytes +
+constexpr size_t kPortraitStyleFixedBytes = kLegacyFixedBytes +
     CharacterPortraitStudio::kBytes + kPortraitRecipeBytes;
+constexpr size_t kFixedBytes = kPortraitStyleFixedBytes + 8u;
 constexpr size_t kMaximumPathBytes = 4095u;
 constexpr size_t kMaximumNameBytes = 96u;
 constexpr size_t kMaximumShortNameBytes = 96u;
@@ -194,6 +196,10 @@ bool snapshotValid(const CharacterDraftSnapshot::Snapshot &snapshot,
     }
     if (snapshot.assemblyPlayers < 1 || snapshot.assemblyPlayers > 4 ||
         snapshot.testPlayers < 1 || snapshot.testPlayers > 4 ||
+        snapshot.testPose == 0u ||
+        snapshot.testPose >
+            MDKR_MODERN_CHARACTER_INSPECTION_SEMANTIC_COUNT ||
+        snapshot.testPosePhaseMilli > 1000u ||
         (snapshot.reviewedContexts & ~0xFu) != 0u) {
         error = "draft test or review state is invalid";
         return false;
@@ -348,6 +354,8 @@ bool encode(const Snapshot &snapshot, std::string &payload,
     appendU32(result, static_cast<uint32_t>(
         snapshot.portraitRecipe.sampling));
     appendU32(result, snapshot.portraitRecipe.fillPinholes ? 1u : 0u);
+    appendU32(result, snapshot.testPose);
+    appendU32(result, snapshot.testPosePhaseMilli);
     if (result.size() != kFixedBytes + 16u +
             snapshot.portraitSourcePath.size() + namesBytes) {
         error = "draft snapshot encoder size invariant failed";
@@ -370,7 +378,8 @@ bool decode(const std::string &payload, Snapshot &snapshot,
     if (payload.size() < kLegacyFixedBytes ||
         payload.compare(0u, 4u, "MDWD") != 0 ||
         !readU32(payload, offset, version) ||
-        (version != kVersion && version != kNamesVersion &&
+        (version != kVersion && version != kPortraitStyleVersion &&
+         version != kNamesVersion &&
          version != kLegacyVersion) ||
         !readU32(payload, offset, declaredSize) ||
         declaredSize != payload.size() ||
@@ -462,7 +471,7 @@ bool decode(const std::string &payload, Snapshot &snapshot,
             offset += nameSize;
         }
     }
-    if (version == kVersion) {
+    if (version >= kPortraitStyleVersion) {
         uint32_t sampling;
         uint32_t fillPinholes;
         if (offset > payload.size() ||
@@ -493,6 +502,11 @@ bool decode(const std::string &payload, Snapshot &snapshot,
         parsed.portraitRecipe.fillPinholes = fillPinholes != 0u;
     } else {
         parsed.portraitStyleSource = parsed.portrait;
+    }
+    if (version >= kVersion &&
+        (!readU32(payload, offset, parsed.testPose) ||
+         !readU32(payload, offset, parsed.testPosePhaseMilli))) {
+        goto malformed;
     }
     if (offset != payload.size() ||
         !snapshotValid(parsed, error, version == kLegacyVersion)) return false;

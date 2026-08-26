@@ -100,20 +100,25 @@ def main() -> int:
             failures.append("temporary catalog install failed")
 
     arms = [
-        ("select", 1, True),
-        ("car", 1, False),
-        ("hovercraft", 1, False),
-        ("plane", 1, False),
-        ("car", 3, False),
-        ("car", 4, True),
+        ("select", 1, True, None, None, False),
+        ("car", 1, False, None, None, False),
+        ("hovercraft", 1, False, None, None, False),
+        ("plane", 1, False, None, None, False),
+        ("car", 3, False, None, None, False),
+        ("car", 4, True, None, None, False),
+        ("car", 1, False, "select.idle", "250", False),
+        ("car", 1, False, "race.finish_win", "750", True),
     ]
     arm_draws: dict[str, int] = {}
     captures: dict[str, Path] = {}
     reported_dimensions: dict[str, tuple[int, int, int, int]] = {}
     comparison_environment: tuple[str, str, str, str, str] | None = None
     if not failures:
-        for context, players, capture in arms:
-            label = f"{context}-{players}p"
+        for (context, players, capture, pose, pose_phase,
+             expect_fallback) in arms:
+            label = (f"{context}-{players}p" if pose is None else
+                     f"{context}-{players}p-pose" +
+                     ("-fallback" if expect_fallback else ""))
             arm_dir = evidence / label
             arm_dir.mkdir(parents=True, exist_ok=True)
             env = {key: value for key, value in os.environ.items()
@@ -130,6 +135,9 @@ def main() -> int:
             )
             for player in range(players):
                 env[f"MDKR_CUSTOM_CHARACTER_P{player + 1}"] = PACKAGE_ID
+            if pose is not None and pose_phase is not None:
+                env["MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE"] = pose
+                env["MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE"] = pose_phase
             command = [
                 str(binary), "--headless-frames", str(FRAMES), "--rom",
                 str(rom), "--window-size", "1280x960", "--restored",
@@ -148,6 +156,27 @@ def main() -> int:
                         f"players={players}")
             if expected not in arm_output:
                 failures.append(f"{label} did not enter its direct context")
+            if pose is not None:
+                expected_pose = 12 if expect_fallback else 1
+                expected_phase = 750 if expect_fallback else 250
+                pose_match = re.search(
+                    rf"pose={expected_pose} phase={expected_phase} "
+                    r"poseTicks=(\d+) poseFallback=(\d+)",
+                    arm_output,
+                )
+                if pose_match is None or int(pose_match.group(1)) <= 0:
+                    failures.append(
+                        f"{label} did not drive the held semantic phase"
+                    )
+                elif expect_fallback:
+                    if int(pose_match.group(2)) != int(pose_match.group(1)):
+                        failures.append(
+                            f"{label} did not report complete source fallback"
+                        )
+                elif int(pose_match.group(2)) != 0:
+                    failures.append(
+                        f"{label} unexpectedly used source fallback"
+                    )
             if "donor0=1" not in arm_output:
                 failures.append(f"{label} lost the non-Diddy donor profile")
             match = re.search(
@@ -222,17 +251,24 @@ def main() -> int:
                     captures[label] = dumps[0]
 
     rejection_arms = [
-        ("invalid-context", "boat", "1", True, None,
+        ("invalid-context", "boat", "1", True, None, None, None,
          "invalid Character Workshop context: boat"),
-        ("invalid-players", "car", "0", True, None,
+        ("invalid-players", "car", "0", True, None, None, None,
          "invalid Character Workshop player count: 0"),
-        ("missing-assignment", "car", "1", False, None,
+        ("missing-assignment", "car", "1", False, None, None, None,
          "Character Workshop package assignment is unavailable"),
-        ("unsupported-vehicle", "plane", "1", True, "1",
+        ("unsupported-vehicle", "plane", "1", True, "1", None, None,
          "Character Workshop package assignment is unavailable"),
+        ("invalid-pose", "car", "1", True, None, "race.dance", "500",
+         "invalid Character Workshop pose request"),
+        ("invalid-pose-phase", "car", "1", True, None, "race.steer", "1001",
+         "invalid Character Workshop pose request"),
+        ("unpaired-pose", "car", "1", True, None, "race.steer", None,
+         "pose and phase must be provided together"),
     ]
     if not failures:
-        for label, context, players, assign, vehicle_mask, marker in rejection_arms:
+        for (label, context, players, assign, vehicle_mask,
+             pose, pose_phase, marker) in rejection_arms:
             env = {key: value for key, value in os.environ.items()
                    if not key.startswith(("MDKR", "GE007_"))}
             env.update(
@@ -247,6 +283,10 @@ def main() -> int:
                 env["MDKR_CUSTOM_CHARACTER_P1"] = PACKAGE_ID
             if vehicle_mask is not None:
                 env[f"MDKR_CUSTOM_CHARACTER_PROFILE_{PACKAGE_ID}_VEHICLE_MASK"] = vehicle_mask
+            if pose is not None:
+                env["MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE"] = pose
+            if pose_phase is not None:
+                env["MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE"] = pose_phase
             process = run([
                 str(binary), "--headless-frames", "60", "--rom", str(rom),
                 "--window-size", "1280x960", "--restored",
@@ -296,7 +336,12 @@ def main() -> int:
             print(f"  - {failure}", file=sys.stderr)
         print(f"  evidence: {evidence}", file=sys.stderr)
         return 1
-    print("check_custom_character_workshop_preview: PASS -- direct select/car/hovercraft/plane routes, one-to-four-player WebGPU stress, and fail-closed invalid requests")
+    print(
+        "check_custom_character_workshop_preview: PASS -- direct "
+        "select/car/hovercraft/plane routes, exact semantic-phase inspection "
+        "with honest fallback accounting, one-to-four-player WebGPU stress, "
+        "and fail-closed invalid requests"
+    )
     if args.evidence_dir is not None:
         print(f"evidence: {evidence}")
     if temporary is not None:

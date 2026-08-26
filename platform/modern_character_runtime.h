@@ -11,6 +11,7 @@
 #include <PR/gbi.h>
 
 #include "modern_character_registry.h"
+#include "modern_character_semantics.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -62,6 +63,8 @@ typedef struct MdkrModernCharacterRuntimeMetrics {
     uint64_t contact_solves;
     uint64_t contact_error_micrometres_sum;
     uint64_t contact_error_micrometres_max;
+    uint64_t inspection_pose_ticks;
+    uint64_t inspection_pose_fallback_ticks;
 } MdkrModernCharacterRuntimeMetrics;
 
 /* Lightweight, borrowed library record for menu/workshop roster surfaces.
@@ -129,6 +132,14 @@ int mdkr_modern_character_tick(int player, const char *semantic,
 int mdkr_modern_character_tick_phase(int player, const char *semantic,
                                      float seconds, float normalized_phase,
                                      char *error, size_t error_size);
+
+/* Exact Workshop inspection seam. Once enabled, every assigned preview player
+ * holds this validated semantic at the same normalized phase regardless of the
+ * live scene's transient animation choice. Runtime shutdown always clears it. */
+int mdkr_modern_character_set_inspection_pose(
+    const char *semantic, float normalized_phase,
+    char *error, size_t error_size);
+void mdkr_modern_character_clear_inspection_pose(void);
 
 /* Emit at the current object matrix in the authored display list. Returns one
  * only when the complete selected LOD was registered and emitted. */

@@ -11,6 +11,7 @@
 /* Canonical C handoff/recovery seam. Keep these declarations in one header so
  * the C engine and C++ shell cannot drift. */
 #include "../host_window.h"
+#include "../modern_character_semantics.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,6 +38,20 @@ typedef enum {
     MDKR_CHARACTER_PREVIEW_PLANE,
 } MdkrCharacterPreviewContext;
 
+/* A pose inspector is a presentation-only exact-renderer request. LIVE keeps
+ * ordinary game-driven animation and is the only mode eligible for durable
+ * performance evidence. Every other value holds the chosen semantic at the
+ * requested normalized phase without changing racer or vehicle logic. */
+typedef enum {
+    MDKR_CHARACTER_PREVIEW_POSE_LIVE = 0,
+#define MDKR_CHARACTER_PREVIEW_POSE_ENUM(suffix, semantic, label) \
+    MDKR_CHARACTER_PREVIEW_POSE_##suffix,
+    MDKR_MODERN_CHARACTER_INSPECTION_SEMANTICS(
+        MDKR_CHARACTER_PREVIEW_POSE_ENUM)
+#undef MDKR_CHARACTER_PREVIEW_POSE_ENUM
+    MDKR_CHARACTER_PREVIEW_POSE_COUNT,
+} MdkrCharacterPreviewPose;
+
 // Measured evidence returned by an exact Character Workshop session. Interval
 // values describe displayed wall cadence after a 120-authored-tick warm-up;
 // they are not GPU timestamp queries. A short session can legitimately return
@@ -48,6 +63,8 @@ typedef struct MdkrCharacterPreviewResult {
     int realtime;
     MdkrCharacterPreviewContext context;
     int players;
+    MdkrCharacterPreviewPose pose;
+    unsigned pose_phase_milli;
     unsigned long long warmup_ticks;
     unsigned long long interval_samples;
     unsigned long long displayed_frames;
@@ -64,6 +81,8 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned long long contact_solves;
     unsigned long long contact_error_mean_micrometres;
     unsigned long long contact_error_max_micrometres;
+    unsigned long long inspection_pose_ticks;
+    unsigned long long inspection_pose_fallback_ticks;
     /* Exact comparison environment captured inside the engine session. Text
      * comes from the bounded GPU diagnostic record; dimensions distinguish
      * output resolution from RenderScale's actual scene resolution. */
@@ -78,7 +97,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 3u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 5u
 
 // Owned by the C engine entry module and non-NULL only during a launcher-owned
 // preview boot. The game writes through it before engine teardown resets the
@@ -98,6 +117,8 @@ typedef struct {
     const char *character_preview_package;
     MdkrCharacterPreviewContext character_preview_context;
     int character_preview_players;  // 1..4
+    MdkrCharacterPreviewPose character_preview_pose;
+    unsigned character_preview_pose_phase_milli;  // 0..1000
     MdkrCharacterPreviewResult *character_preview_result;
     // Staged RESTART-scope settings, as "Video.Key=Value" strings. The settings
     // panel writes these when the player changes a restart-scope key before
