@@ -2396,7 +2396,15 @@ void drawBetaRoom(LauncherState &state) {
     }
     announceView(model);
     drawBetaStatusLine(model, haveLobby ? &lobby : nullptr);
-    ui::SectionHeader(model.title, model.explanation);
+    // Animate the section title's trailing "…" the same way the status line and
+    // invite placeholder do, so a "…"-terminated title (e.g. "Creating Private
+    // Room…") reads as motion instead of a lone static ellipsis on an otherwise
+    // animated screen. Non-ellipsis titles pass through untouched.
+    char sectionTitle[128];
+    std::snprintf(sectionTitle, sizeof(sectionTitle), "%s",
+                  model.title != nullptr ? model.title : "");
+    betaAnimateEllipsis(sectionTitle, sizeof(sectionTitle));
+    ui::SectionHeader(sectionTitle, model.explanation);
 
     // The host's invite card renders through the CONNECTING create round trip
     // too, not just the open ROOM: the transport learns the fallback code
