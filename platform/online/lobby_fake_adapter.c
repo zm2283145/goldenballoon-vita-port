@@ -543,12 +543,26 @@ MdkrOnlineFakeStep mdkr_online_fake_finish_race(
                          MDKR_ONLINE_FAKE_ERROR_INVALID_ACTION);
     }
     next = *adapter;
-    if (!lobby_dispatch(&next, next.lobby.leader_endpoint_id,
-                        MDKR_ONLINE_PUBLISH_RESULTS, 0u, 0u) ||
-        !session_dispatch(&next, MDKR_SESSION_COMMAND_SET_ENGINE_PHASE,
-                          MDKR_ENGINE_FINISHED)) {
-        return fake_step(adapter, false, false,
-                         MDKR_ONLINE_FAKE_ERROR_REDUCER);
+    /* PUBLISH_RESULTS now carries packed per-seat placements (byte i = seat
+     * i's finishing position, 0xFF unoccupied). The fake session has no race
+     * sim, so award places in seat order — valid by construction. */
+    {
+        uint32_t packed = 0u;
+        uint8_t place = 0u;
+        unsigned seat;
+        for (seat = 0u; seat < MDKR_ONLINE_MAX_SEATS; seat++) {
+            const uint8_t byte = next.lobby.seats[seat].occupied
+                                     ? place++
+                                     : (uint8_t)0xFFu;
+            packed |= (uint32_t)byte << (8u * seat);
+        }
+        if (!lobby_dispatch(&next, next.lobby.leader_endpoint_id,
+                            MDKR_ONLINE_PUBLISH_RESULTS, packed, 0u) ||
+            !session_dispatch(&next, MDKR_SESSION_COMMAND_SET_ENGINE_PHASE,
+                              MDKR_ENGINE_FINISHED)) {
+            return fake_step(adapter, false, false,
+                             MDKR_ONLINE_FAKE_ERROR_REDUCER);
+        }
     }
     next.revision++;
     *adapter = next;
