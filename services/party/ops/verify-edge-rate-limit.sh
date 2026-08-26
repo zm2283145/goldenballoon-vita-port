@@ -14,9 +14,14 @@
 #
 # Exit codes:
 #   0  the rule is live and matches the reviewed payload
-#   1  the rule is missing, disabled, diverged, or the API call failed
+#   1  the rule is verifiably wrong: missing, disabled, or diverged. The zone
+#      was reached and answered, and the reviewed rule is not in force.
 #   2  credentials absent — an explicit refusal to claim success, so a
 #      credential-less CI run can never report the rule as verified
+#   3  the check could not run: the API was unreachable, returned non-JSON, or
+#      refused the request (e.g. a token without the Zone WAF read scope). This
+#      is "cannot verify", not "verifiably absent", so a caller can degrade it
+#      to a warning instead of blocking a deploy on a credential/scope problem.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,8 +41,9 @@ fi
 RESPONSE="$(curl --silent --show-error --max-time 30 \
     --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
     "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/rulesets/phases/http_ratelimit/entrypoint")" || {
-    echo "verify-edge-rate-limit: FAIL -- the Cloudflare API was unreachable." >&2
-    exit 1
+    echo "verify-edge-rate-limit: UNVERIFIED -- the Cloudflare API was" >&2
+    echo "  unreachable, so the rule's status could not be determined." >&2
+    exit 3
 }
 
 RESPONSE="$RESPONSE" python3 - "$POLICY" <<'PY'
@@ -52,14 +58,16 @@ with open(policy_path, encoding="utf-8") as handle:
 try:
     envelope = json.loads(os.environ["RESPONSE"])
 except json.JSONDecodeError:
-    print("verify-edge-rate-limit: FAIL -- the API response was not JSON.",
-          file=sys.stderr)
-    sys.exit(1)
+    print("verify-edge-rate-limit: UNVERIFIED -- the API response was not JSON,"
+          " so the rule's status could not be determined.", file=sys.stderr)
+    sys.exit(3)
 
 if not envelope.get("success"):
-    print("verify-edge-rate-limit: FAIL -- the API refused the request:",
+    print("verify-edge-rate-limit: UNVERIFIED -- the API refused the request"
+          " (a token without Zone WAF read scope does this), so the rule's"
+          " status could not be determined:",
           json.dumps(envelope.get("errors", []))[:512], file=sys.stderr)
-    sys.exit(1)
+    sys.exit(3)
 
 rules = (envelope.get("result") or {}).get("rules") or []
 live = [rule for rule in rules if rule.get("ref") == wanted["ref"]]

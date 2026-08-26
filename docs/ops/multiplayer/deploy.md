@@ -10,15 +10,21 @@ page remains the authority for everything it does not automate: durable-data
 compatibility, Worker/object version skew, the staged preview exercises, the
 canary and promotion rules, and the reconciliation gates.
 
-The one-command path implements stages 1-3 and 14's rule review, and reports
-the same evidence:
+The one-command path implements stages 1-3 and 14's rule review and live
+assertion, and reports the same evidence:
 
 - `tools/deploy_party.sh` records the commit and refuses a dirty tree, requires
   Node 22+ and the lockfile-pinned Wrangler, runs `npm ci && npm run check`,
   generates `services/party/wrangler.production.jsonc` from the tracked config
   by substituting the single `PARTY_DOMAIN`, runs the gates below, inspects the
-  `--dry-run` binding census, requires both secret names to exist, deploys, and
-  prints the verification command. `--dry-run` needs no account.
+  `--dry-run` binding census, requires both secret names to exist, deploys, then
+  asserts the edge rate-limit rule is live on the zone (via
+  `services/party/ops/verify-edge-rate-limit.sh`) and prints a consolidated
+  verification summary plus the phone-pairing verification command. A
+  verifiably-absent rule fails the run; a missing `CLOUDFLARE_API_TOKEN`/
+  `CLOUDFLARE_ZONE_ID` or unreachable/under-scoped API degrades to a loud
+  warning; `--skip-rate-limit-check` bypasses it with a red warning. `--dry-run`
+  needs no account and stops before the secret, deploy and rate-limit steps.
 - `tests/check_party_production_config.py` holds `env.production`: the
   custom-domain route, `workers_dev`/`preview_urls`/observability off, the four
   Durable Object bindings and v1/v2/v3 migrations restated identically to the
@@ -177,11 +183,15 @@ lifecycle change; this is why additive class migrations are isolated.
     stop for an explicit owner decision—do not delete or merge it implicitly.
     After promotion, assert the rule is live with
     `services/party/ops/verify-edge-rate-limit.sh` (environment-provided
-    `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ZONE_ID`; without credentials it exits 2
-    and refuses to claim success). Run it beside the
-    `tests/check_party_production_config.py` origin assertion on every
-    subsequent deploy: the rule is hand-applied zone state, not Worker code,
-    so nothing else notices when it silently disappears. In the same pass run
+    `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ZONE_ID`; without credentials it exits 2,
+    on an unreachable/under-scoped API it exits 3, and only a zone that answers
+    with the rule missing/disabled/diverged is a hard 1 — the first two refuse
+    to claim success rather than pass). `tools/deploy_party.sh` runs exactly this
+    checker as its final step on every deploy (a hard 1 fails the run; 2/3
+    degrade to a warning; `--skip-rate-limit-check` bypasses it), so the rule is
+    asserted beside the `tests/check_party_production_config.py` origin gate
+    automatically: the rule is hand-applied zone state, not Worker code, so
+    nothing else notices when it silently disappears. In the same pass run
     `PARTY_DOMAIN=… services/party/ops/verify-controller-csp.sh` and require
     `PASS`: the controller page's CSP is static-host header state that is just
     as silent when it stops arriving, and without a reachable origin the probe

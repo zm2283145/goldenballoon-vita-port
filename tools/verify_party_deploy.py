@@ -765,6 +765,38 @@ def self_test(evidence: list[str], workers_dev_host: str | None) -> None:
                 "the local Party Worker logged an error:\n" + details[-4000:])
 
 
+def print_summary(secure: bool, self_test_mode: bool,
+                  rate_limit_status: str | None,
+                  secrets_status: str | None) -> None:
+    """Consolidated view of what deploy-time verification covers.
+
+    TLS and WSS pairing are proven directly by this script. The edge rate-limit
+    rule and the Worker secrets are asserted at deploy time by
+    tools/deploy_party.sh (which owns the zone/secret-store credentials); their
+    status is passed in when this runs as part of a deploy, and otherwise
+    reported as a deploy-time check that was not re-run here.
+    """
+    tls = ("SKIPPED (loopback self-test); required on https"
+           if not secure else "certificate validated over the real transport")
+    wss = ("WS offer/answer/ICE round-trip verified on loopback"
+           if not secure else
+           "WSS offer/answer/ICE round-trip verified, service-stamped identity")
+    if rate_limit_status is None:
+        rate_limit_status = ("n/a (loopback self-test)" if self_test_mode else
+                             "asserted at deploy time by tools/deploy_party.sh "
+                             "(ops/verify-edge-rate-limit.sh); not re-checked here")
+    if secrets_status is None:
+        secrets_status = ("n/a (loopback self-test uses fixture vars)"
+                          if self_test_mode else
+                          "asserted at deploy time by tools/deploy_party.sh "
+                          "step 7 (PARTY_HMAC_KEY, OPS_READ_TOKEN); not re-checked here")
+    print("verification summary:")
+    print(f"  TLS ................ {tls}")
+    print(f"  WSS pairing ........ {wss}")
+    print(f"  edge rate-limit .... {rate_limit_status}")
+    print(f"  secrets presence ... {secrets_status}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Verify a deployed Party origin end to end, without a phone.")
@@ -774,6 +806,12 @@ def main() -> int:
                         help="run everything against a local wrangler dev Worker")
     parser.add_argument("--workers-dev-host",
                         help="optional workers.dev host that must NOT resolve")
+    parser.add_argument("--rate-limit-status",
+                        help="edge rate-limit rule status to show in the summary, "
+                             "as reported by tools/deploy_party.sh")
+    parser.add_argument("--secrets-status",
+                        help="Worker secrets presence status to show in the "
+                             "summary, as reported by tools/deploy_party.sh")
     args = parser.parse_args()
     require(bool(args.origin) != bool(args.self_test),
             "pass exactly one of --origin or --self-test")
@@ -783,6 +821,7 @@ def main() -> int:
     if args.self_test:
         self_test(evidence, args.workers_dev_host)
         target = "local wrangler dev --local Worker"
+        secure = False
     else:
         origin = args.origin.rstrip("/")
         require(origin.startswith("https://"),
@@ -790,8 +829,11 @@ def main() -> int:
                 "controller from a QR code and WSS requires TLS")
         verify(origin, args.workers_dev_host, evidence)
         target = origin
+        secure = True
     for line in evidence:
         print(f"  - {line}")
+    print_summary(secure, args.self_test,
+                  args.rate_limit_status, args.secrets_status)
     print(f"verify_party_deploy: PASS — {target} serves the launcher and "
           "controller with their promised headers, pairs a synthetic phone over "
           "WSS with service-stamped identity, rotates invites, refuses foreign "

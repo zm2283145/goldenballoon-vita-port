@@ -17,11 +17,20 @@
 #      and internal-API gates, and proves the untouched placeholder config is
 #      still rejected;
 #   6. runs `wrangler deploy --dry-run` and inspects the bindings census;
-#   7. requires both secrets to already exist in the Wrangler secret store
-#      (their values are never read, printed or passed on a command line);
-#   8. deploys, then prints the exact verification command to run next.
+#   7. requires the required secrets to already exist in the Wrangler secret
+#      store (their values are never read, printed or passed on a command line);
+#   8. deploys;
+#   9. asserts the hand-applied edge rate-limit rule is live on the zone, then
+#      prints a consolidated verification summary and the phone-pairing
+#      verification command to run next.
 #
-# --dry-run stops before 7/8 and needs no Cloudflare account at all, so the
+# Step 9's rule assertion fails the deploy only when the zone answers and the
+# reviewed rule is verifiably absent/disabled/diverged; a missing API token or
+# scope degrades to a loud yellow warning (the rule is hand-applied zone state,
+# so the deploy cannot mint it anyway). --skip-rate-limit-check bypasses it with
+# a red warning.
+#
+# --dry-run stops before 7/8/9 and needs no Cloudflare account at all, so the
 # whole path above is exercisable offline.
 #
 set -euo pipefail
@@ -32,30 +41,38 @@ GENERATED="$SERVICE/wrangler.production.jsonc"
 PLACEHOLDER_HOST="party.example.invalid"
 # A fixture host used only by a bare --dry-run so the generation, gate and
 # binding inspection are all exercised without an account. It is never
-# deployable: step 7/8 are unreachable in dry-run mode.
+# deployable: steps 7/8/9 are unreachable in dry-run mode.
 DRY_RUN_FIXTURE_HOST="party.dry-run-fixture.gb-not-a-real-zone.net"
 
 DRY_RUN=0
 ALLOW_DIRTY=0
 SKIP_CHECKS=0
+SKIP_RATE_LIMIT=0
 DOMAIN_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --dry-run)     DRY_RUN=1; shift ;;
-        --allow-dirty) ALLOW_DIRTY=1; shift ;;
-        --skip-checks) SKIP_CHECKS=1; shift ;;
-        --domain)      DOMAIN_OVERRIDE="$2"; shift 2 ;;
-        -h|--help)     sed -n '2,28p' "$0"; exit 0 ;;
+        --dry-run)              DRY_RUN=1; shift ;;
+        --allow-dirty)          ALLOW_DIRTY=1; shift ;;
+        --skip-checks)          SKIP_CHECKS=1; shift ;;
+        --skip-rate-limit-check) SKIP_RATE_LIMIT=1; shift ;;
+        --domain)               DOMAIN_OVERRIDE="$2"; shift 2 ;;
+        -h|--help)              sed -n '2,34p' "$0"; exit 0 ;;
         *) echo "deploy_party: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 
 say()  { printf '\n== %s\n' "$*"; }
 fail() { printf '\ndeploy_party: FAIL -- %s\n' "$*" >&2; exit 1; }
+# Terminal colors, only when stdout is a TTY, so piped/CI logs stay plain.
+if [[ -t 1 ]]; then
+    RED=$'\033[31m'; YELLOW=$'\033[33m'; GREEN=$'\033[32m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
+else
+    RED=""; YELLOW=""; GREEN=""; BOLD=""; RESET=""
+fi
 
 # --------------------------------------------------------------------------
-say "1/8  worktree"
+say "1/9  worktree"
 
 COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
 BRANCH="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)"
@@ -75,7 +92,7 @@ if [[ "$DIRTY" != "0" ]]; then
 fi
 
 # --------------------------------------------------------------------------
-say "2/8  toolchain"
+say "2/9  toolchain"
 
 NODE=""
 for candidate in "$(command -v node || true)" \
@@ -101,7 +118,7 @@ fi
 echo "  wrangler pinned at $PINNED"
 
 # --------------------------------------------------------------------------
-say "3/8  service install and checks"
+say "3/9  service install and checks"
 
 if [[ $SKIP_CHECKS -eq 1 ]]; then
     echo "  SKIPPED by --skip-checks. This is not a deploy path; use it only to"
@@ -119,7 +136,7 @@ INSTALLED="$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' \
 echo "  installed wrangler $INSTALLED matches the pin"
 
 # --------------------------------------------------------------------------
-say "4/8  production config"
+say "4/9  production config"
 
 PARTY_DOMAIN="${DOMAIN_OVERRIDE:-${PARTY_DOMAIN:-}}"
 if [[ -z "$PARTY_DOMAIN" && -f "$SERVICE/ops/production.env" ]]; then
@@ -163,7 +180,7 @@ DIFFERENCES="$(diff <(sed "s/$PARTY_DOMAIN/$PLACEHOLDER_HOST/g" "$GENERATED") \
 echo "  generated  $GENERATED"
 
 # --------------------------------------------------------------------------
-say "5/8  gates"
+say "5/9  gates"
 
 python3 "$ROOT/tests/check_party_production_config.py" \
     --config "$GENERATED" --require-real-domain
@@ -180,7 +197,7 @@ fi
 echo "  fail-closed placeholder still rejected in the tracked config"
 
 # --------------------------------------------------------------------------
-say "6/8  dry run and binding census"
+say "6/9  dry run and binding census"
 
 DRY_OUT="$SERVICE/.deploy-dry-run"
 rm -rf "$DRY_OUT"
@@ -213,20 +230,24 @@ echo "  7/7 reviewed bindings present, no secret is a plain-text var"
 
 if [[ $DRY_RUN -eq 1 ]]; then
     say "dry run complete"
-    echo "  Nothing was deployed. Steps 7 (secrets) and 8 (deploy) need an"
-    echo "  authenticated Cloudflare account and were not attempted."
+    echo "  Nothing was deployed. Steps 7 (secrets), 8 (deploy) and 9 (edge"
+    echo "  rate-limit assertion) need an authenticated Cloudflare account and"
+    echo "  were not attempted."
     echo
     echo "deploy_party: PASS (dry run) -- commit $COMMIT, origin https://$PARTY_DOMAIN"
     exit 0
 fi
 
 # --------------------------------------------------------------------------
-say "7/8  secrets"
+say "7/9  secrets"
 
 echo "  Reading the secret NAMES only. Values are never read or printed."
 SECRETS="$( cd "$SERVICE" && CI=1 "$NODE" "$WRANGLER_JS" secret list \
     --config "$GENERATED" --env production 2>&1 )" || \
     fail "could not list secrets. Run 'wrangler login' first."
+# Zero-cost ruling: this deployment is STUN-only, so TURN_KEY_ID/TURN_API_TOKEN
+# are intentionally absent and deliberately NOT asserted here (a set TURN pair
+# would opt into a paid Realtime path); STUN-only is the supported posture.
 for secret in PARTY_HMAC_KEY OPS_READ_TOKEN; do
     printf '%s\n' "$SECRETS" | grep -qF "$secret" || fail "$secret is not set.
   Provision it interactively -- the value is typed into the prompt, never a
@@ -239,12 +260,102 @@ for secret in PARTY_HMAC_KEY OPS_READ_TOKEN; do
   independent random secret of at least 32 characters -- never the same value."
     echo "  $secret is provisioned"
 done
+SECRETS_STATUS="PARTY_HMAC_KEY + OPS_READ_TOKEN present (TURN pair intentionally absent: STUN-only)"
 
 # --------------------------------------------------------------------------
-say "8/8  deploy"
+say "8/9  deploy"
 
 ( cd "$SERVICE" && CI=1 "$NODE" "$WRANGLER_JS" deploy \
     --config "$GENERATED" --env production )
+echo "  deployed commit $COMMIT to https://$PARTY_DOMAIN"
+
+# --------------------------------------------------------------------------
+say "9/9  edge rate-limit assertion"
+
+# The per-IP /api/ throttle (30 req / 10 s) is a HAND-APPLIED zone rule, not
+# Worker code -- so if it was never applied, or was later removed, nothing else
+# here would notice and the main brute-force throttle would be silently absent.
+# Assert it is live on every deploy. A verifiably-absent rule is a hard failure
+# (the deploy already shipped, but the operator must apply the rule); a missing
+# token/scope or an unreachable API degrades to a loud warning, because the
+# deploy cannot mint zone state and must not be blocked on a credential gap.
+RATE_LIMIT_SCRIPT="$SERVICE/ops/verify-edge-rate-limit.sh"
+RATE_LIMIT_RULE="services/party/ops/free-rate-limit-rule.json"
+RATE_LIMIT_FAILED=0
+if [[ $SKIP_RATE_LIMIT -eq 1 ]]; then
+    RATE_LIMIT_STATUS="SKIPPED by --skip-rate-limit-check"
+    printf '%s' "$RED"
+    echo "  !! SKIPPED by --skip-rate-limit-check. The edge /api/ rate-limit rule"
+    echo "  !! was NOT verified. If it is not live, the main brute-force throttle"
+    echo "  !! is silently absent. Re-run without this flag and confirm PASS."
+    printf '%s' "$RESET"
+elif [[ ! -x "$RATE_LIMIT_SCRIPT" ]]; then
+    RATE_LIMIT_STATUS="UNVERIFIED (checker $RATE_LIMIT_SCRIPT missing/not executable)"
+    printf '%s%s%s\n' "$YELLOW" \
+        "  WARNING: $RATE_LIMIT_SCRIPT is missing or not executable; the edge rule could not be verified." "$RESET"
+else
+    RATE_LIMIT_RC=0
+    "$RATE_LIMIT_SCRIPT" || RATE_LIMIT_RC=$?
+    case "$RATE_LIMIT_RC" in
+        0)
+            RATE_LIMIT_STATUS="verified live on the zone"
+            printf '%s%s%s\n' "$GREEN" "  the reviewed /api/ rate-limit rule is live and enabled." "$RESET"
+            ;;
+        1)
+            RATE_LIMIT_STATUS="VERIFIABLY ABSENT/DIVERGED -- apply $RATE_LIMIT_RULE"
+            RATE_LIMIT_FAILED=1
+            printf '%s' "$RED$BOLD"
+            echo "  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            echo "  !! EDGE RATE-LIMIT RULE IS NOT LIVE ON THE ZONE."
+            echo "  !! The per-IP /api/ brute-force throttle is silently absent."
+            echo "  !! FIX: apply the reviewed payload to the zone's http_ratelimit"
+            echo "  !!      entry point:  $RATE_LIMIT_RULE"
+            echo "  !!      (see docs/multiplayer/DEPLOY_PHONE_PARTY.md)"
+            echo "  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            printf '%s' "$RESET"
+            ;;
+        2)
+            RATE_LIMIT_STATUS="UNVERIFIED (CLOUDFLARE_API_TOKEN/CLOUDFLARE_ZONE_ID not set)"
+            printf '%s' "$YELLOW"
+            echo "  WARNING: the edge rate-limit rule could NOT be verified because"
+            echo "  CLOUDFLARE_API_TOKEN and CLOUDFLARE_ZONE_ID are not set. This is"
+            echo "  not a pass. Verify manually with a least-privilege Zone WAF token:"
+            echo "    CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ZONE_ID=... $RATE_LIMIT_SCRIPT"
+            printf '%s' "$RESET"
+            ;;
+        *)
+            RATE_LIMIT_STATUS="UNVERIFIED (API unreachable or token lacks Zone WAF read scope; rc=$RATE_LIMIT_RC)"
+            printf '%s' "$YELLOW"
+            echo "  WARNING: the edge rate-limit rule could NOT be verified (the API"
+            echo "  was unreachable or the token lacks Zone WAF read scope). This is"
+            echo "  not a pass; the rule's status is unknown. Re-verify with a"
+            echo "  least-privilege Zone WAF token once connectivity/scope is fixed."
+            printf '%s' "$RESET"
+            ;;
+    esac
+fi
+
+# --------------------------------------------------------------------------
+# Consolidated post-deploy verification summary. TLS and WSS pairing are proven
+# by tools/verify_party_deploy.py (the next command); the rate-limit rule and
+# secrets presence were asserted above / in step 7.
+printf '\n%s== verification summary%s\n' "$BOLD" "$RESET"
+echo "  TLS ................ pending -- proven by verify_party_deploy.py (next command)"
+echo "  WSS pairing ........ pending -- proven by verify_party_deploy.py (next command)"
+echo "  edge rate-limit .... $RATE_LIMIT_STATUS"
+echo "  secrets presence ... $SECRETS_STATUS"
+
+if [[ $RATE_LIMIT_FAILED -eq 1 ]]; then
+    printf '\n%sdeploy_party: DEPLOYED but FAILED the edge rate-limit assertion --%s\n' "$RED" "$RESET"
+    echo "commit $COMMIT is live at https://$PARTY_DOMAIN, but the edge /api/"
+    echo "rate-limit rule is not in force. Apply $RATE_LIMIT_RULE to the zone's"
+    echo "http_ratelimit entry point (see docs/multiplayer/DEPLOY_PHONE_PARTY.md),"
+    echo "then re-assert it directly:"
+    echo "    CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ZONE_ID=... $RATE_LIMIT_SCRIPT"
+    echo "and run the phone-pairing verification:"
+    echo "    python3 tools/verify_party_deploy.py --origin https://$PARTY_DOMAIN"
+    exit 1
+fi
 
 cat <<EOF
 

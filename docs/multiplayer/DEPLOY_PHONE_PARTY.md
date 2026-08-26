@@ -204,9 +204,21 @@ CLOUDFLARE_API_TOKEN=… CLOUDFLARE_ZONE_ID=… \
 It requires the rule to exist on the zone's `http_ratelimit` entry point,
 enabled, byte-matching the reviewed payload. Run without credentials it exits
 `2` and says so — it refuses to claim success, so a credential-less CI run can
-never report the rule as verified. Like `tests/check_party_production_config.py`
-for the origin, this is the deploy-time assertion for the edge rule: run them
-side by side before promoting.
+never report the rule as verified. If the API is unreachable or the token lacks
+the Zone WAF read scope it exits `3` (also "cannot verify", not a pass). Only a
+zone that answers with the rule missing, disabled or diverged is a hard `1`.
+
+**`tools/deploy_party.sh` runs this for you as its last step.** After the deploy
+succeeds it invokes the same checker: a verifiably-absent rule (`1`) fails the
+run with a red banner naming `services/party/ops/free-rate-limit-rule.json` as
+the fix (the Worker is already live, but you must apply the rule); a missing
+token/scope or unreachable API (`2`/`3`) prints a loud yellow warning and
+continues, because the deploy cannot mint hand-applied zone state and must not
+be blocked on a credential gap. Export `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ZONE_ID` before the deploy to get the assertion instead of the
+warning. `--skip-rate-limit-check` bypasses the step with a red warning line.
+Like `tests/check_party_production_config.py` for the origin, this is the
+deploy-time assertion for the edge rule.
 
 In the same pass, run `PARTY_DOMAIN=… services/party/ops/verify-controller-csp.sh`
 to assert the deployed `/controller/` page still serves every reviewed
