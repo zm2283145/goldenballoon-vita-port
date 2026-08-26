@@ -700,7 +700,7 @@ static void test_host_authority_config_is_leader_owned(void) {
            "mode above tournament is rejected");
     step = simple(&lobby, 10u, host_cid, MDKR_ONLINE_SET_CONFIG_TRACK, 256u);
     expect(!step.accepted && step.error == MDKR_ONLINE_ERROR_INVALID_STATE,
-           "configured track above 255 is rejected");
+           "configured track outside the race schedule is rejected");
     step = simple(&lobby, 10u, host_cid, MDKR_ONLINE_SET_CUP, 5u);
     expect(!step.accepted && step.error == MDKR_ONLINE_ERROR_INVALID_STATE &&
                memcmp(&lobby, &before, sizeof(lobby)) == 0,
@@ -761,14 +761,14 @@ static void test_begin_loading_prefers_configured_track(void) {
                             5u).accepted,
            "both seats vote for the legacy plurality track");
     expect(simple(&lobby, 10u, host_cid++, MDKR_ONLINE_SET_CONFIG_TRACK,
-                  12u).accepted,
+                  13u).accepted,
            "leader overrides the vote with a configured track");
     expect(simple(&lobby, 10u, host_cid++, MDKR_ONLINE_SET_READY, 1u).accepted &&
                simple(&lobby, 20u, guest_cid++, MDKR_ONLINE_SET_READY,
                       1u).accepted,
            "room re-readies under the configured track");
     step = simple(&lobby, 10u, host_cid++, MDKR_ONLINE_BEGIN_LOADING, 1u);
-    expect(step.accepted && lobby.selected_track == 12u,
+    expect(step.accepted && lobby.selected_track == 13u,
            "host-authority track wins over the seat votes");
 }
 
@@ -889,6 +889,145 @@ static void test_tournament_cup_progression_and_scoring(void) {
            "finishing the cup wraps the series back to a fresh scoreboard");
 }
 
+/* Finding: seat representation after LEAVE. Any removal that vacates seats
+ * must compact the seat array order-preserving and shift points[] and
+ * last_placements[] with the same permutation (zeroing the vacated tail) so
+ * PUBLISH_RESULTS packed bytes validate and attribute identically in the
+ * native and service reducers. */
+static void test_leave_compaction_rejoin_and_attribution(void) {
+    MdkrOnlineCompatibilityV1 compat = compatibility();
+    MdkrOnlineLobby lobby;
+    MdkrOnlineCommand value;
+    MdkrOnlineStep step;
+    uint64_t host_cid;
+    uint64_t guest_cid;
+
+    build_two_seat_room(&lobby, &compat, &host_cid, &guest_cid);
+    expect(simple(&lobby, 10u, host_cid++, MDKR_ONLINE_SET_MODE, 1u).accepted &&
+               simple(&lobby, 10u, host_cid++, MDKR_ONLINE_SET_CUP, 0u).accepted,
+           "compaction fixture arms a tournament cup");
+    expect(run_round_to_racing(&lobby, &host_cid, &guest_cid),
+           "compaction fixture reaches racing");
+    expect(simple(&lobby, 10u, host_cid++, MDKR_ONLINE_PUBLISH_RESULTS,
+                  UINT32_C(0xFFFF0100)).accepted &&
+               lobby.points[0] == 9u && lobby.points[1] == 7u,
+           "compaction fixture publishes round one");
+
+    /* Leader 10 (seat 0) leaves during RESULTS: seat 1 shifts down one slot
+     * together with its series state, and leadership re-elects by endpoint. */
+    value = command(&lobby, 10u, host_cid++, MDKR_ONLINE_LEAVE);
+    step = mdkr_online_lobby_dispatch(&lobby, &value);
+    expect(step.accepted && step.leader_changed &&
+               lobby.leader_endpoint_id == 20u,
+           "leader leave in results re-elects the surviving endpoint");
+    expect(lobby.seat_count == 1u && lobby.seats[0].occupied &&
+               lobby.seats[0].endpoint_id == 20u && !lobby.seats[1].occupied &&
+               !lobby.seats[2].occupied && !lobby.seats[3].occupied,
+           "leave compacts the seat array order-preserving");
+    expect(lobby.points[0] == 7u && lobby.last_placements[0] == 1u,
+           "series state shifts with the surviving seat");
+    expect(lobby.points[1] == 0u && lobby.points[2] == 0u &&
+               lobby.last_placements[1] == MDKR_ONLINE_NO_PLACEMENT &&
+               lobby.last_placements[2] == MDKR_ONLINE_NO_PLACEMENT,
+           "vacated tail series entries are zeroed");
+
+    expect(simple(&lobby, 20u, guest_cid++, MDKR_ONLINE_REMATCH, 0u).accepted &&
+               lobby.race_index == 1u,
+           "surviving leader rematches into round two");
+    expect(join(&lobby, 30u, 1u, &compat).accepted &&
+               lobby.seats[1].occupied && lobby.seats[1].endpoint_id == 30u,
+           "fresh endpoint joins mid-tournament onto the compacted tail");
+    expect(lobby.points[1] == 0u &&
+               lobby.last_placements[1] == MDKR_ONLINE_NO_PLACEMENT,
+           "newcomer does not inherit the leaver's series state");
+    expect(select_value(
+               &lobby, 30u, 2u, MDKR_ONLINE_SET_CHARACTER, 1u, 1u).accepted &&
+               select_value(
+                   &lobby, 30u, 3u, MDKR_ONLINE_SET_VEHICLE, 1u, 0u).accepted,
+           "newcomer completes seat selections");
+    expect(simple(&lobby, 20u, guest_cid++, MDKR_ONLINE_SET_READY, 1u).accepted &&
+               simple(&lobby, 30u, 4u, MDKR_ONLINE_SET_READY, 1u).accepted &&
+               simple(&lobby, 20u, guest_cid++, MDKR_ONLINE_BEGIN_LOADING,
+                      1u).accepted &&
+               simple(&lobby, 20u, guest_cid++, MDKR_ONLINE_ACK_LOADED,
+                      0u).accepted &&
+               simple(&lobby, 30u, 5u, MDKR_ONLINE_ACK_LOADED, 0u).accepted &&
+               simple(&lobby, 20u, guest_cid++, MDKR_ONLINE_BEGIN_RACE,
+                      0u).accepted,
+           "post-rejoin round reaches racing");
+    step = simple(&lobby, 20u, guest_cid, MDKR_ONLINE_PUBLISH_RESULTS,
+                  UINT32_C(0xFFFF01FF));
+    expect(!step.accepted && step.error == MDKR_ONLINE_ERROR_INVALID_STATE,
+           "packed bytes shaped for the old in-place seat hole are refused");
+    expect(simple(&lobby, 20u, guest_cid++, MDKR_ONLINE_PUBLISH_RESULTS,
+                  UINT32_C(0xFFFF0100)).accepted,
+           "post-rejoin publish validates against the compacted seats");
+    expect(lobby.points[0] == 16u && lobby.points[1] == 7u &&
+               lobby.last_placements[0] == 0u && lobby.last_placements[1] == 1u,
+           "trophy points attribute to the compacted seat order");
+}
+
+static void test_leave_in_lobby_compacts_middle_seat(void) {
+    MdkrOnlineCompatibilityV1 compat = compatibility();
+    MdkrOnlineLobby lobby;
+    MdkrOnlineCommand value;
+
+    mdkr_online_lobby_init(&lobby, 5u, 10u, &compat, 1u);
+    join(&lobby, 20u, 1u, &compat);
+    join(&lobby, 30u, 1u, &compat);
+    expect(select_value(
+               &lobby, 30u, 2u, MDKR_ONLINE_SET_CHARACTER, 2u, 3u).accepted,
+           "third seat marks itself before the middle seat leaves");
+    value = command(&lobby, 20u, 2u, MDKR_ONLINE_LEAVE);
+    expect(mdkr_online_lobby_dispatch(&lobby, &value).accepted &&
+               lobby.seat_count == 2u &&
+               lobby.seats[0].endpoint_id == 10u &&
+               lobby.seats[1].occupied && lobby.seats[1].endpoint_id == 30u &&
+               lobby.seats[1].character_id == 3u && !lobby.seats[2].occupied,
+           "lobby-phase leave shifts later seats down order-preserving");
+}
+
+/* Finding: SET_CONFIG_TRACK accepted any value <= 255, letting a hostile
+ * leader configure a hub/cutscene id whose failure only surfaced at engine
+ * boot. Only the 20 race tracks of the cup schedule are configurable. */
+static void test_config_track_requires_known_race_track(void) {
+    static const uint32_t hostile_ids[] = {0u, 34u, 26u};
+    static const char *const hostile_names[] = {
+        "hub id 0", "trophy-race id 34", "battle id 26"};
+    MdkrOnlineCompatibilityV1 compat = compatibility();
+    MdkrOnlineLobby lobby;
+    MdkrOnlineLobby before;
+    MdkrOnlineStep step;
+    uint64_t host_cid;
+    uint64_t guest_cid;
+    unsigned cup;
+    unsigned round;
+    unsigned index;
+
+    build_two_seat_room(&lobby, &compat, &host_cid, &guest_cid);
+    before = lobby;
+    for (index = 0u; index < 3u; index++) {
+        char message[128];
+        step = simple(&lobby, 10u, host_cid, MDKR_ONLINE_SET_CONFIG_TRACK,
+                      hostile_ids[index]);
+        snprintf(message, sizeof(message),
+                 "config track refuses %s atomically", hostile_names[index]);
+        expect(!step.accepted && step.error == MDKR_ONLINE_ERROR_INVALID_STATE &&
+                   memcmp(&lobby, &before, sizeof(lobby)) == 0, message);
+    }
+    for (cup = 0u; cup < MDKR_ONLINE_CUP_COUNT; cup++) {
+        for (round = 0u; round < MDKR_ONLINE_CUP_ROUNDS; round++) {
+            char message[128];
+            uint16_t track = mdkr_online_cup_track(cup, round);
+            step = simple(&lobby, 10u, host_cid++,
+                          MDKR_ONLINE_SET_CONFIG_TRACK, track);
+            snprintf(message, sizeof(message),
+                     "config track accepts race track %u", track);
+            expect(step.accepted && lobby.configured_track == track, message);
+        }
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--rewrite-parity-trace") == 0)
         return rewrite_parity_trace();
@@ -904,6 +1043,9 @@ int main(int argc, char **argv) {
     test_begin_loading_prefers_configured_track();
     test_publish_results_placement_validation();
     test_tournament_cup_progression_and_scoring();
+    test_leave_compaction_rejoin_and_attribution();
+    test_leave_in_lobby_compacts_middle_seat();
+    test_config_track_requires_known_race_track();
     if (failures != 0) return 1;
     puts("online lobby core contract passed");
     return 0;

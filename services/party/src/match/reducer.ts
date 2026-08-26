@@ -22,6 +22,11 @@ const CUP_TRACKS: readonly (readonly number[])[] = [
   [5, 3, 29, 7], [13, 6, 9, 28], [8, 4, 10, 30],
   [19, 18, 20, 31], [17, 32, 33, 15]];
 const CUP_ROUNDS = 4;
+/* The 20 race tracks reachable through the cup schedule are the only ids a
+ * leader may configure (mirrors known_race_track in lobby_core.c). Hub,
+ * cutscene, trophy-ceremony and battle ids fail like any invalid argument. */
+const RACE_TRACK_IDS: ReadonlySet<number> =
+  new Set(CUP_TRACKS.flatMap(cup => [...cup]));
 const TROPHY_POINTS: readonly number[] = [9, 7, 5, 3, 1, 0, 0, 0];
 const MAX_TOURNAMENT_POINTS = 36;
 const MODE_TOURNAMENT = 1;
@@ -111,8 +116,13 @@ function addMember(lobby: MatchLobbyV1, endpointId: string, seatCount: number): 
   lobby.members.push({endpointId, lastCommandId: "0", lastCommandFingerprint: "",
     seatCount, connected: true, ready: false, loaded: false});
   for (let localIndex = 0; localIndex < seatCount; localIndex++) {
+    /* A newly filled seat starts a fresh series entry: a newcomer must never
+     * inherit a previous occupant's trophy points or placement. */
+    const seatIndex = lobby.seats.length;
     lobby.seats.push({endpointId, selectionRevision: 0, voteTrack: null,
       localIndex, characterId: null, vehicleId: null});
+    lobby.points[seatIndex] = 0;
+    lobby.lastPlacements[seatIndex] = MATCH_NO_PLACEMENT;
   }
   return true;
 }
@@ -280,7 +290,25 @@ export function dispatchMatchCommand(lobby: MatchLobbyV1,
       if ((next.phase !== "lobby" && next.phase !== "results") || next.members.length <= 1)
         return reject("invalid_state");
       next.members = next.members.filter(item => item.endpointId !== command.actorEndpointId);
-      next.seats = next.seats.filter(seat => seat.endpointId !== command.actorEndpointId);
+      /* Compact the seat array order-preserving and shift the parallel
+       * per-seat series state (points/lastPlacements) with the same
+       * permutation, zeroing the vacated tail — byte-mirrored with
+       * remove_member in lobby_core.c so seat i means the same racer when
+       * both reducers validate and attribute publish_results. */
+      const kept: number[] = [];
+      next.seats.forEach((seat, index) => {
+        if (seat.endpointId !== command.actorEndpointId) kept.push(index);
+      });
+      const points = Array<number>(MATCH_LIMITS.maxSeats).fill(0);
+      const lastPlacements =
+        Array<number>(MATCH_LIMITS.maxSeats).fill(MATCH_NO_PLACEMENT);
+      kept.forEach((from, to) => {
+        points[to] = next.points[from]!;
+        lastPlacements[to] = next.lastPlacements[from]!;
+      });
+      next.seats = kept.map(index => next.seats[index]!);
+      next.points = points;
+      next.lastPlacements = lastPlacements;
       if (next.leaderEndpointId === command.actorEndpointId) {
         const connected = next.members.filter(item => item.connected)
           .sort((a, b) => BigInt(a.endpointId) < BigInt(b.endpointId) ? -1 : 1);
@@ -414,7 +442,8 @@ export function dispatchMatchCommand(lobby: MatchLobbyV1,
       if (next.leaderEndpointId !== command.actorEndpointId) return reject("unauthorized");
       if (next.phase !== "lobby" ||
           (command.type === "set_mode" && command.value > MODE_TOURNAMENT) ||
-          (command.type === "set_config_track" && command.value > 255) ||
+          (command.type === "set_config_track" &&
+            !RACE_TRACK_IDS.has(command.value)) ||
           (command.type === "set_cup" && command.value >= CUP_TRACKS.length)) {
         return reject("invalid_state");
       }
