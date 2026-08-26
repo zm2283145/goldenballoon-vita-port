@@ -4830,10 +4830,15 @@ The gate is registered as `custom_character_identity_surfaces` and serialized
 with every native GPU/pixel check. Its temporary package, catalog, save, input
 script, and captures never touch the player's normal library.
 
-## Raw GLB Workshop intake — `tests/check_character_raw_intake_ui.py`
+## Raw source Workshop intake — `tests/check_character_raw_intake_ui.py`
 
-This ROM-free WebGPU gate drops two distinct generated, license-clean,
-self-contained GLBs onto one real launcher profile. It requires Workshop routing,
+This ROM-free WebGPU gate first drops a nested authoring ZIP containing one
+generated license-clean DAE, requires bounded conversion to an exclusively
+created self-contained GLB, confirms the missing embedded-license disclosure,
+and verifies the ZIP stays byte-identical and no package/cache is published. It
+also keyboard-walks the explicit converted-destination workflow. The gate then
+drops two distinct generated, license-clean, self-contained GLBs onto one real
+launcher profile. It requires Workshop routing,
 bounded model inspection, two independently authenticated source drafts, durable
 selection, an independently identified same-source branch, source-fingerprint-
 bound fallback/seat/head mapping restoration, explicit switching and exact

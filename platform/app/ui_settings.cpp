@@ -1841,6 +1841,8 @@ MdkrModernCharacterRegistry g_characterRegistry{};
 bool g_characterRegistryLoaded = false;
 std::string g_characterRegistryDirectory;
 char g_characterImportPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
+char g_characterConversionOutputPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
+bool g_characterConversionSmokePrefilled = false;
 std::string g_characterManagerReport;
 std::string g_characterPendingRemoval;
 std::string g_characterWorkshopSelection;
@@ -11406,6 +11408,24 @@ void drawCharacterRawIntakeEditor(bool rail) {
 
 void drawCharacterImportControls(bool rail) {
     loadCharacterRawIntake();
+    const char *smokeSource = std::getenv(
+        "MDKR_APP_SMOKE_CHARACTER_CONVERSION_SOURCE");
+    const char *smokeOutput = std::getenv(
+        "MDKR_APP_SMOKE_CHARACTER_CONVERSION_OUTPUT");
+    const char *smokeToken = std::getenv(
+        "MDKR_APP_SMOKE_CHARACTER_CONVERSION_TOKEN");
+    if (!g_characterConversionSmokePrefilled &&
+        smokeSource != nullptr && smokeSource[0] != '\0' &&
+        smokeOutput != nullptr && smokeOutput[0] != '\0' &&
+        smokeToken != nullptr && std::strcmp(
+            smokeToken, "mdkr64-character-conversion-v1") == 0) {
+        g_characterConversionSmokePrefilled = true;
+        std::snprintf(g_characterImportPath,
+                      sizeof(g_characterImportPath), "%s", smokeSource);
+        std::snprintf(g_characterConversionOutputPath,
+                      sizeof(g_characterConversionOutputPath), "%s",
+                      smokeOutput);
+    }
     if (!g_characterRawDraftsWritable &&
         !g_characterRawDraftError.empty()) {
         if (!g_characterRawDraftStoreTracePrinted &&
@@ -11481,7 +11501,7 @@ void drawCharacterImportControls(bool rail) {
     }
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputTextWithHint("##character-package-path",
-                             "/path/to/character.mdkrchar or model.glb",
+                             "/path/to/package, GLB, DAE, or authoring ZIP",
                              g_characterImportPath,
                              sizeof(g_characterImportPath));
     const bool inlineActions = !rail &&
@@ -11500,22 +11520,66 @@ void drawCharacterImportControls(bool rail) {
         ui::SpeakFocusedItem(
             "Browse for character source",
             nullptr,
-            "Chooses a local mdkrchar package or self-contained GLB. Nothing is installed until validation, review, and explicit confirmation succeed.");
+            "Chooses a local mdkrchar package, self-contained GLB, COLLADA model, or authoring ZIP. Nothing is installed until validation, review, and explicit confirmation succeed.");
         if (inlineActions) ImGui::SameLine();
     }
-    const bool canImport = g_characterImportPath[0] != '\0';
-    if (!canImport) ImGui::BeginDisabled();
     const bool rawGlb = characterPathHasExtension(
         g_characterImportPath, ".glb");
-    if (ImGui::Button(rawGlb ? "Inspect GLB and continue"
-                             : "Validate and review")) {
+    const bool convertibleSource = characterPathHasExtension(
+            g_characterImportPath, ".dae") ||
+        characterPathHasExtension(g_characterImportPath, ".zip");
+    if (convertibleSource) {
+        ui::TextSubtleWrapped(
+            "DAE and ZIP are conversion inputs, never installable packages. Choose a new GLB destination; the bounded converter refuses traversal, encrypted/symlink members, ambiguous model choices, external textures, authored COLLADA animation, and every overwrite. The resulting self-contained GLB enters the ordinary resumable authoring and review flow.");
+        ImGui::SetNextItemWidth(
+            filedialog::isAvailable()
+                ? std::max(120.0f, ImGui::GetContentRegionAvail().x -
+                                      ui::kBtnSecondary().x - ui::kGapS)
+                : -1.0f);
+        ImGui::InputTextWithHint(
+            "Converted GLB destination##character-conversion-output",
+            "/path/to/new-character.glb",
+            g_characterConversionOutputPath,
+            sizeof(g_characterConversionOutputPath));
+        ui::SpeakFocusedItem(
+            "Converted GLB destination", g_characterConversionOutputPath,
+            "Must be a new GLB filename in an existing real directory. Conversion never replaces an existing path.");
+        if (filedialog::isAvailable()) {
+            ImGui::SameLine();
+            if (ImGui::Button("Choose output...", ui::kBtnSecondary())) {
+                std::string picked;
+                if (filedialog::saveCharacterConvertedGlb(picked)) {
+                    std::snprintf(
+                        g_characterConversionOutputPath,
+                        sizeof(g_characterConversionOutputPath), "%s",
+                        picked.c_str());
+                }
+            }
+            ui::SpeakFocusedItem(
+                "Choose converted GLB output", nullptr,
+                "Opens the operating system destination picker. Selecting an existing filename still does not grant overwrite authority.");
+        }
+    }
+    const bool canImport = g_characterImportPath[0] != '\0' &&
+        (!convertibleSource || g_characterConversionOutputPath[0] != '\0');
+    if (!canImport) ImGui::BeginDisabled();
+    if (ImGui::Button(
+            convertibleSource ? "Convert, inspect, and continue" :
+            rawGlb ? "Inspect GLB and continue" :
+                     "Validate and review")) {
         (void)Settings_importCharacterPackage(g_characterImportPath);
     }
     if (!canImport) ImGui::EndDisabled();
     ui::SpeakFocusedItem(
+        convertibleSource ? "Convert, inspect, and continue" :
         rawGlb ? "Inspect GLB and continue" : "Validate and review",
-        canImport ? nullptr : "Choose or enter a character source path first.",
-        rawGlb
+        canImport ? nullptr :
+            convertibleSource
+                ? "Choose a new converted GLB destination first."
+                : "Choose or enter a character source path first.",
+        convertibleSource
+            ? "Converts one explicit or unambiguous safe COLLADA source to a new self-contained GLB, then opens the same resumable authoring draft. It never installs or overwrites a file."
+            : rawGlb
             ? "Validates and fingerprints the raw model, then opens a resumable package-authoring draft. It does not build or install yet."
             : "Stages a mutation-free inventory and installed-version comparison. It does not install the package.");
     if (inlineActions) ImGui::SameLine();
@@ -11992,7 +12056,7 @@ void Settings_setDonorGameplayProfiles(
 bool Settings_importCharacterPackage(const char *path) {
     if (path == nullptr || path[0] == '\0') {
         g_characterManagerReport =
-            "Choose a .mdkrchar package or self-contained .glb source first.";
+            "Choose a .mdkrchar package, self-contained .glb, COLLADA .dae, or authoring .zip source first.";
         setStatus("Character import needs a source path.", AppTheme::bad());
         return false;
     }
@@ -12004,6 +12068,81 @@ bool Settings_importCharacterPackage(const char *path) {
     }
     std::snprintf(g_characterImportPath, sizeof(g_characterImportPath), "%s",
                   path);
+    const bool convertibleSource = characterPathHasExtension(path, ".dae") ||
+        characterPathHasExtension(path, ".zip");
+    if (convertibleSource) {
+        const char *smokeOutput = std::getenv(
+            "MDKR_APP_SMOKE_CHARACTER_CONVERSION_OUTPUT");
+        const char *smokeToken = std::getenv(
+            "MDKR_APP_SMOKE_CHARACTER_CONVERSION_TOKEN");
+        if (g_characterConversionOutputPath[0] == '\0' &&
+            smokeOutput != nullptr && smokeOutput[0] != '\0' &&
+            smokeToken != nullptr &&
+            std::strcmp(
+                smokeToken, "mdkr64-character-conversion-v1") == 0) {
+            std::snprintf(
+                g_characterConversionOutputPath,
+                sizeof(g_characterConversionOutputPath), "%s",
+                smokeOutput);
+        }
+        if (g_characterConversionOutputPath[0] == '\0') {
+            g_characterManagerReport =
+                "Choose a new .glb destination for the converted authoring source.";
+            setStatus(
+                "DAE/ZIP conversion needs an explicit new GLB destination.",
+                AppTheme::accent());
+            return false;
+        }
+        const std::string convertedPath = g_characterConversionOutputPath;
+        if (!runCharacterManager(
+                "convert-authoring-source", {path, convertedPath}, false)) {
+            setStatus(
+                "Character source conversion did not complete cleanly and no draft changed. The exclusive destination may exist only if diagnostic persistence failed; inspect the report and path before retrying.",
+                AppTheme::bad());
+            return false;
+        }
+        const std::string conversionReport = g_characterManagerReport;
+        const bool archiveMissingLicense =
+            characterPathHasExtension(path, ".zip") &&
+            conversionReport.find(
+                "\"archive_license_present\": false") !=
+                std::string::npos;
+        std::snprintf(g_characterImportPath,
+                      sizeof(g_characterImportPath), "%s",
+                      convertedPath.c_str());
+        g_characterConversionOutputPath[0] = '\0';
+        if (!beginCharacterRawDraft(convertedPath)) {
+            g_characterManagerReport = conversionReport +
+                "\n\nThe converted GLB was created, but its raw authoring draft could not be opened: " +
+                g_characterRawDraftError;
+            setStatus(
+                "GLB conversion succeeded, but the authoring draft could not open; the new GLB remains available.",
+                AppTheme::bad());
+            return false;
+        }
+        const bool inspected = inspectCharacterRawGlb(convertedPath);
+        const std::string inspectionReport = g_characterManagerReport;
+        g_characterManagerReport = conversionReport + "\n\n" +
+            inspectionReport;
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-source-conversion kind=%s converted=1 inspected=%d missing_license=%d output=%s\n",
+                characterPathHasExtension(path, ".zip") ? "zip" : "dae",
+                inspected ? 1 : 0, archiveMissingLicense ? 1 : 0,
+                convertedPath.c_str());
+        }
+        setStatus(
+            inspected
+                ? archiveMissingLicense
+                    ? "Archive converted and inspected. Choose the exact license/notice before building; none was embedded in the archive."
+                    : "Character source converted and inspected; complete the resumable authoring draft."
+                : "The new GLB was created but failed character inspection; review the importer report.",
+            inspected ? (archiveMissingLicense ? AppTheme::accent()
+                                               : AppTheme::good())
+                      : AppTheme::bad());
+        return inspected;
+    }
     if (characterPathHasExtension(path, ".glb")) {
         if (!beginCharacterRawDraft(path)) {
             g_characterManagerReport =

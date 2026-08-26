@@ -160,7 +160,8 @@ bool hasCharacterSourceExtension(const std::string &path) {
         }
         return true;
     };
-    return matches(".mdkrchar") || matches(".glb");
+    return matches(".mdkrchar") || matches(".glb") || matches(".dae") ||
+        matches(".zip");
 }
 
 void acceptDroppedFile(AppHost &host, LauncherState &state, int &activePanel) {
@@ -1098,7 +1099,7 @@ LauncherAction Launcher::draw(AppHost &host) {
         }
     }
 
-    // A dropped character package opens its workshop/importer report. Every
+    // A dropped character source opens its workshop/importer report. Every
     // other file keeps the established ROM flow and its full-image validation.
     acceptDroppedFile(host, state_, active_);
     // Navigation carries the global readiness/action state, so initialize the

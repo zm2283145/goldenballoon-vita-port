@@ -231,7 +231,12 @@ Package-specific fit follows the same character when it is assigned to another
 player. Those settings never alter physics or the vehicle selected by the game.
 
 ```sh
-# Optional convenience path for the adapter's deliberately bounded DAE subset.
+# Optional CLI equivalent of the Workshop's no-overwrite DAE/ZIP conversion.
+# A ZIP must contain exactly one DAE or character-ready self-contained GLB.
+python3 tools/character_package_manager.py --directory characters \
+  convert-authoring-source downloaded-model.zip model.glb
+
+# The lower-level adapter remains useful for an explicit bounded DAE subset.
 python3 tools/collada_to_glb.py source.dae --output model.glb
 
 # Inspect before packaging; --require-character applies the renderer contract.
@@ -344,7 +349,16 @@ only its disposable cache after successful compilation and validation. A
 disabled character stays disabled, and any failure leaves the last known-good
 cache and all source history intact.
 
-The Workshop also accepts a self-contained GLB 2.0 file as an authoring source.
+The Workshop accepts a self-contained GLB 2.0 file as an authoring source. It
+also accepts an explicit DAE or a recursively nested authoring ZIP when the ZIP
+contains exactly one DAE or character-ready GLB. The user chooses a new `.glb`
+destination; traversal, symlinks, encryption, unsafe nesting, expanded-size and
+member-count overflow, ambiguous model choices, external resources, and every
+overwrite fail closed. Conversion uses a private temporary extraction and never
+changes the download. Missing archive license material is reported, but the
+raw draft still requires the user to choose exact license/notice bytes before
+Build.
+
 This is not an install shortcut. A resumable first-import draft fingerprints and
 inventories the bounded GLB, then requires a stable package ID, display name,
 exact license/notice file, SPDX expression, attribution, source URL, built-in

@@ -36,6 +36,11 @@ bool openPortraitImage(std::string &out) {
     return false;
 }
 
+bool saveCharacterConvertedGlb(std::string &out) {
+    (void)out;
+    return false;
+}
+
 bool saveCharacterCapture(std::string &out) {
     (void)out;
     return false;

@@ -30,6 +30,7 @@ from typing import Any, Callable, Iterator
 import character_asset_compiler as compiler
 import character_asset_probe as probe
 import character_manifest_wizard as wizard
+import collada_to_glb as collada
 
 
 MANAGER_SCHEMA = "mdkr-character-install-v1"
@@ -52,6 +53,143 @@ class ManagerError(ValueError):
     pass
 
 
+def _archive_convertible_paths(
+        report: dict[str, Any], prefix: tuple[str, ...] = ()
+) -> list[tuple[tuple[str, ...], str]]:
+    paths = [
+        ((*prefix, str(model["path"])), str(model["format"]))
+        for model in report.get("models", [])
+        if model.get("format") in ("dae", "glb")
+    ]
+    for nested in report.get("nested_archives", []):
+        paths.extend(_archive_convertible_paths(
+            nested, (*prefix, str(nested.get("name", ""))))
+        )
+    return paths
+
+
+def _selected_archive_payload(payload: bytes,
+                              nested_paths: tuple[str, ...]) -> bytes:
+    selected = payload
+    for member in nested_paths:
+        with zipfile.ZipFile(io.BytesIO(selected)) as archive:
+            try:
+                selected = archive.read(member)
+            except KeyError as exc:
+                raise ManagerError(
+                    f"inspected nested archive member disappeared: {member}"
+                ) from exc
+    return selected
+
+
+def convert_authoring_source(input_path: Path,
+                             output_path: Path) -> dict[str, Any]:
+    """Convert a DAE or extract one unambiguous DAE/GLB from a safe ZIP."""
+    suffix = input_path.suffix.lower()
+    if suffix not in (".dae", ".zip"):
+        raise ManagerError("authoring conversion requires a .dae or .zip source")
+    if output_path.suffix.lower() != ".glb":
+        raise ManagerError("converted authoring output must use a .glb suffix")
+    if output_path.parent.is_symlink() or not output_path.parent.is_dir():
+        raise ManagerError("converted output directory must be a real existing directory")
+    destination = output_path.parent.resolve() / output_path.name
+    if destination.exists() or destination.is_symlink():
+        raise ManagerError("converted output destination already exists")
+
+    archive_report: dict[str, Any] | None = None
+    source_label = input_path.name
+    with tempfile.TemporaryDirectory(
+            prefix="mdkr-character-authoring-convert-") as temporary:
+        if suffix == ".dae":
+            if input_path.is_symlink() or not input_path.is_file():
+                raise ManagerError("COLLADA source must be a regular file")
+            conversion_source = input_path
+        else:
+            archive_payload = _bounded_authoring_input(
+                input_path, probe.MAX_INPUT_BYTES, "authoring ZIP")
+            archive_report = probe.inspect_archive_bytes(
+                archive_payload, input_path.name)
+            candidates = _archive_convertible_paths(archive_report)
+            if not candidates:
+                raise ManagerError(
+                    "archive has no convertible COLLADA (.dae) or GLB model; "
+                    "export a self-contained GLB from Blender"
+                )
+            if len(candidates) != 1:
+                labels = [
+                    " > ".join(path) + f" ({kind})"
+                    for path, kind in candidates[:8]
+                ]
+                raise ManagerError(
+                    "archive has multiple convertible model candidates; extract and "
+                    "choose one explicitly: " + "; ".join(labels)
+                )
+            candidate, candidate_kind = candidates[0]
+            selected_payload = _selected_archive_payload(
+                archive_payload, candidate[:-1])
+            extraction_root = Path(temporary) / "source"
+            extraction_root.mkdir()
+            with zipfile.ZipFile(io.BytesIO(selected_payload)) as archive:
+                for info in archive.infolist():
+                    safe_name = probe._safe_archive_name(info.filename)
+                    if info.is_dir():
+                        continue
+                    if info.flag_bits & 1 or probe._zip_member_is_symlink(info):
+                        raise ManagerError(
+                            f"unsafe archive member cannot be converted: {safe_name}"
+                        )
+                    target = extraction_root.joinpath(*Path(safe_name).parts)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    _write_exclusive(target, archive.read(info))
+            conversion_source = extraction_root.joinpath(
+                *Path(candidate[-1]).parts)
+            source_label = " > ".join(candidate)
+
+        if suffix == ".zip" and candidate_kind == "glb":
+            converted = _bounded_authoring_input(
+                conversion_source, probe.MAX_INPUT_BYTES,
+                "archived GLB model",
+            )
+            inspected = probe.inspect_glb_bytes(
+                converted, require_character=True)
+            if inspected["errors"]:
+                raise ManagerError(
+                    "archived GLB is not character-ready: " +
+                    "; ".join(inspected["errors"])
+                )
+            report = {
+                "vertices": inspected["vertex_count"],
+                "triangles": inspected["triangle_count"],
+                "joints": inspected["max_joints"],
+                "materials": inspected["material_count"],
+                "textures": inspected["texture_count"],
+                "source_format": "glb",
+            }
+        else:
+            converted, report = collada.convert(conversion_source)
+        try:
+            _write_exclusive(destination, converted)
+        except FileExistsError as exc:
+            raise ManagerError(
+                "converted output destination already exists"
+            ) from exc
+    return {
+        "action": "convert-authoring-source",
+        "input": str(input_path),
+        "source_member": source_label,
+        "converted_model": str(destination),
+        "output_bytes": len(converted),
+        "archive_license_present": bool(
+            archive_report and not any(
+                blocker == "no embedded license or copyright file"
+                for blocker in archive_report.get("blockers", [])
+            )
+        ),
+        **{
+            key: value for key, value in report.items()
+            if key not in ("input", "output")
+        },
+    }
 def _bounded_authoring_input(path: Path, maximum: int, label: str) -> bytes:
     try:
         flags = os.O_RDONLY
@@ -1739,6 +1877,12 @@ def _parser() -> argparse.ArgumentParser:
     raw_index_parser = sub.add_parser("write-raw-glb-index")
     raw_index_parser.add_argument("model", type=Path)
     raw_index_parser.add_argument("output", type=Path)
+    convert_parser = sub.add_parser(
+        "convert-authoring-source",
+        help="convert one DAE or extract one unambiguous DAE/GLB from a safe ZIP",
+    )
+    convert_parser.add_argument("input", type=Path)
+    convert_parser.add_argument("output", type=Path)
     raw_build_parser = sub.add_parser(
         "build-raw-glb",
         help="build a reviewed source-only candidate from launcher intake fields",
@@ -1880,6 +2024,8 @@ def main(argv: list[str] | None = None) -> int:
             report = write_raw_glb_index(
                 args.model, args.directory, args.output
             )
+        elif args.command == "convert-authoring-source":
+            report = convert_authoring_source(args.input, args.output)
         elif args.command == "build-raw-glb":
             vehicle_mask = args.vehicle_mask
             if vehicle_mask < 1 or vehicle_mask > 7:

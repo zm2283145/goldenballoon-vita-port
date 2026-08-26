@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import os
 import struct
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
@@ -19,6 +21,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "tools"))
 
 from test_character_asset_probe import make_animated_glb  # noqa: E402
+from test_collada_to_glb import DAE  # noqa: E402
 
 
 def isolated_environment(root: Path, model: Path, shot: Path, *,
@@ -133,6 +136,82 @@ def main() -> int:
                 model: hashlib.sha256(model.read_bytes()).hexdigest(),
                 model_b: hashlib.sha256(model_b.read_bytes()).hexdigest(),
             }
+
+            conversion = root / "conversion"
+            conversion.mkdir()
+            nested_bytes = io.BytesIO()
+            with zipfile.ZipFile(nested_bytes, "w") as nested:
+                nested.writestr("Character/model.dae", DAE)
+            archive = conversion / "author-download.zip"
+            with zipfile.ZipFile(archive, "w") as outer:
+                outer.writestr(
+                    "source/model-files.zip", nested_bytes.getvalue()
+                )
+            archive_digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            converted = conversion / "converted.glb"
+            conversion_environment = isolated_environment(
+                conversion, archive,
+                conversion / "raw-intake-conversion.bmp",
+                compact=False, drop=True,
+            )
+            conversion_environment.update({
+                "MDKR_APP_SMOKE_CHARACTER_CONVERSION_OUTPUT":
+                    str(converted),
+                "MDKR_APP_SMOKE_CHARACTER_CONVERSION_TOKEN":
+                    "mdkr64-character-conversion-v1",
+            })
+            run(
+                binary, conversion, conversion_environment,
+                ("character-source-conversion kind=zip converted=1 "
+                 "inspected=1 missing_license=1",
+                 "raw-intake resumed=1 inspected=1 mappings=1 drafts=1"),
+            )
+            _, conversion_rows = raw_inventory(conversion)
+            if (
+                not converted.is_file()
+                or len(conversion_rows) != 1
+                or row_text(conversion_rows[0], 2) != str(converted)
+                or conversion_rows[0][13] != hashlib.sha256(
+                    converted.read_bytes()
+                ).hexdigest()
+                or hashlib.sha256(archive.read_bytes()).hexdigest()
+                    != archive_digest
+                or list((conversion / "characters").glob("*.mdkc"))
+            ):
+                raise RuntimeError(
+                    "ZIP conversion did not produce one source-bound raw "
+                    "draft while preserving the archive and installed state"
+                )
+
+            conversion_accessible = root / "conversion-accessible"
+            conversion_accessible.mkdir()
+            (conversion_accessible / "video.ini").write_text(
+                "[Accessibility]\nSpeech=1\n", encoding="utf-8"
+            )
+            conversion_a11y_environment = isolated_environment(
+                conversion_accessible, archive,
+                conversion_accessible / "conversion-a11y.bmp",
+                compact=False, drop=False,
+            )
+            conversion_a11y_environment.update({
+                "MDKR_APP_SMOKE_FRAMES": "260",
+                "MDKR_APP_SMOKE_A11Y_WALK": "1",
+                "MDKR_APP_SMOKE_INPUT": "keyboard",
+                "MDKR_APP_SMOKE_INPUT_TOKEN": "mdkr64-app-ui-input-v1",
+                "MDKR_A11Y_TRACE": "1",
+                "MDKR_APP_SMOKE_CHARACTER_CONVERSION_SOURCE": str(archive),
+                "MDKR_APP_SMOKE_CHARACTER_CONVERSION_OUTPUT": str(
+                    conversion_accessible / "converted.glb"
+                ),
+                "MDKR_APP_SMOKE_CHARACTER_CONVERSION_TOKEN":
+                    "mdkr64-character-conversion-v1",
+            })
+            run(
+                binary, conversion_accessible,
+                conversion_a11y_environment,
+                ("text=Converted GLB destination",
+                 "text=Convert, inspect, and continue"),
+            )
 
             wide = root / "wide"
             wide.mkdir()
@@ -578,7 +657,8 @@ def main() -> int:
         print(f"check_character_raw_intake_ui: FAIL -- {error}",
               file=sys.stderr)
         return 1
-    print("check_character_raw_intake_ui: PASS -- multi-draft GLB intake, "
+    print("check_character_raw_intake_ui: PASS -- bounded DAE/ZIP conversion, "
+          "multi-draft GLB intake, "
           "same-source branching, source-bound mapping restore, exact "
           "switch/delete/install cleanup, "
           "legacy migration, corruption fail-closed behavior, source-byte "

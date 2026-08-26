@@ -75,7 +75,7 @@ bool openCharacterSource(std::string &out) {
         if (![NSThread isMainThread]) return false;
         NSOpenPanel *panel = [NSOpenPanel openPanel];
         panel.title = @"Import a custom character";
-        panel.message = @"Choose a Golden Balloon package (.mdkrchar) or self-contained GLB 2.0 authoring source (.glb).";
+        panel.message = @"Choose a Golden Balloon package, self-contained GLB, COLLADA model, or authoring ZIP.";
         panel.prompt = @"Choose Source";
         panel.allowsMultipleSelection = NO;
         panel.canChooseDirectories = NO;
@@ -85,8 +85,11 @@ bool openCharacterSource(std::string &out) {
         panel.showsHiddenFiles = NO;
         UTType *packageType = [UTType typeWithFilenameExtension:@"mdkrchar"];
         UTType *glbType = [UTType typeWithFilenameExtension:@"glb"];
-        if (packageType != nil && glbType != nil) {
-            panel.allowedContentTypes = @[ packageType, glbType ];
+        UTType *daeType = [UTType typeWithFilenameExtension:@"dae"];
+        if (packageType != nil && glbType != nil && daeType != nil) {
+            panel.allowedContentTypes = @[
+                packageType, glbType, daeType, UTTypeZIP
+            ];
         }
         panel.allowsOtherFileTypes = NO;
         [NSApp activateIgnoringOtherApps:YES];
@@ -143,6 +146,29 @@ bool openPortraitImage(std::string &out) {
         [NSApp activateIgnoringOtherApps:YES];
         if ([panel runModal] != NSModalResponseOK) return false;
         NSURL *url = panel.URLs.firstObject;
+        if (url == nil || !url.isFileURL) return false;
+        const char *path = url.fileSystemRepresentation;
+        if (path == nullptr || path[0] == '\0') return false;
+        out = path;
+        return true;
+    }
+}
+
+bool saveCharacterConvertedGlb(std::string &out) {
+    @autoreleasepool {
+        if (![NSThread isMainThread]) return false;
+        NSSavePanel *panel = [NSSavePanel savePanel];
+        panel.title = @"Save converted character model";
+        panel.message = @"Choose a new GLB filename. Golden Balloon never overwrites an existing model.";
+        panel.prompt = @"Choose Filename";
+        panel.nameFieldStringValue = @"converted-character.glb";
+        panel.canCreateDirectories = YES;
+        UTType *glbType = [UTType typeWithFilenameExtension:@"glb"];
+        if (glbType != nil) panel.allowedContentTypes = @[ glbType ];
+        panel.allowsOtherFileTypes = NO;
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([panel runModal] != NSModalResponseOK) return false;
+        NSURL *url = panel.URL;
         if (url == nil || !url.isFileURL) return false;
         const char *path = url.fileSystemRepresentation;
         if (path == nullptr || path[0] == '\0') return false;

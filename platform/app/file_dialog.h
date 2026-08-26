@@ -44,9 +44,9 @@ bool isAvailable();
 // which is fine because ImGui state is retained across the modal.
 bool openRom(std::string &out);
 
-// Choose either a reviewable package or a raw GLB authoring source. The
-// launcher inspects the suffix and never installs bytes merely because the
-// user selected them.
+// Choose a reviewable package, a raw GLB, a COLLADA source, or an authoring ZIP.
+// The launcher inspects the suffix and never installs bytes merely because the
+// user selected them. DAE/ZIP sources require an explicit converted destination.
 bool openCharacterSource(std::string &out);
 
 // Choose the exact license/notice text embedded beside a raw GLB. Extension is
@@ -57,6 +57,11 @@ bool openCharacterLicense(std::string &out);
 // Choose a still PNG for custom-character portrait authoring. Validation and
 // resampling happen in the Workshop; the dialog grants no import authority.
 bool openPortraitImage(std::string &out);
+
+// Choose a destination for a self-contained GLB derived from a DAE/ZIP source.
+// Conversion uses exclusive create, so a returned existing path still cannot
+// authorize replacement.
+bool saveCharacterConvertedGlb(std::string &out);
 
 // Choose a destination for a new exact-renderer PNG. The capture writer still
 // opens it exclusively, so selecting an existing file never grants overwrite

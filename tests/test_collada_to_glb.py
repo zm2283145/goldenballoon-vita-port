@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import json
+import io
 import struct
 import sys
 import tempfile
 import unittest
+import zipfile
+from contextlib import redirect_stdout
 from pathlib import Path
 
 
@@ -16,9 +19,10 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import character_asset_compiler as compiler  # noqa: E402
+import character_package_manager as manager  # noqa: E402
 import character_asset_probe as probe  # noqa: E402
 import collada_to_glb as adapter  # noqa: E402
-from test_character_asset_probe import make_manifest  # noqa: E402
+from test_character_asset_probe import make_animated_glb, make_manifest  # noqa: E402
 
 
 DAE = """<?xml version="1.0" encoding="utf-8"?>
@@ -132,6 +136,97 @@ class ColladaAdapterTests(unittest.TestCase):
             source.write_text(unsupported, encoding="utf-8")
             with self.assertRaisesRegex(adapter.ConversionError, "polylist"):
                 adapter.convert(source)
+
+    def test_manager_converts_explicit_dae_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "fixture.dae"
+            output = root / "converted.glb"
+            source.write_text(DAE, encoding="utf-8")
+            report = manager.convert_authoring_source(source, output)
+            self.assertEqual("convert-authoring-source", report["action"])
+            self.assertEqual(str(output.resolve()), report["converted_model"])
+            self.assertEqual([], probe.inspect_glb(
+                output, require_character=True)["errors"])
+            before = output.read_bytes()
+            with self.assertRaisesRegex(manager.ManagerError, "already exists"):
+                manager.convert_authoring_source(source, output)
+            self.assertEqual(before, output.read_bytes())
+
+    def test_launcher_manager_dispatches_conversion_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            installed.mkdir()
+            source = root / "fixture.dae"
+            output = root / "converted.glb"
+            result = installed / ".launcher-character-result.json"
+            source.write_text(DAE, encoding="utf-8")
+            with redirect_stdout(io.StringIO()):
+                status = manager.main([
+                    "--directory", str(installed),
+                    "--result-file", str(result),
+                    "convert-authoring-source", str(source), str(output),
+                ])
+            self.assertEqual(0, status)
+            parsed = json.loads(result.read_text(encoding="utf-8"))
+            self.assertTrue(parsed["ok"])
+            self.assertEqual(str(output.resolve()), parsed["converted_model"])
+            self.assertTrue(output.is_file())
+
+    def test_manager_converts_one_dae_inside_nested_safe_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            nested_bytes = io.BytesIO()
+            with zipfile.ZipFile(nested_bytes, "w") as nested:
+                nested.writestr("Character/model.dae", DAE)
+                nested.writestr("Character/readme.txt", "fixture")
+            source = root / "download.zip"
+            with zipfile.ZipFile(source, "w") as outer:
+                outer.writestr("source/model-files.zip", nested_bytes.getvalue())
+            output = root / "converted.glb"
+            report = manager.convert_authoring_source(source, output)
+            self.assertEqual(
+                "source/model-files.zip > Character/model.dae",
+                report["source_member"],
+            )
+            self.assertFalse(report["archive_license_present"])
+            self.assertEqual([], probe.inspect_glb(
+                output, require_character=True)["errors"])
+
+    def test_manager_extracts_one_character_ready_glb_from_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "download.zip"
+            model = make_animated_glb()
+            with zipfile.ZipFile(source, "w") as archive:
+                archive.writestr("model/character.glb", model)
+                archive.writestr("LICENSE.txt", "CC0 fixture")
+            output = root / "converted.glb"
+            report = manager.convert_authoring_source(source, output)
+            self.assertEqual("model/character.glb", report["source_member"])
+            self.assertEqual("glb", report["source_format"])
+            self.assertTrue(report["archive_license_present"])
+            self.assertEqual(model, output.read_bytes())
+
+    def test_manager_refuses_ambiguous_or_unsafe_archives(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ambiguous = root / "ambiguous.zip"
+            with zipfile.ZipFile(ambiguous, "w") as archive:
+                archive.writestr("a.dae", DAE)
+                archive.writestr("b.dae", DAE)
+            with self.assertRaisesRegex(manager.ManagerError, "multiple convertible"):
+                manager.convert_authoring_source(
+                    ambiguous, root / "ambiguous.glb"
+                )
+            unsafe = root / "unsafe.zip"
+            with zipfile.ZipFile(unsafe, "w") as archive:
+                archive.writestr("../escape.dae", DAE)
+            with self.assertRaisesRegex(probe.ProbeError, "unsafe archive"):
+                manager.convert_authoring_source(unsafe, root / "unsafe.glb")
+            self.assertFalse((root / "ambiguous.glb").exists())
+            self.assertFalse((root / "unsafe.glb").exists())
 
 
 if __name__ == "__main__":

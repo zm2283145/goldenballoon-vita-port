@@ -265,6 +265,20 @@ def _zip_member_is_symlink(info: zipfile.ZipInfo) -> bool:
     return ((info.external_attr >> 16) & 0o170000) == 0o120000
 
 
+def _archive_report_has_license(report: dict[str, Any]) -> bool:
+    return bool(report.get("license_files")) or any(
+        _archive_report_has_license(nested)
+        for nested in report.get("nested_archives", [])
+    )
+
+
+def _archive_report_has_model(report: dict[str, Any]) -> bool:
+    return bool(report.get("models")) or any(
+        _archive_report_has_model(nested)
+        for nested in report.get("nested_archives", [])
+    )
+
+
 def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
@@ -360,9 +374,11 @@ def inspect_archive_bytes(data: bytes, name: str, depth: int = 0) -> dict[str, A
             nested.append(inspect_archive_bytes(archive.read(info), safe_name, depth + 1))
 
     blockers: list[str] = []
-    if not licenses and not any(item["license_files"] for item in nested):
+    if not licenses and not any(
+            _archive_report_has_license(item) for item in nested):
         blockers.append("no embedded license or copyright file")
-    if not models and not any(item["models"] or item["nested_archives"] for item in nested):
+    if not models and not any(
+            _archive_report_has_model(item) for item in nested):
         blockers.append("no supported model candidate")
     return {
         "format": "zip",

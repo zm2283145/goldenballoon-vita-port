@@ -689,6 +689,35 @@ class CharacterAssetProbeTests(unittest.TestCase):
         self.assertIn("no embedded license or copyright file", report["blockers"])
         self.assertEqual("dae", report["nested_archives"][0]["models"][0]["format"])
 
+    def test_archive_inventory_finds_deep_license_and_requires_real_model(self) -> None:
+        deep = io.BytesIO()
+        with zipfile.ZipFile(deep, "w") as archive:
+            archive.writestr("LICENSE.txt", "CC0 fixture")
+            archive.writestr("model.glb", make_animated_glb())
+        middle = io.BytesIO()
+        with zipfile.ZipFile(middle, "w") as archive:
+            archive.writestr("deep.zip", deep.getvalue())
+        outer = io.BytesIO()
+        with zipfile.ZipFile(outer, "w") as archive:
+            archive.writestr("middle.zip", middle.getvalue())
+        report = probe.inspect_archive_bytes(outer.getvalue(), "outer.zip")
+        self.assertNotIn(
+            "no embedded license or copyright file", report["blockers"]
+        )
+        self.assertNotIn("no supported model candidate", report["blockers"])
+
+        empty_nested = io.BytesIO()
+        with zipfile.ZipFile(empty_nested, "w") as archive:
+            archive.writestr("readme.txt", "no model")
+        empty_outer = io.BytesIO()
+        with zipfile.ZipFile(empty_outer, "w") as archive:
+            archive.writestr("nested.zip", empty_nested.getvalue())
+            archive.writestr("LICENSE.txt", "CC0 fixture")
+        empty_report = probe.inspect_archive_bytes(
+            empty_outer.getvalue(), "empty.zip"
+        )
+        self.assertIn("no supported model candidate", empty_report["blockers"])
+
     def test_archive_traversal_is_rejected(self) -> None:
         archive_file = io.BytesIO()
         with zipfile.ZipFile(archive_file, "w") as archive:

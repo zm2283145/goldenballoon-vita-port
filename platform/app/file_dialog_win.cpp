@@ -82,9 +82,11 @@ bool openRom(std::string &out) {
 
 bool openCharacterSource(std::string &out) {
     static const wchar_t kFilter[] =
-        L"Character sources (*.mdkrchar;*.glb)\0*.mdkrchar;*.glb\0"
+        L"Character sources (*.mdkrchar;*.glb;*.dae;*.zip)\0*.mdkrchar;*.glb;*.dae;*.zip\0"
         L"Golden Balloon packages (*.mdkrchar)\0*.mdkrchar\0"
         L"glTF binary models (*.glb)\0*.glb\0"
+        L"COLLADA models (*.dae)\0*.dae\0"
+        L"Authoring archives (*.zip)\0*.zip\0"
         L"\0";
     std::vector<wchar_t> file(32768, L'\0');
     OPENFILENAMEW ofn;
@@ -165,6 +167,37 @@ bool openPortraitImage(std::string &out) {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
                 OFN_EXPLORER | OFN_HIDEREADONLY;
     if (!GetOpenFileNameW(&ofn)) return false;
+    std::string picked = toUtf8(file.data());
+    if (picked.empty()) return false;
+    out = picked;
+    return true;
+}
+
+bool saveCharacterConvertedGlb(std::string &out) {
+    static const wchar_t kFilter[] = L"glTF binary models\0*.glb\0\0";
+    std::vector<wchar_t> file(32768, L'\0');
+    const wchar_t initial[] = L"converted-character.glb";
+    std::copy(std::begin(initial), std::end(initial), file.begin());
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    SDL_Window *window = SDL_GetKeyboardFocus();
+    if (window == nullptr) window = SDL_GetMouseFocus();
+    SDL_SysWMinfo windowInfo;
+    SDL_VERSION(&windowInfo.version);
+    if (window != nullptr &&
+        SDL_GetWindowWMInfo(window, &windowInfo) == SDL_TRUE &&
+        windowInfo.subsystem == SDL_SYSWM_WINDOWS) {
+        ofn.hwndOwner = windowInfo.info.win.window;
+    }
+    ofn.lpstrFilter = kFilter;
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFile = file.data();
+    ofn.nMaxFile = (DWORD)file.size();
+    ofn.lpstrTitle = L"Save converted character model";
+    ofn.lpstrDefExt = L"glb";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+    if (!GetSaveFileNameW(&ofn)) return false;
     std::string picked = toUtf8(file.data());
     if (picked.empty()) return false;
     out = picked;

@@ -32,6 +32,10 @@ This gives three deliberately separate formats:
 - deterministic `.mdkrchar` build/verify and a strict JSON manifest schema;
 - a dependency-free, fail-closed COLLADA 1.4 subset adapter for one skinned
   triangle mesh, including centimeter/Z-up conversion and embedded PNGs;
+- a launcher DAE/ZIP handoff that recursively inventories bounded archives,
+  rejects unsafe or ambiguous members, converts one explicit DAE or extracts
+  one character-ready GLB to an exclusively created destination, and then
+  enters the ordinary resumable authoring/review path;
 - deterministic `.mdkc` compilation with content/compiler identity, sections,
   tangents, animation tracks, semantics, sockets, materials and authored
   `MSFT_lod` levels;
@@ -828,8 +832,14 @@ than being distorted by mandatory solving.
     shareable package without touching installed state. Current-source rebuild
     uses an authenticated snapshot and optimistic cache digest; failure retains
     the last-known-good cache and enabled/disabled state.
-13. Raw GLB intake fingerprints and inventories a self-contained character-ready
-    model before authoring. Up to 64 independent source drafts live in one
+13. Raw-source intake accepts self-contained GLB directly. DAE and ZIP inputs
+    first require an explicit new GLB destination. ZIP traversal, symlinks,
+    encryption, nesting, expanded bytes and member count are bounded; exactly
+    one DAE or character-ready GLB must be unambiguous. Conversion happens in a
+    private temporary extraction, exclusively creates the chosen output, leaves
+    the download unchanged, and reports missing archive license material before
+    authoring. The resulting GLB is then fingerprinted and inventoried. Up to 64
+    independent source drafts live in one
     bounded, per-record authenticated, atomically replaced inventory; selection,
     switching, same-source branching, exact deletion, and legacy-singleton
     migration are durable. Open/closed editor state is independent from saved
