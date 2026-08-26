@@ -312,6 +312,17 @@ struct MdkrOnlineLiveRaceInfo {
     uint8_t localSlotMask = 0u;  /* this endpoint's owned canonical slots */
     uint8_t remoteSlotMask = 0u; /* peers' canonical slots (fed from the mesh) */
     uint8_t inputDelay = 0u;     /* ticks the sealed input leads the drain */
+    /* A roster peer was lost (typed PeerLost from the mesh) since the race
+     * transport came up. The launcher's engine-session loop polls this to end
+     * the visible race instead of predicting against a dead peer forever; the
+     * adapter has already latched the matching lobby-facing failure so the
+     * post-race panel shows the connection-lost recovery. Cleared when the
+     * room returns to the lobby phase. */
+    bool peerLost = false;
+    /* Non-fatal connection quality: the launcher-side match transport latched
+     * a typed recovery (INPUT_GAP / LATE_INPUT) mid-race. Detail lives in
+     * MdkrOnlineLiveRaceStats.recovery*. Never terminal by itself. */
+    bool connectionDegraded = false;
 };
 bool mdkr_online_live_adapter_race_info(const IMdkrOnlineAdapter *adapter,
                                         MdkrOnlineLiveRaceInfo *out);
@@ -377,9 +388,91 @@ struct MdkrOnlineLiveRaceStats {
     uint32_t recoveryFirstTick = 0u;    /* first unrecoverable authored tick */
     uint32_t recoveryObservedTick = 0u; /* drain tick where it was observed */
     uint8_t recoverySlot = 0u;          /* the stalled canonical slot */
+    /* In-race resend sweep (W4 C4): every ~30 service() calls of a
+     * race_advance-driven (production loop shape) race, the adapter re-fans
+     * the trailing sealed window (newest .. newest-60, stepping 3) so one
+     * dropped datagram on the lossy state channel can never wedge a tick
+     * unconfirmed forever. resendSweeps counts sweeps, resendBundles the
+     * bundles re-sent. The sweep deliberately stays OFF while the driver
+     * drains via race_drain_local: that seam's contract is that EVERY mesh
+     * transmission is routed through the driver's own (impairment) carrier. */
+    uint32_t resendSweeps = 0u;
+    uint32_t resendBundles = 0u;
 };
 bool mdkr_online_live_adapter_race_stats(const IMdkrOnlineAdapter *adapter,
                                          MdkrOnlineLiveRaceStats *out);
+
+/* ---- O-T7 race lifecycle + session-config C APIs (launcher/UI seams) ----- *
+ *
+ * These free functions resolve the gated LIVE adapter only (false for the
+ * fake adapter / nullptr), exactly like the race accessors above. They are
+ * the surface the launcher's engine-session loop and the Online Room panel
+ * call for the multi-race lifecycle; none of them exists on the view-action
+ * vocabulary because lobby_view_model.c does not define leader-config
+ * actions yet (that surface is owned by the UI task). */
+
+/* Race results handoff (launcher -> room). Called once after the visible
+ * engine session ends, with the per-CANONICAL-SLOT placements from
+ * mdkr_online_race_results_poll (0 == first place, 0xFF == no human racer in
+ * that slot). The adapter maps canonical slots onto the lobby's SEAT indices
+ * from the authoritative roster (canonical slot k == k-th occupied seat, the
+ * exact order the manifest froze), packs value = p0|p1<<8|p2<<16|p3<<24 with
+ * 0xFF per unoccupied seat, and -- when this endpoint is the room LEADER --
+ * sends PUBLISH_RESULTS. A joiner records nothing: the RESULTS lobby phase
+ * arrives via snapshot and the adapter walks its local session to the
+ * results scene from it. Returns false for a non-live adapter, before the
+ * race transport was ready, or when an occupied seat carries no placement.
+ * Idempotent per race (a second call after RESULTS is a no-op true). */
+bool mdkr_online_live_adapter_report_results(IMdkrOnlineAdapter *adapter,
+                                             const uint8_t placements[4]);
+
+/* Leader-only session configuration (UI -> room). Each sends the matching
+ * lobby command (SET_MODE=17 / SET_CONFIG_TRACK=18 / SET_CUP=19) through the
+ * adapter's command path (stale-revision retry included) and returns whether
+ * the command was submitted: false for a non-live adapter, a non-leader, a
+ * lobby not in the LOBBY phase, or an out-of-range value (mode > 1, track >
+ * 255, cup >= MDKR_ONLINE_CUP_COUNT -- mirroring the reducer's own gates).
+ * The authoritative acceptance lands asynchronously in the next lobby
+ * snapshot; render from mdkr_online_live_adapter_lobby below. */
+bool mdkr_online_live_adapter_set_mode(IMdkrOnlineAdapter *adapter,
+                                       unsigned mode);
+bool mdkr_online_live_adapter_set_config_track(IMdkrOnlineAdapter *adapter,
+                                               unsigned trackId);
+bool mdkr_online_live_adapter_set_cup(IMdkrOnlineAdapter *adapter,
+                                      unsigned cupId);
+
+/* The current authoritative lobby snapshot (mode / configured_track / cup_id
+ * / race_index / points / last_placements included), for panel rendering of
+ * the new session-config and results/standings surfaces the shared view
+ * model does not carry yet. Fail-atomic: false (non-live adapter, or no
+ * snapshot received yet) leaves *out untouched. */
+bool mdkr_online_live_adapter_lobby(const IMdkrOnlineAdapter *adapter,
+                                    MdkrOnlineLobby *out);
+
+/* Synchronous engine-race-boot handoff retract (W4 m3). The owner MUST call
+ * this on the launcher thread BEFORE handing the adapter to any teardown
+ * thread: the destructor's own retract still exists but only as a backstop,
+ * because a detached-thread destruction races the launcher's
+ * OnlineRoom_pollEngineRaceBoot() against a dying adapter. Returns true for
+ * a live adapter (no-op true when no handoff is pending or the build carries
+ * no boot-handoff seam). */
+bool mdkr_online_live_adapter_retract_race_boot(IMdkrOnlineAdapter *adapter);
+
+/* ---- ENTER_ANOTHER_CODE step contract (W4 M5 -- for the UI task) ---------- *
+ *
+ * The live adapter is constructed with a FIXED journey + join code and its
+ * room transport begins exactly once, so "Enter Another Code" cannot re-join
+ * in place. submit(MDKR_ONLINE_VIEW_ACTION_ENTER_ANOTHER_CODE) therefore:
+ *   - best-effort sends MDKR_ONLINE_LEAVE (if a lobby was ever joined),
+ *   - resets the local session to HOME and clears lobby/failure state, and
+ *   - returns accepted == true with step.error ==
+ *     kMdkrOnlineLiveStepEnterAnotherCode.
+ * The panel keys on THAT step value: destroy this adapter, present its code
+ * entry, and construct a fresh JOIN adapter with the new code
+ * (OnlineRoom_makeGatedLiveAdapter). No other accepted step ever carries a
+ * nonzero error, so the sentinel cannot collide with the 1..4 refusal codes
+ * (those arrive only with accepted == false). */
+inline constexpr uint32_t kMdkrOnlineLiveStepEnterAnotherCode = 100u;
 
 /* ---- O-T6b engine match-input seam --------------------------------------- *
  *
