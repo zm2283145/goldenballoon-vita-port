@@ -25,6 +25,7 @@
 
 #include "online/match_live_adapter.h"
 #include "online/match_live_transport.h"
+#include "online/online_track_table.h"
 #include "net/net_roster_runtime.h"
 
 #include "app_version.h"
@@ -745,6 +746,120 @@ bool loopbackPumpUntil(std::vector<IMdkrOnlineAdapter *> adapters,
     return done();
 }
 
+/* ==== Test-only loopback session-config env seams ======================== *
+ *
+ * The loopback race historically drove ONE fixed configuration: vote track 5
+ * (Ancient Lake), vehicle Car, START_RACE mask 0x7. The gates for the
+ * all-tracks + tournament work need the same harness to drive DIFFERENT
+ * lobby configurations, so these seams read:
+ *
+ *   MDKR_APP_TEST_ONLINE_TRACK=<id>       leader fixes the track with
+ *                                         SET_CONFIG_TRACK (a configured
+ *                                         session skips the vote step in the
+ *                                         view, exactly like retail; the
+ *                                         config, never a vote, drives the
+ *                                         manifest)
+ *   MDKR_APP_TEST_ONLINE_MODE=tournament  leader sends SET_MODE(1) and
+ *   MDKR_APP_TEST_ONLINE_CUP=<id>         SET_CUP (default cup 0); the cup
+ *                                         schedule, not the votes, picks
+ *                                         every round's track
+ *
+ * With NO seam env set every value below reproduces the historical literals
+ * exactly (vehicle Car == 0, START_RACE mask 0x7, no leader config commands),
+ * so the registered default lanes stay byte-identical. A malformed seam fails
+ * the whole loopback setup loudly rather than racing a wrong configuration.
+ *
+ * Vehicle + mask derivation: BEGIN_LOADING refuses any seat whose chosen
+ * vehicle bit is outside the START_RACE mask, the launch-descriptor validator
+ * re-checks the same bit against the frozen manifest mask, and the engine's
+ * admission requires manifest mask == leveltable_vehicle_usable(track). So a
+ * configured track uses ITS raw table mask and ITS ROM default vehicle; a cup
+ * uses round 1's table mask and one vehicle that stays legal across EVERY
+ * round (seats keep their vehicle across REMATCH -- clear_round only resets
+ * votes and Ready). */
+struct LoopbackSessionConfig {
+    bool valid = true;
+    const char *error = nullptr;
+    bool tournament = false; /* MDKR_APP_TEST_ONLINE_MODE=tournament */
+    unsigned cup = 0u;       /* MDKR_APP_TEST_ONLINE_CUP, tournament only */
+    bool haveTrack = false;  /* MDKR_APP_TEST_ONLINE_TRACK set */
+    unsigned track = 0u;
+    unsigned vehicle = 0u;   /* both endpoints' CHOOSE_VEHICLE value */
+    unsigned startMask = 7u; /* the leader's START_RACE vehicle mask */
+    bool any() const { return tournament || haveTrack; }
+};
+
+LoopbackSessionConfig loopbackSessionConfig() {
+    LoopbackSessionConfig cfg;
+    auto refuse = [&cfg](const char *message) {
+        cfg.valid = false;
+        cfg.error = message;
+        return cfg;
+    };
+    auto parseUnsigned = [](const char *text, unsigned *out) {
+        char *end = nullptr;
+        const unsigned long value = std::strtoul(text, &end, 10);
+        if (end == text || *end != '\0' || value > 0xffffu) return false;
+        *out = static_cast<unsigned>(value);
+        return true;
+    };
+    if (const char *mode = std::getenv("MDKR_APP_TEST_ONLINE_MODE")) {
+        if (std::strcmp(mode, "tournament") != 0) {
+            return refuse("MDKR_APP_TEST_ONLINE_MODE must be 'tournament'");
+        }
+        cfg.tournament = true;
+        if (const char *cup = std::getenv("MDKR_APP_TEST_ONLINE_CUP")) {
+            if (!parseUnsigned(cup, &cfg.cup) ||
+                cfg.cup >= MDKR_ONLINE_CUP_COUNT) {
+                return refuse("invalid MDKR_APP_TEST_ONLINE_CUP");
+            }
+        }
+    }
+    if (const char *track = std::getenv("MDKR_APP_TEST_ONLINE_TRACK")) {
+        if (cfg.tournament) {
+            return refuse("MDKR_APP_TEST_ONLINE_TRACK cannot combine with "
+                          "tournament mode (the cup schedules every track)");
+        }
+        if (!parseUnsigned(track, &cfg.track) ||
+            mdkr_online_track_by_id(static_cast<uint16_t>(cfg.track)) ==
+                nullptr) {
+            return refuse("invalid MDKR_APP_TEST_ONLINE_TRACK (not one of "
+                          "the 20 standard race tracks)");
+        }
+        cfg.haveTrack = true;
+    }
+    if (cfg.tournament) {
+        uint8_t sharedMask = MDKR_ONLINE_VEHICLE_BIT_ALL;
+        const MdkrOnlineTrackInfo *round1 = nullptr;
+        for (unsigned round = 0u; round < MDKR_ONLINE_CUP_ROUNDS; ++round) {
+            const MdkrOnlineTrackInfo *info = mdkr_online_track_by_id(
+                mdkr_online_cup_track(cfg.cup, round));
+            if (info == nullptr) {
+                return refuse("cup round missing from the track table");
+            }
+            sharedMask = static_cast<uint8_t>(sharedMask & info->vehicle_mask);
+            if (round == 0u) round1 = info;
+        }
+        if (sharedMask == 0u) {
+            return refuse("cup rounds share no legal vehicle");
+        }
+        cfg.startMask = round1->vehicle_mask;
+        if ((sharedMask & (1u << round1->default_vehicle)) != 0u) {
+            cfg.vehicle = round1->default_vehicle;
+        } else {
+            unsigned bit = 0u;
+            while ((sharedMask & (1u << bit)) == 0u) ++bit;
+            cfg.vehicle = bit;
+        }
+    } else if (cfg.haveTrack) {
+        const MdkrOnlineTrackInfo *info =
+            mdkr_online_track_by_id(static_cast<uint16_t>(cfg.track));
+        cfg.startMask = info->vehicle_mask;
+        cfg.vehicle = info->default_vehicle;
+    }
+    return cfg;
+}
+
 MdkrOnlineLiveAdapterOptions loopbackOptions(LoopbackRoomTransport *room,
                                              LoopbackMeshBackend *backend,
                                              MdkrOnlineJourney journey) {
@@ -848,6 +963,59 @@ MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLoopbackRace(std::string *error) 
         set_err("confirm phrase did not reach SELECTING");
         return nullptr;
     }
+    /* Test-only session-config seams (loopbackSessionConfig above). With no
+     * seam env set this whole block is inert and the flow below is identical
+     * to the historical fixed vote-track-5 / Car / mask-0x7 race. */
+    const LoopbackSessionConfig sessionCfg = loopbackSessionConfig();
+    if (!sessionCfg.valid) {
+        set_err(sessionCfg.error);
+        return nullptr;
+    }
+    if (sessionCfg.any()) {
+        if (sessionCfg.tournament) {
+            if (!mdkr_online_live_adapter_set_mode(A,
+                                                   MDKR_ONLINE_MODE_TOURNAMENT) ||
+                !mdkr_online_live_adapter_set_cup(A, sessionCfg.cup)) {
+                set_err("leader session-config submit refused (mode/cup)");
+                return nullptr;
+            }
+        } else if (!mdkr_online_live_adapter_set_config_track(
+                       A, sessionCfg.track)) {
+            set_err("leader session-config submit refused (track)");
+            return nullptr;
+        }
+        if (!loopbackPumpUntil(both, [&]() {
+                MdkrOnlineLobby la{}, lb{};
+                if (!mdkr_online_live_adapter_lobby(A, &la) ||
+                    !mdkr_online_live_adapter_lobby(B, &lb)) return false;
+                if (sessionCfg.tournament) {
+                    return la.mode == MDKR_ONLINE_MODE_TOURNAMENT &&
+                           la.cup_id == sessionCfg.cup &&
+                           lb.mode == MDKR_ONLINE_MODE_TOURNAMENT &&
+                           lb.cup_id == sessionCfg.cup;
+                }
+                return la.configured_track == sessionCfg.track &&
+                       lb.configured_track == sessionCfg.track;
+            }, 5000u)) {
+            set_err("session config did not reach both lobby snapshots");
+            return nullptr;
+        }
+        if (sessionCfg.tournament) {
+            std::fprintf(stderr,
+                         "[online-live] loopback config mode=tournament "
+                         "cup=%u round1Track=%u startMask=0x%02x vehicle=%u\n",
+                         sessionCfg.cup,
+                         static_cast<unsigned>(
+                             mdkr_online_cup_track(sessionCfg.cup, 0u)),
+                         sessionCfg.startMask, sessionCfg.vehicle);
+        } else {
+            std::fprintf(stderr,
+                         "[online-live] loopback config mode=single track=%u "
+                         "startMask=0x%02x vehicle=%u\n",
+                         sessionCfg.track, sessionCfg.startMask,
+                         sessionCfg.vehicle);
+        }
+    }
     auto selectReady = [&](IMdkrOnlineAdapter *self, unsigned character) {
         auto until = [&](MdkrOnlineViewAction next) {
             return loopbackPumpUntil(both, [&]() {
@@ -857,12 +1025,21 @@ MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLoopbackRace(std::string *error) 
         self->submit(loopbackCmd(self, MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER,
                                  0u, character));
         until(MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE);
-        self->submit(
-            loopbackCmd(self, MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE, 0u, 0u));
-        until(MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK);
-        /* Track 5 == Ancient Lake, matching tests/input_scripts/race_2p_split. */
-        self->submit(
-            loopbackCmd(self, MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK, 0u, 5u));
+        /* Car (0) historically; a session-config seam swaps in a vehicle that
+         * is legal for the configured track / every cup round (see
+         * loopbackSessionConfig). */
+        self->submit(loopbackCmd(self, MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE,
+                                 0u, sessionCfg.vehicle));
+        if (!sessionCfg.any()) {
+            /* Track 5 == Ancient Lake, matching tests/input_scripts/
+             * race_2p_split. A configured session (tournament cup or fixed
+             * track) never offers the vote step -- the view model skips it,
+             * exactly like the retail flow -- so the vote exists only on the
+             * legacy single-race default path. */
+            until(MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK);
+            self->submit(
+                loopbackCmd(self, MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK, 0u, 5u));
+        }
         until(MDKR_ONLINE_VIEW_ACTION_READY);
         self->submit(loopbackCmd(self, MDKR_ONLINE_VIEW_ACTION_READY, 0u, 1u));
         (void)loopbackPumpUntil(both, [&]() {
@@ -886,10 +1063,13 @@ MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLoopbackRace(std::string *error) 
      *
      * START_RACE's value becomes the lobby's selected_vehicle_mask (BEGIN_LOADING
      * carries it), which the O-T5 builder freezes into the manifest. It MUST equal
-     * the ROM's usable-vehicle mask for the voted track or the engine's online
+     * the ROM's usable-vehicle mask for the race track or the engine's online
      * race admission (mdkr_match_manifest_accepts_loaded_race) rejects the boot.
-     * Ancient Lake (track 5) is car/hovercraft/plane == 0x07. */
-    A->submit(loopbackCmd(A, MDKR_ONLINE_VIEW_ACTION_START_RACE, 0u, 7u));
+     * Default (no seam env): Ancient Lake (track 5), car/hovercraft/plane ==
+     * 0x07; a session-config seam supplies the configured track's / cup round
+     * 1's raw table mask instead. */
+    A->submit(loopbackCmd(A, MDKR_ONLINE_VIEW_ACTION_START_RACE, 0u,
+                          sessionCfg.startMask));
     /* When the joiner must be visible, service B first here so it reaches
      * race-ready and wins the once-only roster install ahead of A -- installing
      * B's local=slot1 roster and making the visible engine render canonical
@@ -923,7 +1103,308 @@ IMdkrOnlineAdapter *OnlineRoom_testLoopbackPeer(
     return (race->joinerVisible ? race->a : race->b).get();
 }
 
+/* ======================================================================== *
+ * Test-only tournament continuation (MDKR_APP_TEST_ONLINE_MODE=tournament)
+ *
+ * The MDKR_APP_TEST_ONLINE_LIVE branch in main_app.cpp boots the visible
+ * engine EXACTLY once per process and then destroys the loopback pair, so a
+ * full 4-race cup cannot re-boot the engine here. Instead, after the launcher
+ * has reported the ENGINE race's real placements (reportOnlineRaceResults ->
+ * PUBLISH_RESULTS), this continuation drives rounds 2..4 at the TRANSPORT
+ * level through the SAME live room, exactly the way
+ * tests/test_online_live_adapter.cpp's lifecycle/tournament rig does: leader
+ * REMATCH advances race_index, both endpoints re-Ready (selections survive
+ * clear_round and a tournament room offers no track vote), the leader
+ * starts the round with that round's raw table mask, both race transports
+ * reach READY on a fresh epoch with byte-identical descriptors carrying the
+ * cup schedule's track, a window of authored ticks is sealed/drained and
+ * hash-compared across both endpoints, and the leader publishes fixed
+ * placements (canonical slot 0 first, slot 1 second) so the reducer accrues
+ * authentic trophy points. Every step prints an [online-tournament] witness;
+ * a stall prints "[online-tournament] result=error step=..." and gives up.
+ * Default env (no MDKR_APP_TEST_ONLINE_MODE) never enters this path.
+ * ======================================================================== */
+namespace {
+
+/* FNV-1a fold of one confirmed canonical frame over the active slots --
+ * mirrors tests/test_online_live_adapter.cpp foldFrame, the ROM-free "engine
+ * advance" both endpoints must agree on. */
+void loopbackFoldFrame(uint64_t &hash, uint32_t tick, uint8_t activeMask,
+                       const MdkrInputSet &frame) {
+    auto mix = [&hash](uint64_t value) {
+        for (unsigned b = 0u; b < 8u; ++b) {
+            hash ^= (value >> (b * 8u)) & 0xffu;
+            hash *= UINT64_C(1099511628211);
+        }
+    };
+    mix(tick);
+    for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; ++slot) {
+        if ((activeMask & (1u << slot)) == 0u) continue;
+        mix(frame.slots[slot].buttons);
+        mix(static_cast<uint64_t>(
+            static_cast<uint8_t>(frame.slots[slot].stick_x)));
+        mix(static_cast<uint64_t>(
+            static_cast<uint8_t>(frame.slots[slot].stick_y)));
+    }
+}
+
+/* Seal + drain `ticks` authored ticks on the deterministic synthetic-input
+ * fixture and require both endpoints to fold the identical confirmed hash --
+ * the transport-level convergence proof for a round the engine does not race
+ * (tests/test_online_live_adapter.cpp driveConvergedTicks, real clock). */
+bool loopbackDriveConvergedTicks(IMdkrOnlineAdapter *A, IMdkrOnlineAdapter *B,
+                                 unsigned ticks, unsigned *outConverged) {
+    if (outConverged != nullptr) *outConverged = 0u;
+    MdkrOnlineLiveRaceInfo ia{}, ib{};
+    if (!mdkr_online_live_adapter_race_info(A, &ia) || !ia.ready ||
+        !mdkr_online_live_adapter_race_info(B, &ib) || !ib.ready) {
+        return false;
+    }
+    mdkr_online_live_adapter_race_set_synthetic_input(A, true);
+    mdkr_online_live_adapter_race_set_synthetic_input(B, true);
+    const uint32_t target = ia.firstTick + ticks - 1u;
+    const uint32_t kThrottle = 16u;
+    uint32_t cursorA = ia.firstTick, cursorB = ib.firstTick;
+    uint64_t hashA = UINT64_C(1469598103934665603);
+    uint64_t hashB = UINT64_C(1469598103934665603);
+    auto foldReady = [&](IMdkrOnlineAdapter *self, uint32_t &cursor,
+                         uint8_t active, uint64_t &hash) {
+        MdkrInputSet frame;
+        while (mdkr_online_live_adapter_race_inputs_for_tick(self, cursor,
+                                                             &frame)) {
+            if ((frame.confirmed_mask & active) != active) break;
+            loopbackFoldFrame(hash, cursor, active, frame);
+            ++cursor;
+        }
+    };
+    for (unsigned step = 0u; step < 20000u; ++step) {
+        /* service() before the tick drain -- the load-bearing pump ordering
+         * (match_live_adapter.h integration contract). */
+        A->service();
+        B->service();
+        MdkrOnlineLiveRaceInfo na{}, nb{};
+        mdkr_online_live_adapter_race_info(A, &na);
+        mdkr_online_live_adapter_race_info(B, &nb);
+        if (na.nextTick <= target && na.nextTick - cursorA < kThrottle) {
+            mdkr_online_live_adapter_race_advance(A);
+        }
+        if (nb.nextTick <= target && nb.nextTick - cursorB < kThrottle) {
+            mdkr_online_live_adapter_race_advance(B);
+        }
+        foldReady(A, cursorA, ia.activeSlotMask, hashA);
+        foldReady(B, cursorB, ib.activeSlotMask, hashB);
+        if (cursorA > target && cursorB > target) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    if (cursorA <= target || cursorB <= target || hashA != hashB) return false;
+    if (outConverged != nullptr) {
+        *outConverged = static_cast<unsigned>(cursorA - ia.firstTick);
+    }
+    return true;
+}
+
+void loopbackTournamentResultsWitness(IMdkrOnlineAdapter *leader,
+                                      unsigned raceNumber) {
+    MdkrOnlineLobby lobby{};
+    (void)mdkr_online_live_adapter_lobby(leader, &lobby);
+    std::fprintf(stderr,
+                 "[online-tournament] results race=%u race_index=%u track=%u "
+                 "points=%u,%u,%u,%u last_placements=%u,%u,%u,%u\n",
+                 raceNumber, static_cast<unsigned>(lobby.race_index),
+                 static_cast<unsigned>(lobby.selected_track),
+                 static_cast<unsigned>(lobby.points[0]),
+                 static_cast<unsigned>(lobby.points[1]),
+                 static_cast<unsigned>(lobby.points[2]),
+                 static_cast<unsigned>(lobby.points[3]),
+                 static_cast<unsigned>(lobby.last_placements[0]),
+                 static_cast<unsigned>(lobby.last_placements[1]),
+                 static_cast<unsigned>(lobby.last_placements[2]),
+                 static_cast<unsigned>(lobby.last_placements[3]));
+}
+
+bool loopbackTournamentContinuation(MdkrOnlineTestLoopbackRace *race) {
+    IMdkrOnlineAdapter *A = race->a.get(); /* room leader */
+    IMdkrOnlineAdapter *B = race->b.get();
+    std::vector<IMdkrOnlineAdapter *> both{A, B};
+    const LoopbackSessionConfig cfg = loopbackSessionConfig();
+    auto failStep = [](const char *stepName) {
+        std::fprintf(stderr, "[online-tournament] result=error step=%s\n",
+                     stepName);
+        return false;
+    };
+    auto lobbyOf = [](IMdkrOnlineAdapter *self) {
+        MdkrOnlineLobby lobby{};
+        (void)mdkr_online_live_adapter_lobby(self, &lobby);
+        return lobby;
+    };
+    auto bothAtPhase = [&](MdkrOnlinePhase phase) {
+        return lobbyOf(A).phase == phase && lobbyOf(B).phase == phase;
+    };
+
+    /* Race 1 (the ENGINE race): the launcher already polled the engine's real
+     * placements and the leader published them (reportOnlineRaceResults runs
+     * before the destroy). Pump both endpoints to the RESULTS phase. */
+    if (!loopbackPumpUntil(both, [&]() {
+            return bothAtPhase(MDKR_ONLINE_RESULTS) &&
+                   loopbackView(A).kind == MDKR_ONLINE_VIEW_RESULTS;
+        }, 15000u)) {
+        return failStep("race1-results-phase");
+    }
+    loopbackTournamentResultsWitness(A, 1u);
+
+    for (unsigned round = 1u; round < MDKR_ONLINE_CUP_ROUNDS; ++round) {
+        /* Mirror runOnlineLiveEngineSession's post-race teardown: the roster
+         * runtime install is once-only while installed, so multi-race rooms
+         * clear it between rounds and the next BEGIN_LOADING re-installs. */
+        mdkr_net_roster_runtime_clear();
+
+        /* Leader REMATCH (RACE_AGAIN maps onto the reducer's leader-only
+         * REMATCH) advances race_index and returns the room to selections. */
+        if (!A->submit(loopbackCmd(A, MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN))
+                 .accepted) {
+            return failStep("rematch-submit");
+        }
+        if (!loopbackPumpUntil(both, [&]() {
+                return bothAtPhase(MDKR_ONLINE_LOBBY) &&
+                       lobbyOf(A).race_index == round &&
+                       loopbackView(A).kind == MDKR_ONLINE_VIEW_SELECTING &&
+                       loopbackView(B).kind == MDKR_ONLINE_VIEW_SELECTING;
+            }, 15000u)) {
+            return failStep("rematch-advance");
+        }
+        {
+            const MdkrOnlineLobby lobby = lobbyOf(A);
+            std::fprintf(stderr,
+                         "[online-tournament] rematch race_index=%u "
+                         "points=%u,%u,%u,%u\n",
+                         static_cast<unsigned>(lobby.race_index),
+                         static_cast<unsigned>(lobby.points[0]),
+                         static_cast<unsigned>(lobby.points[1]),
+                         static_cast<unsigned>(lobby.points[2]),
+                         static_cast<unsigned>(lobby.points[3]));
+        }
+
+        /* Re-Ready (characters/vehicles survive clear_round, and a
+         * tournament room never offers a track vote -- the cup schedule owns
+         * the track -- so the primary lands straight on Ready). */
+        for (IMdkrOnlineAdapter *self : both) {
+            if (!loopbackPumpUntil(both, [&]() {
+                    return loopbackView(self).primary.action ==
+                           MDKR_ONLINE_VIEW_ACTION_READY;
+                }, 10000u)) {
+                return failStep("ready-offer");
+            }
+            self->submit(
+                loopbackCmd(self, MDKR_ONLINE_VIEW_ACTION_READY, 0u, 1u));
+        }
+        if (!loopbackPumpUntil(both, [&]() {
+                return loopbackView(A).ready_count == 2u &&
+                       loopbackView(B).ready_count == 2u;
+            }, 10000u)) {
+            return failStep("ready-both");
+        }
+
+        /* Leader starts this round with the round track's raw table mask (the
+         * admission equality the engine enforces at boot; asserted against
+         * the frozen manifest below since rounds 2..4 do not boot it). */
+        const uint16_t roundTrack = mdkr_online_cup_track(cfg.cup, round);
+        const MdkrOnlineTrackInfo *info = mdkr_online_track_by_id(roundTrack);
+        if (info == nullptr) return failStep("round-track-table");
+        if (!loopbackPumpUntil(both, [&]() {
+                return loopbackView(A).primary.action ==
+                       MDKR_ONLINE_VIEW_ACTION_START_RACE;
+            }, 10000u)) {
+            return failStep("start-offer");
+        }
+        A->submit(loopbackCmd(A, MDKR_ONLINE_VIEW_ACTION_START_RACE, 0u,
+                              info->vehicle_mask));
+        if (!loopbackPumpUntil(both, [&]() {
+                MdkrOnlineLiveRaceInfo ia{}, ib{};
+                return mdkr_online_live_adapter_race_info(A, &ia) && ia.ready &&
+                       mdkr_online_live_adapter_race_info(B, &ib) && ib.ready;
+            }, 30000u)) {
+            return failStep("race-ready");
+        }
+        if (!mdkr_net_roster_runtime_active()) {
+            return failStep("roster-reinstall");
+        }
+        MdkrOnlineLiveLaunchProbe pa{}, pb{};
+        if (!mdkr_online_live_adapter_probe(A, &pa) || !pa.descriptorBuilt ||
+            !mdkr_online_live_adapter_probe(B, &pb) || !pb.descriptorBuilt) {
+            return failStep("descriptor-probe");
+        }
+        const bool identical =
+            std::memcmp(&pa.descriptor, &pb.descriptor,
+                        sizeof(pa.descriptor)) == 0;
+        unsigned convergedTicks = 0u;
+        const bool converged =
+            loopbackDriveConvergedTicks(A, B, 60u, &convergedTicks);
+        std::fprintf(stderr,
+                     "[online-tournament] race-ready round=%u track=%u "
+                     "mask=0x%02x epoch=%u descriptorsIdentical=%u "
+                     "convergedTicks=%u hashEqual=%u\n",
+                     round + 1u,
+                     static_cast<unsigned>(pa.descriptor.manifest.track_id),
+                     static_cast<unsigned>(pa.descriptor.manifest.vehicle_mask),
+                     static_cast<unsigned>(pa.descriptor.manifest.match_epoch),
+                     identical ? 1u : 0u, convergedTicks, converged ? 1u : 0u);
+        if (!identical || pa.descriptor.manifest.track_id != roundTrack ||
+            pa.descriptor.manifest.vehicle_mask != info->vehicle_mask ||
+            pa.descriptor.manifest.match_epoch != round + 1u) {
+            return failStep("manifest-mismatch");
+        }
+        if (!converged) return failStep("transport-convergence");
+
+        /* Transport-level round result: the leader reports fixed placements
+         * (canonical slot 0 first, slot 1 second) exactly through the same
+         * report seam the launcher uses after a real engine race. */
+        const uint8_t placements[4] = {0u, 1u, 0xffu, 0xffu};
+        const bool reported =
+            mdkr_online_live_adapter_report_results(A, placements);
+        std::fprintf(stderr,
+                     "[online-tournament] transport results reported round=%u "
+                     "placements=%u,%u,%u,%u accepted=%u\n",
+                     round + 1u, 0u, 1u, 255u, 255u, reported ? 1u : 0u);
+        if (!reported) return failStep("report-results");
+        if (!loopbackPumpUntil(both, [&]() {
+                return bothAtPhase(MDKR_ONLINE_RESULTS);
+            }, 15000u)) {
+            return failStep("results-phase");
+        }
+        loopbackTournamentResultsWitness(A, round + 1u);
+    }
+
+    {
+        const MdkrOnlineLobby lobby = lobbyOf(A);
+        std::fprintf(stderr,
+                     "[online-tournament] final cup=%u race_index=%u "
+                     "points=%u,%u,%u,%u result=ok\n",
+                     static_cast<unsigned>(lobby.cup_id),
+                     static_cast<unsigned>(lobby.race_index),
+                     static_cast<unsigned>(lobby.points[0]),
+                     static_cast<unsigned>(lobby.points[1]),
+                     static_cast<unsigned>(lobby.points[2]),
+                     static_cast<unsigned>(lobby.points[3]));
+    }
+    /* Round 4's transport race installed a roster; leave the process clean. */
+    mdkr_net_roster_runtime_clear();
+    return true;
+}
+
+}  // namespace
+
 void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race) {
+    /* Test-only multi-race continuation: only under
+     * MDKR_APP_TEST_ONLINE_MODE=tournament (see the block comment above).
+     * Failures are witnessed on stderr -- the caller's exit code belongs to
+     * the engine race, so the tournament gate asserts the witnesses. With the
+     * default env this is a plain delete, exactly as before. */
+    if (race != nullptr) {
+        const char *mode = std::getenv("MDKR_APP_TEST_ONLINE_MODE");
+        if (mode != nullptr && std::strcmp(mode, "tournament") == 0) {
+            (void)loopbackTournamentContinuation(race);
+        }
+    }
     delete race;
 }
 
