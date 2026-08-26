@@ -9,6 +9,7 @@
 #include "character_draft_snapshot.h"
 #include "character_draft_store.h"
 #include "character_edit_history.h"
+#include "character_portrait_import.h"
 #include "character_portrait_studio.h"
 #include "character_raw_draft_store.h"
 #include "character_raw_intake_index.h"
@@ -1849,6 +1850,9 @@ bool g_characterWorkshopTabLoaded = false;
 bool g_characterWorkshopTabForceSelection = false;
 bool g_characterWorkshopOpenRequested = false;
 
+void persistCharacterWorkshopTab(CharacterWorkshopTab tab,
+                                 bool forceSelection);
+
 struct CharacterImportCandidate {
     bool ready = false;
     bool portable = false;
@@ -1935,6 +1939,19 @@ struct CharacterIdentityEdit {
     CharacterPortraitStudio::Canvas styleSource{};
     CharacterPortraitStudio::Canvas stylePreview{};
     CharacterPortraitStudio::Recipe styleRecipe{};
+    CharacterPortraitImport::SourceRecord portraitSourceRecord{};
+    char importPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
+    CharacterPortraitImport::Image importImage{};
+    CharacterPortraitImport::Recipe importRecipe{};
+    CharacterPortraitImport::Thumbnail importThumbnail{};
+    CharacterPortraitStudio::Canvas importPreview{};
+    std::string importError;
+    CharacterEditHistory::Track importHistory{};
+    uint32_t importDragCropX = 0u;
+    uint32_t importDragCropY = 0u;
+    bool importPreviewValid = false;
+    bool importPreviewDirty = false;
+    bool importFromExactRenderer = false;
     float paintRgba[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     float replaceFromRgba[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     int tool = 0;
@@ -1951,6 +1968,15 @@ struct CharacterIdentityEdit {
 
 std::map<std::string, CharacterIdentityEdit> g_characterIdentityEdits;
 std::set<std::string> g_characterPortraitStyleTraceKeys;
+std::set<std::string> g_characterPortraitSourceTraceKeys;
+std::set<std::string> g_characterPortraitSourceSmokePackages;
+
+struct CharacterPendingPortraitSource {
+    std::string path;
+    bool exactRenderer = false;
+};
+std::map<std::string, CharacterPendingPortraitSource>
+    g_characterPendingPortraitSources;
 
 struct CharacterProfileEdit {
     bool loaded = false;
@@ -3561,6 +3587,7 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterTestLighting.erase(id);
     g_characterCaptureEdits.erase(id);
     g_characterVisualCaptures.erase(id);
+    g_characterPendingPortraitSources.erase(id);
     g_characterPoseInspectionTracePackages.erase(id);
     g_characterPreviewResults.erase(id);
     g_characterTestEvidenceSelectedCell.erase(id);
@@ -5512,6 +5539,20 @@ void drawCharacterVisualCaptureTray(
                                 capture.sourceSha256.c_str(),
                                 capture.fitSha256.c_str());
             ui::TextSubtleUnformattedWrapped(capture.pngPath.c_str());
+            if (ImGui::Button("Use for portrait")) {
+                g_characterPendingPortraitSources[entry->id] = {
+                    capture.pngPath, true,
+                };
+                persistCharacterWorkshopTab(
+                    CharacterWorkshopTab::Identity, true);
+                setStatus(
+                    "Exact-renderer capture sent to Portrait Studio; frame the subject before applying it.",
+                    AppTheme::good());
+            }
+            ui::SpeakFocusedItem(
+                "Use capture for portrait", nullptr,
+                "Opens Portrait Studio with this exact stabilized PNG as a reversible local source. The capture file is not changed or deleted.");
+            ImGui::SameLine();
             if (ImGui::Button("Remove from report")) removeIndex = index;
             ui::SpeakFocusedItem(
                 "Remove from report", nullptr,
@@ -6809,6 +6850,598 @@ void refreshPortraitStylePreview(CharacterIdentityEdit &edit) {
     edit.stylePreviewValid = true;
 }
 
+bool refreshPortraitImportPreview(CharacterIdentityEdit &edit) {
+    CharacterPortraitStudio::Canvas preview{};
+    std::string error;
+    if (!CharacterPortraitImport::render(
+            edit.importImage, edit.importRecipe, preview, error)) {
+        edit.importPreviewValid = false;
+        edit.importError = std::move(error);
+        return false;
+    }
+    edit.importPreview = preview;
+    edit.importPreviewValid = true;
+    edit.importPreviewDirty = false;
+    edit.importError.clear();
+    return true;
+}
+
+void commitPortraitImportSource(CharacterIdentityEdit &edit) {
+    edit.portraitSourceRecord = CharacterPortraitImport::sourceRecord(
+        edit.importImage, edit.importRecipe,
+        edit.importFromExactRenderer
+            ? CharacterPortraitImport::SourceKind::ExactRenderer
+            : CharacterPortraitImport::SourceKind::LocalPng);
+    std::snprintf(edit.portraitPath, sizeof(edit.portraitPath), "%s",
+                  edit.importPath);
+}
+
+bool loadPortraitImportSource(CharacterIdentityEdit &edit,
+                              const std::string &path,
+                              bool exactRenderer) {
+    CharacterPortraitImport::Image image;
+    CharacterPortraitImport::Thumbnail thumbnail;
+    std::string error;
+    if (!CharacterPortraitImport::loadPng(path, image, error) ||
+        !CharacterPortraitImport::makeThumbnail(image, thumbnail)) {
+        edit.importError = error.empty()
+            ? "The portrait source thumbnail could not be prepared." : error;
+        return false;
+    }
+    CharacterPortraitImport::Recipe recipe =
+        CharacterPortraitImport::centredRecipe(image);
+    bool resolvedExactRenderer = exactRenderer;
+    if (edit.portraitSourceRecord.kind !=
+            CharacterPortraitImport::SourceKind::Canvas &&
+        edit.portraitSourceRecord.sha256 == image.sha256 &&
+        edit.portraitSourceRecord.width == image.width &&
+        edit.portraitSourceRecord.height == image.height) {
+        recipe = edit.portraitSourceRecord.recipe;
+        resolvedExactRenderer = edit.portraitSourceRecord.kind ==
+            CharacterPortraitImport::SourceKind::ExactRenderer;
+    }
+    CharacterPortraitStudio::Canvas preview{};
+    if (!CharacterPortraitImport::render(image, recipe, preview, error)) {
+        edit.importError = std::move(error);
+        return false;
+    }
+    edit.importImage = std::move(image);
+    edit.importThumbnail = std::move(thumbnail);
+    edit.importRecipe = recipe;
+    edit.importPreview = preview;
+    edit.importPreviewValid = true;
+    edit.importPreviewDirty = false;
+    edit.importFromExactRenderer = resolvedExactRenderer;
+    edit.importError.clear();
+    CharacterEditHistory::clear(edit.importHistory);
+    std::snprintf(edit.importPath, sizeof(edit.importPath), "%s", path.c_str());
+    return true;
+}
+
+std::string portraitImportRecipePayload(
+    const CharacterPortraitImport::Recipe &recipe) {
+    const uint32_t values[] = {
+        recipe.cropX, recipe.cropY, recipe.cropSize,
+        recipe.edgeMatteTolerance,
+        static_cast<uint32_t>(recipe.sampling),
+        static_cast<uint32_t>(recipe.background),
+    };
+    std::string payload = "mdkr-portrait-frame-v1\n";
+    for (uint32_t value : values) {
+        for (unsigned shift = 0u; shift < 32u; shift += 8u) {
+            payload.push_back(static_cast<char>(value >> shift));
+        }
+    }
+    return payload;
+}
+
+bool decodePortraitImportRecipe(
+    const std::string &payload,
+    const CharacterPortraitImport::Image &image,
+    CharacterPortraitImport::Recipe &recipe) {
+    constexpr char header[] = "mdkr-portrait-frame-v1\n";
+    constexpr size_t valueCount = 6u;
+    if (payload.size() != sizeof(header) - 1u + valueCount * 4u ||
+        payload.compare(0u, sizeof(header) - 1u, header) != 0) {
+        return false;
+    }
+    uint32_t values[valueCount] = {};
+    size_t offset = sizeof(header) - 1u;
+    for (uint32_t &value : values) {
+        for (unsigned shift = 0u; shift < 32u; shift += 8u) {
+            value |= static_cast<uint32_t>(
+                static_cast<unsigned char>(payload[offset++])) << shift;
+        }
+    }
+    CharacterPortraitImport::Recipe parsed;
+    parsed.cropX = values[0];
+    parsed.cropY = values[1];
+    parsed.cropSize = values[2];
+    parsed.edgeMatteTolerance = values[3];
+    parsed.sampling = static_cast<CharacterPortraitImport::Sampling>(
+        values[4]);
+    parsed.background = static_cast<CharacterPortraitImport::Background>(
+        values[5]);
+    if (!CharacterPortraitImport::validRecipe(image, parsed)) return false;
+    recipe = parsed;
+    return true;
+}
+
+bool clampPortraitImportCrop(CharacterIdentityEdit &edit) {
+    if (!CharacterPortraitImport::validImage(edit.importImage)) return false;
+    auto &recipe = edit.importRecipe;
+    const uint32_t maximum = std::min(
+        edit.importImage.width, edit.importImage.height);
+    const uint32_t oldX = recipe.cropX;
+    const uint32_t oldY = recipe.cropY;
+    const uint32_t oldSize = recipe.cropSize;
+    recipe.cropSize = std::clamp(recipe.cropSize, 1u, maximum);
+    recipe.cropX = std::min(
+        recipe.cropX, edit.importImage.width - recipe.cropSize);
+    recipe.cropY = std::min(
+        recipe.cropY, edit.importImage.height - recipe.cropSize);
+    return oldX != recipe.cropX || oldY != recipe.cropY ||
+           oldSize != recipe.cropSize;
+}
+
+bool drawPortraitImportThumbnail(CharacterIdentityEdit &edit) {
+    const auto &thumbnail = edit.importThumbnail;
+    if (thumbnail.width == 0u || thumbnail.height == 0u ||
+        thumbnail.rgba.size() !=
+            static_cast<size_t>(thumbnail.width) * thumbnail.height * 4u) {
+        return false;
+    }
+    const float available = std::max(160.0f, ImGui::GetContentRegionAvail().x);
+    const float scale = std::clamp(
+        std::min(available, 360.0f) /
+            static_cast<float>(thumbnail.width),
+        1.0f, 5.0f);
+    const ImVec2 extent(thumbnail.width * scale, thumbnail.height * scale);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton(
+        "##portrait-source-crop", extent,
+        ImGuiButtonFlags_MouseButtonLeft);
+    const bool hovered = ImGui::IsItemHovered();
+    bool changed = false;
+    if (ImGui::IsItemActivated()) {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const double sourceX = std::clamp(
+            static_cast<double>((mouse.x - origin.x) / extent.x) *
+                edit.importImage.width,
+            0.0, static_cast<double>(edit.importImage.width - 1u));
+        const double sourceY = std::clamp(
+            static_cast<double>((mouse.y - origin.y) / extent.y) *
+                edit.importImage.height,
+            0.0, static_cast<double>(edit.importImage.height - 1u));
+        const bool inside =
+            sourceX >= edit.importRecipe.cropX &&
+            sourceX < edit.importRecipe.cropX + edit.importRecipe.cropSize &&
+            sourceY >= edit.importRecipe.cropY &&
+            sourceY < edit.importRecipe.cropY + edit.importRecipe.cropSize;
+        if (!inside) {
+            const int64_t half = edit.importRecipe.cropSize / 2u;
+            const int64_t nextX = static_cast<int64_t>(sourceX) - half;
+            const int64_t nextY = static_cast<int64_t>(sourceY) - half;
+            edit.importRecipe.cropX = static_cast<uint32_t>(std::clamp<int64_t>(
+                nextX, 0, edit.importImage.width -
+                              edit.importRecipe.cropSize));
+            edit.importRecipe.cropY = static_cast<uint32_t>(std::clamp<int64_t>(
+                nextY, 0, edit.importImage.height -
+                              edit.importRecipe.cropSize));
+            changed = true;
+        }
+        edit.importDragCropX = edit.importRecipe.cropX;
+        edit.importDragCropY = edit.importRecipe.cropY;
+        ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
+    }
+    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(
+            ImGuiMouseButton_Left, 1.0f)) {
+        const ImVec2 delta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
+        const int64_t dx = static_cast<int64_t>(std::lround(
+            delta.x / extent.x * edit.importImage.width));
+        const int64_t dy = static_cast<int64_t>(std::lround(
+            delta.y / extent.y * edit.importImage.height));
+        const int64_t maximumX = edit.importImage.width -
+            edit.importRecipe.cropSize;
+        const int64_t maximumY = edit.importImage.height -
+            edit.importRecipe.cropSize;
+        const uint32_t nextX = static_cast<uint32_t>(std::clamp<int64_t>(
+            static_cast<int64_t>(edit.importDragCropX) + dx, 0, maximumX));
+        const uint32_t nextY = static_cast<uint32_t>(std::clamp<int64_t>(
+            static_cast<int64_t>(edit.importDragCropY) + dy, 0, maximumY));
+        if (nextX != edit.importRecipe.cropX ||
+            nextY != edit.importRecipe.cropY) {
+            edit.importRecipe.cropX = nextX;
+            edit.importRecipe.cropY = nextY;
+            changed = true;
+        }
+    }
+    if (hovered && ImGui::GetIO().MouseWheel != 0.0f) {
+        const int64_t oldSize = edit.importRecipe.cropSize;
+        const int64_t step = std::max<int64_t>(1, oldSize / 12);
+        const int64_t maximum = std::min(
+            edit.importImage.width, edit.importImage.height);
+        const int64_t nextSize = std::clamp<int64_t>(
+            oldSize + (ImGui::GetIO().MouseWheel < 0.0f ? step : -step),
+            1, maximum);
+        const int64_t centreX = edit.importRecipe.cropX + oldSize / 2;
+        const int64_t centreY = edit.importRecipe.cropY + oldSize / 2;
+        edit.importRecipe.cropSize = static_cast<uint32_t>(nextSize);
+        edit.importRecipe.cropX = static_cast<uint32_t>(std::clamp<int64_t>(
+            centreX - nextSize / 2, 0,
+            edit.importImage.width - nextSize));
+        edit.importRecipe.cropY = static_cast<uint32_t>(std::clamp<int64_t>(
+            centreY - nextSize / 2, 0,
+            edit.importImage.height - nextSize));
+        changed = nextSize != oldSize;
+    }
+
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(
+        origin, ImVec2(origin.x + extent.x, origin.y + extent.y),
+        IM_COL32(42, 47, 56, 255));
+    for (uint32_t y = 0u; y < thumbnail.height; ++y) {
+        for (uint32_t x = 0u; x < thumbnail.width; ++x) {
+            const uint8_t *pixel = thumbnail.rgba.data() +
+                (static_cast<size_t>(y) * thumbnail.width + x) * 4u;
+            if (pixel[3] == 0u) continue;
+            draw->AddRectFilled(
+                ImVec2(origin.x + x * scale, origin.y + y * scale),
+                ImVec2(origin.x + (x + 1u) * scale,
+                       origin.y + (y + 1u) * scale),
+                IM_COL32(pixel[0], pixel[1], pixel[2], pixel[3]));
+        }
+    }
+    const float x0 = origin.x + extent.x * edit.importRecipe.cropX /
+        edit.importImage.width;
+    const float y0 = origin.y + extent.y * edit.importRecipe.cropY /
+        edit.importImage.height;
+    const float x1 = origin.x + extent.x *
+        (edit.importRecipe.cropX + edit.importRecipe.cropSize) /
+        edit.importImage.width;
+    const float y1 = origin.y + extent.y *
+        (edit.importRecipe.cropY + edit.importRecipe.cropSize) /
+        edit.importImage.height;
+    const ImU32 shade = IM_COL32(8, 12, 18, 150);
+    draw->AddRectFilled(origin, ImVec2(origin.x + extent.x, y0), shade);
+    draw->AddRectFilled(
+        ImVec2(origin.x, y1),
+        ImVec2(origin.x + extent.x, origin.y + extent.y), shade);
+    draw->AddRectFilled(ImVec2(origin.x, y0), ImVec2(x0, y1), shade);
+    draw->AddRectFilled(ImVec2(x1, y0), ImVec2(origin.x + extent.x, y1), shade);
+    draw->AddRect(ImVec2(x0, y0), ImVec2(x1, y1),
+                  IM_COL32(255, 220, 116, 255), 0.0f, 0, 2.0f);
+    draw->AddLine(ImVec2(x0 + (x1 - x0) / 3.0f, y0),
+                  ImVec2(x0 + (x1 - x0) / 3.0f, y1),
+                  IM_COL32(255, 255, 255, 110));
+    draw->AddLine(ImVec2(x0 + (x1 - x0) * 2.0f / 3.0f, y0),
+                  ImVec2(x0 + (x1 - x0) * 2.0f / 3.0f, y1),
+                  IM_COL32(255, 255, 255, 110));
+    draw->AddLine(ImVec2(x0, y0 + (y1 - y0) / 3.0f),
+                  ImVec2(x1, y0 + (y1 - y0) / 3.0f),
+                  IM_COL32(255, 255, 255, 110));
+    draw->AddLine(ImVec2(x0, y0 + (y1 - y0) * 2.0f / 3.0f),
+                  ImVec2(x1, y0 + (y1 - y0) * 2.0f / 3.0f),
+                  IM_COL32(255, 255, 255, 110));
+    ui::SpeakFocusedItem(
+        "Portrait subject crop",
+        "drag to move; mouse wheel changes crop size",
+        "The numeric crop controls below provide the same operation for keyboard and controller users.");
+    return changed;
+}
+
+bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
+                              CharacterIdentityEdit &edit) {
+    bool changed = false;
+    const char *smokeSource = std::getenv("MDKR_APP_SMOKE_PORTRAIT_SOURCE");
+    const char *smokeToken =
+        std::getenv("MDKR_APP_SMOKE_PORTRAIT_SOURCE_TOKEN");
+    if (entry != nullptr && smokeSource != nullptr && smokeSource[0] != '\0' &&
+        smokeToken != nullptr &&
+        std::strcmp(smokeToken, "mdkr64-portrait-source-v1") == 0 &&
+        g_characterPortraitSourceSmokePackages.insert(entry->id).second) {
+        if (loadPortraitImportSource(edit, smokeSource, false)) {
+            const uint32_t maximum = std::min(
+                edit.importImage.width, edit.importImage.height);
+            edit.importRecipe.cropSize = std::max<uint32_t>(1u, maximum * 3u / 4u);
+            edit.importRecipe.cropX =
+                (edit.importImage.width - edit.importRecipe.cropSize) / 2u;
+            edit.importRecipe.cropY =
+                (edit.importImage.height - edit.importRecipe.cropSize) / 2u;
+            edit.importRecipe.background =
+                CharacterPortraitImport::Background::Sky;
+            (void)refreshPortraitImportPreview(edit);
+            std::fprintf(
+                stderr,
+                "[app-ui-test] character-portrait-source-action package=%s loaded=1 applied=0\n",
+                entry->id);
+        } else {
+            std::fprintf(
+                stderr,
+                "[app-ui-test] character-portrait-source-action package=%s loaded=0 error=%s\n",
+                entry->id, edit.importError.c_str());
+        }
+    }
+    ImGui::SeparatorText("Start portrait artwork");
+    ui::TextSubtleWrapped(
+        "Start from an exact-renderer model capture, any local RGB/RGBA PNG, or the pixel canvas. Source decoding and conversion stay local; applying a framed source records the exact 40 × 40 result in the draft, so a moved external PNG cannot invalidate saved work.");
+    ImGui::SetNextItemWidth(
+        filedialog::isAvailable()
+            ? std::max(120.0f, ImGui::GetContentRegionAvail().x -
+                                  ui::kBtnSecondary().x - ui::kGapS)
+            : -1.0f);
+    ImGui::InputTextWithHint(
+        "Portrait input PNG##character-portrait-import-path",
+        "/path/to/source-or-capture.png", edit.importPath,
+        sizeof(edit.importPath));
+    ui::SpeakFocusedItem(
+        "Portrait input PNG", nullptr,
+        "Accepts a bounded, non-animated, non-interlaced RGB or RGBA PNG from sixteen through four thousand ninety-six pixels per side.");
+    if (filedialog::isAvailable()) {
+        ImGui::SameLine();
+        if (ImGui::Button("Choose image...", ui::kBtnSecondary())) {
+            std::string picked;
+            if (filedialog::openPortraitImage(picked)) {
+                std::snprintf(edit.importPath, sizeof(edit.importPath), "%s",
+                              picked.c_str());
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Choose portrait image", nullptr,
+            "Opens the operating system picker for a local PNG source.");
+    }
+    const bool pathReady = edit.importPath[0] != '\0';
+    if (!pathReady) ImGui::BeginDisabled();
+    if (ImGui::Button("Load and frame image") && pathReady) {
+        if (loadPortraitImportSource(edit, edit.importPath, false)) {
+            setStatus(
+                "Portrait source decoded; adjust the crop and conversion before applying it.",
+                AppTheme::good());
+        } else {
+            setStatus(
+                ("Portrait source was not loaded: " + edit.importError).c_str(),
+                AppTheme::bad());
+        }
+    }
+    if (!pathReady) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Load and frame image",
+        pathReady ? nullptr : "Choose or enter a PNG path first.",
+        "Validates and decodes the source without changing the draft canvas.");
+    ImGui::SameLine();
+    if (ImGui::Button("Capture model in exact renderer")) {
+        persistCharacterWorkshopTab(CharacterWorkshopTab::Test, true);
+        setStatus(
+            "Choose a semantic pose and view, enable one-shot PNG capture, then use the saved capture for the portrait from the Test tray.",
+            AppTheme::accent());
+    }
+    ui::SpeakFocusedItem(
+        "Capture model in exact renderer", nullptr,
+        "Opens Test. Capture a stabilized exact game-renderer frame, then choose Use for portrait in its report card.");
+
+    if (!CharacterPortraitImport::validImage(edit.importImage)) {
+        if (edit.portraitSourceRecord.kind !=
+            CharacterPortraitImport::SourceKind::Canvas) {
+            const auto &record = edit.portraitSourceRecord;
+            ImGui::Text(
+                "Retained %s source · %u×%u · PNG SHA-256 %.12s…",
+                record.kind ==
+                        CharacterPortraitImport::SourceKind::ExactRenderer
+                    ? "exact-renderer" : "local image",
+                record.width, record.height, record.sha256.c_str());
+            ui::TextSubtleWrapped(
+                "This draft retains the exact framed 40 × 40 source and conversion recipe. Reload the original path only to revise the high-resolution crop; moving or deleting that file does not invalidate the draft.");
+        }
+        if (!edit.importError.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+            ImGui::TextWrapped("%s", edit.importError.c_str());
+            ImGui::PopStyleColor();
+        }
+        return changed;
+    }
+    ImGui::Text(
+        "%s source · %u×%u · PNG SHA-256 %.12s…",
+        edit.importFromExactRenderer ? "Exact-renderer capture" : "Local image",
+        edit.importImage.width, edit.importImage.height,
+        edit.importImage.sha256.c_str());
+    ui::TextSubtleWrapped(
+        "Drag the highlighted square to move it; use the mouse wheel over the image to resize it. Exact numeric controls remain authoritative and keyboard accessible.");
+    const std::string framingBefore = portraitImportRecipePayload(
+        edit.importRecipe);
+    bool framingHistoryApplied = false;
+    changed |= drawPortraitImportThumbnail(edit);
+
+    const bool canUndoFraming =
+        CharacterEditHistory::canUndo(edit.importHistory);
+    if (ImGui::Button("Undo framing") && canUndoFraming) {
+        std::string target;
+        CharacterPortraitImport::Recipe restored;
+        if (CharacterEditHistory::undoTarget(edit.importHistory, target) &&
+            decodePortraitImportRecipe(target, edit.importImage, restored) &&
+            CharacterEditHistory::commitUndo(
+                edit.importHistory, framingBefore)) {
+            edit.importRecipe = restored;
+            (void)refreshPortraitImportPreview(edit);
+            framingHistoryApplied = true;
+            changed = true;
+        }
+    }
+    ui::SpeakFocusedItem(
+        "Undo portrait framing",
+        CharacterEditHistory::canUndo(edit.importHistory)
+            ? nullptr : "No earlier framing edit.",
+        "Restores the preceding crop, sampling, matte, and background recipe without changing the draft canvas.");
+    ImGui::SameLine();
+    const bool canRedoFraming =
+        CharacterEditHistory::canRedo(edit.importHistory);
+    if (ImGui::Button("Redo framing") && canRedoFraming) {
+        std::string target;
+        CharacterPortraitImport::Recipe restored;
+        if (CharacterEditHistory::redoTarget(edit.importHistory, target) &&
+            decodePortraitImportRecipe(target, edit.importImage, restored) &&
+            CharacterEditHistory::commitRedo(
+                edit.importHistory, framingBefore)) {
+            edit.importRecipe = restored;
+            (void)refreshPortraitImportPreview(edit);
+            framingHistoryApplied = true;
+            changed = true;
+        }
+    }
+    ui::SpeakFocusedItem(
+        "Redo portrait framing",
+        CharacterEditHistory::canRedo(edit.importHistory)
+            ? nullptr : "No later framing edit.",
+        "Reapplies the next crop, sampling, matte, and background recipe without changing the draft canvas.");
+    if (!canUndoFraming && !canRedoFraming) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("No framing edits yet");
+    }
+
+    int cropOrigin[2] = {
+        static_cast<int>(edit.importRecipe.cropX),
+        static_cast<int>(edit.importRecipe.cropY),
+    };
+    ImGui::SetNextItemWidth(std::min(320.0f, ImGui::GetContentRegionAvail().x));
+    if (ImGui::InputInt2("Crop top-left X/Y", cropOrigin)) {
+        edit.importRecipe.cropX = static_cast<uint32_t>(std::max(0, cropOrigin[0]));
+        edit.importRecipe.cropY = static_cast<uint32_t>(std::max(0, cropOrigin[1]));
+        clampPortraitImportCrop(edit);
+        changed = true;
+    }
+    int cropSize = static_cast<int>(edit.importRecipe.cropSize);
+    ImGui::SetNextItemWidth(std::min(320.0f, ImGui::GetContentRegionAvail().x));
+    if (ImGui::SliderInt(
+            "Square crop size", &cropSize, 1,
+            static_cast<int>(std::min(
+                edit.importImage.width, edit.importImage.height)))) {
+        edit.importRecipe.cropSize = static_cast<uint32_t>(cropSize);
+        clampPortraitImportCrop(edit);
+        changed = true;
+    }
+    ui::SpeakFocusedItem(
+        "Square crop size", (std::to_string(cropSize) + " source pixels").c_str(),
+        "Changes the subject frame without stretching the source.");
+    if (ImGui::Button("Centre maximum square")) {
+        edit.importRecipe = CharacterPortraitImport::centredRecipe(
+            edit.importImage);
+        changed = true;
+    }
+    ui::SpeakFocusedItem(
+        "Centre maximum square", nullptr,
+        "Restores the largest centred square while preserving no hidden crop state.");
+
+    int sampling = static_cast<int>(edit.importRecipe.sampling);
+    ImGui::SetNextItemWidth(std::min(320.0f, ImGui::GetContentRegionAvail().x));
+    if (ImGui::Combo("Source resampling", &sampling,
+                     "Crisp nearest pixel\0Premultiplied area\0")) {
+        edit.importRecipe.sampling =
+            static_cast<CharacterPortraitImport::Sampling>(sampling);
+        changed = true;
+    }
+    ui::SpeakFocusedItem(
+        "Source resampling",
+        edit.importRecipe.sampling == CharacterPortraitImport::Sampling::Crisp
+            ? "Crisp nearest pixel" : "Premultiplied area",
+        "Area resampling is recommended for high-resolution art and preserves transparent edge colour correctly.");
+    int matte = static_cast<int>(edit.importRecipe.edgeMatteTolerance);
+    ImGui::SetNextItemWidth(std::min(320.0f, ImGui::GetContentRegionAvail().x));
+    if (ImGui::SliderInt("Edge-connected matte removal", &matte, 0, 96)) {
+        edit.importRecipe.edgeMatteTolerance = static_cast<uint32_t>(matte);
+        changed = true;
+    }
+    ui::SpeakFocusedItem(
+        "Edge-connected matte removal",
+        matte == 0 ? "Off" : ("Tolerance " + std::to_string(matte)).c_str(),
+        "Removes only pixels connected to a source corner and similar to that corner colour. Review hair and outlines after using it.");
+    int background = static_cast<int>(edit.importRecipe.background);
+    ImGui::SetNextItemWidth(std::min(320.0f, ImGui::GetContentRegionAvail().x));
+    if (ImGui::Combo("Background frame", &background,
+                     "Transparent\0Sunset gradient\0Sky gradient\0Charcoal gradient\0")) {
+        edit.importRecipe.background =
+            static_cast<CharacterPortraitImport::Background>(background);
+        changed = true;
+    }
+    static constexpr const char *backgroundNames[] = {
+        "Transparent", "Sunset gradient", "Sky gradient", "Charcoal gradient",
+    };
+    ui::SpeakFocusedItem(
+        "Background frame", backgroundNames[std::clamp(background, 0, 3)],
+        "Project-owned background colours fill transparent or matte-removed pixels without altering opaque subject pixels.");
+    if (changed && !framingHistoryApplied) edit.importPreviewDirty = true;
+    if (edit.importPreviewDirty && !ImGui::IsAnyItemActive()) {
+        (void)refreshPortraitImportPreview(edit);
+    }
+
+    if (edit.importPreviewValid) {
+        drawPortraitStudioCanvas(edit.importPreview, "Framed source");
+        ImGui::SameLine();
+        ImGui::BeginGroup();
+        if (ImGui::Button("Send to DKR-style lab")) {
+            edit.styleSource = edit.importPreview;
+            commitPortraitImportSource(edit);
+            refreshPortraitStylePreview(edit);
+            changed = true;
+            setStatus(
+                "Framed source copied into the reversible DKR-style recipe.",
+                AppTheme::good());
+        }
+        ui::SpeakFocusedItem(
+            "Send to DKR-style lab", nullptr,
+            "Copies the exact framed forty by forty result into the reversible style source without changing the pixel canvas.");
+        if (ImGui::Button("Apply styled source to pixel canvas")) {
+            edit.styleSource = edit.importPreview;
+            commitPortraitImportSource(edit);
+            refreshPortraitStylePreview(edit);
+            edit.canvas = edit.stylePreview;
+            edit.canvasDirty = true;
+            changed = true;
+            setStatus(
+                "Portrait source framed, styled, and copied to the exact game canvas; review it before Build.",
+                AppTheme::good());
+        }
+        ui::SpeakFocusedItem(
+            "Apply styled source to pixel canvas", nullptr,
+            "Runs the current deterministic style recipe and copies the result into the exact game portrait. Undo Identity restores the previous source and canvas.");
+        ImGui::EndGroup();
+    } else if (!edit.importError.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+        ImGui::TextWrapped("%s", edit.importError.c_str());
+        ImGui::PopStyleColor();
+    }
+    if (!framingHistoryApplied) {
+        (void)CharacterEditHistory::observe(
+            edit.importHistory, framingBefore,
+            portraitImportRecipePayload(edit.importRecipe),
+            ImGui::IsAnyItemActive());
+    }
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr && entry != nullptr) {
+        const std::string traceKey = std::string(entry->id) + "\n" +
+            edit.importImage.sha256 + "\n" +
+            std::to_string(edit.importRecipe.cropX) + "," +
+            std::to_string(edit.importRecipe.cropY) + "," +
+            std::to_string(edit.importRecipe.cropSize) + "," +
+            std::to_string(edit.importRecipe.edgeMatteTolerance) + "," +
+            std::to_string(static_cast<unsigned>(edit.importRecipe.sampling)) +
+            "," + std::to_string(
+                static_cast<unsigned>(edit.importRecipe.background));
+        if (g_characterPortraitSourceTraceKeys.insert(traceKey).second) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-portrait-source package=%s kind=%s dimensions=%ux%u crop=%u,%u,%u sampling=%u matte=%u background=%u digest=%.12s\n",
+                entry->id,
+                edit.importFromExactRenderer ? "exact-renderer" : "local-png",
+                edit.importImage.width, edit.importImage.height,
+                edit.importRecipe.cropX, edit.importRecipe.cropY,
+                edit.importRecipe.cropSize,
+                static_cast<unsigned>(edit.importRecipe.sampling),
+                edit.importRecipe.edgeMatteTolerance,
+                static_cast<unsigned>(edit.importRecipe.background),
+                edit.importImage.sha256.c_str());
+        }
+    }
+    return changed;
+}
+
 uint8_t portraitFloatByte(float value) {
     return static_cast<uint8_t>(std::lround(
         std::clamp(value, 0.0f, 1.0f) * 255.0f));
@@ -6954,6 +7587,8 @@ bool drawPortraitStyleLab(const MdkrModernCharacterEntry *entry,
 
     if (ImGui::Button("Use current canvas as style source")) {
         edit.styleSource = edit.canvas;
+        edit.portraitSourceRecord =
+            CharacterPortraitImport::SourceRecord{};
         refreshPortraitStylePreview(edit);
         changed = true;
     }
@@ -7337,6 +7972,22 @@ CharacterIdentityEdit &loadCharacterIdentityEdit(
 
 bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     CharacterIdentityEdit &edit = loadCharacterIdentityEdit(entry);
+    const auto pending = g_characterPendingPortraitSources.find(entry->id);
+    if (pending != g_characterPendingPortraitSources.end()) {
+        const CharacterPendingPortraitSource source = pending->second;
+        g_characterPendingPortraitSources.erase(pending);
+        if (loadPortraitImportSource(
+                edit, source.path, source.exactRenderer)) {
+            setStatus(
+                "Exact-renderer capture loaded into Portrait Studio; frame the subject and review the styled result.",
+                AppTheme::good());
+        } else {
+            setStatus(
+                ("The selected capture could not enter Portrait Studio: " +
+                 edit.importError).c_str(),
+                AppTheme::bad());
+        }
+    }
     CharacterHistoryFrame history = beginCharacterHistory(
         entry, CharacterHistoryTool::Identity);
     const bool stagingDraft = g_characterActiveDrafts.find(entry->id) !=
@@ -7367,6 +8018,10 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
         ui::TextSubtleWrapped(
             "Create or resume a named draft to edit names. This prevents a metadata-only shortcut from publishing a partial identity revision.");
     }
+    (void)drawPortraitSourceImport(entry, edit);
+    ImGui::SeparatorText("Quick-publish authored square PNG");
+    ui::TextSubtleWrapped(
+        "This compatibility shortcut compiles an already-finished square portrait directly. For model captures, non-square art, background cleanup, or pixel styling, use the framed source workflow above.");
     if (stagingDraft) ImGui::BeginDisabled();
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputTextWithHint(
@@ -7463,7 +8118,11 @@ bool captureCharacterHistoryPayload(
     payload.clear();
     if (tool == CharacterHistoryTool::Identity) {
         const CharacterIdentityEdit &edit = loadCharacterIdentityEdit(entry);
-        payload = "mdkr-identity-history-v2\n";
+        if (!CharacterPortraitImport::validSourceRecord(
+                edit.portraitSourceRecord)) {
+            return false;
+        }
+        payload = "mdkr-identity-history-v3\n";
         payload.append(edit.displayName, sizeof(edit.displayName));
         payload.append(edit.shortName, sizeof(edit.shortName));
         payload.append(edit.narrationName, sizeof(edit.narrationName));
@@ -7488,6 +8147,33 @@ bool captureCharacterHistoryPayload(
         const uint8_t fillPinholes = edit.styleRecipe.fillPinholes ? 1u : 0u;
         appendCharacterHistoryValue(payload, sampling);
         appendCharacterHistoryValue(payload, fillPinholes);
+        const uint32_t sourceKind = static_cast<uint32_t>(
+            edit.portraitSourceRecord.kind);
+        appendCharacterHistoryValue(payload, sourceKind);
+        appendCharacterHistoryValue(
+            payload, edit.portraitSourceRecord.width);
+        appendCharacterHistoryValue(
+            payload, edit.portraitSourceRecord.height);
+        appendCharacterHistoryValue(
+            payload, edit.portraitSourceRecord.recipe.cropX);
+        appendCharacterHistoryValue(
+            payload, edit.portraitSourceRecord.recipe.cropY);
+        appendCharacterHistoryValue(
+            payload, edit.portraitSourceRecord.recipe.cropSize);
+        appendCharacterHistoryValue(
+            payload,
+            edit.portraitSourceRecord.recipe.edgeMatteTolerance);
+        const uint32_t sourceSampling = static_cast<uint32_t>(
+            edit.portraitSourceRecord.recipe.sampling);
+        const uint32_t sourceBackground = static_cast<uint32_t>(
+            edit.portraitSourceRecord.recipe.background);
+        appendCharacterHistoryValue(payload, sourceSampling);
+        appendCharacterHistoryValue(payload, sourceBackground);
+        if (edit.portraitSourceRecord.sha256.empty()) {
+            payload.append(64u, '\0');
+        } else {
+            payload += edit.portraitSourceRecord.sha256;
+        }
     } else if (tool == CharacterHistoryTool::Profile) {
         const CharacterProfileEdit &edit = loadCharacterProfileEdit(entry);
         payload = "mdkr-profile-history-v1\n";
@@ -7607,7 +8293,10 @@ bool applyCharacterHistoryPayload(
         return true;
     };
     if (tool == CharacterHistoryTool::Identity) {
-        if (!consumeHeader("mdkr-identity-history-v2\n")) {
+        const bool hasSourceRecord =
+            consumeHeader("mdkr-identity-history-v3\n");
+        if (!hasSourceRecord &&
+            !consumeHeader("mdkr-identity-history-v2\n")) {
             error = "Identity history header is invalid.";
             return false;
         }
@@ -7678,8 +8367,59 @@ bool applyCharacterHistoryPayload(
         replacement.styleRecipe.sampling =
             static_cast<CharacterPortraitStudio::Sampling>(sampling);
         replacement.styleRecipe.fillPinholes = fillPinholes != 0u;
+        replacement.portraitSourceRecord =
+            CharacterPortraitImport::SourceRecord{};
+        if (hasSourceRecord) {
+            uint32_t sourceKind;
+            uint32_t sourceSampling;
+            uint32_t sourceBackground;
+            auto &record = replacement.portraitSourceRecord;
+            if (!readCharacterHistoryValue(payload, offset, sourceKind) ||
+                sourceKind > 2u ||
+                !readCharacterHistoryValue(
+                    payload, offset, record.width) ||
+                !readCharacterHistoryValue(
+                    payload, offset, record.height) ||
+                !readCharacterHistoryValue(
+                    payload, offset, record.recipe.cropX) ||
+                !readCharacterHistoryValue(
+                    payload, offset, record.recipe.cropY) ||
+                !readCharacterHistoryValue(
+                    payload, offset, record.recipe.cropSize) ||
+                !readCharacterHistoryValue(
+                    payload, offset,
+                    record.recipe.edgeMatteTolerance) ||
+                !readCharacterHistoryValue(
+                    payload, offset, sourceSampling) ||
+                sourceSampling > 1u ||
+                !readCharacterHistoryValue(
+                    payload, offset, sourceBackground) ||
+                sourceBackground > 3u || offset > payload.size() ||
+                payload.size() - offset < 64u) {
+                error = "Identity portrait source history is invalid.";
+                return false;
+            }
+            record.kind = static_cast<CharacterPortraitImport::SourceKind>(
+                sourceKind);
+            record.recipe.sampling =
+                static_cast<CharacterPortraitImport::Sampling>(
+                    sourceSampling);
+            record.recipe.background =
+                static_cast<CharacterPortraitImport::Background>(
+                    sourceBackground);
+            const bool emptyDigest = std::all_of(
+                payload.begin() + static_cast<std::ptrdiff_t>(offset),
+                payload.begin() + static_cast<std::ptrdiff_t>(offset + 64u),
+                [](char byte) { return byte == '\0'; });
+            if (!emptyDigest) {
+                record.sha256.assign(payload.data() + offset, 64u);
+            }
+            offset += 64u;
+        }
         if (offset != payload.size() ||
             !CharacterPortraitStudio::validRecipe(replacement.styleRecipe) ||
+            !CharacterPortraitImport::validSourceRecord(
+                replacement.portraitSourceRecord) ||
             !std::all_of(std::begin(replacement.minimapRgb),
                          std::end(replacement.minimapRgb), [](float value) {
                              return std::isfinite(value) &&
@@ -7693,6 +8433,16 @@ bool applyCharacterHistoryPayload(
             !std::equal(replacement.canvas.begin(), replacement.canvas.end(),
                         std::begin(entry->portrait_rgba));
         replacement.strokeActive = false;
+        replacement.importImage = CharacterPortraitImport::Image{};
+        replacement.importThumbnail = CharacterPortraitImport::Thumbnail{};
+        replacement.importPreviewValid = false;
+        replacement.importPreviewDirty = false;
+        replacement.importFromExactRenderer = false;
+        replacement.importError.clear();
+        CharacterEditHistory::clear(replacement.importHistory);
+        std::snprintf(replacement.importPath,
+                      sizeof(replacement.importPath), "%s",
+                      replacement.portraitPath);
         refreshPortraitStylePreview(replacement);
         g_characterIdentityEdits[entry->id] = std::move(replacement);
     } else if (tool == CharacterHistoryTool::Profile) {
@@ -8132,6 +8882,7 @@ bool captureCharacterDraftSnapshot(
     snapshot.portrait = identity.canvas;
     snapshot.portraitStyleSource = identity.styleSource;
     snapshot.portraitRecipe = identity.styleRecipe;
+    snapshot.portraitSourceRecord = identity.portraitSourceRecord;
     snapshot.portraitSourcePath = identity.portraitPath;
     snapshot.displayName = identity.displayName;
     snapshot.shortName = identity.shortName;
@@ -8287,6 +9038,7 @@ bool applyCharacterDraftSnapshot(
     identity.canvas = snapshot.portrait;
     identity.styleSource = snapshot.portraitStyleSource;
     identity.styleRecipe = snapshot.portraitRecipe;
+    identity.portraitSourceRecord = snapshot.portraitSourceRecord;
     refreshPortraitStylePreview(identity);
     identity.minimapRgb[0] = snapshot.minimapRgb[0] / 255.0f;
     identity.minimapRgb[1] = snapshot.minimapRgb[1] / 255.0f;
@@ -8296,6 +9048,8 @@ bool applyCharacterDraftSnapshot(
         !std::equal(identity.canvas.begin(), identity.canvas.end(),
                     std::begin(entry->portrait_rgba));
     std::snprintf(identity.portraitPath, sizeof(identity.portraitPath), "%s",
+                  snapshot.portraitSourcePath.c_str());
+    std::snprintf(identity.importPath, sizeof(identity.importPath), "%s",
                   snapshot.portraitSourcePath.c_str());
     const char *displayName = snapshot.displayName.empty()
         ? entry->display_name : snapshot.displayName.c_str();

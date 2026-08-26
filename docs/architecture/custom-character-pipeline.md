@@ -910,9 +910,12 @@ The executable proof provides:
 - deterministic manifest inference from clip/node names in
   `tools/character_manifest_wizard.py`;
 - a bounded, source-preserving Portrait Studio style pipeline with
-  premultiplied-alpha reframing, deterministic median-cut palettes, ordered
-  dithering, silhouette cleanup, exact selection/palette operations, quality
-  analysis, versioned draft persistence and source-bound history in
+  strict local RGB/RGBA PNG decoding, digest-bound crop provenance,
+  premultiplied-alpha reframing, edge-connected matte removal, project-owned
+  background frames, deterministic median-cut palettes, ordered dithering,
+  silhouette cleanup, exact selection/palette operations, quality analysis,
+  versioned draft persistence and source-bound history in
+  `platform/app/character_portrait_import.*` and
   `platform/app/character_portrait_studio.*`;
 - actual WebGPU upload/draw and fingerprint-qualified replacement for every
   retail donor family.

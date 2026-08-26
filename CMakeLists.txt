@@ -781,6 +781,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/arg_triage.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_candidate_index.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_edit_history.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_import.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_studio.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_raw_draft_store.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_raw_intake_index.cpp
@@ -1370,6 +1371,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform
             ${CMAKE_SOURCE_DIR}/platform/app
             ${CMAKE_SOURCE_DIR}/lib/glad/include
+            ${CMAKE_SOURCE_DIR}/lib/stb
             ${SDL2_INCLUDE_DIRS})
         target_link_directories(mdkr64_app PRIVATE ${SDL2_LIBRARY_DIRS})
         target_link_libraries(mdkr64_app PRIVATE mdkr_qrcodegen)
@@ -1532,9 +1534,16 @@ if(NOT EMSCRIPTEN)
             add_executable(mdkr_character_draft_snapshot_test
                 ${CMAKE_SOURCE_DIR}/tests/test_character_draft_snapshot.cpp
                 ${CMAKE_SOURCE_DIR}/platform/app/character_draft_snapshot.cpp
-                ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_studio.cpp)
+                ${CMAKE_SOURCE_DIR}/platform/app/character_png_validation.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_import.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_studio.cpp
+                ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+                ${CMAKE_SOURCE_DIR}/platform/sha256.c
+                ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c)
             target_include_directories(mdkr_character_draft_snapshot_test PRIVATE
-                ${CMAKE_SOURCE_DIR}/platform/app)
+                ${CMAKE_SOURCE_DIR}/platform
+                ${CMAKE_SOURCE_DIR}/platform/app
+                ${CMAKE_SOURCE_DIR}/lib/stb)
             target_compile_features(mdkr_character_draft_snapshot_test PRIVATE cxx_std_17)
             add_test(NAME character_draft_snapshot
                 COMMAND mdkr_character_draft_snapshot_test)

@@ -10,6 +10,8 @@ namespace CharacterPngValidation {
 struct Info {
     uint32_t width = 0u;
     uint32_t height = 0u;
+    uint8_t bitDepth = 0u;
+    uint8_t colourType = 0u;
 };
 
 /* Validate the complete bounded PNG container used as Workshop evidence.

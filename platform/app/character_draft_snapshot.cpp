@@ -1,5 +1,6 @@
 #include "character_draft_snapshot.h"
 
+#include <algorithm>
 #include <cmath>
 #include <climits>
 #include <cstring>
@@ -8,7 +9,8 @@
 
 namespace {
 
-constexpr uint32_t kVersion = 5u;
+constexpr uint32_t kVersion = 6u;
+constexpr uint32_t kVisualInspectionVersion = 5u;
 constexpr uint32_t kPoseInspectionVersion = 4u;
 constexpr uint32_t kPortraitStyleVersion = 3u;
 constexpr uint32_t kNamesVersion = 2u;
@@ -24,7 +26,11 @@ constexpr size_t kPortraitRecipeBytes = 9u * 4u;
 constexpr size_t kPortraitStyleFixedBytes = kLegacyFixedBytes +
     CharacterPortraitStudio::kBytes + kPortraitRecipeBytes;
 constexpr size_t kPoseInspectionFixedBytes = kPortraitStyleFixedBytes + 8u;
-constexpr size_t kFixedBytes = kPoseInspectionFixedBytes + 12u;
+constexpr size_t kVisualInspectionFixedBytes =
+    kPoseInspectionFixedBytes + 12u;
+constexpr size_t kPortraitSourceRecordBytes = 9u * 4u + 64u;
+constexpr size_t kFixedBytes =
+    kVisualInspectionFixedBytes + kPortraitSourceRecordBytes;
 constexpr size_t kMaximumPathBytes = 4095u;
 constexpr size_t kMaximumNameBytes = 96u;
 constexpr size_t kMaximumShortNameBytes = 96u;
@@ -267,6 +273,11 @@ bool snapshotValid(const CharacterDraftSnapshot::Snapshot &snapshot,
         error = "draft portrait style recipe is invalid";
         return false;
     }
+    if (!CharacterPortraitImport::validSourceRecord(
+            snapshot.portraitSourceRecord)) {
+        error = "draft portrait source record is invalid";
+        return false;
+    }
     const bool legacyNames = snapshot.displayName.empty() &&
         snapshot.shortName.empty() && snapshot.narrationName.empty() &&
         snapshot.sortLabel.empty();
@@ -368,6 +379,24 @@ bool encode(const Snapshot &snapshot, std::string &payload,
     appendU32(result,
               static_cast<uint32_t>(snapshot.testViewPitchDegrees + 45));
     appendU32(result, snapshot.testLighting);
+    appendU32(result, static_cast<uint32_t>(
+        snapshot.portraitSourceRecord.kind));
+    appendU32(result, snapshot.portraitSourceRecord.width);
+    appendU32(result, snapshot.portraitSourceRecord.height);
+    appendU32(result, snapshot.portraitSourceRecord.recipe.cropX);
+    appendU32(result, snapshot.portraitSourceRecord.recipe.cropY);
+    appendU32(result, snapshot.portraitSourceRecord.recipe.cropSize);
+    appendU32(result,
+              snapshot.portraitSourceRecord.recipe.edgeMatteTolerance);
+    appendU32(result, static_cast<uint32_t>(
+        snapshot.portraitSourceRecord.recipe.sampling));
+    appendU32(result, static_cast<uint32_t>(
+        snapshot.portraitSourceRecord.recipe.background));
+    if (snapshot.portraitSourceRecord.sha256.empty()) {
+        result.append(64u, '\0');
+    } else {
+        result += snapshot.portraitSourceRecord.sha256;
+    }
     if (result.size() != kFixedBytes + 16u +
             snapshot.portraitSourcePath.size() + namesBytes) {
         error = "draft snapshot encoder size invariant failed";
@@ -390,7 +419,8 @@ bool decode(const std::string &payload, Snapshot &snapshot,
     if (payload.size() < kLegacyFixedBytes ||
         payload.compare(0u, 4u, "MDWD") != 0 ||
         !readU32(payload, offset, version) ||
-        (version != kVersion && version != kPoseInspectionVersion &&
+        (version != kVersion && version != kVisualInspectionVersion &&
+         version != kPoseInspectionVersion &&
          version != kPortraitStyleVersion &&
          version != kNamesVersion &&
          version != kLegacyVersion) ||
@@ -521,7 +551,7 @@ bool decode(const std::string &payload, Snapshot &snapshot,
          !readU32(payload, offset, parsed.testPosePhaseMilli))) {
         goto malformed;
     }
-    if (version >= kVersion) {
+    if (version >= kVisualInspectionVersion) {
         uint32_t yaw;
         uint32_t pitch;
         if (!readU32(payload, offset, yaw) ||
@@ -532,6 +562,44 @@ bool decode(const std::string &payload, Snapshot &snapshot,
         if (yaw > 360u || pitch > 90u) goto malformed;
         parsed.testViewYawDegrees = static_cast<int32_t>(yaw) - 180;
         parsed.testViewPitchDegrees = static_cast<int32_t>(pitch) - 45;
+    }
+    if (version >= kVersion) {
+        uint32_t kind;
+        uint32_t sampling;
+        uint32_t background;
+        if (!readU32(payload, offset, kind) || kind > 2u ||
+            !readU32(payload, offset,
+                     parsed.portraitSourceRecord.width) ||
+            !readU32(payload, offset,
+                     parsed.portraitSourceRecord.height) ||
+            !readU32(payload, offset,
+                     parsed.portraitSourceRecord.recipe.cropX) ||
+            !readU32(payload, offset,
+                     parsed.portraitSourceRecord.recipe.cropY) ||
+            !readU32(payload, offset,
+                     parsed.portraitSourceRecord.recipe.cropSize) ||
+            !readU32(payload, offset,
+                     parsed.portraitSourceRecord.recipe.edgeMatteTolerance) ||
+            !readU32(payload, offset, sampling) || sampling > 1u ||
+            !readU32(payload, offset, background) || background > 3u ||
+            offset > payload.size() || payload.size() - offset < 64u) {
+            goto malformed;
+        }
+        parsed.portraitSourceRecord.kind =
+            static_cast<CharacterPortraitImport::SourceKind>(kind);
+        parsed.portraitSourceRecord.recipe.sampling =
+            static_cast<CharacterPortraitImport::Sampling>(sampling);
+        parsed.portraitSourceRecord.recipe.background =
+            static_cast<CharacterPortraitImport::Background>(background);
+        const bool emptyDigest = std::all_of(
+            payload.begin() + static_cast<std::ptrdiff_t>(offset),
+            payload.begin() + static_cast<std::ptrdiff_t>(offset + 64u),
+            [](char byte) { return byte == '\0'; });
+        if (!emptyDigest) {
+            parsed.portraitSourceRecord.sha256.assign(
+                payload.data() + offset, 64u);
+        }
+        offset += 64u;
     }
     if (offset != payload.size() ||
         !snapshotValid(parsed, error, version == kLegacyVersion)) return false;

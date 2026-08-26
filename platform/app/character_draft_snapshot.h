@@ -9,6 +9,7 @@
 #include "../modern_character_semantics.h"
 #include "../workshop_preview_runtime.h"
 #include "character_portrait_studio.h"
+#include "character_portrait_import.h"
 
 namespace CharacterDraftSnapshot {
 
@@ -70,6 +71,7 @@ struct Snapshot {
     std::array<uint8_t, kPortraitBytes> portrait{};
     CharacterPortraitStudio::Canvas portraitStyleSource{};
     CharacterPortraitStudio::Recipe portraitRecipe{};
+    CharacterPortraitImport::SourceRecord portraitSourceRecord{};
     std::string portraitSourcePath;
     std::string displayName;
     std::string shortName;

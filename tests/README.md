@@ -4881,15 +4881,19 @@ community model.
 
 ## Portrait Studio authoring — `tests/check_character_portrait_studio_ui.py`
 
-This ROM-free gate installs a generated CC0 package into an isolated catalog
-and opens its real Identity workspace. It requires the deterministic framing,
-premultiplied-alpha resampling, palette, dithering, silhouette, quality-report,
+This ROM-free gate installs a generated CC0 package into an isolated catalog,
+generates a non-square local RGBA PNG, and opens the real Identity workspace. It
+requires strict source loading, digest/dimension disclosure, square crop,
+premultiplied-area or crisp reduction, edge-connected matte removal, background
+frames, bounded framing undo/redo, deterministic styling, quality-report,
 selection and palette-replacement surfaces to render at 200% UI scale in the
-compact launcher. A keyboard-only speech walk must announce the consequential
-controls, and both arms must leave installed source/cache bytes unchanged.
-Pure `character_portrait_studio` and `character_draft_snapshot` tests prove the
-image operations, bounded recipes, deterministic output, analysis, selection
-semantics, and v1/v2 draft migration independently of rendering. The shared
+compact launcher. A keyboard-only
+speech walk must announce the consequential controls, and both arms must leave
+installed source/cache bytes unchanged. Pure `character_portrait_studio` and
+`character_draft_snapshot` tests prove CRC and APNG refusal, mutation-free decode
+failure, image operations, bounded provenance recipes, deterministic output,
+analysis, selection semantics, v1-v5 migration, and v6 source-record round trips
+independently of rendering. The shared
 `character_edit_history` and rendered history gates retain the existing
 source-bound, byte-capped undo/redo contract around those draft fields.
 

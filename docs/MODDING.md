@@ -379,6 +379,16 @@ narration field is spoken by the Workshop library and player-assignment
 controls. The current in-game font safely substitutes unsupported glyphs and
 does not yet claim full Unicode shaping.
 
+Portrait Studio can also start from any local, non-animated, non-interlaced,
+8-bit RGB/RGBA PNG from 16 through 4096 pixels per side. It validates the full
+PNG container and CRCs, then provides a deterministic square crop, crisp or
+premultiplied-area reduction, optional edge-connected matte removal, and local
+background frames before the existing style and pixel-editing stages. A
+stabilized exact-renderer PNG from the Test capture tray uses the same path.
+Named drafts retain the source kind, SHA-256, dimensions, crop recipe and exact
+40x40 intermediate; the external path is only a reload convenience and the
+source PNG is never bundled into the character package.
+
 Animation names are mapped to engine intent, not hard-coded frame numbers. The
 recommended race states are `race.steer`, `race.reverse`, `race.boost`,
 `race.damage`, `race.item`, `race.spin`, `race.airborne`, `race.land`,

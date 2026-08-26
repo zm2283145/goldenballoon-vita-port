@@ -67,6 +67,19 @@ int main() {
     source.portraitRecipe.alphaThreshold = 31;
     source.portraitRecipe.sampling = CharacterPortraitStudio::Sampling::Crisp;
     source.portraitRecipe.fillPinholes = false;
+    source.portraitSourceRecord.kind =
+        CharacterPortraitImport::SourceKind::ExactRenderer;
+    source.portraitSourceRecord.sha256 = std::string(64u, 'c');
+    source.portraitSourceRecord.width = 1280u;
+    source.portraitSourceRecord.height = 720u;
+    source.portraitSourceRecord.recipe.cropX = 420u;
+    source.portraitSourceRecord.recipe.cropY = 80u;
+    source.portraitSourceRecord.recipe.cropSize = 600u;
+    source.portraitSourceRecord.recipe.edgeMatteTolerance = 12u;
+    source.portraitSourceRecord.recipe.sampling =
+        CharacterPortraitImport::Sampling::Area;
+    source.portraitSourceRecord.recipe.background =
+        CharacterPortraitImport::Background::Charcoal;
     source.portraitSourcePath = "/tmp/portrait-\xC2\xA9.png";
     source.displayName = "Dixie Kong";
     source.shortName = "Dixie";
@@ -104,6 +117,18 @@ int main() {
                parsed.portraitRecipe.sampling ==
                    CharacterPortraitStudio::Sampling::Crisp &&
                !parsed.portraitRecipe.fillPinholes &&
+               parsed.portraitSourceRecord.kind ==
+                   CharacterPortraitImport::SourceKind::ExactRenderer &&
+               parsed.portraitSourceRecord.sha256 ==
+                   source.portraitSourceRecord.sha256 &&
+               parsed.portraitSourceRecord.width == 1280u &&
+               parsed.portraitSourceRecord.height == 720u &&
+               parsed.portraitSourceRecord.recipe.cropX == 420u &&
+               parsed.portraitSourceRecord.recipe.cropY == 80u &&
+               parsed.portraitSourceRecord.recipe.cropSize == 600u &&
+               parsed.portraitSourceRecord.recipe.edgeMatteTolerance == 12u &&
+               parsed.portraitSourceRecord.recipe.background ==
+                   CharacterPortraitImport::Background::Charcoal &&
                parsed.portraitSourcePath == source.portraitSourcePath &&
                parsed.displayName == source.displayName &&
                parsed.shortName == source.shortName &&
@@ -117,7 +142,22 @@ int main() {
     const size_t identityTailBytes = 16u + source.displayName.size() +
         source.shortName.size() + source.narrationName.size() +
         source.sortLabel.size();
-    std::string versionFour = encoded.substr(0u, encoded.size() - 12u);
+    constexpr size_t sourceRecordTailBytes = 9u * 4u + 64u;
+    std::string versionFive = encoded.substr(
+        0u, encoded.size() - sourceRecordTailBytes);
+    writeU32(versionFive, 4u, 5u);
+    writeU32(versionFive, 8u,
+             static_cast<uint32_t>(versionFive.size()));
+    Snapshot versionFiveParsed;
+    expect(decode(versionFive, versionFiveParsed, error) &&
+               versionFiveParsed.testViewYawDegrees ==
+                   source.testViewYawDegrees &&
+               versionFiveParsed.portraitSourceRecord.kind ==
+                   CharacterPortraitImport::SourceKind::Canvas,
+           "version-five drafts retain inspection state and gain a safe canvas source record");
+
+    std::string versionFour = versionFive.substr(
+        0u, versionFive.size() - 12u);
     writeU32(versionFour, 4u, 4u);
     writeU32(versionFour, 8u,
              static_cast<uint32_t>(versionFour.size()));
@@ -132,7 +172,8 @@ int main() {
                    MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
            "version-four drafts retain pose state and gain safe visual defaults");
 
-    std::string versionThree = encoded.substr(0u, encoded.size() - 20u);
+    std::string versionThree = versionFive.substr(
+        0u, versionFive.size() - 20u);
     writeU32(versionThree, 4u, 3u);
     writeU32(versionThree, 8u,
              static_cast<uint32_t>(versionThree.size()));
@@ -151,8 +192,8 @@ int main() {
 
     const size_t styleTailBytes =
         CharacterPortraitStudio::kBytes + 9u * 4u + 8u + 12u;
-    std::string versionTwo = encoded.substr(
-        0u, encoded.size() - styleTailBytes);
+    std::string versionTwo = versionFive.substr(
+        0u, versionFive.size() - styleTailBytes);
     writeU32(versionTwo, 4u, 2u);
     writeU32(versionTwo, 8u, static_cast<uint32_t>(versionTwo.size()));
     Snapshot versionTwoParsed;
@@ -163,8 +204,8 @@ int main() {
                    versionTwoParsed.portraitRecipe),
            "version-two drafts retain names and gain a safe style baseline");
 
-    std::string legacy = encoded.substr(
-        0u, encoded.size() - styleTailBytes - identityTailBytes);
+    std::string legacy = versionFive.substr(
+        0u, versionFive.size() - styleTailBytes - identityTailBytes);
     writeU32(legacy, 4u, 1u);
     writeU32(legacy, 8u, static_cast<uint32_t>(legacy.size()));
     Snapshot legacyParsed;
@@ -218,6 +259,14 @@ int main() {
     hostile.portraitRecipe.paletteColors = 17u;
     expect(!encode(hostile, encoded, error),
            "invalid portrait style recipes are rejected");
+    hostile = source;
+    hostile.portraitSourceRecord.recipe.cropSize = 721u;
+    expect(!encode(hostile, encoded, error),
+           "portrait source crops cannot exceed their recorded source image");
+    hostile = source;
+    hostile.portraitSourceRecord.sha256[0] = 'A';
+    expect(!encode(hostile, encoded, error),
+           "portrait source records require canonical content digests");
     hostile = source;
     hostile.contexts[0].offset[0] = INFINITY;
     expect(!encode(hostile, encoded, error),

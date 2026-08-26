@@ -10,6 +10,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
@@ -33,7 +34,8 @@ def inventory(directory: Path) -> dict[str, str]:
 
 
 def environment(root: Path, characters: Path, shot: Path, *,
-                compact: bool, accessible: bool) -> dict[str, str]:
+                compact: bool, accessible: bool,
+                portrait_source: Path) -> dict[str, str]:
     prefs = root / "prefs"
     saves = root / "saves"
     prefs.mkdir(parents=True)
@@ -53,7 +55,7 @@ def environment(root: Path, characters: Path, shot: Path, *,
     }
     result.update({
         "LC_ALL": "C",
-        "MDKR_APP_SMOKE_FRAMES": "520" if accessible else "16",
+        "MDKR_APP_SMOKE_FRAMES": "760" if accessible else "16",
         "MDKR_APP_SMOKE_WINDOW_SIZE": "1280x720" if accessible
         else "640x480",
         "MDKR_APP_SMOKE_SHOT": str(shot),
@@ -69,6 +71,9 @@ def environment(root: Path, characters: Path, shot: Path, *,
         "MDKR_NO_CRASH_HANDLER": "1",
         "MDKR64_HIDDEN": "1",
         "MDKR_AUDIO": "0",
+        "MDKR_APP_SMOKE_PORTRAIT_SOURCE": str(portrait_source),
+        "MDKR_APP_SMOKE_PORTRAIT_SOURCE_TOKEN":
+            "mdkr64-portrait-source-v1",
     })
     if compact:
         result.update({
@@ -83,6 +88,28 @@ def environment(root: Path, characters: Path, shot: Path, *,
             "MDKR_A11Y_TRACE": "1",
         })
     return result
+
+
+def png_chunk(name: bytes, payload: bytes) -> bytes:
+    return (struct.pack(">I", len(payload)) + name + payload +
+            struct.pack(">I", zlib.crc32(name + payload) & 0xFFFFFFFF))
+
+
+def write_portrait_source(path: Path) -> None:
+    width, height = 96, 64
+    rows = bytearray()
+    for y in range(height):
+        rows.append(0)
+        for x in range(width):
+            subject = 28 <= x < 68 and 8 <= y < 58
+            rows.extend((220, 68, 76, 255) if subject else
+                        (32, 110 + y, 180, 255))
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n" +
+        png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height,
+                                        8, 6, 0, 0, 0)) +
+        png_chunk(b"IDAT", zlib.compress(bytes(rows), 9)) +
+        png_chunk(b"IEND", b""))
 
 
 def run(binary: Path, root: Path, env: dict[str, str],
@@ -133,6 +160,8 @@ def main() -> int:
             root = Path(temporary)
             characters = install_fixture(root)
             before = inventory(characters)
+            portrait_source = root / "portrait-source.png"
+            write_portrait_source(portrait_source)
 
             compact = root / "compact"
             compact.mkdir()
@@ -140,7 +169,8 @@ def main() -> int:
             run(
                 binary, root,
                 environment(compact, characters, compact_shot,
-                            compact=True, accessible=False),
+                            compact=True, accessible=False,
+                            portrait_source=portrait_source),
                 ("active-panel=Character Workshop",
                  "compact-layout dense=1 contained=1 "),
             )
@@ -152,8 +182,20 @@ def main() -> int:
             run(
                 binary, root,
                 environment(accessible, characters, accessible_shot,
-                            compact=False, accessible=True),
+                            compact=False, accessible=True,
+                            portrait_source=portrait_source),
                 ("character-portrait-style package=" + PACKAGE_ID,
+                 "character-portrait-source-action package=" + PACKAGE_ID +
+                 " loaded=1 applied=0",
+                 "character-portrait-source package=" + PACKAGE_ID,
+                 "kind=local-png dimensions=96x64",
+                 "text=Portrait input PNG",
+                 "text=Undo portrait framing",
+                 "text=Redo portrait framing",
+                 "text=Square crop size",
+                 "text=Edge-connected matte removal",
+                 "text=Background frame",
+                 "text=Apply styled source to pixel canvas",
                  "palette=32",
                  "text=Framing zoom",
                  "text=Palette target",
@@ -172,8 +214,8 @@ def main() -> int:
               file=sys.stderr)
         return 1
     print("check_character_portrait_studio_ui: PASS -- deterministic style "
-          "lab, advanced pixel tools, 200% compact rendering, keyboard speech, "
-          "and installed-byte purity")
+          "lab, bounded PNG source/capture framing, advanced pixel tools, "
+          "200% compact rendering, keyboard speech, and installed-byte purity")
     return 0
 
 

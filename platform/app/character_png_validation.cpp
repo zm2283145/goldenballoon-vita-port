@@ -129,6 +129,8 @@ bool validate(const unsigned char *bytes, size_t size,
                 error = "The capture PNG has incompatible image metadata.";
                 return false;
             }
+            info.bitDepth = static_cast<uint8_t>(depth);
+            info.colourType = static_cast<uint8_t>(colourType);
             sawHeader = true;
         } else if (isPalette) {
             if (sawPalette || sawData || length == 0u || length > 768u ||
@@ -156,6 +158,12 @@ bool validate(const unsigned char *bytes, size_t size,
             error.clear();
             return true;
         } else {
+            if (std::memcmp(name, "acTL", 4u) == 0 ||
+                std::memcmp(name, "fcTL", 4u) == 0 ||
+                std::memcmp(name, "fdAT", 4u) == 0) {
+                error = "Animated PNG is not supported for Workshop evidence.";
+                return false;
+            }
             if (sawData) endedData = true;
             /* Unknown uppercase-first chunks are critical and cannot be
              * interpreted safely by this evidence reader. */
