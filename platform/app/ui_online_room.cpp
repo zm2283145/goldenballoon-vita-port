@@ -26,6 +26,18 @@
 #include <string>
 #include <thread>
 #include <utility>
+
+// Beta live-adapter provenance seams, defined in online_live_wiring.cpp (the
+// beta-only wiring TU; match_live_adapter.h stays the audited public seam).
+// The first returns the name of a set gameplay-determinism developer env seam
+// (MDKR_RNGSEED / MDKR_ARCTAN / MDKR_TRIG) that would guarantee an online
+// desync, or nullptr; the second derives THIS binary's real compatibility
+// identity (version + release commit stamp + the given validated ROM revision)
+// via mdkr_online_compatibility_from_provenance, returning false for a build
+// without release provenance.
+const char *OnlineRoom_liveBlockedByDeterminismEnv(void);
+bool OnlineRoom_liveCompatibilityFromProvenance(uint8_t romRevision,
+                                                MdkrOnlineCompatibilityV1 *out);
 #endif
 
 namespace {
@@ -55,6 +67,11 @@ struct OnlineRoomUiState {
     BetaStage betaStage = BetaStage::Chooser;
     char betaJoinCode[7] = {0};
     bool betaBuildFailed = false;
+    // Specific, user-facing reason the live adapter refused to build (ROM not
+    // validated, determinism env seam set, no release provenance). Empty means
+    // the generic "service unreachable" copy applies. Rendered by the existing
+    // failure CautionBox in drawBetaChooser -- the established status path.
+    char betaBuildFailedReason[512] = {0};
     bool betaCharacterTaken = false;
     // Which grid tile the SELECTION_CONFLICT above refers to. Only meaningful
     // while betaCharacterTaken is true -- the fake/live adapter exposes no
@@ -136,6 +153,13 @@ void recordAction(MdkrOnlineViewAction action, bool accepted) {
                  static_cast<unsigned>(action), accepted ? 1u : 0u);
 }
 
+// FAKE adapter fixture ONLY (MDKR_APP_ONLINE_FAKE smokes, gallery previews and
+// the gallery contract dump): a constant identity every build shares, which is
+// exactly what a preview needs and exactly what live play must never carry.
+// The LIVE adapter derives its identity from real provenance instead
+// (buildBetaLiveAdapter -> OnlineRoom_liveCompatibilityFromProvenance), and
+// OnlineRoom_makeGatedLiveAdapter refuses any compatibility -- including this
+// fixture -- that does not byte-match that provenance identity.
 MdkrOnlineCompatibilityV1 fakeCompatibility() {
     MdkrOnlineCompatibilityV1 value{};
     value.protocol_version = MDKR_ONLINE_PROTOCOL_VERSION;
@@ -637,19 +661,87 @@ int betaDigitsOnlyFilter(ImGuiInputTextCallbackData *data) {
     return (data->EventChar < '0' || data->EventChar > '9') ? 1 : 0;
 }
 
+// Record a specific, user-facing build refusal for the chooser's existing
+// failure CautionBox and fail the build.
+bool betaBuildRefused(const char *reason) {
+    std::snprintf(g_online.betaBuildFailedReason,
+                  sizeof(g_online.betaBuildFailedReason), "%s", reason);
+    g_online.betaBuildFailed = true;
+    return false;
+}
+
+// The validated ROM's compatibility revision: the two supported decomp builds
+// map to the two revisions the provenance generator accepts (us.v80 -> 1,
+// pal.v80 -> 2, matching MDKR_ROM_US_11 / the PAL row and their authored
+// 30/25Hz cadences). 0 means "not a supported, validated ROM".
+std::uint8_t betaValidatedRomRevision(const RomInfo &info) {
+    // Both flags are required: `valid` is the layout/revision verdict and
+    // `integrity_verified` is the full-image SHA-256 match against the
+    // reference digest -- the same rom_validation.c contract the engine
+    // re-checks at boot. The Online Room tab is reachable without a ROM, so
+    // this gate (not panel navigation) is what guarantees a genuinely
+    // validated ROM before any live adapter exists.
+    if (!info.valid || !info.integrity_verified) return 0u;
+    if (std::strcmp(info.build, "us.v80") == 0) return 1u;
+    if (std::strcmp(info.build, "pal.v80") == 0) return 2u;
+    return 0u;
+}
+
 // Build the live adapter with the chosen journey (+ code for JOIN) and kick the
 // entry action off immediately, so the chooser choice IS the create/join.
-bool buildBetaLiveAdapter(MdkrOnlineJourney journey, const std::string &code) {
-    const MdkrOnlineCompatibilityV1 compatibility = fakeCompatibility();
+//
+// The compatibility handed to the live adapter is NEVER the fake fixture: it is
+// derived here, at CREATE/JOIN time, from real provenance (this build's
+// version + release commit stamp) plus the launcher's genuinely validated ROM
+// revision -- so two different builds, or the same build with different
+// accepted ROMs, refuse each other at the lobby JOIN byte-compare instead of
+// desyncing mid-race.
+bool buildBetaLiveAdapter(const LauncherState &state, MdkrOnlineJourney journey,
+                          const std::string &code) {
+    // m2: the gameplay-determinism developer seams change gameplay math on
+    // this machine only; a one-sided setting guarantees an online desync that
+    // no compatibility byte-compare can see. Refuse up front with the specific
+    // variable named (OnlineRoom_makeGatedLiveAdapter enforces this too).
+    if (const char *seam = OnlineRoom_liveBlockedByDeterminismEnv()) {
+        char reason[256];
+        std::snprintf(reason, sizeof(reason),
+                      "Online play is unavailable while the %s developer "
+                      "variable is set: it changes gameplay on this computer "
+                      "only, which would break an online race. Unset it and "
+                      "relaunch to race online.",
+                      seam);
+        return betaBuildRefused(reason);
+    }
+    const std::uint8_t romRevision = betaValidatedRomRevision(state.romInfo);
+    if (romRevision == 0u) {
+        return betaBuildRefused(
+            "Online play needs a fully verified game ROM. Open the Play "
+            "panel, add a supported ROM and let verification finish, then "
+            "come back here.");
+    }
+    MdkrOnlineCompatibilityV1 compatibility;
+    if (!OnlineRoom_liveCompatibilityFromProvenance(romRevision,
+                                                    &compatibility)) {
+        // Dev builds carry no release provenance stamp (MDKR_BUILD_STAMP), so
+        // they cannot prove a gameplay digest to a peer. Fail closed rather
+        // than fabricate an identity another build could collide with.
+        return betaBuildRefused(
+            "This build has no release provenance, so it cannot prove it "
+            "matches your friend's game. Use a published release build to "
+            "race online.");
+    }
     std::unique_ptr<IMdkrOnlineAdapter> adapter =
         OnlineRoom_makeGatedLiveAdapter(compatibility, journey, code);
     if (!adapter) {
+        // Generic copy (service unreachable / no compiled origin).
+        g_online.betaBuildFailedReason[0] = '\0';
         g_online.betaBuildFailed = true;
         return false;
     }
     g_online.adapter = std::move(adapter);
     g_online.initialized = true;
     g_online.betaBuildFailed = false;
+    g_online.betaBuildFailedReason[0] = '\0';
     g_online.betaCharacterTaken = false;
     g_online.betaCharacterTakenIndex = 0u;
     dispatch(journey == MDKR_ONLINE_JOURNEY_CREATE
@@ -659,17 +751,22 @@ bool buildBetaLiveAdapter(MdkrOnlineJourney journey, const std::string &code) {
 }
 
 void drawBetaChooser(LauncherState &state) {
-    (void)state;
     ui::SectionHeader(
         "Play Online",
         "Race a friend over the internet: private, invite-only, 2 players, base "
         "racers, direct peer-to-peer. Pick a side to start; the lobby takes over "
         "once you connect.");
     if (g_online.betaBuildFailed) {
+        // Specific refusal reasons (unvalidated ROM, determinism env seam, no
+        // release provenance) come from buildBetaLiveAdapter; the generic copy
+        // covers an unreachable service.
         ui::CautionBox(
             "Couldn't Start Online",
-            "The online service could not be reached from this build. Local play "
-            "and phone controllers still work; try the room again later.");
+            g_online.betaBuildFailedReason[0] != '\0'
+                ? g_online.betaBuildFailedReason
+                : "The online service could not be reached from this build. "
+                  "Local play and phone controllers still work; try the room "
+                  "again later.");
         ui::Gap(ui::kGapS);
     }
     if (g_online.betaStage == OnlineRoomUiState::BetaStage::Chooser) {
@@ -677,7 +774,8 @@ void drawBetaChooser(LauncherState &state) {
             ImGui::TextUnformatted("How do you want to play?");
             ui::Gap(ui::kGapS);
             if (ui::BrandPrimaryButton("Host a Race", ui::kBtnFullWidth())) {
-                buildBetaLiveAdapter(MDKR_ONLINE_JOURNEY_CREATE, std::string());
+                buildBetaLiveAdapter(state, MDKR_ONLINE_JOURNEY_CREATE,
+                                     std::string());
             }
             ui::SpeakFocusedItem("Host a Race", "Create a room",
                                  "Creates a private room and shows a code to share.");
@@ -686,6 +784,7 @@ void drawBetaChooser(LauncherState &state) {
                 g_online.betaStage = OnlineRoomUiState::BetaStage::JoinCode;
                 g_online.betaJoinCode[0] = '\0';
                 g_online.betaBuildFailed = false;
+                g_online.betaBuildFailedReason[0] = '\0';
             }
             ui::SpeakFocusedItem("Join a Race", "Enter a code",
                                  "Enter the 6-digit code your host shares with you.");
@@ -709,7 +808,7 @@ void drawBetaChooser(LauncherState &state) {
             const bool ready = std::strlen(g_online.betaJoinCode) == 6u;
             ImGui::BeginDisabled(!ready);
             if (ui::BrandPrimaryButton("Join", ui::kBtnFullWidth())) {
-                buildBetaLiveAdapter(MDKR_ONLINE_JOURNEY_JOIN,
+                buildBetaLiveAdapter(state, MDKR_ONLINE_JOURNEY_JOIN,
                                      std::string(g_online.betaJoinCode));
             }
             ImGui::EndDisabled();
