@@ -475,6 +475,19 @@ bool mdkr_online_live_adapter_take_refusal(IMdkrOnlineAdapter *adapter,
                                            uint32_t *command_type,
                                            uint32_t *error);
 
+#if MDKR_ENABLE_ONLINE_BETA
+/* Test-only (beta build): the two pure decisions that govern race-end card
+ * truthfulness, exposed so a beta-ON unit test can pin them without a full
+ * loopback mesh. `map_lost_reason` is the mesh-reason -> failure mapping (its
+ * in-race branches depend on raceBegun); `race_end_demotes` is the F1 rule that
+ * keeps a more-specific CONNECTION_UNPLAYABLE from being overwritten by the
+ * drain's reason-blind OPPONENT_LEFT. Never called by the launcher. */
+MdkrOnlineViewFailure mdkr_online_live_adapter_test_map_lost_reason(
+    MdkrMatchPeerLostReason lostReason, bool raceBegun);
+bool mdkr_online_live_adapter_test_race_end_demotes(
+    MdkrOnlineViewFailure incoming, MdkrOnlineViewFailure current);
+#endif
+
 /* Seal + fan out the race's OPENING input window (firstTick..firstTick+
  * inputDelay) without draining. The launcher's race-start barrier calls this
  * before waiting for the peer's first bundle so the two machines never
@@ -557,6 +570,16 @@ bool mdkr_online_live_adapter_set_race_end_failure(IMdkrOnlineAdapter *adapter,
  * connection-lost card. A no-op when failure_ was not loss-mapped (an unrelated
  * VERIFICATION_MISMATCH is preserved). Returns false for a non-live adapter. */
 bool mdkr_online_live_adapter_clear_race_loss_failure(
+    IMdkrOnlineAdapter *adapter);
+
+/* F3: walk an abandoned race's engine out of RACING (and keep the race-end card
+ * fronting over any late lobby snapshot) WITHOUT changing which failure shows.
+ * The launcher calls this on the publish-failed keep-the-card path -- a genuine
+ * finish was captured but PUBLISH_RESULTS never landed, so the loss-mapped
+ * recovery card is retained; without the engine walk that card's PLAY_HERE ->
+ * RETURN_HOME would be refused by the still-RACING reducer. Returns false for a
+ * non-live adapter. */
+bool mdkr_online_live_adapter_walk_engine_out_of_race(
     IMdkrOnlineAdapter *adapter);
 
 /* F3 one-sided-abort guard: broadcast a race-abort to every reachable peer on

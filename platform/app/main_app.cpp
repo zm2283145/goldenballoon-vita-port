@@ -1594,7 +1594,15 @@ void reportOnlineRaceResults(
          * snapshot) there is no RESULTS phase to front, so clearing the latch
          * would strand the player on a blank room instead of the truthful
          * recovery card. Keep the card in that case. */
-        if (reported) mdkr_online_live_adapter_clear_race_loss_failure(adapter);
+        if (reported) {
+            mdkr_online_live_adapter_clear_race_loss_failure(adapter);
+        } else {
+            /* F3: publish failed, so the loss-mapped recovery card is kept. Walk
+             * the abandoned race's engine out of RACING so that kept card's
+             * PLAY_HERE -> RETURN_HOME is ACCEPTED (the reducer refuses it while
+             * still RACING), instead of a dead button. */
+            mdkr_online_live_adapter_walk_engine_out_of_race(adapter);
+        }
         std::fprintf(stderr,
                      "[online-live] race results reported placements=%u,%u,%u,%u "
                      "accepted=%d\n",

@@ -1186,6 +1186,72 @@ if(NOT EMSCRIPTEN)
                 # internal waits are bounded, so this timeout backstops a hang.
                 set_tests_properties(online_live_adapter PROPERTIES TIMEOUT 180)
 
+                # P1-T2 F4: the SAME adapter TU, compiled WITH
+                # MDKR_ENABLE_ONLINE_BETA (the target above deliberately does not
+                # -- the define breaks its token-gate test), so the beta-only
+                # race-end-card truthfulness decisions (mapLostReason in-race
+                # branches + the F1 no-demotion rule) are actually exercised.
+                # Pure/mesh-free: only the two exposed test wrappers are called,
+                # with no-op stubs for the boot-handoff hooks the beta build
+                # references, so it links the adapter without the wiring TU.
+                add_executable(mdkr_online_live_adapter_beta_test
+                    ${CMAKE_SOURCE_DIR}/tests/test_online_live_adapter_beta.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c
+                    ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
+                    ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_preflight.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_roster_runtime.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_launch_descriptor.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_peer_crypto.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c
+                    ${CMAKE_SOURCE_DIR}/platform/session/session_bridge.c
+                    ${CMAKE_SOURCE_DIR}/platform/session/session_core.c
+                    ${CMAKE_SOURCE_DIR}/platform/input_tick_queue.c
+                    ${CMAKE_SOURCE_DIR}/platform/sha256.c
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_retry_policy.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_webrtc_signaling.cpp)
+                target_compile_definitions(mdkr_online_live_adapter_beta_test
+                    PRIVATE MDKR_ENABLE_ONLINE_BETA=1)
+                target_include_directories(mdkr_online_live_adapter_beta_test
+                    PRIVATE
+                    ${CMAKE_SOURCE_DIR}
+                    ${CMAKE_SOURCE_DIR}/platform
+                    ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}
+                    ${MDKR_PARTY_GENERATED_INCLUDE})
+                target_include_directories(mdkr_online_live_adapter_beta_test
+                    SYSTEM PRIVATE
+                    ${mdkr_libdatachannel_SOURCE_DIR}/include)
+                target_compile_features(mdkr_online_live_adapter_beta_test PRIVATE
+                    cxx_std_17)
+                target_link_libraries(mdkr_online_live_adapter_beta_test PRIVATE
+                    LibDataChannel::LibDataChannel MbedTLS::MbedTLS
+                    Threads::Threads)
+                if(WIN32)
+                    target_link_libraries(mdkr_online_live_adapter_beta_test
+                        PRIVATE ws2_32)
+                endif()
+                if(MSVC)
+                    target_compile_options(mdkr_online_live_adapter_beta_test
+                        PRIVATE /W4 /WX)
+                else()
+                    target_compile_options(mdkr_online_live_adapter_beta_test
+                        PRIVATE -Wall -Wextra -Wpedantic -Werror)
+                endif()
+                add_test(NAME online_live_adapter_beta
+                    COMMAND mdkr_online_live_adapter_beta_test)
+
                 # W3 connection robustness: the production MatchRoom transport
                 # (platform/online/match_live_transport.cpp) driven wire-level
                 # against a scriptable loopback fake of the MatchRoom service

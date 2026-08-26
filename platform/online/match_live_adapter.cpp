@@ -373,9 +373,12 @@ public:
     /* Non-silent: once the current view surface has not progressed within
      * viewTimeoutMs_, report the timeout so the view model's already-present
      * timeout card ("Room Took Too Long", "Setup Check Took Too Long", "Race Did
-     * Not Load" -> Return to Lobby / Try Again) surfaces instead of an endless
-     * spinner. The anchor is reset on every surface change; selection screens
-     * carry no timeout card so a true expiry there is inert. */
+     * Not Load", "Selection Took Too Long" -> Return to Lobby / Try Again /
+     * Leave Room) surfaces instead of an endless spinner. The anchor resets on
+     * every surface change AND (F2) on selection progress -- any pick/ready/
+     * settings bumps lobby.revision, which re-anchors while SELECTING so the
+     * "Selection Took Too Long" card fronts only a genuinely dead room, never
+     * active picking. */
     bool timeoutExpired() const override {
         return viewAnchorMs_ != 0u && nowMs_() - viewAnchorMs_ >= viewTimeoutMs_;
     }
@@ -427,8 +430,26 @@ private:
             (haveLobby_ ? 0u : UINT64_C(0x10000)) |
             (failure_ != MDKR_ONLINE_VIEW_FAILURE_NONE ? UINT64_C(0x20000) : 0u) |
             (reVerify_ ? UINT64_C(0x40000) : 0u);
-        if (key == lastPhaseKey_) return;
+        const bool selecting = haveLobby_ &&
+            session_.state.room == MDKR_ROOM_SELECTING &&
+            lobby_.phase == MDKR_ONLINE_LOBBY;
+        if (key == lastPhaseKey_) {
+            /* F2: the phase key is constant across an entire selection screen, so
+             * without this a human taking >30 s to pick would permanently front
+             * the "Selection Took Too Long" card even while picks are actively
+             * landing. Selection progress bumps lobby.revision (any pick / ready
+             * / settings change), so re-anchor the timeout on it: only a room
+             * with NO revision for the full window (a genuinely stuck peer) still
+             * cards. Other surfaces keep the phase-key-only anchor -- their
+             * timeouts are true "no transition" spinners. */
+            if (selecting && lobby_.revision != lastAnchorRevision_) {
+                lastAnchorRevision_ = lobby_.revision;
+                viewAnchorMs_ = nowMs_();
+            }
+            return;
+        }
         lastPhaseKey_ = key;
+        lastAnchorRevision_ = haveLobby_ ? lobby_.revision : 0u;
         viewAnchorMs_ = nowMs_();
         MDKR_ONLINE_LOG(
             "[ROOM-PHASE] role=%s room=%s lobbyPhase=%s rev=%u epoch=%u "
@@ -1471,6 +1492,7 @@ private:
         }
     }
 
+public:
     /* Map a mesh peer-loss reason to a lobby-facing failure. `raceBegun` says a
      * playable race connection had actually come up (raceReady_) before the
      * loss, which changes what is TRUTHFUL: a peer that pings-out or ends after
@@ -1509,6 +1531,8 @@ private:
                 return MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK;
         }
     }
+
+private:
 
     /* ---- Loading barrier: build descriptor through the O-T5 clamp ------ */
 
@@ -2002,27 +2026,53 @@ public:
      * aborted its own start barrier (F3). */
     bool racePeerLost() const { return racePeerLost_ || raceAbortReceived_; }
 
-    /* Route a race-scoped recovery failure onto the lobby-facing view after the
-     * engine session ends (see the header). Race-scoped, so resetRaceLatches
-     * clears it when the room returns to LOBBY.
-     *
-     * R2: these cards front while the local session is still mid-race
+    /* F1: applying `incoming` over the already-latched `current` would DEMOTE a
+     * more-specific mid-race breakdown to the drain's reason-blind OPPONENT_LEFT.
+     * The drain sees only race_peer_lost() and reports OpponentLeft, so a
+     * SealWindowExhausted (which the mesh already diagnosed as
+     * CONNECTION_UNPLAYABLE) would be overwritten with the wrong "opponent
+     * disconnected" copy. Pure + public so the beta test can pin it. */
+    static bool raceEndFailureDemotes(MdkrOnlineViewFailure incoming,
+                                      MdkrOnlineViewFailure current) {
+#if MDKR_ENABLE_ONLINE_BETA
+        return incoming == MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT &&
+               current == MDKR_ONLINE_VIEW_FAILURE_CONNECTION_UNPLAYABLE;
+#else
+        (void)incoming;
+        (void)current;
+        return false;
+#endif
+    }
+
+    /* R2/F3: a race-end card fronts while the local session is still mid-race
      * (RACE_CHROME / engine RACING), where the reducer refuses the card's
      * PLAY_HERE -> RETURN_HOME. Walk the abandoned race's engine out of RACING
-     * first (the beginReVerify precedent) so the card's primary is ACCEPTED, and
-     * drop the lobby with it -- these are dead-ends (the room has no RACING ->
-     * LOBBY path yet), so the recovery view builds from the failure alone. */
-    void setRaceEndFailure(MdkrOnlineViewFailure failure) {
+     * (the beginReVerify precedent) so the card's primary is ACCEPTED, drop the
+     * lobby, and keep view() fronting the card over any late snapshot -- these
+     * are dead-ends (no RACING -> LOBBY path yet), so recovery builds from the
+     * failure alone. Owns no failure_ write: the caller decides which card shows.
+     * Shared by setRaceEndFailure and the publish-failed keep-the-card path. */
+    void makeRaceEndCardActionable() {
         if (session_.state.engine == MDKR_ENGINE_RACING) {
             (void)sessionDispatch(MDKR_SESSION_COMMAND_SET_ENGINE_PHASE,
                                   MDKR_ENGINE_FINISHED);
         }
         haveLobby_ = false;
-        raceLossFailureLatched_ = false; /* explicit card, not a loss-mapped one */
         /* O2: a late State snapshot can re-latch haveLobby_ under this card;
          * keep view() suppressing that stale lobby until the room resets. */
         raceEndFailureLatched_ = true;
-        failure_ = failure;
+        bump();
+    }
+
+    /* Route a race-scoped recovery failure onto the lobby-facing view after the
+     * engine session ends (see the header). Race-scoped, so resetRaceLatches
+     * clears it when the room returns to LOBBY. */
+    void setRaceEndFailure(MdkrOnlineViewFailure failure) {
+        makeRaceEndCardActionable();
+        raceLossFailureLatched_ = false; /* explicit card, not a loss-mapped one */
+        /* F1: never let the drain's generic OPPONENT_LEFT overwrite a more
+         * specific mid-race breakdown the mesh already latched. */
+        if (!raceEndFailureDemotes(failure, failure_)) failure_ = failure;
         bump();
     }
 
@@ -2517,6 +2567,10 @@ private:
     uint64_t lastPhaseKey_ = UINT64_MAX;
     uint64_t viewAnchorMs_ = 0u;
     uint64_t viewTimeoutMs_ = 30000u;
+    /* F2: lobby revision the timeout anchor was last re-armed on while SELECTING,
+     * so active picking (each pick/ready/settings change bumps it) never lets the
+     * "Selection Took Too Long" card false-fire. */
+    uint32_t lastAnchorRevision_ = 0u;
     int lastPreflightGate_ = -1;
     bool preflightInitLogged_ = false;
     bool raceReadyLogged_ = false;
@@ -2589,6 +2643,31 @@ bool mdkr_online_live_adapter_set_race_end_failure(
     live->setRaceEndFailure(failure);
     return true;
 }
+
+bool mdkr_online_live_adapter_walk_engine_out_of_race(
+    IMdkrOnlineAdapter *adapter) {
+    if (adapter == nullptr) return false;
+    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    if (live == nullptr) return false;
+    live->makeRaceEndCardActionable();
+    return true;
+}
+
+#if MDKR_ENABLE_ONLINE_BETA
+/* Test-only (beta): expose the two pure decisions that govern race-end card
+ * truthfulness -- the peer-loss -> failure mapping and the F1 no-demotion rule
+ * -- so the beta unit test pins them without driving a full loopback mesh. Not
+ * part of the launcher API; only compiled in a beta build. */
+MdkrOnlineViewFailure mdkr_online_live_adapter_test_map_lost_reason(
+    MdkrMatchPeerLostReason lostReason, bool raceBegun) {
+    return LiveAdapter::mapLostReason(lostReason, raceBegun);
+}
+
+bool mdkr_online_live_adapter_test_race_end_demotes(
+    MdkrOnlineViewFailure incoming, MdkrOnlineViewFailure current) {
+    return LiveAdapter::raceEndFailureDemotes(incoming, current);
+}
+#endif
 
 bool mdkr_online_live_adapter_race_send_abort(IMdkrOnlineAdapter *adapter) {
     if (adapter == nullptr) return false;
