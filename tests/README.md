@@ -1471,7 +1471,8 @@ byte-identical. DEV lane, not release-required: the drivers speak plain
 `MDKR_INTERNAL_TEST_TOKEN`, the same loopback-transport token the party e2e and
 signal-client tests use.
 
-`tests/check_online_engine_boot_direct.py` boots the VISIBLE engine into a
+`check_online_engine_boot_direct.py` (standalone lane, not run-checks
+registered) boots the VISIBLE engine into a
 live loopback online race (`MDKR_APP_TEST_ONLINE_LIVE`, two real adapters over
 the in-process hub, real libdatachannel DTLS) with NO menu-nav input script:
 the direct-boot seam must reach the race purely from the installed manifest,
@@ -1492,7 +1493,8 @@ legality (descriptor validation and BEGIN_LOADING both check the chosen
 vehicle bit against the mask) must hold end-to-end for the boot to happen at
 all.
 
-`tests/check_online_tournament.py` drives a FULL 4-race Dino Domain cup (mode
+`check_online_tournament.py` (standalone lane, not run-checks registered)
+drives a FULL 4-race Dino Domain cup (mode
 tournament, cup 0: tracks 5, 3, 29, 7) through ONE loopback room
 (`MDKR_APP_TEST_ONLINE_MODE=tournament` + `MDKR_APP_TEST_ONLINE_CUP=0`). The
 loopback branch boots the visible engine exactly once per process, so the
@@ -1519,6 +1521,24 @@ run them one at a time, never concurrently with builds. Neither is
 CTest-registered -- like the other `MDKR_APP_TEST_ONLINE_LIVE` engine boots
 they need the local US 1.1 ROM -- so run them standalone with
 `--build <dir> --rom <path>`.
+
+`check_online_peer_loss.py` (standalone lane, not run-checks / CTest
+registered) is the process-level peer-loss gate. It reuses the O-T6
+`mdkr_online_live_transport_e2e_driver` but drives it against small in-process
+FAKE servers (no wrangler, no ROM), so it is fast and deterministic. Two arms:
+a survivor whose opponent's `/connect` transport is SEVERED mid-session, and one
+whose opponent NEVER joins a valid one-seat room -- each must reach the room but
+install NO race descriptor (`[E2E] installed` never prints), report NO converged
+finish (`[E2E] result=ok` never prints), and tear down within its budget without
+wedging. That is the transport-layer shadow of the engine's OPPONENT_LEFT /
+OPPONENT_NEVER_STARTED routing; the engine reason-mapping (peer-loss -> failure,
+the F1 no-demotion rule) and the recovery-card copy are pinned separately at the
+unit level by the `online_live_adapter_beta` and `online_lobby_view_model`
+CTests. It does NOT boot the visible engine, so the literal engine witnesses
+(`[online-live] peer lost mid-race`, `[START] ... aborting to the room`) and the
+`race_abort` control message are out of its reach -- those need the
+wrangler-backed two-process `MDKR_APP_TEST_ONLINE_LIVE_CLOUD` path. Run it on a
+quiet machine, standalone, with `--build build-beta`.
 
 `tests/check_lan_controller_assets.py` keeps the local-play controller asset set
 identical across the three places that must never disagree: the C++

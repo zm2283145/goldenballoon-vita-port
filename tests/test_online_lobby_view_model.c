@@ -575,6 +575,84 @@ static void test_host_config_and_tournament(void) {
            "New Tournament wraps the series back to race 1 with fresh points");
 }
 
+/* P1-T4 subtask 3: pin the join/preflight failure family's REACHABLE view-model
+ * contract -- each typed failure's stable primary recovery action plus complete,
+ * distinct copy -- for the bad-code / room-full / expired / version-mismatch
+ * cases the room drives. The richer per-failure SENTENCES P1-T3 added (the
+ * distinct build / ROM / settings / update explanations) live in
+ * platform/app/ui_online_room.cpp `betaFailureCopy`, which a pure-C view-model
+ * test cannot reach and which this task must not add a hook to (that file is
+ * under concurrent review). So this asserts what IS reachable here: the failure
+ * enum -> primary-action mapping (the wiring the UI copy layers onto) and that
+ * the view model's own title/explanation are present and jargon-free. The UI
+ * sentence-level copy is exercised by the gallery render lane
+ * (check_browser_online_room_gallery.py) instead. */
+static void test_failure_primary_actions_reachable(void) {
+    static const struct {
+        MdkrOnlineViewFailure failure;
+        MdkrOnlineViewAction primary;
+        const char *label;
+    } cases[] = {
+        /* bad join code / invite problems. */
+        { MDKR_ONLINE_VIEW_FAILURE_INVITE_EXPIRED,
+          MDKR_ONLINE_VIEW_ACTION_ENTER_ANOTHER_CODE, "invite-expired" },
+        { MDKR_ONLINE_VIEW_FAILURE_INVITE_ROTATED,
+          MDKR_ONLINE_VIEW_ACTION_ENTER_ANOTHER_CODE, "invite-rotated" },
+        /* room full / expired / host gone -> stay playable locally. */
+        { MDKR_ONLINE_VIEW_FAILURE_ROOM_FULL,
+          MDKR_ONLINE_VIEW_ACTION_PLAY_HERE, "room-full" },
+        { MDKR_ONLINE_VIEW_FAILURE_ROOM_EXPIRED,
+          MDKR_ONLINE_VIEW_ACTION_PLAY_HERE, "room-expired" },
+        { MDKR_ONLINE_VIEW_FAILURE_HOST_CLOSED,
+          MDKR_ONLINE_VIEW_ACTION_PLAY_HERE, "host-closed" },
+        /* version / content mismatch -> each names its own distinct fix. */
+        { MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_BUILD,
+          MDKR_ONLINE_VIEW_ACTION_UPDATE_GAME, "different-build" },
+        { MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_ROM,
+          MDKR_ONLINE_VIEW_ACTION_CHOOSE_ROM, "different-rom" },
+        { MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_SETTINGS,
+          MDKR_ONLINE_VIEW_ACTION_USE_ROOM_SETTINGS, "different-settings" },
+        { MDKR_ONLINE_VIEW_FAILURE_UPDATE_REQUIRED,
+          MDKR_ONLINE_VIEW_ACTION_UPDATE_GAME, "update-required" },
+    };
+    MdkrSessionCore session;
+    MdkrOnlineViewInput input;
+    MdkrOnlineViewModel model;
+    unsigned index;
+
+    mdkr_session_core_init(&session, 6u);
+    session_command(&session, MDKR_SESSION_COMMAND_BEGIN_ONLINE, 0u);
+    input = input_for(&session, NULL);
+
+    for (index = 0u; index < sizeof(cases) / sizeof(cases[0]); index++) {
+        input.failure = cases[index].failure;
+        expect(mdkr_online_view_model_build(&input, &model) &&
+               model.kind == MDKR_ONLINE_VIEW_RECOVERY &&
+               model.failure == cases[index].failure &&
+               model.primary.action == cases[index].primary,
+               cases[index].label);
+        expect_complete(&model, cases[index].label);
+    }
+
+    /* The mismatch family must not collapse to one generic action: ROM and
+     * settings each name their own distinct fix, distinct from the update path. */
+    {
+        MdkrOnlineViewModel a, b, c;
+        input.failure = MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_ROM;
+        expect(mdkr_online_view_model_build(&input, &a), "different-rom builds");
+        input.failure = MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_SETTINGS;
+        expect(mdkr_online_view_model_build(&input, &b),
+               "different-settings builds");
+        input.failure = MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_BUILD;
+        expect(mdkr_online_view_model_build(&input, &c), "different-build builds");
+        expect(a.primary.action != b.primary.action &&
+               a.primary.action != c.primary.action &&
+               b.primary.action != c.primary.action,
+               "ROM / settings / build mismatches each get a distinct primary");
+    }
+    input.failure = MDKR_ONLINE_VIEW_FAILURE_NONE;
+}
+
 static void test_failure_catalog_and_atomicity(void) {
     static const char *forbidden[] = { "ICE", "STUN", "TURN", "HTTP",
                                        "provider", "quota", "unknown error" };
@@ -720,6 +798,7 @@ int main(void) {
     test_room_selection_and_release_gate();
     test_loading_racing_and_results();
     test_host_config_and_tournament();
+    test_failure_primary_actions_reachable();
     test_failure_catalog_and_atomicity();
 #if MDKR_ENABLE_ONLINE_BETA
     test_race_scoped_recovery_cards();
