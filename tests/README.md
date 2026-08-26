@@ -1038,7 +1038,7 @@ and clean-teardown contracts.
 
 `online_lobby_core` is the socket-free launcher room reducer. Native C and the
 service TypeScript reducer both consume
-`tests/fixtures/online_lobby_reducer_v1.tsv`: one 94-row lifecycle fixture
+`tests/fixtures/online_lobby_reducer_v1.tsv`: one 117-row lifecycle fixture
 that asserts the result/error and canonical lobby state after every valid or
 invalid transition. Its tests cover
 membership, exact compatibility, seat ownership, unique per-seat character and
