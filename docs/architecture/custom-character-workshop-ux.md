@@ -379,11 +379,11 @@ last known-good assembly remains available if an update fails.
 | Per-context corrections | Executable | Move from four repeated player panels to one package editor |
 | Animation semantics | Executable sampling/diagnostics plus source-v4 compiled role contract, inference provenance/confidence, transactional 16-role skin-joint editor with rest/bend controls and automatic review invalidation, native hierarchy validation, reviewed engine-reference fallback motion, and bounded idempotent vehicle contact solving | Add richer reference clips, skeleton visualization, target overlays and joint-limit inspection |
 | Portrait/roster identity | Source-v3 import, transactional Portrait Studio revision, exact 40x40 preview/editor with pencil/eraser/fill/eyedropper/mirror/undo, HUD/results/rankings/minimap resolver, and independent 64-entry paginated select browser with per-player portrait/name identity executable | Add model capture, advanced selection/style tools, localization-aware game-font shaping, and remaining identity-surface audit |
-| Donor selection | All ten revision-1 donor seams are fingerprint-qualified and selectable through transactional source revisions; the engine publishes a bounded GPU-free installed-character catalog for virtual roster consumers | Add game-table comparison bars and exact-context review status |
-| Vehicle support | Source-backed compatibility revision, runtime enable subset, independent transforms, persisted per-vehicle hand/foot target offsets, warmed exact-context solve-count/mean/max contact-error feedback, stale-result invalidation, and contextual one-click save/retest loops | Add visual target manipulators and complete vehicle test matrix |
+| Donor selection | All ten revision-1 donor seams are fingerprint-qualified and selectable through transactional source revisions; the engine publishes a bounded GPU-free installed-character catalog for virtual roster consumers | Add game-table comparison bars |
+| Vehicle support | Source-backed compatibility revision, runtime enable subset, independent transforms, persisted per-vehicle hand/foot target offsets, warmed exact-context solve-count/mean/max contact-error feedback, stale-result invalidation, contextual one-click save/retest loops, and source/tuning-bound per-context review | Add visual target manipulators and complete vehicle test matrix |
 | Performance controls | Import caps, authored LOD bias, exact per-LOD draw accounting, 1P-4P worst-visible assembly counts, exact one-click WebGPU stress routes, and a returned post-warm-up wall-cadence percentile/result card with synthetic/short-sample refusal | Add GPU timestamps, repeatable comparison baselines, representative scene matrix and device profiles |
 | Gameplay tuning | Correctly absent from visual package | Build separate opt-in hashed gameplay-profile system |
-| Preview | One-click typed requests launch select or all three vehicles through real game initialization in any 1-4P layout after ROM revalidation; requests are assignment-neutral, return a warmed structured result, and a generated non-Diddy package passes the complete WebGPU route/pixel/stress/result gate | Embed the renderer, add semantic pose/camera/lighting controls, screenshots/contact sheets and persist per-context author review |
+| Preview | One-click typed requests launch select or all three vehicles through real game initialization in any 1-4P layout after ROM revalidation; requests are assignment-neutral, return a warmed structured result, persist source/tuning-bound per-context author review, and a generated non-Diddy package passes the complete WebGPU route/pixel/stress/result gate | Embed the renderer and add semantic pose/camera/lighting controls plus screenshots/contact sheets |
 | Packaging/update/removal | Executable | Add draft lifecycle, update diff, disable and source-preserving cleanup |
 | Accessibility | Inherits launcher fundamentals | Qualify every editor tool at keyboard/controller/200%/screen reader |
 
@@ -405,7 +405,10 @@ The exact-game preview request/result path, deterministic portrait import and
 40x40 pixel editor, versioned identity media, and dynamic local identity
 resolver across select, HUD, results/rankings portraits and minimap are
 implemented. An embedded renderer, model capture, style conversion, camera and
-lighting controls, and contact overlays remain.
+lighting controls, and contact overlays remain. Every exact context has an
+independent persisted author-review action which is unlocked only by a warmed
+test that actually rendered the replacement; its canonical signature prevents
+source or tuning changes from inheriting stale approval.
 
 Gate: no donor name/portrait leaks on any audited identity surface; every output
 is deterministic and readable at original 320x240 presentation.

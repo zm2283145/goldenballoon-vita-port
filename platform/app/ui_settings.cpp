@@ -14,6 +14,7 @@
 #include "modern_character_install.h"
 #include "modern_character_donor.h"
 #include "modern_character_registry.h"
+#include "sha256.h"
 #include "user_paths.h"
 #include "video_config.h"
 #include "platform_os.h"
@@ -1979,6 +1980,92 @@ std::string characterFloatText(float value) {
     return text;
 }
 
+const char *characterFitContextId(unsigned context) {
+    static const char *ids[MDKR_CHARACTER_CONTEXT_COUNT] = {
+        "select", "car", "hovercraft", "plane"
+    };
+    return context < MDKR_CHARACTER_CONTEXT_COUNT ? ids[context] : "invalid";
+}
+
+std::string characterFitReviewSignature(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterTuningEdit &edit,
+    unsigned context) {
+    if (entry == nullptr || context >= MDKR_CHARACTER_CONTEXT_COUNT) return {};
+    std::string canonical = "mdkr-character-fit-review-v1\n";
+    canonical.append(reinterpret_cast<const char *>(entry->source_sha256),
+                     sizeof(entry->source_sha256));
+    canonical += "\n" + std::to_string(entry->donor) + "\n";
+    const auto appendFloat = [&canonical](float value) {
+        canonical += characterFloatText(value);
+        canonical.push_back('\n');
+    };
+    appendFloat(edit.scale);
+    for (float value : edit.offset) appendFloat(value);
+    for (float value : edit.rotation) appendFloat(value);
+    appendFloat(edit.animationSpeed);
+    const CharacterTuningEdit::Context &placement = edit.context[context];
+    appendFloat(placement.scale);
+    for (float value : placement.offset) appendFloat(value);
+    for (float value : placement.rotation) appendFloat(value);
+    if (context != MDKR_CHARACTER_CONTEXT_SELECT) {
+        for (const auto &contact : placement.contacts) {
+            for (float value : contact) appendFloat(value);
+        }
+    }
+    char digest[MDKR_SHA256_HEX_SIZE];
+    mdkr_sha256_hex(canonical.data(), canonical.size(), digest);
+    return digest;
+}
+
+std::string characterFitReviewKey(const char *packageId, unsigned context) {
+    return "custom_character_profile_" + std::string(packageId) + "_" +
+        characterFitContextId(context) + "_review_signature";
+}
+
+bool characterFitReviewed(const MdkrModernCharacterEntry *entry,
+                          const CharacterTuningEdit &edit,
+                          unsigned context) {
+    const std::string signature = characterFitReviewSignature(
+        entry, edit, context);
+    return !signature.empty() &&
+        AppConfig::get(characterFitReviewKey(entry->id, context)) == signature;
+}
+
+bool persistCharacterFitReview(const MdkrModernCharacterEntry *entry,
+                               const CharacterTuningEdit &edit,
+                               unsigned context) {
+    const std::string signature = characterFitReviewSignature(
+        entry, edit, context);
+    if (signature.empty()) return false;
+    AppConfig::set(characterFitReviewKey(entry->id, context), signature);
+    const AppConfig::PersistResult result = AppConfig::save();
+    if (AppConfig::persistResultApplied(result)) {
+        setStatus("Exact-context fit review saved for this source and tuning.",
+                  AppTheme::good());
+        return true;
+    }
+    setStatus("The exact-context fit review could not be saved.",
+              AppTheme::bad());
+    return false;
+}
+
+bool clearCharacterFitReview(const MdkrModernCharacterEntry *entry,
+                             unsigned context) {
+    if (entry == nullptr || context >= MDKR_CHARACTER_CONTEXT_COUNT) {
+        return false;
+    }
+    AppConfig::set(characterFitReviewKey(entry->id, context), "");
+    const AppConfig::PersistResult result = AppConfig::save();
+    if (AppConfig::persistResultApplied(result)) {
+        setStatus("This context is open for fit review again.",
+                  AppTheme::accent());
+        return true;
+    }
+    setStatus("The fit review could not be reopened.", AppTheme::bad());
+    return false;
+}
+
 bool persistCharacterTuning(const char *packageId,
                             const CharacterTuningEdit &edit) {
     static const char *contextNames[MDKR_CHARACTER_CONTEXT_COUNT] = {
@@ -2761,6 +2848,20 @@ bool drawCharacterTuningEditor(int player,
     ImGui::SeparatorText("Placement by context");
     ui::TextSubtleWrapped(
         "Select aligns the model's measured ground point. Vehicles align its pelvis/seat socket. Each correction is independent, so fixing one scene cannot break another.");
+    unsigned reviewContexts = 1u;
+    unsigned reviewedContexts = characterFitReviewed(
+        entry, edit, MDKR_CHARACTER_CONTEXT_SELECT) ? 1u : 0u;
+    for (unsigned context = MDKR_CHARACTER_CONTEXT_CAR;
+         context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+        if ((edit.vehicleMask & (1u << (context - 1u))) == 0u) continue;
+        ++reviewContexts;
+        if (characterFitReviewed(entry, edit, context)) ++reviewedContexts;
+    }
+    ImGui::TextColored(
+        reviewedContexts == reviewContexts
+            ? AppTheme::good() : AppTheme::accent(),
+        "Fit review: %u of %u enabled contexts current",
+        reviewedContexts, reviewContexts);
     if (ImGui::BeginTabBar("##character-placement-contexts")) {
         for (unsigned context = 0u;
              context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
@@ -2840,47 +2941,82 @@ bool drawCharacterTuningEditor(int player,
                     ui::TextSubtleWrapped(
                         "Contact controls require a complete, reviewed source-v4 humanoid map.");
                 }
-                const MdkrCharacterPreviewContext previewContext =
-                    previewContexts[context];
-                const auto result = g_characterPreviewResults.find(entry->id);
-                if (result != g_characterPreviewResults.end() &&
-                    result->second.version ==
-                        MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
-                    result->second.context == previewContext &&
-                    result->second.warmup_complete) {
-                    if (result->second.contact_solves != 0u) {
-                        ImGui::Text(
-                            "Last exact test: %.2f mm mean · %.2f mm maximum across %llu solves",
-                            result->second.contact_error_mean_micrometres /
-                                1000.0,
-                            result->second.contact_error_max_micrometres /
-                                1000.0,
-                            result->second.contact_solves);
-                    } else {
-                        ImGui::TextDisabled(
-                            "Last exact test: no procedural contacts (authored clip or solver locked)");
-                    }
+            }
+            const MdkrCharacterPreviewContext previewContext =
+                previewContexts[context];
+            const auto result = g_characterPreviewResults.find(entry->id);
+            const bool currentResult =
+                result != g_characterPreviewResults.end() &&
+                result->second.version ==
+                    MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
+                result->second.started &&
+                result->second.context == previewContext &&
+                result->second.warmup_complete &&
+                result->second.replacement_draws != 0u;
+            if (currentResult &&
+                context != MDKR_CHARACTER_CONTEXT_SELECT) {
+                if (result->second.contact_solves != 0u) {
+                    ImGui::Text(
+                        "Last exact test: %.2f mm mean · %.2f mm maximum across %llu solves",
+                        result->second.contact_error_mean_micrometres / 1000.0,
+                        result->second.contact_error_max_micrometres / 1000.0,
+                        result->second.contact_solves);
+                } else {
+                    ImGui::TextDisabled(
+                        "Last exact test: no procedural contacts (authored clip or solver locked)");
                 }
-                if (!compact) {
-                    int &testPlayers = g_characterTestPlayers[entry->id];
-                    if (testPlayers < 1 || testPlayers > 4) testPlayers = 1;
-                    const bool enabled =
-                        (edit.vehicleMask & (1u << (context - 1u))) != 0u;
-                    if (!enabled) ImGui::BeginDisabled();
-                    const std::string testLabel = std::string("Test ") +
-                        contextNames[context] + " fit in exact renderer";
-                    if (ImGui::Button(testLabel.c_str()) && enabled &&
-                        persistCharacterTuning(entry->id, edit)) {
-                        requestCharacterPreview(
-                            entry, previewContext, testPlayers);
-                    }
-                    if (!enabled) ImGui::EndDisabled();
-                    ui::SpeakFocusedItem(
-                        testLabel.c_str(),
-                        enabled ? nullptr
-                                : "Enable this vehicle for the package first.",
-                        "Saves the current fit and opens the real game context for contact review.");
+            }
+            const bool fitReviewed = characterFitReviewed(
+                entry, edit, context);
+            ImGui::TextColored(
+                fitReviewed ? AppTheme::good() : AppTheme::accent(),
+                fitReviewed
+                    ? "Fit reviewed for this exact source and tuning"
+                    : "Fit review required for current source or tuning");
+            if (!fitReviewed) {
+                if (!currentResult) ImGui::BeginDisabled();
+                const std::string reviewLabel = std::string("Mark ") +
+                    contextNames[context] + " fit reviewed";
+                if (ImGui::Button(reviewLabel.c_str()) && currentResult) {
+                    changed |= persistCharacterFitReview(
+                        entry, edit, context);
                 }
+                if (!currentResult) ImGui::EndDisabled();
+                ui::SpeakFocusedItem(
+                    reviewLabel.c_str(),
+                    currentResult
+                        ? nullptr
+                        : "Run and complete the matching exact renderer test first.",
+                    "Saves review only for the current package source and fit values.");
+            } else {
+                const std::string reopenLabel = std::string("Reopen ") +
+                    contextNames[context] + " fit review";
+                if (ImGui::Button(reopenLabel.c_str())) {
+                    changed |= clearCharacterFitReview(entry, context);
+                }
+                ui::SpeakFocusedItem(
+                    reopenLabel.c_str(), nullptr,
+                    "Clears this context's approval without changing its fit values.");
+            }
+            if (!compact) {
+                int &testPlayers = g_characterTestPlayers[entry->id];
+                if (testPlayers < 1 || testPlayers > 4) testPlayers = 1;
+                const bool enabled =
+                    context == MDKR_CHARACTER_CONTEXT_SELECT ||
+                    (edit.vehicleMask & (1u << (context - 1u))) != 0u;
+                if (!enabled) ImGui::BeginDisabled();
+                const std::string testLabel = std::string("Test ") +
+                    contextNames[context] + " fit in exact renderer";
+                if (ImGui::Button(testLabel.c_str()) && enabled &&
+                    persistCharacterTuning(entry->id, edit)) {
+                    requestCharacterPreview(entry, previewContext, testPlayers);
+                }
+                if (!enabled) ImGui::EndDisabled();
+                ui::SpeakFocusedItem(
+                    testLabel.c_str(),
+                    enabled ? nullptr
+                            : "Enable this vehicle for the package first.",
+                    "Saves the current fit and opens the real game context for review.");
             }
             ImGui::PopID();
             ImGui::EndTabItem();

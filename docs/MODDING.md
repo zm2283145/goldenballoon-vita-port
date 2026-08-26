@@ -322,6 +322,14 @@ renderer, so authors do not have to shuttle between unrelated Workshop panels.
 Changing any fit/solver setting or revising a package invalidates the prior
 session result; stale measurements are never presented as evidence for the
 new configuration.
+After a successful warmed test that actually drew the replacement, an author
+can mark that context reviewed. The review is persisted against a SHA-256
+signature of the exact package source, donor, global fit, animation speed,
+context transform, and (for vehicles) contact offsets. It therefore survives a
+restart but automatically becomes “review required” when any relevant input
+changes. Select, car, hovercraft, and plane are reviewed independently.
+The Workshop summarizes current approvals across enabled contexts and lets an
+author explicitly reopen any review without changing the saved fit.
 
 The Workshop's Rig Studio loads the exact skin-joint inventory from the active
 cache, shows every semantic role with its compiled node number, name,
