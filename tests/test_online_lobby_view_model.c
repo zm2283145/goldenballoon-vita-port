@@ -616,32 +616,42 @@ static void test_race_scoped_recovery_cards(void) {
            model.kind == MDKR_ONLINE_VIEW_RECOVERY &&
            model.failure == MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT &&
            model.title != NULL &&
-           strcmp(model.title, "Opponent disconnected") == 0 &&
+           strcmp(model.title, "Opponent Disconnected") == 0 &&
            model.explanation != NULL &&
            strstr(model.explanation, "lost connection") != NULL &&
-           strstr(model.explanation,
-                  "wait for them to rejoin or leave") != NULL &&
-           model.primary.action == MDKR_ONLINE_VIEW_ACTION_RETURN_TO_LOBBY &&
+           strstr(model.explanation, "This room is done") != NULL &&
+           strstr(model.explanation, "create or join a new one") != NULL &&
+           /* Working primary: reuse HOST_CLOSED's client-side room exit, not a
+            * dead Return to Lobby the wedged reducer can never honor. */
+           model.primary.action == MDKR_ONLINE_VIEW_ACTION_PLAY_HERE &&
            model.primary.label != NULL &&
-           strcmp(model.primary.label, "Return to Lobby") == 0,
-           "mid-race opponent disconnect routes to its own Return to Lobby card");
+           strcmp(model.primary.label, "Play Here") == 0 &&
+           !model.secondary.visible,
+           "mid-race opponent disconnect is a truthful dead-end with a working "
+           "room exit");
     expect_complete(&model,
                     "opponent-left recovery copy/control contract is complete");
     expect(strstr(model.explanation,
                   "could not establish a playable connection") == NULL,
            "opponent-left card is distinct from the CONNECTION_CHECK copy");
+    /* Real em dash, never ASCII "--" (the a11y announcer reads it raw). */
+    expect(strstr(model.explanation, "--") == NULL,
+           "opponent-left copy uses a real em dash, not ASCII hyphens");
 
     input.failure = MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED;
     expect(mdkr_online_view_model_build(&input, &model) &&
            model.kind == MDKR_ONLINE_VIEW_RECOVERY &&
            model.failure == MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED &&
            model.title != NULL &&
-           strcmp(model.title, "Your opponent couldn't start") == 0 &&
-           model.explanation != NULL && model.explanation[0] != '\0' &&
-           model.primary.action == MDKR_ONLINE_VIEW_ACTION_RETURN_TO_LOBBY &&
+           strcmp(model.title, "Your Opponent Couldn't Start") == 0 &&
+           model.explanation != NULL &&
+           strstr(model.explanation, "canceled before it began") != NULL &&
+           strstr(model.explanation, "fresh invite") != NULL &&
+           model.primary.action == MDKR_ONLINE_VIEW_ACTION_PLAY_HERE &&
            model.primary.label != NULL &&
-           strcmp(model.primary.label, "Return to Lobby") == 0,
-           "start-barrier abort routes to its own Return to Lobby card");
+           strcmp(model.primary.label, "Play Here") == 0 &&
+           !model.secondary.visible,
+           "start-barrier abort is a truthful dead-end with a working room exit");
     expect_complete(
         &model,
         "opponent-never-started recovery copy/control contract is complete");

@@ -923,7 +923,14 @@ const char *betaStatusLine(const MdkrOnlineViewModel &model) {
     case MDKR_ONLINE_VIEW_COUNTDOWN: return "Get ready!";
     case MDKR_ONLINE_VIEW_RACING: return "Racing";
     case MDKR_ONLINE_VIEW_RESULTS: return "Race complete";
-    case MDKR_ONLINE_VIEW_RECOVERY: return "Lost connection — you can retry";
+    case MDKR_ONLINE_VIEW_RECOVERY:
+#if MDKR_ENABLE_ONLINE_BETA
+        if (model.failure == MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT)
+            return "Opponent disconnected — this room is done";
+        if (model.failure == MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED)
+            return "Opponent couldn't start — create a fresh invite";
+#endif
+        return "Lost connection — you can retry";
     default: return "Online race";
     }
 }
@@ -963,6 +970,14 @@ const char *betaFailureCopy(MdkrOnlineViewFailure failure) {
     case MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH:
         return "The safety phrases didn't match — stopped for your protection. "
                "Leave and reconnect.";
+#if MDKR_ENABLE_ONLINE_BETA
+    case MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT:
+        return "Your opponent lost connection, so this race ended. This room is "
+               "done — create or join a new one.";
+    case MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED:
+        return "The race was canceled before it began. Create a fresh invite "
+               "and try again.";
+#endif
     default:
         return "The connection was interrupted. You can retry or leave.";
     }

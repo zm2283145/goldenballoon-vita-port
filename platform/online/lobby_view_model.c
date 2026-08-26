@@ -328,19 +328,28 @@ static void recovery_model(MdkrOnlineViewFailure failure,
                                     "Leave Room", true);
             break;
 #if MDKR_ENABLE_ONLINE_BETA
+        /* Truthful dead-ends: the reducer has NO RACING->LOBBY abandon path yet
+         * (that protocol change is Phase 2), so the primary must fully exit the
+         * room client-side. Reuse HOST_CLOSED's working PLAY_HERE primary (maps
+         * to RETURN_HOME in the adapter) and hide the secondary, so no dead
+         * "Return to Lobby" button promises a room the player can never get back
+         * to. Titles are Title Case and use a real em dash (the a11y announcer
+         * reads "--" raw). */
         case MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT:
-            model->title = "Opponent disconnected";
+            model->title = "Opponent Disconnected";
             model->explanation =
-                "Your opponent lost connection. You're back in the room -- you can wait for them to rejoin or leave.";
-            model->primary = control(MDKR_ONLINE_VIEW_ACTION_RETURN_TO_LOBBY,
-                                     "Return to Lobby", true);
+                "Your opponent lost connection, so this race ended. This room is done — create or join a new one to keep playing.";
+            model->primary = control(MDKR_ONLINE_VIEW_ACTION_PLAY_HERE,
+                                     "Play Here", true);
+            model->secondary = control(MDKR_ONLINE_VIEW_ACTION_NONE, NULL, false);
             break;
         case MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED:
-            model->title = "Your opponent couldn't start";
+            model->title = "Your Opponent Couldn't Start";
             model->explanation =
-                "Your opponent never made it to the starting line, so the race did not begin. You're back in the room.";
-            model->primary = control(MDKR_ONLINE_VIEW_ACTION_RETURN_TO_LOBBY,
-                                     "Return to Lobby", true);
+                "The race was canceled before it began. Create a fresh invite and try again.";
+            model->primary = control(MDKR_ONLINE_VIEW_ACTION_PLAY_HERE,
+                                     "Play Here", true);
+            model->secondary = control(MDKR_ONLINE_VIEW_ACTION_NONE, NULL, false);
             break;
 #endif
         case MDKR_ONLINE_VIEW_FAILURE_NONE:

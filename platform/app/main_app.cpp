@@ -1255,6 +1255,11 @@ bool liveDrainMatchInput(void *opaque, std::uint32_t /*epoch*/,
                      * routes them to the OPPONENT_NEVER_STARTED recovery card.
                      * The witness line is kept truthful for the test lanes. */
                     ctx->endReason = LiveRaceEndReason::OpponentNeverStarted;
+                    /* F3: tell a slow-but-alive opponent we are aborting, so it
+                     * never passes its own barrier on our primed tick-1 fan-out
+                     * and races our frozen input to the flag. No-op if the peer
+                     * is already gone (peerLostAtBarrier). */
+                    (void)mdkr_online_live_adapter_race_send_abort(ctx->visible);
                     std::fprintf(stderr,
                                  "[START] race-start barrier: remote tick-%u "
                                  "input %s; aborting to the room\n",
@@ -1525,19 +1530,10 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
         static_cast<unsigned long long>(hashVisible),
         static_cast<unsigned long long>(hashPeer), converged ? 1 : 0);
 
-    /* Post-session view routing (make-or-break: the panel is the only surface
-     * the player sees after the engine ends). An abnormal drain exit gets its
-     * OWN recovery card rather than the generic connection-lost copy the in-race
-     * PeerLost latch mapped: peer loss mid-race -> "Opponent disconnected",
-     * start-barrier abort -> "Your opponent couldn't start". A normal finish
-     * leaves whatever the adapter latched (usually nothing) untouched. */
-    if (context.endReason == LiveRaceEndReason::OpponentLeft) {
-        mdkr_online_live_adapter_set_race_end_failure(
-            visible, MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT);
-    } else if (context.endReason == LiveRaceEndReason::OpponentNeverStarted) {
-        mdkr_online_live_adapter_set_race_end_failure(
-            visible, MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED);
-    }
+    /* Hand the end reason to the caller; the post-session view routing +
+     * results decision are made together in reportOnlineRaceResults, which owns
+     * the single (one-shot) results poll -- see F1: the disconnect card must NOT
+     * suppress a genuinely captured finish. */
     if (endReasonOut != nullptr) *endReasonOut = context.endReason;
 
     platformSetOverlayHooks(nullptr);
@@ -1556,21 +1552,20 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
     return result;
 }
 
-/* Race-end results handoff (launcher -> room), shared by the interactive
- * race-boot handoff and the loopback proof. After runOnlineLiveEngineSession
- * returns, hand the finished race's per-canonical-slot placements to the
- * adapter exactly once: the LEADER publishes PUBLISH_RESULTS to the room and
- * a joiner's local session syncs from the RESULTS snapshot. An aborted or
- * unfinished race recorded nothing -- the poll returns false and the no-op is
- * logged, never treated as an error.
+/* Race-end results handoff + post-session view routing (launcher -> room),
+ * shared by the interactive race-boot handoff and the loopback proof. This owns
+ * the single, one-shot results poll (mdkr_online_race_results_poll consumes the
+ * epoch), so the publish decision and the recovery-card decision are made
+ * together here.
  *
- * `endReason` says WHY the session ended. When the race did not genuinely
- * finish -- a peer vanished mid-race, or the start barrier aborted -- we must
- * NOT publish placements: the survivor's local sim raced (at most) a frozen
- * ghost, so any captured placement for the vanished peer is fabricated. Skip
- * the publish entirely in that case (the adapter's peer-loss latch already
- * fronts the recovery card). Only a genuine completion (or a normal engine
- * exit) publishes. */
+ * F1 -- the completion signal is the CAPTURE, not the end reason. If the engine
+ * committed a finish order (poll returns placements), those placements are
+ * genuine even when the opponent then quit during the ~2.5 s post-race window;
+ * publish them and show results, and do NOT front a disconnect card. Only when
+ * NOTHING was captured (a mid-race peer loss / a start-barrier abort ends the
+ * engine before the finish) do we suppress the publish and, for the abnormal
+ * end reasons, route the survivor to the dedicated recovery card instead of the
+ * generic connection-lost copy the in-race PeerLost latch mapped. */
 void reportOnlineRaceResults(
     IMdkrOnlineAdapter *adapter,
     LiveRaceEndReason endReason = LiveRaceEndReason::Completed) {
@@ -1580,31 +1575,39 @@ void reportOnlineRaceResults(
         endInfo.peerLost) {
         std::fprintf(stderr,
                      "[online-live] race ended with peerLost=1 "
-                     "(adapter latched the lobby-facing failure)\n");
-    }
-    if (endReason == LiveRaceEndReason::OpponentLeft ||
-        endReason == LiveRaceEndReason::OpponentNeverStarted) {
-        std::fprintf(stderr,
-                     "[online-live] race did not genuinely finish "
-                     "(endReason=%d); suppressing results publish\n",
+                     "(endReason=%d)\n",
                      static_cast<int>(endReason));
-        return;
     }
     uint8_t placements[MDKR_ONLINE_RACE_RESULT_SLOTS];
-    if (!mdkr_online_race_results_poll(placements)) {
+    if (mdkr_online_race_results_poll(placements)) {
+        /* Genuine finish order was committed before the session ended -- even a
+         * post-race-window quit does not erase it. Publish + show results; never
+         * a disconnect card. */
+        const bool reported =
+            mdkr_online_live_adapter_report_results(adapter, placements);
         std::fprintf(stderr,
-                     "[online-live] race results: no results captured\n");
+                     "[online-live] race results reported placements=%u,%u,%u,%u "
+                     "accepted=%d\n",
+                     static_cast<unsigned>(placements[0]),
+                     static_cast<unsigned>(placements[1]),
+                     static_cast<unsigned>(placements[2]),
+                     static_cast<unsigned>(placements[3]), reported ? 1 : 0);
         return;
     }
-    const bool reported =
-        mdkr_online_live_adapter_report_results(adapter, placements);
+    /* Nothing captured: the race never reached the finish. Suppress the publish
+     * (no fabricated placements for a vanished peer) and, when the end was an
+     * opponent disconnect / never-start, front the dedicated recovery card. */
+    if (endReason == LiveRaceEndReason::OpponentLeft) {
+        mdkr_online_live_adapter_set_race_end_failure(
+            adapter, MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT);
+    } else if (endReason == LiveRaceEndReason::OpponentNeverStarted) {
+        mdkr_online_live_adapter_set_race_end_failure(
+            adapter, MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED);
+    }
     std::fprintf(stderr,
-                 "[online-live] race results reported placements=%u,%u,%u,%u "
-                 "accepted=%d\n",
-                 static_cast<unsigned>(placements[0]),
-                 static_cast<unsigned>(placements[1]),
-                 static_cast<unsigned>(placements[2]),
-                 static_cast<unsigned>(placements[3]), reported ? 1 : 0);
+                 "[online-live] race results: no results captured "
+                 "(endReason=%d)\n",
+                 static_cast<int>(endReason));
 }
 #endif /* MDKR_ENABLE_ONLINE_BETA */
 

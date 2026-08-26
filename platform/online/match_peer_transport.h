@@ -315,6 +315,17 @@ public:
         uint64_t peerEndpointId,
         const uint8_t fragment[MDKR_MATCH_PEER_PAYLOAD_BYTES]);
 
+    /* F3: broadcast a plaintext race-abort (typed/versioned like ping) to every
+     * reachable peer on the reliable control channel. Returns the number of
+     * peers reached. Does not change any peer's connection state -- the local
+     * endpoint keeps answering pings so the peer's own teardown stays clean. */
+    unsigned sendRaceAbort();
+
+    /* F3: read-and-clear "a peer sent a race_abort since the last call". The
+     * launcher polls this each pump and latches it into its own race state; a
+     * later race observes a fresh abort independently. */
+    bool consumeRaceAbort();
+
     /* The transcript verification phrase. Available ONLY once every roster
      * peer's key is committed, opened and derived (mirrors the transcript
      * layer: no phrase from uncommitted key material); refuses otherwise. */

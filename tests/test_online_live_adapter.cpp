@@ -562,6 +562,12 @@ struct FullRunResult {
     bool survivorPeerLostAccessor = false; /* mdkr_..._race_peer_lost(A) */
     bool survivorPeerLostInfo = false;     /* raceInfo(A).peerLost */
     bool roomEnteredResults = false;       /* any PUBLISH_RESULTS landed */
+    /* F3 race-abort handshake witnesses (sendAbortFromA): A broadcasts an abort,
+     * B must latch it and report it through the drain-facing accessor. */
+    bool abortSent = false;
+    bool receiverLatchedAbort = false;      /* race_peer_lost(B) after A's abort */
+    bool receiverInfoPeerLost = false;      /* raceInfo(B).peerLost */
+    bool senderStillConnected = false;      /* A did NOT self-latch its own send */
 };
 
 /* One net_impairment matrix cell: a named carrier profile + a deterministic
@@ -621,7 +627,8 @@ void foldFrame(uint64_t &hash, uint32_t tick, uint8_t activeMask,
 FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
                                const ImpairmentSpec *imp = nullptr,
                                bool realInput = false,
-                               unsigned severAfterTicks = 0u) {
+                               unsigned severAfterTicks = 0u,
+                               bool sendAbortFromA = false) {
     FullRunResult result;
     mdkr_net_roster_runtime_clear();
 
@@ -738,6 +745,30 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
      * process-global engine roster can hold only one (see install()). */
     if (raceTicks > 0u && ia.ready && ib.ready) {
         result.raceRun = true;
+        if (sendAbortFromA) {
+            /* F3: A aborts its race start and notifies B on the control channel.
+             * B must latch it and report peer loss through the exact accessor the
+             * drain polls, so B's own barrier/mid-race poll ends its race instead
+             * of racing A's frozen input to the flag. A, having only SENT, keeps
+             * its channels open (it does not self-latch). */
+            result.abortSent =
+                mdkr_online_live_adapter_race_send_abort(A.get());
+            for (unsigned step = 0u; step < 3000u; ++step) {
+                A->service();
+                B->service();
+                if (mdkr_online_live_adapter_race_peer_lost(B.get())) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                clock.nowMs += 2u;
+            }
+            result.receiverLatchedAbort =
+                mdkr_online_live_adapter_race_peer_lost(B.get());
+            MdkrOnlineLiveRaceInfo abi{};
+            mdkr_online_live_adapter_race_info(B.get(), &abi);
+            result.receiverInfoPeerLost = abi.peerLost;
+            result.senderStillConnected =
+                !mdkr_online_live_adapter_race_peer_lost(A.get());
+            return result;
+        }
         auto lowestBit = [](uint8_t m) -> uint8_t {
             for (uint8_t b = 0u; b < 8u; ++b)
                 if ((m >> b) & 1u) return b;
@@ -1111,6 +1142,29 @@ void test_midrace_peer_loss_ends_survivor() {
                      "survivor did not latch peer loss after severance "
                      "(racedBeforeSever=%u)\n",
                      r.racedBeforeSever);
+    }
+    mdkr_net_roster_runtime_clear();
+}
+
+/* P1-T1 F3: a one-sided barrier abort must not recreate the ghost race on the
+ * PEER'S side. When A aborts, it notifies B over the control channel; B latches
+ * it and reports peer loss through the drain-facing accessor exactly like a lost
+ * peer, so B's barrier/mid-race poll ends B's race too. A only SENT, so it keeps
+ * its own channels open. */
+void test_barrier_abort_notifies_peer() {
+    const FullRunResult r =
+        driveTwoAdapters(/*bonusIdentityOnA=*/false, /*raceTicks=*/4u,
+                         /*imp=*/nullptr, /*realInput=*/false,
+                         /*severAfterTicks=*/0u, /*sendAbortFromA=*/true);
+    CHECK(r.raceRun);
+    CHECK(r.abortSent);
+    /* The receiver latched the abort on the exact accessor the drain polls. */
+    CHECK(r.receiverLatchedAbort);
+    CHECK(r.receiverInfoPeerLost);
+    /* The sender did not self-latch its own broadcast. */
+    CHECK(r.senderStillConnected);
+    if (!r.receiverLatchedAbort) {
+        std::fprintf(stderr, "receiver did not latch A's race abort\n");
     }
     mdkr_net_roster_runtime_clear();
 }
@@ -1938,6 +1992,7 @@ int main(int argc, char **argv) {
     test_two_endpoint_race_converges();
     test_two_endpoint_race_respects_real_input();
     test_midrace_peer_loss_ends_survivor();
+    test_barrier_abort_notifies_peer();
     test_clamp_refuses_bonus_identity();
     test_reverify_after_post_confirmation_rewelcome();
     test_multi_race_lifecycle();

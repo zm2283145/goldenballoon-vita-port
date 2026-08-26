@@ -541,6 +541,16 @@ bool mdkr_online_live_adapter_race_peer_lost(const IMdkrOnlineAdapter *adapter);
 bool mdkr_online_live_adapter_set_race_end_failure(IMdkrOnlineAdapter *adapter,
                                                    MdkrOnlineViewFailure failure);
 
+/* F3 one-sided-abort guard: broadcast a race-abort to every reachable peer on
+ * the reliable control channel. The launcher's engine drain calls this when it
+ * aborts the race-start barrier so a slow-but-alive opponent stops waiting on
+ * our primed opening fan-out and never races our frozen input to the flag (nor,
+ * if it is the leader, publishes fabricated placements). The receiving adapter
+ * latches it and its own drain treats it exactly like peer loss. Best-effort
+ * (a peer already gone is simply not reached). Returns false for a non-live
+ * adapter. */
+bool mdkr_online_live_adapter_race_send_abort(IMdkrOnlineAdapter *adapter);
+
 /* ---- Internal-test-token gate for the live adapter ---------------------- *
  *
  * Fail-closed, mirroring platform/party/native_party_host.h's loopback gate:

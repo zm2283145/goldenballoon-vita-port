@@ -240,6 +240,10 @@ struct MdkrMatchPeerMesh::State
     bool signalLossReported = false;
     bool failed = false;
     bool closed = false;
+    /* F3: a peer sent a race_abort on the reliable control channel. Consumed
+     * (read-and-cleared) by the launcher through consumeRaceAbort(), so a fresh
+     * abort in a later race is observed independently. */
+    bool raceAbortReceived = false;
     std::deque<MdkrMatchPeerMeshEvent> events;
     MdkrMatchPeerMeshStats counters;
 
@@ -1130,6 +1134,13 @@ struct MdkrMatchPeerMesh::State
                 }
                 return;
             }
+            if (type == "race_abort") {
+                /* F3: the peer is abandoning the race start (or ended
+                 * mid-race). Latch it for the launcher; not a peer loss, so the
+                 * channel stays open and this endpoint keeps answering pings. */
+                raceAbortReceived = true;
+                return;
+            }
             peerLost(peer, MdkrMatchPeerLostReason::ControlChannelViolation);
         } catch (...) {
             peerLost(peer, MdkrMatchPeerLostReason::ControlChannelViolation);
@@ -1388,6 +1399,28 @@ struct MdkrMatchPeerMesh::State
         return reached;
     }
 
+    /* F3: fan a plaintext race-abort out to every peer on its reliable control
+     * channel (versioned/typed like ping; the receiver does not correlate the
+     * nonce). Best-effort: a peer whose channel is not open is skipped. */
+    unsigned sendRaceAbort() {
+        if (closed || failed) return 0u;
+        unsigned reached = 0u;
+        for (auto &entry : peers) {
+            PeerRuntime &peer = entry.second;
+            if (peer.lost || !peer.control || !peer.control->isOpen()) continue;
+            try {
+                if (peer.control->send(Json{{"type", "race_abort"},
+                        {"protocol", kChannelProtocol},
+                        {"nonce", 0u}}.dump())) {
+                    reached++;
+                }
+            } catch (...) {
+                connectionDown(peer);
+            }
+        }
+        return reached;
+    }
+
     bool sendPreflightFragment(
         uint64_t peerEndpointId,
         const uint8_t fragment[MDKR_MATCH_PEER_PAYLOAD_BYTES]) {
@@ -1535,6 +1568,16 @@ void MdkrMatchPeerMesh::drainEvents(std::vector<MdkrMatchPeerMeshEvent> &out) {
 unsigned MdkrMatchPeerMesh::sendInput(
     const uint8_t bundle[MDKR_MATCH_PEER_PAYLOAD_BYTES]) {
     return state_->sendInput(bundle);
+}
+
+unsigned MdkrMatchPeerMesh::sendRaceAbort() {
+    return state_ ? state_->sendRaceAbort() : 0u;
+}
+
+bool MdkrMatchPeerMesh::consumeRaceAbort() {
+    if (!state_ || !state_->raceAbortReceived) return false;
+    state_->raceAbortReceived = false;
+    return true;
 }
 
 bool MdkrMatchPeerMesh::sendPreflightFragment(

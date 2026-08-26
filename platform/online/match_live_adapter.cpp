@@ -1013,6 +1013,7 @@ private:
         raceSendOwned_ = false;
         raceSweepServiceCalls_ = 0u;
         racePeerLost_ = false;
+        raceAbortReceived_ = false;
         raceDegraded_ = false;
         lastPreflightGate_ = -1;
         if (failure_ == MDKR_ONLINE_VIEW_FAILURE_ENGINE_FAILED
@@ -1391,6 +1392,17 @@ private:
                     feedInputEnvelope(ev);
                     break;
             }
+        }
+        /* F3: a peer that aborted its race-start barrier (or ended mid-race)
+         * signals us over the reliable control channel. Consume-once from the
+         * mesh and latch it locally; the drain's barrier AND mid-race polls both
+         * key on racePeerLost(), which folds this in, so a received abort ends
+         * our race exactly like a lost peer. */
+        if (mesh_ && mesh_->consumeRaceAbort() && !raceAbortReceived_) {
+            raceAbortReceived_ = true;
+            MDKR_ONLINE_LOG(
+                "[MESH] race-abort received from peer -> ending local race\n");
+            bump();
         }
         /* Rekey-in-flight detection (see beginReVerify): the mesh refuses
          * phrase() the moment any generation bump retires the keys. Checked
@@ -1896,7 +1908,11 @@ public:
         out->localSlotMask = raceTransport_.local_slot_mask;
         out->remoteSlotMask = raceTransport_.remote_slot_mask;
         out->inputDelay = raceInputDelay_;
-        out->peerLost = racePeerLost_;
+        /* A peer that ABORTED its start barrier (F3) is, for the drain's
+         * purposes, indistinguishable from a mesh-lost peer: either way we must
+         * not keep racing its frozen input. Fold the received-abort latch into
+         * the same signal. */
+        out->peerLost = racePeerLost_ || raceAbortReceived_;
         MdkrMatchRecovery rec;
         out->connectionDegraded =
             raceDegraded_ ||
@@ -1905,8 +1921,9 @@ public:
 
     /* Cheap drain-facing peer-loss latch (see the header): the engine-session
      * drain polls this every service iteration to end the visible race the
-     * moment the opponent vanishes. */
-    bool racePeerLost() const { return racePeerLost_; }
+     * moment the opponent vanishes -- or the moment the opponent tells us it
+     * aborted its own start barrier (F3). */
+    bool racePeerLost() const { return racePeerLost_ || raceAbortReceived_; }
 
     /* Route a race-scoped recovery failure onto the lobby-facing view after the
      * engine session ends (see the header). Race-scoped, so resetRaceLatches
@@ -1914,6 +1931,15 @@ public:
     void setRaceEndFailure(MdkrOnlineViewFailure failure) {
         failure_ = failure;
         bump();
+    }
+
+    /* F3: tell every reachable peer that we are aborting the race start, so a
+     * slow-but-alive opponent stops waiting on our primed tick-1 fan-out and
+     * never races our frozen input to the flag (nor publishes fabricated
+     * placements). Best-effort broadcast on the reliable control channel; a
+     * peer that is already gone simply is not reached. */
+    void raceSendAbort() {
+        if (mesh_) (void)mesh_->sendRaceAbort();
     }
 
     /* Seal + fan out this endpoint's local input for `newestTick` and the two
@@ -2325,6 +2351,7 @@ private:
     bool raceSendOwned_ = false;   /* true while race_advance drives the send */
     bool raceDegraded_ = false;
     bool racePeerLost_ = false;
+    bool raceAbortReceived_ = false; /* F3: peer told us it aborted the race */
     unsigned raceSweepServiceCalls_ = 0u;
     uint32_t raceResendSweeps_ = 0u;
     uint32_t raceResendBundles_ = 0u;
@@ -2438,6 +2465,14 @@ bool mdkr_online_live_adapter_set_race_end_failure(
     LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
     if (live == nullptr) return false;
     live->setRaceEndFailure(failure);
+    return true;
+}
+
+bool mdkr_online_live_adapter_race_send_abort(IMdkrOnlineAdapter *adapter) {
+    if (adapter == nullptr) return false;
+    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    if (live == nullptr) return false;
+    live->raceSendAbort();
     return true;
 }
 
