@@ -494,6 +494,16 @@ int main(int argc, char **argv) {
                 registry.entries[0].rig_role_mask == 0xFFFFu &&
                 registry.entries[0].inferred_rig_role_mask == 0u &&
                 registry.entries[0].rig_min_confidence_milli == 1000u &&
+                registry.entries[0].rig_role_node[0] == 0u &&
+                registry.entries[0].rig_role_node[4] == 4u &&
+                strcmp(registry.entries[0].rig_role_node_name[0],
+                       "mixamorig:Hips") == 0 &&
+                strcmp(registry.entries[0].rig_role_node_name[4],
+                       "mixamorig:LeftArm") == 0 &&
+                registry.entries[0].rig_role_flags[4] == 0u &&
+                registry.entries[0].rig_role_confidence_milli[4] == 1000u &&
+                registry.entries[0].rig_role_rest_rotation[4][3] == 1.0f &&
+                registry.entries[0].rig_role_bend_axis[4][0] == 0.0f &&
                 registry.entries[0].portrait_bytes > 64u &&
                 registry.entries[0].portrait_rgba[3] != 0u &&
                 registry.entries[0].lod_vertices[0] == 3u &&

@@ -1875,6 +1875,30 @@ struct CharacterTuningEdit {
 
 std::map<std::string, CharacterTuningEdit> g_characterTuning;
 
+struct CharacterRigEdit {
+    struct Joint {
+        uint32_t node = 0u;
+        std::string name;
+    };
+    struct Role {
+        int joint = -1;
+        bool inferred = false;
+        float confidence = 1.0f;
+        float rest[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        float bend[3] = {0.0f, 0.0f, 0.0f};
+    };
+    bool loaded = false;
+    int mode = MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY;
+    bool reviewed = false;
+    uint8_t sourceSha256[32] = {};
+    std::vector<Joint> joints;
+    std::vector<int32_t> nodeParents;
+    Role roles[MDKR_MODERN_HUMANOID_ROLE_COUNT];
+    std::string error;
+};
+
+std::map<std::string, CharacterRigEdit> g_characterRigEdits;
+
 void refreshCharacterRegistry();
 
 float characterConfigFloat(int player, const char *packageId,
@@ -2161,6 +2185,35 @@ bool reviseCharacterProfile(const char *packageId, uint32_t donor,
     return runCharacterManager("revise-profile", arguments);
 }
 
+bool reviseCharacterRig(const char *packageId, const std::string &draftJson) {
+    if (packageId == nullptr || packageId[0] == '\0' ||
+        draftJson.empty() || draftJson.size() > 128u * 1024u ||
+        g_characterRegistryDirectory.empty()) return false;
+    const std::string draftPath = g_characterRegistryDirectory + "/." +
+        packageId + ".launcher-rig-draft.json";
+    (void)mdkr_remove_utf8(draftPath.c_str());
+    std::FILE *file = mdkr_fopen_utf8(draftPath.c_str(), "wbx");
+    if (file == nullptr) {
+        g_characterManagerReport = "Could not create the bounded rig draft.";
+        return false;
+    }
+    const bool payloadWritten =
+        std::fwrite(draftJson.data(), 1u, draftJson.size(), file) ==
+            draftJson.size();
+    const bool flushed = std::fflush(file) == 0;
+    const bool closed = std::fclose(file) == 0;
+    const bool written = payloadWritten && flushed && closed;
+    if (!written) {
+        (void)mdkr_remove_utf8(draftPath.c_str());
+        g_characterManagerReport = "Could not finish the bounded rig draft.";
+        return false;
+    }
+    const bool revised = runCharacterManager(
+        "revise-rig", {packageId, draftPath});
+    (void)mdkr_remove_utf8(draftPath.c_str());
+    return revised;
+}
+
 bool removeCharacterPackage(const std::string &id) {
     MdkrModernCharacterInstallResult result{};
     if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
@@ -2247,6 +2300,203 @@ const CharacterSemanticLabel kHumanoidRigRoles[] = {
     {"foot.right", MDKR_CHARACTER_RIG_FOOT_RIGHT},
 };
 
+CharacterRigEdit &loadCharacterRigEdit(
+    const MdkrModernCharacterEntry *entry) {
+    CharacterRigEdit &edit = g_characterRigEdits[entry->id];
+    if (edit.loaded &&
+        std::memcmp(edit.sourceSha256, entry->source_sha256,
+                    sizeof(edit.sourceSha256)) == 0) return edit;
+    edit = CharacterRigEdit{};
+    std::memcpy(edit.sourceSha256, entry->source_sha256,
+                sizeof(edit.sourceSha256));
+    edit.mode = entry->rig_present != 0u
+        ? static_cast<int>(entry->rig_mode)
+        : MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY;
+    edit.reviewed = (entry->rig_flags & MDKR_MODERN_RIG_REVIEWED) != 0u;
+    MdkrModernCharacterAsset asset{};
+    char error[256];
+    if (!mdkr_modern_character_asset_load_file(
+            entry->path, &asset, error, sizeof(error))) {
+        edit.error = error;
+        edit.loaded = true;
+        return edit;
+    }
+    edit.nodeParents.resize(entry->stats.nodes, -1);
+    for (uint32_t nodeIndex = 0u; nodeIndex < entry->stats.nodes; ++nodeIndex) {
+        MdkrModernNode node;
+        if (mdkr_modern_character_asset_node(&asset, nodeIndex, &node)) {
+            edit.nodeParents[nodeIndex] = node.parent;
+        }
+    }
+    for (uint32_t jointIndex = 0u; jointIndex < entry->stats.joints;
+         ++jointIndex) {
+        MdkrModernJoint joint;
+        MdkrModernNode node;
+        if (!mdkr_modern_character_asset_joint(
+                &asset, jointIndex, &joint) ||
+            !mdkr_modern_character_asset_node(&asset, joint.node, &node)) {
+            continue;
+        }
+        const auto duplicate = std::find_if(
+            edit.joints.begin(), edit.joints.end(),
+            [joint](const CharacterRigEdit::Joint &candidate) {
+                return candidate.node == joint.node;
+            });
+        if (duplicate != edit.joints.end()) continue;
+        const char *name = mdkr_modern_character_asset_string(&asset, node.name);
+        edit.joints.push_back({joint.node, name != nullptr ? name : ""});
+    }
+    mdkr_modern_character_asset_unload(&asset);
+    for (size_t slot = 0u; slot < std::size(kHumanoidRigRoles); ++slot) {
+        if ((entry->rig_role_mask & kHumanoidRigRoles[slot].bit) == 0u) continue;
+        const uint32_t mappedNode = entry->rig_role_node[slot];
+        const auto mapped = std::find_if(
+            edit.joints.begin(), edit.joints.end(),
+            [mappedNode](const CharacterRigEdit::Joint &candidate) {
+                return candidate.node == mappedNode;
+            });
+        if (mapped == edit.joints.end()) {
+            edit.error = "A compiled rig role does not resolve to a skin joint.";
+            continue;
+        }
+        CharacterRigEdit::Role &role = edit.roles[slot];
+        role.joint = static_cast<int>(mapped - edit.joints.begin());
+        role.inferred = (entry->rig_role_flags[slot] & 1u) != 0u;
+        role.confidence = static_cast<float>(
+            entry->rig_role_confidence_milli[slot]) / 1000.0f;
+        std::memcpy(role.rest, entry->rig_role_rest_rotation[slot],
+                    sizeof(role.rest));
+        std::memcpy(role.bend, entry->rig_role_bend_axis[slot],
+                    sizeof(role.bend));
+    }
+    edit.loaded = true;
+    return edit;
+}
+
+bool characterRigRolesComplete(const CharacterRigEdit &edit) {
+    for (const CharacterRigEdit::Role &role : edit.roles) {
+        if (role.joint < 0 ||
+            role.joint >= static_cast<int>(edit.joints.size())) return false;
+    }
+    return true;
+}
+
+bool characterRigNodeUsed(const CharacterRigEdit &edit, size_t exceptRole,
+                          int joint) {
+    for (size_t role = 0u; role < std::size(edit.roles); ++role) {
+        if (role != exceptRole && edit.roles[role].joint == joint) return true;
+    }
+    return false;
+}
+
+bool characterRigAncestor(const CharacterRigEdit &edit, uint32_t ancestor,
+                          uint32_t descendant) {
+    int32_t node = descendant < edit.nodeParents.size()
+        ? edit.nodeParents[descendant] : -1;
+    for (size_t depth = 0u; node >= 0 && depth < edit.nodeParents.size();
+         ++depth) {
+        if (static_cast<uint32_t>(node) == ancestor) return true;
+        node = static_cast<size_t>(node) < edit.nodeParents.size()
+            ? edit.nodeParents[static_cast<size_t>(node)] : -1;
+    }
+    return false;
+}
+
+std::string characterRigHierarchyError(const CharacterRigEdit &edit) {
+    static const unsigned hierarchy[][2] = {
+        {0u, 1u}, {1u, 2u}, {2u, 3u},
+        {2u, 4u}, {4u, 5u}, {5u, 6u},
+        {2u, 7u}, {7u, 8u}, {8u, 9u},
+        {0u, 10u}, {10u, 11u}, {11u, 12u},
+        {0u, 13u}, {13u, 14u}, {14u, 15u},
+    };
+    if (!characterRigRolesComplete(edit)) return "Map all 16 humanoid roles.";
+    for (const auto &relationship : hierarchy) {
+        const CharacterRigEdit::Role &parent = edit.roles[relationship[0]];
+        const CharacterRigEdit::Role &child = edit.roles[relationship[1]];
+        if (!characterRigAncestor(
+                edit, edit.joints[parent.joint].node,
+                edit.joints[child.joint].node)) {
+            return std::string(kHumanoidRigRoles[relationship[0]].name) +
+                " must be an ancestor of " +
+                kHumanoidRigRoles[relationship[1]].name + ".";
+        }
+    }
+    return {};
+}
+
+void normalizeCharacterRigVector(float *value, size_t count,
+                                 bool allowZero) {
+    double lengthSquared = 0.0;
+    for (size_t index = 0u; index < count; ++index) {
+        lengthSquared += static_cast<double>(value[index]) * value[index];
+    }
+    if (!std::isfinite(lengthSquared) || lengthSquared < 1.0e-12) {
+        std::memset(value, 0, count * sizeof(*value));
+        if (!allowZero && count == 4u) value[3] = 1.0f;
+        return;
+    }
+    const float inverse = static_cast<float>(1.0 / std::sqrt(lengthSquared));
+    for (size_t index = 0u; index < count; ++index) value[index] *= inverse;
+}
+
+std::string characterJsonString(const std::string &value) {
+    static const char hex[] = "0123456789abcdef";
+    std::string encoded = "\"";
+    encoded.reserve(value.size() + 2u);
+    for (unsigned char byte : value) {
+        if (byte == '\"' || byte == '\\') {
+            encoded.push_back('\\');
+            encoded.push_back(static_cast<char>(byte));
+        } else if (byte < 0x20u) {
+            encoded += "\\u00";
+            encoded.push_back(hex[byte >> 4u]);
+            encoded.push_back(hex[byte & 0xFu]);
+        } else {
+            encoded.push_back(static_cast<char>(byte));
+        }
+    }
+    encoded.push_back('\"');
+    return encoded;
+}
+
+std::string characterRigDraftJson(const CharacterRigEdit &edit) {
+    std::string json = "{\n  \"schema\": \"mdkr-character-rig-draft-v1\",\n";
+    json += "  \"mode\": \"";
+    json += edit.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1
+        ? "humanoid-retarget-v1" : "authored-clips-only";
+    json += "\",\n  \"reviewed\": ";
+    json += edit.reviewed ? "true" : "false";
+    json += ",\n  \"roles\": {";
+    bool first = true;
+    for (size_t slot = 0u; slot < std::size(kHumanoidRigRoles); ++slot) {
+        const CharacterRigEdit::Role &role = edit.roles[slot];
+        if (role.joint < 0 ||
+            role.joint >= static_cast<int>(edit.joints.size())) continue;
+        const CharacterRigEdit::Joint &joint = edit.joints[role.joint];
+        json += first ? "\n" : ",\n";
+        first = false;
+        json += "    " + characterJsonString(kHumanoidRigRoles[slot].name) +
+            ": {\"node\": " + characterJsonString(joint.name) +
+            ", \"inferred\": " + (role.inferred ? "true" : "false") +
+            ", \"confidence\": " + characterFloatText(role.confidence) +
+            ", \"rest_rotation_xyzw\": [";
+        for (size_t axis = 0u; axis < 4u; ++axis) {
+            if (axis != 0u) json += ", ";
+            json += characterFloatText(role.rest[axis]);
+        }
+        json += "], \"bend_axis\": [";
+        for (size_t axis = 0u; axis < 3u; ++axis) {
+            if (axis != 0u) json += ", ";
+            json += characterFloatText(role.bend[axis]);
+        }
+        json += "]}";
+    }
+    if (!first) json += "\n";
+    json += "  }\n}\n";
+    return json;
+}
+
 template <size_t Count>
 std::string missingCharacterSemantics(
     uint32_t mask, const CharacterSemanticLabel (&semantics)[Count]) {
@@ -2257,6 +2507,152 @@ std::string missingCharacterSemantics(
         missing += semantic.name;
     }
     return missing;
+}
+
+bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
+    CharacterRigEdit &edit = loadCharacterRigEdit(entry);
+    if (!edit.error.empty()) {
+        ImGui::TextColored(AppTheme::bad(), "%s", edit.error.c_str());
+        return false;
+    }
+    ui::TextSubtleWrapped(
+        "Map semantic anatomy to the model's actual skin joints. Saving creates a validated source-v4 revision; the current playable cache remains active unless the complete compile succeeds.");
+    const char *modeNames[] = {
+        "Authored clips only", "Reviewed humanoid reference motion"
+    };
+    int mode = edit.mode;
+    if (ImGui::BeginCombo("Rig behavior", modeNames[mode])) {
+        for (int candidate = 0; candidate < 2; ++candidate) {
+            if (ImGui::Selectable(modeNames[candidate], candidate == mode)) {
+                edit.mode = candidate;
+                edit.reviewed = false;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    if (edit.mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY) {
+        edit.reviewed = false;
+        ui::TextSubtleWrapped(
+            "Use this for creatures, unusual skeletons, or a character whose package supplies every intended clip. Any retained role notes stay inert; the engine will not procedurally alter the rig.");
+    } else {
+        ui::TextSubtleWrapped(
+            "Changing a joint or solver basis clears review automatically. Intervening shoulder, neck, twist, and helper joints are allowed, but every semantic chain must preserve ancestry and every role must use a distinct skin joint.");
+        for (size_t slot = 0u; slot < std::size(kHumanoidRigRoles); ++slot) {
+            CharacterRigEdit::Role &role = edit.roles[slot];
+            ImGui::PushID(static_cast<int>(slot));
+            std::string preview = "Not mapped";
+            if (role.joint >= 0 &&
+                role.joint < static_cast<int>(edit.joints.size())) {
+                const CharacterRigEdit::Joint &joint = edit.joints[role.joint];
+                preview = "#" + std::to_string(joint.node) + " · " + joint.name;
+            }
+            if (ImGui::BeginCombo(kHumanoidRigRoles[slot].name,
+                                  preview.c_str())) {
+                if (ImGui::Selectable("Not mapped", role.joint < 0) &&
+                    role.joint >= 0) {
+                    role = CharacterRigEdit::Role{};
+                    edit.reviewed = false;
+                }
+                for (size_t jointIndex = 0u; jointIndex < edit.joints.size();
+                     ++jointIndex) {
+                    const bool used = characterRigNodeUsed(
+                        edit, slot, static_cast<int>(jointIndex));
+                    const CharacterRigEdit::Joint &joint =
+                        edit.joints[jointIndex];
+                    const std::string label = "#" +
+                        std::to_string(joint.node) + " · " + joint.name +
+                        "##rig-joint";
+                    ImGui::PushID(static_cast<int>(jointIndex));
+                    if (used) ImGui::BeginDisabled();
+                    if (ImGui::Selectable(
+                            label.c_str(), role.joint ==
+                                static_cast<int>(jointIndex)) && !used &&
+                        role.joint != static_cast<int>(jointIndex)) {
+                        role = CharacterRigEdit::Role{};
+                        role.joint = static_cast<int>(jointIndex);
+                        edit.reviewed = false;
+                    }
+                    if (used) ImGui::EndDisabled();
+                    ImGui::PopID();
+                }
+                ImGui::EndCombo();
+            }
+            if (role.joint >= 0) {
+                ImGui::SameLine();
+                if (role.inferred) {
+                    ImGui::TextDisabled(
+                        "inferred %.1f%%",
+                        static_cast<double>(role.confidence * 100.0f));
+                } else {
+                    ImGui::TextDisabled("authored");
+                }
+                if (ImGui::TreeNode("Advanced solver basis")) {
+                    ui::TextSubtleWrapped(
+                        "Rest correction maps canonical engine axes into this joint's local basis. Bend is the preferred joint-local axis only for the exactly-opposite contact case; zero selects a stable automatic axis.");
+                    (void)ImGui::DragFloat4(
+                        "Rest correction XYZW", role.rest, 0.005f,
+                        -1.0f, 1.0f, "%.4f",
+                        ImGuiSliderFlags_AlwaysClamp);
+                    if (ImGui::IsItemDeactivatedAfterEdit()) {
+                        normalizeCharacterRigVector(role.rest, 4u, false);
+                        edit.reviewed = false;
+                    }
+                    (void)ImGui::DragFloat3(
+                        "Preferred bend axis", role.bend, 0.005f,
+                        -1.0f, 1.0f, "%.4f",
+                        ImGuiSliderFlags_AlwaysClamp);
+                    if (ImGui::IsItemDeactivatedAfterEdit()) {
+                        normalizeCharacterRigVector(role.bend, 3u, true);
+                        edit.reviewed = false;
+                    }
+                    if (ImGui::Button("Reset canonical basis")) {
+                        role.rest[0] = role.rest[1] = role.rest[2] = 0.0f;
+                        role.rest[3] = 1.0f;
+                        role.bend[0] = role.bend[1] = role.bend[2] = 0.0f;
+                        edit.reviewed = false;
+                    }
+                    ImGui::TreePop();
+                }
+            }
+            ImGui::PopID();
+        }
+    }
+    const std::string hierarchyError = edit.mode ==
+            MDKR_MODERN_RIG_HUMANOID_RETARGET_V1
+        ? characterRigHierarchyError(edit) : std::string{};
+    if (!hierarchyError.empty()) {
+        ImGui::TextColored(AppTheme::bad(), "%s", hierarchyError.c_str());
+    }
+    const bool canReview = edit.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 &&
+        hierarchyError.empty();
+    if (!canReview) ImGui::BeginDisabled();
+    (void)ImGui::Checkbox(
+        "I reviewed all roles and solver bases in every supported context",
+        &edit.reviewed);
+    if (!canReview) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Rig review", edit.reviewed ? "Approved" : "Not approved",
+        "Only an explicit author review unlocks engine reference motion and vehicle contacts.");
+    const bool canSave = edit.mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY ||
+        hierarchyError.empty();
+    if (!canSave) ImGui::BeginDisabled();
+    bool saved = false;
+    if (ImGui::Button("Save rig revision")) {
+        saved = reviseCharacterRig(entry->id, characterRigDraftJson(edit));
+        setStatus(
+            saved ? "Rig map compiled, validated, and activated."
+                  : "Rig revision failed; the active character was not changed.",
+            saved ? AppTheme::good() : AppTheme::bad());
+    }
+    if (!canSave) ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Discard draft")) {
+        g_characterRigEdits.erase(entry->id);
+        setStatus("Rig draft restored from the active package.",
+                  AppTheme::subtle());
+        return false;
+    }
+    return saved;
 }
 
 bool drawCharacterTuningEditor(int player,
@@ -3341,6 +3737,96 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         ImGui::TextDisabled(
             "Rig contract: %s · no humanoid roles mapped", rigStatus);
     }
+    if (entry->rig_present != 0u) {
+        ImGuiTreeNodeFlags roleFlags = 0;
+        if (humanoidRig && (!humanoidRolesComplete || !rigReviewed)) {
+            roleFlags |= ImGuiTreeNodeFlags_DefaultOpen;
+        }
+        if (ImGui::TreeNodeEx("Humanoid role review", roleFlags)) {
+            ui::TextSubtleWrapped(
+                "Verify anatomy against the actual compiled skin joints before enabling the solver. Node numbers remain unambiguous even when an unusually long glTF name is shortened for display.");
+            if (ImGui::BeginTable(
+                    "##character-rig-role-review", 4,
+                    ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
+                    ImGuiTableFlags_SizingStretchProp)) {
+                ImGui::TableSetupColumn("Role");
+                ImGui::TableSetupColumn("Source joint");
+                ImGui::TableSetupColumn("Mapping");
+                ImGui::TableSetupColumn("Solver basis");
+                ImGui::TableHeadersRow();
+                for (size_t slot = 0u;
+                     slot < std::size(kHumanoidRigRoles); ++slot) {
+                    const CharacterSemanticLabel &role =
+                        kHumanoidRigRoles[slot];
+                    const bool mapped = (entry->rig_role_mask & role.bit) != 0u;
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(role.name);
+                    ImGui::TableNextColumn();
+                    if (!mapped) {
+                        ImGui::TextColored(AppTheme::bad(), "Not mapped");
+                        ImGui::TableNextColumn();
+                        ImGui::TextDisabled("—");
+                        ImGui::TableNextColumn();
+                        ImGui::TextDisabled("—");
+                        continue;
+                    }
+                    ImGui::Text("%s  (#%u)",
+                                entry->rig_role_node_name[slot],
+                                entry->rig_role_node[slot]);
+                    ImGui::TableNextColumn();
+                    const bool inferred =
+                        (entry->rig_role_flags[slot] & 1u) != 0u;
+                    const float confidence =
+                        static_cast<float>(
+                            entry->rig_role_confidence_milli[slot]) / 10.0f;
+                    const ImVec4 mappingColour =
+                        inferred && !rigReviewed ? AppTheme::accent()
+                                                : AppTheme::subtle();
+                    ImGui::TextColored(
+                        mappingColour, "%s · %.1f%%",
+                        inferred ? (rigReviewed ? "inferred, reviewed"
+                                                : "inferred, review needed")
+                                 : "authored",
+                        static_cast<double>(confidence));
+                    ImGui::TableNextColumn();
+                    const float *rest = entry->rig_role_rest_rotation[slot];
+                    const float *bend = entry->rig_role_bend_axis[slot];
+                    const bool customRest =
+                        std::fabs(rest[0]) > 1.0e-5f ||
+                        std::fabs(rest[1]) > 1.0e-5f ||
+                        std::fabs(rest[2]) > 1.0e-5f ||
+                        std::fabs(rest[3] - 1.0f) > 1.0e-5f;
+                    const bool customBend =
+                        std::fabs(bend[0]) > 1.0e-5f ||
+                        std::fabs(bend[1]) > 1.0e-5f ||
+                        std::fabs(bend[2]) > 1.0e-5f;
+                    ImGui::TextDisabled(
+                        "%s rest · %s bend",
+                        customRest ? "corrected" : "canonical",
+                        customBend ? "authored" : "automatic");
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip(
+                            "Rest correction XYZW: %.4f, %.4f, %.4f, %.4f\n"
+                            "Preferred bend axis: %.4f, %.4f, %.4f",
+                            static_cast<double>(rest[0]),
+                            static_cast<double>(rest[1]),
+                            static_cast<double>(rest[2]),
+                            static_cast<double>(rest[3]),
+                            static_cast<double>(bend[0]),
+                            static_cast<double>(bend[1]),
+                            static_cast<double>(bend[2]));
+                    }
+                }
+                ImGui::EndTable();
+            }
+            if (humanoidRig && !rigReviewed) {
+                ui::TextSubtleWrapped(
+                    "The runtime lock is deliberate: inference is a starting point, not author approval. Correct the source-v4 role map as needed, then set reviewed only after checking every row in select and all supported vehicles.");
+            }
+            ImGui::TreePop();
+        }
+    }
     if (humanoidRig && !humanoidRolesComplete) {
         const std::string missingRig = missingCharacterSemantics(
             entry->rig_role_mask, kHumanoidRigRoles);
@@ -3433,6 +3919,18 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
          MDKR_CHARACTER_SEMANTIC_RACE_STEER) != 0u) {
         ImGui::TextDisabled(
             "race.steer phase: 0 full left · 0.5 neutral · 1 full right");
+    }
+
+    ImGui::SeparatorText("Rig Studio");
+    if (identityReady) {
+        if (drawCharacterRigStudio(entry)) {
+            /* The transaction rescans the registry and invalidates `entry`. */
+            ImGui::PopID();
+            return true;
+        }
+    } else {
+        ui::TextSubtleWrapped(
+            "Rig Studio requires an identity-capable source-v3/v4 package so a source-v4 revision can preserve its portrait and provenance exactly.");
     }
 
     ImGui::SeparatorText("Gameplay profile and vehicle compatibility");

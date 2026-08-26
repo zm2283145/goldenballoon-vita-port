@@ -21,6 +21,7 @@ extern "C" {
 #define MDKR_MODERN_CHARACTER_PATH_MAX 4096
 #define MDKR_MODERN_CHARACTER_SKIP_REASON_MAX 192
 #define MDKR_MODERN_CHARACTER_LOD_LEVELS 4
+#define MDKR_MODERN_CHARACTER_NODE_NAME_MAX 129
 
 enum MdkrModernCharacterSemanticBits {
     MDKR_CHARACTER_SEMANTIC_FALLBACK = 1u << 0,
@@ -85,6 +86,13 @@ typedef struct MdkrModernCharacterEntry {
     uint32_t rig_role_mask;
     uint32_t inferred_rig_role_mask;
     uint32_t rig_min_confidence_milli;
+    uint32_t rig_role_node[MDKR_MODERN_HUMANOID_ROLE_COUNT];
+    uint32_t rig_role_flags[MDKR_MODERN_HUMANOID_ROLE_COUNT];
+    uint32_t rig_role_confidence_milli[MDKR_MODERN_HUMANOID_ROLE_COUNT];
+    char rig_role_node_name[MDKR_MODERN_HUMANOID_ROLE_COUNT]
+                           [MDKR_MODERN_CHARACTER_NODE_NAME_MAX];
+    float rig_role_rest_rotation[MDKR_MODERN_HUMANOID_ROLE_COUNT][4];
+    float rig_role_bend_axis[MDKR_MODERN_HUMANOID_ROLE_COUNT][3];
     uint32_t motion_channels;
     uint32_t attachment_context_mask;
     uint32_t calibration_flags;

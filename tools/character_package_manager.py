@@ -21,7 +21,7 @@ import zipfile
 import zlib
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import character_asset_compiler as compiler
 import character_asset_probe as probe
@@ -431,22 +431,14 @@ def revise_identity_rgba(package_id: str, rgba: bytes,
     return result
 
 
-def revise_profile(package_id: str, donor: str, vehicles: tuple[str, ...],
-                   directory: Path) -> dict[str, Any]:
-    """Create and atomically activate a donor/vehicle compatibility revision."""
+def _revise_manifest(
+    package_id: str,
+    directory: Path,
+    transform: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]],
+) -> tuple[dict[str, Any], str]:
+    """Rebuild one source revision while preserving model, media and license."""
     if probe.ID_RE.fullmatch(package_id) is None:
         raise ManagerError("invalid package id")
-    if donor not in probe.GAMEPLAY_DONORS:
-        raise ManagerError("gameplay donor must name a built-in racer")
-    if (
-        not vehicles
-        or len(set(vehicles)) != len(vehicles)
-        or any(vehicle not in probe.VEHICLE_NAMES for vehicle in vehicles)
-    ):
-        raise ManagerError(
-            "vehicle compatibility must contain one or more unique car, "
-            "hovercraft, or plane entries"
-        )
     root = _prepare_directory(directory)
     package, based_on_sha, based_on_digest = _active_source_snapshot(
         package_id, root
@@ -472,6 +464,48 @@ def revise_profile(package_id: str, donor: str, vehicles: tuple[str, ...],
             )
         if not isinstance(manifest, dict):
             raise ManagerError("active source manifest is not an object")
+        revised = transform(manifest, verification)
+        if not isinstance(revised, dict):
+            raise ManagerError("manifest revision did not produce an object")
+        model_path = draft / "model.glb"
+        manifest_path = draft / "manifest.json"
+        license_path = draft / "LICENSE.txt"
+        portrait_path = draft / "portrait.png"
+        revised_package = draft / "revision.mdkrchar"
+        model_path.write_bytes(model)
+        manifest_path.write_text(
+            json.dumps(revised, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        license_path.write_bytes(license_text)
+        if portrait is not None:
+            portrait_path.write_bytes(portrait)
+        probe.build_package(
+            model_path, manifest_path, license_path, revised_package,
+            portrait_path=portrait_path if portrait is not None else None,
+        )
+        installed = install(
+            revised_package, root, expected_active_digest=based_on_digest
+        )
+    return installed, based_on_sha
+
+
+def revise_profile(package_id: str, donor: str, vehicles: tuple[str, ...],
+                   directory: Path) -> dict[str, Any]:
+    """Create and atomically activate a donor/vehicle compatibility revision."""
+    if donor not in probe.GAMEPLAY_DONORS:
+        raise ManagerError("gameplay donor must name a built-in racer")
+    if (
+        not vehicles
+        or len(set(vehicles)) != len(vehicles)
+        or any(vehicle not in probe.VEHICLE_NAMES for vehicle in vehicles)
+    ):
+        raise ManagerError(
+            "vehicle compatibility must contain one or more unique car, "
+            "hovercraft, or plane entries"
+        )
+
+    def transform(manifest: dict[str, Any], _: dict[str, Any]) -> dict[str, Any]:
         revised = dict(manifest)
         revised["gameplay"] = {
             "donor": donor,
@@ -498,32 +532,74 @@ def revise_profile(package_id: str, donor: str, vehicles: tuple[str, ...],
                 })
             presentation["contexts"] = contexts
             revised["presentation"] = presentation
-        model_path = draft / "model.glb"
-        manifest_path = draft / "manifest.json"
-        license_path = draft / "LICENSE.txt"
-        portrait_path = draft / "portrait.png"
-        revised_package = draft / "revision.mdkrchar"
-        model_path.write_bytes(model)
-        manifest_path.write_text(
-            json.dumps(revised, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        license_path.write_bytes(license_text)
-        if portrait is not None:
-            portrait_path.write_bytes(portrait)
-        probe.build_package(
-            model_path, manifest_path, license_path, revised_package,
-            portrait_path=portrait_path if portrait is not None else None,
-        )
-        installed = install(
-            revised_package, root, expected_active_digest=based_on_digest
-        )
+        return revised
+
+    installed, based_on_sha = _revise_manifest(
+        package_id, directory, transform
+    )
     return {
         **installed,
         "action": "revise-profile",
         "based_on_source_sha256": based_on_sha,
         "donor": donor,
         "vehicles": list(vehicles),
+    }
+
+
+def revise_rig(package_id: str, rig_draft_path: Path,
+               directory: Path) -> dict[str, Any]:
+    """Create and atomically activate a reviewed skeleton-map revision."""
+    if rig_draft_path.is_symlink() or not rig_draft_path.is_file():
+        raise ManagerError("rig draft must be a regular JSON file")
+    if rig_draft_path.stat().st_size > 128 * 1024:
+        raise ManagerError("rig draft exceeds 128 KiB")
+    draft_payload = rig_draft_path.read_bytes()
+    if len(draft_payload) > 128 * 1024:
+        raise ManagerError("rig draft exceeds 128 KiB")
+    draft = probe.json_loads_strict(
+        draft_payload, "rig draft"
+    )
+    if not isinstance(draft, dict):
+        raise ManagerError("rig draft must be an object")
+    expected = {"schema", "mode", "reviewed", "roles"}
+    unknown = set(draft) - expected
+    missing = expected - set(draft)
+    if unknown or missing or draft.get("schema") != "mdkr-character-rig-draft-v1":
+        detail = []
+        if unknown:
+            detail.append("unknown: " + ", ".join(sorted(unknown)))
+        if missing:
+            detail.append("missing: " + ", ".join(sorted(missing)))
+        if draft.get("schema") != "mdkr-character-rig-draft-v1":
+            detail.append("unsupported schema")
+        raise ManagerError("invalid rig draft (" + "; ".join(detail) + ")")
+    rig = {
+        "mode": draft["mode"],
+        "reviewed": draft["reviewed"],
+        "roles": draft["roles"],
+    }
+
+    def transform(manifest: dict[str, Any], _: dict[str, Any]) -> dict[str, Any]:
+        schema = manifest.get("schema")
+        if schema not in (probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4):
+            raise ManagerError(
+                "rig authoring requires an identity-capable source-v3/v4 package"
+            )
+        revised = dict(manifest)
+        revised["schema"] = probe.PACKAGE_SCHEMA_V4
+        revised["rig"] = rig
+        return revised
+
+    installed, based_on_sha = _revise_manifest(
+        package_id, directory, transform
+    )
+    return {
+        **installed,
+        "action": "revise-rig",
+        "based_on_source_sha256": based_on_sha,
+        "rig_mode": rig["mode"],
+        "rig_reviewed": rig["reviewed"],
+        "rig_roles": len(rig["roles"]) if isinstance(rig["roles"], dict) else 0,
     }
 
 
@@ -693,6 +769,12 @@ def _parser() -> argparse.ArgumentParser:
     profile_parser.add_argument("id")
     profile_parser.add_argument("donor")
     profile_parser.add_argument("vehicles", nargs="+")
+    rig_parser = sub.add_parser(
+        "revise-rig",
+        help="create and install a source-v4 skeleton role-map revision",
+    )
+    rig_parser.add_argument("id")
+    rig_parser.add_argument("draft", type=Path)
     sub.add_parser("clean")
     return parser
 
@@ -728,6 +810,8 @@ def main(argv: list[str] | None = None) -> int:
             report = revise_profile(
                 args.id, args.donor, tuple(args.vehicles), args.directory,
             )
+        elif args.command == "revise-rig":
+            report = revise_rig(args.id, args.draft, args.directory)
         elif args.command == "remove":
             report = remove(args.id, args.directory)
         elif args.command == "clean":

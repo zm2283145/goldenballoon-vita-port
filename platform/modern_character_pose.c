@@ -188,7 +188,7 @@ static int rig_role_index(const char *semantic) {
     };
     int index;
     if (semantic == NULL) return -1;
-    for (index = 0; index < 16; index++) {
+    for (index = 0; index < (int)MDKR_MODERN_HUMANOID_ROLE_COUNT; index++) {
         if (strcmp(semantic, roles[index]) == 0) return index;
     }
     return -1;
@@ -545,7 +545,8 @@ int mdkr_modern_pose_init(MdkrModernPose *pose,
         if (mdkr_modern_character_asset_rig(asset, &rig) &&
             rig.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 &&
             (rig.flags & MDKR_MODERN_RIG_REVIEWED) != 0u &&
-            rig.role_mask == 0xFFFFu && rig.role_count == 16u) {
+            rig.role_mask == 0xFFFFu &&
+            rig.role_count == MDKR_MODERN_HUMANOID_ROLE_COUNT) {
             uint32_t role_record;
             for (role_record = 0u; role_record < rig.role_count;
                  role_record++) {

@@ -19,6 +19,7 @@ extern "C" {
 #define MDKR_MDKC_HEADER_BYTES 832u
 #define MDKR_MDKC_SECTION_SLOTS 24u
 #define MDKR_MDKC_FILE_MAX (1024u * 1024u * 1024u)
+#define MDKR_MODERN_HUMANOID_ROLE_COUNT 16u
 
 typedef enum MdkrModernSectionType {
     MDKR_MDKC_STRINGS = 1,

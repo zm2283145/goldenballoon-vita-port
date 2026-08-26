@@ -311,6 +311,15 @@ poses and vehicle hand/foot contact solving for missing semantics while
 explicit authored clips win. The importer refuses to disguise either static
 clips or an unreviewed map as animation readiness.
 
+The Workshop's Rig Studio loads the exact skin-joint inventory from the active
+cache, shows every semantic role with its compiled node number, name,
+inference provenance, confidence, rest correction, and bend axis, and prevents
+one joint from being assigned twice. Humanoid review stays disabled until all
+16 roles form the required ancestor chains. Any mapping or solver-basis edit
+clears review. Saving uses the package manager's transactional `revise-rig`
+operation: v3 identity sources upgrade to v4, all other source members remain
+byte-identical, and a failed compile leaves the current playable cache active.
+
 In character select, press **R** for an unconfirmed player to open that player's
 independent custom-racer browser. It shows eight portrait/name tiles per page,
 supports all 64 bounded local catalog entries, centers partial pages, and keeps

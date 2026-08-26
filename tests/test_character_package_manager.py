@@ -19,6 +19,7 @@ import character_asset_probe as probe  # noqa: E402
 import character_package_manager as manager  # noqa: E402
 from test_character_asset_probe import (  # noqa: E402
     make_animated_glb,
+    make_humanoid_glb,
     make_manifest,
     make_portrait_png,
     make_v4_manifest,
@@ -27,14 +28,15 @@ from test_character_asset_probe import (  # noqa: E402
 
 class CharacterPackageManagerTests(unittest.TestCase):
     def make_package(self, root: Path,
-                     manifest_data: dict[str, object] | None = None) -> Path:
+                     manifest_data: dict[str, object] | None = None,
+                     model_data: bytes | None = None) -> Path:
         model = root / "model.glb"
         manifest = root / "manifest.json"
         license_file = root / "LICENSE.txt"
         package = root / "fixture.mdkrchar"
         portrait = root / "portrait.png"
         portrait_path = None
-        model.write_bytes(make_animated_glb())
+        model.write_bytes(model_data or make_animated_glb())
         manifest.write_text(
             json.dumps(manifest_data or make_manifest()), encoding="utf-8"
         )
@@ -316,6 +318,77 @@ class CharacterPackageManagerTests(unittest.TestCase):
             self.assertEqual("authored-clips-only", manifest["rig"]["mode"])
             self.assertFalse(manifest["rig"]["reviewed"])
             self.assertEqual({}, manifest["rig"]["roles"])
+
+    def test_rig_revision_upgrades_v3_and_preserves_all_source_media(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            portrait = make_portrait_png()
+            source = make_v4_manifest(portrait, humanoid=True)
+            rig = source.pop("rig")
+            source["schema"] = probe.PACKAGE_SCHEMA_V3
+            original = manager.install(
+                self.make_package(root, source, make_humanoid_glb()), installed
+            )
+            draft = root / "rig-draft.json"
+            rig["reviewed"] = False
+            rig["roles"]["upper_arm.left"]["inferred"] = True
+            rig["roles"]["upper_arm.left"]["confidence"] = 0.875
+            draft.write_text(json.dumps({
+                "schema": "mdkr-character-rig-draft-v1",
+                **rig,
+            }), encoding="utf-8")
+            revised = manager.revise_rig(original["id"], draft, installed)
+            self.assertEqual("revise-rig", revised["action"])
+            self.assertEqual(16, revised["rig_roles"])
+            self.assertFalse(revised["rig_reviewed"])
+            self.assertEqual(0xFFFF, revised["report"]["rig_role_mask"])
+            with zipfile.ZipFile(self.active_source(installed)) as archive:
+                manifest = probe.json_loads_strict(archive.read("manifest.json"))
+                self.assertEqual(probe.PACKAGE_SCHEMA_V4, manifest["schema"])
+                self.assertEqual(rig, manifest["rig"])
+                self.assertEqual(portrait, archive.read("portrait.png"))
+            rig["reviewed"] = True
+            draft.write_text(json.dumps({
+                "schema": "mdkr-character-rig-draft-v1",
+                **rig,
+            }), encoding="utf-8")
+            reviewed = manager.revise_rig(original["id"], draft, installed)
+            self.assertTrue(reviewed["rig_reviewed"])
+            self.assertTrue(reviewed["report"]["rig_reviewed"])
+            self.assertEqual(3, len(list(installed.glob("*.mdkrchar"))))
+
+    def test_invalid_rig_revision_never_replaces_active_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            portrait = make_portrait_png()
+            source = make_v4_manifest(portrait, humanoid=True)
+            original = manager.install(
+                self.make_package(root, source, make_humanoid_glb()), installed
+            )
+            cache = installed / f"{original['id']}.mdkc"
+            before = cache.read_bytes()
+            rig = source["rig"]
+            rig["roles"]["spine"]["node"] = rig["roles"]["hips"]["node"]
+            draft = root / "bad-rig-draft.json"
+            draft.write_text(json.dumps({
+                "schema": "mdkr-character-rig-draft-v1",
+                **rig,
+            }), encoding="utf-8")
+            with self.assertRaises(probe.ProbeError):
+                manager.revise_rig(original["id"], draft, installed)
+            self.assertEqual(before, cache.read_bytes())
+            draft.write_text(json.dumps({
+                "schema": "mdkr-character-rig-draft-v1",
+                "mode": "authored-clips-only",
+                "reviewed": False,
+                "roles": {},
+                "surprise": True,
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(manager.ManagerError, "unknown"):
+                manager.revise_rig(original["id"], draft, installed)
+            self.assertEqual(before, cache.read_bytes())
 
     def test_invalid_profile_revision_does_not_replace_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

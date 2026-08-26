@@ -98,10 +98,41 @@ static uint32_t rig_role_bit(const char *name) {
     };
     uint32_t index;
     if (name == NULL) return 0u;
-    for (index = 0u; index < 16u; index++) {
+    for (index = 0u; index < MDKR_MODERN_HUMANOID_ROLE_COUNT; index++) {
         if (strcmp(name, roles[index]) == 0) return 1u << index;
     }
     return 0u;
+}
+
+static int rig_role_slot(const char *name) {
+    uint32_t bit = rig_role_bit(name);
+    int slot = 0;
+    if (bit == 0u) return -1;
+    while ((bit >> (unsigned)slot) != 1u) slot++;
+    return slot;
+}
+
+/* glTF node names are not usefully bounded. Registry rows are: retain a
+ * UTF-8-safe diagnostic prefix plus an explicit ellipsis and always publish
+ * the unambiguous compiled node index alongside it. */
+static void copy_node_name(char output[MDKR_MODERN_CHARACTER_NODE_NAME_MAX],
+                           const char *value) {
+    const size_t capacity = MDKR_MODERN_CHARACTER_NODE_NAME_MAX;
+    size_t length;
+    if (value == NULL) {
+        output[0] = '\0';
+        return;
+    }
+    length = strlen(value);
+    if (length < capacity) {
+        memcpy(output, value, length + 1u);
+        return;
+    }
+    length = capacity - 4u;
+    while (length > 0u &&
+           (((unsigned char)value[length] & 0xC0u) == 0x80u)) length--;
+    memcpy(output, value, length);
+    memcpy(output + length, "...", 4u);
 }
 
 static void add_skip(MdkrModernCharacterRegistry *registry,
@@ -244,12 +275,32 @@ int mdkr_modern_character_registry_init(MdkrModernCharacterRegistry *registry,
                 for (role_index = 0u; role_index < rig.role_count;
                      role_index++) {
                     MdkrModernRigRole role;
+                    MdkrModernNode node;
+                    const char *semantic;
+                    int slot;
                     (void)mdkr_modern_character_asset_rig_role(
                         &asset, role_index, &role);
-                    if ((role.flags & 1u) != 0u) {
-                        entry.inferred_rig_role_mask |= rig_role_bit(
+                    semantic = mdkr_modern_character_asset_string(
+                        &asset, role.semantic);
+                    slot = rig_role_slot(semantic);
+                    if (slot >= 0 && mdkr_modern_character_asset_node(
+                            &asset, role.node, &node)) {
+                        entry.rig_role_node[slot] = role.node;
+                        entry.rig_role_flags[slot] = role.flags;
+                        entry.rig_role_confidence_milli[slot] =
+                            role.confidence_milli;
+                        copy_node_name(
+                            entry.rig_role_node_name[slot],
                             mdkr_modern_character_asset_string(
-                                &asset, role.semantic));
+                                &asset, node.name));
+                        memcpy(entry.rig_role_rest_rotation[slot],
+                               role.rest_rotation,
+                               sizeof(role.rest_rotation));
+                        memcpy(entry.rig_role_bend_axis[slot],
+                               role.bend_axis, sizeof(role.bend_axis));
+                    }
+                    if ((role.flags & 1u) != 0u) {
+                        entry.inferred_rig_role_mask |= rig_role_bit(semantic);
                     }
                     if (role.confidence_milli <
                         entry.rig_min_confidence_milli) {

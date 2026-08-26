@@ -29,9 +29,9 @@ typedef struct MdkrModernPose {
     float blend_elapsed;
     float blend_duration;
     uint32_t animation_flags;
-    uint32_t rig_role_nodes[16];
-    float rig_rest_rotation[16][4];
-    float rig_bend_axis[16][3];
+    uint32_t rig_role_nodes[MDKR_MODERN_HUMANOID_ROLE_COUNT];
+    float rig_rest_rotation[MDKR_MODERN_HUMANOID_ROLE_COUNT][4];
+    float rig_bend_axis[MDKR_MODERN_HUMANOID_ROLE_COUNT][3];
     uint32_t rig_role_mask;
     float procedural_time;
     float procedural_weight;

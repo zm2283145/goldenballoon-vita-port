@@ -332,6 +332,14 @@ separate human decision. Until it becomes true, the reference solver remains
 locked. `authored-clips-only` permits an empty or partial role map and is the
 supported final choice for non-humanoids.
 
+`rest_rotation_xyzw` is the normalized correction that maps the engine's
+canonical reference axes into that joint's local rest basis. `bend_axis` is a
+zero or normalized joint-local preference used only when a contact target is
+exactly opposite the current limb direction; zero requests a stable automatic
+axis. Rig Studio exposes both under each role, normalizes edited values, clears
+review after any change, and shows exact compiled node indices alongside
+bounded UTF-8-safe display names.
+
 `source_forward` is deliberately explicit because arbitrary geometry does not
 contain a reliable semantic front. The wizard accepts `+z`, `-z`, `+x`, or
 `-x`, records that decision in its review report, and the launcher offers a
@@ -389,6 +397,13 @@ absent calibrated vehicle creates a neutral seat-anchored context; disabling it
 retains the authored context for a later revision. Existing portrait and
 license bytes remain exact. This changes which retail actor the appearance can
 replace, never the donor's simulation tables or normal vehicle-selection rules.
+
+`revise-rig` uses that transaction for an exact bounded rig draft. It accepts
+only the dedicated draft schema, rejects non-regular or oversized input,
+upgrades identity-capable v3 sources to v4, recompiles the full node/joint and
+ancestor contract, and preserves the model, portrait, license, profile, and
+old source revision. The launcher builds this draft from its skin-joint picker;
+authors do not have to edit package JSON to correct inference or approve a map.
 
 Later schema versions should add, without changing the principles above:
 
