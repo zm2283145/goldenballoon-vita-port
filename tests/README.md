@@ -4828,6 +4828,26 @@ The gate is registered as the `app_character_raw_intake` CTest and the
 `character_raw_intake_ui` run-check; it needs neither a ROM nor a community
 model.
 
+## Workshop tool history — `tests/check_character_workshop_history_ui.py`
+
+This ROM-free WebGPU gate generates and installs an isolated CC0 fixture, then
+opens the exact saved Identity, Rig & Motion, Vehicles, Performance, and Test
+tabs. It requires source-digest-bound history controls for Identity, Profile,
+Rig, Fit/review, Performance assembly, and Test setup, and verifies that merely
+rendering every route leaves the installed source and cache byte-for-byte
+unchanged. `character_edit_history` separately proves discrete edits,
+continuous-gesture coalescing, deferred commit, divergent redo invalidation,
+and bounded eviction.
+
+```bash
+python3 tests/check_character_workshop_history_ui.py \
+  --build build-character-tests
+```
+
+The rendered gate is registered as the `app_character_workshop_history` CTest
+and `character_workshop_history_ui` run-check. It needs neither a ROM nor a
+community model.
+
 ## Exact Character Workshop contexts — `tests/check_custom_character_workshop_preview.py`
 
 This gate generates and transactionally installs a license-clean package with

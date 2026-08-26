@@ -7,6 +7,7 @@
 #include "character_candidate_index.h"
 #include "character_draft_snapshot.h"
 #include "character_draft_store.h"
+#include "character_edit_history.h"
 #include "character_raw_intake_index.h"
 #include "character_revision_index.h"
 #include "character_workshop_model.h"
@@ -38,7 +39,9 @@
 #include <cstdint>
 #include <ctime>
 #include <map>
+#include <set>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -1903,8 +1906,6 @@ struct CharacterIdentityEdit {
     char portraitPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
     float minimapRgb[3] = {0.86f, 0.28f, 0.56f};
     std::array<uint8_t, MDKR_MODERN_PORTRAIT_BYTES> canvas{};
-    std::vector<std::array<uint8_t, MDKR_MODERN_PORTRAIT_BYTES>> undo;
-    std::vector<std::array<uint8_t, MDKR_MODERN_PORTRAIT_BYTES>> redo;
     float paintRgba[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     int tool = 0;
     int selectedPixel[2] = {20, 20};
@@ -1979,6 +1980,37 @@ struct CharacterRigEdit {
 };
 
 std::map<std::string, CharacterRigEdit> g_characterRigEdits;
+
+enum class CharacterHistoryTool : size_t {
+    Identity = 0u,
+    Profile,
+    Rig,
+    Fit,
+    Performance,
+    Test,
+    Count,
+};
+
+struct CharacterPackageHistory {
+    std::string sourceDigest;
+    std::array<CharacterEditHistory::Track,
+               static_cast<size_t>(CharacterHistoryTool::Count)> tracks;
+};
+
+struct CharacterHistoryFrame {
+    bool ready = false;
+    bool actionApplied = false;
+    CharacterHistoryTool tool = CharacterHistoryTool::Identity;
+    std::string before;
+};
+
+std::map<std::string, CharacterPackageHistory> g_characterEditHistories;
+std::set<std::string> g_characterHistoryTraceKeys;
+
+CharacterHistoryFrame beginCharacterHistory(
+    const MdkrModernCharacterEntry *entry, CharacterHistoryTool tool);
+void finishCharacterHistory(const MdkrModernCharacterEntry *entry,
+                            CharacterHistoryFrame &frame);
 
 CharacterDraftStore::Inventory g_characterDrafts;
 bool g_characterDraftsLoaded = false;
@@ -2237,17 +2269,11 @@ bool clearCharacterFitReview(const MdkrModernCharacterEntry *entry,
     return false;
 }
 
-bool persistCharacterTuning(const char *packageId,
-                            const CharacterTuningEdit &edit) {
+void stageCharacterTuningConfig(const char *packageId,
+                                const CharacterTuningEdit &edit) {
     static const char *contextNames[MDKR_CHARACTER_CONTEXT_COUNT] = {
         "select", "car", "hovercraft", "plane"
     };
-    if (g_characterActiveDrafts.find(packageId) !=
-        g_characterActiveDrafts.end()) {
-        g_characterPreviewResults.erase(packageId);
-        setStatus("Fit change staged in the named draft.", AppTheme::good());
-        return true;
-    }
     const std::string prefix = "custom_character_profile_" +
         std::string(packageId) + "_";
     AppConfig::set(prefix + "scale", characterFloatText(edit.scale));
@@ -2289,6 +2315,17 @@ bool persistCharacterTuning(const char *packageId,
             }
         }
     }
+}
+
+bool persistCharacterTuning(const char *packageId,
+                            const CharacterTuningEdit &edit) {
+    if (g_characterActiveDrafts.find(packageId) !=
+        g_characterActiveDrafts.end()) {
+        g_characterPreviewResults.erase(packageId);
+        setStatus("Fit change staged in the named draft.", AppTheme::good());
+        return true;
+    }
+    stageCharacterTuningConfig(packageId, edit);
     const AppConfig::PersistResult result = AppConfig::save();
     if (AppConfig::persistResultApplied(result)) {
         /* Exact-preview evidence describes the saved tuning at capture time.
@@ -3010,6 +3047,7 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterIdentityEdits.erase(id);
     g_characterProfileEdits.erase(id);
     g_characterRigEdits.erase(id);
+    g_characterEditHistories.erase(id);
     g_characterTuning.erase(id);
     g_characterAssemblyPlayers.erase(id);
     g_characterTestPlayers.erase(id);
@@ -3722,6 +3760,8 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
         ImGui::TextColored(AppTheme::bad(), "%s", edit.error.c_str());
         return false;
     }
+    CharacterHistoryFrame history = beginCharacterHistory(
+        entry, CharacterHistoryTool::Rig);
     ui::TextSubtleWrapped(
         "Map semantic anatomy to the model's actual skin joints. Saving creates a validated source-v4 revision; the current playable cache remains active unless the complete compile succeeds.");
     const char *modeNames[] = {
@@ -3864,12 +3904,14 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
         g_characterRigEdits.erase(entry->id);
         setStatus("Rig draft restored from the active package.",
                   AppTheme::subtle());
+        finishCharacterHistory(entry, history);
         return false;
     }
     if (stagingDraft) {
         ui::TextSubtleWrapped(
             "Rig changes are part of the resumed named draft. Build from Named drafts to compile identity, profile, and rig as one source revision; this panel cannot publish a partial revision while that draft is open.");
     }
+    if (!saved) finishCharacterHistory(entry, history);
     return saved;
 }
 
@@ -3896,6 +3938,8 @@ bool drawCharacterTuningEditor(int player,
     CharacterTuningEdit &edit = loadCharacterTuning(player, entry->id);
     edit.vehicleMask &= entry->vehicle_mask;
     if (edit.vehicleMask == 0u) edit.vehicleMask = entry->vehicle_mask;
+    CharacterHistoryFrame history = beginCharacterHistory(
+        entry, CharacterHistoryTool::Fit);
 
     ImGui::TextUnformatted("Enable this appearance in game on");
     for (unsigned vehicle = 0u; vehicle < 3u; ++vehicle) {
@@ -4207,6 +4251,7 @@ bool drawCharacterTuningEditor(int player,
         edit.vehicleMask = entry->vehicle_mask;
         changed |= persistCharacterTuning(entry->id, edit);
     }
+    finishCharacterHistory(entry, history);
     return changed;
 }
 
@@ -4241,6 +4286,8 @@ void drawCharacterPerformanceAssembly(
     const MdkrModernCharacterEntry *entry) {
     int &players = g_characterAssemblyPlayers[entry->id];
     if (players < 1 || players > 4) players = 4;
+    CharacterHistoryFrame history = beginCharacterHistory(
+        entry, CharacterHistoryTool::Performance);
     ui::TextSubtleWrapped(
         "Inspect the selected package repeated across local players. The worst-visible case assumes every custom racer is visible in every split-screen viewport at LOD0. Immutable mesh and texture uploads remain shared once for this package.");
     ImGui::TextUnformatted("Local-player assembly");
@@ -4268,6 +4315,15 @@ void drawCharacterPerformanceAssembly(
     if (ImGui::BeginTable(
             "##character-performance-assembly", 2,
             ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
+        /* SizingStretchProp derives unspecified weights from the previous
+         * frame's measured content.  Both measurements are zero while this
+         * table is first appearing, so explicit weights avoid a transient
+         * 0 / 0 in ImGui's table layout and keep the child content extent
+         * finite under UBSan. */
+        ImGui::TableSetupColumn(
+            "Metric", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+        ImGui::TableSetupColumn(
+            "Assembly value", ImGuiTableColumnFlags_WidthStretch, 1.0f);
         auto countRow = [](const char *label, uint64_t value) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
@@ -4306,6 +4362,7 @@ void drawCharacterPerformanceAssembly(
     }
     ui::TextSubtleWrapped(
         "These are exact structural counts, not a frame-time prediction. Materials, transparency, overdraw, skinning, driver visibility, camera framing, GPU, resolution, and other racers still affect measured performance; the Workshop must not turn a budget guide into an artificial import ceiling.");
+    finishCharacterHistory(entry, history);
 }
 
 void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
@@ -4375,6 +4432,10 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
     if (ImGui::BeginTable("##character-preview-measurement", 2,
                           ImGuiTableFlags_SizingStretchProp |
                           ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn(
+            "Metric", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn(
+            "Measured value", ImGuiTableColumnFlags_WidthStretch, 1.0f);
         const auto metric = [](const char *name, const char *value) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
@@ -4446,6 +4507,8 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
     int &players = g_characterTestPlayers[entry->id];
     const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
     if (players < 1 || players > 4) players = 1;
+    CharacterHistoryFrame history = beginCharacterHistory(
+        entry, CharacterHistoryTool::Test);
     ui::TextSubtleWrapped(
         "Launch this package directly into the real game renderer with its saved fit. The test is temporary: it does not replace Player assignments or skip the final ROM integrity check. For a useful timing sample, stay at least three seconds beyond the 120-tick warm-up; opening F1 freezes the sample before you navigate back.");
     drawCharacterPreviewResult(entry);
@@ -4498,6 +4561,7 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
     ui::SpeakFocusedItem(
         "Plane", planeQualified ? nullptr : "Not supported by this package.",
         "Tests the selected package in a real plane race.");
+    finishCharacterHistory(entry, history);
 }
 
 void drawCharacterPortraitPreview(const MdkrModernCharacterEntry *entry) {
@@ -4646,6 +4710,8 @@ CharacterProfileEdit &loadCharacterProfileEdit(
 bool drawCharacterProfileStudio(const MdkrModernCharacterEntry *entry) {
     static const char *vehicleNames[] = {"Car", "Hovercraft", "Plane"};
     CharacterProfileEdit &edit = loadCharacterProfileEdit(entry);
+    CharacterHistoryFrame history = beginCharacterHistory(
+        entry, CharacterHistoryTool::Profile);
     ui::TextSubtleWrapped(
         "Choose which built-in racer supplies authoritative gameplay and which vehicle scenes this appearance supports. The package never copies or edits the donor's simulation tables.");
     ImGui::SetNextItemWidth(std::min(440.0f, ImGui::GetContentRegionAvail().x));
@@ -4747,13 +4813,8 @@ bool drawCharacterProfileStudio(const MdkrModernCharacterEntry *entry) {
         ui::TextSubtleWrapped(
             "Gameplay and compatibility changes are staged in the named draft and will be compiled together with its identity and rig.");
     }
+    if (!saved) finishCharacterHistory(entry, history);
     return saved;
-}
-
-void portraitPushUndo(CharacterIdentityEdit &edit) {
-    if (edit.undo.size() == 32u) edit.undo.erase(edit.undo.begin());
-    edit.undo.push_back(edit.canvas);
-    edit.redo.clear();
 }
 
 void portraitSetPixel(CharacterIdentityEdit &edit, int x, int y,
@@ -4790,7 +4851,6 @@ void portraitFill(CharacterIdentityEdit &edit, int startX, int startY) {
             std::clamp(edit.paintRgba[component], 0.0f, 1.0f) * 255.0f));
     }
     if (target == replacement) return;
-    portraitPushUndo(edit);
     std::array<int, size * size> queue{};
     int read = 0;
     int write = 0;
@@ -4830,8 +4890,8 @@ bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
     ImGui::SetNextItemWidth(std::min(360.0f, ImGui::GetContentRegionAvail().x));
     (void)ImGui::ColorEdit4(
         "Paint colour", edit.paintRgba,
-        ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_DisplayHex |
-            ImGuiColorEditFlags_InputRGB | ImGuiColorEditFlags_AlphaBar);
+        ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_InputRGB |
+            ImGuiColorEditFlags_AlphaBar);
     const float pixelSize = std::clamp(
         std::floor(ImGui::GetContentRegionAvail().x / size), 3.0f, 8.0f);
     const float extent = pixelSize * size;
@@ -4877,7 +4937,6 @@ bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
             } else if (edit.tool == 3) {
                 portraitPickPixel(edit, x, y);
             } else {
-                portraitPushUndo(edit);
                 edit.strokeActive = true;
                 portraitSetPixel(edit, x, y, edit.tool == 1);
             }
@@ -4901,34 +4960,11 @@ bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
         } else if (edit.tool == 3) {
             portraitPickPixel(edit, edit.selectedPixel[0], edit.selectedPixel[1]);
         } else {
-            portraitPushUndo(edit);
             portraitSetPixel(edit, edit.selectedPixel[0], edit.selectedPixel[1],
                              edit.tool == 1);
         }
     }
-    const bool canUndo = !edit.undo.empty();
-    if (!canUndo) ImGui::BeginDisabled();
-    if (ImGui::Button("Undo")) {
-        edit.redo.push_back(edit.canvas);
-        edit.canvas = edit.undo.back();
-        edit.undo.pop_back();
-        edit.canvasDirty = true;
-    }
-    if (!canUndo) ImGui::EndDisabled();
-    ImGui::SameLine();
-    const bool canRedo = !edit.redo.empty();
-    if (!canRedo) ImGui::BeginDisabled();
-    if (ImGui::Button("Redo")) {
-        if (edit.undo.size() == 32u) edit.undo.erase(edit.undo.begin());
-        edit.undo.push_back(edit.canvas);
-        edit.canvas = edit.redo.back();
-        edit.redo.pop_back();
-        edit.canvasDirty = true;
-    }
-    if (!canRedo) ImGui::EndDisabled();
-    ImGui::SameLine();
     if (ImGui::Button("Mirror horizontally")) {
-        portraitPushUndo(edit);
         for (int y = 0; y < size; ++y) {
             for (int x = 0; x < size / 2; ++x) {
                 for (int component = 0; component < 4; ++component) {
@@ -4998,8 +5034,6 @@ CharacterIdentityEdit &loadCharacterIdentityEdit(
         } else {
             edit.canvas.fill(0u);
         }
-        edit.undo.clear();
-        edit.redo.clear();
         edit.canvasDirty = false;
         edit.strokeActive = false;
         std::snprintf(edit.displayName, sizeof(edit.displayName), "%s",
@@ -5019,6 +5053,8 @@ CharacterIdentityEdit &loadCharacterIdentityEdit(
 
 bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     CharacterIdentityEdit &edit = loadCharacterIdentityEdit(entry);
+    CharacterHistoryFrame history = beginCharacterHistory(
+        entry, CharacterHistoryTool::Identity);
     const bool stagingDraft = g_characterActiveDrafts.find(entry->id) !=
         g_characterActiveDrafts.end();
     ui::TextSubtleWrapped(
@@ -5092,7 +5128,9 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
         ui::TextSubtleWrapped(
             "A named draft builds from its exact 40 × 40 canvas. Use the pixel editor below while the draft is open; close the draft first if you want the PNG revision shortcut.");
     }
-    if (saved) return true;
+    if (saved) {
+        return true;
+    }
     if (ImGui::TreeNodeEx(
             "Pixel editor##character-portrait-pixels",
             ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -5100,9 +5138,575 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
             "Edit the exact 40 × 40 runtime canvas. Pencil, eraser, fill, eyedropper, alpha, mirror, and bounded undo/redo are deterministic and stay local until you save a source revision.");
         const bool pixelSaved = drawPortraitPixelEditor(entry, edit);
         ImGui::TreePop();
-        if (pixelSaved) return true;
+        if (pixelSaved) {
+            return true;
+        }
     }
+    finishCharacterHistory(entry, history);
     return saved;
+}
+
+template <typename Value>
+void appendCharacterHistoryValue(std::string &payload, const Value &value) {
+    static_assert(std::is_trivially_copyable<Value>::value,
+                  "history values must be trivially copyable");
+    payload.append(reinterpret_cast<const char *>(&value), sizeof(value));
+}
+
+template <typename Value>
+bool readCharacterHistoryValue(const std::string &payload, size_t &offset,
+                               Value &value) {
+    static_assert(std::is_trivially_copyable<Value>::value,
+                  "history values must be trivially copyable");
+    if (offset > payload.size() || sizeof(value) > payload.size() - offset) {
+        return false;
+    }
+    std::memcpy(&value, payload.data() + offset, sizeof(value));
+    offset += sizeof(value);
+    return true;
+}
+
+bool captureCharacterHistoryPayload(
+    const MdkrModernCharacterEntry *entry, CharacterHistoryTool tool,
+    std::string &payload) {
+    if (entry == nullptr) return false;
+    payload.clear();
+    if (tool == CharacterHistoryTool::Identity) {
+        const CharacterIdentityEdit &edit = loadCharacterIdentityEdit(entry);
+        payload = "mdkr-identity-history-v1\n";
+        payload.append(edit.displayName, sizeof(edit.displayName));
+        payload.append(edit.shortName, sizeof(edit.shortName));
+        payload.append(edit.narrationName, sizeof(edit.narrationName));
+        payload.append(edit.sortLabel, sizeof(edit.sortLabel));
+        payload.append(edit.portraitPath, sizeof(edit.portraitPath));
+        payload.append(reinterpret_cast<const char *>(edit.minimapRgb),
+                       sizeof(edit.minimapRgb));
+        payload.append(reinterpret_cast<const char *>(edit.canvas.data()),
+                       edit.canvas.size());
+    } else if (tool == CharacterHistoryTool::Profile) {
+        const CharacterProfileEdit &edit = loadCharacterProfileEdit(entry);
+        payload = "mdkr-profile-history-v1\n";
+        appendCharacterHistoryValue(payload, edit.donor);
+        appendCharacterHistoryValue(payload, edit.vehicleMask);
+    } else if (tool == CharacterHistoryTool::Rig) {
+        const CharacterRigEdit &edit = loadCharacterRigEdit(entry);
+        if (!edit.error.empty()) return false;
+        payload = "mdkr-rig-history-v1\n";
+        appendCharacterHistoryValue(payload, edit.mode);
+        const uint8_t reviewed = edit.reviewed ? 1u : 0u;
+        appendCharacterHistoryValue(payload, reviewed);
+        for (const CharacterRigEdit::Role &role : edit.roles) {
+            appendCharacterHistoryValue(payload, role.joint);
+            const uint8_t inferred = role.inferred ? 1u : 0u;
+            appendCharacterHistoryValue(payload, inferred);
+            appendCharacterHistoryValue(payload, role.confidence);
+            for (float value : role.rest) {
+                appendCharacterHistoryValue(payload, value);
+            }
+            for (float value : role.bend) {
+                appendCharacterHistoryValue(payload, value);
+            }
+        }
+    } else if (tool == CharacterHistoryTool::Fit) {
+        const CharacterTuningEdit &edit = loadCharacterTuning(0, entry->id);
+        payload = "mdkr-fit-history-v1\n";
+        appendCharacterHistoryValue(payload, edit.scale);
+        for (float value : edit.offset) {
+            appendCharacterHistoryValue(payload, value);
+        }
+        for (float value : edit.rotation) {
+            appendCharacterHistoryValue(payload, value);
+        }
+        appendCharacterHistoryValue(payload, edit.animationSpeed);
+        appendCharacterHistoryValue(payload, edit.lodBias);
+        appendCharacterHistoryValue(payload, edit.vehicleMask);
+        for (const CharacterTuningEdit::Context &context : edit.context) {
+            appendCharacterHistoryValue(payload, context.scale);
+            for (float value : context.offset) {
+                appendCharacterHistoryValue(payload, value);
+            }
+            for (float value : context.rotation) {
+                appendCharacterHistoryValue(payload, value);
+            }
+            for (const auto &contact : context.contacts) {
+                for (float value : contact) {
+                    appendCharacterHistoryValue(payload, value);
+                }
+            }
+        }
+        uint32_t reviewed = 0u;
+        for (unsigned context = 0u;
+             context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+            if (characterFitReviewed(entry, edit, context)) {
+                reviewed |= 1u << context;
+            }
+        }
+        appendCharacterHistoryValue(payload, reviewed);
+    } else if (tool == CharacterHistoryTool::Performance) {
+        int players = g_characterAssemblyPlayers[entry->id];
+        if (players < 1 || players > 4) players = 4;
+        payload = "mdkr-performance-history-v1\n";
+        appendCharacterHistoryValue(payload, players);
+    } else if (tool == CharacterHistoryTool::Test) {
+        int players = g_characterTestPlayers[entry->id];
+        if (players < 1 || players > 4) players = 1;
+        payload = "mdkr-test-history-v1\n";
+        appendCharacterHistoryValue(payload, players);
+    } else {
+        return false;
+    }
+    return !payload.empty() &&
+        payload.size() <= CharacterEditHistory::kMaximumSnapshotBytes;
+}
+
+bool characterHistoryBufferTerminated(const char *value, size_t size) {
+    return size != 0u && value[size - 1u] == '\0' &&
+        std::memchr(value, '\0', size) != nullptr;
+}
+
+bool applyCharacterHistoryPayload(
+    const MdkrModernCharacterEntry *entry, CharacterHistoryTool tool,
+    const std::string &payload, std::string &error) {
+    if (entry == nullptr) {
+        error = "No character is selected.";
+        return false;
+    }
+    size_t offset = 0u;
+    const auto consumeHeader = [&payload, &offset](const char *header) {
+        const size_t size = std::strlen(header);
+        if (payload.size() < size || payload.compare(0u, size, header) != 0) {
+            return false;
+        }
+        offset = size;
+        return true;
+    };
+    if (tool == CharacterHistoryTool::Identity) {
+        if (!consumeHeader("mdkr-identity-history-v1\n")) {
+            error = "Identity history header is invalid.";
+            return false;
+        }
+        CharacterIdentityEdit replacement = loadCharacterIdentityEdit(entry);
+        auto readBuffer = [&payload, &offset](char *target, size_t size) {
+            if (offset > payload.size() || size > payload.size() - offset) {
+                return false;
+            }
+            std::memcpy(target, payload.data() + offset, size);
+            offset += size;
+            return characterHistoryBufferTerminated(target, size);
+        };
+        if (!readBuffer(replacement.displayName,
+                        sizeof(replacement.displayName)) ||
+            !readBuffer(replacement.shortName,
+                        sizeof(replacement.shortName)) ||
+            !readBuffer(replacement.narrationName,
+                        sizeof(replacement.narrationName)) ||
+            !readBuffer(replacement.sortLabel,
+                        sizeof(replacement.sortLabel)) ||
+            !readBuffer(replacement.portraitPath,
+                        sizeof(replacement.portraitPath)) ||
+            offset > payload.size() ||
+            sizeof(replacement.minimapRgb) > payload.size() - offset) {
+            error = "Identity history payload is truncated.";
+            return false;
+        }
+        std::memcpy(replacement.minimapRgb, payload.data() + offset,
+                    sizeof(replacement.minimapRgb));
+        offset += sizeof(replacement.minimapRgb);
+        if (replacement.canvas.size() > payload.size() - offset) {
+            error = "Identity canvas history is truncated.";
+            return false;
+        }
+        std::memcpy(replacement.canvas.data(), payload.data() + offset,
+                    replacement.canvas.size());
+        offset += replacement.canvas.size();
+        if (offset != payload.size() ||
+            !std::all_of(std::begin(replacement.minimapRgb),
+                         std::end(replacement.minimapRgb), [](float value) {
+                             return std::isfinite(value) &&
+                                    value >= 0.0f && value <= 1.0f;
+                         })) {
+            error = "Identity history values are invalid.";
+            return false;
+        }
+        replacement.canvasDirty =
+            (entry->identity_flags & 1u) == 0u ||
+            !std::equal(replacement.canvas.begin(), replacement.canvas.end(),
+                        std::begin(entry->portrait_rgba));
+        replacement.strokeActive = false;
+        g_characterIdentityEdits[entry->id] = std::move(replacement);
+    } else if (tool == CharacterHistoryTool::Profile) {
+        if (!consumeHeader("mdkr-profile-history-v1\n")) {
+            error = "Profile history header is invalid.";
+            return false;
+        }
+        CharacterProfileEdit replacement = loadCharacterProfileEdit(entry);
+        if (!readCharacterHistoryValue(
+                payload, offset, replacement.donor) ||
+            !readCharacterHistoryValue(
+                payload, offset, replacement.vehicleMask) ||
+            offset != payload.size() || replacement.donor >= 10u ||
+            replacement.vehicleMask == 0u ||
+            (replacement.vehicleMask & ~7u) != 0u) {
+            error = "Profile history values are invalid.";
+            return false;
+        }
+        g_characterProfileEdits[entry->id] = std::move(replacement);
+    } else if (tool == CharacterHistoryTool::Rig) {
+        if (!consumeHeader("mdkr-rig-history-v1\n")) {
+            error = "Rig history header is invalid.";
+            return false;
+        }
+        CharacterRigEdit replacement = loadCharacterRigEdit(entry);
+        uint8_t reviewed = 0u;
+        if (!readCharacterHistoryValue(payload, offset, replacement.mode) ||
+            !readCharacterHistoryValue(payload, offset, reviewed) ||
+            replacement.mode < MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY ||
+            replacement.mode > MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 ||
+            reviewed > 1u) {
+            error = "Rig history mode is invalid.";
+            return false;
+        }
+        replacement.reviewed = reviewed != 0u;
+        std::set<int> mappedJoints;
+        for (CharacterRigEdit::Role &role : replacement.roles) {
+            uint8_t inferred = 0u;
+            if (!readCharacterHistoryValue(payload, offset, role.joint) ||
+                !readCharacterHistoryValue(payload, offset, inferred) ||
+                !readCharacterHistoryValue(
+                    payload, offset, role.confidence)) {
+                error = "Rig history role is truncated.";
+                return false;
+            }
+            for (float &value : role.rest) {
+                if (!readCharacterHistoryValue(payload, offset, value)) {
+                    error = "Rig history rest basis is truncated.";
+                    return false;
+                }
+            }
+            for (float &value : role.bend) {
+                if (!readCharacterHistoryValue(payload, offset, value)) {
+                    error = "Rig history bend basis is truncated.";
+                    return false;
+                }
+            }
+            if (inferred > 1u || role.joint < -1 ||
+                role.joint >= static_cast<int>(replacement.joints.size()) ||
+                (role.joint >= 0 && !mappedJoints.insert(role.joint).second) ||
+                !std::isfinite(role.confidence) || role.confidence < 0.0f ||
+                role.confidence > 1.0f ||
+                !std::all_of(std::begin(role.rest), std::end(role.rest),
+                             [](float value) {
+                                 return std::isfinite(value) &&
+                                        value >= -1.0f && value <= 1.0f;
+                             }) ||
+                !std::all_of(std::begin(role.bend), std::end(role.bend),
+                             [](float value) {
+                                 return std::isfinite(value) &&
+                                        value >= -1.0f && value <= 1.0f;
+                             })) {
+                error = "Rig history role values are invalid.";
+                return false;
+            }
+            role.inferred = inferred != 0u;
+        }
+        if (offset != payload.size() ||
+            (replacement.mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY &&
+             replacement.reviewed)) {
+            error = "Rig history has trailing or inconsistent state.";
+            return false;
+        }
+        g_characterRigEdits[entry->id] = std::move(replacement);
+    } else if (tool == CharacterHistoryTool::Fit) {
+        if (!consumeHeader("mdkr-fit-history-v1\n")) {
+            error = "Fit history header is invalid.";
+            return false;
+        }
+        CharacterTuningEdit replacement{};
+        replacement.loaded = true;
+        const auto readFloatArray = [&payload, &offset](float *values,
+                                                        size_t count) {
+            for (size_t index = 0u; index < count; ++index) {
+                if (!readCharacterHistoryValue(
+                        payload, offset, values[index])) return false;
+            }
+            return true;
+        };
+        if (!readCharacterHistoryValue(payload, offset, replacement.scale) ||
+            !readFloatArray(replacement.offset, 3u) ||
+            !readFloatArray(replacement.rotation, 3u) ||
+            !readCharacterHistoryValue(
+                payload, offset, replacement.animationSpeed) ||
+            !readCharacterHistoryValue(
+                payload, offset, replacement.lodBias) ||
+            !readCharacterHistoryValue(
+                payload, offset, replacement.vehicleMask)) {
+            error = "Fit history global state is truncated.";
+            return false;
+        }
+        for (CharacterTuningEdit::Context &context : replacement.context) {
+            if (!readCharacterHistoryValue(payload, offset, context.scale) ||
+                !readFloatArray(context.offset, 3u) ||
+                !readFloatArray(context.rotation, 3u)) {
+                error = "Fit history context is truncated.";
+                return false;
+            }
+            for (auto &contact : context.contacts) {
+                if (!readFloatArray(contact, 3u)) {
+                    error = "Fit history contacts are truncated.";
+                    return false;
+                }
+            }
+        }
+        uint32_t reviewed = 0u;
+        if (!readCharacterHistoryValue(payload, offset, reviewed) ||
+            offset != payload.size()) {
+            error = "Fit history review state is malformed.";
+            return false;
+        }
+        const auto inRange = [](float value, float minimum, float maximum) {
+            return std::isfinite(value) && value >= minimum &&
+                   value <= maximum;
+        };
+        if (!inRange(replacement.scale, 0.1f, 5.0f) ||
+            !std::all_of(std::begin(replacement.offset),
+                         std::end(replacement.offset),
+                         [&inRange](float value) {
+                             return inRange(value, -500.0f, 500.0f);
+                         }) ||
+            !std::all_of(std::begin(replacement.rotation),
+                         std::end(replacement.rotation),
+                         [&inRange](float value) {
+                             return inRange(value, -180.0f, 180.0f);
+                         }) ||
+            !inRange(replacement.animationSpeed, 0.05f, 4.0f) ||
+            !inRange(replacement.lodBias, -3.0f, 3.0f) ||
+            replacement.vehicleMask == 0u ||
+            (replacement.vehicleMask & ~entry->vehicle_mask) != 0u ||
+            (reviewed & ~0xFu) != 0u) {
+            error = "Fit history global values are invalid.";
+            return false;
+        }
+        for (const CharacterTuningEdit::Context &context :
+             replacement.context) {
+            if (!inRange(context.scale, 0.1f, 5.0f) ||
+                !std::all_of(std::begin(context.offset),
+                             std::end(context.offset),
+                             [&inRange](float value) {
+                                 return inRange(value, -10.0f, 10.0f);
+                             }) ||
+                !std::all_of(std::begin(context.rotation),
+                             std::end(context.rotation),
+                             [&inRange](float value) {
+                                 return inRange(value, -180.0f, 180.0f);
+                             })) {
+                error = "Fit history context values are invalid.";
+                return false;
+            }
+            for (const auto &contact : context.contacts) {
+                if (!std::all_of(
+                        std::begin(contact), std::end(contact),
+                        [&inRange](float value) {
+                            return inRange(value, -1.0f, 1.0f);
+                        })) {
+                    error = "Fit history contact values are invalid.";
+                    return false;
+                }
+            }
+        }
+        const auto previousTuning = g_characterTuning.find(entry->id);
+        const bool hadTuning = previousTuning != g_characterTuning.end();
+        CharacterTuningEdit oldTuning;
+        if (hadTuning) oldTuning = previousTuning->second;
+        const auto previousReview = g_characterDraftReviews.find(entry->id);
+        const bool hadReview = previousReview != g_characterDraftReviews.end();
+        CharacterDraftReviewState oldReview;
+        if (hadReview) oldReview = previousReview->second;
+        g_characterTuning[entry->id] = replacement;
+        CharacterDraftReviewState review;
+        review.mask = reviewed;
+        for (unsigned context = 0u;
+             context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+            if ((reviewed & (1u << context)) != 0u) {
+                review.signature[context] = characterFitReviewSignature(
+                    entry, replacement, context);
+            }
+        }
+        const bool activeDraft = g_characterActiveDrafts.find(entry->id) !=
+            g_characterActiveDrafts.end();
+        std::array<std::string, MDKR_CHARACTER_CONTEXT_COUNT>
+            oldPersistedReviews;
+        bool persisted = false;
+        if (activeDraft) {
+            g_characterDraftReviews[entry->id] = review;
+            persisted = autosaveActiveCharacterDraft(entry);
+        } else {
+            for (unsigned context = 0u;
+                 context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+                oldPersistedReviews[context] = AppConfig::get(
+                    characterFitReviewKey(entry->id, context));
+            }
+            stageCharacterTuningConfig(entry->id, replacement);
+            for (unsigned context = 0u;
+                 context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+                AppConfig::set(
+                    characterFitReviewKey(entry->id, context),
+                    (reviewed & (1u << context)) != 0u
+                        ? review.signature[context] : "");
+            }
+            persisted = AppConfig::persistResultApplied(AppConfig::save());
+        }
+        if (!persisted) {
+            if (hadTuning) {
+                g_characterTuning[entry->id] = oldTuning;
+            } else {
+                g_characterTuning.erase(entry->id);
+            }
+            if (hadReview) {
+                g_characterDraftReviews[entry->id] = std::move(oldReview);
+            } else {
+                g_characterDraftReviews.erase(entry->id);
+            }
+            if (!activeDraft && hadTuning) {
+                stageCharacterTuningConfig(entry->id, oldTuning);
+                for (unsigned context = 0u;
+                     context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+                    AppConfig::set(
+                        characterFitReviewKey(entry->id, context),
+                        oldPersistedReviews[context]);
+                }
+            }
+            error = "Fit history could not be persisted; history was not consumed.";
+            return false;
+        }
+    } else if (tool == CharacterHistoryTool::Performance ||
+               tool == CharacterHistoryTool::Test) {
+        const char *header = tool == CharacterHistoryTool::Performance
+            ? "mdkr-performance-history-v1\n"
+            : "mdkr-test-history-v1\n";
+        int players = 0;
+        if (!consumeHeader(header) ||
+            !readCharacterHistoryValue(payload, offset, players) ||
+            offset != payload.size() || players < 1 || players > 4) {
+            error = "Assembly history value is invalid.";
+            return false;
+        }
+        if (tool == CharacterHistoryTool::Performance) {
+            g_characterAssemblyPlayers[entry->id] = players;
+        } else {
+            g_characterTestPlayers[entry->id] = players;
+        }
+    } else {
+        error = "Unknown character history tool.";
+        return false;
+    }
+    g_characterPreviewResults.erase(entry->id);
+    error.clear();
+    return true;
+}
+
+const char *characterHistoryToolName(CharacterHistoryTool tool) {
+    switch (tool) {
+        case CharacterHistoryTool::Identity: return "Identity";
+        case CharacterHistoryTool::Profile: return "Profile";
+        case CharacterHistoryTool::Rig: return "Rig";
+        case CharacterHistoryTool::Fit: return "Fit";
+        case CharacterHistoryTool::Performance: return "Performance";
+        case CharacterHistoryTool::Test: return "Test setup";
+        default: return "Editor";
+    }
+}
+
+CharacterHistoryFrame beginCharacterHistory(
+    const MdkrModernCharacterEntry *entry, CharacterHistoryTool tool) {
+    CharacterHistoryFrame frame;
+    frame.tool = tool;
+    if (entry == nullptr ||
+        !captureCharacterHistoryPayload(entry, tool, frame.before)) {
+        return frame;
+    }
+    CharacterPackageHistory &package = g_characterEditHistories[entry->id];
+    const std::string digest = characterDigestHex(entry->source_sha256);
+    if (package.sourceDigest != digest) {
+        package = CharacterPackageHistory{};
+        package.sourceDigest = digest;
+    }
+    CharacterEditHistory::Track &track =
+        package.tracks[static_cast<size_t>(tool)];
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        const std::string traceKey = std::string(entry->id) + "\n" +
+            characterHistoryToolName(tool);
+        if (g_characterHistoryTraceKeys.insert(traceKey).second) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-history tool=%s source=%.12s undo=%zu redo=%zu\n",
+                characterHistoryToolName(tool), digest.c_str(),
+                track.undo.size(), track.redo.size());
+        }
+    }
+    if (!ImGui::IsAnyItemActive()) CharacterEditHistory::endGesture(track);
+    frame.ready = true;
+    const std::string undoLabel = std::string("Undo ") +
+        characterHistoryToolName(tool);
+    const bool undoReady = CharacterEditHistory::canUndo(track);
+    if (!undoReady) ImGui::BeginDisabled();
+    if (ImGui::Button(undoLabel.c_str()) && undoReady) {
+        std::string target;
+        std::string error;
+        if (CharacterEditHistory::undoTarget(track, target) &&
+            applyCharacterHistoryPayload(entry, tool, target, error) &&
+            CharacterEditHistory::commitUndo(track, frame.before)) {
+            frame.actionApplied = true;
+            const std::string status =
+                undoLabel + " applied to this source-bound draft.";
+            setStatus(status.c_str(), AppTheme::good());
+        } else {
+            const std::string status = error.empty()
+                ? undoLabel + " could not be applied." : error;
+            setStatus(status.c_str(), AppTheme::bad());
+        }
+    }
+    if (!undoReady) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        undoLabel.c_str(), undoReady ? nullptr : "No earlier edit in this tool.",
+        "Restores only this tool's prior source-bound authoring state; installed character bytes are unchanged.");
+    ImGui::SameLine();
+    const std::string redoLabel = std::string("Redo ") +
+        characterHistoryToolName(tool);
+    const bool redoReady = CharacterEditHistory::canRedo(track);
+    if (!redoReady) ImGui::BeginDisabled();
+    if (ImGui::Button(redoLabel.c_str()) && redoReady) {
+        std::string target;
+        std::string error;
+        if (CharacterEditHistory::redoTarget(track, target) &&
+            applyCharacterHistoryPayload(entry, tool, target, error) &&
+            CharacterEditHistory::commitRedo(track, frame.before)) {
+            frame.actionApplied = true;
+            const std::string status =
+                redoLabel + " applied to this source-bound draft.";
+            setStatus(status.c_str(), AppTheme::good());
+        } else {
+            const std::string status = error.empty()
+                ? redoLabel + " could not be applied." : error;
+            setStatus(status.c_str(), AppTheme::bad());
+        }
+    }
+    if (!redoReady) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        redoLabel.c_str(), redoReady ? nullptr : "No later edit in this tool.",
+        "Reapplies only this tool's next source-bound authoring state; installed character bytes are unchanged.");
+    return frame;
+}
+
+void finishCharacterHistory(const MdkrModernCharacterEntry *entry,
+                            CharacterHistoryFrame &frame) {
+    if (!frame.ready || frame.actionApplied || entry == nullptr) return;
+    std::string after;
+    if (!captureCharacterHistoryPayload(entry, frame.tool, after)) return;
+    CharacterPackageHistory &package = g_characterEditHistories[entry->id];
+    CharacterEditHistory::Track &track =
+        package.tracks[static_cast<size_t>(frame.tool)];
+    (void)CharacterEditHistory::observe(
+        track, frame.before, after, ImGui::IsAnyItemActive());
 }
 
 bool captureCharacterDraftSnapshot(
@@ -5302,6 +5906,7 @@ bool applyCharacterDraftSnapshot(
             entry, g_characterTuning[entry->id], context);
     }
     g_characterDraftReviews[entry->id] = std::move(review);
+    g_characterEditHistories.erase(entry->id);
     g_characterActiveDrafts[entry->id] = draft.id;
     g_characterDraftNameOwner = entry->id;
     std::snprintf(g_characterDraftName, sizeof(g_characterDraftName), "%s",
@@ -5426,6 +6031,7 @@ void closeCharacterDraftEditor(const std::string &packageId,
     g_characterProfileEdits.erase(packageId);
     g_characterIdentityEdits.erase(packageId);
     g_characterRigEdits.erase(packageId);
+    g_characterEditHistories.erase(packageId);
     if (!preserveFitEditor) {
         g_characterTuning.erase(packageId);
         g_characterAssemblyPlayers.erase(packageId);
