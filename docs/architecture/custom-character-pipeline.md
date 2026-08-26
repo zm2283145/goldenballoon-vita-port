@@ -965,7 +965,9 @@ license-clean generated package with a non-Diddy donor into an isolated catalog,
 then exercises select plus every vehicle, including three- and four-player
 split screen, through the real WebGPU path. It requires one shared asset upload,
 nonzero modern draws/triangles, zero refused draws, the exact donor, visible
-captures and four-player viewport dividers. The app lifecycle unit test covers
+captures, four-player viewport dividers, and a stable exact backend, adapter,
+driver, vendor/device ID and physical output/render size. Capture dimensions
+must match the engine result even on HiDPI displays. The app lifecycle unit test covers
 present, absent, repeated-write and idempotent restoration cases for the scoped
 handoff. Invalid context/player values, a missing assignment, and a vehicle
 excluded by package tuning must all fail closed with a precise diagnostic. This
@@ -975,14 +977,25 @@ reports remain open.
 
 Launcher-owned previews also arm the existing bounded presentation census. The
 game discards a 120-authored-tick warm-up, resets only the observational timing
-window, and freezes a structured version-1 result when the F1 overlay opens (or
+window, and freezes a structured version-3 result when the F1 overlay opens (or
 at engine shutdown). The surviving launcher publishes that result back to the
 same package inspector: displayed interval sample count, median/p95/p99/mean/max,
 authored tick-wall sample/mean, and warmed replacement/part/donor-suppression
-counts. Fewer than 60 intervals and synthetic pacing are explicitly
-diagnostic-only. The report deliberately does not invent a “GPU time” from CPU
-wall cadence; timestamp queries and controlled same-device comparisons remain
-separate work.
+counts, vehicle-contact error, selected backend/adapter/driver and physical
+output versus scene-render dimensions. Fewer than 60 intervals and synthetic
+pacing are explicitly diagnostic-only.
+
+The launcher transactionally retains a bounded latest result and optional
+qualified baseline for every select/car/hovercraft/plane by 1P-4P cell. Records
+are authenticated, canonically ordered, atomically replaced, and bound to the
+exact package source, per-context fit, result contract, app build, presentation
+settings, dimensions and GPU identity. Source or fit revisions may be compared
+only on that otherwise identical environment; stale cells remain visible and
+never count as current. Baseline pinning, exact-cell deletion, package deletion,
+restart recovery and malformed-inventory preservation are covered by a rendered
+ROM-free lifecycle gate. The report deliberately does not invent a “GPU time”
+from CPU wall cadence; timestamp/pass attribution, representative scene variants
+and a maintained device-profile corpus remain separate work.
 
 The private Dixie fixture completed the same chain without contributing any
 tracked bytes: DAE -> self-contained GLB -> source and portable `.mdkrchar` ->

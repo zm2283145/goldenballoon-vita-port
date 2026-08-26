@@ -954,6 +954,11 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
     SettingsCharacterPreviewRequest preview;
     if (Settings_takeCharacterPreviewRequest(preview)) {
         s.characterPreviewPackage = std::move(preview.packageId);
+        s.characterPreviewSourceSha256 =
+            std::move(preview.sourceSha256);
+        s.characterPreviewFitSha256 = std::move(preview.fitSha256);
+        s.characterPreviewPresentationSha256 =
+            std::move(preview.presentationSha256);
         s.characterPreviewContext = preview.context;
         s.characterPreviewPlayers = preview.players;
         Launcher_requestTab(s, kLauncherPanelPlay, kLauncherTabPlayer);
@@ -981,6 +986,11 @@ void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out) {
     SettingsCharacterPreviewRequest preview;
     if (Settings_takeCharacterPreviewRequest(preview)) {
         s.characterPreviewPackage = std::move(preview.packageId);
+        s.characterPreviewSourceSha256 =
+            std::move(preview.sourceSha256);
+        s.characterPreviewFitSha256 = std::move(preview.fitSha256);
+        s.characterPreviewPresentationSha256 =
+            std::move(preview.presentationSha256);
         s.characterPreviewContext = preview.context;
         s.characterPreviewPlayers = preview.players;
         Launcher_requestTab(s, kLauncherPanelPlay, kLauncherTabPlayer);
@@ -1018,10 +1028,17 @@ void drawAboutPanel(LauncherState &s, LauncherAction &out) {
 LauncherAction Launcher::draw(AppHost &host) {
     if (state_.characterPreviewDispatched) {
         Settings_publishCharacterPreviewResult(
-            state_.characterPreviewPackage, state_.characterPreviewResult);
+            state_.characterPreviewPackage,
+            state_.characterPreviewSourceSha256,
+            state_.characterPreviewFitSha256,
+            state_.characterPreviewPresentationSha256,
+            state_.characterPreviewResult);
         Launcher_requestTab(
             state_, kLauncherPanelCharacterWorkshop, kLauncherTabPlayer);
         state_.characterPreviewPackage.clear();
+        state_.characterPreviewSourceSha256.clear();
+        state_.characterPreviewFitSha256.clear();
+        state_.characterPreviewPresentationSha256.clear();
         state_.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
         state_.characterPreviewPlayers = 0;
         state_.characterPreviewDispatched = false;

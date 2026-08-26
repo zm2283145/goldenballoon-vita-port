@@ -347,6 +347,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/present_sched.c    # its retrace-branch wiring (Phase 3 Wave B)
     ${CMAKE_SOURCE_DIR}/platform/sim_hash.c         # authoritative-state hash (Phase 1)
     ${CMAKE_SOURCE_DIR}/platform/gameplay_event_trace.c # ordered transient authority events
+    ${CMAKE_SOURCE_DIR}/platform/gpu_diagnostics.c # exact Workshop comparison device identity
     ${CMAKE_SOURCE_DIR}/platform/input_consumption_trace.c # tick-consumed pad trace
     ${CMAKE_SOURCE_DIR}/platform/input_latency_census.c # input -> commit -> present budget (M4)
     ${CMAKE_SOURCE_DIR}/platform/session/session_core.c # shared launcher/session reducer
@@ -783,6 +784,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/character_raw_draft_store.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_raw_intake_index.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_revision_index.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_test_evidence_store.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_draft_store.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_draft_snapshot.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_workshop_model.cpp
@@ -1502,6 +1504,17 @@ if(NOT EMSCRIPTEN)
             add_test(NAME character_raw_draft_store
                 COMMAND mdkr_character_raw_draft_store_test)
 
+            add_executable(mdkr_character_test_evidence_store_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_test_evidence_store.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_test_evidence_store.cpp
+                ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+            target_include_directories(mdkr_character_test_evidence_store_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_test_evidence_store_test PRIVATE cxx_std_17)
+            add_test(NAME character_test_evidence_store
+                COMMAND mdkr_character_test_evidence_store_test)
+
             add_executable(mdkr_character_draft_store_test
                 ${CMAKE_SOURCE_DIR}/tests/test_character_draft_store.cpp
                 ${CMAKE_SOURCE_DIR}/platform/app/character_draft_store.cpp
@@ -1796,6 +1809,15 @@ if(NOT EMSCRIPTEN)
                     DEPENDS app_character_workshop_smoke
                     LABELS gpu
                     TIMEOUT 180)
+
+                add_test(NAME app_character_test_evidence
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_character_test_evidence_ui.py
+                        --build ${CMAKE_CURRENT_BINARY_DIR})
+                set_tests_properties(app_character_test_evidence PROPERTIES
+                    DEPENDS app_character_workshop_smoke
+                    LABELS gpu
+                    TIMEOUT 300)
 
                 add_test(NAME app_character_portrait_studio
                     COMMAND ${Python3_EXECUTABLE}

@@ -109,6 +109,8 @@ def main() -> int:
     ]
     arm_draws: dict[str, int] = {}
     captures: dict[str, Path] = {}
+    reported_dimensions: dict[str, tuple[int, int, int, int]] = {}
+    comparison_environment: tuple[str, str, str, str, str] | None = None
     if not failures:
         for context, players, capture in arms:
             label = f"{context}-{players}p"
@@ -173,6 +175,45 @@ def main() -> int:
                     failures.append(f"{label} result did not isolate a synthetic post-warmup sample")
                 if replacements <= 0:
                     failures.append(f"{label} result counted no package replacements")
+            environment_match = re.search(
+                r"character_workshop_result: .* backend=(webgpu-[^ ]+) "
+                r"adapter=(.*?) driver=(.*?) vendor=([0-9a-f]{8}) "
+                r"device=([0-9a-f]{8}) output=(\d+)x(\d+) "
+                r"render=(\d+)x(\d+)",
+                arm_output,
+            )
+            if environment_match is None:
+                failures.append(
+                    f"{label} emitted no exact GPU/output comparison identity"
+                )
+            else:
+                (backend, adapter, driver, vendor, device, output_w,
+                 output_h, render_w, render_h) = environment_match.groups()
+                if backend == "webgpu-unknown" or adapter == "unknown":
+                    failures.append(f"{label} did not identify its WebGPU adapter")
+                environment = (backend, adapter, driver, vendor, device)
+                if comparison_environment is None:
+                    comparison_environment = environment
+                elif environment != comparison_environment:
+                    failures.append(
+                        f"{label} changed GPU identity between exact test arms"
+                    )
+                dimensions = tuple(
+                    map(int, (output_w, output_h, render_w, render_h))
+                )
+                reported_dimensions[label] = dimensions
+                if (dimensions[0:2] != dimensions[2:4] or
+                        dimensions[0] < 1280 or dimensions[1] < 960 or
+                        dimensions[0] * 3 != dimensions[1] * 4):
+                    failures.append(
+                        f"{label} comparison dimensions were incoherent: "
+                        f"{dimensions!r}"
+                    )
+                elif len(set(reported_dimensions.values())) != 1:
+                    failures.append(
+                        f"{label} changed physical dimensions between exact "
+                        "test arms"
+                    )
             if capture:
                 dumps = sorted(arm_dir.glob("frame_*.ppm"))
                 if len(dumps) != 1:
@@ -223,6 +264,11 @@ def main() -> int:
 
     for label, capture in captures.items():
         width, height, pixels = read_ppm(capture)
+        reported = reported_dimensions.get(label)
+        if reported is None or (width, height) != reported[2:4]:
+            failures.append(
+                f"{label} capture dimensions do not match the engine result"
+            )
         if width % 320 or height % 240 or width * 3 != height * 4:
             failures.append(f"{label} capture has the wrong presentation shape")
             continue

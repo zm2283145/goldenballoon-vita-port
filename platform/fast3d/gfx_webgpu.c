@@ -38,6 +38,7 @@
 #include "gfx_shadow_cascade.h"
 #include "gfx_shadow_frame.h"
 #include "fs_utf8.h"
+#include "gpu_diagnostics.h"
 #include "present_sched.h"
 
 /* platform/fast3d/gfx_pc_dkr.c — declared rather than included: gfx_pc_dkr.h
@@ -1613,6 +1614,40 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
     fprintf(stderr, "[webgpu] adapter backend=%d device=%.*s\n",
             (int)info.backendType, (int)info.device.length,
             info.device.data ? info.device.data : "");
+    {
+        MdkrGpuCandidate candidate;
+        const char *backend = "webgpu-unknown";
+        int device_length = info.device.length > MDKR_GPU_STR_MAX - 1u
+            ? MDKR_GPU_STR_MAX - 1 : (int)info.device.length;
+        int description_length =
+            info.description.length > MDKR_GPU_STR_MAX - 1u
+                ? MDKR_GPU_STR_MAX - 1 : (int)info.description.length;
+        memset(&candidate, 0, sizeof(candidate));
+        switch (info.backendType) {
+            case WGPUBackendType_Metal: backend = "webgpu-metal"; break;
+            case WGPUBackendType_D3D12: backend = "webgpu-d3d12"; break;
+            case WGPUBackendType_Vulkan: backend = "webgpu-vulkan"; break;
+            case WGPUBackendType_OpenGL: backend = "webgpu-gl"; break;
+            case WGPUBackendType_OpenGLES: backend = "webgpu-gles"; break;
+            default: break;
+        }
+        (void)snprintf(candidate.backend, sizeof(candidate.backend), "%s",
+                       backend);
+        (void)snprintf(candidate.adapter, sizeof(candidate.adapter), "%.*s",
+                       device_length,
+                       info.device.data != NULL ? info.device.data : "");
+        (void)snprintf(candidate.driver, sizeof(candidate.driver), "%.*s",
+                       description_length,
+                       info.description.data != NULL
+                           ? info.description.data : "");
+        candidate.vendor_id = info.vendorID;
+        candidate.device_id = info.deviceID;
+        (void)snprintf(candidate.reason, sizeof(candidate.reason), "%s",
+                       "selected by WebGPU high-performance policy");
+        mdkr_gpu_info_reset();
+        mdkr_gpu_info_note_candidate(&candidate);
+        mdkr_gpu_info_select(0, candidate.reason);
+    }
     wgpuAdapterInfoFreeMembers(info);
 
     /* WEB-015: raise maxTextureDimension2D from WebGPU's 8192 default to the

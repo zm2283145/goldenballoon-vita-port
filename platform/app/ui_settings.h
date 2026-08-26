@@ -20,6 +20,9 @@ struct SDL_Window;
 
 struct SettingsCharacterPreviewRequest {
     std::string packageId;
+    std::string sourceSha256;
+    std::string fitSha256;
+    std::string presentationSha256;
     MdkrCharacterPreviewContext context = MDKR_CHARACTER_PREVIEW_SELECT;
     int players = 1;
 };
@@ -65,6 +68,9 @@ bool Settings_takeCharacterPreviewRequest(
     SettingsCharacterPreviewRequest &request);
 void Settings_publishCharacterPreviewResult(
     const std::string &packageId,
+    const std::string &sourceSha256,
+    const std::string &fitSha256,
+    const std::string &presentationSha256,
     const MdkrCharacterPreviewResult &result);
 
 // Discard any in-progress audible Audio slider preview. Used when navigation

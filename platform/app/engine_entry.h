@@ -64,9 +64,21 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned long long contact_solves;
     unsigned long long contact_error_mean_micrometres;
     unsigned long long contact_error_max_micrometres;
+    /* Exact comparison environment captured inside the engine session. Text
+     * comes from the bounded GPU diagnostic record; dimensions distinguish
+     * output resolution from RenderScale's actual scene resolution. */
+    char renderer_backend[32];
+    char adapter[192];
+    char driver[192];
+    unsigned vendor_id;
+    unsigned device_id;
+    unsigned output_width;
+    unsigned output_height;
+    unsigned render_width;
+    unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 2u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 3u
 
 // Owned by the C engine entry module and non-NULL only during a launcher-owned
 // preview boot. The game writes through it before engine teardown resets the

@@ -4916,6 +4916,11 @@ only after the 120-authored-tick warm-up and emit a bounded structured result
 with at least 40 post-warm-up intervals and nonzero modern-character
 replacements. The headless arm must identify its synthetic pacing so those fast
 harness intervals can never be presented as a player/device performance result.
+It must also report a stable WebGPU backend, adapter, driver, vendor/device ID,
+physical output size and actual scene-render size. With RenderScale 1, output
+and render dimensions must agree across every arm and with the captured PPM;
+the gate intentionally accepts the host's real HiDPI drawable rather than
+mistaking logical window pixels for the comparison environment.
 
 ```bash
 python3 tests/check_custom_character_workshop_preview.py \
@@ -4926,6 +4931,34 @@ The gate is registered as `custom_character_workshop_preview` and GPU-serialized
 in `tools/run_checks.py`. The ROM-free `app_lifecycle` CTest separately proves
 that its scoped launcher environment handoff restores both absent variables and
 exact caller-supplied values after repeated writes.
+
+## Durable Character Workshop test evidence — `tests/check_character_test_evidence_ui.py`
+
+This ROM-free rendered gate installs a generated CC0 animated package and
+exercises the Test workspace's durable 4-context by 4-player-layout matrix. It
+publishes a qualified Car 4P result through the production result boundary,
+checks exact source/fit/presentation fingerprints plus timing, device and
+physical-dimension fields on disk, restarts the launcher, and pins the result as
+an explicit comparison baseline. A 200% compact keyboard-only speech walk must
+announce the qualified cell and both baseline controls.
+
+The second half clears only that baseline while preserving latest evidence,
+then clears the package's complete local evidence inventory. Finally it corrupts
+the authenticated store and requires the Workshop to become read-only without
+rewriting one byte. Every arm hashes the installed package before and after so
+test bookkeeping cannot mutate character source or compiled cache bytes. The
+pure `character_test_evidence_store` unit separately covers canonical parsing,
+whole-inventory and row authentication, strict numeric/UTF-8 bounds, exact key
+replacement, the 64-package/2048-record limits, transaction failures and honest
+baseline comparability.
+
+```bash
+python3 tests/check_character_test_evidence_ui.py \
+  --build build-character-tests
+```
+
+The rendered gate is registered as `app_character_test_evidence` in CTest and
+`character_test_evidence_ui` in `tools/run_checks.py`; it requires no ROM.
 
 ## Bonus results portraits — `tests/check_bonus_results_portraits.py`
 

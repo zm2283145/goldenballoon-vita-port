@@ -67,6 +67,7 @@
 #include "modern_character_runtime.h"
 #include "waves.h"
 #include "fast3d/gfx_pc_dkr.h"
+#include "gpu_diagnostics.h"
 #include "present_sched.h"
 #include "gameplay_event_trace.h"
 #include "presentation_snapshot.h"
@@ -193,9 +194,30 @@ static void workshop_preview_measurement_finish(void) {
     MdkrPresentPerfSnapshot present;
     MdkrModernCharacterRuntimeMetrics character;
     MdkrCharacterPreviewResult *result = g_mdkrCharacterPreviewResult;
+    const MdkrGpuInfo *gpu;
     if (result == NULL || sWorkshopPreviewMeasurementFinished) return;
     result->warmup_ticks = sWorkshopPreviewWarmupTicks;
     result->realtime = platform_pace_is_synthetic() ? FALSE : TRUE;
+    gpu = mdkr_gpu_info_get();
+    (void)snprintf(result->renderer_backend,
+                   sizeof(result->renderer_backend), "%s",
+                   mdkr_render_backend_name());
+    if (gpu != NULL && gpu->selected >= 0 && gpu->selected < gpu->count) {
+        const MdkrGpuCandidate *selected = &gpu->candidates[gpu->selected];
+        (void)snprintf(result->renderer_backend,
+                       sizeof(result->renderer_backend), "%s",
+                       selected->backend);
+        (void)snprintf(result->adapter, sizeof(result->adapter), "%s",
+                       selected->adapter);
+        (void)snprintf(result->driver, sizeof(result->driver), "%s",
+                       selected->driver);
+        result->vendor_id = selected->vendor_id;
+        result->device_id = selected->device_id;
+    }
+    result->output_width = gfx_output_dimensions.width;
+    result->output_height = gfx_output_dimensions.height;
+    result->render_width = gfx_current_dimensions.width;
+    result->render_height = gfx_current_dimensions.height;
     if (sWorkshopPreviewMeasurementStarted) {
         present_perf_snapshot(&present);
         mdkr_modern_character_runtime_metrics(&character);
@@ -243,12 +265,21 @@ static void workshop_preview_measurement_finish(void) {
     }
     sWorkshopPreviewMeasurementFinished = TRUE;
     MDKR_TRACE(
-        "character_workshop_result: warmup=%d realtime=%d samples=%llu p50us=%llu p95us=%llu p99us=%llu maxus=%llu replacements=%llu contacts=%llu contactMaxUm=%llu",
+        "character_workshop_result: warmup=%d realtime=%d samples=%llu "
+        "p50us=%llu p95us=%llu p99us=%llu maxus=%llu replacements=%llu "
+        "contacts=%llu contactMaxUm=%llu backend=%s adapter=%s driver=%s "
+        "vendor=%08x device=%08x output=%ux%u render=%ux%u",
         result->warmup_complete, result->realtime,
         result->interval_samples, result->interval_p50_us,
         result->interval_p95_us, result->interval_p99_us,
         result->interval_max_us, result->replacement_draws,
-        result->contact_solves, result->contact_error_max_micrometres);
+        result->contact_solves, result->contact_error_max_micrometres,
+        result->renderer_backend,
+        result->adapter[0] != '\0' ? result->adapter : "unknown",
+        result->driver[0] != '\0' ? result->driver : "unknown",
+        result->vendor_id, result->device_id,
+        result->output_width, result->output_height,
+        result->render_width, result->render_height);
 }
 
 static void workshop_preview_measurement_service(s32 overlayPaused) {

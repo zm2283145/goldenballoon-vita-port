@@ -198,6 +198,7 @@ GPU_SERIAL_NAMES = frozenset({
     "character_raw_intake_ui",
     "character_workshop_history_ui",
     "character_portrait_studio_ui",
+    "character_test_evidence_ui",
     "custom_character_workshop_preview",
     "bonus_results_portraits",
     "taj_character_select",
@@ -748,6 +749,11 @@ CHECKS = (
           "check_character_portrait_studio_ui.py", "native",
           "ROM-free deterministic portrait style/pixel tools at 200% compact "
           "layout with keyboard speech and installed-byte purity"),
+    Check("character_test_evidence_ui",
+          "check_character_test_evidence_ui.py", "native",
+          "ROM-free durable 4x4 exact-test matrix, qualified baseline lifecycle, "
+          "device/source/fit binding, corruption refusal, 200% layout, and "
+          "keyboard speech"),
     Check("custom_character_workshop_preview",
           "check_custom_character_workshop_preview.py", "native",
           "script-free exact select/car/hovercraft/plane launches and real "

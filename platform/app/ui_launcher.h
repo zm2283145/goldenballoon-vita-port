@@ -95,6 +95,9 @@ struct LauncherState {
     // remains pending only for that asynchronous check, then is copied into the
     // one-shot boot config or cleared on cancellation/failure.
     std::string characterPreviewPackage;
+    std::string characterPreviewSourceSha256;
+    std::string characterPreviewFitSha256;
+    std::string characterPreviewPresentationSha256;
     MdkrCharacterPreviewContext characterPreviewContext =
         MDKR_CHARACTER_PREVIEW_NONE;
     int characterPreviewPlayers = 0;

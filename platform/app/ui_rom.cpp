@@ -461,6 +461,9 @@ static void cancelValidation(LauncherState &s, bool clearUnusableSelection) {
     s.romPlayValidationPassed = false;
     if (cancelledPlay) {
         s.characterPreviewPackage.clear();
+        s.characterPreviewSourceSha256.clear();
+        s.characterPreviewFitSha256.clear();
+        s.characterPreviewPresentationSha256.clear();
         s.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
         s.characterPreviewPlayers = 0;
         s.characterPreviewDispatched = false;
@@ -486,6 +489,9 @@ static void cancelCharacterPreview(LauncherState &s) {
         cancelValidation(s, /*clearUnusableSelection=*/false);
     }
     s.characterPreviewPackage.clear();
+    s.characterPreviewSourceSha256.clear();
+    s.characterPreviewFitSha256.clear();
+    s.characterPreviewPresentationSha256.clear();
     s.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
     s.characterPreviewPlayers = 0;
     s.characterPreviewDispatched = false;
@@ -535,6 +541,9 @@ void RomPanel_serviceValidation(LauncherState &s) {
                 result.info.message);
             s.bootErrorVisible = true;
             s.characterPreviewPackage.clear();
+            s.characterPreviewSourceSha256.clear();
+            s.characterPreviewFitSha256.clear();
+            s.characterPreviewPresentationSha256.clear();
             s.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
             s.characterPreviewPlayers = 0;
             s.characterPreviewDispatched = false;

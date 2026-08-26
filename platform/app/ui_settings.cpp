@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "app_theme.h"
 #include "app_ui_policy.h"
+#include "app_version.h"
 #include "app_window.h"
 #include "character_candidate_index.h"
 #include "character_draft_snapshot.h"
@@ -12,6 +13,7 @@
 #include "character_raw_draft_store.h"
 #include "character_raw_intake_index.h"
 #include "character_revision_index.h"
+#include "character_test_evidence_store.h"
 #include "character_workshop_model.h"
 #include "file_dialog.h"
 #include "ui_common.h"
@@ -1962,9 +1964,27 @@ MdkrDonorGameplayProfiles g_donorGameplayProfiles{};
 std::string g_donorGameplayProfilesUnavailableReason;
 std::map<std::string, int> g_characterAssemblyPlayers;
 std::map<std::string, int> g_characterTestPlayers;
-std::map<std::string, MdkrCharacterPreviewResult> g_characterPreviewResults;
+struct CharacterPreviewSessionResult {
+    MdkrCharacterPreviewResult result{};
+    std::string sourceSha256;
+    std::string fitSha256;
+    std::string presentationSha256;
+};
+std::map<std::string, CharacterPreviewSessionResult>
+    g_characterPreviewResults;
 SettingsCharacterPreviewRequest g_characterPreviewRequest;
 bool g_characterPreviewRequested = false;
+CharacterTestEvidenceStore::Inventory g_characterTestEvidence;
+bool g_characterTestEvidenceLoaded = false;
+bool g_characterTestEvidenceWritable = false;
+std::string g_characterTestEvidenceError;
+MdkrTextStateFileSpec g_characterTestEvidenceFileSpec{
+    "character_test_evidence-v1.tsv", nullptr, nullptr,
+};
+std::map<std::string, unsigned> g_characterTestEvidenceSelectedCell;
+bool g_characterTestEvidenceSmokeActionApplied = false;
+bool g_characterTestEvidenceErrorTracePrinted = false;
+std::set<std::string> g_characterTestEvidenceTracePackages;
 
 struct CharacterTuningEdit {
     bool loaded = false;
@@ -2176,6 +2196,91 @@ std::string characterFloatText(float value) {
     char text[48];
     std::snprintf(text, sizeof(text), "%.7g", static_cast<double>(value));
     return text;
+}
+
+std::string characterTestPresentationSignature() {
+    static const MdkrVideoKey keys[] = {
+        MDKR_VIDEO_REMASTER_FX,
+        MDKR_VIDEO_WIDESCREEN,
+        MDKR_VIDEO_ASPECT,
+        MDKR_VIDEO_RENDER_SCALE,
+        MDKR_VIDEO_MSAA,
+        MDKR_VIDEO_ANISOTROPY,
+        MDKR_VIDEO_MIPMAPS,
+        MDKR_VIDEO_TEXTURE_PACK,
+        MDKR_VIDEO_GAMEPLAY_FOV,
+        MDKR_VIDEO_SIMULATION_CADENCE,
+        MDKR_VIDEO_FRAME_LIMIT,
+        MDKR_VIDEO_MOTION_SMOOTHING,
+        MDKR_VIDEO_MODE,
+        MDKR_VIDEO_WORLD_SHADOWS,
+        MDKR_VIDEO_CAMERA_OBSTRUCTION,
+        MDKR_VIDEO_ALLOW_TEARING,
+        MDKR_VIDEO_CAMERA_COMFORT,
+        MDKR_VIDEO_HIRES_TEXT,
+        MDKR_CONTENT_PACKS_ENABLED,
+        MDKR_CONTENT_PACK_DISABLED,
+        MDKR_ENH_DRAW_DISTANCE,
+        MDKR_ENH_LOD_BIAS,
+        MDKR_VIDEO_WIDESCREEN_HUD,
+    };
+    std::string canonical = "mdkr-character-test-presentation-v1\n";
+    canonical += AppVersion();
+    canonical.push_back('\n');
+    for (MdkrVideoKey key : keys) {
+        const MdkrVideoSchema *schema = mdkr_video_schema(key);
+        const MdkrVideoValue *value = desired(key);
+        if (schema == nullptr || value == nullptr) return {};
+        canonical += schema->name;
+        canonical.push_back('=');
+        if (schema->type == MDKR_VIDEO_TYPE_STRING) {
+            canonical += value->text;
+        } else if (schema->type == MDKR_VIDEO_TYPE_INT) {
+            canonical += std::to_string(static_cast<int>(value->number));
+        } else {
+            canonical += characterFloatText(value->number);
+        }
+        canonical.push_back('\n');
+    }
+    char digest[MDKR_SHA256_HEX_SIZE];
+    mdkr_sha256_hex(canonical.data(), canonical.size(), digest);
+    return digest;
+}
+
+MdkrTextStateStorage characterTestEvidenceStorage() {
+    return MdkrTextStateStorage{
+        &g_characterTestEvidenceFileSpec,
+        mdkr_text_state_file_read,
+        mdkr_text_state_file_write,
+    };
+}
+
+void loadCharacterTestEvidence() {
+    if (g_characterTestEvidenceLoaded) return;
+    g_characterTestEvidenceLoaded = true;
+    CharacterTestEvidenceStore::Inventory inventory;
+    const CharacterTestEvidenceStore::LoadResult result =
+        CharacterTestEvidenceStore::load(
+            characterTestEvidenceStorage(), inventory,
+            g_characterTestEvidenceError);
+    g_characterTestEvidenceWritable =
+        result == CharacterTestEvidenceStore::LoadResult::Loaded ||
+        result == CharacterTestEvidenceStore::LoadResult::Missing;
+    if (g_characterTestEvidenceWritable) {
+        g_characterTestEvidence = std::move(inventory);
+    }
+}
+
+bool replaceCharacterTestEvidence(
+    CharacterTestEvidenceStore::Inventory replacement) {
+    if (!g_characterTestEvidenceWritable ||
+        !CharacterTestEvidenceStore::save(
+            characterTestEvidenceStorage(), replacement,
+            g_characterTestEvidenceError)) {
+        return false;
+    }
+    g_characterTestEvidence = std::move(replacement);
+    return true;
 }
 
 const char *characterFitContextId(unsigned context) {
@@ -3386,6 +3491,7 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterAssemblyPlayers.erase(id);
     g_characterTestPlayers.erase(id);
     g_characterPreviewResults.erase(id);
+    g_characterTestEvidenceSelectedCell.erase(id);
     g_characterActiveDrafts.erase(id);
     g_characterDraftReviews.erase(id);
     g_characterPendingDraftFit.erase(id);
@@ -3421,6 +3527,27 @@ bool forgetCharacterPackageDrafts(const std::string &id) {
             }),
         replacement.drafts.end());
     return replaceCharacterDraftInventory(std::move(replacement));
+}
+
+size_t characterPackageTestEvidenceCount(const std::string &id) {
+    loadCharacterTestEvidence();
+    return static_cast<size_t>(std::count_if(
+        g_characterTestEvidence.records.begin(),
+        g_characterTestEvidence.records.end(),
+        [&id](const CharacterTestEvidenceStore::Evidence &evidence) {
+            return evidence.packageId == id;
+        }));
+}
+
+bool forgetCharacterPackageTestEvidence(const std::string &id) {
+    loadCharacterTestEvidence();
+    if (!g_characterTestEvidenceWritable) return false;
+    CharacterTestEvidenceStore::Inventory replacement =
+        g_characterTestEvidence;
+    (void)CharacterTestEvidenceStore::erasePackage(replacement, id);
+    if (!replaceCharacterTestEvidence(std::move(replacement))) return false;
+    g_characterTestEvidenceSelectedCell.erase(id);
+    return true;
 }
 
 void refreshCharacterRegistry() {
@@ -4249,6 +4376,64 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
     return saved;
 }
 
+bool characterTestEvidenceMatchesFit(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterTuningEdit &tuning,
+    const CharacterTestEvidenceStore::Evidence &evidence) {
+    if (entry == nullptr || evidence.context < 1u || evidence.context > 4u) {
+        return false;
+    }
+    return evidence.sourceSha256 == characterDigestHex(entry->source_sha256) &&
+           evidence.fitSha256 == characterFitReviewSignature(
+               entry, tuning, evidence.context - 1u);
+}
+
+bool characterPreviewSessionMatchesFit(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterTuningEdit &tuning,
+    MdkrCharacterPreviewContext context,
+    const CharacterPreviewSessionResult &session) {
+    if (entry == nullptr || context < MDKR_CHARACTER_PREVIEW_SELECT ||
+        context > MDKR_CHARACTER_PREVIEW_PLANE) {
+        return false;
+    }
+    return session.result.version ==
+               MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
+           session.result.started && session.result.context == context &&
+           session.result.warmup_complete &&
+           session.result.replacement_draws != 0u &&
+           session.sourceSha256 ==
+               characterDigestHex(entry->source_sha256) &&
+           session.fitSha256 == characterFitReviewSignature(
+               entry, tuning, static_cast<unsigned>(context - 1));
+}
+
+const CharacterTestEvidenceStore::Evidence *currentRenderedCharacterTestEvidence(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterTuningEdit &tuning,
+    MdkrCharacterPreviewContext context) {
+    loadCharacterTestEvidence();
+    const CharacterTestEvidenceStore::Evidence *newest = nullptr;
+    for (uint32_t players = 1u; players <= 4u; ++players) {
+        const CharacterTestEvidenceStore::Evidence *evidence =
+            CharacterTestEvidenceStore::find(
+                g_characterTestEvidence, entry->id,
+                static_cast<uint32_t>(context), players,
+                CharacterTestEvidenceStore::Kind::Latest);
+        if (evidence != nullptr &&
+            evidence->resultVersion ==
+                MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
+            evidence->started && evidence->warmupComplete &&
+            evidence->replacementDraws != 0u &&
+            characterTestEvidenceMatchesFit(entry, tuning, *evidence) &&
+            (newest == nullptr ||
+             evidence->capturedUnix > newest->capturedUnix)) {
+            newest = evidence;
+        }
+    }
+    return newest;
+}
+
 bool drawCharacterTuningEditor(int player,
                                const MdkrModernCharacterEntry *entry,
                                bool compact) {
@@ -4444,22 +4629,32 @@ bool drawCharacterTuningEditor(int player,
             const MdkrCharacterPreviewContext previewContext =
                 previewContexts[context];
             const auto result = g_characterPreviewResults.find(entry->id);
-            const bool currentResult =
+            const bool currentSessionResult =
                 result != g_characterPreviewResults.end() &&
-                result->second.version ==
-                    MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
-                result->second.started &&
-                result->second.context == previewContext &&
-                result->second.warmup_complete &&
-                result->second.replacement_draws != 0u;
+                characterPreviewSessionMatchesFit(
+                    entry, edit, previewContext, result->second);
+            const CharacterTestEvidenceStore::Evidence *durableResult =
+                currentRenderedCharacterTestEvidence(
+                    entry, edit, previewContext);
+            const bool currentResult = currentSessionResult ||
+                durableResult != nullptr;
             if (currentResult &&
                 context != MDKR_CHARACTER_CONTEXT_SELECT) {
-                if (result->second.contact_solves != 0u) {
+                const uint64_t contactSolves = currentSessionResult
+                    ? result->second.result.contact_solves
+                    : durableResult->contactSolves;
+                const uint64_t contactMean = currentSessionResult
+                    ? result->second.result.contact_error_mean_micrometres
+                    : durableResult->contactErrorMeanMicrometres;
+                const uint64_t contactMaximum = currentSessionResult
+                    ? result->second.result.contact_error_max_micrometres
+                    : durableResult->contactErrorMaxMicrometres;
+                if (contactSolves != 0u) {
                     ImGui::Text(
                         "Last exact test: %.2f mm mean · %.2f mm maximum across %llu solves",
-                        result->second.contact_error_mean_micrometres / 1000.0,
-                        result->second.contact_error_max_micrometres / 1000.0,
-                        result->second.contact_solves);
+                        contactMean / 1000.0,
+                        contactMaximum / 1000.0,
+                        static_cast<unsigned long long>(contactSolves));
                 } else {
                     ImGui::TextDisabled(
                         "Last exact test: no procedural contacts (authored clip or solver locked)");
@@ -4702,12 +4897,87 @@ void drawCharacterPerformanceAssembly(
 void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              MdkrCharacterPreviewContext context,
                              int players) {
+    const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
+    const std::string fitSignature = characterFitReviewSignature(
+        entry, tuning, static_cast<unsigned>(context - 1));
+    const std::string presentationSignature =
+        characterTestPresentationSignature();
+    if (fitSignature.empty() || presentationSignature.empty()) {
+        setStatus(
+            "The exact test could not bind its source, fit, and presentation settings; no test was started.",
+            AppTheme::bad());
+        return;
+    }
+    g_characterPreviewRequest = SettingsCharacterPreviewRequest{};
     g_characterPreviewRequest.packageId = entry->id;
+    g_characterPreviewRequest.sourceSha256 =
+        characterDigestHex(entry->source_sha256);
+    g_characterPreviewRequest.fitSha256 = fitSignature;
+    g_characterPreviewRequest.presentationSha256 = presentationSignature;
     g_characterPreviewRequest.context = context;
     g_characterPreviewRequest.players = players;
     g_characterPreviewRequested = true;
     setStatus("Checking the selected ROM, then opening the exact game context.",
               AppTheme::good());
+}
+
+std::string boundedCharacterPreviewText(const char *text, size_t capacity) {
+    if (text == nullptr) return {};
+    size_t length = 0u;
+    while (length < capacity && text[length] != '\0') ++length;
+    return std::string(text, length);
+}
+
+CharacterTestEvidenceStore::Evidence characterTestEvidenceFromResult(
+    const std::string &packageId, const std::string &sourceSha256,
+    const std::string &fitSha256,
+    const std::string &presentationSha256,
+    const MdkrCharacterPreviewResult &result) {
+    CharacterTestEvidenceStore::Evidence evidence;
+    evidence.packageId = packageId;
+    const std::time_t now = std::time(nullptr);
+    evidence.capturedUnix = now >= 0 ? static_cast<uint64_t>(now) : 0u;
+    evidence.sourceSha256 = sourceSha256;
+    evidence.fitSha256 = fitSha256;
+    evidence.presentationSha256 = presentationSha256;
+    evidence.buildVersion = AppVersion();
+    evidence.context = static_cast<uint32_t>(result.context);
+    evidence.players = static_cast<uint32_t>(result.players);
+    evidence.resultVersion = result.version;
+    evidence.started = result.started != 0;
+    evidence.warmupComplete = result.warmup_complete != 0;
+    evidence.realtime = result.realtime != 0;
+    evidence.warmupTicks = result.warmup_ticks;
+    evidence.intervalSamples = result.interval_samples;
+    evidence.displayedFrames = result.displayed_frames;
+    evidence.intervalP50Us = result.interval_p50_us;
+    evidence.intervalP95Us = result.interval_p95_us;
+    evidence.intervalP99Us = result.interval_p99_us;
+    evidence.intervalMeanUs = result.interval_mean_us;
+    evidence.intervalMaxUs = result.interval_max_us;
+    evidence.tickwallSamples = result.tickwall_samples;
+    evidence.tickwallMeanNs = result.tickwall_mean_ns;
+    evidence.replacementDraws = result.replacement_draws;
+    evidence.replacementPrimitives = result.replacement_primitives;
+    evidence.hiddenDonorBatches = result.hidden_donor_batches;
+    evidence.contactSolves = result.contact_solves;
+    evidence.contactErrorMeanMicrometres =
+        result.contact_error_mean_micrometres;
+    evidence.contactErrorMaxMicrometres =
+        result.contact_error_max_micrometres;
+    evidence.backend = boundedCharacterPreviewText(
+        result.renderer_backend, sizeof(result.renderer_backend));
+    evidence.adapter = boundedCharacterPreviewText(
+        result.adapter, sizeof(result.adapter));
+    evidence.driver = boundedCharacterPreviewText(
+        result.driver, sizeof(result.driver));
+    evidence.vendorId = result.vendor_id;
+    evidence.deviceId = result.device_id;
+    evidence.outputWidth = result.output_width;
+    evidence.outputHeight = result.output_height;
+    evidence.renderWidth = result.render_width;
+    evidence.renderHeight = result.render_height;
+    return evidence;
 }
 
 const char *characterPreviewResultContext(
@@ -4724,7 +4994,7 @@ const char *characterPreviewResultContext(
 void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
     const auto found = g_characterPreviewResults.find(entry->id);
     if (found == g_characterPreviewResults.end()) return;
-    const MdkrCharacterPreviewResult &result = found->second;
+    const MdkrCharacterPreviewResult &result = found->second.result;
     ui::Gap(ui::kGapS);
     if (!ui::CardBegin("##character-preview-result", AppTheme::surface(),
                        0.0f)) {
@@ -4755,13 +5025,18 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         return;
     }
     const bool enoughSamples = result.interval_samples >= 60u;
-    const bool qualified = result.realtime && enoughSamples;
+    const bool renderedCharacter = result.replacement_draws != 0u;
+    const bool qualified = result.realtime && enoughSamples &&
+        renderedCharacter;
     ImGui::PushStyleColor(
         ImGuiCol_Text, qualified ? AppTheme::good() : AppTheme::accent());
     ImGui::TextUnformatted(
         qualified ? "Steady-state sample captured"
-                  : (!result.realtime ? "Synthetic pacing — diagnostic only"
-                                      : "Short sample — diagnostic only"));
+                  : (!renderedCharacter
+                         ? "No character replacement — diagnostic only"
+                         : (!result.realtime
+                                ? "Synthetic pacing — diagnostic only"
+                                : "Short sample — diagnostic only")));
     ImGui::PopStyleColor();
     if (ImGui::BeginTable("##character-preview-measurement", 2,
                           ImGuiTableFlags_SizingStretchProp |
@@ -4831,6 +5106,491 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
     ui::CardEnd();
 }
 
+bool characterTestEvidenceCurrent(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterTuningEdit &tuning,
+    const CharacterTestEvidenceStore::Evidence &evidence,
+    const std::string &presentationSignature) {
+    return evidence.resultVersion == MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
+           evidence.buildVersion == AppVersion() &&
+           evidence.presentationSha256 == presentationSignature &&
+           characterTestEvidenceMatchesFit(entry, tuning, evidence);
+}
+
+const char *characterTestEvidenceState(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterTuningEdit &tuning,
+    const CharacterTestEvidenceStore::Evidence *evidence,
+    const std::string &presentationSignature) {
+    if (evidence == nullptr) return "Not run";
+    if (!characterTestEvidenceMatchesFit(entry, tuning, *evidence)) {
+        return "Stale";
+    }
+    if (evidence->resultVersion != MDKR_CHARACTER_PREVIEW_RESULT_VERSION ||
+        evidence->buildVersion != AppVersion() ||
+        evidence->presentationSha256 != presentationSignature) {
+        return "Setup changed";
+    }
+    if (!evidence->started) return "Did not start";
+    if (!evidence->warmupComplete) return "Warm-up";
+    if (evidence->replacementDraws == 0u) return "No character";
+    if (evidence->adapter.empty()) return "Device unknown";
+    if (!evidence->realtime) return "Synthetic";
+    if (evidence->intervalSamples < 60u) return "Short";
+    return "Qualified";
+}
+
+bool pinCharacterTestBaseline(
+    const CharacterTestEvidenceStore::Evidence &latest) {
+    loadCharacterTestEvidence();
+    if (!g_characterTestEvidenceWritable ||
+        latest.kind != CharacterTestEvidenceStore::Kind::Latest ||
+        !CharacterTestEvidenceStore::qualified(latest)) {
+        return false;
+    }
+    CharacterTestEvidenceStore::Inventory replacement =
+        g_characterTestEvidence;
+    CharacterTestEvidenceStore::Evidence baseline = latest;
+    baseline.kind = CharacterTestEvidenceStore::Kind::Baseline;
+    std::string error;
+    if (!CharacterTestEvidenceStore::upsert(
+            replacement, std::move(baseline), error)) {
+        g_characterTestEvidenceError = error;
+        return false;
+    }
+    return replaceCharacterTestEvidence(std::move(replacement));
+}
+
+bool clearCharacterTestBaseline(
+    const CharacterTestEvidenceStore::Evidence &baseline) {
+    CharacterTestEvidenceStore::Inventory replacement =
+        g_characterTestEvidence;
+    if (!CharacterTestEvidenceStore::erase(
+            replacement, baseline.packageId, baseline.context,
+            baseline.players,
+            CharacterTestEvidenceStore::Kind::Baseline)) {
+        return false;
+    }
+    return replaceCharacterTestEvidence(std::move(replacement));
+}
+
+void drawCharacterTestEvidenceMatrix(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterTuningEdit &tuning) {
+    static const char *contextNames[] = {
+        "Character select", "Car", "Hovercraft", "Plane",
+    };
+    loadCharacterTestEvidence();
+    const char *smokeAction = std::getenv(
+        "MDKR_APP_SMOKE_CHARACTER_TEST_EVIDENCE_ACTION");
+    const char *smokeToken = std::getenv(
+        "MDKR_APP_SMOKE_CHARACTER_TEST_EVIDENCE_TOKEN");
+    // Test-only lifecycle seam. The explicit paired token prevents an
+    // ordinary launcher environment from accidentally manufacturing or
+    // deleting qualification evidence.
+    // The rendered gate drives the same publication and transactional storage
+    // paths as the real engine result and visible controls below.
+    if (!g_characterTestEvidenceSmokeActionApplied &&
+        smokeAction != nullptr && smokeToken != nullptr &&
+        std::strcmp(
+            smokeToken, "mdkr64-character-test-evidence-v1") == 0) {
+        g_characterTestEvidenceSmokeActionApplied = true;
+        bool applied = false;
+        if (std::strcmp(smokeAction, "publish-qualified") == 0 ||
+            std::strcmp(
+                smokeAction, "publish-stale-fit-session") == 0) {
+            MdkrCharacterPreviewResult result{};
+            result.version = MDKR_CHARACTER_PREVIEW_RESULT_VERSION;
+            result.started = 1;
+            result.warmup_complete = 1;
+            result.realtime = 1;
+            result.context = MDKR_CHARACTER_PREVIEW_CAR;
+            result.players = 4;
+            result.warmup_ticks = 120u;
+            result.interval_samples = 180u;
+            result.displayed_frames = 181u;
+            result.interval_p50_us = 16650u;
+            result.interval_p95_us = 17100u;
+            result.interval_p99_us = 18250u;
+            result.interval_mean_us = 16800u;
+            result.interval_max_us = 20000u;
+            result.tickwall_samples = 180u;
+            result.tickwall_mean_ns = 1200000u;
+            result.replacement_draws = 720u;
+            result.replacement_primitives = 1440u;
+            result.hidden_donor_batches = 720u;
+            result.contact_solves = 1440u;
+            result.contact_error_mean_micrometres = 1200u;
+            result.contact_error_max_micrometres = 3400u;
+            std::snprintf(result.renderer_backend,
+                          sizeof(result.renderer_backend), "%s",
+                          "webgpu-test");
+            std::snprintf(result.adapter, sizeof(result.adapter), "%s",
+                          "Rendered evidence fixture GPU");
+            std::snprintf(result.driver, sizeof(result.driver), "%s",
+                          "fixture-driver");
+            result.vendor_id = 0x106Bu;
+            result.device_id = 0x1234u;
+            result.output_width = 1280u;
+            result.output_height = 960u;
+            result.render_width = 2560u;
+            result.render_height = 1920u;
+            const std::string source =
+                characterDigestHex(entry->source_sha256);
+            const bool staleFit = std::strcmp(
+                smokeAction, "publish-stale-fit-session") == 0;
+            const std::string fit = staleFit
+                ? std::string(64u, 'd')
+                : characterFitReviewSignature(
+                      entry, tuning, MDKR_CHARACTER_CONTEXT_CAR);
+            const std::string presentation =
+                characterTestPresentationSignature();
+            Settings_publishCharacterPreviewResult(
+                entry->id, source, fit, presentation, result);
+            const auto session = g_characterPreviewResults.find(entry->id);
+            applied = CharacterTestEvidenceStore::find(
+                g_characterTestEvidence, entry->id, 2u, 4u,
+                CharacterTestEvidenceStore::Kind::Latest) != nullptr &&
+                (!staleFit ||
+                 (session != g_characterPreviewResults.end() &&
+                  !characterPreviewSessionMatchesFit(
+                      entry, tuning, MDKR_CHARACTER_PREVIEW_CAR,
+                      session->second)));
+        } else if (std::strcmp(smokeAction, "pin-car-4p") == 0) {
+            const CharacterTestEvidenceStore::Evidence *latest =
+                CharacterTestEvidenceStore::find(
+                    g_characterTestEvidence, entry->id, 2u, 4u,
+                    CharacterTestEvidenceStore::Kind::Latest);
+            applied = latest != nullptr &&
+                pinCharacterTestBaseline(*latest);
+        } else if (std::strcmp(smokeAction, "clear-car-4p-baseline") == 0) {
+            const CharacterTestEvidenceStore::Evidence *baseline =
+                CharacterTestEvidenceStore::find(
+                    g_characterTestEvidence, entry->id, 2u, 4u,
+                    CharacterTestEvidenceStore::Kind::Baseline);
+            applied = baseline != nullptr &&
+                clearCharacterTestBaseline(*baseline);
+        } else if (std::strcmp(smokeAction, "clear-package") == 0) {
+            CharacterTestEvidenceStore::Inventory replacement =
+                g_characterTestEvidence;
+            applied = CharacterTestEvidenceStore::erasePackage(
+                replacement, entry->id) != 0u &&
+                replaceCharacterTestEvidence(std::move(replacement));
+        }
+        const size_t baselines = static_cast<size_t>(std::count_if(
+            g_characterTestEvidence.records.begin(),
+            g_characterTestEvidence.records.end(),
+            [&](const CharacterTestEvidenceStore::Evidence &evidence) {
+                return evidence.packageId == entry->id &&
+                    evidence.kind ==
+                        CharacterTestEvidenceStore::Kind::Baseline;
+            }));
+        std::fprintf(
+            stderr,
+            "[app-ui] character-test-evidence-action action=%s applied=%d records=%zu baselines=%zu\n",
+            smokeAction, applied ? 1 : 0,
+            g_characterTestEvidence.records.size(), baselines);
+    }
+    ImGui::SeparatorText("Exact test evidence");
+    ui::TextSubtleWrapped(
+        "Each cell is one real game context and local-player layout. Results are bound to the exact package source, fit, app build, presentation settings, render resolution, and GPU identity; stale or incomparable evidence stays visible instead of silently passing.");
+    if (!g_characterTestEvidenceWritable) {
+        if (!g_characterTestEvidenceErrorTracePrinted &&
+            std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-test-evidence writable=0 error=%s\n",
+                g_characterTestEvidenceError.c_str());
+            g_characterTestEvidenceErrorTracePrinted = true;
+        }
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "Saved test evidence is read-only: %s",
+            g_characterTestEvidenceError.c_str());
+        ui::TextSubtleWrapped(
+            "The malformed or unreadable inventory is preserved byte-for-byte. This session's last result remains visible below, but it will not overwrite durable evidence.");
+        return;
+    }
+    const std::string presentationSignature =
+        characterTestPresentationSignature();
+    unsigned &selectedCell =
+        g_characterTestEvidenceSelectedCell[entry->id];
+    if (selectedCell >= 16u) selectedCell = 0u;
+    bool haveSelected = false;
+    uint64_t newestTime = 0u;
+    unsigned newestCell = selectedCell;
+    unsigned applicableCells = 0u;
+    unsigned qualifiedCells = 0u;
+    if (ImGui::BeginTable(
+            "##character-test-evidence-matrix", 5,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn(
+            "Context", ImGuiTableColumnFlags_WidthStretch, 0.28f);
+        for (int players = 1; players <= 4; ++players) {
+            const std::string heading = std::to_string(players) + "P";
+            ImGui::TableSetupColumn(
+                heading.c_str(), ImGuiTableColumnFlags_WidthStretch, 0.18f);
+        }
+        ImGui::TableHeadersRow();
+        for (uint32_t context = 1u; context <= 4u; ++context) {
+            const bool applicable = context == 1u ||
+                (tuning.vehicleMask & (1u << (context - 2u))) != 0u;
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(contextNames[context - 1u]);
+            for (uint32_t players = 1u; players <= 4u; ++players) {
+                ImGui::TableNextColumn();
+                const unsigned cell = (context - 1u) * 4u + players - 1u;
+                const CharacterTestEvidenceStore::Evidence *evidence =
+                    applicable
+                        ? CharacterTestEvidenceStore::find(
+                              g_characterTestEvidence, entry->id, context,
+                              players,
+                              CharacterTestEvidenceStore::Kind::Latest)
+                        : nullptr;
+                if (applicable) {
+                    ++applicableCells;
+                    if (evidence != nullptr &&
+                        characterTestEvidenceCurrent(
+                            entry, tuning, *evidence,
+                            presentationSignature) &&
+                        CharacterTestEvidenceStore::qualified(*evidence)) {
+                        ++qualifiedCells;
+                    }
+                    if (evidence != nullptr &&
+                        (!haveSelected || evidence->capturedUnix > newestTime)) {
+                        newestTime = evidence->capturedUnix;
+                        newestCell = cell;
+                    }
+                }
+                ImGui::PushID(static_cast<int>(cell));
+                if (!applicable) ImGui::BeginDisabled();
+                const char *state = applicable
+                    ? characterTestEvidenceState(
+                          entry, tuning, evidence, presentationSignature)
+                    : "N/A";
+                if (ImGui::Selectable(
+                        state, selectedCell == cell,
+                        ImGuiSelectableFlags_None, ImVec2(-1.0f, 0.0f)) &&
+                    applicable) {
+                    selectedCell = cell;
+                    haveSelected = true;
+                }
+                const std::string spokenState =
+                    std::to_string(players) +
+                    (players == 1u ? " player, " : " players, ") + state;
+                ui::SpeakFocusedItem(
+                    contextNames[context - 1u], spokenState.c_str(),
+                    applicable
+                        ? "Selects this exact test result for timing, device, fit, and baseline details. It does not run or approve a test."
+                        : "This vehicle context is not enabled for the package.");
+                if (!applicable) ImGui::EndDisabled();
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndTable();
+    }
+    if (!haveSelected && newestTime != 0u &&
+        CharacterTestEvidenceStore::find(
+            g_characterTestEvidence, entry->id, selectedCell / 4u + 1u,
+            selectedCell % 4u + 1u,
+            CharacterTestEvidenceStore::Kind::Latest) == nullptr) {
+        selectedCell = newestCell;
+    }
+    ImGui::TextColored(
+        qualifiedCells == applicableCells && applicableCells != 0u
+            ? AppTheme::good() : AppTheme::accent(),
+        "Current qualified matrix: %u of %u enabled context/layout cells",
+        qualifiedCells, applicableCells);
+
+    const uint32_t selectedContext = selectedCell / 4u + 1u;
+    const uint32_t selectedPlayers = selectedCell % 4u + 1u;
+    const CharacterTestEvidenceStore::Evidence *latest =
+        CharacterTestEvidenceStore::find(
+            g_characterTestEvidence, entry->id, selectedContext,
+            selectedPlayers, CharacterTestEvidenceStore::Kind::Latest);
+    const CharacterTestEvidenceStore::Evidence *baseline =
+        CharacterTestEvidenceStore::find(
+            g_characterTestEvidence, entry->id, selectedContext,
+            selectedPlayers, CharacterTestEvidenceStore::Kind::Baseline);
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
+        g_characterTestEvidenceTracePackages.insert(entry->id).second) {
+        std::fprintf(
+            stderr,
+            "[app-ui] character-test-matrix package=%s current=%u required=%u selected=%u:%u state=%s latest=%d baseline=%d comparable=%d\n",
+            entry->id, qualifiedCells, applicableCells, selectedContext,
+            selectedPlayers,
+            characterTestEvidenceState(
+                entry, tuning, latest, presentationSignature),
+            latest != nullptr ? 1 : 0,
+            baseline != nullptr ? 1 : 0,
+            latest != nullptr && baseline != nullptr &&
+                    CharacterTestEvidenceStore::comparable(*latest, *baseline)
+                ? 1 : 0);
+    }
+    if (latest != nullptr) {
+        ImGui::PushID(static_cast<int>(selectedCell));
+        ImGui::SeparatorText("Selected evidence");
+        ImGui::Text(
+            "%s · %u %s · %s",
+            contextNames[selectedContext - 1u], selectedPlayers,
+            selectedPlayers == 1u ? "player" : "players",
+            characterTestEvidenceState(
+                entry, tuning, latest, presentationSignature));
+        ImGui::TextDisabled(
+            "Captured Unix %llu · app %s · result contract v%u",
+            static_cast<unsigned long long>(latest->capturedUnix),
+            latest->buildVersion.c_str(), latest->resultVersion);
+        ImGui::TextWrapped(
+            "Device: %s · %s · vendor %04x / device %04x",
+            latest->backend.c_str(),
+            latest->adapter.empty() ? "unnamed adapter"
+                                    : latest->adapter.c_str(),
+            latest->vendorId, latest->deviceId);
+        ImGui::TextDisabled(
+            "Output %ux%u · rendered %ux%u · driver %s",
+            latest->outputWidth, latest->outputHeight,
+            latest->renderWidth, latest->renderHeight,
+            latest->driver.empty() ? "not reported"
+                                   : latest->driver.c_str());
+        ImGui::Text(
+            "Median %.2f ms · p95 %.2f ms · p99 %.2f ms · worst %.2f ms",
+            latest->intervalP50Us / 1000.0,
+            latest->intervalP95Us / 1000.0,
+            latest->intervalP99Us / 1000.0,
+            latest->intervalMaxUs / 1000.0);
+        ImGui::TextDisabled(
+            "%llu intervals · %llu replacement draws · %llu submitted parts",
+            static_cast<unsigned long long>(latest->intervalSamples),
+            static_cast<unsigned long long>(latest->replacementDraws),
+            static_cast<unsigned long long>(latest->replacementPrimitives));
+        if (selectedContext != 1u) {
+            ImGui::TextDisabled(
+                "%llu contact solves · %.2f / %.2f mm mean / maximum error",
+                static_cast<unsigned long long>(latest->contactSolves),
+                latest->contactErrorMeanMicrometres / 1000.0,
+                latest->contactErrorMaxMicrometres / 1000.0);
+        }
+        const bool currentQualified =
+            characterTestEvidenceCurrent(
+                entry, tuning, *latest, presentationSignature) &&
+            CharacterTestEvidenceStore::qualified(*latest);
+        if (!currentQualified) ImGui::BeginDisabled();
+        if (ImGui::Button("Pin as comparison baseline") &&
+            currentQualified) {
+            if (pinCharacterTestBaseline(*latest)) {
+                setStatus(
+                    "Exact same-device comparison baseline saved for this context and layout.",
+                    AppTheme::good());
+                latest = CharacterTestEvidenceStore::find(
+                    g_characterTestEvidence, entry->id, selectedContext,
+                    selectedPlayers,
+                    CharacterTestEvidenceStore::Kind::Latest);
+                baseline = CharacterTestEvidenceStore::find(
+                    g_characterTestEvidence, entry->id, selectedContext,
+                    selectedPlayers,
+                    CharacterTestEvidenceStore::Kind::Baseline);
+            } else {
+                setStatus(
+                    "The comparison baseline could not be saved; existing evidence remains unchanged.",
+                    AppTheme::bad());
+            }
+        }
+        if (!currentQualified) ImGui::EndDisabled();
+        ui::SpeakFocusedItem(
+            "Pin as comparison baseline",
+            currentQualified ? nullptr
+                : "Requires a current real-time sample with at least 60 intervals and visible character replacement.",
+            "Copies this exact result into the durable baseline slot for the same context and player layout. It never changes character or game settings.");
+        if (baseline != nullptr) {
+            ImGui::SeparatorText("Pinned baseline");
+            ImGui::TextDisabled(
+                "Captured Unix %llu · %s · %ux%u output / %ux%u render",
+                static_cast<unsigned long long>(baseline->capturedUnix),
+                baseline->adapter.empty() ? baseline->backend.c_str()
+                                          : baseline->adapter.c_str(),
+                baseline->outputWidth, baseline->outputHeight,
+                baseline->renderWidth, baseline->renderHeight);
+            if (CharacterTestEvidenceStore::comparable(*latest, *baseline)) {
+                const auto delta = [](uint64_t value, uint64_t reference) {
+                    return reference == 0u ? 0.0
+                        : (static_cast<double>(value) -
+                           static_cast<double>(reference)) * 100.0 /
+                              static_cast<double>(reference);
+                };
+                ImGui::Text(
+                    "Same-environment delta: median %+.1f%% · p95 %+.1f%% · p99 %+.1f%%",
+                    delta(latest->intervalP50Us, baseline->intervalP50Us),
+                    delta(latest->intervalP95Us, baseline->intervalP95Us),
+                    delta(latest->intervalP99Us, baseline->intervalP99Us));
+                ui::TextSubtleWrapped(
+                    "Negative means a shorter displayed interval. This is a repeatable same-environment comparison, not a GPU-only cost or an automatic pass/fail verdict.");
+            } else {
+                ImGui::TextColored(
+                    AppTheme::accent(),
+                    "Not directly comparable: app build, presentation settings, GPU identity, or output/render dimensions differ.");
+            }
+            if (ImGui::Button("Clear pinned baseline")) {
+                if (clearCharacterTestBaseline(*baseline)) {
+                    setStatus(
+                        "Pinned comparison baseline cleared; the latest result remains.",
+                        AppTheme::subtle());
+                    baseline = nullptr;
+                } else {
+                    setStatus(
+                        "The pinned baseline could not be cleared; no evidence changed.",
+                        AppTheme::bad());
+                }
+            }
+            ui::SpeakFocusedItem(
+                "Clear pinned baseline", nullptr,
+                "Deletes only this context and layout's local comparison baseline. The latest result and character are preserved.");
+        }
+        ImGui::PopID();
+    }
+    if (ImGui::Button("Clear all evidence for this character...")) {
+        ImGui::OpenPopup("Clear character test evidence?");
+    }
+    ui::SpeakFocusedItem(
+        "Clear all evidence for this character", nullptr,
+        "Opens a confirmation to delete only locally saved exact-test results and baselines for this package.");
+    if (ImGui::BeginPopupModal(
+            "Clear character test evidence?", nullptr,
+            ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped(
+            "Delete every latest result and pinned baseline for %s? The package, source, fit, author review, and external files are unchanged.",
+            entry->display_name);
+        if (ImGui::Button("Clear test evidence")) {
+            CharacterTestEvidenceStore::Inventory replacement =
+                g_characterTestEvidence;
+            (void)CharacterTestEvidenceStore::erasePackage(
+                replacement, entry->id);
+            if (replaceCharacterTestEvidence(std::move(replacement))) {
+                g_characterPreviewResults.erase(entry->id);
+                g_characterTestEvidenceSelectedCell.erase(entry->id);
+                setStatus(
+                    "This character's local test evidence and baselines were cleared.",
+                    AppTheme::subtle());
+                ImGui::CloseCurrentPopup();
+            } else {
+                setStatus(
+                    "Test evidence could not be cleared; no durable evidence changed.",
+                    AppTheme::bad());
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Clear test evidence", nullptr,
+            "Permanently deletes only this package's local test-result matrix and pinned baselines.");
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ui::SpeakFocusedItem(
+            "Cancel", nullptr,
+            "Keeps every exact-test result and comparison baseline.");
+        ImGui::EndPopup();
+    }
+}
+
 void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
                              bool compact) {
     if (compact) {
@@ -4845,6 +5605,7 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         entry, CharacterHistoryTool::Test);
     ui::TextSubtleWrapped(
         "Launch this package directly into the real game renderer with its saved fit. The test is temporary: it does not replace Player assignments or skip the final ROM integrity check. For a useful timing sample, stay at least three seconds beyond the 120-tick warm-up; opening F1 freezes the sample before you navigate back.");
+    drawCharacterTestEvidenceMatrix(entry, tuning);
     drawCharacterPreviewResult(entry);
     ImGui::TextUnformatted("Test layout");
     for (int option : {1, 2, 3, 4}) {
@@ -8169,6 +8930,8 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         }
         ImGui::SeparatorText("Package lifecycle");
         const size_t packageDrafts = characterPackageDraftCount(entry->id);
+        const size_t packageTestEvidence =
+            characterPackageTestEvidenceCount(entry->id);
         ui::TextSubtleWrapped(
             "Disable is reversible and retains every Workshop revision, fit setting, review, and player assignment. It also retains every named draft. Permanent deletion removes this package's local cache, named drafts, retained revisions, provenance, and package-owned settings.");
         if (entry->enabled != 0u) {
@@ -8190,26 +8953,29 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                 "Uses the built-in racer in game while retaining all package sources, settings, reviews, and player assignments.");
         }
         ui::Gap(ui::kGapS);
-        if (!g_characterDraftsWritable) ImGui::BeginDisabled();
+        const bool deletionInventoriesWritable =
+            g_characterDraftsWritable && g_characterTestEvidenceWritable;
+        if (!deletionInventoriesWritable) ImGui::BeginDisabled();
         if (ImGui::Button("Permanently delete package...")) {
             g_characterPendingRemoval = entry->id;
             ImGui::OpenPopup("Permanently delete custom character?");
         }
-        if (!g_characterDraftsWritable) ImGui::EndDisabled();
+        if (!deletionInventoriesWritable) ImGui::EndDisabled();
         ui::SpeakFocusedItem(
             "Permanently delete package",
             nullptr,
             "Opens a confirmation for destructive deletion of the local cache, named editor drafts, retained Workshop source revisions, provenance reports, and package-owned settings.");
-        if (!g_characterDraftsWritable) {
+        if (!deletionInventoriesWritable) {
             ui::TextSubtleWrapped(
-                "Permanent deletion is locked because the named-draft inventory cannot be read or atomically replaced. Repair that local state first so package-owned work is never orphaned or silently omitted from the confirmation scope.");
+                "Permanent deletion is locked because the named-draft or exact-test evidence inventory cannot be read and atomically replaced. Repair that local state first so package-owned work is never orphaned or silently omitted from the confirmation scope.");
         }
         if (ImGui::BeginPopupModal("Permanently delete custom character?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::TextWrapped(
-                "Permanently delete %s from this computer? This removes its %s cache, %zu named draft(s), %u retained Workshop source revision(s), %u provenance report(s), fit settings, review evidence, and player assignments.",
+                "Permanently delete %s from this computer? This removes its %s cache, %zu named draft(s), %zu exact-test result/baseline record(s), %u retained Workshop source revision(s), %u provenance report(s), fit settings, review evidence, and player assignments.",
                 entry->display_name,
                 entry->enabled != 0u ? "enabled" : "disabled",
                 packageDrafts,
+                packageTestEvidence,
                 entry->source_revisions,
                 entry->provenance_reports);
             ui::TextSubtleWrapped(
@@ -8223,11 +8989,13 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                         AppConfig::persistResultApplied(persist);
                     const bool draftsRemoved =
                         forgetCharacterPackageDrafts(removedId);
+                    const bool testEvidenceRemoved =
+                        forgetCharacterPackageTestEvidence(removedId);
                     setStatus(
-                        preferencesSaved && draftsRemoved
-                            ? "Custom character, named drafts, retained revisions, and package settings permanently deleted."
-                            : "Character files were deleted, but some local draft or preference cleanup could not be saved yet.",
-                        preferencesSaved && draftsRemoved
+                        preferencesSaved && draftsRemoved && testEvidenceRemoved
+                            ? "Custom character, named drafts, exact-test evidence, retained revisions, and package settings permanently deleted."
+                            : "Character files were deleted, but some local draft, test-evidence, or preference cleanup could not be saved yet.",
+                        preferencesSaved && draftsRemoved && testEvidenceRemoved
                             ? AppTheme::good()
                             : AppTheme::bad());
                     g_characterPendingRemoval.clear();
@@ -9676,9 +10444,53 @@ bool Settings_takeCharacterPreviewRequest(
 
 void Settings_publishCharacterPreviewResult(
     const std::string &packageId,
+    const std::string &sourceSha256,
+    const std::string &fitSha256,
+    const std::string &presentationSha256,
     const MdkrCharacterPreviewResult &result) {
     if (packageId.empty()) return;
-    g_characterPreviewResults[packageId] = result;
+    g_characterPreviewResults[packageId] = CharacterPreviewSessionResult{
+        result, sourceSha256, fitSha256, presentationSha256,
+    };
+    if (result.context >= MDKR_CHARACTER_PREVIEW_SELECT &&
+        result.context <= MDKR_CHARACTER_PREVIEW_PLANE &&
+        result.players >= 1 && result.players <= 4) {
+        g_characterTestEvidenceSelectedCell[packageId] =
+            (static_cast<unsigned>(result.context) - 1u) * 4u +
+            static_cast<unsigned>(result.players - 1);
+    }
+    loadCharacterTestEvidence();
+    if (!g_characterTestEvidenceWritable) return;
+    CharacterTestEvidenceStore::Inventory replacement =
+        g_characterTestEvidence;
+    CharacterTestEvidenceStore::Evidence evidence =
+        characterTestEvidenceFromResult(
+            packageId, sourceSha256, fitSha256, presentationSha256, result);
+    std::string error;
+    if (!CharacterTestEvidenceStore::upsert(
+            replacement, evidence, error)) {
+        g_characterTestEvidenceError = error;
+        setStatus(
+            ("The exact test returned, but its evidence was invalid and was not saved: " +
+             error).c_str(),
+            AppTheme::bad());
+        return;
+    }
+    if (!replaceCharacterTestEvidence(std::move(replacement))) {
+        setStatus(
+            ("The exact test returned for this session, but its evidence could not be saved: " +
+             g_characterTestEvidenceError).c_str(),
+            AppTheme::bad());
+        return;
+    }
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        std::fprintf(
+            stderr,
+            "[app-ui] character-test-evidence saved=1 package=%s context=%u players=%u qualified=%d records=%zu\n",
+            packageId.c_str(), evidence.context, evidence.players,
+            CharacterTestEvidenceStore::qualified(evidence) ? 1 : 0,
+            g_characterTestEvidence.records.size());
+    }
 }
 
 void Settings_cancelAudioPreview() {
