@@ -438,7 +438,13 @@ void handleAction(MdkrOnlineViewAction action, LauncherState &state) {
             dispatch(MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN);
         recordAction(action, step.accepted);
     } else if (action == MDKR_ONLINE_VIEW_ACTION_START_RACE) {
-#if MDKR_ENABLE_ONLINE_ROOM_PREVIEW
+        // The live beta lobby (drawBetaRoom) routes its Start Race press through
+        // this same handler, so the correct vehicle mask must be sent whenever the
+        // room can start a race -- BETA or PREVIEW. Gating the fix on PREVIEW alone
+        // left the shipped beta demo compiling the buggy #else (0x01, Car-only),
+        // which is exactly the silent two-machine stall this fixes. The #else keeps
+        // the OFF/release build (neither macro) byte-identical.
+#if MDKR_ENABLE_ONLINE_ROOM_PREVIEW || MDKR_ENABLE_ONLINE_BETA
         // BEGIN_LOADING's value is the legal (usable) vehicle mask for the race.
         // It must equal the resolved track's leveltable_vehicle_usable() mask, or
         // BOTH the lobby reducer's all_vehicles_legal() gate AND the engine's race
