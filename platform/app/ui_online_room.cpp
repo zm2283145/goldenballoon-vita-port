@@ -64,6 +64,12 @@ struct OnlineRoomUiState {
     // Deferred, non-blocking "Leave Race": set when the persistent takeover
     // control is pressed, consumed after the frame's lobby body has drawn.
     bool leavePending = false;
+    // Never-silent Start Race: set the instant the leader presses Start, cleared
+    // when the room advances past the selection screen. Drives the "Starting…"
+    // acknowledgement and, if the room stays in selection, a plain "couldn't
+    // start" hint -- so Start Race is never a silent dead button.
+    bool startRacePressed = false;
+    double startRacePressedAt = 0.0;
 #endif
 };
 
@@ -432,7 +438,36 @@ void handleAction(MdkrOnlineViewAction action, LauncherState &state) {
             dispatch(MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN);
         recordAction(action, step.accepted);
     } else if (action == MDKR_ONLINE_VIEW_ACTION_START_RACE) {
+#if MDKR_ENABLE_ONLINE_ROOM_PREVIEW
+        // BEGIN_LOADING's value is the legal (usable) vehicle mask for the race.
+        // It must equal the resolved track's leveltable_vehicle_usable() mask, or
+        // BOTH the lobby reducer's all_vehicles_legal() gate AND the engine's race
+        // admission (mdkr_match_manifest_accepts_loaded_race) reject it -- the root
+        // cause of "Start Race does nothing" when a player is not on the Car. All
+        // three curated tracks (Ancient Lake 5 / Fossil Canyon 3 / Jungle Falls 29)
+        // permit every base vehicle (0x07 == MDKR_ONLINE_PLAYER_VEHICLE_MASK,
+        // verified against the US v80 ROM level headers via
+        // leveltable_vehicle_usable), so the resolved-track mask is 0x07 whichever
+        // one the vote lands on. The old hardcoded 0x01 (Car-only) silently failed
+        // for Hovercraft/Plane. NOTE: if a narrower-mask track is ever added to
+        // kTracks, this must send that resolved track's usable mask instead.
+        const unsigned startRaceVehicleMask = MDKR_ONLINE_PLAYER_VEHICLE_MASK;
+        const MdkrOnlineAdapterStep step =
+            dispatch(action, 0u, startRaceVehicleMask);
+        std::fprintf(stderr,
+                     "[START] start-race dispatched vehicleMask=0x%02x "
+                     "accepted=%u error=%u rev=%u\n",
+                     startRaceVehicleMask, step.accepted ? 1u : 0u,
+                     static_cast<unsigned>(step.error), step.revision);
+#if MDKR_ENABLE_ONLINE_BETA
+        // Never-silent: acknowledge the press immediately so the button is not a
+        // dead control while the room advances (or reveals why it could not).
+        g_online.startRacePressed = true;
+        g_online.startRacePressedAt = ImGui::GetTime();
+#endif
+#else
         dispatch(action, 0u, 1u);
+#endif
     } else if (action == MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS) {
         g_online.detailsOpen = !g_online.detailsOpen;
         recordAction(action, true);
@@ -1042,6 +1077,36 @@ bool drawBetaSelection(const MdkrOnlineViewModel &model) {
     return drawSelectionControl(model);
 }
 
+// Never-silent Start Race: while the leader's press is pending and the room has
+// not yet advanced past the selection screen, show a clear status. First a brief
+// "Starting the race…" acknowledgement, then -- if the room stays in selection --
+// a plain reason so the button is never a silent dead control. A hard stall in a
+// later phase (LOADING/preflight/connecting) is surfaced by the adapter's real
+// timeout card, which the generic timeout path below already renders.
+void drawBetaStartRaceFeedback(const MdkrOnlineViewModel &model) {
+    if (!g_online.startRacePressed) return;
+    const double elapsed = ImGui::GetTime() - g_online.startRacePressedAt;
+    ui::Gap(ui::kGapS);
+    if (elapsed < 2.5) {
+        if (ui::CardBegin("##beta-starting", AppTheme::accent(), 0.0f)) {
+            ImGui::TextUnformatted("Starting the race…");
+            ui::TextSubtleWrapped(
+                "Getting everyone onto the same race start.");
+        }
+        ui::CardEnd();
+    } else {
+        const bool everyoneReady =
+            model.member_count >= 2u && model.ready_count == model.member_count;
+        ui::CautionBox(
+            "Couldn't Start the Race Yet",
+            everyoneReady
+                ? "The room did not begin loading. Check Connection Details, then "
+                  "press Start Race again."
+                : "Both players must show Ready before the race can start. Wait "
+                  "for the other player, then press Start Race again.");
+    }
+}
+
 void drawBetaRoom(LauncherState &state) {
     g_online.adapter->service();
     MdkrOnlineViewModel model{};
@@ -1054,6 +1119,9 @@ void drawBetaRoom(LauncherState &state) {
     if (model.kind != MDKR_ONLINE_VIEW_SELECTING) {
         g_online.betaCharacterTaken = false;
         g_online.betaCharacterTakenIndex = 0u;
+        // The room advanced out of selection (loading/countdown/racing) or reset:
+        // the press was consumed, so retire the pending acknowledgement.
+        g_online.startRacePressed = false;
     }
     announceView(model);
     drawBetaStatusLine(model);
@@ -1086,6 +1154,8 @@ void drawBetaRoom(LauncherState &state) {
         }
         ui::Gap(ui::kGapM);
     }
+
+    drawBetaStartRaceFeedback(model);
 
     const bool selectionDrawn = drawBetaSelection(model);
     if (!selectionDrawn && model.primary.action != timeoutAction &&
@@ -1289,6 +1359,8 @@ static void leaveOnlineSession(LauncherState &state) {
     g_online.betaBuildFailed = false;
     g_online.betaCharacterTaken = false;
     g_online.betaCharacterTakenIndex = 0u;
+    g_online.startRacePressed = false;
+    g_online.startRacePressedAt = 0.0;
     Launcher_requestTab(state, kLauncherPanelPlay, kLauncherTabPlayer);
 }
 
