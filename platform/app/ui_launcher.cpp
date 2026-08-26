@@ -32,6 +32,7 @@ struct Panel {
 };
 
 void drawSettingsPanel(LauncherState &s, LauncherAction &out);
+void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out);
 void drawAboutPanel(LauncherState &s, LauncherAction &out);
 
 const Panel kPanels[] = {
@@ -46,6 +47,7 @@ const Panel kPanels[] = {
     {"Settings",    drawSettingsPanel},
     {"Diagnostics", DiagPanel_draw},
     {"About",       drawAboutPanel},
+    {"Character Workshop", drawCharacterWorkshopPanel},
 };
 constexpr int kPanelCount = (int)(sizeof(kPanels) / sizeof(kPanels[0]));
 static_assert(kPanelCount == kLauncherPanelCount,
@@ -75,6 +77,11 @@ static bool panelVisible(int index) {
 #else
     return false;
 #endif
+}
+
+const char *compactPanelLabel(int index) {
+    return index == kLauncherPanelCharacterWorkshop
+        ? "Workshop" : kPanels[index].label;
 }
 
 ImVec2 g_smokeTopTabMin[kPanelCount];
@@ -149,7 +156,7 @@ void acceptDroppedFile(AppHost &host, LauncherState &state, int &activePanel) {
 
     if (hasCharacterPackageExtension(dropped)) {
         (void)Settings_importCharacterPackage(dropped.c_str());
-        activePanel = kLauncherPanelSettings;  // show controls and full report
+        activePanel = kLauncherPanelCharacterWorkshop;
         return;
     }
 
@@ -521,13 +528,13 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
         // carries the identical guard rather than trusting the caller.
         const char *activeLabel =
             (activePanel >= 0 && activePanel < kPanelCount)
-                ? kPanels[activePanel].label : "";
+                ? compactPanelLabel(activePanel) : "";
         if (ImGui::BeginCombo("##compact-section", activeLabel)) {
             for (int i = 0; i < kPanelCount; ++i) {
                 if (!panelVisible(i)) continue;
                 const bool selected = activePanel == i;
                 if (ImGui::Selectable(
-                        kPanels[i].label, selected, 0,
+                        compactPanelLabel(i), selected, 0,
                         ImVec2(0.0f, ui::kTouchRowHeight()))) {
                     Launcher_requestTab(state, i, kLauncherTabPlayer);
                 }
@@ -537,7 +544,10 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
         }
         sectionMin = ImGui::GetItemRectMin();
         sectionMax = ImGui::GetItemRectMax();
-        ui::SpeakFocusedItem("Section", activeLabel,
+        const char *spokenLabel =
+            (activePanel >= 0 && activePanel < kPanelCount)
+                ? kPanels[activePanel].label : "";
+        ui::SpeakFocusedItem("Section", spokenLabel,
                              "Choose which launcher section to view.");
         ImGui::SameLine();
         if (ImGui::Button(
@@ -935,6 +945,10 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
     Settings_setDonorGameplayProfiles(
         &s.romInfo.donor_profiles, s.romInfo.donor_profiles_message);
     Settings_draw(s.hostWindow, /*compact=*/false);
+    if (Settings_takeCharacterWorkshopOpenRequest()) {
+        Launcher_requestTab(
+            s, kLauncherPanelCharacterWorkshop, kLauncherTabPlayer);
+    }
     SettingsCharacterPreviewRequest preview;
     if (Settings_takeCharacterPreviewRequest(preview)) {
         s.characterPreviewPackage = std::move(preview.packageId);
@@ -951,6 +965,24 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
     g_smokeSettingsScrollY = ImGui::GetScrollY();
     g_smokeSettingsScrollValid = ImGui::GetScrollMaxY() > 0.0f;
     ImGui::EndChild();
+}
+
+void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out) {
+    (void)out;
+    ui::SectionHeader(
+        "Character Workshop",
+        "Import, author, test, and package local character presentation. "
+        "Built-in donor profiles remain authoritative for gameplay.");
+    Settings_setDonorGameplayProfiles(
+        &s.romInfo.donor_profiles, s.romInfo.donor_profiles_message);
+    Settings_drawCharacterWorkshop(s.hostWindow, /*compact=*/false);
+    SettingsCharacterPreviewRequest preview;
+    if (Settings_takeCharacterPreviewRequest(preview)) {
+        s.characterPreviewPackage = std::move(preview.packageId);
+        s.characterPreviewContext = preview.context;
+        s.characterPreviewPlayers = preview.players;
+        Launcher_requestTab(s, kLauncherPanelPlay, kLauncherTabPlayer);
+    }
 }
 
 void drawAboutPanel(LauncherState &s, LauncherAction &out) {
@@ -986,7 +1018,7 @@ LauncherAction Launcher::draw(AppHost &host) {
         Settings_publishCharacterPreviewResult(
             state_.characterPreviewPackage, state_.characterPreviewResult);
         Launcher_requestTab(
-            state_, kLauncherPanelSettings, kLauncherTabPlayer);
+            state_, kLauncherPanelCharacterWorkshop, kLauncherTabPlayer);
         state_.characterPreviewPackage.clear();
         state_.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
         state_.characterPreviewPlayers = 0;

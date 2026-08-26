@@ -1,0 +1,178 @@
+#include "character_workshop_model.h"
+
+#include <cstring>
+
+namespace {
+
+constexpr uint32_t requiredContextMask(uint32_t vehicleMask) {
+    return 1u | ((vehicleMask & 7u) << 1u);
+}
+
+void setRow(CharacterWorkshopReadiness      &readiness,
+            CharacterWorkshopReadinessId     id,
+            CharacterWorkshopReadinessStatus status,
+            CharacterWorkshopTab             tab) {
+    const size_t index    = static_cast<size_t>(id);
+    readiness.rows[index] = {id, status, tab};
+    if (status == CharacterWorkshopReadinessStatus::Ready) {
+        ++readiness.readyCount;
+    }
+}
+
+} // namespace
+
+CharacterWorkshopReadiness CharacterWorkshop_evaluate(
+    const CharacterWorkshopFacts &facts) {
+    CharacterWorkshopReadiness result;
+
+    setRow(result, CharacterWorkshopReadinessId::Identity, facts.identityReady ? CharacterWorkshopReadinessStatus::Ready : CharacterWorkshopReadinessStatus::Missing, CharacterWorkshopTab::Identity);
+
+    CharacterWorkshopReadinessStatus calibration =
+        CharacterWorkshopReadinessStatus::Ready;
+    if (!facts.geometryAvailable || !facts.anchorsReady ||
+        !facts.attachmentSocketsReady) {
+        calibration = CharacterWorkshopReadinessStatus::Missing;
+    } else if (!facts.normalized) {
+        calibration = CharacterWorkshopReadinessStatus::Review;
+    }
+    setRow(result, CharacterWorkshopReadinessId::Calibration, calibration, CharacterWorkshopTab::Vehicles);
+
+    CharacterWorkshopReadinessStatus rigMotion =
+        CharacterWorkshopReadinessStatus::Ready;
+    if (!facts.motionReady) {
+        rigMotion = facts.rigPresent
+                        ? CharacterWorkshopReadinessStatus::Review
+                        : CharacterWorkshopReadinessStatus::Missing;
+    } else if (facts.rigPresent && !facts.rigReviewed) {
+        // Complete authored motion can play without retargeting. An unreviewed
+        // optional rig remains visible work, but is not misreported as absent.
+        rigMotion = CharacterWorkshopReadinessStatus::Review;
+    }
+    setRow(result, CharacterWorkshopReadinessId::RigMotion, rigMotion, CharacterWorkshopTab::RigMotion);
+
+    setRow(result, CharacterWorkshopReadinessId::GameplayProfile, facts.donorQualified ? CharacterWorkshopReadinessStatus::Ready : CharacterWorkshopReadinessStatus::Unavailable, CharacterWorkshopTab::Vehicles);
+
+    CharacterWorkshopReadinessStatus vehicleFit =
+        CharacterWorkshopReadinessStatus::Ready;
+    if ((facts.supportedVehicleMask & 7u) == 0u) {
+        vehicleFit = CharacterWorkshopReadinessStatus::Missing;
+    } else {
+        const uint32_t required = requiredContextMask(
+            facts.supportedVehicleMask);
+        if ((facts.reviewedContextMask & required) != required) {
+            vehicleFit = CharacterWorkshopReadinessStatus::Review;
+        }
+    }
+    setRow(result, CharacterWorkshopReadinessId::VehicleFit, vehicleFit, CharacterWorkshopTab::Vehicles);
+
+    setRow(result, CharacterWorkshopReadinessId::Performance, facts.performanceMeasured ? CharacterWorkshopReadinessStatus::Ready : CharacterWorkshopReadinessStatus::Review, CharacterWorkshopTab::Performance);
+
+    result.readyToPreview = facts.geometryAvailable;
+    result.readyToPlay    = facts.geometryAvailable && facts.identityReady &&
+                            facts.normalized && facts.anchorsReady &&
+                            facts.attachmentSocketsReady && facts.motionReady &&
+                            facts.donorQualified && vehicleFit == CharacterWorkshopReadinessStatus::Ready && facts.enabled;
+
+    if (!facts.identityReady) {
+        result.nextActionTab   = CharacterWorkshopTab::Identity;
+        result.nextActionLabel = "Create roster identity";
+    } else if (!facts.geometryAvailable || !facts.normalized ||
+               !facts.anchorsReady || !facts.attachmentSocketsReady) {
+        result.nextActionTab   = CharacterWorkshopTab::Vehicles;
+        result.nextActionLabel = "Calibrate model and anchors";
+    } else if (!facts.motionReady ||
+               (facts.rigPresent && !facts.rigReviewed)) {
+        result.nextActionTab   = CharacterWorkshopTab::RigMotion;
+        result.nextActionLabel = "Review rig and motion";
+    } else if (!facts.donorQualified) {
+        result.nextActionTab   = CharacterWorkshopTab::Vehicles;
+        result.nextActionLabel = "Choose a qualified gameplay profile";
+    } else if (vehicleFit != CharacterWorkshopReadinessStatus::Ready) {
+        result.nextActionTab   = CharacterWorkshopTab::Vehicles;
+        result.nextActionLabel = "Review every supported context";
+    } else if (!facts.enabled) {
+        result.nextActionTab   = CharacterWorkshopTab::Package;
+        result.nextActionLabel = "Enable validated character";
+    } else if (!facts.performanceMeasured) {
+        result.nextActionTab   = CharacterWorkshopTab::Performance;
+        result.nextActionLabel = "Review performance assembly";
+    } else {
+        result.nextActionTab   = CharacterWorkshopTab::Test;
+        result.nextActionLabel = "Run an exact-context test";
+    }
+    return result;
+}
+
+const char *CharacterWorkshop_tabLabel(CharacterWorkshopTab tab) {
+    static constexpr const char *kLabels[] = {
+        "Overview",
+        "Identity",
+        "Rig & Motion",
+        "Vehicles",
+        "Performance",
+        "Test",
+        "Package",
+    };
+    const size_t index = static_cast<size_t>(tab);
+    return index < static_cast<size_t>(CharacterWorkshopTab::Count)
+               ? kLabels[index]
+               : "Overview";
+}
+
+const char *CharacterWorkshop_tabStorageId(CharacterWorkshopTab tab) {
+    static constexpr const char *kIds[] = {
+        "overview",
+        "identity",
+        "rig-motion",
+        "vehicles",
+        "performance",
+        "test",
+        "package",
+    };
+    const size_t index = static_cast<size_t>(tab);
+    return index < static_cast<size_t>(CharacterWorkshopTab::Count)
+               ? kIds[index]
+               : "overview";
+}
+
+CharacterWorkshopTab CharacterWorkshop_parseTab(const char *stored) {
+    if (stored == nullptr) return CharacterWorkshopTab::Overview;
+    for (size_t index = 0u;
+         index < static_cast<size_t>(CharacterWorkshopTab::Count);
+         ++index) {
+        const CharacterWorkshopTab tab =
+            static_cast<CharacterWorkshopTab>(index);
+        if (std::strcmp(stored, CharacterWorkshop_tabStorageId(tab)) == 0) {
+            return tab;
+        }
+    }
+    return CharacterWorkshopTab::Overview;
+}
+
+const char *CharacterWorkshop_readinessLabel(
+    CharacterWorkshopReadinessId id) {
+    static constexpr const char *kLabels[] = {
+        "Roster identity",
+        "Calibration and anchors",
+        "Rig and motion",
+        "Gameplay profile",
+        "Vehicle fit",
+        "Performance evidence",
+    };
+    const size_t index = static_cast<size_t>(id);
+    return index < static_cast<size_t>(CharacterWorkshopReadinessId::Count)
+               ? kLabels[index]
+               : "Unknown requirement";
+}
+
+const char *CharacterWorkshop_statusLabel(
+    CharacterWorkshopReadinessStatus status) {
+    static constexpr const char *kLabels[] = {
+        "Ready",
+        "Review",
+        "Missing",
+        "Unavailable",
+    };
+    const size_t index = static_cast<size_t>(status);
+    return index < 4u ? kLabels[index] : "Unavailable";
+}

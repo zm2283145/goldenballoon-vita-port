@@ -38,7 +38,9 @@ constexpr int kLauncherPanelOnlineRoom = 1;
 constexpr int kLauncherPanelSettings = 2;
 constexpr int kLauncherPanelDiagnostics = 3;
 constexpr int kLauncherPanelAbout = 4;
-constexpr int kLauncherPanelCount = 5;
+// Appended so every existing numeric panel contract remains stable.
+constexpr int kLauncherPanelCharacterWorkshop = 5;
+constexpr int kLauncherPanelCount = 6;
 
 struct SDL_Window;
 class AppHost;

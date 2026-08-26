@@ -8,6 +8,7 @@
 #include "character_draft_snapshot.h"
 #include "character_draft_store.h"
 #include "character_revision_index.h"
+#include "character_workshop_model.h"
 #include "file_dialog.h"
 #include "ui_common.h"
 
@@ -1833,6 +1834,10 @@ std::string g_characterManagerReport;
 std::string g_characterPendingRemoval;
 std::string g_characterWorkshopSelection;
 bool g_characterWorkshopSelectionLoaded = false;
+CharacterWorkshopTab g_characterWorkshopTab = CharacterWorkshopTab::Overview;
+bool g_characterWorkshopTabLoaded = false;
+bool g_characterWorkshopTabForceSelection = false;
+bool g_characterWorkshopOpenRequested = false;
 
 struct CharacterImportCandidate {
     bool ready = false;
@@ -5646,9 +5651,281 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
     return false;
 }
 
+void persistCharacterWorkshopTab(CharacterWorkshopTab tab,
+                                 bool                 forceSelection) {
+    g_characterWorkshopTab               = tab;
+    g_characterWorkshopTabLoaded         = true;
+    g_characterWorkshopTabForceSelection = forceSelection;
+    (void)AppConfig::setAndSave(
+        "character_workshop_last_tab",
+        CharacterWorkshop_tabStorageId(tab));
+}
+
+void loadCharacterWorkshopTab() {
+    if (g_characterWorkshopTabLoaded) return;
+    const std::string stored             = AppConfig::get("character_workshop_last_tab");
+    g_characterWorkshopTab               = CharacterWorkshop_parseTab(stored.c_str());
+    g_characterWorkshopTabLoaded         = true;
+    g_characterWorkshopTabForceSelection = true;
+}
+
+void drawCharacterWorkshopTabs() {
+    loadCharacterWorkshopTab();
+    CharacterWorkshopTab visible = g_characterWorkshopTab;
+    if (ImGui::BeginTabBar(
+            "##character-workshop-tabs",
+            ImGuiTabBarFlags_FittingPolicyScroll)) {
+        for (size_t index = 0u;
+             index < static_cast<size_t>(CharacterWorkshopTab::Count);
+             ++index) {
+            const CharacterWorkshopTab tab =
+                static_cast<CharacterWorkshopTab>(index);
+            const ImGuiTabItemFlags flags =
+                g_characterWorkshopTabForceSelection &&
+                        tab == g_characterWorkshopTab
+                    ? ImGuiTabItemFlags_SetSelected
+                    : ImGuiTabItemFlags_None;
+            if (ImGui::BeginTabItem(
+                    CharacterWorkshop_tabLabel(tab),
+                    nullptr,
+                    flags)) {
+                visible = tab;
+                ui::SpeakFocusedItem(
+                    CharacterWorkshop_tabLabel(tab),
+                    "selected workspace",
+                    "Switches tools without discarding or publishing the current draft.");
+                ImGui::EndTabItem();
+            }
+        }
+        ImGui::EndTabBar();
+    }
+    g_characterWorkshopTabForceSelection = false;
+    if (visible != g_characterWorkshopTab) {
+        persistCharacterWorkshopTab(visible, false);
+    }
+}
+
+CharacterWorkshopReadiness characterWorkshopReadiness(
+    const MdkrModernCharacterEntry *entry,
+    bool                            normalized,
+    bool                            anchored,
+    bool                            attachmentSocketsMapped,
+    bool                            motionReady,
+    bool                            qualified,
+    bool                            identityReady,
+    bool                            humanoidRig,
+    bool                            rigReviewed) {
+    CharacterWorkshopFacts facts;
+    facts.geometryAvailable      = entry != nullptr &&
+                                   entry->stats.vertices != 0u && entry->stats.triangles != 0u;
+    facts.identityReady          = identityReady;
+    facts.normalized             = normalized;
+    facts.anchorsReady           = anchored;
+    facts.attachmentSocketsReady = attachmentSocketsMapped;
+    facts.rigPresent             = humanoidRig;
+    facts.rigReviewed            = !humanoidRig || rigReviewed;
+    facts.motionReady            = motionReady;
+    facts.donorQualified         = qualified;
+    facts.performanceMeasured    = entry != nullptr &&
+                                   entry->stats.lod_levels != 0u &&
+                                   (entry->stats.textures == 0u ||
+                                    entry->stats.decoded_texture_bytes != 0u);
+    facts.enabled                = entry != nullptr && entry->enabled != 0u;
+    if (entry != nullptr) {
+        const CharacterTuningEdit &tuning =
+            loadCharacterTuning(0, entry->id);
+        facts.supportedVehicleMask = entry->vehicle_mask & tuning.vehicleMask;
+        for (unsigned context = 0u;
+             context < MDKR_CHARACTER_CONTEXT_COUNT;
+             ++context) {
+            if (context != MDKR_CHARACTER_CONTEXT_SELECT &&
+                (facts.supportedVehicleMask & (1u << (context - 1u))) == 0u) {
+                continue;
+            }
+            if (characterFitReviewed(entry, tuning, context)) {
+                facts.reviewedContextMask |= 1u << context;
+            }
+        }
+    }
+    return CharacterWorkshop_evaluate(facts);
+}
+
+CharacterWorkshopReadiness characterWorkshopReadinessForEntry(
+    const MdkrModernCharacterEntry *entry) {
+    if (entry == nullptr) return CharacterWorkshop_evaluate({});
+    constexpr uint32_t raceStates =
+        (MDKR_CHARACTER_SEMANTIC_SELECT_IDLE - 1u) &
+        ~MDKR_CHARACTER_SEMANTIC_FALLBACK;
+    constexpr uint32_t selectStates =
+        MDKR_CHARACTER_SEMANTIC_SELECT_IDLE |
+        MDKR_CHARACTER_SEMANTIC_SELECT_HOVER |
+        MDKR_CHARACTER_SEMANTIC_SELECT_CONFIRM;
+    const uint32_t requiredContexts =
+        (1u << MDKR_CHARACTER_CONTEXT_SELECT) |
+        ((entry->vehicle_mask & 7u) << 1u);
+    const bool normalized = (entry->calibration_flags & 1u) != 0u;
+    const bool anchored =
+        (entry->attachment_context_mask & requiredContexts) == requiredContexts;
+    const bool sockets =
+        (entry->socket_mask &
+         (MDKR_CHARACTER_SOCKET_SEAT | MDKR_CHARACTER_SOCKET_HEAD)) ==
+        (MDKR_CHARACTER_SOCKET_SEAT | MDKR_CHARACTER_SOCKET_HEAD);
+    const bool humanoid      = entry->rig_present != 0u &&
+                               entry->rig_mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1;
+    const bool rolesComplete = humanoid &&
+                               entry->rig_role_mask == MDKR_CHARACTER_RIG_HUMANOID_MASK;
+    const bool rigReviewed =
+        (entry->rig_flags & MDKR_MODERN_RIG_REVIEWED) != 0u;
+    const uint32_t requiredMotion = raceStates | selectStates;
+    const uint32_t solverCovered  = rolesComplete && rigReviewed
+                                        ? requiredMotion & ~entry->semantic_mask
+                                        : 0u;
+    const bool     motionReady =
+        (((entry->moving_semantic_mask & requiredMotion) | solverCovered) &
+         requiredMotion) == requiredMotion;
+    const bool qualified     = mdkr_modern_donor_qualified(
+                                   static_cast<int>(entry->donor)) != 0;
+    const bool identityReady = (entry->identity_flags & 1u) != 0u &&
+                               entry->portrait_bytes != 0u;
+    return characterWorkshopReadiness(
+        entry,
+        normalized,
+        anchored,
+        sockets,
+        motionReady,
+        qualified,
+        identityReady,
+        humanoid,
+        rigReviewed);
+}
+
+ImVec4 characterWorkshopStatusColour(
+    CharacterWorkshopReadinessStatus status) {
+    switch (status) {
+        case CharacterWorkshopReadinessStatus::Ready:
+            return AppTheme::good();
+        case CharacterWorkshopReadinessStatus::Review:
+            return AppTheme::accent();
+        case CharacterWorkshopReadinessStatus::Missing:
+        case CharacterWorkshopReadinessStatus::Unavailable:
+            return AppTheme::bad();
+    }
+    return AppTheme::subtle();
+}
+
+void drawCharacterReadiness(
+    const MdkrModernCharacterEntry   *entry,
+    const CharacterWorkshopReadiness &readiness,
+    bool                              normalized,
+    bool                              anchored,
+    bool                              attachmentSocketsMapped,
+    bool                              motionReady,
+    bool                              qualified,
+    bool                              identityReady,
+    const char                       *rigStatus) {
+    ImGui::SeparatorText("Readiness");
+    if (ImGui::BeginTable(
+            "##character-workshop-readiness",
+            3,
+            ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Area", ImGuiTableColumnFlags_WidthStretch, 1.1f);
+        ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed, 100.0f * AppTheme::uiScale());
+        ImGui::TableSetupColumn("Evidence", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+        ImGui::TableHeadersRow();
+        for (const CharacterWorkshopReadinessRow &row : readiness.rows) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(CharacterWorkshop_readinessLabel(row.id));
+            ImGui::TableNextColumn();
+            ImGui::TextColored(
+                characterWorkshopStatusColour(row.status),
+                "%s",
+                CharacterWorkshop_statusLabel(row.status));
+            ImGui::TableNextColumn();
+            switch (row.id) {
+                case CharacterWorkshopReadinessId::Identity:
+                    ImGui::TextWrapped(
+                        identityReady
+                            ? "Four authored names and exact 40 × 40 portrait"
+                            : "Author names, portrait, and minimap colour");
+                    break;
+                case CharacterWorkshopReadinessId::Calibration:
+                    ImGui::TextWrapped(
+                        "Normalization %s · anchors %s · seat/head sockets %s",
+                        normalized ? "confirmed" : "needs review",
+                        anchored ? "complete" : "missing",
+                        attachmentSocketsMapped ? "mapped" : "missing");
+                    break;
+                case CharacterWorkshopReadinessId::RigMotion:
+                    ImGui::TextWrapped("%s · motion %s", rigStatus, motionReady ? "complete" : "incomplete");
+                    break;
+                case CharacterWorkshopReadinessId::GameplayProfile:
+                    ImGui::TextWrapped("%s · %s", donorName(entry->donor), qualified ? "fingerprint-qualified" : "ROM evidence unavailable");
+                    break;
+                case CharacterWorkshopReadinessId::VehicleFit: {
+                    const CharacterTuningEdit &tuning =
+                        loadCharacterTuning(0, entry->id);
+                    unsigned       required = 1u;
+                    unsigned       reviewed = characterFitReviewed(
+                                                  entry,
+                                                  tuning,
+                                                  MDKR_CHARACTER_CONTEXT_SELECT)
+                                                  ? 1u
+                                                  : 0u;
+                    const uint32_t supported =
+                        entry->vehicle_mask & tuning.vehicleMask;
+                    for (unsigned context = 1u;
+                         context < MDKR_CHARACTER_CONTEXT_COUNT;
+                         ++context) {
+                        if ((supported & (1u << (context - 1u))) == 0u) continue;
+                        ++required;
+                        if (characterFitReviewed(entry, tuning, context)) {
+                            ++reviewed;
+                        }
+                    }
+                    ImGui::TextWrapped("%u of %u enabled contexts reviewed",
+                                       reviewed,
+                                       required);
+                    break;
+                }
+                case CharacterWorkshopReadinessId::Performance:
+                    ImGui::TextWrapped(
+                        "%s · %u authored LOD%s · %s texture accounting",
+                        characterPerformanceTier(entry),
+                        entry->stats.lod_levels,
+                        entry->stats.lod_levels == 1u ? "" : "s",
+                        entry->stats.textures == 0u ||
+                                entry->stats.decoded_texture_bytes != 0u
+                            ? "exact"
+                            : "legacy");
+                    break;
+                case CharacterWorkshopReadinessId::Count:
+                    break;
+            }
+        }
+        ImGui::EndTable();
+    }
+    ImGui::TextDisabled(
+        "%u/%zu areas ready · Preview %s · Play %s",
+        readiness.readyCount,
+        readiness.rows.size(),
+        readiness.readyToPreview ? "ready" : "unavailable",
+        readiness.readyToPlay ? "ready" : "not ready");
+    const std::string action = std::string("Next: ") +
+                               readiness.nextActionLabel;
+    if (ImGui::Button(action.c_str(), ui::kBtnFullWidth())) {
+        persistCharacterWorkshopTab(readiness.nextActionTab, true);
+    }
+    ui::SpeakFocusedItem(
+        readiness.nextActionLabel,
+        CharacterWorkshop_tabLabel(readiness.nextActionTab),
+        "Opens the single highest-priority unfinished Workshop area. It does not save, build, enable, or assign the character.");
+}
+
 bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
-                                   bool compact) {
-    bool changed = false;
+                                   bool                            compact) {
+    bool               changed = false;
     constexpr uint32_t raceStates =
         (MDKR_CHARACTER_SEMANTIC_SELECT_IDLE - 1u) &
         ~MDKR_CHARACTER_SEMANTIC_FALLBACK;
@@ -5671,16 +5948,17 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         (entry->socket_mask &
          (MDKR_CHARACTER_SOCKET_SEAT | MDKR_CHARACTER_SOCKET_HEAD)) ==
         (MDKR_CHARACTER_SOCKET_SEAT | MDKR_CHARACTER_SOCKET_HEAD);
-    const bool humanoidRig = entry->rig_present != 0u &&
-        entry->rig_mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1;
+    const bool humanoidRig           = entry->rig_present != 0u &&
+                                       entry->rig_mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1;
     const bool humanoidRolesComplete = humanoidRig &&
-        entry->rig_role_mask == MDKR_CHARACTER_RIG_HUMANOID_MASK;
+                                       entry->rig_role_mask == MDKR_CHARACTER_RIG_HUMANOID_MASK;
     const bool rigReviewed =
         (entry->rig_flags & MDKR_MODERN_RIG_REVIEWED) != 0u;
-    const bool referenceFallbackReady = humanoidRolesComplete && rigReviewed;
-    const uint32_t requiredMotionStates = raceStates | selectStates;
-    const uint32_t solverCoveredStates = referenceFallbackReady
-        ? requiredMotionStates & ~entry->semantic_mask : 0u;
+    const bool     referenceFallbackReady = humanoidRolesComplete && rigReviewed;
+    const uint32_t requiredMotionStates   = raceStates | selectStates;
+    const uint32_t solverCoveredStates    = referenceFallbackReady
+                                                ? requiredMotionStates & ~entry->semantic_mask
+                                                : 0u;
     const uint32_t effectiveMovingStates =
         (entry->moving_semantic_mask & requiredMotionStates) |
         solverCoveredStates;
@@ -5688,441 +5966,515 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         entry->semantic_mask & ~entry->moving_semantic_mask &
         requiredMotionStates;
     const char *rigStatus = entry->rig_present == 0u
-        ? "not authored"
-        : entry->rig_mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY
-            ? "authored clips only"
-            : !humanoidRolesComplete
-                ? "roles incomplete"
-                : !rigReviewed ? "review required" : "reference/contact fallback ready";
-    const bool motionReady =
+                                ? "not authored"
+                            : entry->rig_mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY
+                                ? "authored clips only"
+                            : !humanoidRolesComplete
+                                ? "roles incomplete"
+                            : !rigReviewed ? "review required"
+                                           : "reference/contact fallback ready";
+    const bool  motionReady =
         (effectiveMovingStates & requiredMotionStates) == requiredMotionStates;
-    const bool qualified = mdkr_modern_donor_qualified(
-        static_cast<int>(entry->donor)) != 0;
-    const bool identityReady = (entry->identity_flags & 1u) != 0u &&
-        entry->portrait_bytes != 0u;
+    const bool                       qualified     = mdkr_modern_donor_qualified(
+                                                         static_cast<int>(entry->donor)) != 0;
+    const bool                       identityReady = (entry->identity_flags & 1u) != 0u &&
+                                                     entry->portrait_bytes != 0u;
+    const CharacterWorkshopReadiness readiness     = characterWorkshopReadiness(
+        entry,
+        normalized,
+        anchored,
+        attachmentSocketsMapped,
+        motionReady,
+        qualified,
+        identityReady,
+        humanoidRig,
+        rigReviewed);
 
     ImGui::PushID(entry->id);
-    ImGui::SeparatorText("Overview");
+    ImGui::PushFont(AppTheme::fonts().section);
     ImGui::TextUnformatted(entry->display_name);
-    ImGui::TextDisabled(
-        "Short label: %s · Narration: %s · Sort: %s",
-        entry->short_name, entry->narration_name, entry->sort_label);
-    ImGui::TextDisabled(
-        "Appearance package · %s gameplay profile · local presentation only",
-        donorName(entry->donor));
-    ui::TextSubtleWrapped(
-        "The package owns local presentation. Its selected retail donor still "
-        "owns simulation, collision, race audio, ghost identity, and network/rollback authority; ordinary records and saves never embed the package.");
-    ImGui::SeparatorText("Provenance");
-    if (entry->provenance_present != 0u) {
-        ImGui::TextWrapped("License declaration: %s", entry->license_spdx);
-        ImGui::TextWrapped("Creator / attribution: %s", entry->attribution);
-        ImGui::TextWrapped("Source: %s", entry->source_url);
-        ui::TextSubtleWrapped(
-            "These declarations and the exact LICENSE.txt bytes are authenticated by the active source digest. They describe the package; the importer cannot independently establish copyright, trademark, attribution, or redistribution rights.");
-    } else {
+    ImGui::PopFont();
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s · %s", entry->enabled != 0u ? "Enabled" : "Disabled", readiness.readyToPlay ? "Ready to play" : "Workshop incomplete");
+    ImGui::TextDisabled("%s · %s gameplay profile",
+                        entry->short_name,
+                        donorName(entry->donor));
+    drawCharacterWorkshopTabs();
+
+    if (g_characterWorkshopTab == CharacterWorkshopTab::Overview) {
+        ImGui::SeparatorText("Overview");
         ImGui::TextDisabled(
-            "Metadata unavailable in this legacy cache. Workshop-installed source history retains and authenticates its exact LICENSE.txt when available; rebuild from that source with current authoring tools to make SPDX, attribution, and source declarations reviewable here.");
+            "Short label: %s · Narration: %s · Sort: %s",
+            entry->short_name,
+            entry->narration_name,
+            entry->sort_label);
+        ImGui::TextDisabled(
+            "Appearance package · %s gameplay profile · local presentation only",
+            donorName(entry->donor));
+        ui::TextSubtleWrapped(
+            "The package owns local presentation. Its selected retail donor still "
+            "owns simulation, collision, race audio, ghost identity, and network/rollback authority; ordinary records and saves never embed the package.");
+        ImGui::SeparatorText("Provenance");
+        if (entry->provenance_present != 0u) {
+            ImGui::TextWrapped("License declaration: %s", entry->license_spdx);
+            ImGui::TextWrapped("Creator / attribution: %s", entry->attribution);
+            ImGui::TextWrapped("Source: %s", entry->source_url);
+            ui::TextSubtleWrapped(
+                "These declarations and the exact LICENSE.txt bytes are authenticated by the active source digest. They describe the package; the importer cannot independently establish copyright, trademark, attribution, or redistribution rights.");
+        } else {
+            ImGui::TextDisabled(
+                "Metadata unavailable in this legacy cache. Workshop-installed source history retains and authenticates its exact LICENSE.txt when available; rebuild from that source with current authoring tools to make SPDX, attribution, and source declarations reviewable here.");
+        }
+        if (identityReady) {
+            drawCharacterPortraitPreview(entry);
+            ImGui::SameLine(0.0f, ui::kGapM);
+            ImGui::BeginGroup();
+            ImGui::TextDisabled("Exact in-game portrait · 40 × 40");
+            ImGui::TextDisabled("%u encoded source bytes", entry->portrait_bytes);
+            const ImVec4 minimap(
+                static_cast<float>(entry->minimap_rgba & 0xFFu) / 255.0f,
+                static_cast<float>((entry->minimap_rgba >> 8u) & 0xFFu) / 255.0f,
+                static_cast<float>((entry->minimap_rgba >> 16u) & 0xFFu) / 255.0f,
+                1.0f);
+            ImGui::ColorButton(
+                "Minimap colour",
+                minimap,
+                ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoDragDrop,
+                ImVec2(ImGui::GetFrameHeight(), ImGui::GetFrameHeight()));
+            ImGui::SameLine();
+            ImGui::TextDisabled("Minimap #%02X%02X%02X",
+                                entry->minimap_rgba & 0xFFu,
+                                (entry->minimap_rgba >> 8u) & 0xFFu,
+                                (entry->minimap_rgba >> 16u) & 0xFFu);
+            ImGui::EndGroup();
+        } else {
+            ImGui::TextDisabled(
+                "Roster identity: donor fallback · Portrait: donor fallback · Import a source-v3/v4 package to author identity media");
+        }
+        ImGui::TextDisabled(
+            "LOD0 performance guide: %s · %u triangles · %u vertices · %u draw parts · %u package materials · %u joints · %u texture(s) · %u LOD(s)",
+            characterPerformanceTier(entry),
+            entry->lod_triangles[0],
+            entry->lod_vertices[0],
+            entry->lod_primitives[0],
+            entry->stats.materials,
+            entry->stats.joints,
+            entry->stats.textures,
+            entry->stats.lod_levels);
+        if (entry->stats.decoded_texture_bytes != 0u) {
+            ImGui::TextDisabled(
+                "Texture memory: %.1f MiB decoded with mip levels · %.1f MiB package data",
+                static_cast<double>(entry->stats.decoded_texture_bytes) /
+                    (1024.0 * 1024.0),
+                static_cast<double>(entry->stats.encoded_texture_bytes) /
+                    (1024.0 * 1024.0));
+        } else if (entry->stats.textures != 0u) {
+            ImGui::TextDisabled(
+                "Texture memory: unavailable in this legacy cache; recompile for exact accounting");
+        }
+        ui::TextSubtleWrapped(
+            "The guide uses the actual nearest LOD plus package-wide resource costs. It is not measured frame time; use the assembly below to inspect split-screen structural load before an exact-context stress run.");
+
+        drawCharacterReadiness(
+            entry,
+            readiness,
+            normalized,
+            anchored,
+            attachmentSocketsMapped,
+            motionReady,
+            qualified,
+            identityReady,
+            rigStatus);
     }
-    ImGui::SeparatorText("Named drafts");
-    if (drawCharacterDraftLifecycle(entry)) {
-        /* Building refreshes the registry and invalidates `entry`. */
-        ImGui::PopID();
-        return true;
-    }
-    if (entry->enabled == 0u) {
-        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
-        ImGui::TextWrapped(
-            "Disabled — the game uses the built-in racer for any retained player assignment. Workshop source history and package settings are preserved.");
-        ImGui::PopStyleColor();
-        if (ImGui::Button("Enable character")) {
-            const std::string id = entry->id;
-            if (setCharacterPackageEnabled(id, true)) {
-                setStatus(
-                    "Custom character enabled; retained player assignments apply on play.",
-                    AppTheme::good());
+
+    if (g_characterWorkshopTab == CharacterWorkshopTab::RigMotion) {
+        ImGui::SeparatorText("Rig and motion status");
+        if (entry->rig_role_mask != 0u) {
+            ImGui::TextDisabled(
+                "Rig contract: %s · %u/16 humanoid roles · %u inferred · minimum confidence %.0f%%",
+                rigStatus,
+                countCharacterBits(entry->rig_role_mask),
+                countCharacterBits(entry->inferred_rig_role_mask),
+                static_cast<double>(entry->rig_min_confidence_milli) / 10.0);
+        } else {
+            ImGui::TextDisabled(
+                "Rig contract: %s · no humanoid roles mapped",
+                rigStatus);
+        }
+        if (entry->rig_present != 0u) {
+            ImGuiTreeNodeFlags roleFlags = 0;
+            if (humanoidRig && (!humanoidRolesComplete || !rigReviewed)) {
+                roleFlags |= ImGuiTreeNodeFlags_DefaultOpen;
+            }
+            if (ImGui::TreeNodeEx("Humanoid role review", roleFlags)) {
+                ui::TextSubtleWrapped(
+                    "Verify anatomy against the actual compiled skin joints before enabling the solver. Node numbers remain unambiguous even when an unusually long glTF name is shortened for display.");
+                if (ImGui::BeginTable(
+                        "##character-rig-role-review",
+                        4,
+                        ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
+                            ImGuiTableFlags_SizingStretchProp)) {
+                    ImGui::TableSetupColumn("Role");
+                    ImGui::TableSetupColumn("Source joint");
+                    ImGui::TableSetupColumn("Mapping");
+                    ImGui::TableSetupColumn("Solver basis");
+                    ImGui::TableHeadersRow();
+                    for (size_t slot = 0u;
+                         slot < std::size(kHumanoidRigRoles);
+                         ++slot) {
+                        const CharacterSemanticLabel &role =
+                            kHumanoidRigRoles[slot];
+                        const bool mapped = (entry->rig_role_mask & role.bit) != 0u;
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::TextUnformatted(role.name);
+                        ImGui::TableNextColumn();
+                        if (!mapped) {
+                            ImGui::TextColored(AppTheme::bad(), "Not mapped");
+                            ImGui::TableNextColumn();
+                            ImGui::TextDisabled("—");
+                            ImGui::TableNextColumn();
+                            ImGui::TextDisabled("—");
+                            continue;
+                        }
+                        ImGui::Text("%s  (#%u)",
+                                    entry->rig_role_node_name[slot],
+                                    entry->rig_role_node[slot]);
+                        ImGui::TableNextColumn();
+                        const bool inferred =
+                            (entry->rig_role_flags[slot] & 1u) != 0u;
+                        const float confidence =
+                            static_cast<float>(
+                                entry->rig_role_confidence_milli[slot]) /
+                            10.0f;
+                        const ImVec4 mappingColour =
+                            inferred && !rigReviewed ? AppTheme::accent()
+                                                     : AppTheme::subtle();
+                        ImGui::TextColored(
+                            mappingColour,
+                            "%s · %.1f%%",
+                            inferred ? (rigReviewed ? "inferred, reviewed"
+                                                    : "inferred, review needed")
+                                     : "authored",
+                            static_cast<double>(confidence));
+                        ImGui::TableNextColumn();
+                        const float *rest = entry->rig_role_rest_rotation[slot];
+                        const float *bend = entry->rig_role_bend_axis[slot];
+                        const bool   customRest =
+                            std::fabs(rest[0]) > 1.0e-5f ||
+                            std::fabs(rest[1]) > 1.0e-5f ||
+                            std::fabs(rest[2]) > 1.0e-5f ||
+                            std::fabs(rest[3] - 1.0f) > 1.0e-5f;
+                        const bool customBend =
+                            std::fabs(bend[0]) > 1.0e-5f ||
+                            std::fabs(bend[1]) > 1.0e-5f ||
+                            std::fabs(bend[2]) > 1.0e-5f;
+                        ImGui::TextDisabled(
+                            "%s rest · %s bend",
+                            customRest ? "corrected" : "canonical",
+                            customBend ? "authored" : "automatic");
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip(
+                                "Rest correction XYZW: %.4f, %.4f, %.4f, %.4f\n"
+                                "Preferred bend axis: %.4f, %.4f, %.4f",
+                                static_cast<double>(rest[0]),
+                                static_cast<double>(rest[1]),
+                                static_cast<double>(rest[2]),
+                                static_cast<double>(rest[3]),
+                                static_cast<double>(bend[0]),
+                                static_cast<double>(bend[1]),
+                                static_cast<double>(bend[2]));
+                        }
+                    }
+                    ImGui::EndTable();
+                }
+                if (humanoidRig && !rigReviewed) {
+                    ui::TextSubtleWrapped(
+                        "The runtime lock is deliberate: inference is a starting point, not author approval. Correct the source-v4 role map as needed, then set reviewed only after checking every row in select and all supported vehicles.");
+                }
+                ImGui::TreePop();
+            }
+        }
+        if (humanoidRig && !humanoidRolesComplete) {
+            const std::string missingRig = missingCharacterSemantics(
+                entry->rig_role_mask,
+                kHumanoidRigRoles);
+            ImGui::TextWrapped("Missing humanoid roles: %s", missingRig.c_str());
+        } else if (humanoidRolesComplete && !rigReviewed) {
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+            ImGui::TextWrapped(
+                "Every role was mapped, but the author has not reviewed the inferred skeleton. Retargeting remains locked until the mapping is explicitly reviewed.");
+            ImGui::PopStyleColor();
+        } else if (humanoidRolesComplete && rigReviewed) {
+            ImGui::TextWrapped(
+                "The humanoid hierarchy is structurally validated. Engine reference motion and bounded vehicle hand/foot contacts fill missing semantic clips; authored package clips win.");
+        } else if (entry->rig_present != 0u) {
+            ImGui::TextWrapped(
+                "Authored-clips-only is a supported final mode for creatures and unusual skeletons; no humanoid solver will alter this character.");
+        } else {
+            ImGui::TextWrapped(
+                "This legacy package has attachment sockets but no semantic skeleton contract. Its authored clips remain usable; re-author as source-v4 to opt into reviewed humanoid roles.");
+        }
+        ImGui::TextDisabled(
+            "%u/10 race states · %u/3 select states · %u/%u mapped clips move",
+            mappedRaceStates,
+            mappedSelectStates,
+            countCharacterBits(entry->moving_semantic_mask &
+                               (raceStates | selectStates)),
+            mappedRaceStates + mappedSelectStates);
+        if (!qualified) {
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+            ImGui::TextWrapped(
+                "%s is not a fingerprint-qualified replacement profile yet. You may inspect this package, but activation remains unavailable.",
+                donorName(entry->donor));
+            ImGui::PopStyleColor();
+        }
+        if ((entry->stats.animations == 0u || entry->motion_channels == 0u) &&
+            !referenceFallbackReady) {
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+            ImGui::TextWrapped(
+                "Static bind pose: this model has no changing animation keys. Geometry and fit can be tested, but it cannot receive a polished-motion status until clips are authored or retargeted.");
+            ImGui::PopStyleColor();
+        } else if ((entry->moving_semantic_mask &
+                    MDKR_CHARACTER_SEMANTIC_FALLBACK) == 0u &&
+                   !referenceFallbackReady) {
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+            ImGui::TextWrapped(
+                "The fallback clip is static. Mapped motion can still play, but every missing state holds the fallback pose.");
+            ImGui::PopStyleColor();
+        } else if (staticAuthoredStates != 0u) {
+            std::string staticStates = missingCharacterSemantics(
+                ~staticAuthoredStates,
+                kRaceCharacterSemantics);
+            const std::string staticSelect = missingCharacterSemantics(
+                ~staticAuthoredStates,
+                kSelectCharacterSemantics);
+            if (!staticStates.empty() && !staticSelect.empty()) staticStates += ", ";
+            staticStates += staticSelect;
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+            ImGui::TextWrapped(
+                "One or more explicitly mapped states are static. Authored mappings intentionally bypass reference motion; remove or animate those mappings before calling motion complete. Review: %s",
+                staticStates.c_str());
+            ImGui::PopStyleColor();
+        }
+        const std::string missingRace = missingCharacterSemantics(
+            entry->semantic_mask,
+            kRaceCharacterSemantics);
+        const std::string missingSelect = missingCharacterSemantics(
+            entry->semantic_mask,
+            kSelectCharacterSemantics);
+        if (!missingRace.empty()) {
+            ImGui::TextWrapped("%s covers missing race states: %s",
+                               referenceFallbackReady
+                                   ? "Reviewed reference motion"
+                                   : "Fallback clip",
+                               missingRace.c_str());
+        }
+        if (!missingSelect.empty()) {
+            ImGui::TextWrapped("%s covers missing select states: %s",
+                               referenceFallbackReady
+                                   ? "Reviewed reference motion"
+                                   : "Fallback clip",
+                               missingSelect.c_str());
+        }
+        ImGui::TextDisabled(
+            "Sockets: seat %s · head %s · hands L/R %s/%s · feet L/R %s/%s",
+            (entry->socket_mask & MDKR_CHARACTER_SOCKET_SEAT)
+                ? "authored"
+                : "required fallback",
+            (entry->socket_mask & MDKR_CHARACTER_SOCKET_HEAD)
+                ? "authored"
+                : "absent",
+            (entry->socket_mask & MDKR_CHARACTER_SOCKET_HAND_LEFT)
+                ? "authored"
+                : "absent",
+            (entry->socket_mask & MDKR_CHARACTER_SOCKET_HAND_RIGHT)
+                ? "authored"
+                : "absent",
+            (entry->socket_mask & MDKR_CHARACTER_SOCKET_FOOT_LEFT)
+                ? "authored"
+                : "absent",
+            (entry->socket_mask & MDKR_CHARACTER_SOCKET_FOOT_RIGHT)
+                ? "authored"
+                : "absent");
+        if ((entry->semantic_mask &
+             MDKR_CHARACTER_SEMANTIC_RACE_STEER) != 0u) {
+            ImGui::TextDisabled(
+                "race.steer phase: 0 full left · 0.5 neutral · 1 full right");
+        }
+
+        ImGui::SeparatorText("Rig Studio");
+        if (identityReady) {
+            if (drawCharacterRigStudio(entry)) {
+                /* The transaction rescans the registry and invalidates `entry`. */
                 ImGui::PopID();
                 return true;
             }
-            setStatus("The custom character could not be enabled; open the lifecycle report.",
-                      AppTheme::bad());
-        }
-        ui::SpeakFocusedItem(
-            "Enable character", nullptr,
-            "Makes this retained package available to the game without changing its source revisions or fit settings.");
-    }
-    if (identityReady) {
-        drawCharacterPortraitPreview(entry);
-        ImGui::SameLine(0.0f, ui::kGapM);
-        ImGui::BeginGroup();
-        ImGui::TextDisabled("Exact in-game portrait · 40 × 40");
-        ImGui::TextDisabled("%u encoded source bytes", entry->portrait_bytes);
-        const ImVec4 minimap(
-            static_cast<float>(entry->minimap_rgba & 0xFFu) / 255.0f,
-            static_cast<float>((entry->minimap_rgba >> 8u) & 0xFFu) / 255.0f,
-            static_cast<float>((entry->minimap_rgba >> 16u) & 0xFFu) / 255.0f,
-            1.0f);
-        ImGui::ColorButton(
-            "Minimap colour", minimap,
-            ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoDragDrop,
-            ImVec2(ImGui::GetFrameHeight(), ImGui::GetFrameHeight()));
-        ImGui::SameLine();
-        ImGui::TextDisabled("Minimap #%02X%02X%02X",
-            entry->minimap_rgba & 0xFFu,
-            (entry->minimap_rgba >> 8u) & 0xFFu,
-            (entry->minimap_rgba >> 16u) & 0xFFu);
-        ImGui::EndGroup();
-    } else {
-        ImGui::TextDisabled(
-            "Roster identity: donor fallback · Portrait: donor fallback · Import a source-v3/v4 package to author identity media");
-    }
-    ImGui::TextDisabled(
-        "LOD0 performance guide: %s · %u triangles · %u vertices · %u draw parts · %u package materials · %u joints · %u texture(s) · %u LOD(s)",
-        characterPerformanceTier(entry), entry->lod_triangles[0],
-        entry->lod_vertices[0], entry->lod_primitives[0],
-        entry->stats.materials, entry->stats.joints,
-        entry->stats.textures, entry->stats.lod_levels);
-    if (entry->stats.decoded_texture_bytes != 0u) {
-        ImGui::TextDisabled(
-            "Texture memory: %.1f MiB decoded with mip levels · %.1f MiB package data",
-            static_cast<double>(entry->stats.decoded_texture_bytes) /
-                (1024.0 * 1024.0),
-            static_cast<double>(entry->stats.encoded_texture_bytes) /
-                (1024.0 * 1024.0));
-    } else if (entry->stats.textures != 0u) {
-        ImGui::TextDisabled(
-            "Texture memory: unavailable in this legacy cache; recompile for exact accounting");
-    }
-    ui::TextSubtleWrapped(
-        "The guide uses the actual nearest LOD plus package-wide resource costs. It is not measured frame time; use the assembly below to inspect split-screen structural load before an exact-context stress run.");
-
-    ImGui::SeparatorText("Readiness");
-    ImGui::TextDisabled(
-        "Geometry ready · Normalized %s · Anchored %s · Sockets %s · Motion %s · Donor %s · Identity %s",
-        normalized ? "ready" : "review",
-        anchored ? "ready" : "missing",
-        attachmentSocketsMapped ? "ready" : "missing",
-        motionReady ? "ready" : "incomplete",
-        qualified ? "qualified" : "pending",
-        identityReady ? "ready" : "missing");
-    if (entry->rig_role_mask != 0u) {
-        ImGui::TextDisabled(
-            "Rig contract: %s · %u/16 humanoid roles · %u inferred · minimum confidence %.0f%%",
-            rigStatus, countCharacterBits(entry->rig_role_mask),
-            countCharacterBits(entry->inferred_rig_role_mask),
-            static_cast<double>(entry->rig_min_confidence_milli) / 10.0);
-    } else {
-        ImGui::TextDisabled(
-            "Rig contract: %s · no humanoid roles mapped", rigStatus);
-    }
-    if (entry->rig_present != 0u) {
-        ImGuiTreeNodeFlags roleFlags = 0;
-        if (humanoidRig && (!humanoidRolesComplete || !rigReviewed)) {
-            roleFlags |= ImGuiTreeNodeFlags_DefaultOpen;
-        }
-        if (ImGui::TreeNodeEx("Humanoid role review", roleFlags)) {
+        } else {
             ui::TextSubtleWrapped(
-                "Verify anatomy against the actual compiled skin joints before enabling the solver. Node numbers remain unambiguous even when an unusually long glTF name is shortened for display.");
-            if (ImGui::BeginTable(
-                    "##character-rig-role-review", 4,
-                    ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
-                    ImGuiTableFlags_SizingStretchProp)) {
-                ImGui::TableSetupColumn("Role");
-                ImGui::TableSetupColumn("Source joint");
-                ImGui::TableSetupColumn("Mapping");
-                ImGui::TableSetupColumn("Solver basis");
-                ImGui::TableHeadersRow();
-                for (size_t slot = 0u;
-                     slot < std::size(kHumanoidRigRoles); ++slot) {
-                    const CharacterSemanticLabel &role =
-                        kHumanoidRigRoles[slot];
-                    const bool mapped = (entry->rig_role_mask & role.bit) != 0u;
-                    ImGui::TableNextRow();
-                    ImGui::TableNextColumn();
-                    ImGui::TextUnformatted(role.name);
-                    ImGui::TableNextColumn();
-                    if (!mapped) {
-                        ImGui::TextColored(AppTheme::bad(), "Not mapped");
-                        ImGui::TableNextColumn();
-                        ImGui::TextDisabled("—");
-                        ImGui::TableNextColumn();
-                        ImGui::TextDisabled("—");
-                        continue;
-                    }
-                    ImGui::Text("%s  (#%u)",
-                                entry->rig_role_node_name[slot],
-                                entry->rig_role_node[slot]);
-                    ImGui::TableNextColumn();
-                    const bool inferred =
-                        (entry->rig_role_flags[slot] & 1u) != 0u;
-                    const float confidence =
-                        static_cast<float>(
-                            entry->rig_role_confidence_milli[slot]) / 10.0f;
-                    const ImVec4 mappingColour =
-                        inferred && !rigReviewed ? AppTheme::accent()
-                                                : AppTheme::subtle();
-                    ImGui::TextColored(
-                        mappingColour, "%s · %.1f%%",
-                        inferred ? (rigReviewed ? "inferred, reviewed"
-                                                : "inferred, review needed")
-                                 : "authored",
-                        static_cast<double>(confidence));
-                    ImGui::TableNextColumn();
-                    const float *rest = entry->rig_role_rest_rotation[slot];
-                    const float *bend = entry->rig_role_bend_axis[slot];
-                    const bool customRest =
-                        std::fabs(rest[0]) > 1.0e-5f ||
-                        std::fabs(rest[1]) > 1.0e-5f ||
-                        std::fabs(rest[2]) > 1.0e-5f ||
-                        std::fabs(rest[3] - 1.0f) > 1.0e-5f;
-                    const bool customBend =
-                        std::fabs(bend[0]) > 1.0e-5f ||
-                        std::fabs(bend[1]) > 1.0e-5f ||
-                        std::fabs(bend[2]) > 1.0e-5f;
-                    ImGui::TextDisabled(
-                        "%s rest · %s bend",
-                        customRest ? "corrected" : "canonical",
-                        customBend ? "authored" : "automatic");
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip(
-                            "Rest correction XYZW: %.4f, %.4f, %.4f, %.4f\n"
-                            "Preferred bend axis: %.4f, %.4f, %.4f",
-                            static_cast<double>(rest[0]),
-                            static_cast<double>(rest[1]),
-                            static_cast<double>(rest[2]),
-                            static_cast<double>(rest[3]),
-                            static_cast<double>(bend[0]),
-                            static_cast<double>(bend[1]),
-                            static_cast<double>(bend[2]));
-                    }
-                }
-                ImGui::EndTable();
-            }
-            if (humanoidRig && !rigReviewed) {
-                ui::TextSubtleWrapped(
-                    "The runtime lock is deliberate: inference is a starting point, not author approval. Correct the source-v4 role map as needed, then set reviewed only after checking every row in select and all supported vehicles.");
-            }
-            ImGui::TreePop();
+                "Rig Studio requires an identity-capable source-v3/v4 package so a source-v4 revision can preserve its portrait and provenance exactly.");
         }
     }
-    if (humanoidRig && !humanoidRolesComplete) {
-        const std::string missingRig = missingCharacterSemantics(
-            entry->rig_role_mask, kHumanoidRigRoles);
-        ImGui::TextWrapped("Missing humanoid roles: %s", missingRig.c_str());
-    } else if (humanoidRolesComplete && !rigReviewed) {
-        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
-        ImGui::TextWrapped(
-            "Every role was mapped, but the author has not reviewed the inferred skeleton. Retargeting remains locked until the mapping is explicitly reviewed.");
-        ImGui::PopStyleColor();
-    } else if (humanoidRolesComplete && rigReviewed) {
-        ImGui::TextWrapped(
-            "The humanoid hierarchy is structurally validated. Engine reference motion and bounded vehicle hand/foot contacts fill missing semantic clips; authored package clips win.");
-    } else if (entry->rig_present != 0u) {
-        ImGui::TextWrapped(
-            "Authored-clips-only is a supported final mode for creatures and unusual skeletons; no humanoid solver will alter this character.");
-    } else {
-        ImGui::TextWrapped(
-            "This legacy package has attachment sockets but no semantic skeleton contract. Its authored clips remain usable; re-author as source-v4 to opt into reviewed humanoid roles.");
-    }
-    ImGui::TextDisabled(
-        "%u/10 race states · %u/3 select states · %u/%u mapped clips move",
-        mappedRaceStates, mappedSelectStates,
-        countCharacterBits(entry->moving_semantic_mask &
-                           (raceStates | selectStates)),
-        mappedRaceStates + mappedSelectStates);
-    if (!qualified) {
-        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
-        ImGui::TextWrapped(
-            "%s is not a fingerprint-qualified replacement profile yet. You may inspect this package, but activation remains unavailable.",
-            donorName(entry->donor));
-        ImGui::PopStyleColor();
-    }
-    if ((entry->stats.animations == 0u || entry->motion_channels == 0u) &&
-        !referenceFallbackReady) {
-        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
-        ImGui::TextWrapped(
-            "Static bind pose: this model has no changing animation keys. Geometry and fit can be tested, but it cannot receive a polished-motion status until clips are authored or retargeted.");
-        ImGui::PopStyleColor();
-    } else if ((entry->moving_semantic_mask &
-                MDKR_CHARACTER_SEMANTIC_FALLBACK) == 0u &&
-               !referenceFallbackReady) {
-        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
-        ImGui::TextWrapped(
-            "The fallback clip is static. Mapped motion can still play, but every missing state holds the fallback pose.");
-        ImGui::PopStyleColor();
-    } else if (staticAuthoredStates != 0u) {
-        std::string staticStates = missingCharacterSemantics(
-            ~staticAuthoredStates, kRaceCharacterSemantics);
-        const std::string staticSelect = missingCharacterSemantics(
-            ~staticAuthoredStates, kSelectCharacterSemantics);
-        if (!staticStates.empty() && !staticSelect.empty()) staticStates += ", ";
-        staticStates += staticSelect;
-        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
-        ImGui::TextWrapped(
-            "One or more explicitly mapped states are static. Authored mappings intentionally bypass reference motion; remove or animate those mappings before calling motion complete. Review: %s",
-            staticStates.c_str());
-        ImGui::PopStyleColor();
-    }
-    const std::string missingRace = missingCharacterSemantics(
-        entry->semantic_mask, kRaceCharacterSemantics);
-    const std::string missingSelect = missingCharacterSemantics(
-        entry->semantic_mask, kSelectCharacterSemantics);
-    if (!missingRace.empty()) {
-        ImGui::TextWrapped("%s covers missing race states: %s",
-                           referenceFallbackReady
-                               ? "Reviewed reference motion" : "Fallback clip",
-                           missingRace.c_str());
-    }
-    if (!missingSelect.empty()) {
-        ImGui::TextWrapped("%s covers missing select states: %s",
-                           referenceFallbackReady
-                               ? "Reviewed reference motion" : "Fallback clip",
-                           missingSelect.c_str());
-    }
-    ImGui::TextDisabled(
-        "Sockets: seat %s · head %s · hands L/R %s/%s · feet L/R %s/%s",
-        (entry->socket_mask & MDKR_CHARACTER_SOCKET_SEAT)
-            ? "authored" : "required fallback",
-        (entry->socket_mask & MDKR_CHARACTER_SOCKET_HEAD)
-            ? "authored" : "absent",
-        (entry->socket_mask & MDKR_CHARACTER_SOCKET_HAND_LEFT)
-            ? "authored" : "absent",
-        (entry->socket_mask & MDKR_CHARACTER_SOCKET_HAND_RIGHT)
-            ? "authored" : "absent",
-        (entry->socket_mask & MDKR_CHARACTER_SOCKET_FOOT_LEFT)
-            ? "authored" : "absent",
-        (entry->socket_mask & MDKR_CHARACTER_SOCKET_FOOT_RIGHT)
-            ? "authored" : "absent");
-    if ((entry->semantic_mask &
-         MDKR_CHARACTER_SEMANTIC_RACE_STEER) != 0u) {
-        ImGui::TextDisabled(
-            "race.steer phase: 0 full left · 0.5 neutral · 1 full right");
-    }
 
-    ImGui::SeparatorText("Rig Studio");
-    if (identityReady) {
-        if (drawCharacterRigStudio(entry)) {
-            /* The transaction rescans the registry and invalidates `entry`. */
+    if (g_characterWorkshopTab == CharacterWorkshopTab::Vehicles) {
+        ImGui::SeparatorText("Gameplay profile and vehicle compatibility");
+        if (drawCharacterProfileStudio(entry)) {
+            /* Saving refreshes the registry and invalidates `entry`; finish this
+             * inspector immediately and draw the replacement on the next frame. */
             ImGui::PopID();
             return true;
         }
-    } else {
-        ui::TextSubtleWrapped(
-            "Rig Studio requires an identity-capable source-v3/v4 package so a source-v4 revision can preserve its portrait and provenance exactly.");
+        ImGui::SeparatorText("Fit, motion, and vehicles");
+        changed |= drawCharacterTuningEditor(0, entry, compact);
     }
 
-    ImGui::SeparatorText("Gameplay profile and vehicle compatibility");
-    if (drawCharacterProfileStudio(entry)) {
-        /* Saving refreshes the registry and invalidates `entry`; finish this
-         * inspector immediately and draw the replacement on the next frame. */
-        ImGui::PopID();
-        return true;
-    }
-
-    ImGui::SeparatorText("Portrait Studio");
-    if (drawCharacterPortraitStudio(entry)) {
-        /* Saving refreshes the registry and invalidates `entry`; finish this
-         * inspector immediately and draw the replacement on the next frame. */
-        ImGui::PopID();
-        return true;
-    }
-
-    ImGui::SeparatorText("Fit, motion, vehicles, and performance");
-    changed |= drawCharacterTuningEditor(0, entry, compact);
-    ImGui::SeparatorText("Performance assembly");
-    drawCharacterPerformanceAssembly(entry);
-    ImGui::SeparatorText("Test in the exact game renderer");
-    if (entry->enabled != 0u) {
-        drawCharacterExactTests(entry, compact);
-    } else {
-        ui::TextSubtleWrapped(
-            "Exact game tests are unavailable while this package is disabled because the runtime deliberately cannot discover it. Re-enable it to test; source editing and structural performance review remain available above.");
-    }
-    ImGui::SeparatorText("Revision history and recovery");
-    if (drawCharacterRevisionRecovery(entry)) {
-        /* Restore rescans and invalidates this registry row. */
-        ImGui::PopID();
-        return true;
-    }
-    ImGui::SeparatorText("Package lifecycle");
-    const size_t packageDrafts = characterPackageDraftCount(entry->id);
-    ui::TextSubtleWrapped(
-        "Disable is reversible and retains every Workshop revision, fit setting, review, and player assignment. It also retains every named draft. Permanent deletion removes this package's local cache, named drafts, retained revisions, provenance, and package-owned settings.");
-    if (entry->enabled != 0u) {
-        if (ImGui::Button("Disable without deleting")) {
-            const std::string id = entry->id;
-            if (setCharacterPackageEnabled(id, false)) {
-                setStatus(
-                    "Custom character disabled; its sources, settings, and assignments were retained.",
-                    AppTheme::good());
-                ImGui::PopID();
-                return true;
-            }
-            setStatus("The custom character could not be disabled; open the lifecycle report.",
-                      AppTheme::bad());
+    if (g_characterWorkshopTab == CharacterWorkshopTab::Identity) {
+        ImGui::SeparatorText("Portrait Studio");
+        if (drawCharacterPortraitStudio(entry)) {
+            /* Saving refreshes the registry and invalidates `entry`; finish this
+             * inspector immediately and draw the replacement on the next frame. */
+            ImGui::PopID();
+            return true;
         }
+    }
+
+    if (g_characterWorkshopTab == CharacterWorkshopTab::Performance) {
+        ImGui::SeparatorText("Performance assembly");
+        drawCharacterPerformanceAssembly(entry);
+    }
+
+    if (g_characterWorkshopTab == CharacterWorkshopTab::Test) {
+        ImGui::SeparatorText("Test in the exact game renderer");
+        if (entry->enabled != 0u) {
+            drawCharacterExactTests(entry, compact);
+        } else {
+            ui::TextSubtleWrapped(
+                "Exact game tests are unavailable while this package is disabled because the runtime deliberately cannot discover it. Re-enable it to test; source editing and structural performance review remain available above.");
+        }
+    }
+
+    if (g_characterWorkshopTab == CharacterWorkshopTab::Package) {
+        ImGui::SeparatorText("Named drafts and build");
+        if (drawCharacterDraftLifecycle(entry)) {
+            /* Building refreshes the registry and invalidates `entry`. */
+            ImGui::PopID();
+            return true;
+        }
+        if (entry->enabled == 0u) {
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+            ImGui::TextWrapped(
+                "Disabled — the game uses the built-in racer for any retained player assignment. Workshop source history and package settings are preserved.");
+            ImGui::PopStyleColor();
+            if (ImGui::Button("Enable character")) {
+                const std::string id = entry->id;
+                if (setCharacterPackageEnabled(id, true)) {
+                    setStatus(
+                        "Custom character enabled; retained player assignments apply on play.",
+                        AppTheme::good());
+                    ImGui::PopID();
+                    return true;
+                }
+                setStatus("The custom character could not be enabled; open the lifecycle report.",
+                          AppTheme::bad());
+            }
+            ui::SpeakFocusedItem(
+                "Enable character",
+                nullptr,
+                "Makes this retained package available to the game without changing its source revisions or fit settings.");
+        }
+        ImGui::SeparatorText("Revision history and recovery");
+        if (drawCharacterRevisionRecovery(entry)) {
+            /* Restore rescans and invalidates this registry row. */
+            ImGui::PopID();
+            return true;
+        }
+        ImGui::SeparatorText("Package lifecycle");
+        const size_t packageDrafts = characterPackageDraftCount(entry->id);
+        ui::TextSubtleWrapped(
+            "Disable is reversible and retains every Workshop revision, fit setting, review, and player assignment. It also retains every named draft. Permanent deletion removes this package's local cache, named drafts, retained revisions, provenance, and package-owned settings.");
+        if (entry->enabled != 0u) {
+            if (ImGui::Button("Disable without deleting")) {
+                const std::string id = entry->id;
+                if (setCharacterPackageEnabled(id, false)) {
+                    setStatus(
+                        "Custom character disabled; its sources, settings, and assignments were retained.",
+                        AppTheme::good());
+                    ImGui::PopID();
+                    return true;
+                }
+                setStatus("The custom character could not be disabled; open the lifecycle report.",
+                          AppTheme::bad());
+            }
+            ui::SpeakFocusedItem(
+                "Disable without deleting",
+                nullptr,
+                "Uses the built-in racer in game while retaining all package sources, settings, reviews, and player assignments.");
+        }
+        ui::Gap(ui::kGapS);
+        if (!g_characterDraftsWritable) ImGui::BeginDisabled();
+        if (ImGui::Button("Permanently delete package...")) {
+            g_characterPendingRemoval = entry->id;
+            ImGui::OpenPopup("Permanently delete custom character?");
+        }
+        if (!g_characterDraftsWritable) ImGui::EndDisabled();
         ui::SpeakFocusedItem(
-            "Disable without deleting", nullptr,
-            "Uses the built-in racer in game while retaining all package sources, settings, reviews, and player assignments.");
-    }
-    ui::Gap(ui::kGapS);
-    if (!g_characterDraftsWritable) ImGui::BeginDisabled();
-    if (ImGui::Button("Permanently delete package...")) {
-        g_characterPendingRemoval = entry->id;
-        ImGui::OpenPopup("Permanently delete custom character?");
-    }
-    if (!g_characterDraftsWritable) ImGui::EndDisabled();
-    ui::SpeakFocusedItem(
-        "Permanently delete package", nullptr,
-        "Opens a confirmation for destructive deletion of the local cache, named editor drafts, retained Workshop source revisions, provenance reports, and package-owned settings.");
-    if (!g_characterDraftsWritable) {
-        ui::TextSubtleWrapped(
-            "Permanent deletion is locked because the named-draft inventory cannot be read or atomically replaced. Repair that local state first so package-owned work is never orphaned or silently omitted from the confirmation scope.");
-    }
-    if (ImGui::BeginPopupModal("Permanently delete custom character?", nullptr,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextWrapped(
-            "Permanently delete %s from this computer? This removes its %s cache, %zu named draft(s), %u retained Workshop source revision(s), %u provenance report(s), fit settings, review evidence, and player assignments.",
-            entry->display_name, entry->enabled != 0u ? "enabled" : "disabled",
-            packageDrafts, entry->source_revisions, entry->provenance_reports);
-        ui::TextSubtleWrapped(
-            "The external .mdkrchar file you originally chose is not touched. A revision created only inside the Workshop may have no other copy. This action cannot be undone here.");
-        if (ImGui::Button("Delete package and revisions")) {
-            const std::string removedId = g_characterPendingRemoval;
-            if (removeCharacterPackage(removedId)) {
-                const AppConfig::PersistResult persist =
-                    forgetCharacterPackagePreferences(removedId);
-                const bool preferencesSaved =
-                    AppConfig::persistResultApplied(persist);
-                const bool draftsRemoved =
-                    forgetCharacterPackageDrafts(removedId);
-                setStatus(
-                    preferencesSaved && draftsRemoved
-                        ? "Custom character, named drafts, retained revisions, and package settings permanently deleted."
-                        : "Character files were deleted, but some local draft or preference cleanup could not be saved yet.",
-                    preferencesSaved && draftsRemoved
-                        ? AppTheme::good() : AppTheme::bad());
-                g_characterPendingRemoval.clear();
+            "Permanently delete package",
+            nullptr,
+            "Opens a confirmation for destructive deletion of the local cache, named editor drafts, retained Workshop source revisions, provenance reports, and package-owned settings.");
+        if (!g_characterDraftsWritable) {
+            ui::TextSubtleWrapped(
+                "Permanent deletion is locked because the named-draft inventory cannot be read or atomically replaced. Repair that local state first so package-owned work is never orphaned or silently omitted from the confirmation scope.");
+        }
+        if (ImGui::BeginPopupModal("Permanently delete custom character?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextWrapped(
+                "Permanently delete %s from this computer? This removes its %s cache, %zu named draft(s), %u retained Workshop source revision(s), %u provenance report(s), fit settings, review evidence, and player assignments.",
+                entry->display_name,
+                entry->enabled != 0u ? "enabled" : "disabled",
+                packageDrafts,
+                entry->source_revisions,
+                entry->provenance_reports);
+            ui::TextSubtleWrapped(
+                "The external .mdkrchar file you originally chose is not touched. A revision created only inside the Workshop may have no other copy. This action cannot be undone here.");
+            if (ImGui::Button("Delete package and revisions")) {
+                const std::string removedId = g_characterPendingRemoval;
+                if (removeCharacterPackage(removedId)) {
+                    const AppConfig::PersistResult persist =
+                        forgetCharacterPackagePreferences(removedId);
+                    const bool preferencesSaved =
+                        AppConfig::persistResultApplied(persist);
+                    const bool draftsRemoved =
+                        forgetCharacterPackageDrafts(removedId);
+                    setStatus(
+                        preferencesSaved && draftsRemoved
+                            ? "Custom character, named drafts, retained revisions, and package settings permanently deleted."
+                            : "Character files were deleted, but some local draft or preference cleanup could not be saved yet.",
+                        preferencesSaved && draftsRemoved
+                            ? AppTheme::good()
+                            : AppTheme::bad());
+                    g_characterPendingRemoval.clear();
+                    ImGui::CloseCurrentPopup();
+                    ImGui::EndPopup();
+                    ImGui::PopID();
+                    return true;
+                } else {
+                    setStatus(
+                        "Character deletion failed or was partial; open the lifecycle report before retrying.",
+                        AppTheme::bad());
+                }
                 ImGui::CloseCurrentPopup();
-                ImGui::EndPopup();
-                ImGui::PopID();
-                return true;
-            } else {
-                setStatus(
-                    "Character deletion failed or was partial; open the lifecycle report before retrying.",
-                    AppTheme::bad());
             }
-            ImGui::CloseCurrentPopup();
+            ui::SpeakFocusedItem(
+                "Delete package and revisions",
+                nullptr,
+                "Permanently removes every locally retained file and setting owned by this exact package identity. The external file originally imported is unchanged.");
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+            ui::SpeakFocusedItem(
+                "Cancel",
+                nullptr,
+                "Closes this confirmation without changing the package.");
+            ImGui::EndPopup();
         }
-        ui::SpeakFocusedItem(
-            "Delete package and revisions", nullptr,
-            "Permanently removes every locally retained file and setting owned by this exact package identity. The external file originally imported is unchanged.");
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-        ui::SpeakFocusedItem(
-            "Cancel", nullptr,
-            "Closes this confirmation without changing the package.");
-        ImGui::EndPopup();
     }
     (void)autosaveActiveCharacterDraft(entry);
     ImGui::PopID();
@@ -6132,21 +6484,28 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
 
 const char *candidateRigName(uint32_t mode) {
     switch (mode) {
-        case 0u: return "No rig contract";
-        case 1u: return "Authored clips only";
-        case 2u: return "Humanoid retarget map";
-        default: return "Invalid rig contract";
+        case 0u:
+            return "No rig contract";
+        case 1u:
+            return "Authored clips only";
+        case 2u:
+            return "Humanoid retarget map";
+        default:
+            return "Invalid rig contract";
     }
 }
 
 const char *candidatePerformanceTier(
     const CharacterCandidateIndex::Candidate &candidate) {
-    const uint32_t triangles = candidate.lodTriangles[0] != 0u
-        ? candidate.lodTriangles[0] : candidate.triangles;
-    const uint32_t vertices = candidate.lodVertices[0] != 0u
-        ? candidate.lodVertices[0] : candidate.vertices;
+    const uint32_t triangles  = candidate.lodTriangles[0] != 0u
+                                    ? candidate.lodTriangles[0]
+                                    : candidate.triangles;
+    const uint32_t vertices   = candidate.lodVertices[0] != 0u
+                                    ? candidate.lodVertices[0]
+                                    : candidate.vertices;
     const uint32_t primitives = candidate.lodPrimitives[0] != 0u
-        ? candidate.lodPrimitives[0] : candidate.primitives;
+                                    ? candidate.lodPrimitives[0]
+                                    : candidate.primitives;
     if (candidate.textures != 0u && candidate.decodedTextureBytes == 0u) {
         return "Recompile to measure";
     }
@@ -6172,7 +6531,7 @@ const char *candidatePerformanceTier(
 }
 
 std::string candidateVehicleName(uint32_t mask) {
-    std::string text;
+    std::string        text;
     static const char *names[] = {"Car", "Hovercraft", "Plane"};
     for (unsigned vehicle = 0u; vehicle < std::size(names); ++vehicle) {
         if ((mask & (1u << vehicle)) == 0u) continue;
@@ -6184,8 +6543,7 @@ std::string candidateVehicleName(uint32_t mask) {
 
 std::string candidateBytes(uint64_t bytes) {
     char text[64];
-    std::snprintf(text, sizeof(text), "%.2f MiB",
-                  static_cast<double>(bytes) / (1024.0 * 1024.0));
+    std::snprintf(text, sizeof(text), "%.2f MiB", static_cast<double>(bytes) / (1024.0 * 1024.0));
     return text;
 }
 
@@ -6203,133 +6561,99 @@ struct CandidateComparisonRow {
 };
 
 void addCandidateTextRow(std::vector<CandidateComparisonRow> &rows,
-                         const char *label, const std::string &current,
-                         const std::string &next, bool installed) {
-    rows.push_back({label, installed ? current : "Not installed", next,
-                    !installed ? "New" : current == next
-                        ? "No change" : "Changed"});
+                         const char                          *label,
+                         const std::string                   &current,
+                         const std::string                   &next,
+                         bool                                 installed) {
+    rows.push_back({label, installed ? current : "Not installed", next, !installed ? "New" : current == next ? "No change"
+                                                                                                             : "Changed"});
 }
 
 void addCandidateNumberRow(std::vector<CandidateComparisonRow> &rows,
-                           const char *label, uint64_t current,
-                           uint64_t next, bool installed) {
-    rows.push_back({label, installed ? std::to_string(current) : "Not installed",
-                    std::to_string(next), installed
-                        ? candidateDelta(current, next) : "New"});
+                           const char                          *label,
+                           uint64_t                             current,
+                           uint64_t                             next,
+                           bool                                 installed) {
+    rows.push_back({label, installed ? std::to_string(current) : "Not installed", std::to_string(next), installed ? candidateDelta(current, next) : "New"});
 }
 
 bool drawCharacterCandidateReview(bool compact) {
     if (!g_characterImportCandidate.ready) return false;
-    const CharacterImportCandidate &review = g_characterImportCandidate;
-    const CharacterCandidateIndex::Candidate &next = review.next;
-    const CharacterCandidateIndex::Candidate &current = review.current;
-    const bool sameSource = review.installed &&
-        current.sourceDigest == next.sourceDigest;
-    std::vector<CandidateComparisonRow> rows;
-    addCandidateTextRow(rows, "Display name", current.displayName,
-                        next.displayName, review.installed);
-    addCandidateTextRow(rows, "Short name", current.shortName,
-                        next.shortName, review.installed);
-    addCandidateTextRow(rows, "Narration name", current.narrationName,
-                        next.narrationName, review.installed);
-    addCandidateTextRow(rows, "Sort label", current.sortLabel,
-                        next.sortLabel, review.installed);
+    const CharacterImportCandidate           &review     = g_characterImportCandidate;
+    const CharacterCandidateIndex::Candidate &next       = review.next;
+    const CharacterCandidateIndex::Candidate &current    = review.current;
+    const bool                                sameSource = review.installed &&
+                                                           current.sourceDigest == next.sourceDigest;
+    std::vector<CandidateComparisonRow>       rows;
+    addCandidateTextRow(rows, "Display name", current.displayName, next.displayName, review.installed);
+    addCandidateTextRow(rows, "Short name", current.shortName, next.shortName, review.installed);
+    addCandidateTextRow(rows, "Narration name", current.narrationName, next.narrationName, review.installed);
+    addCandidateTextRow(rows, "Sort label", current.sortLabel, next.sortLabel, review.installed);
     addCandidateTextRow(
-        rows, "License (SPDX)",
+        rows,
+        "License (SPDX)",
         current.provenancePresent ? current.licenseSpdx
                                   : "Unavailable (legacy cache)",
         next.provenancePresent ? next.licenseSpdx
                                : "Unavailable (legacy cache)",
         review.installed);
     addCandidateTextRow(
-        rows, "Creator / attribution",
+        rows,
+        "Creator / attribution",
         current.provenancePresent ? current.attribution
                                   : "Unavailable (legacy cache)",
         next.provenancePresent ? next.attribution
                                : "Unavailable (legacy cache)",
         review.installed);
     addCandidateTextRow(
-        rows, "Source",
+        rows,
+        "Source",
         current.provenancePresent ? current.sourceUrl
                                   : "Unavailable (legacy cache)",
         next.provenancePresent ? next.sourceUrl
                                : "Unavailable (legacy cache)",
         review.installed);
-    addCandidateTextRow(rows, "Portrait",
-        current.identityPresent ? "Authored" : "Generated fallback",
-        next.identityPresent ? "Authored" : "Generated fallback",
-        review.installed);
-    addCandidateTextRow(rows, "Gameplay donor", donorName(current.donor),
-                        donorName(next.donor), review.installed);
-    addCandidateTextRow(rows, "Vehicles",
-                        candidateVehicleName(current.vehicleMask),
-                        candidateVehicleName(next.vehicleMask),
+    addCandidateTextRow(rows, "Portrait", current.identityPresent ? "Authored" : "Generated fallback", next.identityPresent ? "Authored" : "Generated fallback", review.installed);
+    addCandidateTextRow(rows, "Gameplay donor", donorName(current.donor), donorName(next.donor), review.installed);
+    addCandidateTextRow(rows, "Vehicles", candidateVehicleName(current.vehicleMask), candidateVehicleName(next.vehicleMask), review.installed);
+    addCandidateTextRow(rows, "Rig", candidateRigName(current.rigMode), candidateRigName(next.rigMode), review.installed);
+    addCandidateTextRow(rows, "Rig review", current.rigMode == 0u ? "Not applicable" : current.rigReviewed ? "Author reviewed"
+                                                                                                           : "Review required",
+                        next.rigMode == 0u ? "Not applicable" : next.rigReviewed ? "Author reviewed"
+                                                                                 : "Review required",
                         review.installed);
-    addCandidateTextRow(rows, "Rig", candidateRigName(current.rigMode),
-                        candidateRigName(next.rigMode), review.installed);
-    addCandidateTextRow(rows, "Rig review",
-        current.rigMode == 0u ? "Not applicable"
-                              : current.rigReviewed ? "Author reviewed"
-                                                    : "Review required",
-        next.rigMode == 0u ? "Not applicable"
-                           : next.rigReviewed ? "Author reviewed"
-                                              : "Review required",
-        review.installed);
-    addCandidateNumberRow(rows, "Rig roles", current.rigRoles,
-                          next.rigRoles, review.installed);
-    addCandidateTextRow(rows, "Performance profile",
-                        candidatePerformanceTier(current),
-                        candidatePerformanceTier(next), review.installed);
-    addCandidateNumberRow(rows, "LOD0 vertices", current.lodVertices[0],
-                          next.lodVertices[0], review.installed);
-    addCandidateNumberRow(rows, "LOD0 triangles", current.lodTriangles[0],
-                          next.lodTriangles[0], review.installed);
-    addCandidateNumberRow(rows, "LOD0 draw parts",
-                          current.lodPrimitives[0], next.lodPrimitives[0],
-                          review.installed);
+    addCandidateNumberRow(rows, "Rig roles", current.rigRoles, next.rigRoles, review.installed);
+    addCandidateTextRow(rows, "Performance profile", candidatePerformanceTier(current), candidatePerformanceTier(next), review.installed);
+    addCandidateNumberRow(rows, "LOD0 vertices", current.lodVertices[0], next.lodVertices[0], review.installed);
+    addCandidateNumberRow(rows, "LOD0 triangles", current.lodTriangles[0], next.lodTriangles[0], review.installed);
+    addCandidateNumberRow(rows, "LOD0 draw parts", current.lodPrimitives[0], next.lodPrimitives[0], review.installed);
     for (size_t lod = 1u; lod < 4u; ++lod) {
         if (current.lodVertices[lod] == 0u &&
             next.lodVertices[lod] == 0u) continue;
         const std::string prefix = "LOD" + std::to_string(lod);
-        addCandidateNumberRow(rows, (prefix + " vertices").c_str(),
-                              current.lodVertices[lod],
-                              next.lodVertices[lod], review.installed);
-        addCandidateNumberRow(rows, (prefix + " triangles").c_str(),
-                              current.lodTriangles[lod],
-                              next.lodTriangles[lod], review.installed);
-        addCandidateNumberRow(rows, (prefix + " draw parts").c_str(),
-                              current.lodPrimitives[lod],
-                              next.lodPrimitives[lod], review.installed);
+        addCandidateNumberRow(rows, (prefix + " vertices").c_str(), current.lodVertices[lod], next.lodVertices[lod], review.installed);
+        addCandidateNumberRow(rows, (prefix + " triangles").c_str(), current.lodTriangles[lod], next.lodTriangles[lod], review.installed);
+        addCandidateNumberRow(rows, (prefix + " draw parts").c_str(), current.lodPrimitives[lod], next.lodPrimitives[lod], review.installed);
     }
-    addCandidateNumberRow(rows, "Vertices", current.vertices,
-                          next.vertices, review.installed);
-    addCandidateNumberRow(rows, "Triangles", current.triangles,
-                          next.triangles, review.installed);
-    addCandidateNumberRow(rows, "Draw parts", current.primitives,
-                          next.primitives, review.installed);
-    addCandidateNumberRow(rows, "LOD levels", current.lodLevels,
-                          next.lodLevels, review.installed);
-    addCandidateNumberRow(rows, "Materials", current.materials,
-                          next.materials, review.installed);
-    addCandidateNumberRow(rows, "Textures", current.textures,
-                          next.textures, review.installed);
-    addCandidateNumberRow(rows, "Joints", current.joints,
-                          next.joints, review.installed);
-    addCandidateNumberRow(rows, "Animations", current.animations,
-                          next.animations, review.installed);
-    addCandidateNumberRow(rows, "Animation channels",
-                          current.animationChannels,
-                          next.animationChannels, review.installed);
-    addCandidateNumberRow(rows, "Animation keys", current.animationKeys,
-                          next.animationKeys, review.installed);
+    addCandidateNumberRow(rows, "Vertices", current.vertices, next.vertices, review.installed);
+    addCandidateNumberRow(rows, "Triangles", current.triangles, next.triangles, review.installed);
+    addCandidateNumberRow(rows, "Draw parts", current.primitives, next.primitives, review.installed);
+    addCandidateNumberRow(rows, "LOD levels", current.lodLevels, next.lodLevels, review.installed);
+    addCandidateNumberRow(rows, "Materials", current.materials, next.materials, review.installed);
+    addCandidateNumberRow(rows, "Textures", current.textures, next.textures, review.installed);
+    addCandidateNumberRow(rows, "Joints", current.joints, next.joints, review.installed);
+    addCandidateNumberRow(rows, "Animations", current.animations, next.animations, review.installed);
+    addCandidateNumberRow(rows, "Animation channels", current.animationChannels, next.animationChannels, review.installed);
+    addCandidateNumberRow(rows, "Animation keys", current.animationKeys, next.animationKeys, review.installed);
     rows.push_back({"Decoded texture memory",
-        review.installed ? candidateBytes(current.decodedTextureBytes)
-                         : "Not installed",
-        candidateBytes(next.decodedTextureBytes),
-        review.installed
-            ? candidateDelta(current.decodedTextureBytes,
-                             next.decodedTextureBytes) + " bytes"
-            : "New"});
+                    review.installed ? candidateBytes(current.decodedTextureBytes)
+                                     : "Not installed",
+                    candidateBytes(next.decodedTextureBytes),
+                    review.installed
+                        ? candidateDelta(current.decodedTextureBytes,
+                                         next.decodedTextureBytes) +
+                              " bytes"
+                        : "New"});
 
     ImGui::SeparatorText(review.installed ? "Review update" : "Ready to install");
     ImGui::PushFont(AppTheme::fonts().section);
@@ -6355,11 +6679,12 @@ bool drawCharacterCandidateReview(bool compact) {
     }
 
     const bool wide = !compact && ImGui::GetContentRegionAvail().x >=
-        700.0f * AppTheme::uiScale();
+                                      700.0f * AppTheme::uiScale();
     if (wide && ImGui::BeginTable(
-            "##character-candidate-comparison", 4,
-            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                ImGuiTableFlags_SizingStretchProp)) {
+                    "##character-candidate-comparison",
+                    4,
+                    ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                        ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("Property");
         ImGui::TableSetupColumn(review.installed ? "Installed" : "Current");
         ImGui::TableSetupColumn("Candidate");
@@ -6367,21 +6692,26 @@ bool drawCharacterCandidateReview(bool compact) {
         ImGui::TableHeadersRow();
         for (const CandidateComparisonRow &row : rows) {
             ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::TextUnformatted(row.label.c_str());
-            ImGui::TableNextColumn(); ImGui::TextWrapped("%s", row.current.c_str());
-            ImGui::TableNextColumn(); ImGui::TextWrapped("%s", row.next.c_str());
-            ImGui::TableNextColumn(); ImGui::TextUnformatted(row.change.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(row.label.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", row.current.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", row.next.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(row.change.c_str());
         }
         ImGui::EndTable();
     } else {
         for (const CandidateComparisonRow &row : rows) {
             if (review.installed) {
                 ImGui::TextWrapped("%s: %s (installed: %s; %s)",
-                    row.label.c_str(), row.next.c_str(), row.current.c_str(),
-                    row.change.c_str());
+                                   row.label.c_str(),
+                                   row.next.c_str(),
+                                   row.current.c_str(),
+                                   row.change.c_str());
             } else {
-                ImGui::TextWrapped("%s: %s", row.label.c_str(),
-                                   row.next.c_str());
+                ImGui::TextWrapped("%s: %s", row.label.c_str(), row.next.c_str());
             }
         }
     }
@@ -6408,14 +6738,15 @@ bool drawCharacterCandidateReview(bool compact) {
         "I confirm I have the right to use this package locally",
         &g_characterImportCandidate.rightsConfirmed);
     ui::SpeakFocusedItem(
-        "Local-use rights confirmation", nullptr,
+        "Local-use rights confirmation",
+        nullptr,
         "Required before install. The package includes license text, but the importer cannot verify copyright, trademark, attribution, or redistribution rights and never uploads this content.");
     ui::TextSubtleWrapped(
         "The package includes cryptographically bound license text, but the importer cannot verify copyright, trademark, attribution, or redistribution rights. Installation is local and never uploads the package.");
     if (!g_characterImportCandidate.rightsConfirmed) ImGui::BeginDisabled();
-    const char *installLabel = sameSource ? "Retain reviewed package"
-        : review.installed ? "Install reviewed update"
-                           : "Install reviewed character";
+    const char *installLabel = sameSource         ? "Retain reviewed package"
+                               : review.installed ? "Install reviewed update"
+                                                  : "Install reviewed character";
     if (ImGui::Button(installLabel)) {
         const bool wasUpdate = review.installed;
         if (installReviewedCharacterPackage()) {
@@ -6434,7 +6765,8 @@ bool drawCharacterCandidateReview(bool compact) {
     }
     if (!g_characterImportCandidate.rightsConfirmed) ImGui::EndDisabled();
     ui::SpeakFocusedItem(
-        installLabel, nullptr,
+        installLabel,
+        nullptr,
         "Commits only the exact package bytes and installed base shown in this review. Gameplay authority remains with the named built-in donor.");
     ImGui::SameLine();
     if (ImGui::Button("Discard candidate")) {
@@ -6444,50 +6776,36 @@ bool drawCharacterCandidateReview(bool compact) {
         return false;
     }
     ui::SpeakFocusedItem(
-        "Discard candidate", nullptr,
+        "Discard candidate",
+        nullptr,
         "Closes this review without installing or deleting any files.");
     return false;
 }
 
-bool drawCustomCharactersSection(bool compact) {
-    bool changed = false;
-    if (!g_characterRegistryLoaded) refreshCharacterRegistry();
-    ui::Gap(ui::kGapS);
-    if (!compact) {
-        ui::TextSubtleWrapped(
-            "Import a self-contained .mdkrchar package, inspect and tune one "
-            "package-level workshop profile, then assign it to local players. The game never "
-            "needs a second ROM and never puts these local presentation choices "
-            "into saves, ghosts, physics, or network authority. Every built-in "
-            "gameplay profile has fingerprint-qualified car, hovercraft, plane, "
-            "and character-select presentation seams.");
-    }
-    ImGui::Indent(ui::kGapM);
-
-    if (mdkr_render_backend() != MDKR_BACKEND_WEBGPU) {
-        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
-        ImGui::TextWrapped(
-            "Modern characters require the WebGPU renderer. This backend will "
-            "keep the built-in racer visible, so packages remain safe but will "
-            "not appear in-game.");
-        ImGui::PopStyleColor();
-    }
-
+void drawCharacterImportControls(bool rail) {
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputTextWithHint("##character-package-path",
                              "/path/to/character.mdkrchar",
                              g_characterImportPath,
                              sizeof(g_characterImportPath));
+    const bool inlineActions = !rail &&
+                               ImGui::GetContentRegionAvail().x >=
+                                   760.0f * AppTheme::uiScale();
     if (filedialog::isAvailable()) {
         if (ImGui::Button("Browse for package...")) {
             std::string picked;
             if (filedialog::openCharacterPackage(picked)) {
                 std::snprintf(g_characterImportPath,
-                              sizeof(g_characterImportPath), "%s",
+                              sizeof(g_characterImportPath),
+                              "%s",
                               picked.c_str());
             }
         }
-        ImGui::SameLine();
+        ui::SpeakFocusedItem(
+            "Browse for package",
+            nullptr,
+            "Chooses a local mdkrchar package. Nothing is installed until validation, review, and explicit confirmation succeed.");
+        if (inlineActions) ImGui::SameLine();
     }
     const bool canImport = g_characterImportPath[0] != '\0';
     if (!canImport) ImGui::BeginDisabled();
@@ -6495,61 +6813,99 @@ bool drawCustomCharactersSection(bool compact) {
         (void)Settings_importCharacterPackage(g_characterImportPath);
     }
     if (!canImport) ImGui::EndDisabled();
-    ImGui::SameLine();
+    ui::SpeakFocusedItem(
+        "Validate and review",
+        canImport ? nullptr : "Choose or enter a package path first.",
+        "Stages a mutation-free inventory and installed-version comparison. It does not install the package.");
+    if (inlineActions) ImGui::SameLine();
     if (ImGui::Button("Rescan installed characters")) {
         refreshCharacterRegistry();
     }
+    ui::SpeakFocusedItem(
+        "Rescan installed characters",
+        nullptr,
+        "Reloads the bounded local library without enabling, disabling, or changing any package.");
     if (!g_characterRegistryDirectory.empty()) {
-        int enabledCount = 0;
+        int       enabledCount = 0;
         const int inventoryCount =
             mdkr_modern_character_registry_count(&g_characterRegistry);
         for (int index = 0; index < inventoryCount; ++index) {
             const MdkrModernCharacterEntry *entry =
                 mdkr_modern_character_registry_entry(&g_characterRegistry,
-                                                      index);
+                                                     index);
             if (entry != nullptr && entry->enabled != 0u) ++enabledCount;
         }
         ImGui::TextDisabled("%d enabled · %d disabled · Folder: %s",
-            enabledCount, inventoryCount - enabledCount,
-            g_characterRegistryDirectory.c_str());
+                            enabledCount,
+                            inventoryCount - enabledCount,
+                            g_characterRegistryDirectory.c_str());
     }
     if (!g_characterManagerReport.empty() &&
         ImGui::TreeNode("Last importer report")) {
         ImGui::TextWrapped("%s", g_characterManagerReport.c_str());
         ImGui::TreePop();
     }
+}
 
-    changed |= drawCharacterCandidateReview(compact);
-
+const MdkrModernCharacterEntry *resolveCharacterWorkshopSelection() {
     const int characterCount =
         mdkr_modern_character_registry_count(&g_characterRegistry);
-    const MdkrModernCharacterEntry *workshopEntry = nullptr;
-    if (characterCount > 0) {
-        if (!g_characterWorkshopSelectionLoaded) {
-            g_characterWorkshopSelection = AppConfig::get(
-                "character_workshop_last_selected");
-            g_characterWorkshopSelectionLoaded = true;
-        }
-        int workshopIndex = mdkr_modern_character_registry_find(
-            &g_characterRegistry, g_characterWorkshopSelection.c_str());
-        if (workshopIndex < 0) {
-            workshopIndex = 0;
-            const MdkrModernCharacterEntry *first =
-                mdkr_modern_character_registry_entry(&g_characterRegistry, 0);
-            g_characterWorkshopSelection = first != nullptr ? first->id : "";
-            AppConfig::set("character_workshop_last_selected",
-                           g_characterWorkshopSelection);
-            (void)AppConfig::save();
-        }
-        workshopEntry = mdkr_modern_character_registry_entry(
-            &g_characterRegistry, workshopIndex);
+    if (characterCount <= 0) return nullptr;
+    if (!g_characterWorkshopSelectionLoaded) {
+        g_characterWorkshopSelection = AppConfig::get(
+            "character_workshop_last_selected");
+        g_characterWorkshopSelectionLoaded = true;
+    }
+    int index = mdkr_modern_character_registry_find(
+        &g_characterRegistry,
+        g_characterWorkshopSelection.c_str());
+    if (index < 0) {
+        index = 0;
+        const MdkrModernCharacterEntry *first =
+            mdkr_modern_character_registry_entry(&g_characterRegistry, 0);
+        g_characterWorkshopSelection = first != nullptr ? first->id : "";
+        (void)AppConfig::setAndSave(
+            "character_workshop_last_selected",
+            g_characterWorkshopSelection);
+    }
+    return mdkr_modern_character_registry_entry(&g_characterRegistry, index);
+}
+
+void selectCharacterWorkshopEntry(const MdkrModernCharacterEntry *entry) {
+    if (entry == nullptr || g_characterWorkshopSelection == entry->id) return;
+    g_characterWorkshopSelection          = entry->id;
+    const AppConfig::PersistResult result = AppConfig::setAndSave(
+        "character_workshop_last_selected",
+        g_characterWorkshopSelection);
+    if (!AppConfig::persistResultApplied(result)) {
+        setStatus(
+            "Character selected, but the launcher could not remember it for next time.",
+            AppTheme::accent());
+    }
+}
+
+const MdkrModernCharacterEntry *drawCharacterLibrary(bool rail) {
+    const int characterCount =
+        mdkr_modern_character_registry_count(&g_characterRegistry);
+    const MdkrModernCharacterEntry *workshopEntry =
+        resolveCharacterWorkshopSelection();
+    if (rail) {
+        ImGui::TextUnformatted("Installed characters");
+    } else {
         ImGui::SeparatorText("Character library");
+    }
+    if (characterCount <= 0) {
+        ui::TextSubtleWrapped(
+            "No characters are installed yet. Choose a package above, validate its inventory, and explicitly install the reviewed candidate.");
+        return nullptr;
+    }
+    if (!rail) {
         ImGui::SetNextItemWidth(-1.0f);
-        const std::string workshopPreview = workshopEntry != nullptr
-            ? std::string(workshopEntry->display_name) +
-                (workshopEntry->enabled != 0u ? "" : " (disabled)")
-            : "Choose a character";
-        const bool libraryComboOpen = ImGui::BeginCombo(
+        const std::string workshopPreview  = workshopEntry != nullptr
+                                                 ? std::string(workshopEntry->display_name) +
+                                                       (workshopEntry->enabled != 0u ? "" : " (disabled)")
+                                                 : "Choose a character";
+        const bool        libraryComboOpen = ImGui::BeginCombo(
             "Character to edit##character-workshop-library",
             workshopPreview.c_str());
         ui::SpeakFocusedItem(
@@ -6561,40 +6917,68 @@ bool drawCustomCharactersSection(bool compact) {
             for (int index = 0; index < characterCount; ++index) {
                 const MdkrModernCharacterEntry *entry =
                     mdkr_modern_character_registry_entry(&g_characterRegistry,
-                                                          index);
+                                                         index);
                 if (entry == nullptr) continue;
-                const bool qualified = mdkr_modern_donor_qualified(
-                    static_cast<int>(entry->donor)) != 0;
-                const std::string item = std::string(entry->display_name) +
-                    (entry->enabled != 0u ? "" : " (disabled)") +
-                    (qualified ? "" : " (review only)");
+                const bool        qualified = mdkr_modern_donor_qualified(
+                                                  static_cast<int>(entry->donor)) != 0;
+                const std::string item      = std::string(entry->display_name) +
+                                              (entry->enabled != 0u ? "" : " (disabled)") +
+                                              (qualified ? "" : " (review only)");
                 if (ImGui::Selectable(
                         item.c_str(),
                         g_characterWorkshopSelection == entry->id)) {
-                    g_characterWorkshopSelection = entry->id;
-                    AppConfig::set("character_workshop_last_selected",
-                                   g_characterWorkshopSelection);
-                    (void)AppConfig::save();
+                    selectCharacterWorkshopEntry(entry);
                     workshopEntry = entry;
                 }
                 const std::string spokenState =
                     std::string(entry->enabled != 0u ? "enabled" : "disabled") +
                     (qualified ? "" : ", donor review required");
                 ui::SpeakFocusedItem(
-                    entry->narration_name, spokenState.c_str(),
+                    entry->narration_name,
+                    spokenState.c_str(),
                     "Select this package for Workshop editing.");
             }
             ImGui::EndCombo();
         }
-        if (workshopEntry != nullptr) {
-            changed |= drawCharacterPackageInspector(workshopEntry, compact);
-        }
-    } else {
-        ImGui::SeparatorText("Character library");
-        ui::TextSubtleWrapped(
-            "No characters are installed yet. Import a validated package above to begin a local workshop draft.");
+        return workshopEntry;
     }
 
+    for (int index = 0; index < characterCount; ++index) {
+        const MdkrModernCharacterEntry *entry =
+            mdkr_modern_character_registry_entry(&g_characterRegistry, index);
+        if (entry == nullptr) continue;
+        const CharacterWorkshopReadiness readiness =
+            characterWorkshopReadinessForEntry(entry);
+        const bool        selected = g_characterWorkshopSelection == entry->id;
+        const std::string label    = std::string(entry->display_name) + "\n" +
+                                     std::to_string(readiness.readyCount) + "/" +
+                                     std::to_string(readiness.rows.size()) + " ready · " +
+                                     (entry->enabled != 0u ? "Enabled" : "Disabled") +
+                                     "##character-library-" + entry->id;
+        if (ImGui::Selectable(
+                label.c_str(),
+                selected,
+                0,
+                ImVec2(0.0f, ui::kTouchRowHeight() * 1.35f))) {
+            selectCharacterWorkshopEntry(entry);
+            workshopEntry = entry;
+        }
+        const std::string spokenState =
+            std::to_string(readiness.readyCount) + " of " +
+            std::to_string(readiness.rows.size()) + " areas ready, " +
+            (entry->enabled != 0u ? "enabled" : "disabled");
+        ui::SpeakFocusedItem(
+            entry->narration_name,
+            spokenState.c_str(),
+            readiness.nextActionLabel);
+    }
+    return workshopEntry;
+}
+
+bool drawCharacterAssignments() {
+    bool      changed = false;
+    const int characterCount =
+        mdkr_modern_character_registry_count(&g_characterRegistry);
     ImGui::SeparatorText("Use in game");
     ui::TextSubtleWrapped(
         "Assignments are separate from editing. A character's saved fit follows the package, regardless of which local player uses it.");
@@ -6602,26 +6986,28 @@ bool drawCustomCharactersSection(bool compact) {
         ImGui::PushID(player);
         const std::string key =
             "custom_character_p" + std::to_string(player + 1);
-        const std::string selected = AppConfig::get(key);
-        const int selectedIndex = mdkr_modern_character_registry_find(
-            &g_characterRegistry, selected.c_str());
+        const std::string selected      = AppConfig::get(key);
+        const int         selectedIndex = mdkr_modern_character_registry_find(
+            &g_characterRegistry,
+            selected.c_str());
         const MdkrModernCharacterEntry *selectedEntry =
             mdkr_modern_character_registry_entry(&g_characterRegistry,
-                                                  selectedIndex);
+                                                 selectedIndex);
         const bool selectedAvailable =
             selectedEntry != nullptr && selectedEntry->enabled != 0u;
         const std::string preview = selectedAvailable
-            ? selectedEntry->display_name
-            : selectedEntry != nullptr
-                ? std::string("Built-in racer — ") +
-                    selectedEntry->display_name + " is disabled"
-                : "Built-in racer";
+                                        ? selectedEntry->display_name
+                                    : selectedEntry != nullptr
+                                        ? std::string("Built-in racer — ") +
+                                              selectedEntry->display_name + " is disabled"
+                                        : "Built-in racer";
         const std::string label =
             "Player " + std::to_string(player + 1) + "##custom-character";
         const std::string spokenLabel =
             "Player " + std::to_string(player + 1) + " character";
         const bool assignmentComboOpen = ImGui::BeginCombo(
-            label.c_str(), preview.c_str());
+            label.c_str(),
+            preview.c_str());
         ui::SpeakFocusedItem(
             spokenLabel.c_str(),
             selectedAvailable ? selectedEntry->narration_name
@@ -6644,19 +7030,20 @@ bool drawCustomCharactersSection(bool compact) {
                 }
             }
             ui::SpeakFocusedItem(
-                "Built-in racer", noneSelected ? "selected" : "available",
+                "Built-in racer",
+                noneSelected ? "selected" : "available",
                 "Use the original built-in character presentation.");
             for (int index = 0; index < characterCount; ++index) {
                 const MdkrModernCharacterEntry *entry =
                     mdkr_modern_character_registry_entry(&g_characterRegistry,
-                                                          index);
+                                                         index);
                 if (entry == nullptr) continue;
-                const bool qualified = mdkr_modern_donor_qualified(
-                    static_cast<int>(entry->donor)) != 0;
-                const std::string item = std::string(entry->display_name) +
-                    (entry->enabled != 0u ? "" : " (disabled)") +
-                    (qualified ? "" : " (donor not qualified)");
-                const bool assignable = qualified && entry->enabled != 0u;
+                const bool        qualified  = mdkr_modern_donor_qualified(
+                                                   static_cast<int>(entry->donor)) != 0;
+                const std::string item       = std::string(entry->display_name) +
+                                               (entry->enabled != 0u ? "" : " (disabled)") +
+                                               (qualified ? "" : " (donor not qualified)");
+                const bool        assignable = qualified && entry->enabled != 0u;
                 if (!assignable) ImGui::BeginDisabled();
                 if (ImGui::Selectable(item.c_str(), selected == entry->id)) {
                     const AppConfig::PersistResult result =
@@ -6676,7 +7063,8 @@ bool drawCustomCharactersSection(bool compact) {
                     std::string(assignable ? "available" : "not assignable") +
                     (selected == entry->id ? ", selected" : "");
                 ui::SpeakFocusedItem(
-                    entry->narration_name, spokenState.c_str(),
+                    entry->narration_name,
+                    spokenState.c_str(),
                     "Assign this local character presentation to the player.");
                 if (!assignable) ImGui::EndDisabled();
             }
@@ -6689,7 +7077,10 @@ bool drawCustomCharactersSection(bool compact) {
         }
         ImGui::PopID();
     }
+    return changed;
+}
 
+void drawSkippedCharacterInventory() {
     const int skipped =
         mdkr_modern_character_registry_skipped(&g_characterRegistry);
     if (skipped > 0) {
@@ -6703,18 +7094,155 @@ bool drawCustomCharactersSection(bool compact) {
                                                            index));
         }
     }
-    ImGui::Unindent(ui::kGapM);
-    ui::Gap(ui::kGapS);
+}
+
+bool drawCustomCharactersSection(bool compact) {
+    bool changed = false;
+    if (!g_characterRegistryLoaded) refreshCharacterRegistry();
+    ui::TextSubtleWrapped(
+        "Appearance packages are local presentation only. The selected fingerprint-qualified built-in donor still owns simulation, collision, audio, ghosts, records, and network/rollback identity; no second ROM is required.");
+    if (mdkr_render_backend() != MDKR_BACKEND_WEBGPU) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+        ImGui::TextWrapped(
+            "Modern characters require the WebGPU renderer. This backend keeps the built-in racer visible, so installed packages remain safe but cannot appear in game.");
+        ImGui::PopStyleColor();
+    }
+
+    const bool rail = !compact &&
+                      ImGui::GetContentRegionAvail().x >=
+                          980.0f * AppTheme::uiScale();
+    if (!rail) {
+        ImGui::Indent(ui::kGapM);
+        drawCharacterImportControls(false);
+        changed |= drawCharacterCandidateReview(compact);
+        const MdkrModernCharacterEntry *entry =
+            drawCharacterLibrary(false);
+        if (entry != nullptr) {
+            changed |= drawCharacterPackageInspector(entry, compact);
+        }
+        changed |= drawCharacterAssignments();
+        drawSkippedCharacterInventory();
+        ImGui::Unindent(ui::kGapM);
+        ui::Gap(ui::kGapS);
+        return changed;
+    }
+
+    if (ImGui::BeginTable(
+            "##character-workshop-shell",
+            2,
+            ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable |
+                ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn(
+            "Library",
+            ImGuiTableColumnFlags_WidthFixed,
+            320.0f * AppTheme::uiScale());
+        ImGui::TableSetupColumn("Editor", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::BeginChild(
+            "##character-workshop-library-rail",
+            ImVec2(0.0f, 0.0f),
+            ImGuiChildFlags_NavFlattened,
+            ImGuiWindowFlags_AlwaysVerticalScrollbar);
+        ImGui::PushFont(AppTheme::fonts().section);
+        ImGui::TextUnformatted("Library");
+        ImGui::PopFont();
+        ui::TextSubtleWrapped(
+            "Import or choose a character. Drafts and installed revisions remain independent.");
+        drawCharacterImportControls(true);
+        const MdkrModernCharacterEntry *entry = drawCharacterLibrary(true);
+        changed |= drawCharacterAssignments();
+        drawSkippedCharacterInventory();
+        ui::TouchScrollCurrentWindow();
+        ImGui::EndChild();
+
+        ImGui::TableNextColumn();
+        ImGui::BeginChild(
+            "##character-workshop-editor",
+            ImVec2(0.0f, 0.0f),
+            ImGuiChildFlags_NavFlattened,
+            ImGuiWindowFlags_AlwaysVerticalScrollbar);
+        if (g_characterImportCandidate.ready) {
+            changed |= drawCharacterCandidateReview(false);
+        } else if (entry != nullptr) {
+            changed |= drawCharacterPackageInspector(entry, false);
+        } else {
+            ImGui::PushFont(AppTheme::fonts().section);
+            ImGui::TextUnformatted("Start with a reviewed package");
+            ImGui::PopFont();
+            ui::TextSubtleWrapped(
+                "Choose a self-contained .mdkrchar file in the library. Validation is mutation-free; the complete inventory and any installed-version differences appear here before an explicit install.");
+        }
+        ui::TouchScrollCurrentWindow();
+        ImGui::EndChild();
+        ImGui::EndTable();
+    }
     return changed;
 }
 
-}  // namespace
+bool drawCustomCharactersSettingsSummary(bool compact) {
+    if (!g_characterRegistryLoaded) refreshCharacterRegistry();
+    const int characterCount =
+        mdkr_modern_character_registry_count(&g_characterRegistry);
+    int enabledCount = 0;
+    for (int index = 0; index < characterCount; ++index) {
+        const MdkrModernCharacterEntry *entry =
+            mdkr_modern_character_registry_entry(&g_characterRegistry, index);
+        if (entry != nullptr && entry->enabled != 0u) ++enabledCount;
+    }
+    ImGui::TextWrapped("%d installed · %d enabled · %d disabled",
+                       characterCount,
+                       enabledCount,
+                       characterCount - enabledCount);
+    ui::TextSubtleWrapped(
+        "Importing, identity, portraits, rigging, vehicle fit, performance, testing, and packaging live in the dedicated Character Workshop.");
+
+    ImGui::TextUnformatted("Current player assignments");
+    for (int player = 0; player < 4; ++player) {
+        const std::string key =
+            "custom_character_p" + std::to_string(player + 1);
+        const std::string selected      = AppConfig::get(key);
+        const int         selectedIndex = mdkr_modern_character_registry_find(
+            &g_characterRegistry,
+            selected.c_str());
+        const MdkrModernCharacterEntry *entry =
+            mdkr_modern_character_registry_entry(&g_characterRegistry,
+                                                 selectedIndex);
+        const bool active = entry != nullptr && entry->enabled != 0u &&
+                            mdkr_modern_donor_qualified(static_cast<int>(entry->donor)) != 0;
+        if (active) {
+            ImGui::BulletText("Player %d: %s", player + 1, entry->display_name);
+        } else if (entry != nullptr) {
+            ImGui::BulletText("Player %d: Built-in racer (%s retained)",
+                              player + 1,
+                              entry->display_name);
+        } else {
+            ImGui::BulletText("Player %d: Built-in racer", player + 1);
+        }
+    }
+
+    if (!compact) {
+        if (ImGui::Button("Open Character Workshop",
+                          ui::kBtnFullWidth())) {
+            g_characterWorkshopOpenRequested = true;
+        }
+        ui::SpeakFocusedItem(
+            "Open Character Workshop",
+            nullptr,
+            "Opens the dedicated character library and authoring workspaces. Current settings and drafts are preserved.");
+    } else {
+        ui::TextSubtleWrapped(
+            "Return to the launcher to open Character Workshop. The in-game overlay never starts a second renderer or changes character packages during a running session.");
+    }
+    return false;
+}
+
+} // namespace
 
 void Settings_setDonorGameplayProfiles(
     const MdkrDonorGameplayProfiles *profiles,
-    const char *unavailableReason) {
-    std::memset(&g_donorGameplayProfiles, 0,
-                sizeof(g_donorGameplayProfiles));
+    const char                      *unavailableReason) {
+    std::memset(&g_donorGameplayProfiles, 0, sizeof(g_donorGameplayProfiles));
     g_donorGameplayProfilesUnavailableReason =
         unavailableReason != nullptr ? unavailableReason : "";
     if (profiles == nullptr || profiles->available != 1u ||
@@ -6723,7 +7251,8 @@ void Settings_setDonorGameplayProfiles(
         return;
     }
     for (uint32_t donor = 0u;
-         donor < MDKR_DONOR_GAMEPLAY_PROFILE_COUNT; ++donor) {
+         donor < MDKR_DONOR_GAMEPLAY_PROFILE_COUNT;
+         ++donor) {
         if (!std::isfinite(profiles->donor[donor].weight) ||
             !std::isfinite(profiles->donor[donor].handling)) {
             return;
@@ -6765,11 +7294,29 @@ bool Settings_importCharacterPackage(const char *path) {
     return true;
 }
 
+bool Settings_drawCharacterWorkshop(SDL_Window *window, bool compact) {
+    (void)window;
+    const bool changed = drawCustomCharactersSection(compact);
+    if (!g_status.empty()) {
+        ui::Gap(ui::kGapS);
+        ImGui::PushStyleColor(ImGuiCol_Text, g_statusColor);
+        ImGui::TextWrapped("%s", g_status.c_str());
+        ImGui::PopStyleColor();
+    }
+    return changed;
+}
+
+bool Settings_takeCharacterWorkshopOpenRequest() {
+    if (!g_characterWorkshopOpenRequested) return false;
+    g_characterWorkshopOpenRequested = false;
+    return true;
+}
+
 bool Settings_takeCharacterPreviewRequest(
     SettingsCharacterPreviewRequest &request) {
     if (!g_characterPreviewRequested) return false;
-    request = std::move(g_characterPreviewRequest);
-    g_characterPreviewRequest = SettingsCharacterPreviewRequest{};
+    request                     = std::move(g_characterPreviewRequest);
+    g_characterPreviewRequest   = SettingsCharacterPreviewRequest{};
     g_characterPreviewRequested = false;
     return true;
 }
@@ -7369,7 +7916,7 @@ bool Settings_draw(SDL_Window *window, bool compact) {
                           : ImGuiTreeNodeFlags_None,
             compact)) {
         ImGui::Unindent(ui::kGapM);
-        changed |= drawCustomCharactersSection(compact);
+        changed |= drawCustomCharactersSettingsSummary(compact);
     }
 
     // --- Advanced -----------------------------------------------------------

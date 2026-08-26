@@ -207,8 +207,9 @@ primary action of an in-game overlay dialog.
 ### 3.1 Panels
 
 Indices are load-bearing — `kLauncherPanelCount` and the smoke contracts pin
-them — so the set keeps its five slots and its order, and the changes are to
-what each slot *is*.
+them. The original five retain their numeric identity; the Character Workshop
+is appended as slot 5 so old automation and recovery routes are not silently
+renumbered.
 
 | # | Was | Is | Rationale |
 |---|-----|----|-----------|
@@ -217,6 +218,7 @@ what each slot *is*.
 | 2 | Settings | **Settings** | — |
 | 3 | Diagnostics | **Diagnostics** | — |
 | 4 | About | **About** | — |
+| 5 | — | **Character Workshop** | Dedicated import, authoring, fit, performance, test, and package workspace; Settings keeps only its shortcut and assignment summary. |
 
 **Play** has two states, and they are the first-run flow and the returning
 flow:

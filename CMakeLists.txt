@@ -781,6 +781,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/character_revision_index.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_draft_store.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_draft_snapshot.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_workshop_model.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/crash_screen.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/dev_tools.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/tool_collision.cpp
@@ -1586,6 +1587,10 @@ if(NOT EMSCRIPTEN)
                     "${MDKR_APP_TEST_ROOT}/shell/saves"
                     "${MDKR_APP_TEST_ROOT}/settings/prefs"
                     "${MDKR_APP_TEST_ROOT}/settings/saves"
+                    "${MDKR_APP_TEST_ROOT}/workshop/prefs"
+                    "${MDKR_APP_TEST_ROOT}/workshop/saves"
+                    "${MDKR_APP_TEST_ROOT}/workshop-min/prefs"
+                    "${MDKR_APP_TEST_ROOT}/workshop-min/saves"
                     "${MDKR_APP_TEST_ROOT}/online/prefs"
                     "${MDKR_APP_TEST_ROOT}/online/saves"
                     "${MDKR_APP_TEST_ROOT}/online-min/prefs"
@@ -1613,6 +1618,8 @@ if(NOT EMSCRIPTEN)
                 file(REMOVE
                     "${MDKR_APP_TEST_ROOT}/shell/video.ini"
                     "${MDKR_APP_TEST_ROOT}/settings/video.ini"
+                    "${MDKR_APP_TEST_ROOT}/workshop/video.ini"
+                    "${MDKR_APP_TEST_ROOT}/workshop-min/video.ini"
                     "${MDKR_APP_TEST_ROOT}/online/video.ini"
                     "${MDKR_APP_TEST_ROOT}/online-min/video.ini"
                     "${MDKR_APP_TEST_ROOT}/top-tabs/video.ini"
@@ -1629,6 +1636,10 @@ if(NOT EMSCRIPTEN)
                     "# isolated first-run shell\n")
                 file(WRITE "${MDKR_APP_TEST_ROOT}/settings/prefs/mdkr64_app.ini"
                     "# isolated first-run settings\n")
+                file(WRITE "${MDKR_APP_TEST_ROOT}/workshop/prefs/mdkr64_app.ini"
+                    "# isolated empty Character Workshop\n")
+                file(WRITE "${MDKR_APP_TEST_ROOT}/workshop-min/prefs/mdkr64_app.ini"
+                    "# minimum Character Workshop\nui_scale=2.00\n")
                 file(WRITE "${MDKR_APP_TEST_ROOT}/online/prefs/mdkr64_app.ini"
                     "# isolated launcher-owned online preview\n")
                 file(WRITE "${MDKR_APP_TEST_ROOT}/online-min/prefs/mdkr64_app.ini"
@@ -1687,6 +1698,50 @@ if(NOT EMSCRIPTEN)
                 set_tests_properties(app_settings_capture_content PROPERTIES
                     FIXTURES_REQUIRED app_settings_capture
                     DEPENDS app_settings_smoke
+                    LABELS gpu
+                    TIMEOUT 60)
+
+                # Character authoring is a dedicated launcher destination, not
+                # a settings accordion. This empty-library route proves the
+                # named panel, responsive shell, importer onboarding, and
+                # render/present path without a ROM or third-party asset.
+                add_test(NAME app_character_workshop_smoke COMMAND ${MDKR_TARGET})
+                set_tests_properties(app_character_workshop_smoke PROPERTIES
+                    FIXTURES_SETUP app_character_workshop_capture
+                    WORKING_DIRECTORY "${MDKR_APP_TEST_ROOT}/workshop"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=6;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_character_workshop.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_PANEL=Character Workshop;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/workshop/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/workshop/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/workshop/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    LABELS gpu
+                    PASS_REGULAR_EXPRESSION "active-panel=Character Workshop"
+                    TIMEOUT 180)
+                add_test(NAME app_character_workshop_content
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_app_capture.py
+                        ${CMAKE_CURRENT_BINARY_DIR}/app_character_workshop.bmp
+                        --self-test)
+                set_tests_properties(app_character_workshop_content PROPERTIES
+                    FIXTURES_REQUIRED app_character_workshop_capture
+                    DEPENDS app_character_workshop_smoke
+                    LABELS gpu
+                    TIMEOUT 60)
+
+                add_test(NAME app_character_workshop_minimum_smoke
+                    COMMAND ${MDKR_TARGET})
+                set_tests_properties(app_character_workshop_minimum_smoke PROPERTIES
+                    FIXTURES_SETUP app_character_workshop_minimum_capture
+                    WORKING_DIRECTORY "${MDKR_APP_TEST_ROOT}/workshop-min"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=10;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_character_workshop_minimum.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Character Workshop;MDKR_APP_UI_TRACE=1;MDKR_APP_SMOKE_TOUCH_SCROLL=1;MDKR_APP_SMOKE_TOUCH_TOKEN=mdkr64-app-touch-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/workshop-min/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/workshop-min/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/workshop-min/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    LABELS gpu
+                    PASS_REGULAR_EXPRESSION "compact-layout dense=1 contained=1 overlap=0 contentSeparated=1"
+                    TIMEOUT 180)
+                add_test(NAME app_character_workshop_minimum_content
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_app_capture.py
+                        ${CMAKE_CURRENT_BINARY_DIR}/app_character_workshop_minimum.bmp
+                        --compact-palette
+                        --self-test)
+                set_tests_properties(app_character_workshop_minimum_content PROPERTIES
+                    FIXTURES_REQUIRED app_character_workshop_minimum_capture
+                    DEPENDS app_character_workshop_minimum_smoke
                     LABELS gpu
                     TIMEOUT 60)
 

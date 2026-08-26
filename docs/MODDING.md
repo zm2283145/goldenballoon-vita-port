@@ -214,8 +214,9 @@ game never saw — check the directory location above.
 The custom-character branch contains a WebGPU-only vertical slice. The stable
 author handoff is a self-contained GLB 2.0 plus a declarative manifest and
 license text, packaged as `.mdkrchar`. It does not require a second ROM. Install
-and removal are available in **Settings → Content → Custom Characters**. That
-workshop can browse, drag-and-drop, or accept a typed package path, validate it
+and removal are available in the launcher's dedicated **Character Workshop**;
+Settings keeps a shortcut plus the current enabled/disabled and P1-P4 assignment
+summary. The Workshop can browse, drag-and-drop, or accept a typed package path, validate it
 without changing installed files, compare full/short/narration/sort identity,
 portrait, donor/vehicle support, rig,
 LOD0 geometry, animation, and texture-memory facts against the installed

@@ -33,6 +33,17 @@ struct SettingsCharacterPreviewRequest {
 // re-read live state).
 bool Settings_draw(SDL_Window *window, bool compact = false);
 
+// Draw the complete Character Workshop in its launcher-owned destination.
+// General Settings intentionally exposes only a shortcut and assignment
+// summary; keeping authoring here prevents a growing inspector from consuming
+// the ordinary settings hierarchy. The in-game overlay must not call this.
+bool Settings_drawCharacterWorkshop(SDL_Window *window,
+                                    bool compact = false);
+
+// One-shot request raised by the Settings shortcut. The launcher owns panel
+// routing, so the shared settings module never reaches into LauncherState.
+bool Settings_takeCharacterWorkshopOpenRequest();
+
 // Publish the immutable numeric donor summary extracted while the launcher
 // validates the player's ROM. The settings UI never owns or re-reads ROM bytes.
 // Passing null or an invalid/version-mismatched summary clears the comparison.

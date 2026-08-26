@@ -403,19 +403,22 @@ last known-good assembly remains available if an update fails.
 | Performance controls | Import caps, authored LOD bias, exact per-LOD draw accounting, 1P-4P worst-visible assembly counts, exact one-click WebGPU stress routes, and a returned post-warm-up wall-cadence percentile/result card with synthetic/short-sample refusal | Add GPU timestamps, repeatable comparison baselines, representative scene matrix and device profiles |
 | Gameplay tuning | Correctly absent from visual package | Build separate opt-in hashed gameplay-profile system |
 | Preview | One-click typed requests launch select or all three vehicles through real game initialization in any 1-4P layout after ROM revalidation; requests are assignment-neutral, return a warmed structured result, persist source/tuning-bound per-context author review, and a generated non-Diddy package passes the complete WebGPU route/pixel/stress/result gate | Embed the renderer and add semantic pose/camera/lighting controls plus screenshots/contact sheets |
-| Packaging/update/removal | Mutation-free review plus package/base-bound transactional install/update, responsive installed-versus-candidate diff, reversible runtime disable, authenticated revision restore/export, and recoverability-aware deletion are executable. Named full-editor snapshots are bounded, authenticated, atomically persisted, independently resumable/deletable, exact-base locked, and autosaved. A combined optimistic build publishes portrait/profile/rig as one retained revision; launcher-owned fit is separately disclosed and confirmed. The last selected package persists locally. | Add the dedicated library/tab shell, portable export/rebuild actions, per-tool undo coverage, and polished first-import resume flow |
-| Accessibility | Inherits launcher fundamentals | Qualify every editor tool at keyboard/controller/200%/screen reader |
+| Packaging/update/removal | Mutation-free review plus package/base-bound transactional install/update, responsive installed-versus-candidate diff, reversible runtime disable, authenticated revision restore/export, and recoverability-aware deletion are executable. Named full-editor snapshots are bounded, authenticated, atomically persisted, independently resumable/deletable, exact-base locked, and autosaved. A combined optimistic build publishes portrait/profile/rig as one retained revision; launcher-owned fit is separately disclosed and confirmed. A dedicated responsive launcher destination now owns a persistent library rail, seven editor tabs, named readiness rows, a deterministic best-next-action resolver, and persisted package/tab selection; Settings retains its shortcut and assignment summary. | Add portable export/rebuild actions, per-tool undo coverage, and polished raw-GLB first-import resume flow |
+| Accessibility | Dedicated panel/tab/library/import/assignment controls carry spoken names, textual status, keyboard/controller navigation, and a narrow single-column fallback | Qualify every editor tool at controller/200%/screen reader and close remaining spatial-tool gaps |
 
 ## Delivery sequence and gates
 
-### W0 — Workshop shell and draft model (draft durability baseline complete)
+### W0 — Workshop shell and draft model (shell/readiness baseline complete)
 
 The package-keyed named draft, full bounded snapshot, autosave/resume/delete,
 exact-base protection, combined source build, last-selected package, and one
-editor independent of P1-P4 assignments are implemented inside the current
-responsive inspector. Create the dedicated library/tab layout, broaden
-undo/redo beyond the portrait and rig surfaces, and add the readiness
-next-action resolver without changing the safe importer/runtime boundary.
+editor independent of P1-P4 assignments now live in a dedicated responsive
+launcher destination. Wide layouts use independently scrollable library and
+editor surfaces; narrow layouts preserve the same tools in one column. Seven
+persisted tabs, six named readiness rows, distinct preview/play verdicts, and a
+pure tested best-next-action resolver preserve the safe importer/runtime
+boundary. Broaden undo/redo beyond the portrait and rig surfaces and complete
+the 200%/controller qualification matrix.
 
 Gate: import, resume, edit, assign, disable and remove are understandable at
 320x568 and 200% text with keyboard/controller only; no edit is lost or applied
