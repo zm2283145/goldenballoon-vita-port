@@ -254,7 +254,7 @@ def main() -> int:
                 or rows[0][0] != "0"
                 or rows[0][1] != PACKAGE_ID
                 or (rows[0][7], rows[0][8]) != ("2", "4")
-                or rows[0][9] != "7"
+                or rows[0][9] != "8"
                 or bytes.fromhex(rows[0][29]).decode("utf-8")
                 != "webgpu-test"
                 or bytes.fromhex(rows[0][30]).decode("utf-8")
@@ -403,6 +403,23 @@ def main() -> int:
                 raise RuntimeError(
                     "mixed-mode result contaminated durable performance evidence"
                 )
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "character-preview-result rejected-evidence=fit-contract",
+                    "action=publish-invalid-fit applied=1 "
+                    "records=0 baselines=0",
+                ),
+                action="publish-invalid-fit",
+            )
+            if (
+                root / "saves" / "character_test_evidence-v1.tsv"
+            ).read_bytes() != empty_evidence:
+                raise RuntimeError(
+                    "invalid fit contract contaminated durable performance evidence"
+                )
 
             run(
                 binary,
@@ -467,8 +484,8 @@ def main() -> int:
     print(
         "check_character_test_evidence_ui: PASS -- durable source/fit/device-"
         "bound 4x4 matrix, same-environment baseline lifecycle, corruption "
-        "refusal, pose-inspection exclusion, keyboard speech, 200% rendering, "
-        "and package-byte purity"
+        "and invalid-fit refusal, pose-inspection exclusion, keyboard speech, "
+        "200% rendering, and package-byte purity"
     )
     return 0
 

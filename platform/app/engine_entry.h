@@ -82,6 +82,14 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned long long contact_solves;
     unsigned long long contact_error_mean_micrometres;
     unsigned long long contact_error_max_micrometres;
+    /* Latest successful replacement draw, expressed in its donor target
+     * frame. Signed micrometres retain sub-millimetre fit evidence without
+     * exposing host float representation across the C/C++ app boundary. */
+    int fit_diagnostics_valid;
+    long long fit_bounds_min_micrometres[3];
+    long long fit_bounds_max_micrometres[3];
+    long long fit_anchor_micrometres[3];
+    int fit_forward_milli[3];
     unsigned long long inspection_pose_ticks;
     unsigned long long inspection_pose_fallback_ticks;
     int view_yaw_degrees;
@@ -108,7 +116,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 7u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 8u
 #define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u
 
 // Owned by the C engine entry module and non-NULL only during a launcher-owned

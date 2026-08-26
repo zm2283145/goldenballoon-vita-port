@@ -57,6 +57,7 @@
 #include <PR/os_cont.h>
 #include <PR/os_time.h>
 #ifdef NATIVE_PORT
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -196,6 +197,55 @@ static u64 sWorkshopPreviewCaptureStableFrames;
 static u64 sWorkshopPreviewCaptureLastReplacementDraws;
 static s32 sWorkshopPreviewCaptureArmed;
 
+static s32 workshop_preview_quantize_micrometres(
+    f32 value, long long *out) {
+    const double scaled = (double)value * 1000000.0;
+    if (out == NULL || !isfinite(scaled) || scaled < -1000000000.0 ||
+        scaled > 1000000000.0) return FALSE;
+    *out = (long long)(scaled + (scaled < 0.0 ? -0.5 : 0.5));
+    return TRUE;
+}
+
+static s32 workshop_preview_publish_fit_diagnostics(
+    MdkrCharacterPreviewResult *result) {
+    MdkrModernCharacterFitDiagnostics fit;
+    long long boundsMin[3];
+    long long boundsMax[3];
+    long long anchor[3];
+    int forward[3];
+    s32 context;
+    s32 axis;
+    if (result == NULL ||
+        result->context < MDKR_CHARACTER_PREVIEW_SELECT ||
+        result->context > MDKR_CHARACTER_PREVIEW_PLANE) return FALSE;
+    context = (s32)result->context -
+        (s32)MDKR_CHARACTER_PREVIEW_SELECT;
+    if (!mdkr_modern_character_player_fit_diagnostics(
+            0, (MdkrModernCharacterContext)context, &fit)) return FALSE;
+    for (axis = 0; axis < 3; ++axis) {
+        const double direction = (double)fit.forward[axis] * 1000.0;
+        if (fit.bounds_min[axis] > fit.bounds_max[axis] ||
+            !workshop_preview_quantize_micrometres(
+                fit.bounds_min[axis], &boundsMin[axis]) ||
+            !workshop_preview_quantize_micrometres(
+                fit.bounds_max[axis], &boundsMax[axis]) ||
+            !workshop_preview_quantize_micrometres(
+                fit.anchor[axis], &anchor[axis]) ||
+            !isfinite(direction) || direction < -1001.0 ||
+            direction > 1001.0) return FALSE;
+        forward[axis] = (int)(direction +
+            (direction < 0.0 ? -0.5 : 0.5));
+    }
+    memcpy(result->fit_bounds_min_micrometres, boundsMin,
+           sizeof(boundsMin));
+    memcpy(result->fit_bounds_max_micrometres, boundsMax,
+           sizeof(boundsMax));
+    memcpy(result->fit_anchor_micrometres, anchor, sizeof(anchor));
+    memcpy(result->fit_forward_milli, forward, sizeof(forward));
+    result->fit_diagnostics_valid = TRUE;
+    return TRUE;
+}
+
 static void workshop_preview_measurement_finish(void) {
     MdkrPresentPerfSnapshot present;
     MdkrModernCharacterRuntimeMetrics character;
@@ -282,6 +332,9 @@ static void workshop_preview_measurement_finish(void) {
                       sWorkshopPreviewCharacterBaseline
                           .inspection_pose_fallback_ticks
                 : 0u;
+        if (result->replacement_draws != 0u) {
+            (void)workshop_preview_publish_fit_diagnostics(result);
+        }
         mdkr_workshop_preview_visual_metrics(&visual);
         result->camera_override_ticks = visual.camera_override_ticks >=
                 sWorkshopPreviewVisualBaseline.camera_override_ticks
@@ -298,7 +351,9 @@ static void workshop_preview_measurement_finish(void) {
     MDKR_TRACE(
         "character_workshop_result: warmup=%d realtime=%d samples=%llu "
         "p50us=%llu p95us=%llu p99us=%llu maxus=%llu replacements=%llu "
-        "contacts=%llu contactMaxUm=%llu pose=%d phase=%u "
+        "contacts=%llu contactMaxUm=%llu fit=%d "
+        "fitAnchorUm=%lld,%lld,%lld fitBoundsYUm=%lld,%lld "
+        "fitForwardMilli=%d,%d,%d pose=%d phase=%u "
         "poseTicks=%llu poseFallback=%llu view=%d,%d lighting=%d "
         "cameraTicks=%llu lightingDraws=%llu capture=%d/%d/%d "
         "captureStableFrames=%llu bytes=%llu "
@@ -309,6 +364,15 @@ static void workshop_preview_measurement_finish(void) {
         result->interval_p95_us, result->interval_p99_us,
         result->interval_max_us, result->replacement_draws,
         result->contact_solves, result->contact_error_max_micrometres,
+        result->fit_diagnostics_valid,
+        result->fit_anchor_micrometres[0],
+        result->fit_anchor_micrometres[1],
+        result->fit_anchor_micrometres[2],
+        result->fit_bounds_min_micrometres[1],
+        result->fit_bounds_max_micrometres[1],
+        result->fit_forward_milli[0],
+        result->fit_forward_milli[1],
+        result->fit_forward_milli[2],
         (int)result->pose, result->pose_phase_milli,
         result->inspection_pose_ticks,
         result->inspection_pose_fallback_ticks,

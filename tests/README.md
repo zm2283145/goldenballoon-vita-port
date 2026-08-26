@@ -4868,7 +4868,9 @@ opens the exact saved Identity, Rig & Motion, Vehicles, Performance, and Test
 tabs. It requires source-digest-bound history controls for Identity, Profile,
 Rig, Fit/review, Performance assembly, and Test setup, and verifies that merely
 rendering every route leaves the installed source and cache byte-for-byte
-unchanged. The Test route also requires all 13 semantic inspection choices,
+unchanged. The Vehicles route additionally requires the front/side/top
+placement and contact planes, context yaw, vehicle-only copy boundary, and Fit
+undo contract to render. The Test route also requires all 13 semantic inspection choices,
 the safe midpoint phase default, neutral camera/light defaults, exclusive-
 capture disclosure, and the explicit session-only/no-performance-evidence
 contract to render. `character_edit_history` separately proves discrete edits,
@@ -4949,7 +4951,11 @@ It must also report a stable WebGPU backend, adapter, driver, vendor/device ID,
 physical output size and actual scene-render size. With RenderScale 1, output
 and render dimensions must agree across every arm and with the captured PPM;
 the gate intentionally accepts the host's real HiDPI drawable rather than
-mistaking logical window pixels for the comparison environment.
+mistaking logical window pixels for the comparison environment. Every valid
+arm must also publish a normalized target-frame forward direction, an ordered
+calibrated vertical volume, and a ground/seat anchor at automatic zero from the
+actual replacement transform. The select volume may not penetrate the roster
+floor beyond the five-millimetre numerical tolerance.
 
 The pose arm is intentionally not performance qualification. The Workshop
 keeps it as session fit evidence and displays replacement/contact observations,

@@ -39,6 +39,9 @@ typedef struct MdkrModernRuntimePlayer {
     float focus_center[MDKR_CHARACTER_CONTEXT_COUNT][3];
     float focus_radius[MDKR_CHARACTER_CONTEXT_COUNT];
     uint32_t focus_valid_mask;
+    MdkrModernCharacterFitDiagnostics
+        fit_diagnostics[MDKR_CHARACTER_CONTEXT_COUNT];
+    uint32_t fit_diagnostics_valid_mask;
 } MdkrModernRuntimePlayer;
 
 static MdkrModernCharacterRegistry s_registry;
@@ -211,6 +214,73 @@ static void matrix_transform_point(const float matrix[16],
                 matrix[9] * point[2] + matrix[13];
     output[2] = matrix[2] * point[0] + matrix[6] * point[1] +
                 matrix[10] * point[2] + matrix[14];
+}
+
+static int calibration_fit_diagnostics(
+    const MdkrModernCalibration *calibration, const float transform[16],
+    const float source_anchor[3],
+    MdkrModernCharacterFitDiagnostics *out) {
+    float source_forward[3] = {0.0f, 0.0f, 1.0f};
+    float forward_length_squared;
+    unsigned axis;
+    unsigned corner;
+    if (calibration == NULL || transform == NULL || source_anchor == NULL ||
+        out == NULL || calibration->source_forward > 3u) return 0;
+    memset(out, 0, sizeof(*out));
+    if (calibration->source_forward == 1u) {
+        source_forward[2] = -1.0f;
+    } else if (calibration->source_forward == 2u) {
+        source_forward[0] = 1.0f;
+        source_forward[2] = 0.0f;
+    } else if (calibration->source_forward == 3u) {
+        source_forward[0] = -1.0f;
+        source_forward[2] = 0.0f;
+    }
+    for (axis = 0u; axis < 3u; ++axis) {
+        if (!isfinite(calibration->bounds_min[axis]) ||
+            !isfinite(calibration->bounds_max[axis]) ||
+            calibration->bounds_min[axis] > calibration->bounds_max[axis] ||
+            !isfinite(source_anchor[axis])) return 0;
+        out->bounds_min[axis] = INFINITY;
+        out->bounds_max[axis] = -INFINITY;
+        out->forward[axis] = transform[axis] * source_forward[0] +
+            transform[4u + axis] * source_forward[1] +
+            transform[8u + axis] * source_forward[2];
+    }
+    for (corner = 0u; corner < 8u; ++corner) {
+        float source[3];
+        float fitted[3];
+        for (axis = 0u; axis < 3u; ++axis) {
+            source[axis] = (corner & (1u << axis)) != 0u
+                ? calibration->bounds_max[axis]
+                : calibration->bounds_min[axis];
+        }
+        matrix_transform_point(transform, source, fitted);
+        for (axis = 0u; axis < 3u; ++axis) {
+            if (!isfinite(fitted[axis])) return 0;
+            if (fitted[axis] < out->bounds_min[axis]) {
+                out->bounds_min[axis] = fitted[axis];
+            }
+            if (fitted[axis] > out->bounds_max[axis]) {
+                out->bounds_max[axis] = fitted[axis];
+            }
+        }
+    }
+    matrix_transform_point(transform, source_anchor, out->anchor);
+    forward_length_squared = out->forward[0] * out->forward[0] +
+        out->forward[1] * out->forward[1] +
+        out->forward[2] * out->forward[2];
+    if (!isfinite(forward_length_squared) ||
+        forward_length_squared < 1.0e-12f) return 0;
+    {
+        const float inverse_length = 1.0f / sqrtf(forward_length_squared);
+        for (axis = 0u; axis < 3u; ++axis) {
+            out->forward[axis] *= inverse_length;
+            if (!isfinite(out->anchor[axis]) ||
+                !isfinite(out->forward[axis])) return 0;
+        }
+    }
+    return 1;
 }
 
 static int calibration_focus(const MdkrModernCalibration *calibration,
@@ -918,6 +988,7 @@ int mdkr_modern_character_set_tuning(int player,
     }
     s_players[player].tuning = checked;
     s_players[player].focus_valid_mask = 0u;
+    s_players[player].fit_diagnostics_valid_mask = 0u;
     return 1;
 }
 
@@ -945,6 +1016,21 @@ int mdkr_modern_character_player_focus(
     memcpy(center, slot->focus_center[context],
            sizeof(slot->focus_center[context]));
     *radius = slot->focus_radius[context];
+    return 1;
+}
+
+int mdkr_modern_character_player_fit_diagnostics(
+    int player, MdkrModernCharacterContext context,
+    MdkrModernCharacterFitDiagnostics *out) {
+    const MdkrModernRuntimePlayer *slot;
+    if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        context < MDKR_CHARACTER_CONTEXT_SELECT ||
+        context >= MDKR_CHARACTER_CONTEXT_COUNT || out == NULL) return 0;
+    slot = &s_players[player];
+    if (slot->pool < 0 ||
+        (slot->fit_diagnostics_valid_mask &
+         (1u << (unsigned)context)) == 0u) return 0;
+    *out = slot->fit_diagnostics[context];
     return 1;
 }
 
@@ -1043,9 +1129,12 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
     float previous_adjusted_transform[16];
     float anchored_transform[16];
     float previous_anchored_transform[16];
+    float source_anchor[3] = {0.0f, 0.0f, 0.0f};
     MdkrModernAttachment attachment;
     MdkrModernCalibration calibration;
+    MdkrModernCharacterFitDiagnostics fit_diagnostics;
     int has_calibration;
+    int fit_diagnostics_ready = 0;
     int contact_solved = 0;
     uint64_t contact_error_micrometres = 0u;
     uint32_t primitive_index;
@@ -1135,6 +1224,8 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
             seat_transform[12] = calibration.ground[0];
             seat_transform[13] = calibration.ground[1];
             seat_transform[14] = calibration.ground[2];
+            memcpy(source_anchor, calibration.ground,
+                   sizeof(source_anchor));
         }
         memcpy(previous_seat_transform, seat_transform,
                sizeof(previous_seat_transform));
@@ -1164,6 +1255,8 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
                 previous_seat_transform[12], previous_seat_transform[13],
                 previous_seat_transform[14]
             };
+            memcpy(source_anchor, current_translation,
+                   sizeof(source_anchor));
             matrix_identity(seat_transform);
             matrix_identity(previous_seat_transform);
             memcpy(seat_transform + 12, current_translation,
@@ -1210,6 +1303,11 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
     matrix_multiply(target_context, adjusted_transform, anchored_transform);
     matrix_multiply(target_context, previous_adjusted_transform,
                     previous_anchored_transform);
+    if (has_calibration) {
+        fit_diagnostics_ready = calibration_fit_diagnostics(
+            &calibration, adjusted_transform, source_anchor,
+            &fit_diagnostics);
+    }
     for (primitive_index = 0u;
          primitive_index < pool->render.gpu.primitive_count;
          primitive_index++) {
@@ -1305,6 +1403,12 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
         slot->focus_valid_mask |= 1u << (unsigned)context;
     } else {
         slot->focus_valid_mask &= ~(1u << (unsigned)context);
+    }
+    if (fit_diagnostics_ready) {
+        slot->fit_diagnostics[context] = fit_diagnostics;
+        slot->fit_diagnostics_valid_mask |= 1u << (unsigned)context;
+    } else {
+        slot->fit_diagnostics_valid_mask &= ~(1u << (unsigned)context);
     }
     if (inspection_lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL) {
         mdkr_workshop_preview_note_lighting_override();

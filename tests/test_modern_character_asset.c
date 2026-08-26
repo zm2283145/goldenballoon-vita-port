@@ -210,6 +210,7 @@ int main(int argc, char **argv) {
     MdkrModernProvenance provenance;
     MdkrModernCharacterIdentityView identity_view;
     MdkrModernCharacterRuntimeMetrics runtime_metrics;
+    MdkrModernCharacterFitDiagnostics fit_diagnostics;
     MdkrWorkshopPreviewVisualMetrics visual_metrics;
     const uint8_t *portrait_data;
     MdkrModernCharacterRegistry registry;
@@ -1084,6 +1085,9 @@ int main(int argc, char **argv) {
                 0, MDKR_CHARACTER_CONTEXT_SELECT,
                 focus_center, &focus_radius),
             "focus is unavailable until the fitted context renders");
+    require(!mdkr_modern_character_player_fit_diagnostics(
+                0, MDKR_CHARACTER_CONTEXT_SELECT, &fit_diagnostics),
+            "fit diagnostics are unavailable until the exact transform renders");
     require(mdkr_workshop_preview_visual_set(
                 0, 0, MDKR_WORKSHOP_PREVIEW_LIGHTING_BRIGHT,
                 error, sizeof(error)),
@@ -1113,6 +1117,25 @@ int main(int argc, char **argv) {
                     -1, MDKR_CHARACTER_CONTEXT_CAR,
                     focus_center, &focus_radius),
             "runtime publishes only complete rendered fitted focus volumes");
+    require(mdkr_modern_character_player_fit_diagnostics(
+                0, MDKR_CHARACTER_CONTEXT_SELECT, &fit_diagnostics) &&
+                fabsf(fit_diagnostics.anchor[0] - 12.0f) < 0.001f &&
+                fabsf(fit_diagnostics.anchor[1] - 0.75f) < 0.001f &&
+                fabsf(fit_diagnostics.bounds_min[1] - 0.75f) < 0.001f &&
+                fabsf(fit_diagnostics.forward[0] - 0.258819f) < 0.001f &&
+                fabsf(fit_diagnostics.forward[1]) < 0.001f &&
+                fabsf(fit_diagnostics.forward[2] - 0.965926f) < 0.001f &&
+                mdkr_modern_character_player_fit_diagnostics(
+                    0, MDKR_CHARACTER_CONTEXT_CAR, &fit_diagnostics) &&
+                fit_diagnostics.bounds_min[0] <= fit_diagnostics.bounds_max[0] &&
+                fit_diagnostics.bounds_min[1] <= fit_diagnostics.bounds_max[1] &&
+                fit_diagnostics.bounds_min[2] <= fit_diagnostics.bounds_max[2] &&
+                !mdkr_modern_character_player_fit_diagnostics(
+                    0, MDKR_CHARACTER_CONTEXT_HOVERCRAFT,
+                    &fit_diagnostics) &&
+                !mdkr_modern_character_player_fit_diagnostics(
+                    -1, MDKR_CHARACTER_CONTEXT_CAR, &fit_diagnostics),
+            "runtime publishes exact target-space anchor, calibrated bounds, and normalized facing only after a successful context draw");
     require(command_cursor == commands + 2 && registered_draws == 2u,
             "runtime emits one retained command per selected primitive");
     require(select_model_y - last_model_matrix[13] > 0.70f,
@@ -1160,6 +1183,14 @@ int main(int argc, char **argv) {
                                        error, sizeof(error)) &&
                 command_cursor == commands + 3 && registered_draws == 3u,
             "four-player assignment reuses GPU ownership and emits independently");
+    require(mdkr_modern_character_get_tuning(0, &tuning) &&
+                mdkr_modern_character_set_tuning(
+                    0, &tuning, error, sizeof(error)) &&
+                !mdkr_modern_character_player_fit_diagnostics(
+                    0, MDKR_CHARACTER_CONTEXT_SELECT, &fit_diagnostics) &&
+                !mdkr_modern_character_player_fit_diagnostics(
+                    0, MDKR_CHARACTER_CONTEXT_CAR, &fit_diagnostics),
+            "any tuning publication invalidates every stale fit measurement until each context renders again");
     mdkr_modern_characters_shutdown();
     (void)clear_env(
         "MDKR_CUSTOM_CHARACTER_PROFILE_org.example.pipeline-proof_SCALE");

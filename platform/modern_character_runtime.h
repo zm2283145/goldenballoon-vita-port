@@ -67,6 +67,18 @@ typedef struct MdkrModernCharacterRuntimeMetrics {
     uint64_t inspection_pose_fallback_ticks;
 } MdkrModernCharacterRuntimeMetrics;
 
+/* Latest successfully emitted calibrated volume in the donor target frame.
+ * This is exact transform evidence from the real replacement draw, not a
+ * second preview renderer and not a claim about every deformed vertex. +Y is
+ * up, +Z is intended forward, and zero anchor offset is the automatic
+ * ground/seat alignment before the author's context correction. */
+typedef struct MdkrModernCharacterFitDiagnostics {
+    float bounds_min[3];
+    float bounds_max[3];
+    float anchor[3];
+    float forward[3];
+} MdkrModernCharacterFitDiagnostics;
+
 /* Lightweight, borrowed library record for menu/workshop roster surfaces.
  * Catalog inspection never loads GPU mesh data; pointers remain valid until
  * runtime shutdown. `has_identity` is false for legacy donor-fallback media. */
@@ -130,6 +142,9 @@ int mdkr_modern_character_get_tuning(int player,
 int mdkr_modern_character_player_focus(
     int player, MdkrModernCharacterContext context,
     float center[3], float *radius);
+int mdkr_modern_character_player_fit_diagnostics(
+    int player, MdkrModernCharacterContext context,
+    MdkrModernCharacterFitDiagnostics *out);
 
 /* Presentation-only adapter. Vehicle is 0 car, 1 hovercraft, 2 plane. */
 int mdkr_modern_character_matches(int player, int donor, int vehicle);

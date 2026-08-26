@@ -4490,6 +4490,11 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
     return saved;
 }
 
+bool characterPreviewFitDiagnosticsValid(
+    const MdkrCharacterPreviewResult &result);
+void drawCharacterFitDiagnostics(
+    const MdkrCharacterPreviewResult &result, bool compact);
+
 bool characterTestEvidenceMatchesFit(
     const MdkrModernCharacterEntry *entry,
     const CharacterTuningEdit &tuning,
@@ -4516,6 +4521,7 @@ bool characterPreviewSessionMatchesFit(
            session.result.started && session.result.context == context &&
            session.result.warmup_complete &&
            session.result.replacement_draws != 0u &&
+           characterPreviewFitDiagnosticsValid(session.result) &&
            ((session.result.pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
              session.result.pose_phase_milli == 0u &&
              session.result.inspection_pose_ticks == 0u &&
@@ -5216,6 +5222,17 @@ bool drawCharacterTuningEditor(int player,
                     entry, edit, previewContext);
             const bool currentResult = currentSessionResult ||
                 durableResult != nullptr;
+            if (currentSessionResult) {
+                if (characterPreviewFitDiagnosticsValid(
+                        result->second.result)) {
+                    drawCharacterFitDiagnostics(
+                        result->second.result, true);
+                } else {
+                    ImGui::TextColored(
+                        AppTheme::bad(),
+                        "Last exact test returned invalid fit measurements.");
+                }
+            }
             if (currentResult &&
                 context != MDKR_CHARACTER_CONTEXT_SELECT) {
                 const uint64_t contactSolves = currentSessionResult
@@ -5626,6 +5643,117 @@ const char *characterPreviewResultContext(
     }
 }
 
+bool characterPreviewFitDiagnosticsValid(
+    const MdkrCharacterPreviewResult &result) {
+    if (result.fit_diagnostics_valid != 0 &&
+        result.fit_diagnostics_valid != 1) return false;
+    if (!result.fit_diagnostics_valid) {
+        for (unsigned axis = 0u; axis < 3u; ++axis) {
+            if (result.fit_bounds_min_micrometres[axis] != 0 ||
+                result.fit_bounds_max_micrometres[axis] != 0 ||
+                result.fit_anchor_micrometres[axis] != 0 ||
+                result.fit_forward_milli[axis] != 0) return false;
+        }
+        return true;
+    }
+    if (result.replacement_draws == 0u) return false;
+    long long forwardLengthSquared = 0;
+    constexpr long long kMaximumFitMicrometres = 1000000000LL;
+    const auto withinFitRange = [](long long value) {
+        return value >= -kMaximumFitMicrometres &&
+               value <= kMaximumFitMicrometres;
+    };
+    for (unsigned axis = 0u; axis < 3u; ++axis) {
+        if (result.fit_bounds_min_micrometres[axis] >
+                result.fit_bounds_max_micrometres[axis] ||
+            !withinFitRange(result.fit_bounds_min_micrometres[axis]) ||
+            !withinFitRange(result.fit_bounds_max_micrometres[axis]) ||
+            !withinFitRange(result.fit_anchor_micrometres[axis]) ||
+            result.fit_forward_milli[axis] < -1001 ||
+            result.fit_forward_milli[axis] > 1001) return false;
+        forwardLengthSquared +=
+            static_cast<long long>(result.fit_forward_milli[axis]) *
+            result.fit_forward_milli[axis];
+    }
+    return forwardLengthSquared >= 995000LL &&
+           forwardLengthSquared <= 1005000LL;
+}
+
+void drawCharacterFitDiagnostics(
+    const MdkrCharacterPreviewResult &result, bool compact) {
+    if (!result.fit_diagnostics_valid) {
+        if (!compact) {
+            ui::TextSubtleWrapped(
+                "This package has no renderer fit measurement. Legacy packages without explicit calibration can still render, but cannot claim measured ground, seat, bounds, or facing evidence.");
+        }
+        return;
+    }
+    const double anchorX =
+        result.fit_anchor_micrometres[0] / 1000000.0;
+    const double anchorY =
+        result.fit_anchor_micrometres[1] / 1000000.0;
+    const double anchorZ =
+        result.fit_anchor_micrometres[2] / 1000000.0;
+    const double minimumY =
+        result.fit_bounds_min_micrometres[1] / 1000000.0;
+    const double maximumY =
+        result.fit_bounds_max_micrometres[1] / 1000000.0;
+    const double forwardX = result.fit_forward_milli[0] / 1000.0;
+    const double forwardY = result.fit_forward_milli[1] / 1000.0;
+    const double forwardZ = result.fit_forward_milli[2] / 1000.0;
+    const double forwardLength = std::sqrt(
+        forwardX * forwardX + forwardY * forwardY + forwardZ * forwardZ);
+    const double facingDegrees = std::acos(std::clamp(
+        forwardZ / forwardLength, -1.0, 1.0)) *
+        57.295779513082320876;
+    const bool backward = forwardZ < 0.0;
+    const bool offAxis = facingDegrees > 15.0;
+    if (result.context == MDKR_CHARACTER_PREVIEW_SELECT) {
+        const bool belowFloor = minimumY < -0.005;
+        const bool aboveFloor = minimumY > 0.005;
+        ImGui::TextColored(
+            belowFloor ? AppTheme::bad()
+                       : aboveFloor ? AppTheme::accent() : AppTheme::good(),
+            belowFloor
+                ? "Calibrated volume passes %.1f mm below the roster floor"
+                : aboveFloor
+                    ? "Calibrated volume floats %.1f mm above the roster floor"
+                    : "Calibrated volume is floor-aligned within %.1f mm",
+            std::fabs(minimumY) * 1000.0);
+        ImGui::Text(
+            "Ground correction: X %+.3f m · Y %+.3f m · Z %+.3f m",
+            anchorX, anchorY, anchorZ);
+    } else {
+        ImGui::Text(
+            "Seat correction: X %+.3f m · Y %+.3f m · Z %+.3f m",
+            anchorX, anchorY, anchorZ);
+        ImGui::Text("Calibrated vertical span: %+.3f to %+.3f m from seat",
+                    minimumY, maximumY);
+    }
+    ImGui::TextColored(
+        backward ? AppTheme::bad()
+                 : offAxis ? AppTheme::accent() : AppTheme::good(),
+        backward
+            ? "Facing is backward: %.1f degrees from target +Z"
+            : offAxis
+                ? "Facing is off-axis: %.1f degrees from target +Z"
+                : "Facing: %.1f degrees from target +Z",
+        facingDegrees);
+    if (!compact) {
+        const double width =
+            (result.fit_bounds_max_micrometres[0] -
+             result.fit_bounds_min_micrometres[0]) / 1000000.0;
+        const double height = maximumY - minimumY;
+        const double depth =
+            (result.fit_bounds_max_micrometres[2] -
+             result.fit_bounds_min_micrometres[2]) / 1000000.0;
+        ImGui::Text("Calibrated fitted volume: %.3f x %.3f x %.3f m",
+                    width, height, depth);
+        ui::TextSubtleWrapped(
+            "These values use the actual replacement draw transform and donor target frame. Bounds come from the package's calibrated source volume; animated limbs and cloth can extend beyond them, so inspect held poses and contact error as well.");
+    }
+}
+
 const CharacterInspectionPose *characterInspectionPose(
     MdkrCharacterPreviewPose pose) {
     const auto found = std::find_if(
@@ -5669,9 +5797,19 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         ui::CardEnd();
         return;
     }
+    if (!characterPreviewFitDiagnosticsValid(result)) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "The engine returned an invalid renderer fit measurement.");
+        ui::TextSubtleWrapped(
+            "No fit conclusion or performance evidence was saved.");
+        ui::CardEnd();
+        return;
+    }
     ImGui::Text("%s  •  %d %s",
                 characterPreviewResultContext(result.context), result.players,
                 result.players == 1 ? "player" : "players");
+    drawCharacterFitDiagnostics(result, false);
     if (result.pose != MDKR_CHARACTER_PREVIEW_POSE_LIVE) {
         const CharacterInspectionPose *pose =
             characterInspectionPose(result.pose);
@@ -6149,6 +6287,7 @@ void drawCharacterTestEvidenceMatrix(
             std::strcmp(
                 smokeAction, "publish-inspection-fallback") == 0 ||
             std::strcmp(smokeAction, "publish-mixed-mode") == 0 ||
+            std::strcmp(smokeAction, "publish-invalid-fit") == 0 ||
             std::strcmp(
                 smokeAction, "publish-stale-fit-session") == 0) {
             MdkrCharacterPreviewResult result{};
@@ -6174,6 +6313,17 @@ void drawCharacterTestEvidenceMatrix(
             result.contact_solves = 1440u;
             result.contact_error_mean_micrometres = 1200u;
             result.contact_error_max_micrometres = 3400u;
+            result.fit_diagnostics_valid = 1;
+            result.fit_bounds_min_micrometres[0] = -400000;
+            result.fit_bounds_min_micrometres[1] = -600000;
+            result.fit_bounds_min_micrometres[2] = -300000;
+            result.fit_bounds_max_micrometres[0] = 400000;
+            result.fit_bounds_max_micrometres[1] = 900000;
+            result.fit_bounds_max_micrometres[2] = 300000;
+            result.fit_anchor_micrometres[0] = 10000;
+            result.fit_anchor_micrometres[1] = 20000;
+            result.fit_anchor_micrometres[2] = -30000;
+            result.fit_forward_milli[2] = 1000;
             std::snprintf(result.renderer_backend,
                           sizeof(result.renderer_backend), "%s",
                           "webgpu-test");
@@ -6199,6 +6349,9 @@ void drawCharacterTestEvidenceMatrix(
                 smokeAction, "publish-inspection-fallback") == 0;
             const bool mixedMode = std::strcmp(
                 smokeAction, "publish-mixed-mode") == 0;
+            const bool invalidFit = std::strcmp(
+                smokeAction, "publish-invalid-fit") == 0;
+            if (invalidFit) result.fit_diagnostics_valid = 2;
             if (inspection) {
                 result.pose = MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER;
                 result.pose_phase_milli = 250u;
@@ -6261,7 +6414,10 @@ void drawCharacterTestEvidenceMatrix(
                 characterPreviewSessionMatchesFit(
                     entry, tuning, MDKR_CHARACTER_PREVIEW_CAR,
                     session->second);
-            if (mixedMode) {
+            if (invalidFit) {
+                applied = session != g_characterPreviewResults.end() &&
+                    latest == nullptr && !sessionMatches;
+            } else if (mixedMode) {
                 applied = session != g_characterPreviewResults.end() &&
                     latest == nullptr && !sessionMatches;
             } else if (inspection) {
@@ -12636,6 +12792,7 @@ void Settings_publishCharacterPreviewResult(
             const bool recordValid =
                 result.version == MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
                 result.started && result.warmup_complete &&
+                characterPreviewFitDiagnosticsValid(result) &&
                 result.capture_requested && result.capture_armed &&
                 result.capture_stable_frames >=
                     MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES &&
@@ -12739,6 +12896,20 @@ void Settings_publishCharacterPreviewResult(
         }
         setStatus(
             "The engine returned mixed live-test and pose-inspection fields; the session is visible for diagnosis but no durable performance evidence was saved.",
+            AppTheme::bad());
+        return;
+    }
+    if (result.version != MDKR_CHARACTER_PREVIEW_RESULT_VERSION ||
+        !result.started || !characterPreviewFitDiagnosticsValid(result)) {
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-preview-result rejected-evidence=fit-contract package=%s version=%u started=%d fit=%d\n",
+                packageId.c_str(), result.version, result.started,
+                result.fit_diagnostics_valid);
+        }
+        setStatus(
+            "The engine returned an invalid renderer fit contract; the session is visible for diagnosis but no durable performance evidence was saved.",
             AppTheme::bad());
         return;
     }

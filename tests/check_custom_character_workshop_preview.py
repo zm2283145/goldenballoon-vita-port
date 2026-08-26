@@ -402,6 +402,46 @@ def main() -> int:
                     failures.append(f"{label} result did not isolate a synthetic post-warmup sample")
                 if replacements <= 0:
                     failures.append(f"{label} result counted no package replacements")
+            fit_match = re.search(
+                r"character_workshop_result: .* fit=(\d+) "
+                r"fitAnchorUm=(-?\d+),(-?\d+),(-?\d+) "
+                r"fitBoundsYUm=(-?\d+),(-?\d+) "
+                r"fitForwardMilli=(-?\d+),(-?\d+),(-?\d+)",
+                arm_output,
+            )
+            if fit_match is None:
+                failures.append(
+                    f"{label} emitted no target-space fit measurement"
+                )
+            else:
+                (fit_valid, anchor_x, anchor_y, anchor_z, bounds_min_y,
+                 bounds_max_y, forward_x, forward_y,
+                 forward_z) = map(int, fit_match.groups())
+                forward_length_squared = (
+                    forward_x * forward_x + forward_y * forward_y +
+                    forward_z * forward_z
+                )
+                if fit_valid != 1 or bounds_min_y > bounds_max_y:
+                    failures.append(
+                        f"{label} returned an invalid calibrated fit volume"
+                    )
+                if not 995000 <= forward_length_squared <= 1005000:
+                    failures.append(
+                        f"{label} returned a non-unit facing direction"
+                    )
+                if forward_z <= 0:
+                    failures.append(
+                        f"{label} fixture faces backward in its target frame"
+                    )
+                if abs(anchor_x) > 5000 or abs(anchor_y) > 5000 or \
+                        abs(anchor_z) > 5000:
+                    failures.append(
+                        f"{label} automatic anchor drifted from target zero"
+                    )
+                if context == "select" and bounds_min_y < -5000:
+                    failures.append(
+                        f"{label} calibrated volume penetrates the roster floor"
+                    )
             environment_match = re.search(
                 r"character_workshop_result: .* backend=(webgpu-[^ ]+) "
                 r"adapter=(.*?) driver=(.*?) vendor=([0-9a-f]{8}) "
@@ -624,8 +664,9 @@ def main() -> int:
         "check_custom_character_workshop_preview: PASS -- direct "
         "select/car/hovercraft/plane routes, exact semantic-phase inspection "
         "with honest fallback accounting, deterministic camera/light controls, "
-        "exclusive stabilized PNG capture, one-to-four-player WebGPU stress, "
-        "and fail-closed invalid requests"
+        "target-frame anchor/bounds/facing measurements, exclusive stabilized "
+        "PNG capture, one-to-four-player WebGPU stress, and fail-closed invalid "
+        "requests"
     )
     if args.evidence_dir is not None:
         print(f"evidence: {evidence}")

@@ -999,18 +999,20 @@ isolation remain open.
 
 Launcher-owned previews also arm the existing bounded presentation census. The
 game discards a 120-authored-tick warm-up, resets only the observational timing
-window, and freezes a structured version-7 result when the F1 overlay opens (or
+window, and freezes a structured version-8 result when the F1 overlay opens (or
 at engine shutdown). The surviving launcher publishes that result back to the
 same package inspector: displayed interval sample count, median/p95/p99/mean/max,
 authored tick-wall sample/mean, and warmed replacement/part/donor-suppression
-counts, vehicle-contact error, selected backend/adapter/driver and physical
+counts, vehicle-contact error, target-frame ground/seat anchor, calibrated
+fitted volume and normalized facing from the actual replacement transform,
+selected backend/adapter/driver and physical
 output versus scene-render dimensions, held-pose/fallback ticks, camera/light
 application counters, and requested/armed/written capture state, stable-frame
 count, and byte count. Fewer than 60 intervals
 and synthetic pacing are explicitly diagnostic-only. Visual-inspection results
 remain session-only and cannot contaminate durable timing evidence.
 
-The launcher collects only version-7 captures armed after at least 12 eligible
+The launcher collects only version-8 captures armed after at least 12 eligible
 frames in bounded session metadata and can export a self-contained HTML
 qualification report. The launcher and exporter share strict bounded PNG
 validation for chunk ordering, names, CRCs, canonical IHDR dimensions, palette
