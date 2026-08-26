@@ -2087,6 +2087,11 @@ struct CharacterTuningEdit {
 };
 
 std::map<std::string, CharacterTuningEdit> g_characterTuning;
+std::map<std::string, int> g_characterFitSpatialViews;
+std::map<std::string, int> g_characterContactSpatialViews;
+std::map<std::string, int> g_characterSelectedContacts;
+std::map<ImGuiID, bool> g_characterSpatialGestureDirty;
+std::set<std::string> g_characterSpatialControlTracePackages;
 
 struct CharacterRigEdit {
     struct Joint {
@@ -4599,6 +4604,294 @@ const CharacterTestEvidenceStore::Evidence *currentRenderedCharacterTestEvidence
     return newest;
 }
 
+enum class CharacterSpatialPlane : int {
+    Front = 0,
+    Side,
+    Top,
+};
+
+struct CharacterSpatialAxes {
+    unsigned horizontal;
+    unsigned vertical;
+    const char *horizontalName;
+    const char *verticalName;
+};
+
+struct CharacterSpatialEditResult {
+    bool changed = false;
+    bool commit = false;
+};
+
+CharacterSpatialAxes characterSpatialAxes(CharacterSpatialPlane plane) {
+    switch (plane) {
+        case CharacterSpatialPlane::Side:
+            return {2u, 1u, "Z", "Y"};
+        case CharacterSpatialPlane::Top:
+            return {0u, 2u, "X", "Z"};
+        case CharacterSpatialPlane::Front:
+        default:
+            return {0u, 1u, "X", "Y"};
+    }
+}
+
+CharacterSpatialPlane drawCharacterSpatialPlaneSelector(
+    const char *id, int &stored) {
+    stored = std::clamp(stored, 0, 2);
+    static const char *names[] = {"Front X/Y", "Side Z/Y", "Top X/Z"};
+    ImGui::PushID(id);
+    const int columns = ImGui::GetContentRegionAvail().x >= 410.0f ? 3 : 1;
+    if (ImGui::BeginTable(
+            "##spatial-plane-options", columns,
+            ImGuiTableFlags_SizingStretchSame)) {
+        for (int candidate = 0; candidate < 3; ++candidate) {
+            ImGui::TableNextColumn();
+            if (ImGui::RadioButton(names[candidate], &stored, candidate)) {
+                stored = candidate;
+            }
+            ui::SpeakFocusedItem(
+                names[candidate],
+                candidate == stored ? "selected" : "not selected",
+                "Changes only the spatial control view; it never changes the saved fit.");
+        }
+        ImGui::EndTable();
+    }
+    ImGui::PopID();
+    return static_cast<CharacterSpatialPlane>(stored);
+}
+
+float characterSpatialRange(const float (*markers)[3], unsigned markerCount,
+                            const CharacterSpatialAxes &axes,
+                            float minimumRange, float maximumValue) {
+    float range = minimumRange;
+    for (unsigned marker = 0u; marker < markerCount; ++marker) {
+        range = std::max(range,
+                         std::fabs(markers[marker][axes.horizontal]) * 1.25f);
+        range = std::max(range,
+                         std::fabs(markers[marker][axes.vertical]) * 1.25f);
+    }
+    return std::min(range, maximumValue);
+}
+
+CharacterSpatialEditResult drawCharacterSpatialPad(
+    const char *id, const char *accessibleName, float (*markers)[3],
+    unsigned markerCount, unsigned selectedMarker,
+    CharacterSpatialPlane plane, float minimumRange, float maximumValue,
+    float nudgeStep, const char *zeroLabel,
+    const char *const *markerNames) {
+    CharacterSpatialEditResult result;
+    if (markers == nullptr || markerCount == 0u ||
+        selectedMarker >= markerCount) return result;
+    const CharacterSpatialAxes axes = characterSpatialAxes(plane);
+    const float range = characterSpatialRange(
+        markers, markerCount, axes, minimumRange, maximumValue);
+    const float available = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float side = std::min(available, 340.0f);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton(id, ImVec2(side, side));
+    const ImGuiID itemId = ImGui::GetItemID();
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    const ImVec2 maximum(origin.x + side, origin.y + side);
+    const ImVec2 center(origin.x + side * 0.5f, origin.y + side * 0.5f);
+    const float half = side * 0.43f;
+    draw->AddRectFilled(origin, maximum, IM_COL32(20, 24, 31, 255), 6.0f);
+    draw->AddRect(origin, maximum, IM_COL32(255, 255, 255, 42), 6.0f);
+    for (int grid = -2; grid <= 2; ++grid) {
+        const float delta = half * static_cast<float>(grid) / 2.0f;
+        const ImU32 color = grid == 0
+            ? IM_COL32(255, 255, 255, 105)
+            : IM_COL32(255, 255, 255, 28);
+        draw->AddLine(ImVec2(center.x + delta, center.y - half),
+                      ImVec2(center.x + delta, center.y + half), color,
+                      grid == 0 ? 1.5f : 1.0f);
+        draw->AddLine(ImVec2(center.x - half, center.y + delta),
+                      ImVec2(center.x + half, center.y + delta), color,
+                      grid == 0 ? 1.5f : 1.0f);
+    }
+    draw->AddText(ImVec2(origin.x + 8.0f, origin.y + 7.0f),
+                  IM_COL32(180, 190, 205, 255), axes.verticalName);
+    draw->AddText(ImVec2(maximum.x - 18.0f, center.y + 5.0f),
+                  IM_COL32(180, 190, 205, 255), axes.horizontalName);
+    if (zeroLabel != nullptr) {
+        draw->AddText(ImVec2(origin.x + 8.0f, maximum.y - 22.0f),
+                      IM_COL32(180, 190, 205, 255), zeroLabel);
+    }
+    const ImU32 markerColors[MDKR_MODERN_CHARACTER_CONTACTS] = {
+        IM_COL32(74, 191, 255, 255), IM_COL32(255, 119, 196, 255),
+        IM_COL32(106, 221, 138, 255), IM_COL32(255, 194, 92, 255),
+    };
+    for (unsigned marker = 0u; marker < markerCount; ++marker) {
+        const float x = std::clamp(
+            markers[marker][axes.horizontal] / range, -1.0f, 1.0f);
+        const float y = std::clamp(
+            markers[marker][axes.vertical] / range, -1.0f, 1.0f);
+        const ImVec2 point(center.x + x * half, center.y - y * half);
+        const ImU32 color = markerCount == 1u
+            ? IM_COL32(91, 192, 255, 255)
+            : markerColors[marker % MDKR_MODERN_CHARACTER_CONTACTS];
+        draw->AddCircleFilled(point, marker == selectedMarker ? 7.0f : 4.5f,
+                              color);
+        if (marker == selectedMarker) {
+            draw->AddCircle(point, 11.0f, IM_COL32(255, 255, 255, 210),
+                            0, 1.5f);
+        }
+    }
+    if (ImGui::IsItemActive()) {
+        const ImVec2 delta = ImGui::GetIO().MouseDelta;
+        if (delta.x != 0.0f || delta.y != 0.0f) {
+            float *value = markers[selectedMarker];
+            const float unitsPerPixel = range / half;
+            value[axes.horizontal] = std::clamp(
+                value[axes.horizontal] + delta.x * unitsPerPixel,
+                -maximumValue, maximumValue);
+            value[axes.vertical] = std::clamp(
+                value[axes.vertical] - delta.y * unitsPerPixel,
+                -maximumValue, maximumValue);
+            g_characterSpatialGestureDirty[itemId] = true;
+            result.changed = true;
+        }
+    }
+    if (ImGui::IsItemHovered() &&
+        ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        markers[selectedMarker][axes.horizontal] = 0.0f;
+        markers[selectedMarker][axes.vertical] = 0.0f;
+        g_characterSpatialGestureDirty.erase(itemId);
+        result.changed = result.commit = true;
+    } else if (ImGui::IsItemDeactivated()) {
+        const auto dirty = g_characterSpatialGestureDirty.find(itemId);
+        if (dirty != g_characterSpatialGestureDirty.end() && dirty->second) {
+            g_characterSpatialGestureDirty.erase(dirty);
+            result.commit = true;
+        }
+    }
+    char state[192];
+    std::snprintf(
+        state, sizeof(state), "%s %.3f metres, %s %.3f metres",
+        axes.horizontalName,
+        static_cast<double>(markers[selectedMarker][axes.horizontal]),
+        axes.verticalName,
+        static_cast<double>(markers[selectedMarker][axes.vertical]));
+    ui::SpeakFocusedItem(
+        accessibleName, state,
+        "Drag to move on this plane. Double-click resets these two axes; the adjacent buttons and numeric fields provide keyboard and controller input.");
+
+    const auto nudge = [&](const char *visible, unsigned axis, float amount) {
+        const std::string label = std::string(visible) + "##" + id;
+        if (ImGui::Button(label.c_str())) {
+            markers[selectedMarker][axis] = std::clamp(
+                markers[selectedMarker][axis] + amount,
+                -maximumValue, maximumValue);
+            result.changed = result.commit = true;
+        }
+        char consequence[128];
+        std::snprintf(consequence, sizeof(consequence),
+                      "Moves the selected marker by %.3f metres on %s.",
+                      static_cast<double>(amount),
+                      axis == axes.horizontal ? axes.horizontalName
+                                              : axes.verticalName);
+        ui::SpeakFocusedItem(visible, nullptr, consequence);
+    };
+    const std::string horizontalMinus =
+        std::string(axes.horizontalName) + " -";
+    const std::string horizontalPlus =
+        std::string(axes.horizontalName) + " +";
+    const std::string verticalMinus =
+        std::string(axes.verticalName) + " -";
+    const std::string verticalPlus =
+        std::string(axes.verticalName) + " +";
+    nudge(horizontalMinus.c_str(), axes.horizontal, -nudgeStep);
+    ImGui::SameLine();
+    nudge(horizontalPlus.c_str(), axes.horizontal, nudgeStep);
+    nudge(verticalMinus.c_str(), axes.vertical, -nudgeStep);
+    ImGui::SameLine();
+    nudge(verticalPlus.c_str(), axes.vertical, nudgeStep);
+    const std::string resetLabel = std::string("Reset plane##") + id;
+    if (ImGui::Button(resetLabel.c_str())) {
+        markers[selectedMarker][axes.horizontal] = 0.0f;
+        markers[selectedMarker][axes.vertical] = 0.0f;
+        result.changed = result.commit = true;
+    }
+    ui::SpeakFocusedItem(
+        "Reset plane", nullptr,
+        "Resets only the two visible axes for the selected marker.");
+    if (markerNames != nullptr && markerCount > 1u) {
+        for (unsigned marker = 0u; marker < markerCount; ++marker) {
+            if ((marker & 1u) != 0u) ImGui::SameLine();
+            ImGui::TextColored(
+                ImGui::ColorConvertU32ToFloat4(
+                    markerColors[marker % MDKR_MODERN_CHARACTER_CONTACTS]),
+                "%s%s", marker == selectedMarker ? "* " : "",
+                markerNames[marker]);
+        }
+    }
+    ImGui::TextDisabled("Visible range: +/- %.2f m", range);
+    return result;
+}
+
+CharacterSpatialEditResult drawCharacterYawDial(
+    const char *id, const char *accessibleName, float &yawDegrees) {
+    CharacterSpatialEditResult result;
+    const float side = 126.0f;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton(id, ImVec2(side, side));
+    const ImGuiID itemId = ImGui::GetItemID();
+    const ImVec2 center(origin.x + side * 0.5f, origin.y + side * 0.5f);
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    draw->AddCircleFilled(center, side * 0.46f, IM_COL32(20, 24, 31, 255));
+    draw->AddCircle(center, side * 0.46f, IM_COL32(255, 255, 255, 55),
+                    0, 1.5f);
+    draw->AddText(ImVec2(center.x - 8.0f, origin.y + 4.0f),
+                  IM_COL32(180, 190, 205, 255), "+Z");
+    const float radians = yawDegrees * 0.01745329251994329577f;
+    const ImVec2 tip(center.x + std::sin(radians) * side * 0.35f,
+                     center.y - std::cos(radians) * side * 0.35f);
+    draw->AddLine(center, tip, IM_COL32(91, 192, 255, 255), 4.0f);
+    draw->AddCircleFilled(tip, 6.0f, IM_COL32(255, 255, 255, 255));
+    if (ImGui::IsItemActive()) {
+        const ImVec2 pointer = ImGui::GetIO().MousePos;
+        const float dx = pointer.x - center.x;
+        const float dy = pointer.y - center.y;
+        if (dx * dx + dy * dy > 16.0f) {
+            yawDegrees = std::atan2(dx, -dy) * 57.295779513082320876f;
+            yawDegrees = std::clamp(yawDegrees, -180.0f, 180.0f);
+            g_characterSpatialGestureDirty[itemId] = true;
+            result.changed = true;
+        }
+    }
+    if (ImGui::IsItemHovered() &&
+        ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        yawDegrees = 0.0f;
+        g_characterSpatialGestureDirty.erase(itemId);
+        result.changed = result.commit = true;
+    } else if (ImGui::IsItemDeactivated()) {
+        const auto dirty = g_characterSpatialGestureDirty.find(itemId);
+        if (dirty != g_characterSpatialGestureDirty.end() && dirty->second) {
+            g_characterSpatialGestureDirty.erase(dirty);
+            result.commit = true;
+        }
+    }
+    char state[64];
+    std::snprintf(state, sizeof(state), "yaw %.1f degrees",
+                  static_cast<double>(yawDegrees));
+    ui::SpeakFocusedItem(
+        accessibleName, state,
+        "Drag the arrow toward the intended forward direction. Double-click resets yaw; the adjacent buttons and numeric rotation field provide keyboard and controller input.");
+    if (ImGui::Button("Turn 180 degrees##yaw")) {
+        yawDegrees += yawDegrees > 0.0f ? -180.0f : 180.0f;
+        result.changed = result.commit = true;
+    }
+    ui::SpeakFocusedItem(
+        "Turn this context 180 degrees", nullptr,
+        "Reverses only this context's facing direction and leaves every other fit unchanged.");
+    if (ImGui::Button("Reset yaw##yaw")) {
+        yawDegrees = 0.0f;
+        result.changed = result.commit = true;
+    }
+    ui::SpeakFocusedItem(
+        "Reset this context yaw", nullptr,
+        "Resets only this context's Y-axis rotation.");
+    return result;
+}
+
 bool drawCharacterTuningEditor(int player,
                                const MdkrModernCharacterEntry *entry,
                                bool compact) {
@@ -4624,6 +4917,13 @@ bool drawCharacterTuningEditor(int player,
     if (edit.vehicleMask == 0u) edit.vehicleMask = entry->vehicle_mask;
     CharacterHistoryFrame history = beginCharacterHistory(
         entry, CharacterHistoryTool::Fit);
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
+        g_characterSpatialControlTracePackages.insert(entry->id).second) {
+        std::fprintf(
+            stderr,
+            "[app-ui] character-spatial-controls package=%s planes=front,side,top placement=ground-or-seat yaw=context contacts=4 copy=vehicle-only undo=fit-history\n",
+            entry->id);
+    }
 
     ImGui::TextUnformatted("Enable this appearance in game on");
     for (unsigned vehicle = 0u; vehicle < 3u; ++vehicle) {
@@ -4744,6 +5044,44 @@ bool drawCharacterTuningEditor(int player,
             if (ImGui::IsItemDeactivatedAfterEdit()) {
                 changed |= persistCharacterTuning(entry->id, edit);
             }
+            if (ImGui::TreeNodeEx(
+                    "Spatial controls",
+                    ImGuiTreeNodeFlags_DefaultOpen)) {
+                ui::TextSubtleWrapped(
+                    "Move the fitted character around its automatic ground or seat anchor in front, side, or top view. The blue forward arrow is the saved context yaw, not the camera. These controls and the exact numeric fields above edit the same values.");
+                const std::string spatialKey = std::string(entry->id) + "#" +
+                    std::to_string(context);
+                int &spatialView = g_characterFitSpatialViews[spatialKey];
+                const CharacterSpatialPlane plane =
+                    drawCharacterSpatialPlaneSelector(
+                        "fit-plane", spatialView);
+                const bool wideSpatial =
+                    ImGui::GetContentRegionAvail().x >= 500.0f;
+                ImGui::BeginGroup();
+                CharacterSpatialEditResult positionResult =
+                    drawCharacterSpatialPad(
+                        "##fit-position-pad",
+                        context == MDKR_CHARACTER_CONTEXT_SELECT
+                            ? "Ground-fit correction control"
+                            : "Seat-fit correction control",
+                        &placement.offset, 1u, 0u, plane,
+                        std::max(0.5f, entry->target_height * edit.scale *
+                                          placement.scale),
+                        10.0f, 0.01f, "zero = automatic anchor", nullptr);
+                ImGui::EndGroup();
+                if (wideSpatial) ImGui::SameLine();
+                ImGui::BeginGroup();
+                ImGui::TextUnformatted("Facing in target space");
+                CharacterSpatialEditResult yawResult =
+                    drawCharacterYawDial(
+                        "##fit-yaw-dial", "Context-facing control",
+                        placement.rotation[1]);
+                ImGui::EndGroup();
+                if (positionResult.commit || yawResult.commit) {
+                    changed |= persistCharacterTuning(entry->id, edit);
+                }
+                ImGui::TreePop();
+            }
             if (ImGui::Button(context == MDKR_CHARACTER_CONTEXT_SELECT
                                   ? "Place feet on ground"
                                   : "Align pelvis to seat")) {
@@ -4765,6 +5103,59 @@ bool drawCharacterTuningEditor(int player,
                         };
                     ui::TextSubtleWrapped(
                         "Fine-tune the engine-owned contact targets in metres relative to the mapped hips at the seat frame. These affect missing-semantic reference motion only; explicit authored clips remain untouched.");
+                    const std::string contactKey =
+                        std::string(entry->id) + "#" +
+                        std::to_string(context);
+                    int &selectedContact =
+                        g_characterSelectedContacts[contactKey];
+                    selectedContact = std::clamp(
+                        selectedContact, 0,
+                        static_cast<int>(MDKR_MODERN_CHARACTER_CONTACTS) - 1);
+                    const float contactWidth =
+                        ImGui::GetContentRegionAvail().x;
+                    const int contactColumns = contactWidth >= 620.0f
+                        ? 4 : contactWidth >= 300.0f ? 2 : 1;
+                    if (ImGui::BeginTable(
+                            "##contact-target-selection", contactColumns,
+                            ImGuiTableFlags_SizingStretchSame)) {
+                        for (unsigned contact = 0u;
+                             contact < MDKR_MODERN_CHARACTER_CONTACTS;
+                             ++contact) {
+                            ImGui::TableNextColumn();
+                            const std::string selectLabel =
+                                std::string(contactLabels[contact]) +
+                                "##contact-select";
+                            if (ImGui::RadioButton(
+                                    selectLabel.c_str(), &selectedContact,
+                                    static_cast<int>(contact))) {
+                                selectedContact = static_cast<int>(contact);
+                            }
+                            ui::SpeakFocusedItem(
+                                contactLabels[contact],
+                                selectedContact == static_cast<int>(contact)
+                                    ? "selected" : "not selected",
+                                "Chooses the contact target edited by the spatial control and numeric fields.");
+                        }
+                        ImGui::EndTable();
+                    }
+                    int &contactView =
+                        g_characterContactSpatialViews[contactKey];
+                    const CharacterSpatialPlane contactPlane =
+                        drawCharacterSpatialPlaneSelector(
+                            "contact-plane", contactView);
+                    CharacterSpatialEditResult contactSpatial =
+                        drawCharacterSpatialPad(
+                            "##contact-target-pad",
+                            "Hand and foot target adjustment control",
+                            placement.contacts,
+                            MDKR_MODERN_CHARACTER_CONTACTS,
+                            static_cast<unsigned>(selectedContact),
+                            contactPlane, 0.15f, 1.0f, 0.005f,
+                            "zero = engine target",
+                            contactLabels);
+                    if (contactSpatial.commit) {
+                        changed |= persistCharacterTuning(entry->id, edit);
+                    }
                     for (unsigned contact = 0u;
                          contact < MDKR_MODERN_CHARACTER_CONTACTS; ++contact) {
                         ImGui::PushID(static_cast<int>(contact));
@@ -4790,6 +5181,28 @@ bool drawCharacterTuningEditor(int player,
                     ui::TextSubtleWrapped(
                         "Contact controls require a complete, reviewed source-v4 humanoid map.");
                 }
+            }
+            if (context != MDKR_CHARACTER_CONTEXT_SELECT &&
+                ImGui::TreeNode("Copy this vehicle fit")) {
+                ui::TextSubtleWrapped(
+                    "Copies size, position, rotation, and all four contact adjustments to one other qualified vehicle. The destination's prior fit remains available through Undo Fit; select placement is never included.");
+                for (unsigned destination = MDKR_CHARACTER_CONTEXT_CAR;
+                     destination < MDKR_CHARACTER_CONTEXT_COUNT;
+                     ++destination) {
+                    if (destination == context ||
+                        (entry->vehicle_mask &
+                         (1u << (destination - 1u))) == 0u) continue;
+                    const std::string copyLabel = std::string("Copy to ") +
+                        contextNames[destination];
+                    if (ImGui::Button(copyLabel.c_str())) {
+                        edit.context[destination] = placement;
+                        changed |= persistCharacterTuning(entry->id, edit);
+                    }
+                    ui::SpeakFocusedItem(
+                        copyLabel.c_str(), nullptr,
+                        "Replaces only the named vehicle's fit and contact adjustments; select placement and other vehicles stay unchanged.");
+                }
+                ImGui::TreePop();
             }
             const MdkrCharacterPreviewContext previewContext =
                 previewContexts[context];

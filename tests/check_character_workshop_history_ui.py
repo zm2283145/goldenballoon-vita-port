@@ -116,6 +116,18 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                 f"{tab} did not render {tool} history controls\n"
                 f"{process.stdout[-8000:]}"
             )
+    if tab == "vehicles":
+        marker = (
+            "character-spatial-controls package=" + PACKAGE_ID +
+            " planes=front,side,top placement=ground-or-seat yaw=context "
+            "contacts=4 copy=vehicle-only undo=fit-history"
+        )
+        if marker not in process.stdout:
+            raise RuntimeError(
+                "vehicle route did not render the synchronized placement, "
+                "facing, contact, copy, and undo contract\n" +
+                process.stdout[-8000:]
+            )
     if tab == "test":
         marker = (
             "character-pose-inspector package=" + PACKAGE_ID +
@@ -162,8 +174,9 @@ def main() -> int:
               file=sys.stderr)
         return 1
     print("check_character_workshop_history_ui: PASS -- exact-source Identity, "
-          "Profile, Rig, Fit, Performance, Test history, and all semantic pose "
-          "inspection controls render without mutating installed bytes")
+          "Profile, Rig, Fit, Performance, Test history, spatial fit/contact "
+          "controls, and all semantic pose inspection controls render without "
+          "mutating installed bytes")
     return 0
 
 

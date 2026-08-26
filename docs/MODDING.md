@@ -226,7 +226,11 @@ re-enable it without losing Workshop work, permanently delete it,
 and edit intended standing height, source facing, animation speed, LOD
 preference, and car/hover/plane pairing. Character select, car, hovercraft, and
 plane each have independent size/XYZ/rotation controls and an anchor reset, so
-placing feet on the roster floor cannot disturb a pelvis-to-seat fit.
+placing feet on the roster floor cannot disturb a pelvis-to-seat fit. Front,
+side, and top spatial pads edit the same translation values; a forward dial
+edits context yaw; and vehicle contact pads directly tune each mapped hand and
+foot offset. Fit can be copied explicitly between qualified vehicles and every
+gesture remains available through Fit undo/redo.
 Package-specific fit follows the same character when it is assigned to another
 player. Those settings never alter physics or the vehicle selected by the game.
 
