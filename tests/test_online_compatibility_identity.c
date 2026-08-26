@@ -82,6 +82,45 @@ int main(void) {
                memcmp(&compatibility, &untouched, sizeof(compatibility)) == 0,
            "unsupported ROM revision fails without output mutation");
 
+    /* The property the lobby's JOIN byte-compare (lobby_core.c compatible())
+     * depends on, now that the LIVE adapter derives its identity here: two
+     * processes of the SAME build with the SAME accepted ROM must derive
+     * identical bytes, and any change in version, commit or ROM revision must
+     * change at least one compared field. Lobby-level rejection of a
+     * mismatched join is covered by test_online_lobby_core.c's
+     * "incompatible" cases. */
+    {
+        static const char other_commit[] =
+            "fedcba9876543210fedcba9876543210fedcba98";
+        MdkrOnlineCompatibilityV1 first;
+        MdkrOnlineCompatibilityV1 second;
+        memset(&first, 0x11, sizeof(first));
+        memset(&second, 0x22, sizeof(second));
+        expect(mdkr_online_compatibility_from_provenance(
+                   "1.6.0", commit, false, 1u, &first) &&
+                   mdkr_online_compatibility_from_provenance(
+                       "1.6.0", commit, false, 1u, &second) &&
+                   memcmp(&first, &second, sizeof(first)) == 0,
+               "same version+commit+ROM derive byte-identical compatibility");
+        expect(mdkr_online_compatibility_from_provenance(
+                   "1.6.1", commit, false, 1u, &second) &&
+                   memcmp(second.build_id, first.build_id,
+                          sizeof(first.build_id)) != 0,
+               "a different version changes the build identity");
+        expect(mdkr_online_compatibility_from_provenance(
+                   "1.6.0", other_commit, false, 1u, &second) &&
+                   memcmp(second.build_id, first.build_id,
+                          sizeof(first.build_id)) != 0 &&
+                   memcmp(second.gameplay_digest, first.gameplay_digest,
+                          sizeof(first.gameplay_digest)) != 0,
+               "a different commit changes build identity AND gameplay digest");
+        expect(mdkr_online_compatibility_from_provenance(
+                   "1.6.0", commit, false, 2u, &second) &&
+                   (second.rom_revision != first.rom_revision ||
+                    second.cadence_hz != first.cadence_hz),
+               "a different accepted ROM revision changes the ROM identity");
+    }
+
     if (failures != 0)
         return 1;
     puts("online compatibility identity: PASS (native/browser exact vector)");

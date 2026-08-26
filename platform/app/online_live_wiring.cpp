@@ -27,6 +27,9 @@
 #include "online/match_live_transport.h"
 #include "net/net_roster_runtime.h"
 
+#include "app_version.h"
+#include "online/compatibility_identity.h"
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -169,12 +172,98 @@ uint64_t launchSessionId() {
     return id;
 }
 
+/* Field-wise (never memcmp-with-padding) equality, mirroring the lobby
+ * reducer's own JOIN comparator (lobby_core.c compatible()). */
+bool sameCompatibility(const MdkrOnlineCompatibilityV1 &left,
+                       const MdkrOnlineCompatibilityV1 &right) {
+    return left.protocol_version == right.protocol_version &&
+           left.rom_revision == right.rom_revision &&
+           left.cadence_hz == right.cadence_hz &&
+           std::memcmp(left.build_id, right.build_id,
+                       sizeof(left.build_id)) == 0 &&
+           std::memcmp(left.gameplay_digest, right.gameplay_digest,
+                       sizeof(left.gameplay_digest)) == 0;
+}
+
 }  // namespace
+
+/* Gameplay-determinism developer seams (platform/math_util_native.c): each of
+ * these environment variables changes gameplay math ON THIS MACHINE ONLY (RNG
+ * boot seeds, arctan table rounding, sine evaluation). None of them is part of
+ * the compatibility identity -- provenance hashes version+commit, not runtime
+ * env -- so a one-sided setting passes the JOIN byte-compare and then GUARANTEES
+ * a silent mid-race desync. Live online therefore refuses to construct while
+ * any is set; offline/dev use of the seams stays untouched. Returns the first
+ * offending variable name, or nullptr when none is set. */
+const char *OnlineRoom_liveBlockedByDeterminismEnv(void) {
+    static const char *const kSeams[] = {"MDKR_RNGSEED", "MDKR_ARCTAN",
+                                         "MDKR_TRIG"};
+    for (const char *seam : kSeams) {
+        if (std::getenv(seam) != nullptr) return seam;
+    }
+    return nullptr;
+}
+
+/* The LIVE compatibility identity for THIS binary: the real provenance
+ * generator (platform/online/compatibility_identity.c, SHA-256 over
+ * version+commit+ROM revision) over the same compiled-in values the About
+ * panel and `mdkr64 --version` print -- MDKR_VERSION via AppVersion() and the
+ * release CI's MDKR_BUILD_STAMP commit via AppBuildStamp(). Two copies of the
+ * same DMG with the same accepted ROM derive identical bytes; any other
+ * version, commit or ROM revision derives different bytes, which is exactly
+ * the property the lobby's JOIN byte-compare needs.
+ *
+ * source_dirty is false because MDKR_BUILD_STAMP is only ever threaded by
+ * release CI from the clean commit tools/release/stamp_provenance.sh binds the
+ * artifact to. A plain dev build has an EMPTY stamp, which fails the strict
+ * 40-hex commit grammar and this returns false: an unstamped build has no
+ * provable gameplay digest, so live online correctly stays unavailable in it
+ * (configure -DMDKR_BUILD_STAMP=<commit> on a clean tree to test locally). */
+bool OnlineRoom_liveCompatibilityFromProvenance(
+    uint8_t romRevision, MdkrOnlineCompatibilityV1 *out) {
+    return mdkr_online_compatibility_from_provenance(
+        AppVersion(), AppBuildStamp(), /*source_dirty=*/false, romRevision,
+        out);
+}
 
 std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
     const MdkrOnlineCompatibilityV1 &compatibility, MdkrOnlineJourney journey,
     const std::string &joinCode) {
     std::string error;
+
+    /* m2 fence: never let a machine with one-sided gameplay-determinism env
+     * seams into a real session (see OnlineRoom_liveBlockedByDeterminismEnv).
+     * Enforced here so EVERY live-adapter construction -- panel and the cloud
+     * test driver alike -- fails closed, not just the interactive chooser. */
+    if (const char *seam = OnlineRoom_liveBlockedByDeterminismEnv()) {
+        std::fprintf(stderr,
+                     "[online-live] refused: gameplay-determinism env %s is "
+                     "set; a one-sided setting guarantees an online desync\n",
+                     seam);
+        return nullptr;
+    }
+
+    /* C1 fence: the live adapter only ever carries the REAL provenance
+     * compatibility. Recompute what this binary derives for the caller's ROM
+     * revision and refuse anything else, so no caller (present or future) can
+     * build a live adapter from a canned fixture that every build shares --
+     * that fixture let mismatched builds/ROMs pass the JOIN byte-compare
+     * (lobby_core.c) and desync mid-race undetected. */
+    MdkrOnlineCompatibilityV1 expected;
+    if (!OnlineRoom_liveCompatibilityFromProvenance(compatibility.rom_revision,
+                                                    &expected)) {
+        std::fprintf(stderr,
+                     "[online-live] refused: no release provenance for rom "
+                     "revision %u (dev build without MDKR_BUILD_STAMP?)\n",
+                     static_cast<unsigned>(compatibility.rom_revision));
+        return nullptr;
+    }
+    if (!sameCompatibility(compatibility, expected)) {
+        std::fprintf(stderr,
+                     "[online-live] refused: compatibility is not this "
+                     "build's provenance identity (canned fixture?)\n");
+        return nullptr;
+    }
 
     /* Construction never touches the network: the room transport begins on the
      * first submit(CREATE_ROOM/JOIN_ROOM). MDKR_PARTY_ORIGIN is the compiled
@@ -203,8 +292,16 @@ std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
         options.localRoster.player_identity[i] = MDKR_MATCH_IDENTITY_RETAIL;
     }                                             /* FENCE: retail-only clamp */
     options.raceAdmissionEnabled = true;          /* beta build only */
-    options.romVerified = true;                   /* beta: local ROM verified;
-                                                     never sourced from service */
+    /* Local ROM verification result (never sourced from the service). True is
+     * honest here by caller contract, enforced above: `compatibility` must
+     * byte-match this build's provenance identity for a SUPPORTED rom_revision,
+     * and the only interactive caller (buildBetaLiveAdapter in
+     * ui_online_room.cpp) derives that revision from the launcher's completed
+     * full-image ROM validation (RomInfo.valid && integrity_verified -- the
+     * same rom_validation.c contract the engine re-checks at boot) and refuses
+     * to call this factory otherwise. The env-gated cloud test driver below
+     * documents its own ROM contract at its call site. */
+    options.romVerified = true;
     options.inputDelay = 2u;
     options.room = roomPtr;
     options.meshBackend = meshPtr;
@@ -304,6 +401,11 @@ bool OnlineRoom_guardRosterOwner(uint64_t token) {
  * ======================================================================== */
 namespace {
 
+/* Fixture for the IN-PROCESS loopback race ONLY (both endpoints share this
+ * one process, so identical bytes are trivially guaranteed and no provenance
+ * stamp is needed to run it). The production factory above and the cloud test
+ * driver below both use OnlineRoom_liveCompatibilityFromProvenance instead;
+ * OnlineRoom_makeGatedLiveAdapter refuses this fixture outright. */
 MdkrOnlineCompatibilityV1 loopbackCompatibility() {
     MdkrOnlineCompatibilityV1 c;
     std::memset(&c, 0, sizeof(c));
@@ -916,15 +1018,29 @@ MdkrOnlineTestCloudLiveSession *OnlineRoom_makeTestCloudLiveSession(
     const uint64_t deadline = cloudNowMs() + timeoutMs;
     const bool isCreate = journey == MDKR_ONLINE_JOURNEY_CREATE;
 
-    /* Same compatibility fixture as the loopback race and the e2e driver
-     * (compatibilityFixture() there, loopbackCompatibility() here): both sides
-     * must agree byte-for-byte or the lobby reducer refuses the join. */
+    /* REAL provenance compatibility -- the exact bytes the production panel
+     * derives -- so this two-process proof exercises the shipped path: both
+     * processes run the SAME binary against the SAME US 1.1 ROM (the harness
+     * pins race_2p_split's US fixtures; the engine boot re-validates the image
+     * authoritatively), so both derive identical bytes by construction and the
+     * lobby reducer's JOIN byte-compare accepts; a mismatched companion build
+     * is now correctly refused instead of silently admitted. The in-process
+     * loopback race above keeps its own fixture: it never leaves one process,
+     * and stamping is not required to run it. */
+    MdkrOnlineCompatibilityV1 cloudCompat;
+    if (!OnlineRoom_liveCompatibilityFromProvenance(1u /* US 1.1 */,
+                                                    &cloudCompat)) {
+        set_err("no release provenance for this binary (build with "
+                "-DMDKR_BUILD_STAMP=<clean commit>); the cloud proof must run "
+                "the production compatibility path");
+        return nullptr;
+    }
     std::unique_ptr<IMdkrOnlineAdapter> adapter =
-        OnlineRoom_makeGatedLiveAdapter(loopbackCompatibility(), journey,
-                                        joinCode);
+        OnlineRoom_makeGatedLiveAdapter(cloudCompat, journey, joinCode);
     if (!adapter) {
         set_err("gated live adapter construction refused (missing/invalid "
-                "compiled-in MDKR_PARTY_ORIGIN?)");
+                "compiled-in MDKR_PARTY_ORIGIN, or a gameplay-determinism env "
+                "seam is set -- see the [online-live] line above)");
         return nullptr;
     }
     IMdkrOnlineAdapter *a = adapter.get();
