@@ -1,6 +1,6 @@
 /* Bounded discovery of locally compiled generic characters.
  *
- * Discovery validates each cache, copies only its small identity/stat summary,
+ * Discovery validates each cache, copies only its bounded identity/preview/stat summary,
  * and unloads the heavy mesh/texture data. Activation validates and loads one
  * selected cache again. Thus startup cannot retain N high-poly characters, and
  * no renderer pointer survives a rescan or package removal.
@@ -20,6 +20,7 @@ extern "C" {
 #define MDKR_MODERN_CHARACTER_NAME_MAX 97
 #define MDKR_MODERN_CHARACTER_PATH_MAX 4096
 #define MDKR_MODERN_CHARACTER_SKIP_REASON_MAX 192
+#define MDKR_MODERN_CHARACTER_LOD_LEVELS 4
 
 enum MdkrModernCharacterSemanticBits {
     MDKR_CHARACTER_SEMANTIC_FALLBACK = 1u << 0,
@@ -66,6 +67,10 @@ typedef struct MdkrModernCharacterEntry {
     uint32_t portrait_bytes;
     uint32_t minimap_rgba;
     uint8_t portrait_rgba[MDKR_MODERN_PORTRAIT_BYTES];
+    uint32_t lod_vertices[MDKR_MODERN_CHARACTER_LOD_LEVELS];
+    uint32_t lod_triangles[MDKR_MODERN_CHARACTER_LOD_LEVELS];
+    uint32_t lod_primitives[MDKR_MODERN_CHARACTER_LOD_LEVELS];
+    uint32_t lod_palette_matrices[MDKR_MODERN_CHARACTER_LOD_LEVELS];
     float bounds_min[3];
     float bounds_max[3];
     float ground[3];

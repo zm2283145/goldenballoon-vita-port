@@ -1842,6 +1842,7 @@ struct CharacterProfileEdit {
 };
 
 std::map<std::string, CharacterProfileEdit> g_characterProfileEdits;
+std::map<std::string, int> g_characterAssemblyPlayers;
 
 struct CharacterTuningEdit {
     bool loaded = false;
@@ -2376,22 +2377,99 @@ bool drawCharacterTuningEditor(int player,
 const char *characterPerformanceTier(
     const MdkrModernCharacterEntry *entry) {
     const MdkrModernCharacterStats &stats = entry->stats;
+    const uint32_t triangles = entry->lod_triangles[0] != 0u
+        ? entry->lod_triangles[0] : stats.triangles;
+    const uint32_t vertices = entry->lod_vertices[0] != 0u
+        ? entry->lod_vertices[0] : stats.vertices;
+    const uint32_t primitives = entry->lod_primitives[0] != 0u
+        ? entry->lod_primitives[0] : stats.primitives;
     if (stats.textures != 0u && stats.decoded_texture_bytes == 0u) {
         return "Recompile to measure";
     }
-    if (stats.triangles <= 15000u && stats.vertices <= 20000u &&
-        stats.primitives <= 4u && stats.materials <= 4u &&
+    if (triangles <= 15000u && vertices <= 20000u &&
+        primitives <= 4u && stats.materials <= 4u &&
         stats.joints <= 64u && stats.textures <= 8u &&
         stats.decoded_texture_bytes <= 64u * 1024u * 1024u) return "Excellent";
-    if (stats.triangles <= 30000u && stats.vertices <= 40000u &&
-        stats.primitives <= 8u && stats.materials <= 8u &&
+    if (triangles <= 30000u && vertices <= 40000u &&
+        primitives <= 8u && stats.materials <= 8u &&
         stats.joints <= 96u && stats.textures <= 12u &&
         stats.decoded_texture_bytes <= 128u * 1024u * 1024u) return "Good";
-    if (stats.triangles <= 60000u && stats.vertices <= 70000u &&
-        stats.primitives <= 12u && stats.materials <= 12u &&
+    if (triangles <= 60000u && vertices <= 70000u &&
+        primitives <= 12u && stats.materials <= 12u &&
         stats.joints <= 128u && stats.textures <= 16u &&
         stats.decoded_texture_bytes <= 256u * 1024u * 1024u) return "Heavy";
     return "Very heavy";
+}
+
+void drawCharacterPerformanceAssembly(
+    const MdkrModernCharacterEntry *entry) {
+    int &players = g_characterAssemblyPlayers[entry->id];
+    if (players != 1 && players != 2 && players != 4) players = 4;
+    ui::TextSubtleWrapped(
+        "Inspect the selected package repeated across local players. The worst-visible case assumes every custom racer is visible in every split-screen viewport at LOD0. Immutable mesh and texture uploads remain shared once for this package.");
+    ImGui::TextUnformatted("Local-player assembly");
+    for (int option : {1, 2, 4}) {
+        if (option != 1) ImGui::SameLine();
+        const std::string label = std::to_string(option) +
+            (option == 1 ? " player" : " players");
+        (void)ImGui::RadioButton(label.c_str(), &players, option);
+    }
+    const uint64_t visibleInstances =
+        static_cast<uint64_t>(players) * static_cast<uint64_t>(players);
+    const uint64_t triangles =
+        static_cast<uint64_t>(entry->lod_triangles[0]) * visibleInstances;
+    const uint64_t vertices =
+        static_cast<uint64_t>(entry->lod_vertices[0]) * visibleInstances;
+    const uint64_t draws =
+        static_cast<uint64_t>(entry->lod_primitives[0]) * visibleInstances;
+    const uint64_t paletteMatrices =
+        static_cast<uint64_t>(entry->lod_palette_matrices[0]) *
+        visibleInstances * 2u;
+    const uint64_t geometryBytes =
+        static_cast<uint64_t>(entry->stats.vertices) *
+            sizeof(MdkrModernVertex) +
+        static_cast<uint64_t>(entry->stats.triangles) * 3u * sizeof(uint32_t);
+    if (ImGui::BeginTable(
+            "##character-performance-assembly", 2,
+            ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
+        auto countRow = [](const char *label, uint64_t value) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(label);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::Text("%llu", static_cast<unsigned long long>(value));
+        };
+        auto memoryRow = [](const char *label, uint64_t bytes) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(label);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::Text("%.2f MiB", static_cast<double>(bytes) /
+                (1024.0 * 1024.0));
+        };
+        countRow("Worst-visible character instances", visibleInstances);
+        countRow("LOD0 triangles submitted", triangles);
+        countRow("LOD0 vertices referenced", vertices);
+        countRow("Character draw submissions", draws);
+        countRow("Current + previous bone matrices prepared", paletteMatrices);
+        memoryRow("Shared geometry upload", geometryBytes);
+        memoryRow("Shared decoded texture upload",
+                  entry->stats.decoded_texture_bytes);
+        ImGui::EndTable();
+    }
+    ImGui::TextDisabled(
+        "LOD0 authoring guide: %s · timing still requires the exact-context stress test",
+        characterPerformanceTier(entry));
+    for (uint32_t lod = 0u;
+         lod < entry->stats.lod_levels &&
+         lod < MDKR_MODERN_CHARACTER_LOD_LEVELS; ++lod) {
+        ImGui::BulletText(
+            "LOD%u: %u triangles · %u vertices · %u draw part(s)",
+            lod, entry->lod_triangles[lod], entry->lod_vertices[lod],
+            entry->lod_primitives[lod]);
+    }
+    ui::TextSubtleWrapped(
+        "These are exact structural counts, not a frame-time prediction. Materials, transparency, overdraw, skinning, driver visibility, camera framing, GPU, resolution, and other racers still affect measured performance; the Workshop must not turn a budget guide into an artificial import ceiling.");
 }
 
 void drawCharacterPortraitPreview(const MdkrModernCharacterEntry *entry) {
@@ -2677,9 +2755,9 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             "Roster identity: donor fallback · Portrait: donor fallback · Import a source-v3 package to author identity media");
     }
     ImGui::TextDisabled(
-        "Performance guide: %s · %u triangles · %u vertices · %u draw parts · %u materials · %u joints · %u texture(s) · %u LOD(s)",
-        characterPerformanceTier(entry), entry->stats.triangles,
-        entry->stats.vertices, entry->stats.primitives,
+        "LOD0 performance guide: %s · %u triangles · %u vertices · %u draw parts · %u package materials · %u joints · %u texture(s) · %u LOD(s)",
+        characterPerformanceTier(entry), entry->lod_triangles[0],
+        entry->lod_vertices[0], entry->lod_primitives[0],
         entry->stats.materials, entry->stats.joints,
         entry->stats.textures, entry->stats.lod_levels);
     if (entry->stats.decoded_texture_bytes != 0u) {
@@ -2694,7 +2772,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             "Texture memory: unavailable in this legacy cache; recompile for exact accounting");
     }
     ui::TextSubtleWrapped(
-        "The guide is the worst import-budget category, not measured frame time. The Test workspace must eventually qualify four-player timing and decoded VRAM.");
+        "The guide uses the actual nearest LOD plus package-wide resource costs. It is not measured frame time; use the assembly below to inspect split-screen structural load before an exact-context stress run.");
 
     ImGui::SeparatorText("Readiness");
     ImGui::TextDisabled(
@@ -2780,6 +2858,8 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
 
     ImGui::SeparatorText("Fit, motion, vehicles, and performance");
     changed |= drawCharacterTuningEditor(0, entry);
+    ImGui::SeparatorText("Performance assembly");
+    drawCharacterPerformanceAssembly(entry);
     ui::Gap(ui::kGapS);
     if (ImGui::Button("Remove package from this computer...")) {
         g_characterPendingRemoval = entry->id;

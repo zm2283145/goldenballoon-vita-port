@@ -369,8 +369,12 @@ int main(int argc, char **argv) {
                 registry.entries[0].identity_flags == 1u &&
                 registry.entries[0].portrait_bytes > 64u &&
                 registry.entries[0].portrait_rgba[3] != 0u &&
+                registry.entries[0].lod_vertices[0] == 3u &&
+                registry.entries[0].lod_triangles[0] == 1u &&
+                registry.entries[0].lod_primitives[0] == 1u &&
+                registry.entries[0].lod_palette_matrices[0] == 2u &&
                 (registry.entries[0].minimap_rgba & 0xFFFFFFu) == 0x9048DCu,
-            "registry summarizes authoring health and decoded identity preview");
+            "registry summarizes per-LOD authoring health and identity preview");
     require(mdkr_modern_character_registry_load(&registry, 0, &asset,
                                                  error, sizeof(error)),
             "load selected registry character");

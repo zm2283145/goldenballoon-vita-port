@@ -217,6 +217,35 @@ int mdkr_modern_character_registry_init(MdkrModernCharacterRegistry *registry,
         }
         mdkr_modern_character_asset_stats(&asset, &entry.stats);
         {
+            const MdkrModernSectionView *primitives =
+                mdkr_modern_character_asset_section(
+                    &asset, MDKR_MDKC_PRIMITIVES);
+            uint32_t primitive_index;
+            if (primitives != NULL) {
+                for (primitive_index = 0u;
+                     primitive_index < primitives->count; primitive_index++) {
+                    MdkrModernPrimitive primitive;
+                    if (mdkr_modern_character_asset_primitive(
+                            &asset, primitive_index, &primitive) &&
+                        primitive.lod < MDKR_MODERN_CHARACTER_LOD_LEVELS) {
+                        entry.lod_vertices[primitive.lod] +=
+                            primitive.vertex_count;
+                        entry.lod_triangles[primitive.lod] +=
+                            primitive.index_count / 3u;
+                        entry.lod_primitives[primitive.lod]++;
+                        if (primitive.skin >= 0) {
+                            MdkrModernSkin skin;
+                            if (mdkr_modern_character_asset_skin(
+                                    &asset, (uint32_t)primitive.skin, &skin)) {
+                                entry.lod_palette_matrices[primitive.lod] +=
+                                    skin.joint_count;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        {
             uint32_t index;
             uint8_t animation_moves[64] = {0};
             for (index = 0u; index < entry.stats.sockets; index++) {

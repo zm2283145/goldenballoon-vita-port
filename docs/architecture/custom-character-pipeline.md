@@ -706,6 +706,16 @@ materials and 256 joints per skin; they are memory/work bounds, not quality
 targets. The Workshop still reports much lower measured performance tiers and
 expects complete LOD assemblies for ordinary play.
 
+Workshop performance accounting follows the runtime LOD contract: it records
+vertices, triangles, draw parts, and skin palette matrices per LOD instead of
+misclassifying the sum of every authored LOD as one frame's cost. Its 1P/2P/4P
+assembly view uses the exact worst-visible `players × viewports` instance count,
+including current/previous bone palettes, while reporting immutable geometry
+and decoded texture uploads once because a repeated package shares its runtime
+pool. These structural counts are deliberately advisory rather than import
+ceilings; measured frame time still belongs to exact-context device stress
+tests.
+
 The private Dixie fixture completed the same chain without contributing any
 tracked bytes: DAE -> self-contained GLB -> source and portable `.mdkrchar` ->
 `.mdkc` -> live character select and race. The source/portable packages,
@@ -739,7 +749,7 @@ legacy-engine representation blockers:
 
 | Capability | Spike v1 | What must change for a cinematic/AAA profile |
 |---|---|---|
-| Geometry | 100k triangles and 100k unique vertices per source | Profile/device-tier budgets, measured LODs, culling and GPU timing; importing a multi-million-poly sculpt directly remains inappropriate |
+| Geometry | 1,000,000 vertices and 2,000,000 triangles per source | Profile/device-tier budgets, measured LODs, culling and GPU timing; importing a multi-million-poly sculpt directly remains inappropriate |
 | Skin | 256 joints, four linear influences, GPU skinned; non-uniform joint bind scale and joint scale tracks rejected | Normal palettes and joint-scale animation in a later profile; dual-quaternion skinning only if art requires it |
 | Textures | Embedded PNG, max 4096 per side, 512 MiB decoded with full generated mips | Bounded KTX2/BasisU transcode and GPU block compression before allowing larger sets |
 | Materials | Core PBR-like factors/maps plus DKR fog/sun/ambient; OPAQUE/MASK/BLEND | IBL, calibrated tone mapping, shadow receive/cast, transparent ordering, then optional hair/clearcoat/subsurface profiles |
