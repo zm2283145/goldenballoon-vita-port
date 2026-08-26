@@ -316,10 +316,26 @@ struct MdkrOnlineLiveRaceInfo {
 bool mdkr_online_live_adapter_race_info(const IMdkrOnlineAdapter *adapter,
                                         MdkrOnlineLiveRaceInfo *out);
 /* Seal + fan out this endpoint's local input for the delayed future tick and
- * drain the current authored tick. Deterministic: the sealed future frames and
- * the drained current frame come from the same launcher-owned input script, so
- * both endpoints commit byte-identical canonical inputs. */
+ * drain the current authored tick. This endpoint records the exact frame it
+ * seals, so the copy the peer receives, this endpoint's own later drain of that
+ * tick, and any retransmit all commit byte-identical canonical inputs -- both
+ * endpoints converge because each contributes only its own local seats and
+ * every other seat is confirmed from the peer's fanned-out bundle. (Local input
+ * is the real controller in production; the transport/rollback test seams select
+ * the deterministic fixture via race_set_synthetic_input.) */
 bool mdkr_online_live_adapter_race_advance(IMdkrOnlineAdapter *adapter);
+/* Select the deterministic raceLocalSample fixture as this endpoint's local
+ * input source (on=true), instead of the real physical pad. The transport and
+ * rollback test seams enable it because they need per-tick input variation to
+ * force genuine corrections; the shipped interactive boot leaves it off so the
+ * race is driven by the player's controller. */
+bool mdkr_online_live_adapter_race_set_synthetic_input(
+    IMdkrOnlineAdapter *adapter, bool on);
+/* Stage the real local controller pads for the next sealed tick. `local` is in
+ * local-seat order (seat i reads controller port i), matching the physical[]
+ * the engine hands the match-input drain callback. Ignored in synthetic mode. */
+bool mdkr_online_live_adapter_race_set_local_input(
+    IMdkrOnlineAdapter *adapter, const MdkrPadSample *local, unsigned count);
 /* Retransmit the local input covering `newestTick` (and the two ticks before
  * it) without draining, so a datagram dropped on the lossy state channel cannot
  * permanently wedge the peer's contiguous confirmation. */

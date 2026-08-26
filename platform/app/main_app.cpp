@@ -1105,11 +1105,16 @@ static int liveOverlayRender(void) { return 1; }
  * the adapter's raceFirstTick (1), so one drain == one race_advance. */
 bool liveDrainMatchInput(void *opaque, std::uint32_t /*epoch*/,
                          std::uint32_t tick,
-                         const MdkrPadSample * /*physical*/, unsigned /*count*/,
+                         const MdkrPadSample *physical, unsigned count,
                          MdkrInputSet *out) {
     LiveMatchInputContext *ctx = static_cast<LiveMatchInputContext *>(opaque);
     if (ctx == nullptr || ctx->visible == nullptr || out == nullptr) return false;
     ctx->drainCalls++;
+    /* Feed the REAL local controller into the visible endpoint before it seals
+     * and drains, so the committed canonical frame is the player's input rather
+     * than the raceLocalSample fixture. The adapter ignores this when a test
+     * seam has selected synthetic input (see runOnlineLiveEngineSession). */
+    mdkr_online_live_adapter_race_set_local_input(ctx->visible, physical, count);
     MdkrOnlineLiveRaceInfo info{};
     if (!mdkr_online_live_adapter_race_info(ctx->visible, &info) || !info.ready) {
         return false;
@@ -1256,7 +1261,8 @@ std::uint32_t foldConfirmedRace(IMdkrOnlineAdapter *adapter,
 int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
                                IMdkrOnlineAdapter *visible,
                                IMdkrOnlineAdapter *peer,
-                               unsigned paceAdvanceHz = 0u) {
+                               unsigned paceAdvanceHz = 0u,
+                               bool syntheticInput = false) {
     if (visible == nullptr) return 2;
     if (!mdkr_net_roster_runtime_active()) {
         std::fprintf(stderr,
@@ -1275,6 +1281,18 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
     const std::uint64_t ownerToken =
         UINT64_C(0x4f4e4c49564500) ^ static_cast<std::uint64_t>(info.matchEpoch);
     OnlineRoom_setRosterOwner(ownerToken);
+
+    /* The transport/rollback test seams (loopback + cloud) drive the race from
+     * the deterministic raceLocalSample fixture, which varies per tick to force
+     * genuine corrections and converges byte-for-byte across endpoints. The
+     * shipped interactive boot leaves this false, so the race commits the real
+     * controller fed through liveDrainMatchInput -> race_set_local_input. */
+    if (syntheticInput) {
+        mdkr_online_live_adapter_race_set_synthetic_input(visible, true);
+        if (peer != nullptr) {
+            mdkr_online_live_adapter_race_set_synthetic_input(peer, true);
+        }
+    }
 
     LiveMatchInputContext context;
     context.visible = visible;
@@ -2687,7 +2705,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         }
         const int liveResult = runOnlineLiveEngineSession(
             host, config, OnlineRoom_testLoopbackVisible(race),
-            OnlineRoom_testLoopbackPeer(race));
+            OnlineRoom_testLoopbackPeer(race), 0u, /*syntheticInput=*/true);
         OnlineRoom_destroyTestLoopbackRace(race);
         host.shutdown();
         return liveResult;
@@ -2776,7 +2794,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         }
         const int liveResult = runOnlineLiveEngineSession(
             host, config, OnlineRoom_testCloudLiveAdapter(cloud), nullptr,
-            paceHz);
+            paceHz, /*syntheticInput=*/true);
         OnlineRoom_destroyTestCloudLiveSession(cloud);
         host.shutdown();
         return liveResult;

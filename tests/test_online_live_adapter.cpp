@@ -539,6 +539,16 @@ struct FullRunResult {
     uint64_t impThrottled = 0u;
     uint64_t impOverflow = 0u;
     uint64_t impCorruptDropped = 0u;       /* corrupt tokens the driver discarded */
+    /* Honest real-input path capture (driveTwoAdapters realInput=true): a
+     * mid-race committed canonical frame from each endpoint, plus each
+     * endpoint's local canonical slot, so the caller can prove the injected
+     * pads (not raceLocalSample, not neutral) were committed and converged. */
+    bool realInputCaptured = false;
+    uint32_t sampleTick = 0u;
+    uint8_t localSlotA = 0u;
+    uint8_t localSlotB = 0u;
+    MdkrInputSet sampleFrameA{};
+    MdkrInputSet sampleFrameB{};
 };
 
 /* One net_impairment matrix cell: a named carrier profile + a deterministic
@@ -596,7 +606,8 @@ void foldFrame(uint64_t &hash, uint32_t tick, uint8_t activeMask,
 }
 
 FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
-                               const ImpairmentSpec *imp = nullptr) {
+                               const ImpairmentSpec *imp = nullptr,
+                               bool realInput = false) {
     FullRunResult result;
     mdkr_net_roster_runtime_clear();
 
@@ -713,6 +724,34 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
      * process-global engine roster can hold only one (see install()). */
     if (raceTicks > 0u && ia.ready && ib.ready) {
         result.raceRun = true;
+        auto lowestBit = [](uint8_t m) -> uint8_t {
+            for (uint8_t b = 0u; b < 8u; ++b)
+                if ((m >> b) & 1u) return b;
+            return 0u;
+        };
+        result.localSlotA = lowestBit(ia.localSlotMask);
+        result.localSlotB = lowestBit(ib.localSlotMask);
+        if (realInput) {
+            /* Honest path: drive each endpoint from a DISTINCT real controller
+             * frame (neither raceLocalSample, which always holds 0x8000|hash bits
+             * and a hashed stick, nor neutral) so the committed canonical inputs
+             * must reflect the injected pads iff real local input reaches the sim
+             * on both endpoints and crosses the mesh. Constant per endpoint, so
+             * with the input delay every committed tick past the ramp equals it. */
+            MdkrPadSample padA;
+            padA.buttons = 0x8000u; padA.stick_x = 50; padA.stick_y = -20;
+            padA.present = 1u;
+            MdkrPadSample padB;
+            padB.buttons = 0x4000u; padB.stick_x = -60; padB.stick_y = 30;
+            padB.present = 1u;
+            mdkr_online_live_adapter_race_set_local_input(A.get(), &padA, 1u);
+            mdkr_online_live_adapter_race_set_local_input(B.get(), &padB, 1u);
+        } else {
+            /* Transport/rollback matrix: the deterministic fixture, which varies
+             * per tick to force genuine corrections. */
+            mdkr_online_live_adapter_race_set_synthetic_input(A.get(), true);
+            mdkr_online_live_adapter_race_set_synthetic_input(B.get(), true);
+        }
         const uint32_t target = ia.firstTick + raceTicks - 1u;
         const uint32_t kThrottle = 16u;
         uint32_t cursorA = ia.firstTick, cursorB = ib.firstTick;
@@ -755,6 +794,14 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
             result.hashB = hB;
             result.raceConverged =
                 cursorA > target && cursorB > target && hA == hB;
+            if (realInput) {
+                result.sampleTick = ia.firstTick + ia.inputDelay + 5u;
+                result.realInputCaptured =
+                    mdkr_online_live_adapter_race_inputs_for_tick(
+                        A.get(), result.sampleTick, &result.sampleFrameA) &&
+                    mdkr_online_live_adapter_race_inputs_for_tick(
+                        B.get(), result.sampleTick, &result.sampleFrameB);
+            }
             return result;
         }
 
@@ -913,6 +960,56 @@ void test_two_endpoint_race_converges() {
                      "hashB=%016llx\n",
                      r.racedTicks, (unsigned long long)r.hashA,
                      (unsigned long long)r.hashB);
+    }
+    mdkr_net_roster_runtime_clear();
+}
+
+/* HONEST online-input gate. Every other online race test drives the deterministic
+ * raceLocalSample fixture and asserts only convergence -- which two endpoints fed
+ * identical canned input satisfy trivially, and which stayed green while the
+ * shipped game ignored the controller entirely (both karts self-drove on the
+ * fixture: 0x8000 accelerate + hashed steering every tick). This drives each
+ * endpoint from a DISTINCT real controller frame through the production
+ * race_set_local_input path and proves the committed canonical inputs ARE the
+ * injected pads -- so real local input reaches the sim, crosses the mesh to the
+ * peer, and still converges byte-for-byte. This is the regression guard for the
+ * "cars self-drive / input ignored on both machines" defect. */
+void test_two_endpoint_race_respects_real_input() {
+    const FullRunResult r =
+        driveTwoAdapters(/*bonusIdentityOnA=*/false, /*raceTicks=*/120u,
+                         /*imp=*/nullptr, /*realInput=*/true);
+    CHECK(r.raceRun);
+    CHECK(r.racedTicks >= 120u);
+    /* Still converges with real, distinct per-endpoint input. */
+    CHECK(r.raceConverged);
+    CHECK(r.hashA == r.hashB);
+    CHECK(r.realInputCaptured);
+
+    const MdkrPadSample &a = r.sampleFrameA.slots[r.localSlotA];
+    const MdkrPadSample &b = r.sampleFrameA.slots[r.localSlotB];
+    /* A's injected pad committed at A's canonical slot (not 0x8000|hash, not 0). */
+    CHECK(a.buttons == 0x8000u);
+    CHECK(a.stick_x == 50);
+    CHECK(a.stick_y == -20);
+    /* B's injected pad reached A over the mesh and committed at B's slot. */
+    CHECK(b.buttons == 0x4000u);
+    CHECK(b.stick_x == -60);
+    CHECK(b.stick_y == 30);
+    /* Both endpoints committed the identical local-slot pads (frame-level
+     * convergence, beyond the fold hash). */
+    const MdkrPadSample &a2 = r.sampleFrameB.slots[r.localSlotA];
+    const MdkrPadSample &b2 = r.sampleFrameB.slots[r.localSlotB];
+    CHECK(a.buttons == a2.buttons && a.stick_x == a2.stick_x &&
+          a.stick_y == a2.stick_y);
+    CHECK(b.buttons == b2.buttons && b.stick_x == b2.stick_x &&
+          b.stick_y == b2.stick_y);
+    if (r.realInputCaptured &&
+        (a.buttons != 0x8000u || b.buttons != 0x4000u)) {
+        std::fprintf(stderr,
+                     "real input NOT respected: slotA(%u) buttons=%04x "
+                     "stick=(%d,%d) slotB(%u) buttons=%04x stick=(%d,%d)\n",
+                     r.localSlotA, a.buttons, a.stick_x, a.stick_y,
+                     r.localSlotB, b.buttons, b.stick_x, b.stick_y);
     }
     mdkr_net_roster_runtime_clear();
 }
@@ -1293,6 +1390,7 @@ int main(int argc, char **argv) {
     test_transport_failure_preserves_lobby();
     test_full_flow_installs_through_builder();
     test_two_endpoint_race_converges();
+    test_two_endpoint_race_respects_real_input();
     test_clamp_refuses_bonus_identity();
     test_reverify_after_post_confirmation_rewelcome();
     std::fprintf(stderr, "online_live_adapter: %d checks, %d failures\n",

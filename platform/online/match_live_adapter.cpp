@@ -69,7 +69,14 @@
 #if MDKR_ENABLE_ONLINE_BETA
 #define MDKR_ONLINE_LOG(...) std::fprintf(stderr, __VA_ARGS__)
 #else
-#define MDKR_ONLINE_LOG(...) ((void)0)
+/* Compiled-out logging that references every argument (and any log-only static
+ * helper) in a POTENTIALLY-evaluated but dead branch, so -Wunused-parameter and
+ * -Wunneeded-internal-declaration stay quiet at the call sites -- e.g. the
+ * [PREFLIGHT]/[START] gate helpers whose only use is the log line -- while the
+ * false condition folds the fprintf away to nothing (byte-identical no-op). The
+ * test target compiles this TU with beta off under -Werror. */
+#define MDKR_ONLINE_LOG(...) \
+    ((void)(false ? std::fprintf(stderr, __VA_ARGS__) : 0))
 #endif
 
 namespace {
@@ -1372,7 +1379,7 @@ public:
             for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; ++slot) {
                 if ((localMask & (1u << slot)) == 0u) continue;
                 bundle.frames[age][slot] =
-                    raceLocalSample(static_cast<uint8_t>(slot), frameTick);
+                    localInputForTick(static_cast<uint8_t>(slot), frameTick);
             }
         }
         uint8_t bytes[MDKR_MATCH_INPUT_BUNDLE_BYTES];
@@ -1392,16 +1399,21 @@ public:
 
     bool raceAdvance() {
         if (!raceReady_ || !mesh_) return false;
+        /* Seal this endpoint's currently-staged local input for the future tick
+         * before fanning it out, so the peer's copy and our own later drain of
+         * that tick commit the identical frame. */
+        recordLocalInput(raceNextTick_ + raceInputDelay_);
         sendLocalBundle(raceNextTick_ + raceInputDelay_);
         /* Drain the current authored tick with this endpoint's local seats in
-         * ascending canonical-slot order (the bridge's frozen local order). */
+         * ascending canonical-slot order (the bridge's frozen local order). The
+         * committed local frame is the one sealed inputDelay ticks ago. */
         const uint8_t localMask = raceTransport_.local_slot_mask;
         MdkrPadSample local[MDKR_SESSION_MAX_PLAYERS];
         unsigned localCount = 0u;
         for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; ++slot) {
             if ((localMask & (1u << slot)) == 0u) continue;
             local[localCount++] =
-                raceLocalSample(static_cast<uint8_t>(slot), raceNextTick_);
+                localInputForTick(static_cast<uint8_t>(slot), raceNextTick_);
         }
         if (!mdkr_match_transport_drain_tick(&raceTransport_, raceEpoch_,
                                              raceNextTick_, local, localCount)) {
@@ -1418,13 +1430,16 @@ public:
      * routes every mesh transmission through a seeded net_impairment carrier. */
     bool raceDrainLocal() {
         if (!raceReady_) return false;
+        /* Record (but do not fan out) this tick's staged local input so a later
+         * raceSendInputForTick retransmit re-derives the identical frame. */
+        recordLocalInput(raceNextTick_ + raceInputDelay_);
         const uint8_t localMask = raceTransport_.local_slot_mask;
         MdkrPadSample local[MDKR_SESSION_MAX_PLAYERS];
         unsigned localCount = 0u;
         for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; ++slot) {
             if ((localMask & (1u << slot)) == 0u) continue;
             local[localCount++] =
-                raceLocalSample(static_cast<uint8_t>(slot), raceNextTick_);
+                localInputForTick(static_cast<uint8_t>(slot), raceNextTick_);
         }
         if (!mdkr_match_transport_drain_tick(&raceTransport_, raceEpoch_,
                                              raceNextTick_, local, localCount)) {
@@ -1432,6 +1447,62 @@ public:
         }
         ++raceNextTick_;
         return true;
+    }
+
+    /* ---- Local controller input for the race ------------------------------ */
+
+    static MdkrPadSample neutralSample() {
+        MdkrPadSample s;
+        s.buttons = 0u;
+        s.stick_x = 0;
+        s.stick_y = 0;
+        s.present = 1u;
+        return s;
+    }
+
+    /* Transport/rollback test seams call this to drive the race from the
+     * deterministic raceLocalSample fixture (per-tick variation that forces real
+     * corrections). The shipped interactive boot never enables it. */
+    void raceSetSyntheticInput(bool on) { raceSyntheticInput_ = on; }
+
+    /* Stage the real local pads for the next seal. `local` is in local-seat
+     * order (seat i reads controller port i), matching the physical[] the engine
+     * hands the drain callback. No-op effect in synthetic mode. */
+    void raceSetLocalInput(const MdkrPadSample *local, unsigned count) {
+        localPendingCount_ = 0u;
+        if (local == nullptr) return;
+        for (unsigned i = 0u; i < count && i < MDKR_SESSION_MAX_PLAYERS; ++i) {
+            localPending_[localPendingCount_++] = local[i];
+        }
+    }
+
+    /* Record the currently-staged real local pads as the committed input for
+     * `sealTick`, mapping each local canonical slot to its local-seat index.
+     * No-op in synthetic mode (raceLocalSample is recomputed on demand). */
+    void recordLocalInput(uint32_t sealTick) {
+        if (raceSyntheticInput_) return;
+        const uint8_t localMask = raceTransport_.local_slot_mask;
+        const size_t idx = static_cast<size_t>(sealTick % kLocalInputRing);
+        localHistTick_[idx] = sealTick;
+        unsigned localIndex = 0u;
+        for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; ++slot) {
+            if ((localMask & (1u << slot)) == 0u) continue;
+            localHist_[idx][slot] =
+                (localIndex < localPendingCount_) ? localPending_[localIndex]
+                                                  : neutralSample();
+            ++localIndex;
+        }
+    }
+
+    /* The committed local input for `tick`, canonical-slot indexed. Synthetic
+     * mode returns the deterministic fixture; production returns the recorded
+     * real pad, or a neutral present frame for a tick with no recorded input
+     * (the first inputDelay ticks, or a headless run that never injects). */
+    MdkrPadSample localInputForTick(uint8_t canonicalSlot, uint32_t tick) {
+        if (raceSyntheticInput_) return raceLocalSample(canonicalSlot, tick);
+        const size_t idx = static_cast<size_t>(tick % kLocalInputRing);
+        if (localHistTick_[idx] == tick) return localHist_[idx][canonicalSlot];
+        return neutralSample();
     }
 
     bool raceInputsForTick(uint32_t tick, MdkrInputSet *out) {
@@ -1571,6 +1642,21 @@ private:
     uint8_t raceInputDelay_ = 2u;
     std::map<uint64_t, uint8_t> peerSlotMask_;
 
+    /* Real local controller input for the race (see raceSetLocalInput /
+     * localInputForTick / recordLocalInput). raceSyntheticInput_ selects the
+     * deterministic raceLocalSample fixture instead -- used ONLY by the
+     * transport/rollback test seams (which need per-tick input variation to
+     * force real corrections); the shipped interactive boot leaves it false and
+     * drives the race from the physical pad. The ring records each sealed tick's
+     * committed local input so the bundle sent to the peer, this endpoint's own
+     * later drain of that tick, and any retransmit all agree byte-for-byte. */
+    bool raceSyntheticInput_ = false;
+    static constexpr uint32_t kLocalInputRing = 512u;
+    MdkrPadSample localPending_[MDKR_SESSION_MAX_PLAYERS] = {};
+    unsigned localPendingCount_ = 0u;
+    MdkrPadSample localHist_[kLocalInputRing][MDKR_SESSION_MAX_PLAYERS] = {};
+    uint32_t localHistTick_[kLocalInputRing] = {};
+
     /* Loading barrier + preflight */
     bool loadingBuildDone_ = false;
     bool descriptorBuilt_ = false;
@@ -1636,6 +1722,24 @@ bool mdkr_online_live_adapter_race_advance(IMdkrOnlineAdapter *adapter) {
     if (adapter == nullptr) return false;
     LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
     return live != nullptr && live->raceAdvance();
+}
+
+bool mdkr_online_live_adapter_race_set_synthetic_input(
+    IMdkrOnlineAdapter *adapter, bool on) {
+    if (adapter == nullptr) return false;
+    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    if (live == nullptr) return false;
+    live->raceSetSyntheticInput(on);
+    return true;
+}
+
+bool mdkr_online_live_adapter_race_set_local_input(
+    IMdkrOnlineAdapter *adapter, const MdkrPadSample *local, unsigned count) {
+    if (adapter == nullptr) return false;
+    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    if (live == nullptr) return false;
+    live->raceSetLocalInput(local, count);
+    return true;
 }
 
 bool mdkr_online_live_adapter_race_resend(IMdkrOnlineAdapter *adapter,
