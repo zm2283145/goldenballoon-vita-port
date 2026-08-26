@@ -1691,6 +1691,107 @@ void test_multi_race_lifecycle() {
     mdkr_net_roster_runtime_clear();
 }
 
+/* P1-T1 R2: a race-end recovery card fronts while the local session is still
+ * mid-race, where the session reducer REFUSES the card's PLAY_HERE -> RETURN_HOME.
+ * setRaceEndFailure must walk the session out of the race first so the card's
+ * primary is a working exit, not a dead button. The beta-gated OPPONENT_* enum
+ * values are not visible in this (token-gated) test binary, so HOST_CLOSED stands
+ * in -- it shares the PLAY_HERE primary and the walk in setRaceEndFailure is
+ * failure-value-agnostic; the OPPONENT_* card COPY is pinned in
+ * test_online_lobby_view_model.c where the beta enum is visible. */
+void test_race_end_latch_frees_play_here() {
+    LifecycleRig rig;
+    CHECK(rig.init());
+    if (!rig.A || !rig.B) return;
+    IMdkrOnlineAdapter *A = rig.A.get();
+    IMdkrOnlineAdapter *B = rig.B.get();
+    CHECK(rig.toSelecting());
+    rig.selectReady(A, 1u);
+    rig.selectReady(B, 2u);
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).ready_count == 2u && viewOf(B).ready_count == 2u;
+    }, 3000u));
+    CHECK(rig.startRace());
+    /* Both sessions mid-race (engine RACING). */
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).kind == MDKR_ONLINE_VIEW_RACING;
+    }, 10000u));
+    /* Control: the R2 bug shape -- PLAY_HERE is REFUSED while the session is
+     * RACING (RETURN_HOME is invalid there), so the card button would be dead. */
+    CHECK(!A->submit(cmd(A, MDKR_ONLINE_VIEW_ACTION_PLAY_HERE)).accepted);
+    /* Latch the abnormal race-end failure exactly as the launcher does. */
+    CHECK(mdkr_online_live_adapter_set_race_end_failure(
+        A, MDKR_ONLINE_VIEW_FAILURE_HOST_CLOSED));
+    const MdkrOnlineViewModel v = viewOf(A);
+    CHECK(v.kind == MDKR_ONLINE_VIEW_RECOVERY);
+    CHECK(v.primary.action == MDKR_ONLINE_VIEW_ACTION_PLAY_HERE);
+    /* R2: after the latch walked the session out of the race, the same primary
+     * dispatch is now ACCEPTED. */
+    CHECK(A->submit(cmd(A, MDKR_ONLINE_VIEW_ACTION_PLAY_HERE)).accepted);
+    mdkr_net_roster_runtime_clear();
+}
+
+/* P1-T1 R1: an opponent who quits AFTER the finish order is committed (the
+ * post-race window) trips the same PeerLost that maps a CONNECTION_CHECK-class
+ * failure onto the view -- and the view builder gives any failure precedence over
+ * RESULTS. When placements WERE captured, the launcher publishes them and clears
+ * ONLY that loss-mapped latch, so the survivor sees RESULTS, not a disconnect
+ * card, and keeps the tournament points. */
+void test_captured_results_beat_peer_loss_card() {
+    LifecycleRig rig;
+    CHECK(rig.init());
+    if (!rig.A || !rig.B) return;
+    IMdkrOnlineAdapter *A = rig.A.get();
+    IMdkrOnlineAdapter *B = rig.B.get();
+    CHECK(rig.toSelecting());
+    rig.selectReady(A, 1u);
+    rig.selectReady(B, 2u);
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).ready_count == 2u && viewOf(B).ready_count == 2u;
+    }, 3000u));
+    CHECK(rig.startRace());
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).kind == MDKR_ONLINE_VIEW_RACING &&
+               viewOf(B).kind == MDKR_ONLINE_VIEW_RACING;
+    }, 10000u));
+
+    /* Late drop: B goes silent, A's control-ping ladder times out -> peer loss,
+     * which also maps a CONNECTION_CHECK-class failure onto A's view. */
+    rig.clock.nowMs += kMdkrMatchControlPingIntervalMs + 1u;
+    A->service();
+    rig.clock.nowMs += kMdkrMatchControlPingTimeoutMs + 1u;
+    for (unsigned step = 0u; step < 5000u; ++step) {
+        A->service();
+        if (mdkr_online_live_adapter_race_peer_lost(A)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        rig.clock.nowMs += 2u;
+    }
+    CHECK(mdkr_online_live_adapter_race_peer_lost(A));
+    /* Pre-fix bug shape: the loss-mapped failure hijacks the view. */
+    CHECK(viewOf(A).kind == MDKR_ONLINE_VIEW_RECOVERY);
+
+    /* A genuine finish WAS captured despite the drop: publish it, then clear the
+     * loss-mapped latch (R1) so RESULTS can front. */
+    const uint8_t placements[4] = {0u, 1u, 0xFFu, 0xFFu};
+    CHECK(mdkr_online_live_adapter_report_results(A, placements));
+    CHECK(mdkr_online_live_adapter_clear_race_loss_failure(A));
+    for (unsigned step = 0u; step < 5000u; ++step) {
+        A->service();
+        if (viewOf(A).kind == MDKR_ONLINE_VIEW_RESULTS) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        rig.clock.nowMs += 2u;
+    }
+    const MdkrOnlineViewModel v = viewOf(A);
+    CHECK(v.kind == MDKR_ONLINE_VIEW_RESULTS);
+    CHECK(v.failure == MDKR_ONLINE_VIEW_FAILURE_NONE);
+    {
+        const MdkrOnlineLobby l = rig.lobbyOf(A);
+        CHECK(l.last_placements[0] == 0u);
+        CHECK(l.last_placements[1] == 1u);
+    }
+    mdkr_net_roster_runtime_clear();
+}
+
 /* W4 tournament lane: set_mode(1) + set_cup(0), two rounds through the same
  * room; the reducer schedules the cup's round tracks and accrues authentic
  * trophy points (9/7 then 18/14). Also pins the leader-only refusal for the
@@ -1996,6 +2097,8 @@ int main(int argc, char **argv) {
     test_clamp_refuses_bonus_identity();
     test_reverify_after_post_confirmation_rewelcome();
     test_multi_race_lifecycle();
+    test_race_end_latch_frees_play_here();
+    test_captured_results_beat_peer_loss_card();
     test_tournament_points_accrue();
     test_phrase_mismatch_rekeys_both_sides();
     std::fprintf(stderr, "online_live_adapter: %d checks, %d failures\n",

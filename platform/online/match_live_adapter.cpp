@@ -1014,6 +1014,7 @@ private:
         raceSweepServiceCalls_ = 0u;
         racePeerLost_ = false;
         raceAbortReceived_ = false;
+        raceLossFailureLatched_ = false;
         raceDegraded_ = false;
         lastPreflightGate_ = -1;
         if (failure_ == MDKR_ONLINE_VIEW_FAILURE_ENGINE_FAILED
@@ -1362,6 +1363,11 @@ private:
                         break;
                     }
                     failure_ = mapLostReason(ev.lostReason);
+                    /* R1: mark this as the IN-RACE loss-mapped failure so the
+                     * capture path can clear exactly it (and nothing else, e.g.
+                     * a genuine VERIFICATION_MISMATCH) when a finish order was
+                     * committed before the peer dropped. */
+                    raceLossFailureLatched_ = true;
                     MDKR_ONLINE_LOG(
                         "[MESH] peer LOST ep=%llu reason=%d -> failure=%u\n",
                         (unsigned long long)ev.endpointId,
@@ -1927,9 +1933,34 @@ public:
 
     /* Route a race-scoped recovery failure onto the lobby-facing view after the
      * engine session ends (see the header). Race-scoped, so resetRaceLatches
-     * clears it when the room returns to LOBBY. */
+     * clears it when the room returns to LOBBY.
+     *
+     * R2: these cards front while the local session is still mid-race
+     * (RACE_CHROME / engine RACING), where the reducer refuses the card's
+     * PLAY_HERE -> RETURN_HOME. Walk the abandoned race's engine out of RACING
+     * first (the beginReVerify precedent) so the card's primary is ACCEPTED, and
+     * drop the lobby with it -- these are dead-ends (the room has no RACING ->
+     * LOBBY path yet), so the recovery view builds from the failure alone. */
     void setRaceEndFailure(MdkrOnlineViewFailure failure) {
+        if (session_.state.engine == MDKR_ENGINE_RACING) {
+            (void)sessionDispatch(MDKR_SESSION_COMMAND_SET_ENGINE_PHASE,
+                                  MDKR_ENGINE_FINISHED);
+        }
+        haveLobby_ = false;
+        raceLossFailureLatched_ = false; /* explicit card, not a loss-mapped one */
         failure_ = failure;
+        bump();
+    }
+
+    /* R1: after a genuine finish is published despite a late peer drop, clear
+     * ONLY the in-race loss-mapped failure latch (mapLostReason set failure_ on
+     * the same PeerLost that ended the session), so the RESULTS phase fronts
+     * instead of a misleading "Lost connection" card. Leaves any unrelated
+     * failure (e.g. a genuine VERIFICATION_MISMATCH) untouched. */
+    void clearRaceLossFailure() {
+        if (!raceLossFailureLatched_) return;
+        failure_ = MDKR_ONLINE_VIEW_FAILURE_NONE;
+        raceLossFailureLatched_ = false;
         bump();
     }
 
@@ -2352,6 +2383,7 @@ private:
     bool raceDegraded_ = false;
     bool racePeerLost_ = false;
     bool raceAbortReceived_ = false; /* F3: peer told us it aborted the race */
+    bool raceLossFailureLatched_ = false; /* R1: failure_ came from mapLostReason */
     unsigned raceSweepServiceCalls_ = 0u;
     uint32_t raceResendSweeps_ = 0u;
     uint32_t raceResendBundles_ = 0u;
@@ -2473,6 +2505,15 @@ bool mdkr_online_live_adapter_race_send_abort(IMdkrOnlineAdapter *adapter) {
     LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
     if (live == nullptr) return false;
     live->raceSendAbort();
+    return true;
+}
+
+bool mdkr_online_live_adapter_clear_race_loss_failure(
+    IMdkrOnlineAdapter *adapter) {
+    if (adapter == nullptr) return false;
+    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    if (live == nullptr) return false;
+    live->clearRaceLossFailure();
     return true;
 }
 

@@ -541,6 +541,16 @@ bool mdkr_online_live_adapter_race_peer_lost(const IMdkrOnlineAdapter *adapter);
 bool mdkr_online_live_adapter_set_race_end_failure(IMdkrOnlineAdapter *adapter,
                                                    MdkrOnlineViewFailure failure);
 
+/* R1: clear ONLY the in-race peer-loss-mapped failure latch (the CONNECTION_CHECK
+ * / NETWORKS_CANNOT_CONNECT / etc. that the mid-race PeerLost set via
+ * mapLostReason). The launcher calls this on the results-capture path so a
+ * genuinely committed finish order -- e.g. the opponent quit during the ~2.5 s
+ * post-race window -- fronts the RESULTS screen instead of a misleading
+ * connection-lost card. A no-op when failure_ was not loss-mapped (an unrelated
+ * VERIFICATION_MISMATCH is preserved). Returns false for a non-live adapter. */
+bool mdkr_online_live_adapter_clear_race_loss_failure(
+    IMdkrOnlineAdapter *adapter);
+
 /* F3 one-sided-abort guard: broadcast a race-abort to every reachable peer on
  * the reliable control channel. The launcher's engine drain calls this when it
  * aborts the race-start barrier so a slow-but-alive opponent stops waiting on

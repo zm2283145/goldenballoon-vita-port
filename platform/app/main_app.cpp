@@ -1585,6 +1585,11 @@ void reportOnlineRaceResults(
          * a disconnect card. */
         const bool reported =
             mdkr_online_live_adapter_report_results(adapter, placements);
+        /* R1: the same mid-race PeerLost that ended the session also latched a
+         * CONNECTION_CHECK-class failure on the view; the view builder gives any
+         * failure precedence over RESULTS, so clear that loss-mapped latch now
+         * (and only it) so the freshly published RESULTS phase fronts. */
+        mdkr_online_live_adapter_clear_race_loss_failure(adapter);
         std::fprintf(stderr,
                      "[online-live] race results reported placements=%u,%u,%u,%u "
                      "accepted=%d\n",

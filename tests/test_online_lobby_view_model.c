@@ -363,6 +363,20 @@ static void test_loading_racing_and_results(void) {
            "results keep the party and offer a clear rematch path");
     expect_complete(&model, "leader results copy/control contract is complete");
 
+    /* R1 precedence: the view builder gives ANY failure precedence over RESULTS,
+     * so a mid-race PeerLost's lingering loss-mapped failure would hijack a
+     * genuinely captured finish. This is exactly why the launcher clears that
+     * latch on the results-capture path -- with it set the recovery card wins,
+     * with it cleared (NONE) the published RESULTS screen fronts. */
+    input.failure = MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK;
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           model.kind == MDKR_ONLINE_VIEW_RECOVERY,
+           "a lingering failure hijacks RESULTS (why the launcher clears it)");
+    input.failure = MDKR_ONLINE_VIEW_FAILURE_NONE;
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           model.kind == MDKR_ONLINE_VIEW_RESULTS,
+           "cleared failure lets the published RESULTS screen front");
+
     /* Only the room leader can send REMATCH: a guest's results view must
      * never offer a dead Race Again button, and it names the next actor. */
     input.local_endpoint_id = 20u;
