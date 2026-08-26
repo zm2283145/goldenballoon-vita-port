@@ -1880,6 +1880,9 @@ struct CharacterRigEdit {
     struct Joint {
         uint32_t node = 0u;
         std::string name;
+        int parentJoint = -1;
+        int32_t parentNode = -1;
+        float bindPosition[3] = {};
     };
     struct Role {
         int joint = -1;
@@ -1895,6 +1898,10 @@ struct CharacterRigEdit {
     std::vector<Joint> joints;
     std::vector<int32_t> nodeParents;
     Role roles[MDKR_MODERN_HUMANOID_ROLE_COUNT];
+    int selectedRole = -1;
+    int selectedJoint = -1;
+    int skeletonView = 0;
+    bool showAllJoints = true;
     std::string error;
 };
 
@@ -2437,9 +2444,32 @@ CharacterRigEdit &loadCharacterRigEdit(
             });
         if (duplicate != edit.joints.end()) continue;
         const char *name = mdkr_modern_character_asset_string(&asset, node.name);
-        edit.joints.push_back({joint.node, name != nullptr ? name : ""});
+        CharacterRigEdit::Joint target;
+        target.node = joint.node;
+        target.name = name != nullptr ? name : "";
+        if (!mdkr_modern_character_asset_node_bind_position(
+                &asset, joint.node, target.bindPosition)) {
+            edit.error = "A skin joint has an invalid bind hierarchy.";
+            continue;
+        }
+        if (!mdkr_modern_character_asset_joint_parent_node(
+                &asset, jointIndex, &target.parentNode)) {
+            edit.error = "A skin joint has an invalid parent hierarchy.";
+            continue;
+        }
+        edit.joints.push_back(std::move(target));
     }
     mdkr_modern_character_asset_unload(&asset);
+    std::vector<int> nodeToJoint(edit.nodeParents.size(), -1);
+    for (size_t joint = 0u; joint < edit.joints.size(); ++joint) {
+        nodeToJoint[edit.joints[joint].node] = static_cast<int>(joint);
+    }
+    for (CharacterRigEdit::Joint &joint : edit.joints) {
+        if (joint.parentNode >= 0 &&
+            static_cast<size_t>(joint.parentNode) < nodeToJoint.size()) {
+            joint.parentJoint = nodeToJoint[joint.parentNode];
+        }
+    }
     for (size_t slot = 0u; slot < std::size(kHumanoidRigRoles); ++slot) {
         if ((entry->rig_role_mask & kHumanoidRigRoles[slot].bit) == 0u) continue;
         const uint32_t mappedNode = entry->rig_role_node[slot];
@@ -2493,6 +2523,176 @@ bool characterRigAncestor(const CharacterRigEdit &edit, uint32_t ancestor,
             ? edit.nodeParents[static_cast<size_t>(node)] : -1;
     }
     return false;
+}
+
+void drawCharacterRigSkeleton(const MdkrModernCharacterEntry *entry,
+                              CharacterRigEdit &edit) {
+    if (edit.joints.empty()) return;
+    ImGui::SeparatorText("Bind-pose skeleton");
+    ui::TextSubtleWrapped(
+        "This is the package's actual skin-joint hierarchy in bind pose. It is a spatial mapping aid; exact role controls and validation remain authoritative.");
+    (void)ImGui::RadioButton("Front##rig-view", &edit.skeletonView, 0);
+    ImGui::SameLine();
+    (void)ImGui::RadioButton("Side##rig-view", &edit.skeletonView, 1);
+    ImGui::SameLine();
+    (void)ImGui::Checkbox("Show helper joints", &edit.showAllJoints);
+    if (edit.selectedRole >= 0 &&
+        edit.selectedRole < static_cast<int>(std::size(edit.roles))) {
+        ImGui::TextDisabled("Active role: %s",
+                            kHumanoidRigRoles[edit.selectedRole].name);
+    }
+
+    std::vector<int> roleByJoint(edit.joints.size(), -1);
+    for (size_t role = 0u; role < std::size(edit.roles); ++role) {
+        const int joint = edit.roles[role].joint;
+        if (joint >= 0 && joint < static_cast<int>(edit.joints.size())) {
+            roleByJoint[joint] = static_cast<int>(role);
+        }
+    }
+    const bool sourceFacesZ = entry->source_forward < 2u;
+    const unsigned horizontalAxis = edit.skeletonView == 0
+        ? (sourceFacesZ ? 0u : 2u)
+        : (sourceFacesZ ? 2u : 0u);
+    float minimum[2] = {INFINITY, INFINITY};
+    float maximum[2] = {-INFINITY, -INFINITY};
+    unsigned visible = 0u;
+    for (size_t joint = 0u; joint < edit.joints.size(); ++joint) {
+        if (!edit.showAllJoints && roleByJoint[joint] < 0) continue;
+        const float projected[2] = {
+            edit.joints[joint].bindPosition[horizontalAxis],
+            edit.joints[joint].bindPosition[1],
+        };
+        for (unsigned axis = 0u; axis < 2u; ++axis) {
+            minimum[axis] = std::min(minimum[axis], projected[axis]);
+            maximum[axis] = std::max(maximum[axis], projected[axis]);
+        }
+        ++visible;
+    }
+    if (visible == 0u) {
+        ImGui::TextDisabled("Map at least one role to inspect it spatially.");
+        return;
+    }
+    const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float height = std::clamp(
+        ImGui::GetFontSize() * 17.0f, 260.0f, 420.0f);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##rig-skeleton-canvas", ImVec2(width, height));
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(origin, ImVec2(origin.x + width, origin.y + height),
+                        IM_COL32(20, 24, 31, 255), 6.0f);
+    draw->AddRect(origin, ImVec2(origin.x + width, origin.y + height),
+                  IM_COL32(255, 255, 255, 42), 6.0f);
+    const float spanX = std::max(maximum[0] - minimum[0], 1.0e-4f);
+    const float spanY = std::max(maximum[1] - minimum[1], 1.0e-4f);
+    const float padding = std::min(
+        20.0f, std::min(width, height) * 0.1f);
+    const float scale = std::min(
+        (width - padding * 2.0f) / spanX,
+        (height - padding * 2.0f) / spanY);
+    const float centerX = (minimum[0] + maximum[0]) * 0.5f;
+    const float centerY = (minimum[1] + maximum[1]) * 0.5f;
+    const auto project = [&](const CharacterRigEdit::Joint &joint) {
+        return ImVec2(
+            origin.x + width * 0.5f +
+                (joint.bindPosition[horizontalAxis] - centerX) * scale,
+            origin.y + height * 0.5f -
+                (joint.bindPosition[1] - centerY) * scale);
+    };
+    std::vector<ImVec2> points(edit.joints.size());
+    for (size_t joint = 0u; joint < edit.joints.size(); ++joint) {
+        points[joint] = project(edit.joints[joint]);
+    }
+    for (size_t joint = 0u; joint < edit.joints.size(); ++joint) {
+        const CharacterRigEdit::Joint &child = edit.joints[joint];
+        if ((!edit.showAllJoints && roleByJoint[joint] < 0) ||
+            child.parentJoint < 0) continue;
+        int parentJoint = child.parentJoint;
+        size_t parentDepth = 0u;
+        while (!edit.showAllJoints && parentJoint >= 0 &&
+               roleByJoint[parentJoint] < 0 &&
+               parentDepth++ < edit.joints.size()) {
+            parentJoint = edit.joints[parentJoint].parentJoint;
+        }
+        if (parentDepth > edit.joints.size()) parentJoint = -1;
+        if (parentJoint < 0) continue;
+        const size_t parent = static_cast<size_t>(parentJoint);
+        const bool selectedRoleMapped = edit.selectedRole >= 0 &&
+            edit.selectedRole < static_cast<int>(std::size(edit.roles)) &&
+            edit.roles[edit.selectedRole].joint >= 0 &&
+            edit.roles[edit.selectedRole].joint <
+                static_cast<int>(edit.joints.size());
+        const bool highlighted = selectedRoleMapped &&
+            characterRigAncestor(
+                edit,
+                edit.joints[edit.roles[edit.selectedRole].joint].node,
+                child.node);
+        draw->AddLine(points[parent], points[joint],
+                      highlighted ? IM_COL32(104, 211, 255, 255)
+                                  : IM_COL32(165, 174, 190, 150),
+                      highlighted ? 3.0f : 1.5f);
+    }
+    int hoveredJoint = -1;
+    float hoveredDistance = 144.0f;
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    for (size_t joint = 0u; joint < edit.joints.size(); ++joint) {
+        if (!edit.showAllJoints && roleByJoint[joint] < 0) continue;
+        const bool mapped = roleByJoint[joint] >= 0;
+        const bool selected = edit.selectedJoint == static_cast<int>(joint) ||
+            (edit.selectedRole >= 0 &&
+             edit.selectedRole < static_cast<int>(std::size(edit.roles)) &&
+             edit.roles[edit.selectedRole].joint == static_cast<int>(joint));
+        draw->AddCircleFilled(
+            points[joint], selected ? 6.0f : (mapped ? 4.5f : 3.0f),
+            selected ? IM_COL32(255, 218, 92, 255)
+                     : mapped ? IM_COL32(104, 211, 255, 255)
+                              : IM_COL32(194, 201, 214, 180));
+        const float dx = mouse.x - points[joint].x;
+        const float dy = mouse.y - points[joint].y;
+        const float distance = dx * dx + dy * dy;
+        if (distance < hoveredDistance) {
+            hoveredDistance = distance;
+            hoveredJoint = static_cast<int>(joint);
+        }
+    }
+    if (ImGui::IsItemHovered() && hoveredJoint >= 0) {
+        const CharacterRigEdit::Joint &joint = edit.joints[hoveredJoint];
+        const int role = roleByJoint[hoveredJoint];
+        ImGui::SetTooltip("#%u · %s%s%s", joint.node, joint.name.c_str(),
+                          role >= 0 ? "\nMapped to " : "",
+                          role >= 0 ? kHumanoidRigRoles[role].name : "");
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            edit.selectedJoint = hoveredJoint;
+            if (role >= 0) edit.selectedRole = role;
+        }
+    }
+    if (edit.selectedJoint >= 0 &&
+        edit.selectedJoint < static_cast<int>(edit.joints.size())) {
+        const CharacterRigEdit::Joint &joint = edit.joints[edit.selectedJoint];
+        ImGui::TextDisabled("Selected joint #%u · %s", joint.node,
+                            joint.name.c_str());
+        if (edit.selectedRole >= 0 &&
+            edit.selectedRole < static_cast<int>(std::size(edit.roles)) &&
+            edit.roles[edit.selectedRole].joint != edit.selectedJoint) {
+            const bool used = characterRigNodeUsed(
+                edit, static_cast<size_t>(edit.selectedRole),
+                edit.selectedJoint);
+            if (used) ImGui::BeginDisabled();
+            const std::string label = "Assign to " + std::string(
+                kHumanoidRigRoles[edit.selectedRole].name);
+            if (ImGui::Button(label.c_str()) && !used) {
+                CharacterRigEdit::Role &role = edit.roles[edit.selectedRole];
+                role = CharacterRigEdit::Role{};
+                role.joint = edit.selectedJoint;
+                edit.reviewed = false;
+            }
+            if (used) ImGui::EndDisabled();
+            ui::SpeakFocusedItem(
+                label.c_str(),
+                used ? "That joint already owns another semantic role."
+                     : nullptr,
+                "Assigns the selected bind-pose joint and clears rig review.");
+        }
+    }
 }
 
 std::string characterRigHierarchyError(const CharacterRigEdit &edit) {
@@ -2634,6 +2834,7 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
     } else {
         ui::TextSubtleWrapped(
             "Changing a joint or solver basis clears review automatically. Intervening shoulder, neck, twist, and helper joints are allowed, but every semantic chain must preserve ancestry and every role must use a distinct skin joint.");
+        drawCharacterRigSkeleton(entry, edit);
         for (size_t slot = 0u; slot < std::size(kHumanoidRigRoles); ++slot) {
             CharacterRigEdit::Role &role = edit.roles[slot];
             ImGui::PushID(static_cast<int>(slot));
@@ -2645,9 +2846,12 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
             }
             if (ImGui::BeginCombo(kHumanoidRigRoles[slot].name,
                                   preview.c_str())) {
+                edit.selectedRole = static_cast<int>(slot);
+                edit.selectedJoint = role.joint;
                 if (ImGui::Selectable("Not mapped", role.joint < 0) &&
                     role.joint >= 0) {
                     role = CharacterRigEdit::Role{};
+                    edit.selectedJoint = -1;
                     edit.reviewed = false;
                 }
                 for (size_t jointIndex = 0u; jointIndex < edit.joints.size();
@@ -2667,6 +2871,7 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
                         role.joint != static_cast<int>(jointIndex)) {
                         role = CharacterRigEdit::Role{};
                         role.joint = static_cast<int>(jointIndex);
+                        edit.selectedJoint = role.joint;
                         edit.reviewed = false;
                     }
                     if (used) ImGui::EndDisabled();

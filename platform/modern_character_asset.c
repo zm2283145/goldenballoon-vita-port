@@ -179,6 +179,87 @@ int mdkr_modern_character_asset_node(const MdkrModernCharacterAsset *asset,
     return 1;
 }
 
+static void rotate_bind_point(const float rotation[4], const float point[3],
+                              float output[3]) {
+    const float tx = 2.0f * (rotation[1] * point[2] - rotation[2] * point[1]);
+    const float ty = 2.0f * (rotation[2] * point[0] - rotation[0] * point[2]);
+    const float tz = 2.0f * (rotation[0] * point[1] - rotation[1] * point[0]);
+    output[0] = point[0] + rotation[3] * tx +
+                rotation[1] * tz - rotation[2] * ty;
+    output[1] = point[1] + rotation[3] * ty +
+                rotation[2] * tx - rotation[0] * tz;
+    output[2] = point[2] + rotation[3] * tz +
+                rotation[0] * ty - rotation[1] * tx;
+}
+
+int mdkr_modern_character_asset_node_bind_position(
+    const MdkrModernCharacterAsset *asset, uint32_t node_index,
+    float output[3]) {
+    const MdkrModernSectionView *nodes = mdkr_modern_character_asset_section(
+        asset, MDKR_MDKC_NODES);
+    MdkrModernNode node;
+    int32_t parent;
+    uint32_t depth;
+    if (nodes == NULL || output == NULL || node_index >= nodes->count ||
+        !mdkr_modern_character_asset_node(asset, node_index, &node)) return 0;
+    memcpy(output, node.translation, sizeof(node.translation));
+    parent = node.parent;
+    for (depth = 0u; parent >= 0 && depth < nodes->count; depth++) {
+        float scaled[3];
+        float rotated[3];
+        unsigned axis;
+        if ((uint32_t)parent >= nodes->count ||
+            !mdkr_modern_character_asset_node(asset, (uint32_t)parent,
+                                              &node)) return 0;
+        for (axis = 0u; axis < 3u; axis++) {
+            scaled[axis] = output[axis] * node.scale[axis];
+        }
+        rotate_bind_point(node.rotation, scaled, rotated);
+        for (axis = 0u; axis < 3u; axis++) {
+            output[axis] = rotated[axis] + node.translation[axis];
+        }
+        parent = node.parent;
+    }
+    return parent < 0;
+}
+
+int mdkr_modern_character_asset_joint_parent_node(
+    const MdkrModernCharacterAsset *asset, uint32_t joint_index,
+    int32_t *parent_node) {
+    const MdkrModernSectionView *nodes = mdkr_modern_character_asset_section(
+        asset, MDKR_MDKC_NODES);
+    const MdkrModernSectionView *joints = mdkr_modern_character_asset_section(
+        asset, MDKR_MDKC_JOINTS);
+    MdkrModernJoint joint;
+    MdkrModernNode node;
+    int32_t parent;
+    uint32_t depth;
+    if (nodes == NULL || joints == NULL || parent_node == NULL ||
+        joint_index >= joints->count ||
+        !mdkr_modern_character_asset_joint(asset, joint_index, &joint) ||
+        !mdkr_modern_character_asset_node(asset, joint.node, &node)) return 0;
+    parent = node.parent;
+    for (depth = 0u; parent >= 0 && depth < nodes->count; depth++) {
+        uint32_t candidate;
+        if ((uint32_t)parent >= nodes->count) return 0;
+        for (candidate = 0u; candidate < joints->count; candidate++) {
+            MdkrModernJoint possible;
+            if (!mdkr_modern_character_asset_joint(asset, candidate,
+                                                    &possible)) return 0;
+            if (possible.node == (uint32_t)parent) {
+                *parent_node = parent;
+                return 1;
+            }
+        }
+        if (!mdkr_modern_character_asset_node(asset, (uint32_t)parent,
+                                              &node)) return 0;
+        parent = node.parent;
+    }
+    if (parent >= 0) return 0;
+    *parent_node = -1;
+    return 1;
+}
+
 int mdkr_modern_character_asset_skin(const MdkrModernCharacterAsset *asset,
                                      uint32_t index, MdkrModernSkin *out) {
     const uint8_t *data = record(asset, MDKR_MDKC_SKINS, index);

@@ -339,6 +339,11 @@ one joint from being assigned twice. Humanoid review stays disabled until all
 clears review. Saving uses the package manager's transactional `revise-rig`
 operation: v3 identity sources upgrade to v4, all other source members remain
 byte-identical, and a failed compile leaves the current playable cache active.
+The bind-pose skeleton canvas is derived from the compiled node TRS hierarchy,
+supports front/side projections and helper-joint filtering, highlights the
+selected semantic chain, and can assign a visually selected joint to the active
+role. Exact named controls remain the accessible authoritative path, and every
+canvas assignment clears rig review before it can be compiled.
 
 In character select, press **R** for an unconfirmed player to open that player's
 independent custom-racer browser. It shows eight portrait/name tiles per page,

@@ -217,6 +217,8 @@ int main(int argc, char **argv) {
     float procedural_arm_left[16];
     float procedural_arm_right[16];
     float contact_offsets[MDKR_MODERN_CHARACTER_CONTACTS][3] = {{0}};
+    float bind_position[3];
+    int32_t parent_joint_node;
     float palette[256];
     char error[256];
     unsigned char *bytes;
@@ -403,6 +405,30 @@ int main(int argc, char **argv) {
                     &asset, 0u, &rig_role) && rig_role.node == 0u &&
                 rig_role.flags == 0u && rig_role.confidence_milli == 1000u,
             "read bounded source-v4 rig role contract");
+    require(mdkr_modern_character_asset_node_bind_position(
+                &asset, 3u, bind_position) &&
+                fabsf(bind_position[0]) < 1.0e-6f &&
+                fabsf(bind_position[1] - 1.75f) < 1.0e-6f &&
+                fabsf(bind_position[2]) < 1.0e-6f,
+            "bind-pose query composes the compiled humanoid hierarchy");
+    require(mdkr_modern_character_asset_node_bind_position(
+                &asset, 12u, bind_position) &&
+                fabsf(bind_position[0] - 0.15f) < 1.0e-6f &&
+                fabsf(bind_position[1]) < 1.0e-6f &&
+                fabsf(bind_position[2] - 0.10f) < 1.0e-6f,
+            "bind-pose query retains lateral and depth limb placement");
+    require(mdkr_modern_character_asset_joint_parent_node(
+                &asset, 6u, &parent_joint_node) &&
+                parent_joint_node == 5 &&
+                mdkr_modern_character_asset_joint_parent_node(
+                    &asset, 0u, &parent_joint_node) &&
+                parent_joint_node == -1,
+            "rig view query resolves nearest joint ancestry and skin roots");
+    require(!mdkr_modern_character_asset_node_bind_position(
+                &asset, stats.nodes, bind_position) &&
+                !mdkr_modern_character_asset_joint_parent_node(
+                    &asset, stats.joints, &parent_joint_node),
+            "rig view queries reject out-of-range nodes and joints");
     mdkr_modern_character_asset_unload(&asset);
     mdkr_modern_character_asset_unload(&asset);
 
