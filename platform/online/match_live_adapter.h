@@ -467,6 +467,13 @@ bool mdkr_online_live_adapter_take_refusal(IMdkrOnlineAdapter *adapter,
                                            uint32_t *command_type,
                                            uint32_t *error);
 
+/* Seal + fan out the race's OPENING input window (firstTick..firstTick+
+ * inputDelay) without draining. The launcher's race-start barrier calls this
+ * before waiting for the peer's first bundle so the two machines never
+ * deadlock each other's barriers; idempotent while waiting (first-write-wins
+ * seal history keeps later drains/retransmits byte-identical). */
+bool mdkr_online_live_adapter_race_prime_start(IMdkrOnlineAdapter *adapter);
+
 /* ---- ENTER_ANOTHER_CODE step contract (W4 M5 -- for the UI task) ---------- *
  *
  * The live adapter is constructed with a FIXED journey + join code and its

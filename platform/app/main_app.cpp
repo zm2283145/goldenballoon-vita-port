@@ -1176,6 +1176,46 @@ bool liveDrainMatchInput(void *opaque, std::uint32_t /*epoch*/,
             /* Production: the real remote process supplies input over the mesh;
              * predict now and let the engine's rollback correct via take_dirty. */
             ctx->visible->service();
+            /* RACE-START BARRIER. The two machines boot their engines seconds
+             * apart (loading, ACK round-trips), and an engine that commits
+             * authored ticks before the peer's FIRST bundle crosses the WAN can
+             * outrun the 32-snapshot rollback window in under a second at 30Hz.
+             * The transport then marks those early ticks unrecoverable-late and
+             * the two endpoints permanently retain different canonical input
+             * history for the countdown (caught by the fold-hash gate; the sim
+             * usually survives because the countdown ignores input — but the
+             * histories must match). Hold the FIRST authored tick until the
+             * peer's input for it has actually arrived; bounded so a dead peer
+             * degrades to today's predict-and-recover behavior. */
+            if (drainTick == info.firstTick) {
+                /* Prime FIRST: seal + fan out our own opening window so the
+                 * peer's identical barrier can release — without this each
+                 * side's first seal only happens inside the drain this
+                 * barrier blocks, and the two machines deadlock into their
+                 * timeouts. Re-fan the (byte-identical) window every ~200ms
+                 * while waiting: the peer may not even have joined the mesh
+                 * when the first send goes out. */
+                (void)mdkr_online_live_adapter_race_prime_start(ctx->visible);
+                bool remoteArrived = false;
+                for (unsigned spin = 0u; spin < 30000u; ++spin) {
+                    if (mdkr_online_live_adapter_race_remote_ready(ctx->visible,
+                                                                   drainTick)) {
+                        remoteArrived = true;
+                        break;
+                    }
+                    if ((spin % 200u) == 199u) {
+                        (void)mdkr_online_live_adapter_race_prime_start(
+                            ctx->visible);
+                    }
+                    ctx->visible->service();
+                    SDL_Delay(1u);
+                }
+                std::fprintf(stderr,
+                             "[START] race-start barrier: remote tick-%u input "
+                             "%s\n",
+                             drainTick,
+                             remoteArrived ? "arrived" : "TIMED OUT (predicting)");
+            }
             if (ctx->paceAdvanceHz > 0u) {
                 /* Test-only (see LiveMatchInputContext::paceAdvanceHz): hold this
                  * authored tick's advance to roughly the authored cadence so a

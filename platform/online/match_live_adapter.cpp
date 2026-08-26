@@ -1809,6 +1809,12 @@ private:
         raceEpoch_ = descriptor_.manifest.match_epoch;
         raceFirstTick_ = 1u;
         raceNextTick_ = raceFirstTick_;
+        /* Fresh race, fresh seal history: authored ticks restart at 1 every
+         * race, and the first-write-wins seal rule would otherwise replay the
+         * PREVIOUS race's recorded pads for the same tick numbers. */
+        std::memset(localHistTick_, 0, sizeof(localHistTick_));
+        std::memset(localHist_, 0, sizeof(localHist_));
+        localPendingCount_ = 0u;
         if (!mdkr_match_transport_init(&raceTransport_, &raceBridge_,
                                        raceFirstTick_)) {
             MDKR_ONLINE_LOG(
@@ -1928,6 +1934,23 @@ public:
         return true;
     }
 
+    /* Seal + fan out the OPENING input window (ticks firstTick..firstTick+
+     * inputDelay) without draining anything. The race-start barrier calls this
+     * before waiting for the peer's first bundle: without it, each endpoint's
+     * first seal only happens inside its first drain — which the barrier
+     * blocks — and the two machines deadlock into their timeouts. First-write-
+     * wins seal history keeps the later real drains byte-identical to what
+     * was primed here. Idempotent; safe to call repeatedly while waiting. */
+    bool racePrimeStart() {
+        if (!raceReady_ || !mesh_) return false;
+        for (uint32_t t = raceNextTick_; t <= raceNextTick_ + raceInputDelay_;
+             ++t) {
+            recordLocalInput(t);
+        }
+        sendLocalBundle(raceNextTick_ + raceInputDelay_);
+        return true;
+    }
+
     bool raceAdvance() {
         if (!raceReady_ || !mesh_) return false;
         raceSendOwned_ = true; /* production loop shape: sweep may assist */
@@ -2017,6 +2040,12 @@ public:
         if (raceSyntheticInput_) return;
         const uint8_t localMask = raceTransport_.local_slot_mask;
         const size_t idx = static_cast<size_t>(sealTick % kLocalInputRing);
+        /* First write wins: once a tick's frame has been sealed (and possibly
+         * fanned out — racePrimeStart seals the opening window before the
+         * first drain), every later seal and retransmit of that tick must be
+         * byte-identical, or the peer would commit a different frame than we
+         * retain and the confirmed input histories diverge permanently. */
+        if (localHistTick_[idx] == sealTick) return;
         localHistTick_[idx] = sealTick;
         unsigned localIndex = 0u;
         for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; ++slot) {
@@ -2507,6 +2536,12 @@ bool mdkr_online_live_adapter_take_refusal(IMdkrOnlineAdapter *adapter,
     if (adapter == nullptr) return false;
     LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
     return live != nullptr && live->takeRefusal(command_type, error);
+}
+
+bool mdkr_online_live_adapter_race_prime_start(IMdkrOnlineAdapter *adapter) {
+    if (adapter == nullptr) return false;
+    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    return live != nullptr && live->racePrimeStart();
 }
 
 /* OnlineRoom_makeGatedLiveAdapter is a header-inline stub (returns nullptr)
