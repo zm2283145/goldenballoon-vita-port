@@ -373,7 +373,7 @@ last known-good assembly remains available if an update fails.
 | Secure GLB/package import | Executable | Preserve, add resumable draft and inventory screen |
 | Height/front/ground/seat calibration | Executable v2 | Add exact embedded preview and manipulators |
 | Per-context corrections | Executable | Move from four repeated player panels to one package editor |
-| Animation semantics | Executable sampling and diagnostics | Add role-map editor, retargeting and IK |
+| Animation semantics | Executable sampling/diagnostics plus source-v4 compiled role contract, inference provenance, confidence, review lock and native hierarchy validation | Add visual role-map editor, retargeting and IK solver |
 | Portrait/roster identity | Source-v3 import, transactional Portrait Studio revision, exact 40x40 preview/editor with pencil/eraser/fill/eyedropper/mirror/undo, HUD/results/rankings/minimap resolver, and independent 64-entry paginated select browser with per-player portrait/name identity executable | Add model capture, advanced selection/style tools, localization-aware game-font shaping, and remaining identity-surface audit |
 | Donor selection | All ten revision-1 donor seams are fingerprint-qualified and selectable through transactional source revisions; the engine publishes a bounded GPU-free installed-character catalog for virtual roster consumers | Add game-table comparison bars and exact-context review status |
 | Vehicle support | Source-backed compatibility revision, runtime enable subset, and independent transforms | Add test matrix, hand/foot targets and reviewed status |
@@ -407,8 +407,9 @@ is deterministic and readable at original 320x240 presentation.
 
 ### W2 — Rig review, retargeting and IK
 
-Add the role-map UI and compiled role section, project-owned reference clips,
-rest-axis corrections, context precedence, two-bone IK and vehicle targets.
+Build the visual role-map review UI on the compiled source-v4 contract, then
+add project-owned reference clips, runtime rest-axis corrections, context
+precedence, two-bone IK and vehicle targets.
 
 Gate: humanoid fixtures of different scales/proportions pass select and all
 three vehicle tests without T-pose, mirrored limbs, knee/elbow inversion or

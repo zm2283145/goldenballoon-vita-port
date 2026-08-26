@@ -65,6 +65,11 @@ This gives three deliberately separate formats:
 - source-v3 identity media: a bounded CRC-checked portrait, authored minimap
   colour, dedicated cache sections, one-time pool decode, deterministic 40x40
   resampling, and revisioned HUD/results/rankings/minimap resolution.
+- source-v4 rig metadata: an explicit authored-clips-only or humanoid mode,
+  16 bounded semantic bone roles, inference provenance/confidence, author
+  review state, rest rotations and bend axes, compiled cache sections, and
+  native joint/hierarchy validation. The runtime retarget/IK solver is not yet
+  enabled, so even a validated role contract currently plays authored clips.
 
 This is deliberately a vertical slice, not a claim of production readiness.
 OpenGL intentionally falls back to the retail driver, while WebGPU now has an
@@ -198,7 +203,7 @@ versions for every character. A virtual identity registry over donor assets is
 the scalable design; a canonical gameplay-profile registry can be added later
 without pretending custom stats are cosmetic.
 
-## Source package contracts (`mdkr-character-source-v2` and `v3`)
+## Source package contracts (`mdkr-character-source-v2`, `v3`, and `v4`)
 
 The spike implements the smallest useful envelope in
 `tools/character_asset_probe.py`:
@@ -206,14 +211,14 @@ The spike implements the smallest useful envelope in
 ```text
 manifest.json
 model.glb
-[portrait.png] # required by v3; absent from v1/v2
+[portrait.png] # required by v3/v4; absent from v1/v2
 LICENSE.txt
 [compiled.mdkc]  # optional author-prepared cache for native player import
 ```
 
 Entries have a fixed order, are stored without compression, timestamped at the
 ZIP epoch, and restricted to regular files. `manifest.json` records the SHA-256 of
-`model.glb`; v3 also records the SHA-256 of `portrait.png`. This makes repeated builds byte-identical and gives the cache,
+`model.glb`; v3/v4 also record the SHA-256 of `portrait.png`. This makes repeated builds byte-identical and gives the cache,
 multiplayer compatibility layer, and bug reports one stable content identity.
 `character_package_manager.py prepare` adds `compiled.mdkc` as the last
 canonical stored member. The Python manager recompiles and byte-compares that
@@ -298,6 +303,34 @@ The runtime independently bounds and decodes it, then uses integer
 premultiplied-alpha bilinear filtering to produce the game-owned 40x40 card.
 Legacy v1/v2 packages retain donor portrait and minimap fallbacks.
 
+For reviewed skeleton semantics, v4 extends v3 with a `rig` member. It does not
+infer anatomy at runtime:
+
+```json
+"rig": {
+  "mode": "humanoid-retarget-v1",
+  "reviewed": false,
+  "roles": {
+    "hips": {
+      "node": "mixamorig:Hips",
+      "inferred": true,
+      "confidence": 0.9,
+      "rest_rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+      "bend_axis": [0.0, 0.0, 1.0]
+    }
+  }
+}
+```
+
+Humanoid mode requires distinct skin-joint mappings for hips, spine, chest,
+head, both upper/lower arms and hands, and both upper/lower legs and feet. The
+compiler permits intervening shoulder, neck, twist, and helper joints but
+requires each semantic chain to have the correct ancestor relationship.
+Inferred mappings retain `inferred: true` after review; `reviewed` records the
+separate human decision. Until it becomes true, a future solver must remain
+locked. `authored-clips-only` permits an empty or partial role map and is the
+supported final choice for non-humanoids.
+
 `source_forward` is deliberately explicit because arbitrary geometry does not
 contain a reliable semantic front. The wizard accepts `+z`, `-z`, `+x`, or
 `-x`, records that decision in its review report, and the launcher offers a
@@ -333,15 +366,17 @@ invalid heights fail visibly and retain the retail character.
 The older `mdkr-character-source-v1` presentation transform remains accepted
 for installed packages. It is marked legacy/uncalibrated in diagnostics and
 receives safe default context anchors. New authoring emits v2 without identity
-media and v3 when the wizard is given `--portrait` and `--minimap-rgb`.
+media, v3 when the wizard is given `--portrait` and `--minimap-rgb`, and v4
+when an explicit rig mode is also requested.
 
 The launcher's Portrait Studio can add or replace identity media on an
 installed package without asking the artist to rebuild it. `revise-identity`
 resolves the content-addressed source that exactly matches the live cache,
-validates the PNG, emits a deterministic source-v3 revision, compiles it, and
+validates the PNG, emits a deterministic identity revision, compiles it, and
 activates it with a compare-and-swap check. The prior source and provenance
 remain retained; invalid input, stale provenance, or a concurrent edit cannot
-replace the live cache. V2 upgrades directly. A v1 uniform transform is moved
+replace the live cache. Existing v4 rig metadata is preserved rather than
+downgraded. V2 upgrades directly. A v1 uniform transform is moved
 losslessly into calibrated context transforms; non-uniform or out-of-range v1
 transforms are refused because v3 cannot represent them without a visible
 change.
@@ -362,8 +397,8 @@ Later schema versions should add, without changing the principles above:
   `MSFT_lod` chains and a package LOD bias);
 - per-semantic loop/once behavior, playback scale, blend duration, normalized
   parameters, and optional additive masks;
-- declarative humanoid bone roles and optional pole vectors for pose retargeting
-  and two-bone hand/foot IK;
+- project-owned reference poses/clips, joint limits, and the runtime retarget/
+  two-bone IK solver that consumes the implemented v4 role and bend-axis data;
 - optional material variants and eye/mouth morph mappings;
 - generated portrait captures, advanced selection/style tools, and icon
   derivatives beyond the implemented imported and exact 40x40 pixel-edited

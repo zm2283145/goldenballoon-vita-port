@@ -2198,6 +2198,25 @@ const CharacterSemanticLabel kSelectCharacterSemantics[] = {
     {"select.confirm", MDKR_CHARACTER_SEMANTIC_SELECT_CONFIRM},
 };
 
+const CharacterSemanticLabel kHumanoidRigRoles[] = {
+    {"hips", MDKR_CHARACTER_RIG_HIPS},
+    {"spine", MDKR_CHARACTER_RIG_SPINE},
+    {"chest", MDKR_CHARACTER_RIG_CHEST},
+    {"head", MDKR_CHARACTER_RIG_HEAD},
+    {"upper_arm.left", MDKR_CHARACTER_RIG_UPPER_ARM_LEFT},
+    {"lower_arm.left", MDKR_CHARACTER_RIG_LOWER_ARM_LEFT},
+    {"hand.left", MDKR_CHARACTER_RIG_HAND_LEFT},
+    {"upper_arm.right", MDKR_CHARACTER_RIG_UPPER_ARM_RIGHT},
+    {"lower_arm.right", MDKR_CHARACTER_RIG_LOWER_ARM_RIGHT},
+    {"hand.right", MDKR_CHARACTER_RIG_HAND_RIGHT},
+    {"upper_leg.left", MDKR_CHARACTER_RIG_UPPER_LEG_LEFT},
+    {"lower_leg.left", MDKR_CHARACTER_RIG_LOWER_LEG_LEFT},
+    {"foot.left", MDKR_CHARACTER_RIG_FOOT_LEFT},
+    {"upper_leg.right", MDKR_CHARACTER_RIG_UPPER_LEG_RIGHT},
+    {"lower_leg.right", MDKR_CHARACTER_RIG_LOWER_LEG_RIGHT},
+    {"foot.right", MDKR_CHARACTER_RIG_FOOT_RIGHT},
+};
+
 template <size_t Count>
 std::string missingCharacterSemantics(
     uint32_t mask, const CharacterSemanticLabel (&semantics)[Count]) {
@@ -3147,10 +3166,23 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
     const bool anchored =
         (entry->attachment_context_mask & requiredContexts) ==
         requiredContexts;
-    const bool rigMapped =
+    const bool attachmentSocketsMapped =
         (entry->socket_mask &
          (MDKR_CHARACTER_SOCKET_SEAT | MDKR_CHARACTER_SOCKET_HEAD)) ==
         (MDKR_CHARACTER_SOCKET_SEAT | MDKR_CHARACTER_SOCKET_HEAD);
+    const bool humanoidRig = entry->rig_present != 0u &&
+        entry->rig_mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1;
+    const bool humanoidRolesComplete = humanoidRig &&
+        entry->rig_role_mask == MDKR_CHARACTER_RIG_HUMANOID_MASK;
+    const bool rigReviewed =
+        (entry->rig_flags & MDKR_MODERN_RIG_REVIEWED) != 0u;
+    const char *rigStatus = entry->rig_present == 0u
+        ? "not authored"
+        : entry->rig_mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY
+            ? "authored clips only"
+            : !humanoidRolesComplete
+                ? "roles incomplete"
+                : !rigReviewed ? "review required" : "contract validated";
     const bool motionReady = mappedRaceStates == 10u &&
         mappedSelectStates == 3u &&
         countCharacterBits(entry->moving_semantic_mask &
@@ -3191,7 +3223,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         ImGui::EndGroup();
     } else {
         ImGui::TextDisabled(
-            "Roster identity: donor fallback · Portrait: donor fallback · Import a source-v3 package to author identity media");
+            "Roster identity: donor fallback · Portrait: donor fallback · Import a source-v3/v4 package to author identity media");
     }
     ImGui::TextDisabled(
         "LOD0 performance guide: %s · %u triangles · %u vertices · %u draw parts · %u package materials · %u joints · %u texture(s) · %u LOD(s)",
@@ -3215,13 +3247,42 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
 
     ImGui::SeparatorText("Readiness");
     ImGui::TextDisabled(
-        "Geometry ready · Normalized %s · Anchored %s · Rig %s · Motion %s · Donor %s · Identity %s",
+        "Geometry ready · Normalized %s · Anchored %s · Sockets %s · Motion %s · Donor %s · Identity %s",
         normalized ? "ready" : "review",
         anchored ? "ready" : "missing",
-        rigMapped ? "ready" : "missing",
+        attachmentSocketsMapped ? "ready" : "missing",
         motionReady ? "ready" : "incomplete",
         qualified ? "qualified" : "pending",
         identityReady ? "ready" : "missing");
+    if (entry->rig_role_mask != 0u) {
+        ImGui::TextDisabled(
+            "Rig contract: %s · %u/16 humanoid roles · %u inferred · minimum confidence %.0f%%",
+            rigStatus, countCharacterBits(entry->rig_role_mask),
+            countCharacterBits(entry->inferred_rig_role_mask),
+            static_cast<double>(entry->rig_min_confidence_milli) / 10.0);
+    } else {
+        ImGui::TextDisabled(
+            "Rig contract: %s · no humanoid roles mapped", rigStatus);
+    }
+    if (humanoidRig && !humanoidRolesComplete) {
+        const std::string missingRig = missingCharacterSemantics(
+            entry->rig_role_mask, kHumanoidRigRoles);
+        ImGui::TextWrapped("Missing humanoid roles: %s", missingRig.c_str());
+    } else if (humanoidRolesComplete && !rigReviewed) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+        ImGui::TextWrapped(
+            "Every role was mapped, but the author has not reviewed the inferred skeleton. Retargeting remains locked until the mapping is explicitly reviewed.");
+        ImGui::PopStyleColor();
+    } else if (humanoidRolesComplete && rigReviewed) {
+        ImGui::TextWrapped(
+            "The humanoid hierarchy is structurally validated. Runtime retargeting and IK are not enabled yet, so current play still uses the package's authored clips.");
+    } else if (entry->rig_present != 0u) {
+        ImGui::TextWrapped(
+            "Authored-clips-only is a supported final mode for creatures and unusual skeletons; no humanoid solver will alter this character.");
+    } else {
+        ImGui::TextWrapped(
+            "This legacy package has attachment sockets but no semantic skeleton contract. Its authored clips remain usable; re-author as source-v4 to opt into reviewed humanoid roles.");
+    }
     ImGui::TextDisabled(
         "%u/10 race states · %u/3 select states · %u/%u mapped clips move",
         mappedRaceStates, mappedSelectStates,

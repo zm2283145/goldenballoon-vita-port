@@ -30,7 +30,7 @@ MDKC_HEADER_BYTES = 832
 MDKC_SECTION_SLOTS = 24
 MDKC_SECTION_ENTRY_BYTES = 32
 MDKC_FILE_MAX = 1024 * 1024 * 1024
-COMPILER_ID = "mdkr-character-compiler/3"
+COMPILER_ID = "mdkr-character-compiler/4"
 
 SECTION_STRINGS = 1
 SECTION_VERTICES = 2
@@ -52,6 +52,8 @@ SECTION_ATTACHMENTS = 17
 SECTION_CALIBRATION = 18
 SECTION_IDENTITY = 19
 SECTION_IDENTITY_DATA = 20
+SECTION_RIG = 21
+SECTION_RIG_ROLES = 22
 
 VERTEX_FORMAT = "<3f3f4f2f4H4f"
 PRIMITIVE_FORMAT = "<8I"
@@ -69,6 +71,8 @@ SOCKET_FORMAT = "<II"
 ATTACHMENT_FORMAT = "<II3f4ffII"
 CALIBRATION_FORMAT = "<3f3f3ffII4f"
 IDENTITY_FORMAT = "<6I"
+RIG_FORMAT = "<4I"
+RIG_ROLE_FORMAT = "<4I4f3f"
 
 COMPONENTS = {
     5120: ("b", 1, True),
@@ -99,6 +103,23 @@ DONOR_IDS = {
 }
 VEHICLE_BITS = {"car": 1, "hovercraft": 2, "plane": 4}
 CONTEXT_IDS = {"select": 0, "car": 1, "hovercraft": 2, "plane": 3}
+RIG_MODE_IDS = {"authored-clips-only": 0, "humanoid-retarget-v1": 1}
+RIG_ROLE_IDS = {name: index for index, name in enumerate(probe.HUMANOID_ROLES)}
+RIG_HIERARCHY = (
+    ("hips", "spine"), ("spine", "chest"), ("chest", "head"),
+    ("chest", "upper_arm.left"),
+    ("upper_arm.left", "lower_arm.left"),
+    ("lower_arm.left", "hand.left"),
+    ("chest", "upper_arm.right"),
+    ("upper_arm.right", "lower_arm.right"),
+    ("lower_arm.right", "hand.right"),
+    ("hips", "upper_leg.left"),
+    ("upper_leg.left", "lower_leg.left"),
+    ("lower_leg.left", "foot.left"),
+    ("hips", "upper_leg.right"),
+    ("upper_leg.right", "lower_leg.right"),
+    ("lower_leg.right", "foot.right"),
+)
 SOURCE_FORWARD_IDS = {"+z": 0, "-z": 1, "+x": 2, "-x": 3}
 SOURCE_FORWARD_ROTATIONS = {
     "+z": (0.0, 0.0, 0.0, 1.0),
@@ -121,6 +142,18 @@ ONE_SHOT_SEMANTICS = {
 
 def _semantic_policy(semantic: str) -> tuple[int, float]:
     return (0 if semantic in ONE_SHOT_SEMANTICS else 1, 0.08 if semantic == "race.steer" else 0.15)
+
+
+def _is_ancestor(parents: list[int], ancestor: int, descendant: int) -> bool:
+    """Return whether ancestor strictly contains descendant, without trusting the graph."""
+    current = descendant
+    for _ in range(len(parents)):
+        current = parents[current]
+        if current < 0:
+            return False
+        if current == ancestor:
+            return True
+    raise CompileError("node hierarchy contains a cycle")
 
 
 class CompileError(ValueError):
@@ -867,7 +900,8 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         raise CompileError("character scene height is too small to calibrate")
     source_forward = "+z"
     explicit_calibration = manifest["schema"] in (
-        probe.PACKAGE_SCHEMA, probe.PACKAGE_SCHEMA_V3
+        probe.PACKAGE_SCHEMA, probe.PACKAGE_SCHEMA_V3,
+        probe.PACKAGE_SCHEMA_V4,
     )
     if explicit_calibration:
         source_forward = presentation["source_forward"]
@@ -938,18 +972,67 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         source_height * definition_scale[1], target_height, 0.0, 0.0,
     )
 
+    rig_records = []
+    rig_role_records = []
+    rig_manifest = manifest.get("rig")
+    rig_role_mask = 0
+    if manifest["schema"] == probe.PACKAGE_SCHEMA_V4:
+        if not isinstance(rig_manifest, dict):
+            raise CompileError("source-v4 package omits rig metadata")
+        role_nodes: dict[str, int] = {}
+        for role in probe.HUMANOID_ROLES:
+            mapping = rig_manifest["roles"].get(role)
+            if mapping is None:
+                continue
+            node_name = mapping["node"]
+            if node_name not in node_names:
+                raise CompileError(
+                    f"rig role {role!r} names missing node {node_name!r}"
+                )
+            node_index = node_names[node_name]
+            if node_index not in joint_node_set:
+                raise CompileError(
+                    f"rig role {role!r} node {node_name!r} is not a skin joint"
+                )
+            role_nodes[role] = node_index
+            rig_role_mask |= 1 << RIG_ROLE_IDS[role]
+            rig_role_records.append((
+                strings.add(role), node_index,
+                1 if mapping["inferred"] else 0,
+                int(round(float(mapping["confidence"]) * 1000.0)),
+                *map(float, mapping.get(
+                    "rest_rotation_xyzw", (0.0, 0.0, 0.0, 1.0)
+                )),
+                *map(float, mapping.get("bend_axis", (0.0, 0.0, 0.0))),
+            ))
+        for ancestor_role, descendant_role in RIG_HIERARCHY:
+            if ancestor_role not in role_nodes or descendant_role not in role_nodes:
+                continue
+            if not _is_ancestor(
+                parents, role_nodes[ancestor_role], role_nodes[descendant_role]
+            ):
+                raise CompileError(
+                    f"rig hierarchy requires {descendant_role!r} below "
+                    f"{ancestor_role!r}"
+                )
+        rig_records.append((
+            RIG_MODE_IDS[rig_manifest["mode"]],
+            1 if rig_manifest["reviewed"] else 0,
+            len(rig_role_records), rig_role_mask,
+        ))
+
     identity_records = []
     identity_data = b""
     identity_manifest = manifest.get("identity")
-    if manifest["schema"] == probe.PACKAGE_SCHEMA_V3:
+    if manifest["schema"] in (probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4):
         if portrait is None:
-            raise CompileError("source-v3 package omits portrait.png")
+            raise CompileError("source-v3/v4 package omits portrait.png")
         try:
             probe.inspect_portrait_png(portrait)
         except probe.ProbeError as exc:
             raise CompileError(str(exc)) from exc
         if not isinstance(identity_manifest, dict):
-            raise CompileError("source-v3 package omits identity metadata")
+            raise CompileError("source-v3/v4 package omits identity metadata")
         if hashlib.sha256(portrait).hexdigest() != identity_manifest["portrait_sha256"]:
             raise CompileError("portrait.png digest does not match the manifest")
         red, green, blue = identity_manifest["minimap_rgb"]
@@ -982,6 +1065,14 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             Section(SECTION_IDENTITY, 1, struct.calcsize(IDENTITY_FORMAT),
                     _pack_records(IDENTITY_FORMAT, identity_records)),
             Section(SECTION_IDENTITY_DATA, len(identity_data), 1, identity_data),
+        ))
+    if rig_records:
+        sections.extend((
+            Section(SECTION_RIG, 1, struct.calcsize(RIG_FORMAT),
+                    _pack_records(RIG_FORMAT, rig_records)),
+            Section(SECTION_RIG_ROLES, len(rig_role_records),
+                    struct.calcsize(RIG_ROLE_FORMAT),
+                    _pack_records(RIG_ROLE_FORMAT, rig_role_records)),
         ))
     compiled = _assemble(sections, source_digest)
     report = {
@@ -1025,6 +1116,15 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             identity_manifest.get("minimap_rgb")
             if isinstance(identity_manifest, dict) else None
         ),
+        "rig_mode": (
+            rig_manifest.get("mode") if isinstance(rig_manifest, dict) else None
+        ),
+        "rig_reviewed": (
+            rig_manifest.get("reviewed")
+            if isinstance(rig_manifest, dict) else False
+        ),
+        "rig_roles": len(rig_role_records),
+        "rig_role_mask": rig_role_mask,
     }
     return compiled, report
 
@@ -1040,7 +1140,9 @@ def compile_package(package_path: Path, output_path: Path) -> dict[str, Any]:
         model = archive.read("model.glb")
         portrait = (
             archive.read("portrait.png")
-            if manifest.get("schema") == probe.PACKAGE_SCHEMA_V3 else None
+            if manifest.get("schema") in (
+                probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4
+            ) else None
         )
         digest = source_digest(
             (name, archive.read(name))

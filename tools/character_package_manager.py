@@ -139,7 +139,9 @@ def install(package_path: Path, directory: Path, *,
         model = archive.read("model.glb")
         portrait = (
             archive.read("portrait.png")
-            if manifest.get("schema") == probe.PACKAGE_SCHEMA_V3 else None
+            if manifest.get("schema") in (
+                probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4
+            ) else None
         )
         compiler_digest = _compiler_source_digest(archive)
         embedded = archive.read("compiled.mdkc") if verification.get("portable") else None
@@ -296,9 +298,15 @@ def _upgrade_identity_manifest(manifest: dict[str, Any],
             "lod_bias": presentation.get("lod_bias", 0.0),
         }
         migration = "legacy v1 transform migrated losslessly; identity added"
-    elif original_schema not in (probe.PACKAGE_SCHEMA, probe.PACKAGE_SCHEMA_V3):
+    elif original_schema not in (
+        probe.PACKAGE_SCHEMA, probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4
+    ):
         raise ManagerError("installed package uses an unsupported source schema")
-    upgraded["schema"] = probe.PACKAGE_SCHEMA_V3
+    upgraded["schema"] = (
+        probe.PACKAGE_SCHEMA_V4
+        if original_schema == probe.PACKAGE_SCHEMA_V4
+        else probe.PACKAGE_SCHEMA_V3
+    )
     upgraded["identity"] = {
         "portrait_file": "portrait.png",
         # build_package replaces this placeholder with the canonical digest.
@@ -311,7 +319,7 @@ def _upgrade_identity_manifest(manifest: dict[str, Any],
 def revise_identity(package_id: str, portrait_path: Path,
                     minimap_rgb: tuple[int, int, int],
                     directory: Path) -> dict[str, Any]:
-    """Create and atomically activate a source-v3 identity revision."""
+    """Create and atomically activate an identity-capable source revision."""
     if probe.ID_RE.fullmatch(package_id) is None:
         raise ManagerError("invalid package id")
     if (
@@ -458,7 +466,9 @@ def revise_profile(package_id: str, donor: str, vehicles: tuple[str, ...],
             license_text = archive.read("LICENSE.txt")
             portrait = (
                 archive.read("portrait.png")
-                if manifest.get("schema") == probe.PACKAGE_SCHEMA_V3 else None
+                if manifest.get("schema") in (
+                    probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4
+                ) else None
             )
         if not isinstance(manifest, dict):
             raise ManagerError("active source manifest is not an object")
@@ -467,8 +477,10 @@ def revise_profile(package_id: str, donor: str, vehicles: tuple[str, ...],
             "donor": donor,
             "vehicles": list(vehicles),
         }
-        if revised.get("schema") in (probe.PACKAGE_SCHEMA,
-                                      probe.PACKAGE_SCHEMA_V3):
+        if revised.get("schema") in (
+            probe.PACKAGE_SCHEMA, probe.PACKAGE_SCHEMA_V3,
+            probe.PACKAGE_SCHEMA_V4,
+        ):
             presentation = revised.get("presentation")
             if not isinstance(presentation, dict):
                 raise ManagerError("active source has no calibrated presentation")
@@ -561,7 +573,9 @@ def prepare(package_path: Path, output_path: Path) -> dict[str, Any]:
         model = archive.read("model.glb")
         portrait = (
             archive.read("portrait.png")
-            if manifest.get("schema") == probe.PACKAGE_SCHEMA_V3 else None
+            if manifest.get("schema") in (
+                probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4
+            ) else None
         )
         digest = _compiler_source_digest(archive)
     compiled, compile_report = compiler.compile_character(

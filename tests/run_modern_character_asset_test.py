@@ -33,11 +33,23 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="mdkr-modern-character-") as directory:
         portrait_bytes = make_portrait_png()
         manifest_data = make_manifest()
-        manifest_data["schema"] = probe.PACKAGE_SCHEMA_V3
+        manifest_data["schema"] = probe.PACKAGE_SCHEMA_V4
         manifest_data["identity"] = {
             "portrait_file": "portrait.png",
             "portrait_sha256": probe._sha256(portrait_bytes),
             "minimap_rgb": [220, 72, 144],
+        }
+        manifest_data["rig"] = {
+            "mode": "authored-clips-only",
+            "reviewed": False,
+            "roles": {
+                "hips": {
+                    "node": "root", "inferred": True, "confidence": 0.9,
+                },
+                "head": {
+                    "node": "head", "inferred": False, "confidence": 1.0,
+                },
+            },
         }
         cache = Path(directory) / "generated.mdkc"
         compiled, _ = compiler.compile_character(

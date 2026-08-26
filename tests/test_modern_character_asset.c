@@ -89,6 +89,56 @@ static unsigned char *read_file(const char *path, size_t *out_size) {
     return bytes;
 }
 
+static uint32_t read_u32_le(const unsigned char *bytes) {
+    return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8u) |
+           ((uint32_t)bytes[2] << 16u) | ((uint32_t)bytes[3] << 24u);
+}
+
+static uint64_t read_u64_le(const unsigned char *bytes) {
+    return (uint64_t)read_u32_le(bytes) |
+           ((uint64_t)read_u32_le(bytes + 4u) << 32u);
+}
+
+static void write_u32_le(unsigned char *bytes, uint32_t value) {
+    bytes[0] = (unsigned char)value;
+    bytes[1] = (unsigned char)(value >> 8u);
+    bytes[2] = (unsigned char)(value >> 16u);
+    bytes[3] = (unsigned char)(value >> 24u);
+}
+
+static uint32_t test_crc32(const unsigned char *bytes, size_t size) {
+    uint32_t crc = 0xFFFFFFFFu;
+    size_t index;
+    for (index = 0u; index < size; index++) {
+        uint32_t value = crc ^ bytes[index];
+        unsigned bit;
+        for (bit = 0u; bit < 8u; bit++) {
+            value = (value >> 1u) ^
+                    (0xEDB88320u & (0u - (value & 1u)));
+        }
+        crc = value;
+    }
+    return ~crc;
+}
+
+static unsigned char *section_payload(unsigned char *bytes, uint32_t kind) {
+    uint32_t index;
+    const uint32_t count = read_u32_le(bytes + 56u);
+    for (index = 0u; index < count; index++) {
+        unsigned char *entry = bytes + 64u + (size_t)index * 32u;
+        if (read_u32_le(entry) == kind) {
+            return bytes + (size_t)read_u64_le(entry + 8u);
+        }
+    }
+    return NULL;
+}
+
+static void refresh_payload_crc(unsigned char *bytes, size_t size) {
+    write_u32_le(bytes + 52u,
+                 test_crc32(bytes + MDKR_MDKC_HEADER_BYTES,
+                            size - MDKR_MDKC_HEADER_BYTES));
+}
+
 static void test_retained_pose_interpolation(void) {
     struct GfxModernSkinnedAsset asset;
     struct GfxModernPrimitive primitive;
@@ -154,6 +204,8 @@ int main(int argc, char **argv) {
     MdkrModernAttachment attachment;
     MdkrModernCalibration calibration;
     MdkrModernIdentity identity;
+    MdkrModernRig rig;
+    MdkrModernRigRole rig_role;
     MdkrModernCharacterIdentityView identity_view;
     const uint8_t *portrait_data;
     MdkrModernCharacterRegistry registry;
@@ -303,7 +355,8 @@ int main(int argc, char **argv) {
     require(stats.animations == 1u && stats.animation_channels == 1u &&
                 stats.animation_keys == 2u,
             "compiled animation statistics");
-    require(stats.semantics == 2u && stats.sockets == 2u,
+    require(stats.semantics == 2u && stats.sockets == 2u &&
+                stats.rig_roles == 2u,
             "compiled presentation mapping statistics");
     require(stats.encoded_texture_bytes > 64u &&
                 stats.decoded_texture_bytes == 4u,
@@ -337,7 +390,15 @@ int main(int argc, char **argv) {
                 &asset, &identity, &portrait_data) && portrait_data != NULL &&
                 identity.portrait_mime == 1u && identity.portrait_size > 64u &&
                 (identity.minimap_rgba & 0xFFFFFFu) == 0x9048DCu,
-            "read validated source-v3 identity media and minimap colour");
+            "read validated source-v4 identity media and minimap colour");
+    require(mdkr_modern_character_asset_rig(&asset, &rig) &&
+                rig.mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY &&
+                rig.flags == 0u && rig.role_count == 2u &&
+                (rig.role_mask & 9u) == 9u &&
+                mdkr_modern_character_asset_rig_role(
+                    &asset, 0u, &rig_role) && rig_role.node == 0u &&
+                rig_role.flags == 1u && rig_role.confidence_milli == 900u,
+            "read bounded source-v4 rig role contract");
     mdkr_modern_character_asset_unload(&asset);
     mdkr_modern_character_asset_unload(&asset);
 
@@ -355,6 +416,32 @@ int main(int argc, char **argv) {
                                                       error, sizeof(error)) &&
                 strstr(error, "header") != NULL,
             "header corruption is rejected before publication");
+    free(bytes);
+
+    bytes = read_file(argv[1], &size);
+    {
+        unsigned char *role = section_payload(bytes, MDKR_MDKC_RIG_ROLES);
+        require(role != NULL, "locate compiled rig roles for mutation test");
+        write_u32_le(role + 4u, 0xFFFFFFFFu);
+        refresh_payload_crc(bytes, size);
+        require(!mdkr_modern_character_asset_load_memory(
+                    bytes, size, &refused, error, sizeof(error)) &&
+                    strstr(error, "rig role") != NULL,
+                "native admission rejects an out-of-range rig joint");
+    }
+    free(bytes);
+
+    bytes = read_file(argv[1], &size);
+    {
+        unsigned char *rig_bytes = section_payload(bytes, MDKR_MDKC_RIG);
+        require(rig_bytes != NULL, "locate compiled rig header for mutation test");
+        write_u32_le(rig_bytes + 12u, 0u);
+        refresh_payload_crc(bytes, size);
+        require(!mdkr_modern_character_asset_load_memory(
+                    bytes, size, &refused, error, sizeof(error)) &&
+                    strstr(error, "rig role mask") != NULL,
+                "native admission rejects a forged rig role mask");
+    }
     free(bytes);
 
     require(mdkr_modern_character_registry_init(&registry, argv[2]) == 0,
@@ -379,6 +466,12 @@ int main(int argc, char **argv) {
                 registry.entries[0].target_height > 1.24f &&
                 registry.entries[0].target_height < 1.26f &&
                 registry.entries[0].identity_flags == 1u &&
+                registry.entries[0].rig_present == 1u &&
+                registry.entries[0].rig_mode ==
+                    MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY &&
+                registry.entries[0].rig_role_mask == 9u &&
+                registry.entries[0].inferred_rig_role_mask == 1u &&
+                registry.entries[0].rig_min_confidence_milli == 900u &&
                 registry.entries[0].portrait_bytes > 64u &&
                 registry.entries[0].portrait_rgba[3] != 0u &&
                 registry.entries[0].lod_vertices[0] == 3u &&

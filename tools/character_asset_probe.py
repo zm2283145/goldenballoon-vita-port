@@ -43,7 +43,10 @@ MAX_MATERIALS = 256
 PACKAGE_SCHEMA_V1 = "mdkr-character-source-v1"
 PACKAGE_SCHEMA = "mdkr-character-source-v2"
 PACKAGE_SCHEMA_V3 = "mdkr-character-source-v3"
-PACKAGE_SCHEMAS = {PACKAGE_SCHEMA_V1, PACKAGE_SCHEMA, PACKAGE_SCHEMA_V3}
+PACKAGE_SCHEMA_V4 = "mdkr-character-source-v4"
+PACKAGE_SCHEMAS = {
+    PACKAGE_SCHEMA_V1, PACKAGE_SCHEMA, PACKAGE_SCHEMA_V3, PACKAGE_SCHEMA_V4,
+}
 PACKAGE_MEMBERS = ("manifest.json", "model.glb", "LICENSE.txt")
 PORTABLE_PACKAGE_MEMBERS = PACKAGE_MEMBERS + ("compiled.mdkc",)
 PACKAGE_MEMBERS_V3 = (
@@ -83,6 +86,15 @@ RECOMMENDED_SELECT_SEMANTICS = (
     "select.idle", "select.hover", "select.confirm",
 )
 REQUIRED_PRESENTATION_SOCKETS = {"seat", "head"}
+RIG_MODES = {"authored-clips-only", "humanoid-retarget-v1"}
+HUMANOID_ROLES = (
+    "hips", "spine", "chest", "head",
+    "upper_arm.left", "lower_arm.left", "hand.left",
+    "upper_arm.right", "lower_arm.right", "hand.right",
+    "upper_leg.left", "lower_leg.left", "foot.left",
+    "upper_leg.right", "lower_leg.right", "foot.right",
+)
+HUMANOID_ROLE_SET = set(HUMANOID_ROLES)
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")
 SEMANTIC_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -216,7 +228,7 @@ def inspect_portrait_png(data: bytes) -> dict[str, int]:
 
 
 def package_members_for_schema(schema: object, portable: bool = False) -> tuple[str, ...]:
-    if schema == PACKAGE_SCHEMA_V3:
+    if schema in (PACKAGE_SCHEMA_V3, PACKAGE_SCHEMA_V4):
         return PORTABLE_PACKAGE_MEMBERS_V3 if portable else PACKAGE_MEMBERS_V3
     return PORTABLE_PACKAGE_MEMBERS if portable else PACKAGE_MEMBERS
 
@@ -692,7 +704,7 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
     allowed = {
         "schema", "id", "display_name", "renderer_profile", "license",
         "animations", "gameplay", "presentation", "sockets", "model",
-        "model_sha256", "license_file", "identity",
+        "model_sha256", "license_file", "identity", "rig",
     }
     for field in sorted(set(manifest) - allowed):
         errors.append(f"manifest contains unknown field {field!r}")
@@ -711,9 +723,9 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
     if manifest.get("renderer_profile") != "modern-skeletal-v1":
         errors.append("manifest.renderer_profile must be 'modern-skeletal-v1'")
     identity = manifest.get("identity")
-    if schema == PACKAGE_SCHEMA_V3:
+    if schema in (PACKAGE_SCHEMA_V3, PACKAGE_SCHEMA_V4):
         if not isinstance(identity, dict):
-            errors.append("manifest.identity object is required for v3")
+            errors.append("manifest.identity object is required for v3/v4")
         else:
             for field in sorted(set(identity) - {
                 "portrait_file", "portrait_sha256", "minimap_rgb"
@@ -740,7 +752,111 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
             ):
                 errors.append("manifest.identity.minimap_rgb must contain three bytes")
     elif identity is not None:
-        errors.append("manifest.identity requires mdkr-character-source-v3")
+        errors.append("manifest.identity requires mdkr-character-source-v3 or v4")
+    rig = manifest.get("rig")
+    if schema == PACKAGE_SCHEMA_V4:
+        if not isinstance(rig, dict):
+            errors.append("manifest.rig object is required for v4")
+        else:
+            for field in sorted(set(rig) - {"mode", "reviewed", "roles"}):
+                errors.append(f"manifest.rig contains unknown field {field!r}")
+            mode = rig.get("mode")
+            if mode not in RIG_MODES:
+                errors.append(
+                    "manifest.rig.mode must be authored-clips-only or humanoid-retarget-v1"
+                )
+            if not isinstance(rig.get("reviewed"), bool):
+                errors.append("manifest.rig.reviewed must be a boolean")
+            roles = rig.get("roles")
+            if not isinstance(roles, dict):
+                errors.append("manifest.rig.roles must be an object")
+            else:
+                unknown_roles = sorted(set(roles) - HUMANOID_ROLE_SET)
+                for role in unknown_roles:
+                    errors.append(f"manifest.rig.roles contains unknown role {role!r}")
+                if len(roles) > len(HUMANOID_ROLES):
+                    errors.append("manifest.rig.roles exceeds the humanoid role contract")
+                mapped_nodes: list[str] = []
+                for role, mapping in roles.items():
+                    if role not in HUMANOID_ROLE_SET:
+                        continue
+                    if not isinstance(mapping, dict):
+                        errors.append(f"manifest.rig.roles.{role} must be an object")
+                        continue
+                    for field in sorted(set(mapping) - {
+                        "node", "inferred", "confidence", "rest_rotation_xyzw",
+                        "bend_axis",
+                    }):
+                        errors.append(
+                            f"manifest.rig.roles.{role} contains unknown field {field!r}"
+                        )
+                    node = mapping.get("node")
+                    if not isinstance(node, str) or not node.strip():
+                        errors.append(f"manifest.rig.roles.{role}.node is required")
+                    else:
+                        mapped_nodes.append(node)
+                    if not isinstance(mapping.get("inferred"), bool):
+                        errors.append(
+                            f"manifest.rig.roles.{role}.inferred must be a boolean"
+                        )
+                    confidence = mapping.get("confidence")
+                    if (
+                        isinstance(confidence, bool)
+                        or not isinstance(confidence, (int, float))
+                        or not math.isfinite(float(confidence))
+                        or not 0.0 <= float(confidence) <= 1.0
+                    ):
+                        errors.append(
+                            f"manifest.rig.roles.{role}.confidence must be between 0 and 1"
+                        )
+                    rotation = mapping.get(
+                        "rest_rotation_xyzw", [0.0, 0.0, 0.0, 1.0]
+                    )
+                    if (
+                        not isinstance(rotation, list)
+                        or len(rotation) != 4
+                        or any(
+                            isinstance(value, bool)
+                            or not isinstance(value, (int, float))
+                            or not math.isfinite(float(value))
+                            for value in rotation
+                        )
+                        or not 0.999 <= sum(float(value) ** 2 for value in rotation) <= 1.001
+                    ):
+                        errors.append(
+                            f"manifest.rig.roles.{role}.rest_rotation_xyzw must be a normalized quaternion"
+                        )
+                    bend = mapping.get("bend_axis", [0.0, 0.0, 0.0])
+                    if (
+                        not isinstance(bend, list)
+                        or len(bend) != 3
+                        or any(
+                            isinstance(value, bool)
+                            or not isinstance(value, (int, float))
+                            or not math.isfinite(float(value))
+                            for value in bend
+                        )
+                    ):
+                        errors.append(
+                            f"manifest.rig.roles.{role}.bend_axis must contain three finite values"
+                        )
+                    else:
+                        bend_length = math.sqrt(sum(float(value) ** 2 for value in bend))
+                        if bend_length != 0.0 and not 0.999 <= bend_length <= 1.001:
+                            errors.append(
+                                f"manifest.rig.roles.{role}.bend_axis must be zero or normalized"
+                            )
+                if len(mapped_nodes) != len(set(mapped_nodes)):
+                    errors.append("manifest.rig.roles must map to distinct nodes")
+                if mode == "humanoid-retarget-v1":
+                    missing_roles = sorted(HUMANOID_ROLE_SET - set(roles))
+                    if missing_roles:
+                        errors.append(
+                            "manifest.rig.roles is missing required humanoid roles: "
+                            + ", ".join(missing_roles)
+                        )
+    elif rig is not None:
+        errors.append("manifest.rig requires mdkr-character-source-v4")
     license_info = manifest.get("license")
     if not isinstance(license_info, dict):
         errors.append("manifest.license object is required")
@@ -793,7 +909,7 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
     presentation = manifest.get("presentation")
     if not isinstance(presentation, dict):
         errors.append("manifest.presentation object is required")
-    elif schema in (PACKAGE_SCHEMA, PACKAGE_SCHEMA_V3):
+    elif schema in (PACKAGE_SCHEMA, PACKAGE_SCHEMA_V3, PACKAGE_SCHEMA_V4):
         for field in sorted(set(presentation) - {
             "source_forward", "target_height_m", "contexts", "lod_bias"
         }):
@@ -991,9 +1107,9 @@ def build_package(model_path: Path, manifest_path: Path, license_path: Path,
         raise ProbeError("manifest root must be an object")
     portrait = None
     portrait_report = None
-    if manifest.get("schema") == PACKAGE_SCHEMA_V3:
+    if manifest.get("schema") in (PACKAGE_SCHEMA_V3, PACKAGE_SCHEMA_V4):
         if portrait_path is None:
-            raise ProbeError("v3 packages require --portrait")
+            raise ProbeError("v3/v4 packages require --portrait")
         portrait = _read_bounded(portrait_path, MAX_PORTRAIT_BYTES, "portrait.png")
         portrait_report = inspect_portrait_png(portrait)
         identity = manifest.get("identity")
@@ -1005,7 +1121,7 @@ def build_package(model_path: Path, manifest_path: Path, license_path: Path,
         manifest = dict(manifest)
         manifest["identity"] = identity
     elif portrait_path is not None:
-        raise ProbeError("--portrait requires mdkr-character-source-v3")
+        raise ProbeError("--portrait requires mdkr-character-source-v3 or v4")
     manifest_errors = validate_manifest(manifest, report)
     if manifest_errors:
         raise ProbeError("invalid manifest: " + "; ".join(manifest_errors))
@@ -1134,7 +1250,7 @@ def verify_package(path: Path) -> dict[str, Any]:
     if manifest.get("model_sha256") != _sha256(model):
         errors.append("manifest model_sha256 does not match model.glb")
     portrait_report = None
-    if manifest.get("schema") == PACKAGE_SCHEMA_V3:
+    if manifest.get("schema") in (PACKAGE_SCHEMA_V3, PACKAGE_SCHEMA_V4):
         portrait = archive.read("portrait.png")
         try:
             portrait_report = inspect_portrait_png(portrait)
@@ -1240,7 +1356,7 @@ def _parser() -> argparse.ArgumentParser:
     pack.add_argument("--compiled-cache", type=Path)
     pack.add_argument(
         "--portrait", type=Path,
-        help="square 8-bit RGB/RGBA PNG required by source-v3",
+        help="square 8-bit RGB/RGBA PNG required by source-v3/v4",
     )
     verify = sub.add_parser("verify", help="verify an existing .mdkrchar source package")
     verify.add_argument("input", type=Path)

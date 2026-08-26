@@ -49,6 +49,26 @@ enum MdkrModernCharacterSocketBits {
     MDKR_CHARACTER_SOCKET_FOOT_RIGHT = 1u << 6,
 };
 
+enum MdkrModernCharacterRigRoleBits {
+    MDKR_CHARACTER_RIG_HIPS = 1u << 0,
+    MDKR_CHARACTER_RIG_SPINE = 1u << 1,
+    MDKR_CHARACTER_RIG_CHEST = 1u << 2,
+    MDKR_CHARACTER_RIG_HEAD = 1u << 3,
+    MDKR_CHARACTER_RIG_UPPER_ARM_LEFT = 1u << 4,
+    MDKR_CHARACTER_RIG_LOWER_ARM_LEFT = 1u << 5,
+    MDKR_CHARACTER_RIG_HAND_LEFT = 1u << 6,
+    MDKR_CHARACTER_RIG_UPPER_ARM_RIGHT = 1u << 7,
+    MDKR_CHARACTER_RIG_LOWER_ARM_RIGHT = 1u << 8,
+    MDKR_CHARACTER_RIG_HAND_RIGHT = 1u << 9,
+    MDKR_CHARACTER_RIG_UPPER_LEG_LEFT = 1u << 10,
+    MDKR_CHARACTER_RIG_LOWER_LEG_LEFT = 1u << 11,
+    MDKR_CHARACTER_RIG_FOOT_LEFT = 1u << 12,
+    MDKR_CHARACTER_RIG_UPPER_LEG_RIGHT = 1u << 13,
+    MDKR_CHARACTER_RIG_LOWER_LEG_RIGHT = 1u << 14,
+    MDKR_CHARACTER_RIG_FOOT_RIGHT = 1u << 15,
+    MDKR_CHARACTER_RIG_HUMANOID_MASK = 0xFFFFu,
+};
+
 typedef struct MdkrModernCharacterEntry {
     char id[MDKR_MODERN_CHARACTER_ID_MAX];
     char display_name[MDKR_MODERN_CHARACTER_NAME_MAX];
@@ -59,6 +79,12 @@ typedef struct MdkrModernCharacterEntry {
     uint32_t semantic_mask;
     uint32_t moving_semantic_mask;
     uint32_t socket_mask;
+    uint32_t rig_present;
+    uint32_t rig_mode;
+    uint32_t rig_flags;
+    uint32_t rig_role_mask;
+    uint32_t inferred_rig_role_mask;
+    uint32_t rig_min_confidence_milli;
     uint32_t motion_channels;
     uint32_t attachment_context_mask;
     uint32_t calibration_flags;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate an editable v2/v3 character manifest from names already in a GLB.
+"""Generate an editable v2/v3/v4 character manifest from names in a GLB.
 
 This is intentionally a deterministic naming assistant, not an animation
 retargeter. It reports every inferred clip/socket so authors can review the
@@ -43,6 +43,41 @@ SOCKET_ALIASES = {
     "foot.right": ("footr", "rightfoot", "footright"),
 }
 
+RIG_ROLE_ALIASES = {
+    "hips": ("hips", "pelvis", "hip", "rootpelvis"),
+    "spine": ("spine", "spine01", "spine1", "lowerback"),
+    "chest": ("chest", "upperchest", "spine02", "spine2", "upperback"),
+    "head": ("head", "headbone"),
+    "upper_arm.left": ("leftupperarm", "upperarmleft", "leftarm", "arml"),
+    "lower_arm.left": (
+        "leftlowerarm", "lowerarmleft", "leftforearm", "forearmleft", "forearml"
+    ),
+    "hand.left": ("lefthand", "handleft", "handl"),
+    "upper_arm.right": ("rightupperarm", "upperarmright", "rightarm", "armr"),
+    "lower_arm.right": (
+        "rightlowerarm", "lowerarmright", "rightforearm", "forearmright", "forearmr"
+    ),
+    "hand.right": ("righthand", "handright", "handr"),
+    "upper_leg.left": (
+        "leftupperleg", "leftupleg", "upperlegleft", "leftthigh",
+        "thighleft", "thighl"
+    ),
+    "lower_leg.left": (
+        "leftlowerleg", "leftleg", "lowerlegleft", "leftshin",
+        "calfleft", "calfl"
+    ),
+    "foot.left": ("leftfoot", "footleft", "footl", "leftankle"),
+    "upper_leg.right": (
+        "rightupperleg", "rightupleg", "upperlegright", "rightthigh",
+        "thighright", "thighr"
+    ),
+    "lower_leg.right": (
+        "rightlowerleg", "rightleg", "lowerlegright", "rightshin",
+        "calfright", "calfr"
+    ),
+    "foot.right": ("rightfoot", "footright", "footr", "rightankle"),
+}
+
 IDENTITY_QUATERNION = [0.0, 0.0, 0.0, 1.0]
 
 
@@ -63,13 +98,36 @@ def choose(named: list[str], aliases: tuple[str, ...]) -> str | None:
     return None
 
 
+def choose_with_confidence(
+    named: list[str], aliases: tuple[str, ...]
+) -> tuple[str | None, float, list[str]]:
+    """Infer one node conservatively and report ambiguity instead of guessing."""
+    keyed = [(name, normalized(name)) for name in named]
+    tiers = (
+        (1.0, lambda key, alias: key == alias),
+        (0.9, lambda key, alias: key.endswith(alias)),
+        (0.75, lambda key, alias: alias in key),
+    )
+    for confidence, matches in tiers:
+        candidates = sorted({
+            name for name, key in keyed for alias in aliases
+            if matches(key, alias)
+        })
+        if len(candidates) == 1:
+            return candidates[0], confidence, []
+        if len(candidates) > 1:
+            return None, 0.0, candidates
+    return None, 0.0, []
+
+
 def build_manifest(model: Path, package_id: str, display_name: str,
                    spdx: str, attribution: str, source_url: str,
                    donor: str, vehicles: list[str], *,
                    source_forward: str = "+z",
                    target_height_m: float = 1.25,
                    portrait: Path | None = None,
-                   minimap_rgb: list[int] | None = None) -> tuple[dict, dict]:
+                   minimap_rgb: list[int] | None = None,
+                   rig_mode: str | None = None) -> tuple[dict, dict]:
     data = model.read_bytes()
     report = probe.inspect_glb_bytes(data, require_character=True)
     if report["errors"]:
@@ -153,6 +211,54 @@ def build_manifest(model: Path, package_id: str, display_name: str,
             "portrait_sha256": hashlib.sha256(portrait_bytes).hexdigest(),
             "minimap_rgb": minimap_rgb,
         }
+    rig_decision = None
+    if rig_mode is not None:
+        if portrait is None:
+            raise probe.ProbeError(
+                "--rig-mode emits source-v4 and therefore requires --portrait "
+                "and --minimap-rgb"
+            )
+        roles = {}
+        ambiguities = {}
+        if rig_mode == "humanoid-retarget-v1":
+            for role in probe.HUMANOID_ROLES:
+                node, confidence, ambiguous = choose_with_confidence(
+                    nodes, RIG_ROLE_ALIASES[role]
+                )
+                if ambiguous:
+                    ambiguities[role] = ambiguous
+                elif node is not None:
+                    roles[role] = {
+                        "node": node,
+                        "inferred": True,
+                        "confidence": confidence,
+                    }
+            missing = [role for role in probe.HUMANOID_ROLES if role not in roles]
+            if missing or ambiguities:
+                detail = []
+                if missing:
+                    detail.append("missing: " + ", ".join(missing))
+                if ambiguities:
+                    detail.append("ambiguous: " + "; ".join(
+                        f"{role} -> {', '.join(candidates)}"
+                        for role, candidates in ambiguities.items()
+                    ))
+                raise probe.ProbeError(
+                    "humanoid role inference is incomplete (" + " | ".join(detail) +
+                    "); use authored-clips-only or edit and review source-v4 manually"
+                )
+        manifest["schema"] = probe.PACKAGE_SCHEMA_V4
+        manifest["rig"] = {
+            "mode": rig_mode,
+            "reviewed": False,
+            "roles": roles,
+        }
+        rig_decision = {
+            "mode": rig_mode,
+            "reviewed": False,
+            "roles": roles,
+            "inference_requires_review": bool(roles),
+        }
     errors = probe.validate_manifest(manifest, report)
     if errors:
         raise probe.ProbeError("generated manifest is invalid: " + "; ".join(errors))
@@ -184,6 +290,7 @@ def build_manifest(model: Path, package_id: str, display_name: str,
         ],
         "warnings": report["warnings"],
         "identity_portrait": portrait_report,
+        "rig": rig_decision,
     }
     return manifest, decisions
 
@@ -215,6 +322,11 @@ def main(argv: list[str] | None = None) -> int:
         "--minimap-rgb", nargs=3, type=int, metavar=("R", "G", "B"),
         help="required with --portrait; each component is 0..255",
     )
+    parser.add_argument(
+        "--rig-mode", choices=sorted(probe.RIG_MODES),
+        help=("emit source-v4 rig metadata; inferred humanoid roles remain "
+              "unreviewed until the author explicitly confirms them"),
+    )
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
@@ -226,6 +338,7 @@ def main(argv: list[str] | None = None) -> int:
             target_height_m=args.target_height,
             portrait=args.portrait,
             minimap_rgb=args.minimap_rgb,
+            rig_mode=args.rig_mode,
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",

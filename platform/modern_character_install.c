@@ -15,7 +15,8 @@
 #define MANIFEST_MAX (1024u * 1024u)
 #define LICENSE_MAX (1024u * 1024u)
 #define PORTRAIT_MAX (8u * 1024u * 1024u)
-#define COMPILER_ID "mdkr-character-compiler/3"
+#define COMPILER_ID "mdkr-character-compiler/4"
+#define LEGACY_COMPILER_ID_V3 "mdkr-character-compiler/3"
 #define LEGACY_COMPILER_ID_V2 "mdkr-character-compiler/2"
 #define LEGACY_COMPILER_ID_V1 "mdkr-character-compiler/1"
 
@@ -309,6 +310,7 @@ int mdkr_modern_character_install_portable(
     mz_uint64 package_size = 0u;
     mz_uint64 member_sizes[5] = {0u, 0u, 0u, 0u, 0u};
     uint8_t source_digest[32];
+    uint8_t legacy_source_digest_v3[32];
     uint8_t legacy_source_digest_v2[32];
     uint8_t legacy_source_digest_v1[32];
     char cache_source_digest[65] = {0};
@@ -408,6 +410,9 @@ int mdkr_modern_character_install_portable(
     }
     if (!archive_source_digest(&archive, names, member_sizes, source_count,
                                COMPILER_ID, source_digest) ||
+        !archive_source_digest(&archive, names, member_sizes, source_count,
+                               LEGACY_COMPILER_ID_V3,
+                               legacy_source_digest_v3) ||
         (legacy_digest_allowed &&
          (!archive_source_digest(&archive, names, member_sizes, source_count,
                                  LEGACY_COMPILER_ID_V2,
@@ -430,6 +435,8 @@ int mdkr_modern_character_install_portable(
         goto done;
     }
     if (memcmp(asset.source_sha256, source_digest, sizeof(source_digest)) != 0 &&
+        memcmp(asset.source_sha256, legacy_source_digest_v3,
+               sizeof(legacy_source_digest_v3)) != 0 &&
         (!legacy_digest_allowed ||
          (memcmp(asset.source_sha256, legacy_source_digest_v2,
                  sizeof(legacy_source_digest_v2)) != 0 &&

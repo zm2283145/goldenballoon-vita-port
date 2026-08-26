@@ -88,6 +88,22 @@ static uint32_t socket_bit(const char *name) {
     return 0u;
 }
 
+static uint32_t rig_role_bit(const char *name) {
+    static const char *roles[] = {
+        "hips", "spine", "chest", "head",
+        "upper_arm.left", "lower_arm.left", "hand.left",
+        "upper_arm.right", "lower_arm.right", "hand.right",
+        "upper_leg.left", "lower_leg.left", "foot.left",
+        "upper_leg.right", "lower_leg.right", "foot.right"
+    };
+    uint32_t index;
+    if (name == NULL) return 0u;
+    for (index = 0u; index < 16u; index++) {
+        if (strcmp(name, roles[index]) == 0) return 1u << index;
+    }
+    return 0u;
+}
+
 static void add_skip(MdkrModernCharacterRegistry *registry,
                      const char *name, const char *reason) {
     int slot;
@@ -216,6 +232,33 @@ int mdkr_modern_character_registry_init(MdkrModernCharacterRegistry *registry,
             }
         }
         mdkr_modern_character_asset_stats(&asset, &entry.stats);
+        {
+            MdkrModernRig rig;
+            if (mdkr_modern_character_asset_rig(&asset, &rig)) {
+                uint32_t role_index;
+                entry.rig_present = 1u;
+                entry.rig_mode = rig.mode;
+                entry.rig_flags = rig.flags;
+                entry.rig_role_mask = rig.role_mask;
+                entry.rig_min_confidence_milli = 1000u;
+                for (role_index = 0u; role_index < rig.role_count;
+                     role_index++) {
+                    MdkrModernRigRole role;
+                    (void)mdkr_modern_character_asset_rig_role(
+                        &asset, role_index, &role);
+                    if ((role.flags & 1u) != 0u) {
+                        entry.inferred_rig_role_mask |= rig_role_bit(
+                            mdkr_modern_character_asset_string(
+                                &asset, role.semantic));
+                    }
+                    if (role.confidence_milli <
+                        entry.rig_min_confidence_milli) {
+                        entry.rig_min_confidence_milli =
+                            role.confidence_milli;
+                    }
+                }
+            }
+        }
         {
             const MdkrModernSectionView *primitives =
                 mdkr_modern_character_asset_section(

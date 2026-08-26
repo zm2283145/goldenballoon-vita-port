@@ -21,6 +21,7 @@ from test_character_asset_probe import (  # noqa: E402
     make_animated_glb,
     make_manifest,
     make_portrait_png,
+    make_v4_manifest,
 )
 
 
@@ -31,12 +32,22 @@ class CharacterPackageManagerTests(unittest.TestCase):
         manifest = root / "manifest.json"
         license_file = root / "LICENSE.txt"
         package = root / "fixture.mdkrchar"
+        portrait = root / "portrait.png"
+        portrait_path = None
         model.write_bytes(make_animated_glb())
         manifest.write_text(
             json.dumps(manifest_data or make_manifest()), encoding="utf-8"
         )
         license_file.write_text("CC0-1.0 test fixture\n", encoding="utf-8")
-        probe.build_package(model, manifest, license_file, package)
+        if (manifest_data or {}).get("schema") in (
+            probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4
+        ):
+            portrait.write_bytes(make_portrait_png())
+            portrait_path = portrait
+        probe.build_package(
+            model, manifest, license_file, package,
+            portrait_path=portrait_path,
+        )
         return package
 
     def active_source(self, installed: Path) -> Path:
@@ -284,6 +295,27 @@ class CharacterPackageManagerTests(unittest.TestCase):
             self.assertEqual([90, 80, 70], revised["report"]["minimap_rgb"])
             with zipfile.ZipFile(self.active_source(installed)) as archive:
                 self.assertEqual(portrait.read_bytes(), archive.read("portrait.png"))
+
+    def test_revisions_preserve_source_v4_rig_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            source = make_v4_manifest(make_portrait_png())
+            original = manager.install(self.make_package(root, source), installed)
+            replacement = root / "replacement.png"
+            replacement.write_bytes(make_portrait_png(24))
+            manager.revise_identity(
+                original["id"], replacement, (11, 22, 33), installed
+            )
+            manager.revise_profile(
+                original["id"], "banjo", ("car",), installed
+            )
+            with zipfile.ZipFile(self.active_source(installed)) as archive:
+                manifest = probe.json_loads_strict(archive.read("manifest.json"))
+            self.assertEqual(probe.PACKAGE_SCHEMA_V4, manifest["schema"])
+            self.assertEqual("authored-clips-only", manifest["rig"]["mode"])
+            self.assertFalse(manifest["rig"]["reviewed"])
+            self.assertEqual({}, manifest["rig"]["roles"])
 
     def test_invalid_profile_revision_does_not_replace_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

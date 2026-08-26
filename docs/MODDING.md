@@ -239,6 +239,16 @@ python3 tools/character_manifest_wizard.py model.glb \
   --source-url https://example.invalid/source \
   --source-forward=-z --target-height 1.25 --output manifest.json
 
+# Optional source-v4 humanoid proposal. This also requires --portrait and
+# --minimap-rgb. Inferred mappings are deliberately emitted reviewed:false;
+# inspect/edit the manifest before explicitly changing that author decision.
+python3 tools/character_manifest_wizard.py model.glb \
+  --id org.example.character-name --display-name "Character Name" \
+  --spdx CC-BY-4.0 --attribution "Creator Name" \
+  --source-url https://example.invalid/source --portrait portrait.png \
+  --minimap-rgb 220 72 144 --rig-mode humanoid-retarget-v1 \
+  --output manifest.json
+
 python3 tools/character_asset_probe.py pack \
   --model model.glb --manifest manifest.json --license LICENSE.txt \
   --output character.mdkrchar
@@ -271,7 +281,8 @@ prepare. The manifest must match the complete
 example and schema in the architecture document, and every named animation or
 socket must exist in the GLB.
 
-The wizard emits `mdkr-character-source-v2`. `--source-forward` declares which
+The wizard emits `mdkr-character-source-v2` by default, v3 when identity media
+is supplied, and v4 when `--rig-mode` is also selected. `--source-forward` declares which
 local horizontal axis the model's face points toward (`+z`, `-z`, `+x`, or
 `-x`); geometry alone cannot answer that reliably. `--target-height` is the
 intended standing height in meters. The compiler measures the transformed
@@ -291,11 +302,13 @@ neutral, and 1 full right. Damage, land, and selection confirmation are
 one-shots; landing is driven for 0.2 seconds after an airborne-to-grounded
 edge. The launcher names missing mappings, reports which mapped clips actually
 move, and separately reports geometry, normalization, anchors, rig sockets,
-motion, and donor qualification. A positive-duration
+motion, semantic skeleton roles, review state, and donor qualification. A positive-duration
 identity clip remains a T-pose—it proves timing plumbing, not authored motion.
 Root rotation and seat offsets cannot repair that. A model needs real authored
-semantic clips or a future humanoid role-map/retargeting/IK stage; the current
-importer refuses to disguise a static clip as animation readiness.
+semantic clips or a reviewed humanoid role map. Source-v4 now validates and
+compiles that role contract, but runtime retargeting and IK are not enabled yet;
+the importer refuses to disguise either static clips or a map without a solver
+as animation readiness.
 
 In character select, press **R** for an unconfirmed player to open that player's
 independent custom-racer browser. It shows eight portrait/name tiles per page,

@@ -12,7 +12,7 @@
 
 static const uint32_t s_expected_strides[MDKR_MDKC_SECTION_LAST + 1] = {
     0u, 1u, 72u, 4u, 32u, 80u, 40u, 1u, 48u, 16u, 68u,
-    16u, 24u, 52u, 64u, 16u, 8u, 48u, 64u, 24u, 1u
+    16u, 24u, 52u, 64u, 16u, 8u, 48u, 64u, 24u, 1u, 16u, 44u
 };
 
 static void set_error(char *error, size_t error_size, const char *message) {
@@ -335,6 +335,36 @@ int mdkr_modern_character_asset_identity(
     return 1;
 }
 
+int mdkr_modern_character_asset_rig(const MdkrModernCharacterAsset *asset,
+                                    MdkrModernRig *out) {
+    const uint8_t *data = record(asset, MDKR_MDKC_RIG, 0u);
+    if (data == NULL || out == NULL) return 0;
+    out->mode = read_u32(data);
+    out->flags = read_u32(data + 4u);
+    out->role_count = read_u32(data + 8u);
+    out->role_mask = read_u32(data + 12u);
+    return 1;
+}
+
+int mdkr_modern_character_asset_rig_role(
+    const MdkrModernCharacterAsset *asset, uint32_t index,
+    MdkrModernRigRole *out) {
+    const uint8_t *data = record(asset, MDKR_MDKC_RIG_ROLES, index);
+    unsigned component;
+    if (data == NULL || out == NULL) return 0;
+    out->semantic = read_u32(data);
+    out->node = read_u32(data + 4u);
+    out->flags = read_u32(data + 8u);
+    out->confidence_milli = read_u32(data + 12u);
+    for (component = 0u; component < 4u; component++) {
+        out->rest_rotation[component] = read_f32(data + 16u + component * 4u);
+    }
+    for (component = 0u; component < 3u; component++) {
+        out->bend_axis[component] = read_f32(data + 32u + component * 4u);
+    }
+    return 1;
+}
+
 static int finite_array(const float *values, size_t count) {
     size_t index;
     for (index = 0u; index < count; index++) {
@@ -345,6 +375,48 @@ static int finite_array(const float *values, size_t count) {
 
 static int range_u32(uint32_t first, uint32_t count, uint32_t total) {
     return first <= total && count <= total - first;
+}
+
+static uint32_t rig_role_bit(const char *semantic) {
+    static const char *roles[] = {
+        "hips", "spine", "chest", "head",
+        "upper_arm.left", "lower_arm.left", "hand.left",
+        "upper_arm.right", "lower_arm.right", "hand.right",
+        "upper_leg.left", "lower_leg.left", "foot.left",
+        "upper_leg.right", "lower_leg.right", "foot.right"
+    };
+    uint32_t index;
+    if (semantic == NULL) return 0u;
+    for (index = 0u; index < 16u; index++) {
+        if (strcmp(semantic, roles[index]) == 0) return 1u << index;
+    }
+    return 0u;
+}
+
+static int node_is_joint(const MdkrModernCharacterAsset *asset,
+                         uint32_t node) {
+    const MdkrModernSectionView *joints = &asset->sections[MDKR_MDKC_JOINTS];
+    uint32_t index;
+    for (index = 0u; index < joints->count; index++) {
+        MdkrModernJoint joint;
+        (void)mdkr_modern_character_asset_joint(asset, index, &joint);
+        if (joint.node == node) return 1;
+    }
+    return 0;
+}
+
+static int node_is_ancestor(const MdkrModernCharacterAsset *asset,
+                            uint32_t ancestor, uint32_t descendant) {
+    const uint32_t count = asset->sections[MDKR_MDKC_NODES].count;
+    uint32_t steps;
+    for (steps = 0u; steps < count; steps++) {
+        MdkrModernNode node;
+        if (!mdkr_modern_character_asset_node(asset, descendant, &node) ||
+            node.parent < 0) return 0;
+        descendant = (uint32_t)node.parent;
+        if (descendant == ancestor) return 1;
+    }
+    return 0;
 }
 
 static int validate_references(const MdkrModernCharacterAsset *asset,
@@ -696,6 +768,103 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
             return 0;
         }
     }
+    if ((asset->sections[MDKR_MDKC_RIG].data == NULL) !=
+        (asset->sections[MDKR_MDKC_RIG_ROLES].data == NULL)) {
+        set_error(error, error_size,
+                  "compiled character rig sections are incomplete");
+        return 0;
+    }
+    if (asset->sections[MDKR_MDKC_RIG].data != NULL) {
+        static const uint8_t hierarchy[][2] = {
+            {0u, 1u}, {1u, 2u}, {2u, 3u},
+            {2u, 4u}, {4u, 5u}, {5u, 6u},
+            {2u, 7u}, {7u, 8u}, {8u, 9u},
+            {0u, 10u}, {10u, 11u}, {11u, 12u},
+            {0u, 13u}, {13u, 14u}, {14u, 15u}
+        };
+        MdkrModernRig rig;
+        uint32_t role_mask = 0u;
+        uint32_t role_nodes[16] = {0};
+        uint32_t role_index;
+        if (asset->sections[MDKR_MDKC_RIG].count != 1u ||
+            !mdkr_modern_character_asset_rig(asset, &rig) ||
+            rig.mode > MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 ||
+            (rig.flags & ~MDKR_MODERN_RIG_REVIEWED) != 0u ||
+            rig.role_count != asset->sections[MDKR_MDKC_RIG_ROLES].count ||
+            rig.role_count > 16u || (rig.role_mask & ~0xFFFFu) != 0u) {
+            set_error(error, error_size,
+                      "compiled character rig header is invalid");
+            return 0;
+        }
+        for (role_index = 0u; role_index < rig.role_count; role_index++) {
+            MdkrModernRigRole role;
+            const char *semantic;
+            uint32_t bit;
+            uint32_t slot = 0u;
+            uint32_t prior;
+            float rotation_length;
+            float bend_length;
+            (void)mdkr_modern_character_asset_rig_role(asset, role_index,
+                                                       &role);
+            semantic = mdkr_modern_character_asset_string(asset,
+                                                          role.semantic);
+            bit = rig_role_bit(semantic);
+            if (bit != 0u) {
+                while ((bit >> slot) != 1u) slot++;
+            }
+            rotation_length =
+                role.rest_rotation[0] * role.rest_rotation[0] +
+                role.rest_rotation[1] * role.rest_rotation[1] +
+                role.rest_rotation[2] * role.rest_rotation[2] +
+                role.rest_rotation[3] * role.rest_rotation[3];
+            bend_length =
+                role.bend_axis[0] * role.bend_axis[0] +
+                role.bend_axis[1] * role.bend_axis[1] +
+                role.bend_axis[2] * role.bend_axis[2];
+            for (prior = 0u; prior < role_index; prior++) {
+                MdkrModernRigRole previous;
+                (void)mdkr_modern_character_asset_rig_role(asset, prior,
+                                                           &previous);
+                if (previous.node == role.node) break;
+            }
+            if (bit == 0u || (role_mask & bit) != 0u ||
+                prior != role_index || role.node >= nodes->count ||
+                !node_is_joint(asset, role.node) ||
+                (role.flags & ~1u) != 0u || role.confidence_milli > 1000u ||
+                !finite_array(role.rest_rotation, 4u) ||
+                rotation_length < 0.999f || rotation_length > 1.001f ||
+                !finite_array(role.bend_axis, 3u) ||
+                (bend_length > 1.0e-12f &&
+                 (bend_length < 0.999f || bend_length > 1.001f))) {
+                set_error(error, error_size,
+                          "compiled character rig role is invalid");
+                return 0;
+            }
+            role_mask |= bit;
+            role_nodes[slot] = role.node;
+        }
+        if (role_mask != rig.role_mask ||
+            (rig.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 &&
+             role_mask != 0xFFFFu)) {
+            set_error(error, error_size,
+                      "compiled character rig role mask is invalid");
+            return 0;
+        }
+        for (role_index = 0u;
+             role_index < sizeof(hierarchy) / sizeof(hierarchy[0]);
+             role_index++) {
+            const uint32_t ancestor = hierarchy[role_index][0];
+            const uint32_t descendant = hierarchy[role_index][1];
+            const uint32_t pair = (1u << ancestor) | (1u << descendant);
+            if ((role_mask & pair) == pair &&
+                !node_is_ancestor(asset, role_nodes[ancestor],
+                                  role_nodes[descendant])) {
+                set_error(error, error_size,
+                          "compiled character rig hierarchy is invalid");
+                return 0;
+            }
+        }
+    }
     return 1;
 }
 
@@ -866,6 +1035,7 @@ void mdkr_modern_character_asset_stats(const MdkrModernCharacterAsset *asset,
     out->animation_keys = asset->sections[MDKR_MDKC_KEYS].count;
     out->semantics = asset->sections[MDKR_MDKC_SEMANTICS].count;
     out->sockets = asset->sections[MDKR_MDKC_SOCKETS].count;
+    out->rig_roles = asset->sections[MDKR_MDKC_RIG_ROLES].count;
     out->encoded_texture_bytes = asset->sections[MDKR_MDKC_TEXTURE_DATA].size;
     for (texture_index = 0u; texture_index < out->textures; texture_index++) {
         MdkrModernTexture texture;

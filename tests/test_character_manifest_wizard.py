@@ -14,7 +14,9 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import character_asset_probe as probe  # noqa: E402
 import character_manifest_wizard as wizard  # noqa: E402
-from test_character_asset_probe import make_animated_glb, make_portrait_png  # noqa: E402
+from test_character_asset_probe import (  # noqa: E402
+    make_animated_glb, make_humanoid_glb, make_portrait_png,
+)
 
 
 class CharacterManifestWizardTests(unittest.TestCase):
@@ -74,6 +76,32 @@ class CharacterManifestWizardTests(unittest.TestCase):
             self.assertEqual(probe.PACKAGE_SCHEMA_V3, manifest["schema"])
             self.assertEqual([12, 34, 56], manifest["identity"]["minimap_rgb"])
             self.assertEqual(16, decisions["identity_portrait"]["width"])
+            self.assertEqual(
+                [], probe.validate_manifest(
+                    manifest, probe.inspect_glb(model, require_character=True)
+                )
+            )
+
+    def test_humanoid_inference_emits_unreviewed_v4_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model = Path(temporary) / "model.glb"
+            portrait = Path(temporary) / "portrait.png"
+            model.write_bytes(make_humanoid_glb())
+            portrait.write_bytes(make_portrait_png())
+            manifest, decisions = wizard.build_manifest(
+                model, "org.example.humanoid", "Humanoid", "CC0-1.0",
+                "Generated fixture", "https://example.invalid/humanoid",
+                "diddy", ["car"], portrait=portrait,
+                minimap_rgb=[12, 34, 56], rig_mode="humanoid-retarget-v1",
+            )
+            self.assertEqual(probe.PACKAGE_SCHEMA_V4, manifest["schema"])
+            self.assertFalse(manifest["rig"]["reviewed"])
+            self.assertEqual(16, len(manifest["rig"]["roles"]))
+            self.assertTrue(all(
+                mapping["inferred"]
+                for mapping in manifest["rig"]["roles"].values()
+            ))
+            self.assertTrue(decisions["rig"]["inference_requires_review"])
             self.assertEqual(
                 [], probe.validate_manifest(
                     manifest, probe.inspect_glb(model, require_character=True)

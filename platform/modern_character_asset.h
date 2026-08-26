@@ -41,7 +41,9 @@ typedef enum MdkrModernSectionType {
     MDKR_MDKC_CALIBRATION = 18,
     MDKR_MDKC_IDENTITY = 19,
     MDKR_MDKC_IDENTITY_DATA = 20,
-    MDKR_MDKC_SECTION_LAST = MDKR_MDKC_IDENTITY_DATA
+    MDKR_MDKC_RIG = 21,
+    MDKR_MDKC_RIG_ROLES = 22,
+    MDKR_MDKC_SECTION_LAST = MDKR_MDKC_RIG_ROLES
 } MdkrModernSectionType;
 
 typedef struct MdkrModernSectionView {
@@ -191,12 +193,12 @@ typedef struct MdkrModernCalibration {
     float ground[3];
     float source_height;
     uint32_t source_forward;
-    uint32_t flags; /* bit zero: explicit v2 calibration */
+    uint32_t flags; /* bit zero: explicit calibrated source profile */
     float normalized_height;
     float target_height;
 } MdkrModernCalibration;
 
-/* Optional source-v3 presentation identity. The encoded portrait remains
+/* Optional source-v3/v4 presentation identity. The encoded portrait remains
  * immutable cache data; a bounded runtime adapter owns decoded pixels. */
 typedef struct MdkrModernIdentity {
     uint32_t flags; /* bit zero: authored portrait and minimap colour */
@@ -206,6 +208,34 @@ typedef struct MdkrModernIdentity {
     uint32_t minimap_rgba; /* R in least-significant byte */
     uint32_t short_name; /* reserved string offset; zero means display_name */
 } MdkrModernIdentity;
+
+typedef enum MdkrModernRigMode {
+    MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY = 0,
+    MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 = 1
+} MdkrModernRigMode;
+
+enum MdkrModernRigFlags {
+    MDKR_MODERN_RIG_REVIEWED = 1u << 0
+};
+
+/* Optional source-v4 semantic skeleton contract. A reviewed humanoid map is
+ * structurally ready for a retargeter; authored-clips-only remains a complete,
+ * supported mode and never asks the runtime to distort a non-humanoid rig. */
+typedef struct MdkrModernRig {
+    uint32_t mode;
+    uint32_t flags;
+    uint32_t role_count;
+    uint32_t role_mask;
+} MdkrModernRig;
+
+typedef struct MdkrModernRigRole {
+    uint32_t semantic;
+    uint32_t node;
+    uint32_t flags; /* bit zero: mapping was inferred */
+    uint32_t confidence_milli;
+    float rest_rotation[4];
+    float bend_axis[3];
+} MdkrModernRigRole;
 
 typedef struct MdkrModernCharacterAsset {
     uint8_t *owned_bytes;
@@ -229,6 +259,7 @@ typedef struct MdkrModernCharacterStats {
     uint32_t animation_keys;
     uint32_t semantics;
     uint32_t sockets;
+    uint32_t rig_roles;
     uint64_t encoded_texture_bytes;
     uint64_t decoded_texture_bytes;
 } MdkrModernCharacterStats;
@@ -276,6 +307,11 @@ int mdkr_modern_character_asset_semantic(const MdkrModernCharacterAsset *asset,
 int mdkr_modern_character_asset_identity(
     const MdkrModernCharacterAsset *asset, MdkrModernIdentity *out,
     const uint8_t **portrait_data);
+int mdkr_modern_character_asset_rig(const MdkrModernCharacterAsset *asset,
+                                    MdkrModernRig *out);
+int mdkr_modern_character_asset_rig_role(
+    const MdkrModernCharacterAsset *asset, uint32_t index,
+    MdkrModernRigRole *out);
 int mdkr_modern_character_asset_socket(const MdkrModernCharacterAsset *asset,
                                        uint32_t index, MdkrModernSocket *out);
 int mdkr_modern_character_asset_attachment(

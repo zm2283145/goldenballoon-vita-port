@@ -251,6 +251,78 @@ def rewrite_glb_document(data: bytes, update) -> bytes:
     return bytes(output)
 
 
+def make_humanoid_glb() -> bytes:
+    names = (
+        "mixamorig:Hips", "mixamorig:Spine", "mixamorig:Spine2",
+        "mixamorig:Head", "mixamorig:LeftArm", "mixamorig:LeftForeArm",
+        "mixamorig:LeftHand", "mixamorig:RightArm",
+        "mixamorig:RightForeArm", "mixamorig:RightHand",
+        "mixamorig:LeftUpLeg", "mixamorig:LeftLeg", "mixamorig:LeftFoot",
+        "mixamorig:RightUpLeg", "mixamorig:RightLeg",
+        "mixamorig:RightFoot",
+    )
+    children = {
+        0: [1, 10, 13], 1: [2], 2: [3, 4, 7],
+        4: [5], 5: [6], 7: [8], 8: [9],
+        10: [11], 11: [12], 13: [14], 14: [15],
+    }
+
+    def update(document: dict[str, object]) -> None:
+        nodes = [
+            {"name": name, **({"children": children[index]}
+                               if index in children else {})}
+            for index, name in enumerate(names)
+        ]
+        nodes.append({"name": "character", "mesh": 0, "skin": 0})
+        document["nodes"] = nodes
+        document["scenes"] = [{"nodes": [0, 16]}]
+        document["skins"] = [{
+            "name": "rig", "joints": list(range(16)), "skeleton": 0,
+        }]
+        document["animations"][0]["channels"][0]["target"]["node"] = 3
+
+    return rewrite_glb_document(make_animated_glb(), update)
+
+
+def make_v4_manifest(portrait: bytes, *, humanoid: bool = False) -> dict[str, object]:
+    manifest = make_manifest()
+    manifest["schema"] = probe.PACKAGE_SCHEMA_V4
+    manifest["identity"] = {
+        "portrait_file": "portrait.png",
+        "portrait_sha256": probe._sha256(portrait),
+        "minimap_rgb": [220, 72, 144],
+    }
+    if humanoid:
+        nodes = (
+            "mixamorig:Hips", "mixamorig:Spine", "mixamorig:Spine2",
+            "mixamorig:Head", "mixamorig:LeftArm",
+            "mixamorig:LeftForeArm", "mixamorig:LeftHand",
+            "mixamorig:RightArm", "mixamorig:RightForeArm",
+            "mixamorig:RightHand", "mixamorig:LeftUpLeg",
+            "mixamorig:LeftLeg", "mixamorig:LeftFoot",
+            "mixamorig:RightUpLeg", "mixamorig:RightLeg",
+            "mixamorig:RightFoot",
+        )
+        manifest["sockets"] = {
+            "seat": "mixamorig:Hips", "head": "mixamorig:Head",
+        }
+        manifest["rig"] = {
+            "mode": "humanoid-retarget-v1",
+            "reviewed": True,
+            "roles": {
+                role: {
+                    "node": node, "inferred": False, "confidence": 1.0,
+                }
+                for role, node in zip(probe.HUMANOID_ROLES, nodes)
+            },
+        }
+    else:
+        manifest["rig"] = {
+            "mode": "authored-clips-only", "reviewed": False, "roles": {},
+        }
+    return manifest
+
+
 class CharacterAssetProbeTests(unittest.TestCase):
     def test_semantic_playback_policy_is_engine_owned(self) -> None:
         self.assertEqual((0, 0.15), compiler._semantic_policy("race.land"))
@@ -343,6 +415,66 @@ class CharacterAssetProbeTests(unittest.TestCase):
             )
             self.assertTrue(report["identity_portrait"])
             self.assertEqual([220, 72, 144], report["minimap_rgb"])
+
+    def test_v4_authored_clips_only_is_a_first_class_rig_mode(self) -> None:
+        portrait = make_portrait_png()
+        manifest = make_v4_manifest(portrait)
+        model = make_animated_glb()
+        policy = probe.inspect_glb_bytes(model, require_character=True)
+        self.assertEqual([], probe.validate_manifest(manifest, policy))
+        compiled, report = compiler.compile_character(
+            model, manifest, bytes(32), portrait
+        )
+        sections = _compiled_sections(compiled)
+        self.assertEqual(1, sections[compiler.SECTION_RIG]["count"])
+        self.assertEqual(0, sections[compiler.SECTION_RIG_ROLES]["count"])
+        self.assertEqual("authored-clips-only", report["rig_mode"])
+        self.assertFalse(report["rig_reviewed"])
+        self.assertEqual(0, report["rig_roles"])
+
+    def test_v4_humanoid_roles_compile_with_reviewed_hierarchy(self) -> None:
+        portrait = make_portrait_png()
+        manifest = make_v4_manifest(portrait, humanoid=True)
+        model = make_humanoid_glb()
+        policy = probe.inspect_glb_bytes(model, require_character=True)
+        self.assertEqual([], probe.validate_manifest(manifest, policy))
+        compiled, report = compiler.compile_character(
+            model, manifest, bytes(32), portrait
+        )
+        sections = _compiled_sections(compiled)
+        self.assertEqual(16, sections[compiler.SECTION_RIG_ROLES]["count"])
+        self.assertEqual(struct.calcsize(compiler.RIG_ROLE_FORMAT),
+                         sections[compiler.SECTION_RIG_ROLES]["stride"])
+        self.assertEqual(0xFFFF, report["rig_role_mask"])
+        self.assertTrue(report["rig_reviewed"])
+
+    def test_v4_rig_validation_rejects_unsafe_role_metadata(self) -> None:
+        portrait = make_portrait_png()
+        manifest = make_v4_manifest(portrait, humanoid=True)
+        policy = probe.inspect_glb_bytes(make_humanoid_glb(),
+                                         require_character=True)
+        del manifest["rig"]["roles"]["head"]
+        manifest["rig"]["roles"]["hips"]["rest_rotation_xyzw"] = [0, 0, 0, 2]
+        manifest["rig"]["roles"]["spine"]["node"] = \
+            manifest["rig"]["roles"]["hips"]["node"]
+        errors = probe.validate_manifest(manifest, policy)
+        self.assertTrue(any("missing required humanoid roles" in error
+                            for error in errors))
+        self.assertTrue(any("normalized quaternion" in error
+                            for error in errors))
+        self.assertTrue(any("distinct nodes" in error for error in errors))
+
+    def test_compiler_rejects_humanoid_role_hierarchy_mismatch(self) -> None:
+        portrait = make_portrait_png()
+        manifest = make_v4_manifest(portrait, humanoid=True)
+        roles = manifest["rig"]["roles"]
+        roles["head"]["node"], roles["foot.left"]["node"] = (
+            roles["foot.left"]["node"], roles["head"]["node"]
+        )
+        with self.assertRaisesRegex(compiler.CompileError, "rig hierarchy"):
+            compiler.compile_character(
+                make_humanoid_glb(), manifest, bytes(32), portrait
+            )
 
     def test_portrait_profile_rejects_corrupt_or_animated_png(self) -> None:
         bad_crc = bytearray(make_portrait_png())
