@@ -4,6 +4,7 @@
 #include "app_theme.h"
 #include "app_ui_policy.h"
 #include "app_window.h"
+#include "character_revision_index.h"
 #include "file_dialog.h"
 #include "ui_common.h"
 
@@ -28,6 +29,8 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <cstdint>
+#include <ctime>
 #include <map>
 #include <string>
 #include <utility>
@@ -1827,6 +1830,19 @@ std::string g_characterManagerReport;
 std::string g_characterPendingRemoval;
 std::string g_characterWorkshopSelection;
 
+using CharacterRevisionRow = CharacterRevisionIndex::Row;
+
+struct CharacterRevisionInventory {
+    bool loaded = false;
+    unsigned total = 0u;
+    int selected = 0;
+    char exportPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
+    std::vector<CharacterRevisionRow> rows;
+};
+
+std::map<std::string, CharacterRevisionInventory>
+    g_characterRevisionInventories;
+
 struct CharacterIdentityEdit {
     bool loaded = false;
     uint8_t sourceSha256[32] = {0};
@@ -2151,7 +2167,8 @@ std::string readCharacterManagerResult(const std::string &path) {
 }
 
 bool runCharacterManager(const char *command,
-                         const std::vector<std::string> &commandArguments) {
+                         const std::vector<std::string> &commandArguments,
+                         bool refreshOnSuccess = true) {
     char toolPath[MDKR_MODERN_CHARACTER_PATH_MAX];
     int regular = 0;
     if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
@@ -2215,8 +2232,60 @@ bool runCharacterManager(const char *command,
             ? "The importer completed without a diagnostic report."
             : "The importer failed without a diagnostic report.";
     }
-    if (exitCode == 0) refreshCharacterRegistry();
+    if (exitCode == 0 && refreshOnSuccess) refreshCharacterRegistry();
     return exitCode == 0;
+}
+
+bool parseCharacterRevisionInventory(
+    const std::string &text, CharacterRevisionInventory &inventory) {
+    CharacterRevisionIndex::Inventory index;
+    CharacterRevisionInventory parsed;
+    if (!CharacterRevisionIndex::parse(text, index)) return false;
+    parsed.loaded = true;
+    parsed.total = index.total;
+    parsed.selected = 0;
+    parsed.rows = std::move(index.rows);
+    inventory = std::move(parsed);
+    return true;
+}
+
+bool loadCharacterRevisionInventory(const std::string &packageId) {
+    if (g_characterRegistryDirectory.empty()) return false;
+    const std::string path = g_characterRegistryDirectory +
+        "/.launcher-character-revisions.tsv";
+    (void)mdkr_remove_utf8(path.c_str());
+    const bool indexed = runCharacterManager(
+        "write-revision-index", {packageId, path}, false);
+    const std::string index = indexed ? readCharacterManagerResult(path) : "";
+    (void)mdkr_remove_utf8(path.c_str());
+    CharacterRevisionInventory inventory;
+    if (!indexed || !parseCharacterRevisionInventory(index, inventory)) {
+        if (indexed) {
+            g_characterManagerReport =
+                "The revision index was malformed; no recovery action was enabled.";
+        }
+        return false;
+    }
+    const auto previous = g_characterRevisionInventories.find(packageId);
+    if (previous != g_characterRevisionInventories.end()) {
+        std::snprintf(inventory.exportPath, sizeof(inventory.exportPath), "%s",
+                      previous->second.exportPath);
+    }
+    g_characterRevisionInventories[packageId] = std::move(inventory);
+    return true;
+}
+
+bool restoreCharacterRevision(const std::string &packageId,
+                              const std::string &sourceSha256) {
+    return runCharacterManager("restore", {packageId, sourceSha256});
+}
+
+bool exportCharacterRevision(const std::string &packageId,
+                             const std::string &sourceSha256,
+                             const std::string &outputPath) {
+    if (outputPath.empty()) return false;
+    return runCharacterManager(
+        "export", {packageId, sourceSha256, outputPath}, false);
 }
 
 bool importCharacterPackage(const std::string &path) {
@@ -2371,6 +2440,7 @@ void refreshCharacterRegistry() {
     /* Identity, donor, rig, or source changes invalidate every session-local
      * measurement associated with the prior registry snapshot. */
     g_characterPreviewResults.clear();
+    g_characterRevisionInventories.clear();
     g_characterRegistryDirectory.clear();
     if (mdkr_user_characters_directory(directory, sizeof(directory))) {
         g_characterRegistryDirectory = directory;
@@ -4348,6 +4418,163 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     return saved;
 }
 
+std::string characterRevisionTimestamp(uint64_t installedUnix) {
+    if (installedUnix == 0u) return "time unavailable";
+    const std::time_t timestamp = static_cast<std::time_t>(installedUnix);
+    if (timestamp < 0 || static_cast<uint64_t>(timestamp) != installedUnix) {
+        return "time unavailable";
+    }
+    std::tm local{};
+#if defined(_WIN32)
+    if (localtime_s(&local, &timestamp) != 0) return "time unavailable";
+#else
+    if (localtime_r(&timestamp, &local) == nullptr) return "time unavailable";
+#endif
+    char text[64];
+    if (std::strftime(text, sizeof(text), "%Y-%m-%d %H:%M:%S", &local) == 0u) {
+        return "time unavailable";
+    }
+    return text;
+}
+
+bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
+    CharacterRevisionInventory &inventory =
+        g_characterRevisionInventories[entry->id];
+    if (!inventory.loaded) {
+        ui::TextSubtleWrapped(
+            "Load the authenticated source history to restore or export any revision retained by the Workshop. Loading does not change the installed character.");
+        if (ImGui::Button("Load revision history")) {
+            if (loadCharacterRevisionInventory(entry->id)) {
+                setStatus("Authenticated revision history loaded.",
+                          AppTheme::good());
+            } else {
+                setStatus("Revision history could not be loaded; open the manager report.",
+                          AppTheme::bad());
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Load revision history", nullptr,
+            "Authenticates retained sources and lists them without changing the current package.");
+        return false;
+    }
+    if (inventory.rows.empty()) return false;
+    if (inventory.selected < 0 ||
+        inventory.selected >= static_cast<int>(inventory.rows.size())) {
+        inventory.selected = 0;
+    }
+    const CharacterRevisionRow &previewRow =
+        inventory.rows[static_cast<size_t>(inventory.selected)];
+    const std::string previewLabel =
+        std::string(previewRow.current ? "Current · " : "Retained · ") +
+        previewRow.sourceSha256.substr(0u, 12u) + "…";
+    ImGui::TextDisabled(
+        "%u authenticated revision(s)%s", inventory.total,
+        inventory.total > inventory.rows.size()
+            ? " · showing the current plus a bounded retained set" : "");
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("Revision##character-revision", previewLabel.c_str())) {
+        for (size_t index = 0u; index < inventory.rows.size(); ++index) {
+            const CharacterRevisionRow &row = inventory.rows[index];
+            const std::string label =
+                std::string(row.current ? "Current · " : "Retained · ") +
+                row.sourceSha256.substr(0u, 12u) + "…##revision-" +
+                std::to_string(index);
+            if (ImGui::Selectable(
+                    label.c_str(), inventory.selected == static_cast<int>(index))) {
+                inventory.selected = static_cast<int>(index);
+            }
+        }
+        ImGui::EndCombo();
+    }
+    const CharacterRevisionRow &selected =
+        inventory.rows[static_cast<size_t>(inventory.selected)];
+    const std::string selectedLabel =
+        std::string(selected.current ? "Current · " : "Retained · ") +
+        selected.sourceSha256.substr(0u, 12u) + "…";
+    ui::SpeakFocusedItem(
+        "Character revision", selectedLabel.c_str(),
+        "Choose any authenticated retained source for restore or export.");
+    ImGui::TextDisabled("Full source SHA-256: %s",
+                        selected.sourceSha256.c_str());
+    ImGui::TextDisabled("Revision recorded: %s",
+        characterRevisionTimestamp(selected.installedUnix).c_str());
+
+    if (selected.current) ImGui::BeginDisabled();
+    if (ImGui::Button("Restore selected revision...") && !selected.current) {
+        ImGui::OpenPopup("Restore retained revision?");
+    }
+    if (selected.current) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Restore selected revision",
+        selected.current ? "This is already the current revision." : nullptr,
+        "Revalidates and compiles the selected source, preserving enabled or disabled state; the current source remains in history.");
+    ImGui::SameLine();
+    bool reloaded = false;
+    if (ImGui::Button("Reload history")) {
+        reloaded = loadCharacterRevisionInventory(entry->id);
+        if (!reloaded) {
+            setStatus("Revision history could not be reloaded.", AppTheme::bad());
+        }
+    }
+    ui::SpeakFocusedItem(
+        "Reload history", nullptr,
+        "Re-authenticates every retained source and refreshes this list.");
+    if (reloaded) return false;
+
+    if (ImGui::BeginPopupModal("Restore retained revision?", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped(
+            "Restore source revision %s…? It will be fully revalidated and compiled before becoming current. The present source stays retained, and the package remains %s.",
+            selected.sourceSha256.substr(0u, 12u).c_str(),
+            entry->enabled != 0u ? "enabled" : "disabled");
+        if (ImGui::Button("Restore revision")) {
+            const std::string id = entry->id;
+            const std::string digest = selected.sourceSha256;
+            if (restoreCharacterRevision(id, digest)) {
+                setStatus("Retained character revision restored transactionally.",
+                          AppTheme::good());
+                ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+                return true;
+            }
+            setStatus("Revision restore failed; the current character was unchanged.",
+                      AppTheme::bad());
+            ImGui::CloseCurrentPopup();
+        }
+        ui::SpeakFocusedItem(
+            "Restore revision", nullptr,
+            "Revalidates and atomically activates this exact retained source without deleting the current source.");
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ui::SpeakFocusedItem("Cancel", nullptr,
+                             "Closes without changing the character.");
+        ImGui::EndPopup();
+    }
+
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint(
+        "##character-revision-export", "/path/to/recovered-character.mdkrchar",
+        inventory.exportPath, sizeof(inventory.exportPath));
+    const bool canExport = inventory.exportPath[0] != '\0';
+    if (!canExport) ImGui::BeginDisabled();
+    if (ImGui::Button("Export selected source") && canExport) {
+        if (exportCharacterRevision(
+                entry->id, selected.sourceSha256, inventory.exportPath)) {
+            setStatus("Retained source exported without overwriting another file.",
+                      AppTheme::good());
+        } else {
+            setStatus("Source export failed; open the manager report.",
+                      AppTheme::bad());
+        }
+    }
+    if (!canExport) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Export selected source",
+        canExport ? nullptr : "Enter a destination path first.",
+        "Writes the exact authenticated mdkrchar source and refuses to overwrite an existing file.");
+    return false;
+}
+
 bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                                    bool compact) {
     bool changed = false;
@@ -4719,6 +4946,12 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
     } else {
         ui::TextSubtleWrapped(
             "Exact game tests are unavailable while this package is disabled because the runtime deliberately cannot discover it. Re-enable it to test; source editing and structural performance review remain available above.");
+    }
+    ImGui::SeparatorText("Revision history and recovery");
+    if (drawCharacterRevisionRecovery(entry)) {
+        /* Restore rescans and invalidates this registry row. */
+        ImGui::PopID();
+        return true;
     }
     ImGui::SeparatorText("Package lifecycle");
     ui::TextSubtleWrapped(

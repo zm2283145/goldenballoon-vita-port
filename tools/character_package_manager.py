@@ -31,6 +31,8 @@ import character_asset_probe as probe
 MANAGER_SCHEMA = "mdkr-character-install-v1"
 COMPILER_ID = compiler.COMPILER_ID
 LOCK_NAME = ".character-import.lock"
+MAX_REPORT_BYTES = 64 * 1024
+MAX_UI_REVISIONS = 256
 
 
 class ManagerError(ValueError):
@@ -109,6 +111,20 @@ def _cache_valid(data: bytes) -> bool:
         return False
     expected_crc = struct.unpack_from("<I", data, 52)[0]
     return (zlib.crc32(data[header_bytes:]) & 0xFFFFFFFF) == expected_crc
+
+
+def _read_report(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise ManagerError("provenance report must be a regular file")
+    if path.stat().st_size > MAX_REPORT_BYTES:
+        raise ManagerError("provenance report exceeds 64 KiB")
+    payload = path.read_bytes()
+    if len(payload) > MAX_REPORT_BYTES:
+        raise ManagerError("provenance report exceeds 64 KiB")
+    report = probe.json_loads_strict(payload, "provenance report")
+    if not isinstance(report, dict):
+        raise ManagerError("provenance report must be an object")
+    return report
 
 
 def _installed_cache_path(root: Path, package_id: str, *,
@@ -224,7 +240,7 @@ def _active_source_snapshot(package_id: str, root: Path) -> tuple[bytes, str, st
         candidates: list[tuple[bool, str, bytes]] = []
         for report_path in sorted(root.glob(f"{package_id}.*.json")):
             try:
-                report = json.loads(report_path.read_text(encoding="utf-8"))
+                report = _read_report(report_path)
                 source_sha = report["source_sha256"]
                 expected_source = f"{package_id}.{source_sha}.mdkrchar"
                 if (
@@ -634,7 +650,7 @@ def list_installed(directory: Path) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     for report_path in sorted(root.glob("*.json")):
         try:
-            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report = _read_report(report_path)
             if report.get("schema") != MANAGER_SCHEMA:
                 continue
             package_id = report["id"]
@@ -659,7 +675,13 @@ def list_installed(directory: Path) -> dict[str, Any]:
                     "compiler": report.get("compiler", ""),
                     "active": active,
                     "enabled": enabled,
-                    "source_present": source.is_file(),
+                    "installed_unix": report.get("installed_unix"),
+                    "cache_source_digest": report.get(
+                        "cache_source_digest", ""
+                    ),
+                    "source_file": report["source_file"],
+                    "cache_file": cache.name,
+                    "source_present": source.is_file() and not source.is_symlink(),
                     "report_file": report_path.name,
                 }
             )
@@ -669,6 +691,156 @@ def list_installed(directory: Path) -> dict[str, Any]:
     # Keep only the provenance matching each active cache's embedded source
     # digest. Older reports remain visible as inactive history until clean.
     return {"schema": MANAGER_SCHEMA, "directory": str(root), "entries": entries}
+
+
+def list_revisions(package_id: str, directory: Path) -> dict[str, Any]:
+    """List retained revisions for one exact identity, current revision first."""
+    if probe.ID_RE.fullmatch(package_id) is None:
+        raise ManagerError("invalid package id")
+    listing = list_installed(directory)
+    revisions = [
+        entry for entry in listing["entries"] if entry["id"] == package_id
+    ]
+    revisions.sort(
+        key=lambda entry: (
+            not entry["active"],
+            -(entry["installed_unix"]
+              if isinstance(entry["installed_unix"], int) and
+              not isinstance(entry["installed_unix"], bool) else 0),
+            entry["source_sha256"],
+        )
+    )
+    if not revisions:
+        raise ManagerError(
+            f"no valid retained revisions exist for {package_id!r}"
+        )
+    return {
+        "schema": MANAGER_SCHEMA,
+        "id": package_id,
+        "enabled": revisions[0]["enabled"],
+        "revisions": revisions,
+    }
+
+
+def _retained_revision_source(package_id: str, source_sha: str,
+                              root: Path) -> tuple[bytes, str]:
+    """Resolve and authenticate one retained source under the shared lock."""
+    if (len(source_sha) != 64 or
+            any(character not in "0123456789abcdef" for character in source_sha)):
+        raise ManagerError("revision digest must be 64 lowercase hex characters")
+    with _locked(root):
+        expected_current_digest = _installed_cache_digest(root, package_id)
+        report_path = root / f"{package_id}.{source_sha}.json"
+        source_path = root / f"{package_id}.{source_sha}.mdkrchar"
+        if (report_path.is_symlink() or not report_path.is_file() or
+                source_path.is_symlink() or not source_path.is_file()):
+            raise ManagerError("retained revision source or provenance is missing")
+        report = _read_report(report_path)
+        payload = source_path.read_bytes()
+        if (
+            report.get("schema") != MANAGER_SCHEMA
+            or report.get("id") != package_id
+            or report.get("source_sha256") != source_sha
+            or report.get("source_file") != source_path.name
+            or hashlib.sha256(payload).hexdigest() != source_sha
+        ):
+            raise ManagerError("retained revision provenance is invalid")
+        with tempfile.TemporaryDirectory(
+                prefix="mdkr-retained-source-verify-") as temporary:
+            snapshot = Path(temporary) / "source.mdkrchar"
+            snapshot.write_bytes(payload)
+            verification = probe.verify_package(snapshot)
+            if (not verification["valid"] or
+                    verification.get("id") != package_id):
+                raise ManagerError("retained revision package failed verification")
+        return payload, expected_current_digest
+
+
+def restore_revision(package_id: str, source_sha: str,
+                     directory: Path) -> dict[str, Any]:
+    """Compile and atomically activate any exact retained source revision."""
+    if probe.ID_RE.fullmatch(package_id) is None:
+        raise ManagerError("invalid package id")
+    root = _prepare_directory(directory)
+    payload, expected_digest = _retained_revision_source(
+        package_id, source_sha, root
+    )
+    with tempfile.TemporaryDirectory(
+            prefix="mdkr-character-restore-") as temporary:
+        snapshot = Path(temporary) / "revision.mdkrchar"
+        snapshot.write_bytes(payload)
+        restored = install(
+            snapshot, root, expected_active_digest=expected_digest
+        )
+    return {
+        **restored,
+        "action": "restore-revision",
+        "restored_source_sha256": source_sha,
+    }
+
+
+def export_revision(package_id: str, source_sha: str, directory: Path,
+                    output_path: Path) -> dict[str, Any]:
+    """Export an authenticated retained source without overwriting any file."""
+    if probe.ID_RE.fullmatch(package_id) is None:
+        raise ManagerError("invalid package id")
+    root = _prepare_directory(directory)
+    payload, _ = _retained_revision_source(package_id, source_sha, root)
+    if output_path.parent.is_symlink():
+        raise ManagerError("export directory must be a real directory")
+    parent = output_path.parent.resolve()
+    if not parent.is_dir():
+        raise ManagerError("export directory must already exist")
+    destination = parent / output_path.name
+    if destination.name in ("", ".", ".."):
+        raise ManagerError("export filename is invalid")
+    if destination.exists() or destination.is_symlink():
+        raise ManagerError("export destination already exists")
+    try:
+        _write_exclusive(destination, payload)
+    except FileExistsError as exc:
+        raise ManagerError("export destination already exists") from exc
+    return {
+        "id": package_id,
+        "source_sha256": source_sha,
+        "exported_file": str(destination),
+        "bytes": len(payload),
+    }
+
+
+def write_revision_index(package_id: str, directory: Path,
+                         index_path: Path) -> dict[str, Any]:
+    """Write the launcher's bounded, fixed-field revision inventory."""
+    root = _prepare_directory(directory)
+    if (index_path.parent.resolve() != root or
+            index_path.name != ".launcher-character-revisions.tsv"):
+        raise ManagerError(
+            "revision index must use the launcher's exact file inside the "
+            "character directory"
+        )
+    revisions = list_revisions(package_id, root)["revisions"]
+    visible = revisions[:MAX_UI_REVISIONS]
+    lines = [
+        f"mdkr-character-revisions-v1\t{len(revisions)}\t{len(visible)}\n"
+    ]
+    for revision in visible:
+        installed_unix = revision.get("installed_unix")
+        if (isinstance(installed_unix, bool) or
+                not isinstance(installed_unix, int) or installed_unix < 0):
+            installed_unix = 0
+        lines.append(
+            f"{revision['source_sha256']}\t"
+            f"{1 if revision['active'] else 0}\t"
+            f"{1 if revision['enabled'] else 0}\t{installed_unix}\n"
+        )
+    payload = "".join(lines).encode("ascii")
+    _write_atomic(index_path, payload)
+    return {
+        "id": package_id,
+        "total_revisions": len(revisions),
+        "indexed_revisions": len(visible),
+        "truncated": len(visible) != len(revisions),
+    }
 
 
 def prepare(package_path: Path, output_path: Path) -> dict[str, Any]:
@@ -795,7 +967,7 @@ def clean(directory: Path) -> dict[str, Any]:
     with _locked(root):
         for path in sorted(root.glob("*.json")):
             try:
-                report = json.loads(path.read_text(encoding="utf-8"))
+                report = _read_report(path)
                 if report.get("schema") != MANAGER_SCHEMA:
                     continue
                 package_id = report.get("id", "")
@@ -832,6 +1004,18 @@ def _parser() -> argparse.ArgumentParser:
     install_parser = sub.add_parser("install")
     install_parser.add_argument("package", type=Path)
     sub.add_parser("list")
+    revisions_parser = sub.add_parser("revisions")
+    revisions_parser.add_argument("id")
+    restore_parser = sub.add_parser("restore")
+    restore_parser.add_argument("id")
+    restore_parser.add_argument("source_sha256")
+    export_parser = sub.add_parser("export")
+    export_parser.add_argument("id")
+    export_parser.add_argument("source_sha256")
+    export_parser.add_argument("output", type=Path)
+    index_parser = sub.add_parser("write-revision-index")
+    index_parser.add_argument("id")
+    index_parser.add_argument("output", type=Path)
     remove_parser = sub.add_parser("remove")
     remove_parser.add_argument("id")
     enable_parser = sub.add_parser("enable")
@@ -913,6 +1097,20 @@ def main(argv: list[str] | None = None) -> int:
             report = revise_rig(args.id, args.draft, args.directory)
         elif args.command == "remove":
             report = remove(args.id, args.directory)
+        elif args.command == "revisions":
+            report = list_revisions(args.id, args.directory)
+        elif args.command == "restore":
+            report = restore_revision(
+                args.id, args.source_sha256, args.directory
+            )
+        elif args.command == "export":
+            report = export_revision(
+                args.id, args.source_sha256, args.directory, args.output
+            )
+        elif args.command == "write-revision-index":
+            report = write_revision_index(
+                args.id, args.directory, args.output
+            )
         elif args.command == "enable":
             report = set_enabled(args.id, args.directory, True)
         elif args.command == "disable":

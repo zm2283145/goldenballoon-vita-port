@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -220,6 +221,84 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 self.assertEqual(probe.PACKAGE_SCHEMA_V3, manifest["schema"])
                 self.assertEqual([12, 34, 56], manifest["identity"]["minimap_rgb"])
                 self.assertEqual(portrait.read_bytes(), archive.read("portrait.png"))
+
+    def test_arbitrary_revision_restore_and_no_overwrite_export(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            original = manager.install(self.make_package(root), installed)
+            portrait = root / "portrait-new.png"
+            portrait.write_bytes(make_portrait_png(23))
+            revised = manager.revise_identity(
+                original["id"], portrait, (23, 46, 69), installed
+            )
+            history = manager.list_revisions(original["id"], installed)
+            self.assertEqual(2, len(history["revisions"]))
+            self.assertEqual(
+                revised["source_sha256"],
+                history["revisions"][0]["source_sha256"],
+            )
+            self.assertTrue(history["revisions"][0]["active"])
+            index_path = installed / ".launcher-character-revisions.tsv"
+            index_report = manager.write_revision_index(
+                original["id"], installed, index_path
+            )
+            self.assertEqual(2, index_report["indexed_revisions"])
+            index_lines = index_path.read_text(encoding="ascii").splitlines()
+            self.assertEqual(
+                "mdkr-character-revisions-v1\t2\t2", index_lines[0]
+            )
+            self.assertTrue(index_lines[1].startswith(
+                revised["source_sha256"] + "\t1\t1\t"
+            ))
+            with self.assertRaisesRegex(manager.ManagerError, "exact file"):
+                manager.write_revision_index(
+                    original["id"], installed, root / "unsafe.tsv"
+                )
+
+            manager.set_enabled(original["id"], installed, False)
+            restored = manager.restore_revision(
+                original["id"], original["source_sha256"], installed
+            )
+            self.assertEqual("restore-revision", restored["action"])
+            self.assertFalse(restored["enabled"])
+            current = [
+                row for row in manager.list_revisions(
+                    original["id"], installed
+                )["revisions"] if row["active"]
+            ]
+            self.assertEqual(
+                original["source_sha256"], current[0]["source_sha256"]
+            )
+
+            exported = root / "exported-revision.mdkrchar"
+            export_report = manager.export_revision(
+                original["id"], revised["source_sha256"], installed, exported
+            )
+            self.assertEqual(
+                revised["source_sha256"], export_report["source_sha256"]
+            )
+            self.assertEqual(
+                revised["source_sha256"],
+                hashlib.sha256(exported.read_bytes()).hexdigest(),
+            )
+            with self.assertRaisesRegex(manager.ManagerError, "already exists"):
+                manager.export_revision(
+                    original["id"], revised["source_sha256"], installed,
+                    exported,
+                )
+            retained = installed / revised["source_file"]
+            retained.write_bytes(b"tampered retained source")
+            with self.assertRaisesRegex(manager.ManagerError, "provenance"):
+                manager.export_revision(
+                    original["id"], revised["source_sha256"], installed,
+                    root / "must-not-exist.mdkrchar",
+                )
+            self.assertFalse((root / "must-not-exist.mdkrchar").exists())
+            with self.assertRaisesRegex(manager.ManagerError, "64 lowercase hex"):
+                manager.restore_revision(
+                    original["id"], "NOT-A-DIGEST", installed
+                )
 
     def test_identity_revision_losslessly_migrates_uniform_v1_transform(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

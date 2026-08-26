@@ -36,9 +36,11 @@ This gives three deliberately separate formats:
   tangents, animation tracks, semantics, sockets, materials and authored
   `MSFT_lod` levels;
 - locked, transactional local install/list/enable/disable/remove/clean
-  operations; updates preserve enabled state, disable retains source and
-  provenance outside runtime discovery, and permanent removal owns only exact
-  content-addressed paths;
+operations; updates preserve enabled state, disable retains source and
+provenance outside runtime discovery, and permanent removal owns only exact
+content-addressed paths;
+- authenticated retained-revision enumeration, optimistic-concurrency restore
+  of any exact source digest, and no-overwrite source export;
 - bounded native cache loading, shared immutable render assets and per-player
   pose instances;
 - WebGPU GPU skinning for up to 256 joints, four weights, multiple primitives,
@@ -744,6 +746,10 @@ than being distorted by mandatory solving.
    provenance paths, reports their counts before confirmation, then clears
    package-owned local preferences. Ordinary saves, records, ghosts, physics,
    and roster identity never embed the package.
+9. Revision recovery authenticates the exact source and provenance pair.
+   Restore snapshots those bytes, recompiles against an optimistic current-cache
+   digest, and preserves enabled/disabled state; export uses exclusive creation
+   and never overwrites an existing destination.
 
 Raw GLB convenience import can have the launcher generate a manifest template,
 but it still requires explicit license/provenance fields before activation.

@@ -777,6 +777,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/app_ui_policy.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_window.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/arg_triage.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_revision_index.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/crash_screen.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/dev_tools.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/tool_collision.cpp
@@ -1445,6 +1446,15 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/platform/app)
             target_compile_features(mdkr_app_ui_policy_test PRIVATE cxx_std_17)
             add_test(NAME app_ui_policy COMMAND mdkr_app_ui_policy_test)
+
+            add_executable(mdkr_character_revision_index_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_revision_index.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_revision_index.cpp)
+            target_include_directories(mdkr_character_revision_index_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_revision_index_test PRIVATE cxx_std_17)
+            add_test(NAME character_revision_index
+                COMMAND mdkr_character_revision_index_test)
 
             add_executable(mdkr_app_config_test
                 ${CMAKE_SOURCE_DIR}/tests/test_app_config.cpp

@@ -191,6 +191,14 @@ def main() -> int:
         "docs/MODDING.md",
         "Importing an update or saving a Portrait, Rig, or Profile Studio revision preserves that state.",
     )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "It will be fully revalidated and compiled before becoming current. The present source stays retained",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Writes the exact authenticated mdkrchar source and refuses to overwrite an existing file.",
+    )
     registry = (ROOT / "platform/modern_character_registry.c").read_text(
         encoding="utf-8"
     )

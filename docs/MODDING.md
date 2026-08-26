@@ -271,6 +271,18 @@ python3 tools/character_package_manager.py \
 python3 tools/character_package_manager.py \
   --directory characters enable org.example.character-name
 
+# Enumerate every authenticated retained revision. Restore accepts any exact
+# source SHA shown here and preserves the package's enabled/disabled state.
+python3 tools/character_package_manager.py \
+  --directory characters revisions org.example.character-name
+python3 tools/character_package_manager.py \
+  --directory characters restore org.example.character-name SOURCE_SHA256
+
+# Export never overwrites an existing path.
+python3 tools/character_package_manager.py \
+  --directory characters export org.example.character-name SOURCE_SHA256 \
+  recovered-character.mdkrchar
+
 # Destructive: removes the cache plus every locally retained source revision
 # and provenance report for this exact id. It does not touch an external file.
 python3 tools/character_package_manager.py \
