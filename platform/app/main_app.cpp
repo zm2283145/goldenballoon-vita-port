@@ -2184,16 +2184,23 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     }
 
     /* A proven active ROM must remain playable while a replacement is being
-     * checked. Exercise the exact formerly-dead gold Play action: begin a real
-     * second SDL drop, supersede only that candidate worker, then require one
-     * final-check action for the original active path. */
+     * checked, AND pressing Play must never throw the replacement away out
+     * from under the player: begin a real second SDL drop, press Play while
+     * that candidate is still mid-check, and require Play to WAIT for the
+     * pending check rather than abandon it -- landing on the NEW ROM once the
+     * check resolves it as valid, exactly as if Play had been pressed after
+     * the check finished on its own. (A prior revision made Play cancel the
+     * unresolved replacement and immediately re-affirm the ROM being
+     * replaced, which silently discarded a fully valid selection -- the
+     * reported "picking a different supported ROM reverts to the original"
+     * bug.) */
     if (smokeReplacementPlay && smokeReplacementPlay[0] && renderOk) {
         const LauncherState &initial = launcher.state();
         const std::string activeRom = initial.romPath;
         const bool initialReady = !initial.romValidationPending &&
                                   initial.romInfo.valid && !activeRom.empty();
         bool replacementPending = false;
-        bool superseded = false;
+        bool deferred = false;
         int serviceFrames = 0;
         if (initialReady) {
             host.queueDropFileForSmoke(smokeReplacementPlay);
@@ -2210,15 +2217,21 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                 replacement.romValidationPath == smokeReplacementPlay;
             if (replacementPending) {
                 launcher.requestPlayValidationForSmoke();
-                const LauncherState &play = launcher.state();
-                superseded = play.romValidationPending &&
-                    play.romPlayValidationPending &&
-                    play.romValidationPath == activeRom &&
-                    !play.romCandidateVisible;
+                const LauncherState &afterPlay = launcher.state();
+                // Play must leave the pending replacement running on the NEW
+                // file untouched: still checking, still targeting the
+                // candidate path, active ROM unchanged so far, and no
+                // early/duplicate Play-purpose check against the OLD ROM.
+                deferred = afterPlay.romValidationPending &&
+                    !afterPlay.romPlayValidationPending &&
+                    afterPlay.romPath == activeRom &&
+                    afterPlay.romValidationPath == smokeReplacementPlay;
             }
         }
         const Uint64 deadline = SDL_GetTicks64() + 5000u;
-        while (superseded && launcher.state().romValidationPending &&
+        while (deferred &&
+               (launcher.state().romValidationPending ||
+                launcher.state().romPlayValidationPending) &&
                SDL_GetTicks64() < deadline && renderOk) {
             if (host.waitAndPump(1)) sawQuit = true;
             host.beginFrame();
@@ -2228,22 +2241,23 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
             ++serviceFrames;
         }
         const LauncherState &finalState = launcher.state();
-        const bool settled = !finalState.romValidationPending;
+        const bool settled = !finalState.romValidationPending &&
+                             !finalState.romPlayValidationPending;
         std::printf(
             "[app] smoke: replacement Play candidate=%s initialReady=%d "
-            "replacementPending=%d superseded=%d serviceFrames=%d actions=%d "
+            "replacementPending=%d deferred=%d serviceFrames=%d actions=%d "
             "actionRom=%s settled=%d active=%s candidateVisible=%d\n",
             smokeReplacementPlay, initialReady ? 1 : 0,
-            replacementPending ? 1 : 0, superseded ? 1 : 0,
+            replacementPending ? 1 : 0, deferred ? 1 : 0,
             serviceFrames, smokePlayActions,
             smokePlayActionRom.empty() ? "(none)" : smokePlayActionRom.c_str(),
             settled ? 1 : 0,
             finalState.romPath.empty() ? "(none)" : finalState.romPath.c_str(),
             finalState.romCandidateVisible ? 1 : 0);
-        if (!initialReady || !replacementPending || !superseded || !settled ||
+        if (!initialReady || !replacementPending || !deferred || !settled ||
             serviceFrames < 1 || smokePlayActions != 1 ||
-            smokePlayActionRom != activeRom ||
-            finalState.romPath != activeRom ||
+            smokePlayActionRom != smokeReplacementPlay ||
+            finalState.romPath != smokeReplacementPlay ||
             finalState.romCandidateVisible) {
             renderOk = false;
         }

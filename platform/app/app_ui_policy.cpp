@@ -51,7 +51,7 @@ AppUiRomPlayRequest AppUi_romPlayRequest(
         return AppUiRomPlayRequest::Ignore;
     }
     return validationPending
-        ? AppUiRomPlayRequest::SupersedeReplacementCheck
+        ? AppUiRomPlayRequest::AwaitReplacementCheck
         : AppUiRomPlayRequest::StartFinalCheck;
 }
 

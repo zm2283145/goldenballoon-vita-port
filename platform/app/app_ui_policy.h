@@ -34,7 +34,7 @@ struct AppUiRomPanelVisibility {
 enum class AppUiRomPlayRequest {
     Ignore,
     StartFinalCheck,
-    SupersedeReplacementCheck,
+    AwaitReplacementCheck,
 };
 
 // An in-flight first or remembered-ROM check has no verdict yet. Do not flash
@@ -46,8 +46,12 @@ bool AppUi_romCandidateFeedbackVisible(
     bool candidateVisible, bool validationPending);
 
 // A proven active ROM remains playable while a replacement is being checked.
-// Play therefore supersedes only that candidate check; an initial/remembered
-// check or an already-running final Play check remains non-actionable.
+// Play must not cancel that unresolved check and re-affirm the ROM it would
+// replace -- that would silently discard a fully valid selection the player
+// just made. It waits instead: an initial/remembered check or an
+// already-running final Play check remains non-actionable, but a pending
+// REPLACEMENT check is left running so the eventual verdict (new ROM if
+// valid, the previous one otherwise) is what Play acts on.
 AppUiRomPlayRequest AppUi_romPlayRequest(
     bool ready, bool validationPending, bool playValidationPending);
 

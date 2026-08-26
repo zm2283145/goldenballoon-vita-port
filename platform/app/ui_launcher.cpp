@@ -171,7 +171,11 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size) {
     g_betaPlayDrawnFrame = g_betaFrame;
 #endif
     const bool ready = !state.romPath.empty() && state.romInfo.valid;
+    // romPlayAwaitingReplacement: Play was already pressed once and is
+    // waiting on a pending replacement check (see RomPanel_requestPlayValidation).
+    // Show that immediately so a second press cannot queue a duplicate wait.
     const bool busy = state.romPlayValidationPending ||
+                      state.romPlayAwaitingReplacement ||
                       (!ready && state.romValidationPending);
     const char *label = "Play";
     if (busy) {

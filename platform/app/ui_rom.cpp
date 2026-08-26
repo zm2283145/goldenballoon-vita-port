@@ -458,6 +458,7 @@ static void cancelValidation(LauncherState &s, bool clearUnusableSelection) {
     s.romValidationPending = false;
     s.romPlayValidationPending = false;
     s.romPlayValidationPassed = false;
+    s.romPlayAwaitingReplacement = false;
     s.romValidationPath.clear();
     s.romValidationBytes = 0u;
     s.romValidationTotal = 0u;
@@ -522,6 +523,18 @@ void RomPanel_serviceValidation(LauncherState &s) {
                          result.purpose == ValidationPurpose::Remembered);
     if (restoreRemembered) {
         requestValidation(s, ValidationPurpose::Remembered, s.romPath);
+        return;
+    }
+    if (s.romPlayAwaitingReplacement) {
+        // Play was pressed while this Selection check was still running. The
+        // transaction above has already decided which ROM is active now (the
+        // one just picked if it validated and persisted, the previous one
+        // otherwise) -- resume Play against exactly that ROM rather than the
+        // one that was active when the button was pressed.
+        s.romPlayAwaitingReplacement = false;
+        if (!s.romPath.empty() && s.romInfo.valid) {
+            requestValidation(s, ValidationPurpose::Play, s.romPath);
+        }
     }
 }
 
@@ -530,14 +543,17 @@ void RomPanel_requestPlayValidation(LauncherState &s) {
         !s.romPath.empty() && s.romInfo.valid,
         s.romValidationPending, s.romPlayValidationPending);
     if (request == AppUiRomPlayRequest::Ignore) return;
-    if (request == AppUiRomPlayRequest::SupersedeReplacementCheck) {
-        // Choosing Play abandons only the unresolved replacement. The proven
-        // active ROM remains intact and immediately enters its mandatory final
-        // full-image check, so the visible gold action never becomes a no-op.
-        cancelValidation(s, /*clearUnusableSelection=*/false);
-        clearCandidateFeedback(s);
-        g_changing = false;
-        g_note.clear();
+    if (request == AppUiRomPlayRequest::AwaitReplacementCheck) {
+        // A replacement Selection check is already reading the candidate the
+        // player just picked. Cancelling it here and immediately final-checking
+        // the ROM it was about to replace is what used to make choosing a
+        // different supported ROM look like it "reverted" -- the new selection
+        // was thrown away and never reached AppConfig::setAndSave(). Instead,
+        // let the check finish and land through the normal transaction
+        // (persist + activate on success, keep the previous ROM on failure),
+        // then resume Play against whatever ROM that leaves active.
+        s.romPlayAwaitingReplacement = true;
+        return;
     }
     requestValidation(s, ValidationPurpose::Play, s.romPath);
 }

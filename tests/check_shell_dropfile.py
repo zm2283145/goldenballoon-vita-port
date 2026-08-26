@@ -88,7 +88,7 @@ FINAL_PLAY_RE = re.compile(
     r"actionRom=(.*) finalValid=(\d+) settled=(\d+)$")
 REPLACEMENT_PLAY_RE = re.compile(
     r"^\[app\] smoke: replacement Play candidate=(.*) initialReady=(\d+) "
-    r"replacementPending=(\d+) superseded=(\d+) serviceFrames=(\d+) "
+    r"replacementPending=(\d+) deferred=(\d+) serviceFrames=(\d+) "
     r"actions=(\d+) actionRom=(.*) settled=(\d+) active=(.*) "
     r"candidateVisible=(\d+)$")
 BAD_RE = re.compile(
@@ -128,7 +128,7 @@ class DropResult:
         self.replacement_play_candidate: Optional[str] = None
         self.replacement_play_initial_ready: Optional[int] = None
         self.replacement_play_pending: Optional[int] = None
-        self.replacement_play_superseded: Optional[int] = None
+        self.replacement_play_deferred: Optional[int] = None
         self.replacement_play_service_frames: Optional[int] = None
         self.replacement_play_actions: Optional[int] = None
         self.replacement_play_action_rom: Optional[str] = None
@@ -172,12 +172,12 @@ class DropResult:
             m5 = REPLACEMENT_PLAY_RE.match(line)
             if m5:
                 (self.replacement_play_candidate, initial_ready, pending,
-                 superseded, service_frames, actions,
+                 deferred, service_frames, actions,
                  self.replacement_play_action_rom, settled,
                  self.replacement_play_active, candidate_visible) = m5.groups()
                 self.replacement_play_initial_ready = int(initial_ready)
                 self.replacement_play_pending = int(pending)
-                self.replacement_play_superseded = int(superseded)
+                self.replacement_play_deferred = int(deferred)
                 self.replacement_play_service_frames = int(service_frames)
                 self.replacement_play_actions = int(actions)
                 self.replacement_play_settled = int(settled)
@@ -398,8 +398,10 @@ def main() -> int:
                             f"{result.play_action_rom!r}")
 
     # A replacement check cannot turn the persistent Play action into a dead
-    # button. Play abandons the unresolved candidate and final-checks the
-    # already-proven active ROM without publishing or retaining the candidate.
+    # button, but it also must never let Play silently discard a fully valid
+    # replacement and re-affirm the ROM it was about to replace. Play defers:
+    # the pending check keeps running on the NEW file, and once it resolves
+    # (this file is valid) Play proceeds with THAT ROM.
     if replacement_play.returncode != 0:
         failures.append(
             "replacement-Play arm exited "
@@ -407,21 +409,21 @@ def main() -> int:
     if (replacement_play.replacement_play_candidate != str(replacement_play_rom) or
             replacement_play.replacement_play_initial_ready != 1 or
             replacement_play.replacement_play_pending != 1 or
-            replacement_play.replacement_play_superseded != 1 or
+            replacement_play.replacement_play_deferred != 1 or
             replacement_play.replacement_play_settled != 1 or
             replacement_play.replacement_play_service_frames is None or
             replacement_play.replacement_play_service_frames < 1 or
             replacement_play.replacement_play_actions != 1 or
-            replacement_play.replacement_play_action_rom != str(rom) or
-            replacement_play.replacement_play_active != str(rom) or
+            replacement_play.replacement_play_action_rom != str(replacement_play_rom) or
+            replacement_play.replacement_play_active != str(replacement_play_rom) or
             replacement_play.replacement_play_candidate_visible != 0):
         failures.append(
-            "Play did not supersede the unresolved replacement with one exact "
-            "final-check action for the active ROM: "
+            "Play did not wait for the unresolved replacement and use it once "
+            "it validated -- it must not revert to the ROM being replaced: "
             f"candidate={replacement_play.replacement_play_candidate!r} "
             f"ready={replacement_play.replacement_play_initial_ready} "
             f"pending={replacement_play.replacement_play_pending} "
-            f"superseded={replacement_play.replacement_play_superseded} "
+            f"deferred={replacement_play.replacement_play_deferred} "
             f"frames={replacement_play.replacement_play_service_frames} "
             f"actions={replacement_play.replacement_play_actions} "
             f"actionRom={replacement_play.replacement_play_action_rom!r} "
@@ -519,7 +521,8 @@ def main() -> int:
         "the active ROM with candidate error and Cancel; a supported header with "
         "either a truncated or corrupted body was refused before Play; a first "
         "verified ROM remained playable when its path could not be remembered; "
-        "Play superseded an unresolved replacement and final-checked the active ROM; "
+        "Play waited for an unresolved but ultimately valid replacement instead "
+        "of reverting to the ROM it was replacing; "
         "the final asynchronous Play recheck emitted one exact-path action and "
         "refused a post-selection body mutation")
     return 0

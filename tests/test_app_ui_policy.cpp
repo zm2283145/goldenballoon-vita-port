@@ -97,8 +97,9 @@ int main() {
                AppUiRomPlayRequest::StartFinalCheck,
            "Play starts the final check for an idle proven ROM");
     expect(AppUi_romPlayRequest(true, true, false) ==
-               AppUiRomPlayRequest::SupersedeReplacementCheck,
-           "Play supersedes an unresolved replacement with the active ROM");
+               AppUiRomPlayRequest::AwaitReplacementCheck,
+           "Play waits for an unresolved replacement instead of silently "
+           "reverting to the ROM it would replace");
     expect(AppUi_romPlayRequest(true, true, true) ==
                AppUiRomPlayRequest::Ignore,
            "Play cannot duplicate an in-flight final check");

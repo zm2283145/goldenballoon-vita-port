@@ -89,6 +89,13 @@ struct LauncherState {
     bool romValidationPending = false;
     bool romPlayValidationPending = false;
     bool romPlayValidationPassed = false;
+    // Play was pressed while a replacement Selection check was still running.
+    // The check keeps running on the candidate file; once it resolves, the
+    // mandatory final Play check runs against whatever ROM that resolution
+    // leaves active (the new one on success, the previous one on failure), so
+    // Play can never publish a decision against a ROM the player just
+    // replaced out from under it.
+    bool romPlayAwaitingReplacement = false;
     // No discovery state: the launcher never searches the disk. The ROM arrives
     // by drag-and-drop, a native open-panel, a typed path, or the remembered
     // choice in the app's own prefs. See ui_rom.cpp's header for why.
