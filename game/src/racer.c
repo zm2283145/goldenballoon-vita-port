@@ -5427,11 +5427,12 @@ void update_player_racer(Object *obj, s32 updateRate) {
             audspat_point_set_position(tempRacer->bananaSoundMask, obj->trans.x_position, obj->trans.y_position,
                                        obj->trans.z_position);
         }
-        if (is_in_time_trial() && tempRacer->playerIndex == PLAYER_ONE && gRaceStartTimer == 0
-#ifdef NATIVE_PORT
-            && taj_physics_canonical_records_allowed(tempRacer)
-#endif
-        ) {
+        /* Record player-1 ghost node data for EVERY Time Trial run, base or bonus.
+         * A bonus (added) racer's ghost is stamped non-authentic by its character
+         * marker; it still needs real node data so it can be saved and replayed.
+         * Base-racer recording is byte-identical (they always passed the old
+         * canonical gate). */
+        if (is_in_time_trial() && tempRacer->playerIndex == PLAYER_ONE && gRaceStartTimer == 0) {
             timetrial_ghost_write(obj, updateRate);
         }
         if (tempRacer->soundMask) {
@@ -9578,10 +9579,9 @@ void timetrial_free_staff_ghost(void) {
  */
 SIDeviceStatus timetrial_write_player_ghost(s32 controllerIndex, s32 mapId, s16 arg2, s16 arg3, s16 arg4) {
 #ifdef NATIVE_PORT
-    if (taj_physics_run_is_noncanonical()) {
-        taj_physics_trace_record_suppressed(NULL);
-        return CONTROLLER_PAK_BAD_DATA;
-    }
+    /* arg3 is the ghost character. For a bonus-racer run it is a marker ID
+     * (>= NUM_CHARACTERS) that keeps the saved ghost distinct from any base
+     * record; the write validator accepts that extended range. */
     {
         SIDeviceStatus writeStatus =
             func_80075000(controllerIndex, (s16) mapId, arg2, arg3, arg4, gGhostNodeCount[gCurrentGhostIndex],
@@ -9614,11 +9614,10 @@ void timetrial_ghost_write(Object *obj, s32 updateRate) {
     GhostNode *ghostNode;
 
     racer = obj->racer;
-#ifdef NATIVE_PORT
-    if (!taj_physics_canonical_records_allowed(racer)) {
-        return;
-    }
-#endif
+    /* Bonus (added) racers now record ghost node data too, so their run can be
+     * saved and replayed. Base-racer recording is unchanged (they always passed
+     * the old canonical gate). The stored ghost is stamped non-authentic via its
+     * character ID; it never touches the authentic record tables or T.T.-unlock. */
     yOffset = coss_f(racer->z_rotation_offset) * coss_f(racer->x_rotation_offset - racer->unk166);
     if (yOffset < 0) {
         yOffset *= 0.5;

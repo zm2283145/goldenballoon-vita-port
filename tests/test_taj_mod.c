@@ -638,8 +638,53 @@ static void test_challenge_mask_and_identity(void) {
     CHECK(taj_mod_unlock_from_taj_flags(0x38));
 }
 
+static void test_ghost_character_marker_mapping(void) {
+    /* Added-racer ghost markers live above the retail ten-wide character range
+     * so a stored record is inherently non-authentic. */
+    CHECK(MOD_RACER_GHOST_CHARACTER_BASE == 10);
+    CHECK(mod_racer_ghost_character_id(MOD_RACER_TAJ) ==
+          MOD_RACER_GHOST_CHARACTER_TAJ);
+    CHECK(mod_racer_ghost_character_id(MOD_RACER_WIZPIG) ==
+          MOD_RACER_GHOST_CHARACTER_WIZPIG);
+    CHECK(mod_racer_ghost_character_id(MOD_RACER_TERRY) ==
+          MOD_RACER_GHOST_CHARACTER_TERRY);
+    CHECK(mod_racer_ghost_character_id(MOD_RACER_RETAIL) == -1);
+
+    /* Round-trips back to the identity. */
+    CHECK(mod_racer_identity_from_ghost_character(
+              MOD_RACER_GHOST_CHARACTER_TAJ) == MOD_RACER_TAJ);
+    CHECK(mod_racer_identity_from_ghost_character(
+              MOD_RACER_GHOST_CHARACTER_WIZPIG) == MOD_RACER_WIZPIG);
+    CHECK(mod_racer_identity_from_ghost_character(
+              MOD_RACER_GHOST_CHARACTER_TERRY) == MOD_RACER_TERRY);
+
+    /* Every base character (0..9) is retail/authentic, never a bonus marker. */
+    {
+        int c;
+        for (c = 0; c <= 9; c++) {
+            CHECK(mod_racer_identity_from_ghost_character(c) ==
+                  MOD_RACER_RETAIL);
+            CHECK(!mod_racer_ghost_character_is_bonus(c));
+            /* Donor lookup leaves base characters untouched. */
+            CHECK(mod_racer_ghost_character_donor(c) == c);
+        }
+    }
+    CHECK(mod_racer_ghost_character_is_bonus(MOD_RACER_GHOST_CHARACTER_TAJ));
+    CHECK(mod_racer_ghost_character_is_bonus(MOD_RACER_GHOST_CHARACTER_TERRY));
+    CHECK(!mod_racer_ghost_character_is_bonus(MOD_RACER_GHOST_CHARACTER_MAX + 1));
+
+    /* Markers translate back to their donor character for asset-table lookups. */
+    CHECK(mod_racer_ghost_character_donor(MOD_RACER_GHOST_CHARACTER_TAJ) ==
+          TAJ_MOD_DONOR_CHARACTER);
+    CHECK(mod_racer_ghost_character_donor(MOD_RACER_GHOST_CHARACTER_WIZPIG) ==
+          WIZPIG_MOD_DONOR_CHARACTER);
+    CHECK(mod_racer_ghost_character_donor(MOD_RACER_GHOST_CHARACTER_TERRY) ==
+          TERRY_MOD_DONOR_CHARACTER);
+}
+
 int main(void) {
     test_state_format();
+    test_ghost_character_marker_mapping();
     test_magic_code_and_lifecycle();
     test_persisted_reload_and_failures();
     test_async_persistence_state_machine();

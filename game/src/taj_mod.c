@@ -75,6 +75,50 @@ static unsigned int mod_racer_identity_bit(ModRacerIdentity identity) {
     return mod_racer_valid_identity(identity) ? bits[identity] : 0u;
 }
 
+int mod_racer_ghost_character_id(ModRacerIdentity identity) {
+    switch (identity) {
+        case MOD_RACER_TAJ:
+            return MOD_RACER_GHOST_CHARACTER_TAJ;
+        case MOD_RACER_WIZPIG:
+            return MOD_RACER_GHOST_CHARACTER_WIZPIG;
+        case MOD_RACER_TERRY:
+            return MOD_RACER_GHOST_CHARACTER_TERRY;
+        default:
+            return -1;
+    }
+}
+
+ModRacerIdentity mod_racer_identity_from_ghost_character(int ghost_character) {
+    switch (ghost_character) {
+        case MOD_RACER_GHOST_CHARACTER_TAJ:
+            return MOD_RACER_TAJ;
+        case MOD_RACER_GHOST_CHARACTER_WIZPIG:
+            return MOD_RACER_WIZPIG;
+        case MOD_RACER_GHOST_CHARACTER_TERRY:
+            return MOD_RACER_TERRY;
+        default:
+            return MOD_RACER_RETAIL;
+    }
+}
+
+int mod_racer_ghost_character_is_bonus(int ghost_character) {
+    return ghost_character >= MOD_RACER_GHOST_CHARACTER_BASE &&
+           ghost_character <= MOD_RACER_GHOST_CHARACTER_MAX;
+}
+
+int mod_racer_ghost_character_donor(int ghost_character) {
+    switch (ghost_character) {
+        case MOD_RACER_GHOST_CHARACTER_TAJ:
+            return TAJ_MOD_DONOR_CHARACTER;
+        case MOD_RACER_GHOST_CHARACTER_WIZPIG:
+            return WIZPIG_MOD_DONOR_CHARACTER;
+        case MOD_RACER_GHOST_CHARACTER_TERRY:
+            return TERRY_MOD_DONOR_CHARACTER;
+        default:
+            return ghost_character;
+    }
+}
+
 static int mod_racer_persisted_unlocked(const TajModPersistentState *state,
                                          ModRacerIdentity identity) {
     if (state == NULL) return 0;

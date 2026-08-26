@@ -15463,6 +15463,17 @@ void ghostmenu_render(UNUSED s32 updateRate) {
         }
 #endif
         textBuffer[i] = '\0'; // Set NULL terminator
+#ifdef NATIVE_PORT
+        /* Tag added (bonus) racer ghosts with a trailing asterisk. Their distinct
+         * portrait already marks them, but the asterisk reads as non-authentic in
+         * the plain list style too. */
+        if (mod_racer_ghost_character_is_bonus(gGhostCharacterIDsMenu[scroll]) &&
+            i < 61) {
+            textBuffer[i] = ' ';
+            textBuffer[i + 1] = '*';
+            textBuffer[i + 2] = '\0';
+        }
+#endif
         texrect_draw_scaled(&sMenuCurrDisplayList, gDrawTexWorldBgs[currentWorldId], x, y, 0.75f, 0.8125f,
                             COLOUR_RGBA32(255, 255, 255, 255), 0);
         func_80080E90(&sMenuCurrDisplayList, 40, y, 240, 52, 4, 4, 32, 80, 176, 128);
@@ -15483,8 +15494,30 @@ void ghostmenu_render(UNUSED s32 updateRate) {
         set_text_colour(200, 228, 80, 255, 255);
         draw_text(&sMenuCurrDisplayList, gGhostDataElementPositions[0] + GHOSTMENU_TEXT_OFFSET,
                   gGhostDataElementPositions[1] + y, textBuffer, ALIGN_MIDDLE_CENTER);
-        texrect_draw(&sMenuCurrDisplayList, gRacerPortraits[gGhostCharacterIDsMenu[scroll]],
-                     gGhostDataElementPositions[2] + 40, gGhostDataElementPositions[3] + y, 255, 255, 255, 255);
+        {
+            DrawTexture *ghostPortrait;
+#ifdef NATIVE_PORT
+            /* A bonus-racer ghost stores a marker ID >= NUM_CHARACTERS that would
+             * index gRacerPortraits[] out of bounds; resolve its Taj/Wizpig/Terry
+             * portrait from the identity instead. */
+            ModRacerIdentity ghostIdentity =
+                mod_racer_identity_from_ghost_character(gGhostCharacterIDsMenu[scroll]);
+            if (ghostIdentity != MOD_RACER_RETAIL) {
+                ghostPortrait = menu_mod_portrait(ghostIdentity);
+                if (ghostPortrait == NULL) {
+                    ghostPortrait = gRacerPortraits[CHARACTER_KRUNCH];
+                }
+            } else if (gGhostCharacterIDsMenu[scroll] < ARRAY_COUNT(gRacerPortraits)) {
+                ghostPortrait = gRacerPortraits[gGhostCharacterIDsMenu[scroll]];
+            } else {
+                ghostPortrait = gRacerPortraits[CHARACTER_KRUNCH];
+            }
+#else
+            ghostPortrait = gRacerPortraits[gGhostCharacterIDsMenu[scroll]];
+#endif
+            texrect_draw(&sMenuCurrDisplayList, ghostPortrait,
+                         gGhostDataElementPositions[2] + 40, gGhostDataElementPositions[3] + y, 255, 255, 255, 255);
+        }
         switch (gGhostVehicleIDsMenu[scroll]) {
             case 1:
                 vehicleSelectTex = gRaceSelectionHoverTex;

@@ -2990,7 +2990,15 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
         }
         // Spawn player ghost.
         if (timetrial_valid_player_ghost()) {
+#ifdef NATIVE_PORT
+            /* A bonus-racer ghost stores a marker ID >= NUM_CHARACTERS; index the
+             * retail kart-model table with its donor character instead. */
+            s32 ghostSpawnCharacter =
+                mod_racer_ghost_character_donor(gTimeTrialCharacter);
+            objectID = gRacerObjectTable[ghostSpawnCharacter + (gTimeTrialVehicle * NUM_CHARACTERS)];
+#else
             objectID = gRacerObjectTable[gTimeTrialCharacter + (gTimeTrialVehicle * NUM_CHARACTERS)];
+#endif
             racerEntry->common.size = ((objectID & 0x100) >> 1) | 0x10;
             racerEntry->common.objectID = objectID;
             racerEntry->common.x = spawnX[0];
@@ -10637,26 +10645,33 @@ void race_finish_time_trial(void) {
         }
         if (((!vehicleID) && (!vehicleID)) && (!vehicleID)) {} // Fakematch
         if (settings->timeTrialRacer == 0) {
-#ifdef NATIVE_PORT
-            /* A modded (Taj) run is non-canonical, so nothing PERSISTENT may
-             * come out of it: no player ghost, no staff-ghost retirement. It is
-             * still a time trial the player just finished, though, and the
-             * end-of-run announcement is pure HUD/audio with no record side
-             * effect, so keep the guard on the writes only. Wrapping the whole
-             * block left Taj time trials silent. */
-            if (!tajTimeTrial) {
-#endif
             if (bestCourseTime < 10800 && (vehicleID != gTimeTrialVehicle || timetrial_map_id() != level_id() ||
                                            bestCourseTime < gTimeTrialTime)) {
                 gTimeTrialTime = bestCourseTime;
                 gTimeTrialVehicle = gPrevTimeTrialVehicle;
+#ifdef NATIVE_PORT
+                /* An added (bonus) racer's run may now save and replay a ghost,
+                 * but its record must never masquerade as a base-racer one: stamp
+                 * the ghost's character with the bonus marker ID (>= NUM_CHARACTERS)
+                 * so the stored record is inherently non-authentic. Base racers
+                 * keep their retail character ID (0..9), byte-identical. The
+                 * AUTHENTIC record tables and the T.T.-unlock stay base-only --
+                 * they are still gated by !tajTimeTrial above and below. */
+                {
+                    ModRacerIdentity ghostIdentity =
+                        (ModRacerIdentity) mod_racer_physics_identity(bestRacer);
+                    int ghostCharacter =
+                        mod_racer_ghost_character_id(ghostIdentity);
+                    gTimeTrialCharacter = ghostCharacter >= 0
+                                              ? (s16) ghostCharacter
+                                              : settings->racers[0].character;
+                }
+#else
                 gTimeTrialCharacter = settings->racers[0].character;
+#endif
                 timetrial_swap_player_ghost(level_id());
                 gHasGhostToSave = TRUE;
             }
-#ifdef NATIVE_PORT
-            }
-#endif
             if (osTvType == OS_TV_TYPE_PAL) {
                 bestCourseTime = (bestCourseTime * 6) / 5;
             }
@@ -10680,7 +10695,10 @@ void race_finish_time_trial(void) {
         }
 #ifdef NATIVE_PORT
         if (tajTimeTrial) {
-            gHasGhostToSave = FALSE;
+            /* The AUTHENTIC record tables (fast-lap / course-time), the T.T.
+             * unlock, and staff-ghost retirement were all suppressed above -- a
+             * bonus run never pollutes canonical records. The ghost itself is
+             * kept (stamped non-authentic) and may still be saved by the player. */
             taj_physics_trace_record_suppressed(bestRacer);
         }
 #endif
@@ -10873,10 +10891,10 @@ s32 timetrial_init_player_ghost(s32 playerID) {
  */
 SIDeviceStatus timetrial_save_player_ghost(s32 controllerIndex) {
 #ifdef NATIVE_PORT
-    if (taj_physics_run_is_noncanonical()) {
-        taj_physics_trace_record_suppressed(NULL);
-        return CONTROLLER_PAK_BAD_DATA;
-    }
+    /* A bonus-racer run is non-canonical for RECORDS, but its ghost may now be
+     * saved: the ghost is stamped with a bonus marker character (>= NUM_CHARACTERS)
+     * so it can never be mistaken for a base-racer record. Authentic record
+     * tables and the T.T.-unlock were kept base-only in race_finish_time_trial(). */
     /* Issue #46: make sure this pair has its own or an empty window slot
      * before the authored write, so CONTROLLER_PAK_NO_ROOM_FOR_GHOSTS only
      * remains reachable for genuine device failures. */
