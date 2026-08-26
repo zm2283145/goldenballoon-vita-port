@@ -1830,6 +1830,14 @@ struct CharacterIdentityEdit {
     uint8_t sourceSha256[32] = {0};
     char portraitPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
     float minimapRgb[3] = {0.86f, 0.28f, 0.56f};
+    std::array<uint8_t, MDKR_MODERN_PORTRAIT_BYTES> canvas{};
+    std::vector<std::array<uint8_t, MDKR_MODERN_PORTRAIT_BYTES>> undo;
+    std::vector<std::array<uint8_t, MDKR_MODERN_PORTRAIT_BYTES>> redo;
+    float paintRgba[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    int tool = 0;
+    int selectedPixel[2] = {20, 20};
+    bool canvasDirty = false;
+    bool strokeActive = false;
 };
 
 std::map<std::string, CharacterIdentityEdit> g_characterIdentityEdits;
@@ -2078,6 +2086,26 @@ bool reviseCharacterIdentity(const char *packageId, const char *portraitPath,
         arguments.push_back(std::to_string(byte));
     }
     return runCharacterManager("revise-identity", arguments);
+}
+
+bool reviseCharacterIdentityRgba(
+    const char *packageId,
+    const std::array<uint8_t, MDKR_MODERN_PORTRAIT_BYTES> &rgba,
+    const float minimapRgb[3]) {
+    static const char hexDigits[] = "0123456789abcdef";
+    std::string encoded;
+    encoded.resize(rgba.size() * 2u);
+    for (size_t index = 0u; index < rgba.size(); ++index) {
+        encoded[index * 2u] = hexDigits[rgba[index] >> 4u];
+        encoded[index * 2u + 1u] = hexDigits[rgba[index] & 0xFu];
+    }
+    std::vector<std::string> arguments = {packageId, std::move(encoded)};
+    for (unsigned component = 0u; component < 3u; ++component) {
+        const int byte = static_cast<int>(std::lround(
+            std::clamp(minimapRgb[component], 0.0f, 1.0f) * 255.0f));
+        arguments.push_back(std::to_string(byte));
+    }
+    return runCharacterManager("revise-identity-rgba", arguments);
 }
 
 bool reviseCharacterProfile(const char *packageId, uint32_t donor,
@@ -2617,6 +2645,219 @@ bool drawCharacterProfileStudio(const MdkrModernCharacterEntry *entry) {
     return saved;
 }
 
+void portraitPushUndo(CharacterIdentityEdit &edit) {
+    if (edit.undo.size() == 32u) edit.undo.erase(edit.undo.begin());
+    edit.undo.push_back(edit.canvas);
+    edit.redo.clear();
+}
+
+void portraitSetPixel(CharacterIdentityEdit &edit, int x, int y,
+                      bool erase) {
+    if (x < 0 || x >= static_cast<int>(MDKR_MODERN_PORTRAIT_SIZE) ||
+        y < 0 || y >= static_cast<int>(MDKR_MODERN_PORTRAIT_SIZE)) return;
+    uint8_t *pixel = edit.canvas.data() +
+        (y * MDKR_MODERN_PORTRAIT_SIZE + x) * 4u;
+    for (unsigned component = 0u; component < 4u; ++component) {
+        pixel[component] = erase ? 0u : static_cast<uint8_t>(std::lround(
+            std::clamp(edit.paintRgba[component], 0.0f, 1.0f) * 255.0f));
+    }
+    edit.canvasDirty = true;
+}
+
+void portraitPickPixel(CharacterIdentityEdit &edit, int x, int y) {
+    const uint8_t *pixel = edit.canvas.data() +
+        (y * MDKR_MODERN_PORTRAIT_SIZE + x) * 4u;
+    for (unsigned component = 0u; component < 4u; ++component) {
+        edit.paintRgba[component] = static_cast<float>(pixel[component]) / 255.0f;
+    }
+}
+
+void portraitFill(CharacterIdentityEdit &edit, int startX, int startY) {
+    constexpr int size = MDKR_MODERN_PORTRAIT_SIZE;
+    const int start = startY * size + startX;
+    const std::array<uint8_t, 4> target = {
+        edit.canvas[start * 4], edit.canvas[start * 4 + 1],
+        edit.canvas[start * 4 + 2], edit.canvas[start * 4 + 3],
+    };
+    std::array<uint8_t, 4> replacement{};
+    for (unsigned component = 0u; component < 4u; ++component) {
+        replacement[component] = static_cast<uint8_t>(std::lround(
+            std::clamp(edit.paintRgba[component], 0.0f, 1.0f) * 255.0f));
+    }
+    if (target == replacement) return;
+    portraitPushUndo(edit);
+    std::array<int, size * size> queue{};
+    int read = 0;
+    int write = 0;
+    std::memcpy(edit.canvas.data() + start * 4, replacement.data(), 4u);
+    queue[write++] = start;
+    while (read < write) {
+        const int index = queue[read++];
+        const int x = index % size;
+        const int y = index / size;
+        const int neighbours[4] = {
+            x > 0 ? index - 1 : -1,
+            x + 1 < size ? index + 1 : -1,
+            y > 0 ? index - size : -1,
+            y + 1 < size ? index + size : -1,
+        };
+        for (int neighbour : neighbours) {
+            if (neighbour >= 0 &&
+                std::memcmp(edit.canvas.data() + neighbour * 4,
+                            target.data(), 4u) == 0) {
+                std::memcpy(edit.canvas.data() + neighbour * 4,
+                            replacement.data(), 4u);
+                queue[write++] = neighbour;
+            }
+        }
+    }
+    edit.canvasDirty = true;
+}
+
+bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
+                             CharacterIdentityEdit &edit) {
+    constexpr int size = MDKR_MODERN_PORTRAIT_SIZE;
+    static const char *tools[] = {"Pencil", "Eraser", "Fill", "Eyedropper"};
+    for (int tool = 0; tool < static_cast<int>(std::size(tools)); ++tool) {
+        if (tool != 0) ImGui::SameLine();
+        (void)ImGui::RadioButton(tools[tool], &edit.tool, tool);
+    }
+    ImGui::SetNextItemWidth(std::min(360.0f, ImGui::GetContentRegionAvail().x));
+    (void)ImGui::ColorEdit4(
+        "Paint colour", edit.paintRgba,
+        ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_DisplayHex |
+            ImGuiColorEditFlags_InputRGB | ImGuiColorEditFlags_AlphaBar);
+    const float pixelSize = std::clamp(
+        std::floor(ImGui::GetContentRegionAvail().x / size), 3.0f, 8.0f);
+    const float extent = pixelSize * size;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            const uint8_t *pixel = edit.canvas.data() + (y * size + x) * 4;
+            const ImU32 background = ((x / 4 + y / 4) & 1)
+                ? IM_COL32(73, 79, 89, 255) : IM_COL32(48, 53, 62, 255);
+            const ImVec2 minimum(origin.x + x * pixelSize,
+                                 origin.y + y * pixelSize);
+            const ImVec2 maximum(minimum.x + pixelSize,
+                                 minimum.y + pixelSize);
+            draw->AddRectFilled(minimum, maximum, background);
+            if (pixel[3] != 0u) {
+                draw->AddRectFilled(
+                    minimum, maximum,
+                    IM_COL32(pixel[0], pixel[1], pixel[2], pixel[3]));
+            }
+        }
+    }
+    draw->AddRect(origin, ImVec2(origin.x + extent, origin.y + extent),
+                  IM_COL32(255, 255, 255, 140));
+    ImGui::InvisibleButton("##portrait-pixel-canvas", ImVec2(extent, extent));
+    const bool hovered = ImGui::IsItemHovered();
+    if (hovered) {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const int x = std::clamp(
+            static_cast<int>((mouse.x - origin.x) / pixelSize), 0, size - 1);
+        const int y = std::clamp(
+            static_cast<int>((mouse.y - origin.y) / pixelSize), 0, size - 1);
+        edit.selectedPixel[0] = x;
+        edit.selectedPixel[1] = y;
+        draw->AddRect(
+            ImVec2(origin.x + x * pixelSize, origin.y + y * pixelSize),
+            ImVec2(origin.x + (x + 1) * pixelSize,
+                   origin.y + (y + 1) * pixelSize),
+            IM_COL32(255, 255, 255, 255), 0.0f, 0, 2.0f);
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            if (edit.tool == 2) {
+                portraitFill(edit, x, y);
+            } else if (edit.tool == 3) {
+                portraitPickPixel(edit, x, y);
+            } else {
+                portraitPushUndo(edit);
+                edit.strokeActive = true;
+                portraitSetPixel(edit, x, y, edit.tool == 1);
+            }
+        } else if (edit.strokeActive &&
+                   ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            portraitSetPixel(edit, x, y, edit.tool == 1);
+        }
+    }
+    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        edit.strokeActive = false;
+    }
+    ImGui::TextDisabled("Selected pixel: %d, %d", edit.selectedPixel[0],
+                        edit.selectedPixel[1]);
+    ImGui::SetNextItemWidth(std::min(220.0f, ImGui::GetContentRegionAvail().x));
+    (void)ImGui::InputInt2("Pixel coordinates", edit.selectedPixel);
+    edit.selectedPixel[0] = std::clamp(edit.selectedPixel[0], 0, size - 1);
+    edit.selectedPixel[1] = std::clamp(edit.selectedPixel[1], 0, size - 1);
+    if (ImGui::Button("Apply tool to selected pixel")) {
+        if (edit.tool == 2) {
+            portraitFill(edit, edit.selectedPixel[0], edit.selectedPixel[1]);
+        } else if (edit.tool == 3) {
+            portraitPickPixel(edit, edit.selectedPixel[0], edit.selectedPixel[1]);
+        } else {
+            portraitPushUndo(edit);
+            portraitSetPixel(edit, edit.selectedPixel[0], edit.selectedPixel[1],
+                             edit.tool == 1);
+        }
+    }
+    const bool canUndo = !edit.undo.empty();
+    if (!canUndo) ImGui::BeginDisabled();
+    if (ImGui::Button("Undo")) {
+        edit.redo.push_back(edit.canvas);
+        edit.canvas = edit.undo.back();
+        edit.undo.pop_back();
+        edit.canvasDirty = true;
+    }
+    if (!canUndo) ImGui::EndDisabled();
+    ImGui::SameLine();
+    const bool canRedo = !edit.redo.empty();
+    if (!canRedo) ImGui::BeginDisabled();
+    if (ImGui::Button("Redo")) {
+        if (edit.undo.size() == 32u) edit.undo.erase(edit.undo.begin());
+        edit.undo.push_back(edit.canvas);
+        edit.canvas = edit.redo.back();
+        edit.redo.pop_back();
+        edit.canvasDirty = true;
+    }
+    if (!canRedo) ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Mirror horizontally")) {
+        portraitPushUndo(edit);
+        for (int y = 0; y < size; ++y) {
+            for (int x = 0; x < size / 2; ++x) {
+                for (int component = 0; component < 4; ++component) {
+                    std::swap(edit.canvas[(y * size + x) * 4 + component],
+                              edit.canvas[(y * size + size - 1 - x) * 4 + component]);
+                }
+            }
+        }
+        edit.canvasDirty = true;
+    }
+    bool saved = false;
+    const uint32_t authoredMinimap =
+        static_cast<uint32_t>(std::lround(
+            std::clamp(edit.minimapRgb[0], 0.0f, 1.0f) * 255.0f)) |
+        static_cast<uint32_t>(std::lround(
+            std::clamp(edit.minimapRgb[1], 0.0f, 1.0f) * 255.0f)) << 8u |
+        static_cast<uint32_t>(std::lround(
+            std::clamp(edit.minimapRgb[2], 0.0f, 1.0f) * 255.0f)) << 16u;
+    const bool minimapDirty = (entry->identity_flags & 1u) != 0u &&
+        authoredMinimap != (entry->minimap_rgba & 0xFFFFFFu);
+    const bool canSaveCanvas = edit.canvasDirty || minimapDirty;
+    if (!canSaveCanvas) ImGui::BeginDisabled();
+    if (ImGui::Button("Save pixel canvas revision")) {
+        saved = reviseCharacterIdentityRgba(
+            entry->id, edit.canvas, edit.minimapRgb);
+        setStatus(saved
+                ? "Pixel portrait compiled and activated."
+                : "Pixel portrait failed; the active character was not changed.",
+            saved ? AppTheme::good() : AppTheme::bad());
+    }
+    if (!canSaveCanvas) ImGui::EndDisabled();
+    return saved;
+}
+
 bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     static const uint8_t donorColours[][3] = {
         {194, 72, 58}, {54, 120, 197}, {66, 166, 110}, {76, 153, 190},
@@ -2639,6 +2880,16 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
             static_cast<float>((rgba >> 8u) & 0xFFu) / 255.0f;
         edit.minimapRgb[2] =
             static_cast<float>((rgba >> 16u) & 0xFFu) / 255.0f;
+        if ((entry->identity_flags & 1u) != 0u) {
+            std::copy(std::begin(entry->portrait_rgba),
+                      std::end(entry->portrait_rgba), edit.canvas.begin());
+        } else {
+            edit.canvas.fill(0u);
+        }
+        edit.undo.clear();
+        edit.redo.clear();
+        edit.canvasDirty = false;
+        edit.strokeActive = false;
         std::memcpy(edit.sourceSha256, entry->source_sha256,
                     sizeof(edit.sourceSha256));
         edit.loaded = true;
@@ -2684,6 +2935,16 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     if (!canSave) ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::TextDisabled("non-destructive local revision");
+    if (saved) return true;
+    if (ImGui::TreeNodeEx(
+            "Pixel editor##character-portrait-pixels",
+            ImGuiTreeNodeFlags_DefaultOpen)) {
+        ui::TextSubtleWrapped(
+            "Edit the exact 40 × 40 runtime canvas. Pencil, eraser, fill, eyedropper, alpha, mirror, and bounded undo/redo are deterministic and stay local until you save a source revision.");
+        const bool pixelSaved = drawPortraitPixelEditor(entry, edit);
+        ImGui::TreePop();
+        if (pixelSaved) return true;
+    }
     return saved;
 }
 

@@ -354,8 +354,9 @@ Later schema versions should add, without changing the principles above:
 - declarative humanoid bone roles and optional pole vectors for pose retargeting
   and two-bone hand/foot IK;
 - optional material variants and eye/mouth morph mappings;
-- generated portrait captures, pixel editing, and icon derivatives beyond the
-  implemented imported primary portrait;
+- generated portrait captures, advanced selection/style tools, and icon
+  derivatives beyond the implemented imported and exact 40x40 pixel-edited
+  primary portrait;
 - feature requirements such as morph targets or alpha blending.
 
 The schema is declarative. JavaScript, Lua, native libraries, Blender Python,
