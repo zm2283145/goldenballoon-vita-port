@@ -8,11 +8,14 @@
 
 #include "app_restart.h"    // AppRestart_getEnv, AppRestart_setEnv
 #include "app_config.h"
+#include "modern_character_registry.h"
+#include "user_paths.h"
 #include "video_config.h"   // MdkrVideoMode, mdkr_video_schema
 
 #include <cstdio>
 #include <cstring>
 #include <array>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -22,6 +25,7 @@ std::array<std::string, 4> s_launcherCharacterEnvironment;
 constexpr size_t kCharacterTuningCount = 38;
 std::array<std::array<std::string, kCharacterTuningCount>, 4>
     s_launcherCharacterTuningEnvironment;
+std::map<std::string, std::string> s_launcherPackageTuningEnvironment;
 
 struct CharacterTuningKey {
     const char *environment_suffix;
@@ -77,6 +81,61 @@ const char *modeFlag(int mode) {
         case MDKR_VIDEO_MODE_REMASTERED: return "--remastered";
         default:                         return nullptr;  // Custom / unset
     }
+}
+
+std::string legacyCharacterTuning(
+    const char *packageId, const CharacterTuningKey &mapping) {
+    for (int player = 0; player < 4; ++player) {
+        const std::string assignment =
+            AppConfig::get("custom_character_p" + std::to_string(player + 1));
+        if (assignment != packageId) continue;
+        const std::string legacyKey = "custom_character_p" +
+            std::to_string(player + 1) + "_" + mapping.preference_suffix;
+        const std::string legacy = AppConfig::get(legacyKey);
+        if (!legacy.empty()) return legacy;
+    }
+    return mapping.fallback;
+}
+
+void handoffCharacterPackageTuning() {
+    char directory[MDKR_MODERN_CHARACTER_PATH_MAX];
+    MdkrModernCharacterRegistry registry{};
+    std::string existing;
+    if (!mdkr_user_characters_directory(directory, sizeof(directory)) ||
+        mdkr_modern_character_registry_init(&registry, directory) != 0) {
+        return;
+    }
+    for (int index = 0;
+         index < mdkr_modern_character_registry_count(&registry); ++index) {
+        const MdkrModernCharacterEntry *entry =
+            mdkr_modern_character_registry_entry(&registry, index);
+        if (entry == nullptr) continue;
+        const std::string environmentPrefix =
+            "MDKR_CUSTOM_CHARACTER_PROFILE_" + std::string(entry->id);
+        const std::string preferencePrefix =
+            "custom_character_profile_" + std::string(entry->id) + "_";
+        for (const CharacterTuningKey &mapping : kCharacterTuningKeys) {
+            const std::string variable = environmentPrefix + "_" +
+                mapping.environment_suffix;
+            const auto previous =
+                s_launcherPackageTuningEnvironment.find(variable);
+            const bool hasExisting =
+                AppRestart_getEnv(variable.c_str(), existing) &&
+                !existing.empty();
+            if (hasExisting &&
+                (previous == s_launcherPackageTuningEnvironment.end() ||
+                 existing != previous->second)) {
+                continue;
+            }
+            const std::string configured = AppConfig::get(
+                preferencePrefix + mapping.preference_suffix);
+            const std::string value = configured.empty()
+                ? legacyCharacterTuning(entry->id, mapping) : configured;
+            AppRestart_setEnv(variable.c_str(), value.c_str());
+            s_launcherPackageTuningEnvironment[variable] = value;
+        }
+    }
+    mdkr_modern_character_registry_shutdown(&registry);
 }
 
 }  // namespace
@@ -181,6 +240,7 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
      * launcher preferences, then hand them to the engine through the same
      * diagnostic override the CLI supports. An explicit caller environment
      * remains higher priority. */
+    handoffCharacterPackageTuning();
     for (int player = 0; player < 4; ++player) {
         const std::string variable =
             "MDKR_CUSTOM_CHARACTER_P" + std::to_string(player + 1);
@@ -188,14 +248,10 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             AppRestart_getEnv(variable.c_str(), existing) && !existing.empty();
         const std::string key =
             "custom_character_p" + std::to_string(player + 1);
-        std::string activeSelection;
         if (!hasExisting || existing == s_launcherCharacterEnvironment[player]) {
             const std::string selected = AppConfig::get(key);
             AppRestart_setEnv(variable.c_str(), selected.c_str());
             s_launcherCharacterEnvironment[player] = selected;
-            activeSelection = selected;
-        } else {
-            activeSelection = existing;
         }
 
         for (size_t tuning = 0; tuning < kCharacterTuningCount; ++tuning) {
@@ -209,15 +265,14 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
                 existing != s_launcherCharacterTuningEnvironment[player][tuning]) {
                 continue;
             }
-            const std::string profileKey = "custom_character_profile_" +
-                activeSelection + "_" + mapping.preference_suffix;
-            const std::string legacyKey = key + "_" + mapping.preference_suffix;
-            const std::string value = activeSelection.empty()
-                ? mapping.fallback
-                : AppConfig::get(profileKey,
-                                 AppConfig::get(legacyKey, mapping.fallback));
-            AppRestart_setEnv(tuningVariable.c_str(), value.c_str());
-            s_launcherCharacterTuningEnvironment[player][tuning] = value;
+            /* Launcher-authored tuning is package keyed above. Retain Pn
+             * variables only for explicit CLI diagnostics; scrub values this
+             * launcher wrote on an earlier in-process boot. */
+            if (!tuningHasExisting ||
+                existing == s_launcherCharacterTuningEnvironment[player][tuning]) {
+                AppRestart_setEnv(tuningVariable.c_str(), "");
+                s_launcherCharacterTuningEnvironment[player][tuning].clear();
+            }
         }
     }
 

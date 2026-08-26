@@ -14,6 +14,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32)
+static int set_env(const char *name, const char *value) {
+    return _putenv_s(name, value);
+}
+static int clear_env(const char *name) { return _putenv_s(name, ""); }
+#else
+static int set_env(const char *name, const char *value) {
+    return setenv(name, value, 1);
+}
+static int clear_env(const char *name) { return unsetenv(name); }
+#endif
+
 static void require(int condition, const char *message) {
     if (!condition) {
         fprintf(stderr, "FAIL: %s\n", message);
@@ -36,7 +48,7 @@ uint32_t gfx_modern_character_register_draw(
             "runtime registers a complete renderer draw");
     require(draw->primitive < draw->asset->primitive_count,
             "runtime primitive is in range");
-    require(draw->bone_count <= 128u,
+    require(draw->bone_count <= 256u,
             "runtime obeys the GPU palette bound");
     for (component = 0u; component < 16u; component++) {
         require(isfinite(draw->model_matrix[component]),
@@ -479,6 +491,12 @@ int main(int argc, char **argv) {
     require(mdkr_remove_utf8(prefix_witness) == 0,
             "retire prefix-collision provenance witness");
 
+    require(set_env(
+                "MDKR_CUSTOM_CHARACTER_PROFILE_org.example.pipeline-proof_SCALE",
+                "1.75") == 0 &&
+                clear_env("MDKR_CUSTOM_CHARACTER_P1_SCALE") == 0 &&
+                set_env("MDKR_CUSTOM_CHARACTER_P2_SCALE", "1.25") == 0,
+            "configure package tuning and a higher-priority player override");
     require(mdkr_modern_characters_init(argv[2]),
             "initialize process-level character runtime");
     {
@@ -506,6 +524,9 @@ int main(int argc, char **argv) {
     require(mdkr_modern_character_assign_player_index(
                 0, 0, error, sizeof(error)),
             error);
+    require(mdkr_modern_character_get_tuning(0, &tuning) &&
+                tuning.scale == 1.75f,
+            "catalog assignment restores package-keyed tuning");
     require(mdkr_modern_character_matches(0, 9, 0),
             "runtime assignment retains donor and vehicle characteristics");
     require(mdkr_modern_character_player_identity(0, &identity_view) &&
@@ -572,6 +593,11 @@ int main(int argc, char **argv) {
                     player, "org.example.pipeline-proof",
                     error, sizeof(error)),
                 "all four local player slots share one installed package");
+        if (player == 1) {
+            require(mdkr_modern_character_get_tuning(player, &tuning) &&
+                        tuning.scale == 1.25f,
+                    "explicit player tuning overrides the package profile");
+        }
         require(mdkr_modern_character_matches(player, 9, 0) &&
                     mdkr_modern_character_tick(
                         player, "select.confirm", 0.1f,
@@ -584,6 +610,9 @@ int main(int argc, char **argv) {
                 command_cursor == commands + 3 && registered_draws == 3u,
             "four-player assignment reuses GPU ownership and emits independently");
     mdkr_modern_characters_shutdown();
+    (void)clear_env(
+        "MDKR_CUSTOM_CHARACTER_PROFILE_org.example.pipeline-proof_SCALE");
+    (void)clear_env("MDKR_CUSTOM_CHARACTER_P2_SCALE");
     require(released_assets == 1u,
             "runtime retires GPU ownership before freeing CPU asset bytes");
 

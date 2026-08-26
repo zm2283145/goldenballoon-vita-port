@@ -453,6 +453,15 @@ index resolves back through the registry and then uses the ordinary validated
 player-assignment path. This is the identity-token foundation for paginated
 custom roster tiles, rather than aliasing package rows to retail character IDs.
 
+Launcher-authored fit and motion tuning crosses the process boundary under the
+stable package ID, not the player slot that happened to own it at startup. A
+catalog selection therefore restores that package's height, offsets, rotations,
+animation rate, LOD preference, vehicle mask, and four context corrections.
+Explicit `MDKR_CUSTOM_CHARACTER_Pn_*` variables remain higher-priority
+diagnostic overrides. Older per-player preferences are read only as a migration
+fallback and are no longer synthesized into overrides that could contaminate a
+different package selected later.
+
 V1 deliberately accepts embedded PNG only. KTX2/BasisU is the preferred future
 portable texture payload because it can carry mip levels and transcode to a
 GPU-supported block format, but accepting it before a bounded transcoder exists

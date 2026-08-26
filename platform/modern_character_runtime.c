@@ -309,14 +309,14 @@ static int attachment_for_context(const MdkrModernCharacterAsset *asset,
     return 0;
 }
 
-static int parse_environment_float(int player, const char *suffix,
+static int parse_environment_float(const char *prefix, const char *suffix,
                                    float minimum, float maximum, float *output) {
-    char name[80];
+    char name[128];
     char *end = NULL;
     const char *text;
     float value;
-    (void)snprintf(name, sizeof(name), "MDKR_CUSTOM_CHARACTER_P%d_%s",
-                   player + 1, suffix);
+    int written = snprintf(name, sizeof(name), "%s_%s", prefix, suffix);
+    if (written < 0 || (size_t)written >= sizeof(name)) return 0;
     text = getenv(name);
     if (text == NULL || text[0] == '\0') return 1;
     if (text[0] == ' ' || text[0] == '\t' || text[0] == '\r' ||
@@ -329,39 +329,39 @@ static int parse_environment_float(int player, const char *suffix,
     return 1;
 }
 
-static void player_tuning_from_environment(int player,
-                                           MdkrModernCharacterTuning *tuning) {
+static int apply_tuning_environment(const char *prefix,
+                                    MdkrModernCharacterTuning *tuning) {
     static const char *context_names[MDKR_CHARACTER_CONTEXT_COUNT] = {
         "SELECT", "CAR", "HOVERCRAFT", "PLANE"
     };
-    char name[80];
+    char name[128];
     char *end = NULL;
     const char *text;
     unsigned long mask;
     int valid = 1;
+    int written;
     unsigned context;
     unsigned axis;
-    mdkr_modern_character_tuning_defaults(tuning);
-    valid &= parse_environment_float(player, "SCALE", 0.1f, 5.0f,
+    valid &= parse_environment_float(prefix, "SCALE", 0.1f, 5.0f,
                                      &tuning->scale);
-    valid &= parse_environment_float(player, "OFFSET_X", -500.0f, 500.0f,
+    valid &= parse_environment_float(prefix, "OFFSET_X", -500.0f, 500.0f,
                                      &tuning->translation[0]);
-    valid &= parse_environment_float(player, "OFFSET_Y", -500.0f, 500.0f,
+    valid &= parse_environment_float(prefix, "OFFSET_Y", -500.0f, 500.0f,
                                      &tuning->translation[1]);
-    valid &= parse_environment_float(player, "OFFSET_Z", -500.0f, 500.0f,
+    valid &= parse_environment_float(prefix, "OFFSET_Z", -500.0f, 500.0f,
                                      &tuning->translation[2]);
-    valid &= parse_environment_float(player, "ROTATION_X", -180.0f, 180.0f,
+    valid &= parse_environment_float(prefix, "ROTATION_X", -180.0f, 180.0f,
                                      &tuning->rotation_degrees[0]);
-    valid &= parse_environment_float(player, "ROTATION_Y", -180.0f, 180.0f,
+    valid &= parse_environment_float(prefix, "ROTATION_Y", -180.0f, 180.0f,
                                      &tuning->rotation_degrees[1]);
-    valid &= parse_environment_float(player, "ROTATION_Z", -180.0f, 180.0f,
+    valid &= parse_environment_float(prefix, "ROTATION_Z", -180.0f, 180.0f,
                                      &tuning->rotation_degrees[2]);
-    valid &= parse_environment_float(player, "ANIMATION_SPEED", 0.05f, 4.0f,
+    valid &= parse_environment_float(prefix, "ANIMATION_SPEED", 0.05f, 4.0f,
                                      &tuning->animation_speed);
-    valid &= parse_environment_float(player, "LOD_BIAS", -3.0f, 3.0f,
+    valid &= parse_environment_float(prefix, "LOD_BIAS", -3.0f, 3.0f,
                                      &tuning->lod_bias);
-    (void)snprintf(name, sizeof(name), "MDKR_CUSTOM_CHARACTER_P%d_VEHICLE_MASK",
-                   player + 1);
+    written = snprintf(name, sizeof(name), "%s_VEHICLE_MASK", prefix);
+    if (written < 0 || (size_t)written >= sizeof(name)) return 0;
     text = getenv(name);
     if (text != NULL && text[0] != '\0') {
         errno = 0;
@@ -377,22 +377,40 @@ static void player_tuning_from_environment(int player,
         (void)snprintf(suffix, sizeof(suffix), "%s_SCALE",
                        context_names[context]);
         valid &= parse_environment_float(
-            player, suffix, 0.1f, 5.0f,
+            prefix, suffix, 0.1f, 5.0f,
             &tuning->context[context].scale);
         for (axis = 0u; axis < 3u; axis++) {
             (void)snprintf(suffix, sizeof(suffix), "%s_OFFSET_%s",
                            context_names[context], axis_names[axis]);
             valid &= parse_environment_float(
-                player, suffix, -10.0f, 10.0f,
+                prefix, suffix, -10.0f, 10.0f,
                 &tuning->context[context].translation[axis]);
             (void)snprintf(suffix, sizeof(suffix), "%s_ROTATION_%s",
                            context_names[context], axis_names[axis]);
             valid &= parse_environment_float(
-                player, suffix, -180.0f, 180.0f,
+                prefix, suffix, -180.0f, 180.0f,
                 &tuning->context[context].rotation_degrees[axis]);
         }
     }
-    if (!valid) {
+    return valid;
+}
+
+static void player_tuning_from_environment(
+    int player, const char *package_id, MdkrModernCharacterTuning *tuning) {
+    char package_prefix[128];
+    char player_prefix[64];
+    int package_valid;
+    int player_valid;
+    mdkr_modern_character_tuning_defaults(tuning);
+    (void)snprintf(package_prefix, sizeof(package_prefix),
+                   "MDKR_CUSTOM_CHARACTER_PROFILE_%s", package_id);
+    (void)snprintf(player_prefix, sizeof(player_prefix),
+                   "MDKR_CUSTOM_CHARACTER_P%d", player + 1);
+    package_valid = apply_tuning_environment(package_prefix, tuning);
+    /* Explicit per-player diagnostic values deliberately outrank the package
+     * profile. This keeps CLI test/repair workflows authoritative. */
+    player_valid = apply_tuning_environment(player_prefix, tuning);
+    if (!package_valid || !player_valid) {
         fprintf(stderr,
                 "[modern-character] P%d ignored one or more invalid tuning values\n",
                 player + 1);
@@ -622,7 +640,8 @@ int mdkr_modern_character_assign_player(int player, const char *package_id,
     if (slot->identity_revision == 0u) {
         slot->identity_revision = ++s_identity_revision;
     }
-    player_tuning_from_environment(player, &slot->tuning);
+    player_tuning_from_environment(
+        player, package_id, &slot->tuning);
     slot->tuning.vehicle_mask &= s_pools[pool].definition.vehicle_mask;
     if (slot->tuning.vehicle_mask == 0u) {
         slot->tuning.vehicle_mask = s_pools[pool].definition.vehicle_mask;
