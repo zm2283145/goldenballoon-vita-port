@@ -51,6 +51,19 @@ static int id_valid(const char *id) {
     return 1;
 }
 
+static int digest_text_valid(const char *digest, int allow_empty) {
+    size_t index;
+    if (digest == NULL) return 0;
+    if (digest[0] == '\0') return allow_empty;
+    if (strlen(digest) != 64u) return 0;
+    for (index = 0u; index < 64u; index++) {
+        const char byte = digest[index];
+        if (!((byte >= '0' && byte <= '9') ||
+              (byte >= 'a' && byte <= 'f'))) return 0;
+    }
+    return 1;
+}
+
 static int json_escape(char *output, size_t capacity, const char *input) {
     static const char hex[] = "0123456789abcdef";
     size_t write = 0u;
@@ -163,10 +176,9 @@ static int stored_file_matches(const char *path, const char *expected_hash) {
     return matches;
 }
 
-static int copy_source_if_absent(const char *source, const char *destination,
+static int copy_source_if_absent(FILE *input, const char *destination,
                                  const char *expected_hash) {
     int exists = 0;
-    FILE *input;
     FILE *output = NULL;
     char stage[4096];
     unsigned char buffer[64u * 1024u];
@@ -175,10 +187,10 @@ static int copy_source_if_absent(const char *source, const char *destination,
     if (mdkr_path_query_utf8(destination, &exists, NULL, NULL) == 0 && exists) {
         return stored_file_matches(destination, expected_hash);
     }
-    input = mdkr_fopen_utf8(source, "rb");
-    if (input == NULL ||
+    if (input == NULL) return 0;
+    clearerr(input);
+    if (fseek(input, 0, SEEK_SET) != 0 ||
         !open_stage(destination, stage, sizeof(stage), &output)) {
-        if (input != NULL) fclose(input);
         return 0;
     }
     while ((count = fread(buffer, 1u, sizeof(buffer), input)) != 0u) {
@@ -188,7 +200,6 @@ static int copy_source_if_absent(const char *source, const char *destination,
         }
     }
     if (ferror(input)) okay = 0;
-    if (fclose(input) != 0) okay = 0;
     if (okay && mdkr_file_sync(output) != 0) okay = 0;
     if (fclose(output) != 0) okay = 0;
     if (okay && mdkr_move_utf8(stage, destination, 0, 1) != 0) {
@@ -230,6 +241,17 @@ static void digest_hex(const uint8_t bytes[32], char output[65]) {
         output[index * 2u + 1u] = hex[bytes[index] & 15u];
     }
     output[64] = '\0';
+}
+
+static int digest_matches_hex(const uint8_t bytes[32], const char *hex) {
+    static const char digits[] = "0123456789abcdef";
+    unsigned index;
+    if (hex == NULL || strlen(hex) != 64u) return 0;
+    for (index = 0u; index < 32u; index++) {
+        if (hex[index * 2u] != digits[bytes[index] >> 4u] ||
+            hex[index * 2u + 1u] != digits[bytes[index] & 15u]) return 0;
+    }
+    return 1;
 }
 
 static int archive_entry(mz_zip_archive *archive, mz_uint index,
@@ -288,9 +310,11 @@ static int archive_source_digest(mz_zip_archive *archive,
     return 1;
 }
 
-int mdkr_modern_character_install_portable(
+static int portable_package_operation(
     const char *package_path, const char *directory,
-    MdkrModernCharacterInstallResult *result) {
+    MdkrModernCharacterInstallResult *result, int inspect_only,
+    const char *expected_package_sha256,
+    const char *expected_installed_source_digest) {
     static const char *const names_v2[] = {
         "manifest.json", "model.glb", "LICENSE.txt", "compiled.mdkc"
     };
@@ -306,10 +330,12 @@ int mdkr_modern_character_install_portable(
         MDKR_MDKC_FILE_MAX
     };
     FILE *package = NULL;
+    FILE *source_input = NULL;
     FILE *lock = NULL;
     mz_zip_archive archive;
     mz_zip_archive_file_stat stat;
     MdkrModernCharacterAsset asset;
+    MdkrModernCharacterAsset installed_asset;
     MdkrModernCharacterDefinition definition;
     void *compiled = NULL;
     size_t compiled_size = 0u;
@@ -354,25 +380,54 @@ int mdkr_modern_character_install_portable(
     error[0] = '\0';
     memset(&archive, 0, sizeof(archive));
     memset(&asset, 0, sizeof(asset));
-    if (package_path == NULL || directory == NULL || directory[0] == '\0' ||
+    memset(&installed_asset, 0, sizeof(installed_asset));
+    if (package_path == NULL ||
         mdkr_path_query_utf8(package_path, NULL, &regular, NULL) != 0 ||
-        !regular || !ensure_directory(directory)) {
-        result_message(result, "package path or character directory is unavailable");
+        !regular) {
+        result_message(result, "character package path is unavailable");
         goto done;
     }
-    package = mdkr_fopen_utf8(package_path, "rb");
-    if (package == NULL || fseek(package, 0, SEEK_END) != 0) {
+    if (!inspect_only &&
+        (directory == NULL || directory[0] == '\0' ||
+         !ensure_directory(directory))) {
+        result_message(result, "character directory is unavailable");
+        goto done;
+    }
+    source_input = mdkr_fopen_utf8(package_path, "rb");
+    package = tmpfile();
+    if (source_input == NULL || package == NULL) {
         result_message(result, "character package could not be opened");
         goto done;
     }
     {
-        const long length = ftell(package);
-        if (length <= 0 || (unsigned long)length > SOURCE_PACKAGE_MAX ||
-            fseek(package, 0, SEEK_SET) != 0 || !hash_file(package, hash)) {
+        unsigned char buffer[64u * 1024u];
+        size_t count;
+        while ((count = fread(buffer, 1u, sizeof(buffer), source_input)) != 0u) {
+            if (package_size > SOURCE_PACKAGE_MAX - count ||
+                fwrite(buffer, 1u, count, package) != count) {
+                result_message(result,
+                    "character package exceeds its bounded size or could not be snapshotted");
+                goto done;
+            }
+            package_size += count;
+        }
+        if (ferror(source_input) || package_size == 0u ||
+            fflush(package) != 0 || !hash_file(package, hash)) {
             result_message(result, "character package exceeds its bounded size or could not be read");
             goto done;
         }
-        package_size = (mz_uint64)(unsigned long)length;
+        if (fclose(source_input) != 0) {
+            source_input = NULL;
+            result_message(result, "character package snapshot could not be finalized");
+            goto done;
+        }
+        source_input = NULL;
+    }
+    if (expected_package_sha256 != NULL &&
+        strcmp(hash, expected_package_sha256) != 0) {
+        result_message(result,
+            "the package file changed after review; validate the new bytes before installing");
+        goto done;
     }
     if (!mz_zip_reader_init_cfile(&archive, package, package_size, 0u)) {
         result_message(result, "character package is not a readable deterministic ZIP");
@@ -477,13 +532,70 @@ int mdkr_modern_character_install_portable(
             goto done;
         }
         if (result != NULL) {
+            MdkrModernCharacterStats stats;
             (void)snprintf(result->id, sizeof(result->id), "%s", id);
             (void)snprintf(result->display_name, sizeof(result->display_name),
                            "%s", display);
+            (void)snprintf(result->package_sha256,
+                           sizeof(result->package_sha256), "%s", hash);
+            digest_hex(asset.source_sha256, result->source_digest);
+            result->donor = definition.donor;
+            result->vehicle_mask = definition.vehicle_mask;
+            mdkr_modern_character_asset_stats(&asset, &stats);
+            result->vertices = stats.vertices;
+            result->triangles = stats.triangles;
+            result->primitives = stats.primitives;
+            result->lod_levels = stats.lod_levels;
+            result->materials = stats.materials;
+            result->textures = stats.textures;
+            result->nodes = stats.nodes;
+            result->skins = stats.skins;
+            result->joints = stats.joints;
+            result->animations = stats.animations;
+            result->animation_channels = stats.animation_channels;
+            result->animation_keys = stats.animation_keys;
+            result->rig_roles = stats.rig_roles;
+            result->encoded_texture_bytes = stats.encoded_texture_bytes;
+            result->decoded_texture_bytes = stats.decoded_texture_bytes;
+            {
+                uint32_t primitive_index;
+                for (primitive_index = 0u;
+                     primitive_index < stats.primitives; ++primitive_index) {
+                    MdkrModernPrimitive primitive;
+                    if (mdkr_modern_character_asset_primitive(
+                            &asset, primitive_index, &primitive) &&
+                        primitive.lod < 4u) {
+                        result->lod_vertices[primitive.lod] +=
+                            primitive.vertex_count;
+                        result->lod_triangles[primitive.lod] +=
+                            primitive.index_count / 3u;
+                        result->lod_primitives[primitive.lod]++;
+                    }
+                }
+            }
+            {
+                MdkrModernIdentity identity;
+                MdkrModernRig rig;
+                result->identity_present =
+                    mdkr_modern_character_asset_identity(
+                        &asset, &identity, NULL) && identity.portrait_size != 0u;
+                if (mdkr_modern_character_asset_rig(&asset, &rig)) {
+                    /* Candidate protocol: 0 absent, 1 authored, 2 humanoid. */
+                    result->rig_mode = rig.mode + 1u;
+                    result->rig_reviewed =
+                        (rig.flags & MDKR_MODERN_RIG_REVIEWED) != 0u;
+                }
+            }
         }
         (void)snprintf(installed_id, sizeof(installed_id), "%s", id);
         (void)snprintf(installed_display_name,
                        sizeof(installed_display_name), "%s", display);
+        if (inspect_only) {
+            result_message(result,
+                "Portable character validated without changing installed files.");
+            okay = 1;
+            goto done;
+        }
         if (!json_escape(escaped_display_name, sizeof(escaped_display_name),
                          installed_display_name)) {
             result_message(result, "embedded character display name cannot be recorded safely");
@@ -556,7 +668,25 @@ int mdkr_modern_character_install_portable(
         goto done;
     }
     publish_cache_path = disabled_exists ? disabled_cache_path : cache_path;
-    if (!copy_source_if_absent(package_path, source_path, hash) ||
+    if (expected_installed_source_digest != NULL) {
+        if (expected_installed_source_digest[0] == '\0') {
+            if (active_exists || disabled_exists) {
+                result_message(result,
+                    "a character with this id was installed after review; review the update before installing");
+                goto done;
+            }
+        } else if ((!active_exists && !disabled_exists) ||
+                   !mdkr_modern_character_asset_load_file(
+                       publish_cache_path, &installed_asset,
+                       error, sizeof(error)) ||
+                   !digest_matches_hex(installed_asset.source_sha256,
+                                       expected_installed_source_digest)) {
+            result_message(result,
+                "the installed character changed after review; review the latest revision and try again");
+            goto done;
+        }
+    }
+    if (!copy_source_if_absent(package, source_path, hash) ||
         !write_atomic(report_path, report_text, strlen(report_text)) ||
         !write_atomic(publish_cache_path, compiled, compiled_size)) {
         result_message(result, "character source or cache could not be installed transactionally");
@@ -572,10 +702,41 @@ done:
     if (lock != NULL) fclose(lock);
     if (lock_owned && lock_path[0] != '\0') (void)mdkr_remove_utf8(lock_path);
     mdkr_modern_character_asset_unload(&asset);
+    mdkr_modern_character_asset_unload(&installed_asset);
     free(compiled);
     if (archive.m_zip_mode != MZ_ZIP_MODE_INVALID) mz_zip_reader_end(&archive);
     if (package != NULL) fclose(package);
+    if (source_input != NULL) fclose(source_input);
     return okay;
+}
+
+int mdkr_modern_character_inspect_portable(
+    const char *package_path, MdkrModernCharacterInstallResult *result) {
+    return portable_package_operation(package_path, NULL, result, 1,
+                                      NULL, NULL);
+}
+
+int mdkr_modern_character_install_portable(
+    const char *package_path, const char *directory,
+    MdkrModernCharacterInstallResult *result) {
+    return portable_package_operation(package_path, directory, result, 0,
+                                      NULL, NULL);
+}
+
+int mdkr_modern_character_install_portable_reviewed(
+    const char *package_path, const char *directory,
+    const char *expected_package_sha256,
+    const char *expected_installed_source_digest,
+    MdkrModernCharacterInstallResult *result) {
+    if (!digest_text_valid(expected_package_sha256, 0) ||
+        !digest_text_valid(expected_installed_source_digest, 1)) {
+        result_reset(result);
+        result_message(result, "reviewed import digests are invalid");
+        return 0;
+    }
+    return portable_package_operation(
+        package_path, directory, result, 0, expected_package_sha256,
+        expected_installed_source_digest);
 }
 
 int mdkr_modern_character_set_enabled(

@@ -215,8 +215,11 @@ The custom-character branch contains a WebGPU-only vertical slice. The stable
 author handoff is a self-contained GLB 2.0 plus a declarative manifest and
 license text, packaged as `.mdkrchar`. It does not require a second ROM. Install
 and removal are available in **Settings → Content → Custom Characters**. That
-workshop can browse, drag-and-drop, or accept a typed package path,
-validate/import, rescan, assign a different presentation to P1-P4, disable or
+workshop can browse, drag-and-drop, or accept a typed package path, validate it
+without changing installed files, compare identity, donor/vehicle support, rig,
+LOD0 geometry, animation, and texture-memory facts against the installed
+revision, then require both a local-use rights confirmation and an explicit
+reviewed install. It can also rescan, assign a different presentation to P1-P4, disable or
 re-enable it without losing Workshop work, permanently delete it,
 and edit intended standing height, source facing, animation speed, LOD
 preference, and car/hover/plane pairing. Character select, car, hovercraft, and
@@ -300,6 +303,15 @@ that compiler when it is available and otherwise explains what the author must
 prepare. The manifest must match the complete
 example and schema in the architecture document, and every named animation or
 socket must exist in the GLB.
+
+Validation and installation are deliberately separate. Candidate review binds
+the exact package-file SHA-256 and the installed cache's canonical source digest.
+At commit, both are checked again under the shared import lock. If the package
+changed, an update of the same ID appeared, or the installed revision changed
+after review, nothing is published and the Workshop requires a fresh review.
+Portable packages use this flow without Python; source-only developer packages
+use the same fixed-field, bounded summary and reviewed transaction through the
+author compiler. Drag-and-drop stages the same review instead of bypassing it.
 
 An enabled cache is named `<id>.mdkc`. Disable atomically moves the same
 validated bytes to `<id>.mdkc.disabled`, which the game does not scan but the

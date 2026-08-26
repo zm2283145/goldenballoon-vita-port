@@ -26,11 +26,17 @@ def main() -> int:
     require("persistResultApplied" in HEADER,
             "visible-but-unconfirmed writes need one shared applied predicate")
 
-    # Both the initial UI-scale commit and its Retry action must retire their
-    # dirty/error state after a visible replacement, while presenting a warning
-    # instead of claiming a durable save.
-    require(SETTINGS.count("AppConfig::persistResultApplied(persist)") == 2,
-            "both UI-scale save paths must accept visible unconfirmed writes")
+    # Every shell-preference save path in this settings unit must accept a
+    # visible-but-unconfirmed write through the shared applied predicate: the
+    # initial UI-scale commit, its Retry action, and permanent character-package
+    # preference cleanup. A fourth path added without updating this count is a
+    # path someone wrote without deciding its durability story.
+    require(SETTINGS.count("AppConfig::persistResultApplied(persist)") == 3,
+            "all three settings-unit save paths must accept visible "
+            "unconfirmed writes")
+    require("forgetCharacterPackagePreferences(removedId)" in SETTINGS,
+            "permanent character deletion must include its package-owned "
+            "preference cleanup in the durability contract")
     require(SETTINGS.count("PersistResult::DurabilityUnconfirmed") >= 2,
             "both UI-scale save paths must distinguish durability uncertainty")
     # Pin the CLAIM, not the sentence. This assertion used to pin exact prose,

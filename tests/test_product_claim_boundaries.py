@@ -168,6 +168,30 @@ def main() -> int:
             "the Workshop must not describe ordinary record/save data as "
             "donor-owned"
         )
+    # Package selection is a review, not an install side effect. Both native
+    # portable and source-only compiler routes bind the bytes and installed
+    # base that were actually shown before the final action is enabled.
+    for claim in (
+        "Validate and review",
+        "Install reviewed character",
+        "Install reviewed update",
+        "I confirm I have the right to use this package locally",
+        "the importer cannot verify copyright, trademark, attribution, or redistribution rights",
+        "The package or installed character may have changed; validate and review it again.",
+    ):
+        require_contains("platform/app/ui_settings.cpp", claim)
+    require_contains(
+        "platform/modern_character_install.c",
+        "the package file changed after review; validate the new bytes before installing",
+    )
+    require_contains(
+        "tools/character_package_manager.py",
+        '"the installed character changed after review; review the "',
+    )
+    require_contains(
+        "docs/MODDING.md",
+        "Drag-and-drop stages the same review instead of bypassing it.",
+    )
     require_contains(
         "docs/architecture/custom-character-pipeline.md",
         "describing those as “owned by the donor” would be incorrect.",

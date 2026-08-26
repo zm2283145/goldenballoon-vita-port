@@ -194,6 +194,143 @@ class CharacterPackageManagerTests(unittest.TestCase):
             report = manager.install(portable, installed)
             self.assertEqual(prepared["compiled_sha256"], report["compiled_sha256"])
 
+    def test_candidate_inspection_is_exact_and_mutation_free(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = self.make_package(root)
+            before = {path.name for path in root.iterdir()}
+            inspected = manager.inspect(source)
+            self.assertEqual(before, {path.name for path in root.iterdir()})
+            self.assertEqual("inspect", inspected["action"])
+            self.assertEqual("org.example.pipeline-proof", inspected["id"])
+            self.assertEqual("Pipeline Proof", inspected["display_name"])
+            self.assertEqual(3, inspected["report"]["vertices"])
+            self.assertEqual(1, inspected["report"]["triangles"])
+            self.assertEqual(2, inspected["report"]["joints"])
+            self.assertEqual(7, inspected["report"]["vehicle_mask"])
+            self.assertFalse(inspected["portable"])
+            character_dir = root / "characters"
+            index_path = character_dir / ".launcher-character-candidate.tsv"
+            manager.write_candidate_index(
+                source, character_dir, index_path
+            )
+            index_lines = index_path.read_text(encoding="ascii").splitlines()
+            self.assertEqual("mdkr-character-candidate-v1", index_lines[0])
+            fields = index_lines[1].split("\t")
+            self.assertEqual(36, len(fields))
+            self.assertEqual(inspected["id"], fields[0])
+            self.assertEqual(inspected["display_name"], bytes.fromhex(
+                fields[1]
+            ).decode("utf-8"))
+            self.assertEqual(inspected["source_sha256"], fields[2])
+            self.assertEqual(inspected["cache_source_digest"], fields[3])
+            self.assertEqual("9", fields[4])
+            self.assertEqual("7", fields[5])
+            self.assertEqual(
+                inspected["report"]["animation_channels"], int(fields[16])
+            )
+            self.assertEqual(
+                inspected["report"]["animation_keys"], int(fields[17])
+            )
+            self.assertEqual(
+                inspected["report"]["lod_vertices"],
+                [int(value) for value in fields[24:28]],
+            )
+            self.assertEqual(
+                inspected["report"]["lod_triangles"],
+                [int(value) for value in fields[28:32]],
+            )
+            self.assertEqual(
+                inspected["report"]["lod_primitives"],
+                [int(value) for value in fields[32:36]],
+            )
+            with self.assertRaisesRegex(manager.ManagerError, "exact file"):
+                manager.write_candidate_index(
+                    source, character_dir, root / "candidate.tsv"
+                )
+
+            portable = root / "portable.mdkrchar"
+            manager.prepare(source, portable)
+            portable_inspection = manager.inspect(portable)
+            self.assertTrue(portable_inspection["portable"])
+            self.assertEqual(
+                inspected["cache_source_digest"],
+                portable_inspection["cache_source_digest"],
+            )
+            self.assertEqual(
+                inspected["compiled_sha256"],
+                portable_inspection["compiled_sha256"],
+            )
+
+    def test_candidate_inspection_rejects_oversized_source_before_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            package = Path(temporary) / "oversized.mdkrchar"
+            with package.open("wb") as output:
+                output.truncate(probe.MAX_INPUT_BYTES + 1)
+            with self.assertRaisesRegex(manager.ManagerError, "exceeds"):
+                manager.inspect(package)
+
+    def test_reviewed_install_binds_candidate_and_installed_base(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first_dir = root / "first"
+            first_dir.mkdir()
+            first_package = self.make_package(first_dir)
+            first_review = manager.inspect(first_package)
+            installed = root / "characters"
+            first = manager.install_reviewed(
+                first_package, installed, first_review["source_sha256"], "absent"
+            )
+            self.assertEqual("install-reviewed", first["action"])
+
+            update_dir = root / "update"
+            update_dir.mkdir()
+            update_manifest = make_manifest()
+            update_manifest["display_name"] = "Reviewed Update"
+            update_package = self.make_package(update_dir, update_manifest)
+            update_review = manager.inspect(update_package)
+            cache = installed / f"{first['id']}.mdkc"
+            before = cache.read_bytes()
+
+            changed_dir = root / "changed"
+            changed_dir.mkdir()
+            changed_manifest = make_manifest()
+            changed_manifest["display_name"] = "Changed After Review"
+            changed_package = self.make_package(changed_dir, changed_manifest)
+            reviewed_bytes = update_package.read_bytes()
+            update_package.write_bytes(changed_package.read_bytes())
+            with self.assertRaisesRegex(manager.ManagerError, "changed after review"):
+                manager.install_reviewed(
+                    update_package, installed,
+                    update_review["source_sha256"],
+                    first["cache_source_digest"],
+                )
+            self.assertEqual(before, cache.read_bytes())
+
+            update_package.write_bytes(reviewed_bytes)
+            concurrent_dir = root / "concurrent"
+            concurrent_dir.mkdir()
+            concurrent_manifest = make_manifest()
+            concurrent_manifest["display_name"] = "Concurrent Revision"
+            concurrent = manager.install(
+                self.make_package(concurrent_dir, concurrent_manifest), installed
+            )
+            concurrent_bytes = cache.read_bytes()
+            with self.assertRaisesRegex(manager.ManagerError, "changed after review"):
+                manager.install_reviewed(
+                    update_package, installed,
+                    update_review["source_sha256"],
+                    first["cache_source_digest"],
+                )
+            self.assertEqual(concurrent_bytes, cache.read_bytes())
+
+            committed = manager.install_reviewed(
+                update_package, installed,
+                update_review["source_sha256"],
+                concurrent["cache_source_digest"],
+            )
+            self.assertEqual("Reviewed Update", committed["display_name"])
+
     def test_identity_revision_is_deterministic_and_retains_history(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

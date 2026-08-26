@@ -157,18 +157,28 @@ def _installed_cache_digest(root: Path, package_id: str) -> str:
     return cache[20:52].hex()
 
 
-def install(package_path: Path, directory: Path, *,
-            expected_active_digest: str | None = None) -> dict[str, Any]:
-    root = _prepare_directory(directory)
+def _compile_candidate(package_path: Path) -> dict[str, Any]:
+    """Validate and compile a package without touching installed state."""
+    if package_path.stat().st_size > probe.MAX_INPUT_BYTES:
+        raise ManagerError(
+            f"character package exceeds {probe.MAX_INPUT_BYTES} bytes"
+        )
     package = package_path.read_bytes()
-    verification = probe.verify_package(package_path)
+    if len(package) > probe.MAX_INPUT_BYTES:
+        raise ManagerError(
+            f"character package exceeds {probe.MAX_INPUT_BYTES} bytes"
+        )
+    with tempfile.TemporaryDirectory(
+            prefix="mdkr-character-candidate-") as temporary:
+        snapshot = Path(temporary) / "candidate.mdkrchar"
+        snapshot.write_bytes(package)
+        verification = probe.verify_package(snapshot)
     if not verification["valid"]:
         raise ManagerError("invalid source package: " + "; ".join(verification["errors"]))
     package_id = verification["id"]
     if not isinstance(package_id, str) or probe.ID_RE.fullmatch(package_id) is None:
         raise ManagerError("validated package has an unsafe id")
-    source_sha = hashlib.sha256(package).hexdigest()
-    with zipfile.ZipFile(package_path) as archive:
+    with zipfile.ZipFile(io.BytesIO(package)) as archive:
         manifest = probe.json_loads_strict(
             archive.read("manifest.json"), "manifest"
         )
@@ -190,7 +200,108 @@ def install(package_path: Path, directory: Path, *,
         )
     if not _cache_valid(compiled):
         raise ManagerError("compiler produced an invalid cache")
-    compiled_sha = hashlib.sha256(compiled).hexdigest()
+    return {
+        "package": package,
+        "package_id": package_id,
+        "source_sha256": hashlib.sha256(package).hexdigest(),
+        "manifest": manifest,
+        "compiler_digest": compiler_digest,
+        "compiled": compiled,
+        "compiled_sha256": hashlib.sha256(compiled).hexdigest(),
+        "compile_report": compile_report,
+        "portable": embedded is not None,
+    }
+
+
+def inspect(package_path: Path) -> dict[str, Any]:
+    """Publish exact compiled candidate facts without installing any bytes."""
+    candidate = _compile_candidate(package_path)
+    report = candidate["compile_report"]
+    return {
+        "schema": MANAGER_SCHEMA,
+        "action": "inspect",
+        "id": candidate["package_id"],
+        "display_name": candidate["manifest"]["display_name"],
+        "source_sha256": candidate["source_sha256"],
+        "cache_source_digest": candidate["compiler_digest"].hex(),
+        "compiled_sha256": candidate["compiled_sha256"],
+        "compiler": COMPILER_ID,
+        "portable": candidate["portable"],
+        "report": report,
+    }
+
+
+def write_candidate_index(package_path: Path, directory: Path,
+                          index_path: Path) -> dict[str, Any]:
+    """Write one validated compiled candidate in a strict launcher protocol."""
+    root = _prepare_directory(directory)
+    if (index_path.parent.resolve() != root or
+            index_path.name != ".launcher-character-candidate.tsv"):
+        raise ManagerError(
+            "candidate index must use the launcher's exact file inside the "
+            "character directory"
+        )
+    candidate = inspect(package_path)
+    report = candidate["report"]
+    display_hex = candidate["display_name"].encode("utf-8").hex()
+    rig_mode = report.get("rig_mode")
+    rig_mode_value = {
+        None: 0,
+        "authored-clips-only": 1,
+        "humanoid-retarget-v1": 2,
+    }.get(rig_mode)
+    if rig_mode_value is None:
+        raise ManagerError("candidate compiler reported an unknown rig mode")
+    fields = [
+        candidate["id"], display_hex, candidate["source_sha256"],
+        candidate["cache_source_digest"],
+        str(compiler.DONOR_IDS[report["donor"]]),
+        str(report["vehicle_mask"]), str(report["vertices"]),
+        str(report["triangles"]), str(report["primitives"]),
+        str(report["lod_levels"]), str(report["materials"]),
+        str(report["textures"]), str(report["nodes"]),
+        str(report["skins"]), str(report["joints"]),
+        str(report["animations"]),
+        str(report["animation_channels"]), str(report["animation_keys"]),
+        "1" if report["identity_portrait"] else "0",
+        str(rig_mode_value), "1" if report["rig_reviewed"] else "0",
+        str(report["rig_roles"]), str(report["encoded_texture_bytes"]),
+        str(report["decoded_texture_bytes"]),
+        *(str(value) for value in report["lod_vertices"]),
+        *(str(value) for value in report["lod_triangles"]),
+        *(str(value) for value in report["lod_primitives"]),
+    ]
+    payload = (
+        "mdkr-character-candidate-v1\n" + "\t".join(fields) + "\n"
+    ).encode("ascii")
+    _write_atomic(index_path, payload)
+    return {
+        "id": candidate["id"],
+        "source_sha256": candidate["source_sha256"],
+        "cache_source_digest": candidate["cache_source_digest"],
+        "candidate_index": index_path.name,
+    }
+
+
+def install(package_path: Path, directory: Path, *,
+            expected_active_digest: str | None = None,
+            expected_package_sha256: str | None = None) -> dict[str, Any]:
+    candidate = _compile_candidate(package_path)
+    if (expected_package_sha256 is not None and
+            candidate["source_sha256"] != expected_package_sha256):
+        raise ManagerError(
+            "the package file changed after review; validate the new bytes "
+            "before installing"
+        )
+    root = _prepare_directory(directory)
+    package = candidate["package"]
+    package_id = candidate["package_id"]
+    source_sha = candidate["source_sha256"]
+    manifest = candidate["manifest"]
+    compiler_digest = candidate["compiler_digest"]
+    compiled = candidate["compiled"]
+    compiled_sha = candidate["compiled_sha256"]
+    compile_report = candidate["compile_report"]
     provenance = {
         "schema": MANAGER_SCHEMA,
         "id": package_id,
@@ -209,17 +320,31 @@ def install(package_path: Path, directory: Path, *,
         cache_path, enabled = _installed_cache_path(
             root, package_id, required=False
         )
+        if expected_active_digest is not None:
+            if expected_active_digest == "":
+                if cache_path is not None:
+                    raise ManagerError(
+                        "a character with this id was installed after review; "
+                        "review the update before installing"
+                    )
+            elif (
+                len(expected_active_digest) != 64
+                or any(character not in "0123456789abcdef"
+                       for character in expected_active_digest)
+            ):
+                raise ManagerError("expected installed digest is invalid")
+            elif (cache_path is None or
+                  _installed_cache_digest(root, package_id) !=
+                  expected_active_digest):
+                raise ManagerError(
+                    "the installed character changed after review; review the "
+                    "latest revision and try again"
+                )
         if cache_path is None:
             cache_path = root / f"{package_id}.mdkc"
             enabled = True
         provenance["cache_file"] = cache_path.name
         provenance["enabled"] = enabled
-        if (expected_active_digest is not None and
-                _installed_cache_digest(root, package_id) != expected_active_digest):
-            raise ManagerError(
-                "the installed character changed while this revision was being built; "
-                "review the latest revision and try again"
-            )
         if not source_path.exists():
             _write_exclusive(source_path, package)
         elif source_path.read_bytes() != package:
@@ -231,6 +356,26 @@ def install(package_path: Path, directory: Path, *,
         # Commit point. The engine scans only this stable filename.
         _write_atomic(cache_path, compiled)
     return provenance
+
+
+def install_reviewed(package_path: Path, directory: Path,
+                     expected_package_sha256: str,
+                     expected_installed_digest: str) -> dict[str, Any]:
+    """Commit only the candidate/base pair the user explicitly reviewed."""
+    if (len(expected_package_sha256) != 64 or
+            any(character not in "0123456789abcdef"
+                for character in expected_package_sha256)):
+        raise ManagerError("reviewed package digest is invalid")
+    if expected_installed_digest == "absent":
+        expected_installed_digest = ""
+    return {
+        **install(
+            package_path, directory,
+            expected_active_digest=expected_installed_digest,
+            expected_package_sha256=expected_package_sha256,
+        ),
+        "action": "install-reviewed",
+    }
 
 
 def _active_source_snapshot(package_id: str, root: Path) -> tuple[bytes, str, str]:
@@ -1003,6 +1148,15 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     install_parser = sub.add_parser("install")
     install_parser.add_argument("package", type=Path)
+    inspect_parser = sub.add_parser("inspect")
+    inspect_parser.add_argument("package", type=Path)
+    candidate_index_parser = sub.add_parser("write-candidate-index")
+    candidate_index_parser.add_argument("package", type=Path)
+    candidate_index_parser.add_argument("output", type=Path)
+    reviewed_parser = sub.add_parser("install-reviewed")
+    reviewed_parser.add_argument("package", type=Path)
+    reviewed_parser.add_argument("expected_package_sha256")
+    reviewed_parser.add_argument("expected_installed_digest")
     sub.add_parser("list")
     revisions_parser = sub.add_parser("revisions")
     revisions_parser.add_argument("id")
@@ -1065,10 +1219,22 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        if args.command != "prepare" and args.directory is None:
+        if args.command not in ("prepare", "inspect") and args.directory is None:
             raise ManagerError("--directory is required for this command")
         if args.command == "install":
             report = install(args.package, args.directory)
+        elif args.command == "inspect":
+            report = inspect(args.package)
+        elif args.command == "write-candidate-index":
+            report = write_candidate_index(
+                args.package, args.directory, args.output
+            )
+        elif args.command == "install-reviewed":
+            report = install_reviewed(
+                args.package, args.directory,
+                args.expected_package_sha256,
+                args.expected_installed_digest,
+            )
         elif args.command == "prepare":
             report = prepare(args.package, args.output)
         elif args.command == "revise-identity":

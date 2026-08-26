@@ -4,6 +4,7 @@
 #include "app_theme.h"
 #include "app_ui_policy.h"
 #include "app_window.h"
+#include "character_candidate_index.h"
 #include "character_revision_index.h"
 #include "file_dialog.h"
 #include "ui_common.h"
@@ -1830,6 +1831,20 @@ std::string g_characterManagerReport;
 std::string g_characterPendingRemoval;
 std::string g_characterWorkshopSelection;
 
+struct CharacterImportCandidate {
+    bool ready = false;
+    bool portable = false;
+    bool installed = false;
+    bool installedEnabled = false;
+    bool rightsConfirmed = false;
+    std::string packagePath;
+    std::string reviewedInstalledDigest;
+    CharacterCandidateIndex::Candidate next;
+    CharacterCandidateIndex::Candidate current;
+};
+
+CharacterImportCandidate g_characterImportCandidate;
+
 using CharacterRevisionRow = CharacterRevisionIndex::Row;
 
 struct CharacterRevisionInventory {
@@ -2288,21 +2303,167 @@ bool exportCharacterRevision(const std::string &packageId,
         "export", {packageId, sourceSha256, outputPath}, false);
 }
 
-bool importCharacterPackage(const std::string &path) {
-    MdkrModernCharacterInstallResult result{};
+std::string characterDigestHex(const uint8_t digest[32]) {
+    static const char digits[] = "0123456789abcdef";
+    std::string text(64u, '0');
+    for (size_t index = 0u; index < 32u; ++index) {
+        text[index * 2u] = digits[digest[index] >> 4u];
+        text[index * 2u + 1u] = digits[digest[index] & 0xFu];
+    }
+    return text;
+}
+
+CharacterCandidateIndex::Candidate installedCharacterSummary(
+    const MdkrModernCharacterEntry &entry) {
+    CharacterCandidateIndex::Candidate summary;
+    summary.id = entry.id;
+    summary.displayName = entry.display_name;
+    summary.sourceDigest = characterDigestHex(entry.source_sha256);
+    summary.donor = entry.donor;
+    summary.vehicleMask = entry.vehicle_mask;
+    summary.vertices = entry.stats.vertices;
+    summary.triangles = entry.stats.triangles;
+    summary.primitives = entry.stats.primitives;
+    summary.lodLevels = entry.stats.lod_levels;
+    summary.materials = entry.stats.materials;
+    summary.textures = entry.stats.textures;
+    summary.nodes = entry.stats.nodes;
+    summary.skins = entry.stats.skins;
+    summary.joints = entry.stats.joints;
+    summary.animations = entry.stats.animations;
+    summary.animationChannels = entry.stats.animation_channels;
+    summary.animationKeys = entry.stats.animation_keys;
+    summary.identityPresent =
+        (entry.identity_flags & 1u) != 0u && entry.portrait_bytes != 0u;
+    summary.rigMode = entry.rig_present != 0u ? entry.rig_mode + 1u : 0u;
+    summary.rigReviewed =
+        (entry.rig_flags & MDKR_MODERN_RIG_REVIEWED) != 0u;
+    summary.rigRoles = entry.stats.rig_roles;
+    summary.encodedTextureBytes = entry.stats.encoded_texture_bytes;
+    summary.decodedTextureBytes = entry.stats.decoded_texture_bytes;
+    for (size_t lod = 0u; lod < 4u; ++lod) {
+        summary.lodVertices[lod] = entry.lod_vertices[lod];
+        summary.lodTriangles[lod] = entry.lod_triangles[lod];
+        summary.lodPrimitives[lod] = entry.lod_primitives[lod];
+    }
+    return summary;
+}
+
+CharacterCandidateIndex::Candidate nativeCharacterSummary(
+    const MdkrModernCharacterInstallResult &result) {
+    CharacterCandidateIndex::Candidate summary;
+    summary.id = result.id;
+    summary.displayName = result.display_name;
+    summary.packageSha256 = result.package_sha256;
+    summary.sourceDigest = result.source_digest;
+    summary.donor = result.donor;
+    summary.vehicleMask = result.vehicle_mask;
+    summary.vertices = result.vertices;
+    summary.triangles = result.triangles;
+    summary.primitives = result.primitives;
+    summary.lodLevels = result.lod_levels;
+    summary.materials = result.materials;
+    summary.textures = result.textures;
+    summary.nodes = result.nodes;
+    summary.skins = result.skins;
+    summary.joints = result.joints;
+    summary.animations = result.animations;
+    summary.animationChannels = result.animation_channels;
+    summary.animationKeys = result.animation_keys;
+    summary.identityPresent = result.identity_present != 0u;
+    summary.rigMode = result.rig_mode;
+    summary.rigReviewed = result.rig_reviewed != 0u;
+    summary.rigRoles = result.rig_roles;
+    summary.encodedTextureBytes = result.encoded_texture_bytes;
+    summary.decodedTextureBytes = result.decoded_texture_bytes;
+    for (size_t lod = 0u; lod < 4u; ++lod) {
+        summary.lodVertices[lod] = result.lod_vertices[lod];
+        summary.lodTriangles[lod] = result.lod_triangles[lod];
+        summary.lodPrimitives[lod] = result.lod_primitives[lod];
+    }
+    return summary;
+}
+
+bool stageCharacterPackage(const std::string &path) {
+    MdkrModernCharacterInstallResult nativeResult{};
+    CharacterImportCandidate staged;
     if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
-    if (!g_characterRegistryDirectory.empty() &&
-        mdkr_modern_character_install_portable(
-            path.c_str(), g_characterRegistryDirectory.c_str(), &result)) {
+    if (g_characterRegistryDirectory.empty()) {
+        g_characterManagerReport =
+            "No writable character directory is available.";
+        return false;
+    }
+    if (mdkr_modern_character_inspect_portable(path.c_str(), &nativeResult)) {
+        staged.next = nativeCharacterSummary(nativeResult);
+        staged.portable = true;
+        g_characterManagerReport = nativeResult.message;
+    } else if (nativeResult.needs_compiler != 0) {
+        const std::string indexPath = g_characterRegistryDirectory +
+            "/.launcher-character-candidate.tsv";
+        (void)mdkr_remove_utf8(indexPath.c_str());
+        const bool indexed = runCharacterManager(
+            "write-candidate-index", {path, indexPath}, false);
+        const std::string index = indexed
+            ? readCharacterManagerResult(indexPath) : "";
+        (void)mdkr_remove_utf8(indexPath.c_str());
+        if (!indexed ||
+            !CharacterCandidateIndex::parse(index, staged.next)) {
+            if (indexed) {
+                g_characterManagerReport =
+                    "The compiler candidate summary was malformed; review and install remain disabled.";
+            }
+            return false;
+        }
+        staged.portable = false;
+    } else {
+        g_characterManagerReport = nativeResult.message;
+        return false;
+    }
+    const int installedIndex = mdkr_modern_character_registry_find(
+        &g_characterRegistry, staged.next.id.c_str());
+    const MdkrModernCharacterEntry *installed =
+        mdkr_modern_character_registry_entry(&g_characterRegistry,
+                                              installedIndex);
+    if (installed != nullptr) {
+        staged.installed = true;
+        staged.installedEnabled = installed->enabled != 0u;
+        staged.current = installedCharacterSummary(*installed);
+        staged.reviewedInstalledDigest = staged.current.sourceDigest;
+    }
+    staged.packagePath = path;
+    staged.ready = true;
+    g_characterImportCandidate = std::move(staged);
+    return true;
+}
+
+bool installReviewedCharacterPackage() {
+    if (!g_characterImportCandidate.ready) return false;
+    const CharacterImportCandidate reviewed = g_characterImportCandidate;
+    bool installed = false;
+    if (reviewed.portable) {
+        MdkrModernCharacterInstallResult result{};
+        installed = mdkr_modern_character_install_portable_reviewed(
+            reviewed.packagePath.c_str(), g_characterRegistryDirectory.c_str(),
+            reviewed.next.packageSha256.c_str(),
+            reviewed.reviewedInstalledDigest.c_str(), &result) != 0;
         g_characterManagerReport = result.message;
-        refreshCharacterRegistry();
-        return true;
+        if (installed) refreshCharacterRegistry();
+    } else {
+        installed = runCharacterManager(
+            "install-reviewed",
+            {reviewed.packagePath, reviewed.next.packageSha256,
+             reviewed.installed ? reviewed.reviewedInstalledDigest : "absent"});
     }
-    g_characterManagerReport = result.message;
-    if (result.needs_compiler) {
-        return runCharacterManager("install", {path});
+    if (!installed) {
+        /* A failed commit never remains armed: file bytes or installed state
+         * may have changed, and retrying requires a fresh visible review. */
+        g_characterImportCandidate = CharacterImportCandidate{};
+        return false;
     }
-    return false;
+    g_characterWorkshopSelection = reviewed.next.id;
+    g_characterImportCandidate = CharacterImportCandidate{};
+    g_characterImportPath[0] = '\0';
+    return true;
 }
 
 bool reviseCharacterIdentity(const char *packageId, const char *portraitPath,
@@ -5028,6 +5189,288 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
     return changed;
 }
 
+const char *candidateRigName(uint32_t mode) {
+    switch (mode) {
+        case 0u: return "No rig contract";
+        case 1u: return "Authored clips only";
+        case 2u: return "Humanoid retarget map";
+        default: return "Invalid rig contract";
+    }
+}
+
+const char *candidatePerformanceTier(
+    const CharacterCandidateIndex::Candidate &candidate) {
+    const uint32_t triangles = candidate.lodTriangles[0] != 0u
+        ? candidate.lodTriangles[0] : candidate.triangles;
+    const uint32_t vertices = candidate.lodVertices[0] != 0u
+        ? candidate.lodVertices[0] : candidate.vertices;
+    const uint32_t primitives = candidate.lodPrimitives[0] != 0u
+        ? candidate.lodPrimitives[0] : candidate.primitives;
+    if (candidate.textures != 0u && candidate.decodedTextureBytes == 0u) {
+        return "Recompile to measure";
+    }
+    if (triangles <= 15000u && vertices <= 20000u && primitives <= 4u &&
+        candidate.materials <= 4u && candidate.joints <= 64u &&
+        candidate.textures <= 8u &&
+        candidate.decodedTextureBytes <= 64u * 1024u * 1024u) {
+        return "Excellent";
+    }
+    if (triangles <= 30000u && vertices <= 40000u && primitives <= 8u &&
+        candidate.materials <= 8u && candidate.joints <= 96u &&
+        candidate.textures <= 12u &&
+        candidate.decodedTextureBytes <= 128u * 1024u * 1024u) {
+        return "Good";
+    }
+    if (triangles <= 60000u && vertices <= 70000u && primitives <= 12u &&
+        candidate.materials <= 12u && candidate.joints <= 128u &&
+        candidate.textures <= 16u &&
+        candidate.decodedTextureBytes <= 256u * 1024u * 1024u) {
+        return "Heavy";
+    }
+    return "Very heavy";
+}
+
+std::string candidateVehicleName(uint32_t mask) {
+    std::string text;
+    static const char *names[] = {"Car", "Hovercraft", "Plane"};
+    for (unsigned vehicle = 0u; vehicle < std::size(names); ++vehicle) {
+        if ((mask & (1u << vehicle)) == 0u) continue;
+        if (!text.empty()) text += ", ";
+        text += names[vehicle];
+    }
+    return text.empty() ? "None" : text;
+}
+
+std::string candidateBytes(uint64_t bytes) {
+    char text[64];
+    std::snprintf(text, sizeof(text), "%.2f MiB",
+                  static_cast<double>(bytes) / (1024.0 * 1024.0));
+    return text;
+}
+
+std::string candidateDelta(uint64_t current, uint64_t next) {
+    if (current == next) return "No change";
+    if (next > current) return "+" + std::to_string(next - current);
+    return "-" + std::to_string(current - next);
+}
+
+struct CandidateComparisonRow {
+    std::string label;
+    std::string current;
+    std::string next;
+    std::string change;
+};
+
+void addCandidateTextRow(std::vector<CandidateComparisonRow> &rows,
+                         const char *label, const std::string &current,
+                         const std::string &next, bool installed) {
+    rows.push_back({label, installed ? current : "Not installed", next,
+                    !installed ? "New" : current == next
+                        ? "No change" : "Changed"});
+}
+
+void addCandidateNumberRow(std::vector<CandidateComparisonRow> &rows,
+                           const char *label, uint64_t current,
+                           uint64_t next, bool installed) {
+    rows.push_back({label, installed ? std::to_string(current) : "Not installed",
+                    std::to_string(next), installed
+                        ? candidateDelta(current, next) : "New"});
+}
+
+bool drawCharacterCandidateReview(bool compact) {
+    if (!g_characterImportCandidate.ready) return false;
+    const CharacterImportCandidate &review = g_characterImportCandidate;
+    const CharacterCandidateIndex::Candidate &next = review.next;
+    const CharacterCandidateIndex::Candidate &current = review.current;
+    const bool sameSource = review.installed &&
+        current.sourceDigest == next.sourceDigest;
+    std::vector<CandidateComparisonRow> rows;
+    addCandidateTextRow(rows, "Display name", current.displayName,
+                        next.displayName, review.installed);
+    addCandidateTextRow(rows, "Portrait",
+        current.identityPresent ? "Authored" : "Generated fallback",
+        next.identityPresent ? "Authored" : "Generated fallback",
+        review.installed);
+    addCandidateTextRow(rows, "Gameplay donor", donorName(current.donor),
+                        donorName(next.donor), review.installed);
+    addCandidateTextRow(rows, "Vehicles",
+                        candidateVehicleName(current.vehicleMask),
+                        candidateVehicleName(next.vehicleMask),
+                        review.installed);
+    addCandidateTextRow(rows, "Rig", candidateRigName(current.rigMode),
+                        candidateRigName(next.rigMode), review.installed);
+    addCandidateTextRow(rows, "Rig review",
+        current.rigMode == 0u ? "Not applicable"
+                              : current.rigReviewed ? "Author reviewed"
+                                                    : "Review required",
+        next.rigMode == 0u ? "Not applicable"
+                           : next.rigReviewed ? "Author reviewed"
+                                              : "Review required",
+        review.installed);
+    addCandidateNumberRow(rows, "Rig roles", current.rigRoles,
+                          next.rigRoles, review.installed);
+    addCandidateTextRow(rows, "Performance profile",
+                        candidatePerformanceTier(current),
+                        candidatePerformanceTier(next), review.installed);
+    addCandidateNumberRow(rows, "LOD0 vertices", current.lodVertices[0],
+                          next.lodVertices[0], review.installed);
+    addCandidateNumberRow(rows, "LOD0 triangles", current.lodTriangles[0],
+                          next.lodTriangles[0], review.installed);
+    addCandidateNumberRow(rows, "LOD0 draw parts",
+                          current.lodPrimitives[0], next.lodPrimitives[0],
+                          review.installed);
+    for (size_t lod = 1u; lod < 4u; ++lod) {
+        if (current.lodVertices[lod] == 0u &&
+            next.lodVertices[lod] == 0u) continue;
+        const std::string prefix = "LOD" + std::to_string(lod);
+        addCandidateNumberRow(rows, (prefix + " vertices").c_str(),
+                              current.lodVertices[lod],
+                              next.lodVertices[lod], review.installed);
+        addCandidateNumberRow(rows, (prefix + " triangles").c_str(),
+                              current.lodTriangles[lod],
+                              next.lodTriangles[lod], review.installed);
+        addCandidateNumberRow(rows, (prefix + " draw parts").c_str(),
+                              current.lodPrimitives[lod],
+                              next.lodPrimitives[lod], review.installed);
+    }
+    addCandidateNumberRow(rows, "Vertices", current.vertices,
+                          next.vertices, review.installed);
+    addCandidateNumberRow(rows, "Triangles", current.triangles,
+                          next.triangles, review.installed);
+    addCandidateNumberRow(rows, "Draw parts", current.primitives,
+                          next.primitives, review.installed);
+    addCandidateNumberRow(rows, "LOD levels", current.lodLevels,
+                          next.lodLevels, review.installed);
+    addCandidateNumberRow(rows, "Materials", current.materials,
+                          next.materials, review.installed);
+    addCandidateNumberRow(rows, "Textures", current.textures,
+                          next.textures, review.installed);
+    addCandidateNumberRow(rows, "Joints", current.joints,
+                          next.joints, review.installed);
+    addCandidateNumberRow(rows, "Animations", current.animations,
+                          next.animations, review.installed);
+    addCandidateNumberRow(rows, "Animation channels",
+                          current.animationChannels,
+                          next.animationChannels, review.installed);
+    addCandidateNumberRow(rows, "Animation keys", current.animationKeys,
+                          next.animationKeys, review.installed);
+    rows.push_back({"Decoded texture memory",
+        review.installed ? candidateBytes(current.decodedTextureBytes)
+                         : "Not installed",
+        candidateBytes(next.decodedTextureBytes),
+        review.installed
+            ? candidateDelta(current.decodedTextureBytes,
+                             next.decodedTextureBytes) + " bytes"
+            : "New"});
+
+    ImGui::SeparatorText(review.installed ? "Review update" : "Ready to install");
+    ImGui::PushFont(AppTheme::fonts().section);
+    ImGui::TextWrapped("%s — %s", next.displayName.c_str(), next.id.c_str());
+    ImGui::PopFont();
+    ui::TextSubtleWrapped(
+        "This package controls local appearance, portrait, animation, fit, and presentation. The selected built-in donor continues to own handling, weight, acceleration, voice, and game authority.");
+    if (review.installed && !review.installedEnabled) {
+        ImGui::TextDisabled(
+            "This package is disabled. Installing the update will preserve that state.");
+    }
+    if (next.rigMode == 2u && !next.rigReviewed) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+        ImGui::TextWrapped(
+            "Humanoid mappings are present but not author-reviewed; automatic retargeting remains unavailable until Rig Studio review.");
+        ImGui::PopStyleColor();
+    }
+
+    const bool wide = !compact && ImGui::GetContentRegionAvail().x >=
+        700.0f * AppTheme::uiScale();
+    if (wide && ImGui::BeginTable(
+            "##character-candidate-comparison", 4,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Property");
+        ImGui::TableSetupColumn(review.installed ? "Installed" : "Current");
+        ImGui::TableSetupColumn("Candidate");
+        ImGui::TableSetupColumn("Change");
+        ImGui::TableHeadersRow();
+        for (const CandidateComparisonRow &row : rows) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(row.label.c_str());
+            ImGui::TableNextColumn(); ImGui::TextWrapped("%s", row.current.c_str());
+            ImGui::TableNextColumn(); ImGui::TextWrapped("%s", row.next.c_str());
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(row.change.c_str());
+        }
+        ImGui::EndTable();
+    } else {
+        for (const CandidateComparisonRow &row : rows) {
+            if (review.installed) {
+                ImGui::TextWrapped("%s: %s (installed: %s; %s)",
+                    row.label.c_str(), row.next.c_str(), row.current.c_str(),
+                    row.change.c_str());
+            } else {
+                ImGui::TextWrapped("%s: %s", row.label.c_str(),
+                                   row.next.c_str());
+            }
+        }
+    }
+    if (ImGui::TreeNode("Verified package details")) {
+        ImGui::TextWrapped("File: %s", review.packagePath.c_str());
+        ImGui::TextWrapped("Package SHA-256: %s",
+                           next.packageSha256.c_str());
+        ImGui::TextWrapped("Compiled source digest: %s",
+                           next.sourceDigest.c_str());
+        ImGui::TextWrapped("Encoded texture data: %s",
+                           candidateBytes(next.encodedTextureBytes).c_str());
+        ImGui::Text("Nodes: %u · Skins: %u", next.nodes, next.skins);
+        ImGui::TreePop();
+    }
+    if (sameSource) {
+        ImGui::TextDisabled(
+            "This exact compiled source is already active. Installing will retain the reviewed package file as a revision and refresh the same runtime cache.");
+    }
+    (void)ImGui::Checkbox(
+        "I confirm I have the right to use this package locally",
+        &g_characterImportCandidate.rightsConfirmed);
+    ui::SpeakFocusedItem(
+        "Local-use rights confirmation", nullptr,
+        "Required before install. The package includes license text, but the importer cannot verify copyright, trademark, attribution, or redistribution rights and never uploads this content.");
+    ui::TextSubtleWrapped(
+        "The package includes cryptographically bound license text, but the importer cannot verify copyright, trademark, attribution, or redistribution rights. Installation is local and never uploads the package.");
+    if (!g_characterImportCandidate.rightsConfirmed) ImGui::BeginDisabled();
+    const char *installLabel = sameSource ? "Retain reviewed package"
+        : review.installed ? "Install reviewed update"
+                           : "Install reviewed character";
+    if (ImGui::Button(installLabel)) {
+        const bool wasUpdate = review.installed;
+        if (installReviewedCharacterPackage()) {
+            setStatus(
+                wasUpdate
+                    ? "Reviewed character update installed; local settings and enabled state were preserved."
+                    : "Reviewed character installed and ready for Workshop setup.",
+                AppTheme::good());
+            return true;
+        } else {
+            setStatus(
+                "Nothing was installed. The package or installed character may have changed; validate and review it again.",
+                AppTheme::bad());
+            return false;
+        }
+    }
+    if (!g_characterImportCandidate.rightsConfirmed) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        installLabel, nullptr,
+        "Commits only the exact package bytes and installed base shown in this review. Gameplay authority remains with the named built-in donor.");
+    ImGui::SameLine();
+    if (ImGui::Button("Discard candidate")) {
+        g_characterImportCandidate = CharacterImportCandidate{};
+        setStatus("Candidate review discarded; no installed files changed.",
+                  AppTheme::subtle());
+        return false;
+    }
+    ui::SpeakFocusedItem(
+        "Discard candidate", nullptr,
+        "Closes this review without installing or deleting any files.");
+    return false;
+}
+
 bool drawCustomCharactersSection(bool compact) {
     bool changed = false;
     if (!g_characterRegistryLoaded) refreshCharacterRegistry();
@@ -5070,10 +5513,8 @@ bool drawCustomCharactersSection(bool compact) {
     }
     const bool canImport = g_characterImportPath[0] != '\0';
     if (!canImport) ImGui::BeginDisabled();
-    if (ImGui::Button("Validate and import")) {
-        if (Settings_importCharacterPackage(g_characterImportPath)) {
-            changed = true;
-        }
+    if (ImGui::Button("Validate and review")) {
+        (void)Settings_importCharacterPackage(g_characterImportPath);
     }
     if (!canImport) ImGui::EndDisabled();
     ImGui::SameLine();
@@ -5099,6 +5540,8 @@ bool drawCustomCharactersSection(bool compact) {
         ImGui::TextWrapped("%s", g_characterManagerReport.c_str());
         ImGui::TreePop();
     }
+
+    changed |= drawCharacterCandidateReview(compact);
 
     const int characterCount =
         mdkr_modern_character_registry_count(&g_characterRegistry);
@@ -5289,14 +5732,17 @@ bool Settings_importCharacterPackage(const char *path) {
     }
     std::snprintf(g_characterImportPath, sizeof(g_characterImportPath), "%s",
                   path);
-    if (!importCharacterPackage(path)) {
-        setStatus("Character import failed; open the importer report below.",
+    if (!stageCharacterPackage(path)) {
+        g_characterImportCandidate = CharacterImportCandidate{};
+        setStatus("Character validation failed; open the importer report below.",
                   AppTheme::bad());
         return false;
     }
-    g_characterImportPath[0] = '\0';
-    setStatus("Character package validated, compiled, and installed.",
-              AppTheme::good());
+    setStatus(
+        g_characterImportCandidate.installed
+            ? "Character update validated; review every change before installing."
+            : "Character validated; review its identity, gameplay donor, rig, and performance before installing.",
+        AppTheme::good());
     return true;
 }
 

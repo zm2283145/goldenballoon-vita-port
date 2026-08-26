@@ -729,24 +729,34 @@ than being distorted by mandatory solving.
 
 ## Launcher and community workflow
 
-1. User chooses a `.mdkrchar` or a raw `.glb` plus manifest/license files.
-2. Launcher inventories the package without extracting it and shows provenance.
-3. User confirms they have the right to use the content locally.
-4. Import worker runs Khronos validation, MDKR policy validation, normalization,
-   compilation, and a headless render smoke.
-5. Launcher shows triangle/joint/material/texture/VRAM/clip statistics and every
-   repair or fallback. Repairs are never silent.
-6. A successful cache becomes selectable; a failed import is quarantined with a
-   machine-readable report.
-7. Disabling atomically renames `<id>.mdkc` to `<id>.mdkc.disabled`; runtime
+1. User chooses or drops a `.mdkrchar` package.
+2. The launcher validates and, for a source-only developer package, compiles a
+   temporary candidate without publishing a runtime cache or retained revision.
+3. A bounded candidate summary shows identity, portrait presence, donor and
+   vehicle compatibility, rig/review state, total and per-LOD geometry,
+   animation channels/keys, materials, textures and decoded memory beside the
+   currently installed revision. Changes are stated in text, not colour alone.
+4. User confirms they have the right to use the content locally. The UI states
+   that included license text cannot prove copyright, trademark, attribution,
+   or redistribution rights and that the package is never uploaded.
+5. The install action binds the exact package SHA-256 and reviewed installed
+   source digest. The commit rechecks the package bytes, then checks the current
+   enabled or disabled cache under the cross-tool import lock. A changed file,
+   newly appeared ID, or changed installed base fails without publishing.
+6. Portable packages follow this path natively without Python. Source-only
+   developer packages emit the same strict fixed-field candidate protocol and
+   use the same optimistic commit pair through the author compiler.
+7. A successful cache becomes selectable; failed validation or commit retains
+   the last-known-good installed cache and requires a fresh visible review.
+8. Disabling atomically renames `<id>.mdkc` to `<id>.mdkc.disabled`; runtime
    scans ignore it while Workshop inventory and source-backed editors retain it.
    Updates preserve this state. Player assignments and package-owned fit/review
    preferences remain, and presentation degrades to the built-in racer.
-8. Permanent deletion resolves the exact cache and content-addressed source/
+9. Permanent deletion resolves the exact cache and content-addressed source/
    provenance paths, reports their counts before confirmation, then clears
    package-owned local preferences. Ordinary saves, records, ghosts, physics,
    and roster identity never embed the package.
-9. Revision recovery authenticates the exact source and provenance pair.
+10. Revision recovery authenticates the exact source and provenance pair.
    Restore snapshots those bytes, recompiles against an optimistic current-cache
    digest, and preserves enabled/disabled state; export uses exclusive creation
    and never overwrites an existing destination.

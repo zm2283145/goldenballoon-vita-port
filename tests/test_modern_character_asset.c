@@ -228,6 +228,8 @@ int main(int argc, char **argv) {
     char import_lock[4096];
     char prefix_witness[4096];
     char deletion_failure_witness[4096];
+    char reviewed_package_sha[65];
+    char reviewed_source_digest[65];
     FILE *lock_file;
     int player;
     float select_model_y;
@@ -688,11 +690,67 @@ int main(int argc, char **argv) {
                 argv[7], argv[5], &install_result) &&
                 strstr(install_result.message, "does not match") != NULL,
             "native portable import binds a valid cache to its exact source members");
-    require(mdkr_modern_character_install_portable(
-                argv[4], argv[5], &install_result),
+    require(mdkr_modern_character_inspect_portable(
+                argv[4], &install_result) &&
+                strcmp(install_result.id, "org.example.pipeline-proof") == 0 &&
+                strcmp(install_result.display_name, "Pipeline Proof") == 0 &&
+                strlen(install_result.package_sha256) == 64u &&
+                strlen(install_result.source_digest) == 64u &&
+                install_result.donor == 9u &&
+                install_result.vehicle_mask == 7u &&
+                install_result.vertices == 3u &&
+                install_result.triangles == 1u &&
+                install_result.joints == 16u &&
+                install_result.animations == 1u &&
+                install_result.animation_channels == 1u &&
+                install_result.animation_keys == 2u &&
+                install_result.identity_present == 1u &&
+                install_result.rig_mode == 2u &&
+                install_result.rig_reviewed == 1u &&
+                install_result.rig_roles == 16u &&
+                install_result.lod_vertices[0] == 3u &&
+                install_result.lod_triangles[0] == 1u &&
+                install_result.lod_primitives[0] == 1u &&
+                install_result.decoded_texture_bytes == 4u,
+            "mutation-free portable inspection publishes exact compiled comparison data");
+    (void)snprintf(reviewed_package_sha, sizeof(reviewed_package_sha), "%s",
+                   install_result.package_sha256);
+    (void)snprintf(reviewed_source_digest, sizeof(reviewed_source_digest), "%s",
+                   install_result.source_digest);
+    require(mdkr_modern_character_registry_init(&registry, argv[5]) == 0 &&
+                mdkr_modern_character_registry_count(&registry) == 0,
+            "portable inspection never publishes a runtime cache");
+    mdkr_modern_character_registry_shutdown(&registry);
+    require(mdkr_modern_character_install_portable_reviewed(
+                argv[4], argv[5], reviewed_package_sha, "", &install_result),
             install_result.message);
     require(strcmp(install_result.id, "org.example.pipeline-proof") == 0,
             "native portable import publishes the compiled package identity");
+    require(mdkr_modern_character_install_portable_reviewed(
+                argv[4], argv[5], reviewed_package_sha,
+                reviewed_source_digest, &install_result),
+            "reviewed native update accepts the exact current base");
+    require(!mdkr_modern_character_install_portable_reviewed(
+                argv[4], argv[5], reviewed_package_sha, "", &install_result) &&
+                strstr(install_result.message, "installed after review") != NULL,
+            "reviewed native new install refuses an id that appeared concurrently");
+    require(!mdkr_modern_character_install_portable_reviewed(
+                argv[7], argv[5], reviewed_package_sha,
+                reviewed_source_digest, &install_result) &&
+                strstr(install_result.message, "package file changed") != NULL,
+            "reviewed native install binds the exact candidate package bytes");
+    require(!mdkr_modern_character_install_portable_reviewed(
+                argv[4], argv[5],
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                reviewed_source_digest, &install_result) &&
+                strstr(install_result.message, "digests are invalid") != NULL,
+            "reviewed native install rejects non-canonical digest text");
+    require(!mdkr_modern_character_install_portable_reviewed(
+                argv[4], argv[5], reviewed_package_sha,
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                &install_result) &&
+                strstr(install_result.message, "installed character changed") != NULL,
+            "reviewed native update binds the exact installed base revision");
     require(mdkr_modern_character_registry_init(&registry, argv[5]) == 0 &&
                 mdkr_modern_character_registry_count(&registry) == 1,
             "native portable import is immediately discoverable");

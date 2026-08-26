@@ -1075,6 +1075,14 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
                     _pack_records(RIG_ROLE_FORMAT, rig_role_records)),
         ))
     compiled = _assemble(sections, source_digest)
+    lod_vertices = [0, 0, 0, 0]
+    lod_triangles = [0, 0, 0, 0]
+    lod_primitives = [0, 0, 0, 0]
+    for primitive in primitive_records:
+        lod = primitive[7]
+        lod_vertices[lod] += primitive[1]
+        lod_triangles[lod] += primitive[3] // 3
+        lod_primitives[lod] += 1
     report = {
         "compiler": COMPILER_ID,
         "format": "mdkc-v1",
@@ -1092,6 +1100,7 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         "lod_levels": max(node_lods, default=0) + 1,
         "materials": len(material_records),
         "textures": len(texture_records),
+        "encoded_texture_bytes": len(texture_data),
         "decoded_texture_bytes": decoded_texture_bytes,
         "nodes": len(node_records),
         "skins": len(skin_records),
@@ -1101,6 +1110,9 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         "motion_channels": motion_channels,
         "static_animations": static_animations,
         "animation_keys": len(key_records),
+        "lod_vertices": lod_vertices,
+        "lod_triangles": lod_triangles,
+        "lod_primitives": lod_primitives,
         "semantics": len(semantic_records),
         "sockets": len(socket_records),
         "source_schema": manifest["schema"],

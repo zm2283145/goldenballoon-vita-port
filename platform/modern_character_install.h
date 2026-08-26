@@ -3,6 +3,7 @@
 #define MDKR64_MODERN_CHARACTER_INSTALL_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,13 +18,52 @@ typedef struct MdkrModernCharacterInstallResult {
     unsigned failed_files;
     char id[65];
     char display_name[97];
+    char package_sha256[65];
+    char source_digest[65];
+    uint32_t donor;
+    uint32_t vehicle_mask;
+    uint32_t vertices;
+    uint32_t triangles;
+    uint32_t primitives;
+    uint32_t lod_levels;
+    uint32_t materials;
+    uint32_t textures;
+    uint32_t nodes;
+    uint32_t skins;
+    uint32_t joints;
+    uint32_t animations;
+    uint32_t animation_channels;
+    uint32_t animation_keys;
+    uint32_t identity_present;
+    uint32_t rig_mode;
+    uint32_t rig_reviewed;
+    uint32_t rig_roles;
+    uint64_t encoded_texture_bytes;
+    uint64_t decoded_texture_bytes;
+    uint32_t lod_vertices[4];
+    uint32_t lod_triangles[4];
+    uint32_t lod_primitives[4];
     char message[256];
 } MdkrModernCharacterInstallResult;
+
+/* Performs every portable-package/cache/digest validation and publishes the
+ * exact compiled summary without creating a directory or installing bytes. */
+int mdkr_modern_character_inspect_portable(
+    const char *package_path, MdkrModernCharacterInstallResult *result);
 
 /* Returns one only after the cache has been validated and atomically
  * published. A valid source-only package returns zero with needs_compiler=1. */
 int mdkr_modern_character_install_portable(
     const char *package_path, const char *directory,
+    MdkrModernCharacterInstallResult *result);
+
+/* Commits only if the package SHA-256 and installed source digest still match
+ * the candidate/base pair previously shown to the user. An empty expected
+ * installed digest means the reviewed state had no package with this id. */
+int mdkr_modern_character_install_portable_reviewed(
+    const char *package_path, const char *directory,
+    const char *expected_package_sha256,
+    const char *expected_installed_source_digest,
     MdkrModernCharacterInstallResult *result);
 
 /* Atomically moves one validated cache into or out of runtime discovery while

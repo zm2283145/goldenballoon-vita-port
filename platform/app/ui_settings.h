@@ -40,10 +40,11 @@ void Settings_setDonorGameplayProfiles(
     const MdkrDonorGameplayProfiles *profiles,
     const char *unavailableReason = nullptr);
 
-// Validate and install a package through the same native-first path used by
-// the Custom Characters section. This is also the window-wide drag-and-drop
-// entry point, so Linux builds without a native picker still have a direct
-// package workflow. The Settings panel owns and displays the detailed report.
+// Validate and stage a mutation-free package review through the same
+// native-first path used by the Custom Characters section. This is also the
+// window-wide drag-and-drop entry point, so Linux builds without a native
+// picker can inspect a package before explicitly committing it. The Settings
+// panel owns the comparison, final install action, and detailed report.
 bool Settings_importCharacterPackage(const char *path);
 
 // Consume the one-shot exact-game preview requested by the launcher Workshop.
