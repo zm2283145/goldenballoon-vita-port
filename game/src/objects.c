@@ -42,6 +42,7 @@
 #include "math_util.h"
 #include "menu.h"
 #include "network_player_authority.h"
+#include "net/net_roster_runtime.h"
 #include "object_functions.h"
 #include "object_layout.h"
 #include "object_models.h"
@@ -6280,12 +6281,111 @@ void func_80012CE8(Gfx **dList) {
     }
 }
 
+#if MDKR_ENABLE_ONLINE_BETA
+/* ---- online rollback partition-integrity hardening + observability ----
+ *
+ * The object list gObjPtrList is partitioned in two stages every authoritative
+ * tick (obj_sort_tick): func_8001E4C4 moves cutscene-inactive animation objects
+ * ahead of gObjectListStart, then get_first_active_object moves the remaining
+ * NON-rendered entries -- particles and every object whose header carries
+ * HEADER_FLAGS_UNK_0001, which includes a track's spectate BHV_CAMERA_CONTROL
+ * objects -- ahead of gFirstActiveObjectId. The scene draw walks only the tail
+ * [gObjSortFirstActive, gObjectCount), so those camera objects are normally
+ * never drawn.
+ *
+ * get_first_active_object CACHES that boundary in gFirstActiveObjectId and
+ * returns it verbatim whenever it is nonzero; the cache is only invalidated on a
+ * cutscene change or a list rebuild, and is maintained incrementally by the free
+ * path in between. The rollback snapshot (platform/rollback) restores gObjPtrList,
+ * gObjectCount and gObjectListStart, but NOT this cache -- so after a deep
+ * catch-up rollback on a solo online endpoint the cached boundary can disagree
+ * with the restored list. A boundary that ends up too low makes the render tail
+ * spill into the inactive front partition: the level's spectate cameras get
+ * drawn (the floating-camera artifact) and a recycled/inactive entry can feed a
+ * wild display-list sub-list pointer into the walk (a rare SIGSEGV). Same root,
+ * two symptoms.
+ *
+ * All of the hardening below is compiled only in the online-beta build and is
+ * inert unless mdkr_net_roster_runtime_active() (false offline), so offline play
+ * -- and the release binary -- is byte-identical. Set MDKR_TEST_DISABLE_PARTITION_FIX
+ * to A/B the fix (render-purity / repro). MDKR_TEST_PARTITION_TRACE narrates it.
+ */
+s32 gPartitionTraceCameraDraws; /* spectate cameras that reached render_object */
+
+static s32 mdkr_partition_trace_enabled(void) {
+    static s32 state = -1;
+    if (state < 0) {
+        const char *v = getenv("MDKR_TEST_PARTITION_TRACE");
+        state = (v != NULL && v[0] != '\0' && v[0] != '0') ? 1 : 0;
+    }
+    return state;
+}
+
+static s32 mdkr_partition_fix_enabled(void) {
+    static s32 state = -1;
+    if (state < 0) {
+        const char *v = getenv("MDKR_TEST_DISABLE_PARTITION_FIX");
+        state = (v != NULL && v[0] != '\0' && v[0] != '0') ? 0 : 1;
+    }
+    return state;
+}
+
+/* Test-only faithful reproduction of the post-rollback boundary state. A deep
+ * catch-up restores gObjPtrList/gObjectCount/gObjectListStart but NOT the cached
+ * boundary gFirstActiveObjectId, which the free path had lowered as front objects
+ * retired -- so the restore re-materialises those objects while the boundary
+ * stays below the live active region, and the render tail spills into the front
+ * partition (the spectate cameras). MDKR_TEST_PARTITION_STALE_AT=<n> forces that
+ * exact state on the n-th online render tick by dropping the cached boundary to
+ * gObjectListStart. The object list itself stays valid, so this is the real
+ * corruption made deterministic and offline; 0 disables. */
+static s32 mdkr_partition_stale_inject_tick(void) {
+    static s32 state = -1;
+    if (state < 0) {
+        const char *v = getenv("MDKR_TEST_PARTITION_STALE_AT");
+        long parsed = (v != NULL) ? strtol(v, NULL, 10) : 0;
+        state = (parsed > 0 && parsed < 100000000L) ? (s32)parsed : 0;
+    }
+    return state;
+}
+
+/* Scene render filter (online belt). TRUE when this object must be kept out of
+ * render_object: it is a non-particle object the active-partition classifies as
+ * non-rendered (HEADER_FLAGS_UNK_0001 -- a spectate BHV_CAMERA_CONTROL and its
+ * kin), so it can only be in the render tail because a post-rollback boundary
+ * went stale. Particles are excluded from this test: they route through the
+ * scene loops' own particle branch and are legitimately drawn. Never fires
+ * offline (roster inactive) or under the A/B disable, so offline/release render
+ * output is byte-identical. */
+s32 mdkr_scene_render_partition_excluded(const Object *obj) {
+    return mdkr_net_roster_runtime_active() && mdkr_partition_fix_enabled() &&
+           obj != NULL && !(obj->trans.flags & OBJ_FLAGS_PARTICLE) &&
+           obj->header != NULL &&
+           (obj->header->flags & HEADER_FLAGS_UNK_0001);
+}
+#endif
+
 /**
  * Update the object stack trace, set the draw pointers, then begin rendering the object.
  * Official Name: objPrintObject
  */
 void render_object(Gfx **dList, Mtx **mtx, Vertex **verts, Object *obj) {
     f32 scale;
+#if MDKR_ENABLE_ONLINE_BETA
+    /* Detector for the online rollback partition-corruption class: a spectate
+     * BHV_CAMERA_CONTROL object should be partitioned out of the render tail and
+     * never arrive here. Counting it (and, when tracing, narrating it) is what
+     * turns "floating cameras" into a number the repro/regression can assert. */
+    if (obj != NULL && obj->behaviorId == BHV_CAMERA_CONTROL) {
+        gPartitionTraceCameraDraws++;
+        if (mdkr_partition_trace_enabled()) {
+            fprintf(stderr,
+                    "[PARTITION-TRACE] spectate BHV_CAMERA_CONTROL reached "
+                    "render_object listStart=%d firstActive=%d count=%d\n",
+                    gObjectListStart, gFirstActiveObjectId, gObjectCount);
+        }
+    }
+#endif
 #ifdef NATIVE_PORT
     if (taj_visual_suppress_donor_draw(obj) || wizpig_visual_suppress_donor_draw(obj) ||
         terry_visual_suppress_donor_draw(obj)) {
@@ -7758,6 +7858,77 @@ void obj_sort_tick(void) {
     savedCameraID = get_current_viewport();
     scene_build_last_viewport_basis();
     gObjSortFirstActive = get_first_active_object(&gObjSortObjCount);
+#if MDKR_ENABLE_ONLINE_BETA
+    if (mdkr_net_roster_runtime_active()) {
+        s32 injectAt = mdkr_partition_stale_inject_tick();
+        if (injectAt > 0) {
+            static s32 sInjectTickCounter = 0;
+            sInjectTickCounter++;
+            if (sInjectTickCounter >= injectAt) {
+                /* Persist the corruption exactly as a real restore would: the
+                 * cached boundary stays below the active region every subsequent
+                 * tick until a cutscene change / list rebuild would reset it. */
+                gFirstActiveObjectId = (s16)gObjectListStart;
+                gObjSortFirstActive = gObjectListStart;
+                if (sInjectTickCounter == injectAt) {
+                    fprintf(stderr,
+                            "[PARTITION-TRACE] INJECTED stale boundary at online "
+                            "tick %d: firstActive dropped to listStart=%d "
+                            "(count=%d)\n",
+                            sInjectTickCounter, gObjectListStart, gObjectCount);
+                }
+            }
+        }
+    }
+    /* Rollback partition-range bound (online only). The render walk covers
+     * exactly [gObjSortFirstActive, gObjSortObjCount). get_first_active_object
+     * returns the CACHED boundary gFirstActiveObjectId, which the rollback
+     * snapshot never captures: the free path lowers it as front objects retire,
+     * but a restore re-materialises those objects in the list WITHOUT undoing the
+     * decrement, so the boundary can be left below the live active region. Keep
+     * the walked span inside the restored list so a stale boundary or count can
+     * never index a wild Object* into the display-list walk (the rare SIGSEGV).
+     * The spectate cameras a stale-low boundary would expose are then dropped by
+     * the per-object scene filter (mdkr_scene_render_partition_excluded). This is
+     * a no-op whenever the boundary is already valid (always, offline/normal), so
+     * it never moves the list order or the canonical fold. Inert offline:
+     * mdkr_net_roster_runtime_active() is false there. */
+    if (mdkr_net_roster_runtime_active() && mdkr_partition_fix_enabled()) {
+        if (gObjSortObjCount < 0) {
+            gObjSortObjCount = 0;
+        }
+        if (gObjSortObjCount > gObjectCount) {
+            gObjSortObjCount = gObjectCount;
+        }
+        if (gObjSortFirstActive < gObjectListStart) {
+            gObjSortFirstActive = gObjectListStart;
+        }
+        if (gObjSortFirstActive > gObjSortObjCount) {
+            gObjSortFirstActive = gObjSortObjCount;
+        }
+    }
+    if (mdkr_partition_trace_enabled() && mdkr_net_roster_runtime_active()) {
+        /* Corruption detector, independent of the belt: count the spectate
+         * cameras sitting inside the render tail this tick. Normally zero -- the
+         * partition keeps them ahead of the boundary -- so any nonzero value is a
+         * stale-boundary event that the scene filter must then suppress. */
+        s32 cameras = 0;
+        s32 i;
+        for (i = gObjSortFirstActive; i < gObjSortObjCount; i++) {
+            Object *obj = gObjPtrList[i];
+            if (obj != NULL && obj->behaviorId == BHV_CAMERA_CONTROL) {
+                cameras++;
+            }
+        }
+        if (cameras != 0) {
+            fprintf(stderr,
+                    "[PARTITION-TRACE] render tail [%d,%d) of %d holds "
+                    "spectateCameras=%d cachedBoundary=%d (listStart=%d)\n",
+                    gObjSortFirstActive, gObjSortObjCount, gObjectCount,
+                    cameras, gFirstActiveObjectId, gObjectListStart);
+        }
+    }
+#endif
     sort_objects_by_dist(gObjSortFirstActive, gObjSortObjCount - 1);
     set_active_camera(savedCameraID);
 }

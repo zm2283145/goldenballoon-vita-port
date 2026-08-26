@@ -4061,6 +4061,14 @@ void render_level_geometry_and_objects(void) {
         routeAdmitted = scene_wide_draw_route(
             obj, MDKR_VIEWPORT_ROUTE_OPAQUE, objectsVisible, visibleFlags,
             routeAdmitted, &visible, &renderOpacity);
+#if MDKR_ENABLE_ONLINE_BETA
+        /* Rollback partition belt (online only): never draw a spectate camera /
+         * non-rendered HEADER_FLAGS_UNK_0001 object even if a stale post-rollback
+         * boundary let it into this render tail. Inert offline/release. */
+        if (routeAdmitted && mdkr_scene_render_partition_excluded(obj)) {
+            routeAdmitted = FALSE;
+        }
+#endif
 #else
         visible = 255;
         objFlags = obj->trans.flags;
@@ -4128,6 +4136,11 @@ void render_level_geometry_and_objects(void) {
         routeAdmitted = scene_wide_draw_route(
             obj, MDKR_VIEWPORT_ROUTE_SPECIAL, objectsVisible, visibleFlags,
             routeAdmitted, &visible, &renderOpacity);
+#if MDKR_ENABLE_ONLINE_BETA
+        if (routeAdmitted && mdkr_scene_render_partition_excluded(obj)) {
+            routeAdmitted = FALSE;
+        }
+#endif
 #else
         objFlags = obj->trans.flags;
         if (objFlags & visibleFlags) {
@@ -4207,6 +4220,11 @@ void render_level_geometry_and_objects(void) {
         routeAdmitted = scene_wide_draw_route(
             obj, MDKR_VIEWPORT_ROUTE_BLEND, objectsVisible, visibleFlags,
             routeAdmitted, &visible, &renderOpacity);
+#if MDKR_ENABLE_ONLINE_BETA
+        if (routeAdmitted && mdkr_scene_render_partition_excluded(obj)) {
+            routeAdmitted = FALSE;
+        }
+#endif
 #else
         visible = 255;
         objFlags = obj->trans.flags;

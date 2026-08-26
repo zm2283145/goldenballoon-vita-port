@@ -353,6 +353,15 @@ void obj_visibility_tick(void);
 void obj_authoritative_texture_tick(Object *obj, s32 updateRate, f32 viewDistance);
 extern s32 gObjSortFirstActive;
 extern s32 gObjSortObjCount;
+#if MDKR_ENABLE_ONLINE_BETA
+/* Scene render filter (online belt) for the rollback partition class: TRUE when
+ * a non-particle HEADER_FLAGS_UNK_0001 object (a spectate camera) must be kept
+ * out of render_object. Inert offline and under the A/B disable. */
+s32 mdkr_scene_render_partition_excluded(const Object *obj);
+/* Count of spectate BHV_CAMERA_CONTROL objects that have reached render_object
+ * (should stay 0). Observability for the online rollback partition class. */
+extern s32 gPartitionTraceCameraDraws;
+#endif
 #endif
 u32 func_800179D0(void);
 void set_taj_challenge_type(s32 vehicleID);
