@@ -1864,6 +1864,10 @@ std::map<std::string, CharacterRevisionInventory>
 struct CharacterIdentityEdit {
     bool loaded = false;
     uint8_t sourceSha256[32] = {0};
+    char displayName[MDKR_MODERN_CHARACTER_NAME_MAX] = {0};
+    char shortName[MDKR_MODERN_CHARACTER_SHORT_NAME_MAX] = {0};
+    char narrationName[MDKR_MODERN_CHARACTER_NAME_MAX] = {0};
+    char sortLabel[MDKR_MODERN_CHARACTER_NAME_MAX] = {0};
     char portraitPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
     float minimapRgb[3] = {0.86f, 0.28f, 0.56f};
     std::array<uint8_t, MDKR_MODERN_PORTRAIT_BYTES> canvas{};
@@ -2418,6 +2422,9 @@ CharacterCandidateIndex::Candidate installedCharacterSummary(
     CharacterCandidateIndex::Candidate summary;
     summary.id = entry.id;
     summary.displayName = entry.display_name;
+    summary.shortName = entry.short_name;
+    summary.narrationName = entry.narration_name;
+    summary.sortLabel = entry.sort_label;
     summary.sourceDigest = characterDigestHex(entry.source_sha256);
     summary.donor = entry.donor;
     summary.vehicleMask = entry.vehicle_mask;
@@ -2460,6 +2467,9 @@ CharacterCandidateIndex::Candidate nativeCharacterSummary(
     CharacterCandidateIndex::Candidate summary;
     summary.id = result.id;
     summary.displayName = result.display_name;
+    summary.shortName = result.short_name;
+    summary.narrationName = result.narration_name;
+    summary.sortLabel = result.sort_label;
     summary.packageSha256 = result.package_sha256;
     summary.sourceDigest = result.source_digest;
     summary.donor = result.donor;
@@ -4693,6 +4703,14 @@ CharacterIdentityEdit &loadCharacterIdentityEdit(
         edit.redo.clear();
         edit.canvasDirty = false;
         edit.strokeActive = false;
+        std::snprintf(edit.displayName, sizeof(edit.displayName), "%s",
+                      entry->display_name);
+        std::snprintf(edit.shortName, sizeof(edit.shortName), "%s",
+                      entry->short_name);
+        std::snprintf(edit.narrationName, sizeof(edit.narrationName), "%s",
+                      entry->narration_name);
+        std::snprintf(edit.sortLabel, sizeof(edit.sortLabel), "%s",
+                      entry->sort_label);
         std::memcpy(edit.sourceSha256, entry->source_sha256,
                     sizeof(edit.sourceSha256));
         edit.loaded = true;
@@ -4705,7 +4723,32 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     const bool stagingDraft = g_characterActiveDrafts.find(entry->id) !=
         g_characterActiveDrafts.end();
     ui::TextSubtleWrapped(
-        "Choose square PNG artwork and a readable minimap colour. The importer validates the source, downsamples it once to the exact 40 × 40 game format, and atomically activates a new local package revision. The model, license, gameplay profile, and previous source revision are preserved.");
+        "Author the character's player-facing names, square portrait artwork, and readable minimap colour. Named drafts compile these identity fields with gameplay and rig choices as one reviewed source revision.");
+    if (!stagingDraft) ImGui::BeginDisabled();
+    ImGui::SetNextItemWidth(std::min(420.0f, ImGui::GetContentRegionAvail().x));
+    (void)ImGui::InputTextWithHint(
+        "Display name##character-display-name", "Dixie Kong",
+        edit.displayName, sizeof(edit.displayName));
+    ImGui::SetNextItemWidth(std::min(420.0f, ImGui::GetContentRegionAvail().x));
+    (void)ImGui::InputTextWithHint(
+        "Short name##character-short-name", "Dixie",
+        edit.shortName, sizeof(edit.shortName));
+    ImGui::SetNextItemWidth(std::min(420.0f, ImGui::GetContentRegionAvail().x));
+    (void)ImGui::InputTextWithHint(
+        "Narration name##character-narration-name", "Dixie Kong",
+        edit.narrationName, sizeof(edit.narrationName));
+    ImGui::SetNextItemWidth(std::min(420.0f, ImGui::GetContentRegionAvail().x));
+    (void)ImGui::InputTextWithHint(
+        "Sort label##character-sort-label", "Kong, Dixie",
+        edit.sortLabel, sizeof(edit.sortLabel));
+    if (!stagingDraft) ImGui::EndDisabled();
+    ui::TextSubtleWrapped(
+        "Display name is the full visible label; short name fits compact roster tiles; narration name is the accessible spoken label; sort label controls alphabetical roster order. Each must be non-empty printable UTF-8. The current game font safely substitutes unsupported glyphs until full text shaping is available.");
+    if (!stagingDraft) {
+        ui::TextSubtleWrapped(
+            "Create or resume a named draft to edit names. This prevents a metadata-only shortcut from publishing a partial identity revision.");
+    }
+    if (stagingDraft) ImGui::BeginDisabled();
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputTextWithHint(
         "Portrait source PNG##character-portrait-path",
@@ -4718,6 +4761,7 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
                           picked.c_str());
         }
     }
+    if (stagingDraft) ImGui::EndDisabled();
     ImGui::SetNextItemWidth(std::min(360.0f, ImGui::GetContentRegionAvail().x));
     (void)ImGui::ColorEdit3(
         "Minimap colour##character-minimap-colour", edit.minimapRgb,
@@ -4793,6 +4837,10 @@ bool captureCharacterDraftSnapshot(
     }
     snapshot.portrait = identity.canvas;
     snapshot.portraitSourcePath = identity.portraitPath;
+    snapshot.displayName = identity.displayName;
+    snapshot.shortName = identity.shortName;
+    snapshot.narrationName = identity.narrationName;
+    snapshot.sortLabel = identity.sortLabel;
     snapshot.scale = tuning.scale;
     snapshot.animationSpeed = tuning.animationSpeed;
     snapshot.lodBias = tuning.lodBias;
@@ -4922,6 +4970,22 @@ bool applyCharacterDraftSnapshot(
                     std::begin(entry->portrait_rgba));
     std::snprintf(identity.portraitPath, sizeof(identity.portraitPath), "%s",
                   snapshot.portraitSourcePath.c_str());
+    const char *displayName = snapshot.displayName.empty()
+        ? entry->display_name : snapshot.displayName.c_str();
+    const char *shortName = snapshot.shortName.empty()
+        ? entry->short_name : snapshot.shortName.c_str();
+    const char *narrationName = snapshot.narrationName.empty()
+        ? entry->narration_name : snapshot.narrationName.c_str();
+    const char *sortLabel = snapshot.sortLabel.empty()
+        ? entry->sort_label : snapshot.sortLabel.c_str();
+    std::snprintf(identity.displayName, sizeof(identity.displayName), "%s",
+                  displayName);
+    std::snprintf(identity.shortName, sizeof(identity.shortName), "%s",
+                  shortName);
+    std::snprintf(identity.narrationName, sizeof(identity.narrationName), "%s",
+                  narrationName);
+    std::snprintf(identity.sortLabel, sizeof(identity.sortLabel), "%s",
+                  sortLabel);
     std::memcpy(identity.sourceSha256, entry->source_sha256,
                 sizeof(identity.sourceSha256));
 
@@ -5117,6 +5181,14 @@ bool buildCharacterDraftSource(const MdkrModernCharacterEntry *entry) {
         "{\n  \"schema\": \"mdkr-workshop-build-v1\",\n"
         "  \"base_cache_source_digest\": \"" +
         characterDigestHex(entry->source_sha256) + "\",\n"
+        "  \"display_name\": " +
+        characterJsonString(identity.displayName) + ",\n"
+        "  \"short_name\": " +
+        characterJsonString(identity.shortName) + ",\n"
+        "  \"narration_name\": " +
+        characterJsonString(identity.narrationName) + ",\n"
+        "  \"sort_label\": " +
+        characterJsonString(identity.sortLabel) + ",\n"
         "  \"donor\": \"" + donorIds[profile.donor] + "\",\n"
         "  \"vehicles\": [" + vehicles + "],\n"
         "  \"portrait_rgba_hex\": \"" + portraitHex + "\",\n"
@@ -5632,6 +5704,9 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
     ImGui::PushID(entry->id);
     ImGui::SeparatorText("Overview");
     ImGui::TextUnformatted(entry->display_name);
+    ImGui::TextDisabled(
+        "Short label: %s · Narration: %s · Sort: %s",
+        entry->short_name, entry->narration_name, entry->sort_label);
     ImGui::TextDisabled(
         "Appearance package · %s gameplay profile · local presentation only",
         donorName(entry->donor));
@@ -6153,6 +6228,12 @@ bool drawCharacterCandidateReview(bool compact) {
     std::vector<CandidateComparisonRow> rows;
     addCandidateTextRow(rows, "Display name", current.displayName,
                         next.displayName, review.installed);
+    addCandidateTextRow(rows, "Short name", current.shortName,
+                        next.shortName, review.installed);
+    addCandidateTextRow(rows, "Narration name", current.narrationName,
+                        next.narrationName, review.installed);
+    addCandidateTextRow(rows, "Sort label", current.sortLabel,
+                        next.sortLabel, review.installed);
     addCandidateTextRow(
         rows, "License (SPDX)",
         current.provenancePresent ? current.licenseSpdx
@@ -6468,9 +6549,15 @@ bool drawCustomCharactersSection(bool compact) {
             ? std::string(workshopEntry->display_name) +
                 (workshopEntry->enabled != 0u ? "" : " (disabled)")
             : "Choose a character";
-        if (ImGui::BeginCombo(
-                "Character to edit##character-workshop-library",
-                workshopPreview.c_str())) {
+        const bool libraryComboOpen = ImGui::BeginCombo(
+            "Character to edit##character-workshop-library",
+            workshopPreview.c_str());
+        ui::SpeakFocusedItem(
+            "Character to edit",
+            workshopEntry != nullptr ? workshopEntry->narration_name
+                                     : "No character selected",
+            "Choose an installed character package to inspect or edit.");
+        if (libraryComboOpen) {
             for (int index = 0; index < characterCount; ++index) {
                 const MdkrModernCharacterEntry *entry =
                     mdkr_modern_character_registry_entry(&g_characterRegistry,
@@ -6490,6 +6577,12 @@ bool drawCustomCharactersSection(bool compact) {
                     (void)AppConfig::save();
                     workshopEntry = entry;
                 }
+                const std::string spokenState =
+                    std::string(entry->enabled != 0u ? "enabled" : "disabled") +
+                    (qualified ? "" : ", donor review required");
+                ui::SpeakFocusedItem(
+                    entry->narration_name, spokenState.c_str(),
+                    "Select this package for Workshop editing.");
             }
             ImGui::EndCombo();
         }
@@ -6525,7 +6618,16 @@ bool drawCustomCharactersSection(bool compact) {
                 : "Built-in racer";
         const std::string label =
             "Player " + std::to_string(player + 1) + "##custom-character";
-        if (ImGui::BeginCombo(label.c_str(), preview.c_str())) {
+        const std::string spokenLabel =
+            "Player " + std::to_string(player + 1) + " character";
+        const bool assignmentComboOpen = ImGui::BeginCombo(
+            label.c_str(), preview.c_str());
+        ui::SpeakFocusedItem(
+            spokenLabel.c_str(),
+            selectedAvailable ? selectedEntry->narration_name
+                              : "Built-in racer",
+            "Choose a local presentation for this player. Gameplay remains owned by its built-in donor.");
+        if (assignmentComboOpen) {
             const bool noneSelected =
                 selected.empty() || !selectedAvailable;
             if (ImGui::Selectable("Built-in racer", noneSelected)) {
@@ -6541,6 +6643,9 @@ bool drawCustomCharactersSection(bool compact) {
                         AppTheme::bad());
                 }
             }
+            ui::SpeakFocusedItem(
+                "Built-in racer", noneSelected ? "selected" : "available",
+                "Use the original built-in character presentation.");
             for (int index = 0; index < characterCount; ++index) {
                 const MdkrModernCharacterEntry *entry =
                     mdkr_modern_character_registry_entry(&g_characterRegistry,
@@ -6567,6 +6672,12 @@ bool drawCustomCharactersSection(bool compact) {
                             AppTheme::bad());
                     }
                 }
+                const std::string spokenState =
+                    std::string(assignable ? "available" : "not assignable") +
+                    (selected == entry->id ? ", selected" : "");
+                ui::SpeakFocusedItem(
+                    entry->narration_name, spokenState.c_str(),
+                    "Assign this local character presentation to the player.");
                 if (!assignable) ImGui::EndDisabled();
             }
             ImGui::EndCombo();

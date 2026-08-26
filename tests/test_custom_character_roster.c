@@ -49,8 +49,16 @@ int main(void) {
             "empty roster must have no cursor or pages");
 
     catalog = view("zeta", "Zeta", 1u);
+    catalog.short_name = "Z";
+    catalog.narration_name = "Zeta custom character";
+    catalog.sort_label = "00 Zeta";
     require(mdkr_custom_roster_add(&roster, 17, &catalog),
             "valid identity record rejected");
+    require(strcmp(roster.items[0].short_name, "Z") == 0 &&
+                strcmp(roster.items[0].narration_name,
+                       "Zeta custom character") == 0 &&
+                strcmp(roster.items[0].sort_label, "00 Zeta") == 0,
+            "authored identity names were not copied into the virtual roster");
     catalog = view("legacy", "Legacy", 0u);
     require(mdkr_custom_roster_add(&roster, 9, &catalog),
             "legacy record should remain visible");
@@ -61,15 +69,15 @@ int main(void) {
     catalog = view("alpha", "alpha", 1u);
     require(mdkr_custom_roster_add(&roster, 3, &catalog), "alpha rejected");
     mdkr_custom_roster_sort(&roster);
-    require(strcmp(roster.items[0].id, "alpha") == 0 &&
-                strcmp(roster.items[1].id, "legacy") == 0 &&
-                strcmp(roster.items[2].id, "zeta") == 0,
-            "case-insensitive display-name sort is not deterministic");
+    require(strcmp(roster.items[0].id, "zeta") == 0 &&
+                strcmp(roster.items[1].id, "alpha") == 0 &&
+                strcmp(roster.items[2].id, "legacy") == 0,
+            "case-insensitive authored sort label is not deterministic");
 
     cursor.item = 2;
     snprintf(cursor.package_id, sizeof(cursor.package_id), "%s", "legacy");
     mdkr_custom_roster_cursor_sync(&roster, &cursor);
-    require(cursor.item == 1, "cursor did not rebind by stable package id");
+    require(cursor.item == 2, "cursor did not rebind by stable package id");
 
     mdkr_custom_roster_reset(&roster);
     memset(&cursor, 0, sizeof(cursor));

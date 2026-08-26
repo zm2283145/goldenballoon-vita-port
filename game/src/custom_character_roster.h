@@ -23,6 +23,9 @@ typedef enum MdkrCustomRosterAvailability {
 typedef struct MdkrCustomRosterItem {
     char id[MDKR_MODERN_CHARACTER_ID_MAX];
     char display_name[MDKR_MODERN_CHARACTER_NAME_MAX];
+    char short_name[MDKR_MODERN_CHARACTER_SHORT_NAME_MAX];
+    char narration_name[MDKR_MODERN_CHARACTER_NAME_MAX];
+    char sort_label[MDKR_MODERN_CHARACTER_NAME_MAX];
     int catalog_index;
     uint32_t donor;
     uint32_t vehicle_mask;

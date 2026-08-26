@@ -30,7 +30,7 @@ MDKC_HEADER_BYTES = 832
 MDKC_SECTION_SLOTS = 24
 MDKC_SECTION_ENTRY_BYTES = 32
 MDKC_FILE_MAX = 1024 * 1024 * 1024
-COMPILER_ID = "mdkr-character-compiler/5"
+COMPILER_ID = "mdkr-character-compiler/6"
 
 SECTION_STRINGS = 1
 SECTION_VERTICES = 2
@@ -55,6 +55,7 @@ SECTION_IDENTITY_DATA = 20
 SECTION_RIG = 21
 SECTION_RIG_ROLES = 22
 SECTION_PROVENANCE = 23
+SECTION_IDENTITY_NAMES = 24
 
 VERTEX_FORMAT = "<3f3f4f2f4H4f"
 PRIMITIVE_FORMAT = "<8I"
@@ -72,6 +73,7 @@ SOCKET_FORMAT = "<II"
 ATTACHMENT_FORMAT = "<II3f4ffII"
 CALIBRATION_FORMAT = "<3f3f3ffII4f"
 IDENTITY_FORMAT = "<6I"
+IDENTITY_NAMES_FORMAT = "<3I"
 RIG_FORMAT = "<4I"
 RIG_ROLE_FORMAT = "<4I4f3f"
 PROVENANCE_FORMAT = "<4I"
@@ -1025,6 +1027,7 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         ))
 
     identity_records = []
+    identity_name_records = []
     identity_data = b""
     identity_manifest = manifest.get("identity")
     if manifest["schema"] in (probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4):
@@ -1041,7 +1044,18 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         red, green, blue = identity_manifest["minimap_rgb"]
         minimap_rgba = red | (green << 8) | (blue << 16) | (255 << 24)
         identity_data = portrait
-        identity_records.append((1, 1, 0, len(portrait), minimap_rgba, 0))
+        short_name = identity_manifest.get("short_name")
+        narration_name = identity_manifest.get("narration_name")
+        sort_label = identity_manifest.get("sort_label")
+        identity_records.append((
+            1, 1, 0, len(portrait), minimap_rgba,
+            strings.add(short_name) if short_name is not None else 0,
+        ))
+        identity_name_records.append((
+            strings.add(narration_name) if narration_name is not None else 0,
+            strings.add(sort_label) if sort_label is not None else 0,
+            0,
+        ))
 
     license_manifest = manifest["license"]
     provenance_record = (
@@ -1076,6 +1090,11 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             Section(SECTION_IDENTITY, 1, struct.calcsize(IDENTITY_FORMAT),
                     _pack_records(IDENTITY_FORMAT, identity_records)),
             Section(SECTION_IDENTITY_DATA, len(identity_data), 1, identity_data),
+            Section(
+                SECTION_IDENTITY_NAMES, 1,
+                struct.calcsize(IDENTITY_NAMES_FORMAT),
+                _pack_records(IDENTITY_NAMES_FORMAT, identity_name_records),
+            ),
         ))
     if rig_records:
         sections.extend((
@@ -1138,6 +1157,18 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         "attachment_contexts": sorted(context_manifest, key=lambda name: CONTEXT_IDS[name]),
         "calibration_explicit": explicit_calibration,
         "identity_portrait": bool(identity_records),
+        "identity_short_name": (
+            identity_manifest.get("short_name", manifest["display_name"])
+            if isinstance(identity_manifest, dict) else None
+        ),
+        "identity_narration_name": (
+            identity_manifest.get("narration_name", manifest["display_name"])
+            if isinstance(identity_manifest, dict) else None
+        ),
+        "identity_sort_label": (
+            identity_manifest.get("sort_label", manifest["display_name"])
+            if isinstance(identity_manifest, dict) else None
+        ),
         "identity_portrait_bytes": len(identity_data),
         "minimap_rgb": (
             identity_manifest.get("minimap_rgb")

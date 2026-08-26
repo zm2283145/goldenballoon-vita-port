@@ -8,7 +8,8 @@
 
 namespace {
 
-constexpr uint32_t kVersion = 1u;
+constexpr uint32_t kVersion = 2u;
+constexpr uint32_t kLegacyVersion = 1u;
 constexpr size_t kHeaderBytes = 40u;
 constexpr size_t kTuningBytes = 9u * 4u + 4u +
     CharacterDraftSnapshot::kContexts * (19u * 4u);
@@ -17,6 +18,8 @@ constexpr size_t kRigBytes = 8u +
 constexpr size_t kFixedBytes = kHeaderBytes + kTuningBytes + kRigBytes +
     CharacterDraftSnapshot::kPortraitBytes + 4u;
 constexpr size_t kMaximumPathBytes = 4095u;
+constexpr size_t kMaximumNameBytes = 96u;
+constexpr size_t kMaximumShortNameBytes = 96u;
 
 void appendU32(std::string &out, uint32_t value) {
     for (unsigned shift = 0u; shift < 32u; shift += 8u) {
@@ -106,8 +109,55 @@ bool pathUtf8(const std::string &text) {
     return true;
 }
 
+bool identityText(const std::string &text, size_t maximum, bool allowEmpty) {
+    if (text.size() > maximum || (!allowEmpty && text.empty())) return false;
+    if (text.empty()) return allowEmpty;
+    bool nonSpace = false;
+    size_t index = 0u;
+    while (index < text.size()) {
+        const unsigned char first = static_cast<unsigned char>(text[index++]);
+        uint32_t codepoint;
+        uint32_t minimum;
+        unsigned continuation;
+        if (first < 0x80u) {
+            codepoint = first;
+            minimum = 0u;
+            continuation = 0u;
+        } else if (first >= 0xC2u && first <= 0xDFu) {
+            codepoint = first & 0x1Fu;
+            minimum = 0x80u;
+            continuation = 1u;
+        } else if (first >= 0xE0u && first <= 0xEFu) {
+            codepoint = first & 0x0Fu;
+            minimum = 0x800u;
+            continuation = 2u;
+        } else if (first >= 0xF0u && first <= 0xF4u) {
+            codepoint = first & 0x07u;
+            minimum = 0x10000u;
+            continuation = 3u;
+        } else return false;
+        if (continuation > text.size() - index) return false;
+        while (continuation-- != 0u) {
+            const unsigned char next =
+                static_cast<unsigned char>(text[index++]);
+            if ((next & 0xC0u) != 0x80u) return false;
+            codepoint = (codepoint << 6u) | (next & 0x3Fu);
+        }
+        if (codepoint < minimum || codepoint > 0x10FFFFu ||
+            (codepoint >= 0xD800u && codepoint <= 0xDFFFu) ||
+            codepoint < 0x20u ||
+            (codepoint >= 0x7Fu && codepoint <= 0x9Fu) ||
+            (codepoint >= 0x200Bu && codepoint <= 0x200Fu) ||
+            (codepoint >= 0x2028u && codepoint <= 0x202Eu) ||
+            (codepoint >= 0x2060u && codepoint <= 0x206Fu) ||
+            codepoint == 0xFEFFu) return false;
+        if (codepoint != ' ' && codepoint != '\t') nonSpace = true;
+    }
+    return nonSpace;
+}
+
 bool snapshotValid(const CharacterDraftSnapshot::Snapshot &snapshot,
-                   std::string &error) {
+                   std::string &error, bool allowLegacyNames) {
     using namespace CharacterDraftSnapshot;
     if (snapshot.flags == 0u || (snapshot.flags & ~All) != 0u) {
         error = "draft snapshot flags are invalid";
@@ -178,6 +228,21 @@ bool snapshotValid(const CharacterDraftSnapshot::Snapshot &snapshot,
         error = "draft portrait source path is invalid UTF-8";
         return false;
     }
+    const bool legacyNames = snapshot.displayName.empty() &&
+        snapshot.shortName.empty() && snapshot.narrationName.empty() &&
+        snapshot.sortLabel.empty();
+    if (legacyNames && !allowLegacyNames) {
+        error = "draft identity names are required";
+        return false;
+    }
+    if (!legacyNames &&
+        (!identityText(snapshot.displayName, kMaximumNameBytes, false) ||
+         !identityText(snapshot.shortName, kMaximumShortNameBytes, false) ||
+         !identityText(snapshot.narrationName, kMaximumNameBytes, false) ||
+         !identityText(snapshot.sortLabel, kMaximumNameBytes, false))) {
+        error = "draft identity names are invalid UTF-8";
+        return false;
+    }
     return true;
 }
 
@@ -187,13 +252,17 @@ namespace CharacterDraftSnapshot {
 
 bool encode(const Snapshot &snapshot, std::string &payload,
             std::string &error) {
-    if (!snapshotValid(snapshot, error)) return false;
+    if (!snapshotValid(snapshot, error, false)) return false;
     std::string result;
-    result.reserve(kFixedBytes + snapshot.portraitSourcePath.size());
+    const size_t namesBytes = snapshot.displayName.size() +
+        snapshot.shortName.size() + snapshot.narrationName.size() +
+        snapshot.sortLabel.size();
+    result.reserve(kFixedBytes + 16u + snapshot.portraitSourcePath.size() +
+                   namesBytes);
     result.append("MDWD", 4u);
     appendU32(result, kVersion);
     appendU32(result, static_cast<uint32_t>(
-        kFixedBytes + snapshot.portraitSourcePath.size()));
+        kFixedBytes + 16u + snapshot.portraitSourcePath.size() + namesBytes));
     appendU32(result, snapshot.flags);
     appendU32(result, snapshot.donor);
     appendU32(result, snapshot.packageVehicleMask);
@@ -232,7 +301,16 @@ bool encode(const Snapshot &snapshot, std::string &payload,
                   snapshot.portrait.size());
     appendU32(result, static_cast<uint32_t>(snapshot.portraitSourcePath.size()));
     result += snapshot.portraitSourcePath;
-    if (result.size() != kFixedBytes + snapshot.portraitSourcePath.size()) {
+    const std::string *names[] = {
+        &snapshot.displayName, &snapshot.shortName,
+        &snapshot.narrationName, &snapshot.sortLabel,
+    };
+    for (const std::string *name : names) {
+        appendU32(result, static_cast<uint32_t>(name->size()));
+        result += *name;
+    }
+    if (result.size() != kFixedBytes + 16u +
+            snapshot.portraitSourcePath.size() + namesBytes) {
         error = "draft snapshot encoder size invariant failed";
         return false;
     }
@@ -251,7 +329,8 @@ bool decode(const std::string &payload, Snapshot &snapshot,
     uint32_t testPlayers;
     uint32_t rigReviewed;
     if (payload.size() < kFixedBytes || payload.compare(0u, 4u, "MDWD") != 0 ||
-        !readU32(payload, offset, version) || version != kVersion ||
+        !readU32(payload, offset, version) ||
+        (version != kVersion && version != kLegacyVersion) ||
         !readU32(payload, offset, declaredSize) ||
         declaredSize != payload.size() ||
         !readU32(payload, offset, parsed.flags) ||
@@ -316,13 +395,34 @@ bool decode(const std::string &payload, Snapshot &snapshot,
     {
         uint32_t pathSize;
         if (!readU32(payload, offset, pathSize) ||
-            pathSize > kMaximumPathBytes || pathSize != payload.size() - offset) {
+            pathSize > kMaximumPathBytes ||
+            pathSize > payload.size() - offset) {
             goto malformed;
         }
         parsed.portraitSourcePath.assign(payload.data() + offset, pathSize);
         offset += pathSize;
     }
-    if (offset != payload.size() || !snapshotValid(parsed, error)) return false;
+    if (version == kVersion) {
+        std::string *names[] = {
+            &parsed.displayName, &parsed.shortName,
+            &parsed.narrationName, &parsed.sortLabel,
+        };
+        const size_t maxima[] = {
+            kMaximumNameBytes, kMaximumShortNameBytes,
+            kMaximumNameBytes, kMaximumNameBytes,
+        };
+        for (size_t name = 0u; name < 4u; ++name) {
+            uint32_t nameSize;
+            if (!readU32(payload, offset, nameSize) ||
+                nameSize > maxima[name] || nameSize > payload.size() - offset) {
+                goto malformed;
+            }
+            names[name]->assign(payload.data() + offset, nameSize);
+            offset += nameSize;
+        }
+    }
+    if (offset != payload.size() ||
+        !snapshotValid(parsed, error, version == kLegacyVersion)) return false;
     snapshot = std::move(parsed);
     error.clear();
     return true;

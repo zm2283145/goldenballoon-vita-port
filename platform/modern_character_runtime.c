@@ -622,6 +622,9 @@ int mdkr_modern_character_catalog_entry(
     memset(out, 0, sizeof(*out));
     out->id = entry->id;
     out->display_name = entry->display_name;
+    out->short_name = entry->short_name;
+    out->narration_name = entry->narration_name;
+    out->sort_label = entry->sort_label;
     out->donor = entry->donor;
     out->vehicle_mask = entry->vehicle_mask;
     out->has_identity = (entry->identity_flags & 1u) != 0u;
@@ -740,6 +743,9 @@ int mdkr_modern_character_player_identity(
     MdkrModernRuntimePlayer *slot;
     MdkrModernRuntimePool *pool;
     const char *display_name;
+    const char *candidate;
+    MdkrModernIdentity identity;
+    MdkrModernIdentityNames identity_names;
     if (out == NULL || player < 0 ||
         player >= MDKR_MODERN_CHARACTER_PLAYERS) return 0;
     memset(out, 0, sizeof(*out));
@@ -751,6 +757,31 @@ int mdkr_modern_character_player_identity(
         &pool->asset, pool->definition.display_name);
     if (display_name == NULL || display_name[0] == '\0') return 0;
     out->display_name = display_name;
+    out->short_name = display_name;
+    out->narration_name = display_name;
+    out->sort_label = display_name;
+    if (mdkr_modern_character_asset_identity(
+            &pool->asset, &identity, NULL) && identity.short_name != 0u &&
+        (candidate = mdkr_modern_character_asset_string(
+            &pool->asset, identity.short_name)) != NULL &&
+        candidate[0] != '\0') {
+        out->short_name = candidate;
+    }
+    if (mdkr_modern_character_asset_identity_names(
+            &pool->asset, &identity_names)) {
+        if (identity_names.narration_name != 0u &&
+            (candidate = mdkr_modern_character_asset_string(
+                &pool->asset, identity_names.narration_name)) != NULL &&
+            candidate[0] != '\0') {
+            out->narration_name = candidate;
+        }
+        if (identity_names.sort_label != 0u &&
+            (candidate = mdkr_modern_character_asset_string(
+                &pool->asset, identity_names.sort_label)) != NULL &&
+            candidate[0] != '\0') {
+            out->sort_label = candidate;
+        }
+    }
     out->portrait_rgba = pool->identity.portrait_rgba;
     out->portrait_width = MDKR_MODERN_PORTRAIT_SIZE;
     out->portrait_height = MDKR_MODERN_PORTRAIT_SIZE;

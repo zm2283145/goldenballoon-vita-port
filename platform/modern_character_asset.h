@@ -45,7 +45,8 @@ typedef enum MdkrModernSectionType {
     MDKR_MDKC_RIG = 21,
     MDKR_MDKC_RIG_ROLES = 22,
     MDKR_MDKC_PROVENANCE = 23,
-    MDKR_MDKC_SECTION_LAST = MDKR_MDKC_PROVENANCE
+    MDKR_MDKC_IDENTITY_NAMES = 24,
+    MDKR_MDKC_SECTION_LAST = MDKR_MDKC_IDENTITY_NAMES
 } MdkrModernSectionType;
 
 typedef struct MdkrModernSectionView {
@@ -222,6 +223,12 @@ typedef struct MdkrModernIdentity {
     uint32_t short_name; /* reserved string offset; zero means display_name */
 } MdkrModernIdentity;
 
+typedef struct MdkrModernIdentityNames {
+    uint32_t narration_name; /* zero means display_name */
+    uint32_t sort_label; /* zero means display_name */
+    uint32_t flags; /* reserved; must be zero */
+} MdkrModernIdentityNames;
+
 typedef enum MdkrModernRigMode {
     MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY = 0,
     MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 = 1
@@ -343,6 +350,8 @@ int mdkr_modern_character_asset_semantic(const MdkrModernCharacterAsset *asset,
 int mdkr_modern_character_asset_identity(
     const MdkrModernCharacterAsset *asset, MdkrModernIdentity *out,
     const uint8_t **portrait_data);
+int mdkr_modern_character_asset_identity_names(
+    const MdkrModernCharacterAsset *asset, MdkrModernIdentityNames *out);
 int mdkr_modern_character_asset_rig(const MdkrModernCharacterAsset *asset,
                                     MdkrModernRig *out);
 int mdkr_modern_character_asset_rig_role(

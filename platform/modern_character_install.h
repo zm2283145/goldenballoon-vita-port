@@ -18,6 +18,9 @@ typedef struct MdkrModernCharacterInstallResult {
     unsigned failed_files;
     char id[65];
     char display_name[97];
+    char short_name[97];
+    char narration_name[97];
+    char sort_label[97];
     char package_sha256[65];
     char source_digest[65];
     uint32_t provenance_present;

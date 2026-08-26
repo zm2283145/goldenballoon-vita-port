@@ -66,9 +66,11 @@ content-addressed paths;
   gameplay authority;
 - an author manifest wizard plus launcher diagnostics for motionless clips,
   recommended semantic coverage, and seat/head/hand sockets;
-- source-v3 identity media: a bounded CRC-checked portrait, authored minimap
-  colour, dedicated cache sections, one-time pool decode, deterministic 40x40
-  resampling, and revisioned HUD/results/rankings/minimap resolution.
+- source-v3 identity media and names: a bounded CRC-checked portrait, authored
+  minimap colour, full/short/narration/sort labels, dedicated cache sections,
+  one-time pool decode, deterministic 40x40 resampling, and revisioned
+  select/HUD/results/rankings/minimap resolution, roster ordering, and
+  launcher Workshop/assignment narration.
 - source-v4 rig metadata: an explicit authored-clips-only or humanoid mode,
   16 bounded semantic bone roles, inference provenance/confidence, author
   review state, rest rotations and bend axes, compiled cache sections, native
@@ -80,7 +82,9 @@ content-addressed paths;
 This is deliberately a vertical slice, not a claim of production readiness.
 OpenGL intentionally falls back to the retail driver, while WebGPU now has an
 independent paginated custom-character select browser with package portraits,
-font-width-bounded local names, and per-player identity. The COLLADA adapter
+font-width-bounded local names, and per-player identity. Compact tiles use the
+authored short name while the detail surface retains the full display name;
+alphabetization uses the authored sort label. The COLLADA adapter
 still synthesizes a motionless one-second witness clip when the source has no
 animation.
 
@@ -275,6 +279,13 @@ not carry the record, the UI says that review metadata is unavailable and
 recommends a current rebuild from retained or user-provided source instead of
 inventing it or blocking local installation.
 
+Compiler v6 fills the previously reserved short-name offset and adds one final
+bounded identity-name record for narration and sort labels. Compiler-v1 through
+compiler-v5 caches remain source-authenticated and use their display name for
+any absent role. Candidate review protocol v3 carries all four names for both
+portable and source-only packages, so a reviewed update cannot hide a label or
+roster-order change.
+
 A minimal manifest is:
 
 ```json
@@ -340,12 +351,20 @@ For authored local identity, v3 adds `portrait.png` and this manifest member:
 "identity": {
   "portrait_file": "portrait.png",
   "portrait_sha256": "<64 lowercase hex characters>",
-  "minimap_rgb": [220, 72, 144]
+  "minimap_rgb": [220, 72, 144],
+  "short_name": "Character",
+  "narration_name": "Character Name",
+  "sort_label": "Name, Character"
 }
 ```
 
 The portrait profile is square, 16–1024 pixels, non-interlaced 8-bit RGB or
 RGBA PNG, at most 8 MiB, non-animated, and fully chunk/CRC checked offline.
+The three name overrides are optional and otherwise resolve to `display_name`;
+when present they must be non-empty, NFC-normalized, bounded printable UTF-8
+without control or bidirectional-formatting characters. The current game font
+replaces unsupported glyphs safely; full localized shaping remains separate
+presentation work.
 The runtime independently bounds and decodes it, then uses integer
 premultiplied-alpha bilinear filtering to produce the game-owned 40x40 card.
 Legacy v1/v2 packages retain donor portrait and minimap fallbacks.
@@ -458,8 +477,9 @@ The launcher also owns a Python-independent named-draft store. Its strict
 `mdkr-character-drafts-v1` inventory is atomically replaced, caps names,
 records, and opaque payloads, rejects unsafe UTF-8 controls, authenticates each
 record, and never mutates the last loaded inventory after a malformed read.
-The versioned binary editor snapshot captures the exact portrait canvas,
-minimap colour, donor and vehicle choices, stable rig node roles and solver
+The versioned binary editor snapshot captures all four identity names, the
+exact portrait canvas, minimap colour, donor and vehicle choices, stable rig
+node roles and solver
 bases, global/context/contact tuning, assembly/test player counts, and
 source/tuning-bound review state. A draft resumes only against its exact cache
 source digest; restoring the retained base is required instead of guessing how
@@ -467,7 +487,8 @@ old joint node ids map onto a changed model.
 
 `build-draft` is the corresponding single source transaction. It validates a
 bounded strict build document, checks the active cache digest against the
-resumed base, applies portrait, gameplay compatibility, and rig edits to one
+resumed base, applies identity names, portrait, gameplay compatibility, and rig
+edits to one
 source snapshot, then publishes one retained revision only after package
 validation and compilation succeed. Fit, contact, animation-speed, LOD, and
 runtime vehicle-enable values intentionally remain a separately confirmed

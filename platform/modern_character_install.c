@@ -15,7 +15,8 @@
 #define MANIFEST_MAX (1024u * 1024u)
 #define LICENSE_MAX (1024u * 1024u)
 #define PORTRAIT_MAX (8u * 1024u * 1024u)
-#define COMPILER_ID "mdkr-character-compiler/5"
+#define COMPILER_ID "mdkr-character-compiler/6"
+#define LEGACY_COMPILER_ID_V5 "mdkr-character-compiler/5"
 #define LEGACY_COMPILER_ID_V4 "mdkr-character-compiler/4"
 #define LEGACY_COMPILER_ID_V3 "mdkr-character-compiler/3"
 #define LEGACY_COMPILER_ID_V2 "mdkr-character-compiler/2"
@@ -353,6 +354,7 @@ static int portable_package_operation(
     mz_uint64 package_size = 0u;
     mz_uint64 member_sizes[5] = {0u, 0u, 0u, 0u, 0u};
     uint8_t source_digest[32];
+    uint8_t legacy_source_digest_v5[32];
     uint8_t legacy_source_digest_v3[32];
     uint8_t legacy_source_digest_v4[32];
     uint8_t legacy_source_digest_v2[32];
@@ -489,6 +491,9 @@ static int portable_package_operation(
     if (!archive_source_digest(&archive, names, member_sizes, source_count,
                                COMPILER_ID, source_digest) ||
         !archive_source_digest(&archive, names, member_sizes, source_count,
+                               LEGACY_COMPILER_ID_V5,
+                               legacy_source_digest_v5) ||
+        !archive_source_digest(&archive, names, member_sizes, source_count,
                                LEGACY_COMPILER_ID_V4,
                                legacy_source_digest_v4) ||
         !archive_source_digest(&archive, names, member_sizes, source_count,
@@ -516,6 +521,8 @@ static int portable_package_operation(
         goto done;
     }
     if (memcmp(asset.source_sha256, source_digest, sizeof(source_digest)) != 0 &&
+        memcmp(asset.source_sha256, legacy_source_digest_v5,
+               sizeof(legacy_source_digest_v5)) != 0 &&
         memcmp(asset.source_sha256, legacy_source_digest_v4,
                sizeof(legacy_source_digest_v4)) != 0 &&
         memcmp(asset.source_sha256, legacy_source_digest_v3,
@@ -542,6 +549,12 @@ static int portable_package_operation(
             MdkrModernCharacterStats stats;
             (void)snprintf(result->id, sizeof(result->id), "%s", id);
             (void)snprintf(result->display_name, sizeof(result->display_name),
+                           "%s", display);
+            (void)snprintf(result->short_name, sizeof(result->short_name),
+                           "%s", display);
+            (void)snprintf(result->narration_name,
+                           sizeof(result->narration_name), "%s", display);
+            (void)snprintf(result->sort_label, sizeof(result->sort_label),
                            "%s", display);
             (void)snprintf(result->package_sha256,
                            sizeof(result->package_sha256), "%s", hash);
@@ -582,11 +595,51 @@ static int portable_package_operation(
             }
             {
                 MdkrModernIdentity identity;
+                MdkrModernIdentityNames identity_names;
                 MdkrModernRig rig;
                 MdkrModernProvenance provenance;
                 result->identity_present =
                     mdkr_modern_character_asset_identity(
                         &asset, &identity, NULL) && identity.portrait_size != 0u;
+                if (result->identity_present) {
+                    const char *short_name = identity.short_name != 0u
+                        ? mdkr_modern_character_asset_string(
+                              &asset, identity.short_name)
+                        : display;
+                    if (short_name == NULL) {
+                        result_message(result,
+                            "embedded character short name is unavailable");
+                        goto done;
+                    }
+                    (void)snprintf(result->short_name,
+                                   sizeof(result->short_name), "%s",
+                                   short_name);
+                    if (mdkr_modern_character_asset_identity_names(
+                            &asset, &identity_names)) {
+                        const char *narration_name =
+                            identity_names.narration_name != 0u
+                                ? mdkr_modern_character_asset_string(
+                                      &asset,
+                                      identity_names.narration_name)
+                                : display;
+                        const char *sort_label =
+                            identity_names.sort_label != 0u
+                                ? mdkr_modern_character_asset_string(
+                                      &asset, identity_names.sort_label)
+                                : display;
+                        if (narration_name == NULL || sort_label == NULL) {
+                            result_message(result,
+                                "embedded character identity names are unavailable");
+                            goto done;
+                        }
+                        (void)snprintf(result->narration_name,
+                                       sizeof(result->narration_name), "%s",
+                                       narration_name);
+                        (void)snprintf(result->sort_label,
+                                       sizeof(result->sort_label), "%s",
+                                       sort_label);
+                    }
+                }
                 if (mdkr_modern_character_asset_rig(&asset, &rig)) {
                     /* Candidate protocol: 0 absent, 1 authored, 2 humanoid. */
                     result->rig_mode = rig.mode + 1u;

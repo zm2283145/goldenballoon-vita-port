@@ -18,6 +18,7 @@ import struct
 import sys
 import tempfile
 import time
+import unicodedata
 import zipfile
 import zlib
 from contextlib import contextmanager
@@ -31,7 +32,7 @@ import character_asset_probe as probe
 MANAGER_SCHEMA = "mdkr-character-install-v1"
 COMPILER_ID = compiler.COMPILER_ID
 LEGACY_COMPILER_IDS = tuple(
-    f"mdkr-character-compiler/{version}" for version in range(4, 0, -1)
+    f"mdkr-character-compiler/{version}" for version in range(5, 0, -1)
 )
 LOCK_NAME = ".character-import.lock"
 MAX_REPORT_BYTES = 64 * 1024
@@ -41,6 +42,30 @@ MAX_WORKSHOP_DRAFT_BYTES = 256 * 1024
 
 class ManagerError(ValueError):
     pass
+
+
+def _workshop_identity_name(value: Any, label: str,
+                            maximum_bytes: int) -> str:
+    """Validate user-facing draft text before touching retained source state."""
+    if not isinstance(value, str) or not value or not value.strip():
+        raise ManagerError(f"{label} must be non-empty printable UTF-8")
+    if unicodedata.normalize("NFC", value) != value:
+        raise ManagerError(f"{label} must use NFC-normalized Unicode")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ManagerError(f"{label} is not valid UTF-8") from exc
+    if len(encoded) > maximum_bytes or any(
+        ord(character) < 0x20
+        or 0x7F <= ord(character) <= 0x9F
+        or 0x200B <= ord(character) <= 0x200F
+        or 0x2028 <= ord(character) <= 0x202E
+        or 0x2060 <= ord(character) <= 0x206F
+        or ord(character) == 0xFEFF
+        for character in value
+    ):
+        raise ManagerError(f"{label} must be bounded printable UTF-8")
+    return value
 
 
 def _compiler_source_digest(archive: zipfile.ZipFile,
@@ -232,11 +257,17 @@ def inspect(package_path: Path) -> dict[str, Any]:
     candidate = _compile_candidate(package_path)
     report = candidate["compile_report"]
     license_info = candidate["manifest"]["license"]
+    display_name = candidate["manifest"]["display_name"]
     return {
         "schema": MANAGER_SCHEMA,
         "action": "inspect",
         "id": candidate["package_id"],
-        "display_name": candidate["manifest"]["display_name"],
+        "display_name": display_name,
+        "short_name": report.get("identity_short_name") or display_name,
+        "narration_name": (
+            report.get("identity_narration_name") or display_name
+        ),
+        "sort_label": report.get("identity_sort_label") or display_name,
         "source_sha256": candidate["source_sha256"],
         "cache_source_digest": candidate["compiler_digest"].hex(),
         "compiled_sha256": candidate["compiled_sha256"],
@@ -261,7 +292,12 @@ def write_candidate_index(package_path: Path, directory: Path,
         )
     candidate = inspect(package_path)
     report = candidate["report"]
-    display_hex = candidate["display_name"].encode("utf-8").hex()
+    identity_hex = [
+        candidate[field].encode("utf-8").hex()
+        for field in (
+            "display_name", "short_name", "narration_name", "sort_label"
+        )
+    ]
     rig_mode = report.get("rig_mode")
     rig_mode_value = {
         None: 0,
@@ -271,7 +307,7 @@ def write_candidate_index(package_path: Path, directory: Path,
     if rig_mode_value is None:
         raise ManagerError("candidate compiler reported an unknown rig mode")
     fields = [
-        candidate["id"], display_hex, candidate["source_sha256"],
+        candidate["id"], *identity_hex, candidate["source_sha256"],
         candidate["cache_source_digest"],
         str(compiler.DONOR_IDS[report["donor"]]),
         str(report["vehicle_mask"]), str(report["vertices"]),
@@ -294,7 +330,7 @@ def write_candidate_index(package_path: Path, directory: Path,
         candidate["source_url"].encode("utf-8").hex(),
     ]
     payload = (
-        "mdkr-character-candidate-v2\n" + "\t".join(fields) + "\n"
+        "mdkr-character-candidate-v3\n" + "\t".join(fields) + "\n"
     ).encode("ascii")
     _write_atomic(index_path, payload)
     return {
@@ -516,11 +552,20 @@ def _upgrade_identity_manifest(manifest: dict[str, Any],
         if original_schema == probe.PACKAGE_SCHEMA_V4
         else probe.PACKAGE_SCHEMA_V3
     )
+    prior_identity = manifest.get("identity")
+    retained_names = {}
+    if isinstance(prior_identity, dict):
+        retained_names = {
+            field: prior_identity[field]
+            for field in ("short_name", "narration_name", "sort_label")
+            if field in prior_identity
+        }
     upgraded["identity"] = {
         "portrait_file": "portrait.png",
         # build_package replaces this placeholder with the canonical digest.
         "portrait_sha256": "0" * 64,
         "minimap_rgb": list(minimap_rgb),
+        **retained_names,
     }
     return upgraded, migration
 
@@ -832,6 +877,7 @@ def build_workshop_draft(package_id: str, draft_path: Path,
     )
     expected = {
         "schema", "base_cache_source_digest", "donor", "vehicles",
+        "display_name", "short_name", "narration_name", "sort_label",
         "portrait_rgba_hex", "minimap_rgb", "rig_draft",
     }
     unknown = set(draft) - expected
@@ -852,6 +898,18 @@ def build_workshop_draft(package_id: str, draft_path: Path,
             any(character not in "0123456789abcdef"
                 for character in base_digest)):
         raise ManagerError("Workshop draft base digest is invalid")
+    display_name = _workshop_identity_name(
+        draft["display_name"], "display name", 96
+    )
+    short_name = _workshop_identity_name(
+        draft["short_name"], "short name", 96
+    )
+    narration_name = _workshop_identity_name(
+        draft["narration_name"], "narration name", 96
+    )
+    sort_label = _workshop_identity_name(
+        draft["sort_label"], "sort label", 96
+    )
     donor = draft["donor"]
     vehicles = draft["vehicles"]
     if not isinstance(donor, str) or donor not in probe.GAMEPLAY_DONORS:
@@ -909,6 +967,15 @@ def build_workshop_draft(package_id: str, draft_path: Path,
         revised, migration = _upgrade_identity_manifest(
             manifest, verification["model"], tuple(minimap)
         )
+        revised["display_name"] = display_name
+        identity = revised.get("identity")
+        if not isinstance(identity, dict):
+            raise ManagerError("identity migration did not produce an object")
+        identity = dict(identity)
+        identity["short_name"] = short_name
+        identity["narration_name"] = narration_name
+        identity["sort_label"] = sort_label
+        revised["identity"] = identity
         revised["gameplay"] = {
             "donor": donor,
             "vehicles": list(vehicles),

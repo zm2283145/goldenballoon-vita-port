@@ -235,8 +235,8 @@ int main(int argc, char **argv) {
     int player;
     float select_model_y;
 
-    require(argc == 9,
-            "usage: test_modern_character_asset <generated.mdkc> <directory> <source.mdkrchar> <portable.mdkrchar> <install-directory> <corrupt-portable.mdkrchar> <mismatched-portable.mdkrchar> <legacy-portable.mdkrchar>");
+    require(argc == 10,
+            "usage: test_modern_character_asset <generated.mdkc> <directory> <source.mdkrchar> <portable.mdkrchar> <install-directory> <corrupt-portable.mdkrchar> <mismatched-portable.mdkrchar> <legacy-portable.mdkrchar> <legacy-v5-portable.mdkrchar>");
     test_retained_pose_interpolation();
     require(mdkr_modern_character_asset_load_file(argv[1], &asset,
                                                    error, sizeof(error)),
@@ -745,6 +745,11 @@ int main(int argc, char **argv) {
                 argv[4], &install_result) &&
                 strcmp(install_result.id, "org.example.pipeline-proof") == 0 &&
                 strcmp(install_result.display_name, "Pipeline Proof") == 0 &&
+                strcmp(install_result.short_name, "Proof") == 0 &&
+                strcmp(install_result.narration_name,
+                       "Pipeline Proof character") == 0 &&
+                strcmp(install_result.sort_label,
+                       "Proof, Pipeline") == 0 &&
                 strlen(install_result.package_sha256) == 64u &&
                 strlen(install_result.source_digest) == 64u &&
                 install_result.donor == 9u &&
@@ -779,6 +784,18 @@ int main(int argc, char **argv) {
                 install_result.attribution[0] == '\0' &&
                 install_result.source_url[0] == '\0',
             "compiler-v4 portable caches remain inspectable with explicit legacy provenance absence");
+    require(mdkr_modern_character_inspect_portable(
+                argv[9], &install_result) &&
+                strcmp(install_result.id,
+                       "org.example.pipeline-proof") == 0 &&
+                install_result.identity_present == 1u &&
+                strcmp(install_result.short_name, "Pipeline Proof") == 0 &&
+                strcmp(install_result.narration_name,
+                       "Pipeline Proof") == 0 &&
+                strcmp(install_result.sort_label,
+                       "Pipeline Proof") == 0 &&
+                install_result.provenance_present == 1u,
+            "compiler-v5 portable caches remain authenticated after the identity-name extension");
     require(mdkr_modern_character_inspect_portable(
                 argv[4], &install_result),
             "restore the current portable review after legacy inspection");
@@ -940,6 +957,10 @@ int main(int argc, char **argv) {
                     mdkr_modern_character_catalog_entry(0, &catalog) &&
                     strcmp(catalog.id, "org.example.pipeline-proof") == 0 &&
                     strcmp(catalog.display_name, "Pipeline Proof") == 0 &&
+                    strcmp(catalog.short_name, "Proof") == 0 &&
+                    strcmp(catalog.narration_name,
+                           "Pipeline Proof character") == 0 &&
+                    strcmp(catalog.sort_label, "Proof, Pipeline") == 0 &&
                     catalog.donor == 9u && catalog.vehicle_mask == 7u &&
                     catalog.has_identity == 1u &&
                     catalog.portrait_rgba != NULL &&
@@ -969,6 +990,10 @@ int main(int argc, char **argv) {
             "runtime assignment retains donor and vehicle characteristics");
     require(mdkr_modern_character_player_identity(0, &identity_view) &&
                 strcmp(identity_view.display_name, "Pipeline Proof") == 0 &&
+                strcmp(identity_view.short_name, "Proof") == 0 &&
+                strcmp(identity_view.narration_name,
+                       "Pipeline Proof character") == 0 &&
+                strcmp(identity_view.sort_label, "Proof, Pipeline") == 0 &&
                 identity_view.portrait_rgba != NULL &&
                 identity_view.portrait_width == 40u &&
                 identity_view.portrait_height == 40u &&

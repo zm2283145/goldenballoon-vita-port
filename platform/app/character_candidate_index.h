@@ -9,6 +9,9 @@ namespace CharacterCandidateIndex {
 struct Candidate {
     std::string id;
     std::string displayName;
+    std::string shortName;
+    std::string narrationName;
+    std::string sortLabel;
     std::string packageSha256;
     std::string sourceDigest;
     uint32_t donor = 0u;

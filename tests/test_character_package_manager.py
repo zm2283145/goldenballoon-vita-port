@@ -223,47 +223,56 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 source, character_dir, index_path
             )
             index_lines = index_path.read_text(encoding="ascii").splitlines()
-            self.assertEqual("mdkr-character-candidate-v2", index_lines[0])
+            self.assertEqual("mdkr-character-candidate-v3", index_lines[0])
             fields = index_lines[1].split("\t")
-            self.assertEqual(40, len(fields))
+            self.assertEqual(43, len(fields))
             self.assertEqual(inspected["id"], fields[0])
             self.assertEqual(inspected["display_name"], bytes.fromhex(
                 fields[1]
             ).decode("utf-8"))
-            self.assertEqual(inspected["source_sha256"], fields[2])
-            self.assertEqual(inspected["cache_source_digest"], fields[3])
-            self.assertEqual("9", fields[4])
-            self.assertEqual("7", fields[5])
+            self.assertEqual(inspected["short_name"], bytes.fromhex(
+                fields[2]
+            ).decode("utf-8"))
+            self.assertEqual(inspected["narration_name"], bytes.fromhex(
+                fields[3]
+            ).decode("utf-8"))
+            self.assertEqual(inspected["sort_label"], bytes.fromhex(
+                fields[4]
+            ).decode("utf-8"))
+            self.assertEqual(inspected["source_sha256"], fields[5])
+            self.assertEqual(inspected["cache_source_digest"], fields[6])
+            self.assertEqual("9", fields[7])
+            self.assertEqual("7", fields[8])
             self.assertEqual(
-                inspected["report"]["animation_channels"], int(fields[16])
+                inspected["report"]["animation_channels"], int(fields[19])
             )
             self.assertEqual(
-                inspected["report"]["animation_keys"], int(fields[17])
+                inspected["report"]["animation_keys"], int(fields[20])
             )
             self.assertEqual(
                 inspected["report"]["lod_vertices"],
-                [int(value) for value in fields[24:28]],
+                [int(value) for value in fields[27:31]],
             )
             self.assertEqual(
                 inspected["report"]["lod_triangles"],
-                [int(value) for value in fields[28:32]],
+                [int(value) for value in fields[31:35]],
             )
             self.assertEqual(
                 inspected["report"]["lod_primitives"],
-                [int(value) for value in fields[32:36]],
+                [int(value) for value in fields[35:39]],
             )
-            self.assertEqual("1", fields[36])
+            self.assertEqual("1", fields[39])
             self.assertEqual(
                 inspected["license_spdx"],
-                bytes.fromhex(fields[37]).decode("utf-8"),
+                bytes.fromhex(fields[40]).decode("utf-8"),
             )
             self.assertEqual(
                 inspected["attribution"],
-                bytes.fromhex(fields[38]).decode("utf-8"),
+                bytes.fromhex(fields[41]).decode("utf-8"),
             )
             self.assertEqual(
                 inspected["source_url"],
-                bytes.fromhex(fields[39]).decode("utf-8"),
+                bytes.fromhex(fields[42]).decode("utf-8"),
             )
             with self.assertRaisesRegex(manager.ManagerError, "exact file"):
                 manager.write_candidate_index(
@@ -776,6 +785,10 @@ class CharacterPackageManagerTests(unittest.TestCase):
             draft.write_text(json.dumps({
                 "schema": "mdkr-workshop-build-v1",
                 "base_cache_source_digest": original["cache_source_digest"],
+                "display_name": "Dixie Kong",
+                "short_name": "Dixie",
+                "narration_name": "Dixie Kong",
+                "sort_label": "Kong, Dixie",
                 "donor": "banjo",
                 "vehicles": ["car", "plane"],
                 "portrait_rgba_hex": rgba.hex(),
@@ -797,6 +810,16 @@ class CharacterPackageManagerTests(unittest.TestCase):
             self.assertEqual("banjo", built["report"]["donor"])
             self.assertEqual(5, built["report"]["vehicle_mask"])
             self.assertEqual([19, 83, 211], built["report"]["minimap_rgb"])
+            self.assertEqual("Dixie Kong", built["report"]["display_name"])
+            self.assertEqual(
+                "Dixie", built["report"]["identity_short_name"]
+            )
+            self.assertEqual(
+                "Dixie Kong", built["report"]["identity_narration_name"]
+            )
+            self.assertEqual(
+                "Kong, Dixie", built["report"]["identity_sort_label"]
+            )
             self.assertTrue(built["report"]["rig_reviewed"])
             self.assertEqual(2, len(list(installed.glob("*.mdkrchar"))))
             self.assertEqual(2, len(manager.list_revisions(
@@ -807,6 +830,14 @@ class CharacterPackageManagerTests(unittest.TestCase):
                     archive.read("manifest.json"), "manifest"
                 )
                 self.assertEqual(probe.PACKAGE_SCHEMA_V4, manifest["schema"])
+                self.assertEqual("Dixie Kong", manifest["display_name"])
+                self.assertEqual("Dixie", manifest["identity"]["short_name"])
+                self.assertEqual(
+                    "Dixie Kong", manifest["identity"]["narration_name"]
+                )
+                self.assertEqual(
+                    "Kong, Dixie", manifest["identity"]["sort_label"]
+                )
                 self.assertEqual("banjo", manifest["gameplay"]["donor"])
                 self.assertEqual(
                     ["car", "plane"], manifest["gameplay"]["vehicles"]
@@ -832,6 +863,10 @@ class CharacterPackageManagerTests(unittest.TestCase):
             payload = {
                 "schema": "mdkr-workshop-build-v1",
                 "base_cache_source_digest": "0" * 64,
+                "display_name": "Dixie Kong",
+                "short_name": "Dixie",
+                "narration_name": "Dixie Kong",
+                "sort_label": "Kong, Dixie",
                 "donor": "diddy",
                 "vehicles": ["car"],
                 "portrait_rgba_hex": bytes(40 * 40 * 4).hex(),
@@ -862,6 +897,18 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 before_files, sorted(path.name for path in installed.iterdir())
             )
             self.assertEqual(before, cache.read_bytes())
+
+            payload["rig_draft"].pop("surprise")
+            payload["sort_label"] = "Kong\u202e, Dixie"
+            draft.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(
+                manager.ManagerError, "sort label.*printable UTF-8"
+            ):
+                manager.build_workshop_draft(original["id"], draft, installed)
+            self.assertEqual(before, cache.read_bytes())
+            self.assertEqual(
+                before_files, sorted(path.name for path in installed.iterdir())
+            )
 
     def test_exact_rgba_canvas_round_trips_through_identity_revision(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

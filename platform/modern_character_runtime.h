@@ -44,6 +44,9 @@ typedef struct MdkrModernCharacterTuning {
 
 typedef struct MdkrModernCharacterIdentityView {
     const char *display_name;
+    const char *short_name;
+    const char *narration_name;
+    const char *sort_label;
     const uint8_t *portrait_rgba;
     uint32_t portrait_width;
     uint32_t portrait_height;
@@ -67,6 +70,9 @@ typedef struct MdkrModernCharacterRuntimeMetrics {
 typedef struct MdkrModernCharacterCatalogView {
     const char *id;
     const char *display_name;
+    const char *short_name;
+    const char *narration_name;
+    const char *sort_label;
     const uint8_t *portrait_rgba;
     uint32_t portrait_width;
     uint32_t portrait_height;

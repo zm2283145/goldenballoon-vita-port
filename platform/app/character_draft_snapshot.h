@@ -60,6 +60,10 @@ struct Snapshot {
 
     std::array<uint8_t, kPortraitBytes> portrait{};
     std::string portraitSourcePath;
+    std::string displayName;
+    std::string shortName;
+    std::string narrationName;
+    std::string sortLabel;
 };
 
 bool encode(const Snapshot &snapshot, std::string &payload,

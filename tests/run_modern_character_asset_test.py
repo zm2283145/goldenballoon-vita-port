@@ -33,6 +33,11 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="mdkr-modern-character-") as directory:
         portrait_bytes = make_portrait_png()
         manifest_data = make_v4_manifest(portrait_bytes, humanoid=True)
+        manifest_data["identity"].update({
+            "short_name": "Proof",
+            "narration_name": "Pipeline Proof character",
+            "sort_label": "Proof, Pipeline",
+        })
         manifest_data["animations"]["states"]["race.item"] = "idle"
         model_bytes = make_humanoid_glb()
         cache = Path(directory) / "generated.mdkc"
@@ -67,6 +72,7 @@ def main() -> int:
         corrupt_portable = Path(directory) / "corrupt-portable.mdkrchar"
         mismatched_portable = Path(directory) / "mismatched-portable.mdkrchar"
         legacy_portable = Path(directory) / "legacy-portable.mdkrchar"
+        legacy_v5_portable = Path(directory) / "legacy-v5-portable.mdkrchar"
         install_directory = Path(directory) / "native-install"
         model.write_bytes(model_bytes)
         manifest.write_text(json.dumps(manifest_data), encoding="utf-8")
@@ -96,46 +102,58 @@ def main() -> int:
             for name in probe.PORTABLE_PACKAGE_MEMBERS_V3:
                 info, payload = probe._zip_entry(name, mismatched_members[name])
                 archive.writestr(info, payload)
-        legacy_members = dict(members)
-        legacy_cache = bytearray(legacy_members["compiled.mdkc"])
-        section_count = struct.unpack_from("<I", legacy_cache, 56)[0]
-        provenance_entry = None
-        for index in range(section_count):
-            entry_offset = 64 + index * compiler.MDKC_SECTION_ENTRY_BYTES
-            kind, _, offset, size, _, _ = struct.unpack_from(
-                "<IIQQII", legacy_cache, entry_offset
+        def cache_for_legacy_compiler(
+                version: int, *, include_provenance: bool) -> bytes:
+            legacy_sections = []
+            current_cache = members["compiled.mdkc"]
+            section_count = struct.unpack_from("<I", current_cache, 56)[0]
+            for index in range(section_count):
+                kind, _, offset, size, count, stride = struct.unpack_from(
+                    "<IIQQII", current_cache,
+                    64 + index * compiler.MDKC_SECTION_ENTRY_BYTES,
+                )
+                if kind == compiler.SECTION_IDENTITY_NAMES or (
+                        kind == compiler.SECTION_PROVENANCE and
+                        not include_provenance):
+                    continue
+                section_data = bytearray(current_cache[offset:offset + size])
+                if kind == compiler.SECTION_IDENTITY:
+                    # Compiler v5 and earlier reserved the final identity word.
+                    struct.pack_into("<I", section_data, 20, 0)
+                legacy_sections.append(compiler.Section(
+                    kind, count, stride, bytes(section_data)
+                ))
+            digest = compiler.source_digest(
+                ((name, members[name])
+                 for name in probe.package_members_for_schema(
+                     manifest_data["schema"])),
+                compiler_id=f"mdkr-character-compiler/{version}",
             )
-            if kind == compiler.SECTION_PROVENANCE:
-                provenance_entry = (index, entry_offset, offset, size)
-                break
-        assert provenance_entry is not None
-        index, entry_offset, offset, size = provenance_entry
-        assert index == section_count - 1 and offset + size == len(legacy_cache)
-        del legacy_cache[offset:]
-        struct.pack_into("<Q", legacy_cache, 12, len(legacy_cache))
-        legacy_digest = compiler.source_digest(
-            ((name, legacy_members[name])
-             for name in probe.package_members_for_schema(
-                 manifest_data["schema"])),
-            compiler_id="mdkr-character-compiler/4",
+            return compiler._assemble(legacy_sections, digest)
+
+        legacy_members = dict(members)
+        legacy_members["compiled.mdkc"] = cache_for_legacy_compiler(
+            4, include_provenance=False
         )
-        legacy_cache[20:52] = legacy_digest
-        struct.pack_into("<I", legacy_cache, 56, section_count - 1)
-        legacy_cache[entry_offset:entry_offset + 32] = bytes(32)
-        struct.pack_into(
-            "<I", legacy_cache, 52,
-            zlib.crc32(legacy_cache[compiler.MDKC_HEADER_BYTES:]) & 0xFFFFFFFF,
-        )
-        legacy_members["compiled.mdkc"] = bytes(legacy_cache)
         with zipfile.ZipFile(legacy_portable, "w", allowZip64=False) as archive:
             for name in probe.PORTABLE_PACKAGE_MEMBERS_V3:
                 info, payload = probe._zip_entry(name, legacy_members[name])
+                archive.writestr(info, payload)
+
+        v5_members = dict(members)
+        v5_members["compiled.mdkc"] = cache_for_legacy_compiler(
+            5, include_provenance=True
+        )
+        with zipfile.ZipFile(
+                legacy_v5_portable, "w", allowZip64=False) as archive:
+            for name in probe.PORTABLE_PACKAGE_MEMBERS_V3:
+                info, payload = probe._zip_entry(name, v5_members[name])
                 archive.writestr(info, payload)
         completed = subprocess.run(
             [str(args.loader), str(cache), directory, str(source_package),
              str(portable_package), str(install_directory),
              str(corrupt_portable), str(mismatched_portable),
-             str(legacy_portable)],
+             str(legacy_portable), str(legacy_v5_portable)],
             check=False, text=True
         )
         return completed.returncode

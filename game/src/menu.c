@@ -9121,7 +9121,7 @@ static void charselect_custom_draw_panel(void) {
             draw_text(&sMenuCurrDisplayList, x + 20, y + 18,
                       "UPDATE", ALIGN_MIDDLE_CENTER);
         }
-        charselect_custom_fit_text(item->display_name, shortName,
+        charselect_custom_fit_text(item->short_name, shortName,
                                    sizeof(shortName), 54);
         if (itemIndex == cursor->item) {
             set_text_colour(playerColours[owner][0],

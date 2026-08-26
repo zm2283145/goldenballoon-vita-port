@@ -748,7 +748,8 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
             errors.append("manifest.identity object is required for v3/v4")
         else:
             for field in sorted(set(identity) - {
-                "portrait_file", "portrait_sha256", "minimap_rgb"
+                "portrait_file", "portrait_sha256", "minimap_rgb",
+                "short_name", "narration_name", "sort_label",
             }):
                 errors.append(f"manifest.identity contains unknown field {field!r}")
             if identity.get("portrait_file") != "portrait.png":
@@ -771,6 +772,18 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
                 )
             ):
                 errors.append("manifest.identity.minimap_rgb must contain three bytes")
+            for field, maximum in (
+                ("short_name", 96),
+                ("narration_name", 96),
+                ("sort_label", 96),
+            ):
+                value = identity.get(field, manifest.get("display_name"))
+                if (not isinstance(value, str) or not value.strip() or
+                        not _bounded_printable_text(value, maximum)):
+                    errors.append(
+                        f"manifest.identity.{field} must be 1-{maximum} "
+                        "printable UTF-8 bytes when present"
+                    )
     elif identity is not None:
         errors.append("manifest.identity requires mdkr-character-source-v3 or v4")
     rig = manifest.get("rig")

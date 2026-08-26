@@ -400,7 +400,12 @@ class CharacterAssetProbeTests(unittest.TestCase):
             portrait.write_bytes(make_portrait_png())
             manifest_data = make_manifest()
             manifest_data["schema"] = probe.PACKAGE_SCHEMA_V3
-            manifest_data["identity"] = {"minimap_rgb": [220, 72, 144]}
+            manifest_data["identity"] = {
+                "minimap_rgb": [220, 72, 144],
+                "short_name": "Proof",
+                "narration_name": "Pipeline Proof character",
+                "sort_label": "Proof, Pipeline",
+            }
             manifest = root / "manifest.json"
             manifest.write_text(json.dumps(manifest_data), encoding="utf-8")
             license_file = root / "LICENSE.txt"
@@ -421,10 +426,19 @@ class CharacterAssetProbeTests(unittest.TestCase):
             sections = _compiled_sections(compiled)
             self.assertEqual(1, sections[compiler.SECTION_IDENTITY]["count"])
             self.assertEqual(
+                1, sections[compiler.SECTION_IDENTITY_NAMES]["count"]
+            )
+            self.assertEqual(
                 len(make_portrait_png()), sections[compiler.SECTION_IDENTITY_DATA]["size"]
             )
             self.assertTrue(report["identity_portrait"])
             self.assertEqual([220, 72, 144], report["minimap_rgb"])
+            self.assertEqual("Proof", report["identity_short_name"])
+            self.assertEqual(
+                "Pipeline Proof character",
+                report["identity_narration_name"],
+            )
+            self.assertEqual("Proof, Pipeline", report["identity_sort_label"])
 
     def test_v4_authored_clips_only_is_a_first_class_rig_mode(self) -> None:
         portrait = make_portrait_png()
@@ -441,6 +455,29 @@ class CharacterAssetProbeTests(unittest.TestCase):
         self.assertEqual("authored-clips-only", report["rig_mode"])
         self.assertFalse(report["rig_reviewed"])
         self.assertEqual(0, report["rig_roles"])
+
+    def test_absent_identity_name_overrides_preserve_long_display_fallback(self) -> None:
+        portrait = make_portrait_png()
+        manifest = make_v4_manifest(portrait)
+        manifest["display_name"] = "A" * 96
+        model = make_animated_glb()
+        policy = probe.inspect_glb_bytes(model, require_character=True)
+        self.assertEqual([], probe.validate_manifest(manifest, policy))
+        compiled, report = compiler.compile_character(
+            model, manifest, bytes(32), portrait
+        )
+        sections = _compiled_sections(compiled)
+        identity_offset = sections[compiler.SECTION_IDENTITY]["offset"]
+        names_offset = sections[compiler.SECTION_IDENTITY_NAMES]["offset"]
+        self.assertEqual(0, struct.unpack_from(
+            "<I", compiled, identity_offset + 20
+        )[0])
+        self.assertEqual((0, 0, 0), struct.unpack_from(
+            compiler.IDENTITY_NAMES_FORMAT, compiled, names_offset
+        ))
+        self.assertEqual("A" * 96, report["identity_short_name"])
+        self.assertEqual("A" * 96, report["identity_narration_name"])
+        self.assertEqual("A" * 96, report["identity_sort_label"])
 
     def test_v4_humanoid_roles_compile_with_reviewed_hierarchy(self) -> None:
         portrait = make_portrait_png()

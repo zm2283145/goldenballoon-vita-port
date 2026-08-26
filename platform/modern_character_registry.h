@@ -18,6 +18,7 @@ extern "C" {
 #define MDKR_MODERN_CHARACTER_MAX 64
 #define MDKR_MODERN_CHARACTER_ID_MAX 65
 #define MDKR_MODERN_CHARACTER_NAME_MAX 97
+#define MDKR_MODERN_CHARACTER_SHORT_NAME_MAX 97
 #define MDKR_MODERN_CHARACTER_PATH_MAX 4096
 #define MDKR_MODERN_CHARACTER_SKIP_REASON_MAX 192
 #define MDKR_MODERN_CHARACTER_LOD_LEVELS 4
@@ -76,6 +77,9 @@ enum MdkrModernCharacterRigRoleBits {
 typedef struct MdkrModernCharacterEntry {
     char id[MDKR_MODERN_CHARACTER_ID_MAX];
     char display_name[MDKR_MODERN_CHARACTER_NAME_MAX];
+    char short_name[MDKR_MODERN_CHARACTER_SHORT_NAME_MAX];
+    char narration_name[MDKR_MODERN_CHARACTER_NAME_MAX];
+    char sort_label[MDKR_MODERN_CHARACTER_NAME_MAX];
     char path[MDKR_MODERN_CHARACTER_PATH_MAX];
     uint8_t source_sha256[32];
     uint32_t enabled;

@@ -13,6 +13,12 @@ void expect(bool condition, const char *message) {
         ++failures;
     }
 }
+
+void writeU32(std::string &payload, size_t offset, uint32_t value) {
+    for (unsigned shift = 0u; shift < 32u; shift += 8u) {
+        payload[offset++] = static_cast<char>(value >> shift);
+    }
+}
 }  // namespace
 
 int main() {
@@ -47,6 +53,10 @@ int main() {
         source.portrait[index] = static_cast<uint8_t>(index * 31u);
     }
     source.portraitSourcePath = "/tmp/portrait-\xC2\xA9.png";
+    source.displayName = "Dixie Kong";
+    source.shortName = "Dixie";
+    source.narrationName = "Dixie Kong";
+    source.sortLabel = "Kong, Dixie";
 
     std::string encoded;
     std::string error;
@@ -62,11 +72,30 @@ int main() {
                parsed.rigReviewed && parsed.roles[15].node == 30u &&
                parsed.roles[1].inferred &&
                parsed.portrait == source.portrait &&
-               parsed.portraitSourcePath == source.portraitSourcePath,
+               parsed.portraitSourcePath == source.portraitSourcePath &&
+               parsed.displayName == source.displayName &&
+               parsed.shortName == source.shortName &&
+               parsed.narrationName == source.narrationName &&
+               parsed.sortLabel == source.sortLabel,
            "all authoring surfaces survive the snapshot round trip");
     std::string second;
     expect(encode(parsed, second, error) && encoded == second,
            "snapshot encoding is deterministic");
+
+    const size_t identityTailBytes = 16u + source.displayName.size() +
+        source.shortName.size() + source.narrationName.size() +
+        source.sortLabel.size();
+    std::string legacy = encoded.substr(0u, encoded.size() - identityTailBytes);
+    writeU32(legacy, 4u, 1u);
+    writeU32(legacy, 8u, static_cast<uint32_t>(legacy.size()));
+    Snapshot legacyParsed;
+    expect(decode(legacy, legacyParsed, error) &&
+               legacyParsed.displayName.empty() &&
+               legacyParsed.shortName.empty() &&
+               legacyParsed.narrationName.empty() &&
+               legacyParsed.sortLabel.empty() &&
+               legacyParsed.portrait == source.portrait,
+           "version-one drafts decode with legacy empty identity names");
 
     const Snapshot before = parsed;
     std::string truncated = encoded.substr(0u, encoded.size() - 1u);
@@ -105,6 +134,21 @@ int main() {
         "\xE2\x81\xA6" + "path.png";
     expect(!encode(hostile, encoded, error),
            "bidirectional controls are rejected from persisted paths");
+    hostile = source;
+    hostile.sortLabel = std::string("Dixie") + "\xE2\x80\xAE" + "Kong";
+    expect(!encode(hostile, encoded, error),
+           "bidirectional controls are rejected from identity names");
+    hostile = source;
+    hostile.shortName.clear();
+    expect(!encode(hostile, encoded, error),
+           "identity name groups cannot be partially absent");
+    hostile = source;
+    hostile.displayName.clear();
+    hostile.shortName.clear();
+    hostile.narrationName.clear();
+    hostile.sortLabel.clear();
+    expect(!encode(hostile, encoded, error),
+           "new snapshots cannot omit the complete identity name group");
 
     if (failures != 0) return 1;
     std::puts("character draft snapshot passed");

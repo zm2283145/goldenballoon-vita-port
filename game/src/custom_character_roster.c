@@ -29,7 +29,7 @@ static int roster_ascii_compare(const char *left, const char *right) {
 static int roster_item_compare(const void *left, const void *right) {
     const MdkrCustomRosterItem *a = (const MdkrCustomRosterItem *)left;
     const MdkrCustomRosterItem *b = (const MdkrCustomRosterItem *)right;
-    int order = roster_ascii_compare(a->display_name, b->display_name);
+    int order = roster_ascii_compare(a->sort_label, b->sort_label);
     return order != 0 ? order : strcmp(a->id, b->id);
 }
 
@@ -57,6 +57,15 @@ int mdkr_custom_roster_add(MdkrCustomRoster *roster, int catalog_index,
         !roster_string_valid(view->id, MDKR_MODERN_CHARACTER_ID_MAX) ||
         !roster_string_valid(view->display_name,
                              MDKR_MODERN_CHARACTER_NAME_MAX) ||
+        (view->short_name != NULL &&
+         !roster_string_valid(view->short_name,
+                              MDKR_MODERN_CHARACTER_SHORT_NAME_MAX)) ||
+        (view->narration_name != NULL &&
+         !roster_string_valid(view->narration_name,
+                              MDKR_MODERN_CHARACTER_NAME_MAX)) ||
+        (view->sort_label != NULL &&
+         !roster_string_valid(view->sort_label,
+                              MDKR_MODERN_CHARACTER_NAME_MAX)) ||
         view->donor >= 10u || view->vehicle_mask == 0u ||
         (view->vehicle_mask & ~7u) != 0u) {
         if (roster != NULL) roster->rejected++;
@@ -73,6 +82,16 @@ int mdkr_custom_roster_add(MdkrCustomRoster *roster, int catalog_index,
     (void)snprintf(item->id, sizeof(item->id), "%s", view->id);
     (void)snprintf(item->display_name, sizeof(item->display_name), "%s",
                    view->display_name);
+    (void)snprintf(item->short_name, sizeof(item->short_name), "%s",
+                   view->short_name != NULL && view->short_name[0] != '\0'
+                       ? view->short_name : view->display_name);
+    (void)snprintf(
+        item->narration_name, sizeof(item->narration_name), "%s",
+        view->narration_name != NULL && view->narration_name[0] != '\0'
+            ? view->narration_name : view->display_name);
+    (void)snprintf(item->sort_label, sizeof(item->sort_label), "%s",
+                   view->sort_label != NULL && view->sort_label[0] != '\0'
+                       ? view->sort_label : view->display_name);
     item->catalog_index = catalog_index;
     item->donor = view->donor;
     item->vehicle_mask = view->vehicle_mask;

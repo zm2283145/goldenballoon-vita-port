@@ -120,7 +120,7 @@ bool splitFields(const std::string &line, std::vector<std::string> &fields) {
         if (tab == std::string::npos) break;
         begin = tab + 1u;
     }
-    return fields.size() == 40u;
+    return fields.size() == 43u;
 }
 
 }  // namespace
@@ -128,7 +128,7 @@ bool splitFields(const std::string &line, std::vector<std::string> &fields) {
 namespace CharacterCandidateIndex {
 
 bool parse(const std::string &text, Candidate &output) {
-    static const std::string header = "mdkr-character-candidate-v2\n";
+    static const std::string header = "mdkr-character-candidate-v3\n";
     Candidate parsed;
     std::vector<std::string> fields;
     uint64_t numbers[32] = {};
@@ -139,11 +139,14 @@ bool parse(const std::string &text, Candidate &output) {
             header.size(), text.size() - header.size() - 1u), fields) ||
         !idValid(fields[0]) ||
         !decodeText(fields[1], 96u, parsed.displayName) ||
-        !digestValid(fields[2]) || !digestValid(fields[3])) return false;
+        !decodeText(fields[2], 96u, parsed.shortName) ||
+        !decodeText(fields[3], 96u, parsed.narrationName) ||
+        !decodeText(fields[4], 96u, parsed.sortLabel) ||
+        !digestValid(fields[5]) || !digestValid(fields[6])) return false;
     for (size_t index = 0u; index < 32u; ++index) {
         const uint64_t maximum = index == 18u || index == 19u
             ? UINT64_MAX : UINT_MAX;
-        if (!parseUnsigned(fields[index + 4u], maximum, numbers[index])) {
+        if (!parseUnsigned(fields[index + 7u], maximum, numbers[index])) {
             return false;
         }
     }
@@ -164,19 +167,19 @@ bool parse(const std::string &text, Candidate &output) {
             numbers[28u + lod] != 0u) return false;
     }
     uint64_t provenancePresent = 0u;
-    if (!parseUnsigned(fields[36], 1u, provenancePresent)) return false;
+    if (!parseUnsigned(fields[39], 1u, provenancePresent)) return false;
     if (provenancePresent != 0u) {
-        if (!decodeText(fields[37], 128u, parsed.licenseSpdx) ||
-            !decodeText(fields[38], 256u, parsed.attribution) ||
-            !decodeText(fields[39], 2048u, parsed.sourceUrl)) return false;
+        if (!decodeText(fields[40], 128u, parsed.licenseSpdx) ||
+            !decodeText(fields[41], 256u, parsed.attribution) ||
+            !decodeText(fields[42], 2048u, parsed.sourceUrl)) return false;
         parsed.provenancePresent = true;
-    } else if (!fields[37].empty() || !fields[38].empty() ||
-               !fields[39].empty()) {
+    } else if (!fields[40].empty() || !fields[41].empty() ||
+               !fields[42].empty()) {
         return false;
     }
     parsed.id = fields[0];
-    parsed.packageSha256 = fields[2];
-    parsed.sourceDigest = fields[3];
+    parsed.packageSha256 = fields[5];
+    parsed.sourceDigest = fields[6];
     parsed.donor = static_cast<uint32_t>(numbers[0]);
     parsed.vehicleMask = static_cast<uint32_t>(numbers[1]);
     parsed.vertices = static_cast<uint32_t>(numbers[2]);

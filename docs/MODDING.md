@@ -216,7 +216,8 @@ author handoff is a self-contained GLB 2.0 plus a declarative manifest and
 license text, packaged as `.mdkrchar`. It does not require a second ROM. Install
 and removal are available in **Settings → Content → Custom Characters**. That
 workshop can browse, drag-and-drop, or accept a typed package path, validate it
-without changing installed files, compare identity, donor/vehicle support, rig,
+without changing installed files, compare full/short/narration/sort identity,
+portrait, donor/vehicle support, rig,
 LOD0 geometry, animation, and texture-memory facts against the installed
 revision, then require both a local-use rights confirmation and an explicit
 reviewed install. It can also rescan, assign a different presentation to P1-P4, disable or
@@ -311,14 +312,16 @@ attribution, and source URL beside the installed revision. The exact
 `LICENSE.txt` is included in the same source digest, but neither those bytes nor
 the manifest declarations establish that the person importing the package has
 the necessary rights; the final local-use confirmation therefore remains
-required. Compiler-v1 through compiler-v4 portable caches continue to work and
-are labeled as legacy when their cache cannot expose these review fields; use
-`prepare` with current tools to add them.
+required. Compiler-v1 through compiler-v5 portable caches continue to work.
+Versions before v5 are labeled as legacy when their cache cannot expose
+provenance; versions before v6 fall back to the display name for compact,
+narrated, and sorting identity. Use `prepare` with current tools to add the
+current records.
 At commit, both are checked again under the shared import lock. If the package
 changed, an update of the same ID appeared, or the installed revision changed
 after review, nothing is published and the Workshop requires a fresh review.
 Portable packages use this flow without Python; source-only developer packages
-use the same fixed-field, bounded summary and reviewed transaction through the
+use the same versioned fixed-field, bounded summary and reviewed transaction through the
 author compiler. Drag-and-drop stages the same review instead of bypassing it.
 
 An enabled cache is named `<id>.mdkc`. Disable atomically moves the same
@@ -340,6 +343,15 @@ anchor, and creates separate ground/select and pelvis/vehicle profiles. Old v1
 packages still load but are clearly marked as legacy calibration in the
 workshop. If a preview is backward, use the visible 180-degree correction; if
 it is misplaced, adjust only the affected context.
+
+Source-v3/v4 identity may additionally author `short_name`, `narration_name`,
+and `sort_label` (each up to 96 UTF-8 bytes). Portrait Studio exposes all four
+names only inside a named draft, so a label edit cannot accidentally publish a
+partial identity revision. Compact select tiles use the short name, the detail
+view uses the full display name, and roster ordering uses the sort label. The
+narration field is spoken by the Workshop library and player-assignment
+controls. The current in-game font safely substitutes unsupported glyphs and
+does not yet claim full Unicode shaping.
 
 Animation names are mapped to engine intent, not hard-coded frame numbers. The
 recommended race states are `race.steer`, `race.reverse`, `race.boost`,

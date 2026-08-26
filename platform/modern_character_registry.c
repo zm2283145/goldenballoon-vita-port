@@ -217,6 +217,9 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
         MdkrModernDecodedIdentity decoded_identity;
         const char *id;
         const char *display_name;
+        const char *short_name;
+        const char *narration_name;
+        const char *sort_label;
         char path[MDKR_MODERN_CHARACTER_PATH_MAX];
         char error[MDKR_MODERN_CHARACTER_SKIP_REASON_MAX];
         int regular = 0;
@@ -246,8 +249,42 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
         (void)mdkr_modern_character_asset_definition(&asset, &definition);
         id = mdkr_modern_character_asset_string(&asset, definition.id);
         display_name = mdkr_modern_character_asset_string(&asset, definition.display_name);
+        short_name = display_name;
+        narration_name = display_name;
+        sort_label = display_name;
+        {
+            MdkrModernIdentity identity;
+            MdkrModernIdentityNames identity_names;
+            const char *candidate;
+            if (mdkr_modern_character_asset_identity(
+                    &asset, &identity, NULL) && identity.short_name != 0u &&
+                (candidate = mdkr_modern_character_asset_string(
+                    &asset, identity.short_name)) != NULL &&
+                candidate[0] != '\0') {
+                short_name = candidate;
+            }
+            if (mdkr_modern_character_asset_identity_names(
+                    &asset, &identity_names)) {
+                if (identity_names.narration_name != 0u &&
+                    (candidate = mdkr_modern_character_asset_string(
+                        &asset, identity_names.narration_name)) != NULL &&
+                    candidate[0] != '\0') {
+                    narration_name = candidate;
+                }
+                if (identity_names.sort_label != 0u &&
+                    (candidate = mdkr_modern_character_asset_string(
+                        &asset, identity_names.sort_label)) != NULL &&
+                    candidate[0] != '\0') {
+                    sort_label = candidate;
+                }
+            }
+        }
         if (!copy_string(entry.id, sizeof(entry.id), id) ||
             !copy_string(entry.display_name, sizeof(entry.display_name), display_name) ||
+            !copy_string(entry.short_name, sizeof(entry.short_name), short_name) ||
+            !copy_string(entry.narration_name, sizeof(entry.narration_name),
+                         narration_name) ||
+            !copy_string(entry.sort_label, sizeof(entry.sort_label), sort_label) ||
             !copy_string(entry.path, sizeof(entry.path), path)) {
             mdkr_modern_character_asset_unload(&asset);
             add_skip(registry, item->d_name, "compiled identity or path exceeds the registry bound");

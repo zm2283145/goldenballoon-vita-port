@@ -12,7 +12,8 @@
 
 static const uint32_t s_expected_strides[MDKR_MDKC_SECTION_LAST + 1] = {
     0u, 1u, 72u, 4u, 32u, 80u, 40u, 1u, 48u, 16u, 68u,
-    16u, 24u, 52u, 64u, 16u, 8u, 48u, 64u, 24u, 1u, 16u, 44u, 16u
+    16u, 24u, 52u, 64u, 16u, 8u, 48u, 64u, 24u, 1u, 16u, 44u, 16u,
+    12u
 };
 
 static void set_error(char *error, size_t error_size, const char *message) {
@@ -481,6 +482,16 @@ int mdkr_modern_character_asset_identity(
     return 1;
 }
 
+int mdkr_modern_character_asset_identity_names(
+    const MdkrModernCharacterAsset *asset, MdkrModernIdentityNames *out) {
+    const uint8_t *data = record(asset, MDKR_MDKC_IDENTITY_NAMES, 0u);
+    if (data == NULL || out == NULL) return 0;
+    out->narration_name = read_u32(data);
+    out->sort_label = read_u32(data + 4u);
+    out->flags = read_u32(data + 8u);
+    return 1;
+}
+
 int mdkr_modern_character_asset_rig(const MdkrModernCharacterAsset *asset,
                                     MdkrModernRig *out) {
     const uint8_t *data = record(asset, MDKR_MDKC_RIG, 0u);
@@ -912,8 +923,11 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
     }
     if (asset->sections[MDKR_MDKC_IDENTITY].data != NULL) {
         MdkrModernIdentity identity;
+        MdkrModernIdentityNames identity_names;
         const uint8_t *portrait = NULL;
         const char *short_name;
+        const char *narration_name;
+        const char *sort_label;
         if (asset->sections[MDKR_MDKC_IDENTITY].count != 1u ||
             asset->sections[MDKR_MDKC_IDENTITY_DATA].size == 0u ||
             !mdkr_modern_character_asset_identity(asset, &identity,
@@ -928,11 +942,36 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
         }
         short_name = mdkr_modern_character_asset_string(asset,
                                                         identity.short_name);
-        if (short_name == NULL) {
+        if (short_name == NULL ||
+            (identity.short_name != 0u &&
+             (short_name[0] == '\0' ||
+              !bounded_printable_utf8(short_name, 96u)))) {
             set_error(error, error_size,
                       "compiled character identity name is invalid");
             return 0;
         }
+        if (asset->sections[MDKR_MDKC_IDENTITY_NAMES].data != NULL &&
+            (asset->sections[MDKR_MDKC_IDENTITY_NAMES].count != 1u ||
+             !mdkr_modern_character_asset_identity_names(
+                 asset, &identity_names) || identity_names.flags != 0u ||
+             (narration_name = mdkr_modern_character_asset_string(
+                 asset, identity_names.narration_name)) == NULL ||
+             (identity_names.narration_name != 0u &&
+              (narration_name[0] == '\0' ||
+               !bounded_printable_utf8(narration_name, 96u))) ||
+             (sort_label = mdkr_modern_character_asset_string(
+                 asset, identity_names.sort_label)) == NULL ||
+             (identity_names.sort_label != 0u &&
+              (sort_label[0] == '\0' ||
+               !bounded_printable_utf8(sort_label, 96u))))) {
+            set_error(error, error_size,
+                      "compiled character identity names are invalid");
+            return 0;
+        }
+    } else if (asset->sections[MDKR_MDKC_IDENTITY_NAMES].data != NULL) {
+        set_error(error, error_size,
+                  "compiled character identity names have no identity media");
+        return 0;
     }
     if ((asset->sections[MDKR_MDKC_RIG].data == NULL) !=
         (asset->sections[MDKR_MDKC_RIG_ROLES].data == NULL)) {
