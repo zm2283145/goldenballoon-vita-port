@@ -10,8 +10,10 @@
 
 namespace {
 
-constexpr const char *kHeader       = "mdkr-character-test-evidence-v1";
-constexpr size_t      kFieldsPerRow = 39u;
+constexpr const char *kHeaderV1 = "mdkr-character-test-evidence-v1";
+constexpr const char *kHeaderV2 = "mdkr-character-test-evidence-v2";
+constexpr size_t kFieldsPerRowV1 = 39u;
+constexpr size_t kFieldsPerRowV2 = 52u;
 constexpr size_t      kMaximumRowBytes =
     (CharacterTestEvidenceStore::kMaximumBuildVersionBytes * 2u) +
     (CharacterTestEvidenceStore::kMaximumBackendBytes * 2u) +
@@ -54,6 +56,30 @@ bool parseUnsigned(const std::string &text, uint64_t maximum, uint64_t &value) {
     }
     value = parsed;
     return true;
+}
+
+bool parseSigned(const std::string &text, int64_t minimum, int64_t maximum,
+                 int64_t &value) {
+    if (text.empty() || text == "-0") return false;
+    const bool negative = text[0] == '-';
+    const size_t begin = negative ? 1u : 0u;
+    if (begin == text.size() ||
+        (text.size() - begin > 1u && text[begin] == '0')) return false;
+    uint64_t magnitude = 0u;
+    const uint64_t limit = negative
+        ? static_cast<uint64_t>(-(minimum + 1)) + 1u
+        : static_cast<uint64_t>(maximum);
+    if (!parseUnsigned(text.substr(begin), limit, magnitude)) return false;
+    if (negative) {
+        if (magnitude == static_cast<uint64_t>(INT64_MAX) + 1u) {
+            value = INT64_MIN;
+        } else {
+            value = -static_cast<int64_t>(magnitude);
+        }
+    } else {
+        value = static_cast<int64_t>(magnitude);
+    }
+    return value >= minimum && value <= maximum;
 }
 
 int hexNibble(char byte) {
@@ -178,7 +204,8 @@ std::string recordDigest(const std::vector<std::string> &fields) {
     return finishDigest(digest);
 }
 
-std::string inventoryDigest(const std::string &count,
+std::string inventoryDigest(const std::string &header,
+                            const std::string &count,
                             const std::string &body) {
     MdkrSha256 digest;
     mdkr_sha256_init(&digest);
@@ -187,7 +214,7 @@ std::string inventoryDigest(const std::string &count,
         const unsigned char separator = 0u;
         mdkr_sha256_update(&digest, &separator, 1u);
     };
-    add(kHeader);
+    add(header);
     add(count);
     mdkr_sha256_update(&digest, body.data(), body.size());
     return finishDigest(digest);
@@ -242,6 +269,36 @@ bool evidenceValid(const CharacterTestEvidenceStore::Evidence &evidence,
     const bool dimensionsValid =
         (evidence.outputWidth == 0u) == (evidence.outputHeight == 0u) &&
         (evidence.renderWidth == 0u) == (evidence.renderHeight == 0u);
+    bool fitStateValid = true;
+    int64_t forwardLengthSquared = 0;
+    constexpr int64_t kMaximumFitMicrometres = 1000000000LL;
+    for (unsigned axis = 0u; axis < 3u; ++axis) {
+        if (!evidence.fitDiagnosticsValid) {
+            fitStateValid = fitStateValid &&
+                evidence.fitBoundsMinMicrometres[axis] == 0 &&
+                evidence.fitBoundsMaxMicrometres[axis] == 0 &&
+                evidence.fitAnchorMicrometres[axis] == 0 &&
+                evidence.fitForwardMilli[axis] == 0;
+            continue;
+        }
+        const int64_t minimum = evidence.fitBoundsMinMicrometres[axis];
+        const int64_t maximum = evidence.fitBoundsMaxMicrometres[axis];
+        const int64_t anchor = evidence.fitAnchorMicrometres[axis];
+        const int64_t forward = evidence.fitForwardMilli[axis];
+        const bool forwardInRange = forward >= -1001 && forward <= 1001;
+        fitStateValid = fitStateValid && evidence.replacementDraws != 0u &&
+            minimum <= maximum &&
+            minimum >= -kMaximumFitMicrometres &&
+            maximum <= kMaximumFitMicrometres &&
+            anchor >= -kMaximumFitMicrometres &&
+            anchor <= kMaximumFitMicrometres &&
+            forwardInRange;
+        if (forwardInRange) forwardLengthSquared += forward * forward;
+    }
+    if (evidence.fitDiagnosticsValid) {
+        fitStateValid = fitStateValid && forwardLengthSquared >= 995000LL &&
+            forwardLengthSquared <= 1005000LL;
+    }
     if (evidence.kind != Kind::Latest && evidence.kind != Kind::Baseline)
         error = "test evidence kind is invalid";
     else if (!slugValid(evidence.packageId))
@@ -277,6 +334,8 @@ bool evidenceValid(const CharacterTestEvidenceStore::Evidence &evidence,
         error = "started test evidence has no render dimensions";
     else if (!contactStateValid)
         error = "test evidence contact state or distribution is inconsistent";
+    else if (!fitStateValid)
+        error = "test evidence fit diagnostics are inconsistent";
     else if (evidence.kind == Kind::Baseline && !qualified(evidence))
         error = "a comparison baseline must be qualified evidence";
     else
@@ -287,7 +346,10 @@ bool evidenceValid(const CharacterTestEvidenceStore::Evidence &evidence,
 std::vector<std::string> recordFields(
     const CharacterTestEvidenceStore::Evidence &evidence) {
     const auto number = [](uint64_t value) { return std::to_string(value); };
-    return {
+    const auto signedNumber = [](int64_t value) {
+        return std::to_string(value);
+    };
+    std::vector<std::string> fields = {
         number(static_cast<uint32_t>(evidence.kind)),
         evidence.packageId,
         number(evidence.capturedUnix),
@@ -327,6 +389,20 @@ std::vector<std::string> recordFields(
         number(evidence.renderWidth),
         number(evidence.renderHeight),
     };
+    fields.push_back(evidence.fitDiagnosticsValid ? "1" : "0");
+    for (int64_t value : evidence.fitBoundsMinMicrometres) {
+        fields.push_back(signedNumber(value));
+    }
+    for (int64_t value : evidence.fitBoundsMaxMicrometres) {
+        fields.push_back(signedNumber(value));
+    }
+    for (int64_t value : evidence.fitAnchorMicrometres) {
+        fields.push_back(signedNumber(value));
+    }
+    for (int32_t value : evidence.fitForwardMilli) {
+        fields.push_back(signedNumber(value));
+    }
+    return fields;
 }
 
 } // namespace
@@ -373,19 +449,22 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
     uint64_t                 count     = 0u;
     if (text.size() > kMaximumSerializedBytes || end == std::string::npos ||
         !split(text.substr(0u, end), 3u, fields) ||
-        fields[0] != kHeader ||
+        (fields[0] != kHeaderV1 && fields[0] != kHeaderV2) ||
         !parseUnsigned(fields[1], kMaximumRecords, count) ||
         !digestValid(fields[2])) {
         error = "test evidence inventory header is invalid";
         return false;
     }
+    const std::string header = fields[0];
+    const bool legacyV1 = header == kHeaderV1;
+    const size_t rowFields = legacyV1 ? kFieldsPerRowV1 : kFieldsPerRowV2;
     const std::string countText         = fields[1];
     const std::string inventoryChecksum = fields[2];
     begin                               = end + 1u;
     for (uint64_t index = 0u; index < count; ++index) {
         end = text.find('\n', begin);
         if (end == std::string::npos ||
-            !split(text.substr(begin, end - begin), kFieldsPerRow, fields)) {
+            !split(text.substr(begin, end - begin), rowFields, fields)) {
             error = "test evidence inventory row is malformed";
             return false;
         }
@@ -449,7 +528,7 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
             !decodeHex(fields[29], kMaximumBackendBytes, evidence.backend) ||
             !decodeHex(fields[30], kMaximumAdapterBytes, evidence.adapter) ||
             !decodeHex(fields[31], kMaximumDriverBytes, evidence.driver) ||
-            !digestValid(fields[38])) {
+            !digestValid(fields.back())) {
             error = "test evidence inventory row fields are invalid";
             return false;
         }
@@ -488,6 +567,40 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
         evidence.outputHeight                = static_cast<uint32_t>(numbers[n++]);
         evidence.renderWidth                 = static_cast<uint32_t>(numbers[n++]);
         evidence.renderHeight                = static_cast<uint32_t>(numbers[n++]);
+        if (!legacyV1) {
+            uint64_t fitValid = 0u;
+            int64_t signedValue = 0;
+            bool fitFieldsValid = parseUnsigned(fields[38], 1u, fitValid);
+            evidence.fitDiagnosticsValid = fitValid != 0u;
+            for (size_t axis = 0u; axis < 3u && fitFieldsValid; ++axis) {
+                fitFieldsValid = parseSigned(
+                    fields[39u + axis], -1000000000LL, 1000000000LL,
+                    signedValue);
+                evidence.fitBoundsMinMicrometres[axis] = signedValue;
+            }
+            for (size_t axis = 0u; axis < 3u && fitFieldsValid; ++axis) {
+                fitFieldsValid = parseSigned(
+                    fields[42u + axis], -1000000000LL, 1000000000LL,
+                    signedValue);
+                evidence.fitBoundsMaxMicrometres[axis] = signedValue;
+            }
+            for (size_t axis = 0u; axis < 3u && fitFieldsValid; ++axis) {
+                fitFieldsValid = parseSigned(
+                    fields[45u + axis], -1000000000LL, 1000000000LL,
+                    signedValue);
+                evidence.fitAnchorMicrometres[axis] = signedValue;
+            }
+            for (size_t axis = 0u; axis < 3u && fitFieldsValid; ++axis) {
+                fitFieldsValid = parseSigned(
+                    fields[48u + axis], -1001, 1001, signedValue);
+                evidence.fitForwardMilli[axis] =
+                    static_cast<int32_t>(signedValue);
+            }
+            if (!fitFieldsValid) {
+                error = "test evidence fit fields are invalid";
+                return false;
+            }
+        }
         const std::string checksum           = fields.back();
         fields.pop_back();
         if (!evidenceValid(evidence, error) ||
@@ -506,7 +619,7 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
         begin = end + 1u;
     }
     if (begin != text.size() ||
-        inventoryDigest(countText, text.substr(bodyBegin)) !=
+        inventoryDigest(header, countText, text.substr(bodyBegin)) !=
             inventoryChecksum) {
         error = begin != text.size()
                     ? "test evidence inventory has trailing data"
@@ -553,8 +666,9 @@ bool serialize(const Inventory &inventory, std::string &output, std::string &err
         }
     }
     const std::string count  = std::to_string(ordered.records.size());
-    std::string       result = std::string(kHeader) + "\t" + count + "\t" +
-                               inventoryDigest(count, body) + "\n" + body;
+    std::string       result = std::string(kHeaderV2) + "\t" + count + "\t" +
+                               inventoryDigest(kHeaderV2, count, body) +
+                               "\n" + body;
     if (result.size() > kMaximumSerializedBytes) {
         error = "serialized test evidence exceeds its byte bound";
         return false;

@@ -60,6 +60,11 @@ struct Evidence {
     uint64_t    contactSolves               = 0u;
     uint64_t    contactErrorMeanMicrometres = 0u;
     uint64_t    contactErrorMaxMicrometres  = 0u;
+    bool        fitDiagnosticsValid         = false;
+    int64_t     fitBoundsMinMicrometres[3]  = {};
+    int64_t     fitBoundsMaxMicrometres[3]  = {};
+    int64_t     fitAnchorMicrometres[3]     = {};
+    int32_t     fitForwardMilli[3]          = {};
     std::string backend;
     std::string adapter;
     std::string driver;

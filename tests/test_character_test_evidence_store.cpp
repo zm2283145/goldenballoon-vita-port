@@ -1,7 +1,9 @@
 #include "character_test_evidence_store.h"
+#include "sha256.h"
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -41,6 +43,118 @@ int writeMemory(void *context, const char *text, size_t length) {
     return 1;
 }
 
+std::string finishDigest(MdkrSha256 &digest) {
+    uint8_t bytes[MDKR_SHA256_DIGEST_SIZE];
+    static const char digits[] = "0123456789abcdef";
+    std::string hex(MDKR_SHA256_DIGEST_SIZE * 2u, '0');
+    mdkr_sha256_final(&digest, bytes);
+    for (size_t index = 0u; index < sizeof(bytes); ++index) {
+        hex[index * 2u] = digits[bytes[index] >> 4u];
+        hex[index * 2u + 1u] = digits[bytes[index] & 0xFu];
+    }
+    return hex;
+}
+
+std::string digestFields(const std::vector<std::string> &fields) {
+    MdkrSha256 digest;
+    mdkr_sha256_init(&digest);
+    for (const std::string &field : fields) {
+        mdkr_sha256_update(&digest, field.data(), field.size());
+        const uint8_t separator = 0u;
+        mdkr_sha256_update(&digest, &separator, 1u);
+    }
+    return finishDigest(digest);
+}
+
+std::string digestInventory(const std::string &header,
+                            const std::string &count,
+                            const std::string &body) {
+    MdkrSha256 digest;
+    mdkr_sha256_init(&digest);
+    const auto add = [&digest](const std::string &value) {
+        mdkr_sha256_update(&digest, value.data(), value.size());
+        const uint8_t separator = 0u;
+        mdkr_sha256_update(&digest, &separator, 1u);
+    };
+    add(header);
+    add(count);
+    mdkr_sha256_update(&digest, body.data(), body.size());
+    return finishDigest(digest);
+}
+
+std::vector<std::string> splitFields(const std::string &line) {
+    std::vector<std::string> fields;
+    size_t begin = 0u;
+    while (true) {
+        const size_t tab = line.find('\t', begin);
+        fields.push_back(line.substr(
+            begin, tab == std::string::npos ? std::string::npos
+                                             : tab - begin));
+        if (tab == std::string::npos) return fields;
+        begin = tab + 1u;
+    }
+}
+
+std::string legacyV1FromV2(const std::string &encoded) {
+    const size_t headerEnd = encoded.find('\n');
+    if (headerEnd == std::string::npos) return {};
+    const std::vector<std::string> header = splitFields(
+        encoded.substr(0u, headerEnd));
+    if (header.size() != 3u ||
+        header[0] != "mdkr-character-test-evidence-v2") return {};
+    std::string body;
+    size_t begin = headerEnd + 1u;
+    while (begin < encoded.size()) {
+        const size_t end = encoded.find('\n', begin);
+        if (end == std::string::npos) return {};
+        std::vector<std::string> fields = splitFields(
+            encoded.substr(begin, end - begin));
+        if (fields.size() != 52u) return {};
+        fields.resize(38u);
+        for (const std::string &field : fields) {
+            body += field;
+            body.push_back('\t');
+        }
+        body += digestFields(fields);
+        body.push_back('\n');
+        begin = end + 1u;
+    }
+    constexpr const char *legacyHeader =
+        "mdkr-character-test-evidence-v1";
+    return std::string(legacyHeader) + "\t" + header[1] + "\t" +
+        digestInventory(legacyHeader, header[1], body) + "\n" + body;
+}
+
+std::string authenticatedV2WithFirstRowField(
+    const std::string &encoded, size_t fieldIndex,
+    const std::string &replacement) {
+    const size_t headerEnd = encoded.find('\n');
+    const size_t rowEnd = headerEnd == std::string::npos
+        ? std::string::npos : encoded.find('\n', headerEnd + 1u);
+    if (headerEnd == std::string::npos || rowEnd == std::string::npos) {
+        return {};
+    }
+    const std::vector<std::string> header = splitFields(
+        encoded.substr(0u, headerEnd));
+    std::vector<std::string> fields = splitFields(
+        encoded.substr(headerEnd + 1u, rowEnd - headerEnd - 1u));
+    if (header.size() != 3u ||
+        header[0] != "mdkr-character-test-evidence-v2" ||
+        fields.size() != 52u || fieldIndex >= 51u) return {};
+    fields[fieldIndex] = replacement;
+    fields.resize(51u);
+    std::string firstRow;
+    for (const std::string &field : fields) {
+        firstRow += field;
+        firstRow.push_back('\t');
+    }
+    firstRow += digestFields(fields);
+    firstRow.push_back('\n');
+    const std::string body = firstRow + encoded.substr(rowEnd + 1u);
+    return header[0] + "\t" + header[1] + "\t" +
+        digestInventory(header[0], header[1], body) + "\n" + body;
+}
+
 CharacterTestEvidenceStore::Evidence makeEvidence(
     const std::string               &packageId,
     uint32_t                         context,
@@ -77,6 +191,17 @@ CharacterTestEvidenceStore::Evidence makeEvidence(
     evidence.contactSolves               = context == 1u ? 0u : 720u;
     evidence.contactErrorMeanMicrometres = context == 1u ? 0u : 1200u;
     evidence.contactErrorMaxMicrometres  = context == 1u ? 0u : 3400u;
+    evidence.fitDiagnosticsValid = true;
+    evidence.fitBoundsMinMicrometres[0] = -400000;
+    evidence.fitBoundsMinMicrometres[1] = context == 1u ? 0 : -600000;
+    evidence.fitBoundsMinMicrometres[2] = -300000;
+    evidence.fitBoundsMaxMicrometres[0] = 400000;
+    evidence.fitBoundsMaxMicrometres[1] = context == 1u ? 1500000 : 900000;
+    evidence.fitBoundsMaxMicrometres[2] = 300000;
+    evidence.fitAnchorMicrometres[0] = 10000;
+    evidence.fitAnchorMicrometres[1] = context == 1u ? 0 : 20000;
+    evidence.fitAnchorMicrometres[2] = -30000;
+    evidence.fitForwardMilli[2] = 1000;
     evidence.backend                     = "webgpu-metal";
     evidence.adapter                     = "Test GPU \xC2\xA9";
     evidence.driver                      = "test-driver";
@@ -110,9 +235,9 @@ int main() {
 
     std::string encoded;
     expect(serialize(inventory, encoded, error) &&
-               encoded.rfind("mdkr-character-test-evidence-v1\t3\t", 0u) ==
+               encoded.rfind("mdkr-character-test-evidence-v2\t3\t", 0u) ==
                    0u,
-           "test evidence serializes with a whole-inventory checksum");
+           "v2 test evidence serializes with a whole-inventory checksum");
     const size_t body = encoded.find('\n') + 1u;
     expect(encoded.find("org.example.alpha\t", body) != std::string::npos,
            "canonical rows retain their package key");
@@ -123,9 +248,32 @@ int main() {
                        ->adapter == car.adapter &&
                find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
                        ->intervalP99Us == car.intervalP99Us &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->fitBoundsMinMicrometres[1] == -600000 &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->fitAnchorMicrometres[2] == -30000 &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->fitForwardMilli[2] == 1000 &&
                find(parsed, "org.example.alpha", 2u, 4u, Kind::Baseline)
                        ->sourceSha256 == baseline.sourceSha256,
-           "round trip preserves exact timing, device, source, fit, and kind");
+           "round trip preserves timing, device, source, signed renderer fit, and kind");
+    const std::string legacyV1 = legacyV1FromV2(encoded);
+    Inventory legacyParsed;
+    const Evidence *legacyCar = nullptr;
+    expect(!legacyV1.empty() && parse(legacyV1, legacyParsed, error) &&
+               legacyParsed.records.size() == 3u &&
+               (legacyCar = find(
+                    legacyParsed, "org.example.alpha", 2u, 4u,
+                    Kind::Latest)) != nullptr &&
+               !legacyCar->fitDiagnosticsValid &&
+               legacyCar->fitBoundsMinMicrometres[1] == 0 &&
+               legacyCar->fitForwardMilli[2] == 0,
+           "authenticated v1 rows load with an explicit unavailable fit state");
+    std::string migrated;
+    expect(serialize(legacyParsed, migrated, error) &&
+               migrated.rfind(
+                   "mdkr-character-test-evidence-v2\t3\t", 0u) == 0u,
+           "the next successful write migrates a v1 inventory to v2 in place");
     expect(qualified(car) && comparable(car, baseline),
            "a source or fit change remains comparable under one exact environment");
     Evidence anotherDevice = baseline;
@@ -217,6 +365,30 @@ int main() {
     invalid.contactErrorMaxMicrometres  = 1u;
     expect(!upsert(inventory, invalid, error),
            "character-select evidence cannot claim vehicle contact solves");
+    invalid = select;
+    invalid.fitDiagnosticsValid = false;
+    expect(!upsert(inventory, invalid, error),
+           "unavailable fit evidence cannot retain stale measurements");
+    invalid = select;
+    invalid.fitBoundsMinMicrometres[1] = 2000000;
+    expect(!upsert(inventory, invalid, error),
+           "renderer fit bounds must remain ordered on every axis");
+    invalid = select;
+    invalid.fitForwardMilli[2] = 900;
+    expect(!upsert(inventory, invalid, error),
+           "renderer forward evidence must remain a normalized direction");
+    invalid = select;
+    invalid.fitForwardMilli[0] = INT32_MAX;
+    invalid.fitForwardMilli[1] = INT32_MAX;
+    invalid.fitForwardMilli[2] = INT32_MAX;
+    expect(!upsert(inventory, invalid, error),
+           "extreme in-memory facing vectors fail without overflowing validation");
+    invalid = select;
+    invalid.replacementDraws = 0u;
+    invalid.replacementPrimitives = 0u;
+    invalid.hiddenDonorBatches = 0u;
+    expect(!upsert(inventory, invalid, error),
+           "renderer fit evidence requires a successful replacement draw");
 
     const Inventory before      = parsed;
     std::string     tampered    = encoded;
@@ -230,6 +402,21 @@ int main() {
            "row tampering cannot replace the prior inventory or reuse a stale diagnostic");
     expect(!parse(encoded + "trailing", parsed, error),
            "trailing bytes are rejected");
+    const std::string negativeZero = authenticatedV2WithFirstRowField(
+        encoded, 45u, "-0");
+    expect(!negativeZero.empty() && !parse(negativeZero, parsed, error) &&
+               error == "test evidence fit fields are invalid",
+           "authenticated signed fields reject negative zero");
+    const std::string outOfRange = authenticatedV2WithFirstRowField(
+        encoded, 39u, "-1000000001");
+    expect(!outOfRange.empty() && !parse(outOfRange, parsed, error) &&
+               error == "test evidence fit fields are invalid",
+           "authenticated signed fields reject values outside the fit bound");
+    const std::string reversedBounds = authenticatedV2WithFirstRowField(
+        encoded, 39u, "500000");
+    expect(!reversedBounds.empty() && !parse(reversedBounds, parsed, error) &&
+               error == "test evidence fit diagnostics are inconsistent",
+           "authenticated but reversed renderer bounds fail semantic validation");
 
     const size_t      headerEnd = encoded.find('\n') + 1u;
     const size_t      rowOneEnd = encoded.find('\n', headerEnd) + 1u;

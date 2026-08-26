@@ -83,13 +83,13 @@ def evidence_rows(root: Path) -> list[list[str]]:
     header = lines[0].split("\t")
     if (
         len(header) != 3
-        or header[0] != "mdkr-character-test-evidence-v1"
+        or header[0] != "mdkr-character-test-evidence-v2"
         or int(header[1]) != len(lines) - 1
         or len(header[2]) != 64
     ):
         raise RuntimeError("test evidence inventory header is malformed")
     rows = [line.split("\t") for line in lines[1:]]
-    if any(len(row) != 39 for row in rows):
+    if any(len(row) != 52 for row in rows):
         raise RuntimeError("test evidence inventory row is malformed")
     return rows
 
@@ -261,9 +261,17 @@ def main() -> int:
                 != "Rendered evidence fixture GPU"
                 or tuple(map(int, rows[0][34:38]))
                 != (1280, 960, 2560, 1920)
+                or rows[0][38] != "1"
+                or tuple(map(int, rows[0][39:42]))
+                != (-400000, -600000, -300000)
+                or tuple(map(int, rows[0][42:45]))
+                != (400000, 900000, 300000)
+                or tuple(map(int, rows[0][45:48]))
+                != (10000, 20000, -30000)
+                or tuple(map(int, rows[0][48:51])) != (0, 0, 1000)
             ):
                 raise RuntimeError(
-                    "qualified exact result did not persist with exact device fields"
+                    "qualified exact result did not persist exact device and renderer-fit fields"
                 )
 
             run(
@@ -273,6 +281,10 @@ def main() -> int:
                 (
                     "action=pin-car-4p applied=1 records=2 baselines=1",
                     "state=Qualified latest=1 baseline=1 comparable=1",
+                    "comparable=1 fit=1 "
+                    "fitAnchorUm=10000,20000,-30000 "
+                    "fitBoundsYUm=-600000,900000 "
+                    "fitForwardMilli=0,0,1000",
                 ),
                 action="pin-car-4p",
             )
@@ -483,7 +495,8 @@ def main() -> int:
         return 1
     print(
         "check_character_test_evidence_ui: PASS -- durable source/fit/device-"
-        "bound 4x4 matrix, same-environment baseline lifecycle, corruption "
+        "bound 4x4 matrix with signed renderer-fit diagnostics, same-"
+        "environment baseline lifecycle, corruption "
         "and invalid-fit refusal, pose-inspection exclusion, keyboard speech, "
         "200% rendering, and package-byte purity"
     )

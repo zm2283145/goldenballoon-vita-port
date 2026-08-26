@@ -4979,8 +4979,10 @@ This ROM-free rendered gate installs a generated CC0 animated package and
 exercises the Test workspace's durable 4-context by 4-player-layout matrix. It
 publishes a qualified Car 4P result through the production result boundary,
 checks exact source/fit/presentation fingerprints plus timing, device and
-physical-dimension fields on disk, restarts the launcher, and pins the result as
-an explicit comparison baseline. A 200% compact keyboard-only speech walk must
+physical-dimension fields on disk, and checks the v2 signed target-frame bounds,
+ground/seat anchor, and normalized facing fields from that replacement draw. It
+restarts the launcher, requires the same fit diagnosis to remain available, and
+pins the result as an explicit comparison baseline. A 200% compact keyboard-only speech walk must
 announce the qualified cell and both baseline controls.
 
 The second half clears only that baseline while preserving latest evidence,
@@ -5001,9 +5003,13 @@ output, digest binding, HTML/script escaping, source-path privacy, PNG
 completeness/dimension checks, and overwrite refusal; `workshop_preview_runtime`
 proves visual bounds, failure-without-mutation, and measurement epochs.
 The pure `character_test_evidence_store` unit separately covers canonical parsing,
-whole-inventory and row authentication, strict numeric/UTF-8 bounds, exact key
-replacement, the 64-package/2048-record limits, transaction failures and honest
-baseline comparability.
+whole-inventory and row authentication, strict unsigned/signed numeric and UTF-8
+bounds, renderer-fit invariants, exact key replacement, authenticated v1 loading
+and next-write v2 migration, the 64-package/2048-record limits, transaction
+failures and honest baseline comparability. The durable filename intentionally
+remains `character_test_evidence-v1.tsv`: its authenticated header selects the
+schema, allowing existing v1 stores to be discovered and migrated rather than
+silently orphaned.
 
 ```bash
 python3 tests/check_character_test_evidence_ui.py \

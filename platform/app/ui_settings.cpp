@@ -2063,12 +2063,15 @@ bool g_characterTestEvidenceLoaded = false;
 bool g_characterTestEvidenceWritable = false;
 std::string g_characterTestEvidenceError;
 MdkrTextStateFileSpec g_characterTestEvidenceFileSpec{
+    // Keep the established filename so authenticated v1 inventories are found
+    // and migrated in place; the serialized header carries the v2 schema.
     "character_test_evidence-v1.tsv", nullptr, nullptr,
 };
 std::map<std::string, unsigned> g_characterTestEvidenceSelectedCell;
 bool g_characterTestEvidenceSmokeActionApplied = false;
 bool g_characterTestEvidenceErrorTracePrinted = false;
 std::set<std::string> g_characterTestEvidenceTracePackages;
+std::set<std::string> g_characterFitEvidenceTraceContexts;
 
 struct CharacterTuningEdit {
     bool loaded = false;
@@ -4492,6 +4495,8 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
 
 bool characterPreviewFitDiagnosticsValid(
     const MdkrCharacterPreviewResult &result);
+MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
+    const CharacterTestEvidenceStore::Evidence &evidence);
 void drawCharacterFitDiagnostics(
     const MdkrCharacterPreviewResult &result, bool compact);
 
@@ -4521,6 +4526,7 @@ bool characterPreviewSessionMatchesFit(
            session.result.started && session.result.context == context &&
            session.result.warmup_complete &&
            session.result.replacement_draws != 0u &&
+           session.result.fit_diagnostics_valid != 0 &&
            characterPreviewFitDiagnosticsValid(session.result) &&
            ((session.result.pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
              session.result.pose_phase_milli == 0u &&
@@ -4601,6 +4607,7 @@ const CharacterTestEvidenceStore::Evidence *currentRenderedCharacterTestEvidence
                 MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
             evidence->started && evidence->warmupComplete &&
             evidence->replacementDraws != 0u &&
+            evidence->fitDiagnosticsValid &&
             characterTestEvidenceMatchesFit(entry, tuning, *evidence) &&
             (newest == nullptr ||
              evidence->capturedUnix > newest->capturedUnix)) {
@@ -5232,6 +5239,36 @@ bool drawCharacterTuningEditor(int player,
                         AppTheme::bad(),
                         "Last exact test returned invalid fit measurements.");
                 }
+            } else if (durableResult != nullptr) {
+                drawCharacterFitDiagnostics(
+                    characterPreviewResultFromEvidence(*durableResult), true);
+                if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+                    const std::string traceKey = std::string(entry->id) + ":" +
+                        std::to_string(static_cast<unsigned>(previewContext));
+                    if (g_characterFitEvidenceTraceContexts.insert(
+                            traceKey).second) {
+                        std::fprintf(
+                            stderr,
+                            "[app-ui] character-fit-evidence durable=1 package=%s context=%u players=%u fit=%d fitAnchorUm=%lld,%lld,%lld fitBoundsYUm=%lld,%lld fitForwardMilli=%d,%d,%d\n",
+                            entry->id,
+                            static_cast<unsigned>(previewContext),
+                            durableResult->players,
+                            durableResult->fitDiagnosticsValid ? 1 : 0,
+                            static_cast<long long>(
+                                durableResult->fitAnchorMicrometres[0]),
+                            static_cast<long long>(
+                                durableResult->fitAnchorMicrometres[1]),
+                            static_cast<long long>(
+                                durableResult->fitAnchorMicrometres[2]),
+                            static_cast<long long>(
+                                durableResult->fitBoundsMinMicrometres[1]),
+                            static_cast<long long>(
+                                durableResult->fitBoundsMaxMicrometres[1]),
+                            durableResult->fitForwardMilli[0],
+                            durableResult->fitForwardMilli[1],
+                            durableResult->fitForwardMilli[2]);
+                    }
+                }
             }
             if (currentResult &&
                 context != MDKR_CHARACTER_CONTEXT_SELECT) {
@@ -5617,6 +5654,16 @@ CharacterTestEvidenceStore::Evidence characterTestEvidenceFromResult(
         result.contact_error_mean_micrometres;
     evidence.contactErrorMaxMicrometres =
         result.contact_error_max_micrometres;
+    evidence.fitDiagnosticsValid = result.fit_diagnostics_valid != 0;
+    for (unsigned axis = 0u; axis < 3u; ++axis) {
+        evidence.fitBoundsMinMicrometres[axis] =
+            result.fit_bounds_min_micrometres[axis];
+        evidence.fitBoundsMaxMicrometres[axis] =
+            result.fit_bounds_max_micrometres[axis];
+        evidence.fitAnchorMicrometres[axis] =
+            result.fit_anchor_micrometres[axis];
+        evidence.fitForwardMilli[axis] = result.fit_forward_milli[axis];
+    }
     evidence.backend = boundedCharacterPreviewText(
         result.renderer_backend, sizeof(result.renderer_backend));
     evidence.adapter = boundedCharacterPreviewText(
@@ -5630,6 +5677,28 @@ CharacterTestEvidenceStore::Evidence characterTestEvidenceFromResult(
     evidence.renderWidth = result.render_width;
     evidence.renderHeight = result.render_height;
     return evidence;
+}
+
+MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
+    const CharacterTestEvidenceStore::Evidence &evidence) {
+    MdkrCharacterPreviewResult result{};
+    result.version = evidence.resultVersion;
+    result.started = evidence.started ? 1 : 0;
+    result.context = static_cast<MdkrCharacterPreviewContext>(
+        evidence.context);
+    result.players = static_cast<int>(evidence.players);
+    result.replacement_draws = evidence.replacementDraws;
+    result.fit_diagnostics_valid = evidence.fitDiagnosticsValid ? 1 : 0;
+    for (unsigned axis = 0u; axis < 3u; ++axis) {
+        result.fit_bounds_min_micrometres[axis] =
+            evidence.fitBoundsMinMicrometres[axis];
+        result.fit_bounds_max_micrometres[axis] =
+            evidence.fitBoundsMaxMicrometres[axis];
+        result.fit_anchor_micrometres[axis] =
+            evidence.fitAnchorMicrometres[axis];
+        result.fit_forward_milli[axis] = evidence.fitForwardMilli[axis];
+    }
+    return result;
 }
 
 const char *characterPreviewResultContext(
@@ -6595,7 +6664,7 @@ void drawCharacterTestEvidenceMatrix(
         g_characterTestEvidenceTracePackages.insert(entry->id).second) {
         std::fprintf(
             stderr,
-            "[app-ui] character-test-matrix package=%s current=%u required=%u selected=%u:%u state=%s latest=%d baseline=%d comparable=%d\n",
+            "[app-ui] character-test-matrix package=%s current=%u required=%u selected=%u:%u state=%s latest=%d baseline=%d comparable=%d fit=%d fitAnchorUm=%lld,%lld,%lld fitBoundsYUm=%lld,%lld fitForwardMilli=%d,%d,%d\n",
             entry->id, qualifiedCells, applicableCells, selectedContext,
             selectedPlayers,
             characterTestEvidenceState(
@@ -6604,7 +6673,21 @@ void drawCharacterTestEvidenceMatrix(
             baseline != nullptr ? 1 : 0,
             latest != nullptr && baseline != nullptr &&
                     CharacterTestEvidenceStore::comparable(*latest, *baseline)
-                ? 1 : 0);
+                ? 1 : 0,
+            latest != nullptr && latest->fitDiagnosticsValid ? 1 : 0,
+            static_cast<long long>(
+                latest != nullptr ? latest->fitAnchorMicrometres[0] : 0),
+            static_cast<long long>(
+                latest != nullptr ? latest->fitAnchorMicrometres[1] : 0),
+            static_cast<long long>(
+                latest != nullptr ? latest->fitAnchorMicrometres[2] : 0),
+            static_cast<long long>(
+                latest != nullptr ? latest->fitBoundsMinMicrometres[1] : 0),
+            static_cast<long long>(
+                latest != nullptr ? latest->fitBoundsMaxMicrometres[1] : 0),
+            latest != nullptr ? latest->fitForwardMilli[0] : 0,
+            latest != nullptr ? latest->fitForwardMilli[1] : 0,
+            latest != nullptr ? latest->fitForwardMilli[2] : 0);
     }
     if (latest != nullptr) {
         ImGui::PushID(static_cast<int>(selectedCell));
@@ -6649,6 +6732,9 @@ void drawCharacterTestEvidenceMatrix(
                 latest->contactErrorMeanMicrometres / 1000.0,
                 latest->contactErrorMaxMicrometres / 1000.0);
         }
+        ImGui::SeparatorText("Renderer fit");
+        drawCharacterFitDiagnostics(
+            characterPreviewResultFromEvidence(*latest), false);
         const bool currentQualified =
             characterTestEvidenceCurrent(
                 entry, tuning, *latest, presentationSignature) &&
@@ -6689,6 +6775,14 @@ void drawCharacterTestEvidenceMatrix(
                                           : baseline->adapter.c_str(),
                 baseline->outputWidth, baseline->outputHeight,
                 baseline->renderWidth, baseline->renderHeight);
+            if (baseline->fitDiagnosticsValid) {
+                ImGui::TextDisabled("Pinned renderer fit:");
+                drawCharacterFitDiagnostics(
+                    characterPreviewResultFromEvidence(*baseline), true);
+            } else {
+                ImGui::TextDisabled(
+                    "Pinned renderer fit: unavailable in legacy evidence");
+            }
             if (CharacterTestEvidenceStore::comparable(*latest, *baseline)) {
                 const auto delta = [](uint64_t value, uint64_t reference) {
                     return reference == 0u ? 0.0

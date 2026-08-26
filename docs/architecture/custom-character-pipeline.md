@@ -1032,7 +1032,13 @@ settings, dimensions and GPU identity. Source or fit revisions may be compared
 only on that otherwise identical environment; stale cells remain visible and
 never count as current. Baseline pinning, exact-cell deletion, package deletion,
 restart recovery and malformed-inventory preservation are covered by a rendered
-ROM-free lifecycle gate. The report deliberately does not invent a “GPU time”
+ROM-free lifecycle gate. Evidence schema v2 also retains the signed target-frame
+bounds, ground/seat anchor, and normalized facing direction from the successful
+replacement draw, so Fit and Performance retain the same renderer measurement
+after restart. Authenticated v1 inventories load with an explicit unavailable
+fit state and migrate in place on the next successful write; the established
+filename remains unchanged so old evidence is never orphaned. The report
+deliberately does not invent a “GPU time”
 from CPU wall cadence; timestamp/pass attribution, representative scene variants
 and a maintained device-profile corpus remain separate work.
 
