@@ -216,7 +216,8 @@ author handoff is a self-contained GLB 2.0 plus a declarative manifest and
 license text, packaged as `.mdkrchar`. It does not require a second ROM. Install
 and removal are available in **Settings → Content → Custom Characters**. That
 workshop can browse, drag-and-drop, or accept a typed package path,
-validate/import, rescan, assign a different presentation to P1-P4, remove it,
+validate/import, rescan, assign a different presentation to P1-P4, disable or
+re-enable it without losing Workshop work, permanently delete it,
 and edit intended standing height, source facing, animation speed, LOD
 preference, and car/hover/plane pairing. Character select, car, hovercraft, and
 plane each have independent size/XYZ/rotation controls and an anchor reset, so
@@ -263,8 +264,15 @@ python3 tools/character_package_manager.py prepare \
 python3 tools/character_package_manager.py \
   --directory characters install character.mdkrchar
 
-# Cache/source provenance and removal use the manifest's stable package id.
+# Cache/source provenance and lifecycle commands use the manifest's stable id.
 python3 tools/character_package_manager.py --directory characters list
+python3 tools/character_package_manager.py \
+  --directory characters disable org.example.character-name
+python3 tools/character_package_manager.py \
+  --directory characters enable org.example.character-name
+
+# Destructive: removes the cache plus every locally retained source revision
+# and provenance report for this exact id. It does not touch an external file.
 python3 tools/character_package_manager.py \
   --directory characters remove org.example.character-name
 ```
@@ -280,6 +288,15 @@ that compiler when it is available and otherwise explains what the author must
 prepare. The manifest must match the complete
 example and schema in the architecture document, and every named animation or
 socket must exist in the GLB.
+
+An enabled cache is named `<id>.mdkc`. Disable atomically moves the same
+validated bytes to `<id>.mdkc.disabled`, which the game does not scan but the
+Workshop still inventories. Importing an update or saving a Portrait, Rig, or
+Profile Studio revision preserves that state. Player assignments, package fit,
+and review evidence remain stored while disabled; the built-in racer is used
+until the package is enabled again. Permanent deletion is separate and removes
+the cache, all content-addressed Workshop source revisions and reports, and the
+package-owned local preferences.
 
 The wizard emits `mdkr-character-source-v2` by default, v3 when identity media
 is supplied, and v4 when `--rig-mode` is also selected. `--source-forward` declares which

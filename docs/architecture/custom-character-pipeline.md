@@ -25,7 +25,7 @@ This gives three deliberately separate formats:
 |---|---|---|---|
 | Authoring | Blender/Maya/etc.; optional FBX or DAE handoff | None | Creator and their DCC tools |
 | Portable source package | `.mdkrchar`: deterministic ZIP containing `manifest.json`, `model.glb`, `LICENSE.txt`, and optionally a verified `compiled.mdkc` for Python-free player import | Public, versioned | Community tools and launcher |
-| Runtime cache | `.mdkc`: validated, GPU-oriented sections plus a source digest | Private to an engine cache version | Import compiler and renderer |
+| Runtime cache | `<id>.mdkc` when enabled or `<id>.mdkc.disabled` when retained outside runtime discovery: validated, GPU-oriented sections plus a source digest | Private to an engine cache version | Import compiler and renderer |
 
 ## What the spike actually implements
 
@@ -35,8 +35,10 @@ This gives three deliberately separate formats:
 - deterministic `.mdkc` compilation with content/compiler identity, sections,
   tangents, animation tracks, semantics, sockets, materials and authored
   `MSFT_lod` levels;
-- locked, transactional local install/list/remove/clean operations that retain
-  source and provenance but publish only a final validated cache filename;
+- locked, transactional local install/list/enable/disable/remove/clean
+  operations; updates preserve enabled state, disable retains source and
+  provenance outside runtime discovery, and permanent removal owns only exact
+  content-addressed paths;
 - bounded native cache loading, shared immutable render assets and per-player
   pose instances;
 - WebGPU GPU skinning for up to 256 joints, four weights, multiple primitives,
@@ -54,8 +56,8 @@ This gives three deliberately separate formats:
   geometry remains authored even for models with more than 32 batches;
 - launcher discovery, drag-and-drop/import diagnostics and P1-P4 selection of
   installed caches;
-- native browse/import/removal for portable packages, with a developer compiler
-  fallback for source-only packages;
+- native browse/import/enable/disable/permanent deletion for portable packages,
+  with a developer compiler fallback for source-only packages;
 - canonical height/ground/facing normalization, independent select/car/hover/
   plane anchor profiles, and package-specific per-context size/position/
   rotation, animation-rate, vehicle-body and LOD tuning without entering
@@ -734,9 +736,14 @@ than being distorted by mandatory solving.
    repair or fallback. Repairs are never silent.
 6. A successful cache becomes selectable; a failed import is quarantined with a
    machine-readable report.
-7. Removing a package removes its source and cache only after resolving their
-   exact content-addressed paths. Saves retain only a stable local package ID
-   and degrade to fallback if it disappears.
+7. Disabling atomically renames `<id>.mdkc` to `<id>.mdkc.disabled`; runtime
+   scans ignore it while Workshop inventory and source-backed editors retain it.
+   Updates preserve this state. Player assignments and package-owned fit/review
+   preferences remain, and presentation degrades to the built-in racer.
+8. Permanent deletion resolves the exact cache and content-addressed source/
+   provenance paths, reports their counts before confirmation, then clears
+   package-owned local preferences. Ordinary saves, records, ghosts, physics,
+   and roster identity never embed the package.
 
 Raw GLB convenience import can have the launcher generate a manifest template,
 but it still requires explicit license/provenance fields before activation.
@@ -1005,7 +1012,7 @@ GPU limits are exceeded.
 - Validated package portraits, exact pixel editing, identity revisions and
   game-surface fallbacks are complete; renderer capture and advanced style
   generation remain.
-- Add local enable/order policy and online digest/fallback diagnostics.
+- Add local ordering policy and online digest/fallback diagnostics.
 - Publish an SDK containing schemas, the generated animated fixture, validator,
   packer, semantic state reference, and examples that contain no Nintendo asset.
 - Update modding, privacy, support, third-party, and release documentation.

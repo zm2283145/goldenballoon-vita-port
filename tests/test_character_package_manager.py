@@ -84,6 +84,91 @@ class CharacterPackageManagerTests(unittest.TestCase):
             self.assertFalse((installed / "org.example.pipeline-proof.mdkc").exists())
             self.assertTrue(collision.is_file())
 
+    def test_disable_preserves_history_updates_and_workshop_revisions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = self.make_package(root)
+            installed = root / "characters"
+            first = manager.install(package, installed)
+            package_id = first["id"]
+
+            disabled = manager.set_enabled(package_id, installed, False)
+            self.assertFalse(disabled["enabled"])
+            self.assertFalse((installed / f"{package_id}.mdkc").exists())
+            disabled_cache = installed / f"{package_id}.mdkc.disabled"
+            self.assertTrue(disabled_cache.is_file())
+            current = [
+                entry for entry in manager.list_installed(installed)["entries"]
+                if entry["active"]
+            ]
+            self.assertEqual(1, len(current))
+            self.assertFalse(current[0]["enabled"])
+
+            updated = manager.install(package, installed)
+            self.assertFalse(updated["enabled"])
+            self.assertEqual(disabled_cache.name, updated["cache_file"])
+            with self.assertRaisesRegex(manager.ManagerError, "already disabled"):
+                manager.set_enabled(package_id, installed, False)
+
+            portrait = root / "replacement.png"
+            portrait.write_bytes(make_portrait_png(17))
+            revised = manager.revise_identity(
+                package_id, portrait, (17, 34, 51), installed
+            )
+            self.assertFalse(revised["enabled"])
+            self.assertTrue(disabled_cache.is_file())
+            self.assertEqual(2, len(list(installed.glob("*.mdkrchar"))))
+            self.assertEqual(2, len(list(installed.glob("*.json"))))
+
+            enabled = manager.set_enabled(package_id, installed, True)
+            self.assertTrue(enabled["enabled"])
+            self.assertTrue((installed / f"{package_id}.mdkc").is_file())
+            self.assertFalse(disabled_cache.exists())
+            current = [
+                entry for entry in manager.list_installed(installed)["entries"]
+                if entry["active"]
+            ]
+            self.assertEqual(1, len(current))
+            self.assertTrue(current[0]["enabled"])
+            manager.set_enabled(package_id, installed, False)
+            removed = manager.remove(package_id, installed)
+            self.assertEqual(5, len(removed["removed"]))
+            self.assertFalse(disabled_cache.exists())
+            self.assertEqual([], list(installed.glob("*.mdkrchar")))
+            self.assertEqual([], list(installed.glob("*.json")))
+
+    def test_ambiguous_cache_state_never_updates_or_changes_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = self.make_package(root)
+            installed = root / "characters"
+            report = manager.install(package, installed)
+            package_id = report["id"]
+            active = installed / f"{package_id}.mdkc"
+            disabled = installed / f"{package_id}.mdkc.disabled"
+            disabled.write_bytes(active.read_bytes())
+            before = active.read_bytes()
+            with self.assertRaisesRegex(manager.ManagerError, "both enabled and disabled"):
+                manager.install(package, installed)
+            with self.assertRaisesRegex(manager.ManagerError, "both enabled and disabled"):
+                manager.set_enabled(package_id, installed, False)
+            self.assertEqual(before, active.read_bytes())
+            self.assertEqual(before, disabled.read_bytes())
+
+    def test_partial_deletion_fails_visible_with_completed_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            report = manager.install(self.make_package(root), installed)
+            witness = installed / (report["id"] + "." + "b" * 64 + ".json")
+            witness.mkdir()
+            with self.assertRaisesRegex(
+                    manager.ManagerError,
+                    r"partial deletion removed 3 owned file\(s\).+1 could not"):
+                manager.remove(report["id"], installed)
+            self.assertTrue(witness.is_dir())
+            self.assertFalse((installed / f"{report['id']}.mdkc").exists())
+
     def test_invalid_package_never_publishes_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

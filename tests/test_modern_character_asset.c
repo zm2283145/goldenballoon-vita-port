@@ -227,6 +227,7 @@ int main(int argc, char **argv) {
     Gfx *command_cursor = commands;
     char import_lock[4096];
     char prefix_witness[4096];
+    char deletion_failure_witness[4096];
     FILE *lock_file;
     int player;
     float select_model_y;
@@ -696,6 +697,54 @@ int main(int argc, char **argv) {
                 mdkr_modern_character_registry_count(&registry) == 1,
             "native portable import is immediately discoverable");
     mdkr_modern_character_registry_shutdown(&registry);
+    require(mdkr_modern_character_registry_init_inventory(
+                &registry, argv[5]) == 0 &&
+                mdkr_modern_character_registry_count(&registry) == 1 &&
+                mdkr_modern_character_registry_entry(&registry, 0)->enabled == 1u &&
+                mdkr_modern_character_registry_entry(&registry, 0)->source_revisions == 1u &&
+                mdkr_modern_character_registry_entry(&registry, 0)->provenance_reports == 1u,
+            "workshop inventory accounts for enabled cache and retained provenance");
+    mdkr_modern_character_registry_shutdown(&registry);
+    require(mdkr_modern_character_set_enabled(
+                "org.example.pipeline-proof", argv[5], 0, &install_result) &&
+                install_result.enabled == 0,
+            install_result.message);
+    require(mdkr_modern_character_registry_init(&registry, argv[5]) == 0 &&
+                mdkr_modern_character_registry_count(&registry) == 0,
+            "disabled cache is outside ordinary runtime discovery");
+    mdkr_modern_character_registry_shutdown(&registry);
+    require(mdkr_modern_character_registry_init_inventory(
+                &registry, argv[5]) == 0 &&
+                mdkr_modern_character_registry_count(&registry) == 1 &&
+                mdkr_modern_character_registry_entry(&registry, 0)->enabled == 0u &&
+                mdkr_modern_character_registry_entry(&registry, 0)->source_revisions == 1u &&
+                mdkr_modern_character_registry_entry(&registry, 0)->provenance_reports == 1u,
+            "disabled cache remains validated and editable with source history intact");
+    mdkr_modern_character_registry_shutdown(&registry);
+    require(mdkr_modern_character_install_portable(
+                argv[4], argv[5], &install_result) &&
+                install_result.enabled == 0,
+            "updating a disabled package preserves its disabled state");
+    lock_file = mdkr_fopen_utf8(import_lock, "wb");
+    require(lock_file != NULL && fclose(lock_file) == 0,
+            "create lifecycle witness lock");
+    require(!mdkr_modern_character_set_enabled(
+                "org.example.pipeline-proof", argv[5], 1, &install_result),
+            "lifecycle state change respects the shared import lock");
+    lock_file = mdkr_fopen_utf8(import_lock, "rb");
+    require(lock_file != NULL && fclose(lock_file) == 0,
+            "refused lifecycle state change preserves another owner's lock");
+    require(mdkr_remove_utf8(import_lock) == 0,
+            "retire lifecycle witness lock");
+    require(mdkr_modern_character_set_enabled(
+                "org.example.pipeline-proof", argv[5], 1, &install_result) &&
+                install_result.enabled == 1,
+            install_result.message);
+    require(mdkr_modern_character_registry_init(&registry, argv[5]) == 0 &&
+                mdkr_modern_character_registry_count(&registry) == 1 &&
+                mdkr_modern_character_registry_entry(&registry, 0)->enabled == 1u,
+            "re-enabled cache returns to ordinary runtime discovery");
+    mdkr_modern_character_registry_shutdown(&registry);
     require(snprintf(prefix_witness, sizeof(prefix_witness),
                      "%s/org.example.pipeline-proof.other.%064x.json",
                      argv[5], 0) > 0,
@@ -704,9 +753,39 @@ int main(int argc, char **argv) {
     require(lock_file != NULL && fputs("unrelated prefix package\n", lock_file) >= 0 &&
                 fclose(lock_file) == 0,
             "create unrelated longer-id provenance witness");
+    require(mdkr_modern_character_set_enabled(
+                "org.example.pipeline-proof", argv[5], 0, &install_result),
+            install_result.message);
+    require(snprintf(deletion_failure_witness,
+                     sizeof(deletion_failure_witness),
+                     "%s/org.example.pipeline-proof.%064x.json",
+                     argv[5], 1) > 0 &&
+                mdkr_mkdir_utf8(deletion_failure_witness) == 0,
+            "create an undeletable owned-path-shaped directory witness");
+    require(!mdkr_modern_character_remove_installed(
+                "org.example.pipeline-proof", argv[5], &install_result) &&
+                install_result.removed_files == 3u &&
+                install_result.removed_source_revisions == 1u &&
+                install_result.removed_provenance_reports == 1u &&
+                install_result.failed_files == 1u,
+            "partial destructive removal fails visible with exact completed scope");
+    require(mdkr_rmdir_utf8(deletion_failure_witness) == 0,
+            "retire deletion failure witness");
+    require(mdkr_modern_character_install_portable(
+                argv[4], argv[5], &install_result) &&
+                install_result.enabled == 1,
+            "reinstall after an explicitly reported partial deletion");
+    require(mdkr_modern_character_set_enabled(
+                "org.example.pipeline-proof", argv[5], 0, &install_result),
+            install_result.message);
     require(mdkr_modern_character_remove_installed(
                 "org.example.pipeline-proof", argv[5], &install_result),
             install_result.message);
+    require(install_result.removed_files == 3u &&
+                install_result.removed_source_revisions == 1u &&
+                install_result.removed_provenance_reports == 1u &&
+                install_result.failed_files == 0u,
+            "destructive removal reports its exact cache/source/report scope");
     require(mdkr_modern_character_registry_init(&registry, argv[5]) == 0 &&
                 mdkr_modern_character_registry_count(&registry) == 0,
             "native removal retires the cache and retained package source");

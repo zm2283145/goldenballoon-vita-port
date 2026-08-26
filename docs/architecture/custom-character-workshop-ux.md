@@ -403,7 +403,7 @@ last known-good assembly remains available if an update fails.
 | Performance controls | Import caps, authored LOD bias, exact per-LOD draw accounting, 1P-4P worst-visible assembly counts, exact one-click WebGPU stress routes, and a returned post-warm-up wall-cadence percentile/result card with synthetic/short-sample refusal | Add GPU timestamps, repeatable comparison baselines, representative scene matrix and device profiles |
 | Gameplay tuning | Correctly absent from visual package | Build separate opt-in hashed gameplay-profile system |
 | Preview | One-click typed requests launch select or all three vehicles through real game initialization in any 1-4P layout after ROM revalidation; requests are assignment-neutral, return a warmed structured result, persist source/tuning-bound per-context author review, and a generated non-Diddy package passes the complete WebGPU route/pixel/stress/result gate | Embed the renderer and add semantic pose/camera/lighting controls plus screenshots/contact sheets |
-| Packaging/update/removal | Executable | Add draft lifecycle, update diff, disable and source-preserving cleanup |
+| Packaging/update/removal | Transactional import/update, reversible runtime disable with retained assignments/settings/source history, disabled-state-preserving Portrait/Rig/Profile revisions, exact revision/report inventory, and recoverability-aware permanent deletion with package-preference cleanup are executable | Add named draft/export/rollback UI and installed-vs-update diff |
 | Accessibility | Inherits launcher fundamentals | Qualify every editor tool at keyboard/controller/200%/screen reader |
 
 ## Delivery sequence and gates

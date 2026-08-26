@@ -172,6 +172,34 @@ def main() -> int:
         "docs/architecture/custom-character-pipeline.md",
         "describing those as “owned by the donor” would be incorrect.",
     )
+    # Disable and delete have intentionally different recoverability. A later
+    # Workshop-authored revision may exist only in the managed directory, so a
+    # generic "remove cache" confirmation would materially understate loss.
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Disable is reversible and retains every Workshop revision, fit setting, review, and player assignment.",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "A revision created only inside the Workshop may have no other copy.",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "The external .mdkrchar file you originally chose is not touched.",
+    )
+    require_contains(
+        "docs/MODDING.md",
+        "Importing an update or saving a Portrait, Rig, or Profile Studio revision preserves that state.",
+    )
+    registry = (ROOT / "platform/modern_character_registry.c").read_text(
+        encoding="utf-8"
+    )
+    if "registry_init(registry, directory, 0)" not in registry or \
+            "registry_init(registry, directory, 1)" not in registry:
+        raise AssertionError(
+            "runtime discovery and Workshop inventory must retain distinct "
+            "disabled-cache policies"
+        )
     print("product claim boundaries passed")
     return 0
 

@@ -91,6 +91,21 @@ static int path_join(char *output, size_t capacity,
     return written >= 0 && (size_t)written < capacity;
 }
 
+/* Windows reports a missing path as a successful query with exists=0; POSIX
+ * reports ENOENT. Normalize that platform detail for lifecycle state checks. */
+static int query_path_state(const char *path, int *exists, int *regular) {
+    int result;
+    errno = 0;
+    result = mdkr_path_query_utf8(path, exists, regular, NULL);
+    if (result == 0) return 1;
+    if (errno == ENOENT) {
+        if (exists != NULL) *exists = 0;
+        if (regular != NULL) *regular = 0;
+        return 1;
+    }
+    return 0;
+}
+
 static int ensure_directory(const char *directory) {
     int exists = 0;
     int is_directory = 0;
@@ -306,6 +321,7 @@ int mdkr_modern_character_install_portable(
     char source_path[4096] = {0};
     char report_path[4096] = {0};
     char cache_path[4096] = {0};
+    char disabled_cache_path[4096] = {0};
     char lock_path[4096] = {0};
     mz_uint64 package_size = 0u;
     mz_uint64 member_sizes[5] = {0u, 0u, 0u, 0u, 0u};
@@ -329,6 +345,11 @@ int mdkr_modern_character_install_portable(
     unsigned compiled_index = 0u;
     int source_only = 0;
     int legacy_digest_allowed = 0;
+    int active_exists = 0;
+    int disabled_exists = 0;
+    int active_regular = 0;
+    int disabled_regular = 0;
+    const char *publish_cache_path = NULL;
     result_reset(result);
     error[0] = '\0';
     memset(&archive, 0, sizeof(archive));
@@ -480,6 +501,9 @@ int mdkr_modern_character_install_portable(
         }
         (void)snprintf(leaf, sizeof(leaf), "%s.mdkc", id);
         if (!path_join(cache_path, sizeof(cache_path), directory, leaf) ||
+            snprintf(leaf, sizeof(leaf), "%s.mdkc.disabled", id) < 0 ||
+            !path_join(disabled_cache_path, sizeof(disabled_cache_path),
+                       directory, leaf) ||
             !path_join(lock_path, sizeof(lock_path), directory,
                        ".character-import.lock")) {
             result_message(result, "character install path is too long");
@@ -519,13 +543,29 @@ int mdkr_modern_character_install_portable(
         goto done;
     }
     lock = NULL;
+    if (!query_path_state(cache_path, &active_exists, &active_regular) ||
+        !query_path_state(disabled_cache_path, &disabled_exists,
+                          &disabled_regular) ||
+        (active_exists && (!active_regular ||
+         mdkr_path_is_link_or_reparse_utf8(cache_path) != 0)) ||
+        (disabled_exists && (!disabled_regular ||
+         mdkr_path_is_link_or_reparse_utf8(disabled_cache_path) != 0)) ||
+        (active_exists && disabled_exists)) {
+        result_message(result,
+            "installed character cache state is ambiguous or unsafe");
+        goto done;
+    }
+    publish_cache_path = disabled_exists ? disabled_cache_path : cache_path;
     if (!copy_source_if_absent(package_path, source_path, hash) ||
         !write_atomic(report_path, report_text, strlen(report_text)) ||
-        !write_atomic(cache_path, compiled, compiled_size)) {
+        !write_atomic(publish_cache_path, compiled, compiled_size)) {
         result_message(result, "character source or cache could not be installed transactionally");
         goto done;
     }
-    result_message(result, "Portable character validated and installed.");
+    result_message(result, disabled_exists
+        ? "Portable character validated and updated while disabled."
+        : "Portable character validated and installed.");
+    if (result != NULL) result->enabled = disabled_exists ? 0 : 1;
     okay = 1;
 
 done:
@@ -535,6 +575,92 @@ done:
     free(compiled);
     if (archive.m_zip_mode != MZ_ZIP_MODE_INVALID) mz_zip_reader_end(&archive);
     if (package != NULL) fclose(package);
+    return okay;
+}
+
+int mdkr_modern_character_set_enabled(
+    const char *package_id, const char *directory, int enabled,
+    MdkrModernCharacterInstallResult *result) {
+    MdkrModernCharacterAsset asset;
+    MdkrModernCharacterDefinition definition;
+    char active_leaf[256];
+    char disabled_leaf[256];
+    char active_path[4096];
+    char disabled_path[4096];
+    char lock_path[4096];
+    char error[256];
+    const char *source;
+    const char *destination;
+    const char *asset_id;
+    FILE *lock = NULL;
+    int regular = 0;
+    int destination_exists = 0;
+    int okay = 0;
+    result_reset(result);
+    memset(&asset, 0, sizeof(asset));
+    error[0] = '\0';
+    if (!id_valid(package_id) || directory == NULL ||
+        snprintf(active_leaf, sizeof(active_leaf), "%s.mdkc", package_id) < 0 ||
+        snprintf(disabled_leaf, sizeof(disabled_leaf), "%s.mdkc.disabled",
+                 package_id) < 0 ||
+        !path_join(active_path, sizeof(active_path), directory, active_leaf) ||
+        !path_join(disabled_path, sizeof(disabled_path), directory,
+                   disabled_leaf) ||
+        !path_join(lock_path, sizeof(lock_path), directory,
+                   ".character-import.lock")) {
+        result_message(result, "installed character directory or id is invalid");
+        return 0;
+    }
+    source = enabled ? disabled_path : active_path;
+    destination = enabled ? active_path : disabled_path;
+    lock = mdkr_fopen_utf8(lock_path, "wbx");
+    if (lock == NULL) {
+        result_message(result, "another character import or lifecycle change is active");
+        return 0;
+    }
+    (void)fputs(enabled ? "native-launcher-enable\n"
+                        : "native-launcher-disable\n", lock);
+    if (fclose(lock) != 0) {
+        lock = NULL;
+        (void)mdkr_remove_utf8(lock_path);
+        result_message(result, "character lifecycle lock could not be committed");
+        return 0;
+    }
+    lock = NULL;
+    if (!query_path_state(source, NULL, &regular) || !regular ||
+        mdkr_path_is_link_or_reparse_utf8(source) != 0 ||
+        !query_path_state(destination, &destination_exists, NULL) ||
+        destination_exists) {
+        result_message(result, enabled
+            ? "disabled character cache is unavailable or an active cache already exists"
+            : "active character cache is unavailable or a disabled cache already exists");
+        goto done;
+    }
+    if (!mdkr_modern_character_asset_load_file(
+            source, &asset, error, sizeof(error)) ||
+        !mdkr_modern_character_asset_definition(&asset, &definition) ||
+        (asset_id = mdkr_modern_character_asset_string(
+             &asset, definition.id)) == NULL ||
+        strcmp(asset_id, package_id) != 0) {
+        result_message(result, error[0] != '\0' ? error :
+                       "character cache identity does not match its filename");
+        goto done;
+    }
+    if (mdkr_move_utf8(source, destination, 0, 1) == 0) {
+        if (result != NULL) {
+            result->enabled = enabled ? 1 : 0;
+            (void)snprintf(result->id, sizeof(result->id), "%s", package_id);
+        }
+        result_message(result, enabled
+            ? "Custom character enabled; retained source history was unchanged."
+            : "Custom character disabled; retained source history was unchanged.");
+        okay = 1;
+    } else {
+        result_message(result, "character cache state could not be changed atomically");
+    }
+done:
+    mdkr_modern_character_asset_unload(&asset);
+    (void)mdkr_remove_utf8(lock_path);
     return okay;
 }
 
@@ -565,6 +691,9 @@ int mdkr_modern_character_remove_installed(
     FILE *lock = NULL;
     const size_t id_length = package_id != NULL ? strlen(package_id) : 0u;
     int removed = 0;
+    int removed_sources = 0;
+    int removed_reports = 0;
+    int failed = 0;
     result_reset(result);
     if (!id_valid(package_id) || directory == NULL ||
         !path_join(lock_path, sizeof(lock_path), directory,
@@ -590,22 +719,52 @@ int mdkr_modern_character_remove_installed(
                         strncmp(name, package_id, id_length) == 0 &&
                         strcmp(name + id_length, ".mdkc") == 0;
         if (!candidate) {
-            candidate = content_addressed_leaf(
-                            name, package_id, ".mdkrchar") ||
-                        content_addressed_leaf(name, package_id, ".json");
+            candidate = strlen(name) == id_length + 14u &&
+                        strncmp(name, package_id, id_length) == 0 &&
+                        strcmp(name + id_length, ".mdkc.disabled") == 0;
         }
-        if (!candidate || !path_join(path, sizeof(path), directory, name) ||
-            mdkr_path_query_utf8(path, NULL, &regular, NULL) != 0 || !regular ||
-            mdkr_path_is_link_or_reparse_utf8(path) != 0) continue;
-        if (mdkr_remove_utf8(path) == 0) removed++;
+        {
+            int source_revision = content_addressed_leaf(
+                name, package_id, ".mdkrchar");
+            int provenance_report = content_addressed_leaf(
+                name, package_id, ".json");
+            if (!candidate) {
+                candidate = source_revision || provenance_report;
+            }
+            if (!candidate) continue;
+            if (!path_join(path, sizeof(path), directory, name) ||
+                mdkr_path_query_utf8(path, NULL, &regular, NULL) != 0 ||
+                !regular || mdkr_path_is_link_or_reparse_utf8(path) != 0) {
+                failed++;
+                continue;
+            }
+            if (mdkr_remove_utf8(path) == 0) {
+                removed++;
+                if (source_revision) removed_sources++;
+                if (provenance_report) removed_reports++;
+            } else {
+                failed++;
+            }
+        }
     }
     (void)closedir(handle);
     (void)mdkr_remove_utf8(lock_path);
+    if (result != NULL) {
+        (void)snprintf(result->id, sizeof(result->id), "%s", package_id);
+        result->removed_files = (unsigned)removed;
+        result->removed_source_revisions = (unsigned)removed_sources;
+        result->removed_provenance_reports = (unsigned)removed_reports;
+        result->failed_files = (unsigned)failed;
+    }
+    if (failed != 0) {
+        result_message(result,
+            "Character deletion was partial; one or more owned files could not be removed.");
+        return 0;
+    }
     if (removed == 0) {
         result_message(result, "no regular installed files matched that character id");
         return 0;
     }
-    if (result != NULL) (void)snprintf(result->id, sizeof(result->id), "%s", package_id);
     result_message(result, "Installed character files removed.");
     return 1;
 }

@@ -51,6 +51,35 @@ static int has_cache_suffix(const char *name) {
            ascii_lower((unsigned char)name[length - 1u]) == 'c';
 }
 
+static int has_disabled_cache_suffix(const char *name) {
+    static const char suffix[] = ".mdkc.disabled";
+    size_t length = strlen(name);
+    size_t suffix_length = sizeof(suffix) - 1u;
+    size_t index;
+    if (length <= suffix_length) return 0;
+    for (index = 0u; index < suffix_length; index++) {
+        if (ascii_lower((unsigned char)name[length - suffix_length + index]) !=
+            ascii_lower((unsigned char)suffix[index])) return 0;
+    }
+    return 1;
+}
+
+static int content_addressed_leaf(const char *name, const char *package_id,
+                                  const char *suffix) {
+    const size_t id_length = strlen(package_id);
+    const size_t suffix_length = strlen(suffix);
+    size_t index;
+    if (strlen(name) != id_length + 1u + 64u + suffix_length ||
+        memcmp(name, package_id, id_length) != 0 || name[id_length] != '.' ||
+        strcmp(name + id_length + 1u + 64u, suffix) != 0) return 0;
+    for (index = id_length + 1u; index < id_length + 1u + 64u; index++) {
+        const char byte = name[index];
+        if (!((byte >= '0' && byte <= '9') ||
+              (byte >= 'a' && byte <= 'f'))) return 0;
+    }
+    return 1;
+}
+
 static uint32_t semantic_bit(const char *name) {
     static const struct { const char *name; uint32_t bit; } table[] = {
         {"fallback", MDKR_CHARACTER_SEMANTIC_FALLBACK},
@@ -154,7 +183,9 @@ static void add_skip(MdkrModernCharacterRegistry *registry,
 static int entry_compare(const MdkrModernCharacterEntry *left,
                          const MdkrModernCharacterEntry *right) {
     int identity = strcmp(left->id, right->id);
-    return identity != 0 ? identity : ascii_casecmp(left->path, right->path);
+    if (identity != 0) return identity;
+    if (left->enabled != right->enabled) return left->enabled ? -1 : 1;
+    return ascii_casecmp(left->path, right->path);
 }
 
 static void sort_entries(MdkrModernCharacterRegistry *registry) {
@@ -170,8 +201,8 @@ static void sort_entries(MdkrModernCharacterRegistry *registry) {
     }
 }
 
-int mdkr_modern_character_registry_init(MdkrModernCharacterRegistry *registry,
-                                        const char *directory) {
+static int registry_init(MdkrModernCharacterRegistry *registry,
+                         const char *directory, int include_disabled) {
     DIR *handle;
     struct dirent *item;
     if (registry == NULL) return -1;
@@ -189,7 +220,13 @@ int mdkr_modern_character_registry_init(MdkrModernCharacterRegistry *registry,
         char path[MDKR_MODERN_CHARACTER_PATH_MAX];
         char error[MDKR_MODERN_CHARACTER_SKIP_REASON_MAX];
         int regular = 0;
-        if (item->d_name[0] == '.' || !has_cache_suffix(item->d_name)) continue;
+        int enabled;
+        if (item->d_name[0] == '.') continue;
+        enabled = has_cache_suffix(item->d_name);
+        if (!enabled &&
+            !(include_disabled && has_disabled_cache_suffix(item->d_name))) {
+            continue;
+        }
         if (!path_join(path, sizeof(path), directory, item->d_name) ||
             mdkr_path_query_utf8(path, NULL, &regular, NULL) != 0 || !regular) {
             add_skip(registry, item->d_name, "cache path is not a regular readable file");
@@ -217,6 +254,7 @@ int mdkr_modern_character_registry_init(MdkrModernCharacterRegistry *registry,
             continue;
         }
         memcpy(entry.source_sha256, asset.source_sha256, sizeof(entry.source_sha256));
+        entry.enabled = enabled ? 1u : 0u;
         entry.donor = definition.donor;
         entry.vehicle_mask = definition.vehicle_mask;
         if (decoded_identity.has_portrait) {
@@ -450,7 +488,51 @@ int mdkr_modern_character_registry_init(MdkrModernCharacterRegistry *registry,
         }
         registry->count = write_index;
     }
+    if (include_disabled && registry->count > 0) {
+        handle = opendir(directory);
+        if (handle != NULL) {
+            while ((item = readdir(handle)) != NULL) {
+                int regular = 0;
+                char path[MDKR_MODERN_CHARACTER_PATH_MAX];
+                int index;
+                if (item->d_name[0] == '.' ||
+                    !path_join(path, sizeof(path), directory, item->d_name) ||
+                    mdkr_path_query_utf8(path, NULL, &regular, NULL) != 0 ||
+                    !regular || mdkr_path_is_link_or_reparse_utf8(path) != 0) {
+                    continue;
+                }
+                for (index = 0; index < registry->count; index++) {
+                    MdkrModernCharacterEntry *entry = &registry->entries[index];
+                    if (content_addressed_leaf(item->d_name, entry->id,
+                                               ".mdkrchar")) {
+                        if (entry->source_revisions != UINT32_MAX) {
+                            entry->source_revisions++;
+                        }
+                        break;
+                    }
+                    if (content_addressed_leaf(item->d_name, entry->id,
+                                               ".json")) {
+                        if (entry->provenance_reports != UINT32_MAX) {
+                            entry->provenance_reports++;
+                        }
+                        break;
+                    }
+                }
+            }
+            (void)closedir(handle);
+        }
+    }
     return 0;
+}
+
+int mdkr_modern_character_registry_init(MdkrModernCharacterRegistry *registry,
+                                        const char *directory) {
+    return registry_init(registry, directory, 0);
+}
+
+int mdkr_modern_character_registry_init_inventory(
+    MdkrModernCharacterRegistry *registry, const char *directory) {
+    return registry_init(registry, directory, 1);
 }
 
 void mdkr_modern_character_registry_shutdown(MdkrModernCharacterRegistry *registry) {

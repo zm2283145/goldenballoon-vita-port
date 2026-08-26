@@ -2328,6 +2328,43 @@ bool removeCharacterPackage(const std::string &id) {
     return false;
 }
 
+bool setCharacterPackageEnabled(const std::string &id, bool enabled) {
+    MdkrModernCharacterInstallResult result{};
+    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
+    if (!g_characterRegistryDirectory.empty() &&
+        mdkr_modern_character_set_enabled(
+            id.c_str(), g_characterRegistryDirectory.c_str(),
+            enabled ? 1 : 0, &result)) {
+        g_characterManagerReport = result.message;
+        refreshCharacterRegistry();
+        return true;
+    }
+    g_characterManagerReport = result.message;
+    return false;
+}
+
+AppConfig::PersistResult forgetCharacterPackagePreferences(
+    const std::string &id) {
+    for (int slot = 0; slot < 4; ++slot) {
+        const std::string slotKey = "custom_character_p" +
+            std::to_string(slot + 1);
+        if (AppConfig::get(slotKey) == id) AppConfig::set(slotKey, "");
+    }
+    (void)AppConfig::erasePrefix(
+        "custom_character_profile_" + id + "_");
+    g_characterIdentityEdits.erase(id);
+    g_characterProfileEdits.erase(id);
+    g_characterRigEdits.erase(id);
+    g_characterTuning.erase(id);
+    g_characterAssemblyPlayers.erase(id);
+    g_characterTestPlayers.erase(id);
+    g_characterPreviewResults.erase(id);
+    if (g_characterWorkshopSelection == id) {
+        g_characterWorkshopSelection.clear();
+    }
+    return AppConfig::save();
+}
+
 void refreshCharacterRegistry() {
     char directory[MDKR_MODERN_CHARACTER_PATH_MAX];
     mdkr_modern_character_registry_shutdown(&g_characterRegistry);
@@ -2337,8 +2374,8 @@ void refreshCharacterRegistry() {
     g_characterRegistryDirectory.clear();
     if (mdkr_user_characters_directory(directory, sizeof(directory))) {
         g_characterRegistryDirectory = directory;
-        (void)mdkr_modern_character_registry_init(&g_characterRegistry,
-                                                   directory);
+        (void)mdkr_modern_character_registry_init_inventory(
+            &g_characterRegistry, directory);
     }
     g_characterRegistryLoaded = true;
 }
@@ -3392,20 +3429,23 @@ bool drawCharacterTuningEditor(int player,
             if (!compact) {
                 int &testPlayers = g_characterTestPlayers[entry->id];
                 if (testPlayers < 1 || testPlayers > 4) testPlayers = 1;
-                const bool enabled =
+                const bool contextEnabled =
                     context == MDKR_CHARACTER_CONTEXT_SELECT ||
                     (edit.vehicleMask & (1u << (context - 1u))) != 0u;
-                if (!enabled) ImGui::BeginDisabled();
+                const bool testEnabled = entry->enabled != 0u && contextEnabled;
+                if (!testEnabled) ImGui::BeginDisabled();
                 const std::string testLabel = std::string("Test ") +
                     contextNames[context] + " fit in exact renderer";
-                if (ImGui::Button(testLabel.c_str()) && enabled &&
+                if (ImGui::Button(testLabel.c_str()) && testEnabled &&
                     persistCharacterTuning(entry->id, edit)) {
                     requestCharacterPreview(entry, previewContext, testPlayers);
                 }
-                if (!enabled) ImGui::EndDisabled();
+                if (!testEnabled) ImGui::EndDisabled();
                 ui::SpeakFocusedItem(
                     testLabel.c_str(),
-                    enabled ? nullptr
+                    testEnabled ? nullptr
+                        : entry->enabled == 0u
+                            ? "Enable this character package first."
                             : "Enable this vehicle for the package first.",
                     "Saves the current fit and opens the real game context for review.");
             }
@@ -4372,6 +4412,27 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
     ui::TextSubtleWrapped(
         "The package owns local presentation. Its selected retail donor still "
         "owns simulation, collision, race audio, ghost identity, and network/rollback authority; ordinary records and saves never embed the package.");
+    if (entry->enabled == 0u) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+        ImGui::TextWrapped(
+            "Disabled — the game uses the built-in racer for any retained player assignment. Workshop source history and package settings are preserved.");
+        ImGui::PopStyleColor();
+        if (ImGui::Button("Enable character")) {
+            const std::string id = entry->id;
+            if (setCharacterPackageEnabled(id, true)) {
+                setStatus(
+                    "Custom character enabled; retained player assignments apply on play.",
+                    AppTheme::good());
+                ImGui::PopID();
+                return true;
+            }
+            setStatus("The custom character could not be enabled; open the lifecycle report.",
+                      AppTheme::bad());
+        }
+        ui::SpeakFocusedItem(
+            "Enable character", nullptr,
+            "Makes this retained package available to the game without changing its source revisions or fit settings.");
+    }
     if (identityReady) {
         drawCharacterPortraitPreview(entry);
         ImGui::SameLine(0.0f, ui::kGapM);
@@ -4653,40 +4714,80 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
     ImGui::SeparatorText("Performance assembly");
     drawCharacterPerformanceAssembly(entry);
     ImGui::SeparatorText("Test in the exact game renderer");
-    drawCharacterExactTests(entry, compact);
-    ui::Gap(ui::kGapS);
-    if (ImGui::Button("Remove package from this computer...")) {
-        g_characterPendingRemoval = entry->id;
-        ImGui::OpenPopup("Remove custom character?");
+    if (entry->enabled != 0u) {
+        drawCharacterExactTests(entry, compact);
+    } else {
+        ui::TextSubtleWrapped(
+            "Exact game tests are unavailable while this package is disabled because the runtime deliberately cannot discover it. Re-enable it to test; source editing and structural performance review remain available above.");
     }
-    if (ImGui::BeginPopupModal("Remove custom character?", nullptr,
+    ImGui::SeparatorText("Package lifecycle");
+    ui::TextSubtleWrapped(
+        "Disable is reversible and retains every Workshop revision, fit setting, review, and player assignment. Permanent deletion removes this package's local cache, retained revisions, provenance, and package-owned settings.");
+    if (entry->enabled != 0u) {
+        if (ImGui::Button("Disable without deleting")) {
+            const std::string id = entry->id;
+            if (setCharacterPackageEnabled(id, false)) {
+                setStatus(
+                    "Custom character disabled; its sources, settings, and assignments were retained.",
+                    AppTheme::good());
+                ImGui::PopID();
+                return true;
+            }
+            setStatus("The custom character could not be disabled; open the lifecycle report.",
+                      AppTheme::bad());
+        }
+        ui::SpeakFocusedItem(
+            "Disable without deleting", nullptr,
+            "Uses the built-in racer in game while retaining all package sources, settings, reviews, and player assignments.");
+    }
+    ui::Gap(ui::kGapS);
+    if (ImGui::Button("Permanently delete package...")) {
+        g_characterPendingRemoval = entry->id;
+        ImGui::OpenPopup("Permanently delete custom character?");
+    }
+    ui::SpeakFocusedItem(
+        "Permanently delete package", nullptr,
+        "Opens a confirmation for destructive deletion of the local cache, retained Workshop source revisions, provenance reports, and package-owned settings.");
+    if (ImGui::BeginPopupModal("Permanently delete custom character?", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextWrapped(
-            "Remove %s and its local compiled cache? The original file you imported is not touched.",
-            entry->display_name);
-        if (ImGui::Button("Remove")) {
+            "Permanently delete %s from this computer? This removes its %s cache, %u retained Workshop source revision(s), %u provenance report(s), fit settings, review evidence, and player assignments.",
+            entry->display_name, entry->enabled != 0u ? "enabled" : "disabled",
+            entry->source_revisions, entry->provenance_reports);
+        ui::TextSubtleWrapped(
+            "The external .mdkrchar file you originally chose is not touched. A revision created only inside the Workshop may have no other copy. This action cannot be undone here.");
+        if (ImGui::Button("Delete package and revisions")) {
             const std::string removedId = g_characterPendingRemoval;
             if (removeCharacterPackage(removedId)) {
-                for (int slot = 0; slot < 4; ++slot) {
-                    const std::string slotKey = "custom_character_p" +
-                        std::to_string(slot + 1);
-                    if (AppConfig::get(slotKey) == removedId) {
-                        AppConfig::set(slotKey, "");
-                    }
-                }
-                const AppConfig::PersistResult result = AppConfig::save();
-                changed |= AppConfig::persistResultApplied(result);
-                setStatus("Custom character removed from this computer.",
-                          AppTheme::good());
+                const AppConfig::PersistResult persist =
+                    forgetCharacterPackagePreferences(removedId);
+                const bool preferencesSaved =
+                    AppConfig::persistResultApplied(persist);
+                setStatus(
+                    preferencesSaved
+                        ? "Custom character, retained revisions, and package settings permanently deleted."
+                        : "Character files were deleted, but preference cleanup could not be saved yet.",
+                    preferencesSaved ? AppTheme::good() : AppTheme::bad());
+                g_characterPendingRemoval.clear();
+                ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+                ImGui::PopID();
+                return true;
             } else {
                 setStatus(
-                    "Character removal failed; open the importer report.",
+                    "Character deletion failed or was partial; open the lifecycle report before retrying.",
                     AppTheme::bad());
             }
             ImGui::CloseCurrentPopup();
         }
+        ui::SpeakFocusedItem(
+            "Delete package and revisions", nullptr,
+            "Permanently removes every locally retained file and setting owned by this exact package identity. The external file originally imported is unchanged.");
         ImGui::SameLine();
         if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ui::SpeakFocusedItem(
+            "Cancel", nullptr,
+            "Closes this confirmation without changing the package.");
         ImGui::EndPopup();
     }
     ImGui::PopID();
@@ -4747,8 +4848,17 @@ bool drawCustomCharactersSection(bool compact) {
         refreshCharacterRegistry();
     }
     if (!g_characterRegistryDirectory.empty()) {
-        ImGui::TextDisabled("%d installed · Folder: %s",
-            mdkr_modern_character_registry_count(&g_characterRegistry),
+        int enabledCount = 0;
+        const int inventoryCount =
+            mdkr_modern_character_registry_count(&g_characterRegistry);
+        for (int index = 0; index < inventoryCount; ++index) {
+            const MdkrModernCharacterEntry *entry =
+                mdkr_modern_character_registry_entry(&g_characterRegistry,
+                                                      index);
+            if (entry != nullptr && entry->enabled != 0u) ++enabledCount;
+        }
+        ImGui::TextDisabled("%d enabled · %d disabled · Folder: %s",
+            enabledCount, inventoryCount - enabledCount,
             g_characterRegistryDirectory.c_str());
     }
     if (!g_characterManagerReport.empty() &&
@@ -4773,10 +4883,13 @@ bool drawCustomCharactersSection(bool compact) {
             &g_characterRegistry, workshopIndex);
         ImGui::SeparatorText("Character library");
         ImGui::SetNextItemWidth(-1.0f);
+        const std::string workshopPreview = workshopEntry != nullptr
+            ? std::string(workshopEntry->display_name) +
+                (workshopEntry->enabled != 0u ? "" : " (disabled)")
+            : "Choose a character";
         if (ImGui::BeginCombo(
                 "Character to edit##character-workshop-library",
-                workshopEntry != nullptr ? workshopEntry->display_name
-                                         : "Choose a character")) {
+                workshopPreview.c_str())) {
             for (int index = 0; index < characterCount; ++index) {
                 const MdkrModernCharacterEntry *entry =
                     mdkr_modern_character_registry_entry(&g_characterRegistry,
@@ -4785,6 +4898,7 @@ bool drawCustomCharactersSection(bool compact) {
                 const bool qualified = mdkr_modern_donor_qualified(
                     static_cast<int>(entry->donor)) != 0;
                 const std::string item = std::string(entry->display_name) +
+                    (entry->enabled != 0u ? "" : " (disabled)") +
                     (qualified ? "" : " (review only)");
                 if (ImGui::Selectable(
                         item.c_str(),
@@ -4817,13 +4931,19 @@ bool drawCustomCharactersSection(bool compact) {
         const MdkrModernCharacterEntry *selectedEntry =
             mdkr_modern_character_registry_entry(&g_characterRegistry,
                                                   selectedIndex);
-        const char *preview = selectedEntry != nullptr
-            ? selectedEntry->display_name : "Built-in racer";
+        const bool selectedAvailable =
+            selectedEntry != nullptr && selectedEntry->enabled != 0u;
+        const std::string preview = selectedAvailable
+            ? selectedEntry->display_name
+            : selectedEntry != nullptr
+                ? std::string("Built-in racer — ") +
+                    selectedEntry->display_name + " is disabled"
+                : "Built-in racer";
         const std::string label =
             "Player " + std::to_string(player + 1) + "##custom-character";
-        if (ImGui::BeginCombo(label.c_str(), preview)) {
+        if (ImGui::BeginCombo(label.c_str(), preview.c_str())) {
             const bool noneSelected =
-                selected.empty() || selectedEntry == nullptr;
+                selected.empty() || !selectedAvailable;
             if (ImGui::Selectable("Built-in racer", noneSelected)) {
                 const AppConfig::PersistResult result =
                     AppConfig::setAndSave(key, "");
@@ -4845,8 +4965,10 @@ bool drawCustomCharactersSection(bool compact) {
                 const bool qualified = mdkr_modern_donor_qualified(
                     static_cast<int>(entry->donor)) != 0;
                 const std::string item = std::string(entry->display_name) +
+                    (entry->enabled != 0u ? "" : " (disabled)") +
                     (qualified ? "" : " (donor not qualified)");
-                if (!qualified) ImGui::BeginDisabled();
+                const bool assignable = qualified && entry->enabled != 0u;
+                if (!assignable) ImGui::BeginDisabled();
                 if (ImGui::Selectable(item.c_str(), selected == entry->id)) {
                     const AppConfig::PersistResult result =
                         AppConfig::setAndSave(key, entry->id);
@@ -4861,9 +4983,14 @@ bool drawCustomCharactersSection(bool compact) {
                             AppTheme::bad());
                     }
                 }
-                if (!qualified) ImGui::EndDisabled();
+                if (!assignable) ImGui::EndDisabled();
             }
             ImGui::EndCombo();
+        }
+        if (selectedEntry != nullptr && selectedEntry->enabled == 0u) {
+            ImGui::TextDisabled(
+                "Assignment retained; the built-in racer is used until %s is enabled.",
+                selectedEntry->display_name);
         }
         ImGui::PopID();
     }

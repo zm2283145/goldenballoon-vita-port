@@ -303,6 +303,19 @@ void set(const std::string &key, const std::string &value) {
     g_dirtyKeys.insert(key);
 }
 
+std::size_t erasePrefix(const std::string &prefix) {
+    std::size_t removed = 0u;
+    if (prefix.empty()) return 0u;
+    auto entry = g_kv.lower_bound(prefix);
+    while (entry != g_kv.end() && entry->first.compare(
+               0u, prefix.size(), prefix) == 0) {
+        g_dirtyKeys.insert(entry->first);
+        entry = g_kv.erase(entry);
+        ++removed;
+    }
+    return removed;
+}
+
 PersistResult setAndSave(const std::string &key, const std::string &value) {
     std::lock_guard<std::mutex> guard(g_saveMutex);
     return persistWithFallbackLocked(&key, &value);

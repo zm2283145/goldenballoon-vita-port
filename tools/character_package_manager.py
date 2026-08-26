@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Install and manage private .mdkrchar packages and disposable MDKC caches.
 
-The source package is retained for provenance. `<id>.mdkc` is the sole active
-runtime record and is replaced atomically only after validation and compilation
-complete, so an interrupted import cannot publish a partial character.
+The source package is retained for provenance. `<id>.mdkc` is the enabled
+runtime record; `<id>.mdkc.disabled` is the same validated cache held outside
+runtime discovery. Installs and revisions preserve that state and replace the
+chosen cache atomically only after validation and compilation complete.
 """
 
 from __future__ import annotations
@@ -110,12 +111,31 @@ def _cache_valid(data: bytes) -> bool:
     return (zlib.crc32(data[header_bytes:]) & 0xFFFFFFFF) == expected_crc
 
 
-def _active_cache_digest(root: Path, package_id: str) -> str:
-    cache_path = root / f"{package_id}.mdkc"
-    try:
-        cache = cache_path.read_bytes()
-    except FileNotFoundError as exc:
-        raise ManagerError(f"character {package_id!r} is not installed") from exc
+def _installed_cache_path(root: Path, package_id: str, *,
+                          required: bool = True) -> tuple[Path | None, bool]:
+    """Resolve the one exact cache state without following ambiguous links."""
+    active = root / f"{package_id}.mdkc"
+    disabled = root / f"{package_id}.mdkc.disabled"
+    active_exists = active.exists() or active.is_symlink()
+    disabled_exists = disabled.exists() or disabled.is_symlink()
+    if active_exists and disabled_exists:
+        raise ManagerError(
+            f"character {package_id!r} has both enabled and disabled caches"
+        )
+    cache_path = active if active_exists else disabled if disabled_exists else None
+    if cache_path is None:
+        if required:
+            raise ManagerError(f"character {package_id!r} is not installed")
+        return None, True
+    if cache_path.is_symlink() or not cache_path.is_file():
+        raise ManagerError(f"installed cache for {package_id!r} is unsafe")
+    return cache_path, cache_path == active
+
+
+def _installed_cache_digest(root: Path, package_id: str) -> str:
+    cache_path, _ = _installed_cache_path(root, package_id)
+    assert cache_path is not None
+    cache = cache_path.read_bytes()
     if not _cache_valid(cache):
         raise ManagerError(f"installed cache for {package_id!r} is invalid")
     return cache[20:52].hex()
@@ -165,15 +185,21 @@ def install(package_path: Path, directory: Path, *,
         "compiler": COMPILER_ID,
         "installed_unix": int(time.time()),
         "source_file": f"{package_id}.{source_sha}.mdkrchar",
-        "cache_file": f"{package_id}.mdkc",
         "report": compile_report,
     }
     source_path = root / provenance["source_file"]
     report_path = root / f"{package_id}.{source_sha}.json"
-    cache_path = root / provenance["cache_file"]
     with _locked(root):
+        cache_path, enabled = _installed_cache_path(
+            root, package_id, required=False
+        )
+        if cache_path is None:
+            cache_path = root / f"{package_id}.mdkc"
+            enabled = True
+        provenance["cache_file"] = cache_path.name
+        provenance["enabled"] = enabled
         if (expected_active_digest is not None and
-                _active_cache_digest(root, package_id) != expected_active_digest):
+                _installed_cache_digest(root, package_id) != expected_active_digest):
             raise ManagerError(
                 "the installed character changed while this revision was being built; "
                 "review the latest revision and try again"
@@ -192,9 +218,9 @@ def install(package_path: Path, directory: Path, *,
 
 
 def _active_source_snapshot(package_id: str, root: Path) -> tuple[bytes, str, str]:
-    """Read the exact source behind the active cache under the import lock."""
+    """Read the exact source behind the installed cache under the import lock."""
     with _locked(root):
-        active_digest = _active_cache_digest(root, package_id)
+        active_digest = _installed_cache_digest(root, package_id)
         candidates: list[tuple[bool, str, bytes]] = []
         for report_path in sorted(root.glob(f"{package_id}.*.json")):
             try:
@@ -228,7 +254,7 @@ def _active_source_snapshot(package_id: str, root: Path) -> tuple[bytes, str, st
                 continue
         if not candidates:
             raise ManagerError(
-                f"active source provenance for {package_id!r} is missing or invalid"
+                f"installed source provenance for {package_id!r} is missing or invalid"
             )
         # Prefer the smaller source-only artifact when both it and a portable
         # package describe the same active source; the canonical source members
@@ -615,9 +641,12 @@ def list_installed(directory: Path) -> dict[str, Any]:
             source_sha = report.get("source_sha256", "")
             if report_path.name != f"{package_id}.{source_sha}.json":
                 continue
-            cache = root / f"{package_id}.mdkc"
+            if probe.ID_RE.fullmatch(package_id) is None:
+                continue
+            cache, enabled = _installed_cache_path(root, package_id)
+            assert cache is not None
             source = root / report["source_file"]
-            cache_data = cache.read_bytes() if cache.is_file() else b""
+            cache_data = cache.read_bytes()
             active = (
                 _cache_valid(cache_data)
                 and cache_data[20:52].hex() == report.get("cache_source_digest")
@@ -629,11 +658,13 @@ def list_installed(directory: Path) -> dict[str, Any]:
                     "source_sha256": source_sha,
                     "compiler": report.get("compiler", ""),
                     "active": active,
+                    "enabled": enabled,
                     "source_present": source.is_file(),
                     "report_file": report_path.name,
                 }
             )
-        except (OSError, KeyError, TypeError, ValueError, struct.error):
+        except (OSError, KeyError, TypeError, ValueError, struct.error,
+                ManagerError):
             continue
     # Keep only the provenance matching each active cache's embedded source
     # digest. Older reports remain visible as inactive history until clean.
@@ -683,21 +714,79 @@ def remove(package_id: str, directory: Path) -> dict[str, Any]:
         raise ManagerError("invalid package id")
     root = _prepare_directory(directory)
     removed: list[str] = []
+    failed: list[str] = []
     with _locked(root):
-        candidates = [root / f"{package_id}.mdkc"]
+        candidates = [
+            root / f"{package_id}.mdkc",
+            root / f"{package_id}.mdkc.disabled",
+        ]
         candidates.extend(sorted(root.glob(f"{package_id}.*.mdkrchar")))
         candidates.extend(sorted(root.glob(f"{package_id}.*.json")))
         for path in candidates:
-            if path.parent != root or not path.is_file() or path.is_symlink():
+            if path.parent != root:
                 continue
-            if path.name != f"{package_id}.mdkc" and not (
+            owned = path.name in (
+                f"{package_id}.mdkc", f"{package_id}.mdkc.disabled"
+            ) or (
                 _owned_provenance_name(path.name, package_id, ".mdkrchar") or
                 _owned_provenance_name(path.name, package_id, ".json")
-            ):
+            )
+            if not owned or not (path.exists() or path.is_symlink()):
                 continue
-            path.unlink()
-            removed.append(path.name)
+            if path.is_symlink() or not path.is_file():
+                failed.append(path.name)
+                continue
+            try:
+                path.unlink()
+                removed.append(path.name)
+            except OSError:
+                failed.append(path.name)
+    if failed:
+        detail = ", ".join(failed[:8])
+        if len(failed) > 8:
+            detail += f", and {len(failed) - 8} more"
+        raise ManagerError(
+            f"partial deletion removed {len(removed)} owned file(s), but "
+            f"{len(failed)} could not be removed: {detail}"
+        )
+    if not removed:
+        raise ManagerError("no regular installed files matched that character id")
     return {"id": package_id, "removed": removed}
+
+
+def set_enabled(package_id: str, directory: Path,
+                enabled: bool) -> dict[str, Any]:
+    """Move one validated cache across the runtime-discovery boundary."""
+    if probe.ID_RE.fullmatch(package_id) is None:
+        raise ManagerError("invalid package id")
+    if not isinstance(enabled, bool):
+        raise ManagerError("enabled state must be boolean")
+    root = _prepare_directory(directory)
+    with _locked(root):
+        source, current_enabled = _installed_cache_path(root, package_id)
+        assert source is not None
+        if current_enabled == enabled:
+            state = "enabled" if enabled else "disabled"
+            raise ManagerError(f"character {package_id!r} is already {state}")
+        payload = source.read_bytes()
+        if not _cache_valid(payload):
+            raise ManagerError(f"installed cache for {package_id!r} is invalid")
+        destination = root / (
+            f"{package_id}.mdkc" if enabled
+            else f"{package_id}.mdkc.disabled"
+        )
+        if destination.exists() or destination.is_symlink():
+            raise ManagerError("destination cache state already exists")
+        # The shared lock makes this a single state transition for cooperating
+        # tools. rename preserves the validated bytes and never exposes a
+        # partially written cache.
+        source.rename(destination)
+    return {
+        "id": package_id,
+        "enabled": enabled,
+        "cache_file": destination.name,
+        "retained_source_history": True,
+    }
 
 
 def clean(directory: Path) -> dict[str, Any]:
@@ -709,8 +798,14 @@ def clean(directory: Path) -> dict[str, Any]:
                 report = json.loads(path.read_text(encoding="utf-8"))
                 if report.get("schema") != MANAGER_SCHEMA:
                     continue
-                cache = root / f"{report.get('id', '')}.mdkc"
-                cache_data = cache.read_bytes() if cache.is_file() else b""
+                package_id = report.get("id", "")
+                if (not isinstance(package_id, str) or
+                        probe.ID_RE.fullmatch(package_id) is None):
+                    continue
+                cache, _ = _installed_cache_path(
+                    root, package_id, required=False
+                )
+                cache_data = cache.read_bytes() if cache is not None else b""
                 if (_cache_valid(cache_data) and
                         cache_data[20:52].hex() == report.get("cache_source_digest")):
                     continue
@@ -720,7 +815,7 @@ def clean(directory: Path) -> dict[str, Any]:
                     removed.append(source.name)
                 path.unlink()
                 removed.append(path.name)
-            except (OSError, TypeError, ValueError):
+            except (OSError, TypeError, ValueError, ManagerError):
                 continue
     return {"removed": removed}
 
@@ -739,6 +834,10 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("list")
     remove_parser = sub.add_parser("remove")
     remove_parser.add_argument("id")
+    enable_parser = sub.add_parser("enable")
+    enable_parser.add_argument("id")
+    disable_parser = sub.add_parser("disable")
+    disable_parser.add_argument("id")
     prepare_parser = sub.add_parser(
         "prepare", help="embed a verified deterministic cache for player import"
     )
@@ -814,6 +913,10 @@ def main(argv: list[str] | None = None) -> int:
             report = revise_rig(args.id, args.draft, args.directory)
         elif args.command == "remove":
             report = remove(args.id, args.directory)
+        elif args.command == "enable":
+            report = set_enabled(args.id, args.directory, True)
+        elif args.command == "disable":
+            report = set_enabled(args.id, args.directory, False)
         elif args.command == "clean":
             report = clean(args.directory)
         else:

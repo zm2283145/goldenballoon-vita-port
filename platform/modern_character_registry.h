@@ -75,6 +75,9 @@ typedef struct MdkrModernCharacterEntry {
     char display_name[MDKR_MODERN_CHARACTER_NAME_MAX];
     char path[MDKR_MODERN_CHARACTER_PATH_MAX];
     uint8_t source_sha256[32];
+    uint32_t enabled;
+    uint32_t source_revisions;
+    uint32_t provenance_reports;
     uint32_t donor;
     uint32_t vehicle_mask;
     uint32_t semantic_mask;
@@ -125,6 +128,10 @@ typedef struct MdkrModernCharacterRegistry {
 /* Missing directory is the ordinary zero-character state and succeeds. */
 int mdkr_modern_character_registry_init(MdkrModernCharacterRegistry *registry,
                                         const char *directory);
+/* Workshop-only inventory scan. Disabled caches remain fully validated and
+ * inspectable here, but the ordinary runtime initializer never admits them. */
+int mdkr_modern_character_registry_init_inventory(
+    MdkrModernCharacterRegistry *registry, const char *directory);
 void mdkr_modern_character_registry_shutdown(MdkrModernCharacterRegistry *registry);
 int mdkr_modern_character_registry_count(const MdkrModernCharacterRegistry *registry);
 const MdkrModernCharacterEntry *mdkr_modern_character_registry_entry(
