@@ -4,7 +4,7 @@ Status: implemented vertical-slice spike, 2026-08-26. The source contract,
 compiler/cache, native transactional portable-package install, launcher
 workshop and per-player fit controls, retained
 WebGPU GPU-skinned renderer, animation sampler, PBR-like materials, authored
-LODs, and one fingerprint-qualified retail donor seam are executable. This
+LODs, and all ten fingerprint-qualified retail donor seams are executable. This
 document does not approve or propose bundling any imported character asset.
 
 ## Decision
@@ -39,7 +39,7 @@ This gives three deliberately separate formats:
   source and provenance but publish only a final validated cache filename;
 - bounded native cache loading, shared immutable render assets and per-player
   pose instances;
-- WebGPU GPU skinning for up to 128 joints, four weights, multiple primitives,
+- WebGPU GPU skinning for up to 256 joints, four weights, multiple primitives,
   directional/ambient/fog response, core metallic-roughness inputs, role-aware
   mip generation, alpha masks, and explicit resource release/recreation;
 - a copied retained draw command and seat-socket attachment at the retail racer
@@ -49,8 +49,9 @@ This gives three deliberately separate formats:
   boost, item, airborne/landing edges, spin, damage, win/lose finish, and
   character-select idle/hover/confirm, with package fallback for clips an
   author does not provide;
-- exact US/PAL Diddy car/hover/plane LOD fingerprints and driver-batch masks,
-  so replacement is atomic and vehicle/effect geometry remains authored;
+- exact US/PAL car/hover/plane LOD fingerprints and 64-bit driver-batch masks
+  for all ten retail donors, so replacement is atomic and vehicle/effect
+  geometry remains authored even for models with more than 32 batches;
 - launcher discovery, drag-and-drop/import diagnostics and P1-P4 selection of
   installed caches;
 - native browse/import/removal for portable packages, with a developer compiler
@@ -66,8 +67,8 @@ This gives three deliberately separate formats:
   resampling, and revisioned HUD/results/rankings/minimap resolution.
 
 This is deliberately a vertical slice, not a claim of production readiness.
-Only the Diddy donor family is qualified, OpenGL intentionally falls back to
-the retail driver, full independent character-select tiles and dynamic
+OpenGL intentionally falls back to the retail driver, full independent
+character-select tiles and dynamic
 game-font names are not yet wired, and the COLLADA adapter synthesizes a
 motionless one-second witness clip when the source has no animation.
 
@@ -144,10 +145,10 @@ gameplay-mod system is introduced.
 
 The implemented spike is a **virtual presentation identity**, not an eleventh
 retail `Character` enum value. Selecting a package for P1 and then selecting its
-Diddy donor in the game keeps `characterId == CHARACTER_DIDDY`; only that
-player's qualified driver batches are replaced. This is enough to ship Dixie or
-Tiny as visually distinct local characters with an explicit familiar stats
-profile. The exact Diddy select actor is also replaced while its numbered
+declared donor in the game keeps the corresponding retail `characterId`; only
+that player's qualified driver batches are replaced. This is enough to ship a
+visually distinct local character with an explicit familiar stats profile. The
+exact donor select actor is also replaced while its numbered
 placard remains authored. The remaining roster UX still has to expose packages
 as independently named tiles and supply portraits/results identity rather than
 presenting them through the donor's tile.
@@ -311,8 +312,8 @@ donor object frame
   * inverse source ground-or-seat translation
 ```
 
-The qualified Diddy profile derives local units from the live hidden driver
-batches. It maps their measured height to Diddy's 1.25 m reference, places
+Each qualified donor profile derives local units from the live hidden driver
+batches. It maps their measured height to the 1.25 m presentation reference, places
 select on the measured body ground, and preserves each vehicle model's
 qualified origin as its seat frame. The pure fit function is native-tested;
 unknown donors, changed fingerprints, missing anchors, non-finite bounds, or
@@ -661,7 +662,8 @@ The executable proof provides:
   `platform/modern_character_install.c`;
 - deterministic manifest inference from clip/node names in
   `tools/character_manifest_wizard.py`;
-- actual WebGPU upload/draw and fingerprint-qualified Diddy replacement.
+- actual WebGPU upload/draw and fingerprint-qualified replacement for every
+  retail donor family.
 
 `tests/test_character_asset_probe.py` generates a tiny license-clean GLB in
 memory with indexed geometry, a two-joint skin, PBR factors, and a one-second
@@ -719,7 +721,7 @@ legacy-engine representation blockers:
 | Capability | Spike v1 | What must change for a cinematic/AAA profile |
 |---|---|---|
 | Geometry | 100k triangles and 100k unique vertices per source | Profile/device-tier budgets, measured LODs, culling and GPU timing; importing a multi-million-poly sculpt directly remains inappropriate |
-| Skin | 128 joints, four linear influences, GPU skinned; non-uniform joint bind scale and joint scale tracks rejected | Normal palettes and joint-scale animation in a later profile; dual-quaternion skinning only if art requires it |
+| Skin | 256 joints, four linear influences, GPU skinned; non-uniform joint bind scale and joint scale tracks rejected | Normal palettes and joint-scale animation in a later profile; dual-quaternion skinning only if art requires it |
 | Textures | Embedded PNG, max 4096 per side, 512 MiB decoded with full generated mips | Bounded KTX2/BasisU transcode and GPU block compression before allowing larger sets |
 | Materials | Core PBR-like factors/maps plus DKR fog/sun/ambient; OPAQUE/MASK/BLEND | IBL, calibrated tone mapping, shadow receive/cast, transparent ordering, then optional hair/clearcoat/subsurface profiles |
 | Animation | TRS tracks, LINEAR/STEP/CUBICSPLINE, cross-fade, semantic clips, immutable previous/current replay interpolation | Real authored clips, local-TRS/quaternion presentation interpolation, additive masks, root-motion policy and possibly morph/facial animation |

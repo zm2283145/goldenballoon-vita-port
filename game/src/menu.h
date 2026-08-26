@@ -627,6 +627,7 @@ s8 get_player_selected_vehicle(s32 playerNum);
 void set_player_selected_vehicle(s32 playerNum, s32 index);
 s8 *charselect_status(void);
 s8 get_player_character(s32 controllerIndex);
+s16 menu_character_select_donor(s32 rosterIndex);
 void enable_tracks_mode(s32 boolean);
 s32 is_in_tracks_mode(void);
 void set_magic_code_flags(s32 flags);

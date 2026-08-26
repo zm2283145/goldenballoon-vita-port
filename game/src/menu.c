@@ -16518,6 +16518,18 @@ s8 get_player_character(s32 controllerIndex) {
     return gPlayersCharacterArray[controllerIndex];
 }
 
+/* Character-select indexes are presentation rows, not Character ids. Resolve
+ * through the authoritative live table so object presentation cannot drift
+ * from unlock-specific or future native roster layouts. */
+s16 menu_character_select_donor(s32 rosterIndex) {
+#ifdef NATIVE_PORT
+    if (rosterIndex < 0 || rosterIndex >= sCharacterSelectBaseCount) return -1;
+#else
+    if (rosterIndex < 0 || rosterIndex >= 10) return -1;
+#endif
+    return CHARSELECT_DATA(rosterIndex).voiceID;
+}
+
 /**
  * Sets the value of gIsInTracksMode, which determines if the player is in tracks mode or not.
  */

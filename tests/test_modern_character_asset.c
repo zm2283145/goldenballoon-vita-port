@@ -178,15 +178,57 @@ int main(int argc, char **argv) {
             "compiled display name");
     require(definition.donor == 9u && definition.vehicle_mask == 7u,
             "donor and vehicle characteristics");
-    require(mdkr_modern_donor_model_ready(
-                9, 0, ASSET_OBJECTMODEL_DIDDYCAR_0, 0, 325, 257, 30),
-            "qualified Diddy car schema permits transactional replacement");
+    {
+        static const struct {
+            int car_model, car_v, car_t, car_b;
+            int hover_model, hover_v, hover_t, hover_b;
+            int plane_model, plane_v, plane_t, plane_b;
+            int select_model, select_v, select_t, select_b;
+        } donors[10] = {
+            {ASSET_OBJECTMODEL_KREMCAR_0,309,240,29, ASSET_OBJECTMODEL_KREMLINHOVER_0,323,237,30, ASSET_OBJECTMODEL_KREMPLANE_0,342,256,32, ASSET_OBJECTMODEL_KREMSELECT,330,252,27},
+            {ASSET_OBJECTMODEL_BADGERCAR_0,347,261,32, ASSET_OBJECTMODEL_BADGERHOVER_0,360,254,33, ASSET_OBJECTMODEL_BADGERPLANE_0,370,273,34, ASSET_OBJECTMODEL_BADGERSELECT,325,249,27},
+            {ASSET_OBJECTMODEL_TORTCAR_0,317,244,28, ASSET_OBJECTMODEL_TORTHOVER_0,328,235,29, ASSET_OBJECTMODEL_TORTPLANE_0,336,256,30, ASSET_OBJECTMODEL_TORTSELECT,315,244,23},
+            {ASSET_OBJECTMODEL_CONKACAR_0,329,259,27, ASSET_OBJECTMODEL_CONKAHOVER_0,334,249,27, ASSET_OBJECTMODEL_CONKA_0,355,270,29, ASSET_OBJECTMODEL_CONKSELECT,306,245,24},
+            {ASSET_OBJECTMODEL_TIGERCAR_0,367,258,36, ASSET_OBJECTMODEL_TIGERHOVER_0,363,243,35, ASSET_OBJECTMODEL_TIGPLANE_0,390,268,38, ASSET_OBJECTMODEL_TIGERSELECT,367,268,33},
+            {ASSET_OBJECTMODEL_BANJOCAR_0,315,247,32, ASSET_OBJECTMODEL_BANJOHOVER_0,323,240,32, ASSET_OBJECTMODEL_BANJOPLANE_0,342,259,34, ASSET_OBJECTMODEL_BANJOSELECT,308,249,28},
+            {ASSET_OBJECTMODEL_CHICKENCAR_0,368,245,37, ASSET_OBJECTMODEL_CHICKENHOVER_0,371,235,36, ASSET_OBJECTMODEL_CHICKENPLANE_0,399,259,39, ASSET_OBJECTMODEL_CHICKSELECT,343,238,32},
+            {ASSET_OBJECTMODEL_MOUSECAR_0,284,234,25, ASSET_OBJECTMODEL_MOUSEHOVER_0,287,225,24, ASSET_OBJECTMODEL_MOUSEPLANE_0,306,244,26, ASSET_OBJECTMODEL_MOUSESELECT,287,235,24},
+            {ASSET_OBJECTMODEL_SWCAR_0,303,226,25, ASSET_OBJECTMODEL_TICKTOCKHOVER_0,299,215,25, ASSET_OBJECTMODEL_TICKTOCKPLANE_0,323,237,26, ASSET_OBJECTMODEL_STOPWATCHSELECT,355,306,26},
+            {ASSET_OBJECTMODEL_DIDDYCAR_0,325,257,30, ASSET_OBJECTMODEL_DIDDYHOVER_0,329,248,30, ASSET_OBJECTMODEL_DIDDYPLANE_0,348,267,32, ASSET_OBJECTMODEL_DIDDYSELECT,343,297,28},
+        };
+        int donor;
+        for (donor = 0; donor < 10; donor++) {
+            require(mdkr_modern_donor_qualified(donor),
+                    "every retail gameplay donor is qualified");
+            require(mdkr_modern_donor_model_ready(
+                        donor, 0, donors[donor].car_model, 0,
+                        donors[donor].car_v, donors[donor].car_t,
+                        donors[donor].car_b) &&
+                    mdkr_modern_donor_model_ready(
+                        donor, 1, donors[donor].hover_model, 0,
+                        donors[donor].hover_v, donors[donor].hover_t,
+                        donors[donor].hover_b) &&
+                    mdkr_modern_donor_model_ready(
+                        donor, 2, donors[donor].plane_model, 0,
+                        donors[donor].plane_v, donors[donor].plane_t,
+                        donors[donor].plane_b),
+                    "each donor's three vehicle schemas are exact");
+            require(mdkr_modern_donor_select_model_ready(
+                        donor, donors[donor].select_model,
+                        donors[donor].select_v, donors[donor].select_t,
+                        donors[donor].select_b),
+                    "each donor's character-select schema is exact");
+        }
+        require(!mdkr_modern_donor_qualified(-1) &&
+                    !mdkr_modern_donor_qualified(10),
+                "out-of-range donors fail visible");
+    }
     require(!mdkr_modern_donor_model_ready(
                 9, 0, ASSET_OBJECTMODEL_DIDDYCAR_0, 0, 326, 257, 30),
             "changed donor geometry fails visible");
     require(!mdkr_modern_donor_model_ready(
-                0, 0, ASSET_OBJECTMODEL_KREMCAR_0, 0, 309, 240, 29),
-            "unqualified donor families fail visible");
+                0, 0, ASSET_OBJECTMODEL_KREMCAR_0, 0, 310, 240, 29),
+            "changed non-Diddy geometry also fails visible");
     require(mdkr_modern_donor_select_model_ready(
                 9, ASSET_OBJECTMODEL_DIDDYSELECT, 343, 297, 28) &&
                 !mdkr_modern_donor_select_model_ready(
@@ -194,15 +236,27 @@ int main(int argc, char **argv) {
             "Diddy select actor requires its exact qualified fingerprint");
     require(mdkr_modern_donor_select_batch_visible(9, 0) &&
                 !mdkr_modern_donor_select_batch_visible(9, 1) &&
-                mdkr_modern_donor_select_batch_visible(0, 1),
-            "select replacement retains only the qualified player placard");
+                mdkr_modern_donor_select_batch_visible(0, 0) &&
+                !mdkr_modern_donor_select_batch_visible(0, 1),
+            "every select replacement retains only its player placard");
     require(!mdkr_modern_donor_batch_visible(9, 0, 0, 0) &&
                 mdkr_modern_donor_batch_visible(9, 0, 0, 18) &&
                 !mdkr_modern_donor_batch_visible(9, 0, 0, 27),
             "Diddy driver mask retains vehicle batches");
+    require(!mdkr_modern_donor_batch_visible(0, 1, 0, 17) &&
+                !mdkr_modern_donor_batch_visible(1, 0, 0, 2) &&
+                !mdkr_modern_donor_batch_visible(2, 0, 0, 11) &&
+                !mdkr_modern_donor_batch_visible(4, 0, 0, 20) &&
+                !mdkr_modern_donor_batch_visible(5, 0, 0, 21) &&
+                !mdkr_modern_donor_batch_visible(6, 0, 0, 27),
+            "LOD-specific character materials remain in donor masks");
+    require(!mdkr_modern_donor_batch_visible(6, 1, 0, 33) &&
+                mdkr_modern_donor_batch_visible(6, 1, 0, 35),
+            "64-bit donor masks preserve Drumstick batches above bit 31");
     require(mdkr_modern_donor_cap_lod(9, 0, 5) == 4 &&
-                mdkr_modern_donor_cap_lod(0, 0, 5) == 5,
-            "only the qualified donor avoids its collapsed far LOD");
+                mdkr_modern_donor_cap_lod(0, 0, 5) == 4 &&
+                mdkr_modern_donor_cap_lod(10, 0, 5) == 5,
+            "all qualified donors avoid their collapsed far LOD");
     {
         const float donor_min[3] = {-50.0f, 1.0f, -116.0f};
         const float donor_max[3] = {50.0f, 179.0f, 140.0f};

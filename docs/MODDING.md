@@ -297,17 +297,20 @@ Root rotation and seat offsets cannot repair that. A model needs real authored
 semantic clips or a future humanoid role-map/retargeting/IK stage; the current
 importer refuses to disguise a static clip as animation readiness.
 
-In character select, a configured Diddy-family package replaces the exact
-fingerprint-qualified Diddy actor while the numbered player placard remains.
+In character select, a configured package replaces its exact
+fingerprint-qualified donor actor while the numbered player placard remains.
 Its `select.idle`, `select.hover`, and `select.confirm` mapping follows the real
-cursor state. The current virtual-presentation tier still uses Diddy's roster
-tile, name, voice, and gameplay profile; custom named tiles and portraits are a
-separate local-identity layer, not physics authority.
+cursor state. The current virtual-presentation tier still uses the donor's
+roster tile, voice, and gameplay profile. Authored portraits/names resolve in
+HUD and results surfaces; an independent select tile and dynamic game-font name
+remain separate local-identity work, not physics authority.
 
-Only the Diddy vehicle-model family has an exact qualified replacement seam.
-Other donor declarations remain visible but unavailable, and OpenGL keeps the
-retail visual. Packages are local-only; the game does not transfer them to
-peers. See [`architecture/custom-character-pipeline.md`](architecture/custom-character-pipeline.md)
+All ten retail vehicle-model families now have exact revision-1 fingerprint and
+driver-batch profiles for car, hovercraft, plane, and character select. Their
+collapsed/merged far LOD is capped before carving. Unknown models or changed
+fingerprints remain visible, and OpenGL keeps every retail visual. Packages are
+local-only; the game does not transfer them to peers. See
+[`architecture/custom-character-pipeline.md`](architecture/custom-character-pipeline.md)
 for the format, limits, security model, current proof and remaining gates, and
 [`architecture/custom-character-workshop-ux.md`](architecture/custom-character-workshop-ux.md)
 for the complete library/editor, Portrait Studio, donor-profile, vehicle-test,

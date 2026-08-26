@@ -12,6 +12,7 @@
 #include "fs_utf8.h"
 #include "mod_registry.h"
 #include "modern_character_install.h"
+#include "modern_character_donor.h"
 #include "modern_character_registry.h"
 #include "user_paths.h"
 #include "video_config.h"
@@ -2214,8 +2215,9 @@ bool drawCharacterTuningEditor(int player,
             if (!ImGui::BeginTabItem(contextNames[context])) continue;
             CharacterTuningEdit::Context &placement = edit.context[context];
             ImGui::TextDisabled(
-                "%s anchor → qualified Diddy %s frame",
+                "%s anchor → qualified %s %s frame",
                 context == MDKR_CHARACTER_CONTEXT_SELECT ? "Ground" : "Pelvis/seat",
+                donorName(entry->donor),
                 context == MDKR_CHARACTER_CONTEXT_SELECT ? "select" :
                     contextNames[context]);
             ImGui::PushID(static_cast<int>(context));
@@ -2367,7 +2369,8 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         mappedSelectStates == 3u &&
         countCharacterBits(entry->moving_semantic_mask &
                            (raceStates | selectStates)) == 13u;
-    const bool qualified = entry->donor == 9u;
+    const bool qualified = mdkr_modern_donor_qualified(
+        static_cast<int>(entry->donor)) != 0;
     const bool identityReady = (entry->identity_flags & 1u) != 0u &&
         entry->portrait_bytes != 0u;
 
@@ -2527,8 +2530,9 @@ bool drawCustomCharactersSection(bool compact) {
             "Import a self-contained .mdkrchar package, inspect and tune one "
             "package-level workshop profile, then assign it to local players. The game never "
             "needs a second ROM and never puts these local presentation choices "
-            "into saves, ghosts, physics, or network authority. This spike has "
-            "fingerprint-qualified Diddy's car, hovercraft, and plane bodies.");
+            "into saves, ghosts, physics, or network authority. Every built-in "
+            "gameplay profile has fingerprint-qualified car, hovercraft, plane, "
+            "and character-select presentation seams.");
     }
     ImGui::Indent(ui::kGapM);
 
@@ -2605,8 +2609,10 @@ bool drawCustomCharactersSection(bool compact) {
                     mdkr_modern_character_registry_entry(&g_characterRegistry,
                                                           index);
                 if (entry == nullptr) continue;
+                const bool qualified = mdkr_modern_donor_qualified(
+                    static_cast<int>(entry->donor)) != 0;
                 const std::string item = std::string(entry->display_name) +
-                    (entry->donor == 9u ? "" : " (review only)");
+                    (qualified ? "" : " (review only)");
                 if (ImGui::Selectable(
                         item.c_str(),
                         g_characterWorkshopSelection == entry->id)) {
@@ -2663,7 +2669,8 @@ bool drawCustomCharactersSection(bool compact) {
                     mdkr_modern_character_registry_entry(&g_characterRegistry,
                                                           index);
                 if (entry == nullptr) continue;
-                const bool qualified = entry->donor == 9u;
+                const bool qualified = mdkr_modern_donor_qualified(
+                    static_cast<int>(entry->donor)) != 0;
                 const std::string item = std::string(entry->display_name) +
                     (qualified ? "" : " (donor not qualified)");
                 if (!qualified) ImGui::BeginDisabled();

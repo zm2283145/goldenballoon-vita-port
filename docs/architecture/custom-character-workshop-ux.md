@@ -188,10 +188,10 @@ IDs. A profile card shows:
 - records, ghosts, saves and online status;
 - why a profile is unavailable.
 
-The current implementation exposes only Diddy's qualified geometry seams, so
-the selector is visibly locked to Diddy rather than presenting ten choices that
-silently fail. Qualifying a new donor adds a new engine-owned profile without
-changing packages.
+The implementation exposes qualified geometry seams for every retail donor.
+Profile cards can therefore present all ten choices without a hidden Diddy-only
+gate; an unavailable or changed ROM schema still fails visible and retains the
+built-in actor.
 
 Vehicle selection has two meanings and the UI must not conflate them:
 
@@ -375,7 +375,7 @@ last known-good assembly remains available if an update fails.
 | Per-context corrections | Executable | Move from four repeated player panels to one package editor |
 | Animation semantics | Executable sampling and diagnostics | Add role-map editor, retargeting and IK |
 | Portrait/roster identity | Source-v3 import, cache, HUD/results/rankings/minimap resolver executable | Add capture/pixel editor, independent select tile, and font-safe game name |
-| Donor selection | Manifest accepts ten; Diddy is the only qualified seam | Present only qualified profile cards; qualify donors incrementally |
+| Donor selection | All ten revision-1 donor seams are fingerprint-qualified and selectable | Add full profile comparison cards and exact-context review status |
 | Vehicle support | Mask and independent transforms | Add test matrix, hand/foot targets and reviewed status |
 | Performance controls | Import caps, authored LOD bias | Add per-category budget report, assembly targets and stress test |
 | Gameplay tuning | Correctly absent from visual package | Build separate opt-in hashed gameplay-profile system |

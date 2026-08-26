@@ -8,8 +8,12 @@
 extern "C" {
 #endif
 
-/* V1 deliberately supports one fully-qualified donor family. Unknown donors,
- * model ids, LODs, or fingerprints fail visible. */
+/* Every retail roster donor has an immutable profile qualified against the
+ * shared US/PAL revision-1 model corpus. Unknown donors, model ids, LODs, or
+ * fingerprints fail visible. This is also the single capability query used by
+ * launcher/UI code; presentation policy must not duplicate donor ids. */
+int mdkr_modern_donor_qualified(int donor);
+
 int mdkr_modern_donor_model_ready(int donor, int vehicle, int model_id,
                                   int lod, int vertices, int triangles,
                                   int batches);
@@ -19,13 +23,13 @@ int mdkr_modern_donor_model_ready(int donor, int vehicle, int model_id,
 int mdkr_modern_donor_batch_visible(int donor, int vehicle, int lod,
                                     int batch);
 
-/* LOD 5 merges driver and vehicle in the supported retail donor. Retaining LOD
- * 4 at the presentation seam preserves a complete vehicle to carve. */
+/* Retail LOD 5 models merge or omit driver geometry. Retaining LOD 4 at the
+ * presentation seam preserves a complete, independently carveable vehicle. */
 int mdkr_modern_donor_cap_lod(int donor, int vehicle, int lod);
 
 /* Character-select actor qualification is deliberately separate from vehicle
- * qualification: the supported Diddy select mesh contains a four-vertex
- * numbered placard in batch zero and body geometry in every later batch. */
+ * qualification. Every qualified actor contains a four-vertex numbered
+ * placard in batch zero and character geometry in every later batch. */
 int mdkr_modern_donor_select_model_ready(int donor, int model_id,
                                          int vertices, int triangles,
                                          int batches);

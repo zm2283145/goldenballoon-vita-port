@@ -2421,9 +2421,10 @@ void obj_loop_char_select(Object *charSelectObj, s32 updateRate) {
                 taj_visual_select_apply_authored_actor(charSelectObj, i);
                 wizpig_visual_select_apply_authored_actor(charSelectObj, i);
                 terry_visual_select_apply_authored_actor(charSelectObj, i);
-                if (i == 1) { /* Diddy is row one in every retail roster. */
+                {
                     u32 hoverMask = 0u;
                     u32 confirmedMask = 0u;
+                    const s32 donor = menu_character_select_donor(i);
                     s32 controller;
                     s32 logicalPlayer = 0;
                     s8 *selectStatus = charselect_status();
@@ -2442,7 +2443,7 @@ void obj_loop_char_select(Object *charSelectObj, s32 updateRate) {
                         logicalPlayer++;
                     }
                     obj_modern_character_select_update(
-                        charSelectObj, hoverMask, confirmedMask,
+                        charSelectObj, donor, hoverMask, confirmedMask,
                         (f32)updateRate / 60.0f);
                 }
 #endif

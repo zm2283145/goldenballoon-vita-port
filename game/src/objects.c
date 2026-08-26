@@ -101,10 +101,18 @@ static s32 sModernCharacterReplacementVehicle;
 static s32 sModernCharacterReplacementLod;
 static s32 sModernCharacterReplacementSelect;
 static u32 sModernCharacterWarningBits;
-static const Object *sModernCharacterSelectObject;
-static s32 sModernCharacterSelectPlayer = -1;
+static const Object *sModernCharacterSelectObjects[MDKR_MODERN_CHARACTER_PLAYERS];
 static u8 sModernCharacterWasAirborne[MDKR_MODERN_CHARACTER_PLAYERS];
 static s16 sModernCharacterLandTicks[MDKR_MODERN_CHARACTER_PLAYERS];
+
+static s32 modern_character_select_player_for_object(const Object *obj) {
+    s32 player;
+    if (obj == NULL) return -1;
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        if (sModernCharacterSelectObjects[player] == obj) return player;
+    }
+    return -1;
+}
 
 static void modern_character_warn_once(s32 player, u32 reason,
                                        const char *message) {
@@ -130,9 +138,9 @@ static s32 modern_character_select_model_ready(
             donor, modelId, model->numberOfVertices,
             model->numberOfTriangles, model->numberOfBatches)) return FALSE;
     batches = DKR_PTR(const TriangleBatchInfo, model->batches);
-    /* The shared US/PAL actor's batch zero is exactly the four-vertex,
-     * two-triangle numbered placard. Every subsequent batch belongs to Diddy.
-     * Validate this topology before the platform mask is ever consumed. */
+    /* Every qualified shared US/PAL actor has exactly one four-vertex,
+     * two-triangle numbered placard at batch zero. All subsequent batches are
+     * the retail body. Validate that topology before a profile mask is used. */
     if (batches[0].textureIndex >= 4 ||
         batches[0].verticesOffset != 0 || batches[0].facesOffset != 0 ||
         batches[1].verticesOffset != 4 || batches[1].facesOffset != 2) {
@@ -195,19 +203,21 @@ static s32 modern_character_donor_target_frame(
     return TRUE;
 }
 
-void obj_modern_character_select_update(Object *obj, u32 hoverMask,
-                                        u32 confirmedMask, f32 seconds) {
+void obj_modern_character_select_update(Object *obj, s32 donor,
+                                        u32 hoverMask, u32 confirmedMask,
+                                        f32 seconds) {
     s32 player;
     s32 selected = -1;
     const char *semantic;
     char error[192];
-    if (obj == NULL || !isfinite(seconds) || seconds < 0.0f) return;
-    /* Prefer the matching package whose player is actually pointing at Diddy.
-     * With no cursor on that actor, show the first configured Diddy-family
-     * package so the roster still previews the local replacement. */
+    if (obj == NULL || !mdkr_modern_donor_qualified(donor) ||
+        !isfinite(seconds) || seconds < 0.0f) return;
+    /* Prefer the matching package whose player is actually pointing at this
+     * donor actor. With no cursor on it, show the first configured package for
+     * that donor so every installed roster family still has an idle preview. */
     for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
         if (mdkr_modern_character_player_package(player) == NULL ||
-            mdkr_modern_character_player_donor(player) != CHARACTER_DIDDY) {
+            mdkr_modern_character_player_donor(player) != donor) {
             continue;
         }
         if (selected < 0) selected = player;
@@ -217,11 +227,20 @@ void obj_modern_character_select_update(Object *obj, u32 hoverMask,
         }
     }
     if (selected < 0) {
-        if (sModernCharacterSelectObject == obj) {
-            sModernCharacterSelectObject = NULL;
-            sModernCharacterSelectPlayer = -1;
+        for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+            if (sModernCharacterSelectObjects[player] == obj) {
+                sModernCharacterSelectObjects[player] = NULL;
+            }
         }
         return;
+    }
+    /* One authored actor can present one package. Disarm its previous owner
+     * before ticking so any animation error fails visible this frame. Other
+     * donor actors remain mapped to their own players. */
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        if (sModernCharacterSelectObjects[player] == obj) {
+            sModernCharacterSelectObjects[player] = NULL;
+        }
     }
     semantic = (confirmedMask & (1u << selected)) != 0u
         ? "select.confirm"
@@ -232,14 +251,16 @@ void obj_modern_character_select_update(Object *obj, u32 hoverMask,
         modern_character_warn_once(selected, 4, error);
         return;
     }
-    sModernCharacterSelectObject = obj;
-    sModernCharacterSelectPlayer = selected;
+    sModernCharacterSelectObjects[selected] = obj;
 }
 
 void obj_modern_character_select_forget(const Object *obj) {
-    if (obj != NULL && sModernCharacterSelectObject == obj) {
-        sModernCharacterSelectObject = NULL;
-        sModernCharacterSelectPlayer = -1;
+    s32 player;
+    if (obj == NULL) return;
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        if (sModernCharacterSelectObjects[player] == obj) {
+            sModernCharacterSelectObjects[player] = NULL;
+        }
     }
 }
 
@@ -1857,8 +1878,8 @@ void clear_object_pointers(void) {
     D_8011AD53 = 0;
     gOverrideDoors = FALSE;
 #ifdef NATIVE_PORT
-    sModernCharacterSelectObject = NULL;
-    sModernCharacterSelectPlayer = -1;
+    memset(sModernCharacterSelectObjects, 0,
+           sizeof(sModernCharacterSelectObjects));
     memset(sModernCharacterWasAirborne, 0,
            sizeof(sModernCharacterWasAirborne));
     memset(sModernCharacterLandTicks, 0,
@@ -6291,44 +6312,45 @@ void render_3d_model(Object *obj) {
 #endif
         mtx_cam_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, &obj->trans, gObjectModelScaleY, 0.0f);
 #ifdef NATIVE_PORT
-        if (obj == sModernCharacterSelectObject &&
-            sModernCharacterSelectPlayer >= 0) {
-            const s32 player = sModernCharacterSelectPlayer;
-            const s32 donor = mdkr_modern_character_player_donor(player);
-            const s32 modelId =
-                DKR_PTR(s32, obj->header->modelIds)[modernModelIndex];
-            if (!modern_character_select_model_ready(
-                    donor, modelId, objModel)) {
-                modern_character_warn_once(
-                    player, 5,
-                    "select fallback: retail actor fingerprint is unqualified");
-            } else {
-                char modernError[192];
-                f32 targetFrame[16];
-                if (!modern_character_donor_target_frame(
-                        objModel, obj, player, donor, -1, 0,
-                        MDKR_CHARACTER_CONTEXT_SELECT, targetFrame)) {
+        {
+            const s32 player = modern_character_select_player_for_object(obj);
+            if (player >= 0) {
+                const s32 donor = mdkr_modern_character_player_donor(player);
+                const s32 modelId =
+                    DKR_PTR(s32, obj->header->modelIds)[modernModelIndex];
+                if (!modern_character_select_model_ready(
+                        donor, modelId, objModel)) {
                     modern_character_warn_once(
-                        player, 6,
-                        "select fallback: donor ground frame is unavailable");
-                    goto modern_select_done;
-                }
-                if (mdkr_modern_character_emit(
-                        player, MDKR_CHARACTER_CONTEXT_SELECT,
-                        targetFrame,
-                        obj->distanceToCamera,
-                        &gObjectCurrDisplayList,
-                        modernError, sizeof(modernError))) {
-                    sModernCharacterReplacementObject = obj;
-                    sModernCharacterReplacementModel = objModel;
-                    sModernCharacterReplacementDonor = donor;
-                    sModernCharacterReplacementVehicle = -1;
-                    sModernCharacterReplacementLod = 0;
-                    sModernCharacterReplacementSelect = TRUE;
+                        player, 5,
+                        "select fallback: retail actor fingerprint is unqualified");
                 } else {
-                    modern_character_warn_once(player, 6, modernError);
-                }
+                    char modernError[192];
+                    f32 targetFrame[16];
+                    if (!modern_character_donor_target_frame(
+                            objModel, obj, player, donor, -1, 0,
+                            MDKR_CHARACTER_CONTEXT_SELECT, targetFrame)) {
+                        modern_character_warn_once(
+                            player, 6,
+                            "select fallback: donor ground frame is unavailable");
+                        goto modern_select_done;
+                    }
+                    if (mdkr_modern_character_emit(
+                            player, MDKR_CHARACTER_CONTEXT_SELECT,
+                            targetFrame,
+                            obj->distanceToCamera,
+                            &gObjectCurrDisplayList,
+                            modernError, sizeof(modernError))) {
+                        sModernCharacterReplacementObject = obj;
+                        sModernCharacterReplacementModel = objModel;
+                        sModernCharacterReplacementDonor = donor;
+                        sModernCharacterReplacementVehicle = -1;
+                        sModernCharacterReplacementLod = 0;
+                        sModernCharacterReplacementSelect = TRUE;
+                    } else {
+                        modern_character_warn_once(player, 6, modernError);
+                    }
 modern_select_done:;
+                }
             }
         }
         if (racerObj != NULL && racerObj->playerIndex >= 0 &&

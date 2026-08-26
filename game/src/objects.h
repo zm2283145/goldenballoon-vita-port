@@ -518,8 +518,9 @@ void render_3d_model(Object *obj);
 #ifdef NATIVE_PORT
 /* Character-select presentation adapter. Logical-player masks use the same
  * compact player order that becomes racer playerIndex after confirmation. */
-void obj_modern_character_select_update(Object *obj, u32 hoverMask,
-                                        u32 confirmedMask, f32 seconds);
+void obj_modern_character_select_update(Object *obj, s32 donor,
+                                        u32 hoverMask, u32 confirmedMask,
+                                        f32 seconds);
 void obj_modern_character_select_forget(const Object *obj);
 #endif
 void mode_end_taj_race(s32 reason);
