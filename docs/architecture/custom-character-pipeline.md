@@ -445,6 +445,14 @@ invalidates and rebuilds them from the source package. Failed compilation is
 transactional: write a temporary file, fully validate it, then rename it into
 the cache. The last known-good cache remains available until replacement.
 
+Menu and Workshop code enumerate validated caches through a lightweight
+runtime catalog view containing stable package/display identity, decoded 40x40
+portrait, minimap colour, donor, vehicle mask, and source revision. Catalog
+inspection retains no GPU mesh or texture ownership; selecting an entry by
+index resolves back through the registry and then uses the ordinary validated
+player-assignment path. This is the identity-token foundation for paginated
+custom roster tiles, rather than aliasing package rows to retail character IDs.
+
 V1 deliberately accepts embedded PNG only. KTX2/BasisU is the preferred future
 portable texture payload because it can carry mip levels and transcode to a
 GPU-supported block format, but accepting it before a bounded transcoder exists

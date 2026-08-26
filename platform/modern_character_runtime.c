@@ -528,6 +528,58 @@ const MdkrModernCharacterRegistry *mdkr_modern_characters_registry(void) {
     return s_initialized ? &s_registry : NULL;
 }
 
+int mdkr_modern_character_catalog_count(void) {
+    return s_initialized ? mdkr_modern_character_registry_count(&s_registry)
+                         : 0;
+}
+
+int mdkr_modern_character_catalog_entry(
+    int index, MdkrModernCharacterCatalogView *out) {
+    const MdkrModernCharacterEntry *entry;
+    uint32_t packed;
+    uint64_t revision = 0u;
+    unsigned byte;
+    if (!s_initialized || out == NULL) return 0;
+    entry = mdkr_modern_character_registry_entry(&s_registry, index);
+    if (entry == NULL) return 0;
+    memset(out, 0, sizeof(*out));
+    out->id = entry->id;
+    out->display_name = entry->display_name;
+    out->donor = entry->donor;
+    out->vehicle_mask = entry->vehicle_mask;
+    out->has_identity = (entry->identity_flags & 1u) != 0u;
+    if (out->has_identity) {
+        out->portrait_rgba = entry->portrait_rgba;
+        out->portrait_width = MDKR_MODERN_PORTRAIT_SIZE;
+        out->portrait_height = MDKR_MODERN_PORTRAIT_SIZE;
+        out->portrait_stride = MDKR_MODERN_PORTRAIT_SIZE * 4u;
+        packed = entry->minimap_rgba;
+        out->minimap_rgba[0] = (uint8_t)(packed & 0xFFu);
+        out->minimap_rgba[1] = (uint8_t)((packed >> 8u) & 0xFFu);
+        out->minimap_rgba[2] = (uint8_t)((packed >> 16u) & 0xFFu);
+        out->minimap_rgba[3] = (uint8_t)((packed >> 24u) & 0xFFu);
+    }
+    for (byte = 0u; byte < 8u; byte++) {
+        revision |= (uint64_t)entry->source_sha256[byte] << (byte * 8u);
+    }
+    out->revision = revision != 0u ? revision : 1u;
+    return 1;
+}
+
+int mdkr_modern_character_assign_player_index(
+    int player, int catalog_index, char *error, size_t error_size) {
+    const MdkrModernCharacterEntry *entry;
+    if (!s_initialized ||
+        (entry = mdkr_modern_character_registry_entry(
+             &s_registry, catalog_index)) == NULL) {
+        set_error(error, error_size,
+                  "character catalog selection is unavailable");
+        return 0;
+    }
+    return mdkr_modern_character_assign_player(
+        player, entry->id, error, error_size);
+}
+
 void mdkr_modern_character_clear_player(int player) {
     MdkrModernRuntimePlayer *slot;
     int pool;

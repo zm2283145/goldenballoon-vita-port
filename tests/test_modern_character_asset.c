@@ -481,8 +481,30 @@ int main(int argc, char **argv) {
 
     require(mdkr_modern_characters_init(argv[2]),
             "initialize process-level character runtime");
-    require(mdkr_modern_character_assign_player(
-                0, "org.example.pipeline-proof", error, sizeof(error)),
+    {
+        MdkrModernCharacterCatalogView catalog;
+        require(mdkr_modern_character_catalog_count() == 1 &&
+                    mdkr_modern_character_catalog_entry(0, &catalog) &&
+                    strcmp(catalog.id, "org.example.pipeline-proof") == 0 &&
+                    strcmp(catalog.display_name, "Pipeline Proof") == 0 &&
+                    catalog.donor == 9u && catalog.vehicle_mask == 7u &&
+                    catalog.has_identity == 1u &&
+                    catalog.portrait_rgba != NULL &&
+                    catalog.portrait_width == 40u &&
+                    catalog.portrait_height == 40u &&
+                    catalog.portrait_stride == 160u &&
+                    catalog.minimap_rgba[0] == 220u &&
+                    catalog.minimap_rgba[1] == 72u &&
+                    catalog.minimap_rgba[2] == 144u &&
+                    catalog.minimap_rgba[3] == 255u &&
+                    catalog.revision != 0u,
+                "runtime publishes a bounded library catalog without GPU activation");
+        require(!mdkr_modern_character_catalog_entry(-1, &catalog) &&
+                    !mdkr_modern_character_catalog_entry(1, &catalog),
+                "runtime catalog rejects out-of-range rows");
+    }
+    require(mdkr_modern_character_assign_player_index(
+                0, 0, error, sizeof(error)),
             error);
     require(mdkr_modern_character_matches(0, 9, 0),
             "runtime assignment retains donor and vehicle characteristics");

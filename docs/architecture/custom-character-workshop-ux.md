@@ -375,7 +375,7 @@ last known-good assembly remains available if an update fails.
 | Per-context corrections | Executable | Move from four repeated player panels to one package editor |
 | Animation semantics | Executable sampling and diagnostics | Add role-map editor, retargeting and IK |
 | Portrait/roster identity | Source-v3 import, transactional Portrait Studio revision, exact 40x40 preview/editor with pencil/eraser/fill/eyedropper/mirror/undo, and HUD/results/rankings/minimap resolver executable | Add model capture, advanced selection/style tools, independent select tile, and font-safe game name |
-| Donor selection | All ten revision-1 donor seams are fingerprint-qualified and selectable through transactional source revisions | Add game-table comparison bars and exact-context review status |
+| Donor selection | All ten revision-1 donor seams are fingerprint-qualified and selectable through transactional source revisions; the engine publishes a bounded GPU-free installed-character catalog for virtual roster consumers | Add game-table comparison bars and exact-context review status |
 | Vehicle support | Source-backed compatibility revision, runtime enable subset, and independent transforms | Add test matrix, hand/foot targets and reviewed status |
 | Performance controls | Import caps, authored LOD bias, exact per-LOD draw accounting, and 1P/2P/4P worst-visible assembly counts | Add recorded exact-context frame-time stress test and device profiles |
 | Gameplay tuning | Correctly absent from visual package | Build separate opt-in hashed gameplay-profile system |

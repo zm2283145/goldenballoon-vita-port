@@ -48,6 +48,23 @@ typedef struct MdkrModernCharacterIdentityView {
     uint64_t revision;
 } MdkrModernCharacterIdentityView;
 
+/* Lightweight, borrowed library record for menu/workshop roster surfaces.
+ * Catalog inspection never loads GPU mesh data; pointers remain valid until
+ * runtime shutdown. `has_identity` is false for legacy donor-fallback media. */
+typedef struct MdkrModernCharacterCatalogView {
+    const char *id;
+    const char *display_name;
+    const uint8_t *portrait_rgba;
+    uint32_t portrait_width;
+    uint32_t portrait_height;
+    uint32_t portrait_stride;
+    uint8_t minimap_rgba[4];
+    uint32_t donor;
+    uint32_t vehicle_mask;
+    uint32_t has_identity;
+    uint64_t revision;
+} MdkrModernCharacterCatalogView;
+
 void mdkr_modern_character_tuning_defaults(MdkrModernCharacterTuning *out);
 int mdkr_modern_character_tuning_validate(MdkrModernCharacterTuning *tuning,
                                           char *error, size_t error_size);
@@ -58,6 +75,11 @@ int mdkr_modern_characters_init(const char *directory);
 void mdkr_modern_characters_shutdown(void);
 
 const MdkrModernCharacterRegistry *mdkr_modern_characters_registry(void);
+int mdkr_modern_character_catalog_count(void);
+int mdkr_modern_character_catalog_entry(
+    int index, MdkrModernCharacterCatalogView *out);
+int mdkr_modern_character_assign_player_index(
+    int player, int catalog_index, char *error, size_t error_size);
 int mdkr_modern_character_assign_player(int player, const char *package_id,
                                         char *error, size_t error_size);
 void mdkr_modern_character_clear_player(int player);
