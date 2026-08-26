@@ -509,9 +509,10 @@ Later schema versions should add, without changing the principles above:
 - expanded project-owned reference clips, per-context author target offsets,
   and richer joint/pole constraints over the bounded contact solver;
 - optional material variants and eye/mouth morph mappings;
-- generated portrait captures, advanced selection/style tools, and icon
-  derivatives beyond the implemented imported and exact 40x40 pixel-edited
-  primary portrait;
+- generated portrait captures, freeform subject selection, background/frame
+  presets, and icon derivatives beyond the implemented imported portrait,
+  exact 40x40 pixel editor, rectangular move/copy and deterministic framing,
+  resampling, palette, dithering, outline and cleanup recipe;
 - feature requirements such as morph targets or alpha blending.
 
 The schema is declarative. JavaScript, Lua, native libraries, Blender Python,
@@ -895,6 +896,11 @@ The executable proof provides:
   `platform/modern_character_install.c`;
 - deterministic manifest inference from clip/node names in
   `tools/character_manifest_wizard.py`;
+- a bounded, source-preserving Portrait Studio style pipeline with
+  premultiplied-alpha reframing, deterministic median-cut palettes, ordered
+  dithering, silhouette cleanup, exact selection/palette operations, quality
+  analysis, versioned draft persistence and source-bound history in
+  `platform/app/character_portrait_studio.*`;
 - actual WebGPU upload/draw and fingerprint-qualified replacement for every
   retail donor family.
 
@@ -1096,9 +1102,10 @@ GPU limits are exceeded.
 - Import/diagnostic/removal UI, native portable-package install, local package
   directory, P1-P4 assignment, independent in-game custom browser, vehicle
   pairing and fit/motion controls are complete.
-- Validated package portraits, exact pixel editing, identity revisions and
-  game-surface fallbacks are complete; renderer capture and advanced style
-  generation remain.
+- Validated package portraits, exact and selection-based pixel editing,
+  deterministic style recipes, identity revisions and game-surface fallbacks
+  are complete; renderer capture, freeform subject selection and derivative
+  background/frame presets remain.
 - Add local ordering policy and online digest/fallback diagnostics.
 - Publish an SDK containing schemas, the generated animated fixture, validator,
   packer, semantic state reference, and examples that contain no Nintendo asset.

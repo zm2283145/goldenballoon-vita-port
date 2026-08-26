@@ -51,7 +51,17 @@ int main() {
     }
     for (size_t index = 0u; index < source.portrait.size(); ++index) {
         source.portrait[index] = static_cast<uint8_t>(index * 31u);
+        source.portraitStyleSource[index] = static_cast<uint8_t>(index * 17u);
     }
+    source.portraitRecipe.zoomPercent = 175;
+    source.portraitRecipe.panX = -7;
+    source.portraitRecipe.panY = 9;
+    source.portraitRecipe.paletteColors = 16u;
+    source.portraitRecipe.ditherStrength = 0.75f;
+    source.portraitRecipe.outlinePixels = 2;
+    source.portraitRecipe.alphaThreshold = 31;
+    source.portraitRecipe.sampling = CharacterPortraitStudio::Sampling::Crisp;
+    source.portraitRecipe.fillPinholes = false;
     source.portraitSourcePath = "/tmp/portrait-\xC2\xA9.png";
     source.displayName = "Dixie Kong";
     source.shortName = "Dixie";
@@ -72,6 +82,17 @@ int main() {
                parsed.rigReviewed && parsed.roles[15].node == 30u &&
                parsed.roles[1].inferred &&
                parsed.portrait == source.portrait &&
+               parsed.portraitStyleSource == source.portraitStyleSource &&
+               parsed.portraitRecipe.zoomPercent == 175 &&
+               parsed.portraitRecipe.panX == -7 &&
+               parsed.portraitRecipe.panY == 9 &&
+               parsed.portraitRecipe.paletteColors == 16u &&
+               parsed.portraitRecipe.ditherStrength == 0.75f &&
+               parsed.portraitRecipe.outlinePixels == 2 &&
+               parsed.portraitRecipe.alphaThreshold == 31 &&
+               parsed.portraitRecipe.sampling ==
+                   CharacterPortraitStudio::Sampling::Crisp &&
+               !parsed.portraitRecipe.fillPinholes &&
                parsed.portraitSourcePath == source.portraitSourcePath &&
                parsed.displayName == source.displayName &&
                parsed.shortName == source.shortName &&
@@ -85,7 +106,21 @@ int main() {
     const size_t identityTailBytes = 16u + source.displayName.size() +
         source.shortName.size() + source.narrationName.size() +
         source.sortLabel.size();
-    std::string legacy = encoded.substr(0u, encoded.size() - identityTailBytes);
+    const size_t styleTailBytes = CharacterPortraitStudio::kBytes + 9u * 4u;
+    std::string versionTwo = encoded.substr(
+        0u, encoded.size() - styleTailBytes);
+    writeU32(versionTwo, 4u, 2u);
+    writeU32(versionTwo, 8u, static_cast<uint32_t>(versionTwo.size()));
+    Snapshot versionTwoParsed;
+    expect(decode(versionTwo, versionTwoParsed, error) &&
+               versionTwoParsed.displayName == source.displayName &&
+               versionTwoParsed.portraitStyleSource == source.portrait &&
+               CharacterPortraitStudio::validRecipe(
+                   versionTwoParsed.portraitRecipe),
+           "version-two drafts retain names and gain a safe style baseline");
+
+    std::string legacy = encoded.substr(
+        0u, encoded.size() - styleTailBytes - identityTailBytes);
     writeU32(legacy, 4u, 1u);
     writeU32(legacy, 8u, static_cast<uint32_t>(legacy.size()));
     Snapshot legacyParsed;
@@ -94,7 +129,8 @@ int main() {
                legacyParsed.shortName.empty() &&
                legacyParsed.narrationName.empty() &&
                legacyParsed.sortLabel.empty() &&
-               legacyParsed.portrait == source.portrait,
+               legacyParsed.portrait == source.portrait &&
+               legacyParsed.portraitStyleSource == source.portrait,
            "version-one drafts decode with legacy empty identity names");
 
     const Snapshot before = parsed;
@@ -113,6 +149,10 @@ int main() {
     hostile.enabledVehicleMask = 2u;
     expect(!encode(hostile, encoded, error),
            "enabled vehicles cannot exceed package compatibility");
+    hostile = source;
+    hostile.portraitRecipe.paletteColors = 17u;
+    expect(!encode(hostile, encoded, error),
+           "invalid portrait style recipes are rejected");
     hostile = source;
     hostile.contexts[0].offset[0] = INFINITY;
     expect(!encode(hostile, encoded, error),

@@ -779,6 +779,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/arg_triage.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_candidate_index.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_edit_history.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_studio.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_raw_intake_index.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_revision_index.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_draft_store.cpp
@@ -1502,7 +1503,8 @@ if(NOT EMSCRIPTEN)
 
             add_executable(mdkr_character_draft_snapshot_test
                 ${CMAKE_SOURCE_DIR}/tests/test_character_draft_snapshot.cpp
-                ${CMAKE_SOURCE_DIR}/platform/app/character_draft_snapshot.cpp)
+                ${CMAKE_SOURCE_DIR}/platform/app/character_draft_snapshot.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_studio.cpp)
             target_include_directories(mdkr_character_draft_snapshot_test PRIVATE
                 ${CMAKE_SOURCE_DIR}/platform/app)
             target_compile_features(mdkr_character_draft_snapshot_test PRIVATE cxx_std_17)
@@ -1779,6 +1781,15 @@ if(NOT EMSCRIPTEN)
                         ${CMAKE_SOURCE_DIR}/tests/check_character_workshop_history_ui.py
                         --build ${CMAKE_CURRENT_BINARY_DIR})
                 set_tests_properties(app_character_workshop_history PROPERTIES
+                    DEPENDS app_character_workshop_smoke
+                    LABELS gpu
+                    TIMEOUT 180)
+
+                add_test(NAME app_character_portrait_studio
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_character_portrait_studio_ui.py
+                        --build ${CMAKE_CURRENT_BINARY_DIR})
+                set_tests_properties(app_character_portrait_studio PROPERTIES
                     DEPENDS app_character_workshop_smoke
                     LABELS gpu
                     TIMEOUT 180)

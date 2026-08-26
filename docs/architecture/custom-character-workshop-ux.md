@@ -406,7 +406,7 @@ last known-good assembly remains available if an update fails.
 | Height/front/ground/seat calibration | Executable v2 | Add exact embedded preview and manipulators |
 | Per-context corrections | One package-keyed editor shared by every local assignment, with independent select/car/hovercraft/plane transforms and contact offsets | Add direct spatial transform/target manipulators |
 | Animation semantics | Executable sampling/diagnostics plus source-v4 compiled role contract, inference provenance/confidence, transactional 16-role skin-joint editor with bind-pose hierarchy canvas, rest/bend controls and automatic review invalidation, native hierarchy validation, reviewed engine-reference fallback motion, and bounded idempotent vehicle contact solving | Add richer reference clips, target overlays and joint-limit inspection |
-| Portrait/roster identity | Source-v3 import, transactional Portrait Studio revision, exact 40x40 preview/editor with pencil/eraser/fill/eyedropper/mirror/source-bound undo/redo, HUD/results/rankings/minimap resolver, independent 64-entry paginated select browser with per-player portrait/name identity, explicit donor-owned ghost/save/network and scene-authored cinematic boundaries, and generated-package pixel/runtime proof across a real race and race-times page | Add model capture, advanced selection/style tools, and localization-aware game-font shaping |
+| Portrait/roster identity | Source-v3 import, transactional Portrait Studio revision, exact 40x40 preview/editor with pencil/eraser/fill/eyedropper/mirror, numeric rectangular move/copy, tolerant palette replacement, source onion, source-bound undo/redo, and a deterministic before/after style recipe covering framing, crisp or premultiplied-alpha resampling, 16/32/64-colour median-cut palettes, ordered dithering, alpha cleanup, outlines, pinholes and textual quality checks. Recipe plus source/output survive the versioned named draft; v1/v2 drafts migrate to a safe exact-canvas baseline. HUD/results/rankings/minimap resolution, the independent 64-entry paginated select browser, explicit donor-owned ghost/save/network and scene-authored cinematic boundaries, and generated-package pixel/runtime proof across a real race and race-times page are executable. | Add exact-renderer model capture, freeform subject selection/background-frame presets, derivative/contact sheets, and localization-aware game-font shaping |
 | Donor selection | All ten revision-1 donor seams are fingerprint-qualified and selectable through transactional source revisions; the engine publishes a bounded GPU-free installed-character catalog for virtual roster consumers; the launcher publishes exact bounded ROM-derived weight, handling, and vehicle-specific 14-sample acceleration evidence without retaining ROM bytes; a responsive draft-aware authority card distinguishes package presentation, donor simulation/audio/ghost/network identity, ordinary save/record data, and future package negotiation | Add donor portrait treatment without bundling copyrighted art and complete remaining effect-surface audit |
 | Vehicle support | Source-backed compatibility revision, runtime enable subset, independent transforms, persisted per-vehicle hand/foot target offsets, warmed exact-context solve-count/mean/max contact-error feedback, stale-result invalidation, contextual one-click save/retest loops, and source/tuning-bound per-context review | Add visual target manipulators and complete vehicle test matrix |
 | Performance controls | Import caps, authored LOD bias, exact per-LOD draw accounting, 1P-4P worst-visible assembly counts, exact one-click WebGPU stress routes, and a returned post-warm-up wall-cadence percentile/result card with synthetic/short-sample refusal | Add GPU timestamps, repeatable comparison baselines, representative scene matrix and device profiles |
@@ -442,11 +442,12 @@ to a different package.
 
 ### W1 — Exact launch preview and Portrait Studio (baseline complete)
 
-The exact-game preview request/result path, deterministic portrait import and
-40x40 pixel editor, versioned identity media, and dynamic local identity
-resolver across select, HUD, results/rankings portraits and minimap are
-implemented. An embedded renderer, model capture, style conversion, camera and
-lighting controls, and contact overlays remain. Every exact context has an
+The exact-game preview request/result path, deterministic portrait import,
+40x40 pixel editor, source-preserving style recipe and quality analysis,
+versioned identity media, and dynamic local identity resolver across select,
+HUD, results/rankings portraits and minimap are implemented. An embedded
+renderer, model capture, freeform selection/background-frame presets, camera
+and lighting controls, and contact overlays remain. Every exact context has an
 independent persisted author-review action which is unlocked only by a warmed
 test that actually rendered the replacement; its canonical signature prevents
 source or tuning changes from inheriting stale approval.
@@ -483,8 +484,8 @@ All ten donor seams are fingerprint-qualified, and the independent paginated
 custom-racer browser resolves package identity plus donor without extending
 retail ten-wide simulation tables. Generated-package race/minimap/results proof
 and explicit donor-owned ghost/save/network boundaries complete the current
-identity-surface audit. Model-captured portraits, richer editing tools, and
-localization-aware game-font shaping remain.
+identity-surface audit. Model-captured portraits, freeform subject/background
+composition and localization-aware game-font shaping remain.
 
 Gate: multiple packages may share a donor, four players can select distinct
 virtual identities, and retail saves/ghosts/online authority remain unchanged.

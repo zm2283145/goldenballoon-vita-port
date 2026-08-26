@@ -8,15 +8,19 @@
 
 namespace {
 
-constexpr uint32_t kVersion = 2u;
+constexpr uint32_t kVersion = 3u;
+constexpr uint32_t kNamesVersion = 2u;
 constexpr uint32_t kLegacyVersion = 1u;
 constexpr size_t kHeaderBytes = 40u;
 constexpr size_t kTuningBytes = 9u * 4u + 4u +
     CharacterDraftSnapshot::kContexts * (19u * 4u);
 constexpr size_t kRigBytes = 8u +
     CharacterDraftSnapshot::kRoles * (8u + 8u * 4u);
-constexpr size_t kFixedBytes = kHeaderBytes + kTuningBytes + kRigBytes +
+constexpr size_t kLegacyFixedBytes = kHeaderBytes + kTuningBytes + kRigBytes +
     CharacterDraftSnapshot::kPortraitBytes + 4u;
+constexpr size_t kPortraitRecipeBytes = 9u * 4u;
+constexpr size_t kFixedBytes = kLegacyFixedBytes +
+    CharacterPortraitStudio::kBytes + kPortraitRecipeBytes;
 constexpr size_t kMaximumPathBytes = 4095u;
 constexpr size_t kMaximumNameBytes = 96u;
 constexpr size_t kMaximumShortNameBytes = 96u;
@@ -34,6 +38,15 @@ void appendF32(std::string &out, float value) {
     appendU32(out, bits);
 }
 
+void appendI32(std::string &out, int value) {
+    static_assert(sizeof(int32_t) == sizeof(uint32_t),
+                  "signed editor integers must be 32-bit");
+    const int32_t signedValue = static_cast<int32_t>(value);
+    uint32_t bits;
+    std::memcpy(&bits, &signedValue, sizeof(bits));
+    appendU32(out, bits);
+}
+
 bool readU32(const std::string &input, size_t &offset, uint32_t &value) {
     if (offset > input.size() || input.size() - offset < 4u) return false;
     value = 0u;
@@ -48,6 +61,15 @@ bool readF32(const std::string &input, size_t &offset, float &value) {
     uint32_t bits;
     if (!readU32(input, offset, bits)) return false;
     std::memcpy(&value, &bits, sizeof(value));
+    return true;
+}
+
+bool readI32(const std::string &input, size_t &offset, int &value) {
+    uint32_t bits;
+    int32_t signedValue;
+    if (!readU32(input, offset, bits)) return false;
+    std::memcpy(&signedValue, &bits, sizeof(signedValue));
+    value = static_cast<int>(signedValue);
     return true;
 }
 
@@ -228,6 +250,10 @@ bool snapshotValid(const CharacterDraftSnapshot::Snapshot &snapshot,
         error = "draft portrait source path is invalid UTF-8";
         return false;
     }
+    if (!CharacterPortraitStudio::validRecipe(snapshot.portraitRecipe)) {
+        error = "draft portrait style recipe is invalid";
+        return false;
+    }
     const bool legacyNames = snapshot.displayName.empty() &&
         snapshot.shortName.empty() && snapshot.narrationName.empty() &&
         snapshot.sortLabel.empty();
@@ -309,6 +335,19 @@ bool encode(const Snapshot &snapshot, std::string &payload,
         appendU32(result, static_cast<uint32_t>(name->size()));
         result += *name;
     }
+    result.append(
+        reinterpret_cast<const char *>(snapshot.portraitStyleSource.data()),
+        snapshot.portraitStyleSource.size());
+    appendI32(result, snapshot.portraitRecipe.zoomPercent);
+    appendI32(result, snapshot.portraitRecipe.panX);
+    appendI32(result, snapshot.portraitRecipe.panY);
+    appendU32(result, snapshot.portraitRecipe.paletteColors);
+    appendF32(result, snapshot.portraitRecipe.ditherStrength);
+    appendI32(result, snapshot.portraitRecipe.outlinePixels);
+    appendI32(result, snapshot.portraitRecipe.alphaThreshold);
+    appendU32(result, static_cast<uint32_t>(
+        snapshot.portraitRecipe.sampling));
+    appendU32(result, snapshot.portraitRecipe.fillPinholes ? 1u : 0u);
     if (result.size() != kFixedBytes + 16u +
             snapshot.portraitSourcePath.size() + namesBytes) {
         error = "draft snapshot encoder size invariant failed";
@@ -328,9 +367,11 @@ bool decode(const std::string &payload, Snapshot &snapshot,
     uint32_t assemblyPlayers;
     uint32_t testPlayers;
     uint32_t rigReviewed;
-    if (payload.size() < kFixedBytes || payload.compare(0u, 4u, "MDWD") != 0 ||
+    if (payload.size() < kLegacyFixedBytes ||
+        payload.compare(0u, 4u, "MDWD") != 0 ||
         !readU32(payload, offset, version) ||
-        (version != kVersion && version != kLegacyVersion) ||
+        (version != kVersion && version != kNamesVersion &&
+         version != kLegacyVersion) ||
         !readU32(payload, offset, declaredSize) ||
         declaredSize != payload.size() ||
         !readU32(payload, offset, parsed.flags) ||
@@ -402,7 +443,7 @@ bool decode(const std::string &payload, Snapshot &snapshot,
         parsed.portraitSourcePath.assign(payload.data() + offset, pathSize);
         offset += pathSize;
     }
-    if (version == kVersion) {
+    if (version >= kNamesVersion) {
         std::string *names[] = {
             &parsed.displayName, &parsed.shortName,
             &parsed.narrationName, &parsed.sortLabel,
@@ -420,6 +461,38 @@ bool decode(const std::string &payload, Snapshot &snapshot,
             names[name]->assign(payload.data() + offset, nameSize);
             offset += nameSize;
         }
+    }
+    if (version == kVersion) {
+        uint32_t sampling;
+        uint32_t fillPinholes;
+        if (offset > payload.size() ||
+            parsed.portraitStyleSource.size() > payload.size() - offset) {
+            goto malformed;
+        }
+        std::memcpy(parsed.portraitStyleSource.data(),
+                    payload.data() + offset,
+                    parsed.portraitStyleSource.size());
+        offset += parsed.portraitStyleSource.size();
+        if (!readI32(payload, offset, parsed.portraitRecipe.zoomPercent) ||
+            !readI32(payload, offset, parsed.portraitRecipe.panX) ||
+            !readI32(payload, offset, parsed.portraitRecipe.panY) ||
+            !readU32(payload, offset,
+                     parsed.portraitRecipe.paletteColors) ||
+            !readF32(payload, offset,
+                     parsed.portraitRecipe.ditherStrength) ||
+            !readI32(payload, offset,
+                     parsed.portraitRecipe.outlinePixels) ||
+            !readI32(payload, offset,
+                     parsed.portraitRecipe.alphaThreshold) ||
+            !readU32(payload, offset, sampling) || sampling > 1u ||
+            !readU32(payload, offset, fillPinholes) || fillPinholes > 1u) {
+            goto malformed;
+        }
+        parsed.portraitRecipe.sampling =
+            static_cast<CharacterPortraitStudio::Sampling>(sampling);
+        parsed.portraitRecipe.fillPinholes = fillPinholes != 0u;
+    } else {
+        parsed.portraitStyleSource = parsed.portrait;
     }
     if (offset != payload.size() ||
         !snapshotValid(parsed, error, version == kLegacyVersion)) return false;

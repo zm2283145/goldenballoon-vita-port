@@ -8,6 +8,7 @@
 #include "character_draft_snapshot.h"
 #include "character_draft_store.h"
 #include "character_edit_history.h"
+#include "character_portrait_studio.h"
 #include "character_raw_intake_index.h"
 #include "character_revision_index.h"
 #include "character_workshop_model.h"
@@ -1906,14 +1907,25 @@ struct CharacterIdentityEdit {
     char portraitPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
     float minimapRgb[3] = {0.86f, 0.28f, 0.56f};
     std::array<uint8_t, MDKR_MODERN_PORTRAIT_BYTES> canvas{};
+    CharacterPortraitStudio::Canvas styleSource{};
+    CharacterPortraitStudio::Canvas stylePreview{};
+    CharacterPortraitStudio::Recipe styleRecipe{};
     float paintRgba[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float replaceFromRgba[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     int tool = 0;
     int selectedPixel[2] = {20, 20};
+    int selection[4] = {0, 0, MDKR_MODERN_PORTRAIT_SIZE,
+                        MDKR_MODERN_PORTRAIT_SIZE};
+    int selectionDelta[2] = {0, 0};
+    int replaceTolerance = 0;
     bool canvasDirty = false;
     bool strokeActive = false;
+    bool stylePreviewValid = false;
+    bool showOnion = false;
 };
 
 std::map<std::string, CharacterIdentityEdit> g_characterIdentityEdits;
+std::set<std::string> g_characterPortraitStyleTraceKeys;
 
 struct CharacterProfileEdit {
     bool loaded = false;
@@ -4879,6 +4891,264 @@ void portraitFill(CharacterIdentityEdit &edit, int startX, int startY) {
     edit.canvasDirty = true;
 }
 
+void drawPortraitStudioCanvas(
+    const CharacterPortraitStudio::Canvas &canvas, const char *label,
+    float maximumExtent = 176.0f) {
+    constexpr int size = CharacterPortraitStudio::kSize;
+    ImGui::PushID(label);
+    ImGui::BeginGroup();
+    const float available = std::max(80.0f, ImGui::GetContentRegionAvail().x);
+    const float pixelSize = std::clamp(
+        std::floor(std::min(available, maximumExtent) / size), 2.0f, 5.0f);
+    const float extent = pixelSize * size;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            const ImU32 background = ((x / 4 + y / 4) & 1)
+                ? IM_COL32(73, 79, 89, 255) : IM_COL32(48, 53, 62, 255);
+            const ImVec2 minimum(origin.x + x * pixelSize,
+                                 origin.y + y * pixelSize);
+            draw->AddRectFilled(
+                minimum, ImVec2(minimum.x + pixelSize,
+                                minimum.y + pixelSize), background);
+        }
+        int x = 0;
+        while (x < size) {
+            const uint8_t *pixel = canvas.data() + (y * size + x) * 4;
+            if (pixel[3] == 0u) {
+                ++x;
+                continue;
+            }
+            int end = x + 1;
+            while (end < size &&
+                   std::memcmp(pixel,
+                               canvas.data() + (y * size + end) * 4,
+                               4u) == 0) {
+                ++end;
+            }
+            draw->AddRectFilled(
+                ImVec2(origin.x + x * pixelSize, origin.y + y * pixelSize),
+                ImVec2(origin.x + end * pixelSize,
+                       origin.y + (y + 1) * pixelSize),
+                IM_COL32(pixel[0], pixel[1], pixel[2], pixel[3]));
+            x = end;
+        }
+    }
+    draw->AddRect(origin, ImVec2(origin.x + extent, origin.y + extent),
+                  IM_COL32(255, 255, 255, 140));
+    ImGui::InvisibleButton("canvas", ImVec2(extent, extent));
+    const std::string spokenLabel = std::string(label) + " portrait preview";
+    ui::SpeakFocusedItem(
+        spokenLabel.c_str(), "exact forty by forty pixels",
+        "Preview only. Use the labelled recipe and pixel controls to change the draft.");
+    ImGui::TextDisabled("%s · exact 40 × 40", label);
+    ImGui::EndGroup();
+    ImGui::PopID();
+}
+
+void refreshPortraitStylePreview(CharacterIdentityEdit &edit) {
+    edit.stylePreview = CharacterPortraitStudio::applyRecipe(
+        edit.styleSource, edit.styleRecipe);
+    edit.stylePreviewValid = true;
+}
+
+uint8_t portraitFloatByte(float value) {
+    return static_cast<uint8_t>(std::lround(
+        std::clamp(value, 0.0f, 1.0f) * 255.0f));
+}
+
+void drawPortraitQualityReport(
+    const CharacterPortraitStudio::Analysis &analysis,
+    uint32_t paletteTarget) {
+    const auto status = [](const char *text, const ImVec4 &colour) {
+        ImGui::PushStyleColor(ImGuiCol_Text, colour);
+        ImGui::TextWrapped("%s", text);
+        ImGui::PopStyleColor();
+    };
+    ImGui::SeparatorText("Automatic quality checks");
+    if (analysis.empty) {
+        status(
+            "Missing — the styled result has no visible subject pixels.",
+            AppTheme::bad());
+        return;
+    }
+    ImGui::Text("Subject occupancy: %.0f%% of card · %.0f%% inside bounds",
+                analysis.canvasOccupancy * 100.0f,
+                analysis.boundsOccupancy * 100.0f);
+    ImGui::Text("Visible colours: %u / %u target · luminance span: %u / 255",
+                analysis.uniqueVisibleColors, paletteTarget,
+                analysis.luminanceRange);
+    ImGui::Text("Transparent holes: %u · semitransparent pixels: %u",
+                analysis.enclosedTransparentPixels,
+                analysis.semitransparentPixels);
+    if (analysis.touchesEdge) {
+        status(
+            "Review — visible artwork touches the card edge; hair, ears, or outline may be clipped.",
+            AppTheme::accent());
+    }
+    if (analysis.lowOccupancy) {
+        status(
+            "Review — the subject occupies less than 18% of the card. Increase zoom or adjust framing for HUD readability.",
+            AppTheme::accent());
+    }
+    if (analysis.lowContrast) {
+        status(
+            "Review — the visible luminance range is narrow. Check the portrait against both light and dark HUD backgrounds.",
+            AppTheme::accent());
+    }
+    if (!analysis.touchesEdge && !analysis.lowOccupancy &&
+        !analysis.lowContrast && analysis.enclosedTransparentPixels == 0u) {
+        status(
+            "Ready — framing, silhouette continuity, palette, and tonal separation pass the deterministic checks.",
+            AppTheme::good());
+    }
+    ui::TextSubtleWrapped(
+        "Automatic checks cannot recognize a face or judge artistic likeness. Review the native-size result yourself before approving identity.");
+}
+
+bool drawPortraitStyleLab(const MdkrModernCharacterEntry *entry,
+                          CharacterIdentityEdit &edit) {
+    bool changed = false;
+    ui::TextSubtleWrapped(
+        "Reframe one local source and generate a deterministic game-size result. The source, recipe, and exact output stay in the named draft; no network service or generative model is used.");
+    ImGui::SetNextItemWidth(std::min(280.0f, ImGui::GetContentRegionAvail().x));
+    changed |= ImGui::SliderInt("Framing zoom (%)", &edit.styleRecipe.zoomPercent,
+                                50, 250);
+    const std::string zoomState =
+        std::to_string(edit.styleRecipe.zoomPercent) + " percent";
+    ui::SpeakFocusedItem(
+        "Framing zoom", zoomState.c_str(),
+        "Changes portrait framing only; it does not resize the in-game model.");
+    int pan[2] = {edit.styleRecipe.panX, edit.styleRecipe.panY};
+    ImGui::SetNextItemWidth(std::min(280.0f, ImGui::GetContentRegionAvail().x));
+    if (ImGui::InputInt2("Framing pan (pixels)", pan)) {
+        edit.styleRecipe.panX = std::clamp(pan[0], -40, 40);
+        edit.styleRecipe.panY = std::clamp(pan[1], -40, 40);
+        changed = true;
+    }
+    const std::string panState = "x " + std::to_string(edit.styleRecipe.panX) +
+        ", y " + std::to_string(edit.styleRecipe.panY) + " pixels";
+    ui::SpeakFocusedItem(
+        "Framing pan", panState.c_str(),
+        "Moves the portrait subject inside the fixed forty by forty card.");
+    int sampling = static_cast<int>(edit.styleRecipe.sampling);
+    ImGui::SetNextItemWidth(std::min(280.0f, ImGui::GetContentRegionAvail().x));
+    if (ImGui::Combo("Resampling", &sampling,
+                     "Crisp pixels\0Smooth premultiplied alpha\0")) {
+        edit.styleRecipe.sampling =
+            static_cast<CharacterPortraitStudio::Sampling>(sampling);
+        changed = true;
+    }
+    ui::SpeakFocusedItem(
+        "Resampling",
+        edit.styleRecipe.sampling == CharacterPortraitStudio::Sampling::Crisp
+            ? "Crisp pixels" : "Smooth premultiplied alpha",
+        "Chooses deterministic pixel sampling for reframing transparency.");
+    int palette = edit.styleRecipe.paletteColors == 16u ? 0 :
+                  edit.styleRecipe.paletteColors == 32u ? 1 : 2;
+    ImGui::SetNextItemWidth(std::min(280.0f, ImGui::GetContentRegionAvail().x));
+    if (ImGui::Combo("Palette target", &palette,
+                     "16 colours\0" "32 colours\0" "64 colours\0")) {
+        static constexpr uint32_t choices[] = {16u, 32u, 64u};
+        edit.styleRecipe.paletteColors = choices[std::clamp(palette, 0, 2)];
+        changed = true;
+    }
+    const std::string paletteState =
+        std::to_string(edit.styleRecipe.paletteColors) + " colours";
+    ui::SpeakFocusedItem(
+        "Palette target", paletteState.c_str(),
+        "Limits the styled result to this deterministic maximum colour count.");
+    ImGui::SetNextItemWidth(std::min(280.0f, ImGui::GetContentRegionAvail().x));
+    changed |= ImGui::SliderFloat("Ordered dither strength",
+                                  &edit.styleRecipe.ditherStrength,
+                                  0.0f, 1.0f, "%.2f");
+    char ditherState[32];
+    std::snprintf(ditherState, sizeof(ditherState), "%.2f",
+                  edit.styleRecipe.ditherStrength);
+    ui::SpeakFocusedItem(
+        "Ordered dither strength", ditherState,
+        "Controls only the fixed local four by four ordered dither pattern.");
+    ImGui::SetNextItemWidth(std::min(280.0f, ImGui::GetContentRegionAvail().x));
+    changed |= ImGui::SliderInt("Silhouette outline (pixels)",
+                                &edit.styleRecipe.outlinePixels, 0, 2);
+    const std::string outlineState =
+        std::to_string(edit.styleRecipe.outlinePixels) + " pixels";
+    ui::SpeakFocusedItem(
+        "Silhouette outline", outlineState.c_str(),
+        "Adds a bounded dark outline outside visible portrait pixels.");
+    ImGui::SetNextItemWidth(std::min(280.0f, ImGui::GetContentRegionAvail().x));
+    changed |= ImGui::SliderInt("Transparent alpha cutoff",
+                                &edit.styleRecipe.alphaThreshold, 0, 255);
+    const std::string alphaCutoffState =
+        std::to_string(edit.styleRecipe.alphaThreshold);
+    ui::SpeakFocusedItem(
+        "Transparent alpha cutoff",
+        alphaCutoffState.c_str(),
+        "Pixels below this alpha value become fully transparent before styling.");
+    changed |= ImGui::Checkbox("Fill isolated one-pixel holes",
+                               &edit.styleRecipe.fillPinholes);
+    ui::SpeakFocusedItem(
+        "Fill isolated one-pixel holes",
+        edit.styleRecipe.fillPinholes ? "On" : "Off",
+        "When on, fills only transparent pixels enclosed by four visible neighbours.");
+    if (changed || !edit.stylePreviewValid) {
+        refreshPortraitStylePreview(edit);
+    }
+
+    if (ImGui::Button("Use current canvas as style source")) {
+        edit.styleSource = edit.canvas;
+        refreshPortraitStylePreview(edit);
+        changed = true;
+    }
+    ui::SpeakFocusedItem(
+        "Use current canvas as style source", nullptr,
+        "Replaces only the draft's reversible portrait source. The installed portrait is unchanged until Build.");
+    ImGui::SameLine();
+    if (ImGui::Button("Reset style recipe")) {
+        edit.styleRecipe = CharacterPortraitStudio::Recipe{};
+        refreshPortraitStylePreview(edit);
+        changed = true;
+    }
+    ui::SpeakFocusedItem(
+        "Reset style recipe", nullptr,
+        "Restores the bounded framing and style defaults without changing the source canvas.");
+
+    const bool sideBySide = ImGui::GetContentRegionAvail().x >= 380.0f;
+    drawPortraitStudioCanvas(edit.styleSource, "Before");
+    if (sideBySide) ImGui::SameLine();
+    drawPortraitStudioCanvas(edit.stylePreview, "Styled result");
+    const auto analysis = CharacterPortraitStudio::analyse(edit.stylePreview);
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr && entry != nullptr) {
+        const std::string digest = characterDigestHex(entry->source_sha256);
+        const std::string traceKey = std::string(entry->id) + "\n" + digest;
+        if (g_characterPortraitStyleTraceKeys.insert(traceKey).second) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-portrait-style package=%s source=%.12s palette=%u visible=%u colours=%u holes=%u\n",
+                entry->id, digest.c_str(),
+                edit.styleRecipe.paletteColors, analysis.visiblePixels,
+                analysis.uniqueVisibleColors,
+                analysis.enclosedTransparentPixels);
+        }
+    }
+    drawPortraitQualityReport(analysis, edit.styleRecipe.paletteColors);
+    const bool canApply = !analysis.empty && edit.stylePreview != edit.canvas;
+    if (!canApply) ImGui::BeginDisabled();
+    bool applied = false;
+    if (ImGui::Button("Apply styled result to pixel canvas")) {
+        edit.canvas = edit.stylePreview;
+        edit.canvasDirty = true;
+        applied = true;
+    }
+    if (!canApply) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Apply styled result to pixel canvas",
+        canApply ? nullptr : "The styled result is empty or already applied.",
+        "Copies the deterministic preview into the editable draft canvas. Undo Identity restores the previous canvas and recipe.");
+    return changed || applied;
+}
+
 bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
                              CharacterIdentityEdit &edit) {
     constexpr int size = MDKR_MODERN_PORTRAIT_SIZE;
@@ -4886,12 +5156,25 @@ bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
     for (int tool = 0; tool < static_cast<int>(std::size(tools)); ++tool) {
         if (tool != 0) ImGui::SameLine();
         (void)ImGui::RadioButton(tools[tool], &edit.tool, tool);
+        ui::SpeakFocusedItem(
+            tools[tool], edit.tool == tool ? "selected" : "available",
+            "Selects the tool used by the portrait canvas and numeric pixel action.");
     }
     ImGui::SetNextItemWidth(std::min(360.0f, ImGui::GetContentRegionAvail().x));
     (void)ImGui::ColorEdit4(
         "Paint colour", edit.paintRgba,
         ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_InputRGB |
             ImGuiColorEditFlags_AlphaBar);
+    char paintState[64];
+    std::snprintf(
+        paintState, sizeof(paintState), "red %u, green %u, blue %u, alpha %u",
+        portraitFloatByte(edit.paintRgba[0]),
+        portraitFloatByte(edit.paintRgba[1]),
+        portraitFloatByte(edit.paintRgba[2]),
+        portraitFloatByte(edit.paintRgba[3]));
+    ui::SpeakFocusedItem(
+        "Paint colour", paintState,
+        "Sets the exact RGBA colour for pencil, fill, and palette replacement.");
     const float pixelSize = std::clamp(
         std::floor(ImGui::GetContentRegionAvail().x / size), 3.0f, 8.0f);
     const float extent = pixelSize * size;
@@ -4907,6 +5190,16 @@ bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
             const ImVec2 maximum(minimum.x + pixelSize,
                                  minimum.y + pixelSize);
             draw->AddRectFilled(minimum, maximum, background);
+            if (edit.showOnion) {
+                const uint8_t *source = edit.styleSource.data() +
+                    (y * size + x) * 4;
+                if (source[3] != 0u) {
+                    draw->AddRectFilled(
+                        minimum, maximum,
+                        IM_COL32(source[0], source[1], source[2],
+                                 std::min<unsigned>(source[3], 88u)));
+                }
+            }
             if (pixel[3] != 0u) {
                 draw->AddRectFilled(
                     minimum, maximum,
@@ -4917,6 +5210,12 @@ bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
     draw->AddRect(origin, ImVec2(origin.x + extent, origin.y + extent),
                   IM_COL32(255, 255, 255, 140));
     ImGui::InvisibleButton("##portrait-pixel-canvas", ImVec2(extent, extent));
+    const std::string canvasState =
+        "selected pixel " + std::to_string(edit.selectedPixel[0]) + ", " +
+        std::to_string(edit.selectedPixel[1]);
+    ui::SpeakFocusedItem(
+        "Portrait pixel canvas", canvasState.c_str(),
+        "Pointer painting is optional. Keyboard and controller users can edit the numeric pixel coordinates below.");
     const bool hovered = ImGui::IsItemHovered();
     if (hovered) {
         const ImVec2 mouse = ImGui::GetIO().MousePos;
@@ -4954,6 +5253,12 @@ bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
     (void)ImGui::InputInt2("Pixel coordinates", edit.selectedPixel);
     edit.selectedPixel[0] = std::clamp(edit.selectedPixel[0], 0, size - 1);
     edit.selectedPixel[1] = std::clamp(edit.selectedPixel[1], 0, size - 1);
+    const std::string coordinateState =
+        "x " + std::to_string(edit.selectedPixel[0]) + ", y " +
+        std::to_string(edit.selectedPixel[1]);
+    ui::SpeakFocusedItem(
+        "Pixel coordinates", coordinateState.c_str(),
+        "Chooses the exact pixel used by Apply tool and replace-source actions.");
     if (ImGui::Button("Apply tool to selected pixel")) {
         if (edit.tool == 2) {
             portraitFill(edit, edit.selectedPixel[0], edit.selectedPixel[1]);
@@ -4964,6 +5269,9 @@ bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
                              edit.tool == 1);
         }
     }
+    ui::SpeakFocusedItem(
+        "Apply tool to selected pixel", tools[edit.tool],
+        "Applies the selected portrait tool at the numeric coordinates and can be undone in Identity history.");
     if (ImGui::Button("Mirror horizontally")) {
         for (int y = 0; y < size; ++y) {
             for (int x = 0; x < size / 2; ++x) {
@@ -4974,6 +5282,116 @@ bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
             }
         }
         edit.canvasDirty = true;
+    }
+    ui::SpeakFocusedItem(
+        "Mirror horizontally", nullptr,
+        "Mirrors only the exact draft portrait canvas and can be undone in Identity history.");
+    ImGui::SameLine();
+    (void)ImGui::Checkbox("Onion source", &edit.showOnion);
+    ui::SpeakFocusedItem(
+        "Onion source", edit.showOnion ? "On" : "Off",
+        "Shows the reversible style source beneath transparent canvas pixels; it does not change saved artwork.");
+    if (ImGui::TreeNodeEx("Selection and palette tools",
+                          ImGuiTreeNodeFlags_DefaultOpen)) {
+        ui::TextSubtleWrapped(
+            "The numeric rectangle is the keyboard/controller-accessible selection path. Move clears its old pixels; Copy preserves them. Pixels clipped by the card edge are deliberately discarded.");
+        ImGui::SetNextItemWidth(
+            std::min(320.0f, ImGui::GetContentRegionAvail().x));
+        (void)ImGui::InputInt4("Selection x, y, width, height",
+                               edit.selection);
+        edit.selection[0] = std::clamp(edit.selection[0], 0, size - 1);
+        edit.selection[1] = std::clamp(edit.selection[1], 0, size - 1);
+        edit.selection[2] = std::clamp(edit.selection[2], 1,
+                                       size - edit.selection[0]);
+        edit.selection[3] = std::clamp(edit.selection[3], 1,
+                                       size - edit.selection[1]);
+        const std::string selectionState =
+            "x " + std::to_string(edit.selection[0]) + ", y " +
+            std::to_string(edit.selection[1]) + ", width " +
+            std::to_string(edit.selection[2]) + ", height " +
+            std::to_string(edit.selection[3]);
+        ui::SpeakFocusedItem(
+            "Selection x, y, width, height", selectionState.c_str(),
+            "Defines the bounded rectangular region used by Move and Copy selection.");
+        ImGui::SetNextItemWidth(
+            std::min(240.0f, ImGui::GetContentRegionAvail().x));
+        (void)ImGui::InputInt2("Move by x, y", edit.selectionDelta);
+        for (int &delta : edit.selectionDelta) {
+            delta = std::clamp(delta, -size, size);
+        }
+        const std::string deltaState =
+            "x " + std::to_string(edit.selectionDelta[0]) + ", y " +
+            std::to_string(edit.selectionDelta[1]);
+        ui::SpeakFocusedItem(
+            "Move by x, y", deltaState.c_str(),
+            "Sets the signed pixel displacement used by Move and Copy selection.");
+        const CharacterPortraitStudio::Selection selection = {
+            edit.selection[0], edit.selection[1],
+            edit.selection[2], edit.selection[3],
+        };
+        if (ImGui::Button("Move selection")) {
+            edit.canvasDirty |= CharacterPortraitStudio::moveSelection(
+                edit.canvas, selection, edit.selectionDelta[0],
+                edit.selectionDelta[1], false);
+        }
+        ui::SpeakFocusedItem(
+            "Move selection", nullptr,
+            "Moves the selected pixels, clears their old location, clips at the card edge, and can be undone.");
+        ImGui::SameLine();
+        if (ImGui::Button("Copy selection")) {
+            edit.canvasDirty |= CharacterPortraitStudio::moveSelection(
+                edit.canvas, selection, edit.selectionDelta[0],
+                edit.selectionDelta[1], true);
+        }
+        ui::SpeakFocusedItem(
+            "Copy selection", nullptr,
+            "Copies the selected pixels by the entered displacement and can be undone.");
+        if (ImGui::Button("Use selected pixel as replace source")) {
+            const uint8_t *source = edit.canvas.data() +
+                (edit.selectedPixel[1] * size + edit.selectedPixel[0]) * 4;
+            for (int component = 0; component < 4; ++component) {
+                edit.replaceFromRgba[component] =
+                    static_cast<float>(source[component]) / 255.0f;
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Use selected pixel as replace source", nullptr,
+            "Copies the selected pixel RGBA into the palette replacement source without changing the canvas.");
+        ImGui::SetNextItemWidth(
+            std::min(320.0f, ImGui::GetContentRegionAvail().x));
+        (void)ImGui::ColorEdit4(
+            "Replace source colour", edit.replaceFromRgba,
+            ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_InputRGB |
+                ImGuiColorEditFlags_AlphaBar);
+        ui::SpeakFocusedItem(
+            "Replace source colour", nullptr,
+            "Sets the RGBA colour that palette replacement searches for.");
+        ImGui::SetNextItemWidth(
+            std::min(240.0f, ImGui::GetContentRegionAvail().x));
+        (void)ImGui::SliderInt("Replace tolerance", &edit.replaceTolerance,
+                               0, 64);
+        const std::string toleranceState =
+            std::to_string(edit.replaceTolerance);
+        ui::SpeakFocusedItem(
+            "Replace tolerance",
+            toleranceState.c_str(),
+            "Sets a bounded RGBA distance; zero replaces exact matches only.");
+        if (ImGui::Button("Replace matching colours with paint colour")) {
+            uint8_t from[4];
+            uint8_t to[4];
+            for (int component = 0; component < 4; ++component) {
+                from[component] = portraitFloatByte(
+                    edit.replaceFromRgba[component]);
+                to[component] = portraitFloatByte(edit.paintRgba[component]);
+            }
+            edit.canvasDirty |= CharacterPortraitStudio::replaceColour(
+                edit.canvas, from, to,
+                static_cast<uint8_t>(edit.replaceTolerance)) != 0u;
+        }
+        ui::SpeakFocusedItem(
+            "Replace matching colours with paint colour", nullptr,
+            "Replaces every bounded match in the draft canvas and can be undone in Identity history.");
+        ImGui::TreePop();
     }
     bool saved = false;
     const uint32_t authoredMinimap =
@@ -4997,6 +5415,13 @@ bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
                 : "Pixel portrait failed; the active character was not changed.",
             saved ? AppTheme::good() : AppTheme::bad());
     }
+    ui::SpeakFocusedItem(
+        "Save pixel canvas revision",
+        canSaveCanvas && !stagingDraft
+            ? "available" : stagingDraft
+                ? "unavailable while a named draft is open"
+                : "no canvas or minimap changes",
+        "Compiles and atomically activates the exact canvas. Named drafts use Build so identity, profile, and rig publish together.");
     if (!canSaveCanvas || stagingDraft) ImGui::EndDisabled();
     if (stagingDraft) {
         ui::TextSubtleWrapped(
@@ -5016,6 +5441,7 @@ CharacterIdentityEdit &loadCharacterIdentityEdit(
     if (!edit.loaded ||
         std::memcmp(edit.sourceSha256, entry->source_sha256,
                     sizeof(edit.sourceSha256)) != 0) {
+        edit = CharacterIdentityEdit{};
         const size_t donorIndex = entry->donor < std::size(donorColours)
             ? entry->donor : std::size(donorColours) - 1u;
         const uint32_t rgba = entry->identity_flags != 0u
@@ -5034,6 +5460,8 @@ CharacterIdentityEdit &loadCharacterIdentityEdit(
         } else {
             edit.canvas.fill(0u);
         }
+        edit.styleSource = edit.canvas;
+        refreshPortraitStylePreview(edit);
         edit.canvasDirty = false;
         edit.strokeActive = false;
         std::snprintf(edit.displayName, sizeof(edit.displayName), "%s",
@@ -5132,10 +5560,16 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
         return true;
     }
     if (ImGui::TreeNodeEx(
+            "DKR-style lab##character-portrait-style",
+            ImGuiTreeNodeFlags_DefaultOpen)) {
+        (void)drawPortraitStyleLab(entry, edit);
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNodeEx(
             "Pixel editor##character-portrait-pixels",
             ImGuiTreeNodeFlags_DefaultOpen)) {
         ui::TextSubtleWrapped(
-            "Edit the exact 40 × 40 runtime canvas. Pencil, eraser, fill, eyedropper, alpha, mirror, and bounded undo/redo are deterministic and stay local until you save a source revision.");
+            "Edit the exact 40 × 40 runtime canvas. Pencil, eraser, fill, eyedropper, alpha, mirror, rectangular move/copy, palette replacement, source onion, and bounded undo/redo are deterministic and stay local until you save a source revision.");
         const bool pixelSaved = drawPortraitPixelEditor(entry, edit);
         ImGui::TreePop();
         if (pixelSaved) {
@@ -5173,7 +5607,7 @@ bool captureCharacterHistoryPayload(
     payload.clear();
     if (tool == CharacterHistoryTool::Identity) {
         const CharacterIdentityEdit &edit = loadCharacterIdentityEdit(entry);
-        payload = "mdkr-identity-history-v1\n";
+        payload = "mdkr-identity-history-v2\n";
         payload.append(edit.displayName, sizeof(edit.displayName));
         payload.append(edit.shortName, sizeof(edit.shortName));
         payload.append(edit.narrationName, sizeof(edit.narrationName));
@@ -5183,6 +5617,21 @@ bool captureCharacterHistoryPayload(
                        sizeof(edit.minimapRgb));
         payload.append(reinterpret_cast<const char *>(edit.canvas.data()),
                        edit.canvas.size());
+        payload.append(
+            reinterpret_cast<const char *>(edit.styleSource.data()),
+            edit.styleSource.size());
+        appendCharacterHistoryValue(payload, edit.styleRecipe.zoomPercent);
+        appendCharacterHistoryValue(payload, edit.styleRecipe.panX);
+        appendCharacterHistoryValue(payload, edit.styleRecipe.panY);
+        appendCharacterHistoryValue(payload, edit.styleRecipe.paletteColors);
+        appendCharacterHistoryValue(payload, edit.styleRecipe.ditherStrength);
+        appendCharacterHistoryValue(payload, edit.styleRecipe.outlinePixels);
+        appendCharacterHistoryValue(payload, edit.styleRecipe.alphaThreshold);
+        const uint32_t sampling = static_cast<uint32_t>(
+            edit.styleRecipe.sampling);
+        const uint8_t fillPinholes = edit.styleRecipe.fillPinholes ? 1u : 0u;
+        appendCharacterHistoryValue(payload, sampling);
+        appendCharacterHistoryValue(payload, fillPinholes);
     } else if (tool == CharacterHistoryTool::Profile) {
         const CharacterProfileEdit &edit = loadCharacterProfileEdit(entry);
         payload = "mdkr-profile-history-v1\n";
@@ -5281,7 +5730,7 @@ bool applyCharacterHistoryPayload(
         return true;
     };
     if (tool == CharacterHistoryTool::Identity) {
-        if (!consumeHeader("mdkr-identity-history-v1\n")) {
+        if (!consumeHeader("mdkr-identity-history-v2\n")) {
             error = "Identity history header is invalid.";
             return false;
         }
@@ -5319,7 +5768,41 @@ bool applyCharacterHistoryPayload(
         std::memcpy(replacement.canvas.data(), payload.data() + offset,
                     replacement.canvas.size());
         offset += replacement.canvas.size();
+        if (replacement.styleSource.size() > payload.size() - offset) {
+            error = "Identity style source history is truncated.";
+            return false;
+        }
+        std::memcpy(replacement.styleSource.data(), payload.data() + offset,
+                    replacement.styleSource.size());
+        offset += replacement.styleSource.size();
+        uint32_t sampling;
+        uint8_t fillPinholes;
+        if (!readCharacterHistoryValue(
+                payload, offset, replacement.styleRecipe.zoomPercent) ||
+            !readCharacterHistoryValue(
+                payload, offset, replacement.styleRecipe.panX) ||
+            !readCharacterHistoryValue(
+                payload, offset, replacement.styleRecipe.panY) ||
+            !readCharacterHistoryValue(
+                payload, offset, replacement.styleRecipe.paletteColors) ||
+            !readCharacterHistoryValue(
+                payload, offset, replacement.styleRecipe.ditherStrength) ||
+            !readCharacterHistoryValue(
+                payload, offset, replacement.styleRecipe.outlinePixels) ||
+            !readCharacterHistoryValue(
+                payload, offset, replacement.styleRecipe.alphaThreshold) ||
+            !readCharacterHistoryValue(payload, offset, sampling) ||
+            sampling > 1u ||
+            !readCharacterHistoryValue(payload, offset, fillPinholes) ||
+            fillPinholes > 1u) {
+            error = "Identity style recipe history is invalid.";
+            return false;
+        }
+        replacement.styleRecipe.sampling =
+            static_cast<CharacterPortraitStudio::Sampling>(sampling);
+        replacement.styleRecipe.fillPinholes = fillPinholes != 0u;
         if (offset != payload.size() ||
+            !CharacterPortraitStudio::validRecipe(replacement.styleRecipe) ||
             !std::all_of(std::begin(replacement.minimapRgb),
                          std::end(replacement.minimapRgb), [](float value) {
                              return std::isfinite(value) &&
@@ -5333,6 +5816,7 @@ bool applyCharacterHistoryPayload(
             !std::equal(replacement.canvas.begin(), replacement.canvas.end(),
                         std::begin(entry->portrait_rgba));
         replacement.strokeActive = false;
+        refreshPortraitStylePreview(replacement);
         g_characterIdentityEdits[entry->id] = std::move(replacement);
     } else if (tool == CharacterHistoryTool::Profile) {
         if (!consumeHeader("mdkr-profile-history-v1\n")) {
@@ -5739,6 +6223,8 @@ bool captureCharacterDraftSnapshot(
         snapshot.rotation[component] = tuning.rotation[component];
     }
     snapshot.portrait = identity.canvas;
+    snapshot.portraitStyleSource = identity.styleSource;
+    snapshot.portraitRecipe = identity.styleRecipe;
     snapshot.portraitSourcePath = identity.portraitPath;
     snapshot.displayName = identity.displayName;
     snapshot.shortName = identity.shortName;
@@ -5864,6 +6350,9 @@ bool applyCharacterDraftSnapshot(
     CharacterIdentityEdit identity{};
     identity.loaded = true;
     identity.canvas = snapshot.portrait;
+    identity.styleSource = snapshot.portraitStyleSource;
+    identity.styleRecipe = snapshot.portraitRecipe;
+    refreshPortraitStylePreview(identity);
     identity.minimapRgb[0] = snapshot.minimapRgb[0] / 255.0f;
     identity.minimapRgb[1] = snapshot.minimapRgb[1] / 255.0f;
     identity.minimapRgb[2] = snapshot.minimapRgb[2] / 255.0f;

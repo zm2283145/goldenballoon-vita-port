@@ -380,6 +380,14 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_compile_features(mdkr_character_workshop_model_test PRIVATE cxx_std_17)
     add_test(NAME character_workshop_model
         COMMAND mdkr_character_workshop_model_test)
+    add_executable(mdkr_character_portrait_studio_test
+        ${CMAKE_SOURCE_DIR}/tests/test_character_portrait_studio.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_studio.cpp)
+    target_include_directories(mdkr_character_portrait_studio_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/app)
+    target_compile_features(mdkr_character_portrait_studio_test PRIVATE cxx_std_17)
+    add_test(NAME character_portrait_studio
+        COMMAND mdkr_character_portrait_studio_test)
     add_test(NAME collada_to_glb
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_collada_to_glb.py)

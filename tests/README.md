@@ -4869,6 +4869,28 @@ The rendered gate is registered as the `app_character_workshop_history` CTest
 and `character_workshop_history_ui` run-check. It needs neither a ROM nor a
 community model.
 
+## Portrait Studio authoring — `tests/check_character_portrait_studio_ui.py`
+
+This ROM-free gate installs a generated CC0 package into an isolated catalog
+and opens its real Identity workspace. It requires the deterministic framing,
+premultiplied-alpha resampling, palette, dithering, silhouette, quality-report,
+selection and palette-replacement surfaces to render at 200% UI scale in the
+compact launcher. A keyboard-only speech walk must announce the consequential
+controls, and both arms must leave installed source/cache bytes unchanged.
+Pure `character_portrait_studio` and `character_draft_snapshot` tests prove the
+image operations, bounded recipes, deterministic output, analysis, selection
+semantics, and v1/v2 draft migration independently of rendering. The shared
+`character_edit_history` and rendered history gates retain the existing
+source-bound, byte-capped undo/redo contract around those draft fields.
+
+```bash
+python3 tests/check_character_portrait_studio_ui.py \
+  --build build-character-tests
+```
+
+The gate is registered as `app_character_portrait_studio` and
+`character_portrait_studio_ui`; it needs neither a ROM nor a community model.
+
 ## Exact Character Workshop contexts — `tests/check_custom_character_workshop_preview.py`
 
 This gate generates and transactionally installs a license-clean package with

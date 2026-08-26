@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <string>
 
+#include "character_portrait_studio.h"
+
 namespace CharacterDraftSnapshot {
 
 constexpr size_t kPortraitBytes = 40u * 40u * 4u;
@@ -59,6 +61,8 @@ struct Snapshot {
     RigRole roles[kRoles];
 
     std::array<uint8_t, kPortraitBytes> portrait{};
+    CharacterPortraitStudio::Canvas portraitStyleSource{};
+    CharacterPortraitStudio::Recipe portraitRecipe{};
     std::string portraitSourcePath;
     std::string displayName;
     std::string shortName;
