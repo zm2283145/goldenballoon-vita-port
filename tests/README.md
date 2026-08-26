@@ -4809,6 +4809,27 @@ python3 tests/check_custom_character_roster.py \
 The gate is registered as `custom_character_roster` in `tools/run_checks.py`
 and is serialized with the other native GPU/pixel checks.
 
+## Custom-character identity surfaces — `tests/check_custom_character_identity_surfaces.py`
+
+This real WebGPU gate generates a CC0 package with a Bumper gameplay donor,
+four unmistakable portrait quadrants, authored display/short/narration/sort
+names, and a distinctive minimap colour. It carries the launcher's engine
+handoff contract through the production character-select transaction and a
+complete Ancient Lake Time Trial. Runtime witnesses must retain Bumper as
+gameplay authority while resolving the package's minimap colour and 40x40 card
+for the exact player. Pixel checks then require the authored marker colour in
+the real race minimap region and all four portrait quadrants on the real
+race-times page.
+
+```bash
+python3 tests/check_custom_character_identity_surfaces.py \
+  --build build-character-tests --rom baserom.us.v80.z64
+```
+
+The gate is registered as `custom_character_identity_surfaces` and serialized
+with every native GPU/pixel check. Its temporary package, catalog, save, input
+script, and captures never touch the player's normal library.
+
 ## Raw GLB Workshop intake — `tests/check_character_raw_intake_ui.py`
 
 This ROM-free WebGPU gate drops a generated, license-clean, self-contained GLB

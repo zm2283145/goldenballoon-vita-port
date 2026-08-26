@@ -194,6 +194,7 @@ GPU_SERIAL_NAMES = frozenset({
     "taj_challenges",
     "bonus_character_select",
     "custom_character_roster",
+    "custom_character_identity_surfaces",
     "character_raw_intake_ui",
     "character_workshop_history_ui",
     "custom_character_workshop_preview",
@@ -728,6 +729,10 @@ CHECKS = (
     Check("custom_character_roster", "check_custom_character_roster.py", "native",
           "isolated generated custom package, independent paginated browser, "
           "portrait composition, and real controller entry route"),
+    Check("custom_character_identity_surfaces",
+          "check_custom_character_identity_surfaces.py", "native",
+          "generated package donor authority plus authored minimap colour and "
+          "portrait pixels across a real race and post-race flow"),
     Check("character_raw_intake_ui", "check_character_raw_intake_ui.py", "native",
           "ROM-free GLB drop, bounded mapping inventory, restart resume, "
           "keyboard speech, and 200% compact Workshop rendering"),

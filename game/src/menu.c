@@ -13611,11 +13611,26 @@ static DrawTexture *menu_racer_portrait_for_player(s32 playerIndex,
                                                    s32 character) {
     static u32 tracedPlayers[MOD_RACER_IDENTITY_COUNT];
     static u32 tracedEpoch;
+    static u64 tracedCustomRevisions[MDKR_MODERN_CHARACTER_PLAYERS];
+    MdkrModernCharacterIdentityView customIdentity;
     ModRacerIdentity identity = mod_racer_player_identity(playerIndex);
     u32 playerBit = taj_mod_player_bit(playerIndex);
     DrawTexture *portrait;
     portrait = menu_custom_character_portrait(playerIndex);
-    if (portrait != NULL && portrait[0].texture != NULL) return portrait;
+    if (portrait != NULL && portrait[0].texture != NULL) {
+        if (playerIndex >= 0 &&
+            playerIndex < MDKR_MODERN_CHARACTER_PLAYERS &&
+            mdkr_modern_character_player_identity(
+                playerIndex, &customIdentity) &&
+            tracedCustomRevisions[playerIndex] != customIdentity.revision) {
+            tracedCustomRevisions[playerIndex] = customIdentity.revision;
+            MDKR_TRACE(
+                "custom_character_results_portrait: player=%d name=%s revision=%llu source=package-card",
+                playerIndex, customIdentity.display_name,
+                (unsigned long long)customIdentity.revision);
+        }
+        return portrait;
+    }
     if (tracedEpoch != taj_visual_trace_epoch()) {
         tracedEpoch = taj_visual_trace_epoch();
         memset(tracedPlayers, 0, sizeof(tracedPlayers));

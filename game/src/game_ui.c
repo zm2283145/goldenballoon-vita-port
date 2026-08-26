@@ -44,6 +44,7 @@
 #define hud_rand_range cadence_compat_rand_range
 static s32 sTajMinimapIdentityTraced;
 static u32 sTajMinimapTracedEpoch;
+static u64 sCustomMinimapRevisions[MDKR_MODERN_CHARACTER_PLAYERS];
 #else
 #define hud_rand_range rand_range
 #define hud_presentation_viewport_layout() gHUDNumPlayers
@@ -1286,6 +1287,8 @@ static void hud_render_identity_portrait(HudElement *portrait, s32 character,
     static DrawTexture sHudBonusPortrait[2];
     static u32 tracedPlayers[MOD_RACER_IDENTITY_COUNT];
     static u32 tracedEpoch;
+    static u64 tracedCustomRevisions[MDKR_MODERN_CHARACTER_PLAYERS];
+    MdkrModernCharacterIdentityView customIdentity;
     u32 playerBit;
     DrawTexture *bonusPortrait;
     s32 customPortrait;
@@ -1336,7 +1339,20 @@ static void hud_render_identity_portrait(HudElement *portrait, s32 character,
                             y, portrait->scale, yScale,
                             gHudColour, TEXRECT_POINT);
     }
-    if (customPortrait) return;
+    if (customPortrait) {
+        if (playerIndex >= 0 &&
+            playerIndex < MDKR_MODERN_CHARACTER_PLAYERS &&
+            mdkr_modern_character_player_identity(
+                playerIndex, &customIdentity) &&
+            tracedCustomRevisions[playerIndex] != customIdentity.revision) {
+            tracedCustomRevisions[playerIndex] = customIdentity.revision;
+            MDKR_TRACE(
+                "custom_character_hud_portrait: player=%d name=%s revision=%llu",
+                playerIndex, customIdentity.display_name,
+                (unsigned long long)customIdentity.revision);
+        }
+        return;
+    }
     playerBit = taj_mod_player_bit(playerIndex);
     if (playerBit != 0 && !(tracedPlayers[identity] & playerBit)) {
         tracedPlayers[identity] |= playerBit;
@@ -5277,6 +5293,22 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
                                     customIdentity.minimap_rgba[0],
                                     customIdentity.minimap_rgba[1],
                                     customIdentity.minimap_rgba[2], opacity);
+                    if (someRacer->playerIndex >= 0 &&
+                        someRacer->playerIndex <
+                            MDKR_MODERN_CHARACTER_PLAYERS &&
+                        sCustomMinimapRevisions[someRacer->playerIndex] !=
+                            customIdentity.revision) {
+                        sCustomMinimapRevisions[someRacer->playerIndex] =
+                            customIdentity.revision;
+                        MDKR_TRACE(
+                            "custom_character_minimap: player=%d name=%s revision=%llu rgb=%u,%u,%u",
+                            someRacer->playerIndex,
+                            customIdentity.display_name,
+                            (unsigned long long)customIdentity.revision,
+                            customIdentity.minimap_rgba[0],
+                            customIdentity.minimap_rgba[1],
+                            customIdentity.minimap_rgba[2]);
+                    }
                 } else if (identity != MOD_RACER_RETAIL) {
                     s32 red = 255;
                     s32 green = 0;

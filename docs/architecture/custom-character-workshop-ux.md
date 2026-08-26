@@ -172,6 +172,15 @@ have to align five nearly identical files independently. Packages may instead
 supply validated final PNGs plus attribution when an artist already created
 them.
 
+Player-owned identity resolves on the custom roster, local HUD portraits,
+minimap markers, post-race cards, and trophy rankings. Scripted cinematic and
+credits portraits remain scene-authored retail cast, not aliases for the local
+player. Controller Pak ghosts, course records, saves, and online/rollback
+identity likewise retain the donor ID by design: they cannot depend on a local
+package that another machine or a later install may not have. The generated
+identity-surface gate proves this separation by retaining a non-Diddy donor
+while the package portrait and minimap colour reach their player-owned seams.
+
 ## Gameplay profile and kart selection
 
 ### Visual-only release
@@ -397,7 +406,7 @@ last known-good assembly remains available if an update fails.
 | Height/front/ground/seat calibration | Executable v2 | Add exact embedded preview and manipulators |
 | Per-context corrections | One package-keyed editor shared by every local assignment, with independent select/car/hovercraft/plane transforms and contact offsets | Add direct spatial transform/target manipulators |
 | Animation semantics | Executable sampling/diagnostics plus source-v4 compiled role contract, inference provenance/confidence, transactional 16-role skin-joint editor with bind-pose hierarchy canvas, rest/bend controls and automatic review invalidation, native hierarchy validation, reviewed engine-reference fallback motion, and bounded idempotent vehicle contact solving | Add richer reference clips, target overlays and joint-limit inspection |
-| Portrait/roster identity | Source-v3 import, transactional Portrait Studio revision, exact 40x40 preview/editor with pencil/eraser/fill/eyedropper/mirror/source-bound undo/redo, HUD/results/rankings/minimap resolver, and independent 64-entry paginated select browser with per-player portrait/name identity executable | Add model capture, advanced selection/style tools, localization-aware game-font shaping, and remaining identity-surface audit |
+| Portrait/roster identity | Source-v3 import, transactional Portrait Studio revision, exact 40x40 preview/editor with pencil/eraser/fill/eyedropper/mirror/source-bound undo/redo, HUD/results/rankings/minimap resolver, independent 64-entry paginated select browser with per-player portrait/name identity, explicit donor-owned ghost/save/network and scene-authored cinematic boundaries, and generated-package pixel/runtime proof across a real race and race-times page | Add model capture, advanced selection/style tools, and localization-aware game-font shaping |
 | Donor selection | All ten revision-1 donor seams are fingerprint-qualified and selectable through transactional source revisions; the engine publishes a bounded GPU-free installed-character catalog for virtual roster consumers; the launcher publishes exact bounded ROM-derived weight, handling, and vehicle-specific 14-sample acceleration evidence without retaining ROM bytes; a responsive draft-aware authority card distinguishes package presentation, donor simulation/audio/ghost/network identity, ordinary save/record data, and future package negotiation | Add donor portrait treatment without bundling copyrighted art and complete remaining effect-surface audit |
 | Vehicle support | Source-backed compatibility revision, runtime enable subset, independent transforms, persisted per-vehicle hand/foot target offsets, warmed exact-context solve-count/mean/max contact-error feedback, stale-result invalidation, contextual one-click save/retest loops, and source/tuning-bound per-context review | Add visual target manipulators and complete vehicle test matrix |
 | Performance controls | Import caps, authored LOD bias, exact per-LOD draw accounting, 1P-4P worst-visible assembly counts, exact one-click WebGPU stress routes, and a returned post-warm-up wall-cadence percentile/result card with synthetic/short-sample refusal | Add GPU timestamps, repeatable comparison baselines, representative scene matrix and device profiles |
@@ -472,8 +481,10 @@ published device budgets and fail explicitly when they cannot.
 
 All ten donor seams are fingerprint-qualified, and the independent paginated
 custom-racer browser resolves package identity plus donor without extending
-retail ten-wide simulation tables. Richer profile comparison cards and a
-complete remaining identity-surface audit remain.
+retail ten-wide simulation tables. Generated-package race/minimap/results proof
+and explicit donor-owned ghost/save/network boundaries complete the current
+identity-surface audit. Model-captured portraits, richer editing tools, and
+localization-aware game-font shaping remain.
 
 Gate: multiple packages may share a donor, four players can select distinct
 virtual identities, and retail saves/ghosts/online authority remain unchanged.
