@@ -192,9 +192,25 @@ def make_manifest() -> dict[str, object]:
             "vehicles": ["car", "hovercraft", "plane"],
         },
         "presentation": {
-            "scale": [1.0, 1.0, 1.0],
-            "translation_m": [0.0, 0.0, 0.0],
-            "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "source_forward": "+z",
+            "target_height_m": 1.25,
+            "contexts": {
+                "select": {
+                    "anchor": "ground",
+                    "translation_m": [0.0, 0.0, 0.0],
+                    "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    "scale": 1.0,
+                },
+                **{
+                    vehicle: {
+                        "anchor": "seat",
+                        "translation_m": [0.0, 0.0, 0.0],
+                        "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                        "scale": 1.0,
+                    }
+                    for vehicle in ("car", "hovercraft", "plane")
+                },
+            },
             "lod_bias": 0.0,
         },
         "sockets": {"seat": "root", "head": "head"},
@@ -285,7 +301,35 @@ class CharacterAssetProbeTests(unittest.TestCase):
         self.assertEqual(1, first_report["motion_channels"])
         self.assertEqual([], first_report["static_animations"])
         self.assertEqual(2, first_report["sockets"])
+        self.assertEqual(1.25, first_report["target_height_m"])
+        self.assertEqual(
+            ["select", "car", "hovercraft", "plane"],
+            first_report["attachment_contexts"],
+        )
+        sections = _compiled_sections(first)
+        self.assertEqual(4, sections[compiler.SECTION_ATTACHMENTS]["count"])
+        self.assertEqual(1, sections[compiler.SECTION_CALIBRATION]["count"])
         self.assertEqual(4, first_report["decoded_texture_bytes"])
+
+    def test_v1_manifest_remains_valid_and_gets_safe_context_defaults(self) -> None:
+        manifest = make_manifest()
+        manifest["schema"] = probe.PACKAGE_SCHEMA_V1
+        manifest["presentation"] = {
+            "scale": [1.0, 1.0, 1.0],
+            "translation_m": [0.0, 0.0, 0.0],
+            "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "lod_bias": 0.0,
+        }
+        report = probe.inspect_glb_bytes(make_animated_glb(), require_character=True)
+        self.assertEqual([], probe.validate_manifest(manifest, report))
+        _, compiled_report = compiler.compile_character(
+            make_animated_glb(), manifest, bytes(32)
+        )
+        self.assertFalse(compiled_report["calibration_explicit"])
+        self.assertEqual(
+            ["select", "car", "hovercraft", "plane"],
+            compiled_report["attachment_contexts"],
+        )
 
     def test_compiler_rejects_png_dimensions_before_decode(self) -> None:
         header = (b"\x89PNG\r\n\x1a\n" + struct.pack(

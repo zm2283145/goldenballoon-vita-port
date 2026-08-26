@@ -14,7 +14,8 @@
 #define SOURCE_PACKAGE_MAX (512u * 1024u * 1024u)
 #define MANIFEST_MAX (1024u * 1024u)
 #define LICENSE_MAX (1024u * 1024u)
-#define COMPILER_ID "mdkr-character-compiler/1"
+#define COMPILER_ID "mdkr-character-compiler/2"
+#define LEGACY_COMPILER_ID "mdkr-character-compiler/1"
 
 static unsigned s_stage_serial;
 
@@ -214,15 +215,15 @@ static size_t digest_extract(void *opaque, mz_uint64 offset,
 
 static int archive_source_digest(mz_zip_archive *archive,
                                  const mz_uint64 sizes[4],
+                                 const char *compiler_id,
                                  uint8_t output[32]) {
     static const char *names[] = {
         "manifest.json", "model.glb", "LICENSE.txt"
     };
     MdkrSha256 digest;
     unsigned index;
-    static const char compiler_prefix[] = COMPILER_ID "\0";
     mdkr_sha256_init(&digest);
-    mdkr_sha256_update(&digest, compiler_prefix, sizeof(compiler_prefix) - 1u);
+    mdkr_sha256_update(&digest, compiler_id, strlen(compiler_id) + 1u);
     for (index = 0u; index < 3u; index++) {
         uint8_t length[8];
         unsigned byte;
@@ -271,6 +272,7 @@ int mdkr_modern_character_install_portable(
     mz_uint64 package_size = 0u;
     mz_uint64 member_sizes[4] = {0u, 0u, 0u, 0u};
     uint8_t source_digest[32];
+    uint8_t legacy_source_digest[32];
     char cache_source_digest[65] = {0};
     char installed_id[65] = {0};
     char report_text[2048];
@@ -335,7 +337,10 @@ int mdkr_modern_character_install_portable(
         member_sizes[index] = stat.m_uncomp_size;
         if (index == 3u) compiled_size = (size_t)stat.m_uncomp_size;
     }
-    if (!archive_source_digest(&archive, member_sizes, source_digest)) {
+    if (!archive_source_digest(&archive, member_sizes, COMPILER_ID,
+                               source_digest) ||
+        !archive_source_digest(&archive, member_sizes, LEGACY_COMPILER_ID,
+                               legacy_source_digest)) {
         result_message(result, "portable package source members could not be hashed");
         goto done;
     }
@@ -349,8 +354,9 @@ int mdkr_modern_character_install_portable(
                        "embedded compiled character cache is invalid");
         goto done;
     }
-    if (memcmp(asset.source_sha256, source_digest,
-               sizeof(source_digest)) != 0) {
+    if (memcmp(asset.source_sha256, source_digest, sizeof(source_digest)) != 0 &&
+        memcmp(asset.source_sha256, legacy_source_digest,
+               sizeof(legacy_source_digest)) != 0) {
         result_message(result,
             "embedded cache does not match this package's manifest, model, and license");
         goto done;

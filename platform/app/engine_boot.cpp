@@ -19,7 +19,7 @@
 namespace {
 
 std::array<std::string, 4> s_launcherCharacterEnvironment;
-constexpr size_t kCharacterTuningCount = 10;
+constexpr size_t kCharacterTuningCount = 38;
 std::array<std::array<std::string, kCharacterTuningCount>, 4>
     s_launcherCharacterTuningEnvironment;
 
@@ -40,6 +40,34 @@ constexpr CharacterTuningKey kCharacterTuningKeys[kCharacterTuningCount] = {
     {"ANIMATION_SPEED", "animation_speed", "1"},
     {"LOD_BIAS", "lod_bias", "0"},
     {"VEHICLE_MASK", "vehicle_mask", "7"},
+    {"SELECT_SCALE", "select_scale", "1"},
+    {"SELECT_OFFSET_X", "select_offset_x", "0"},
+    {"SELECT_OFFSET_Y", "select_offset_y", "0"},
+    {"SELECT_OFFSET_Z", "select_offset_z", "0"},
+    {"SELECT_ROTATION_X", "select_rotation_x", "0"},
+    {"SELECT_ROTATION_Y", "select_rotation_y", "0"},
+    {"SELECT_ROTATION_Z", "select_rotation_z", "0"},
+    {"CAR_SCALE", "car_scale", "1"},
+    {"CAR_OFFSET_X", "car_offset_x", "0"},
+    {"CAR_OFFSET_Y", "car_offset_y", "0"},
+    {"CAR_OFFSET_Z", "car_offset_z", "0"},
+    {"CAR_ROTATION_X", "car_rotation_x", "0"},
+    {"CAR_ROTATION_Y", "car_rotation_y", "0"},
+    {"CAR_ROTATION_Z", "car_rotation_z", "0"},
+    {"HOVERCRAFT_SCALE", "hovercraft_scale", "1"},
+    {"HOVERCRAFT_OFFSET_X", "hovercraft_offset_x", "0"},
+    {"HOVERCRAFT_OFFSET_Y", "hovercraft_offset_y", "0"},
+    {"HOVERCRAFT_OFFSET_Z", "hovercraft_offset_z", "0"},
+    {"HOVERCRAFT_ROTATION_X", "hovercraft_rotation_x", "0"},
+    {"HOVERCRAFT_ROTATION_Y", "hovercraft_rotation_y", "0"},
+    {"HOVERCRAFT_ROTATION_Z", "hovercraft_rotation_z", "0"},
+    {"PLANE_SCALE", "plane_scale", "1"},
+    {"PLANE_OFFSET_X", "plane_offset_x", "0"},
+    {"PLANE_OFFSET_Y", "plane_offset_y", "0"},
+    {"PLANE_OFFSET_Z", "plane_offset_z", "0"},
+    {"PLANE_ROTATION_X", "plane_rotation_x", "0"},
+    {"PLANE_ROTATION_Y", "plane_rotation_y", "0"},
+    {"PLANE_ROTATION_Z", "plane_rotation_z", "0"},
 };
 
 const char *modeFlag(int mode) {

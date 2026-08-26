@@ -30,7 +30,7 @@ MDKC_HEADER_BYTES = 832
 MDKC_SECTION_SLOTS = 24
 MDKC_SECTION_ENTRY_BYTES = 32
 MDKC_FILE_MAX = 1024 * 1024 * 1024
-COMPILER_ID = "mdkr-character-compiler/1"
+COMPILER_ID = "mdkr-character-compiler/2"
 
 SECTION_STRINGS = 1
 SECTION_VERTICES = 2
@@ -48,6 +48,8 @@ SECTION_KEYS = 13
 SECTION_CHARACTER = 14
 SECTION_SEMANTICS = 15
 SECTION_SOCKETS = 16
+SECTION_ATTACHMENTS = 17
+SECTION_CALIBRATION = 18
 
 VERTEX_FORMAT = "<3f3f4f2f4H4f"
 PRIMITIVE_FORMAT = "<8I"
@@ -62,6 +64,8 @@ KEY_FORMAT = "<f4f4f4f"
 CHARACTER_FORMAT = "<IIII3f3f4ffI"
 SEMANTIC_FORMAT = "<IIIf"
 SOCKET_FORMAT = "<II"
+ATTACHMENT_FORMAT = "<II3f4ffII"
+CALIBRATION_FORMAT = "<3f3f3ffII4f"
 
 COMPONENTS = {
     5120: ("b", 1, True),
@@ -91,6 +95,14 @@ DONOR_IDS = {
     "diddy": 9,
 }
 VEHICLE_BITS = {"car": 1, "hovercraft": 2, "plane": 4}
+CONTEXT_IDS = {"select": 0, "car": 1, "hovercraft": 2, "plane": 3}
+SOURCE_FORWARD_IDS = {"+z": 0, "-z": 1, "+x": 2, "-x": 3}
+SOURCE_FORWARD_ROTATIONS = {
+    "+z": (0.0, 0.0, 0.0, 1.0),
+    "-z": (0.0, 1.0, 0.0, 0.0),
+    "+x": (0.0, -math.sqrt(0.5), 0.0, math.sqrt(0.5)),
+    "-x": (0.0, math.sqrt(0.5), 0.0, math.sqrt(0.5)),
+}
 PATH_IDS = {"translation": 0, "rotation": 1, "scale": 2, "weights": 3}
 INTERPOLATION_IDS = {"LINEAR": 0, "STEP": 1, "CUBICSPLINE": 2}
 MIME_IDS = {"image/png": 1}
@@ -828,11 +840,49 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
     gameplay = manifest["gameplay"]
     presentation = manifest["presentation"]
     vehicle_mask = sum(VEHICLE_BITS[name] for name in gameplay["vehicles"])
+    bounds_min = policy.get("bbox_min")
+    bounds_max = policy.get("bbox_max")
+    if (
+        not isinstance(bounds_min, list) or len(bounds_min) != 3
+        or not isinstance(bounds_max, list) or len(bounds_max) != 3
+    ):
+        raise CompileError("character scene has no finite world-space bounds")
+    source_height = float(bounds_max[1]) - float(bounds_min[1])
+    if not math.isfinite(source_height) or source_height <= 1.0e-6:
+        raise CompileError("character scene height is too small to calibrate")
+    source_forward = "+z"
+    explicit_calibration = manifest["schema"] == probe.PACKAGE_SCHEMA
+    if explicit_calibration:
+        source_forward = presentation["source_forward"]
+        target_height = float(presentation["target_height_m"])
+        uniform_scale = 1.0 / source_height
+        definition_scale = (uniform_scale, uniform_scale, uniform_scale)
+        definition_translation = (0.0, 0.0, 0.0)
+        definition_rotation = SOURCE_FORWARD_ROTATIONS[source_forward]
+        context_manifest = presentation["contexts"]
+    else:
+        definition_scale = tuple(map(float, presentation["scale"]))
+        definition_translation = tuple(map(float, presentation["translation_m"]))
+        definition_rotation = tuple(map(float, presentation["rotation_xyzw"]))
+        target_height = source_height * definition_scale[1]
+        context_manifest = {
+            "select": {
+                "anchor": "ground", "translation_m": [0.0, 0.0, 0.0],
+                "rotation_xyzw": [0.0, 0.0, 0.0, 1.0], "scale": 1.0,
+            },
+            **{
+                vehicle: {
+                    "anchor": "seat", "translation_m": [0.0, 0.0, 0.0],
+                    "rotation_xyzw": [0.0, 0.0, 0.0, 1.0], "scale": 1.0,
+                }
+                for vehicle in gameplay["vehicles"]
+            },
+        }
     character_record = (
         strings.add(manifest["id"]), strings.add(manifest["display_name"]),
         DONOR_IDS[gameplay["donor"]], strings.add(manifest["renderer_profile"]),
-        *map(float, presentation["scale"]), *map(float, presentation["translation_m"]),
-        *map(float, presentation["rotation_xyzw"]), float(presentation.get("lod_bias", 0.0)),
+        *definition_scale, *definition_translation,
+        *definition_rotation, float(presentation.get("lod_bias", 0.0)),
         vehicle_mask,
     )
     semantic_records = []
@@ -848,6 +898,28 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         if node_name not in node_names:
             raise CompileError(f"socket {semantic!r} names missing node {node_name!r}")
         socket_records.append((strings.add(semantic), node_names[node_name]))
+    attachment_records = []
+    for context in sorted(context_manifest, key=lambda name: CONTEXT_IDS[name]):
+        adjustment = context_manifest[context]
+        attachment_records.append((
+            CONTEXT_IDS[context], strings.add(adjustment["anchor"]),
+            *map(float, adjustment["translation_m"]),
+            *map(float, adjustment["rotation_xyzw"]),
+            float(adjustment.get("scale", 1.0)),
+            1 if adjustment["anchor"] == "ground" else 0,
+            0,
+        ))
+    ground = (
+        (float(bounds_min[0]) + float(bounds_max[0])) * 0.5,
+        float(bounds_min[1]),
+        (float(bounds_min[2]) + float(bounds_max[2])) * 0.5,
+    )
+    calibration_record = (
+        *map(float, bounds_min), *map(float, bounds_max), *ground,
+        source_height, SOURCE_FORWARD_IDS[source_forward],
+        1 if explicit_calibration else 0,
+        source_height * definition_scale[1], target_height, 0.0, 0.0,
+    )
 
     sections = [
         Section(SECTION_STRINGS, len(strings.data), 1, bytes(strings.data)),
@@ -866,6 +938,8 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         Section(SECTION_CHARACTER, 1, struct.calcsize(CHARACTER_FORMAT), _pack_records(CHARACTER_FORMAT, (character_record,))),
         Section(SECTION_SEMANTICS, len(semantic_records), struct.calcsize(SEMANTIC_FORMAT), _pack_records(SEMANTIC_FORMAT, semantic_records)),
         Section(SECTION_SOCKETS, len(socket_records), struct.calcsize(SOCKET_FORMAT), _pack_records(SOCKET_FORMAT, socket_records)),
+        Section(SECTION_ATTACHMENTS, len(attachment_records), struct.calcsize(ATTACHMENT_FORMAT), _pack_records(ATTACHMENT_FORMAT, attachment_records)),
+        Section(SECTION_CALIBRATION, 1, struct.calcsize(CALIBRATION_FORMAT), _pack_records(CALIBRATION_FORMAT, (calibration_record,))),
     ]
     compiled = _assemble(sections, source_digest)
     report = {
@@ -896,6 +970,13 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         "animation_keys": len(key_records),
         "semantics": len(semantic_records),
         "sockets": len(socket_records),
+        "source_schema": manifest["schema"],
+        "source_forward": source_forward,
+        "source_height_m": source_height,
+        "target_height_m": target_height,
+        "ground_anchor_m": list(ground),
+        "attachment_contexts": sorted(context_manifest, key=lambda name: CONTEXT_IDS[name]),
+        "calibration_explicit": explicit_calibration,
     }
     return compiled, report
 

@@ -1829,6 +1829,11 @@ struct CharacterTuningEdit {
     float animationSpeed = 1.0f;
     float lodBias = 0.0f;
     unsigned vehicleMask = 7u;
+    struct Context {
+        float scale = 1.0f;
+        float offset[3] = {0.0f, 0.0f, 0.0f};
+        float rotation[3] = {0.0f, 0.0f, 0.0f};
+    } context[MDKR_CHARACTER_CONTEXT_COUNT];
 };
 
 std::map<std::string, CharacterTuningEdit> g_characterTuning;
@@ -1854,6 +1859,9 @@ float characterConfigFloat(int player, const char *packageId,
 }
 
 CharacterTuningEdit &loadCharacterTuning(int player, const char *packageId) {
+    static const char *contextNames[MDKR_CHARACTER_CONTEXT_COUNT] = {
+        "select", "car", "hovercraft", "plane"
+    };
     CharacterTuningEdit &edit = g_characterTuning[packageId];
     if (edit.loaded) return edit;
     edit.scale = characterConfigFloat(player, packageId, "scale", 1.0f, 0.1f, 5.0f);
@@ -1868,6 +1876,23 @@ CharacterTuningEdit &loadCharacterTuning(int player, const char *packageId) {
     const float mask = characterConfigFloat(player, packageId, "vehicle_mask", 7.0f, 1.0f, 7.0f);
     edit.vehicleMask = static_cast<unsigned>(mask);
     if (edit.vehicleMask == 0u || edit.vehicleMask > 7u) edit.vehicleMask = 7u;
+    for (unsigned context = 0u;
+         context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+        const std::string prefix = std::string(contextNames[context]) + "_";
+        edit.context[context].scale = characterConfigFloat(
+            player, packageId, (prefix + "scale").c_str(), 1.0f, 0.1f, 5.0f);
+        static const char *axes[] = {"x", "y", "z"};
+        for (unsigned axis = 0u; axis < 3u; ++axis) {
+            edit.context[context].offset[axis] = characterConfigFloat(
+                player, packageId,
+                (prefix + "offset_" + axes[axis]).c_str(),
+                0.0f, -10.0f, 10.0f);
+            edit.context[context].rotation[axis] = characterConfigFloat(
+                player, packageId,
+                (prefix + "rotation_" + axes[axis]).c_str(),
+                0.0f, -180.0f, 180.0f);
+        }
+    }
     edit.loaded = true;
     return edit;
 }
@@ -1880,6 +1905,9 @@ std::string characterFloatText(float value) {
 
 bool persistCharacterTuning(const char *packageId,
                             const CharacterTuningEdit &edit) {
+    static const char *contextNames[MDKR_CHARACTER_CONTEXT_COUNT] = {
+        "select", "car", "hovercraft", "plane"
+    };
     const std::string prefix = "custom_character_profile_" +
         std::string(packageId) + "_";
     AppConfig::set(prefix + "scale", characterFloatText(edit.scale));
@@ -1892,6 +1920,21 @@ bool persistCharacterTuning(const char *packageId,
     AppConfig::set(prefix + "animation_speed", characterFloatText(edit.animationSpeed));
     AppConfig::set(prefix + "lod_bias", characterFloatText(edit.lodBias));
     AppConfig::set(prefix + "vehicle_mask", std::to_string(edit.vehicleMask));
+    for (unsigned context = 0u;
+         context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+        const std::string contextPrefix = prefix + contextNames[context] + "_";
+        AppConfig::set(contextPrefix + "scale",
+                       characterFloatText(edit.context[context].scale));
+        static const char *axes[] = {"x", "y", "z"};
+        for (unsigned axis = 0u; axis < 3u; ++axis) {
+            AppConfig::set(contextPrefix + "offset_" + axes[axis],
+                           characterFloatText(
+                               edit.context[context].offset[axis]));
+            AppConfig::set(contextPrefix + "rotation_" + axes[axis],
+                           characterFloatText(
+                               edit.context[context].rotation[axis]));
+        }
+    }
     const AppConfig::PersistResult result = AppConfig::save();
     if (AppConfig::persistResultApplied(result)) {
         setStatus("Character fit settings saved; they apply on play.",
@@ -2080,6 +2123,10 @@ std::string missingCharacterSemantics(
 bool drawCharacterTuningEditor(int player,
                                const MdkrModernCharacterEntry *entry) {
     static const char *vehicleNames[] = {"Car", "Hovercraft", "Plane"};
+    static const char *contextNames[MDKR_CHARACTER_CONTEXT_COUNT] = {
+        "Character select", "Car", "Hovercraft", "Plane"
+    };
+    static const char *forwardNames[] = {"+Z", "-Z", "+X", "-X"};
     bool changed = false;
     CharacterTuningEdit &edit = loadCharacterTuning(player, entry->id);
     edit.vehicleMask &= entry->vehicle_mask;
@@ -2110,23 +2157,120 @@ bool drawCharacterTuningEditor(int player,
     ui::TextSubtleWrapped(
         "This controls presentation only. The in-game vehicle choice still owns physics and handling.");
 
-    (void)ImGui::SliderFloat("Character size", &edit.scale, 0.1f, 5.0f,
-                             "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SeparatorText("Source normalization");
+    if ((entry->calibration_flags & 1u) != 0u) {
+        ImGui::TextColored(
+            AppTheme::good(), "Normalized v2 profile · source faces %s",
+            entry->source_forward < std::size(forwardNames)
+                ? forwardNames[entry->source_forward] : "unknown");
+    } else {
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "Legacy transform: confirm height and facing before use");
+    }
+    if (entry->source_height > 0.0f && entry->target_height > 0.0f) {
+        ImGui::TextDisabled(
+            "Measured source extent %.4g m · intended standing height %.3g m",
+            static_cast<double>(entry->source_height),
+            static_cast<double>(entry->target_height));
+        float height = entry->target_height * edit.scale;
+        (void)ImGui::SliderFloat("Standing height", &height, 0.25f, 3.0f,
+                                 "%.2f m", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            edit.scale = height / entry->target_height;
+            if (edit.scale < 0.1f) edit.scale = 0.1f;
+            if (edit.scale > 5.0f) edit.scale = 5.0f;
+        }
+    } else {
+        (void)ImGui::SliderFloat("Character size", &edit.scale, 0.1f, 5.0f,
+                                 "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    }
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         changed |= persistCharacterTuning(entry->id, edit);
     }
-    (void)ImGui::DragFloat3("Seat position", edit.offset, 0.25f,
-                            -500.0f, 500.0f, "%.2f",
-                            ImGuiSliderFlags_AlwaysClamp);
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
+    if (ImGui::Button("Turn model around 180°")) {
+        edit.rotation[1] += 180.0f;
+        if (edit.rotation[1] > 180.0f) edit.rotation[1] -= 360.0f;
         changed |= persistCharacterTuning(entry->id, edit);
     }
-    (void)ImGui::DragFloat3("Rotation", edit.rotation, 0.5f,
-                            -180.0f, 180.0f, "%.1f deg",
-                            ImGuiSliderFlags_AlwaysClamp);
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
+    ImGui::SameLine();
+    if (ImGui::Button("Reset source facing")) {
+        edit.rotation[0] = edit.rotation[1] = edit.rotation[2] = 0.0f;
         changed |= persistCharacterTuning(entry->id, edit);
     }
+    ui::TextSubtleWrapped(
+        "Facing cannot be inferred safely from arbitrary geometry. Use the author-declared axis first, then this explicit correction if the preview is backward.");
+
+    ImGui::SeparatorText("Placement by context");
+    ui::TextSubtleWrapped(
+        "Select aligns the model's measured ground point. Vehicles align its pelvis/seat socket. Each correction is independent, so fixing one scene cannot break another.");
+    if (ImGui::BeginTabBar("##character-placement-contexts")) {
+        for (unsigned context = 0u;
+             context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+            const bool packageContext = context == MDKR_CHARACTER_CONTEXT_SELECT ||
+                (entry->vehicle_mask & (1u << (context - 1u))) != 0u;
+            if (!packageContext) continue;
+            if (!ImGui::BeginTabItem(contextNames[context])) continue;
+            CharacterTuningEdit::Context &placement = edit.context[context];
+            ImGui::TextDisabled(
+                "%s anchor → qualified Diddy %s frame",
+                context == MDKR_CHARACTER_CONTEXT_SELECT ? "Ground" : "Pelvis/seat",
+                context == MDKR_CHARACTER_CONTEXT_SELECT ? "select" :
+                    contextNames[context]);
+            ImGui::PushID(static_cast<int>(context));
+            (void)ImGui::SliderFloat("Context size", &placement.scale,
+                                     0.5f, 2.0f, "%.2fx",
+                                     ImGuiSliderFlags_AlwaysClamp);
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                changed |= persistCharacterTuning(entry->id, edit);
+            }
+            (void)ImGui::DragFloat3("Position", placement.offset, 0.01f,
+                                    -10.0f, 10.0f, "%.3f m",
+                                    ImGuiSliderFlags_AlwaysClamp);
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                changed |= persistCharacterTuning(entry->id, edit);
+            }
+            (void)ImGui::DragFloat3("Rotation", placement.rotation, 0.5f,
+                                    -180.0f, 180.0f, "%.1f deg",
+                                    ImGuiSliderFlags_AlwaysClamp);
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                changed |= persistCharacterTuning(entry->id, edit);
+            }
+            if (ImGui::Button(context == MDKR_CHARACTER_CONTEXT_SELECT
+                                  ? "Place feet on ground"
+                                  : "Align pelvis to seat")) {
+                placement.scale = 1.0f;
+                placement.offset[0] = placement.offset[1] =
+                    placement.offset[2] = 0.0f;
+                placement.rotation[0] = placement.rotation[1] =
+                    placement.rotation[2] = 0.0f;
+                changed |= persistCharacterTuning(entry->id, edit);
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("automatic anchor reset");
+            ImGui::PopID();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+
+    if (ImGui::TreeNode("Advanced whole-character correction")) {
+        (void)ImGui::DragFloat3("Overall position", edit.offset, 0.01f,
+                                -500.0f, 500.0f, "%.3f",
+                                ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            changed |= persistCharacterTuning(entry->id, edit);
+        }
+        (void)ImGui::DragFloat3("Overall rotation", edit.rotation, 0.5f,
+                                -180.0f, 180.0f, "%.1f deg",
+                                ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            changed |= persistCharacterTuning(entry->id, edit);
+        }
+        ImGui::TreePop();
+    }
+
+    ImGui::SeparatorText("Motion and detail");
     (void)ImGui::SliderFloat("Animation speed", &edit.animationSpeed,
                              0.05f, 4.0f, "%.2fx",
                              ImGuiSliderFlags_AlwaysClamp);
@@ -2286,6 +2430,31 @@ bool drawCustomCharactersSection(bool compact) {
                 selectedEntry->semantic_mask & raceStates);
             const unsigned mappedSelectStates = countCharacterBits(
                 selectedEntry->semantic_mask & selectStates);
+            const uint32_t requiredContexts =
+                (1u << MDKR_CHARACTER_CONTEXT_SELECT) |
+                ((selectedEntry->vehicle_mask & 7u) << 1u);
+            const bool normalized =
+                (selectedEntry->calibration_flags & 1u) != 0u;
+            const bool anchored =
+                (selectedEntry->attachment_context_mask & requiredContexts) ==
+                requiredContexts;
+            const bool rigMapped =
+                (selectedEntry->socket_mask &
+                 (MDKR_CHARACTER_SOCKET_SEAT |
+                  MDKR_CHARACTER_SOCKET_HEAD)) ==
+                (MDKR_CHARACTER_SOCKET_SEAT |
+                 MDKR_CHARACTER_SOCKET_HEAD);
+            const bool motionReady = mappedRaceStates == 10u &&
+                mappedSelectStates == 3u &&
+                countCharacterBits(selectedEntry->moving_semantic_mask &
+                                   (raceStates | selectStates)) == 13u;
+            ImGui::TextDisabled(
+                "Readiness: Geometry ready · Normalized %s · Anchored %s · Rig %s · Motion %s · Qualified %s",
+                normalized ? "ready" : "review",
+                anchored ? "ready" : "missing",
+                rigMapped ? "ready" : "missing",
+                motionReady ? "ready" : "incomplete",
+                selectedEntry->donor == 9u ? "ready" : "pending");
             ImGui::TextDisabled(
                 "%u/10 race states · %u/3 select states · %u/%u mapped clips move",
                 mappedRaceStates, mappedSelectStates,
@@ -2321,12 +2490,18 @@ bool drawCustomCharactersSection(bool compact) {
                                    missingSelect.c_str());
             }
             ImGui::TextDisabled(
-                "Sockets: seat %s · head %s · hand %s",
+                "Sockets: seat %s · head %s · hands L/R %s/%s · feet L/R %s/%s",
                 (selectedEntry->socket_mask & MDKR_CHARACTER_SOCKET_SEAT)
                     ? "authored" : "required fallback",
                 (selectedEntry->socket_mask & MDKR_CHARACTER_SOCKET_HEAD)
                     ? "authored" : "absent",
-                (selectedEntry->socket_mask & MDKR_CHARACTER_SOCKET_HAND)
+                (selectedEntry->socket_mask & MDKR_CHARACTER_SOCKET_HAND_LEFT)
+                    ? "authored" : "absent",
+                (selectedEntry->socket_mask & MDKR_CHARACTER_SOCKET_HAND_RIGHT)
+                    ? "authored" : "absent",
+                (selectedEntry->socket_mask & MDKR_CHARACTER_SOCKET_FOOT_LEFT)
+                    ? "authored" : "absent",
+                (selectedEntry->socket_mask & MDKR_CHARACTER_SOCKET_FOOT_RIGHT)
                     ? "authored" : "absent");
             if ((selectedEntry->semantic_mask &
                  MDKR_CHARACTER_SEMANTIC_RACE_STEER) != 0u) {

@@ -1,6 +1,6 @@
 # Custom character asset pipeline spike
 
-Status: implemented vertical-slice spike, 2026-08-25. The source contract,
+Status: implemented vertical-slice spike, 2026-08-26. The source contract,
 compiler/cache, native transactional portable-package install, launcher
 workshop and per-player fit controls, retained
 WebGPU GPU-skinned renderer, animation sampler, PBR-like materials, authored
@@ -55,9 +55,10 @@ This gives three deliberately separate formats:
   installed caches;
 - native browse/import/removal for portable packages, with a developer compiler
   fallback for source-only packages;
-- package-specific scale, seat offset, rotation, animation-rate, vehicle-body
-  and LOD tuning layered over package defaults without entering gameplay
-  authority;
+- canonical height/ground/facing normalization, independent select/car/hover/
+  plane anchor profiles, and package-specific per-context size/position/
+  rotation, animation-rate, vehicle-body and LOD tuning without entering
+  gameplay authority;
 - an author manifest wizard plus launcher diagnostics for motionless clips,
   recommended semantic coverage, and seat/head/hand sockets.
 
@@ -182,7 +183,7 @@ versions for every character. A virtual identity registry over donor assets is
 the scalable design; a canonical gameplay-profile registry can be added later
 without pretending custom stats are cosmetic.
 
-## Source package contract (`mdkr-character-source-v1`)
+## Source package contract (`mdkr-character-source-v2`)
 
 The spike implements the smallest useful envelope in
 `tools/character_asset_probe.py`:
@@ -210,7 +211,7 @@ A minimal manifest is:
 
 ```json
 {
-  "schema": "mdkr-character-source-v1",
+  "schema": "mdkr-character-source-v2",
   "id": "org.example.character-name",
   "display_name": "Character Name",
   "renderer_profile": "modern-skeletal-v1",
@@ -228,9 +229,34 @@ A minimal manifest is:
     "vehicles": ["car", "hovercraft", "plane"]
   },
   "presentation": {
-    "scale": [1.0, 1.0, 1.0],
-    "translation_m": [0.0, 0.0, 0.0],
-    "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+    "source_forward": "+z",
+    "target_height_m": 1.25,
+    "contexts": {
+      "select": {
+        "anchor": "ground",
+        "translation_m": [0.0, 0.0, 0.0],
+        "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "scale": 1.0
+      },
+      "car": {
+        "anchor": "seat",
+        "translation_m": [0.0, 0.0, 0.0],
+        "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "scale": 1.0
+      },
+      "hovercraft": {
+        "anchor": "seat",
+        "translation_m": [0.0, 0.0, 0.0],
+        "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "scale": 1.0
+      },
+      "plane": {
+        "anchor": "seat",
+        "translation_m": [0.0, 0.0, 0.0],
+        "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "scale": 1.0
+      }
+    },
     "lod_bias": 0.0
   },
   "sockets": {
@@ -240,6 +266,42 @@ A minimal manifest is:
 }
 ```
 
+`source_forward` is deliberately explicit because arbitrary geometry does not
+contain a reliable semantic front. The wizard accepts `+z`, `-z`, `+x`, or
+`-x`, records that decision in its review report, and the launcher offers a
+visible 180-degree correction if an author chose incorrectly. The compiler
+measures the transformed scene bounds, makes height canonical, records the
+bottom-center ground point, and stores the intended standing height. It does
+not use a guessed centimeter-to-meter repair.
+
+Select and vehicle placement are different contracts. Select aligns the
+synthetic ground anchor to the measured donor floor. Car, hovercraft, and plane
+align the named `seat` node's animated translation to independently qualified
+engine seat frames. The source seat's orientation is intentionally not
+inverted: source axis normalization is applied exactly once, and authored or
+user context rotations remain visible instead of being canceled by a bone
+basis. At runtime the root transform is composed in this order:
+
+```text
+donor object frame
+  * qualified live donor target frame
+  * user correction for this context
+  * package correction for this context
+  * canonical source height/facing transform
+  * inverse source ground-or-seat translation
+```
+
+The qualified Diddy profile derives local units from the live hidden driver
+batches. It maps their measured height to Diddy's 1.25 m reference, places
+select on the measured body ground, and preserves each vehicle model's
+qualified origin as its seat frame. The pure fit function is native-tested;
+unknown donors, changed fingerprints, missing anchors, non-finite bounds, or
+invalid heights fail visibly and retain the retail character.
+
+The older `mdkr-character-source-v1` presentation transform remains accepted
+for installed packages. It is marked legacy/uncalibrated in diagnostics and
+receives safe default context anchors; new authoring always emits v2.
+
 Later schema versions should add, without changing the principles above:
 
 - package version and minimum/maximum engine asset API;
@@ -248,8 +310,8 @@ Later schema versions should add, without changing the principles above:
   `MSFT_lod` chains and a package LOD bias);
 - per-semantic loop/once behavior, playback scale, blend duration, normalized
   parameters, and optional additive masks;
-- a declared standing/seat reference height in addition to v1's root placement
-  transform and named node sockets;
+- declarative humanoid bone roles and optional pole vectors for pose retargeting
+  and two-bone hand/foot IK;
 - optional material variants and eye/mouth morph mappings;
 - portrait/icon references, with generated fallback renders;
 - feature requirements such as morph targets or alpha blending.
@@ -452,6 +514,39 @@ Sockets are similarly semantic. The importer resolves manifest socket names to
 joint/node indices once. Gameplay references `seat`, `head`, or `hand` without
 depending on an artist's bone naming convention.
 
+### Pose is a separate calibration layer
+
+A root transform can correct scale, floor/seat placement, and facing; it cannot
+turn a T-pose into a believable driving pose. Treating those as one “rotation”
+knob was the central failure exposed by the first private screenshots.
+
+The current spike therefore distinguishes three outcomes in its diagnostics:
+
+- **normalized and anchored:** geometry is the right size, direction, and place;
+- **rig mapped:** seat/head plus independent left/right hands and feet are named;
+- **motion ready:** mapped semantic clips contain changing animation keys.
+
+The supplied static fixture reaches the first two and deliberately reports the
+third as incomplete. A production general-purpose pose stage should add a
+versioned humanoid role map (`hips`, spine/chest/head, upper/lower arm/hand and
+upper/lower leg/foot per side), validate hierarchy and limb lengths, then use
+this precedence:
+
+1. use an authored context clip when supplied;
+2. retarget a project-owned reference clip through the role map;
+3. apply bounded two-bone IK for hands to wheel/grip targets and feet to pedal/
+   footrest targets, with author-declared bend planes;
+4. fall back to the source clip/bind pose with an explicit incomplete warning.
+
+IK targets belong to the qualified donor vehicle profile, not to a community
+package. Bone mappings and optional twist/rest-axis corrections belong to the
+package. Solver output is presentation-only, clamped to joint limits, blended
+at semantic transitions, and must never affect physics. Automatic bone-name
+matching can propose a map, as the wizard already does for six sockets, but the
+author must be able to review every inferred role. Models with missing limbs,
+non-humanoid anatomy, mirrored bones, or unusable bind axes must be allowed to
+choose authored animation only rather than being distorted by mandatory IK.
+
 ## Rollback and multiplayer
 
 - The authoritative racer remains a built-in identity/profile. Imported IDs,
@@ -486,8 +581,8 @@ but it still requires explicit license/provenance fields before activation.
 
 ## Supplied Dixie archive: objective result
 
-The archive was used only from `/Users/adamkratch/Downloads`; no extracted or
-normalized asset is tracked by this worktree.
+The supplied archive was used only from the user's Downloads directory; no
+extracted or normalized asset is tracked by this worktree.
 
 Archive inventory:
 
@@ -504,8 +599,15 @@ The bounded DAE adapter preserved 3,489 triangles as 2,517 unified vertices,
 It embedded every resource and put the declared centimeter scale and Z-up to
 meter/Y-up conversion on one shared root. The policy probe consequently
 reported the true scene-world height of only 0.01448 m, rather than silently
-discarding the exporter metadata; the private manifest used an explicit 100x
-presentation scale. Because the DAE contains no animation channels, the
+discarding the exporter metadata. The first v1 proof used an explicit 100x
+presentation scale and exposed why that is insufficient: inverting the full
+pelvis transform pushed the legs through the select floor, one root transform
+could not represent both ground and vehicle seats, and the source faced the
+wrong way in the kart. The v2 proof instead declared `source_forward: -z` and a
+1.25 m target height, compiled the 0.01448 m source to canonical unit height,
+used a bottom-center ground anchor for select, and used translation-only pelvis
+anchors for the three vehicle contexts. Because the DAE contains no animation
+channels, the
 adapter generated only a named one-second motionless witness clip. Authored
 COLLADA animation fails closed and must be exported as GLB from a DCC tool.
 
@@ -560,19 +662,26 @@ fall back through N64 vertices or display lists; it remains below the explicit
 
 The private Dixie fixture completed the same chain without contributing any
 tracked bytes: DAE -> self-contained GLB -> source and portable `.mdkrchar` ->
-`.mdkc` -> live character select and race.
+`.mdkc` -> live character select and race. The source/portable packages,
+compiled cache, logs, and screenshots remain private temporary artifacts.
 The resulting cache contained 2,517 vertices, 3,489 triangles, 35 joints, two
-materials, four PNG textures and 1,922,384 decoded RGBA+mip bytes. In a scripted
-Ancient Lake WebGPU run, diagnostics recorded 1 asset upload, 1,238 complete
-model draws (4,319,382 triangles), 23,541 suppressed qualified donor batches,
-and zero refused modern draws. A private frame showed the driver attached at a
-plausible scale. The T-pose is expected: the adapter supplied one
+materials, four PNG textures and 1,922,384 decoded RGBA+mip bytes. In the
+corrected scripted Ancient Lake WebGPU run, diagnostics recorded one asset
+upload, 1,194 complete model draws (2,082,933 triangles), 13,061 suppressed
+qualified donor batches, and zero refused modern draws. The measured car-driver
+body was 101 local units high; the calibrated character's pelvis landed on the
+independent car seat frame and its declared -Z front was converted to the engine
+forward direction. The T-pose is expected: the adapter supplied one
 positive-duration but motionless witness channel because the archive has no
 authored clips. The compiler and launcher now report that distinction instead
 of mistaking “one clip exists” for real motion.
-The character-select run independently recorded 153 complete replacements and
-zero refused draws while retaining Diddy's numbered placard; this proves the
-select lifecycle/semantic seam, not a polished select pose for that fixture.
+The corrected character-select run independently measured the donor body from
+(-50, 1, -116) to (50, 179, 140), derived a 178-unit target scale and ground
+point (0, 1, 12), recorded 304 primitive draws (530,328 triangles), 153 complete
+replacements and zero refused draws while retaining Diddy's numbered placard.
+The resulting private frame has the imported feet on the roster floor at donor
+height and the face toward the select camera. This proves normalization and the
+select lifecycle/semantic seam, not a polished pose for that static fixture.
 
 ### Higher-fidelity answer and firm v1 limits
 

@@ -39,7 +39,9 @@ MAX_JOINTS = 128
 MAX_VERTICES = 100_000
 MAX_TRIANGLES = 100_000
 MAX_MATERIALS = 16
-PACKAGE_SCHEMA = "mdkr-character-source-v1"
+PACKAGE_SCHEMA_V1 = "mdkr-character-source-v1"
+PACKAGE_SCHEMA = "mdkr-character-source-v2"
+PACKAGE_SCHEMAS = {PACKAGE_SCHEMA_V1, PACKAGE_SCHEMA}
 PACKAGE_MEMBERS = ("manifest.json", "model.glb", "LICENSE.txt")
 PORTABLE_PACKAGE_MEMBERS = PACKAGE_MEMBERS + ("compiled.mdkc",)
 PACKAGE_EPOCH = (1980, 1, 1, 0, 0, 0)
@@ -64,6 +66,8 @@ GAMEPLAY_DONORS = {
     "krunch", "pipsy", "timber", "tiptup", "tt",
 }
 VEHICLE_NAMES = {"car", "hovercraft", "plane"}
+PRESENTATION_CONTEXTS = {"select", *VEHICLE_NAMES}
+SOURCE_FORWARD_AXES = {"+z", "-z", "+x", "-x"}
 RECOMMENDED_RACE_SEMANTICS = (
     "race.steer", "race.reverse", "race.boost", "race.damage", "race.item",
     "race.spin", "race.airborne", "race.land", "race.finish_win",
@@ -613,8 +617,11 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
     }
     for field in sorted(set(manifest) - allowed):
         errors.append(f"manifest contains unknown field {field!r}")
-    if manifest.get("schema") != PACKAGE_SCHEMA:
-        errors.append(f"manifest.schema must be {PACKAGE_SCHEMA!r}")
+    schema = manifest.get("schema")
+    if schema not in PACKAGE_SCHEMAS:
+        errors.append(
+            "manifest.schema must be one of: " + ", ".join(sorted(PACKAGE_SCHEMAS))
+        )
     package_id = manifest.get("id")
     if not isinstance(package_id, str) or not ID_RE.fullmatch(package_id):
         errors.append("manifest.id must be a 2-64 character lowercase slug")
@@ -676,7 +683,118 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
     presentation = manifest.get("presentation")
     if not isinstance(presentation, dict):
         errors.append("manifest.presentation object is required")
-    else:
+    elif schema == PACKAGE_SCHEMA:
+        for field in sorted(set(presentation) - {
+            "source_forward", "target_height_m", "contexts", "lod_bias"
+        }):
+            errors.append(f"manifest.presentation contains unknown field {field!r}")
+        if presentation.get("source_forward") not in SOURCE_FORWARD_AXES:
+            errors.append(
+                "manifest.presentation.source_forward must be +z, -z, +x, or -x"
+            )
+        target_height = presentation.get("target_height_m")
+        if (
+            isinstance(target_height, bool)
+            or not isinstance(target_height, (int, float))
+            or not math.isfinite(float(target_height))
+            or not 0.1 <= float(target_height) <= 10.0
+        ):
+            errors.append(
+                "manifest.presentation.target_height_m must be between 0.1 and 10"
+            )
+        contexts = presentation.get("contexts")
+        required_contexts = {"select"}
+        if isinstance(gameplay, dict) and isinstance(gameplay.get("vehicles"), list):
+            required_contexts.update(
+                vehicle for vehicle in gameplay["vehicles"] if vehicle in VEHICLE_NAMES
+            )
+        if not isinstance(contexts, dict):
+            errors.append("manifest.presentation.contexts object is required")
+        else:
+            for context in sorted(set(contexts) - PRESENTATION_CONTEXTS):
+                errors.append(
+                    f"manifest.presentation.contexts contains unknown context {context!r}"
+                )
+            missing_contexts = sorted(required_contexts - set(contexts))
+            if missing_contexts:
+                errors.append(
+                    "manifest.presentation.contexts is missing: "
+                    + ", ".join(missing_contexts)
+                )
+            for context, adjustment in contexts.items():
+                if context not in PRESENTATION_CONTEXTS:
+                    continue
+                if not isinstance(adjustment, dict):
+                    errors.append(
+                        f"manifest.presentation.contexts.{context} must be an object"
+                    )
+                    continue
+                for field in sorted(set(adjustment) - {
+                    "anchor", "translation_m", "rotation_xyzw", "scale"
+                }):
+                    errors.append(
+                        f"manifest.presentation.contexts.{context} contains unknown field {field!r}"
+                    )
+                expected_anchor = "ground" if context == "select" else "seat"
+                if adjustment.get("anchor") != expected_anchor:
+                    errors.append(
+                        f"manifest.presentation.contexts.{context}.anchor must be {expected_anchor!r}"
+                    )
+                translation = adjustment.get("translation_m")
+                if (
+                    not isinstance(translation, list)
+                    or len(translation) != 3
+                    or any(
+                        isinstance(component, bool)
+                        or not isinstance(component, (int, float))
+                        or not math.isfinite(float(component))
+                        or not -10.0 <= float(component) <= 10.0
+                        for component in translation
+                    )
+                ):
+                    errors.append(
+                        f"manifest.presentation.contexts.{context}.translation_m must contain three finite values between -10 and 10"
+                    )
+                rotation = adjustment.get("rotation_xyzw")
+                if (
+                    not isinstance(rotation, list)
+                    or len(rotation) != 4
+                    or any(
+                        isinstance(component, bool)
+                        or not isinstance(component, (int, float))
+                        or not math.isfinite(float(component))
+                        or not -1.0 <= float(component) <= 1.0
+                        for component in rotation
+                    )
+                ):
+                    errors.append(
+                        f"manifest.presentation.contexts.{context}.rotation_xyzw must be a bounded quaternion"
+                    )
+                else:
+                    length_squared = sum(float(component) ** 2 for component in rotation)
+                    if not 0.999 <= length_squared <= 1.001:
+                        errors.append(
+                            f"manifest.presentation.contexts.{context}.rotation_xyzw must be normalized"
+                        )
+                context_scale = adjustment.get("scale", 1.0)
+                if (
+                    isinstance(context_scale, bool)
+                    or not isinstance(context_scale, (int, float))
+                    or not math.isfinite(float(context_scale))
+                    or not 0.1 <= float(context_scale) <= 5.0
+                ):
+                    errors.append(
+                        f"manifest.presentation.contexts.{context}.scale must be between 0.1 and 5"
+                    )
+        lod_bias = presentation.get("lod_bias", 0.0)
+        if (
+            isinstance(lod_bias, bool)
+            or not isinstance(lod_bias, (int, float))
+            or not math.isfinite(float(lod_bias))
+            or not -4.0 <= float(lod_bias) <= 4.0
+        ):
+            errors.append("manifest.presentation.lod_bias must be between -4 and 4")
+    elif schema == PACKAGE_SCHEMA_V1:
         for field in sorted(set(presentation) - {
             "scale", "translation_m", "rotation_xyzw", "lod_bias"
         }):
@@ -888,6 +1006,10 @@ def verify_package(path: Path) -> dict[str, Any]:
         if semantic not in states
     ]
     author_warnings = []
+    if manifest.get("schema") == PACKAGE_SCHEMA_V1:
+        author_warnings.append(
+            "legacy v1 transform has no explicit forward/height/context calibration; regenerate with the v2 manifest wizard"
+        )
     if missing_states:
         author_warnings.append(
             f"{len(missing_states)} recommended race animation states use fallback"
@@ -903,7 +1025,7 @@ def verify_package(path: Path) -> dict[str, Any]:
             "source-only package needs the developer compiler; prepare a portable package for launcher-only import"
         )
     return {
-        "format": PACKAGE_SCHEMA,
+        "format": manifest.get("schema"),
         "bytes": len(data),
         "sha256": _sha256(data),
         "id": manifest.get("id"),
@@ -912,6 +1034,21 @@ def verify_package(path: Path) -> dict[str, Any]:
         "valid": not errors,
         "portable": portable,
         "authoring": {
+            "calibration_schema": manifest.get("schema"),
+            "source_forward": (
+                manifest.get("presentation", {}).get("source_forward")
+                if isinstance(manifest.get("presentation"), dict) else None
+            ),
+            "target_height_m": (
+                manifest.get("presentation", {}).get("target_height_m")
+                if isinstance(manifest.get("presentation"), dict) else None
+            ),
+            "attachment_contexts": sorted(
+                manifest.get("presentation", {}).get("contexts", {})
+                if isinstance(manifest.get("presentation"), dict) and
+                   isinstance(manifest.get("presentation", {}).get("contexts"), dict)
+                else {}
+            ),
             "fallback_clip": animation_info.get("fallback")
                 if isinstance(animation_info, dict) else None,
             "mapped_recommended_states": [semantic for semantic in RECOMMENDED_RACE_SEMANTICS

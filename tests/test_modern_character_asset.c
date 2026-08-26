@@ -139,6 +139,8 @@ int main(int argc, char **argv) {
     MdkrModernChannel channel;
     MdkrModernKey key;
     MdkrModernSocket socket;
+    MdkrModernAttachment attachment;
+    MdkrModernCalibration calibration;
     MdkrModernCharacterRegistry registry;
     MdkrModernCharacterInstallResult install_result;
     MdkrModernPose pose;
@@ -154,6 +156,7 @@ int main(int argc, char **argv) {
     char prefix_witness[4096];
     FILE *lock_file;
     int player;
+    float select_model_y;
 
     require(argc == 8,
             "usage: test_modern_character_asset <generated.mdkc> <directory> <source.mdkrchar> <portable.mdkrchar> <install-directory> <corrupt-portable.mdkrchar> <mismatched-portable.mdkrchar>");
@@ -197,6 +200,29 @@ int main(int argc, char **argv) {
     require(mdkr_modern_donor_cap_lod(9, 0, 5) == 4 &&
                 mdkr_modern_donor_cap_lod(0, 0, 5) == 5,
             "only the qualified donor avoids its collapsed far LOD");
+    {
+        const float donor_min[3] = {-50.0f, 1.0f, -116.0f};
+        const float donor_max[3] = {50.0f, 179.0f, 140.0f};
+        float fit[16];
+        require(mdkr_modern_donor_fit_frame(
+                    9, MDKR_CHARACTER_CONTEXT_SELECT,
+                    donor_min, donor_max, 1.0f, 1.25f, fit) &&
+                    fit[0] > 177.99f && fit[0] < 178.01f &&
+                    fit[12] == 0.0f && fit[13] == 1.0f &&
+                    fit[14] == 12.0f,
+                "select fit converts meters and lands on measured ground");
+        require(mdkr_modern_donor_fit_frame(
+                    9, MDKR_CHARACTER_CONTEXT_CAR,
+                    donor_min, donor_max, 1.0f, 1.25f, fit) &&
+                    fit[0] > 177.99f && fit[0] < 178.01f &&
+                    fit[12] == 0.0f && fit[13] == 0.0f &&
+                    fit[14] == 0.0f,
+                "vehicle fit retains its independent qualified seat frame");
+        require(!mdkr_modern_donor_fit_frame(
+                    9, MDKR_CHARACTER_CONTEXT_SELECT,
+                    donor_min, donor_max, 0.0f, 1.25f, fit),
+                "fit refuses an invalid normalized source height");
+    }
 
     mdkr_modern_character_asset_stats(&asset, &stats);
     require(stats.vertices == 3u && stats.triangles == 1u &&
@@ -221,6 +247,19 @@ int main(int argc, char **argv) {
     require(mdkr_modern_character_asset_socket(&asset, 0u, &socket) &&
                 mdkr_modern_character_asset_string(&asset, socket.semantic) != NULL,
             "read compiled socket");
+    require(mdkr_modern_character_asset_calibration(&asset, &calibration) &&
+                calibration.source_height > 0.99f &&
+                calibration.source_height < 1.01f &&
+                calibration.normalized_height > 0.99f &&
+                calibration.normalized_height < 1.01f &&
+                calibration.target_height > 1.24f &&
+                calibration.target_height < 1.26f &&
+                (calibration.flags & 1u) != 0u &&
+                mdkr_modern_character_asset_attachment(&asset, 0u,
+                                                       &attachment) &&
+                attachment.context == MDKR_CHARACTER_CONTEXT_SELECT &&
+                (attachment.flags & 1u) != 0u,
+            "read explicit height, ground, facing, and context calibration");
     mdkr_modern_character_asset_unload(&asset);
     mdkr_modern_character_asset_unload(&asset);
 
@@ -254,7 +293,13 @@ int main(int argc, char **argv) {
                 (registry.entries[0].moving_semantic_mask &
                  MDKR_CHARACTER_SEMANTIC_FALLBACK) != 0u &&
                 (registry.entries[0].socket_mask &
-                 MDKR_CHARACTER_SOCKET_SEAT) != 0u,
+                 MDKR_CHARACTER_SOCKET_SEAT) != 0u &&
+                registry.entries[0].attachment_context_mask == 15u &&
+                (registry.entries[0].calibration_flags & 1u) != 0u &&
+                registry.entries[0].normalized_height > 0.99f &&
+                registry.entries[0].normalized_height < 1.01f &&
+                registry.entries[0].target_height > 1.24f &&
+                registry.entries[0].target_height < 1.26f,
             "registry summarizes animation and socket authoring health");
     require(mdkr_modern_character_registry_load(&registry, 0, &asset,
                                                  error, sizeof(error)),
@@ -374,6 +419,7 @@ int main(int argc, char **argv) {
     tuning.animation_speed = 0.5f;
     tuning.lod_bias = 1.0f;
     tuning.vehicle_mask = 1u;
+    tuning.context[MDKR_CHARACTER_CONTEXT_SELECT].translation[1] = 0.75f;
     require(mdkr_modern_character_set_tuning(0, &tuning,
                                               error, sizeof(error)),
             error);
@@ -396,14 +442,22 @@ int main(int argc, char **argv) {
                 0, "race.steer", 0.25f, 1.0f,
                 error, sizeof(error)),
             "missing phase-driven semantic advances fallback instead of scrubbing it");
-    require(mdkr_modern_character_emit(0, 0.0f, &command_cursor,
+    require(mdkr_modern_character_emit(0, MDKR_CHARACTER_CONTEXT_SELECT,
+                                       NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)),
             error);
-    require(command_cursor == commands + 1 && registered_draws == 1u,
+    select_model_y = last_model_matrix[13];
+    require(mdkr_modern_character_emit(0, MDKR_CHARACTER_CONTEXT_CAR,
+                                       NULL, 0.0f, &command_cursor,
+                                       error, sizeof(error)),
+            error);
+    require(command_cursor == commands + 2 && registered_draws == 2u,
             "runtime emits one retained command per selected primitive");
+    require(select_model_y - last_model_matrix[13] > 0.70f,
+            "select ground correction is independent from the car seat frame");
     require(fabsf(last_model_matrix[12]) > 1.0f,
             "runtime draw includes the player seat-offset adjustment");
-    require(commands[0].words.w1 == 1u,
+    require(commands[0].words.w1 == 1u && commands[1].words.w1 == 2u,
             "display list embeds immutable draw token rather than a pointer");
     for (player = 1; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
         require(mdkr_modern_character_assign_player(
@@ -416,9 +470,10 @@ int main(int argc, char **argv) {
                         error, sizeof(error)),
                 "each local player owns an independent semantic pose");
     }
-    require(mdkr_modern_character_emit(3, 0.0f, &command_cursor,
+    require(mdkr_modern_character_emit(3, MDKR_CHARACTER_CONTEXT_CAR,
+                                       NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)) &&
-                command_cursor == commands + 2 && registered_draws == 2u,
+                command_cursor == commands + 3 && registered_draws == 3u,
             "four-player assignment reuses GPU ownership and emits independently");
     mdkr_modern_characters_shutdown();
     require(released_assets == 1u,

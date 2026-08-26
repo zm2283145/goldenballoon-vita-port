@@ -4,6 +4,7 @@
 #include "f3ddkr.h"
 #include "modern_character_pose.h"
 #include "modern_character_render.h"
+#include "modern_character_donor.h"
 
 #include <errno.h>
 #include <math.h>
@@ -53,16 +54,21 @@ static void matrix_identity(float output[16]) {
 }
 
 void mdkr_modern_character_tuning_defaults(MdkrModernCharacterTuning *out) {
+    unsigned context;
     if (out == NULL) return;
     memset(out, 0, sizeof(*out));
     out->scale = 1.0f;
     out->animation_speed = 1.0f;
     out->vehicle_mask = 0x7u;
+    for (context = 0u; context < MDKR_CHARACTER_CONTEXT_COUNT; context++) {
+        out->context[context].scale = 1.0f;
+    }
 }
 
 int mdkr_modern_character_tuning_validate(MdkrModernCharacterTuning *tuning,
                                           char *error, size_t error_size) {
     unsigned axis;
+    unsigned context;
     if (tuning == NULL || !isfinite(tuning->scale) ||
         tuning->scale < 0.1f || tuning->scale > 5.0f ||
         !isfinite(tuning->animation_speed) ||
@@ -84,6 +90,27 @@ int mdkr_modern_character_tuning_validate(MdkrModernCharacterTuning *tuning,
             set_error(error, error_size,
                       "character translation or rotation is outside its safe range");
             return 0;
+        }
+    }
+    for (context = 0u; context < MDKR_CHARACTER_CONTEXT_COUNT; context++) {
+        MdkrModernCharacterAdjustment *adjustment = &tuning->context[context];
+        if (!isfinite(adjustment->scale) || adjustment->scale < 0.1f ||
+            adjustment->scale > 5.0f) {
+            set_error(error, error_size,
+                      "character context scale is outside its safe range");
+            return 0;
+        }
+        for (axis = 0u; axis < 3u; axis++) {
+            if (!isfinite(adjustment->translation[axis]) ||
+                adjustment->translation[axis] < -10.0f ||
+                adjustment->translation[axis] > 10.0f ||
+                !isfinite(adjustment->rotation_degrees[axis]) ||
+                adjustment->rotation_degrees[axis] < -180.0f ||
+                adjustment->rotation_degrees[axis] > 180.0f) {
+                set_error(error, error_size,
+                          "character context transform is outside its safe range");
+                return 0;
+            }
         }
     }
     set_error(error, error_size, "");
@@ -214,6 +241,70 @@ static void definition_matrix(const MdkrModernCharacterDefinition *definition,
     output[14] = definition->translation[2] + tuning->translation[2];
 }
 
+static void quaternion_transform_matrix(const float rotation[4], float scale,
+                                        const float translation[3],
+                                        float output[16]) {
+    const float x = rotation[0], y = rotation[1];
+    const float z = rotation[2], w = rotation[3];
+    matrix_identity(output);
+    output[0] = (1.0f - 2.0f * (y * y + z * z)) * scale;
+    output[1] = (2.0f * (x * y + z * w)) * scale;
+    output[2] = (2.0f * (x * z - y * w)) * scale;
+    output[4] = (2.0f * (x * y - z * w)) * scale;
+    output[5] = (1.0f - 2.0f * (x * x + z * z)) * scale;
+    output[6] = (2.0f * (y * z + x * w)) * scale;
+    output[8] = (2.0f * (x * z + y * w)) * scale;
+    output[9] = (2.0f * (y * z - x * w)) * scale;
+    output[10] = (1.0f - 2.0f * (x * x + y * y)) * scale;
+    output[12] = translation[0];
+    output[13] = translation[1];
+    output[14] = translation[2];
+}
+
+static void adjustment_matrix(const MdkrModernCharacterAdjustment *adjustment,
+                              float output[16]) {
+    const float radians = 0.00872664625997164788f;
+    const float half_x = adjustment->rotation_degrees[0] * radians;
+    const float half_y = adjustment->rotation_degrees[1] * radians;
+    const float half_z = adjustment->rotation_degrees[2] * radians;
+    const float cx = cosf(half_x), sx = sinf(half_x);
+    const float cy = cosf(half_y), sy = sinf(half_y);
+    const float cz = cosf(half_z), sz = sinf(half_z);
+    const float rotation[4] = {
+        sx * cy * cz - cx * sy * sz,
+        cx * sy * cz + sx * cy * sz,
+        cx * cy * sz - sx * sy * cz,
+        cx * cy * cz + sx * sy * sz,
+    };
+    quaternion_transform_matrix(rotation, adjustment->scale,
+                                adjustment->translation, output);
+}
+
+static int attachment_for_context(const MdkrModernCharacterAsset *asset,
+                                  MdkrModernCharacterContext context,
+                                  MdkrModernAttachment *out) {
+    const MdkrModernSectionView *attachments =
+        mdkr_modern_character_asset_section(asset, MDKR_MDKC_ATTACHMENTS);
+    uint32_t index;
+    memset(out, 0, sizeof(*out));
+    out->context = (uint32_t)context;
+    out->rotation[3] = 1.0f;
+    out->scale = 1.0f;
+    if (attachments == NULL) {
+        out->flags = context == MDKR_CHARACTER_CONTEXT_SELECT ? 1u : 0u;
+        return 1;
+    }
+    for (index = 0u; index < attachments->count; index++) {
+        MdkrModernAttachment candidate;
+        (void)mdkr_modern_character_asset_attachment(asset, index, &candidate);
+        if (candidate.context == (uint32_t)context) {
+            *out = candidate;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int parse_environment_float(int player, const char *suffix,
                                    float minimum, float maximum, float *output) {
     char name[80];
@@ -236,11 +327,16 @@ static int parse_environment_float(int player, const char *suffix,
 
 static void player_tuning_from_environment(int player,
                                            MdkrModernCharacterTuning *tuning) {
+    static const char *context_names[MDKR_CHARACTER_CONTEXT_COUNT] = {
+        "SELECT", "CAR", "HOVERCRAFT", "PLANE"
+    };
     char name[80];
     char *end = NULL;
     const char *text;
     unsigned long mask;
     int valid = 1;
+    unsigned context;
+    unsigned axis;
     mdkr_modern_character_tuning_defaults(tuning);
     valid &= parse_environment_float(player, "SCALE", 0.1f, 5.0f,
                                      &tuning->scale);
@@ -270,6 +366,27 @@ static void player_tuning_from_environment(int player,
             text[0] == '\r' || text[0] == '\n' || end == text ||
             *end != '\0' || mask == 0u || mask > 7u) valid = 0;
         else tuning->vehicle_mask = (uint32_t)mask;
+    }
+    for (context = 0u; context < MDKR_CHARACTER_CONTEXT_COUNT; context++) {
+        static const char *axis_names[3] = {"X", "Y", "Z"};
+        char suffix[64];
+        (void)snprintf(suffix, sizeof(suffix), "%s_SCALE",
+                       context_names[context]);
+        valid &= parse_environment_float(
+            player, suffix, 0.1f, 5.0f,
+            &tuning->context[context].scale);
+        for (axis = 0u; axis < 3u; axis++) {
+            (void)snprintf(suffix, sizeof(suffix), "%s_OFFSET_%s",
+                           context_names[context], axis_names[axis]);
+            valid &= parse_environment_float(
+                player, suffix, -10.0f, 10.0f,
+                &tuning->context[context].translation[axis]);
+            (void)snprintf(suffix, sizeof(suffix), "%s_ROTATION_%s",
+                           context_names[context], axis_names[axis]);
+            valid &= parse_environment_float(
+                player, suffix, -180.0f, 180.0f,
+                &tuning->context[context].rotation_degrees[axis]);
+        }
     }
     if (!valid) {
         fprintf(stderr,
@@ -567,8 +684,9 @@ int mdkr_modern_character_tick_phase(int player, const char *semantic,
         &slot->pose, seconds, normalized_phase, error, error_size);
 }
 
-int mdkr_modern_character_emit(int player, float view_distance,
-                               Gfx **display_list,
+int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
+                               const float target_frame[16],
+                               float view_distance, Gfx **display_list,
                                char *error, size_t error_size) {
     MdkrModernRuntimePlayer *slot;
     MdkrModernRuntimePool *pool;
@@ -577,8 +695,19 @@ int mdkr_modern_character_emit(int player, float view_distance,
     float previous_seat_transform[16];
     float inverse_seat[16];
     float previous_inverse_seat[16];
+    float authored_context[16];
+    float user_context[16];
+    float target_context[16];
+    float donor_context[16];
+    float source_normalized[16];
+    float previous_source_normalized[16];
+    float authored_normalized[16];
+    float previous_authored_normalized[16];
+    float adjusted_transform[16];
+    float previous_adjusted_transform[16];
     float anchored_transform[16];
     float previous_anchored_transform[16];
+    MdkrModernAttachment attachment;
     uint32_t primitive_index;
     uint32_t selected_lod;
     uint32_t available_lod = 0u;
@@ -586,6 +715,8 @@ int mdkr_modern_character_emit(int player, float view_distance,
     if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
         display_list == NULL || *display_list == NULL ||
         (slot = &s_players[player])->pool < 0 ||
+        context < MDKR_CHARACTER_CONTEXT_SELECT ||
+        context >= MDKR_CHARACTER_CONTEXT_COUNT ||
         !gfx_modern_character_supported() || !isfinite(view_distance)) {
         set_error(error, error_size, "modern character draw is unavailable");
         return 0;
@@ -624,23 +755,93 @@ int mdkr_modern_character_emit(int player, float view_distance,
         if (found || selected_lod == 0u) break;
         selected_lod--;
     }
-    if (!mdkr_modern_pose_socket_matrix(&slot->pose, "seat", 0,
-                                        seat_transform) ||
-        !mdkr_modern_pose_socket_matrix(&slot->pose, "seat", 1,
-                                        previous_seat_transform) ||
-        !matrix_affine_inverse(seat_transform, inverse_seat) ||
+    if (!attachment_for_context(&pool->asset, context, &attachment)) {
+        set_error(error, error_size,
+                  "character package has no attachment for this context");
+        return 0;
+    }
+    if ((attachment.flags & 1u) != 0u) {
+        MdkrModernCalibration calibration;
+        matrix_identity(seat_transform);
+        if (mdkr_modern_character_asset_calibration(&pool->asset,
+                                                     &calibration)) {
+            seat_transform[12] = calibration.ground[0];
+            seat_transform[13] = calibration.ground[1];
+            seat_transform[14] = calibration.ground[2];
+        }
+        memcpy(previous_seat_transform, seat_transform,
+               sizeof(previous_seat_transform));
+    } else {
+        const char *anchor = attachment.anchor != 0u
+            ? mdkr_modern_character_asset_string(&pool->asset,
+                                                  attachment.anchor)
+            : "seat";
+        if (anchor == NULL ||
+            !mdkr_modern_pose_socket_matrix(&slot->pose, anchor, 0,
+                                            seat_transform) ||
+            !mdkr_modern_pose_socket_matrix(&slot->pose, anchor, 1,
+                                            previous_seat_transform)) {
+            set_error(error, error_size,
+                      "character attachment socket is unavailable");
+            return 0;
+        }
+        /* Attachment sockets contribute their animated position only. Source
+         * unit/up-axis scale and facing are normalized exactly once by the
+         * package definition; inheriting a pelvis node's basis here would
+         * silently apply exporter conversion a second time. */
+        {
+            const float current_translation[3] = {
+                seat_transform[12], seat_transform[13], seat_transform[14]
+            };
+            const float previous_translation[3] = {
+                previous_seat_transform[12], previous_seat_transform[13],
+                previous_seat_transform[14]
+            };
+            matrix_identity(seat_transform);
+            matrix_identity(previous_seat_transform);
+            memcpy(seat_transform + 12, current_translation,
+                   sizeof(current_translation));
+            memcpy(previous_seat_transform + 12, previous_translation,
+                   sizeof(previous_translation));
+        }
+    }
+    if (!matrix_affine_inverse(seat_transform, inverse_seat) ||
         !matrix_affine_inverse(previous_seat_transform,
                                previous_inverse_seat)) {
         set_error(error, error_size,
-                  "character seat socket has a singular transform");
+                  "character attachment anchor has a singular transform");
         return 0;
     }
     definition_matrix(&pool->definition, &slot->tuning, package_transform);
-    /* A character package defines its own seated origin. Cancelling that
-     * socket before applying the author adjustment keeps root-motion clips and
-     * differently-authored rigs attached to the vehicle origin. */
-    matrix_multiply(package_transform, inverse_seat, anchored_transform);
+    quaternion_transform_matrix(attachment.rotation, attachment.scale,
+                                attachment.translation, authored_context);
+    adjustment_matrix(&slot->tuning.context[context], user_context);
+    if (target_frame != NULL) {
+        memcpy(target_context, target_frame, sizeof(target_context));
+    } else if (mdkr_modern_donor_attachment_frame(
+                   (int)pool->definition.donor, context, donor_context)) {
+        memcpy(target_context, donor_context, sizeof(target_context));
+    } else {
+        set_error(error, error_size,
+                  "character donor has no qualified attachment frame");
+        return 0;
+    }
+    /* Source and target frames remain independent. Ground anchoring is fixed
+     * in bind space, while a vehicle seat may move with an authored clip.
+     * Context and user corrections operate in DKR target space, so fixing the
+     * select floor can never perturb the car/hover/plane fit. */
+    matrix_multiply(package_transform, inverse_seat, source_normalized);
     matrix_multiply(package_transform, previous_inverse_seat,
+                    previous_source_normalized);
+    matrix_multiply(authored_context, source_normalized,
+                    authored_normalized);
+    matrix_multiply(authored_context, previous_source_normalized,
+                    previous_authored_normalized);
+    matrix_multiply(user_context, authored_normalized, adjusted_transform);
+    matrix_multiply(user_context, previous_authored_normalized,
+                    previous_adjusted_transform);
+    matrix_multiply(target_context, adjusted_transform, anchored_transform);
+    matrix_multiply(target_context, previous_adjusted_transform,
                     previous_anchored_transform);
     for (primitive_index = 0u;
          primitive_index < pool->render.gpu.primitive_count;
@@ -711,5 +912,31 @@ int mdkr_modern_character_emit(int player, float view_distance,
     s_replacement_draws++;
     s_replacement_primitives += emitted;
     set_error(error, error_size, "");
+    return 1;
+}
+
+int mdkr_modern_character_player_calibration(
+    int player, MdkrModernCalibration *out,
+    uint32_t *attachment_context_mask) {
+    MdkrModernRuntimePlayer *slot;
+    MdkrModernRuntimePool *pool;
+    const MdkrModernSectionView *attachments;
+    uint32_t mask = 0u;
+    uint32_t index;
+    if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS || out == NULL ||
+        (slot = &s_players[player])->pool < 0) return 0;
+    pool = &s_pools[slot->pool];
+    if (!mdkr_modern_character_asset_calibration(&pool->asset, out)) return 0;
+    attachments = mdkr_modern_character_asset_section(
+        &pool->asset, MDKR_MDKC_ATTACHMENTS);
+    if (attachments != NULL) {
+        for (index = 0u; index < attachments->count; index++) {
+            MdkrModernAttachment attachment;
+            (void)mdkr_modern_character_asset_attachment(
+                &pool->asset, index, &attachment);
+            mask |= 1u << attachment.context;
+        }
+    }
+    if (attachment_context_mask != NULL) *attachment_context_mask = mask;
     return 1;
 }

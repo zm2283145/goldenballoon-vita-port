@@ -41,6 +41,10 @@ enum MdkrModernCharacterSocketBits {
     MDKR_CHARACTER_SOCKET_SEAT = 1u << 0,
     MDKR_CHARACTER_SOCKET_HEAD = 1u << 1,
     MDKR_CHARACTER_SOCKET_HAND = 1u << 2,
+    MDKR_CHARACTER_SOCKET_HAND_LEFT = 1u << 3,
+    MDKR_CHARACTER_SOCKET_HAND_RIGHT = 1u << 4,
+    MDKR_CHARACTER_SOCKET_FOOT_LEFT = 1u << 5,
+    MDKR_CHARACTER_SOCKET_FOOT_RIGHT = 1u << 6,
 };
 
 typedef struct MdkrModernCharacterEntry {
@@ -54,6 +58,15 @@ typedef struct MdkrModernCharacterEntry {
     uint32_t moving_semantic_mask;
     uint32_t socket_mask;
     uint32_t motion_channels;
+    uint32_t attachment_context_mask;
+    uint32_t calibration_flags;
+    uint32_t source_forward;
+    float bounds_min[3];
+    float bounds_max[3];
+    float ground[3];
+    float source_height;
+    float normalized_height;
+    float target_height;
     MdkrModernCharacterStats stats;
 } MdkrModernCharacterEntry;
 

@@ -37,7 +37,9 @@ typedef enum MdkrModernSectionType {
     MDKR_MDKC_CHARACTER = 14,
     MDKR_MDKC_SEMANTICS = 15,
     MDKR_MDKC_SOCKETS = 16,
-    MDKR_MDKC_SECTION_LAST = MDKR_MDKC_SOCKETS
+    MDKR_MDKC_ATTACHMENTS = 17,
+    MDKR_MDKC_CALIBRATION = 18,
+    MDKR_MDKC_SECTION_LAST = MDKR_MDKC_CALIBRATION
 } MdkrModernSectionType;
 
 typedef struct MdkrModernSectionView {
@@ -160,6 +162,37 @@ typedef struct MdkrModernSocket {
     uint32_t node;
 } MdkrModernSocket;
 
+typedef enum MdkrModernCharacterContext {
+    MDKR_CHARACTER_CONTEXT_SELECT = 0,
+    MDKR_CHARACTER_CONTEXT_CAR = 1,
+    MDKR_CHARACTER_CONTEXT_HOVERCRAFT = 2,
+    MDKR_CHARACTER_CONTEXT_PLANE = 3,
+    MDKR_CHARACTER_CONTEXT_COUNT = 4
+} MdkrModernCharacterContext;
+
+/* Package-authored adjustment in the target context's coordinate system.
+ * `anchor` names either the synthetic `ground` anchor or a socket such as
+ * `seat`. Flags bit zero identifies a fixed ground anchor. */
+typedef struct MdkrModernAttachment {
+    uint32_t context;
+    uint32_t anchor;
+    float translation[3];
+    float rotation[4];
+    float scale;
+    uint32_t flags;
+} MdkrModernAttachment;
+
+typedef struct MdkrModernCalibration {
+    float bounds_min[3];
+    float bounds_max[3];
+    float ground[3];
+    float source_height;
+    uint32_t source_forward;
+    uint32_t flags; /* bit zero: explicit v2 calibration */
+    float normalized_height;
+    float target_height;
+} MdkrModernCalibration;
+
 typedef struct MdkrModernCharacterAsset {
     uint8_t *owned_bytes;
     size_t size;
@@ -226,6 +259,11 @@ int mdkr_modern_character_asset_semantic(const MdkrModernCharacterAsset *asset,
                                          uint32_t index, MdkrModernSemantic *out);
 int mdkr_modern_character_asset_socket(const MdkrModernCharacterAsset *asset,
                                        uint32_t index, MdkrModernSocket *out);
+int mdkr_modern_character_asset_attachment(
+    const MdkrModernCharacterAsset *asset, uint32_t index,
+    MdkrModernAttachment *out);
+int mdkr_modern_character_asset_calibration(
+    const MdkrModernCharacterAsset *asset, MdkrModernCalibration *out);
 
 void mdkr_modern_character_asset_stats(const MdkrModernCharacterAsset *asset,
                                        MdkrModernCharacterStats *out);

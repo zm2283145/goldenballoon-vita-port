@@ -29,6 +29,15 @@ class CharacterManifestWizardTests(unittest.TestCase):
             )
             report = probe.inspect_glb(model, require_character=True)
             self.assertEqual([], probe.validate_manifest(manifest, report))
+            self.assertEqual(probe.PACKAGE_SCHEMA, manifest["schema"])
+            self.assertEqual("+z", manifest["presentation"]["source_forward"])
+            self.assertEqual(1.25, manifest["presentation"]["target_height_m"])
+            self.assertEqual(
+                "ground", manifest["presentation"]["contexts"]["select"]["anchor"]
+            )
+            self.assertEqual(
+                "seat", manifest["presentation"]["contexts"]["car"]["anchor"]
+            )
             self.assertEqual("idle", decisions["fallback"])
             self.assertEqual("idle", manifest["animations"]["states"]["select.idle"])
             self.assertEqual(
@@ -36,6 +45,19 @@ class CharacterManifestWizardTests(unittest.TestCase):
                 decisions["missing_select_states"],
             )
             self.assertEqual({"seat": "root", "head": "head"}, manifest["sockets"])
+
+    def test_forward_and_height_are_explicit_author_decisions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model = Path(temporary) / "model.glb"
+            model.write_bytes(make_animated_glb())
+            manifest, decisions = wizard.build_manifest(
+                model, "org.example.backward", "Backward Character", "CC0-1.0",
+                "Generated fixture", "https://example.invalid/backward",
+                "diddy", ["car"], source_forward="-z", target_height_m=1.4
+            )
+            self.assertEqual("-z", manifest["presentation"]["source_forward"])
+            self.assertEqual(1.4, manifest["presentation"]["target_height_m"])
+            self.assertEqual("-z", decisions["source_forward"])
 
 
 if __name__ == "__main__":

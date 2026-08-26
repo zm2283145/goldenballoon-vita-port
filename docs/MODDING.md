@@ -217,10 +217,12 @@ license text, packaged as `.mdkrchar`. It does not require a second ROM. Install
 and removal are available in **Settings → Content → Custom Characters**. That
 workshop can browse, drag-and-drop, or accept a typed package path,
 validate/import, rescan, assign a different presentation to P1-P4, remove it,
-and edit package-specific size, seat XYZ, rotation XYZ, animation speed, LOD
-preference, and car/hover/plane pairing. Package-specific fit follows the same
-character when it is assigned to another player. Those settings never alter
-physics or the vehicle selected by the game.
+and edit intended standing height, source facing, animation speed, LOD
+preference, and car/hover/plane pairing. Character select, car, hovercraft, and
+plane each have independent size/XYZ/rotation controls and an anchor reset, so
+placing feet on the roster floor cannot disturb a pelvis-to-seat fit.
+Package-specific fit follows the same character when it is assigned to another
+player. Those settings never alter physics or the vehicle selected by the game.
 
 ```sh
 # Optional convenience path for the adapter's deliberately bounded DAE subset.
@@ -234,7 +236,8 @@ python3 tools/character_asset_probe.py probe model.glb --require-character
 python3 tools/character_manifest_wizard.py model.glb \
   --id org.example.character-name --display-name "Character Name" \
   --spdx CC-BY-4.0 --attribution "Creator Name" \
-  --source-url https://example.invalid/source --output manifest.json
+  --source-url https://example.invalid/source \
+  --source-forward=-z --target-height 1.25 --output manifest.json
 
 python3 tools/character_asset_probe.py pack \
   --model model.glb --manifest manifest.json --license LICENSE.txt \
@@ -268,6 +271,16 @@ prepare. The manifest must match the complete
 example and schema in the architecture document, and every named animation or
 socket must exist in the GLB.
 
+The wizard emits `mdkr-character-source-v2`. `--source-forward` declares which
+local horizontal axis the model's face points toward (`+z`, `-z`, `+x`, or
+`-x`); geometry alone cannot answer that reliably. `--target-height` is the
+intended standing height in meters. The compiler measures the transformed
+source bounds, normalizes them to unit height, records a bottom-center ground
+anchor, and creates separate ground/select and pelvis/vehicle profiles. Old v1
+packages still load but are clearly marked as legacy calibration in the
+workshop. If a preview is backward, use the visible 180-degree correction; if
+it is misplaced, adjust only the affected context.
+
 Animation names are mapped to engine intent, not hard-coded frame numbers. The
 recommended race states are `race.steer`, `race.reverse`, `race.boost`,
 `race.damage`, `race.item`, `race.spin`, `race.airborne`, `race.land`,
@@ -277,8 +290,12 @@ recommended race states are `race.steer`, `race.reverse`, `race.boost`,
 neutral, and 1 full right. Damage, land, and selection confirmation are
 one-shots; landing is driven for 0.2 seconds after an airborne-to-grounded
 edge. The launcher names missing mappings, reports which mapped clips actually
-move, and shows seat/head/hand socket readiness. A positive-duration
+move, and separately reports geometry, normalization, anchors, rig sockets,
+motion, and donor qualification. A positive-duration
 identity clip remains a T-pose—it proves timing plumbing, not authored motion.
+Root rotation and seat offsets cannot repair that. A model needs real authored
+semantic clips or a future humanoid role-map/retargeting/IK stage; the current
+importer refuses to disguise a static clip as animation readiness.
 
 In character select, a configured Diddy-family package replaces the exact
 fingerprint-qualified Diddy actor while the numbered player placard remains.

@@ -2,6 +2,7 @@
 
 #include "asset_enums.h"
 
+#include <math.h>
 #include <stdint.h>
 
 #define MDKR_DONOR_DIDDY 9
@@ -104,4 +105,65 @@ int mdkr_modern_donor_select_model_ready(int donor, int model_id,
 int mdkr_modern_donor_select_batch_visible(int donor, int batch) {
     if (donor != MDKR_DONOR_DIDDY || batch < 0 || batch >= 28) return 1;
     return batch == 0;
+}
+
+int mdkr_modern_donor_attachment_frame(
+    int donor, MdkrModernCharacterContext context, float output[16]) {
+    int index;
+    if (donor != MDKR_DONOR_DIDDY || output == NULL ||
+        context < MDKR_CHARACTER_CONTEXT_SELECT ||
+        context >= MDKR_CHARACTER_CONTEXT_COUNT) return 0;
+    for (index = 0; index < 16; index++) output[index] = 0.0f;
+    output[0] = output[5] = output[10] = output[15] = 1.0f;
+    /* Diddy's qualified object models already express their ground/seat frame
+     * at local origin. Keeping that fact here, rather than implicit in the
+     * renderer, lets each newly-qualified donor provide independent measured
+     * select/car/hover/plane frames without changing package data. */
+    return 1;
+}
+
+float mdkr_modern_donor_reference_height_m(int donor) {
+    return donor == MDKR_DONOR_DIDDY ? 1.25f : 0.0f;
+}
+
+int mdkr_modern_donor_fit_frame(
+    int donor, MdkrModernCharacterContext context,
+    const float bounds_min[3], const float bounds_max[3],
+    float normalized_height, float target_height_m, float output[16]) {
+    float reference_height;
+    float donor_height;
+    float target_scale;
+    int axis;
+    int index;
+    if (bounds_min == NULL || bounds_max == NULL || output == NULL ||
+        context < MDKR_CHARACTER_CONTEXT_SELECT ||
+        context >= MDKR_CHARACTER_CONTEXT_COUNT ||
+        !isfinite(normalized_height) || normalized_height <= 0.0f ||
+        !isfinite(target_height_m) || target_height_m <= 0.0f ||
+        !mdkr_modern_donor_attachment_frame(donor, context, output)) {
+        return 0;
+    }
+    for (axis = 0; axis < 3; axis++) {
+        if (!isfinite(bounds_min[axis]) || !isfinite(bounds_max[axis]) ||
+            bounds_max[axis] < bounds_min[axis]) return 0;
+    }
+    reference_height = mdkr_modern_donor_reference_height_m(donor);
+    donor_height = bounds_max[1] - bounds_min[1];
+    if (!isfinite(reference_height) || reference_height <= 0.0f ||
+        !isfinite(donor_height) || donor_height <= 0.0f) return 0;
+    target_scale = donor_height * target_height_m /
+                   (reference_height * normalized_height);
+    if (!isfinite(target_scale) || target_scale <= 0.0f) return 0;
+
+    /* Preserve a future donor profile's rotation while applying its measured
+     * unit conversion. Translation is never scaled. */
+    for (index = 0; index < 12; index++) {
+        if ((index & 3) != 3) output[index] *= target_scale;
+    }
+    if (context == MDKR_CHARACTER_CONTEXT_SELECT) {
+        output[12] += (bounds_min[0] + bounds_max[0]) * 0.5f;
+        output[13] += bounds_min[1];
+        output[14] += (bounds_min[2] + bounds_max[2]) * 0.5f;
+    }
+    return 1;
 }

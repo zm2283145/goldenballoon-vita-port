@@ -12,7 +12,7 @@
 
 static const uint32_t s_expected_strides[MDKR_MDKC_SECTION_LAST + 1] = {
     0u, 1u, 72u, 4u, 32u, 80u, 40u, 1u, 48u, 16u, 68u,
-    16u, 24u, 52u, 64u, 16u, 8u
+    16u, 24u, 52u, 64u, 16u, 8u, 48u, 64u
 };
 
 static void set_error(char *error, size_t error_size, const char *message) {
@@ -272,6 +272,45 @@ int mdkr_modern_character_asset_socket(const MdkrModernCharacterAsset *asset,
     return 1;
 }
 
+int mdkr_modern_character_asset_attachment(
+    const MdkrModernCharacterAsset *asset, uint32_t index,
+    MdkrModernAttachment *out) {
+    const uint8_t *data = record(asset, MDKR_MDKC_ATTACHMENTS, index);
+    unsigned component;
+    if (data == NULL || out == NULL) return 0;
+    memset(out, 0, sizeof(*out));
+    out->context = read_u32(data);
+    out->anchor = read_u32(data + 4u);
+    for (component = 0u; component < 3u; component++) {
+        out->translation[component] = read_f32(data + 8u + component * 4u);
+    }
+    for (component = 0u; component < 4u; component++) {
+        out->rotation[component] = read_f32(data + 20u + component * 4u);
+    }
+    out->scale = read_f32(data + 36u);
+    out->flags = read_u32(data + 40u);
+    return 1;
+}
+
+int mdkr_modern_character_asset_calibration(
+    const MdkrModernCharacterAsset *asset, MdkrModernCalibration *out) {
+    const uint8_t *data = record(asset, MDKR_MDKC_CALIBRATION, 0u);
+    unsigned component;
+    if (data == NULL || out == NULL) return 0;
+    memset(out, 0, sizeof(*out));
+    for (component = 0u; component < 3u; component++) {
+        out->bounds_min[component] = read_f32(data + component * 4u);
+        out->bounds_max[component] = read_f32(data + 12u + component * 4u);
+        out->ground[component] = read_f32(data + 24u + component * 4u);
+    }
+    out->source_height = read_f32(data + 36u);
+    out->source_forward = read_u32(data + 40u);
+    out->flags = read_u32(data + 44u);
+    out->normalized_height = read_f32(data + 48u);
+    out->target_height = read_f32(data + 52u);
+    return 1;
+}
+
 static int finite_array(const float *values, size_t count) {
     size_t index;
     for (index = 0u; index < count; index++) {
@@ -524,6 +563,80 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
             return 0;
         }
     }
+    if (asset->sections[MDKR_MDKC_ATTACHMENTS].data != NULL) {
+        uint32_t context_mask = 0u;
+        if (asset->sections[MDKR_MDKC_ATTACHMENTS].count == 0u ||
+            asset->sections[MDKR_MDKC_ATTACHMENTS].count >
+                MDKR_CHARACTER_CONTEXT_COUNT) {
+            set_error(error, error_size,
+                      "compiled attachment profile has an invalid count");
+            return 0;
+        }
+        for (index = 0u;
+             index < asset->sections[MDKR_MDKC_ATTACHMENTS].count; index++) {
+            MdkrModernAttachment attachment;
+            float quaternion_length;
+            (void)mdkr_modern_character_asset_attachment(asset, index,
+                                                         &attachment);
+            quaternion_length =
+                attachment.rotation[0] * attachment.rotation[0] +
+                attachment.rotation[1] * attachment.rotation[1] +
+                attachment.rotation[2] * attachment.rotation[2] +
+                attachment.rotation[3] * attachment.rotation[3];
+            if (attachment.context >= MDKR_CHARACTER_CONTEXT_COUNT ||
+                (context_mask & (1u << attachment.context)) != 0u ||
+                mdkr_modern_character_asset_string(asset, attachment.anchor) == NULL ||
+                !finite_array(attachment.translation, 3u) ||
+                !finite_array(attachment.rotation, 4u) ||
+                !isfinite(attachment.scale) || attachment.scale < 0.1f ||
+                attachment.scale > 5.0f || (attachment.flags & ~1u) != 0u ||
+                quaternion_length < 0.999f || quaternion_length > 1.001f) {
+                set_error(error, error_size,
+                          "compiled attachment profile is invalid");
+                return 0;
+            }
+            context_mask |= 1u << attachment.context;
+        }
+        if ((context_mask & (1u << MDKR_CHARACTER_CONTEXT_SELECT)) == 0u) {
+            set_error(error, error_size,
+                      "compiled attachment profile omits character select");
+            return 0;
+        }
+    }
+    if (asset->sections[MDKR_MDKC_CALIBRATION].data != NULL) {
+        MdkrModernCalibration calibration;
+        if (asset->sections[MDKR_MDKC_CALIBRATION].count != 1u ||
+            !mdkr_modern_character_asset_calibration(asset, &calibration) ||
+            !finite_array(calibration.bounds_min, 3u) ||
+            !finite_array(calibration.bounds_max, 3u) ||
+            !finite_array(calibration.ground, 3u) ||
+            !isfinite(calibration.source_height) ||
+            calibration.source_height <= 1.0e-6f ||
+            !isfinite(calibration.normalized_height) ||
+            calibration.normalized_height <= 1.0e-6f ||
+            !isfinite(calibration.target_height) ||
+            calibration.target_height < 0.1f ||
+            calibration.target_height > 10.0f ||
+            calibration.source_forward > 3u ||
+            (calibration.flags & ~1u) != 0u) {
+            set_error(error, error_size,
+                      "compiled character calibration is invalid");
+            return 0;
+        }
+        for (index = 0u; index < 3u; index++) {
+            if (calibration.bounds_min[index] > calibration.bounds_max[index]) {
+                set_error(error, error_size,
+                          "compiled character calibration bounds are inverted");
+                return 0;
+            }
+        }
+    }
+    if ((asset->sections[MDKR_MDKC_ATTACHMENTS].data == NULL) !=
+        (asset->sections[MDKR_MDKC_CALIBRATION].data == NULL)) {
+        set_error(error, error_size,
+                  "compiled character calibration sections are incomplete");
+        return 0;
+    }
     return 1;
 }
 
@@ -575,7 +688,7 @@ static int parse_cache(MdkrModernCharacterAsset *asset,
         asset->sections[type].stride = stride;
         asset->sections[type].flags = flags;
     }
-    for (section_index = 1u; section_index <= MDKR_MDKC_SECTION_LAST; section_index++) {
+    for (section_index = 1u; section_index <= MDKR_MDKC_SOCKETS; section_index++) {
         if (asset->sections[section_index].data == NULL) {
             set_error(error, error_size, "compiled character omits a required section");
             return 0;

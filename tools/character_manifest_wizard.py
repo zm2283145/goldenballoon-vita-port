@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate an editable v1 character manifest from names already in a GLB.
+"""Generate an editable v2 character manifest from names already in a GLB.
 
 This is intentionally a deterministic naming assistant, not an animation
 retargeter. It reports every inferred clip/socket so authors can review the
@@ -36,8 +36,13 @@ CLIP_ALIASES = {
 SOCKET_ALIASES = {
     "seat": ("seat", "root", "hips", "pelvis", "armature"),
     "head": ("head", "headbone", "neck"),
-    "hand": ("righthand", "handr", "handright", "hand"),
+    "hand.left": ("handl", "lefthand", "handleft"),
+    "hand.right": ("handr", "righthand", "handright"),
+    "foot.left": ("footl", "leftfoot", "footleft"),
+    "foot.right": ("footr", "rightfoot", "footright"),
 }
+
+IDENTITY_QUATERNION = [0.0, 0.0, 0.0, 1.0]
 
 
 def normalized(value: str) -> str:
@@ -59,7 +64,9 @@ def choose(named: list[str], aliases: tuple[str, ...]) -> str | None:
 
 def build_manifest(model: Path, package_id: str, display_name: str,
                    spdx: str, attribution: str, source_url: str,
-                   donor: str, vehicles: list[str]) -> tuple[dict, dict]:
+                   donor: str, vehicles: list[str], *,
+                   source_forward: str = "+z",
+                   target_height_m: float = 1.25) -> tuple[dict, dict]:
     data = model.read_bytes()
     report = probe.inspect_glb_bytes(data, require_character=True)
     if report["errors"]:
@@ -92,6 +99,21 @@ def build_manifest(model: Path, package_id: str, display_name: str,
             "could not infer required socket node(s): " + ", ".join(missing) +
             "; name the intended nodes or edit the manifest manually"
         )
+    contexts = {
+        "select": {
+            "anchor": "ground",
+            "translation_m": [0.0, 0.0, 0.0],
+            "rotation_xyzw": list(IDENTITY_QUATERNION),
+            "scale": 1.0,
+        },
+    }
+    for vehicle in vehicles:
+        contexts[vehicle] = {
+            "anchor": "seat",
+            "translation_m": [0.0, 0.0, 0.0],
+            "rotation_xyzw": list(IDENTITY_QUATERNION),
+            "scale": 1.0,
+        }
     manifest = {
         "schema": probe.PACKAGE_SCHEMA,
         "id": package_id,
@@ -105,9 +127,9 @@ def build_manifest(model: Path, package_id: str, display_name: str,
         "animations": {"fallback": fallback, "states": states},
         "gameplay": {"donor": donor, "vehicles": vehicles},
         "presentation": {
-            "scale": [1.0, 1.0, 1.0],
-            "translation_m": [0.0, 0.0, 0.0],
-            "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "source_forward": source_forward,
+            "target_height_m": target_height_m,
+            "contexts": contexts,
             "lod_bias": 0.0,
         },
         "sockets": sockets,
@@ -127,9 +149,20 @@ def build_manifest(model: Path, package_id: str, display_name: str,
         ],
         "sockets": sockets,
         "scene_world_bounds": [report["bbox_min"], report["bbox_max"]],
+        "source_forward": source_forward,
+        "target_height_m": target_height_m,
+        "source_height_m": (
+            report["bbox_max"][1] - report["bbox_min"][1]
+            if report.get("bbox_min") is not None and report.get("bbox_max") is not None
+            else None
+        ),
+        "attachment_contexts": contexts,
         "author_notes": ([
             "race.steer is phase-driven: author full left at 0, neutral at 0.5, and full right at 1"
-        ] if "race.steer" in states else []),
+        ] if "race.steer" in states else []) + [
+            "Confirm source_forward visually; mesh facing cannot be inferred reliably from geometry",
+            "Select is ground-anchored; vehicle contexts are pelvis/seat-anchored independently",
+        ],
         "warnings": report["warnings"],
     }
     return manifest, decisions
@@ -146,13 +179,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--donor", default="diddy", choices=sorted(probe.GAMEPLAY_DONORS))
     parser.add_argument("--vehicles", nargs="+", default=["car", "hovercraft", "plane"],
                         choices=sorted(probe.VEHICLE_NAMES))
+    parser.add_argument(
+        "--source-forward", default="+z", choices=sorted(probe.SOURCE_FORWARD_AXES),
+        help="direction the model faces before normalization; confirm this visually",
+    )
+    parser.add_argument(
+        "--target-height", default=1.25, type=float,
+        help="normalized standing height in engine meters (default: 1.25)",
+    )
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
     try:
         manifest, decisions = build_manifest(
             args.model, args.id, args.display_name, args.spdx,
-            args.attribution, args.source_url, args.donor, args.vehicles
+            args.attribution, args.source_url, args.donor, args.vehicles,
+            source_forward=args.source_forward,
+            target_height_m=args.target_height,
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",

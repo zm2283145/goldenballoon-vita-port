@@ -18,6 +18,12 @@ extern "C" {
 
 #define MDKR_MODERN_CHARACTER_PLAYERS 4
 
+typedef struct MdkrModernCharacterAdjustment {
+    float scale;
+    float translation[3];
+    float rotation_degrees[3];
+} MdkrModernCharacterAdjustment;
+
 /* Presentation-only adjustments layered over the package's authored
  * transform. They deliberately cannot change racer identity, stats, physics,
  * or the vehicle chosen by game logic. `vehicle_mask` only chooses which of
@@ -29,6 +35,7 @@ typedef struct MdkrModernCharacterTuning {
     float animation_speed;
     float lod_bias;
     uint32_t vehicle_mask;
+    MdkrModernCharacterAdjustment context[MDKR_CHARACTER_CONTEXT_COUNT];
 } MdkrModernCharacterTuning;
 
 void mdkr_modern_character_tuning_defaults(MdkrModernCharacterTuning *out);
@@ -65,9 +72,17 @@ int mdkr_modern_character_tick_phase(int player, const char *semantic,
 
 /* Emit at the current object matrix in the authored display list. Returns one
  * only when the complete selected LOD was registered and emitted. */
-int mdkr_modern_character_emit(int player, float view_distance,
-                               Gfx **display_list,
+int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
+                               const float target_frame[16],
+                               float view_distance, Gfx **display_list,
                                char *error, size_t error_size);
+
+/* Copies the package's validated bind-space measurements for diagnostics and
+ * assisted calibration. Returns zero for a legacy cache compiled before the
+ * calibration sections existed. */
+int mdkr_modern_character_player_calibration(
+    int player, MdkrModernCalibration *out,
+    uint32_t *attachment_context_mask);
 
 /* Draw-local donor replacement evidence. The object renderer calls this only
  * when a fingerprint-qualified retail driver batch is intentionally skipped. */

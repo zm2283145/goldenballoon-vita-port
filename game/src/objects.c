@@ -70,6 +70,7 @@
 #ifdef NATIVE_PORT
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #endif
 #include "vehicle_misc.h"
 #include "video.h"
@@ -139,6 +140,57 @@ static s32 modern_character_select_model_ready(
     }
     for (index = 1; index < model->numberOfBatches; index++) {
         if (batches[index].textureIndex < 4) return FALSE;
+    }
+    return TRUE;
+}
+
+static s32 modern_character_donor_target_frame(
+    const ObjectModel *model, const Object *object, s32 player, s32 donor,
+    s32 vehicle, s32 lod, MdkrModernCharacterContext context, f32 output[16]) {
+    const TriangleBatchInfo *batches;
+    const Vertex *vertices;
+    f32 minimum[3] = {32767.0f, 32767.0f, 32767.0f};
+    f32 maximum[3] = {-32768.0f, -32768.0f, -32768.0f};
+    s32 batch;
+    s32 found = FALSE;
+    MdkrModernCalibration calibration;
+    static u32 tracedContexts;
+    if (model == NULL || object == NULL || object->curVertData == NULL ||
+        output == NULL || model->numberOfBatches <= 0) return FALSE;
+    batches = DKR_PTR(const TriangleBatchInfo, model->batches);
+    vertices = object->curVertData;
+    for (batch = 0; batch < model->numberOfBatches; batch++) {
+        const s32 driver = context == MDKR_CHARACTER_CONTEXT_SELECT
+            ? !mdkr_modern_donor_select_batch_visible(donor, batch)
+            : !mdkr_modern_donor_batch_visible(donor, vehicle, lod, batch);
+        s32 vertex;
+        if (!driver) continue;
+        for (vertex = batches[batch].verticesOffset;
+             vertex < batches[batch + 1].verticesOffset; vertex++) {
+            if (vertices[vertex].x < minimum[0]) minimum[0] = vertices[vertex].x;
+            if (vertices[vertex].y < minimum[1]) minimum[1] = vertices[vertex].y;
+            if (vertices[vertex].z < minimum[2]) minimum[2] = vertices[vertex].z;
+            if (vertices[vertex].x > maximum[0]) maximum[0] = vertices[vertex].x;
+            if (vertices[vertex].y > maximum[1]) maximum[1] = vertices[vertex].y;
+            if (vertices[vertex].z > maximum[2]) maximum[2] = vertices[vertex].z;
+            found = TRUE;
+        }
+    }
+    if (!found ||
+        !mdkr_modern_character_player_calibration(player, &calibration, NULL) ||
+        !mdkr_modern_donor_fit_frame(
+            donor, context, minimum, maximum,
+            calibration.normalized_height, calibration.target_height,
+            output)) return FALSE;
+    if (getenv("MDKR_CUSTOM_CHARACTER_TRACE_ANCHORS") != NULL &&
+        (tracedContexts & (1u << context)) == 0u) {
+        tracedContexts |= 1u << context;
+        fprintf(stderr,
+                "[modern-character-anchor] context=%d min=%.3f,%.3f,%.3f "
+                "max=%.3f,%.3f,%.3f target=%.3f,%.3f,%.3f scale=%.3f\n",
+                context, minimum[0], minimum[1], minimum[2],
+                maximum[0], maximum[1], maximum[2],
+                output[12], output[13], output[14], output[0]);
     }
     return TRUE;
 }
@@ -6252,8 +6304,19 @@ void render_3d_model(Object *obj) {
                     "select fallback: retail actor fingerprint is unqualified");
             } else {
                 char modernError[192];
+                f32 targetFrame[16];
+                if (!modern_character_donor_target_frame(
+                        objModel, obj, player, donor, -1, 0,
+                        MDKR_CHARACTER_CONTEXT_SELECT, targetFrame)) {
+                    modern_character_warn_once(
+                        player, 6,
+                        "select fallback: donor ground frame is unavailable");
+                    goto modern_select_done;
+                }
                 if (mdkr_modern_character_emit(
-                        player, obj->distanceToCamera,
+                        player, MDKR_CHARACTER_CONTEXT_SELECT,
+                        targetFrame,
+                        obj->distanceToCamera,
                         &gObjectCurrDisplayList,
                         modernError, sizeof(modernError))) {
                     sModernCharacterReplacementObject = obj;
@@ -6265,6 +6328,7 @@ void render_3d_model(Object *obj) {
                 } else {
                     modern_character_warn_once(player, 6, modernError);
                 }
+modern_select_done:;
             }
         }
         if (racerObj != NULL && racerObj->playerIndex >= 0 &&
@@ -6301,8 +6365,23 @@ void render_3d_model(Object *obj) {
                 modern_character_warn_once(player, 2, message);
             } else {
                 char modernError[192];
+                f32 targetFrame[16];
+                const MdkrModernCharacterContext context =
+                    (MdkrModernCharacterContext)(
+                        MDKR_CHARACTER_CONTEXT_CAR +
+                        racerObj->vehicleIDPrev);
+                if (!modern_character_donor_target_frame(
+                        objModel, obj, player, racerObj->characterId,
+                        racerObj->vehicleIDPrev, modernModelIndex,
+                        context, targetFrame)) {
+                    modern_character_warn_once(
+                        player, 3,
+                        "fallback: donor seat frame is unavailable");
+                    goto modern_racer_done;
+                }
                 if (mdkr_modern_character_emit(
                         player,
+                        context, targetFrame,
                         gSceneDrawDistanceValid ? gSceneDrawDistance
                                                 : obj->distanceToCamera,
                         &gObjectCurrDisplayList,
@@ -6316,6 +6395,7 @@ void render_3d_model(Object *obj) {
                 } else {
                     modern_character_warn_once(player, 3, modernError);
                 }
+modern_racer_done:;
             }
         }
 #endif

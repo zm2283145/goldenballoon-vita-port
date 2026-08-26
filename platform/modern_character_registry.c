@@ -80,6 +80,10 @@ static uint32_t socket_bit(const char *name) {
     if (strcmp(name, "seat") == 0) return MDKR_CHARACTER_SOCKET_SEAT;
     if (strcmp(name, "head") == 0) return MDKR_CHARACTER_SOCKET_HEAD;
     if (strcmp(name, "hand") == 0) return MDKR_CHARACTER_SOCKET_HAND;
+    if (strcmp(name, "hand.left") == 0) return MDKR_CHARACTER_SOCKET_HAND_LEFT;
+    if (strcmp(name, "hand.right") == 0) return MDKR_CHARACTER_SOCKET_HAND_RIGHT;
+    if (strcmp(name, "foot.left") == 0) return MDKR_CHARACTER_SOCKET_FOOT_LEFT;
+    if (strcmp(name, "foot.right") == 0) return MDKR_CHARACTER_SOCKET_FOOT_RIGHT;
     return 0u;
 }
 
@@ -160,6 +164,37 @@ int mdkr_modern_character_registry_init(MdkrModernCharacterRegistry *registry,
         memcpy(entry.source_sha256, asset.source_sha256, sizeof(entry.source_sha256));
         entry.donor = definition.donor;
         entry.vehicle_mask = definition.vehicle_mask;
+        {
+            MdkrModernCalibration calibration;
+            const MdkrModernSectionView *attachments =
+                mdkr_modern_character_asset_section(
+                    &asset, MDKR_MDKC_ATTACHMENTS);
+            uint32_t attachment_index;
+            if (mdkr_modern_character_asset_calibration(&asset, &calibration)) {
+                memcpy(entry.bounds_min, calibration.bounds_min,
+                       sizeof(entry.bounds_min));
+                memcpy(entry.bounds_max, calibration.bounds_max,
+                       sizeof(entry.bounds_max));
+                memcpy(entry.ground, calibration.ground,
+                       sizeof(entry.ground));
+                entry.source_height = calibration.source_height;
+                entry.normalized_height = calibration.normalized_height;
+                entry.target_height = calibration.target_height;
+                entry.source_forward = calibration.source_forward;
+                entry.calibration_flags = calibration.flags;
+            }
+            if (attachments != NULL) {
+                for (attachment_index = 0u;
+                     attachment_index < attachments->count;
+                     attachment_index++) {
+                    MdkrModernAttachment attachment;
+                    (void)mdkr_modern_character_asset_attachment(
+                        &asset, attachment_index, &attachment);
+                    entry.attachment_context_mask |=
+                        1u << attachment.context;
+                }
+            }
+        }
         mdkr_modern_character_asset_stats(&asset, &entry.stats);
         {
             uint32_t index;

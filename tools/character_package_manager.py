@@ -26,7 +26,7 @@ import character_asset_probe as probe
 
 
 MANAGER_SCHEMA = "mdkr-character-install-v1"
-COMPILER_ID = "mdkr-character-compiler/1"
+COMPILER_ID = compiler.COMPILER_ID
 LOCK_NAME = ".character-import.lock"
 
 
