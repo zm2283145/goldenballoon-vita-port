@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import json
 import hashlib
+import io
 import sys
 import tempfile
 import unittest
 import zipfile
 import zlib
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -466,6 +469,122 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 manager.restore_revision(
                     original["id"], "NOT-A-DIGEST", installed
                 )
+
+    def test_portable_export_uses_exact_retained_revision_without_mutation(
+            self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            original = manager.install(self.make_package(root), installed)
+            portrait = root / "portrait-new.png"
+            portrait.write_bytes(make_portrait_png(29))
+            revised = manager.revise_identity(
+                original["id"], portrait, (29, 58, 87), installed
+            )
+            manager.restore_revision(
+                original["id"], original["source_sha256"], installed
+            )
+            before = {
+                path.name: path.read_bytes()
+                for path in installed.iterdir() if path.is_file()
+            }
+
+            portable = root / "portable-revision.mdkrchar"
+            report = manager.export_portable_revision(
+                original["id"], revised["source_sha256"], installed, portable
+            )
+            self.assertEqual("export-portable-revision", report["action"])
+            self.assertEqual(revised["source_sha256"], report["source_sha256"])
+            self.assertEqual(str(portable.resolve()), report["exported_file"])
+            verification = probe.verify_package(portable)
+            self.assertTrue(verification["valid"], verification["errors"])
+            self.assertTrue(verification["portable"])
+            with zipfile.ZipFile(portable) as archive:
+                self.assertEqual(
+                    portrait.read_bytes(), archive.read("portrait.png")
+                )
+            self.assertEqual(
+                before,
+                {
+                    path.name: path.read_bytes()
+                    for path in installed.iterdir() if path.is_file()
+                },
+            )
+            with self.assertRaisesRegex(manager.ManagerError, "already exists"):
+                manager.export_portable_revision(
+                    original["id"], revised["source_sha256"], installed,
+                    portable,
+                )
+
+    def test_rebuild_current_is_transactional_and_preserves_disabled_state(
+            self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            original = manager.install(self.make_package(root), installed)
+            manager.set_enabled(original["id"], installed, False)
+            cache = installed / f"{original['id']}.mdkc.disabled"
+            before_cache = cache.read_bytes()
+
+            rebuilt = manager.rebuild_current(original["id"], installed)
+            self.assertEqual("rebuild-current", rebuilt["action"])
+            self.assertEqual(
+                original["source_sha256"], rebuilt["rebuilt_source_sha256"]
+            )
+            self.assertFalse(rebuilt["enabled"])
+            self.assertEqual(before_cache, cache.read_bytes())
+            self.assertFalse((installed / f"{original['id']}.mdkc").exists())
+
+            before_files = {
+                path.name: path.read_bytes()
+                for path in installed.iterdir() if path.is_file()
+            }
+            with mock.patch.object(
+                    manager.compiler, "compile_character",
+                    side_effect=manager.compiler.CompileError("forced failure")):
+                with self.assertRaisesRegex(
+                        manager.compiler.CompileError, "forced failure"):
+                    manager.rebuild_current(original["id"], installed)
+            self.assertEqual(
+                before_files,
+                {
+                    path.name: path.read_bytes()
+                    for path in installed.iterdir() if path.is_file()
+                },
+            )
+
+    def test_native_launcher_cli_dispatches_portable_export_and_rebuild(
+            self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            original = manager.install(self.make_package(root), installed)
+            result = installed / ".launcher-character-result.json"
+            portable = root / "portable-cli.mdkrchar"
+
+            with redirect_stdout(io.StringIO()):
+                status = manager.main([
+                    "--directory", str(installed),
+                    "--result-file", str(result),
+                    "export-portable", original["id"],
+                    original["source_sha256"], str(portable),
+                ])
+            self.assertEqual(0, status)
+            exported = json.loads(result.read_text(encoding="utf-8"))
+            self.assertTrue(exported["ok"])
+            self.assertEqual("export-portable-revision", exported["action"])
+            self.assertTrue(probe.verify_package(portable)["portable"])
+
+            with redirect_stdout(io.StringIO()):
+                status = manager.main([
+                    "--directory", str(installed),
+                    "--result-file", str(result),
+                    "rebuild", original["id"],
+                ])
+            self.assertEqual(0, status)
+            rebuilt = json.loads(result.read_text(encoding="utf-8"))
+            self.assertTrue(rebuilt["ok"])
+            self.assertEqual("rebuild-current", rebuilt["action"])
 
     def test_legacy_compiler_source_remains_editable_and_upgrades(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

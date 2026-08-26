@@ -1167,6 +1167,29 @@ def restore_revision(package_id: str, source_sha: str,
     }
 
 
+def rebuild_current(package_id: str, directory: Path) -> dict[str, Any]:
+    """Recompile the authenticated active source without changing identity."""
+    if probe.ID_RE.fullmatch(package_id) is None:
+        raise ManagerError("invalid package id")
+    root = _prepare_directory(directory)
+    payload, source_sha, expected_digest = _active_source_snapshot(
+        package_id, root
+    )
+    with tempfile.TemporaryDirectory(
+            prefix="mdkr-character-rebuild-") as temporary:
+        snapshot = Path(temporary) / "current.mdkrchar"
+        snapshot.write_bytes(payload)
+        rebuilt = install(
+            snapshot, root, expected_active_digest=expected_digest
+        )
+    return {
+        **rebuilt,
+        "action": "rebuild-current",
+        "rebuilt_source_sha256": source_sha,
+        "replaced_cache_source_digest": expected_digest,
+    }
+
+
 def export_revision(package_id: str, source_sha: str, directory: Path,
                     output_path: Path) -> dict[str, Any]:
     """Export an authenticated retained source without overwriting any file."""
@@ -1193,6 +1216,46 @@ def export_revision(package_id: str, source_sha: str, directory: Path,
         "source_sha256": source_sha,
         "exported_file": str(destination),
         "bytes": len(payload),
+    }
+
+
+def export_portable_revision(package_id: str, source_sha: str,
+                             directory: Path, output_path: Path) -> dict[str, Any]:
+    """Compile and exclusively export one authenticated retained revision."""
+    if probe.ID_RE.fullmatch(package_id) is None:
+        raise ManagerError("invalid package id")
+    root = _prepare_directory(directory)
+    payload, _ = _retained_revision_source(package_id, source_sha, root)
+    if output_path.parent.is_symlink():
+        raise ManagerError("export directory must be a real directory")
+    parent = output_path.parent.resolve()
+    if not parent.is_dir():
+        raise ManagerError("export directory must already exist")
+    destination = parent / output_path.name
+    if destination.name in ("", ".", ".."):
+        raise ManagerError("export filename is invalid")
+    if destination.exists() or destination.is_symlink():
+        raise ManagerError("export destination already exists")
+
+    with tempfile.TemporaryDirectory(
+            prefix="mdkr-character-portable-export-") as temporary:
+        temporary_root = Path(temporary)
+        snapshot = temporary_root / "source.mdkrchar"
+        compiled_package = temporary_root / "portable.mdkrchar"
+        snapshot.write_bytes(payload)
+        prepared = prepare(snapshot, compiled_package)
+        portable_payload = compiled_package.read_bytes()
+    try:
+        _write_exclusive(destination, portable_payload)
+    except FileExistsError as exc:
+        raise ManagerError("export destination already exists") from exc
+    return {
+        **prepared,
+        "action": "export-portable-revision",
+        "source_sha256": source_sha,
+        "portable_package": str(destination),
+        "exported_file": str(destination),
+        "bytes": len(portable_payload),
     }
 
 
@@ -1406,10 +1469,19 @@ def _parser() -> argparse.ArgumentParser:
     restore_parser = sub.add_parser("restore")
     restore_parser.add_argument("id")
     restore_parser.add_argument("source_sha256")
+    rebuild_parser = sub.add_parser("rebuild")
+    rebuild_parser.add_argument("id")
     export_parser = sub.add_parser("export")
     export_parser.add_argument("id")
     export_parser.add_argument("source_sha256")
     export_parser.add_argument("output", type=Path)
+    portable_export_parser = sub.add_parser(
+        "export-portable",
+        help="compile and export an authenticated retained source revision",
+    )
+    portable_export_parser.add_argument("id")
+    portable_export_parser.add_argument("source_sha256")
+    portable_export_parser.add_argument("output", type=Path)
     index_parser = sub.add_parser("write-revision-index")
     index_parser.add_argument("id")
     index_parser.add_argument("output", type=Path)
@@ -1522,8 +1594,14 @@ def main(argv: list[str] | None = None) -> int:
             report = restore_revision(
                 args.id, args.source_sha256, args.directory
             )
+        elif args.command == "rebuild":
+            report = rebuild_current(args.id, args.directory)
         elif args.command == "export":
             report = export_revision(
+                args.id, args.source_sha256, args.directory, args.output
+            )
+        elif args.command == "export-portable":
+            report = export_portable_revision(
                 args.id, args.source_sha256, args.directory, args.output
             )
         elif args.command == "write-revision-index":

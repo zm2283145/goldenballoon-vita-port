@@ -1860,6 +1860,7 @@ struct CharacterRevisionInventory {
     unsigned total = 0u;
     int selected = 0;
     char exportPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
+    char portableExportPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
     std::vector<CharacterRevisionRow> rows;
 };
 
@@ -2394,6 +2395,9 @@ bool loadCharacterRevisionInventory(const std::string &packageId) {
     if (previous != g_characterRevisionInventories.end()) {
         std::snprintf(inventory.exportPath, sizeof(inventory.exportPath), "%s",
                       previous->second.exportPath);
+        std::snprintf(
+            inventory.portableExportPath, sizeof(inventory.portableExportPath),
+            "%s", previous->second.portableExportPath);
     }
     g_characterRevisionInventories[packageId] = std::move(inventory);
     return true;
@@ -2404,12 +2408,24 @@ bool restoreCharacterRevision(const std::string &packageId,
     return runCharacterManager("restore", {packageId, sourceSha256});
 }
 
+bool rebuildCharacterAssembly(const std::string &packageId) {
+    return runCharacterManager("rebuild", {packageId});
+}
+
 bool exportCharacterRevision(const std::string &packageId,
                              const std::string &sourceSha256,
                              const std::string &outputPath) {
     if (outputPath.empty()) return false;
     return runCharacterManager(
         "export", {packageId, sourceSha256, outputPath}, false);
+}
+
+bool exportPortableCharacterRevision(const std::string &packageId,
+                                     const std::string &sourceSha256,
+                                     const std::string &outputPath) {
+    if (outputPath.empty()) return false;
+    return runCharacterManager(
+        "export-portable", {packageId, sourceSha256, outputPath}, false);
 }
 
 std::string characterDigestHex(const uint8_t digest[32]) {
@@ -5575,6 +5591,44 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
     ImGui::TextDisabled("Revision recorded: %s",
         characterRevisionTimestamp(selected.installedUnix).c_str());
 
+    if (ImGui::Button("Rebuild current assembly...")) {
+        ImGui::OpenPopup("Rebuild current character assembly?");
+    }
+    ui::SpeakFocusedItem(
+        "Rebuild current assembly", nullptr,
+        "Re-authenticates the active source and rebuilds its disposable runtime cache with the current compiler. The source revision and enabled state do not change.");
+    if (ImGui::BeginPopupModal(
+            "Rebuild current character assembly?", nullptr,
+            ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped(
+            "Rebuild %s from its authenticated current source? The replacement cache is validated before publication. The package remains %s and the last known-good cache stays active if rebuilding fails.",
+            entry->display_name,
+            entry->enabled != 0u ? "enabled" : "disabled");
+        if (ImGui::Button("Rebuild assembly")) {
+            const std::string id = entry->id;
+            if (rebuildCharacterAssembly(id)) {
+                setStatus(
+                    "Current character assembly rebuilt transactionally.",
+                    AppTheme::good());
+                ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+                return true;
+            }
+            setStatus(
+                "Assembly rebuild failed; the last known-good character is unchanged.",
+                AppTheme::bad());
+            ImGui::CloseCurrentPopup();
+        }
+        ui::SpeakFocusedItem(
+            "Rebuild assembly", nullptr,
+            "Compiles and validates the authenticated current source before atomically replacing its disposable runtime cache.");
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ui::SpeakFocusedItem("Cancel", nullptr,
+                             "Closes without changing the character.");
+        ImGui::EndPopup();
+    }
+
     if (selected.current) ImGui::BeginDisabled();
     if (ImGui::Button("Restore selected revision...") && !selected.current) {
         ImGui::OpenPopup("Restore retained revision?");
@@ -5648,6 +5702,36 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
         "Export selected source",
         canExport ? nullptr : "Enter a destination path first.",
         "Writes the exact authenticated mdkrchar source and refuses to overwrite an existing file.");
+
+    ui::Gap(ui::kGapS);
+    ui::TextSubtleWrapped(
+        "Portable export embeds a cache built by this compiler so another player can import without installing authoring tools. It does not alter the installed character or the retained source.");
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint(
+        "##character-revision-portable-export",
+        "/path/to/shareable-character.mdkrchar",
+        inventory.portableExportPath,
+        sizeof(inventory.portableExportPath));
+    const bool canExportPortable = inventory.portableExportPath[0] != '\0';
+    if (!canExportPortable) ImGui::BeginDisabled();
+    if (ImGui::Button("Export portable package") && canExportPortable) {
+        if (exportPortableCharacterRevision(
+                entry->id, selected.sourceSha256,
+                inventory.portableExportPath)) {
+            setStatus(
+                "Portable package compiled and exported without overwriting another file.",
+                AppTheme::good());
+        } else {
+            setStatus(
+                "Portable package export failed; open the manager report.",
+                AppTheme::bad());
+        }
+    }
+    if (!canExportPortable) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Export portable package",
+        canExportPortable ? nullptr : "Enter a destination path first.",
+        "Compiles this exact authenticated retained source into a shareable mdkrchar package and refuses to overwrite an existing file.");
     return false;
 }
 

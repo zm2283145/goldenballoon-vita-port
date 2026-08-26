@@ -334,6 +334,16 @@ until the package is enabled again. Permanent deletion is separate and removes
 the cache, all content-addressed Workshop source revisions and reports, and the
 package-owned local preferences.
 
+The Package tab authenticates every retained revision before offering recovery.
+**Export selected source** copies those exact authoring bytes. **Export portable
+package** instead compiles that selected revision with the current compiler and
+embeds the validated cache for another player; it publishes exclusively and
+never overwrites a destination or changes the installed character. **Rebuild
+current assembly** re-authenticates the active source and atomically replaces
+only its disposable cache after successful compilation and validation. A
+disabled character stays disabled, and any failure leaves the last known-good
+cache and all source history intact.
+
 The wizard emits `mdkr-character-source-v2` by default, v3 when identity media
 is supplied, and v4 when `--rig-mode` is also selected. `--source-forward` declares which
 local horizontal axis the model's face points toward (`+z`, `-z`, `+x`, or
