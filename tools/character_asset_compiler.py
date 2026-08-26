@@ -695,7 +695,7 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             strings.add(texture.get("name") or f"texture_{texture_index}"), mime_id,
             data_offset, len(payload), sampler.get("wrapS", 10497), sampler.get("wrapT", 10497),
             sampler.get("minFilter", 9987), sampler.get("magFilter", 9729),
-            texture_roles[texture_index] or 1, 0,
+            texture_roles[texture_index] or 1, width | (height << 16),
         ))
 
     material_records = []

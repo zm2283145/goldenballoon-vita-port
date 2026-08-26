@@ -301,6 +301,13 @@ class CharacterAssetProbeTests(unittest.TestCase):
             self.assertEqual(first.read_bytes(), second.read_bytes())
             verified = probe.verify_package(first)
             self.assertTrue(verified["valid"], verified["errors"])
+            cache = root / "compiled.mdkc"
+            compiler.compile_package(first, cache)
+            with zipfile.ZipFile(first) as archive:
+                expected_digest = compiler.source_digest(
+                    (name, archive.read(name)) for name in probe.PACKAGE_MEMBERS
+                )
+            self.assertEqual(expected_digest, cache.read_bytes()[20:52])
 
     def test_v3_identity_media_is_canonical_bounded_and_compiled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -162,6 +162,7 @@ int mdkr_modern_character_asset_texture(const MdkrModernCharacterAsset *asset,
     out->min_filter = read_i32(data + 24u);
     out->mag_filter = read_i32(data + 28u);
     out->flags = read_u32(data + 32u);
+    out->dimensions = read_u32(data + 36u);
     return 1;
 }
 
@@ -374,12 +375,12 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
      * before walking any attacker-controlled record, keeping validation work
      * bounded while still allowing a character orders of magnitude denser
      * than retail N64 geometry. */
-    if (vertices->count > 100000u || indices->count > 300000u ||
-        primitives->count > 512u || materials->count > 16u ||
-        textures->count > 80u || texture_data->count > 512u * 1024u * 1024u ||
-        nodes->count > 4096u || skins->count > 64u || joints->count > 8192u ||
-        animations->count > 64u || channels->count > 4096u ||
-        keys->count > 1000000u ||
+    if (vertices->count > 1000000u || indices->count > 6000000u ||
+        primitives->count > 512u || materials->count > 256u ||
+        textures->count > 1024u || texture_data->count > 512u * 1024u * 1024u ||
+        nodes->count > 16384u || skins->count > 256u || joints->count > 65536u ||
+        animations->count > 256u || channels->count > 16384u ||
+        keys->count > 4000000u ||
         asset->sections[MDKR_MDKC_SEMANTICS].count > 65u ||
         asset->sections[MDKR_MDKC_SOCKETS].count > 32u) {
         set_error(error, error_size, "compiled character exceeds a runtime admission ceiling");
@@ -470,7 +471,12 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
         if (mdkr_modern_character_asset_string(asset, texture.name) == NULL ||
             (texture.mime != 1u && texture.mime != 2u) || texture.data_size == 0u ||
             (texture.flags != 1u && texture.flags != 2u && texture.flags != 4u) ||
-            !range_u32(texture.data_offset, texture.data_size, texture_data->count)) {
+            !range_u32(texture.data_offset, texture.data_size, texture_data->count) ||
+            (texture.dimensions != 0u &&
+             ((texture.dimensions & 0xFFFFu) == 0u ||
+              (texture.dimensions & 0xFFFFu) > 4096u ||
+              (texture.dimensions >> 16u) == 0u ||
+              (texture.dimensions >> 16u) > 4096u))) {
             set_error(error, error_size, "compiled texture is invalid");
             return 0;
         }
@@ -498,7 +504,7 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
         MdkrModernSkin skin;
         (void)mdkr_modern_character_asset_skin(asset, index, &skin);
         if (mdkr_modern_character_asset_string(asset, skin.name) == NULL ||
-            skin.joint_count == 0u || skin.joint_count > 128u ||
+            skin.joint_count == 0u || skin.joint_count > 256u ||
             !range_u32(skin.first_joint, skin.joint_count, joints->count) ||
             skin.skeleton >= nodes->count) {
             set_error(error, error_size, "compiled skin is invalid");
@@ -834,6 +840,7 @@ void mdkr_modern_character_asset_unload(MdkrModernCharacterAsset *asset) {
 void mdkr_modern_character_asset_stats(const MdkrModernCharacterAsset *asset,
                                        MdkrModernCharacterStats *out) {
     uint32_t primitive_index;
+    uint32_t texture_index;
     if (out == NULL) return;
     memset(out, 0, sizeof(*out));
     if (asset == NULL || asset->owned_bytes == NULL) return;
@@ -860,4 +867,20 @@ void mdkr_modern_character_asset_stats(const MdkrModernCharacterAsset *asset,
     out->semantics = asset->sections[MDKR_MDKC_SEMANTICS].count;
     out->sockets = asset->sections[MDKR_MDKC_SOCKETS].count;
     out->encoded_texture_bytes = asset->sections[MDKR_MDKC_TEXTURE_DATA].size;
+    for (texture_index = 0u; texture_index < out->textures; texture_index++) {
+        MdkrModernTexture texture;
+        uint32_t width;
+        uint32_t height;
+        (void)mdkr_modern_character_asset_texture(asset, texture_index,
+                                                  &texture);
+        width = texture.dimensions & 0xFFFFu;
+        height = texture.dimensions >> 16u;
+        while (width != 0u && height != 0u) {
+            out->decoded_texture_bytes +=
+                (uint64_t)width * (uint64_t)height * 4u;
+            if (width == 1u && height == 1u) break;
+            if (width > 1u) width >>= 1u;
+            if (height > 1u) height >>= 1u;
+        }
+    }
 }

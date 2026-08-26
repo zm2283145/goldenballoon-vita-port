@@ -2320,16 +2320,22 @@ bool drawCharacterTuningEditor(int player,
 const char *characterPerformanceTier(
     const MdkrModernCharacterEntry *entry) {
     const MdkrModernCharacterStats &stats = entry->stats;
+    if (stats.textures != 0u && stats.decoded_texture_bytes == 0u) {
+        return "Recompile to measure";
+    }
     if (stats.triangles <= 15000u && stats.vertices <= 20000u &&
         stats.primitives <= 4u && stats.materials <= 4u &&
-        stats.joints <= 64u && stats.textures <= 8u) return "Excellent";
+        stats.joints <= 64u && stats.textures <= 8u &&
+        stats.decoded_texture_bytes <= 64u * 1024u * 1024u) return "Excellent";
     if (stats.triangles <= 30000u && stats.vertices <= 40000u &&
         stats.primitives <= 8u && stats.materials <= 8u &&
-        stats.joints <= 96u && stats.textures <= 12u) return "Good";
+        stats.joints <= 96u && stats.textures <= 12u &&
+        stats.decoded_texture_bytes <= 128u * 1024u * 1024u) return "Good";
     if (stats.triangles <= 60000u && stats.vertices <= 70000u &&
         stats.primitives <= 12u && stats.materials <= 12u &&
-        stats.joints <= 128u && stats.textures <= 16u) return "Heavy";
-    return "Near import limit";
+        stats.joints <= 128u && stats.textures <= 16u &&
+        stats.decoded_texture_bytes <= 256u * 1024u * 1024u) return "Heavy";
+    return "Very heavy";
 }
 
 bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
@@ -2390,6 +2396,17 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         entry->stats.vertices, entry->stats.primitives,
         entry->stats.materials, entry->stats.joints,
         entry->stats.textures, entry->stats.lod_levels);
+    if (entry->stats.decoded_texture_bytes != 0u) {
+        ImGui::TextDisabled(
+            "Texture memory: %.1f MiB decoded with mip levels · %.1f MiB package data",
+            static_cast<double>(entry->stats.decoded_texture_bytes) /
+                (1024.0 * 1024.0),
+            static_cast<double>(entry->stats.encoded_texture_bytes) /
+                (1024.0 * 1024.0));
+    } else if (entry->stats.textures != 0u) {
+        ImGui::TextDisabled(
+            "Texture memory: unavailable in this legacy cache; recompile for exact accounting");
+    }
     ui::TextSubtleWrapped(
         "The guide is the worst import-budget category, not measured frame time. The Test workspace must eventually qualify four-player timing and decoded VRAM.");
 

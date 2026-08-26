@@ -239,6 +239,9 @@ int main(int argc, char **argv) {
             "compiled animation statistics");
     require(stats.semantics == 2u && stats.sockets == 2u,
             "compiled presentation mapping statistics");
+    require(stats.encoded_texture_bytes > 64u &&
+                stats.decoded_texture_bytes == 4u,
+            "compiled stats expose exact encoded and decoded texture cost");
     require(mdkr_modern_character_asset_animation(&asset, 0u, &animation) &&
                 animation.duration == 1.0f,
             "read compiled animation");

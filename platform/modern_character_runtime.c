@@ -15,7 +15,7 @@
 
 #define MODERN_RUNTIME_POOLS 4
 #define MODERN_RUNTIME_MAX_PRIMITIVES 512u
-#define MODERN_RUNTIME_MAX_BONES 128u
+#define MODERN_RUNTIME_MAX_BONES 256u
 
 typedef struct MdkrModernRuntimePool {
     int registry_index;

@@ -119,6 +119,17 @@ class HighFidelityCharacterTests(unittest.TestCase):
         self.assertEqual(25_600, report["vertices"])
         self.assertGreater(len(compiled), 2_000_000)
 
+    def test_model_above_old_hundred_thousand_vertex_cap_compiles(self) -> None:
+        model = make_grid_glb(side=360)
+        inspected = probe.inspect_glb_bytes(model, require_character=True)
+        self.assertEqual([], inspected["errors"])
+        compiled, report = compiler.compile_character(
+            model, make_manifest(), bytes(32)
+        )
+        self.assertEqual(129_600, report["vertices"])
+        self.assertGreater(report["triangles"], 250_000)
+        self.assertGreater(len(compiled), 10_000_000)
+
 
 if __name__ == "__main__":
     unittest.main()

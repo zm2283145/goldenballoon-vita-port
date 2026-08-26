@@ -519,12 +519,14 @@ static int        s_modern_ubo_used = 0;   /* slots consumed this frame */
 static uint32_t   s_modern_ubo_gen  = 0;   /* bumped on (re)create; stamps cached bgs */
 
 /* Generic skeletal characters use one 8,352-byte uniform per primitive draw:
- * transform/material/fog/light parameters followed by 128 mat4 skin entries.
+ * transform/material/fog/light parameters followed by 256 mat4 skin entries.
  * Slots are 256-byte aligned and never rewritten within a frame. */
-#define WGPU_SKINNED_MAX_BONES 128u
+#define WGPU_SKINNED_MAX_BONES 256u
 #define WGPU_SKINNED_UNIFORM_FLOATS (72u + WGPU_SKINNED_MAX_BONES * 16u)
 #define WGPU_SKINNED_UNIFORM_BYTES (WGPU_SKINNED_UNIFORM_FLOATS * sizeof(float))
-#define WGPU_SKINNED_SLOT_BYTES 8704u
+#define WGPU_SKINNED_SLOT_BYTES \
+    ((WGPU_SKINNED_UNIFORM_BYTES + WGPU_MODERN_UBO_ALIGN - 1u) & \
+     ~(WGPU_MODERN_UBO_ALIGN - 1u))
 #define WGPU_SKINNED_UBO_INIT 16
 static WGPUBuffer s_skinned_ubo = NULL;
 static int s_skinned_ubo_cap = 0;
@@ -8600,7 +8602,7 @@ static const char *kSkinnedWGSL =
     " @location(4) joints:vec4<u32>, @location(5) weights:vec4<f32> };\n"
     "struct U { mvp:mat4x4<f32>, model:mat4x4<f32>, normalModel:mat4x4<f32>, fog:vec4<f32>, fogParams:vec4<f32>,\n"
     " light:vec4<f32>, base:vec4<f32>, emissiveMetal:vec4<f32>,\n"
-    " material:vec4<f32>, bones:array<mat4x4<f32>,128> };\n"
+    " material:vec4<f32>, bones:array<mat4x4<f32>,256> };\n"
     "@group(0) @binding(0) var<uniform> u:U;\n"
     "@group(0) @binding(1) var baseTex:texture_2d<f32>;\n"
     "@group(0) @binding(2) var mrTex:texture_2d<f32>;\n"

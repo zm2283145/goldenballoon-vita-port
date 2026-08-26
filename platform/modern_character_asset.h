@@ -95,6 +95,7 @@ typedef struct MdkrModernTexture {
     int32_t min_filter;
     int32_t mag_filter;
     uint32_t flags;
+    uint32_t dimensions; /* width low 16, height high 16; zero in legacy caches */
 } MdkrModernTexture;
 
 typedef struct MdkrModernNode {
@@ -229,6 +230,7 @@ typedef struct MdkrModernCharacterStats {
     uint32_t semantics;
     uint32_t sockets;
     uint64_t encoded_texture_bytes;
+    uint64_t decoded_texture_bytes;
 } MdkrModernCharacterStats;
 
 /* Copies and validates `bytes`; a failed load leaves `out` empty. */

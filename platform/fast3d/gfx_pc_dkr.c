@@ -109,7 +109,7 @@
 #define DKR_DL_MAX_DEPTH   16          /* nested G_DL / G_DMADL recursion cap */
 #define DKR_FONT_UPSCALE   4
 #define DKR_MODERN_DRAW_RING 2048u
-#define DKR_MODERN_MAX_BONES 128u
+#define DKR_MODERN_MAX_BONES 256u
 
 enum { DKR_PRESENTATION_PARTICLE_KIND_POINT = 4 };
 

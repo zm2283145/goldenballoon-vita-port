@@ -36,10 +36,10 @@ MAX_PORTRAIT_BYTES = 8 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 4096
 MAX_NESTED_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_ARCHIVE_DEPTH = 2
-MAX_JOINTS = 128
-MAX_VERTICES = 100_000
-MAX_TRIANGLES = 100_000
-MAX_MATERIALS = 16
+MAX_JOINTS = 256
+MAX_VERTICES = 1_000_000
+MAX_TRIANGLES = 2_000_000
+MAX_MATERIALS = 256
 PACKAGE_SCHEMA_V1 = "mdkr-character-source-v1"
 PACKAGE_SCHEMA = "mdkr-character-source-v2"
 PACKAGE_SCHEMA_V3 = "mdkr-character-source-v3"
@@ -629,13 +629,13 @@ def inspect_glb_bytes(data: bytes, require_character: bool = False) -> dict[str,
         })
 
     if vertex_count > MAX_VERTICES:
-        errors.append(f"vertex count {vertex_count} exceeds the v1 budget {MAX_VERTICES}")
+        errors.append(f"vertex count {vertex_count} exceeds the runtime ceiling {MAX_VERTICES}")
     if triangle_count > MAX_TRIANGLES:
-        errors.append(f"triangle count {triangle_count} exceeds the v1 budget {MAX_TRIANGLES}")
+        errors.append(f"triangle count {triangle_count} exceeds the runtime ceiling {MAX_TRIANGLES}")
     if len(_array(document, "materials")) > MAX_MATERIALS:
-        errors.append(f"material count exceeds the v1 budget {MAX_MATERIALS}")
+        errors.append(f"material count exceeds the runtime ceiling {MAX_MATERIALS}")
     if max_joints > MAX_JOINTS:
-        errors.append(f"joint count {max_joints} exceeds the v1 budget {MAX_JOINTS}")
+        errors.append(f"joint count {max_joints} exceeds the renderer ceiling {MAX_JOINTS}")
     if world_bbox_min is not None and world_bbox_max is not None:
         height = world_bbox_max[1] - world_bbox_min[1]
         if height < 0.25 or height > 4.0:
