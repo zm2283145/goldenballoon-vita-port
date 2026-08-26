@@ -82,11 +82,12 @@ bool openRom(std::string &out) {
 
 bool openCharacterSource(std::string &out) {
     static const wchar_t kFilter[] =
-        L"Character sources (*.mdkrchar;*.glb;*.dae;*.zip)\0*.mdkrchar;*.glb;*.dae;*.zip\0"
+        L"Character sources (*.mdkrchar;*.glb;*.dae;*.zip;*.gltf;*.fbx;*.obj;*.blend;*.usd;*.usda;*.usdc;*.usdz;*.ma;*.mb;*.max;*.c4d;*.3ds)\0*.mdkrchar;*.glb;*.dae;*.zip;*.gltf;*.fbx;*.obj;*.blend;*.usd;*.usda;*.usdc;*.usdz;*.ma;*.mb;*.max;*.c4d;*.3ds\0"
         L"Golden Balloon packages (*.mdkrchar)\0*.mdkrchar\0"
         L"glTF binary models (*.glb)\0*.glb\0"
         L"COLLADA models (*.dae)\0*.dae\0"
         L"Authoring archives (*.zip)\0*.zip\0"
+        L"DCC sources requiring GLB export (*.gltf;*.fbx;*.obj;*.blend;*.usd;*.usda;*.usdc;*.usdz;*.ma;*.mb;*.max;*.c4d;*.3ds)\0*.gltf;*.fbx;*.obj;*.blend;*.usd;*.usda;*.usdc;*.usdz;*.ma;*.mb;*.max;*.c4d;*.3ds\0"
         L"\0";
     std::vector<wchar_t> file(32768, L'\0');
     OPENFILENAMEW ofn;

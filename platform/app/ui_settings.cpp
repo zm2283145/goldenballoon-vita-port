@@ -2844,6 +2844,122 @@ bool characterPathHasExtension(const std::string &path,
     return true;
 }
 
+enum class CharacterSourceKind {
+    Unknown,
+    Package,
+    Glb,
+    Dae,
+    Zip,
+    Gltf,
+    Fbx,
+    Obj,
+    Blend,
+    Usd,
+    NativeDcc,
+};
+
+CharacterSourceKind characterSourceKind(const std::string &path) {
+    if (characterPathHasExtension(path, ".mdkrchar")) {
+        return CharacterSourceKind::Package;
+    }
+    if (characterPathHasExtension(path, ".glb")) {
+        return CharacterSourceKind::Glb;
+    }
+    if (characterPathHasExtension(path, ".dae")) {
+        return CharacterSourceKind::Dae;
+    }
+    if (characterPathHasExtension(path, ".zip")) {
+        return CharacterSourceKind::Zip;
+    }
+    if (characterPathHasExtension(path, ".gltf")) {
+        return CharacterSourceKind::Gltf;
+    }
+    if (characterPathHasExtension(path, ".fbx")) {
+        return CharacterSourceKind::Fbx;
+    }
+    if (characterPathHasExtension(path, ".obj")) {
+        return CharacterSourceKind::Obj;
+    }
+    if (characterPathHasExtension(path, ".blend")) {
+        return CharacterSourceKind::Blend;
+    }
+    if (characterPathHasExtension(path, ".usd") ||
+        characterPathHasExtension(path, ".usda") ||
+        characterPathHasExtension(path, ".usdc") ||
+        characterPathHasExtension(path, ".usdz")) {
+        return CharacterSourceKind::Usd;
+    }
+    if (characterPathHasExtension(path, ".ma") ||
+        characterPathHasExtension(path, ".mb") ||
+        characterPathHasExtension(path, ".max") ||
+        characterPathHasExtension(path, ".c4d") ||
+        characterPathHasExtension(path, ".3ds")) {
+        return CharacterSourceKind::NativeDcc;
+    }
+    return CharacterSourceKind::Unknown;
+}
+
+bool characterSourceNeedsDccExport(CharacterSourceKind kind) {
+    return kind == CharacterSourceKind::Gltf ||
+        kind == CharacterSourceKind::Fbx ||
+        kind == CharacterSourceKind::Obj ||
+        kind == CharacterSourceKind::Blend ||
+        kind == CharacterSourceKind::Usd ||
+        kind == CharacterSourceKind::NativeDcc;
+}
+
+const char *characterSourceFormatName(CharacterSourceKind kind) {
+    switch (kind) {
+        case CharacterSourceKind::Gltf: return "glTF JSON";
+        case CharacterSourceKind::Fbx: return "FBX";
+        case CharacterSourceKind::Obj: return "OBJ";
+        case CharacterSourceKind::Blend: return "Blender scene";
+        case CharacterSourceKind::Usd: return "USD";
+        case CharacterSourceKind::NativeDcc: return "native DCC scene";
+        default: return "authoring source";
+    }
+}
+
+std::string characterSourceExportGuidance(CharacterSourceKind kind) {
+    std::string reason;
+    switch (kind) {
+        case CharacterSourceKind::Gltf:
+            reason =
+                "This JSON glTF may depend on loose buffers and images. Re-export or pack it as one binary GLB so the Workshop can authenticate every byte as a single source.";
+            break;
+        case CharacterSourceKind::Fbx:
+            reason =
+                "FBX interpretation varies by SDK and exporter. Open it in Blender, Maya, 3ds Max, or another trusted DCC and export the evaluated result instead of asking the game to guess at FBX semantics.";
+            break;
+        case CharacterSourceKind::Obj:
+            reason =
+                "OBJ carries geometry and loose material references but no usable character skin or animation. Import it into a DCC, rig and skin it, and author at least one fallback clip before export.";
+            break;
+        case CharacterSourceKind::Blend:
+            reason =
+                "A Blender scene is an editable project, not a portable runtime asset. Open it in the Blender version you trust and export only the intended character result.";
+            break;
+        case CharacterSourceKind::Usd:
+            reason =
+                "USD composition can resolve external layers, payloads, materials, and application-specific rig schemas. Flatten the intended character in a trusted DCC and export a self-contained runtime asset.";
+            break;
+        case CharacterSourceKind::NativeDcc:
+            reason =
+                "This native DCC scene requires its owning authoring application. Open it there and export the evaluated character; the game will never execute a project file or silently discard application-specific rig data.";
+            break;
+        default:
+            return {};
+    }
+    return std::string(characterSourceFormatName(kind)) +
+        " needs a GLB 2.0 export.\n\n" + reason +
+        "\n\nExport checklist:\n"
+        "1. Export glTF 2.0 Binary (.glb), with buffers and images embedded.\n"
+        "2. Include the deforming meshes, armature/skin, materials, and only the clips the character should use. Bake procedural constraints into those clips.\n"
+        "3. Use metres and glTF's +Y-up coordinate system. Do not destructively turn the character just for this game; declare its authored forward axis during Workshop intake.\n"
+        "4. Apply or export triangulation consistently, verify normal/tangent direction, and keep every texture inside the GLB.\n"
+        "5. Drop the exported GLB here. The Workshop will inventory it, preserve the original project, and require explicit mapping, licensing, review, and install steps.";
+}
+
 MdkrTextStateStorage characterRawDraftStorage() {
     return MdkrTextStateStorage{
         &g_characterRawDraftFileSpec,
@@ -12164,7 +12280,7 @@ void drawCharacterImportControls(bool rail) {
     }
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputTextWithHint("##character-package-path",
-                             "/path/to/package, GLB, DAE, or authoring ZIP",
+                             "/path/to/package, model, or DCC source",
                              g_characterImportPath,
                              sizeof(g_characterImportPath));
     const bool inlineActions = !rail &&
@@ -12183,14 +12299,35 @@ void drawCharacterImportControls(bool rail) {
         ui::SpeakFocusedItem(
             "Browse for character source",
             nullptr,
-            "Chooses a local mdkrchar package, self-contained GLB, COLLADA model, or authoring ZIP. Nothing is installed until validation, review, and explicit confirmation succeed.");
-        if (inlineActions) ImGui::SameLine();
+            "Chooses a local mdkrchar package, self-contained GLB, COLLADA model, authoring ZIP, or common DCC source. DCC projects receive safe GLB export guidance; nothing is installed until validation, review, and explicit confirmation succeed.");
     }
-    const bool rawGlb = characterPathHasExtension(
-        g_characterImportPath, ".glb");
-    const bool convertibleSource = characterPathHasExtension(
-            g_characterImportPath, ".dae") ||
-        characterPathHasExtension(g_characterImportPath, ".zip");
+    const CharacterSourceKind sourceKind = characterSourceKind(
+        g_characterImportPath);
+    const bool rawGlb = sourceKind == CharacterSourceKind::Glb;
+    const bool convertibleSource = sourceKind == CharacterSourceKind::Dae ||
+        sourceKind == CharacterSourceKind::Zip;
+    const bool dccExportRequired = characterSourceNeedsDccExport(sourceKind);
+    const std::string exportGuidance = dccExportRequired
+        ? characterSourceExportGuidance(sourceKind) : std::string{};
+    if (dccExportRequired) {
+        if (ui::CardBegin("##character-dcc-export-guidance",
+                          AppTheme::accent(), 0.0f)) {
+            ImGui::TextColored(
+                AppTheme::accent(), "%s needs a GLB export",
+                characterSourceFormatName(sourceKind));
+            ui::TextSubtleWrapped("%s", exportGuidance.c_str());
+            if (ImGui::Button("Copy GLB export checklist")) {
+                ImGui::SetClipboardText(exportGuidance.c_str());
+                setStatus(
+                    "GLB export checklist copied; the selected authoring source was not changed.",
+                    AppTheme::good());
+            }
+            ui::SpeakFocusedItem(
+                "Copy GLB export checklist", nullptr,
+                "Copies the format-specific self-contained GLB export steps. It does not open, execute, convert, or change the selected DCC source.");
+        }
+        ui::CardEnd();
+    }
     if (convertibleSource) {
         ui::TextSubtleWrapped(
             "DAE and ZIP are conversion inputs, never installable packages. Choose a new GLB destination; the bounded converter refuses traversal, encrypted/symlink members, ambiguous model choices, external textures, authored COLLADA animation, and every overwrite. The resulting self-contained GLB enters the ordinary resumable authoring and review flow.");
@@ -12224,9 +12361,15 @@ void drawCharacterImportControls(bool rail) {
         }
     }
     const bool canImport = g_characterImportPath[0] != '\0' &&
+        !dccExportRequired &&
         (!convertibleSource || g_characterConversionOutputPath[0] != '\0');
+    if (filedialog::isAvailable() && inlineActions &&
+        !convertibleSource && !dccExportRequired) {
+        ImGui::SameLine();
+    }
     if (!canImport) ImGui::BeginDisabled();
     if (ImGui::Button(
+            dccExportRequired ? "Export a self-contained GLB to continue" :
             convertibleSource ? "Convert, inspect, and continue" :
             rawGlb ? "Inspect GLB and continue" :
                      "Validate and review")) {
@@ -12234,13 +12377,18 @@ void drawCharacterImportControls(bool rail) {
     }
     if (!canImport) ImGui::EndDisabled();
     ui::SpeakFocusedItem(
+        dccExportRequired ? "Export a self-contained GLB to continue" :
         convertibleSource ? "Convert, inspect, and continue" :
         rawGlb ? "Inspect GLB and continue" : "Validate and review",
         canImport ? nullptr :
-            convertibleSource
+            dccExportRequired
+                ? "Use the format-specific checklist above, then choose or drop the exported GLB."
+                : convertibleSource
                 ? "Choose a new converted GLB destination first."
                 : "Choose or enter a character source path first.",
-        convertibleSource
+        dccExportRequired
+            ? "The Workshop does not execute native project files or guess at unstable interchange semantics. Export one self-contained GLB while preserving the original source."
+            : convertibleSource
             ? "Converts one explicit or unambiguous safe COLLADA source to a new self-contained GLB, then opens the same resumable authoring draft. It never installs or overwrites a file."
             : rawGlb
             ? "Validates and fingerprints the raw model, then opens a resumable package-authoring draft. It does not build or install yet."
@@ -12719,7 +12867,7 @@ void Settings_setDonorGameplayProfiles(
 bool Settings_importCharacterPackage(const char *path) {
     if (path == nullptr || path[0] == '\0') {
         g_characterManagerReport =
-            "Choose a .mdkrchar package, self-contained .glb, COLLADA .dae, or authoring .zip source first.";
+            "Choose a .mdkrchar package, self-contained .glb, COLLADA .dae, authoring .zip, or recognized DCC source first.";
         setStatus("Character import needs a source path.", AppTheme::bad());
         return false;
     }
@@ -12731,8 +12879,23 @@ bool Settings_importCharacterPackage(const char *path) {
     }
     std::snprintf(g_characterImportPath, sizeof(g_characterImportPath), "%s",
                   path);
-    const bool convertibleSource = characterPathHasExtension(path, ".dae") ||
-        characterPathHasExtension(path, ".zip");
+    const CharacterSourceKind sourceKind = characterSourceKind(path);
+    if (characterSourceNeedsDccExport(sourceKind)) {
+        g_characterManagerReport = characterSourceExportGuidance(sourceKind);
+        setStatus(
+            (std::string(characterSourceFormatName(sourceKind)) +
+             " recognized. Export a self-contained GLB; no source or draft changed.").c_str(),
+            AppTheme::accent());
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-source-guidance kind=%s direct_import=0 mutated=0\n",
+                characterSourceFormatName(sourceKind));
+        }
+        return false;
+    }
+    const bool convertibleSource = sourceKind == CharacterSourceKind::Dae ||
+        sourceKind == CharacterSourceKind::Zip;
     if (convertibleSource) {
         const char *smokeOutput = std::getenv(
             "MDKR_APP_SMOKE_CHARACTER_CONVERSION_OUTPUT");
@@ -12766,7 +12929,7 @@ bool Settings_importCharacterPackage(const char *path) {
         }
         const std::string conversionReport = g_characterManagerReport;
         const bool archiveMissingLicense =
-            characterPathHasExtension(path, ".zip") &&
+            sourceKind == CharacterSourceKind::Zip &&
             conversionReport.find(
                 "\"archive_license_present\": false") !=
                 std::string::npos;
@@ -12791,7 +12954,7 @@ bool Settings_importCharacterPackage(const char *path) {
             std::fprintf(
                 stderr,
                 "[app-ui] character-source-conversion kind=%s converted=1 inspected=%d missing_license=%d output=%s\n",
-                characterPathHasExtension(path, ".zip") ? "zip" : "dae",
+                sourceKind == CharacterSourceKind::Zip ? "zip" : "dae",
                 inspected ? 1 : 0, archiveMissingLicense ? 1 : 0,
                 convertedPath.c_str());
         }
@@ -12806,7 +12969,7 @@ bool Settings_importCharacterPackage(const char *path) {
                       : AppTheme::bad());
         return inspected;
     }
-    if (characterPathHasExtension(path, ".glb")) {
+    if (sourceKind == CharacterSourceKind::Glb) {
         if (!beginCharacterRawDraft(path)) {
             g_characterManagerReport =
                 "The raw authoring draft could not be created or selected: " +

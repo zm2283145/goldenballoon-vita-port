@@ -137,6 +137,62 @@ def main() -> int:
                 model_b: hashlib.sha256(model_b.read_bytes()).hexdigest(),
             }
 
+            guidance_cases = (
+                ("author-model.FBX", "FBX"),
+                ("author-model.obj", "OBJ"),
+                ("author-model.blend", "Blender scene"),
+                ("author-model.gltf", "glTF JSON"),
+                ("author-model.usdz", "USD"),
+                ("author-model.ma", "native DCC scene"),
+            )
+            for index, (filename, format_name) in enumerate(guidance_cases):
+                guidance_root = root / f"guidance-{index}"
+                guidance_root.mkdir()
+                source = guidance_root / filename
+                source.write_bytes(
+                    b"untrusted authoring source must remain byte exact\x00" +
+                    bytes([index])
+                )
+                source_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+                guidance_environment = isolated_environment(
+                    guidance_root, source,
+                    guidance_root / "guidance.bmp",
+                    compact=False, drop=True,
+                )
+                expected = [
+                    "active-panel=Character Workshop",
+                    f"character-source-guidance kind={format_name} "
+                    "direct_import=0 mutated=0",
+                ]
+                if index == 0:
+                    (guidance_root / "video.ini").write_text(
+                        "[Accessibility]\nSpeech=1\n", encoding="utf-8"
+                    )
+                    guidance_environment.update({
+                        "MDKR_APP_SMOKE_FRAMES": "220",
+                        "MDKR_APP_SMOKE_A11Y_WALK": "1",
+                        "MDKR_APP_SMOKE_INPUT": "keyboard",
+                        "MDKR_APP_SMOKE_INPUT_TOKEN":
+                            "mdkr64-app-ui-input-v1",
+                        "MDKR_A11Y_TRACE": "1",
+                    })
+                    expected.append("text=Copy GLB export checklist")
+                run(
+                    binary, guidance_root, guidance_environment,
+                    tuple(expected),
+                )
+                if (
+                    hashlib.sha256(source.read_bytes()).hexdigest()
+                        != source_digest
+                    or (guidance_root / "saves" /
+                        "character_raw_drafts-v1.tsv").exists()
+                    or any((guidance_root / "characters").iterdir())
+                ):
+                    raise RuntimeError(
+                        f"{format_name} guidance mutated the source, created "
+                        "a raw draft, or published character state"
+                    )
+
             conversion = root / "conversion"
             conversion.mkdir()
             nested_bytes = io.BytesIO()
@@ -658,6 +714,7 @@ def main() -> int:
               file=sys.stderr)
         return 1
     print("check_character_raw_intake_ui: PASS -- bounded DAE/ZIP conversion, "
+          "mutation-free FBX/OBJ/BLEND/glTF/USD/DCC export guidance, "
           "multi-draft GLB intake, "
           "same-source branching, source-bound mapping restore, exact "
           "switch/delete/install cleanup, "

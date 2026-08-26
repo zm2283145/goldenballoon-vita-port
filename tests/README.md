@@ -4836,7 +4836,12 @@ This ROM-free WebGPU gate first drops a nested authoring ZIP containing one
 generated license-clean DAE, requires bounded conversion to an exclusively
 created self-contained GLB, confirms the missing embedded-license disclosure,
 and verifies the ZIP stays byte-identical and no package/cache is published. It
-also keyboard-walks the explicit converted-destination workflow. The gate then
+also keyboard-walks the explicit converted-destination workflow. Before
+conversion, it drops uppercase FBX, OBJ, Blender, JSON glTF, USDZ and native
+DCC fixtures and requires each to route to its format-specific GLB export lane
+instead of ROM/package validation. One lane is keyboard/speech walked through
+the copyable checklist; every lane must leave the source byte-identical and
+create no draft, candidate, output, or installed state. The gate then
 drops two distinct generated, license-clean, self-contained GLBs onto one real
 launcher profile. It requires Workshop routing,
 bounded model inspection, two independently authenticated source drafts, durable

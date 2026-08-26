@@ -36,6 +36,10 @@ This gives three deliberately separate formats:
   rejects unsafe or ambiguous members, converts one explicit DAE or extracts
   one character-ready GLB to an exclusively created destination, and then
   enters the ordinary resumable authoring/review path;
+- format-specific, mutation-free export guidance for JSON glTF, FBX, OBJ,
+  Blender, USD and common native DCC scenes. Native pickers, manual paths and
+  window-wide drops all route these sources to the Workshop instead of ROM or
+  package validation; the launcher never executes or loosely interprets them;
 - deterministic `.mdkc` compilation with content/compiler identity, sections,
   tangents, animation tracks, semantics, sockets, materials and authored
   `MSFT_lod` levels;
@@ -855,7 +859,13 @@ than being distorted by mandatory solving.
     source switch, or changed model requires reinspection. Switching closes only
     disposable review state. Installing or deleting removes the exact selected
     authoring record while preserving peer drafts and never mutates the external
-    GLB/license. A successful build creates only a draft-bound disposable
+    GLB/license. JSON glTF, FBX, OBJ, Blender, USD and native Maya/3ds Max/C4D
+    scene extensions take a separate guidance-only route. It explains the
+    format-specific risk and supplies a copyable GLB 2.0 checklist covering
+    embedded resources, evaluated skin/animation, units/up-axis, triangulation,
+    normals/tangents and later forward-axis declaration. Guidance never creates
+    an output, draft, candidate, or cache and never changes the selected source.
+    A successful build creates only a draft-bound disposable
     source-package candidate, which must pass steps 2–7 like any externally
     authored package.
 

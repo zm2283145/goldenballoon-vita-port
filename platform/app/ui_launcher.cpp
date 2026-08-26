@@ -161,7 +161,11 @@ bool hasCharacterSourceExtension(const std::string &path) {
         return true;
     };
     return matches(".mdkrchar") || matches(".glb") || matches(".dae") ||
-        matches(".zip");
+        matches(".zip") || matches(".gltf") || matches(".fbx") ||
+        matches(".obj") || matches(".blend") || matches(".usd") ||
+        matches(".usda") || matches(".usdc") || matches(".usdz") ||
+        matches(".ma") || matches(".mb") || matches(".max") ||
+        matches(".c4d") || matches(".3ds");
 }
 
 void acceptDroppedFile(AppHost &host, LauncherState &state, int &activePanel) {
