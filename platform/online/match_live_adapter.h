@@ -458,6 +458,15 @@ bool mdkr_online_live_adapter_lobby(const IMdkrOnlineAdapter *adapter,
  * no boot-handoff seam). */
 bool mdkr_online_live_adapter_retract_race_boot(IMdkrOnlineAdapter *adapter);
 
+/* One-shot async command-refusal for the panel: when the room refused this
+ * endpoint's last lobby command with no auto-recovery (e.g. SET_CHARACTER ->
+ * SELECTION_CONFLICT after both players tapped the same racer), returns true
+ * once with the refused MdkrOnlineCommandType and MdkrOnlineError so the UI
+ * can un-stage its optimistic pick and explain why. */
+bool mdkr_online_live_adapter_take_refusal(IMdkrOnlineAdapter *adapter,
+                                           uint32_t *command_type,
+                                           uint32_t *error);
+
 /* ---- ENTER_ANOTHER_CODE step contract (W4 M5 -- for the UI task) ---------- *
  *
  * The live adapter is constructed with a FIXED journey + join code and its

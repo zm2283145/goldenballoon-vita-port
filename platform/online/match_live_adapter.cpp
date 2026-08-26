@@ -483,6 +483,17 @@ private:
     }
 
     bool actionAllowed(MdkrOnlineViewAction action) const {
+        /* Re-picking a racer, vehicle or track vote is legal any time the room
+         * is back in its selection phase, even when the view model's primary
+         * control has already moved on to Ready/Start (the reducer accepts a
+         * re-pick and clears ready). Without this the pickers are one-shot:
+         * "Change Selection" could never actually change anything. */
+        if ((action == MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER ||
+             action == MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE ||
+             action == MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK) &&
+            haveLobby_ && lobby_.phase == MDKR_ONLINE_LOBBY) {
+            return true;
+        }
         MdkrOnlineViewModel m;
         if (!view(&m)) return false;
         return (m.primary.visible && m.primary.enabled &&
@@ -783,6 +794,18 @@ private:
                             "(no auto-recovery)\n",
                             haveLast_ ? lobbyCommandName(lastType_) : "?",
                             lobbyErrorName(ev.step.error));
+                        /* Surface the refusal to the panel (one-shot): the
+                         * command was accepted locally but refused by the room
+                         * (e.g. SELECTION_CONFLICT when both players tap the
+                         * same racer), so the UI must un-stage its optimistic
+                         * pick and show why. */
+                        if (haveLast_) {
+                            refusalType_ =
+                                static_cast<uint32_t>(lastType_);
+                            refusalError_ = ev.step.error;
+                            haveRefusal_ = true;
+                            bump();
+                        }
                     }
                     break;
                 case MdkrOnlineRoomEvent::Type::Failure:
@@ -2301,6 +2324,24 @@ private:
     int lastPreflightGate_ = -1;
     bool preflightInitLogged_ = false;
     bool raceReadyLogged_ = false;
+
+    /* One-shot async command-refusal surface for the panel (e.g. the room
+     * refused SET_CHARACTER with SELECTION_CONFLICT after the optimistic local
+     * pick). Set by the CommandResult drain, consumed by takeRefusal(). */
+    uint32_t refusalType_ = 0u;
+    uint32_t refusalError_ = 0u;
+    bool haveRefusal_ = false;
+
+public:
+    bool takeRefusal(uint32_t *type, uint32_t *error) {
+        if (!haveRefusal_) return false;
+        if (type != nullptr) *type = refusalType_;
+        if (error != nullptr) *error = refusalError_;
+        haveRefusal_ = false;
+        return true;
+    }
+
+private:
 };
 
 }  // namespace
@@ -2458,6 +2499,14 @@ bool mdkr_online_live_adapter_retract_race_boot(IMdkrOnlineAdapter *adapter) {
     if (adapter == nullptr) return false;
     LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
     return live != nullptr && live->retractRaceBoot();
+}
+
+bool mdkr_online_live_adapter_take_refusal(IMdkrOnlineAdapter *adapter,
+                                           uint32_t *command_type,
+                                           uint32_t *error) {
+    if (adapter == nullptr) return false;
+    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    return live != nullptr && live->takeRefusal(command_type, error);
 }
 
 /* OnlineRoom_makeGatedLiveAdapter is a header-inline stub (returns nullptr)
