@@ -2185,6 +2185,28 @@ static void mdkr_online_boot_direct_race(
     fprintf(stderr, "[online-boot] direct race: track=%d players=%d\n", trackId,
             canonicalPlayers);
 
+    /* Manifest RNG seed (hostile m1). The frozen manifest's rng_seed is
+     * derived identically on both endpoints, but the engine otherwise boots
+     * on the compile-time constant seed 'QAVM' (platform/math_util_native.c)
+     * and nothing re-seeds it -- set_rng_seed()'s only other caller is
+     * waves.c, bracketed by save_rng_seed()/load_rng_seed() -- so every
+     * online race replayed one fixed item/AI random stream. Seeding here,
+     * before the level loads, gives each race its own per-race item/RNG
+     * variety while keeping both endpoints identical: each applies the same
+     * fold at the same boot point and every authoritative draw afterwards is
+     * lockstep (presentation randomness runs on its own separate stream).
+     * Fold the u64 to the generator's 32-bit width by XOR of the halves.
+     * Online-only by construction: this function runs only for a validated
+     * online launch descriptor. */
+    {
+        u64 manifestSeed = launch->manifest.rng_seed;
+        s32 foldedSeed = (s32) (u32) (manifestSeed ^ (manifestSeed >> 32));
+
+        set_rng_seed(foldedSeed);
+        fprintf(stderr, "[online-boot] rng seed applied: %08x\n",
+                (unsigned) (u32) foldedSeed);
+    }
+
     menu_online_versus_race_setup(trackId, canonicalPlayers);
     init_racer_headers();
 
