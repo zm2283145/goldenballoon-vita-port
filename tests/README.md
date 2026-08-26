@@ -4830,6 +4830,27 @@ The gate is registered as `custom_character_identity_surfaces` and serialized
 with every native GPU/pixel check. Its temporary package, catalog, save, input
 script, and captures never touch the player's normal library.
 
+## Collection-arena custom portrait — `tests/check_custom_character_flag_portrait.py`
+
+This real-ROM WebGPU gate generates and installs a CC0 package with a Bumper
+donor and an unmistakable package-owned 40x40 card, then enters Fire Mountain's
+actual egg challenge. The lazy `BHV_CHARACTER_FLAG` binding for player one must
+name the exact package card rather than Bumper's retail portrait. Two otherwise
+identical runs differ only by the production portrait-draw suppression control;
+matched framebuffer samples must differ by a full portrait-shaped region. This
+isolates real painted flag pixels from the custom model, HUD, course, and race
+simulation. The installed package inventory is hashed before and after both
+arms.
+
+```bash
+python3 tests/check_custom_character_flag_portrait.py \
+  --build build-character-tests --rom baserom.us.v80.z64
+```
+
+The gate is registered as `custom_character_flag_portrait` and GPU-serialized
+in `tools/run_checks.py`. Its source, catalog, save, logs, and captures are
+temporary unless `--evidence-dir` is supplied.
+
 ## Raw source Workshop intake — `tests/check_character_raw_intake_ui.py`
 
 This ROM-free WebGPU gate first drops a nested authoring ZIP containing one

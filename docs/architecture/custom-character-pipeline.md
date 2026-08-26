@@ -202,6 +202,17 @@ for gameplay. This is enough to ship a visually distinct local character with
 an explicit familiar stats profile without expanding fixed ROM tables or
 pretending a donor tile is the custom identity.
 
+Player-owned portrait resolution is shared by the custom browser, race HUD,
+rankings/results, and the giant `BHV_CHARACTER_FLAG` quads authored by Fire
+Mountain and Smokey Castle. The flag seam first asks for the assigned package
+card, then a project-owned bonus-racer card, and only then the bounded retail
+fallback. A generated non-Diddy package is run through the real Fire Mountain
+course twice with only the portrait draw suppressed in the control arm; the
+package-card binding trace and isolated framebuffer difference prove that the
+flag neither leaks its Bumper donor nor merely binds a texture that paints no
+pixels. Ghost menus remain donor-owned, while cinematic and credits portrait
+lists remain scene-authored retail cast by contract.
+
 The Workshop reflects that boundary in a draft-aware ownership card. Race
 voice and horn index `Object_Racer.characterId`, vehicle audio initializes from
 that character/vehicle pair, and collision/simulation remain on the retail

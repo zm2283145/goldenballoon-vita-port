@@ -195,6 +195,7 @@ GPU_SERIAL_NAMES = frozenset({
     "bonus_character_select",
     "custom_character_roster",
     "custom_character_identity_surfaces",
+    "custom_character_flag_portrait",
     "character_raw_intake_ui",
     "character_workshop_history_ui",
     "character_portrait_studio_ui",
@@ -735,6 +736,10 @@ CHECKS = (
           "check_custom_character_identity_surfaces.py", "native",
           "generated package donor authority plus authored minimap colour and "
           "portrait pixels across a real race and post-race flow"),
+    Check("custom_character_flag_portrait",
+          "check_custom_character_flag_portrait.py", "native",
+          "generated package portrait ownership and isolated WebGPU pixels on "
+          "the real Fire Mountain collection-arena flag"),
     Check("character_raw_intake_ui", "check_character_raw_intake_ui.py", "native",
           "ROM-free multi-draft GLB intake, same-source branching, source-bound "
           "mapping restore, close/resume navigation, exact switch/delete/install "
@@ -752,7 +757,7 @@ CHECKS = (
     Check("character_test_evidence_ui",
           "check_character_test_evidence_ui.py", "native",
           "ROM-free durable 4x4 exact-test matrix, qualified baseline lifecycle, "
-          "device/source/fit binding, corruption refusal, 200% layout, and "
+          "device/source/fit/LOD binding, corruption refusal, 200% layout, and "
           "keyboard speech"),
     Check("custom_character_workshop_preview",
           "check_custom_character_workshop_preview.py", "native",
