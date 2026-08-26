@@ -226,7 +226,8 @@ int main(int argc, char **argv) {
 
     mdkr_modern_character_asset_stats(&asset, &stats);
     require(stats.vertices == 3u && stats.triangles == 1u &&
-                stats.primitives == 1u && stats.materials == 1u,
+                stats.primitives == 1u && stats.lod_levels == 1u &&
+                stats.materials == 1u,
             "compiled geometry statistics");
     require(stats.nodes == 3u && stats.skins == 1u && stats.joints == 2u,
             "compiled rig statistics");

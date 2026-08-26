@@ -204,6 +204,7 @@ typedef struct MdkrModernCharacterStats {
     uint32_t vertices;
     uint32_t triangles;
     uint32_t primitives;
+    uint32_t lod_levels;
     uint32_t materials;
     uint32_t textures;
     uint32_t nodes;

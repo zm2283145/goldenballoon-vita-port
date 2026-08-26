@@ -813,3 +813,7 @@ the imported source.
 The first useful release is a secure, deterministic, modern-stylized character
 pipeline with reliable fallbacks. “AAA” features can then become additional
 renderer profiles rather than exceptions punched through the import contract.
+The complete user journey, including the Portrait Studio, package-keyed drafts,
+donor/gameplay profile selection, exact-context previews, performance assembly
+targets and accessibility gates, is specified in
+[`custom-character-workshop-ux.md`](custom-character-workshop-ux.md).

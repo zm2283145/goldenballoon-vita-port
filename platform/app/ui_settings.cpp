@@ -1820,6 +1820,7 @@ std::string g_characterRegistryDirectory;
 char g_characterImportPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
 std::string g_characterManagerReport;
 std::string g_characterPendingRemoval;
+std::string g_characterWorkshopSelection;
 
 struct CharacterTuningEdit {
     bool loaded = false;
@@ -2277,14 +2278,36 @@ bool drawCharacterTuningEditor(int player,
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         changed |= persistCharacterTuning(entry->id, edit);
     }
-    (void)ImGui::SliderFloat("Detail preference", &edit.lodBias,
+    const bool hasMultipleLods = entry->stats.lod_levels > 1u;
+    if (!hasMultipleLods) ImGui::BeginDisabled();
+    (void)ImGui::SliderFloat("LOD preference", &edit.lodBias,
                              -3.0f, 3.0f, "%+.0f",
                              ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         changed |= persistCharacterTuning(entry->id, edit);
     }
-    ui::TextSubtleWrapped(
-        "Higher detail preference holds authored high-detail LODs farther away; it cannot invent detail missing from the package.");
+    if (!hasMultipleLods) ImGui::EndDisabled();
+    if (hasMultipleLods) {
+        if (ImGui::Button("Performance")) {
+            edit.lodBias = -2.0f;
+            changed |= persistCharacterTuning(entry->id, edit);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Balanced")) {
+            edit.lodBias = 0.0f;
+            changed |= persistCharacterTuning(entry->id, edit);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Quality")) {
+            edit.lodBias = 2.0f;
+            changed |= persistCharacterTuning(entry->id, edit);
+        }
+        ui::TextSubtleWrapped(
+            "These presets choose among authored LODs. They do not change physics or manufacture missing detail.");
+    } else {
+        ui::TextSubtleWrapped(
+            "One authored LOD: runtime quality controls cannot reduce this model's geometry. Re-export with LODs or build an offline simplified assembly.");
+    }
     if (ImGui::Button("Reset fit and motion")) {
         edit = CharacterTuningEdit{};
         edit.loaded = true;
@@ -2294,14 +2317,186 @@ bool drawCharacterTuningEditor(int player,
     return changed;
 }
 
+const char *characterPerformanceTier(
+    const MdkrModernCharacterEntry *entry) {
+    const MdkrModernCharacterStats &stats = entry->stats;
+    if (stats.triangles <= 15000u && stats.vertices <= 20000u &&
+        stats.primitives <= 4u && stats.materials <= 4u &&
+        stats.joints <= 64u && stats.textures <= 8u) return "Excellent";
+    if (stats.triangles <= 30000u && stats.vertices <= 40000u &&
+        stats.primitives <= 8u && stats.materials <= 8u &&
+        stats.joints <= 96u && stats.textures <= 12u) return "Good";
+    if (stats.triangles <= 60000u && stats.vertices <= 70000u &&
+        stats.primitives <= 12u && stats.materials <= 12u &&
+        stats.joints <= 128u && stats.textures <= 16u) return "Heavy";
+    return "Near import limit";
+}
+
+bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
+                                   bool compact) {
+    bool changed = false;
+    constexpr uint32_t raceStates =
+        (MDKR_CHARACTER_SEMANTIC_SELECT_IDLE - 1u) &
+        ~MDKR_CHARACTER_SEMANTIC_FALLBACK;
+    constexpr uint32_t selectStates =
+        MDKR_CHARACTER_SEMANTIC_SELECT_IDLE |
+        MDKR_CHARACTER_SEMANTIC_SELECT_HOVER |
+        MDKR_CHARACTER_SEMANTIC_SELECT_CONFIRM;
+    const unsigned mappedRaceStates = countCharacterBits(
+        entry->semantic_mask & raceStates);
+    const unsigned mappedSelectStates = countCharacterBits(
+        entry->semantic_mask & selectStates);
+    const uint32_t requiredContexts =
+        (1u << MDKR_CHARACTER_CONTEXT_SELECT) |
+        ((entry->vehicle_mask & 7u) << 1u);
+    const bool normalized = (entry->calibration_flags & 1u) != 0u;
+    const bool anchored =
+        (entry->attachment_context_mask & requiredContexts) ==
+        requiredContexts;
+    const bool rigMapped =
+        (entry->socket_mask &
+         (MDKR_CHARACTER_SOCKET_SEAT | MDKR_CHARACTER_SOCKET_HEAD)) ==
+        (MDKR_CHARACTER_SOCKET_SEAT | MDKR_CHARACTER_SOCKET_HEAD);
+    const bool motionReady = mappedRaceStates == 10u &&
+        mappedSelectStates == 3u &&
+        countCharacterBits(entry->moving_semantic_mask &
+                           (raceStates | selectStates)) == 13u;
+    const bool qualified = entry->donor == 9u;
+
+    ImGui::PushID(entry->id);
+    ImGui::SeparatorText("Overview");
+    ImGui::TextUnformatted(entry->display_name);
+    ImGui::TextDisabled(
+        "Appearance package · %s gameplay profile · local presentation only",
+        donorName(entry->donor));
+    ui::TextSubtleWrapped(
+        "The built-in profile still owns stats, handling, hitbox, voice, horn, records, ghosts, and ordinary online authority.");
+    ImGui::TextDisabled(
+        "Roster identity: donor fallback · Portrait: donor fallback · Custom identity media: not authored");
+    ImGui::TextDisabled(
+        "Performance guide: %s · %u triangles · %u vertices · %u draw parts · %u materials · %u joints · %u texture(s) · %u LOD(s)",
+        characterPerformanceTier(entry), entry->stats.triangles,
+        entry->stats.vertices, entry->stats.primitives,
+        entry->stats.materials, entry->stats.joints,
+        entry->stats.textures, entry->stats.lod_levels);
+    ui::TextSubtleWrapped(
+        "The guide is the worst import-budget category, not measured frame time. The Test workspace must eventually qualify four-player timing and decoded VRAM.");
+
+    ImGui::SeparatorText("Readiness");
+    ImGui::TextDisabled(
+        "Geometry ready · Normalized %s · Anchored %s · Rig %s · Motion %s · Donor %s · Identity missing",
+        normalized ? "ready" : "review",
+        anchored ? "ready" : "missing",
+        rigMapped ? "ready" : "missing",
+        motionReady ? "ready" : "incomplete",
+        qualified ? "qualified" : "pending");
+    ImGui::TextDisabled(
+        "%u/10 race states · %u/3 select states · %u/%u mapped clips move",
+        mappedRaceStates, mappedSelectStates,
+        countCharacterBits(entry->moving_semantic_mask &
+                           (raceStates | selectStates)),
+        mappedRaceStates + mappedSelectStates);
+    if (!qualified) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+        ImGui::TextWrapped(
+            "%s is not a fingerprint-qualified replacement profile yet. You may inspect this package, but activation remains unavailable.",
+            donorName(entry->donor));
+        ImGui::PopStyleColor();
+    }
+    if (entry->stats.animations == 0u || entry->motion_channels == 0u) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+        ImGui::TextWrapped(
+            "Static bind pose: this model has no changing animation keys. Geometry and fit can be tested, but it cannot receive a polished-motion status until clips are authored or retargeted.");
+        ImGui::PopStyleColor();
+    } else if ((entry->moving_semantic_mask &
+                MDKR_CHARACTER_SEMANTIC_FALLBACK) == 0u) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+        ImGui::TextWrapped(
+            "The fallback clip is static. Mapped motion can still play, but every missing state holds the fallback pose.");
+        ImGui::PopStyleColor();
+    }
+    const std::string missingRace = missingCharacterSemantics(
+        entry->semantic_mask, kRaceCharacterSemantics);
+    const std::string missingSelect = missingCharacterSemantics(
+        entry->semantic_mask, kSelectCharacterSemantics);
+    if (!missingRace.empty()) {
+        ImGui::TextWrapped("Fallback covers missing race states: %s",
+                           missingRace.c_str());
+    }
+    if (!missingSelect.empty()) {
+        ImGui::TextWrapped("Fallback covers missing select states: %s",
+                           missingSelect.c_str());
+    }
+    ImGui::TextDisabled(
+        "Sockets: seat %s · head %s · hands L/R %s/%s · feet L/R %s/%s",
+        (entry->socket_mask & MDKR_CHARACTER_SOCKET_SEAT)
+            ? "authored" : "required fallback",
+        (entry->socket_mask & MDKR_CHARACTER_SOCKET_HEAD)
+            ? "authored" : "absent",
+        (entry->socket_mask & MDKR_CHARACTER_SOCKET_HAND_LEFT)
+            ? "authored" : "absent",
+        (entry->socket_mask & MDKR_CHARACTER_SOCKET_HAND_RIGHT)
+            ? "authored" : "absent",
+        (entry->socket_mask & MDKR_CHARACTER_SOCKET_FOOT_LEFT)
+            ? "authored" : "absent",
+        (entry->socket_mask & MDKR_CHARACTER_SOCKET_FOOT_RIGHT)
+            ? "authored" : "absent");
+    if ((entry->semantic_mask &
+         MDKR_CHARACTER_SEMANTIC_RACE_STEER) != 0u) {
+        ImGui::TextDisabled(
+            "race.steer phase: 0 full left · 0.5 neutral · 1 full right");
+    }
+
+    ImGui::SeparatorText("Fit, motion, vehicles, and performance");
+    changed |= drawCharacterTuningEditor(0, entry);
+    ui::Gap(ui::kGapS);
+    if (ImGui::Button("Remove package from this computer...")) {
+        g_characterPendingRemoval = entry->id;
+        ImGui::OpenPopup("Remove custom character?");
+    }
+    if (ImGui::BeginPopupModal("Remove custom character?", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped(
+            "Remove %s and its local compiled cache? The original file you imported is not touched.",
+            entry->display_name);
+        if (ImGui::Button("Remove")) {
+            const std::string removedId = g_characterPendingRemoval;
+            if (removeCharacterPackage(removedId)) {
+                for (int slot = 0; slot < 4; ++slot) {
+                    const std::string slotKey = "custom_character_p" +
+                        std::to_string(slot + 1);
+                    if (AppConfig::get(slotKey) == removedId) {
+                        AppConfig::set(slotKey, "");
+                    }
+                }
+                const AppConfig::PersistResult result = AppConfig::save();
+                changed |= AppConfig::persistResultApplied(result);
+                setStatus("Custom character removed from this computer.",
+                          AppTheme::good());
+            } else {
+                setStatus(
+                    "Character removal failed; open the importer report.",
+                    AppTheme::bad());
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+    (void)compact;
+    return changed;
+}
+
 bool drawCustomCharactersSection(bool compact) {
     bool changed = false;
     if (!g_characterRegistryLoaded) refreshCharacterRegistry();
     ui::Gap(ui::kGapS);
     if (!compact) {
         ui::TextSubtleWrapped(
-            "Import a self-contained .mdkrchar package, assign it per player, "
-            "then tune its fit, motion, and vehicle pairing. The game never "
+            "Import a self-contained .mdkrchar package, inspect and tune one "
+            "package-level workshop profile, then assign it to local players. The game never "
             "needs a second ROM and never puts these local presentation choices "
             "into saves, ghosts, physics, or network authority. This spike has "
             "fingerprint-qualified Diddy's car, hovercraft, and plane bodies.");
@@ -2356,6 +2551,54 @@ bool drawCustomCharactersSection(bool compact) {
         ImGui::TreePop();
     }
 
+    const int characterCount =
+        mdkr_modern_character_registry_count(&g_characterRegistry);
+    const MdkrModernCharacterEntry *workshopEntry = nullptr;
+    if (characterCount > 0) {
+        int workshopIndex = mdkr_modern_character_registry_find(
+            &g_characterRegistry, g_characterWorkshopSelection.c_str());
+        if (workshopIndex < 0) {
+            workshopIndex = 0;
+            const MdkrModernCharacterEntry *first =
+                mdkr_modern_character_registry_entry(&g_characterRegistry, 0);
+            g_characterWorkshopSelection = first != nullptr ? first->id : "";
+        }
+        workshopEntry = mdkr_modern_character_registry_entry(
+            &g_characterRegistry, workshopIndex);
+        ImGui::SeparatorText("Character library");
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::BeginCombo(
+                "Character to edit##character-workshop-library",
+                workshopEntry != nullptr ? workshopEntry->display_name
+                                         : "Choose a character")) {
+            for (int index = 0; index < characterCount; ++index) {
+                const MdkrModernCharacterEntry *entry =
+                    mdkr_modern_character_registry_entry(&g_characterRegistry,
+                                                          index);
+                if (entry == nullptr) continue;
+                const std::string item = std::string(entry->display_name) +
+                    (entry->donor == 9u ? "" : " (review only)");
+                if (ImGui::Selectable(
+                        item.c_str(),
+                        g_characterWorkshopSelection == entry->id)) {
+                    g_characterWorkshopSelection = entry->id;
+                    workshopEntry = entry;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        if (workshopEntry != nullptr) {
+            changed |= drawCharacterPackageInspector(workshopEntry, compact);
+        }
+    } else {
+        ImGui::SeparatorText("Character library");
+        ui::TextSubtleWrapped(
+            "No characters are installed yet. Import a validated package above to begin a local workshop draft.");
+    }
+
+    ImGui::SeparatorText("Use in game");
+    ui::TextSubtleWrapped(
+        "Assignments are separate from editing. A character's saved fit follows the package, regardless of which local player uses it.");
     for (int player = 0; player < 4; ++player) {
         ImGui::PushID(player);
         const std::string key =
@@ -2371,185 +2614,47 @@ bool drawCustomCharactersSection(bool compact) {
         const std::string label =
             "Player " + std::to_string(player + 1) + "##custom-character";
         if (ImGui::BeginCombo(label.c_str(), preview)) {
-            const bool noneSelected = selected.empty() || selectedEntry == nullptr;
+            const bool noneSelected =
+                selected.empty() || selectedEntry == nullptr;
             if (ImGui::Selectable("Built-in racer", noneSelected)) {
                 const AppConfig::PersistResult result =
                     AppConfig::setAndSave(key, "");
                 if (AppConfig::persistResultApplied(result)) {
                     changed = true;
-                    setStatus("Custom character selection saved.", AppTheme::good());
+                    setStatus("Custom character assignment saved.",
+                              AppTheme::good());
                 } else {
-                    setStatus("The custom character selection could not be saved.",
-                              AppTheme::bad());
+                    setStatus(
+                        "The custom character assignment could not be saved.",
+                        AppTheme::bad());
                 }
             }
-            for (int index = 0;
-                 index < mdkr_modern_character_registry_count(&g_characterRegistry);
-                 ++index) {
+            for (int index = 0; index < characterCount; ++index) {
                 const MdkrModernCharacterEntry *entry =
                     mdkr_modern_character_registry_entry(&g_characterRegistry,
                                                           index);
                 if (entry == nullptr) continue;
-                const bool seamless = entry->donor == 9u;
+                const bool qualified = entry->donor == 9u;
                 const std::string item = std::string(entry->display_name) +
-                    (seamless ? "" : " (donor not yet qualified)");
-                if (!seamless) ImGui::BeginDisabled();
+                    (qualified ? "" : " (donor not qualified)");
+                if (!qualified) ImGui::BeginDisabled();
                 if (ImGui::Selectable(item.c_str(), selected == entry->id)) {
                     const AppConfig::PersistResult result =
                         AppConfig::setAndSave(key, entry->id);
                     if (AppConfig::persistResultApplied(result)) {
                         changed = true;
-                        setStatus("Custom character selection saved; it applies on play.",
-                                  AppTheme::good());
+                        setStatus(
+                            "Custom character assignment saved; it applies on play.",
+                            AppTheme::good());
                     } else {
-                        setStatus("The custom character selection could not be saved.",
-                                  AppTheme::bad());
+                        setStatus(
+                            "The custom character assignment could not be saved.",
+                            AppTheme::bad());
                     }
                 }
-                if (!seamless) ImGui::EndDisabled();
+                if (!qualified) ImGui::EndDisabled();
             }
             ImGui::EndCombo();
-        }
-        if (selectedEntry != nullptr) {
-            ImGui::TextDisabled(
-                "%s donor · %u triangles · %u joints · %u materials · %u clips",
-                donorName(selectedEntry->donor), selectedEntry->stats.triangles,
-                selectedEntry->stats.joints, selectedEntry->stats.materials,
-                selectedEntry->stats.animations);
-            ImGui::TextDisabled(
-                "Roster pairing: choose %s in-game; that racer keeps its stats and voice.",
-                donorName(selectedEntry->donor));
-            constexpr uint32_t raceStates =
-                (MDKR_CHARACTER_SEMANTIC_SELECT_IDLE - 1u) &
-                ~MDKR_CHARACTER_SEMANTIC_FALLBACK;
-            constexpr uint32_t selectStates =
-                MDKR_CHARACTER_SEMANTIC_SELECT_IDLE |
-                MDKR_CHARACTER_SEMANTIC_SELECT_HOVER |
-                MDKR_CHARACTER_SEMANTIC_SELECT_CONFIRM;
-            const unsigned mappedRaceStates = countCharacterBits(
-                selectedEntry->semantic_mask & raceStates);
-            const unsigned mappedSelectStates = countCharacterBits(
-                selectedEntry->semantic_mask & selectStates);
-            const uint32_t requiredContexts =
-                (1u << MDKR_CHARACTER_CONTEXT_SELECT) |
-                ((selectedEntry->vehicle_mask & 7u) << 1u);
-            const bool normalized =
-                (selectedEntry->calibration_flags & 1u) != 0u;
-            const bool anchored =
-                (selectedEntry->attachment_context_mask & requiredContexts) ==
-                requiredContexts;
-            const bool rigMapped =
-                (selectedEntry->socket_mask &
-                 (MDKR_CHARACTER_SOCKET_SEAT |
-                  MDKR_CHARACTER_SOCKET_HEAD)) ==
-                (MDKR_CHARACTER_SOCKET_SEAT |
-                 MDKR_CHARACTER_SOCKET_HEAD);
-            const bool motionReady = mappedRaceStates == 10u &&
-                mappedSelectStates == 3u &&
-                countCharacterBits(selectedEntry->moving_semantic_mask &
-                                   (raceStates | selectStates)) == 13u;
-            ImGui::TextDisabled(
-                "Readiness: Geometry ready · Normalized %s · Anchored %s · Rig %s · Motion %s · Qualified %s",
-                normalized ? "ready" : "review",
-                anchored ? "ready" : "missing",
-                rigMapped ? "ready" : "missing",
-                motionReady ? "ready" : "incomplete",
-                selectedEntry->donor == 9u ? "ready" : "pending");
-            ImGui::TextDisabled(
-                "%u/10 race states · %u/3 select states · %u/%u mapped clips move",
-                mappedRaceStates, mappedSelectStates,
-                countCharacterBits(selectedEntry->moving_semantic_mask &
-                                   (raceStates | selectStates)),
-                mappedRaceStates + mappedSelectStates);
-            if (selectedEntry->stats.animations == 0u ||
-                selectedEntry->motion_channels == 0u) {
-                ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
-                ImGui::TextWrapped(
-                    "Static bind pose: this model has no changing animation keys. "
-                    "Geometry and fit work, but it will remain posed like the source "
-                    "until real clips are authored or retargeted.");
-                ImGui::PopStyleColor();
-            } else if ((selectedEntry->moving_semantic_mask &
-                        MDKR_CHARACTER_SEMANTIC_FALLBACK) == 0u) {
-                ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
-                ImGui::TextWrapped(
-                    "The fallback clip is static. Mapped motion can still play, "
-                    "but every missing state will hold the fallback pose.");
-                ImGui::PopStyleColor();
-            }
-            const std::string missingRace = missingCharacterSemantics(
-                selectedEntry->semantic_mask, kRaceCharacterSemantics);
-            const std::string missingSelect = missingCharacterSemantics(
-                selectedEntry->semantic_mask, kSelectCharacterSemantics);
-            if (!missingRace.empty()) {
-                ImGui::TextWrapped("Fallback covers missing race states: %s",
-                                   missingRace.c_str());
-            }
-            if (!missingSelect.empty()) {
-                ImGui::TextWrapped("Fallback covers missing select states: %s",
-                                   missingSelect.c_str());
-            }
-            ImGui::TextDisabled(
-                "Sockets: seat %s · head %s · hands L/R %s/%s · feet L/R %s/%s",
-                (selectedEntry->socket_mask & MDKR_CHARACTER_SOCKET_SEAT)
-                    ? "authored" : "required fallback",
-                (selectedEntry->socket_mask & MDKR_CHARACTER_SOCKET_HEAD)
-                    ? "authored" : "absent",
-                (selectedEntry->socket_mask & MDKR_CHARACTER_SOCKET_HAND_LEFT)
-                    ? "authored" : "absent",
-                (selectedEntry->socket_mask & MDKR_CHARACTER_SOCKET_HAND_RIGHT)
-                    ? "authored" : "absent",
-                (selectedEntry->socket_mask & MDKR_CHARACTER_SOCKET_FOOT_LEFT)
-                    ? "authored" : "absent",
-                (selectedEntry->socket_mask & MDKR_CHARACTER_SOCKET_FOOT_RIGHT)
-                    ? "authored" : "absent");
-            if ((selectedEntry->semantic_mask &
-                 MDKR_CHARACTER_SEMANTIC_RACE_STEER) != 0u) {
-                ImGui::TextDisabled(
-                    "race.steer phase: 0 full left · 0.5 neutral · 1 full right");
-            }
-            const std::string editorLabel =
-                "Fit, motion, and vehicle pairing##character-editor";
-            if (ImGui::TreeNodeEx(editorLabel.c_str(),
-                                  player == 0 ? ImGuiTreeNodeFlags_DefaultOpen
-                                              : ImGuiTreeNodeFlags_None)) {
-                changed |= drawCharacterTuningEditor(player, selectedEntry);
-                ui::Gap(ui::kGapS);
-                if (ImGui::Button("Remove package from this computer...")) {
-                    g_characterPendingRemoval = selectedEntry->id;
-                    ImGui::OpenPopup("Remove custom character?");
-                }
-                if (ImGui::BeginPopupModal("Remove custom character?", nullptr,
-                                           ImGuiWindowFlags_AlwaysAutoResize)) {
-                    ImGui::TextWrapped(
-                        "Remove %s and its local compiled cache? The original file you imported is not touched.",
-                        selectedEntry->display_name);
-                    if (ImGui::Button("Remove")) {
-                        const std::string removedId = g_characterPendingRemoval;
-                        if (removeCharacterPackage(removedId)) {
-                            for (int slot = 0; slot < 4; ++slot) {
-                                const std::string slotKey = "custom_character_p" +
-                                    std::to_string(slot + 1);
-                                if (AppConfig::get(slotKey) == removedId) {
-                                    AppConfig::set(slotKey, "");
-                                }
-                            }
-                            const AppConfig::PersistResult result = AppConfig::save();
-                            changed |= AppConfig::persistResultApplied(result);
-                            setStatus("Custom character removed from this computer.",
-                                      AppTheme::good());
-                        } else {
-                            setStatus("Character removal failed; open the importer report.",
-                                      AppTheme::bad());
-                        }
-                        ImGui::CloseCurrentPopup();
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-                    ImGui::EndPopup();
-                }
-                ImGui::TreePop();
-            }
         }
         ImGui::PopID();
     }

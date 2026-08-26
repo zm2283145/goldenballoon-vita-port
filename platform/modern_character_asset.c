@@ -780,12 +780,22 @@ void mdkr_modern_character_asset_unload(MdkrModernCharacterAsset *asset) {
 
 void mdkr_modern_character_asset_stats(const MdkrModernCharacterAsset *asset,
                                        MdkrModernCharacterStats *out) {
+    uint32_t primitive_index;
     if (out == NULL) return;
     memset(out, 0, sizeof(*out));
     if (asset == NULL || asset->owned_bytes == NULL) return;
     out->vertices = asset->sections[MDKR_MDKC_VERTICES].count;
     out->triangles = asset->sections[MDKR_MDKC_INDICES].count / 3u;
     out->primitives = asset->sections[MDKR_MDKC_PRIMITIVES].count;
+    for (primitive_index = 0u; primitive_index < out->primitives;
+         primitive_index++) {
+        MdkrModernPrimitive primitive;
+        if (mdkr_modern_character_asset_primitive(
+                asset, primitive_index, &primitive) &&
+            primitive.lod + 1u > out->lod_levels) {
+            out->lod_levels = primitive.lod + 1u;
+        }
+    }
     out->materials = asset->sections[MDKR_MDKC_MATERIALS].count;
     out->textures = asset->sections[MDKR_MDKC_TEXTURES].count;
     out->nodes = asset->sections[MDKR_MDKC_NODES].count;

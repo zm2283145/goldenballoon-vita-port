@@ -308,7 +308,10 @@ Only the Diddy vehicle-model family has an exact qualified replacement seam.
 Other donor declarations remain visible but unavailable, and OpenGL keeps the
 retail visual. Packages are local-only; the game does not transfer them to
 peers. See [`architecture/custom-character-pipeline.md`](architecture/custom-character-pipeline.md)
-for the format, limits, security model, current proof and remaining gates.
+for the format, limits, security model, current proof and remaining gates, and
+[`architecture/custom-character-workshop-ux.md`](architecture/custom-character-workshop-ux.md)
+for the complete library/editor, Portrait Studio, donor-profile, vehicle-test,
+performance-assembly, preview and optional gameplay-mod UX plan.
 
 ## For contributors
 
