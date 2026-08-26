@@ -135,6 +135,43 @@ def main() -> int:
         "docs/APP_SHELL.md",
         "Drag-and-drop and the typed path are the documented\npaths on Linux",
     )
+    # Custom characters are presentation identities. Keep the Workshop's save
+    # review precise: ghosts/network retain a retail character ID, but course
+    # records and adventure saves do not become donor-owned data, and peer
+    # package negotiation is still future work.
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Course records and adventure saves remain ordinary game data; they ",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "do not embed the custom package.",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Package negotiation for online peers ",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "is not implemented, so the donor is always the safe authoritative ",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Ghost and network/rollback character ID",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Acceleration curve by vehicle",
+    )
+    if "records, ghosts, saves, and ordinary online authority remain" in settings:
+        raise AssertionError(
+            "the Workshop must not describe ordinary record/save data as "
+            "donor-owned"
+        )
+    require_contains(
+        "docs/architecture/custom-character-pipeline.md",
+        "describing those as “owned by the donor” would be incorrect.",
+    )
     print("product claim boundaries passed")
     return 0
 

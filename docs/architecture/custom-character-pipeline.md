@@ -186,6 +186,15 @@ for gameplay. This is enough to ship a visually distinct local character with
 an explicit familiar stats profile without expanding fixed ROM tables or
 pretending a donor tile is the custom identity.
 
+The Workshop reflects that boundary in a draft-aware ownership card. Race
+voice and horn index `Object_Racer.characterId`, vehicle audio initializes from
+that character/vehicle pair, and collision/simulation remain on the retail
+object path. Ghost headers store the retail 0–9 character ID. Course-time and
+fast-lap records are vehicle/course values, while adventure saves likewise do
+not embed a custom package; describing those as “owned by the donor” would be
+incorrect. The package owns only the local presentation fields enumerated
+above, and the card says explicitly that online package negotiation is future.
+
 This separation avoids corrupting assumptions that are genuinely fixed at ten:
 
 - `Character`, `NUM_CHARACTERS`, the 10-by-3 `gRacerObjectTable`, and several

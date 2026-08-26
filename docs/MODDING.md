@@ -368,6 +368,12 @@ only finite numeric values and never
 stores ROM bytes in the package, configuration, or installed-character cache.
 If no supported ROM is currently verified, package selection and saving remain
 available while the comparison explicitly says its evidence is unavailable.
+The adjacent ownership card is the save review: the package owns local model,
+materials, rig/animation/fit, name, portrait and minimap colour; the donor keeps
+simulation, collision, in-race voice/horn/vehicle audio, ghost character ID and
+network/rollback character ID. Course records and adventure saves remain normal
+game data and do not store the package. Character-select audio stays neutral,
+and online package negotiation/fallback is not yet implemented.
 
 `MDKR_CUSTOM_CHARACTER_DIRECTORY` is a diagnostic and automated-test override
 for launching against an isolated catalog. Ordinary players should use the

@@ -190,7 +190,9 @@ retained. Its profile comparison shows:
   table rather than a fabricated one-number rating;
 - voice/horn/effect fallbacks;
 - car/hovercraft/plane qualification state;
-- records, ghosts, saves and online status;
+- exact authority consequences: race voice/horn/vehicle audio use the donor;
+  ghosts and network/rollback store the donor character ID; course records and
+  adventure saves remain ordinary game data and never embed the package;
 - a visible evidence-unavailable state when no supported ROM has been verified.
 
 The bars describe range position, never “better” or “worse.” Top speed is not
@@ -201,6 +203,13 @@ The implementation exposes qualified geometry seams for every retail donor.
 Profile cards can therefore present all ten choices without a hidden Diddy-only
 gate; an unavailable or changed ROM schema still fails visible and retains the
 built-in actor.
+
+The current responsive ownership card puts **Custom package owns** beside
+**Built-in profile remains authoritative** on wide screens and stacks the same
+content on handheld/narrow layouts. It updates against the unsaved donor draft,
+states that character-select audio is neutral, and identifies package
+negotiation as future work rather than implying that peers already receive the
+appearance.
 
 Vehicle selection has two meanings and the UI must not conflate them:
 
@@ -389,7 +398,7 @@ last known-good assembly remains available if an update fails.
 | Per-context corrections | One package-keyed editor shared by every local assignment, with independent select/car/hovercraft/plane transforms and contact offsets | Add direct spatial transform/target manipulators |
 | Animation semantics | Executable sampling/diagnostics plus source-v4 compiled role contract, inference provenance/confidence, transactional 16-role skin-joint editor with bind-pose hierarchy canvas, rest/bend controls and automatic review invalidation, native hierarchy validation, reviewed engine-reference fallback motion, and bounded idempotent vehicle contact solving | Add richer reference clips, target overlays and joint-limit inspection |
 | Portrait/roster identity | Source-v3 import, transactional Portrait Studio revision, exact 40x40 preview/editor with pencil/eraser/fill/eyedropper/mirror/undo, HUD/results/rankings/minimap resolver, and independent 64-entry paginated select browser with per-player portrait/name identity executable | Add model capture, advanced selection/style tools, localization-aware game-font shaping, and remaining identity-surface audit |
-| Donor selection | All ten revision-1 donor seams are fingerprint-qualified and selectable through transactional source revisions; the engine publishes a bounded GPU-free installed-character catalog for virtual roster consumers; the launcher publishes exact bounded ROM-derived weight, handling, and vehicle-specific 14-sample acceleration evidence without retaining ROM bytes | Add portrait-led profile cards and complete voice/horn/effect explanation audit |
+| Donor selection | All ten revision-1 donor seams are fingerprint-qualified and selectable through transactional source revisions; the engine publishes a bounded GPU-free installed-character catalog for virtual roster consumers; the launcher publishes exact bounded ROM-derived weight, handling, and vehicle-specific 14-sample acceleration evidence without retaining ROM bytes; a responsive draft-aware authority card distinguishes package presentation, donor simulation/audio/ghost/network identity, ordinary save/record data, and future package negotiation | Add donor portrait treatment without bundling copyrighted art and complete remaining effect-surface audit |
 | Vehicle support | Source-backed compatibility revision, runtime enable subset, independent transforms, persisted per-vehicle hand/foot target offsets, warmed exact-context solve-count/mean/max contact-error feedback, stale-result invalidation, contextual one-click save/retest loops, and source/tuning-bound per-context review | Add visual target manipulators and complete vehicle test matrix |
 | Performance controls | Import caps, authored LOD bias, exact per-LOD draw accounting, 1P-4P worst-visible assembly counts, exact one-click WebGPU stress routes, and a returned post-warm-up wall-cadence percentile/result card with synthetic/short-sample refusal | Add GPU timestamps, repeatable comparison baselines, representative scene matrix and device profiles |
 | Gameplay tuning | Correctly absent from visual package | Build separate opt-in hashed gameplay-profile system |

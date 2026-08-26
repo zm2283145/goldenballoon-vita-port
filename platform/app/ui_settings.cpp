@@ -3829,6 +3829,72 @@ void drawCharacterPortraitPreview(const MdkrModernCharacterEntry *entry) {
     }
 }
 
+void drawCharacterProfileAuthorityCard(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterProfileEdit &edit) {
+    const bool donorDirty = edit.donor != entry->donor;
+    ImGui::Text("%s appearance  →  %s gameplay profile",
+                entry->display_name, donorName(edit.donor));
+    if (donorDirty) {
+        ImGui::SameLine();
+        ImGui::TextColored(AppTheme::accent(), "draft");
+    }
+    ui::TextSubtleWrapped(
+        "This is an ownership contract, not a stat copy. Saving records the "
+        "chosen retail donor and package vehicle mask in a new source revision.");
+
+    const bool wide = ImGui::GetContentRegionAvail().x >= 700.0f;
+    const bool sideBySide = wide && ImGui::BeginTable(
+        "##character-profile-authority-columns", 2,
+        ImGuiTableFlags_SizingStretchSame);
+    if (sideBySide) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+    }
+    auto card = [](const char *id, const char *title, const ImVec4 &colour,
+                   const char *line1, const char *line2, const char *line3,
+                   const char *line4) {
+        if (ui::CardBegin(id, colour, 0.0f)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, colour);
+            ImGui::TextUnformatted(title);
+            ImGui::PopStyleColor();
+            const auto bullet = [](const char *text) {
+                ImGui::Bullet();
+                ImGui::SameLine();
+                ui::TextSubtleWrapped("%s", text);
+            };
+            bullet(line1);
+            bullet(line2);
+            bullet(line3);
+            bullet(line4);
+        }
+        ui::CardEnd();
+    };
+    card("##character-profile-presentation-owns", "Custom package owns",
+         AppTheme::good(),
+         "3D mesh, materials, rig mapping, animation and fit tuning",
+         "Display name, 40 × 40 portrait and minimap colour",
+         "Local character-select identity; selection audio stays neutral",
+         "Presentation only; a missing package falls back to the retail actor");
+    if (sideBySide) {
+        ImGui::TableNextColumn();
+    } else {
+        ui::Gap(ui::kGapS);
+    }
+    card("##character-profile-donor-owns", "Built-in profile remains authoritative",
+         AppTheme::accent(),
+         "Weight, handling and per-vehicle acceleration curves",
+         "Collision, hitbox, vehicle state, items and race simulation",
+         "In-race character voice, horn and vehicle audio",
+         "Ghost and network/rollback character ID");
+    if (sideBySide) ImGui::EndTable();
+    ui::TextSubtleWrapped(
+        "Course records and adventure saves remain ordinary game data; they "
+        "do not embed the custom package. Package negotiation for online peers "
+        "is not implemented, so the donor is always the safe authoritative "
+        "identity and presentation fallback.");
+}
+
 bool drawCharacterProfileStudio(const MdkrModernCharacterEntry *entry) {
     static const char *vehicleNames[] = {"Car", "Hovercraft", "Plane"};
     CharacterProfileEdit &edit = g_characterProfileEdits[entry->id];
@@ -3842,7 +3908,7 @@ bool drawCharacterProfileStudio(const MdkrModernCharacterEntry *entry) {
         edit.loaded = true;
     }
     ui::TextSubtleWrapped(
-        "Choose which built-in racer supplies gameplay and which vehicle scenes this appearance supports. This never copies or edits stats: handling, weight, acceleration, hitbox, voice, horn, records, ghosts, saves, and ordinary online authority remain the selected built-in profile's own data.");
+        "Choose which built-in racer supplies authoritative gameplay and which vehicle scenes this appearance supports. The package never copies or edits the donor's simulation tables.");
     ImGui::SetNextItemWidth(std::min(440.0f, ImGui::GetContentRegionAvail().x));
     const std::string selectedLabel = donorChoiceLabel(edit.donor);
     const bool profileComboOpen = ImGui::BeginCombo(
@@ -3879,6 +3945,7 @@ bool drawCharacterProfileStudio(const MdkrModernCharacterEntry *entry) {
         }
         ImGui::EndCombo();
     }
+    drawCharacterProfileAuthorityCard(entry, edit);
     drawDonorGameplayComparison(edit.donor, edit.comparisonVehicle);
     ImGui::TextColored(
         AppTheme::good(),
@@ -4303,7 +4370,8 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         "Appearance package · %s gameplay profile · local presentation only",
         donorName(entry->donor));
     ui::TextSubtleWrapped(
-        "The built-in profile still owns stats, handling, hitbox, voice, horn, records, ghosts, and ordinary online authority.");
+        "The package owns local presentation. Its selected retail donor still "
+        "owns simulation, collision, race audio, ghost identity, and network/rollback authority; ordinary records and saves never embed the package.");
     if (identityReady) {
         drawCharacterPortraitPreview(entry);
         ImGui::SameLine(0.0f, ui::kGapM);
