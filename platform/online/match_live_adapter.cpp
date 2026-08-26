@@ -146,6 +146,9 @@ const char *lobbyCommandName(MdkrOnlineCommandType t) {
         case MDKR_ONLINE_SET_CHARACTER: return "SET_CHARACTER";
         case MDKR_ONLINE_SET_VEHICLE: return "SET_VEHICLE";
         case MDKR_ONLINE_CANCEL_LOADING: return "CANCEL_LOADING";
+        case MDKR_ONLINE_SET_MODE: return "SET_MODE";
+        case MDKR_ONLINE_SET_CONFIG_TRACK: return "SET_CONFIG_TRACK";
+        case MDKR_ONLINE_SET_CUP: return "SET_CUP";
     }
     return "?";
 }

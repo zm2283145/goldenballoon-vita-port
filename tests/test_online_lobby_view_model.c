@@ -353,7 +353,7 @@ static void test_loading_racing_and_results(void) {
            "race chrome states non-pausing behavior and deliberate leave");
 
     /* Packed placements: seat 0 first, seat 1 second, seats 2/3 unoccupied. */
-    lobby_command(&lobby, 8u, MDKR_ONLINE_PUBLISH_RESULTS, 0xFFFF0100u, 0u);
+    lobby_command(&lobby, 8u, MDKR_ONLINE_PUBLISH_RESULTS, 0u, 0xFFFF0100u);
     session_command(&session, MDKR_SESSION_COMMAND_SET_ENGINE_PHASE,
                     MDKR_ENGINE_FINISHED);
     expect(mdkr_online_view_model_build(&input, &model) &&

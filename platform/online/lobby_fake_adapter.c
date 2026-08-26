@@ -557,7 +557,7 @@ MdkrOnlineFakeStep mdkr_online_fake_finish_race(
             packed |= (uint32_t)byte << (8u * seat);
         }
         if (!lobby_dispatch(&next, next.lobby.leader_endpoint_id,
-                            MDKR_ONLINE_PUBLISH_RESULTS, packed, 0u) ||
+                            MDKR_ONLINE_PUBLISH_RESULTS, 0u, packed) ||
             !session_dispatch(&next, MDKR_SESSION_COMMAND_SET_ENGINE_PHASE,
                               MDKR_ENGINE_FINISHED)) {
             return fake_step(adapter, false, false,
