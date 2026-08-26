@@ -24,7 +24,14 @@ export type MatchCommandType =
   | "join" | "leave" | "disconnect" | "reconnect" | "set_ready"
   | "set_vote" | "begin_loading" | "ack_loaded" | "begin_race"
   | "publish_results" | "rematch" | "transfer_leader" | "close"
-  | "set_character" | "set_vehicle" | "cancel_loading";
+  | "set_character" | "set_vehicle" | "cancel_loading"
+  | "set_mode" | "set_config_track" | "set_cup";
+
+/* Sentinel encodings shared byte-for-byte with platform/online/lobby_core.h:
+ * MDKR_ONLINE_NO_VOTE / MDKR_ONLINE_NO_CUP / MDKR_ONLINE_NO_PLACEMENT. */
+export const MATCH_NO_TRACK = 0xffff;
+export const MATCH_NO_CUP = 0xff;
+export const MATCH_NO_PLACEMENT = 0xff;
 export type MatchError =
   | "ok" | "protocol" | "stale_revision" | "stale_command"
   | "command_conflict" | "invalid_state" | "unauthorized" | "not_found"
@@ -79,6 +86,17 @@ export interface MatchLobbyV1 {
   nextReceipt: number;
   selectedTrack: number | null;
   selectedVehicleMask: number;
+  /* Session configuration and tournament progress, mirrored from
+   * MdkrOnlineLobby in platform/online/lobby_core.h with the native sentinel
+   * encodings (MATCH_NO_TRACK/MATCH_NO_CUP/MATCH_NO_PLACEMENT for "none").
+   * Round transitions never clear these; only set_mode/set_cup (and the
+   * series wrap) reset them. */
+  mode: number;
+  configuredTrack: number;
+  cupId: number;
+  raceIndex: number;
+  points: number[];
+  lastPlacements: number[];
 }
 
 export interface MatchCommandV1 {
@@ -124,8 +142,13 @@ export interface MatchCredential {
   issuedAt: number;
 }
 
+/* schemaVersion 2 added the session-configuration/tournament lobby fields
+ * (mode, configuredTrack, cupId, raceIndex, points, lastPlacements). Stored
+ * v1 rooms are rejected rather than migrated: the 24h room TTL makes them
+ * ephemeral, and MDKR_ONLINE_PROTOCOL_VERSION (unchanged at 1) still
+ * partitions build compatibility. */
 export interface StoredMatchRoomV1 {
-  schemaVersion: 1;
+  schemaVersion: 2;
   createdAt: number;
   expiresAt: number;
   inviteExpiresAt: number;
@@ -187,6 +210,7 @@ export const MATCH_COMMAND_TYPES = new Set<MatchCommandType>([
   "join", "leave", "disconnect", "reconnect", "set_ready", "set_vote",
   "begin_loading", "ack_loaded", "begin_race", "publish_results", "rematch",
   "transfer_leader", "close", "set_character", "set_vehicle", "cancel_loading",
+  "set_mode", "set_config_track", "set_cup",
 ]);
 
 export function validMatchCommandRequest(value: unknown):

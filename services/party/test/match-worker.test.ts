@@ -244,7 +244,7 @@ describe("MatchRoom local Durable Object adapter", () => {
     expect((await send(guest.credential, 6, "ack_loaded")).response.ok).toBe(true);
     expect((await send(host.credential, 7, "begin_race")).response.ok).toBe(true);
     await restartAt("racing");
-    expect((await send(host.credential, 8, "publish_results")).response.ok).toBe(true);
+    expect((await send(host.credential, 8, "publish_results", 0xffff_0100)).response.ok).toBe(true);
     await restartAt("results");
     expect((await send(host.credential, 9, "rematch")).response.ok).toBe(true);
     const state = await post(`/api/match/${host.roomId}/state`, {}, guest.credential);
