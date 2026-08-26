@@ -1155,6 +1155,48 @@ bool parseLobby(const Json &root, MdkrOnlineLobby &lobby) {
                 : MDKR_ONLINE_NO_VOTE;
         lobby.selected_vehicle_mask =
             static_cast<uint8_t>(readU32(l, "selectedVehicleMask", 0u));
+
+        /* Session configuration + tournament progress (wave-1 protocol).
+         * Absent / null / wrong-typed keys read as the reducer's inert
+         * sentinels -- NEVER as zero, which would mean "track 0 configured" /
+         * "cup 0 selected" / "everyone placed first". */
+        lobby.mode = static_cast<uint8_t>(readU32(l, "mode", 0u));
+        const Json &configured = l.value("configuredTrack", Json());
+        lobby.configured_track =
+            configured.is_number_integer() || configured.is_number_unsigned()
+                ? static_cast<uint16_t>(configured.get<unsigned>())
+                : MDKR_ONLINE_NO_VOTE;
+        const Json &cup = l.value("cupId", Json());
+        lobby.cup_id = cup.is_number_integer() || cup.is_number_unsigned()
+                           ? static_cast<uint8_t>(cup.get<unsigned>())
+                           : MDKR_ONLINE_NO_CUP;
+        lobby.race_index = static_cast<uint8_t>(readU32(l, "raceIndex", 0u));
+        for (unsigned i = 0u; i < MDKR_ONLINE_MAX_SEATS; ++i) {
+            lobby.points[i] = 0u;
+            lobby.last_placements[i] = MDKR_ONLINE_NO_PLACEMENT;
+        }
+        const Json &points = l.value("points", Json());
+        if (points.is_array()) {
+            for (size_t i = 0u;
+                 i < points.size() && i < MDKR_ONLINE_MAX_SEATS; ++i) {
+                if (points[i].is_number_integer() ||
+                    points[i].is_number_unsigned()) {
+                    lobby.points[i] =
+                        static_cast<uint16_t>(points[i].get<unsigned>());
+                }
+            }
+        }
+        const Json &placements = l.value("lastPlacements", Json());
+        if (placements.is_array()) {
+            for (size_t i = 0u;
+                 i < placements.size() && i < MDKR_ONLINE_MAX_SEATS; ++i) {
+                if (placements[i].is_number_integer() ||
+                    placements[i].is_number_unsigned()) {
+                    lobby.last_placements[i] =
+                        static_cast<uint8_t>(placements[i].get<unsigned>());
+                }
+            }
+        }
         lobby.next_receipt = 0u;
     } catch (...) {
         return false;
@@ -1247,6 +1289,11 @@ const char *commandTypeName(MdkrOnlineCommandType type) {
         case MDKR_ONLINE_SET_CHARACTER: return "set_character";
         case MDKR_ONLINE_SET_VEHICLE: return "set_vehicle";
         case MDKR_ONLINE_CANCEL_LOADING: return "cancel_loading";
+        /* Session-config commands (leader-only); names mirror the TS reducer
+         * byte-for-byte ("set_mode" / "set_config_track" / "set_cup"). */
+        case MDKR_ONLINE_SET_MODE: return "set_mode";
+        case MDKR_ONLINE_SET_CONFIG_TRACK: return "set_config_track";
+        case MDKR_ONLINE_SET_CUP: return "set_cup";
         case MDKR_ONLINE_LEAVE: return "leave";
         case MDKR_ONLINE_DISCONNECT: return "disconnect";
         case MDKR_ONLINE_RECONNECT: return "reconnect";

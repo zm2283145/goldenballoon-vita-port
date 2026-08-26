@@ -549,6 +549,11 @@ struct FullRunResult {
     uint8_t localSlotB = 0u;
     MdkrInputSet sampleFrameA{};
     MdkrInputSet sampleFrameB{};
+    /* W4 C4: in-race resend sweep witnesses (production loop shape only). */
+    uint32_t resendSweepsA = 0u;
+    uint32_t resendSweepsB = 0u;
+    uint32_t resendBundlesA = 0u;
+    uint32_t resendBundlesB = 0u;
 };
 
 /* One net_impairment matrix cell: a named carrier profile + a deterministic
@@ -802,6 +807,15 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
                     mdkr_online_live_adapter_race_inputs_for_tick(
                         B.get(), result.sampleTick, &result.sampleFrameB);
             }
+            MdkrOnlineLiveRaceStats plainA{}, plainB{};
+            mdkr_online_live_adapter_race_stats(A.get(), &plainA);
+            mdkr_online_live_adapter_race_stats(B.get(), &plainB);
+            result.resendSweepsA = plainA.resendSweeps;
+            result.resendSweepsB = plainB.resendSweeps;
+            result.resendBundlesA = plainA.resendBundles;
+            result.resendBundlesB = plainB.resendBundles;
+            result.inputEnvelopesA = plainA.inputEnvelopesReceived;
+            result.inputEnvelopesB = plainB.inputEnvelopesReceived;
             return result;
         }
 
@@ -905,6 +919,10 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
         result.inputEnvelopesB = sb.inputEnvelopesReceived;
         result.transportAcceptedA = sa.transportAccepted;
         result.transportAcceptedB = sb.transportAccepted;
+        result.resendSweepsA = sa.resendSweeps;
+        result.resendSweepsB = sb.resendSweeps;
+        result.resendBundlesA = sa.resendBundles;
+        result.resendBundlesB = sb.resendBundles;
         result.impSent = simA.sent + simB.sent;
         result.impDropped = simA.dropped + simB.dropped;
         result.impDuplicated = simA.duplicated + simB.duplicated;
@@ -954,6 +972,12 @@ void test_two_endpoint_race_converges() {
      * byte-identical converged state hash. */
     CHECK(r.raceConverged);
     CHECK(r.hashA == r.hashB);
+    /* W4 C4: the in-race resend sweep runs on the production (race_advance)
+     * loop shape -- and its byte-identical retransmits never disturb the
+     * converged hash above. 240 authored ticks means >= 240 service calls,
+     * so the ~30-call sweep period fired several times on both endpoints. */
+    CHECK(r.resendSweepsA > 0u && r.resendSweepsB > 0u);
+    CHECK(r.resendBundlesA > 0u && r.resendBundlesB > 0u);
     if (!r.raceConverged) {
         std::fprintf(stderr,
                      "race did not converge: ticks=%u hashA=%016llx "
@@ -1246,6 +1270,446 @@ void test_reverify_after_post_confirmation_rewelcome() {
     mdkr_net_roster_runtime_clear();
 }
 
+/* ---- W4 race-lifecycle rig ------------------------------------------------ *
+ *
+ * Two live adapters over the shared room double + loopback mesh, kept ALIVE
+ * across rounds so the multi-race/tournament/mismatch lifecycles can be
+ * driven end to end. Members are declared transport-first so the adapters
+ * (declared last) destruct before the transports they borrow. */
+struct LifecycleRig {
+    FakeMatchRoom room;
+    FakeHub hub;
+    FakeClock clock;
+    FakeRoomTransport transportA{&room, 1u};
+    FakeRoomTransport transportB{&room, 1u};
+    HubMeshBackend backendA{&hub};
+    HubMeshBackend backendB{&hub};
+    std::unique_ptr<IMdkrOnlineAdapter> A;
+    std::unique_ptr<IMdkrOnlineAdapter> B;
+    std::vector<IMdkrOnlineAdapter *> both;
+
+    bool init() {
+        mdkr_net_roster_runtime_clear();
+        A = mdkr_online_live_adapter_create(baseOptions(
+            &transportA, &backendA, &clock, MDKR_ONLINE_JOURNEY_CREATE));
+        B = mdkr_online_live_adapter_create(baseOptions(
+            &transportB, &backendB, &clock, MDKR_ONLINE_JOURNEY_JOIN));
+        if (!A || !B) return false;
+        both = {A.get(), B.get()};
+        return true;
+    }
+
+    bool pumpBoth(const std::function<bool()> &done, unsigned maxMs = 20000u) {
+        return pumpUntil(both, clock, done, maxMs);
+    }
+
+    MdkrOnlineLobby lobbyOf(IMdkrOnlineAdapter *a) {
+        MdkrOnlineLobby l{};
+        (void)mdkr_online_live_adapter_lobby(a, &l);
+        return l;
+    }
+
+    bool lobbiesAt(MdkrOnlinePhase phase) {
+        return lobbyOf(A.get()).phase == phase &&
+               lobbyOf(B.get()).phase == phase;
+    }
+
+    /* create + join + Check Setup to the shared SAS phrase on both sides. */
+    bool toPhrase() {
+        A->submit(cmd(A.get(), MDKR_ONLINE_VIEW_ACTION_CREATE_ROOM));
+        if (!pumpUntil({A.get()}, clock, [&]() {
+                return viewOf(A.get()).kind == MDKR_ONLINE_VIEW_ROOM;
+            }, 3000u)) return false;
+        B->submit(cmd(B.get(), MDKR_ONLINE_VIEW_ACTION_JOIN_ROOM));
+        if (!pumpBoth([&]() {
+                return viewOf(A.get()).member_count == 2u &&
+                       viewOf(B.get()).member_count == 2u;
+            }, 3000u)) return false;
+        A->submit(cmd(A.get(), MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP));
+        B->submit(cmd(B.get(), MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP));
+        hub.welcome(backendA.began);
+        hub.welcome(backendB.began);
+        return pumpBoth([&]() {
+            return viewOf(A.get()).verification_phrase[0] != '\0' &&
+                   viewOf(B.get()).verification_phrase[0] != '\0';
+        }, 30000u);
+    }
+
+    bool toSelecting() {
+        if (!toPhrase()) return false;
+        A->submit(cmd(A.get(), MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE));
+        B->submit(cmd(B.get(), MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE));
+        return pumpBoth([&]() {
+            return viewOf(A.get()).kind == MDKR_ONLINE_VIEW_SELECTING &&
+                   viewOf(B.get()).kind == MDKR_ONLINE_VIEW_SELECTING;
+        }, 3000u);
+    }
+
+    void selectReady(IMdkrOnlineAdapter *self, unsigned character) {
+        auto until = [&](MdkrOnlineViewAction next) {
+            (void)pumpBoth([&]() {
+                return viewOf(self).primary.action == next;
+            }, 5000u);
+        };
+        self->submit(
+            cmd(self, MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER, 0u, character));
+        until(MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE);
+        self->submit(cmd(self, MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE, 0u, 0u));
+        until(MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK);
+        self->submit(cmd(self, MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK, 0u, 5u));
+        until(MDKR_ONLINE_VIEW_ACTION_READY);
+        self->submit(cmd(self, MDKR_ONLINE_VIEW_ACTION_READY, 0u, 1u));
+        (void)pumpBoth([&]() {
+            return viewOf(self).primary.action != MDKR_ONLINE_VIEW_ACTION_READY;
+        }, 5000u);
+    }
+
+    /* Post-rematch round: character/vehicle survive, only vote + ready are
+     * cleared by the reducer's clear_round. */
+    void voteAndReady(IMdkrOnlineAdapter *self) {
+        (void)pumpBoth([&]() {
+            return viewOf(self).primary.action ==
+                   MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK;
+        }, 5000u);
+        self->submit(cmd(self, MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK, 0u, 5u));
+        (void)pumpBoth([&]() {
+            return viewOf(self).primary.action == MDKR_ONLINE_VIEW_ACTION_READY;
+        }, 5000u);
+        self->submit(cmd(self, MDKR_ONLINE_VIEW_ACTION_READY, 0u, 1u));
+        (void)pumpBoth([&]() {
+            return viewOf(self).primary.action != MDKR_ONLINE_VIEW_ACTION_READY;
+        }, 5000u);
+    }
+
+    /* Leader starts; success == both race transports ready (install +
+     * setUpRace ran for this epoch). */
+    bool startRace() {
+        if (!pumpBoth([&]() {
+                return viewOf(A.get()).primary.action ==
+                       MDKR_ONLINE_VIEW_ACTION_START_RACE;
+            }, 5000u)) return false;
+        A->submit(cmd(A.get(), MDKR_ONLINE_VIEW_ACTION_START_RACE, 0u, 1u));
+        return pumpBoth([&]() {
+            MdkrOnlineLiveRaceInfo ia{}, ib{};
+            return mdkr_online_live_adapter_race_info(A.get(), &ia) &&
+                   ia.ready &&
+                   mdkr_online_live_adapter_race_info(B.get(), &ib) &&
+                   ib.ready;
+        }, 30000u);
+    }
+
+    /* Drive `ticks` authored ticks on the deterministic fixture and require
+     * both endpoints to fold the identical confirmed state hash. */
+    bool driveConvergedTicks(unsigned ticks) {
+        MdkrOnlineLiveRaceInfo ia{}, ib{};
+        if (!mdkr_online_live_adapter_race_info(A.get(), &ia) || !ia.ready ||
+            !mdkr_online_live_adapter_race_info(B.get(), &ib) || !ib.ready) {
+            return false;
+        }
+        mdkr_online_live_adapter_race_set_synthetic_input(A.get(), true);
+        mdkr_online_live_adapter_race_set_synthetic_input(B.get(), true);
+        const uint32_t target = ia.firstTick + ticks - 1u;
+        const uint32_t kThrottle = 16u;
+        uint32_t cursorA = ia.firstTick, cursorB = ib.firstTick;
+        uint64_t hA = UINT64_C(1469598103934665603);
+        uint64_t hB = UINT64_C(1469598103934665603);
+        auto foldReady = [&](IMdkrOnlineAdapter *self, uint32_t &cursor,
+                             uint8_t active, uint64_t &h) {
+            MdkrInputSet frame;
+            while (mdkr_online_live_adapter_race_inputs_for_tick(self, cursor,
+                                                                 &frame)) {
+                if ((frame.confirmed_mask & active) != active) break;
+                foldFrame(h, cursor, active, frame);
+                ++cursor;
+            }
+        };
+        for (unsigned step = 0u; step < 20000u; ++step) {
+            A->service();
+            B->service();
+            MdkrOnlineLiveRaceInfo na{}, nb{};
+            mdkr_online_live_adapter_race_info(A.get(), &na);
+            mdkr_online_live_adapter_race_info(B.get(), &nb);
+            if (na.nextTick <= target && na.nextTick - cursorA < kThrottle) {
+                mdkr_online_live_adapter_race_advance(A.get());
+            }
+            if (nb.nextTick <= target && nb.nextTick - cursorB < kThrottle) {
+                mdkr_online_live_adapter_race_advance(B.get());
+            }
+            foldReady(A.get(), cursorA, ia.activeSlotMask, hA);
+            foldReady(B.get(), cursorB, ib.activeSlotMask, hB);
+            if (cursorA > target && cursorB > target) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            clock.nowMs += 2u;
+        }
+        return cursorA > target && cursorB > target && hA == hB;
+    }
+};
+
+/* W4 C2/C3 regression gate: TWO full races through one live room. Race 1
+ * exercises the complete new phase loop (ACK_LOADED from both, leader
+ * BEGIN_RACE, race ticks, leader report_results -> PUBLISH_RESULTS, RESULTS
+ * views + last_placements, leader REMATCH via apply(RACE_AGAIN)); race 2
+ * proves every one-race latch re-armed: a DIFFERENT (leader-configured)
+ * track reaches a READY race transport on the NEW epoch and converges again.
+ * Pre-fix, the second Start Race hung both machines at "Loading the race..."
+ * forever. */
+void test_multi_race_lifecycle() {
+    LifecycleRig rig;
+    CHECK(rig.init());
+    if (!rig.A || !rig.B) return;
+    IMdkrOnlineAdapter *A = rig.A.get();
+    IMdkrOnlineAdapter *B = rig.B.get();
+
+    CHECK(rig.toSelecting());
+    rig.selectReady(A, 1u);
+    rig.selectReady(B, 2u);
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).ready_count == 2u && viewOf(B).ready_count == 2u;
+    }, 3000u));
+
+    /* ---- Race 1 ---- */
+    CHECK(rig.startRace());
+    /* The lobby-facing phase loop is ALIVE: both endpoints ACK_LOADED, the
+     * leader sends BEGIN_RACE, and both sessions surface the racing view
+     * (lobby_phase_matches holds through LOADING -> RACING). */
+    CHECK(rig.pumpBoth([&]() {
+        return rig.lobbiesAt(MDKR_ONLINE_RACING) &&
+               viewOf(A).kind == MDKR_ONLINE_VIEW_RACING &&
+               viewOf(B).kind == MDKR_ONLINE_VIEW_RACING;
+    }, 10000u));
+    CHECK(rig.lobbyOf(A).match_epoch == 1u);
+    CHECK(rig.driveConvergedTicks(60u));
+
+    /* Engine over: the launcher hands the engine placements to the adapter. */
+    const uint8_t placements1[4] = {0u, 1u, 0xFFu, 0xFFu};
+    CHECK(mdkr_online_live_adapter_report_results(A, placements1));
+    CHECK(mdkr_online_live_adapter_report_results(B, placements1)); /* joiner no-op */
+    CHECK(rig.pumpBoth([&]() {
+        return rig.lobbiesAt(MDKR_ONLINE_RESULTS) &&
+               viewOf(A).kind == MDKR_ONLINE_VIEW_RESULTS &&
+               viewOf(B).kind == MDKR_ONLINE_VIEW_RESULTS;
+    }, 10000u));
+    {
+        const MdkrOnlineLobby l = rig.lobbyOf(B);
+        CHECK(l.last_placements[0] == 0u);
+        CHECK(l.last_placements[1] == 1u);
+        CHECK(l.last_placements[2] == MDKR_ONLINE_NO_PLACEMENT);
+        CHECK(l.last_placements[3] == MDKR_ONLINE_NO_PLACEMENT);
+    }
+
+    /* The launcher clears the process-global roster after the engine session
+     * (runOnlineLiveEngineSession's post-race teardown). */
+    mdkr_net_roster_runtime_clear();
+
+    /* Joiner RACE_AGAIN is a clean refusal (REMATCH is leader-only). */
+    CHECK(!B->submit(cmd(B, MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN)).accepted);
+    /* Leader REMATCH returns the room to selections on BOTH endpoints. */
+    CHECK(A->submit(cmd(A, MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN)).accepted);
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).kind == MDKR_ONLINE_VIEW_SELECTING &&
+               viewOf(B).kind == MDKR_ONLINE_VIEW_SELECTING;
+    }, 10000u));
+    {
+        /* Race-Ready and the one-race latches were re-armed. */
+        MdkrOnlineLiveRaceInfo ia{}, ib{};
+        CHECK(mdkr_online_live_adapter_race_info(A, &ia) && !ia.ready);
+        CHECK(mdkr_online_live_adapter_race_info(B, &ib) && !ib.ready);
+    }
+
+    /* ---- Race 2: leader-configured DIFFERENT track ---- */
+    CHECK(mdkr_online_live_adapter_set_config_track(A, 3u)); /* Fossil Canyon */
+    CHECK(!mdkr_online_live_adapter_set_config_track(B, 3u)); /* leader-only */
+    CHECK(rig.pumpBoth([&]() {
+        return rig.lobbyOf(A).configured_track == 3u &&
+               rig.lobbyOf(B).configured_track == 3u;
+    }, 5000u));
+    rig.voteAndReady(A);
+    rig.voteAndReady(B);
+    CHECK(rig.startRace());
+    {
+        MdkrOnlineLiveRaceInfo ia{}, ib{};
+        CHECK(mdkr_online_live_adapter_race_info(A, &ia) && ia.ready);
+        CHECK(mdkr_online_live_adapter_race_info(B, &ib) && ib.ready);
+        CHECK(ia.matchEpoch == 2u && ib.matchEpoch == 2u); /* new epoch */
+        MdkrOnlineLiveLaunchProbe pa{}, pb{};
+        CHECK(mdkr_online_live_adapter_probe(A, &pa) && pa.descriptorBuilt);
+        CHECK(mdkr_online_live_adapter_probe(B, &pb) && pb.descriptorBuilt);
+        /* The rebuilt manifest carries the NEW track + epoch and both
+         * endpoints froze byte-identical descriptors again. */
+        CHECK(pa.descriptor.manifest.track_id == 3u);
+        CHECK(pa.descriptor.manifest.match_epoch == 2u);
+        CHECK(std::memcmp(&pa.descriptor, &pb.descriptor,
+                          sizeof(pa.descriptor)) == 0);
+        CHECK(pa.installed); /* the roster re-installed after the clear */
+    }
+    CHECK(rig.pumpBoth([&]() {
+        return rig.lobbiesAt(MDKR_ONLINE_RACING);
+    }, 10000u));
+    CHECK(rig.driveConvergedTicks(60u));
+
+    const uint8_t placements2[4] = {1u, 0u, 0xFFu, 0xFFu};
+    CHECK(mdkr_online_live_adapter_report_results(A, placements2));
+    CHECK(rig.pumpBoth([&]() {
+        return rig.lobbiesAt(MDKR_ONLINE_RESULTS);
+    }, 10000u));
+    {
+        const MdkrOnlineLobby l = rig.lobbyOf(A);
+        CHECK(l.last_placements[0] == 1u);
+        CHECK(l.last_placements[1] == 0u);
+    }
+    mdkr_net_roster_runtime_clear();
+}
+
+/* W4 tournament lane: set_mode(1) + set_cup(0), two rounds through the same
+ * room; the reducer schedules the cup's round tracks and accrues authentic
+ * trophy points (9/7 then 18/14). Also pins the leader-only refusal for the
+ * joiner's set_mode (the direct C API the UI task calls). */
+void test_tournament_points_accrue() {
+    LifecycleRig rig;
+    CHECK(rig.init());
+    if (!rig.A || !rig.B) return;
+    IMdkrOnlineAdapter *A = rig.A.get();
+    IMdkrOnlineAdapter *B = rig.B.get();
+
+    CHECK(rig.toSelecting());
+    /* Leader-only config surface. */
+    CHECK(!mdkr_online_live_adapter_set_mode(B, 1u)); /* joiner refused */
+    CHECK(mdkr_online_live_adapter_set_mode(A, 1u));
+    CHECK(mdkr_online_live_adapter_set_cup(A, 0u)); /* Dino Domain cup */
+    CHECK(!mdkr_online_live_adapter_set_cup(A, 5u)); /* out of range */
+    CHECK(rig.pumpBoth([&]() {
+        const MdkrOnlineLobby la = rig.lobbyOf(A);
+        const MdkrOnlineLobby lb = rig.lobbyOf(B);
+        return la.mode == MDKR_ONLINE_MODE_TOURNAMENT && la.cup_id == 0u &&
+               lb.mode == MDKR_ONLINE_MODE_TOURNAMENT && lb.cup_id == 0u;
+    }, 5000u));
+
+    rig.selectReady(A, 1u);
+    rig.selectReady(B, 2u);
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).ready_count == 2u && viewOf(B).ready_count == 2u;
+    }, 3000u));
+
+    /* Round 1: the cup schedule (not the votes) picks the track. */
+    CHECK(rig.startRace());
+    {
+        MdkrOnlineLiveLaunchProbe pa{};
+        CHECK(mdkr_online_live_adapter_probe(A, &pa) && pa.descriptorBuilt);
+        CHECK(pa.descriptor.manifest.track_id ==
+              mdkr_online_cup_track(0u, 0u)); /* Ancient Lake (5) */
+    }
+    CHECK(rig.pumpBoth([&]() {
+        return rig.lobbiesAt(MDKR_ONLINE_RACING);
+    }, 10000u));
+    const uint8_t placements[4] = {0u, 1u, 0xFFu, 0xFFu};
+    CHECK(mdkr_online_live_adapter_report_results(A, placements));
+    CHECK(rig.pumpBoth([&]() {
+        return rig.lobbiesAt(MDKR_ONLINE_RESULTS);
+    }, 10000u));
+    {
+        const MdkrOnlineLobby l = rig.lobbyOf(B);
+        CHECK(l.points[0] == 9u && l.points[1] == 7u); /* gTrophyRacePoints */
+        CHECK(l.race_index == 0u);
+    }
+    mdkr_net_roster_runtime_clear();
+
+    /* Round 2 via Race Again: schedule advances, points accumulate. */
+    CHECK(A->submit(cmd(A, MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN)).accepted);
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).kind == MDKR_ONLINE_VIEW_SELECTING &&
+               viewOf(B).kind == MDKR_ONLINE_VIEW_SELECTING;
+    }, 10000u));
+    CHECK(rig.lobbyOf(A).race_index == 1u);
+    CHECK(rig.lobbyOf(A).points[0] == 9u); /* rounds never clear standings */
+    rig.voteAndReady(A);
+    rig.voteAndReady(B);
+    CHECK(rig.startRace());
+    {
+        MdkrOnlineLiveRaceInfo ia{};
+        CHECK(mdkr_online_live_adapter_race_info(A, &ia) && ia.ready);
+        CHECK(ia.matchEpoch == 2u);
+        MdkrOnlineLiveLaunchProbe pa{};
+        CHECK(mdkr_online_live_adapter_probe(A, &pa));
+        CHECK(pa.descriptor.manifest.track_id ==
+              mdkr_online_cup_track(0u, 1u)); /* Fossil Canyon (3) */
+    }
+    CHECK(rig.pumpBoth([&]() {
+        return rig.lobbiesAt(MDKR_ONLINE_RACING);
+    }, 10000u));
+    CHECK(mdkr_online_live_adapter_report_results(A, placements));
+    CHECK(rig.pumpBoth([&]() {
+        return rig.lobbiesAt(MDKR_ONLINE_RESULTS);
+    }, 10000u));
+    {
+        const MdkrOnlineLobby l = rig.lobbyOf(A);
+        CHECK(l.points[0] == 18u && l.points[1] == 14u);
+        CHECK(l.last_placements[0] == 0u && l.last_placements[1] == 1u);
+    }
+    mdkr_net_roster_runtime_clear();
+}
+
+/* W4 M6: "Words Differ" retires the mesh keys/session AND tells the peer.
+ * Pre-fix it only latched a local failure -- RETRY re-presented the exact
+ * phrase the humans refused and the peer sat on "confirm the phrase"
+ * forever. Now both displays leave the confirm surface onto the mismatch
+ * recovery, and after Reconnect Securely a FRESH phrase (fresh ephemeral
+ * keys, fresh transcript) surfaces on both. */
+void test_phrase_mismatch_rekeys_both_sides() {
+    LifecycleRig rig;
+    CHECK(rig.init());
+    if (!rig.A || !rig.B) return;
+    IMdkrOnlineAdapter *A = rig.A.get();
+    IMdkrOnlineAdapter *B = rig.B.get();
+
+    CHECK(rig.toPhrase());
+    const std::string phraseBefore = viewOf(A).verification_phrase;
+
+    /* A's human presses "Words Differ". */
+    CHECK(A->submit(
+        cmd(A, MDKR_ONLINE_VIEW_ACTION_REPORT_PHRASE_MISMATCH)).accepted);
+    /* The sealed notice may have to wait for the reliable control channel to
+     * finish opening (the phrase derives from signaling-borne hellos and can
+     * be ready first); the adapter retries it from service(). Pump until the
+     * PEER's surface flips, then settle so both teardown countdowns run. */
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).kind == MDKR_ONLINE_VIEW_RECOVERY &&
+               viewOf(B).kind == MDKR_ONLINE_VIEW_RECOVERY;
+    }, 15000u));
+    for (unsigned i = 0u; i < 20u; ++i) {
+        A->service();
+        B->service();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        rig.clock.nowMs += 10u;
+    }
+    CHECK(viewOf(A).failure == MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH);
+    /* The PEER left "confirm the phrase" too: the control-channel notice
+     * (not silence) moved it onto the same recovery surface. */
+    CHECK(viewOf(B).failure == MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH);
+
+    /* Fresh welcomes for the re-keyed signal registrations, then RETRY. */
+    rig.hub.welcome(rig.backendA.began);
+    rig.hub.welcome(rig.backendB.began);
+    CHECK(A->submit(cmd(A, MDKR_ONLINE_VIEW_ACTION_RETRY)).accepted);
+    CHECK(B->submit(cmd(B, MDKR_ONLINE_VIEW_ACTION_RETRY)).accepted);
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).verification_phrase[0] != '\0' &&
+               viewOf(B).verification_phrase[0] != '\0';
+    }, 30000u));
+    const std::string phraseAfterA = viewOf(A).verification_phrase;
+    const std::string phraseAfterB = viewOf(B).verification_phrase;
+    CHECK(phraseAfterA == phraseAfterB);   /* both compare the SAME new SAS */
+    CHECK(phraseAfterA != phraseBefore);   /* never re-present the refused SAS */
+
+    /* The rebuilt mesh serves the room end to end: confirm and select. */
+    A->submit(cmd(A, MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE));
+    B->submit(cmd(B, MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE));
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).kind == MDKR_ONLINE_VIEW_SELECTING &&
+               viewOf(B).kind == MDKR_ONLINE_VIEW_SELECTING;
+    }, 5000u));
+    mdkr_net_roster_runtime_clear();
+}
+
 /* Seed derived from the profile index only -- never wall-clock -- so every
  * matrix cell is byte-reproducible across CI reruns. */
 uint64_t matrixSeed(unsigned profileIndex) {
@@ -1286,6 +1750,11 @@ void test_impairment_matrix() {
          * overflowed its bounded schedule buffer. */
         CHECK(r.impSent > 0u);
         CHECK(r.impOverflow == 0u);
+        /* The adapter's in-race resend sweep (W4 C4) must honor the
+         * race_drain_local seam: while the driver routes every transmission
+         * through this seeded carrier the sweep stays silent, or the matrix's
+         * loss/outage arms would be quietly healed outside the carrier. */
+        CHECK(r.resendSweepsA == 0u && r.resendSweepsB == 0u);
         /* Remote input really crossed the mesh -- impairment did not shortcut
          * the convergence proof. */
         CHECK(r.inputEnvelopesA > 0u && r.inputEnvelopesB > 0u);
@@ -1393,6 +1862,9 @@ int main(int argc, char **argv) {
     test_two_endpoint_race_respects_real_input();
     test_clamp_refuses_bonus_identity();
     test_reverify_after_post_confirmation_rewelcome();
+    test_multi_race_lifecycle();
+    test_tournament_points_accrue();
+    test_phrase_mismatch_rekeys_both_sides();
     std::fprintf(stderr, "online_live_adapter: %d checks, %d failures\n",
                  g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
