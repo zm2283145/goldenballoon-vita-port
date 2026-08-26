@@ -149,7 +149,10 @@ export class MatchRoom extends DurableObject<Env> {
     const value = await this.ctx.storage.get<StoredMatchRoomV1>("match");
     if (!value) return undefined;
     const closed = value.lobby?.phase === "closed";
-    if (value.schemaVersion !== 1 || !validMatchLobby(value.lobby) ||
+    /* Only schemaVersion 2 (session-configuration lobby fields) is accepted.
+     * Stored v1 rooms are rejected rather than migrated: the 24h room TTL
+     * makes them ephemeral, so a failed read only costs one stale room. */
+    if (value.schemaVersion !== 2 || !validMatchLobby(value.lobby) ||
         !Array.isArray(value.credentials) || !Array.isArray(value.controlLog) ||
         !Number.isSafeInteger(value.createdAt) || value.createdAt <= 0 ||
         !Number.isSafeInteger(value.expiresAt) || value.expiresAt <= value.createdAt ||
@@ -209,7 +212,7 @@ export class MatchRoom extends DurableObject<Env> {
       const lobby = createMatchLobby(input.roomNumericId, input.leaderEndpointId,
         input.compatibility, input.leaderSeats);
       if (!lobby) return json({error: "invalid_match"}, 400);
-      const record: StoredMatchRoomV1 = {schemaVersion: 1, createdAt: input.now,
+      const record: StoredMatchRoomV1 = {schemaVersion: 2, createdAt: input.now,
         expiresAt: input.now + MATCH_LIMITS.roomTtlMs,
         inviteExpiresAt: input.now + MATCH_LIMITS.inviteTtlMs,
         inviteGeneration: 1,
