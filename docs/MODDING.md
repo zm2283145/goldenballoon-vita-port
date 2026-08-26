@@ -305,10 +305,11 @@ move, and separately reports geometry, normalization, anchors, rig sockets,
 motion, semantic skeleton roles, review state, and donor qualification. A positive-duration
 identity clip remains a T-pose—it proves timing plumbing, not authored motion.
 Root rotation and seat offsets cannot repair that. A model needs real authored
-semantic clips or a reviewed humanoid role map. Source-v4 now validates and
-compiles that role contract, but runtime retargeting and IK are not enabled yet;
-the importer refuses to disguise either static clips or a map without a solver
-as animation readiness.
+semantic clips or a reviewed humanoid role map. Source-v4 validates and
+compiles that role contract; reviewed humanoids receive bounded engine-reference
+poses and vehicle hand/foot contact solving for missing semantics while
+explicit authored clips win. The importer refuses to disguise either static
+clips or an unreviewed map as animation readiness.
 
 In character select, press **R** for an unconfirmed player to open that player's
 independent custom-racer browser. It shows eight portrait/name tiles per page,

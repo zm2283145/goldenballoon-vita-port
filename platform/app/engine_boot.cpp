@@ -22,7 +22,7 @@
 namespace {
 
 std::array<std::string, 4> s_launcherCharacterEnvironment;
-constexpr size_t kCharacterTuningCount = 38;
+constexpr size_t kCharacterTuningCount = 74;
 std::array<std::array<std::string, kCharacterTuningCount>, 4>
     s_launcherCharacterTuningEnvironment;
 std::map<std::string, std::string> s_launcherPackageTuningEnvironment;
@@ -82,6 +82,42 @@ constexpr CharacterTuningKey kCharacterTuningKeys[kCharacterTuningCount] = {
     {"PLANE_ROTATION_X", "plane_rotation_x", "0"},
     {"PLANE_ROTATION_Y", "plane_rotation_y", "0"},
     {"PLANE_ROTATION_Z", "plane_rotation_z", "0"},
+    {"CAR_HAND_LEFT_X", "car_hand_left_x", "0"},
+    {"CAR_HAND_LEFT_Y", "car_hand_left_y", "0"},
+    {"CAR_HAND_LEFT_Z", "car_hand_left_z", "0"},
+    {"CAR_HAND_RIGHT_X", "car_hand_right_x", "0"},
+    {"CAR_HAND_RIGHT_Y", "car_hand_right_y", "0"},
+    {"CAR_HAND_RIGHT_Z", "car_hand_right_z", "0"},
+    {"CAR_FOOT_LEFT_X", "car_foot_left_x", "0"},
+    {"CAR_FOOT_LEFT_Y", "car_foot_left_y", "0"},
+    {"CAR_FOOT_LEFT_Z", "car_foot_left_z", "0"},
+    {"CAR_FOOT_RIGHT_X", "car_foot_right_x", "0"},
+    {"CAR_FOOT_RIGHT_Y", "car_foot_right_y", "0"},
+    {"CAR_FOOT_RIGHT_Z", "car_foot_right_z", "0"},
+    {"HOVERCRAFT_HAND_LEFT_X", "hovercraft_hand_left_x", "0"},
+    {"HOVERCRAFT_HAND_LEFT_Y", "hovercraft_hand_left_y", "0"},
+    {"HOVERCRAFT_HAND_LEFT_Z", "hovercraft_hand_left_z", "0"},
+    {"HOVERCRAFT_HAND_RIGHT_X", "hovercraft_hand_right_x", "0"},
+    {"HOVERCRAFT_HAND_RIGHT_Y", "hovercraft_hand_right_y", "0"},
+    {"HOVERCRAFT_HAND_RIGHT_Z", "hovercraft_hand_right_z", "0"},
+    {"HOVERCRAFT_FOOT_LEFT_X", "hovercraft_foot_left_x", "0"},
+    {"HOVERCRAFT_FOOT_LEFT_Y", "hovercraft_foot_left_y", "0"},
+    {"HOVERCRAFT_FOOT_LEFT_Z", "hovercraft_foot_left_z", "0"},
+    {"HOVERCRAFT_FOOT_RIGHT_X", "hovercraft_foot_right_x", "0"},
+    {"HOVERCRAFT_FOOT_RIGHT_Y", "hovercraft_foot_right_y", "0"},
+    {"HOVERCRAFT_FOOT_RIGHT_Z", "hovercraft_foot_right_z", "0"},
+    {"PLANE_HAND_LEFT_X", "plane_hand_left_x", "0"},
+    {"PLANE_HAND_LEFT_Y", "plane_hand_left_y", "0"},
+    {"PLANE_HAND_LEFT_Z", "plane_hand_left_z", "0"},
+    {"PLANE_HAND_RIGHT_X", "plane_hand_right_x", "0"},
+    {"PLANE_HAND_RIGHT_Y", "plane_hand_right_y", "0"},
+    {"PLANE_HAND_RIGHT_Z", "plane_hand_right_z", "0"},
+    {"PLANE_FOOT_LEFT_X", "plane_foot_left_x", "0"},
+    {"PLANE_FOOT_LEFT_Y", "plane_foot_left_y", "0"},
+    {"PLANE_FOOT_LEFT_Z", "plane_foot_left_z", "0"},
+    {"PLANE_FOOT_RIGHT_X", "plane_foot_right_x", "0"},
+    {"PLANE_FOOT_RIGHT_Y", "plane_foot_right_y", "0"},
+    {"PLANE_FOOT_RIGHT_Z", "plane_foot_right_z", "0"},
 };
 
 const char *modeFlag(int mode) {

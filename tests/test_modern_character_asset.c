@@ -213,7 +213,10 @@ int main(int argc, char **argv) {
     MdkrModernPose pose;
     MdkrModernRenderAsset render;
     float socket_matrix[16];
-    float palette[32];
+    float procedural_arm_left[16];
+    float procedural_arm_right[16];
+    float contact_offsets[MDKR_MODERN_CHARACTER_CONTACTS][3] = {{0}};
+    float palette[256];
     char error[256];
     unsigned char *bytes;
     size_t size;
@@ -350,13 +353,13 @@ int main(int argc, char **argv) {
                 stats.primitives == 1u && stats.lod_levels == 1u &&
                 stats.materials == 1u,
             "compiled geometry statistics");
-    require(stats.nodes == 3u && stats.skins == 1u && stats.joints == 2u,
+    require(stats.nodes == 17u && stats.skins == 1u && stats.joints == 16u,
             "compiled rig statistics");
     require(stats.animations == 1u && stats.animation_channels == 1u &&
                 stats.animation_keys == 2u,
             "compiled animation statistics");
-    require(stats.semantics == 2u && stats.sockets == 2u &&
-                stats.rig_roles == 2u,
+    require(stats.semantics == 3u && stats.sockets == 2u &&
+                stats.rig_roles == 16u,
             "compiled presentation mapping statistics");
     require(stats.encoded_texture_bytes > 64u &&
                 stats.decoded_texture_bytes == 4u,
@@ -392,12 +395,12 @@ int main(int argc, char **argv) {
                 (identity.minimap_rgba & 0xFFFFFFu) == 0x9048DCu,
             "read validated source-v4 identity media and minimap colour");
     require(mdkr_modern_character_asset_rig(&asset, &rig) &&
-                rig.mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY &&
-                rig.flags == 0u && rig.role_count == 2u &&
-                (rig.role_mask & 9u) == 9u &&
+                rig.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 &&
+                rig.flags == MDKR_MODERN_RIG_REVIEWED &&
+                rig.role_count == 16u && rig.role_mask == 0xFFFFu &&
                 mdkr_modern_character_asset_rig_role(
                     &asset, 0u, &rig_role) && rig_role.node == 0u &&
-                rig_role.flags == 1u && rig_role.confidence_milli == 900u,
+                rig_role.flags == 0u && rig_role.confidence_milli == 1000u,
             "read bounded source-v4 rig role contract");
     mdkr_modern_character_asset_unload(&asset);
     mdkr_modern_character_asset_unload(&asset);
@@ -444,6 +447,24 @@ int main(int argc, char **argv) {
     }
     free(bytes);
 
+    bytes = read_file(argv[1], &size);
+    {
+        unsigned char *rig_bytes = section_payload(bytes, MDKR_MDKC_RIG);
+        require(rig_bytes != NULL,
+                "locate compiled rig review flag for lock test");
+        write_u32_le(rig_bytes + 4u, 0u);
+        refresh_payload_crc(bytes, size);
+        require(mdkr_modern_character_asset_load_memory(
+                    bytes, size, &refused, error, sizeof(error)) &&
+                    mdkr_modern_pose_init(&pose, &refused,
+                                          error, sizeof(error)) &&
+                    !mdkr_modern_pose_humanoid_retarget_ready(&pose),
+                "unreviewed inferred humanoid maps cannot drive reference motion");
+        mdkr_modern_pose_shutdown(&pose);
+        mdkr_modern_character_asset_unload(&refused);
+    }
+    free(bytes);
+
     require(mdkr_modern_character_registry_init(&registry, argv[2]) == 0,
             "scan generated character directory");
     require(mdkr_modern_character_registry_count(&registry) == 1,
@@ -468,16 +489,17 @@ int main(int argc, char **argv) {
                 registry.entries[0].identity_flags == 1u &&
                 registry.entries[0].rig_present == 1u &&
                 registry.entries[0].rig_mode ==
-                    MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY &&
-                registry.entries[0].rig_role_mask == 9u &&
-                registry.entries[0].inferred_rig_role_mask == 1u &&
-                registry.entries[0].rig_min_confidence_milli == 900u &&
+                    MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 &&
+                registry.entries[0].rig_flags == MDKR_MODERN_RIG_REVIEWED &&
+                registry.entries[0].rig_role_mask == 0xFFFFu &&
+                registry.entries[0].inferred_rig_role_mask == 0u &&
+                registry.entries[0].rig_min_confidence_milli == 1000u &&
                 registry.entries[0].portrait_bytes > 64u &&
                 registry.entries[0].portrait_rgba[3] != 0u &&
                 registry.entries[0].lod_vertices[0] == 3u &&
                 registry.entries[0].lod_triangles[0] == 1u &&
                 registry.entries[0].lod_primitives[0] == 1u &&
-                registry.entries[0].lod_palette_matrices[0] == 2u &&
+                registry.entries[0].lod_palette_matrices[0] == 16u &&
                 (registry.entries[0].minimap_rgba & 0xFFFFFFu) == 0x9048DCu,
             "registry summarizes per-LOD authoring health and identity preview");
     require(mdkr_modern_character_registry_load(&registry, 0, &asset,
@@ -485,6 +507,8 @@ int main(int argc, char **argv) {
             "load selected registry character");
     require(mdkr_modern_pose_init(&pose, &asset, error, sizeof(error)),
             "initialize semantic skeletal pose");
+    require(mdkr_modern_pose_humanoid_retarget_ready(&pose),
+            "reviewed complete humanoid map enables reference motion");
     require(mdkr_modern_pose_advance(&pose, 0.5f, error, sizeof(error)),
             "advance semantic skeletal pose");
     require(mdkr_modern_pose_socket_matrix(&pose, "head", 0, socket_matrix),
@@ -506,11 +530,83 @@ int main(int argc, char **argv) {
                     &pose, "head", 0, socket_matrix) &&
                 socket_matrix[0] > 0.70f && socket_matrix[0] < 0.72f,
             "normalized phase one samples the right endpoint exactly");
-    require(mdkr_modern_pose_skin_palette(&pose, 0u, 2u, 0,
-                                           palette, 2u,
+    require(mdkr_modern_pose_set_semantic(
+                &pose, "race.item", error, sizeof(error)) &&
+                mdkr_modern_pose_has_semantic(&pose, "race.item") &&
+                mdkr_modern_pose_advance(&pose, 0.2f,
+                                         error, sizeof(error)),
+            "explicit race item clip resolves on a reviewed humanoid");
+    memcpy(procedural_arm_left,
+           mdkr_modern_pose_node_matrix(&pose, 4u, 0),
+           sizeof(procedural_arm_left));
+    require(fabsf(procedural_arm_left[1]) < 1.0e-6f &&
+                fabsf(procedural_arm_left[4]) < 1.0e-6f &&
+                mdkr_modern_pose_apply_vehicle_contacts(
+                    &pose, MDKR_CHARACTER_CONTEXT_CAR, &calibration,
+                    contact_offsets, error, sizeof(error)) &&
+                memcmp(procedural_arm_left,
+                       mdkr_modern_pose_node_matrix(&pose, 4u, 0),
+                       sizeof(procedural_arm_left)) == 0,
+            "explicit authored clips bypass reference motion and contact solving");
+    require(mdkr_modern_pose_set_semantic(
+                &pose, "select.confirm", error, sizeof(error)) &&
+                mdkr_modern_pose_advance(&pose, 0.2f,
+                                         error, sizeof(error)),
+            "missing select clip resolves through reviewed reference motion");
+    memcpy(procedural_arm_left,
+           mdkr_modern_pose_node_matrix(&pose, 4u, 0),
+           sizeof(procedural_arm_left));
+    require(fabsf(procedural_arm_left[1]) > 0.1f ||
+                fabsf(procedural_arm_left[4]) > 0.1f,
+            "reference confirmation pose moves the mapped upper arm");
+    require(mdkr_modern_pose_set_semantic(
+                &pose, "race.steer", error, sizeof(error)) &&
+                mdkr_modern_pose_advance_phase(
+                    &pose, 0.2f, 0.0f, error, sizeof(error)),
+            "reviewed humanoid fallback accepts left steering phase");
+    memcpy(procedural_arm_left,
+           mdkr_modern_pose_node_matrix(&pose, 4u, 0),
+           sizeof(procedural_arm_left));
+    require(mdkr_modern_pose_advance_phase(
+                &pose, 0.2f, 1.0f, error, sizeof(error)),
+            "reviewed humanoid fallback accepts right steering phase");
+    memcpy(procedural_arm_right,
+           mdkr_modern_pose_node_matrix(&pose, 4u, 0),
+           sizeof(procedural_arm_right));
+    require(memcmp(procedural_arm_left, procedural_arm_right,
+                   sizeof(procedural_arm_left)) != 0,
+            "procedural steering produces distinct left and right arm poses");
+    require(mdkr_modern_pose_apply_vehicle_contacts(
+                &pose, MDKR_CHARACTER_CONTEXT_CAR, &calibration,
+                contact_offsets,
+                error, sizeof(error)) &&
+                isfinite(pose.contact_max_error) &&
+                pose.contact_max_error < 0.25f,
+            "bounded contact solver reaches the car hand/foot targets");
+    memcpy(procedural_arm_left,
+           mdkr_modern_pose_node_matrix(&pose, 6u, 0),
+           sizeof(procedural_arm_left));
+    require(mdkr_modern_pose_apply_vehicle_contacts(
+                &pose, MDKR_CHARACTER_CONTEXT_CAR, &calibration,
+                contact_offsets,
+                error, sizeof(error)) &&
+                memcmp(procedural_arm_left,
+                       mdkr_modern_pose_node_matrix(&pose, 6u, 0),
+                       sizeof(procedural_arm_left)) == 0,
+            "repeating one contact context in a pose generation is idempotent");
+    contact_offsets[MDKR_CHARACTER_CONTACT_HAND_LEFT][0] = NAN;
+    require(mdkr_modern_pose_advance_phase(
+                &pose, 0.01f, 0.5f, error, sizeof(error)) &&
+                !mdkr_modern_pose_apply_vehicle_contacts(
+                    &pose, MDKR_CHARACTER_CONTEXT_CAR, &calibration,
+                    contact_offsets, error, sizeof(error)),
+            "direct contact solver rejects non-finite author adjustments");
+    contact_offsets[MDKR_CHARACTER_CONTACT_HAND_LEFT][0] = 0.0f;
+    require(mdkr_modern_pose_skin_palette(&pose, 0u, 16u, 0,
+                                           palette, 16u,
                                            error, sizeof(error)),
             "build mesh-relative GPU skin palette");
-    require(isfinite(palette[0]) && isfinite(palette[31]),
+    require(isfinite(palette[0]) && isfinite(palette[255]),
             "skin palette contains finite matrices");
     require(mdkr_modern_render_asset_init(&render, &asset,
                                           error, sizeof(error)),
@@ -587,6 +683,9 @@ int main(int argc, char **argv) {
     require(set_env(
                 "MDKR_CUSTOM_CHARACTER_PROFILE_org.example.pipeline-proof_SCALE",
                 "1.75") == 0 &&
+                set_env(
+                    "MDKR_CUSTOM_CHARACTER_PROFILE_org.example.pipeline-proof_CAR_HAND_LEFT_X",
+                    "0.125") == 0 &&
                 clear_env("MDKR_CUSTOM_CHARACTER_P1_SCALE") == 0 &&
                 set_env("MDKR_CUSTOM_CHARACTER_P2_SCALE", "1.25") == 0,
             "configure package tuning and a higher-priority player override");
@@ -618,8 +717,11 @@ int main(int argc, char **argv) {
                 0, 0, error, sizeof(error)),
             error);
     require(mdkr_modern_character_get_tuning(0, &tuning) &&
-                tuning.scale == 1.75f,
-            "catalog assignment restores package-keyed tuning");
+                tuning.scale == 1.75f &&
+                tuning.contact_offset[MDKR_CHARACTER_CONTEXT_CAR]
+                                     [MDKR_CHARACTER_CONTACT_HAND_LEFT][0] ==
+                    0.125f,
+            "catalog assignment restores package-keyed fit and contact tuning");
     require(mdkr_modern_character_matches(0, 9, 0),
             "runtime assignment retains donor and vehicle characteristics");
     require(mdkr_modern_character_player_identity(0, &identity_view) &&
@@ -642,12 +744,17 @@ int main(int argc, char **argv) {
     tuning.lod_bias = 1.0f;
     tuning.vehicle_mask = 1u;
     tuning.context[MDKR_CHARACTER_CONTEXT_SELECT].translation[1] = 0.75f;
+    tuning.contact_offset[MDKR_CHARACTER_CONTEXT_CAR]
+                         [MDKR_CHARACTER_CONTACT_HAND_LEFT][0] = 0.25f;
     require(mdkr_modern_character_set_tuning(0, &tuning,
                                               error, sizeof(error)),
             error);
     memset(&tuning, 0, sizeof(tuning));
     require(mdkr_modern_character_get_tuning(0, &tuning) &&
-                tuning.scale == 1.5f && tuning.vehicle_mask == 1u,
+                tuning.scale == 1.5f && tuning.vehicle_mask == 1u &&
+                tuning.contact_offset[MDKR_CHARACTER_CONTEXT_CAR]
+                                     [MDKR_CHARACTER_CONTACT_HAND_LEFT][0] ==
+                    0.25f,
             "runtime retains bounded presentation-only tuning");
     require(mdkr_modern_character_matches(0, 9, 0) &&
                 !mdkr_modern_character_matches(0, 9, 1),
@@ -657,6 +764,13 @@ int main(int argc, char **argv) {
                                                error, sizeof(error)),
             "unsafe editor tuning fails closed");
     tuning.scale = 1.5f;
+    tuning.contact_offset[MDKR_CHARACTER_CONTEXT_SELECT]
+                         [MDKR_CHARACTER_CONTACT_FOOT_RIGHT][2] = NAN;
+    require(!mdkr_modern_character_set_tuning(0, &tuning,
+                                               error, sizeof(error)),
+            "non-finite unused contact tuning cannot enter runtime state");
+    tuning.contact_offset[MDKR_CHARACTER_CONTEXT_SELECT]
+                         [MDKR_CHARACTER_CONTACT_FOOT_RIGHT][2] = 0.0f;
     require(mdkr_modern_character_tick(0, "race.boost", 0.25f,
                                        error, sizeof(error)),
             "runtime semantic uses package fallback when optional state is absent");

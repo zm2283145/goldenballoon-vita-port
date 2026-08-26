@@ -36,6 +36,10 @@ typedef struct MdkrModernCharacterTuning {
     float lod_bias;
     uint32_t vehicle_mask;
     MdkrModernCharacterAdjustment context[MDKR_CHARACTER_CONTEXT_COUNT];
+    /* Per-vehicle local presentation offsets, ordered left hand, right hand,
+     * left foot, right foot. They tune contact appearance only. */
+    float contact_offset[MDKR_CHARACTER_CONTEXT_COUNT]
+                        [MDKR_MODERN_CHARACTER_CONTACTS][3];
 } MdkrModernCharacterTuning;
 
 typedef struct MdkrModernCharacterIdentityView {

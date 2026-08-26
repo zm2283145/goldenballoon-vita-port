@@ -22,7 +22,7 @@ import character_asset_compiler as compiler  # noqa: E402
 import character_asset_probe as probe  # noqa: E402
 import character_package_manager as manager  # noqa: E402
 from test_character_asset_probe import (  # noqa: E402
-    make_animated_glb, make_manifest, make_portrait_png,
+    make_humanoid_glb, make_portrait_png, make_v4_manifest,
 )
 
 
@@ -32,28 +32,12 @@ def main() -> int:
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="mdkr-modern-character-") as directory:
         portrait_bytes = make_portrait_png()
-        manifest_data = make_manifest()
-        manifest_data["schema"] = probe.PACKAGE_SCHEMA_V4
-        manifest_data["identity"] = {
-            "portrait_file": "portrait.png",
-            "portrait_sha256": probe._sha256(portrait_bytes),
-            "minimap_rgb": [220, 72, 144],
-        }
-        manifest_data["rig"] = {
-            "mode": "authored-clips-only",
-            "reviewed": False,
-            "roles": {
-                "hips": {
-                    "node": "root", "inferred": True, "confidence": 0.9,
-                },
-                "head": {
-                    "node": "head", "inferred": False, "confidence": 1.0,
-                },
-            },
-        }
+        manifest_data = make_v4_manifest(portrait_bytes, humanoid=True)
+        manifest_data["animations"]["states"]["race.item"] = "idle"
+        model_bytes = make_humanoid_glb()
         cache = Path(directory) / "generated.mdkc"
         compiled, _ = compiler.compile_character(
-            make_animated_glb(), manifest_data, bytes(range(32)), portrait_bytes
+            model_bytes, manifest_data, bytes(range(32)), portrait_bytes
         )
         cache.write_bytes(compiled)
         (Path(directory) / "duplicate.mdkc").write_bytes(compiled)
@@ -83,7 +67,7 @@ def main() -> int:
         corrupt_portable = Path(directory) / "corrupt-portable.mdkrchar"
         mismatched_portable = Path(directory) / "mismatched-portable.mdkrchar"
         install_directory = Path(directory) / "native-install"
-        model.write_bytes(make_animated_glb())
+        model.write_bytes(model_bytes)
         manifest.write_text(json.dumps(manifest_data), encoding="utf-8")
         license_file.write_text("CC0-1.0 generated fixture\n", encoding="utf-8")
         portrait.write_bytes(portrait_bytes)

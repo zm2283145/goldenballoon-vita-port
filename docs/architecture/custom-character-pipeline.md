@@ -67,9 +67,10 @@ This gives three deliberately separate formats:
   resampling, and revisioned HUD/results/rankings/minimap resolution.
 - source-v4 rig metadata: an explicit authored-clips-only or humanoid mode,
   16 bounded semantic bone roles, inference provenance/confidence, author
-  review state, rest rotations and bend axes, compiled cache sections, and
-  native joint/hierarchy validation. The runtime retarget/IK solver is not yet
-  enabled, so even a validated role contract currently plays authored clips.
+  review state, rest rotations and bend axes, compiled cache sections, native
+  joint/hierarchy validation, and bounded engine-reference fallback poses for
+  missing select/race semantics plus bounded vehicle hand/foot contact solving.
+  Authored clips take precedence and remain unmodified.
 
 This is deliberately a vertical slice, not a claim of production readiness.
 OpenGL intentionally falls back to the retail driver, while WebGPU now has an
@@ -327,7 +328,7 @@ head, both upper/lower arms and hands, and both upper/lower legs and feet. The
 compiler permits intervening shoulder, neck, twist, and helper joints but
 requires each semantic chain to have the correct ancestor relationship.
 Inferred mappings retain `inferred: true` after review; `reviewed` records the
-separate human decision. Until it becomes true, a future solver must remain
+separate human decision. Until it becomes true, the reference solver remains
 locked. `authored-clips-only` permits an empty or partial role map and is the
 supported final choice for non-humanoids.
 
@@ -397,8 +398,8 @@ Later schema versions should add, without changing the principles above:
   `MSFT_lod` chains and a package LOD bias);
 - per-semantic loop/once behavior, playback scale, blend duration, normalized
   parameters, and optional additive masks;
-- project-owned reference poses/clips, joint limits, and the runtime retarget/
-  two-bone IK solver that consumes the implemented v4 role and bend-axis data;
+- expanded project-owned reference clips, per-context author target offsets,
+  and richer joint/pole constraints over the bounded contact solver;
 - optional material variants and eye/mouth morph mappings;
 - generated portrait captures, advanced selection/style tools, and icon
   derivatives beyond the implemented imported and exact 40x40 pixel-edited

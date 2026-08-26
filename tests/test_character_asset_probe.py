@@ -266,11 +266,21 @@ def make_humanoid_glb() -> bytes:
         4: [5], 5: [6], 7: [8], 8: [9],
         10: [11], 11: [12], 13: [14], 14: [15],
     }
+    translations = {
+        0: [0.0, 1.0, 0.0], 1: [0.0, 0.20, 0.0],
+        2: [0.0, 0.25, 0.0], 3: [0.0, 0.30, 0.0],
+        4: [0.20, 0.15, 0.0], 5: [0.30, 0.0, 0.0],
+        6: [0.25, 0.0, 0.0], 7: [-0.20, 0.15, 0.0],
+        8: [-0.30, 0.0, 0.0], 9: [-0.25, 0.0, 0.0],
+        10: [0.15, -0.15, 0.0], 11: [0.0, -0.45, 0.0],
+        12: [0.0, -0.40, 0.10], 13: [-0.15, -0.15, 0.0],
+        14: [0.0, -0.45, 0.0], 15: [0.0, -0.40, 0.10],
+    }
 
     def update(document: dict[str, object]) -> None:
         nodes = [
-            {"name": name, **({"children": children[index]}
-                               if index in children else {})}
+            {"name": name, "translation": translations[index],
+             **({"children": children[index]} if index in children else {})}
             for index, name in enumerate(names)
         ]
         nodes.append({"name": "character", "mesh": 0, "skin": 0})

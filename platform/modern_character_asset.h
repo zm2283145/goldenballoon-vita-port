@@ -175,6 +175,17 @@ typedef enum MdkrModernCharacterContext {
     MDKR_CHARACTER_CONTEXT_COUNT = 4
 } MdkrModernCharacterContext;
 
+/* Stable authoring/runtime order for vehicle contact adjustments. Keep this
+ * in the lightweight asset contract so tools and launcher UI do not need the
+ * renderer-facing runtime header merely to share the semantic identities. */
+typedef enum MdkrModernCharacterContact {
+    MDKR_CHARACTER_CONTACT_HAND_LEFT = 0,
+    MDKR_CHARACTER_CONTACT_HAND_RIGHT = 1,
+    MDKR_CHARACTER_CONTACT_FOOT_LEFT = 2,
+    MDKR_CHARACTER_CONTACT_FOOT_RIGHT = 3,
+    MDKR_MODERN_CHARACTER_CONTACTS = 4
+} MdkrModernCharacterContact;
+
 /* Package-authored adjustment in the target context's coordinate system.
  * `anchor` names either the synthetic `ground` anchor or a socket such as
  * `seat`. Flags bit zero identifies a fixed ground anchor. */

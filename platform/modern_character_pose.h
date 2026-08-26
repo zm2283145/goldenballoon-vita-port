@@ -19,6 +19,7 @@ typedef struct MdkrModernPose {
     MdkrModernTrs *local;
     MdkrModernTrs *blend_from;
     MdkrModernTrs *sampled;
+    MdkrModernTrs *pre_contact;
     uint32_t *evaluation_order;
     float *world_previous; /* node_count column-major mat4 values */
     float *world_current;
@@ -28,6 +29,21 @@ typedef struct MdkrModernPose {
     float blend_elapsed;
     float blend_duration;
     uint32_t animation_flags;
+    uint32_t rig_role_nodes[16];
+    float rig_rest_rotation[16][4];
+    float rig_bend_axis[16][3];
+    uint32_t rig_role_mask;
+    float procedural_time;
+    float procedural_weight;
+    float normalized_phase;
+    char requested_semantic[65];
+    int requested_semantic_explicit;
+    int humanoid_retarget_ready;
+    uint64_t generation;
+    uint64_t contact_generation;
+    uint32_t contact_context;
+    float contact_max_error;
+    int contacts_initialized;
     int valid;
 } MdkrModernPose;
 
@@ -55,6 +71,19 @@ int mdkr_modern_pose_advance_phase(MdkrModernPose *pose, float seconds,
 /* True only for an explicitly authored mapping; fallback does not count. */
 int mdkr_modern_pose_has_semantic(const MdkrModernPose *pose,
                                   const char *semantic);
+
+/* True only for a complete, author-reviewed source-v4 humanoid role map. */
+int mdkr_modern_pose_humanoid_retarget_ready(const MdkrModernPose *pose);
+
+/* Applies bounded presentation-only hand/foot contact solving for one vehicle
+ * context. Target offsets are engine-owned and converted into source space by
+ * the validated calibration. Repeating a context in one pose generation is
+ * idempotent. Authored-clips-only and unreviewed rigs are unchanged. */
+int mdkr_modern_pose_apply_vehicle_contacts(
+    MdkrModernPose *pose, MdkrModernCharacterContext context,
+    const MdkrModernCalibration *calibration,
+    const float contact_offsets[MDKR_MODERN_CHARACTER_CONTACTS][3],
+    char *error, size_t error_size);
 
 const float *mdkr_modern_pose_node_matrix(const MdkrModernPose *pose,
                                           uint32_t node, int previous);

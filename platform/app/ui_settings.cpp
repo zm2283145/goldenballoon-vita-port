@@ -1869,6 +1869,7 @@ struct CharacterTuningEdit {
         float scale = 1.0f;
         float offset[3] = {0.0f, 0.0f, 0.0f};
         float rotation[3] = {0.0f, 0.0f, 0.0f};
+        float contacts[MDKR_MODERN_CHARACTER_CONTACTS][3] = {};
     } context[MDKR_CHARACTER_CONTEXT_COUNT];
 };
 
@@ -1928,6 +1929,21 @@ CharacterTuningEdit &loadCharacterTuning(int player, const char *packageId) {
                 (prefix + "rotation_" + axes[axis]).c_str(),
                 0.0f, -180.0f, 180.0f);
         }
+        if (context != MDKR_CHARACTER_CONTEXT_SELECT) {
+            static const char *contactNames[MDKR_MODERN_CHARACTER_CONTACTS] = {
+                "hand_left", "hand_right", "foot_left", "foot_right"
+            };
+            for (unsigned contact = 0u;
+                 contact < MDKR_MODERN_CHARACTER_CONTACTS; ++contact) {
+                for (unsigned axis = 0u; axis < 3u; ++axis) {
+                    edit.context[context].contacts[contact][axis] =
+                        characterConfigFloat(
+                            player, packageId,
+                            (prefix + contactNames[contact] + "_" + axes[axis]).c_str(),
+                            0.0f, -1.0f, 1.0f);
+                }
+            }
+        }
     }
     edit.loaded = true;
     return edit;
@@ -1969,6 +1985,20 @@ bool persistCharacterTuning(const char *packageId,
             AppConfig::set(contextPrefix + "rotation_" + axes[axis],
                            characterFloatText(
                                edit.context[context].rotation[axis]));
+        }
+        if (context != MDKR_CHARACTER_CONTEXT_SELECT) {
+            static const char *contactNames[MDKR_MODERN_CHARACTER_CONTACTS] = {
+                "hand_left", "hand_right", "foot_left", "foot_right"
+            };
+            for (unsigned contact = 0u;
+                 contact < MDKR_MODERN_CHARACTER_CONTACTS; ++contact) {
+                for (unsigned axis = 0u; axis < 3u; ++axis) {
+                    AppConfig::set(
+                        contextPrefix + contactNames[contact] + "_" + axes[axis],
+                        characterFloatText(
+                            edit.context[context].contacts[contact][axis]));
+                }
+            }
         }
     }
     const AppConfig::PersistResult result = AppConfig::save();
@@ -2237,6 +2267,10 @@ bool drawCharacterTuningEditor(int player,
     };
     static const char *forwardNames[] = {"+Z", "-Z", "+X", "-X"};
     bool changed = false;
+    const bool contactReady = entry->rig_present != 0u &&
+        entry->rig_mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 &&
+        (entry->rig_flags & MDKR_MODERN_RIG_REVIEWED) != 0u &&
+        entry->rig_role_mask == MDKR_CHARACTER_RIG_HUMANOID_MASK;
     CharacterTuningEdit &edit = loadCharacterTuning(player, entry->id);
     edit.vehicleMask &= entry->vehicle_mask;
     if (edit.vehicleMask == 0u) edit.vehicleMask = entry->vehicle_mask;
@@ -2358,6 +2392,41 @@ bool drawCharacterTuningEditor(int player,
             }
             ImGui::SameLine();
             ImGui::TextDisabled("automatic anchor reset");
+            if (context != MDKR_CHARACTER_CONTEXT_SELECT) {
+                if (!contactReady) ImGui::BeginDisabled();
+                if (ImGui::TreeNode("Hand and foot contacts")) {
+                    static const char *contactLabels[
+                        MDKR_MODERN_CHARACTER_CONTACTS] = {
+                            "Left hand", "Right hand", "Left foot", "Right foot"
+                        };
+                    ui::TextSubtleWrapped(
+                        "Fine-tune the engine-owned contact targets in metres relative to the mapped hips at the seat frame. These affect missing-semantic reference motion only; explicit authored clips remain untouched.");
+                    for (unsigned contact = 0u;
+                         contact < MDKR_MODERN_CHARACTER_CONTACTS; ++contact) {
+                        ImGui::PushID(static_cast<int>(contact));
+                        (void)ImGui::DragFloat3(
+                            contactLabels[contact],
+                            placement.contacts[contact], 0.005f,
+                            -1.0f, 1.0f, "%.3f m",
+                            ImGuiSliderFlags_AlwaysClamp);
+                        if (ImGui::IsItemDeactivatedAfterEdit()) {
+                            changed |= persistCharacterTuning(entry->id, edit);
+                        }
+                        ImGui::PopID();
+                    }
+                    if (ImGui::Button("Reset contact targets")) {
+                        std::memset(placement.contacts, 0,
+                                    sizeof(placement.contacts));
+                        changed |= persistCharacterTuning(entry->id, edit);
+                    }
+                    ImGui::TreePop();
+                }
+                if (!contactReady) {
+                    ImGui::EndDisabled();
+                    ui::TextSubtleWrapped(
+                        "Contact controls require a complete, reviewed source-v4 humanoid map.");
+                }
+            }
             ImGui::PopID();
             ImGui::EndTabItem();
         }
@@ -3176,17 +3245,25 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         entry->rig_role_mask == MDKR_CHARACTER_RIG_HUMANOID_MASK;
     const bool rigReviewed =
         (entry->rig_flags & MDKR_MODERN_RIG_REVIEWED) != 0u;
+    const bool referenceFallbackReady = humanoidRolesComplete && rigReviewed;
+    const uint32_t requiredMotionStates = raceStates | selectStates;
+    const uint32_t solverCoveredStates = referenceFallbackReady
+        ? requiredMotionStates & ~entry->semantic_mask : 0u;
+    const uint32_t effectiveMovingStates =
+        (entry->moving_semantic_mask & requiredMotionStates) |
+        solverCoveredStates;
+    const uint32_t staticAuthoredStates =
+        entry->semantic_mask & ~entry->moving_semantic_mask &
+        requiredMotionStates;
     const char *rigStatus = entry->rig_present == 0u
         ? "not authored"
         : entry->rig_mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY
             ? "authored clips only"
             : !humanoidRolesComplete
                 ? "roles incomplete"
-                : !rigReviewed ? "review required" : "contract validated";
-    const bool motionReady = mappedRaceStates == 10u &&
-        mappedSelectStates == 3u &&
-        countCharacterBits(entry->moving_semantic_mask &
-                           (raceStates | selectStates)) == 13u;
+                : !rigReviewed ? "review required" : "reference/IK fallback ready";
+    const bool motionReady =
+        (effectiveMovingStates & requiredMotionStates) == requiredMotionStates;
     const bool qualified = mdkr_modern_donor_qualified(
         static_cast<int>(entry->donor)) != 0;
     const bool identityReady = (entry->identity_flags & 1u) != 0u &&
@@ -3275,7 +3352,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         ImGui::PopStyleColor();
     } else if (humanoidRolesComplete && rigReviewed) {
         ImGui::TextWrapped(
-            "The humanoid hierarchy is structurally validated. Runtime retargeting and IK are not enabled yet, so current play still uses the package's authored clips.");
+            "The humanoid hierarchy is structurally validated. Engine reference motion and bounded vehicle hand/foot contacts fill missing semantic clips; authored package clips win.");
     } else if (entry->rig_present != 0u) {
         ImGui::TextWrapped(
             "Authored-clips-only is a supported final mode for creatures and unusual skeletons; no humanoid solver will alter this character.");
@@ -3296,16 +3373,30 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             donorName(entry->donor));
         ImGui::PopStyleColor();
     }
-    if (entry->stats.animations == 0u || entry->motion_channels == 0u) {
+    if ((entry->stats.animations == 0u || entry->motion_channels == 0u) &&
+        !referenceFallbackReady) {
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
         ImGui::TextWrapped(
             "Static bind pose: this model has no changing animation keys. Geometry and fit can be tested, but it cannot receive a polished-motion status until clips are authored or retargeted.");
         ImGui::PopStyleColor();
     } else if ((entry->moving_semantic_mask &
-                MDKR_CHARACTER_SEMANTIC_FALLBACK) == 0u) {
+                MDKR_CHARACTER_SEMANTIC_FALLBACK) == 0u &&
+               !referenceFallbackReady) {
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
         ImGui::TextWrapped(
             "The fallback clip is static. Mapped motion can still play, but every missing state holds the fallback pose.");
+        ImGui::PopStyleColor();
+    } else if (staticAuthoredStates != 0u) {
+        std::string staticStates = missingCharacterSemantics(
+            ~staticAuthoredStates, kRaceCharacterSemantics);
+        const std::string staticSelect = missingCharacterSemantics(
+            ~staticAuthoredStates, kSelectCharacterSemantics);
+        if (!staticStates.empty() && !staticSelect.empty()) staticStates += ", ";
+        staticStates += staticSelect;
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+        ImGui::TextWrapped(
+            "One or more explicitly mapped states are static. Authored mappings intentionally bypass reference motion; remove or animate those mappings before calling motion complete. Review: %s",
+            staticStates.c_str());
         ImGui::PopStyleColor();
     }
     const std::string missingRace = missingCharacterSemantics(
@@ -3313,11 +3404,15 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
     const std::string missingSelect = missingCharacterSemantics(
         entry->semantic_mask, kSelectCharacterSemantics);
     if (!missingRace.empty()) {
-        ImGui::TextWrapped("Fallback covers missing race states: %s",
+        ImGui::TextWrapped("%s covers missing race states: %s",
+                           referenceFallbackReady
+                               ? "Reviewed reference motion" : "Fallback clip",
                            missingRace.c_str());
     }
     if (!missingSelect.empty()) {
-        ImGui::TextWrapped("Fallback covers missing select states: %s",
+        ImGui::TextWrapped("%s covers missing select states: %s",
+                           referenceFallbackReady
+                               ? "Reviewed reference motion" : "Fallback clip",
                            missingSelect.c_str());
     }
     ImGui::TextDisabled(

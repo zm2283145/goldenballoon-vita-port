@@ -116,6 +116,22 @@ int mdkr_modern_character_tuning_validate(MdkrModernCharacterTuning *tuning,
                 return 0;
             }
         }
+        {
+            unsigned contact;
+            for (contact = 0u; contact < MDKR_MODERN_CHARACTER_CONTACTS;
+                 contact++) {
+                for (axis = 0u; axis < 3u; axis++) {
+                    if (!isfinite(
+                            tuning->contact_offset[context][contact][axis]) ||
+                        tuning->contact_offset[context][contact][axis] < -1.0f ||
+                        tuning->contact_offset[context][contact][axis] > 1.0f) {
+                        set_error(error, error_size,
+                                  "character contact offset is outside its safe range");
+                        return 0;
+                    }
+                }
+            }
+        }
     }
     set_error(error, error_size, "");
     return 1;
@@ -390,6 +406,24 @@ static int apply_tuning_environment(const char *prefix,
             valid &= parse_environment_float(
                 prefix, suffix, -180.0f, 180.0f,
                 &tuning->context[context].rotation_degrees[axis]);
+        }
+        if (context != MDKR_CHARACTER_CONTEXT_SELECT) {
+            static const char *contact_names[MDKR_MODERN_CHARACTER_CONTACTS] = {
+                "HAND_LEFT", "HAND_RIGHT", "FOOT_LEFT", "FOOT_RIGHT"
+            };
+            unsigned contact;
+            for (contact = 0u; contact < MDKR_MODERN_CHARACTER_CONTACTS;
+                 contact++) {
+                for (axis = 0u; axis < 3u; axis++) {
+                    (void)snprintf(
+                        suffix, sizeof(suffix), "%s_%s_%s",
+                        context_names[context], contact_names[contact],
+                        axis_names[axis]);
+                    valid &= parse_environment_float(
+                        prefix, suffix, -1.0f, 1.0f,
+                        &tuning->contact_offset[context][contact][axis]);
+                }
+            }
         }
     }
     return valid;
@@ -791,7 +825,8 @@ int mdkr_modern_character_tick_phase(int player, const char *semantic,
         (void)snprintf(slot->semantic, sizeof(slot->semantic), "%s", semantic);
     }
     seconds *= slot->tuning.animation_speed;
-    if (!mdkr_modern_pose_has_semantic(&slot->pose, semantic)) {
+    if (!mdkr_modern_pose_has_semantic(&slot->pose, semantic) &&
+        !mdkr_modern_pose_humanoid_retarget_ready(&slot->pose)) {
         return mdkr_modern_pose_advance(&slot->pose, seconds,
                                         error, error_size);
     }
@@ -823,6 +858,8 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
     float anchored_transform[16];
     float previous_anchored_transform[16];
     MdkrModernAttachment attachment;
+    MdkrModernCalibration calibration;
+    int has_calibration;
     uint32_t primitive_index;
     uint32_t selected_lod;
     uint32_t available_lod = 0u;
@@ -837,6 +874,14 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
         return 0;
     }
     pool = &s_pools[slot->pool];
+    has_calibration = mdkr_modern_character_asset_calibration(
+        &pool->asset, &calibration);
+    if (context != MDKR_CHARACTER_CONTEXT_SELECT && has_calibration &&
+        !mdkr_modern_pose_apply_vehicle_contacts(
+            &slot->pose, context, &calibration,
+            slot->tuning.contact_offset[context], error, error_size)) {
+        return 0;
+    }
     for (primitive_index = 0u;
          primitive_index < pool->render.gpu.primitive_count;
          primitive_index++) {
@@ -876,10 +921,8 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
         return 0;
     }
     if ((attachment.flags & 1u) != 0u) {
-        MdkrModernCalibration calibration;
         matrix_identity(seat_transform);
-        if (mdkr_modern_character_asset_calibration(&pool->asset,
-                                                     &calibration)) {
+        if (has_calibration) {
             seat_transform[12] = calibration.ground[0];
             seat_transform[13] = calibration.ground[1];
             seat_transform[14] = calibration.ground[2];
