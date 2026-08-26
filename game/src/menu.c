@@ -12972,6 +12972,16 @@ static DrawTexture *menu_racer_portrait_for_player(UNUSED s32 playerIndex,
 }
 #endif
 
+#if MDKR_ENABLE_ONLINE_BETA
+/* Online post-race exit (hostile-review CRITICAL C3). Grace-period clock and
+ * one-shot latch, armed by postrace_start() and driven by the
+ * POSTRACE_STAGE_FADE_OUT arm of menu_postrace(). Both are compiled only in
+ * the online beta and act only while the online roster is active, so offline
+ * post-race behavior is untouched. */
+static s32 sOnlinePostraceTicks;
+static s8 sOnlinePostraceEndRequested;
+#endif
+
 /**
  * Initialises the post race variables.
  * Sets different defaults based on being in adventure mode, tracks mode, or multiplayer.
@@ -12984,6 +12994,12 @@ void postrace_start(s32 finishState, s32 worldID) {
     rumble_init(FALSE);
 #ifdef NATIVE_PORT
     viewport_world_region_set(0, VIEWPORT_WORLD_REGION_PRESENTATION);
+#endif
+#if MDKR_ENABLE_ONLINE_BETA
+    /* Arm the online post-race exit: the grace clock starts at postrace entry
+     * (immediately after the race-finish results write in objects.c). */
+    sOnlinePostraceTicks = 0;
+    sOnlinePostraceEndRequested = FALSE;
 #endif
     header = level_header();
     gPostraceFinishState = finishState;
@@ -13712,6 +13728,35 @@ s32 menu_postrace(Gfx **dList, Mtx **matrices, Vertex **vertices, s32 updateRate
             }
             break;
         case POSTRACE_STAGE_FADE_OUT:
+#if MDKR_ENABLE_ONLINE_BETA
+            /* Online post-race exit (hostile-review CRITICAL C3). The stock
+             * multiplayer post-race parks here on LOCAL input: A/START arms
+             * POSTRACE_STAGE_END, whose gNumberOfActivePlayers >= 2 arm hands
+             * off to the single-player results menus (POSTRACE_OPT_8 ->
+             * LEVEL_CONTEXT_RESULTS in thread3_main.c) -- online, that strands
+             * each player alone in the offline front-end with the roster still
+             * installed. The launcher owns the online results/standings UI
+             * (fed by mdkr_online_race_results_poll), so instead let the
+             * finish banner/placements play for a short grace period, then end
+             * the engine session cleanly. platform_request_exit(0) is the same
+             * platform-owned flag the autoplay tick budget uses
+             * (platform_headless_tick_complete): the thread3 main loop honors
+             * it, mdkr64_headless_main returns 0, and control comes back to
+             * the launcher's engine-session call. Both endpoints do this
+             * independently; no network coordination is needed. Offline this
+             * whole arm is dead (roster inactive) and the retail input wait
+             * below runs unchanged. */
+            if (mdkr_net_roster_runtime_active()) {
+                sOnlinePostraceTicks += updateRate;
+                /* 150 time units ~= 2.5 s (see normalise_time(240) == 4 s). */
+                if (sOnlinePostraceTicks > 150 && !sOnlinePostraceEndRequested) {
+                    sOnlinePostraceEndRequested = TRUE;
+                    fprintf(stderr, "[online-postrace] session end requested\n");
+                    platform_request_exit(0);
+                }
+                break;
+            }
+#endif
             if (buttonsPressed & (A_BUTTON | START_BUTTON)) {
                 music_fade(-128);
                 transition_begin(&sMenuTransitionFadeIn);

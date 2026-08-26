@@ -923,6 +923,20 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME match_preflight COMMAND mdkr_match_preflight_test)
 
+    add_executable(mdkr_online_race_results_test
+        ${CMAKE_SOURCE_DIR}/tests/test_online_race_results.c
+        ${CMAKE_SOURCE_DIR}/platform/net/online_race_results.c)
+    target_include_directories(mdkr_online_race_results_test PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(MSVC)
+        target_compile_options(mdkr_online_race_results_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_online_race_results_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME online_race_results COMMAND mdkr_online_race_results_test)
+
     add_executable(mdkr_online_lobby_core_test
         ${CMAKE_SOURCE_DIR}/tests/test_online_lobby_core.c
         ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c)
