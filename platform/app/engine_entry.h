@@ -61,9 +61,12 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned long long replacement_draws;
     unsigned long long replacement_primitives;
     unsigned long long hidden_donor_batches;
+    unsigned long long contact_solves;
+    unsigned long long contact_error_mean_micrometres;
+    unsigned long long contact_error_max_micrometres;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 1u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 2u
 
 // Owned by the C engine entry module and non-NULL only during a launcher-owned
 // preview boot. The game writes through it before engine teardown resets the

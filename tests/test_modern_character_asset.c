@@ -207,6 +207,7 @@ int main(int argc, char **argv) {
     MdkrModernRig rig;
     MdkrModernRigRole rig_role;
     MdkrModernCharacterIdentityView identity_view;
+    MdkrModernCharacterRuntimeMetrics runtime_metrics;
     const uint8_t *portrait_data;
     MdkrModernCharacterRegistry registry;
     MdkrModernCharacterInstallResult install_result;
@@ -805,6 +806,20 @@ int main(int argc, char **argv) {
             "runtime draw includes the player seat-offset adjustment");
     require(commands[0].words.w1 == 1u && commands[1].words.w1 == 2u,
             "display list embeds immutable draw token rather than a pointer");
+    mdkr_modern_character_runtime_metrics(&runtime_metrics);
+    require(runtime_metrics.replacement_draws == 2u &&
+                runtime_metrics.contact_solves == 1u &&
+                runtime_metrics.contact_error_micrometres_sum > 0u &&
+                runtime_metrics.contact_error_micrometres_max > 0u &&
+                runtime_metrics.contact_error_micrometres_max < 250000u,
+            "runtime publishes physical contact-fit evidence with draw metrics");
+    mdkr_modern_character_contact_metrics_reset();
+    mdkr_modern_character_runtime_metrics(&runtime_metrics);
+    require(runtime_metrics.replacement_draws == 2u &&
+                runtime_metrics.contact_solves == 0u &&
+                runtime_metrics.contact_error_micrometres_sum == 0u &&
+                runtime_metrics.contact_error_micrometres_max == 0u,
+            "preview warm-up reset affects contact observations only");
     for (player = 1; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
         require(mdkr_modern_character_assign_player(
                     player, "org.example.pipeline-proof",

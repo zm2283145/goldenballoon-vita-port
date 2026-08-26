@@ -56,6 +56,9 @@ typedef struct MdkrModernCharacterRuntimeMetrics {
     uint64_t replacement_draws;
     uint64_t replacement_primitives;
     uint64_t hidden_donor_batches;
+    uint64_t contact_solves;
+    uint64_t contact_error_micrometres_sum;
+    uint64_t contact_error_micrometres_max;
 } MdkrModernCharacterRuntimeMetrics;
 
 /* Lightweight, borrowed library record for menu/workshop roster surfaces.
@@ -85,6 +88,9 @@ int mdkr_modern_characters_init(const char *directory);
 void mdkr_modern_characters_shutdown(void);
 void mdkr_modern_character_runtime_metrics(
     MdkrModernCharacterRuntimeMetrics *out);
+/* Exact-preview measurement seam. Rendering counters remain lifetime totals;
+ * only contact quality starts a fresh post-warm-up observation window. */
+void mdkr_modern_character_contact_metrics_reset(void);
 
 const MdkrModernCharacterRegistry *mdkr_modern_characters_registry(void);
 int mdkr_modern_character_catalog_count(void);

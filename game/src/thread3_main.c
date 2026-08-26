@@ -223,14 +223,32 @@ static void workshop_preview_measurement_finish(void) {
             ? character.hidden_donor_batches -
                   sWorkshopPreviewCharacterBaseline.hidden_donor_batches
             : 0u;
+        result->contact_solves = character.contact_solves >=
+                sWorkshopPreviewCharacterBaseline.contact_solves
+            ? character.contact_solves -
+                  sWorkshopPreviewCharacterBaseline.contact_solves
+            : 0u;
+        if (result->contact_solves != 0u &&
+            character.contact_error_micrometres_sum >=
+                sWorkshopPreviewCharacterBaseline
+                    .contact_error_micrometres_sum) {
+            result->contact_error_mean_micrometres =
+                (character.contact_error_micrometres_sum -
+                 sWorkshopPreviewCharacterBaseline
+                     .contact_error_micrometres_sum) /
+                result->contact_solves;
+        }
+        result->contact_error_max_micrometres =
+            character.contact_error_micrometres_max;
     }
     sWorkshopPreviewMeasurementFinished = TRUE;
     MDKR_TRACE(
-        "character_workshop_result: warmup=%d realtime=%d samples=%llu p50us=%llu p95us=%llu p99us=%llu maxus=%llu replacements=%llu",
+        "character_workshop_result: warmup=%d realtime=%d samples=%llu p50us=%llu p95us=%llu p99us=%llu maxus=%llu replacements=%llu contacts=%llu contactMaxUm=%llu",
         result->warmup_complete, result->realtime,
         result->interval_samples, result->interval_p50_us,
         result->interval_p95_us, result->interval_p99_us,
-        result->interval_max_us, result->replacement_draws);
+        result->interval_max_us, result->replacement_draws,
+        result->contact_solves, result->contact_error_max_micrometres);
 }
 
 static void workshop_preview_measurement_service(s32 overlayPaused) {
@@ -244,6 +262,7 @@ static void workshop_preview_measurement_service(s32 overlayPaused) {
         result->warmup_ticks = sWorkshopPreviewWarmupTicks;
         if (sWorkshopPreviewWarmupTicks >= WORKSHOP_PREVIEW_WARMUP_TICKS) {
             present_perf_measurement_reset();
+            mdkr_modern_character_contact_metrics_reset();
             mdkr_modern_character_runtime_metrics(
                 &sWorkshopPreviewCharacterBaseline);
             sWorkshopPreviewMeasurementStarted = TRUE;

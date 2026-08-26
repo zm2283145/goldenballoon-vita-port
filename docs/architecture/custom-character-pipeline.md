@@ -70,7 +70,8 @@ This gives three deliberately separate formats:
   review state, rest rotations and bend axes, compiled cache sections, native
   joint/hierarchy validation, and bounded engine-reference fallback poses for
   missing select/race semantics plus bounded vehicle hand/foot contact solving.
-  Authored clips take precedence and remain unmodified.
+  Authored clips take precedence and remain unmodified. Exact vehicle previews
+  report post-warm-up solve count and mean/maximum physical contact error.
 
 This is deliberately a vertical slice, not a claim of production readiness.
 OpenGL intentionally falls back to the retail driver, while WebGPU now has an

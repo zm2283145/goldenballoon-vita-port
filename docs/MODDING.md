@@ -311,6 +311,12 @@ poses and vehicle hand/foot contact solving for missing semantics while
 explicit authored clips win. The importer refuses to disguise either static
 clips or an unreviewed map as animation readiness.
 
+Exact vehicle tests reset contact telemetry after their normal warm-up and
+return the number of bounded solves plus mean and maximum endpoint-to-target
+error in physical units. This is fit evidence, not an import limit: unusual
+proportions or intentionally unreachable tuned targets may legitimately report
+larger distances.
+
 The Workshop's Rig Studio loads the exact skin-joint inventory from the active
 cache, shows every semantic role with its compiled node number, name,
 inference provenance, confidence, rest correction, and bend axis, and prevents

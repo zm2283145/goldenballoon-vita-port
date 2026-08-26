@@ -3083,6 +3083,21 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
                       result.replacement_draws,
                       result.replacement_primitives);
         metric("Character replacements / parts", value);
+        if (result.context != MDKR_CHARACTER_PREVIEW_SELECT) {
+            if (result.contact_solves != 0u) {
+                std::snprintf(value, sizeof(value), "%llu",
+                              result.contact_solves);
+                metric("Vehicle contact solves", value);
+                std::snprintf(
+                    value, sizeof(value), "%.2f / %.2f mm",
+                    result.contact_error_mean_micrometres / 1000.0,
+                    result.contact_error_max_micrometres / 1000.0);
+                metric("Mean / maximum contact error", value);
+            } else {
+                metric("Vehicle contact solves",
+                       "None — authored clip or solver locked");
+            }
+        }
         std::snprintf(value, sizeof(value), "%.2f ms across %llu ticks",
                       result.tickwall_mean_ns / 1000000.0,
                       result.tickwall_samples);
@@ -3095,6 +3110,10 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
     }
     ui::TextSubtleWrapped(
         "Measured wall cadence includes the selected presentation policy, renderer, scene, resolution, other racers and this device. It is not a GPU timestamp, spare GPU headroom, or a character-only cost; compare the same context and settings, and use the four-player route for worst-visible stress.");
+    if (result.context != MDKR_CHARACTER_PREVIEW_SELECT) {
+        ui::TextSubtleWrapped(
+            "Contact error is the physical distance from each solved hand/foot endpoint to its tuned target. It is evidence for fit review, not an import ceiling: body proportions and intentionally unreachable targets can make a valid character report a larger value.");
+    }
     ui::CardEnd();
 }
 

@@ -44,6 +44,9 @@ static int s_initialized;
 static uint64_t s_replacement_draws;
 static uint64_t s_replacement_primitives;
 static uint64_t s_hidden_donor_batches;
+static uint64_t s_contact_solves;
+static uint64_t s_contact_error_micrometres_sum;
+static uint64_t s_contact_error_micrometres_max;
 static uint64_t s_identity_revision;
 
 static void set_error(char *error, size_t size, const char *message) {
@@ -518,6 +521,9 @@ int mdkr_modern_characters_init(const char *directory) {
     s_replacement_draws = 0u;
     s_replacement_primitives = 0u;
     s_hidden_donor_batches = 0u;
+    s_contact_solves = 0u;
+    s_contact_error_micrometres_sum = 0u;
+    s_contact_error_micrometres_max = 0u;
     for (index = 0; index < MODERN_RUNTIME_POOLS; index++) {
         s_pools[index].registry_index = -1;
     }
@@ -578,6 +584,17 @@ void mdkr_modern_character_runtime_metrics(
     out->replacement_draws = s_replacement_draws;
     out->replacement_primitives = s_replacement_primitives;
     out->hidden_donor_batches = s_hidden_donor_batches;
+    out->contact_solves = s_contact_solves;
+    out->contact_error_micrometres_sum =
+        s_contact_error_micrometres_sum;
+    out->contact_error_micrometres_max =
+        s_contact_error_micrometres_max;
+}
+
+void mdkr_modern_character_contact_metrics_reset(void) {
+    s_contact_solves = 0u;
+    s_contact_error_micrometres_sum = 0u;
+    s_contact_error_micrometres_max = 0u;
 }
 
 void mdkr_modern_character_note_hidden_donor_batch(void) {
@@ -860,6 +877,8 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
     MdkrModernAttachment attachment;
     MdkrModernCalibration calibration;
     int has_calibration;
+    int contact_solved = 0;
+    uint64_t contact_error_micrometres = 0u;
     uint32_t primitive_index;
     uint32_t selected_lod;
     uint32_t available_lod = 0u;
@@ -876,11 +895,30 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
     pool = &s_pools[slot->pool];
     has_calibration = mdkr_modern_character_asset_calibration(
         &pool->asset, &calibration);
-    if (context != MDKR_CHARACTER_CONTEXT_SELECT && has_calibration &&
-        !mdkr_modern_pose_apply_vehicle_contacts(
-            &slot->pose, context, &calibration,
-            slot->tuning.contact_offset[context], error, error_size)) {
-        return 0;
+    if (context != MDKR_CHARACTER_CONTEXT_SELECT && has_calibration) {
+        const uint64_t previous_contact_generation =
+            slot->pose.contact_generation;
+        const uint32_t previous_contact_context = slot->pose.contact_context;
+        if (!mdkr_modern_pose_apply_vehicle_contacts(
+                &slot->pose, context, &calibration,
+                slot->tuning.contact_offset[context], error, error_size)) {
+            return 0;
+        }
+        contact_solved =
+            slot->pose.contact_generation == slot->pose.generation &&
+            (previous_contact_generation != slot->pose.contact_generation ||
+             previous_contact_context != slot->pose.contact_context);
+        if (contact_solved) {
+            double micrometres =
+                (double)slot->pose.contact_max_error * 1000000.0;
+            if (!isfinite(micrometres) || micrometres < 0.0 ||
+                micrometres > (double)UINT64_MAX) {
+                set_error(error, error_size,
+                          "vehicle contact metric is outside its safe range");
+                return 0;
+            }
+            contact_error_micrometres = (uint64_t)(micrometres + 0.5);
+        }
     }
     for (primitive_index = 0u;
          primitive_index < pool->render.gpu.primitive_count;
@@ -1069,6 +1107,19 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
     }
     s_replacement_draws++;
     s_replacement_primitives += emitted;
+    if (contact_solved) {
+        s_contact_solves++;
+        if (UINT64_MAX - s_contact_error_micrometres_sum <
+            contact_error_micrometres) {
+            s_contact_error_micrometres_sum = UINT64_MAX;
+        } else {
+            s_contact_error_micrometres_sum += contact_error_micrometres;
+        }
+        if (contact_error_micrometres >
+            s_contact_error_micrometres_max) {
+            s_contact_error_micrometres_max = contact_error_micrometres;
+        }
+    }
     set_error(error, error_size, "");
     return 1;
 }
