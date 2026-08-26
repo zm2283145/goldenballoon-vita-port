@@ -1588,8 +1588,13 @@ void reportOnlineRaceResults(
         /* R1: the same mid-race PeerLost that ended the session also latched a
          * CONNECTION_CHECK-class failure on the view; the view builder gives any
          * failure precedence over RESULTS, so clear that loss-mapped latch now
-         * (and only it) so the freshly published RESULTS phase fronts. */
-        mdkr_online_live_adapter_clear_race_loss_failure(adapter);
+         * (and only it) so the freshly published RESULTS phase fronts.
+         * O1: gate on a SUCCESSFUL publish -- if report_results was refused (a
+         * leader's PUBLISH_RESULTS never landed, or a joiner never got the
+         * snapshot) there is no RESULTS phase to front, so clearing the latch
+         * would strand the player on a blank room instead of the truthful
+         * recovery card. Keep the card in that case. */
+        if (reported) mdkr_online_live_adapter_clear_race_loss_failure(adapter);
         std::fprintf(stderr,
                      "[online-live] race results reported placements=%u,%u,%u,%u "
                      "accepted=%d\n",

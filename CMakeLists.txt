@@ -1131,6 +1131,7 @@ if(NOT EMSCRIPTEN)
                 add_executable(mdkr_online_live_adapter_test
                     ${CMAKE_SOURCE_DIR}/tests/test_online_live_adapter.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c
@@ -1306,6 +1307,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/tests/test_online_live_transport_e2e_driver.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_transport.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c

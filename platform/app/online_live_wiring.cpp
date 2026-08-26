@@ -522,6 +522,7 @@ public:
         MdkrOnlineRoomEvent ev;
         ev.type = MdkrOnlineRoomEvent::Type::CommandResult;
         ev.step = room_->command(command);
+        ev.commandId = command.command_id; /* echo for the adapter's correlation */
         queue_.push_back(ev);
         return true;
     }

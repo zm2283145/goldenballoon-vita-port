@@ -351,6 +351,18 @@ static void recovery_model(MdkrOnlineViewFailure failure,
                                      "Play Here", true);
             model->secondary = control(MDKR_ONLINE_VIEW_ACTION_NONE, NULL, false);
             break;
+        case MDKR_ONLINE_VIEW_FAILURE_CONNECTION_UNPLAYABLE:
+            /* The race DID connect, then the link degraded past recovery -- a
+             * truthfully different story from CONNECTION_CHECK's "could not
+             * establish". Same working dead-end exit as the other race-end
+             * cards (no RACING->LOBBY path exists yet). */
+            model->title = "Connection Became Unplayable";
+            model->explanation =
+                "The connection to your opponent degraded past recovery, so this race ended. This room is done — create or join a new one to keep playing.";
+            model->primary = control(MDKR_ONLINE_VIEW_ACTION_PLAY_HERE,
+                                     "Play Here", true);
+            model->secondary = control(MDKR_ONLINE_VIEW_ACTION_NONE, NULL, false);
+            break;
 #endif
         case MDKR_ONLINE_VIEW_FAILURE_NONE:
         case MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE:
@@ -614,6 +626,18 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
                         MDKR_ONLINE_VIEW_ACTION_CHANGE_SELECTION,
                         "Change Selection", true);
                 }
+#if MDKR_ENABLE_ONLINE_BETA
+                /* Never-silent: selection can stall for the local player who is
+                 * done and only "Waiting for Friends". Arm the same 30 s
+                 * view-timeout card the other lobby surfaces carry so an endless
+                 * wait always offers a working escape (Leave Room), instead of a
+                 * spinner. Beta-gated to keep the OFF/release view model
+                 * byte-identical. */
+                next.timeout = timeout_view(
+                    "Selection Took Too Long",
+                    "The room is still waiting on everyone's choices. Leave and start a fresh room if it stays stuck.",
+                    MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM, "Leave Room");
+#endif
             } else {
                 return false;
             }

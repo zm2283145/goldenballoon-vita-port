@@ -929,6 +929,8 @@ const char *betaStatusLine(const MdkrOnlineViewModel &model) {
             return "Opponent disconnected — this room is done";
         if (model.failure == MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED)
             return "Opponent couldn't start — create a fresh invite";
+        if (model.failure == MDKR_ONLINE_VIEW_FAILURE_CONNECTION_UNPLAYABLE)
+            return "Connection became unplayable — this room is done";
 #endif
         return "Lost connection — you can retry";
     default: return "Online race";
@@ -977,6 +979,9 @@ const char *betaFailureCopy(MdkrOnlineViewFailure failure) {
     case MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED:
         return "The race was canceled before it began. Create a fresh invite "
                "and try again.";
+    case MDKR_ONLINE_VIEW_FAILURE_CONNECTION_UNPLAYABLE:
+        return "The connection degraded past recovery mid-race, so this race "
+               "ended. This room is done — create or join a new one.";
 #endif
     default:
         return "The connection was interrupted. You can retry or leave.";

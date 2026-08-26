@@ -45,6 +45,7 @@
  */
 #include "match_live_adapter.h"
 
+#include "online_track_table.h"
 #include "net/match_input_bundle.h"
 #include "net/match_preflight.h"
 #include "net/match_transport.h"
@@ -320,6 +321,18 @@ public:
                 reVerifyLobby.members[i].loaded = false;
             }
             in.lobby = &reVerifyLobby;
+        } else if (raceEndFailureLatched_ &&
+                   failure_ != MDKR_ONLINE_VIEW_FAILURE_NONE) {
+            /* O2: a race-end recovery card is latched. Do NOT hand the builder a
+             * stale/late lobby snapshot -- the shared view model fails ATOMIC
+             * (returns false) when the walked session's phase disagrees with the
+             * snapshot's, BEFORE its failure-precedence path runs, so a late
+             * State re-latching haveLobby_ would demote the tailored card to the
+             * generic "Online Room Unavailable" box. The recovery model builds
+             * from the failure alone, so suppress the lobby input persistently
+             * until the failure clears (resetRaceLatches / clearRaceLossFailure /
+             * a RETURN_HOME leave). */
+            in.lobby = nullptr;
         } else {
             in.lobby = haveLobby_ ? &lobby_ : nullptr;
         }
@@ -463,6 +476,13 @@ private:
         c.target_endpoint_id = seat;
         c.value = value;
         c.compatibility = opts_.compatibility;
+        /* Correlation: remember what each command_id was, so the CommandResult
+         * drain can attribute a refusal to the command the server answered even
+         * with two in flight. Bounded (a server that echoes no id never lets us
+         * consume entries): drop the oldest once the window is comfortably past
+         * any realistic in-flight depth. */
+        inFlight_[c.command_id] = type;
+        if (inFlight_.size() > 64u) inFlight_.erase(inFlight_.begin());
         return opts_.room && opts_.room->submitCommand(c);
     }
 
@@ -750,11 +770,28 @@ private:
                         bump();
                     }
                     break;
-                case MdkrOnlineRoomEvent::Type::CommandResult:
+                case MdkrOnlineRoomEvent::Type::CommandResult: {
+                    /* Attribute this result to the command it actually answers.
+                     * Two commands can be in flight, so keying on the most
+                     * recently SENT type (lastType_) misattributes the first's
+                     * refusal to the second. Prefer the server-echoed command_id
+                     * (see MdkrOnlineRoomEvent::commandId); fall back to lastType_
+                     * only when the server echoed no id. Consume the map entry so
+                     * it cannot grow or be matched twice. */
+                    MdkrOnlineCommandType attrType = lastType_;
+                    bool attrValid = haveLast_;
+                    if (ev.commandId != 0u) {
+                        const auto found = inFlight_.find(ev.commandId);
+                        if (found != inFlight_.end()) {
+                            attrType = found->second;
+                            attrValid = true;
+                            inFlight_.erase(found);
+                        }
+                    }
                     /* The BEGIN_LOADING result is the make-or-break Start Race
                      * signal: whether the cloud MatchRoom accepted the leader's
                      * start, and with what error if not. Always logged. */
-                    if (haveLast_ && lastType_ == MDKR_ONLINE_BEGIN_LOADING) {
+                    if (attrValid && attrType == MDKR_ONLINE_BEGIN_LOADING) {
                         MDKR_ONLINE_LOG(
                             "[START] BEGIN_LOADING result accepted=%u error=%s "
                             "rev=%u\n",
@@ -765,9 +802,9 @@ private:
                         staleRetries_ = 0u;
                     } else if (ev.step.error == MDKR_ONLINE_ERROR_INCOMPATIBLE) {
                         MDKR_ONLINE_LOG(
-                            "[ONLINE] command REJECTED lastType=%s error=%s "
+                            "[ONLINE] command REJECTED type=%s error=%s "
                             "-> DIFFERENT_BUILD\n",
-                            haveLast_ ? lobbyCommandName(lastType_) : "?",
+                            attrValid ? lobbyCommandName(attrType) : "?",
                             lobbyErrorName(ev.step.error));
                         failure_ = MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_BUILD;
                         bump();
@@ -777,10 +814,11 @@ private:
                         /* Launcher-owned optimistic-concurrency retry: the room
                          * advanced under us (a concurrent peer). The State
                          * carrying that advance was applied earlier in this same
-                         * drain, so re-send against the fresh revision. */
+                         * drain, so re-send the most recent command against the
+                         * fresh revision (its seat/value are what we retain). */
                         ++staleRetries_;
                         MDKR_ONLINE_LOG(
-                            "[ONLINE] command stale lastType=%s error=%s retry=%u "
+                            "[ONLINE] command stale type=%s error=%s retry=%u "
                             "(re-sending against fresh revision)\n",
                             lobbyCommandName(lastType_),
                             lobbyErrorName(ev.step.error), staleRetries_);
@@ -790,24 +828,26 @@ private:
                          * ILLEGAL_VEHICLE, exhausted stale retries) is logged so a
                          * refused command never vanishes without a trace. */
                         MDKR_ONLINE_LOG(
-                            "[ONLINE] command REJECTED lastType=%s error=%s "
+                            "[ONLINE] command REJECTED type=%s error=%s "
                             "(no auto-recovery)\n",
-                            haveLast_ ? lobbyCommandName(lastType_) : "?",
+                            attrValid ? lobbyCommandName(attrType) : "?",
                             lobbyErrorName(ev.step.error));
                         /* Surface the refusal to the panel (one-shot): the
                          * command was accepted locally but refused by the room
                          * (e.g. SELECTION_CONFLICT when both players tap the
                          * same racer), so the UI must un-stage its optimistic
-                         * pick and show why. */
-                        if (haveLast_) {
+                         * pick and show why. Attributed to the command the server
+                         * answered, not merely the last one sent. */
+                        if (attrValid) {
                             refusalType_ =
-                                static_cast<uint32_t>(lastType_);
+                                static_cast<uint32_t>(attrType);
                             refusalError_ = ev.step.error;
                             haveRefusal_ = true;
                             bump();
                         }
                     }
                     break;
+                }
                 case MdkrOnlineRoomEvent::Type::Failure:
                     /* Pre-mapped stable failure; lobby state is retained so a
                      * Retry recovers without dismissing the room. */
@@ -1015,12 +1055,14 @@ private:
         racePeerLost_ = false;
         raceAbortReceived_ = false;
         raceLossFailureLatched_ = false;
+        raceEndFailureLatched_ = false;
         raceDegraded_ = false;
         lastPreflightGate_ = -1;
         if (failure_ == MDKR_ONLINE_VIEW_FAILURE_ENGINE_FAILED
 #if MDKR_ENABLE_ONLINE_BETA
             || failure_ == MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT
             || failure_ == MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED
+            || failure_ == MDKR_ONLINE_VIEW_FAILURE_CONNECTION_UNPLAYABLE
 #endif
         ) {
             failure_ = MDKR_ONLINE_VIEW_FAILURE_NONE; /* race-scoped failure */
@@ -1362,12 +1404,19 @@ private:
                             (unsigned long long)ev.endpointId);
                         break;
                     }
-                    failure_ = mapLostReason(ev.lostReason);
+                    failure_ = mapLostReason(ev.lostReason, raceReady_);
                     /* R1: mark this as the IN-RACE loss-mapped failure so the
                      * capture path can clear exactly it (and nothing else, e.g.
                      * a genuine VERIFICATION_MISMATCH) when a finish order was
                      * committed before the peer dropped. */
                     raceLossFailureLatched_ = true;
+                    /* O2: while a race-END card (OPPONENT_LEFT /
+                     * CONNECTION_UNPLAYABLE, or the beta-OFF CONNECTION_CHECK
+                     * fallback) is latched, view() must front it even if a late
+                     * State snapshot re-latches a lobby whose phase disagrees
+                     * with the walked session. Only in-race losses arm this;
+                     * pre-connection losses keep the ordinary lobby input. */
+                    if (raceReady_) raceEndFailureLatched_ = true;
                     MDKR_ONLINE_LOG(
                         "[MESH] peer LOST ep=%llu reason=%d -> failure=%u\n",
                         (unsigned long long)ev.endpointId,
@@ -1422,7 +1471,17 @@ private:
         }
     }
 
-    static MdkrOnlineViewFailure mapLostReason(MdkrMatchPeerLostReason r) {
+    /* Map a mesh peer-loss reason to a lobby-facing failure. `raceBegun` says a
+     * playable race connection had actually come up (raceReady_) before the
+     * loss, which changes what is TRUTHFUL: a peer that pings-out or ends after
+     * the race is racing has "disconnected" (OPPONENT_LEFT), not "could not
+     * establish a connection"; a seal-window exhaustion mid-race is a genuine
+     * transport breakdown (CONNECTION_UNPLAYABLE), not a failed handshake. A
+     * pre-connection loss keeps the original establishment copy. The OPPONENT_*
+     * / CONNECTION_UNPLAYABLE enums are beta-only, so a beta-OFF compile of this
+     * TU falls back to the pre-existing CONNECTION_CHECK. */
+    static MdkrOnlineViewFailure mapLostReason(MdkrMatchPeerLostReason r,
+                                               bool raceBegun) {
         switch (r) {
             case MdkrMatchPeerLostReason::CommitmentMismatch:
             case MdkrMatchPeerLostReason::HelloViolation:
@@ -1430,11 +1489,23 @@ private:
                 return MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH;
             case MdkrMatchPeerLostReason::ConnectTimeout:
             case MdkrMatchPeerLostReason::TransportFailed:
+                /* Always a handshake-time failure by nature. */
                 return MDKR_ONLINE_VIEW_FAILURE_NETWORKS_CANNOT_CONNECT;
+            case MdkrMatchPeerLostReason::SealWindowExhausted:
+#if MDKR_ENABLE_ONLINE_BETA
+                if (raceBegun)
+                    return MDKR_ONLINE_VIEW_FAILURE_CONNECTION_UNPLAYABLE;
+#endif
+                (void)raceBegun;
+                return MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK;
             case MdkrMatchPeerLostReason::PingTimeout:
             case MdkrMatchPeerLostReason::PeerEnded:
-            case MdkrMatchPeerLostReason::SealWindowExhausted:
             default:
+#if MDKR_ENABLE_ONLINE_BETA
+                if (raceBegun)
+                    return MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT;
+#endif
+                (void)raceBegun;
                 return MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK;
         }
     }
@@ -1948,6 +2019,9 @@ public:
         }
         haveLobby_ = false;
         raceLossFailureLatched_ = false; /* explicit card, not a loss-mapped one */
+        /* O2: a late State snapshot can re-latch haveLobby_ under this card;
+         * keep view() suppressing that stale lobby until the room resets. */
+        raceEndFailureLatched_ = true;
         failure_ = failure;
         bump();
     }
@@ -1961,6 +2035,7 @@ public:
         if (!raceLossFailureLatched_) return;
         failure_ = MDKR_ONLINE_VIEW_FAILURE_NONE;
         raceLossFailureLatched_ = false;
+        raceEndFailureLatched_ = false; /* card cleared: stop suppressing the lobby */
         bump();
     }
 
@@ -2267,11 +2342,19 @@ public:
         if (!haveLobby_ || lobby_.phase != MDKR_ONLINE_LOBBY || !isLeader()) {
             return false;
         }
-        /* Mirror the reducer's range gates so an out-of-range press is an
-         * immediate local refusal, not an async one. */
+        /* Mirror the reducer's acceptance gates so an unacceptable press is an
+         * immediate local refusal, not an async one. Both reducers accept
+         * SET_CONFIG_TRACK only for one of the 20 standard race ids (lobby_core's
+         * known_race_track / the service's RACE_TRACK_IDS), so reject anything
+         * outside that set here too -- an earlier refusal only, never a new
+         * acceptance. The >255 guard both matches the reducers' range and keeps
+         * the uint16 track-table lookup from truncating a large value into a
+         * false hit; the id set (max 33) is well within it. */
         if ((type == MDKR_ONLINE_SET_MODE &&
              value > MDKR_ONLINE_MODE_TOURNAMENT) ||
-            (type == MDKR_ONLINE_SET_CONFIG_TRACK && value > 255u) ||
+            (type == MDKR_ONLINE_SET_CONFIG_TRACK &&
+             (value > 255u ||
+              mdkr_online_track_by_id(static_cast<uint16_t>(value)) == nullptr)) ||
             (type == MDKR_ONLINE_SET_CUP && value >= MDKR_ONLINE_CUP_COUNT)) {
             return false;
         }
@@ -2344,6 +2427,11 @@ private:
     uint32_t lastValue_ = 0u;
     bool haveLast_ = false;
     unsigned staleRetries_ = 0u;
+    /* In-flight command correlation: command_id -> the type sent under it, so a
+     * CommandResult refusal is attributed to the command the server actually
+     * answered (two can be in flight) rather than to lastType_. Bounded in
+     * sendLobbyCommandRaw; entries consumed as their results drain. */
+    std::map<uint64_t, MdkrOnlineCommandType> inFlight_;
     std::function<uint64_t()> nowMs_;
     std::vector<MdkrMatchPeerIceServer> iceServers_;
     std::string roomIdStr_;
@@ -2384,6 +2472,8 @@ private:
     bool racePeerLost_ = false;
     bool raceAbortReceived_ = false; /* F3: peer told us it aborted the race */
     bool raceLossFailureLatched_ = false; /* R1: failure_ came from mapLostReason */
+    bool raceEndFailureLatched_ = false;  /* O2: suppress stale lobby under a
+                                           * race-end recovery card */
     unsigned raceSweepServiceCalls_ = 0u;
     uint32_t raceResendSweeps_ = 0u;
     uint32_t raceResendBundles_ = 0u;

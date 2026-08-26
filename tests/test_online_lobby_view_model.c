@@ -263,6 +263,20 @@ static void test_room_selection_and_release_gate(void) {
            model.kind == MDKR_ONLINE_VIEW_SELECTING &&
            model.primary.action == MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER,
            "selection points to the first incomplete launcher-owned choice");
+#if MDKR_ENABLE_ONLINE_BETA
+    /* P1-T2 never-silent hole: selection arms the same 30 s view-timeout card
+     * the other lobby surfaces carry, so an endless wait always offers a working
+     * escape rather than a dead spinner. Beta-gated (OFF/release view model is
+     * byte-identical). */
+    expect(model.timeout.present &&
+           model.timeout.title != NULL &&
+           strcmp(model.timeout.title, "Selection Took Too Long") == 0 &&
+           model.timeout.explanation != NULL &&
+           model.timeout.primary.action == MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM &&
+           model.timeout.primary.label != NULL &&
+           strcmp(model.timeout.primary.label, "Leave Room") == 0,
+           "selecting arms the never-silent view-timeout card (beta)");
+#endif
     expect(lobby_command(&lobby, 1u, MDKR_ONLINE_SET_CHARACTER, 0u, 2u).accepted,
            "character selection accepted");
     expect(mdkr_online_view_model_build(&input, &model) &&
@@ -672,6 +686,32 @@ static void test_race_scoped_recovery_cards(void) {
     expect(strstr(model.explanation,
                   "could not establish a playable connection") == NULL,
            "opponent-never-started card is distinct from CONNECTION_CHECK copy");
+
+    input.failure = MDKR_ONLINE_VIEW_FAILURE_CONNECTION_UNPLAYABLE;
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           model.kind == MDKR_ONLINE_VIEW_RECOVERY &&
+           model.failure == MDKR_ONLINE_VIEW_FAILURE_CONNECTION_UNPLAYABLE &&
+           model.title != NULL &&
+           strcmp(model.title, "Connection Became Unplayable") == 0 &&
+           model.explanation != NULL &&
+           strstr(model.explanation, "degraded past recovery") != NULL &&
+           strstr(model.explanation, "This room is done") != NULL &&
+           model.primary.action == MDKR_ONLINE_VIEW_ACTION_PLAY_HERE &&
+           model.primary.label != NULL &&
+           strcmp(model.primary.label, "Play Here") == 0 &&
+           !model.secondary.visible,
+           "mid-race transport breakdown is a truthful dead-end with a working "
+           "room exit");
+    expect_complete(
+        &model,
+        "connection-unplayable recovery copy/control contract is complete");
+    /* Truthfully distinct from the pre-connection CONNECTION_CHECK copy: a
+     * playable connection DID exist, so never "could not establish". */
+    expect(strstr(model.explanation,
+                  "could not establish a playable connection") == NULL,
+           "connection-unplayable card is distinct from CONNECTION_CHECK copy");
+    expect(strstr(model.explanation, "--") == NULL,
+           "connection-unplayable copy uses a real em dash, not ASCII hyphens");
 }
 #endif
 

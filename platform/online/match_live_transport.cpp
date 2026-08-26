@@ -1673,6 +1673,24 @@ private:
                 continue;
             }
             parseCommandStep(res.body, ev.step);
+            /* Correlate the answer to the command it actually resolves: parse the
+             * commandId the server echoes (same "commandId" field the request
+             * carries, string- or number-typed) so the adapter attributes a
+             * refusal by id rather than by the most recently SENT command. A
+             * body with no echoed id leaves ev.commandId 0 -> the adapter falls
+             * back to its lastType_ behavior. Defensive whole-parse, mirroring
+             * parseCommandStep: any malformed body yields id 0, never a throw. */
+            ev.commandId = 0u;
+            try {
+                const Json root = Json::parse(res.body);
+                const auto it = root.find("commandId");
+                if (it != root.end()) {
+                    uint64_t echoed = 0u;
+                    if (parseU64(*it, echoed)) ev.commandId = echoed;
+                }
+            } catch (...) {
+                ev.commandId = 0u;
+            }
             enqueue(std::move(ev));
         }
     }

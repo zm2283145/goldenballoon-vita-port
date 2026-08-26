@@ -192,6 +192,14 @@ struct MdkrOnlineRoomEvent {
     bool haveLobby = false;
     /* CommandResult: the server's step for a submitted command. */
     MdkrOnlineStep step{};
+    /* CommandResult correlation: the command_id the server echoed for this
+     * step, or 0 when the response carried none. The adapter keys its
+     * in-flight command_id->type map on this so a refusal is attributed to the
+     * command it actually answered, not merely the most recently SENT one (two
+     * commands can be in flight). Lives on the event rather than MdkrOnlineStep
+     * so the shared lobby_core.h struct -- compiled into the OFF/release build
+     * -- stays byte-identical. */
+    uint64_t commandId = 0u;
     /* Failure: a pre-mapped stable launcher failure -- never a raw wire code. */
     MdkrOnlineViewFailure failure = MDKR_ONLINE_VIEW_FAILURE_NONE;
 };

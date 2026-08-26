@@ -135,6 +135,36 @@ public:
         queue_.push_back(ev);
     }
 
+    /* Inject a raw authoritative-lobby snapshot (O2: a late/mismatched State
+     * that re-latches haveLobby_ under a recovery card). */
+    void injectState(const MdkrOnlineLobby &lobby) {
+        MdkrOnlineRoomEvent ev;
+        ev.type = MdkrOnlineRoomEvent::Type::State;
+        ev.lobby = lobby;
+        ev.haveLobby = true;
+        queue_.push_back(ev);
+    }
+
+    /* Inject a CommandResult echoing a specific command_id, so the adapter's
+     * command_id->type correlation can be exercised deterministically (two in
+     * flight, an out-of-order refusal, etc.). */
+    void injectCommandResult(uint64_t commandId, bool accepted,
+                             MdkrOnlineError error) {
+        MdkrOnlineRoomEvent ev;
+        ev.type = MdkrOnlineRoomEvent::Type::CommandResult;
+        ev.commandId = commandId;
+        ev.step.accepted = accepted;
+        ev.step.error = error;
+        queue_.push_back(ev);
+    }
+
+    /* When set, submitCommand records the command but neither dispatches it to
+     * the reducer nor auto-enqueues a result -- leaving the test in control of
+     * when (and with what id/error) results arrive, so two commands can sit in
+     * flight at once. */
+    void setDeferResults(bool defer) { deferResults_ = defer; }
+    const std::vector<MdkrOnlineCommand> &submitted() const { return submitted_; }
+
     bool beginCreate(const MdkrOnlineCompatibilityV1 &compat,
                      unsigned seatCount) override {
         kind_ = Kind::Create;
@@ -159,9 +189,12 @@ public:
     }
 
     bool submitCommand(const MdkrOnlineCommand &command) override {
+        submitted_.push_back(command);
+        if (deferResults_) return true;
         MdkrOnlineRoomEvent ev;
         ev.type = MdkrOnlineRoomEvent::Type::CommandResult;
         ev.step = room_->command(command);
+        ev.commandId = command.command_id; /* echo for correlation */
         queue_.push_back(ev);
         return true;
     }
@@ -211,8 +244,10 @@ private:
     MdkrOnlineCompatibilityV1 compat_{};
     unsigned seats_ = 1u;
     bool ready_ = false;
+    bool deferResults_ = false;
     uint32_t lastRevision_ = 0u;
     std::deque<MdkrOnlineRoomEvent> queue_;
+    std::vector<MdkrOnlineCommand> submitted_;
 };
 
 /* ---- O-T2 loopback signal hub (adapted from test_match_peer_transport) --- */
@@ -1792,6 +1827,140 @@ void test_captured_results_beat_peer_loss_card() {
     mdkr_net_roster_runtime_clear();
 }
 
+/* P1-T2: two lobby commands can be in flight at once, so a CommandResult must be
+ * attributed to the command the server ANSWERED (its echoed command_id), not to
+ * the most recently SENT one. Deferred-result transport holds both in flight;
+ * a refusal is then injected for the FIRST command's id and the surfaced refusal
+ * must name the FIRST command's type -- pre-fix the drain blamed lastType_ (the
+ * SECOND command). */
+void test_command_refusal_correlates_by_id() {
+    FakeMatchRoom room;
+    FakeHub hub;
+    FakeClock clock;
+    FakeRoomTransport transport(&room, 1u);
+    HubMeshBackend backend(&hub);
+    auto adapter = mdkr_online_live_adapter_create(
+        baseOptions(&transport, &backend, &clock, MDKR_ONLINE_JOURNEY_CREATE));
+    CHECK(adapter != nullptr);
+    if (!adapter) return;
+    adapter->submit(cmd(adapter.get(), MDKR_ONLINE_VIEW_ACTION_CREATE_ROOM));
+    CHECK(pumpUntil({adapter.get()}, clock, [&]() {
+        return viewOf(adapter.get()).kind == MDKR_ONLINE_VIEW_ROOM;
+    }, 3000u));
+
+    /* Hold both results so two commands sit in flight; the leader of an open
+     * room may configure the mode and the track. */
+    transport.setDeferResults(true);
+    const size_t base = transport.submitted().size();
+    CHECK(mdkr_online_live_adapter_set_mode(adapter.get(), 1u));
+    CHECK(mdkr_online_live_adapter_set_config_track(adapter.get(), 5u));
+    CHECK(transport.submitted().size() == base + 2u);
+    const MdkrOnlineCommand first = transport.submitted()[base];
+    const MdkrOnlineCommand second = transport.submitted()[base + 1u];
+    CHECK(first.type == MDKR_ONLINE_SET_MODE);
+    CHECK(second.type == MDKR_ONLINE_SET_CONFIG_TRACK);
+    CHECK(first.command_id != second.command_id);
+
+    /* Refuse the FIRST command out of band (SELECTION_CONFLICT is a plain "no
+     * auto-recovery" refusal that reaches the panel surface). */
+    transport.injectCommandResult(first.command_id, false,
+                                  MDKR_ONLINE_ERROR_SELECTION_CONFLICT);
+    adapter->service();
+    uint32_t rtype = 0u, rerr = 0u;
+    CHECK(mdkr_online_live_adapter_take_refusal(adapter.get(), &rtype, &rerr));
+    CHECK(rtype == static_cast<uint32_t>(MDKR_ONLINE_SET_MODE));
+    CHECK(rtype != static_cast<uint32_t>(MDKR_ONLINE_SET_CONFIG_TRACK));
+    CHECK(rerr == static_cast<uint32_t>(MDKR_ONLINE_ERROR_SELECTION_CONFLICT));
+    mdkr_net_roster_runtime_clear();
+}
+
+/* P1-T2: the client SET_CONFIG_TRACK pre-check mirrors the reducers' acceptance
+ * (only one of the 20 standard race ids). A non-race id <=255 (0, the Central
+ * Area hub) is refused locally instead of costing an async round-trip, and a
+ * huge value is refused without truncating into a false hit; a real race id
+ * still passes. Earlier refusal only -- never a new acceptance. */
+void test_config_track_precheck_rejects_non_race_id() {
+    FakeMatchRoom room;
+    FakeHub hub;
+    FakeClock clock;
+    FakeRoomTransport transport(&room, 1u);
+    HubMeshBackend backend(&hub);
+    auto adapter = mdkr_online_live_adapter_create(
+        baseOptions(&transport, &backend, &clock, MDKR_ONLINE_JOURNEY_CREATE));
+    CHECK(adapter != nullptr);
+    if (!adapter) return;
+    adapter->submit(cmd(adapter.get(), MDKR_ONLINE_VIEW_ACTION_CREATE_ROOM));
+    CHECK(pumpUntil({adapter.get()}, clock, [&]() {
+        return viewOf(adapter.get()).kind == MDKR_ONLINE_VIEW_ROOM;
+    }, 3000u));
+    transport.setDeferResults(true);
+    const size_t base = transport.submitted().size();
+    /* 0 is in range (<=255) but not a race track id -> refused locally. */
+    CHECK(!mdkr_online_live_adapter_set_config_track(adapter.get(), 0u));
+    /* A large value whose low 16 bits alias a real id (0x10005 -> 5) must still
+     * be refused: the >255 guard runs before the uint16 table lookup. */
+    CHECK(!mdkr_online_live_adapter_set_config_track(adapter.get(), 0x10005u));
+    /* A genuine race id passes the pre-check and is sent. */
+    CHECK(mdkr_online_live_adapter_set_config_track(adapter.get(), 5u));
+    CHECK(transport.submitted().size() == base + 1u);
+    CHECK(transport.submitted()[base].type == MDKR_ONLINE_SET_CONFIG_TRACK);
+    CHECK(transport.submitted()[base].value == 5u);
+    mdkr_net_roster_runtime_clear();
+}
+
+/* P1-T2 O2: while a race-end recovery card is latched, a LATE authoritative
+ * State snapshot must not demote the tailored card to the generic "Online Room
+ * Unavailable" box. The shared view model fails ATOMIC when the walked session's
+ * phase/epoch disagrees with a snapshot's, BEFORE its failure-precedence path,
+ * so the adapter must stop handing the stale lobby to the builder while the card
+ * stands. A mid-race peer loss latches the card, then a mismatched State is
+ * injected; view() must still build and front the recovery card. */
+void test_race_end_card_survives_late_state() {
+    LifecycleRig rig;
+    CHECK(rig.init());
+    if (!rig.A || !rig.B) return;
+    IMdkrOnlineAdapter *A = rig.A.get();
+    IMdkrOnlineAdapter *B = rig.B.get();
+    CHECK(rig.toSelecting());
+    rig.selectReady(A, 1u);
+    rig.selectReady(B, 2u);
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).ready_count == 2u && viewOf(B).ready_count == 2u;
+    }, 3000u));
+    CHECK(rig.startRace());
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).kind == MDKR_ONLINE_VIEW_RACING &&
+               viewOf(B).kind == MDKR_ONLINE_VIEW_RACING;
+    }, 10000u));
+
+    /* B drops mid-race: A's control-ping ladder times out -> peer loss, which
+     * latches the in-race recovery card (raceEndFailureLatched_). */
+    rig.clock.nowMs += kMdkrMatchControlPingIntervalMs + 1u;
+    A->service();
+    rig.clock.nowMs += kMdkrMatchControlPingTimeoutMs + 1u;
+    for (unsigned step = 0u; step < 5000u; ++step) {
+        A->service();
+        if (mdkr_online_live_adapter_race_peer_lost(A)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        rig.clock.nowMs += 2u;
+    }
+    CHECK(mdkr_online_live_adapter_race_peer_lost(A));
+    CHECK(viewOf(A).kind == MDKR_ONLINE_VIEW_RECOVERY);
+
+    /* Inject a late State whose epoch the walked session no longer matches --
+     * the exact atomic mismatch that used to brick the view. */
+    MdkrOnlineLobby stale = rig.lobbyOf(A);
+    stale.match_epoch += 1u;
+    rig.transportA.injectState(stale);
+    A->service();
+
+    MdkrOnlineViewModel v{};
+    CHECK(A->view(&v)); /* build no longer fails atomic */
+    CHECK(v.kind == MDKR_ONLINE_VIEW_RECOVERY);
+    CHECK(v.failure != MDKR_ONLINE_VIEW_FAILURE_NONE);
+    mdkr_net_roster_runtime_clear();
+}
+
 /* W4 tournament lane: set_mode(1) + set_cup(0), two rounds through the same
  * room; the reducer schedules the cup's round tracks and accrues authentic
  * trophy points (9/7 then 18/14). Also pins the leader-only refusal for the
@@ -2099,6 +2268,9 @@ int main(int argc, char **argv) {
     test_multi_race_lifecycle();
     test_race_end_latch_frees_play_here();
     test_captured_results_beat_peer_loss_card();
+    test_command_refusal_correlates_by_id();
+    test_config_track_precheck_rejects_non_race_id();
+    test_race_end_card_survives_late_state();
     test_tournament_points_accrue();
     test_phrase_mismatch_rekeys_both_sides();
     std::fprintf(stderr, "online_live_adapter: %d checks, %d failures\n",
