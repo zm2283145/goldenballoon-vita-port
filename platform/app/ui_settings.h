@@ -43,6 +43,9 @@ bool Settings_importCharacterPackage(const char *path);
 // inside a running engine would violate the host/session lifetime contract.
 bool Settings_takeCharacterPreviewRequest(
     SettingsCharacterPreviewRequest &request);
+void Settings_publishCharacterPreviewResult(
+    const std::string &packageId,
+    const MdkrCharacterPreviewResult &result);
 
 // Discard any in-progress audible Audio slider preview. Used when navigation
 // removes the settings panel before ImGui can emit a normal deactivation.

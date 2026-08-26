@@ -538,6 +538,14 @@ void mdkr_modern_characters_shutdown(void) {
     s_initialized = 0;
 }
 
+void mdkr_modern_character_runtime_metrics(
+    MdkrModernCharacterRuntimeMetrics *out) {
+    if (out == NULL) return;
+    out->replacement_draws = s_replacement_draws;
+    out->replacement_primitives = s_replacement_primitives;
+    out->hidden_donor_batches = s_hidden_donor_batches;
+}
+
 void mdkr_modern_character_note_hidden_donor_batch(void) {
     s_hidden_donor_batches++;
 }

@@ -63,6 +63,8 @@
 #include "net/net_roster_runtime.h"
 #include "platform_os.h"
 #include "app_overlay_hooks.h"
+#include "app/engine_entry.h"
+#include "modern_character_runtime.h"
 #include "waves.h"
 #include "fast3d/gfx_pc_dkr.h"
 #include "present_sched.h"
@@ -70,6 +72,8 @@
 #include "presentation_snapshot.h"
 #include "rollback/rollback_game_runtime.h"
 #include "taj_mod.h"
+
+extern int platform_pace_is_synthetic(void);
 #endif
 
 /************ .rodata ************/
@@ -177,6 +181,84 @@ OSMesgQueue gNMIMesgQueue;
 s32 gNMIMesgBuf;          // Official Name: resetPressed
 UNUSED s32 D_80123568[3]; // BSS Padding
 
+#ifdef NATIVE_PORT
+#define WORKSHOP_PREVIEW_WARMUP_TICKS 120u
+static u64 sWorkshopPreviewWarmupTicks;
+static s32 sWorkshopPreviewMeasurementStarted;
+static s32 sWorkshopPreviewMeasurementFinished;
+static MdkrCharacterPreviewResult sWorkshopPreviewDiagnosticResult;
+static MdkrModernCharacterRuntimeMetrics sWorkshopPreviewCharacterBaseline;
+
+static void workshop_preview_measurement_finish(void) {
+    MdkrPresentPerfSnapshot present;
+    MdkrModernCharacterRuntimeMetrics character;
+    MdkrCharacterPreviewResult *result = g_mdkrCharacterPreviewResult;
+    if (result == NULL || sWorkshopPreviewMeasurementFinished) return;
+    result->warmup_ticks = sWorkshopPreviewWarmupTicks;
+    result->realtime = platform_pace_is_synthetic() ? FALSE : TRUE;
+    if (sWorkshopPreviewMeasurementStarted) {
+        present_perf_snapshot(&present);
+        mdkr_modern_character_runtime_metrics(&character);
+        result->interval_samples = present.interval_samples;
+        result->displayed_frames = present.displayed_frames;
+        result->interval_p50_us = present.interval_p50_us;
+        result->interval_p95_us = present.interval_p95_us;
+        result->interval_p99_us = present.interval_p99_us;
+        result->interval_mean_us = present.interval_mean_us;
+        result->interval_max_us = present.interval_max_us;
+        result->tickwall_samples = present.tickwall_samples;
+        result->tickwall_mean_ns = present.tickwall_mean_ns;
+        result->replacement_draws = character.replacement_draws >=
+                sWorkshopPreviewCharacterBaseline.replacement_draws
+            ? character.replacement_draws -
+                  sWorkshopPreviewCharacterBaseline.replacement_draws
+            : 0u;
+        result->replacement_primitives = character.replacement_primitives >=
+                sWorkshopPreviewCharacterBaseline.replacement_primitives
+            ? character.replacement_primitives -
+                  sWorkshopPreviewCharacterBaseline.replacement_primitives
+            : 0u;
+        result->hidden_donor_batches = character.hidden_donor_batches >=
+                sWorkshopPreviewCharacterBaseline.hidden_donor_batches
+            ? character.hidden_donor_batches -
+                  sWorkshopPreviewCharacterBaseline.hidden_donor_batches
+            : 0u;
+    }
+    sWorkshopPreviewMeasurementFinished = TRUE;
+    MDKR_TRACE(
+        "character_workshop_result: warmup=%d realtime=%d samples=%llu p50us=%llu p95us=%llu p99us=%llu maxus=%llu replacements=%llu",
+        result->warmup_complete, result->realtime,
+        result->interval_samples, result->interval_p50_us,
+        result->interval_p95_us, result->interval_p99_us,
+        result->interval_max_us, result->replacement_draws);
+}
+
+static void workshop_preview_measurement_service(s32 overlayPaused) {
+    MdkrCharacterPreviewResult *result = g_mdkrCharacterPreviewResult;
+    if (result == NULL || !result->started ||
+        sWorkshopPreviewMeasurementFinished) {
+        return;
+    }
+    if (!sWorkshopPreviewMeasurementStarted) {
+        sWorkshopPreviewWarmupTicks++;
+        result->warmup_ticks = sWorkshopPreviewWarmupTicks;
+        if (sWorkshopPreviewWarmupTicks >= WORKSHOP_PREVIEW_WARMUP_TICKS) {
+            present_perf_measurement_reset();
+            mdkr_modern_character_runtime_metrics(
+                &sWorkshopPreviewCharacterBaseline);
+            sWorkshopPreviewMeasurementStarted = TRUE;
+            result->warmup_complete = TRUE;
+            MDKR_TRACE(
+                "character_workshop_measurement: started warmupTicks=%llu",
+                (unsigned long long)sWorkshopPreviewWarmupTicks);
+        }
+        if (overlayPaused) workshop_preview_measurement_finish();
+        return;
+    }
+    if (overlayPaused) workshop_preview_measurement_finish();
+}
+#endif
+
 /******************************/
 
 /**
@@ -225,6 +307,13 @@ void thread3_main(UNUSED void *unused) {
     bzero(&gNMIMesgQueue, sizeof(gNMIMesgQueue));
     gNMIOSMesg = NULL;
     gNMIMesgBuf = 0;
+#ifdef NATIVE_PORT
+    sWorkshopPreviewWarmupTicks = 0u;
+    sWorkshopPreviewMeasurementStarted = FALSE;
+    sWorkshopPreviewMeasurementFinished = FALSE;
+    bzero(&sWorkshopPreviewCharacterBaseline,
+          sizeof(sWorkshopPreviewCharacterBaseline));
+#endif
     init_game();
     gSaveDataFlags = input_update(gSaveDataFlags, 0);
     sBootDelayTimer = 0;
@@ -256,6 +345,9 @@ void thread3_main(UNUSED void *unused) {
 #endif
         thread3_verify_stack();
     }
+#ifdef NATIVE_PORT
+    workshop_preview_measurement_finish();
+#endif
 }
 
 /**
@@ -411,6 +503,7 @@ void main_game_loop(void) {
      * Without registered hooks both queries are constant-zero. */
     {
         const s32 overlayPaused = platformOverlayWantsPause();
+        workshop_preview_measurement_service(overlayPaused);
         /* A cutscene camera is a one-frame pulse. The app overlay opens from
          * presentation, so unlike the authored START pause it reaches this
          * input boundary one tick after that pulse was cleared. Restore the
@@ -2194,6 +2287,21 @@ static s32 workshop_preview_start(void) {
                 "[FATAL] Character Workshop package assignment is unavailable\n");
         platform_request_exit(EXIT_FAILURE);
         return TRUE;
+    }
+    if (g_mdkrCharacterPreviewResult == NULL) {
+        bzero(&sWorkshopPreviewDiagnosticResult,
+              sizeof(sWorkshopPreviewDiagnosticResult));
+        sWorkshopPreviewDiagnosticResult.version =
+            MDKR_CHARACTER_PREVIEW_RESULT_VERSION;
+        sWorkshopPreviewDiagnosticResult.context = vehicle < 0
+            ? MDKR_CHARACTER_PREVIEW_SELECT
+            : (MdkrCharacterPreviewContext)(vehicle +
+                  MDKR_CHARACTER_PREVIEW_CAR);
+        sWorkshopPreviewDiagnosticResult.players = players;
+        g_mdkrCharacterPreviewResult = &sWorkshopPreviewDiagnosticResult;
+    }
+    if (g_mdkrCharacterPreviewResult != NULL) {
+        g_mdkrCharacterPreviewResult->started = TRUE;
     }
     if (vehicle < 0) {
         charselect_prev(1, NULL);

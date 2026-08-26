@@ -639,6 +639,8 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
                 s.characterPreviewPlayers == 1 ? "player" : "players");
             ui::TextSubtleUnformattedWrapped(
                 s.characterPreviewPackage.c_str());
+            ui::TextSubtleWrapped(
+                "The first 120 authored ticks warm the scene. Stay at least three seconds longer for a useful real-time sample; opening F1 freezes it.");
             if (ImGui::Button("Cancel Test", ui::kBtnSecondary())) {
                 cancelCharacterPreview(s);
             }

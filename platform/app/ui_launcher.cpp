@@ -89,7 +89,7 @@ ImVec2 g_smokePanelScrollMax;
 float g_smokePanelScrollY = 0.0f;
 bool g_smokePanelScrollValid = false;
 
-void fillBootConfig(const LauncherState &state, MdkrBootConfig &boot) {
+void fillBootConfig(LauncherState &state, MdkrBootConfig &boot) {
     boot = MdkrBootConfig{};
     boot.rom_path = state.romPath.empty() ? nullptr : state.romPath.c_str();
     // -1: let the engine resolve the mode from the ini the settings panel wrote,
@@ -104,6 +104,8 @@ void fillBootConfig(const LauncherState &state, MdkrBootConfig &boot) {
             state.characterPreviewPackage.c_str();
         boot.character_preview_context = state.characterPreviewContext;
         boot.character_preview_players = state.characterPreviewPlayers;
+        state.characterPreviewResult = MdkrCharacterPreviewResult{};
+        boot.character_preview_result = &state.characterPreviewResult;
     }
 }
 
@@ -979,6 +981,10 @@ void drawAboutPanel(LauncherState &s, LauncherAction &out) {
 
 LauncherAction Launcher::draw(AppHost &host) {
     if (state_.characterPreviewDispatched) {
+        Settings_publishCharacterPreviewResult(
+            state_.characterPreviewPackage, state_.characterPreviewResult);
+        Launcher_requestTab(
+            state_, kLauncherPanelSettings, kLauncherTabPlayer);
         state_.characterPreviewPackage.clear();
         state_.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
         state_.characterPreviewPlayers = 0;

@@ -48,6 +48,12 @@ typedef struct MdkrModernCharacterIdentityView {
     uint64_t revision;
 } MdkrModernCharacterIdentityView;
 
+typedef struct MdkrModernCharacterRuntimeMetrics {
+    uint64_t replacement_draws;
+    uint64_t replacement_primitives;
+    uint64_t hidden_donor_batches;
+} MdkrModernCharacterRuntimeMetrics;
+
 /* Lightweight, borrowed library record for menu/workshop roster surfaces.
  * Catalog inspection never loads GPU mesh data; pointers remain valid until
  * runtime shutdown. `has_identity` is false for legacy donor-fallback media. */
@@ -73,6 +79,8 @@ int mdkr_modern_character_tuning_validate(MdkrModernCharacterTuning *tuning,
  * (player one) / MDKR_CUSTOM_CHARACTER_P1..P4 diagnostic assignments. */
 int mdkr_modern_characters_init(const char *directory);
 void mdkr_modern_characters_shutdown(void);
+void mdkr_modern_character_runtime_metrics(
+    MdkrModernCharacterRuntimeMetrics *out);
 
 const MdkrModernCharacterRegistry *mdkr_modern_characters_registry(void);
 int mdkr_modern_character_catalog_count(void);

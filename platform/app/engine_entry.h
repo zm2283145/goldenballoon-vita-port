@@ -37,6 +37,39 @@ typedef enum {
     MDKR_CHARACTER_PREVIEW_PLANE,
 } MdkrCharacterPreviewContext;
 
+// Measured evidence returned by an exact Character Workshop session. Interval
+// values describe displayed wall cadence after a 120-authored-tick warm-up;
+// they are not GPU timestamp queries. A short session can legitimately return
+// warmup_complete=0 or fewer than 60 interval samples.
+typedef struct MdkrCharacterPreviewResult {
+    unsigned version;
+    int started;
+    int warmup_complete;
+    int realtime;
+    MdkrCharacterPreviewContext context;
+    int players;
+    unsigned long long warmup_ticks;
+    unsigned long long interval_samples;
+    unsigned long long displayed_frames;
+    unsigned long long interval_p50_us;
+    unsigned long long interval_p95_us;
+    unsigned long long interval_p99_us;
+    unsigned long long interval_mean_us;
+    unsigned long long interval_max_us;
+    unsigned long long tickwall_samples;
+    unsigned long long tickwall_mean_ns;
+    unsigned long long replacement_draws;
+    unsigned long long replacement_primitives;
+    unsigned long long hidden_donor_batches;
+} MdkrCharacterPreviewResult;
+
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 1u
+
+// Owned by the C engine entry module and non-NULL only during a launcher-owned
+// preview boot. The game writes through it before engine teardown resets the
+// underlying bounded counters.
+extern MdkrCharacterPreviewResult *g_mdkrCharacterPreviewResult;
+
 typedef struct {
     const char *rom_path;      // NULL/empty => engine default (baserom.us.v80.z64)
     int   video_mode;          // MdkrVideoMode, or -1 for "don't pass a preset"
@@ -50,6 +83,7 @@ typedef struct {
     const char *character_preview_package;
     MdkrCharacterPreviewContext character_preview_context;
     int character_preview_players;  // 1..4
+    MdkrCharacterPreviewResult *character_preview_result;
     // Staged RESTART-scope settings, as "Video.Key=Value" strings. The settings
     // panel writes these when the player changes a restart-scope key before
     // pressing Play, so the choice takes effect on THIS boot rather than

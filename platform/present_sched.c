@@ -1017,6 +1017,49 @@ void present_perf_note_queue_depth(unsigned in_flight) {
     }
 }
 
+void present_perf_measurement_reset(void) {
+    memset(s_perf_ns, 0, sizeof(s_perf_ns));
+    memset(s_perf_hits, 0, sizeof(s_perf_hits));
+    memset(s_reject_bin, 0, sizeof(s_reject_bin));
+    s_reject_worst = 0u;
+    s_reject_total = 0u;
+    memset(&s_hist_present, 0, sizeof(s_hist_present));
+    memset(&s_hist_displayed, 0, sizeof(s_hist_displayed));
+    memset(&s_hist_alpha, 0, sizeof(s_hist_alpha));
+    s_hist_last_present_ns = 0u;
+    s_hist_last_displayed_ns = 0u;
+    s_hist_last_phase_ppm = 0u;
+    s_hist_phase_valid = 0;
+    s_hist_phase_regressions = 0u;
+    s_hist_phase_stalls = 0u;
+    s_hist_present_count = 0u;
+    s_hist_displayed_count = 0u;
+    s_depth_samples = 0u;
+    s_depth_sum = 0u;
+    s_depth_max = 0u;
+}
+
+void present_perf_snapshot(MdkrPresentPerfSnapshot *out) {
+    if (out == NULL) return;
+    memset(out, 0, sizeof(*out));
+    out->interval_samples = s_hist_displayed.n;
+    out->displayed_frames = s_hist_displayed_count;
+    out->interval_p50_us = present_hist_percentile(
+        &s_hist_displayed, 50u, PRESENT_INTERVAL_BIN_US);
+    out->interval_p95_us = present_hist_percentile(
+        &s_hist_displayed, 95u, PRESENT_INTERVAL_BIN_US);
+    out->interval_p99_us = present_hist_percentile(
+        &s_hist_displayed, 99u, PRESENT_INTERVAL_BIN_US);
+    out->interval_mean_us = s_hist_displayed.n != 0u
+        ? s_hist_displayed.sum / s_hist_displayed.n : 0u;
+    out->interval_max_us = s_hist_displayed.max;
+    out->tickwall_samples = s_perf_hits[PRESENT_PERF_TICKWALL];
+    out->tickwall_mean_ns = s_perf_hits[PRESENT_PERF_TICKWALL] != 0u
+        ? s_perf_ns[PRESENT_PERF_TICKWALL] /
+              s_perf_hits[PRESENT_PERF_TICKWALL]
+        : 0u;
+}
+
 /*
  * The arm label a gate groups baselines by. Policy and smoothing are the two
  * axes M3 will change, and the pace mode is included because a synthetic run's
@@ -1660,25 +1703,7 @@ void present_sched_engine_session_begin(void) {
     s_alpha_last_quantum = 0u;
     memset(&s_slot_state, 0, sizeof(s_slot_state));
     s_perf = -1;
-    memset(s_perf_ns, 0, sizeof(s_perf_ns));
-    memset(s_perf_hits, 0, sizeof(s_perf_hits));
-    memset(s_reject_bin, 0, sizeof(s_reject_bin));
-    s_reject_worst = 0u;
-    s_reject_total = 0u;
-    memset(&s_hist_present, 0, sizeof(s_hist_present));
-    memset(&s_hist_displayed, 0, sizeof(s_hist_displayed));
-    memset(&s_hist_alpha, 0, sizeof(s_hist_alpha));
-    s_hist_last_present_ns = 0u;
-    s_hist_last_displayed_ns = 0u;
-    s_hist_last_phase_ppm = 0u;
-    s_hist_phase_valid = 0;
-    s_hist_phase_regressions = 0u;
-    s_hist_phase_stalls = 0u;
-    s_hist_present_count = 0u;
-    s_hist_displayed_count = 0u;
-    s_depth_samples = 0u;
-    s_depth_sum = 0u;
-    s_depth_max = 0u;
+    present_perf_measurement_reset();
 
     /* A new match must never interpolate against the old match's last frame. */
     presentation_snapshot_shutdown();

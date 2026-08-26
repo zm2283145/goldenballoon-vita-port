@@ -118,6 +118,7 @@ def main() -> int:
                    if not key.startswith(("MDKR", "GE007_"))}
             env.update(
                 LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
+                MDKR_PRESENT_PERF="1",
                 MDKR_RENDERER="webgpu", MDKR_RENDER_SCALE="1",
                 MDKR_VIDEO_CONFIG_PATH=os.devnull,
                 MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
@@ -160,6 +161,18 @@ def main() -> int:
             for marker in ("[FATAL]", "AddressSanitizer", "runtime error:"):
                 if marker in arm_output:
                     failures.append(f"{label} reported {marker}")
+            result_match = re.search(
+                r"character_workshop_result: warmup=(\d+) realtime=(\d+) "
+                r"samples=(\d+).*replacements=(\d+)", arm_output)
+            if result_match is None:
+                failures.append(f"{label} emitted no bounded result")
+            else:
+                warmup, realtime, samples, replacements = map(
+                    int, result_match.groups())
+                if warmup != 1 or realtime != 0 or samples < 40:
+                    failures.append(f"{label} result did not isolate a synthetic post-warmup sample")
+                if replacements <= 0:
+                    failures.append(f"{label} result counted no package replacements")
             if capture:
                 dumps = sorted(arm_dir.glob("frame_*.ppm"))
                 if len(dumps) != 1:

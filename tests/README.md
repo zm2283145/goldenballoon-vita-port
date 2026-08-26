@@ -4822,6 +4822,12 @@ the one-player character work. Negative arms require invalid context/player
 values, a missing package assignment, and an unsupported vehicle to fail closed
 with the precise refusal.
 
+Every valid arm also enables the production presentation census. It must begin
+only after the 120-authored-tick warm-up and emit a bounded structured result
+with at least 40 post-warm-up intervals and nonzero modern-character
+replacements. The headless arm must identify its synthetic pacing so those fast
+harness intervals can never be presented as a player/device performance result.
+
 ```bash
 python3 tests/check_custom_character_workshop_preview.py \
   --build build-character-tests --rom baserom.us.v80.z64

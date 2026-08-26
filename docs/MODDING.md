@@ -325,10 +325,20 @@ engine returns. Vehicle buttons are unavailable when that package's saved
 compatibility profile excludes the vehicle. Press **F1** to return to the
 launcher and the same package inspector.
 
+An exact-context result card appears after returning. The first 120 authored
+ticks are a warm-up and are excluded so level loading and initial shader work do
+not masquerade as steady-state character cost. Opening F1 freezes the sample
+before overlay navigation. With at least 60 displayed intervals under real-time
+pacing, the card reports median, 95th/99th percentile and worst displayed
+cadence, authored tick-wall mean, and modern-character replacement/part counts.
+Short or synthetic runs remain visible but are labelled diagnostic-only.
+
 This is an exact in-game test route, not yet the planned embedded renderer or a
-benchmark report. Context cameras, semantic-animation controls, frame-time/GPU
-timing capture, screenshots/contact sheets, review status, and device profiles
-remain product work.
+character-only GPU benchmark. The wall-cadence result includes the complete
+scene, presentation policy, resolution and device; it is neither a GPU
+timestamp nor spare-headroom measurement. Context cameras, semantic-animation
+controls, GPU timestamp capture, screenshots/contact sheets, persistent review
+status, comparisons and device profiles remain product work.
 
 All ten retail vehicle-model families now have exact revision-1 fingerprint and
 driver-batch profiles for car, hovercraft, plane, and character select. Their

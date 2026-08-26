@@ -156,6 +156,7 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
     // stored, not copied, by main_pc.c).
     std::vector<std::string> owned;
     AppEnvironmentTransaction previewEnvironment;
+    g_mdkrCharacterPreviewResult = nullptr;
     owned.push_back("mdkr64");
 
     if (cfg != nullptr) {
@@ -306,7 +307,8 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             "MDKR_CHARACTER_WORKSHOP_PREVIEW", context) &&
             previewEnvironment.set(
                 "MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS",
-                std::to_string(cfg->character_preview_players).c_str());
+                std::to_string(cfg->character_preview_players).c_str()) &&
+            previewEnvironment.set("MDKR_PRESENT_PERF", "1");
         for (int player = 0; player < 4; ++player) {
             const std::string variable =
                 "MDKR_CUSTOM_CHARACTER_P" + std::to_string(player + 1);
@@ -325,6 +327,16 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             "[app] character preview: package=%s context=%s players=%d\n",
             cfg->character_preview_package, context,
             cfg->character_preview_players);
+        if (cfg->character_preview_result != nullptr) {
+            *cfg->character_preview_result = MdkrCharacterPreviewResult{};
+            cfg->character_preview_result->version =
+                MDKR_CHARACTER_PREVIEW_RESULT_VERSION;
+            cfg->character_preview_result->context =
+                cfg->character_preview_context;
+            cfg->character_preview_result->players =
+                cfg->character_preview_players;
+            g_mdkrCharacterPreviewResult = cfg->character_preview_result;
+        }
     }
 
     std::fprintf(stderr, "[app] boot:");
@@ -333,6 +345,7 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
 
     const int result =
         mdkr64_headless_main((int)owned.size(), argv.data());
+    g_mdkrCharacterPreviewResult = nullptr;
     if (!previewEnvironment.restore()) {
         std::fprintf(stderr,
                      "[app] character preview environment restore failed\n");

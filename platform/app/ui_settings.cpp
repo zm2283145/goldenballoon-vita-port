@@ -1853,6 +1853,7 @@ struct CharacterProfileEdit {
 std::map<std::string, CharacterProfileEdit> g_characterProfileEdits;
 std::map<std::string, int> g_characterAssemblyPlayers;
 std::map<std::string, int> g_characterTestPlayers;
+std::map<std::string, MdkrCharacterPreviewResult> g_characterPreviewResults;
 SettingsCharacterPreviewRequest g_characterPreviewRequest;
 bool g_characterPreviewRequested = false;
 
@@ -2515,6 +2516,104 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
               AppTheme::good());
 }
 
+const char *characterPreviewResultContext(
+    MdkrCharacterPreviewContext context) {
+    switch (context) {
+        case MDKR_CHARACTER_PREVIEW_SELECT: return "Character select";
+        case MDKR_CHARACTER_PREVIEW_CAR: return "Car";
+        case MDKR_CHARACTER_PREVIEW_HOVERCRAFT: return "Hovercraft";
+        case MDKR_CHARACTER_PREVIEW_PLANE: return "Plane";
+        default: return "Unknown context";
+    }
+}
+
+void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
+    const auto found = g_characterPreviewResults.find(entry->id);
+    if (found == g_characterPreviewResults.end()) return;
+    const MdkrCharacterPreviewResult &result = found->second;
+    ui::Gap(ui::kGapS);
+    if (!ui::CardBegin("##character-preview-result", AppTheme::surface(),
+                       0.0f)) {
+        ui::CardEnd();
+        return;
+    }
+    ImGui::TextUnformatted("Last exact-context result");
+    if (result.version != MDKR_CHARACTER_PREVIEW_RESULT_VERSION ||
+        !result.started) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+        ImGui::TextUnformatted("The test did not reach the selected context.");
+        ImGui::PopStyleColor();
+        ui::TextSubtleWrapped(
+            "No performance conclusion was saved. Review Diagnostics and run the test again.");
+        ui::CardEnd();
+        return;
+    }
+    ImGui::Text("%s  •  %d %s",
+                characterPreviewResultContext(result.context), result.players,
+                result.players == 1 ? "player" : "players");
+    if (!result.warmup_complete) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+        ImGui::TextUnformatted("Ended during the 120-tick warm-up");
+        ImGui::PopStyleColor();
+        ui::TextSubtleWrapped(
+            "Keep the exact context open beyond the warm-up (about four seconds on NTSC) before pressing F1. Loading and shader creation are deliberately excluded from steady-state timing.");
+        ui::CardEnd();
+        return;
+    }
+    const bool enoughSamples = result.interval_samples >= 60u;
+    const bool qualified = result.realtime && enoughSamples;
+    ImGui::PushStyleColor(
+        ImGuiCol_Text, qualified ? AppTheme::good() : AppTheme::accent());
+    ImGui::TextUnformatted(
+        qualified ? "Steady-state sample captured"
+                  : (!result.realtime ? "Synthetic pacing — diagnostic only"
+                                      : "Short sample — diagnostic only"));
+    ImGui::PopStyleColor();
+    if (ImGui::BeginTable("##character-preview-measurement", 2,
+                          ImGuiTableFlags_SizingStretchProp |
+                          ImGuiTableFlags_RowBg)) {
+        const auto metric = [](const char *name, const char *value) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ui::TextSubtle("%s", name);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(value);
+        };
+        char value[96];
+        std::snprintf(value, sizeof(value), "%llu intervals / %llu frames",
+                      result.interval_samples, result.displayed_frames);
+        metric("Displayed sample", value);
+        std::snprintf(value, sizeof(value), "%.2f ms  •  %.1f fps",
+                      result.interval_p50_us / 1000.0,
+                      result.interval_p50_us != 0u
+                          ? 1000000.0 / result.interval_p50_us : 0.0);
+        metric("Median cadence", value);
+        std::snprintf(value, sizeof(value), "%.2f / %.2f ms",
+                      result.interval_p95_us / 1000.0,
+                      result.interval_p99_us / 1000.0);
+        metric("95th / 99th percentile", value);
+        std::snprintf(value, sizeof(value), "%.2f ms",
+                      result.interval_max_us / 1000.0);
+        metric("Worst displayed interval", value);
+        std::snprintf(value, sizeof(value), "%llu / %llu",
+                      result.replacement_draws,
+                      result.replacement_primitives);
+        metric("Character replacements / parts", value);
+        std::snprintf(value, sizeof(value), "%.2f ms across %llu ticks",
+                      result.tickwall_mean_ns / 1000000.0,
+                      result.tickwall_samples);
+        metric("Authored tick wall mean", value);
+        ImGui::EndTable();
+    }
+    if (!enoughSamples) {
+        ui::TextSubtleWrapped(
+            "Collect at least 60 displayed intervals after warm-up before comparing runs.");
+    }
+    ui::TextSubtleWrapped(
+        "Measured wall cadence includes the selected presentation policy, renderer, scene, resolution, other racers and this device. It is not a GPU timestamp, spare GPU headroom, or a character-only cost; compare the same context and settings, and use the four-player route for worst-visible stress.");
+    ui::CardEnd();
+}
+
 void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
                              bool compact) {
     if (compact) {
@@ -2526,7 +2625,8 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
     const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
     if (players < 1 || players > 4) players = 1;
     ui::TextSubtleWrapped(
-        "Launch this package directly into the real game renderer with its saved fit. The test is temporary: it does not replace Player assignments or skip the final ROM integrity check. Use F1 to return to the launcher when finished.");
+        "Launch this package directly into the real game renderer with its saved fit. The test is temporary: it does not replace Player assignments or skip the final ROM integrity check. For a useful timing sample, stay at least three seconds beyond the 120-tick warm-up; opening F1 freezes the sample before you navigate back.");
+    drawCharacterPreviewResult(entry);
     ImGui::TextUnformatted("Test layout");
     for (int option : {1, 2, 3, 4}) {
         if (option != 1) ImGui::SameLine();
@@ -3461,6 +3561,13 @@ bool Settings_takeCharacterPreviewRequest(
     g_characterPreviewRequest = SettingsCharacterPreviewRequest{};
     g_characterPreviewRequested = false;
     return true;
+}
+
+void Settings_publishCharacterPreviewResult(
+    const std::string &packageId,
+    const MdkrCharacterPreviewResult &result) {
+    if (packageId.empty()) return;
+    g_characterPreviewResults[packageId] = result;
 }
 
 void Settings_cancelAudioPreview() {

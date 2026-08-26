@@ -280,6 +280,25 @@ void present_perf_note_present(bool displayed, uint64_t alpha_num,
  */
 void present_perf_note_queue_depth(unsigned in_flight);
 
+typedef struct MdkrPresentPerfSnapshot {
+    uint64_t interval_samples;
+    uint64_t displayed_frames;
+    uint64_t interval_p50_us;
+    uint64_t interval_p95_us;
+    uint64_t interval_p99_us;
+    uint64_t interval_mean_us;
+    uint64_t interval_max_us;
+    uint64_t tickwall_samples;
+    uint64_t tickwall_mean_ns;
+} MdkrPresentPerfSnapshot;
+
+/* Begin a bounded measurement window without changing pacing policy. The
+ * Workshop invokes this only after its exact context has warmed for 120
+ * authored ticks; that preview's end summary intentionally describes the same
+ * warmed window returned to the Workshop rather than its loading phase. */
+void present_perf_measurement_reset(void);
+void present_perf_snapshot(MdkrPresentPerfSnapshot *out);
+
 void present_perf_summary(void);
 
 /* ---- Video.FrameLimit / Video.MotionSmoothing config push (Wave C) ------- *

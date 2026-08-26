@@ -52,6 +52,9 @@
 #include "camera_obstruction_runtime.h"
 #include "modern_character_runtime.h"
 #include "user_paths.h"
+#include "app/engine_entry.h"
+
+MdkrCharacterPreviewResult *g_mdkrCharacterPreviewResult = NULL;
 
 /* Game audio owns this teardown; keep the platform TU out of PR/os_libc.h,
  * whose N64 libc declarations intentionally conflict with host fortified libc. */

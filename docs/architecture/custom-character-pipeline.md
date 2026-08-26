@@ -770,9 +770,20 @@ captures and four-player viewport dividers. The app lifecycle unit test covers
 present, absent, repeated-write and idempotent restoration cases for the scoped
 handoff. Invalid context/player values, a missing assignment, and a vehicle
 excluded by package tuning must all fail closed with a precise diagnostic. This
-qualifies the direct game route and stress seam; embedded
-offscreen preview, GPU/frame timing results, semantic-pose controls and exported
-review reports remain open.
+qualifies the direct game route and stress seam; embedded offscreen preview,
+GPU timestamps/headroom isolation, semantic-pose controls and exported review
+reports remain open.
+
+Launcher-owned previews also arm the existing bounded presentation census. The
+game discards a 120-authored-tick warm-up, resets only the observational timing
+window, and freezes a structured version-1 result when the F1 overlay opens (or
+at engine shutdown). The surviving launcher publishes that result back to the
+same package inspector: displayed interval sample count, median/p95/p99/mean/max,
+authored tick-wall sample/mean, and warmed replacement/part/donor-suppression
+counts. Fewer than 60 intervals and synthetic pacing are explicitly
+diagnostic-only. The report deliberately does not invent a “GPU time” from CPU
+wall cadence; timestamp queries and controlled same-device comparisons remain
+separate work.
 
 The private Dixie fixture completed the same chain without contributing any
 tracked bytes: DAE -> self-contained GLB -> source and portable `.mdkrchar` ->
