@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -300,6 +301,52 @@ class CharacterPackageManagerTests(unittest.TestCase):
                     original["id"], "diddy", (), installed
                 )
             self.assertEqual(before, cache.read_bytes())
+
+    def test_exact_rgba_canvas_round_trips_through_identity_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            original = manager.install(self.make_package(root), installed)
+            rgba = bytes(
+                component
+                for y in range(40)
+                for x in range(40)
+                for component in (x * 6, y * 6, (x + y) * 3, 255)
+            )
+            first_png = manager._portrait_png_from_rgba(rgba)
+            self.assertEqual(first_png, manager._portrait_png_from_rgba(rgba))
+            report = manager.revise_identity_rgba(
+                original["id"], rgba, (4, 5, 6), installed
+            )
+            self.assertEqual("revise-identity-rgba", report["action"])
+            self.assertEqual([4, 5, 6], report["report"]["minimap_rgb"])
+            with zipfile.ZipFile(self.active_source(installed)) as archive:
+                portrait = archive.read("portrait.png")
+            self.assertEqual(first_png, portrait)
+            self.assertEqual(
+                {"width": 40, "height": 40, "colour_type": 6,
+                 "bytes": len(portrait)},
+                probe.inspect_portrait_png(portrait),
+            )
+            offset = len(probe.PNG_SIGNATURE)
+            compressed = bytearray()
+            while offset < len(portrait):
+                length = int.from_bytes(portrait[offset:offset + 4], "big")
+                kind = portrait[offset + 4:offset + 8]
+                payload = portrait[offset + 8:offset + 8 + length]
+                if kind == b"IDAT":
+                    compressed.extend(payload)
+                offset += 12 + length
+            scanlines = zlib.decompress(bytes(compressed))
+            decoded = b"".join(
+                scanlines[y * 161 + 1:(y + 1) * 161]
+                for y in range(40)
+            )
+            self.assertEqual(rgba, decoded)
+
+    def test_exact_rgba_canvas_rejects_wrong_size(self) -> None:
+        with self.assertRaisesRegex(manager.ManagerError, "40×40"):
+            manager._portrait_png_from_rgba(bytes(40 * 40 * 4 - 1))
 
 
 if __name__ == "__main__":

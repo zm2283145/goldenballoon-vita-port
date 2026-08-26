@@ -384,6 +384,45 @@ def revise_identity(package_id: str, portrait_path: Path,
     }
 
 
+def _portrait_png_from_rgba(rgba: bytes) -> bytes:
+    size = 40
+    if len(rgba) != size * size * 4:
+        raise ManagerError("portrait RGBA draft must contain exactly 40×40 pixels")
+
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload)) + kind + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    scanlines = b"".join(
+        b"\0" + rgba[y * size * 4:(y + 1) * size * 4]
+        for y in range(size)
+    )
+    return (
+        probe.PNG_SIGNATURE
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(scanlines, level=9))
+        + chunk(b"IEND", b"")
+    )
+
+
+def revise_identity_rgba(package_id: str, rgba: bytes,
+                         minimap_rgb: tuple[int, int, int],
+                         directory: Path) -> dict[str, Any]:
+    """Compile an exact 40x40 editor canvas through the normal identity path."""
+    portrait = _portrait_png_from_rgba(rgba)
+    with tempfile.TemporaryDirectory(prefix="mdkr-portrait-draft-") as temporary:
+        portrait_path = Path(temporary) / "portrait.png"
+        portrait_path.write_bytes(portrait)
+        result = revise_identity(
+            package_id, portrait_path, minimap_rgb, directory
+        )
+    result["action"] = "revise-identity-rgba"
+    result["draft_rgba_sha256"] = hashlib.sha256(rgba).hexdigest()
+    return result
+
+
 def revise_profile(package_id: str, donor: str, vehicles: tuple[str, ...],
                    directory: Path) -> dict[str, Any]:
     """Create and atomically activate a donor/vehicle compatibility revision."""
@@ -624,6 +663,15 @@ def _parser() -> argparse.ArgumentParser:
     identity_parser.add_argument("red", type=int)
     identity_parser.add_argument("green", type=int)
     identity_parser.add_argument("blue", type=int)
+    rgba_parser = sub.add_parser(
+        "revise-identity-rgba",
+        help="create identity media from an exact 40x40 RGBA editor canvas",
+    )
+    rgba_parser.add_argument("id")
+    rgba_parser.add_argument("rgba_hex")
+    rgba_parser.add_argument("red", type=int)
+    rgba_parser.add_argument("green", type=int)
+    rgba_parser.add_argument("blue", type=int)
     profile_parser = sub.add_parser(
         "revise-profile",
         help="create and install a donor/vehicle compatibility revision",
@@ -647,6 +695,19 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "revise-identity":
             report = revise_identity(
                 args.id, args.portrait,
+                (args.red, args.green, args.blue), args.directory,
+            )
+        elif args.command == "revise-identity-rgba":
+            if (
+                len(args.rgba_hex) != 40 * 40 * 8
+                or any(character not in "0123456789abcdef"
+                       for character in args.rgba_hex)
+            ):
+                raise ManagerError(
+                    "RGBA draft must be exactly 12,800 lowercase hex characters"
+                )
+            report = revise_identity_rgba(
+                args.id, bytes.fromhex(args.rgba_hex),
                 (args.red, args.green, args.blue), args.directory,
             )
         elif args.command == "revise-profile":
