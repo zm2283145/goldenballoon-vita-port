@@ -1513,6 +1513,30 @@ never loaded), and that the race still boots and converges byte-for-byte through
 the same `ENGINE-ONLINE-LIVE` witness the direct lane checks. Default
 `--build build-beta` (the beta engine carries the seam).
 
+`check_online_charselect.py` (standalone lane, not run-checks registered) is the
+PD-T2 gate for the native online CHARACTER SELECT screen (Strategy D2). Where the
+session-boot lane proves LOBBY_WAIT hands off to the race, this proves the first
+player-facing SCREEN of the separated path. It stands up the same in-process live
+loopback session (real libdatachannel DTLS, roster + launch descriptor from the
+vote) but sets `MDKR_TEST_ONLINE_CHARSELECT=1`. That engine-side seam
+(`game/src/online/online_charselect.c`, beta + env gated, inert otherwise) stands
+in for the launcher: it installs the REAL `party_link` forward feed, publishes a
+scripted 2-seat `LOBBY` room (local seat 0; a scripted remote `RIVAL` who has
+already locked Bumper and readied), then each CHARSELECT tick acts as a minimal
+reducer -- it polls the screen's published intent, converges the local seat, and
+flips the lobby to `LOADING` once both seats are ready. The screen (which
+re-implements the presentation with the game's OWN portraits + font instead of
+calling the offline charselect `_loop`) walks its cursor to Pipsy, confirms and
+readies. The gate asserts the screen was entered and its portrait assets loaded
+(`[online-charselect] enter`), the remote seat rendered from the snapshot (a
+render row with the remote's char + name), the published intent reached the target
+character + the SAME default vehicle `menu_online_versus_race_setup` applies +
+ready, the local seat converged and rendered, the phase advanced on the scripted
+host-start (`[online-charselect] advance`), the assets were freed
+(`[online-charselect] exit`), and the session handed off to the race WITHOUT the
+offline menu (`gGameMode=2 gCurrentMenuId=0`), which still converges byte-for-byte
+through the `ENGINE-ONLINE-LIVE` witness. Default `--build build-beta`.
+
 `check_online_tournament.py` (standalone lane, not run-checks registered)
 drives a FULL 4-race Dino Domain cup (mode
 tournament, cup 0: tracks 5, 3, 29, 7) through ONE loopback room

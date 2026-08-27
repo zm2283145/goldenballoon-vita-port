@@ -25,6 +25,7 @@
 #include "types.h"
 #include "thread3_main.h"
 #include "net/party_link.h"
+#include "online/online_charselect.h" /* PD-T2 native CHARSELECT phase */
 
 /* The engine's live game-mode selector. Defined (external linkage) in
  * thread3_main.c; no shared header declares it, so the session declares the
@@ -133,6 +134,22 @@ void mdkr_online_session_begin(const MdkrMatchLaunchDescriptorV1 *launch) {
             gGameMode);
 }
 
+/* True when the snapshot seats a resolvable LOCAL player -- the signal that the
+ * room is a live selection room this endpoint is actually in, so the native
+ * CHARSELECT screen (PD-T2) should be shown rather than idling. The PD-T1
+ * session-boot lane publishes an empty room (no occupied seats), so it never
+ * trips this and keeps its LOBBY_WAIT-then-boot behaviour unchanged. */
+static bool online_session_snapshot_has_local_seat(
+    const MdkrPartyLinkSnapshot *snap) {
+    unsigned i;
+    for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
+        if (snap->seats[i].occupied && snap->seats[i].is_local) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void mdkr_online_session_tick(s32 updateRate) {
     (void) updateRate;
 
@@ -150,10 +167,14 @@ void mdkr_online_session_tick(s32 updateRate) {
     case MDKR_ONLINE_SESSION_LOBBY_WAIT: {
         MdkrPartyLinkSnapshot snap;
         bool haveSnap;
-        bool readyToBoot;
+        bool readyToBoot = false;
+        bool toCharselect = false;
 
-        /* Dormant unless the headless test seam is enabled. */
+        /* Dormant unless a headless test seam is enabled. */
         online_session_test_maybe_script();
+        /* PD-T2: inert unless the CHARSELECT headless seam is armed; then it
+         * installs the forward feed and publishes a scripted LOBBY room. */
+        mdkr_online_charselect_test_lobby_pump();
 
         haveSnap = mdkr_party_link_read(&snap);
         if (!haveSnap) {
@@ -162,10 +183,15 @@ void mdkr_online_session_tick(s32 updateRate) {
              * room's agreement to start, so boot now. This keeps
              * check_online_engine_boot_direct green. */
             readyToBoot = true;
+        } else if (snap.phase == (uint8_t) MDKR_ONLINE_SESSION_LOBBY_PHASE) {
+            /* Room is still selecting. Show the native CHARSELECT once a local
+             * seat is resolvable; otherwise keep idling (the PD-T1 session-boot
+             * lane publishes an empty room and boots when the phase leaves
+             * LOBBY). */
+            toCharselect = online_session_snapshot_has_local_seat(&snap);
         } else {
-            /* The room has left selection once the lobby phase advances past
-             * MDKR_ONLINE_LOBBY. */
-            readyToBoot = (snap.phase != (uint8_t) MDKR_ONLINE_SESSION_LOBBY_PHASE);
+            /* The room has left selection (host started / loading): boot. */
+            readyToBoot = true;
         }
 
         fprintf(stderr,
@@ -175,18 +201,40 @@ void mdkr_online_session_tick(s32 updateRate) {
                 (unsigned) (haveSnap ? snap.phase : 0u), (int) readyToBoot);
         sOnlineSession.lobbyWaitTicks++;
 
-        if (readyToBoot) {
+        if (toCharselect) {
+            sOnlineSession.phase = MDKR_ONLINE_SESSION_CHARSELECT;
+            mdkr_online_charselect_enter();
+        } else if (readyToBoot) {
             online_session_boot_race();
         }
         break;
     }
+    case MDKR_ONLINE_SESSION_CHARSELECT: {
+        MdkrOnlineCharselectResult r = mdkr_online_charselect_tick(updateRate);
+        if (r == MDKR_ONLINE_CHARSELECT_ADVANCE) {
+            /* PD-T3 will route to TRACKSELECT; for now hand straight to the race
+             * so the separated flow still completes end-to-end. */
+            mdkr_online_charselect_exit();
+            online_session_boot_race();
+        } else if (r == MDKR_ONLINE_CHARSELECT_LEAVE) {
+            /* Backing all the way out to the launcher room requires the
+             * engine->launcher return handshake that is PD-T6 (the same wiring
+             * that boots this session at LOBBY phase in the first place). For now
+             * this is a documented stub: log it and remain on the screen rather
+             * than half-tear-down into an unwired state. */
+            fprintf(stderr,
+                    "[online-charselect] leave requested; engine->launcher return "
+                    "is PD-T6, staying on screen\n");
+        }
+        break;
+    }
     case MDKR_ONLINE_SESSION_RACE:
-        /* The boot normally fires inline from LOBBY_WAIT; boot here too if the
-         * mode is somehow re-entered before the hand-off completed. */
+        /* The boot normally fires inline from LOBBY_WAIT / CHARSELECT; boot here
+         * too if the mode is somehow re-entered before the hand-off completed. */
         online_session_boot_race();
         break;
     default:
-        /* CHARSELECT / TRACKSELECT / RESULTS / CEREMONY arrive in PD-T2..T6. */
+        /* TRACKSELECT / RESULTS / CEREMONY arrive in PD-T3..T6. */
         break;
     }
 }
