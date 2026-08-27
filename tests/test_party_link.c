@@ -124,6 +124,7 @@ static void test_intent_one_shot(void) {
 
     memset(&in, 0, sizeof(in));
     in.hover_character = 7u;
+    in.vehicle_id = 2u;
     in.confirmed = 1u;
     in.ready = 1u;
     in.start_requested = 1u;
@@ -131,7 +132,8 @@ static void test_intent_one_shot(void) {
     /* One-shot: true exactly once, matching the published intent. */
     memset(&out, 0, sizeof(out));
     CHECK(mdkr_party_link_intent_poll(&out));
-    CHECK(out.hover_character == 7u && out.confirmed == 1u && out.ready == 1u &&
+    CHECK(out.hover_character == 7u && out.vehicle_id == 2u &&
+          out.confirmed == 1u && out.ready == 1u &&
           out.start_requested == 1u && out.backout == 0u);
     /* Second poll without a new publish returns false. */
     CHECK(!mdkr_party_link_intent_poll(&out));
@@ -216,8 +218,12 @@ static void test_snapshot_field_mapping(void) {
           !snap.seats[1].is_local);
     CHECK(!snap.seats[1].ready && snap.seats[1].connected);
     CHECK(snap.seats[1].character_id == 2u);
-    /* Empty seats stay clear. */
+    /* Empty seats stay clear AND publish the unset sentinels, never racer 0 (F4). */
     CHECK(!snap.seats[2].occupied && !snap.seats[3].occupied);
+    CHECK(snap.seats[2].character_id == MDKR_ONLINE_NO_CHARACTER &&
+          snap.seats[2].vehicle_id == MDKR_ONLINE_NO_VEHICLE);
+    CHECK(snap.seats[3].character_id == MDKR_ONLINE_NO_CHARACTER &&
+          snap.seats[3].vehicle_id == MDKR_ONLINE_NO_VEHICLE);
     /* Points + standings copied verbatim. */
     CHECK(snap.points[0] == 9u && snap.points[1] == 7u);
     CHECK(snap.last_placements[0] == 0u && snap.last_placements[1] == 1u);
@@ -245,11 +251,134 @@ static void test_snapshot_field_mapping(void) {
           snap.configured_track == 7u);
 }
 
+static MdkrPartyLinkLocalIntent intent_new(void) {
+    MdkrPartyLinkLocalIntent in;
+    memset(&in, 0, sizeof(in));
+    in.vehicle_id = MDKR_ONLINE_NO_VEHICLE; /* "unset" unless a test sets it */
+    return in;
+}
+
+static int plan_index_of(const MdkrPartyLinkDispatchPlan *plan, uint8_t kind) {
+    unsigned i;
+    for (i = 0u; i < plan->count; i++) {
+        if (plan->actions[i].kind == kind) return (int)i;
+    }
+    return -1;
+}
+
+/* Latch whichever planned action of `kind` is present (simulating the reducer
+ * accepting that submit). */
+static void latch_kind(MdkrPartyLinkDispatchState *st,
+                       const MdkrPartyLinkDispatchPlan *plan, uint8_t kind) {
+    const int idx = plan_index_of(plan, kind);
+    CHECK(idx >= 0);
+    if (idx >= 0) mdkr_party_link_dispatch_latch(st, &plan->actions[idx]);
+}
+
+static void test_dispatch_plan(void) {
+    MdkrPartyLinkDispatchState st;
+    MdkrPartyLinkDispatchPlan plan;
+    MdkrPartyLinkLocalIntent in;
+
+    /* F1: a REFUSED dispatch does not latch, so it re-fires; an ACCEPTED one
+     * latches and dedupes; a CHANGED pick re-fires. */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.confirmed = 1u;
+    in.hover_character = 5u;
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) >= 0);
+    /* refusal: DON'T latch -> the very next intent re-plans it. */
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) >= 0);
+    /* acceptance: latch -> deduped. */
+    latch_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER);
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) < 0);
+    /* a changed racer re-fires. */
+    in.hover_character = 6u;
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) >= 0);
+
+    /* F2: {character, vehicle, ready} plans CHOOSE_CHARACTER, then
+     * CHOOSE_VEHICLE, then READY -- vehicle strictly before ready. */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.confirmed = 1u;
+    in.hover_character = 3u;
+    in.vehicle_id = 1u;
+    in.ready = 1u;
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    CHECK(plan.count == 3u);
+    CHECK(plan.actions[0].kind == MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER &&
+          plan.actions[0].value == 3u);
+    CHECK(plan.actions[1].kind == MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE &&
+          plan.actions[1].value == 1u);
+    CHECK(plan.actions[2].kind == MDKR_PARTY_LINK_DISPATCH_READY);
+
+    /* READY: rising edge, F1 retry, and re-arm on release. */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.ready = 1u;
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) >= 0);
+    mdkr_party_link_plan_dispatch(&st, &in, &plan); /* refused -> re-fires */
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) >= 0);
+    latch_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_READY); /* accepted */
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) < 0);
+    in.ready = 0u; /* release re-arms */
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    in.ready = 1u;
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) >= 0);
+
+    /* VEHICLE dedupe: accepted -> deduped; changed -> re-fires; unset -> never. */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.vehicle_id = 1u;
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    latch_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE);
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE) < 0);
+    in.vehicle_id = 2u;
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE) >= 0);
+    in.vehicle_id = MDKR_ONLINE_NO_VEHICLE;
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE) < 0);
+
+    /* BACK OUT latches once and re-arms the character + vehicle picks. */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.confirmed = 1u;
+    in.hover_character = 4u;
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    latch_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER);
+    mdkr_party_link_plan_dispatch(&st, &in, &plan); /* same racer -> deduped */
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) < 0);
+    in.backout = 1u;
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    latch_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION);
+    in.backout = 0u; /* the same confirm now re-fires (re-armed) */
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) >= 0);
+
+    /* reset drops all dedupe. */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.confirmed = 1u;
+    in.hover_character = 4u; /* same id as before reset -> fires because cleared */
+    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) >= 0);
+}
+
 int main(void) {
     test_round_trip();
     test_generation_monotonicity();
     test_intent_one_shot();
     test_snapshot_field_mapping();
+    test_dispatch_plan();
     fprintf(stderr, "party_link: %d checks, %d failures\n", g_checks,
             g_failures);
     return g_failures == 0 ? 0 : 1;

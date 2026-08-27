@@ -81,10 +81,17 @@ typedef struct MdkrPartyLinkSnapshot {
     MdkrPartyLinkHostCursor host_cursor;
 } MdkrPartyLinkSnapshot;
 
-/* REVERSE FEED record: the local player's latest in-menu intent. start_requested
- * is the host pressing Start on the native screen. */
+/* REVERSE FEED record: the local player's latest in-menu intent. The native
+ * screen is the source of truth for the pick, so it carries BOTH the racer and
+ * the vehicle -- the reducer refuses READY until a vehicle is set, so a bridge
+ * that could not express a vehicle could never legally ready a fresh seat.
+ * vehicle_id == 0xFF (MDKR_ONLINE_NO_VEHICLE) means "unset" (no CHOOSE_VEHICLE).
+ * start_requested is the host pressing Start on the native screen. The launcher
+ * dispatches, per intent, CHOOSE_CHARACTER, then CHOOSE_VEHICLE (before READY,
+ * so the vehicle lands first), then READY / START_RACE. */
 typedef struct MdkrPartyLinkLocalIntent {
     uint8_t hover_character;
+    uint8_t vehicle_id;      /* chosen vehicle, or 0xFF (NO_VEHICLE) == unset */
     uint8_t confirmed;
     uint8_t ready;
     uint8_t backout;
@@ -122,6 +129,73 @@ void mdkr_party_link_intent_publish(const MdkrPartyLinkLocalIntent *intent);
  * exactly once per publish (an already-read intent -- or none -- is never handed
  * out again), then clears the arm. Returns false when inactive. */
 bool mdkr_party_link_intent_poll(MdkrPartyLinkLocalIntent *out);
+
+/* ---- Reverse-feed dispatch plan (pure, launcher-side) ------------------- *
+ *
+ * The dedupe/ordering logic is held OUT of the beta wiring so it is directly
+ * unit-testable -- the same rationale as mdkr_net_roster_guard_decides_clear
+ * (net_roster_runtime.h). The wiring (online_live_wiring.cpp) owns one
+ * MdkrPartyLinkDispatchState across a session, plans the ordered actions once
+ * per polled intent, submits them IN ORDER, and latches each ONLY when the
+ * reducer ACCEPTED it. Latching on acceptance (never on mere submission) is
+ * load-bearing: a refusal (SELECTION_CONFLICT while the opponent holds a racer,
+ * ILLEGAL_VEHICLE, a stale-revision/in-flight command) must re-fire on the next
+ * intent instead of being silently swallowed -- exactly the panel's behavior,
+ * where every re-press is a fresh dispatch. These types name only party_link
+ * values (no MdkrOnlineViewAction), so the header stays dependency-free; the
+ * wiring maps each kind to the EXISTING view action and fills the START_RACE
+ * vehicle mask (which needs the live lobby). */
+typedef enum MdkrPartyLinkDispatchKind {
+    MDKR_PARTY_LINK_DISPATCH_NONE = 0,
+    MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER,
+    MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE,
+    MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION,
+    MDKR_PARTY_LINK_DISPATCH_READY,
+    MDKR_PARTY_LINK_DISPATCH_START_RACE
+} MdkrPartyLinkDispatchKind;
+
+typedef struct MdkrPartyLinkDispatchAction {
+    uint8_t kind;  /* MdkrPartyLinkDispatchKind */
+    uint8_t value; /* character/vehicle id; START_RACE mask is filled by wiring */
+} MdkrPartyLinkDispatchAction;
+
+#define MDKR_PARTY_LINK_MAX_DISPATCH 5u
+typedef struct MdkrPartyLinkDispatchPlan {
+    MdkrPartyLinkDispatchAction actions[MDKR_PARTY_LINK_MAX_DISPATCH];
+    uint8_t count;
+} MdkrPartyLinkDispatchPlan;
+
+typedef struct MdkrPartyLinkDispatchState {
+    uint8_t last_character; /* last accepted CHOOSE_CHARACTER value */
+    uint8_t last_vehicle;   /* last accepted CHOOSE_VEHICLE value */
+    uint8_t character_dispatched;
+    uint8_t vehicle_dispatched;
+    uint8_t ready_dispatched;
+    uint8_t backout_dispatched;
+    uint8_t start_dispatched;
+} MdkrPartyLinkDispatchState;
+
+/* Reset the dedupe state (call on install/clear, before the first intent). */
+void mdkr_party_link_dispatch_state_reset(MdkrPartyLinkDispatchState *state);
+
+/* Plan the ORDERED reducer commands for one polled intent. Order is
+ * CHOOSE_CHARACTER, CHOOSE_VEHICLE, CHANGE_SELECTION, READY, START_RACE --
+ * vehicle BEFORE ready so a fresh seat's vehicle lands first (a refused ready
+ * simply re-fires next intent once the vehicle is accepted). Deduped on CHANGE:
+ * confirm/vehicle plan only for a changed id vs. the last ACCEPTED value; ready/
+ * start plan on the rising edge. `state` is mutated only for edge RE-ARMS (a
+ * released ready/start/backout flag clears its latch); acceptance latches are
+ * applied separately via mdkr_party_link_dispatch_latch. NULL args -> empty
+ * plan. */
+void mdkr_party_link_plan_dispatch(MdkrPartyLinkDispatchState *state,
+                                   const MdkrPartyLinkLocalIntent *intent,
+                                   MdkrPartyLinkDispatchPlan *out);
+
+/* Latch one action into the dedupe state after the reducer ACCEPTED it (F1:
+ * never latch a refusal). CHANGE_SELECTION also re-arms the next character +
+ * vehicle pick. No-op for NULL args. */
+void mdkr_party_link_dispatch_latch(MdkrPartyLinkDispatchState *state,
+                                    const MdkrPartyLinkDispatchAction *action);
 
 /* ---- Launcher-side projection helper ------------------------------------ *
  *

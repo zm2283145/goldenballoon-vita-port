@@ -666,11 +666,14 @@ bool OnlineRoom_liveInvite(IMdkrOnlineAdapter *adapter, std::string *code,
  * link is installed and the adapter has an authoritative lobby snapshot).
  * REVERSE FEED: OnlineRoom_pumpPartyLinkIntent one-shot-polls the local
  * player's in-menu intent and dispatches the SAME existing view actions
- * ui_online_room.cpp does (CHOOSE_CHARACTER / CHANGE_SELECTION / READY /
- * START_RACE), deduped so a per-frame republish never spams the reducer.
- * install/clear bookend a session and reset the reverse-feed dedupe. Both pumps
- * are driven from the launcher-code-in-engine-loop service callback during
- * MENUS by later tasks. Defined in platform/app/online_live_wiring.cpp. */
+ * ui_online_room.cpp does, IN ORDER: CHOOSE_CHARACTER, then CHOOSE_VEHICLE
+ * (before READY, so a fresh seat's vehicle lands first -- the reducer refuses
+ * READY until a vehicle is set), then CHANGE_SELECTION / READY / START_RACE.
+ * Each is latched ONLY on an accepted step, so a refusal re-fires next intent
+ * instead of being swallowed; deduped so a per-frame republish never spams the
+ * reducer. install/clear bookend a session and reset the reverse-feed dedupe.
+ * Both pumps are driven from the launcher-code-in-engine-loop service callback
+ * during MENUS by later tasks. Defined in platform/app/online_live_wiring.cpp. */
 void OnlineRoom_installPartyLink(void);
 void OnlineRoom_clearPartyLink(void);
 void OnlineRoom_pumpPartyLink(IMdkrOnlineAdapter *adapter);

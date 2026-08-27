@@ -137,9 +137,15 @@ void mdkr_party_link_snapshot_from_lobby(
         MdkrPartyLinkSeat *dst = &out->seats[i];
         const MdkrOnlineMember *member;
         dst->occupied = seat->occupied ? 1u : 0u;
+        if (!seat->occupied) {
+            /* Never publish a real racer id (0) for an empty seat: force the
+             * unset sentinels so P2-T2 readers can trust the fields (F4). */
+            dst->character_id = MDKR_ONLINE_NO_CHARACTER;
+            dst->vehicle_id = MDKR_ONLINE_NO_VEHICLE;
+            continue;
+        }
         dst->character_id = seat->character_id;
         dst->vehicle_id = seat->vehicle_id;
-        if (!seat->occupied) continue;
         dst->is_host =
             (seat->endpoint_id == lobby->leader_endpoint_id) ? 1u : 0u;
         dst->is_local = (local_endpoint != 0u &&
@@ -156,4 +162,92 @@ void mdkr_party_link_snapshot_from_lobby(
         out->last_placements[i] = lobby->last_placements[i];
     }
     /* host_cursor stays zero/invalid (P2-T3). */
+}
+
+/* ---- Reverse-feed dispatch plan (pure) ---------------------------------- */
+
+void mdkr_party_link_dispatch_state_reset(MdkrPartyLinkDispatchState *state) {
+    if (state == NULL) return;
+    memset(state, 0, sizeof(*state));
+    state->last_character = MDKR_ONLINE_NO_CHARACTER;
+    state->last_vehicle = MDKR_ONLINE_NO_VEHICLE;
+}
+
+static void party_link_plan_push(MdkrPartyLinkDispatchPlan *out, uint8_t kind,
+                                 uint8_t value) {
+    if (out->count >= MDKR_PARTY_LINK_MAX_DISPATCH) return;
+    out->actions[out->count].kind = kind;
+    out->actions[out->count].value = value;
+    out->count++;
+}
+
+void mdkr_party_link_plan_dispatch(MdkrPartyLinkDispatchState *state,
+                                   const MdkrPartyLinkLocalIntent *intent,
+                                   MdkrPartyLinkDispatchPlan *out) {
+    if (out == NULL) return;
+    memset(out, 0, sizeof(*out));
+    if (state == NULL || intent == NULL) return;
+
+    /* Edge re-arms: a released flag clears its latch so its next assertion fires
+     * (independent of acceptance). */
+    if (!intent->ready) state->ready_dispatched = 0u;
+    if (!intent->start_requested) state->start_dispatched = 0u;
+    if (!intent->backout) state->backout_dispatched = 0u;
+
+    /* CHOOSE_CHARACTER on a changed confirmed id. Hover alone is cursor motion
+     * carried by the forward feed's host_cursor, never a reducer command. */
+    if (intent->confirmed &&
+        (!state->character_dispatched ||
+         state->last_character != intent->hover_character)) {
+        party_link_plan_push(out, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER,
+                             intent->hover_character);
+    }
+    /* CHOOSE_VEHICLE (before READY) when a vehicle is set and changed. */
+    if (intent->vehicle_id != MDKR_ONLINE_NO_VEHICLE &&
+        (!state->vehicle_dispatched ||
+         state->last_vehicle != intent->vehicle_id)) {
+        party_link_plan_push(out, MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE,
+                             intent->vehicle_id);
+    }
+    /* CHANGE_SELECTION (back out) once per assertion. */
+    if (intent->backout && !state->backout_dispatched) {
+        party_link_plan_push(out, MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION, 0u);
+    }
+    /* READY on the rising edge. */
+    if (intent->ready && !state->ready_dispatched) {
+        party_link_plan_push(out, MDKR_PARTY_LINK_DISPATCH_READY, 1u);
+    }
+    /* START_RACE once per press (mask filled by the wiring). */
+    if (intent->start_requested && !state->start_dispatched) {
+        party_link_plan_push(out, MDKR_PARTY_LINK_DISPATCH_START_RACE, 0u);
+    }
+}
+
+void mdkr_party_link_dispatch_latch(MdkrPartyLinkDispatchState *state,
+                                    const MdkrPartyLinkDispatchAction *action) {
+    if (state == NULL || action == NULL) return;
+    switch (action->kind) {
+    case MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER:
+        state->character_dispatched = 1u;
+        state->last_character = action->value;
+        break;
+    case MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE:
+        state->vehicle_dispatched = 1u;
+        state->last_vehicle = action->value;
+        break;
+    case MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION:
+        state->backout_dispatched = 1u;
+        /* A fresh selection may follow: re-arm the character + vehicle picks. */
+        state->character_dispatched = 0u;
+        state->vehicle_dispatched = 0u;
+        break;
+    case MDKR_PARTY_LINK_DISPATCH_READY:
+        state->ready_dispatched = 1u;
+        break;
+    case MDKR_PARTY_LINK_DISPATCH_START_RACE:
+        state->start_dispatched = 1u;
+        break;
+    default:
+        break;
+    }
 }

@@ -381,16 +381,9 @@ unsigned partyLinkStartVehicleMask(IMdkrOnlineAdapter *adapter) {
     return mask;
 }
 
-/* Reverse-feed dedupe so a per-frame intent republish never spams the reducer:
- * dispatch a pick only when it actually changed. Reset on install/clear. */
-struct PartyLinkDispatchState {
-    uint8_t lastCharacter = 0xFFu;
-    bool characterDispatched = false;
-    bool readyDispatched = false;
-    bool backoutDispatched = false;
-    bool startDispatched = false;
-};
-PartyLinkDispatchState sPartyLinkDispatch;
+/* Reverse-feed dedupe state (pure dedupe/ordering logic lives in party_link.c so
+ * it is unit-testable). One instance per session; reset on install/clear. */
+MdkrPartyLinkDispatchState sPartyLinkDispatch;
 
 /* Deterministic, adapter-free scripted snapshot for step `step` of the
  * MDKR_APP_TEST_PARTY_LINK_FAKE sequence: a 2-seat tournament room (host seat 0
@@ -403,16 +396,16 @@ void partyLinkFakeSnapshot(unsigned step, MdkrPartyLinkSnapshot *out) {
     out->configured_track = 0xFFFFu; /* tournament: cup schedule owns the track */
     out->cup_id = 0u;                /* Dino Domain cup */
     out->race_index = 0u;
+    for (unsigned i = 0u; i < MDKR_PARTY_LINK_SEATS; ++i) {
+        out->seats[i].character_id = MDKR_ONLINE_NO_CHARACTER;
+        out->seats[i].vehicle_id = MDKR_ONLINE_NO_VEHICLE;
+    }
     out->seats[0].occupied = 1u;
     out->seats[0].is_local = 1u;
     out->seats[0].is_host = 1u;
     out->seats[0].connected = 1u;
     out->seats[1].occupied = 1u;
     out->seats[1].connected = 1u;
-    out->seats[0].character_id = MDKR_ONLINE_NO_CHARACTER;
-    out->seats[1].character_id = MDKR_ONLINE_NO_CHARACTER;
-    out->seats[0].vehicle_id = MDKR_ONLINE_NO_VEHICLE;
-    out->seats[1].vehicle_id = MDKR_ONLINE_NO_VEHICLE;
     if (step >= 1u) {
         out->seats[0].character_id = 1u;
         out->seats[0].vehicle_id = 0u;
@@ -429,13 +422,17 @@ void partyLinkFakeSnapshot(unsigned step, MdkrPartyLinkSnapshot *out) {
 }  // namespace
 
 void OnlineRoom_installPartyLink(void) {
-    sPartyLinkDispatch = PartyLinkDispatchState();
+    /* Clear-then-install (F3): install() refuses when already active, which would
+     * leave a stale prior snapshot live -- clearing first guarantees a fresh
+     * session every time. */
+    mdkr_party_link_clear();
     (void)mdkr_party_link_install();
+    mdkr_party_link_dispatch_state_reset(&sPartyLinkDispatch);
 }
 
 void OnlineRoom_clearPartyLink(void) {
     mdkr_party_link_clear();
-    sPartyLinkDispatch = PartyLinkDispatchState();
+    mdkr_party_link_dispatch_state_reset(&sPartyLinkDispatch);
 }
 
 void OnlineRoom_pumpPartyLink(IMdkrOnlineAdapter *adapter) {
@@ -454,53 +451,92 @@ void OnlineRoom_pumpPartyLink(IMdkrOnlineAdapter *adapter) {
     mdkr_party_link_publish(&snap);
 }
 
+/* The local seat's current vehicle in the live lobby, so a CHOOSE_VEHICLE that
+ * merely re-states the lobby's existing pick is skipped. NO_VEHICLE when there
+ * is no snapshot or no resolvable local seat. */
+unsigned partyLinkLocalVehicle(IMdkrOnlineAdapter *adapter) {
+    MdkrOnlineLobby lobby{};
+    if (!mdkr_online_live_adapter_lobby(adapter, &lobby)) {
+        return MDKR_ONLINE_NO_VEHICLE;
+    }
+    MdkrOnlineViewModel vm{};
+    const bool haveView = adapter->view(&vm);
+    MdkrPartyLinkSnapshot snap;
+    mdkr_party_link_snapshot_from_lobby(&snap, haveView ? &vm : nullptr, &lobby,
+                                        0u);
+    for (unsigned i = 0u; i < MDKR_PARTY_LINK_SEATS; ++i) {
+        if (snap.seats[i].occupied && snap.seats[i].is_local) {
+            return snap.seats[i].vehicle_id;
+        }
+    }
+    return MDKR_ONLINE_NO_VEHICLE;
+}
+
 void OnlineRoom_pumpPartyLinkIntent(IMdkrOnlineAdapter *adapter) {
     if (adapter == nullptr) return;
     MdkrPartyLinkLocalIntent intent;
     if (!mdkr_party_link_intent_poll(&intent)) return; /* one-shot per publish */
-    PartyLinkDispatchState &st = sPartyLinkDispatch;
-    /* Character confirm -> CHOOSE_CHARACTER(value = chosen id). Hover alone is
-     * cursor motion carried by the forward feed's host_cursor, never a reducer
-     * command. Dedupe so re-confirming the same racer is a no-op. */
-    if (intent.confirmed) {
-        if (!st.characterDispatched ||
-            st.lastCharacter != intent.hover_character) {
-            (void)partyLinkSubmit(adapter,
-                                  MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER,
-                                  intent.hover_character);
-            st.characterDispatched = true;
-            st.lastCharacter = intent.hover_character;
+
+    MdkrPartyLinkDispatchPlan plan;
+    mdkr_party_link_plan_dispatch(&sPartyLinkDispatch, &intent, &plan);
+    if (plan.count == 0u) return;
+
+    const unsigned currentVehicle = partyLinkLocalVehicle(adapter);
+
+    /* Dispatch the planned actions IN ORDER, latching each ONLY on an accepted
+     * step (F1): a refusal (SELECTION_CONFLICT / ILLEGAL_VEHICLE / stale-revision
+     * / in-flight) re-fires on the next intent instead of being swallowed. */
+    for (unsigned i = 0u; i < plan.count; ++i) {
+        const MdkrPartyLinkDispatchAction &action = plan.actions[i];
+        switch (action.kind) {
+        case MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER:
+            if (partyLinkSubmit(adapter,
+                                MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER,
+                                action.value).accepted) {
+                mdkr_party_link_dispatch_latch(&sPartyLinkDispatch, &action);
+            }
+            break;
+        case MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE:
+            /* Mask-legal value handling: only forward a real vehicle id; the
+             * reducer's own mask gate (ILLEGAL_VEHICLE) rejects a track-illegal
+             * pick, which -- unlatched -- lets the native screen (the source of
+             * truth) re-pick, rather than the launcher silently defaulting. */
+            if (action.value >= MDKR_ONLINE_PLAYER_VEHICLE_COUNT) break;
+            if (action.value == currentVehicle) {
+                /* The lobby already holds this vehicle: nothing to send, but
+                 * latch so it is not re-planned every intent. */
+                mdkr_party_link_dispatch_latch(&sPartyLinkDispatch, &action);
+                break;
+            }
+            if (partyLinkSubmit(adapter, MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE,
+                                action.value).accepted) {
+                mdkr_party_link_dispatch_latch(&sPartyLinkDispatch, &action);
+            }
+            break;
+        case MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION:
+            if (partyLinkSubmit(adapter,
+                                MDKR_ONLINE_VIEW_ACTION_CHANGE_SELECTION, 0u)
+                    .accepted) {
+                mdkr_party_link_dispatch_latch(&sPartyLinkDispatch, &action);
+            }
+            break;
+        case MDKR_PARTY_LINK_DISPATCH_READY:
+            if (partyLinkSubmit(adapter, MDKR_ONLINE_VIEW_ACTION_READY, 1u)
+                    .accepted) {
+                mdkr_party_link_dispatch_latch(&sPartyLinkDispatch, &action);
+            }
+            break;
+        case MDKR_PARTY_LINK_DISPATCH_START_RACE:
+            /* START_RACE value is the resolved track's RAW usable-vehicle mask
+             * (partyLinkStartVehicleMask), not a party_link value. */
+            if (partyLinkSubmit(adapter, MDKR_ONLINE_VIEW_ACTION_START_RACE,
+                                partyLinkStartVehicleMask(adapter)).accepted) {
+                mdkr_party_link_dispatch_latch(&sPartyLinkDispatch, &action);
+            }
+            break;
+        default:
+            break;
         }
-    }
-    /* Back out of the staged selection -> CHANGE_SELECTION; re-arm confirm. */
-    if (intent.backout) {
-        if (!st.backoutDispatched) {
-            (void)partyLinkSubmit(adapter,
-                                  MDKR_ONLINE_VIEW_ACTION_CHANGE_SELECTION, 0u);
-            st.backoutDispatched = true;
-            st.characterDispatched = false;
-        }
-    } else {
-        st.backoutDispatched = false;
-    }
-    /* Ready -> READY(1) on the rising edge only. */
-    if (intent.ready) {
-        if (!st.readyDispatched) {
-            (void)partyLinkSubmit(adapter, MDKR_ONLINE_VIEW_ACTION_READY, 1u);
-            st.readyDispatched = true;
-        }
-    } else {
-        st.readyDispatched = false;
-    }
-    /* Host pressed Start -> START_RACE(resolved raw vehicle mask), once/press. */
-    if (intent.start_requested) {
-        if (!st.startDispatched) {
-            (void)partyLinkSubmit(adapter, MDKR_ONLINE_VIEW_ACTION_START_RACE,
-                                  partyLinkStartVehicleMask(adapter));
-            st.startDispatched = true;
-        }
-    } else {
-        st.startDispatched = false;
     }
 }
 
