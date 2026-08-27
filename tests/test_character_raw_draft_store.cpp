@@ -62,6 +62,7 @@ CharacterRawDraftStore::Draft makeDraft(const char *id,
     draft.fallback = "idle";
     draft.seat     = "pelvis";
     draft.head     = "head";
+    draft.transformReviewSignature.assign(64u, 'c');
     return draft;
 }
 
@@ -83,10 +84,10 @@ int main() {
     Inventory   emptyParsed;
     expect(serialize(empty, emptyEncoded, error) &&
                emptyEncoded.rfind(
-                   "mdkr-character-raw-drafts-v1\t0\t-\t",
+                   "mdkr-character-raw-drafts-v2\t0\t-\t",
                    0u) == 0u &&
                emptyEncoded.size() ==
-                   std::string("mdkr-character-raw-drafts-v1\t0\t-\t").size() +
+                   std::string("mdkr-character-raw-drafts-v2\t0\t-\t").size() +
                        65u &&
                parse(emptyEncoded, emptyParsed, error) &&
                emptyParsed.drafts.empty() && emptyParsed.selectedId.empty(),
@@ -104,7 +105,7 @@ int main() {
            "raw inventory serializes");
     const size_t encodedBody = encoded.find('\n') + 1u;
     expect(encoded.rfind(
-               "mdkr-character-raw-drafts-v1\t2\traw-alpha\t",
+               "mdkr-character-raw-drafts-v2\t2\traw-alpha\t",
                0u) == 0u &&
                encoded.find("raw-beta\t", encodedBody) <
                    encoded.find("raw-alpha\t", encodedBody),
@@ -115,6 +116,8 @@ int main() {
                parsed.selectedId == first.id &&
                find(parsed, first.id)->modelPath == first.modelPath &&
                find(parsed, first.id)->targetHeight == first.targetHeight &&
+               find(parsed, first.id)->transformReviewSignature ==
+                   first.transformReviewSignature &&
                find(parsed, second.id)->mappingModelSha256 ==
                    second.mappingModelSha256,
            "round trip preserves exact source-bound authoring state");

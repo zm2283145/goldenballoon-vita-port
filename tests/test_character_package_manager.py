@@ -217,6 +217,7 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 "Creative Commons test license\n", encoding="utf-8"
             )
             inventory = manager.inspect_raw_glb(model)
+            self.assertEqual("mdkr-character-glb-intake-v2", inventory["schema"])
             self.assertEqual("idle", inventory["fallback"])
             self.assertEqual("root", inventory["seat"])
             self.assertEqual("head", inventory["head"])
@@ -228,7 +229,7 @@ class CharacterPackageManagerTests(unittest.TestCase):
             self.assertEqual(inventory["model_sha256"], indexed["model_sha256"])
             lines = index.read_text(encoding="ascii").splitlines()
             self.assertTrue(lines[0].startswith(
-                "mdkr-character-glb-intake-v1\t" + inventory["model_sha256"]
+                "mdkr-character-glb-intake-v2\t" + inventory["model_sha256"]
             ))
             self.assertEqual("defaults\t69646c65\t726f6f74\t68656164", lines[1])
             with self.assertRaisesRegex(manager.ManagerError, "exact file"):

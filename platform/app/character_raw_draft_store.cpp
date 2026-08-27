@@ -15,8 +15,10 @@ static_assert(sizeof(float) == sizeof(uint32_t) &&
                   std::numeric_limits<float>::is_iec559,
               "raw draft persistence requires 32-bit IEEE-754 floats");
 
-constexpr const char *kHeader       = "mdkr-character-raw-drafts-v1";
-constexpr size_t      kFieldsPerRow = 18u;
+constexpr const char *kHeaderV1 = "mdkr-character-raw-drafts-v1";
+constexpr const char *kHeaderV2 = "mdkr-character-raw-drafts-v2";
+constexpr size_t      kFieldsPerRowV1 = 18u;
+constexpr size_t      kFieldsPerRowV2 = 19u;
 constexpr size_t      kMaximumRowBytes =
     (CharacterRawDraftStore::kMaximumPathBytes * 2u) * 2u +
     (CharacterRawDraftStore::kMaximumSourceUrlBytes * 2u) + 4096u;
@@ -204,6 +206,12 @@ bool draftValid(const CharacterRawDraftStore::Draft &draft,
     else if (!draft.mappingModelSha256.empty() &&
              !digestValid(draft.mappingModelSha256))
         error = "raw draft mapping fingerprint is invalid";
+    else if (!draft.transformReviewSignature.empty() &&
+             !digestValid(draft.transformReviewSignature))
+        error = "raw draft transform review signature is invalid";
+    else if (!draft.transformReviewSignature.empty() &&
+             draft.mappingModelSha256.empty())
+        error = "raw draft transform review has no source fingerprint";
     else if (draft.mappingModelSha256.empty() &&
              (!draft.fallback.empty() || !draft.seat.empty() ||
               !draft.head.empty()))
@@ -245,6 +253,8 @@ std::vector<std::string> recordFields(
         encodeHex(draft.fallback),
         encodeHex(draft.seat),
         encodeHex(draft.head),
+        draft.transformReviewSignature.empty()
+            ? "-" : draft.transformReviewSignature,
     };
 }
 
@@ -276,7 +286,8 @@ std::string recordDigest(const std::string              &selectedId,
     return finishDigest(digest);
 }
 
-std::string inventoryDigest(const std::string &count,
+std::string inventoryDigest(const std::string &header,
+                            const std::string &count,
                             const std::string &selected,
                             const std::string &body) {
     MdkrSha256 digest;
@@ -286,7 +297,7 @@ std::string inventoryDigest(const std::string &count,
         const unsigned char separator = 0u;
         mdkr_sha256_update(&digest, &separator, 1u);
     };
-    add(kHeader);
+    add(header);
     add(count);
     add(selected);
     mdkr_sha256_update(&digest, body.data(), body.size());
@@ -305,7 +316,8 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
     const size_t             bodyBegin = end == std::string::npos ? 0u : end + 1u;
     uint64_t                 count     = 0u;
     if (text.size() > kMaximumSerializedBytes || end == std::string::npos ||
-        !split(text.substr(0u, end), 4u, fields) || fields[0] != kHeader ||
+        !split(text.substr(0u, end), 4u, fields) ||
+        (fields[0] != kHeaderV1 && fields[0] != kHeaderV2) ||
         !parseUnsigned(fields[1], kMaximumDrafts, count) ||
         (fields[2] != "-" && !slugValid(fields[2])) ||
         !digestValid(fields[3])) {
@@ -315,12 +327,15 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
     const std::string countText         = fields[1];
     const std::string selectedText      = fields[2];
     const std::string inventoryChecksum = fields[3];
+    const std::string header            = fields[0];
+    const bool        v2                = header == kHeaderV2;
     if (fields[2] != "-") parsed.selectedId = fields[2];
     begin = end + 1u;
     for (uint64_t index = 0u; index < count; ++index) {
         end = text.find('\n', begin);
         if (end == std::string::npos ||
-            !split(text.substr(begin, end - begin), kFieldsPerRow, fields)) {
+            !split(text.substr(begin, end - begin),
+                   v2 ? kFieldsPerRowV2 : kFieldsPerRowV1, fields)) {
             error = "raw draft inventory row is malformed";
             return false;
         }
@@ -345,7 +360,8 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
             !decodeHex(fields[14], kMaximumMappingNameBytes, draft.fallback) ||
             !decodeHex(fields[15], kMaximumMappingNameBytes, draft.seat) ||
             !decodeHex(fields[16], kMaximumMappingNameBytes, draft.head) ||
-            !digestValid(fields[17])) {
+            (v2 && fields[17] != "-" && !digestValid(fields[17])) ||
+            !digestValid(fields[v2 ? 18u : 17u])) {
             error = "raw draft inventory row fields are invalid";
             return false;
         }
@@ -353,6 +369,9 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
         draft.vehicleMask   = static_cast<uint32_t>(vehicles);
         draft.sourceForward = static_cast<uint32_t>(forward);
         if (fields[13] != "-") draft.mappingModelSha256 = fields[13];
+        if (v2 && fields[17] != "-") {
+            draft.transformReviewSignature = fields[17];
+        }
         const std::string checksum = fields.back();
         fields.pop_back();
         if (!draftValid(draft, error) ||
@@ -373,7 +392,8 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
                                     : !parsed.selectedId.empty() &&
                                           find(parsed, parsed.selectedId) != nullptr;
     if (begin != text.size() || !selectionValid ||
-        inventoryDigest(countText, selectedText, text.substr(bodyBegin)) != inventoryChecksum) {
+        inventoryDigest(header, countText, selectedText,
+                        text.substr(bodyBegin)) != inventoryChecksum) {
         error = begin != text.size()
                     ? "raw draft inventory has trailing data"
                 : !selectionValid
@@ -420,8 +440,9 @@ bool serialize(const Inventory &inventory, std::string &output, std::string &err
     const std::string selected = ordered.selectedId.empty()
                                      ? "-"
                                      : ordered.selectedId;
-    std::string       result   = std::string(kHeader) + "\t" + count + "\t" +
-                         selected + "\t" + inventoryDigest(count, selected, body) + "\n" +
+    std::string       result   = std::string(kHeaderV2) + "\t" + count + "\t" +
+                         selected + "\t" +
+                         inventoryDigest(kHeaderV2, count, selected, body) + "\n" +
                          body;
     if (result.size() > kMaximumSerializedBytes) {
         error = "serialized raw draft inventory exceeds its byte bound";

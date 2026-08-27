@@ -1,6 +1,7 @@
 #ifndef MDKR_APP_CHARACTER_RAW_INTAKE_INDEX_H
 #define MDKR_APP_CHARACTER_RAW_INTAKE_INDEX_H
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -19,6 +20,11 @@ struct Inventory {
     uint32_t skins = 0u;
     uint32_t joints = 0u;
     double sourceHeightM = 0.0;
+    bool detailedBounds = false;
+    std::array<double, 3> meshLocalMinimum{};
+    std::array<double, 3> meshLocalMaximum{};
+    std::array<double, 3> sceneWorldMinimum{};
+    std::array<double, 3> sceneWorldMaximum{};
     std::string fallback;
     std::string seat;
     std::string head;

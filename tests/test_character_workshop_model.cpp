@@ -307,6 +307,51 @@ void testExactFitSuggestions() {
            !noForward.facingAdjustment);
 }
 
+void testSourceTransformDiagnosis() {
+    CharacterWorkshopSourceTransformFacts ordinary;
+    ordinary.meshLocalMinimum = {-0.4, 0.0, -0.2};
+    ordinary.meshLocalMaximum = {0.4, 1.8, 0.2};
+    ordinary.sceneWorldMinimum = {-0.4, 0.0, -0.2};
+    ordinary.sceneWorldMaximum = {0.4, 1.8, 0.2};
+    ordinary.targetHeightMetres = 1.25;
+    auto review = CharacterWorkshop_reviewSourceTransform(ordinary);
+    assert(review.valid);
+    assert(review.severity == CharacterWorkshopTransformSeverity::Nominal);
+    assert(std::fabs(review.hierarchyScale - 1.0) < 1.0e-9);
+    assert(std::fabs(review.targetHeightMultiplier - 1.25 / 1.8) < 1.0e-9);
+
+    CharacterWorkshopSourceTransformFacts centimetreNested = ordinary;
+    centimetreNested.meshLocalMinimum = {-126.0, -1.0, -23.0};
+    centimetreNested.meshLocalMaximum = {126.0, 194.0, 45.0};
+    centimetreNested.sceneWorldMinimum = {-0.0126, -0.0001, -0.0023};
+    centimetreNested.sceneWorldMaximum = {0.0126, 0.0194, 0.0045};
+    review = CharacterWorkshop_reviewSourceTransform(centimetreNested);
+    assert(review.valid);
+    assert(review.severity == CharacterWorkshopTransformSeverity::Critical);
+    assert(review.suspiciousHierarchyScale);
+    assert(review.suspiciousWorldHeight);
+    assert(std::fabs(review.hierarchyScale - 0.0001) < 1.0e-12);
+    assert(std::fabs(review.targetHeightMultiplier -
+                     (1.25 / 0.0195)) < 1.0e-9);
+
+    CharacterWorkshopSourceTransformFacts zUp = ordinary;
+    zUp.meshLocalMinimum = {0.0, 0.0, 0.0};
+    zUp.meshLocalMaximum = {100.0, 0.0, 100.0};
+    zUp.sceneWorldMinimum = {0.0, 0.0, 0.0};
+    zUp.sceneWorldMaximum = {1.0, 1.0, 0.0};
+    review = CharacterWorkshop_reviewSourceTransform(zUp);
+    assert(review.valid);
+    assert(review.severity == CharacterWorkshopTransformSeverity::Review);
+    assert(std::fabs(review.hierarchyScale - 0.01) < 1.0e-12);
+
+    CharacterWorkshopSourceTransformFacts invalid = ordinary;
+    invalid.sceneWorldMaximum[1] = invalid.sceneWorldMinimum[1];
+    assert(!CharacterWorkshop_reviewSourceTransform(invalid).valid);
+    invalid = ordinary;
+    invalid.targetHeightMetres = NAN;
+    assert(!CharacterWorkshop_reviewSourceTransform(invalid).valid);
+}
+
 } // namespace
 
 int main() {
@@ -319,5 +364,6 @@ int main() {
     testRuntimeEquivalentLodSelection();
     testRuntimeLodHysteresis();
     testExactFitSuggestions();
+    testSourceTransformDiagnosis();
     return 0;
 }

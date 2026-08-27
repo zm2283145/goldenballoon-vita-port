@@ -37,6 +37,9 @@ struct Draft {
     std::string fallback;
     std::string seat;
     std::string head;
+    // Digest of model fingerprint + chosen forward axis + target height. Empty
+    // means the transform proposal has not been explicitly accepted.
+    std::string transformReviewSignature;
 };
 
 struct Inventory {

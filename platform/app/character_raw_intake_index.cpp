@@ -135,6 +135,23 @@ bool parseHeight(const std::string &text, double &output) {
     return true;
 }
 
+bool parseBound(const std::string &text, double &output) {
+    if (text.empty() || text.size() > 32u ||
+        !std::all_of(text.begin(), text.end(), [](char byte) {
+            return (byte >= '0' && byte <= '9') || byte == '.' ||
+                   byte == 'e' || byte == 'E' || byte == '+' || byte == '-';
+        })) return false;
+    char *end = nullptr;
+    errno = 0;
+    const double parsed = std::strtod(text.c_str(), &end);
+    if (errno != 0 || end != text.c_str() + text.size() ||
+        !std::isfinite(parsed) || std::fabs(parsed) > 1000000000.0) {
+        return false;
+    }
+    output = parsed;
+    return true;
+}
+
 }  // namespace
 
 namespace CharacterRawIntakeIndex {
@@ -145,9 +162,12 @@ bool parse(const std::string &text, Inventory &output) {
     size_t begin = 0u;
     size_t end = text.find('\n');
     uint64_t values[8] = {};
-    if (text.size() > 1024u * 1024u || end == std::string::npos ||
-        !splitLine(text.substr(0u, end), 11u, fields) ||
-        fields[0] != "mdkr-character-glb-intake-v1" ||
+    if (text.size() > 1024u * 1024u || end == std::string::npos) return false;
+    const std::string header = text.substr(0u, end);
+    const bool detailed =
+        header.rfind("mdkr-character-glb-intake-v2\t", 0u) == 0u;
+    if (!splitLine(header, detailed ? 23u : 11u, fields) ||
+        (!detailed && fields[0] != "mdkr-character-glb-intake-v1") ||
         !digestValid(fields[1])) return false;
     for (size_t index = 0u; index < 6u; ++index) {
         const uint64_t maximum = index < 2u ? 2000000u : 4096u;
@@ -167,6 +187,40 @@ bool parse(const std::string &text, Inventory &output) {
     parsed.textures = static_cast<uint32_t>(values[3]);
     parsed.skins = static_cast<uint32_t>(values[4]);
     parsed.joints = static_cast<uint32_t>(values[5]);
+    if (detailed) {
+        double *destinations[] = {
+            parsed.meshLocalMinimum.data(), parsed.meshLocalMaximum.data(),
+            parsed.sceneWorldMinimum.data(), parsed.sceneWorldMaximum.data(),
+        };
+        size_t field = 11u;
+        for (double *destination : destinations) {
+            for (size_t axis = 0u; axis < 3u; ++axis) {
+                if (!parseBound(fields[field++], destination[axis])) {
+                    return false;
+                }
+            }
+        }
+        for (size_t axis = 0u; axis < 3u; ++axis) {
+            if (parsed.meshLocalMinimum[axis] > parsed.meshLocalMaximum[axis] ||
+                parsed.sceneWorldMinimum[axis] > parsed.sceneWorldMaximum[axis]) {
+                return false;
+            }
+        }
+        const double worldHeight =
+            parsed.sceneWorldMaximum[1] - parsed.sceneWorldMinimum[1];
+        double localSpanSquared = 0.0;
+        for (size_t axis = 0u; axis < 3u; ++axis) {
+            const double extent = parsed.meshLocalMaximum[axis] -
+                                  parsed.meshLocalMinimum[axis];
+            localSpanSquared += extent * extent;
+        }
+        if (worldHeight <= 0.0 || localSpanSquared <= 0.0 ||
+            std::fabs(worldHeight - parsed.sourceHeightM) >
+                std::max(1.0e-8, worldHeight * 1.0e-6)) {
+            return false;
+        }
+        parsed.detailedBounds = true;
+    }
 
     begin = end + 1u;
     end = text.find('\n', begin);

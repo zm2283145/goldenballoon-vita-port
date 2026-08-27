@@ -146,10 +146,18 @@ explicitly restricted to the generated fixture and exists only for CI.
 
 ### M1 — Guided orientation, scale, and anchor calibration (medium)
 
-- Present declared units, mesh-local bounds, scene-world bounds, normalization
+- **Implemented:** present aggregate mesh-local bounds, scene-world bounds, normalization
   multiplier, and suspicious-transform warnings together. A 1.45 cm scene-world
   height beside roughly human mesh-local proportions must read as “review
   source transform,” not merely a generic small-height warning.
+- **Implemented:** bind an explicit scale/facing acceptance to the exact model
+  fingerprint, chosen forward axis, and target height. Any one of those changing
+  clears acceptance; the source GLB remains byte-exact and the source-package
+  build stays unavailable until the revised proposal is accepted.
+- **Implemented:** expose all four front candidates (`+z`, `-z`, `+x`, `-x`) as
+  equal, keyboard/speech-accessible choices rather than hiding them in a
+  dropdown. The UI labels them honestly as coordinate-axis choices pending
+  exact visual confirmation.
 - Render four front candidates (`+z`, `-z`, `+x`, `-x`) as equally framed
   thumbnails. Let the author choose the face they recognize; never silently
   infer front from geometry.

@@ -46,6 +46,35 @@ int main() {
                bindInventory.fallback == "$bind" &&
                bindInventory.clips.size() == 1u,
            "animationless intake preserves the explicit bind fallback token");
+    const std::string detailed =
+        "mdkr-character-glb-intake-v2\t" + digest +
+        "\t3000\t2000\t2\t3\t1\t64\t0.0195\t1\t2"
+        "\t-126\t-1\t-23\t126\t194\t45"
+        "\t-0.0126\t-0.0001\t-0.0023\t0.0126\t0.0194\t0.0045\n"
+        "defaults\t2462696e64\t68697073\t68656164\n"
+        "clip\t2462696e64\n"
+        "node\t68697073\n"
+        "node\t68656164\n";
+    CharacterRawIntakeIndex::Inventory detailedInventory;
+    expect(CharacterRawIntakeIndex::parse(detailed, detailedInventory) &&
+               detailedInventory.detailedBounds &&
+               detailedInventory.meshLocalMinimum[1] == -1.0 &&
+               detailedInventory.meshLocalMaximum[1] == 194.0 &&
+               detailedInventory.sceneWorldMinimum[1] == -0.0001 &&
+               detailedInventory.sceneWorldMaximum[1] == 0.0194,
+           "v2 intake retains mesh-local and scene-world transform evidence");
+    std::string inconsistentDetailed = detailed;
+    inconsistentDetailed.replace(
+        inconsistentDetailed.find("\t0.0194\t"), 8u, "\t0.0204\t");
+    expect(!CharacterRawIntakeIndex::parse(
+               inconsistentDetailed, detailedInventory),
+           "v2 intake refuses a source height that contradicts its bounds");
+    std::string zUpDetailed = detailed;
+    const std::string localBounds = "-126\t-1\t-23\t126\t194\t45";
+    zUpDetailed.replace(zUpDetailed.find(localBounds), localBounds.size(),
+                        "0\t0\t0\t100\t0\t100");
+    expect(CharacterRawIntakeIndex::parse(zUpDetailed, detailedInventory),
+           "v2 intake accepts a transformed Z-up mesh with zero local-Y extent");
     const CharacterRawIntakeIndex::Inventory before = inventory;
     expect(!CharacterRawIntakeIndex::parse(valid + "trailing", inventory) &&
                inventory.modelSha256 == before.modelSha256,

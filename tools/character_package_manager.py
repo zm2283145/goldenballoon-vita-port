@@ -1906,10 +1906,14 @@ def inspect_raw_glb(model_path: Path) -> dict[str, Any]:
     }
     bounds_min = report["bbox_min"]
     bounds_max = report["bbox_max"]
+    mesh_local_min = report["mesh_local_bbox_min"]
+    mesh_local_max = report["mesh_local_bbox_max"]
     if (not isinstance(bounds_min, list) or len(bounds_min) != 3 or
-            not isinstance(bounds_max, list) or len(bounds_max) != 3):
+            not isinstance(bounds_max, list) or len(bounds_max) != 3 or
+            not isinstance(mesh_local_min, list) or len(mesh_local_min) != 3 or
+            not isinstance(mesh_local_max, list) or len(mesh_local_max) != 3):
         raise ManagerError(
-            "GLB has no finite scene-world bounds; export POSITION min/max "
+            "GLB has no finite mesh-local and scene-world bounds; export POSITION min/max "
             "metadata before authoring"
         )
     source_height_m = float(bounds_max[1]) - float(bounds_min[1])
@@ -1918,7 +1922,7 @@ def inspect_raw_glb(model_path: Path) -> dict[str, Any]:
             "GLB scene-world height is too small to calibrate"
         )
     return {
-        "schema": "mdkr-character-glb-intake-v1",
+        "schema": "mdkr-character-glb-intake-v2",
         "model": str(model_path.resolve()),
         "model_sha256": hashlib.sha256(payload).hexdigest(),
         "vertices": report["vertex_count"],
@@ -1928,6 +1932,8 @@ def inspect_raw_glb(model_path: Path) -> dict[str, Any]:
         "skins": report["skin_count"],
         "joints": report["max_joints"],
         "source_height_m": source_height_m,
+        "mesh_local_bounds": [mesh_local_min, mesh_local_max],
+        "scene_world_bounds": [bounds_min, bounds_max],
         "clips": fallback_choices,
         "source_animation_count": len(clips),
         "nodes": nodes,
@@ -1962,6 +1968,11 @@ def write_raw_glb_index(model_path: Path, directory: Path,
             str(inventory["skins"]), str(inventory["joints"]),
             format(inventory["source_height_m"], ".9g"),
             str(len(inventory["clips"])), str(len(inventory["nodes"])),
+            *(format(float(value), ".9g")
+              for bounds in (
+                  inventory["mesh_local_bounds"],
+                  inventory["scene_world_bounds"],
+              ) for point in bounds for value in point),
         )) + "\n",
         "defaults\t" + "\t".join((
             encoded(inventory["fallback"]), encoded(inventory["seat"]),

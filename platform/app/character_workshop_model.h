@@ -138,6 +138,44 @@ struct CharacterWorkshopFitSuggestion {
     float targetMinimumYMetres = 0.0f;
 };
 
+enum class CharacterWorkshopTransformSeverity : uint8_t {
+    Nominal = 0,
+    Review,
+    Critical,
+    Invalid,
+};
+
+// Pure intake diagnosis from the two coordinate spaces exposed by glTF. It
+// deliberately reports evidence and proposed multipliers; it never guesses an
+// artist's unit intent or mutates the package.
+struct CharacterWorkshopSourceTransformFacts {
+    std::array<double, 3> meshLocalMinimum{};
+    std::array<double, 3> meshLocalMaximum{};
+    std::array<double, 3> sceneWorldMinimum{};
+    std::array<double, 3> sceneWorldMaximum{};
+    double targetHeightMetres = 1.25;
+};
+
+struct CharacterWorkshopSourceTransformReview {
+    bool valid = false;
+    CharacterWorkshopTransformSeverity severity =
+        CharacterWorkshopTransformSeverity::Invalid;
+    // Diagonal spans are rotation-invariant and expose aggregate hierarchy
+    // scaling even when an authoring format is Z-up or X-up.
+    double meshLocalSpan = 0.0;
+    double sceneWorldSpanMetres = 0.0;
+    double sceneWorldHeightMetres = 0.0;
+    double hierarchyScale = 0.0;
+    double normalizeToOneMultiplier = 0.0;
+    double targetHeightMultiplier = 0.0;
+    double sceneGroundYMetres = 0.0;
+    double widthToHeight = 0.0;
+    double depthToHeight = 0.0;
+    bool suspiciousHierarchyScale = false;
+    bool suspiciousWorldHeight = false;
+    bool unusualProportions = false;
+};
+
 CharacterWorkshopReadiness CharacterWorkshop_evaluate(
     const CharacterWorkshopFacts &facts);
 
@@ -168,5 +206,7 @@ size_t CharacterWorkshop_lodBands(
 
 CharacterWorkshopFitSuggestion CharacterWorkshop_suggestFit(
     const CharacterWorkshopFitMeasurement &measurement);
+CharacterWorkshopSourceTransformReview CharacterWorkshop_reviewSourceTransform(
+    const CharacterWorkshopSourceTransformFacts &facts);
 
 #endif // MDKR64_CHARACTER_WORKSHOP_MODEL_H

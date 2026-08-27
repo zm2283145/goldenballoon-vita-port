@@ -106,11 +106,14 @@ def raw_inventory(root: Path) -> tuple[str, list[list[str]]]:
     path = root / "saves" / "character_raw_drafts-v1.tsv"
     lines = path.read_text(encoding="ascii").splitlines()
     header = lines[0].split("\t")
-    if len(header) != 4 or header[0] != "mdkr-character-raw-drafts-v1":
+    if len(header) != 4 or header[0] not in {
+            "mdkr-character-raw-drafts-v1",
+            "mdkr-character-raw-drafts-v2"}:
         raise RuntimeError("raw draft inventory header is malformed")
     count = int(header[1])
     rows = [line.split("\t") for line in lines[1:]]
-    if count != len(rows) or any(len(row) != 18 for row in rows):
+    expected_fields = 19 if header[0].endswith("v2") else 18
+    if count != len(rows) or any(len(row) != expected_fields for row in rows):
         raise RuntimeError("raw draft inventory rows are malformed")
     return header[2], rows
 
@@ -366,7 +369,8 @@ def main() -> int:
                     wide, model, wide_shot, compact=False, drop=True
                 ),
                 ("active-panel=Character Workshop",
-                 "raw-intake resumed=1 inspected=1 mappings=1 drafts=1"),
+                 "raw-intake resumed=1 inspected=1 mappings=1 drafts=1",
+                 "raw-transform bounds=1 valid=1 severity=0 candidates=4 "),
             )
             check_bmp(wide_shot, 1280, 720)
             selected_a, rows = raw_inventory(wide)
@@ -643,7 +647,7 @@ def main() -> int:
                 compact=False, drop=False
             )
             closed_a11y_environment.update({
-                "MDKR_APP_SMOKE_FRAMES": "220",
+                "MDKR_APP_SMOKE_FRAMES": "300",
                 "MDKR_APP_SMOKE_A11Y_WALK": "1",
                 "MDKR_APP_SMOKE_INPUT": "keyboard",
                 "MDKR_APP_SMOKE_INPUT_TOKEN": "mdkr64-app-ui-input-v1",
@@ -833,7 +837,9 @@ def main() -> int:
                  "text=Duplicate as a new raw draft",
                  "text=Close raw editor",
                  "text=Gameplay donor",
+                 "text=Model faces +Z",
                  "text=Standing height in metres",
+                 "text=Accept scale and facing proposal",
                  "text=Delete raw authoring draft"),
             )
 
@@ -851,6 +857,7 @@ def main() -> int:
                     compact, model, compact_shot, compact=True, drop=True
                 ),
                 ("raw-intake resumed=1 inspected=1 mappings=1 drafts=1",
+                 "raw-transform bounds=1 valid=1 severity=0 candidates=4 ",
                  "compact-layout dense=1 contained=1 overlap=0 "),
             )
             check_bmp(compact_shot, 640, 480)

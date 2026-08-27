@@ -343,3 +343,72 @@ CharacterWorkshopFitSuggestion CharacterWorkshop_suggestFit(
     }
     return result;
 }
+
+CharacterWorkshopSourceTransformReview CharacterWorkshop_reviewSourceTransform(
+    const CharacterWorkshopSourceTransformFacts &facts) {
+    CharacterWorkshopSourceTransformReview result;
+    for (size_t axis = 0u; axis < 3u; ++axis) {
+        if (!std::isfinite(facts.meshLocalMinimum[axis]) ||
+            !std::isfinite(facts.meshLocalMaximum[axis]) ||
+            !std::isfinite(facts.sceneWorldMinimum[axis]) ||
+            !std::isfinite(facts.sceneWorldMaximum[axis]) ||
+            facts.meshLocalMinimum[axis] > facts.meshLocalMaximum[axis] ||
+            facts.sceneWorldMinimum[axis] > facts.sceneWorldMaximum[axis]) {
+            return result;
+        }
+    }
+    if (!std::isfinite(facts.targetHeightMetres) ||
+        facts.targetHeightMetres < 0.1 || facts.targetHeightMetres > 10.0) {
+        return result;
+    }
+    result.sceneWorldHeightMetres =
+        facts.sceneWorldMaximum[1] - facts.sceneWorldMinimum[1];
+    double localSpanSquared = 0.0;
+    double worldSpanSquared = 0.0;
+    for (size_t axis = 0u; axis < 3u; ++axis) {
+        const double localExtent =
+            facts.meshLocalMaximum[axis] - facts.meshLocalMinimum[axis];
+        const double worldExtent =
+            facts.sceneWorldMaximum[axis] - facts.sceneWorldMinimum[axis];
+        localSpanSquared += localExtent * localExtent;
+        worldSpanSquared += worldExtent * worldExtent;
+    }
+    result.meshLocalSpan = std::sqrt(localSpanSquared);
+    result.sceneWorldSpanMetres = std::sqrt(worldSpanSquared);
+    if (result.meshLocalSpan <= 1.0e-9 ||
+        result.sceneWorldSpanMetres <= 1.0e-9 ||
+        result.sceneWorldHeightMetres <= 1.0e-9) {
+        return result;
+    }
+    result.valid = true;
+    result.hierarchyScale =
+        result.sceneWorldSpanMetres / result.meshLocalSpan;
+    result.normalizeToOneMultiplier = 1.0 / result.sceneWorldHeightMetres;
+    result.targetHeightMultiplier =
+        facts.targetHeightMetres / result.sceneWorldHeightMetres;
+    result.sceneGroundYMetres = facts.sceneWorldMinimum[1];
+    result.widthToHeight =
+        (facts.sceneWorldMaximum[0] - facts.sceneWorldMinimum[0]) /
+        result.sceneWorldHeightMetres;
+    result.depthToHeight =
+        (facts.sceneWorldMaximum[2] - facts.sceneWorldMinimum[2]) /
+        result.sceneWorldHeightMetres;
+    result.suspiciousWorldHeight =
+        result.sceneWorldHeightMetres < 0.25 ||
+        result.sceneWorldHeightMetres > 4.0;
+    result.suspiciousHierarchyScale =
+        result.hierarchyScale < 0.1 || result.hierarchyScale > 10.0;
+    result.unusualProportions =
+        result.widthToHeight > 2.5 || result.depthToHeight > 2.5;
+    const bool extreme = result.sceneWorldHeightMetres < 0.025 ||
+        result.sceneWorldHeightMetres > 40.0 ||
+        result.hierarchyScale < 0.001 || result.hierarchyScale > 1000.0 ||
+        result.targetHeightMultiplier < 0.01 ||
+        result.targetHeightMultiplier > 100.0;
+    result.severity = extreme
+        ? CharacterWorkshopTransformSeverity::Critical
+        : result.suspiciousWorldHeight || result.suspiciousHierarchyScale
+            ? CharacterWorkshopTransformSeverity::Review
+            : CharacterWorkshopTransformSeverity::Nominal;
+    return result;
+}

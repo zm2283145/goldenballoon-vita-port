@@ -2054,12 +2054,14 @@ struct CharacterRawIntake {
     std::string savedFallback;
     std::string savedSeat;
     std::string savedHead;
+    std::string transformReviewSignature;
     CharacterRawIntakeIndex::Inventory inventory;
 };
 
 CharacterRawIntake g_characterRawIntake;
 bool g_characterRawIntakeTracePrinted = false;
 bool g_characterRawSpdxTracePrinted = false;
+bool g_characterRawTransformTracePrinted = false;
 // Token-gated rendered-test actions. They call the same transactional paths as
 // the widgets; the two-frame install delay ensures the ordinary candidate
 // review is submitted and rendered before the test confirms local rights.
@@ -3590,6 +3592,7 @@ void applyCharacterRawDraft(const CharacterRawDraftStore::Draft *draft) {
     intake.loaded = true;
     g_characterRawIntakeTracePrinted = false;
     g_characterRawSpdxTracePrinted = false;
+    g_characterRawTransformTracePrinted = false;
     if (draft == nullptr) return;
     intake.draftId = draft->id;
     const auto copy = [](char *target, size_t capacity,
@@ -3614,6 +3617,32 @@ void applyCharacterRawDraft(const CharacterRawDraftStore::Draft *draft) {
     intake.savedFallback = draft->fallback;
     intake.savedSeat = draft->seat;
     intake.savedHead = draft->head;
+    intake.transformReviewSignature = draft->transformReviewSignature;
+}
+
+std::string characterRawTransformReviewSignature(
+    const CharacterRawIntake &intake) {
+    if (!intake.inspected || !intake.inventory.detailedBounds ||
+        intake.inventory.modelSha256.size() != 64u ||
+        intake.sourceForward < 0 || intake.sourceForward >= 4 ||
+        !std::isfinite(intake.targetHeight) || intake.targetHeight < 0.1f ||
+        intake.targetHeight > 10.0f) {
+        return {};
+    }
+    char height[32];
+    const int written = std::snprintf(
+        height, sizeof(height), "%.9g",
+        static_cast<double>(intake.targetHeight));
+    if (written <= 0 || static_cast<size_t>(written) >= sizeof(height)) {
+        return {};
+    }
+    const std::string canonical =
+        "mdkr-character-transform-review-v1\n" +
+        intake.inventory.modelSha256 + "\n" +
+        std::to_string(intake.sourceForward) + "\n" + height + "\n";
+    char digest[MDKR_SHA256_HEX_SIZE];
+    mdkr_sha256_hex(canonical.data(), canonical.size(), digest);
+    return digest;
 }
 
 bool replaceCharacterRawDraftInventory(
@@ -3758,6 +3787,7 @@ CharacterRawDraftStore::Draft captureCharacterRawDraft() {
     draft.fallback = intake.savedFallback;
     draft.seat = intake.savedSeat;
     draft.head = intake.savedHead;
+    draft.transformReviewSignature = intake.transformReviewSignature;
     if (intake.inspected) {
         const auto selectedName = [](const std::vector<std::string> &choices,
                                      int selected) -> std::string {
@@ -4007,6 +4037,7 @@ bool applyCharacterRawGlbInspection(
     intake.inventory = std::move(inventory);
     const bool sameFingerprint = intake.savedMappingModelSha256 ==
         intake.inventory.modelSha256;
+    if (!sameFingerprint) intake.transformReviewSignature.clear();
     const auto restoredChoice = [sameFingerprint](
                                    const std::string &savedMapping,
                                    const std::vector<std::string> &choices,
@@ -16589,21 +16620,169 @@ void drawCharacterRawIntakeEditor(bool rail) {
         if (!rail && vehicle != 2) ImGui::SameLine();
     }
 
+    ImGui::SeparatorText("Transform Review");
+    ui::TextSubtleWrapped(
+        "Confirm the source's scale and forward axis before building. The Workshop never rewrites the GLB: these choices become a reversible package transform, and vehicle placement is calibrated separately after import.");
+    CharacterWorkshopSourceTransformReview transformReview;
+    if (intake.inspected && intake.inventory.detailedBounds) {
+        CharacterWorkshopSourceTransformFacts facts;
+        facts.meshLocalMinimum = intake.inventory.meshLocalMinimum;
+        facts.meshLocalMaximum = intake.inventory.meshLocalMaximum;
+        facts.sceneWorldMinimum = intake.inventory.sceneWorldMinimum;
+        facts.sceneWorldMaximum = intake.inventory.sceneWorldMaximum;
+        facts.targetHeightMetres = intake.targetHeight;
+        transformReview = CharacterWorkshop_reviewSourceTransform(facts);
+    }
+    if (!intake.inspected) {
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "Inspect the GLB to measure its local and scene transforms.");
+    } else if (!intake.inventory.detailedBounds) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "Detailed transform evidence is unavailable. Re-inspect with the current Workshop helper.");
+    } else if (!transformReview.valid) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "The measured transform is invalid. Correct the source bounds, then re-inspect.");
+    } else {
+        const char *diagnosis = "Source transform looks ordinary";
+        ImVec4 diagnosisColor = AppTheme::good();
+        if (transformReview.severity ==
+            CharacterWorkshopTransformSeverity::Critical) {
+            diagnosis =
+                "Review source transform — nested or unit scale is likely";
+            diagnosisColor = AppTheme::bad();
+        } else if (transformReview.severity ==
+                   CharacterWorkshopTransformSeverity::Review) {
+            diagnosis = "Check source scale before build";
+            diagnosisColor = AppTheme::accent();
+        }
+        ImGui::TextColored(diagnosisColor, "%s", diagnosis);
+        ImGui::TextDisabled(
+            "Mesh-local bounds  X %.4g…%.4g  Y %.4g…%.4g  Z %.4g…%.4g",
+            intake.inventory.meshLocalMinimum[0],
+            intake.inventory.meshLocalMaximum[0],
+            intake.inventory.meshLocalMinimum[1],
+            intake.inventory.meshLocalMaximum[1],
+            intake.inventory.meshLocalMinimum[2],
+            intake.inventory.meshLocalMaximum[2]);
+        ImGui::TextDisabled(
+            "Scene-world bounds  X %.4g…%.4g  Y %.4g…%.4g  Z %.4g…%.4g",
+            intake.inventory.sceneWorldMinimum[0],
+            intake.inventory.sceneWorldMaximum[0],
+            intake.inventory.sceneWorldMinimum[1],
+            intake.inventory.sceneWorldMaximum[1],
+            intake.inventory.sceneWorldMinimum[2],
+            intake.inventory.sceneWorldMaximum[2]);
+        ImGui::TextDisabled(
+            "Measured height %.4g m · hierarchy scale ×%.4g · ground Y %.4g m",
+            transformReview.sceneWorldHeightMetres,
+            transformReview.hierarchyScale,
+            transformReview.sceneGroundYMetres);
+        ImGui::TextDisabled(
+            "Compiler normalization ×%.4g · current target-height transform ×%.4g",
+            transformReview.normalizeToOneMultiplier,
+            transformReview.targetHeightMultiplier);
+        ImGui::TextDisabled(
+            "Width/height %.3g · depth/height %.3g",
+            transformReview.widthToHeight, transformReview.depthToHeight);
+        ui::TextSubtleWrapped(
+            "These are measured coordinate-space facts, not a guess about the artist's intended units. Unusual values require attention but are not automatically wrong.");
+    }
+
     static const char *forwards[] = {"+Z", "-Z", "+X", "-X"};
+    ImGui::TextUnformatted("Which way does the unmodified model face?");
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float candidateWidth = std::max(
+        1.0f, (ImGui::GetContentRegionAvail().x - spacing * 3.0f) / 4.0f);
+    bool transformChanged = false;
+    for (int candidate = 0; candidate < 4; ++candidate) {
+        if (candidate != 0) ImGui::SameLine();
+        const bool selected = intake.sourceForward == candidate;
+        if (selected) {
+            ImGui::PushStyleColor(ImGuiCol_Button, AppTheme::accent());
+        }
+        const std::string label = std::string(selected ? "✓ " : "") +
+                                  forwards[candidate] + "##raw-forward";
+        if (ImGui::Button(label.c_str(), ImVec2(candidateWidth, 0.0f)) &&
+            !selected) {
+            intake.sourceForward = candidate;
+            transformChanged = true;
+        }
+        ui::SpeakFocusedItem(
+            (std::string("Model faces ") + forwards[candidate]).c_str(),
+            selected ? "Selected" : "Not selected",
+            "Selects the model's unmodified horizontal forward axis. Geometry alone cannot infer facing reliably; exact in-game review remains required after build.");
+        if (selected) ImGui::PopStyleColor();
+    }
+    ui::TextSubtleWrapped(
+        "The four choices are coordinate-axis candidates, not rendered previews. Confirm the result in the exact character-select and vehicle contexts after build.");
     ImGui::SetNextItemWidth(-1.0f);
-    changed |= ImGui::Combo(
-        "Model faces", &intake.sourceForward, forwards,
-        static_cast<int>(std::size(forwards)));
-    ui::SpeakFocusedItem(
-        "Model faces", forwards[intake.sourceForward],
-        "Declares the model's unmodified horizontal forward axis. Geometry cannot infer facing reliably.");
-    ImGui::SetNextItemWidth(-1.0f);
-    changed |= ImGui::InputFloat(
+    transformChanged |= ImGui::InputFloat(
         "Standing height in metres", &intake.targetHeight, 0.01f, 0.1f,
         "%.3f");
     ui::SpeakFocusedItem(
         "Standing height in metres", nullptr,
         "Sets normalized authored height from 0.1 to 10 metres; vehicle placement is calibrated separately after import.");
+    if (transformChanged) {
+        intake.transformReviewSignature.clear();
+        changed = true;
+    }
+    const std::string currentTransformSignature =
+        characterRawTransformReviewSignature(intake);
+    const bool transformAccepted = transformReview.valid &&
+        !currentTransformSignature.empty() &&
+        intake.transformReviewSignature == currentTransformSignature;
+    if (transformAccepted) {
+        ImGui::TextColored(
+            AppTheme::good(), "Scale and facing reviewed for this exact GLB");
+    } else {
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "Review required · building is paused until you accept this proposal");
+    }
+    if (!transformReview.valid || currentTransformSignature.empty() ||
+        transformAccepted) {
+        ImGui::BeginDisabled();
+    }
+    if (ImGui::Button("Accept scale and facing proposal")) {
+        intake.transformReviewSignature = currentTransformSignature;
+        if (saveCharacterRawIntake()) {
+            setStatus(
+                "Scale and facing accepted for this exact GLB; changing either choice will require review again.",
+                AppTheme::good());
+        } else {
+            intake.transformReviewSignature.clear();
+            setStatus(
+                "The transform review could not be persisted; building remains paused.",
+                AppTheme::bad());
+        }
+    }
+    if (!transformReview.valid || currentTransformSignature.empty() ||
+        transformAccepted) {
+        ImGui::EndDisabled();
+    }
+    ui::SpeakFocusedItem(
+        "Accept scale and facing proposal",
+        transformAccepted ? "Already accepted for this exact model and proposal"
+                          : nullptr,
+        "Records an explicit review bound to this model fingerprint, facing axis, and target height. It does not alter the source file or install a character.");
+    if (!g_characterRawTransformTracePrinted && intake.inspected &&
+        std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        std::fprintf(
+            stderr,
+            "[app-ui] raw-transform bounds=%d valid=%d severity=%u candidates=4 accepted=%d height=%.9g hierarchy=%.9g normalize=%.9g target=%.9g\n",
+            intake.inventory.detailedBounds ? 1 : 0,
+            transformReview.valid ? 1 : 0,
+            static_cast<unsigned>(transformReview.severity),
+            transformAccepted ? 1 : 0,
+            transformReview.sceneWorldHeightMetres,
+            transformReview.hierarchyScale,
+            transformReview.normalizeToOneMultiplier,
+            transformReview.targetHeightMultiplier);
+        g_characterRawTransformTracePrinted = true;
+    }
 
     if (intake.inspected) {
         const bool bindFallback = intake.inventory.clips.size() == 1u &&
@@ -16640,7 +16819,22 @@ void drawCharacterRawIntakeEditor(bool rail) {
     }
     const bool hasVehicle = intake.vehicles[0] || intake.vehicles[1] ||
                             intake.vehicles[2];
-    const bool ready = intake.inspected &&
+    const bool smokeBuildActionRequested =
+        !g_characterRawDraftSmokeActionApplied &&
+        smokeAction != nullptr && smokeToken != nullptr &&
+        std::strcmp(smokeAction, "build-reviewed-install") == 0 &&
+        std::strcmp(smokeToken, "mdkr64-app-raw-draft-v1") == 0;
+    if (smokeBuildActionRequested && transformReview.valid &&
+        !currentTransformSignature.empty() && !transformAccepted) {
+        intake.transformReviewSignature = currentTransformSignature;
+        if (!saveCharacterRawIntake()) {
+            intake.transformReviewSignature.clear();
+        }
+    }
+    const bool finalTransformAccepted = transformReview.valid &&
+        !currentTransformSignature.empty() &&
+        intake.transformReviewSignature == currentTransformSignature;
+    const bool ready = intake.inspected && finalTransformAccepted &&
         characterRawPackageIdValid(intake.packageId) &&
         intake.displayName[0] != '\0' && intake.licensePath[0] != '\0' &&
         spdxValid && intake.attribution[0] != '\0' &&
@@ -16651,10 +16845,7 @@ void drawCharacterRawIntakeEditor(bool rail) {
     bool buildRequested = ImGui::Button("Build source package for review") &&
                           ready;
     const bool smokeBuildRequested =
-        !g_characterRawDraftSmokeActionApplied && ready &&
-        smokeAction != nullptr && smokeToken != nullptr &&
-        std::strcmp(smokeAction, "build-reviewed-install") == 0 &&
-        std::strcmp(smokeToken, "mdkr64-app-raw-draft-v1") == 0;
+        smokeBuildActionRequested && ready;
     if (smokeBuildRequested) {
         g_characterRawDraftSmokeActionApplied = true;
         buildRequested = true;
@@ -16697,7 +16888,9 @@ void drawCharacterRawIntakeEditor(bool rail) {
         ready ? nullptr :
             (intake.spdx[0] != '\0' && !spdxValid
                  ? spdxError.c_str()
-                 : "Complete inspection, identity, provenance, vehicle, calibration, and required mappings first."),
+                 : !finalTransformAccepted
+                     ? "Review and accept the measured scale and facing proposal first."
+                     : "Complete inspection, identity, provenance, vehicle, calibration, and required mappings first."),
         "Snapshots the GLB and license, builds a deterministic source package, and opens the ordinary mutation-free package review. It does not install the character.");
     if (!rail) ImGui::SameLine();
     if (ImGui::Button("Delete raw authoring draft...")) {
