@@ -74,7 +74,7 @@ void testReadinessOrdering() {
     facts.motionReady = true;
     facts.rigReviewed = true;
     readiness         = CharacterWorkshop_evaluate(facts);
-    assert(readiness.nextActionTab == CharacterWorkshopTab::Vehicles);
+    assert(readiness.nextActionTab == CharacterWorkshopTab::Profile);
     assert(std::strcmp(readiness.nextActionLabel,
                        "Choose a qualified gameplay profile") == 0);
 
@@ -252,6 +252,55 @@ void testRuntimeLodHysteresis() {
                650.0f, 0.0f, 0.0f, 0xFu, 0u, 0) == 1u);
 }
 
+void testExactFitSuggestions() {
+    CharacterWorkshopFitMeasurement vehicle;
+    vehicle.valid = true;
+    vehicle.vehicleContext = true;
+    vehicle.boundsMinimumMicrometres = {-300000, -481272, -200000};
+    vehicle.boundsMaximumMicrometres = {300000, 518728, 200000};
+    vehicle.forwardMilli = {0, 0, 1000};
+    auto suggestion = CharacterWorkshop_suggestFit(vehicle);
+    assert(suggestion.available);
+    assert(suggestion.verticalAdjustment);
+    assert(suggestion.facingMeasured);
+    assert(!suggestion.facingAdjustment);
+    assert(std::fabs(suggestion.measuredHeightMetres - 1.0f) < 1.0e-6f);
+    assert(std::fabs(suggestion.targetMinimumYMetres + 0.25f) < 1.0e-6f);
+    assert(std::fabs(suggestion.verticalDeltaMetres - 0.231272f) < 1.0e-6f);
+
+    vehicle.boundsMinimumMicrometres[1] = -249000;
+    vehicle.boundsMaximumMicrometres[1] = 751000;
+    vehicle.forwardMilli = {0, 0, -1000};
+    suggestion = CharacterWorkshop_suggestFit(vehicle);
+    assert(!suggestion.verticalAdjustment);
+    assert(suggestion.facingAdjustment);
+    assert(std::fabs(suggestion.yawDeltaDegrees - 180.0f) < 1.0e-6f);
+
+    CharacterWorkshopFitMeasurement select = vehicle;
+    select.vehicleContext = false;
+    select.boundsMinimumMicrometres[1] = -125000;
+    select.boundsMaximumMicrometres[1] = 875000;
+    select.forwardMilli = {1000, 0, 0};
+    suggestion = CharacterWorkshop_suggestFit(select);
+    assert(suggestion.verticalAdjustment);
+    assert(std::fabs(suggestion.verticalDeltaMetres - 0.125f) < 1.0e-6f);
+    assert(suggestion.facingAdjustment);
+    assert(std::fabs(suggestion.yawDeltaDegrees + 90.0f) < 1.0e-6f);
+
+    CharacterWorkshopFitMeasurement invalid;
+    assert(!CharacterWorkshop_suggestFit(invalid).available);
+    invalid.valid = true;
+    invalid.boundsMinimumMicrometres = {0, 20, 0};
+    invalid.boundsMaximumMicrometres = {0, 10, 0};
+    assert(!CharacterWorkshop_suggestFit(invalid).available);
+    invalid.boundsMinimumMicrometres = {0, 0, 0};
+    invalid.boundsMaximumMicrometres = {1000, 1000000, 1000};
+    invalid.forwardMilli = {0, 1000, 0};
+    const auto noForward = CharacterWorkshop_suggestFit(invalid);
+    assert(noForward.available && !noForward.facingMeasured &&
+           !noForward.facingAdjustment);
+}
+
 } // namespace
 
 int main() {
@@ -263,5 +312,6 @@ int main() {
     testPerformanceTargets();
     testRuntimeEquivalentLodSelection();
     testRuntimeLodHysteresis();
+    testExactFitSuggestions();
     return 0;
 }

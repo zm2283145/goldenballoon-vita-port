@@ -6719,6 +6719,90 @@ CharacterSpatialEditResult drawCharacterYawDial(
     return result;
 }
 
+CharacterWorkshopFitMeasurement characterWorkshopFitMeasurement(
+    const MdkrCharacterPreviewResult &result, bool vehicleContext) {
+    CharacterWorkshopFitMeasurement measurement;
+    measurement.valid = characterPreviewFitDiagnosticsValid(result);
+    measurement.vehicleContext = vehicleContext;
+    for (unsigned axis = 0u; axis < 3u; ++axis) {
+        measurement.boundsMinimumMicrometres[axis] =
+            result.fit_bounds_min_micrometres[axis];
+        measurement.boundsMaximumMicrometres[axis] =
+            result.fit_bounds_max_micrometres[axis];
+        measurement.forwardMilli[axis] = result.fit_forward_milli[axis];
+    }
+    return measurement;
+}
+
+float characterWorkshopWrappedDegrees(float degrees) {
+    while (degrees > 180.0f) degrees -= 360.0f;
+    while (degrees <= -180.0f) degrees += 360.0f;
+    return degrees;
+}
+
+bool drawCharacterOffsetSuggestion(
+    const MdkrModernCharacterEntry *entry, CharacterTuningEdit &edit,
+    unsigned context, const MdkrCharacterPreviewResult &result) {
+    CharacterTuningEdit::Context &placement = edit.context[context];
+    const CharacterWorkshopFitSuggestion suggestion =
+        CharacterWorkshop_suggestFit(characterWorkshopFitMeasurement(
+            result, context != MDKR_CHARACTER_CONTEXT_SELECT));
+    ImGui::SeparatorText("Measured fit assistant");
+    if (!suggestion.available) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "The exact renderer did not return a usable fit measurement.");
+        ui::TextSubtleWrapped(
+            "Keep the current values, inspect the package validation report, and rerun this context. No correction was guessed.");
+        return false;
+    }
+
+    ImGui::Text(
+        "Rendered height %.3f m · lowest point %.3f m · visibility target %.3f m",
+        static_cast<double>(suggestion.measuredHeightMetres),
+        static_cast<double>(suggestion.measuredMinimumYMetres),
+        static_cast<double>(suggestion.targetMinimumYMetres));
+    if (!suggestion.verticalAdjustment && !suggestion.facingAdjustment) {
+        ImGui::TextColored(
+            AppTheme::good(),
+            suggestion.facingMeasured
+                ? "Ground/seat visibility and forward direction are within the measured starting range."
+                : "Ground/seat visibility is within the measured starting range; forward direction was not measurable.");
+        ui::TextSubtleWrapped(
+            "This checks bounds and facing, not silhouette quality or hand and foot contact. Review the actual scene before approving the context.");
+        return false;
+    }
+
+    if (suggestion.verticalAdjustment) {
+        ImGui::TextColored(
+            AppTheme::accent(), "Suggested vertical change: %+.3f m",
+            static_cast<double>(suggestion.verticalDeltaMetres));
+    }
+    if (suggestion.facingAdjustment) {
+        ImGui::TextColored(
+            AppTheme::accent(), "Suggested facing change: %+.1f degrees",
+            static_cast<double>(suggestion.yawDeltaDegrees));
+    }
+    ui::TextSubtleWrapped(
+        context == MDKR_CHARACTER_CONTEXT_SELECT
+            ? suggestion.facingMeasured
+                ? "The proposal places the measured lower bound on the exact selection-room floor and points the model along target-space +Z."
+                : "The proposal places the measured lower bound on the exact selection-room floor. Facing remains unchanged because the renderer did not provide a usable horizontal forward vector."
+            : "The proposal is a conservative visibility-first seat fit: approximately one quarter of the measured height remains below the donor seat. Because bounds cannot see the vehicle shell or costume silhouette, rerun the exact preview after applying it.");
+    if (!ImGui::Button("Apply measured starting point")) return false;
+
+    placement.offset[1] = std::clamp(
+        placement.offset[1] + suggestion.verticalDeltaMetres,
+        -10.0f, 10.0f);
+    placement.rotation[1] = characterWorkshopWrappedDegrees(
+        placement.rotation[1] + suggestion.yawDeltaDegrees);
+    if (!persistCharacterTuning(entry->id, edit)) return false;
+    setStatus(
+        "Measured starting point saved. Rerun the exact context before approving it.",
+        AppTheme::good());
+    return true;
+}
+
 bool drawCharacterTuningEditor(int player,
                                const MdkrModernCharacterEntry *entry,
                                bool compact) {
@@ -6749,6 +6833,10 @@ bool drawCharacterTuningEditor(int player,
         std::fprintf(
             stderr,
             "[app-ui] character-spatial-controls package=%s planes=front,side,top placement=ground-or-seat yaw=context contacts=4 copy=vehicle-only undo=fit-history\n",
+            entry->id);
+        std::fprintf(
+            stderr,
+            "[app-ui] character-offset-studio package=%s contexts=select,car,hovercraft,plane exact-rom-preview=1 disabled-package-preview=1 measured-starting-point=vertical-and-facing reset=package-anchor review=current-source-and-fit\n",
             entry->id);
     }
 
@@ -6821,9 +6909,20 @@ bool drawCharacterTuningEditor(int player,
     ui::TextSubtleWrapped(
         "Facing cannot be inferred safely from arbitrary geometry. Use the author-declared axis first, then this explicit correction if the preview is backward.");
 
-    ImGui::SeparatorText("Placement by context");
+    ImGui::SeparatorText("Offset Studio");
     ui::TextSubtleWrapped(
-        "Select aligns the model's measured ground point. Vehicles align its pelvis/seat socket. Each correction is independent, so fixing one scene cannot break another.");
+        "Author against the same donor character, vehicles, animations, cameras, and scene transforms used in game. Select aligns a measured ground point; each vehicle owns an independent pelvis/seat correction so fixing one context cannot break another.");
+    if (donorProfilesAvailable()) {
+        ImGui::TextColored(
+            AppTheme::good(),
+            "Linked ROM ready · exact game assets and simulation profiles available");
+    } else {
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "Link and verify a supported base ROM on Play for exact in-game previews");
+        ui::TextSubtleWrapped(
+            "Numeric editing remains available without a ROM. The studio will not pretend a generic viewport can validate kart occlusion, selection-room placement, or the game camera.");
+    }
     unsigned reviewContexts = 1u;
     unsigned reviewedContexts = characterFitReviewed(
         entry, edit, MDKR_CHARACTER_CONTEXT_SELECT) ? 1u : 0u;
@@ -6847,12 +6946,55 @@ bool drawCharacterTuningEditor(int player,
             if (!ImGui::BeginTabItem(contextNames[context])) continue;
             CharacterTuningEdit::Context &placement = edit.context[context];
             ImGui::TextDisabled(
-                "%s anchor → qualified %s %s frame",
+                "%s anchor to qualified %s %s frame",
                 context == MDKR_CHARACTER_CONTEXT_SELECT ? "Ground" : "Pelvis/seat",
                 donorName(entry->donor),
                 context == MDKR_CHARACTER_CONTEXT_SELECT ? "select" :
                     contextNames[context]);
             ImGui::PushID(static_cast<int>(context));
+            if (!compact) {
+                ImGui::SeparatorText("1. Preview in game");
+                int &testPlayers = g_characterTestPlayers[entry->id];
+                if (testPlayers < 1 || testPlayers > 4) testPlayers = 1;
+                static const char *cameraLayouts[] = {
+                    "1 player", "2 player split-screen",
+                    "3 player split-screen", "4 player split-screen",
+                };
+                int cameraLayout = testPlayers - 1;
+                ImGui::SetNextItemWidth(
+                    std::min(280.0f, ImGui::GetContentRegionAvail().x));
+                if (ImGui::Combo(
+                        "Camera layout", &cameraLayout, cameraLayouts,
+                        static_cast<int>(std::size(cameraLayouts)))) {
+                    testPlayers = cameraLayout + 1;
+                }
+                ui::SpeakFocusedItem(
+                    "Exact preview camera layout",
+                    cameraLayouts[cameraLayout],
+                    "Chooses the real one-to-four-player game camera layout used by the next exact context preview.");
+                const bool exactPreviewReady = donorProfilesAvailable();
+                if (!exactPreviewReady) ImGui::BeginDisabled();
+                const std::string previewLabel = std::string("Open exact ") +
+                    contextNames[context] + " preview";
+                if (ImGui::Button(previewLabel.c_str()) &&
+                    exactPreviewReady &&
+                    persistCharacterTuning(entry->id, edit)) {
+                    requestCharacterPreview(
+                        entry, previewContexts[context], testPlayers);
+                }
+                if (!exactPreviewReady) ImGui::EndDisabled();
+                ui::SpeakFocusedItem(
+                    previewLabel.c_str(),
+                    exactPreviewReady
+                        ? "Ready; current fit will be saved before launch."
+                        : "Unavailable until a supported base ROM is linked and verified on Play.",
+                    "Opens the real game scene with the selected donor character and vehicle. It works while the custom character is still disabled for ordinary play.");
+                ImGui::SameLine();
+                ImGui::TextDisabled(
+                    "%d-player camera · returns here with measurements",
+                    testPlayers);
+            }
+            ImGui::SeparatorText("2. Adjust this context");
             (void)ImGui::SliderFloat("Context size", &placement.scale,
                                      0.5f, 2.0f, "%.2fx",
                                      ImGuiSliderFlags_AlwaysClamp);
@@ -6909,9 +7051,7 @@ bool drawCharacterTuningEditor(int player,
                 }
                 ImGui::TreePop();
             }
-            if (ImGui::Button(context == MDKR_CHARACTER_CONTEXT_SELECT
-                                  ? "Place feet on ground"
-                                  : "Align pelvis to seat")) {
+            if (ImGui::Button("Reset to package anchor")) {
                 placement.scale = 1.0f;
                 placement.offset[0] = placement.offset[1] =
                     placement.offset[2] = 0.0f;
@@ -6920,7 +7060,13 @@ bool drawCharacterTuningEditor(int player,
                 changed |= persistCharacterTuning(entry->id, edit);
             }
             ImGui::SameLine();
-            ImGui::TextDisabled("automatic anchor reset");
+            ImGui::TextDisabled(
+                context == MDKR_CHARACTER_CONTEXT_SELECT
+                    ? "ground-anchor baseline"
+                    : "seat-anchor baseline; not an automatic fit");
+            ui::SpeakFocusedItem(
+                "Reset to package anchor", nullptr,
+                "Clears this context's size, position, and rotation corrections. It does not claim the package anchor is already fitted to the scene.");
             if (context != MDKR_CHARACTER_CONTEXT_SELECT) {
                 if (!contactReady) ImGui::BeginDisabled();
                 if (ImGui::TreeNode("Hand and foot contacts")) {
@@ -7041,8 +7187,20 @@ bool drawCharacterTuningEditor(int player,
             const CharacterTestEvidenceStore::Evidence *durableResult =
                 currentRenderedCharacterTestEvidence(
                     entry, edit, previewContext);
-            const bool currentResult = currentSessionResult ||
+            bool currentResult = currentSessionResult ||
                 durableResult != nullptr;
+            MdkrCharacterPreviewResult measuredResult{};
+            if (currentSessionResult) {
+                measuredResult = result->second.result;
+            } else if (durableResult != nullptr) {
+                measuredResult = characterPreviewResultFromEvidence(
+                    *durableResult);
+            }
+            ImGui::SeparatorText("3. Exact measurements");
+            if (!currentResult) {
+                ImGui::TextDisabled(
+                    "No measurements match the current source and fit. Open this context's exact preview first.");
+            }
             if (currentSessionResult) {
                 if (characterPreviewFitDiagnosticsValid(
                         result->second.result)) {
@@ -7115,16 +7273,40 @@ bool drawCharacterTuningEditor(int player,
                     ? result->second.result.contact_error_max_micrometres
                     : durableResult->contactErrorMaxMicrometres;
                 if (contactSolves != 0u) {
+                    bool contactsWithinGuide = true;
+                    for (unsigned contact = 0u;
+                         contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
+                        const uint64_t guide = contact < 2u ? 25000u : 40000u;
+                        const uint64_t error = currentSessionResult
+                            ? result->second.result
+                                  .contact_witness_error_micrometres[contact]
+                            : durableResult
+                                  ->contactWitnessErrorMicrometres[contact];
+                        if (error > guide) contactsWithinGuide = false;
+                    }
                     ImGui::Text(
                         "Last exact test: %.2f mm mean · %.2f mm maximum across %llu solves",
                         contactMean / 1000.0,
                         contactMaximum / 1000.0,
                         static_cast<unsigned long long>(contactSolves));
+                    ImGui::TextColored(
+                        contactsWithinGuide ? AppTheme::good()
+                                            : AppTheme::accent(),
+                        contactsWithinGuide
+                            ? "Contact guide met: hands <= 25 mm and feet <= 40 mm"
+                            : "Contact tuning required: a hand exceeds 25 mm or a foot exceeds 40 mm");
                 } else {
                     ImGui::TextDisabled(
                         "Last exact test: no procedural contacts (authored clip or solver locked)");
                 }
             }
+            if (currentResult) {
+                const bool appliedSuggestion = drawCharacterOffsetSuggestion(
+                    entry, edit, context, measuredResult);
+                changed |= appliedSuggestion;
+                if (appliedSuggestion) currentResult = false;
+            }
+            ImGui::SeparatorText("4. Review this context");
             const bool fitReviewed = characterFitReviewed(
                 entry, edit, context);
             ImGui::TextColored(
@@ -7156,29 +7338,6 @@ bool drawCharacterTuningEditor(int player,
                 ui::SpeakFocusedItem(
                     reopenLabel.c_str(), nullptr,
                     "Clears this context's approval without changing its fit values.");
-            }
-            if (!compact) {
-                int &testPlayers = g_characterTestPlayers[entry->id];
-                if (testPlayers < 1 || testPlayers > 4) testPlayers = 1;
-                const bool contextEnabled =
-                    context == MDKR_CHARACTER_CONTEXT_SELECT ||
-                    (edit.vehicleMask & (1u << (context - 1u))) != 0u;
-                const bool testEnabled = entry->enabled != 0u && contextEnabled;
-                if (!testEnabled) ImGui::BeginDisabled();
-                const std::string testLabel = std::string("Test ") +
-                    contextNames[context] + " fit in exact renderer";
-                if (ImGui::Button(testLabel.c_str()) && testEnabled &&
-                    persistCharacterTuning(entry->id, edit)) {
-                    requestCharacterPreview(entry, previewContext, testPlayers);
-                }
-                if (!testEnabled) ImGui::EndDisabled();
-                ui::SpeakFocusedItem(
-                    testLabel.c_str(),
-                    testEnabled ? nullptr
-                        : entry->enabled == 0u
-                            ? "Enable this character package first."
-                            : "Enable this vehicle for the package first.",
-                    "Saves the current fit and opens the real game context for review.");
             }
             ImGui::PopID();
             ImGui::EndTabItem();
@@ -15219,7 +15378,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         }
     }
 
-    if (g_characterWorkshopTab == CharacterWorkshopTab::Vehicles) {
+    if (g_characterWorkshopTab == CharacterWorkshopTab::Profile) {
         ImGui::SeparatorText("Gameplay profile and vehicle compatibility");
         if (drawCharacterProfileStudio(entry)) {
             /* Saving refreshes the registry and invalidates `entry`; finish this
@@ -15227,7 +15386,9 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             ImGui::PopID();
             return true;
         }
-        ImGui::SeparatorText("Fit, motion, and vehicles");
+    }
+
+    if (g_characterWorkshopTab == CharacterWorkshopTab::Vehicles) {
         changed |= drawCharacterTuningEditor(0, entry, compact);
     }
 

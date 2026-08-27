@@ -77,7 +77,7 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
     saves = tab_root / "saves"
     prefs.mkdir(parents=True)
     saves.mkdir()
-    accessible = tab in ("vehicles", "performance")
+    accessible = tab in ("profile", "vehicles", "performance")
     preferences = (
         f"character_workshop_last_selected={PACKAGE_ID}\n"
         f"character_workshop_last_tab={tab}\n" +
@@ -137,7 +137,7 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                 f"{tab} did not render {tool} history controls\n"
                 f"{process.stdout[-8000:]}"
             )
-    if tab == "vehicles":
+    if tab == "profile":
         profile_marker = (
             "character-donor-profile-gallery package=" + PACKAGE_ID
             + " profiles=10 glyph=project-owned-metric-badge "
@@ -158,6 +158,7 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                     "profile keyboard/speech walk missed " + spoken
                     + "\n" + process.stdout[-8000:]
                 )
+    if tab == "vehicles":
         marker = (
             "character-spatial-controls package=" + PACKAGE_ID +
             " planes=front,side,top placement=ground-or-seat yaw=context "
@@ -169,6 +170,28 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                 "facing, contact, copy, and undo contract\n" +
                 process.stdout[-8000:]
             )
+        studio_marker = (
+            "character-offset-studio package=" + PACKAGE_ID +
+            " contexts=select,car,hovercraft,plane exact-rom-preview=1 "
+            "disabled-package-preview=1 "
+            "measured-starting-point=vertical-and-facing "
+            "reset=package-anchor "
+            "review=current-source-and-fit"
+        )
+        if studio_marker not in process.stdout:
+            raise RuntimeError(
+                "offset studio omitted its exact-preview and measured-fit "
+                "contract\n" + process.stdout[-8000:]
+            )
+        spoken_controls = ["text=Exact preview camera layout"]
+        if rom is not None:
+            spoken_controls.append("text=Open exact Character select preview")
+        for spoken in spoken_controls:
+            if spoken not in process.stdout:
+                raise RuntimeError(
+                    "offset studio keyboard/speech walk missed " + spoken +
+                    "\n" + process.stdout[-8000:]
+                )
     if tab == "test":
         marker = (
             "character-pose-inspector package=" + PACKAGE_ID +
@@ -230,7 +253,8 @@ def main() -> int:
             routes = (
                 ("identity", ("Identity",)),
                 ("rig-motion", ("Rig",)),
-                ("vehicles", ("Profile", "Fit")),
+                ("profile", ("Profile",)),
+                ("vehicles", ("Fit",)),
                 ("performance", ("Performance",)),
                 ("test", ("Test setup",)),
             )

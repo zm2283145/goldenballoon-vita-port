@@ -16,6 +16,7 @@ enum class CharacterWorkshopTab : uint8_t {
     Overview = 0,
     Identity,
     RigMotion,
+    Profile,
     Vehicles,
     Performance,
     Test,
@@ -107,6 +108,31 @@ struct CharacterWorkshopLodBand {
     uint32_t lod = 0u;
 };
 
+// A conservative first-pass correction derived from the exact renderer's
+// target-space measurements. The proposal intentionally changes only the
+// vertical context offset and facing yaw: X/Z placement and contact targets
+// require vehicle geometry or author judgement and must never be guessed from
+// a character bounds box alone.
+struct CharacterWorkshopFitMeasurement {
+    bool valid = false;
+    bool vehicleContext = false;
+    std::array<int64_t, 3> boundsMinimumMicrometres{};
+    std::array<int64_t, 3> boundsMaximumMicrometres{};
+    std::array<int32_t, 3> forwardMilli{};
+};
+
+struct CharacterWorkshopFitSuggestion {
+    bool available = false;
+    bool verticalAdjustment = false;
+    bool facingMeasured = false;
+    bool facingAdjustment = false;
+    float verticalDeltaMetres = 0.0f;
+    float yawDeltaDegrees = 0.0f;
+    float measuredHeightMetres = 0.0f;
+    float measuredMinimumYMetres = 0.0f;
+    float targetMinimumYMetres = 0.0f;
+};
+
 CharacterWorkshopReadiness CharacterWorkshop_evaluate(
     const CharacterWorkshopFacts &facts);
 
@@ -134,5 +160,8 @@ uint32_t CharacterWorkshop_selectLod(
 size_t CharacterWorkshop_lodBands(
     float sourceLodBias, float localLodBias, uint32_t authoredLodMask,
     CharacterWorkshopLodBand output[4]);
+
+CharacterWorkshopFitSuggestion CharacterWorkshop_suggestFit(
+    const CharacterWorkshopFitMeasurement &measurement);
 
 #endif // MDKR64_CHARACTER_WORKSHOP_MODEL_H

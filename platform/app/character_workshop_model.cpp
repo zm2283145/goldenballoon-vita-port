@@ -54,7 +54,7 @@ CharacterWorkshopReadiness CharacterWorkshop_evaluate(
     }
     setRow(result, CharacterWorkshopReadinessId::RigMotion, rigMotion, CharacterWorkshopTab::RigMotion);
 
-    setRow(result, CharacterWorkshopReadinessId::GameplayProfile, facts.donorQualified ? CharacterWorkshopReadinessStatus::Ready : CharacterWorkshopReadinessStatus::Unavailable, CharacterWorkshopTab::Vehicles);
+    setRow(result, CharacterWorkshopReadinessId::GameplayProfile, facts.donorQualified ? CharacterWorkshopReadinessStatus::Ready : CharacterWorkshopReadinessStatus::Unavailable, CharacterWorkshopTab::Profile);
 
     CharacterWorkshopReadinessStatus vehicleFit =
         CharacterWorkshopReadinessStatus::Ready;
@@ -101,7 +101,7 @@ CharacterWorkshopReadiness CharacterWorkshop_evaluate(
         result.nextActionTab   = CharacterWorkshopTab::RigMotion;
         result.nextActionLabel = "Review rig and motion";
     } else if (!facts.donorQualified) {
-        result.nextActionTab   = CharacterWorkshopTab::Vehicles;
+        result.nextActionTab   = CharacterWorkshopTab::Profile;
         result.nextActionLabel = "Choose a qualified gameplay profile";
     } else if (vehicleFit != CharacterWorkshopReadinessStatus::Ready) {
         result.nextActionTab   = CharacterWorkshopTab::Vehicles;
@@ -132,7 +132,8 @@ const char *CharacterWorkshop_tabLabel(CharacterWorkshopTab tab) {
         "Overview",
         "Identity",
         "Rig & Motion",
-        "Vehicles",
+        "Gameplay",
+        "Offset Studio",
         "Performance",
         "Test",
         "Package",
@@ -148,6 +149,7 @@ const char *CharacterWorkshop_tabStorageId(CharacterWorkshopTab tab) {
         "overview",
         "identity",
         "rig-motion",
+        "profile",
         "vehicles",
         "performance",
         "test",
@@ -275,4 +277,69 @@ size_t CharacterWorkshop_lodBands(
     }
     std::copy(resolved, resolved + count, output);
     return count;
+}
+
+CharacterWorkshopFitSuggestion CharacterWorkshop_suggestFit(
+    const CharacterWorkshopFitMeasurement &measurement) {
+    CharacterWorkshopFitSuggestion result;
+    if (!measurement.valid) return result;
+
+    constexpr int64_t kMaximumCoordinateMicrometres = 1000000000LL;
+    for (size_t axis = 0u; axis < 3u; ++axis) {
+        const int64_t minimum = measurement.boundsMinimumMicrometres[axis];
+        const int64_t maximum = measurement.boundsMaximumMicrometres[axis];
+        if (minimum < -kMaximumCoordinateMicrometres ||
+            maximum > kMaximumCoordinateMicrometres || minimum > maximum) {
+            return result;
+        }
+    }
+    const int64_t heightMicrometres =
+        measurement.boundsMaximumMicrometres[1] -
+        measurement.boundsMinimumMicrometres[1];
+    // Reject a degenerate measurement and absurd target-space extents rather
+    // than producing a plausible-looking correction from corrupt evidence.
+    if (heightMicrometres < 10000LL || heightMicrometres > 100000000LL) {
+        return result;
+    }
+
+    result.available = true;
+    result.measuredHeightMetres =
+        static_cast<float>(heightMicrometres) / 1000000.0f;
+    result.measuredMinimumYMetres =
+        static_cast<float>(measurement.boundsMinimumMicrometres[1]) /
+        1000000.0f;
+    // Selection uses a literal floor datum. For a vehicle, keeping roughly the
+    // lower quarter of a standing-height envelope below the donor seat is a
+    // deliberately conservative visibility-first starting point. The exact
+    // in-game preview remains the authority because a bounds box cannot see a
+    // vehicle shell, a seated pose, or costume-specific silhouette details.
+    result.targetMinimumYMetres = measurement.vehicleContext
+        ? -0.25f * result.measuredHeightMetres : 0.0f;
+    result.verticalDeltaMetres =
+        result.targetMinimumYMetres - result.measuredMinimumYMetres;
+    if (std::fabs(result.verticalDeltaMetres) < 0.005f) {
+        result.verticalDeltaMetres = 0.0f;
+    } else {
+        result.verticalAdjustment = true;
+    }
+
+    const float forwardX =
+        static_cast<float>(measurement.forwardMilli[0]);
+    const float forwardZ =
+        static_cast<float>(measurement.forwardMilli[2]);
+    const float horizontalLength = std::hypot(forwardX, forwardZ);
+    if (horizontalLength >= 500.0f) {
+        result.facingMeasured = true;
+        result.yawDeltaDegrees =
+            -std::atan2(forwardX, forwardZ) * 57.295779513082320876f;
+        if (result.yawDeltaDegrees <= -180.0f) {
+            result.yawDeltaDegrees = 180.0f;
+        }
+        if (std::fabs(result.yawDeltaDegrees) < 2.0f) {
+            result.yawDeltaDegrees = 0.0f;
+        } else {
+            result.facingAdjustment = true;
+        }
+    }
+    return result;
 }

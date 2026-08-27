@@ -4911,16 +4911,18 @@ model.
 
 ## Workshop tool history — `tests/check_character_workshop_history_ui.py`
 
-This ROM-free WebGPU gate generates and installs an isolated CC0 fixture, then
-opens the exact saved Identity, Rig & Motion, Vehicles, Performance, and Test
-tabs. It requires source-digest-bound history controls for Identity, Profile,
+This WebGPU gate generates and installs an isolated CC0 fixture, then opens the
+exact saved Identity, Rig & Motion, Gameplay, Offset Studio, Performance, and
+Test tabs. It requires source-digest-bound history controls for Identity, Profile,
 Rig, Fit/review, Performance assembly, and Test setup, and verifies that merely
 rendering every route leaves the installed source and cache byte-for-byte
-unchanged. The 200% keyboard/speech Vehicles route additionally requires all
+unchanged. The 200% keyboard/speech Gameplay route additionally requires all
 ten project-owned, colour-independent donor-profile metric badges with no
-retail portrait art, plus the front/side/top
-placement and contact planes, context yaw, vehicle-only copy boundary, and Fit
-undo contract to render. The 200% keyboard/speech Performance route requires
+retail portrait art. The distinct 200% Offset Studio route requires the linked-
+ROM exact-preview, disabled-package preview, measured-starting-point and honest
+package-anchor reset contracts plus the front/side/top placement and contact
+planes, context yaw, vehicle-only copy boundary, and Fit undo contract to
+render. The 200% keyboard/speech Performance route requires
 all four named targets, the exact authored-LOD control, runtime-equivalent
 source/local-bias selection, merged distance intervals, session-only distance
 scrubbing, selected-LOD structural accounting, transition quality warnings,
