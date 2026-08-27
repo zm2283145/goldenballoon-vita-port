@@ -168,6 +168,11 @@ struct GfxRenderingAPI {
                                                      uint32_t *height);
     bool (*get_modern_character_capture_projection)(
         MdkrModernCharacterCaptureProjection *projection);
+    /* Exact projection retained from player one's accepted scene draw. This
+     * is cheap matrix/viewport evidence only; it does not read pixels or walk
+     * the skinned mesh and therefore does not perturb performance tests. */
+    bool (*get_modern_character_scene_projection)(
+        MdkrModernCharacterCaptureProjection *projection);
     bool (*read_modern_character_capture_rgba)(int width, int height,
                                                 uint8_t *rgba_out);
     /* Optional exact GPU timestamp evidence for the Workshop. begin() resets

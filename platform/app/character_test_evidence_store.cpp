@@ -1,5 +1,6 @@
 #include "character_test_evidence_store.h"
 
+#include "modern_character_capture_projection.h"
 #include "sha256.h"
 
 #include <algorithm>
@@ -15,10 +16,12 @@ constexpr const char *kHeaderV1 = "mdkr-character-test-evidence-v1";
 constexpr const char *kHeaderV2 = "mdkr-character-test-evidence-v2";
 constexpr const char *kHeaderV3 = "mdkr-character-test-evidence-v3";
 constexpr const char *kHeaderV4 = "mdkr-character-test-evidence-v4";
+constexpr const char *kHeaderV5 = "mdkr-character-test-evidence-v5";
 constexpr size_t kFieldsPerRowV1 = 39u;
 constexpr size_t kFieldsPerRowV2 = 52u;
 constexpr size_t kFieldsPerRowV3 = 105u;
 constexpr size_t kFieldsPerRowV4 = 125u;
+constexpr size_t kFieldsPerRowV5 = 164u;
 constexpr size_t      kMaximumRowBytes =
     (CharacterTestEvidenceStore::kMaximumBuildVersionBytes * 2u) +
     (CharacterTestEvidenceStore::kMaximumBackendBytes * 2u) +
@@ -387,6 +390,189 @@ bool evidenceValid(const CharacterTestEvidenceStore::Evidence &evidence,
         fitStateValid = fitStateValid && forwardLengthSquared >= 995000LL &&
             forwardLengthSquared <= 1005000LL;
     }
+    constexpr uint32_t kAllLandmarks = 0x7u;
+    bool landmarkStateValid =
+        (evidence.fitLandmarkMask & ~kAllLandmarks) == 0u;
+    for (size_t landmark = 0u; landmark < 3u; ++landmark) {
+        const bool valid =
+            (evidence.fitLandmarkMask & (1u << landmark)) != 0u;
+        for (size_t axis = 0u; axis < 3u; ++axis) {
+            const int64_t value =
+                evidence.fitLandmarkMicrometres[landmark][axis];
+            landmarkStateValid = landmarkStateValid &&
+                (valid || value == 0) &&
+                value >= -kMaximumFitMicrometres &&
+                value <= kMaximumFitMicrometres;
+        }
+    }
+    if (!evidence.fitDiagnosticsValid && evidence.fitLandmarkMask != 0u) {
+        landmarkStateValid = false;
+    }
+    if (evidence.resultVersion >= 15u && evidence.warmupComplete &&
+        evidence.replacementDraws != 0u &&
+        (evidence.fitLandmarkMask & 0x4u) == 0u) {
+        landmarkStateValid = false;
+    }
+    const auto cameraValuesZero = [&evidence]() {
+        if (evidence.cameraProjectionWidth != 0u ||
+            evidence.cameraProjectionHeight != 0u ||
+            evidence.cameraProjectionPrimitiveDraws != 0u) return false;
+        for (size_t component = 0u; component < 4u; ++component) {
+            if (evidence.cameraProjectionViewport[component] != 0 ||
+                evidence.cameraProjectionScissor[component] != 0 ||
+                evidence.cameraBoundsPixelMilli[component] != 0) return false;
+        }
+        for (size_t landmark = 0u; landmark < 3u; ++landmark) {
+            if (evidence.cameraLandmarkPixelMilli[landmark][0] != 0 ||
+                evidence.cameraLandmarkPixelMilli[landmark][1] != 0 ||
+                evidence.cameraLandmarkDepthMillionths[landmark] != 0 ||
+                evidence.cameraLandmarkClipFlags[landmark] != 0u) return false;
+        }
+        if (evidence.cameraBoundsClipFlags != 0u) return false;
+        return true;
+    };
+    bool cameraStateValid = evidence.cameraProjectionValid ||
+        cameraValuesZero();
+    if (evidence.cameraProjectionValid) {
+        const auto rectValid = [&evidence](const int32_t rect[4]) {
+            return rect[0] >= 0 && rect[1] >= 0 && rect[2] > 0 && rect[3] > 0 &&
+                static_cast<int64_t>(rect[0]) + rect[2] <=
+                    evidence.cameraProjectionWidth &&
+                static_cast<int64_t>(rect[1]) + rect[3] <=
+                    evidence.cameraProjectionHeight;
+        };
+        constexpr uint32_t kKnownClipFlags =
+            MDKR_MODERN_CHARACTER_PROJECTION_CLIP_LEFT |
+            MDKR_MODERN_CHARACTER_PROJECTION_CLIP_RIGHT |
+            MDKR_MODERN_CHARACTER_PROJECTION_CLIP_TOP |
+            MDKR_MODERN_CHARACTER_PROJECTION_CLIP_BOTTOM |
+            MDKR_MODERN_CHARACTER_PROJECTION_CLIP_NEAR |
+            MDKR_MODERN_CHARACTER_PROJECTION_CLIP_FAR |
+            MDKR_MODERN_CHARACTER_PROJECTION_CLIP_SCISSOR;
+        cameraStateValid = cameraStateValid &&
+            evidence.fitDiagnosticsValid &&
+            evidence.cameraProjectionWidth != 0u &&
+            evidence.cameraProjectionHeight != 0u &&
+            evidence.cameraProjectionWidth == evidence.renderWidth &&
+            evidence.cameraProjectionHeight == evidence.renderHeight &&
+            evidence.cameraProjectionWidth <= 16384u &&
+            evidence.cameraProjectionHeight <= 16384u &&
+            evidence.cameraProjectionPrimitiveDraws != 0u &&
+            evidence.cameraProjectionPrimitiveDraws <= 4096u &&
+            rectValid(evidence.cameraProjectionViewport) &&
+            rectValid(evidence.cameraProjectionScissor) &&
+            evidence.cameraBoundsPixelMilli[0] <
+                evidence.cameraBoundsPixelMilli[2] &&
+            evidence.cameraBoundsPixelMilli[1] <
+                evidence.cameraBoundsPixelMilli[3];
+        cameraStateValid = cameraStateValid &&
+            (evidence.cameraBoundsClipFlags & ~kKnownClipFlags) == 0u;
+        const int64_t viewportLeft =
+            static_cast<int64_t>(evidence.cameraProjectionViewport[0]) * 1000;
+        const int64_t viewportTop =
+            static_cast<int64_t>(evidence.cameraProjectionViewport[1]) * 1000;
+        const int64_t viewportRight =
+            (static_cast<int64_t>(evidence.cameraProjectionViewport[0]) +
+             evidence.cameraProjectionViewport[2]) * 1000;
+        const int64_t viewportBottom =
+            (static_cast<int64_t>(evidence.cameraProjectionViewport[1]) +
+             evidence.cameraProjectionViewport[3]) * 1000;
+        const int64_t scissorLeft =
+            static_cast<int64_t>(evidence.cameraProjectionScissor[0]) * 1000;
+        const int64_t scissorTop =
+            static_cast<int64_t>(evidence.cameraProjectionScissor[1]) * 1000;
+        const int64_t scissorRight =
+            (static_cast<int64_t>(evidence.cameraProjectionScissor[0]) +
+             evidence.cameraProjectionScissor[2]) * 1000;
+        const int64_t scissorBottom =
+            (static_cast<int64_t>(evidence.cameraProjectionScissor[1]) +
+             evidence.cameraProjectionScissor[3]) * 1000;
+        constexpr int64_t kProjectionTolerance = 1;
+        const bool boundsOutsideScissor =
+            evidence.cameraBoundsPixelMilli[0] <
+                scissorLeft - kProjectionTolerance ||
+            evidence.cameraBoundsPixelMilli[2] >
+                scissorRight + kProjectionTolerance ||
+            evidence.cameraBoundsPixelMilli[1] <
+                scissorTop - kProjectionTolerance ||
+            evidence.cameraBoundsPixelMilli[3] >
+                scissorBottom + kProjectionTolerance;
+        cameraStateValid = cameraStateValid &&
+            ((evidence.cameraBoundsPixelMilli[0] <
+                  viewportLeft - kProjectionTolerance) ==
+             ((evidence.cameraBoundsClipFlags &
+               MDKR_MODERN_CHARACTER_PROJECTION_CLIP_LEFT) != 0u)) &&
+            ((evidence.cameraBoundsPixelMilli[2] >
+                  viewportRight + kProjectionTolerance) ==
+             ((evidence.cameraBoundsClipFlags &
+               MDKR_MODERN_CHARACTER_PROJECTION_CLIP_RIGHT) != 0u)) &&
+            ((evidence.cameraBoundsPixelMilli[1] <
+                  viewportTop - kProjectionTolerance) ==
+             ((evidence.cameraBoundsClipFlags &
+               MDKR_MODERN_CHARACTER_PROJECTION_CLIP_TOP) != 0u)) &&
+            ((evidence.cameraBoundsPixelMilli[3] >
+                  viewportBottom + kProjectionTolerance) ==
+             ((evidence.cameraBoundsClipFlags &
+               MDKR_MODERN_CHARACTER_PROJECTION_CLIP_BOTTOM) != 0u)) &&
+            (boundsOutsideScissor ==
+             ((evidence.cameraBoundsClipFlags &
+               MDKR_MODERN_CHARACTER_PROJECTION_CLIP_SCISSOR) != 0u));
+        for (size_t landmark = 0u; landmark < 3u; ++landmark) {
+            const bool valid =
+                (evidence.fitLandmarkMask & (1u << landmark)) != 0u;
+            const bool valuesZero =
+                evidence.cameraLandmarkPixelMilli[landmark][0] == 0 &&
+                evidence.cameraLandmarkPixelMilli[landmark][1] == 0 &&
+                evidence.cameraLandmarkDepthMillionths[landmark] == 0 &&
+                evidence.cameraLandmarkClipFlags[landmark] == 0u;
+            cameraStateValid = cameraStateValid &&
+                (valid || valuesZero) &&
+                (evidence.cameraLandmarkClipFlags[landmark] &
+                 ~kKnownClipFlags) == 0u;
+            if (valid) {
+                const int64_t x =
+                    evidence.cameraLandmarkPixelMilli[landmark][0];
+                const int64_t y =
+                    evidence.cameraLandmarkPixelMilli[landmark][1];
+                const int32_t depth =
+                    evidence.cameraLandmarkDepthMillionths[landmark];
+                const uint32_t flags =
+                    evidence.cameraLandmarkClipFlags[landmark];
+                const bool outsideScissor =
+                    x < scissorLeft - kProjectionTolerance ||
+                    x > scissorRight + kProjectionTolerance ||
+                    y < scissorTop - kProjectionTolerance ||
+                    y > scissorBottom + kProjectionTolerance;
+                cameraStateValid = cameraStateValid &&
+                    ((x < viewportLeft - kProjectionTolerance) ==
+                     ((flags &
+                       MDKR_MODERN_CHARACTER_PROJECTION_CLIP_LEFT) != 0u)) &&
+                    ((x > viewportRight + kProjectionTolerance) ==
+                     ((flags &
+                       MDKR_MODERN_CHARACTER_PROJECTION_CLIP_RIGHT) != 0u)) &&
+                    ((y < viewportTop - kProjectionTolerance) ==
+                     ((flags &
+                       MDKR_MODERN_CHARACTER_PROJECTION_CLIP_TOP) != 0u)) &&
+                    ((y > viewportBottom + kProjectionTolerance) ==
+                     ((flags &
+                       MDKR_MODERN_CHARACTER_PROJECTION_CLIP_BOTTOM) != 0u)) &&
+                    ((depth < 0) ==
+                     ((flags &
+                       MDKR_MODERN_CHARACTER_PROJECTION_CLIP_NEAR) != 0u)) &&
+                    ((depth > 1000000) ==
+                     ((flags &
+                       MDKR_MODERN_CHARACTER_PROJECTION_CLIP_FAR) != 0u)) &&
+                    (outsideScissor ==
+                     ((flags &
+                       MDKR_MODERN_CHARACTER_PROJECTION_CLIP_SCISSOR) != 0u));
+            }
+        }
+    }
+    if (evidence.resultVersion >= 15u && evidence.warmupComplete &&
+        evidence.replacementDraws != 0u &&
+        !evidence.cameraProjectionValid) {
+        cameraStateValid = false;
+    }
     if (evidence.kind != Kind::Latest && evidence.kind != Kind::Baseline)
         error = "test evidence kind is invalid";
     else if (!slugValid(evidence.packageId))
@@ -427,6 +613,8 @@ bool evidenceValid(const CharacterTestEvidenceStore::Evidence &evidence,
         error = "test evidence contact witnesses are inconsistent";
     else if (!fitStateValid)
         error = "test evidence fit diagnostics are inconsistent";
+    else if (!landmarkStateValid || !cameraStateValid)
+        error = "test evidence camera or anatomy diagnostics are inconsistent";
     else if (evidence.kind == Kind::Baseline && !qualified(evidence))
         error = "a comparison baseline must be qualified evidence";
     else
@@ -528,6 +716,37 @@ std::vector<std::string> recordFields(
         };
     appendGpuDistribution(evidence.gpuTiming.scene_pass);
     appendGpuDistribution(evidence.gpuTiming.character_draws);
+    fields.push_back(number(evidence.fitLandmarkMask));
+    for (const auto &landmark : evidence.fitLandmarkMicrometres) {
+        for (int64_t value : landmark) {
+            fields.push_back(signedNumber(value));
+        }
+    }
+    fields.push_back(evidence.cameraProjectionValid ? "1" : "0");
+    fields.push_back(number(evidence.cameraProjectionWidth));
+    fields.push_back(number(evidence.cameraProjectionHeight));
+    for (int32_t value : evidence.cameraProjectionViewport) {
+        fields.push_back(signedNumber(value));
+    }
+    for (int32_t value : evidence.cameraProjectionScissor) {
+        fields.push_back(signedNumber(value));
+    }
+    fields.push_back(number(evidence.cameraProjectionPrimitiveDraws));
+    for (int32_t value : evidence.cameraBoundsPixelMilli) {
+        fields.push_back(signedNumber(value));
+    }
+    for (const auto &landmark : evidence.cameraLandmarkPixelMilli) {
+        for (int32_t value : landmark) {
+            fields.push_back(signedNumber(value));
+        }
+    }
+    for (int32_t value : evidence.cameraLandmarkDepthMillionths) {
+        fields.push_back(signedNumber(value));
+    }
+    for (uint32_t value : evidence.cameraLandmarkClipFlags) {
+        fields.push_back(number(value));
+    }
+    fields.push_back(number(evidence.cameraBoundsClipFlags));
     return fields;
 }
 
@@ -602,7 +821,8 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
     if (text.size() > kMaximumSerializedBytes || end == std::string::npos ||
         !split(text.substr(0u, end), 3u, fields) ||
         (fields[0] != kHeaderV1 && fields[0] != kHeaderV2 &&
-         fields[0] != kHeaderV3 && fields[0] != kHeaderV4) ||
+         fields[0] != kHeaderV3 && fields[0] != kHeaderV4 &&
+         fields[0] != kHeaderV5) ||
         !parseUnsigned(fields[1], kMaximumRecords, count) ||
         !digestValid(fields[2])) {
         error = "test evidence inventory header is invalid";
@@ -612,9 +832,11 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
     const bool legacyV1 = header == kHeaderV1;
     const bool legacyV2 = header == kHeaderV2;
     const bool legacyV3 = header == kHeaderV3;
+    const bool legacyV4 = header == kHeaderV4;
     const size_t rowFields = legacyV1 ? kFieldsPerRowV1
         : legacyV2 ? kFieldsPerRowV2
-        : legacyV3 ? kFieldsPerRowV3 : kFieldsPerRowV4;
+        : legacyV3 ? kFieldsPerRowV3
+        : legacyV4 ? kFieldsPerRowV4 : kFieldsPerRowV5;
     const std::string countText         = fields[1];
     const std::string inventoryChecksum = fields[2];
     begin                               = end + 1u;
@@ -839,6 +1061,74 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
             assignDistribution(evidence.gpuTiming.scene_pass);
             assignDistribution(evidence.gpuTiming.character_draws);
         }
+        if (header == kHeaderV5) {
+            size_t field = 124u;
+            uint64_t unsignedValue = 0u;
+            int64_t signedValue = 0;
+            bool spatialFieldsValid = parseUnsigned(
+                fields[field++], 0x7u, unsignedValue);
+            evidence.fitLandmarkMask =
+                static_cast<uint32_t>(unsignedValue);
+            for (size_t landmark = 0u;
+                 landmark < 3u && spatialFieldsValid; ++landmark) {
+                for (size_t axis = 0u;
+                     axis < 3u && spatialFieldsValid; ++axis) {
+                    spatialFieldsValid = parseSigned(
+                        fields[field++], -1000000000LL, 1000000000LL,
+                        evidence.fitLandmarkMicrometres[landmark][axis]);
+                }
+            }
+            spatialFieldsValid = spatialFieldsValid && parseUnsigned(
+                fields[field++], 1u, unsignedValue);
+            evidence.cameraProjectionValid = unsignedValue != 0u;
+            spatialFieldsValid = spatialFieldsValid && parseUnsigned(
+                fields[field++], 16384u, unsignedValue);
+            evidence.cameraProjectionWidth =
+                static_cast<uint32_t>(unsignedValue);
+            spatialFieldsValid = spatialFieldsValid && parseUnsigned(
+                fields[field++], 16384u, unsignedValue);
+            evidence.cameraProjectionHeight =
+                static_cast<uint32_t>(unsignedValue);
+            const auto parseSigned32 = [&](int32_t &output) {
+                if (!spatialFieldsValid) return;
+                spatialFieldsValid = parseSigned(
+                    fields[field++], INT32_MIN, INT32_MAX, signedValue);
+                output = static_cast<int32_t>(signedValue);
+            };
+            for (int32_t &value : evidence.cameraProjectionViewport) {
+                parseSigned32(value);
+            }
+            for (int32_t &value : evidence.cameraProjectionScissor) {
+                parseSigned32(value);
+            }
+            spatialFieldsValid = spatialFieldsValid && parseUnsigned(
+                fields[field++], 4096u, unsignedValue);
+            evidence.cameraProjectionPrimitiveDraws =
+                static_cast<uint32_t>(unsignedValue);
+            for (int32_t &value : evidence.cameraBoundsPixelMilli) {
+                parseSigned32(value);
+            }
+            for (auto &landmark : evidence.cameraLandmarkPixelMilli) {
+                for (int32_t &value : landmark) parseSigned32(value);
+            }
+            for (int32_t &value :
+                 evidence.cameraLandmarkDepthMillionths) {
+                parseSigned32(value);
+            }
+            for (uint32_t &value : evidence.cameraLandmarkClipFlags) {
+                spatialFieldsValid = spatialFieldsValid && parseUnsigned(
+                    fields[field++], 0x7Fu, unsignedValue);
+                value = static_cast<uint32_t>(unsignedValue);
+            }
+            spatialFieldsValid = spatialFieldsValid && parseUnsigned(
+                fields[field++], 0x7Fu, unsignedValue);
+            evidence.cameraBoundsClipFlags =
+                static_cast<uint32_t>(unsignedValue);
+            if (!spatialFieldsValid || field != 163u) {
+                error = "test evidence camera or anatomy fields are invalid";
+                return false;
+            }
+        }
         const std::string checksum           = fields.back();
         fields.pop_back();
         if (!evidenceValid(evidence, error) ||
@@ -904,8 +1194,8 @@ bool serialize(const Inventory &inventory, std::string &output, std::string &err
         }
     }
     const std::string count  = std::to_string(ordered.records.size());
-    std::string       result = std::string(kHeaderV4) + "\t" + count + "\t" +
-                               inventoryDigest(kHeaderV4, count, body) +
+    std::string       result = std::string(kHeaderV5) + "\t" + count + "\t" +
+                               inventoryDigest(kHeaderV5, count, body) +
                                "\n" + body;
     if (result.size() > kMaximumSerializedBytes) {
         error = "serialized test evidence exceeds its byte bound";

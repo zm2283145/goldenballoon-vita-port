@@ -20,9 +20,10 @@ enum MdkrModernCharacterProjectionClipFlag {
     MDKR_MODERN_CHARACTER_PROJECTION_CLIP_SCISSOR = 1u << 6,
 };
 
-/* Session-only renderer witness for one isolated model capture. Matrices are
+/* Session-only renderer projection witness. It represents either the last
+ * complete ordinary scene draw or one isolated model capture. Matrices are
  * column-major and map donor-target coordinates directly into WebGPU clip
- * space. Viewport/scissor use top-left output-PNG pixels. This internal record
+ * space. Viewport/scissor use top-left target pixels. This internal record
  * never enters a package or durable performance result as host floats. */
 typedef struct MdkrModernCharacterCaptureProjection {
     uint32_t version;

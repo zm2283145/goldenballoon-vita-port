@@ -85,13 +85,13 @@ def evidence_rows(root: Path) -> list[list[str]]:
     header = lines[0].split("\t")
     if (
         len(header) != 3
-        or header[0] != "mdkr-character-test-evidence-v4"
+        or header[0] != "mdkr-character-test-evidence-v5"
         or int(header[1]) != len(lines) - 1
         or len(header[2]) != 64
     ):
         raise RuntimeError("test evidence inventory header is malformed")
     rows = [line.split("\t") for line in lines[1:]]
-    if any(len(row) != 125 for row in rows):
+    if any(len(row) != 164 for row in rows):
         raise RuntimeError("test evidence inventory row is malformed")
     return rows
 
@@ -388,7 +388,7 @@ def main() -> int:
                 or rows[0][0] != "0"
                 or rows[0][1] != PACKAGE_ID
                 or (rows[0][7], rows[0][8]) != ("2", "4")
-                or rows[0][9] != "14"
+                or rows[0][9] != "15"
                 or bytes.fromhex(rows[0][29]).decode("utf-8")
                 != "webgpu-test"
                 or bytes.fromhex(rows[0][30]).decode("utf-8")
@@ -414,9 +414,28 @@ def main() -> int:
                 )
                 or tuple(map(int, rows[0][117:124]))
                 != (176, 176, 200000, 300000, 400000, 250000, 500000)
+                or rows[0][124] != "7"
+                or tuple(map(int, rows[0][125:134]))
+                != (0, 100000, 0, 0, 600000, 0, 0, 1200000, 0)
+                or tuple(map(int, rows[0][134:150]))
+                != (
+                    1, 2560, 1920,
+                    0, 0, 2560, 1920,
+                    0, 0, 2560, 1920,
+                    2, 800000, 300000, 1760000, 1500000,
+                )
+                or tuple(map(int, rows[0][150:162]))
+                != (
+                    1280000, 1300000,
+                    1280000, 900000,
+                    1280000, 500000,
+                    500000, 500000, 500000,
+                    0, 0, 0,
+                )
+                or rows[0][162] != "0"
             ):
                 raise RuntimeError(
-                    "qualified exact result did not persist exact device and renderer-fit fields"
+                    "qualified exact result did not persist exact device, renderer-fit, anatomy, and camera fields"
                 )
 
             run(
@@ -672,7 +691,7 @@ def main() -> int:
                 root,
                 characters,
                 (
-                    "character-preview-result rejected-evidence=fit-contact-contract",
+                    "character-preview-result rejected-evidence=fit-camera-contact-contract",
                     "action=publish-invalid-fit applied=1 "
                     "records=0 baselines=0",
                 ),
@@ -689,7 +708,25 @@ def main() -> int:
                 root,
                 characters,
                 (
-                    "character-preview-result rejected-evidence=fit-contact-contract",
+                    "character-preview-result rejected-evidence=fit-camera-contact-contract",
+                    "camera=1 cameraFlags=80",
+                    "action=publish-invalid-camera applied=1 "
+                    "records=0 baselines=0",
+                ),
+                action="publish-invalid-camera",
+            )
+            if (
+                root / "saves" / "character_test_evidence-v1.tsv"
+            ).read_bytes() != empty_evidence:
+                raise RuntimeError(
+                    "invalid gameplay-camera contract contaminated durable performance evidence"
+                )
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "character-preview-result rejected-evidence=fit-camera-contact-contract",
                     "contactMask=3",
                     "action=publish-invalid-contact applied=1 "
                     "records=0 baselines=0",
@@ -796,7 +833,7 @@ def main() -> int:
         "check_character_test_evidence_ui: PASS -- durable source/fit/device-"
         "bound 4x4 matrix with focusable three-view bounds/anchor/facing overlays, digest-bound current renderer references with stale-fit refusal, signed renderer-fit and hand/foot contact diagnostics, same-"
         "environment wall/scene/character GPU baseline lifecycle, corruption "
-        "and invalid-fit/contact/GPU refusal, pose-inspection exclusion, keyboard speech, "
+        "and invalid-fit/camera/contact/GPU refusal, pose-inspection exclusion, keyboard speech, "
         "200% rendering, and package-byte purity"
     )
     return 0

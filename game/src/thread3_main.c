@@ -57,6 +57,7 @@
 #include <PR/os_cont.h>
 #include <PR/os_time.h>
 #ifdef NATIVE_PORT
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -189,6 +190,16 @@ UNUSED s32 D_80123568[3]; // BSS Padding
 _Static_assert(
     MDKR_CHARACTER_PREVIEW_CONTACTS == MDKR_MODERN_CHARACTER_CONTACTS,
     "preview and runtime contact order must remain identical");
+_Static_assert(
+    MDKR_CHARACTER_PREVIEW_LANDMARKS ==
+            MDKR_MODERN_CHARACTER_FIT_LANDMARKS &&
+        MDKR_CHARACTER_PREVIEW_LANDMARK_HIPS ==
+            MDKR_MODERN_CHARACTER_FIT_LANDMARK_HIPS &&
+        MDKR_CHARACTER_PREVIEW_LANDMARK_CHEST ==
+            MDKR_MODERN_CHARACTER_FIT_LANDMARK_CHEST &&
+        MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD ==
+            MDKR_MODERN_CHARACTER_FIT_LANDMARK_HEAD,
+    "preview and runtime anatomy landmark order must remain identical");
 static u64 sWorkshopPreviewWarmupTicks;
 static s32 sWorkshopPreviewMeasurementStarted;
 static s32 sWorkshopPreviewMeasurementFinished;
@@ -246,7 +257,90 @@ static s32 workshop_preview_publish_fit_diagnostics(
            sizeof(boundsMax));
     memcpy(result->fit_anchor_micrometres, anchor, sizeof(anchor));
     memcpy(result->fit_forward_milli, forward, sizeof(forward));
+    if ((fit.landmark_valid_mask &
+         ~((1u << MDKR_CHARACTER_PREVIEW_LANDMARKS) - 1u)) != 0u) {
+        return FALSE;
+    }
+    for (axis = 0; axis < MDKR_CHARACTER_PREVIEW_LANDMARKS; ++axis) {
+        s32 component;
+        if ((fit.landmark_valid_mask & (1u << axis)) == 0u) continue;
+        for (component = 0; component < 3; ++component) {
+            if (!workshop_preview_quantize_micrometres(
+                    fit.landmarks[axis][component],
+                    &result->fit_landmark_micrometres[axis][component])) {
+                return FALSE;
+            }
+        }
+        result->fit_landmark_mask |= 1u << axis;
+    }
     result->fit_diagnostics_valid = TRUE;
+    return TRUE;
+}
+
+static s32 workshop_preview_publish_camera_projection(
+    MdkrCharacterPreviewResult *result) {
+    MdkrModernCharacterCaptureProjection projection;
+    int bounds[4] = {INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN};
+    u32 boundsClipFlags = 0u;
+    u32 corner;
+    u32 landmark;
+    if (result == NULL || !result->fit_diagnostics_valid ||
+        !gfx_get_modern_character_scene_projection(&projection) ||
+        projection.subject_player != 0u ||
+        projection.output_width != result->render_width ||
+        projection.output_height != result->render_height) return FALSE;
+    for (corner = 0u;
+         corner < MDKR_CHARACTER_PREVIEW_PROJECTION_BOUNDS_POINTS; ++corner) {
+        f32 point[3];
+        int32_t pixel[2];
+        int32_t depth;
+        u32 clipFlags;
+        u32 axis;
+        for (axis = 0u; axis < 3u; ++axis) {
+            const long long value = (corner & (1u << axis)) != 0u
+                ? result->fit_bounds_max_micrometres[axis]
+                : result->fit_bounds_min_micrometres[axis];
+            point[axis] = (f32)((double)value / 1000000.0);
+        }
+        if (!mdkr_modern_character_capture_project_point(
+                &projection, point, pixel, &depth, &clipFlags)) return FALSE;
+        if (pixel[0] < bounds[0]) bounds[0] = pixel[0];
+        if (pixel[1] < bounds[1]) bounds[1] = pixel[1];
+        if (pixel[0] > bounds[2]) bounds[2] = pixel[0];
+        if (pixel[1] > bounds[3]) bounds[3] = pixel[1];
+        boundsClipFlags |= clipFlags;
+    }
+    if (bounds[0] >= bounds[2] || bounds[1] >= bounds[3]) return FALSE;
+    for (landmark = 0u;
+         landmark < MDKR_CHARACTER_PREVIEW_LANDMARKS; ++landmark) {
+        f32 point[3];
+        int32_t pixel[2];
+        int32_t depth;
+        u32 clipFlags;
+        u32 axis;
+        if ((result->fit_landmark_mask & (1u << landmark)) == 0u) continue;
+        for (axis = 0u; axis < 3u; ++axis) {
+            point[axis] = (f32)((double)
+                result->fit_landmark_micrometres[landmark][axis] /
+                1000000.0);
+        }
+        if (!mdkr_modern_character_capture_project_point(
+                &projection, point, pixel, &depth, &clipFlags)) return FALSE;
+        result->camera_landmark_pixel_milli[landmark][0] = pixel[0];
+        result->camera_landmark_pixel_milli[landmark][1] = pixel[1];
+        result->camera_landmark_depth_millionths[landmark] = depth;
+        result->camera_landmark_clip_flags[landmark] = clipFlags;
+    }
+    result->camera_projection_width = projection.output_width;
+    result->camera_projection_height = projection.output_height;
+    result->camera_projection_primitive_draws = projection.primitive_draws;
+    memcpy(result->camera_projection_viewport, projection.viewport,
+           sizeof(result->camera_projection_viewport));
+    memcpy(result->camera_projection_scissor, projection.scissor,
+           sizeof(result->camera_projection_scissor));
+    memcpy(result->camera_bounds_pixel_milli, bounds, sizeof(bounds));
+    result->camera_bounds_clip_flags = boundsClipFlags;
+    result->camera_projection_valid = TRUE;
     return TRUE;
 }
 
@@ -418,7 +512,9 @@ static void workshop_preview_measurement_finish(void) {
             (MdkrCharacterPreviewMotionSource)
                 character.inspection_to_motion_source;
         if (result->replacement_draws != 0u) {
-            (void)workshop_preview_publish_fit_diagnostics(result);
+            if (workshop_preview_publish_fit_diagnostics(result)) {
+                (void)workshop_preview_publish_camera_projection(result);
+            }
             (void)workshop_preview_publish_contact_diagnostics(result);
         }
         mdkr_workshop_preview_visual_metrics(&visual);
@@ -442,7 +538,11 @@ static void workshop_preview_measurement_finish(void) {
         "contactLHUm=root:%lld,%lld,%lld bend:%lld,%lld,%lld "
         "target:%lld,%lld,%lld end:%lld,%lld,%lld fit=%d "
         "fitAnchorUm=%lld,%lld,%lld fitBoundsYUm=%lld,%lld "
-        "fitForwardMilli=%d,%d,%d pose=%d phase=%u "
+        "fitForwardMilli=%d,%d,%d fitLandmarks=%x "
+        "headUm=%lld,%lld,%lld cameraFit=%d "
+        "cameraBoundsMilli=%d,%d,%d,%d/%x "
+        "cameraViewport=%d,%d,%d,%d cameraHeadMilli=%d,%d,%d/%x "
+        "pose=%d phase=%u "
         "transitionFrom=%d transitionPhase=%u transition=%llu/%llu/%llu "
         "transitionBlend=%u,%u transitionSource=%d,%d "
         "poseTicks=%llu poseFallback=%llu view=%d,%d lighting=%d "
@@ -483,6 +583,31 @@ static void workshop_preview_measurement_finish(void) {
         result->fit_forward_milli[0],
         result->fit_forward_milli[1],
         result->fit_forward_milli[2],
+        result->fit_landmark_mask,
+        result->fit_landmark_micrometres
+            [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD][0],
+        result->fit_landmark_micrometres
+            [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD][1],
+        result->fit_landmark_micrometres
+            [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD][2],
+        result->camera_projection_valid,
+        result->camera_bounds_pixel_milli[0],
+        result->camera_bounds_pixel_milli[1],
+        result->camera_bounds_pixel_milli[2],
+        result->camera_bounds_pixel_milli[3],
+        result->camera_bounds_clip_flags,
+        result->camera_projection_viewport[0],
+        result->camera_projection_viewport[1],
+        result->camera_projection_viewport[2],
+        result->camera_projection_viewport[3],
+        result->camera_landmark_pixel_milli
+            [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD][0],
+        result->camera_landmark_pixel_milli
+            [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD][1],
+        result->camera_landmark_depth_millionths
+            [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD],
+        result->camera_landmark_clip_flags
+            [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD],
         (int)result->pose, result->pose_phase_milli,
         (int)result->transition_from_pose,
         result->transition_from_phase_milli,

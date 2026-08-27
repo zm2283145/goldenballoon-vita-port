@@ -71,7 +71,7 @@ struct Evidence {
     uint64_t    tickwallSamples             = 0u;
     uint64_t    tickwallMeanNs              = 0u;
     /* Version zero means the authenticated v1-v3 record predates GPU timing.
-     * Current v4/result-v14 records carry a structurally validated snapshot. */
+     * Current v5/result-v15 records carry a structurally validated snapshot. */
     MdkrModernCharacterGpuTimingMetrics gpuTiming{};
     uint64_t    replacementDraws            = 0u;
     uint64_t    replacementPrimitives       = 0u;
@@ -90,6 +90,19 @@ struct Evidence {
     int64_t     fitBoundsMaxMicrometres[3]  = {};
     int64_t     fitAnchorMicrometres[3]     = {};
     int32_t     fitForwardMilli[3]          = {};
+    uint32_t    fitLandmarkMask             = 0u;
+    int64_t     fitLandmarkMicrometres[3][3] = {};
+    bool        cameraProjectionValid       = false;
+    uint32_t    cameraProjectionWidth       = 0u;
+    uint32_t    cameraProjectionHeight      = 0u;
+    int32_t     cameraProjectionViewport[4] = {};
+    int32_t     cameraProjectionScissor[4]  = {};
+    uint32_t    cameraProjectionPrimitiveDraws = 0u;
+    int32_t     cameraBoundsPixelMilli[4]   = {};
+    uint32_t    cameraBoundsClipFlags       = 0u;
+    int32_t     cameraLandmarkPixelMilli[3][2] = {};
+    int32_t     cameraLandmarkDepthMillionths[3] = {};
+    uint32_t    cameraLandmarkClipFlags[3]  = {};
     std::string backend;
     std::string adapter;
     std::string driver;

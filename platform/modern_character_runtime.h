@@ -81,6 +81,14 @@ typedef enum MdkrModernCharacterMotionSource {
     MDKR_MODERN_CHARACTER_MOTION_COUNT,
 } MdkrModernCharacterMotionSource;
 
+#define MDKR_MODERN_CHARACTER_FIT_LANDMARKS 3u
+
+typedef enum MdkrModernCharacterFitLandmark {
+    MDKR_MODERN_CHARACTER_FIT_LANDMARK_HIPS = 0,
+    MDKR_MODERN_CHARACTER_FIT_LANDMARK_CHEST,
+    MDKR_MODERN_CHARACTER_FIT_LANDMARK_HEAD,
+} MdkrModernCharacterFitLandmark;
+
 /* Latest successfully emitted calibrated volume in the donor target frame.
  * This is exact transform evidence from the real replacement draw, not a
  * second preview renderer and not a claim about every deformed vertex. +Y is
@@ -91,6 +99,12 @@ typedef struct MdkrModernCharacterFitDiagnostics {
     float bounds_max[3];
     float anchor[3];
     float forward[3];
+    /* Exact current-pose node origins after the same source normalization and
+     * authored/user context transform as the accepted replacement draw. Hips
+     * and chest require a reviewed humanoid map. Head uses that map when
+     * available and otherwise the package-required head socket. */
+    float landmarks[MDKR_MODERN_CHARACTER_FIT_LANDMARKS][3];
+    uint32_t landmark_valid_mask;
 } MdkrModernCharacterFitDiagnostics;
 
 /* Latest exact post-solve contact witnesses in the donor target frame. These

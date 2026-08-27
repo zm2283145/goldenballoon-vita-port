@@ -6340,6 +6340,8 @@ bool characterPreviewFitDiagnosticsValid(
     const MdkrCharacterPreviewResult &result);
 bool characterPreviewProjectionValid(
     const MdkrCharacterPreviewResult &result);
+bool characterPreviewCameraProjectionValid(
+    const MdkrCharacterPreviewResult &result);
 bool characterPreviewContactDiagnosticsValid(
     const MdkrCharacterPreviewResult &result);
 MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
@@ -6384,6 +6386,7 @@ bool characterPreviewSessionMatchesTuning(
            mdkr_modern_character_gpu_timing_metrics_valid(
                &session.result.gpu_timing) != 0 &&
            characterPreviewFitDiagnosticsValid(session.result) &&
+           characterPreviewCameraProjectionValid(session.result) &&
            characterPreviewProjectionValid(session.result) &&
            characterPreviewContactDiagnosticsValid(session.result) &&
            (session.result.capture_requested
@@ -7434,7 +7437,8 @@ ImVec4 characterWorkshopQualityColour(
 }
 
 void drawCharacterFitQualityBands(
-    const CharacterWorkshopFitAssessment &assessment) {
+    const CharacterWorkshopFitAssessment &assessment,
+    const MdkrCharacterPreviewResult &result) {
     if (!assessment.valid) return;
     ImGui::TextUnformatted("Measured quality bands");
     ImGui::TextColored(
@@ -7463,11 +7467,19 @@ void drawCharacterFitQualityBands(
         "(width/height %.2f · depth/height %.2f)",
         static_cast<double>(assessment.widthToHeight),
         static_cast<double>(assessment.depthToHeight));
+    const bool exactFraming =
+        characterPreviewCameraProjectionValid(result) &&
+        result.camera_projection_valid;
+    ImGui::TextColored(
+        exactFraming ? AppTheme::good() : AppTheme::accent(),
+        exactFraming
+            ? "Gameplay-camera framing · Exact envelope measured"
+            : "Gameplay-camera framing · Exact evidence unavailable");
     ImGui::TextColored(
         AppTheme::accent(),
-        "Camera and vehicle occlusion · Visual review required");
+        "Vehicle occlusion and shell intersection · Visual review required");
     ui::TextSubtleWrapped(
-        "Green means the measured starting range is ordinary, amber asks for judgement, and red identifies a likely placement defect. These advisory bands never reject unusual anatomy. Bounds cannot see the kart shell, costume silhouette, or gameplay camera crop, so the exact scene remains the authority.");
+        "Green means the measured starting range is ordinary, amber asks for judgement, and red identifies a likely placement defect. These advisory bands never reject unusual anatomy. The camera envelope uses the real scene projection, but calibrated bounds still cannot prove depth visibility, costume silhouette, or kart-shell penetration; the composed scene remains authoritative for those checks.");
 }
 
 bool drawCharacterOffsetSuggestion(
@@ -7488,7 +7500,7 @@ bool drawCharacterOffsetSuggestion(
         return false;
     }
     drawCharacterFitQualityBands(
-        CharacterWorkshop_assessFit(measurement));
+        CharacterWorkshop_assessFit(measurement), result);
 
     ImGui::Text(
         "Rendered height %.3f m · lowest point %.3f m · visibility target %.3f m",
@@ -8817,6 +8829,39 @@ CharacterTestEvidenceStore::Evidence characterTestEvidenceFromResult(
             result.fit_anchor_micrometres[axis];
         evidence.fitForwardMilli[axis] = result.fit_forward_milli[axis];
     }
+    evidence.fitLandmarkMask = result.fit_landmark_mask;
+    for (unsigned landmark = 0u;
+         landmark < MDKR_CHARACTER_PREVIEW_LANDMARKS; ++landmark) {
+        for (unsigned axis = 0u; axis < 3u; ++axis) {
+            evidence.fitLandmarkMicrometres[landmark][axis] =
+                result.fit_landmark_micrometres[landmark][axis];
+        }
+    }
+    evidence.cameraProjectionValid = result.camera_projection_valid != 0;
+    evidence.cameraProjectionWidth = result.camera_projection_width;
+    evidence.cameraProjectionHeight = result.camera_projection_height;
+    evidence.cameraProjectionPrimitiveDraws =
+        result.camera_projection_primitive_draws;
+    for (unsigned component = 0u; component < 4u; ++component) {
+        evidence.cameraProjectionViewport[component] =
+            result.camera_projection_viewport[component];
+        evidence.cameraProjectionScissor[component] =
+            result.camera_projection_scissor[component];
+        evidence.cameraBoundsPixelMilli[component] =
+            result.camera_bounds_pixel_milli[component];
+    }
+    evidence.cameraBoundsClipFlags = result.camera_bounds_clip_flags;
+    for (unsigned landmark = 0u;
+         landmark < MDKR_CHARACTER_PREVIEW_LANDMARKS; ++landmark) {
+        evidence.cameraLandmarkPixelMilli[landmark][0] =
+            result.camera_landmark_pixel_milli[landmark][0];
+        evidence.cameraLandmarkPixelMilli[landmark][1] =
+            result.camera_landmark_pixel_milli[landmark][1];
+        evidence.cameraLandmarkDepthMillionths[landmark] =
+            result.camera_landmark_depth_millionths[landmark];
+        evidence.cameraLandmarkClipFlags[landmark] =
+            result.camera_landmark_clip_flags[landmark];
+    }
     evidence.backend = boundedCharacterPreviewText(
         result.renderer_backend, sizeof(result.renderer_backend));
     evidence.adapter = boundedCharacterPreviewText(
@@ -8840,6 +8885,7 @@ MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
     result.context = static_cast<MdkrCharacterPreviewContext>(
         evidence.context);
     result.players = static_cast<int>(evidence.players);
+    result.warmup_complete = evidence.warmupComplete ? 1 : 0;
     result.gpu_timing = evidence.gpuTiming;
     result.replacement_draws = evidence.replacementDraws;
     result.contact_solves = evidence.contactSolves;
@@ -8858,6 +8904,44 @@ MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
             evidence.fitAnchorMicrometres[axis];
         result.fit_forward_milli[axis] = evidence.fitForwardMilli[axis];
     }
+    result.fit_landmark_mask = evidence.fitLandmarkMask;
+    for (unsigned landmark = 0u;
+         landmark < MDKR_CHARACTER_PREVIEW_LANDMARKS; ++landmark) {
+        for (unsigned axis = 0u; axis < 3u; ++axis) {
+            result.fit_landmark_micrometres[landmark][axis] =
+                evidence.fitLandmarkMicrometres[landmark][axis];
+        }
+    }
+    result.camera_projection_valid =
+        evidence.cameraProjectionValid ? 1 : 0;
+    result.camera_projection_width = evidence.cameraProjectionWidth;
+    result.camera_projection_height = evidence.cameraProjectionHeight;
+    result.camera_projection_primitive_draws =
+        evidence.cameraProjectionPrimitiveDraws;
+    for (unsigned component = 0u; component < 4u; ++component) {
+        result.camera_projection_viewport[component] =
+            evidence.cameraProjectionViewport[component];
+        result.camera_projection_scissor[component] =
+            evidence.cameraProjectionScissor[component];
+        result.camera_bounds_pixel_milli[component] =
+            evidence.cameraBoundsPixelMilli[component];
+    }
+    result.camera_bounds_clip_flags = evidence.cameraBoundsClipFlags;
+    for (unsigned landmark = 0u;
+         landmark < MDKR_CHARACTER_PREVIEW_LANDMARKS; ++landmark) {
+        result.camera_landmark_pixel_milli[landmark][0] =
+            evidence.cameraLandmarkPixelMilli[landmark][0];
+        result.camera_landmark_pixel_milli[landmark][1] =
+            evidence.cameraLandmarkPixelMilli[landmark][1];
+        result.camera_landmark_depth_millionths[landmark] =
+            evidence.cameraLandmarkDepthMillionths[landmark];
+        result.camera_landmark_clip_flags[landmark] =
+            evidence.cameraLandmarkClipFlags[landmark];
+    }
+    result.output_width = evidence.outputWidth;
+    result.output_height = evidence.outputHeight;
+    result.render_width = evidence.renderWidth;
+    result.render_height = evidence.renderHeight;
     for (unsigned contact = 0u;
          contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
         for (unsigned axis = 0u; axis < 3u; ++axis) {
@@ -8921,6 +9005,9 @@ uint32_t characterGpuTimingStatusRepresentation(
 
 bool characterPreviewFitDiagnosticsValid(
     const MdkrCharacterPreviewResult &result) {
+    constexpr unsigned kAllLandmarks =
+        (1u << MDKR_CHARACTER_PREVIEW_LANDMARKS) - 1u;
+    if ((result.fit_landmark_mask & ~kAllLandmarks) != 0u) return false;
     if (result.fit_diagnostics_valid != 0 &&
         result.fit_diagnostics_valid != 1) return false;
     if (!result.fit_diagnostics_valid) {
@@ -8929,6 +9016,15 @@ bool characterPreviewFitDiagnosticsValid(
                 result.fit_bounds_max_micrometres[axis] != 0 ||
                 result.fit_anchor_micrometres[axis] != 0 ||
                 result.fit_forward_milli[axis] != 0) return false;
+        }
+        if (result.fit_landmark_mask != 0u) return false;
+        for (unsigned landmark = 0u;
+             landmark < MDKR_CHARACTER_PREVIEW_LANDMARKS; ++landmark) {
+            for (unsigned axis = 0u; axis < 3u; ++axis) {
+                if (result.fit_landmark_micrometres[landmark][axis] != 0) {
+                    return false;
+                }
+            }
         }
         return true;
     }
@@ -8951,12 +9047,192 @@ bool characterPreviewFitDiagnosticsValid(
             static_cast<long long>(result.fit_forward_milli[axis]) *
             result.fit_forward_milli[axis];
     }
+    for (unsigned landmark = 0u;
+         landmark < MDKR_CHARACTER_PREVIEW_LANDMARKS; ++landmark) {
+        const bool valid =
+            (result.fit_landmark_mask & (1u << landmark)) != 0u;
+        for (unsigned axis = 0u; axis < 3u; ++axis) {
+            const long long value =
+                result.fit_landmark_micrometres[landmark][axis];
+            if ((!valid && value != 0) || !withinFitRange(value)) {
+                return false;
+            }
+        }
+    }
+    if (result.version >= 15u && result.warmup_complete &&
+        result.replacement_draws != 0u &&
+        (result.fit_landmark_mask &
+         (1u << MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD)) == 0u) {
+        return false;
+    }
     return forwardLengthSquared >= 995000LL &&
            forwardLengthSquared <= 1005000LL;
 }
 
+bool characterPreviewCameraProjectionValid(
+    const MdkrCharacterPreviewResult &result) {
+    constexpr unsigned kKnownClipFlags =
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_LEFT |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_RIGHT |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_TOP |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_BOTTOM |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_NEAR |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_FAR |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_SCISSOR;
+    if (result.camera_projection_valid != 0 &&
+        result.camera_projection_valid != 1) return false;
+    const auto allZero = [&result]() {
+        if (result.camera_projection_width != 0u ||
+            result.camera_projection_height != 0u ||
+            result.camera_projection_primitive_draws != 0u) return false;
+        for (unsigned component = 0u; component < 4u; ++component) {
+            if (result.camera_projection_viewport[component] != 0 ||
+                result.camera_projection_scissor[component] != 0 ||
+                result.camera_bounds_pixel_milli[component] != 0) {
+                return false;
+            }
+        }
+        if (result.camera_bounds_clip_flags != 0u) return false;
+        for (unsigned landmark = 0u;
+             landmark < MDKR_CHARACTER_PREVIEW_LANDMARKS; ++landmark) {
+            if (result.camera_landmark_pixel_milli[landmark][0] != 0 ||
+                result.camera_landmark_pixel_milli[landmark][1] != 0 ||
+                result.camera_landmark_depth_millionths[landmark] != 0 ||
+                result.camera_landmark_clip_flags[landmark] != 0u) {
+                return false;
+            }
+        }
+        return true;
+    };
+    if (!result.camera_projection_valid) {
+        return allZero() &&
+            !(result.version >= 15u && result.warmup_complete &&
+              result.replacement_draws != 0u);
+    }
+    if (!result.fit_diagnostics_valid ||
+        result.camera_projection_width == 0u ||
+        result.camera_projection_height == 0u ||
+        result.camera_projection_width != result.render_width ||
+        result.camera_projection_height != result.render_height ||
+        result.camera_projection_width > 16384u ||
+        result.camera_projection_height > 16384u ||
+        result.camera_projection_primitive_draws == 0u ||
+        result.camera_projection_primitive_draws > 4096u ||
+        result.camera_bounds_pixel_milli[0] >=
+            result.camera_bounds_pixel_milli[2] ||
+        result.camera_bounds_pixel_milli[1] >=
+            result.camera_bounds_pixel_milli[3]) return false;
+    if ((result.camera_bounds_clip_flags & ~kKnownClipFlags) != 0u) {
+        return false;
+    }
+    const auto rectValid = [&result](const int rect[4]) {
+        return rect[0] >= 0 && rect[1] >= 0 && rect[2] > 0 && rect[3] > 0 &&
+            static_cast<long long>(rect[0]) + rect[2] <=
+                result.camera_projection_width &&
+            static_cast<long long>(rect[1]) + rect[3] <=
+                result.camera_projection_height;
+    };
+    if (!rectValid(result.camera_projection_viewport) ||
+        !rectValid(result.camera_projection_scissor)) return false;
+    const long long viewportLeft =
+        static_cast<long long>(result.camera_projection_viewport[0]) * 1000;
+    const long long viewportTop =
+        static_cast<long long>(result.camera_projection_viewport[1]) * 1000;
+    const long long viewportRight =
+        (static_cast<long long>(result.camera_projection_viewport[0]) +
+         result.camera_projection_viewport[2]) * 1000;
+    const long long viewportBottom =
+        (static_cast<long long>(result.camera_projection_viewport[1]) +
+         result.camera_projection_viewport[3]) * 1000;
+    const long long scissorLeft =
+        static_cast<long long>(result.camera_projection_scissor[0]) * 1000;
+    const long long scissorTop =
+        static_cast<long long>(result.camera_projection_scissor[1]) * 1000;
+    const long long scissorRight =
+        (static_cast<long long>(result.camera_projection_scissor[0]) +
+         result.camera_projection_scissor[2]) * 1000;
+    const long long scissorBottom =
+        (static_cast<long long>(result.camera_projection_scissor[1]) +
+         result.camera_projection_scissor[3]) * 1000;
+    constexpr long long kTolerance = 1;
+    const bool boundsOutsideScissor =
+        result.camera_bounds_pixel_milli[0] < scissorLeft - kTolerance ||
+        result.camera_bounds_pixel_milli[2] > scissorRight + kTolerance ||
+        result.camera_bounds_pixel_milli[1] < scissorTop - kTolerance ||
+        result.camera_bounds_pixel_milli[3] > scissorBottom + kTolerance;
+    if (((result.camera_bounds_pixel_milli[0] <
+              viewportLeft - kTolerance) !=
+         ((result.camera_bounds_clip_flags &
+           MDKR_MODERN_CHARACTER_PROJECTION_CLIP_LEFT) != 0u)) ||
+        ((result.camera_bounds_pixel_milli[2] >
+              viewportRight + kTolerance) !=
+         ((result.camera_bounds_clip_flags &
+           MDKR_MODERN_CHARACTER_PROJECTION_CLIP_RIGHT) != 0u)) ||
+        ((result.camera_bounds_pixel_milli[1] <
+              viewportTop - kTolerance) !=
+         ((result.camera_bounds_clip_flags &
+           MDKR_MODERN_CHARACTER_PROJECTION_CLIP_TOP) != 0u)) ||
+        ((result.camera_bounds_pixel_milli[3] >
+              viewportBottom + kTolerance) !=
+         ((result.camera_bounds_clip_flags &
+           MDKR_MODERN_CHARACTER_PROJECTION_CLIP_BOTTOM) != 0u)) ||
+        (boundsOutsideScissor !=
+         ((result.camera_bounds_clip_flags &
+           MDKR_MODERN_CHARACTER_PROJECTION_CLIP_SCISSOR) != 0u))) {
+        return false;
+    }
+    for (unsigned landmark = 0u;
+         landmark < MDKR_CHARACTER_PREVIEW_LANDMARKS; ++landmark) {
+        const bool valid =
+            (result.fit_landmark_mask & (1u << landmark)) != 0u;
+        const long long x =
+            result.camera_landmark_pixel_milli[landmark][0];
+        const long long y =
+            result.camera_landmark_pixel_milli[landmark][1];
+        const int depth =
+            result.camera_landmark_depth_millionths[landmark];
+        const unsigned flags =
+            result.camera_landmark_clip_flags[landmark];
+        if (!valid) {
+            if (x != 0 || y != 0 || depth != 0 || flags != 0u) return false;
+            continue;
+        }
+        if ((flags & ~kKnownClipFlags) != 0u ||
+            ((x < viewportLeft - kTolerance) !=
+             ((flags & MDKR_MODERN_CHARACTER_PROJECTION_CLIP_LEFT) != 0u)) ||
+            ((x > viewportRight + kTolerance) !=
+             ((flags & MDKR_MODERN_CHARACTER_PROJECTION_CLIP_RIGHT) != 0u)) ||
+            ((y < viewportTop - kTolerance) !=
+             ((flags & MDKR_MODERN_CHARACTER_PROJECTION_CLIP_TOP) != 0u)) ||
+            ((y > viewportBottom + kTolerance) !=
+             ((flags & MDKR_MODERN_CHARACTER_PROJECTION_CLIP_BOTTOM) != 0u)) ||
+            ((depth < 0) !=
+             ((flags & MDKR_MODERN_CHARACTER_PROJECTION_CLIP_NEAR) != 0u)) ||
+            ((depth > 1000000) !=
+             ((flags & MDKR_MODERN_CHARACTER_PROJECTION_CLIP_FAR) != 0u))) {
+            return false;
+        }
+        const bool outsideScissor =
+            x < scissorLeft - kTolerance || x > scissorRight + kTolerance ||
+            y < scissorTop - kTolerance || y > scissorBottom + kTolerance;
+        if (outsideScissor !=
+            ((flags & MDKR_MODERN_CHARACTER_PROJECTION_CLIP_SCISSOR) != 0u)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool characterPreviewProjectionValid(
     const MdkrCharacterPreviewResult &result) {
+    constexpr unsigned kKnownClipFlags =
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_LEFT |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_RIGHT |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_TOP |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_BOTTOM |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_NEAR |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_FAR |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_SCISSOR;
     if (result.fit_projection_valid != 0 &&
         result.fit_projection_valid != 1) return false;
     const auto allProjectionValuesZero = [&result]() {
@@ -8997,34 +9273,26 @@ bool characterPreviewProjectionValid(
     };
     if (!rectValid(result.fit_projection_viewport) ||
         !rectValid(result.fit_projection_scissor)) return false;
-    constexpr unsigned kKnownClipFlags =
-        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_LEFT |
-        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_RIGHT |
-        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_TOP |
-        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_BOTTOM |
-        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_NEAR |
-        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_FAR |
-        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_SCISSOR;
     const long long viewportLeft =
         static_cast<long long>(result.fit_projection_viewport[0]) * 1000;
     const long long viewportTop =
         static_cast<long long>(result.fit_projection_viewport[1]) * 1000;
-    const long long viewportRight = static_cast<long long>(
-        result.fit_projection_viewport[0] +
-        result.fit_projection_viewport[2]) * 1000;
-    const long long viewportBottom = static_cast<long long>(
-        result.fit_projection_viewport[1] +
-        result.fit_projection_viewport[3]) * 1000;
+    const long long viewportRight =
+        (static_cast<long long>(result.fit_projection_viewport[0]) +
+         result.fit_projection_viewport[2]) * 1000;
+    const long long viewportBottom =
+        (static_cast<long long>(result.fit_projection_viewport[1]) +
+         result.fit_projection_viewport[3]) * 1000;
     const long long scissorLeft =
         static_cast<long long>(result.fit_projection_scissor[0]) * 1000;
     const long long scissorTop =
         static_cast<long long>(result.fit_projection_scissor[1]) * 1000;
-    const long long scissorRight = static_cast<long long>(
-        result.fit_projection_scissor[0] +
-        result.fit_projection_scissor[2]) * 1000;
-    const long long scissorBottom = static_cast<long long>(
-        result.fit_projection_scissor[1] +
-        result.fit_projection_scissor[3]) * 1000;
+    const long long scissorRight =
+        (static_cast<long long>(result.fit_projection_scissor[0]) +
+         result.fit_projection_scissor[2]) * 1000;
+    const long long scissorBottom =
+        (static_cast<long long>(result.fit_projection_scissor[1]) +
+         result.fit_projection_scissor[3]) * 1000;
     constexpr long long kRoundingTolerance = 1;
     for (unsigned point = 0u;
          point < MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS; ++point) {
@@ -9115,6 +9383,221 @@ bool characterPreviewContactDiagnosticsValid(
            latestMaximum - result.contact_error_max_micrometres <= 3u;
 }
 
+void drawCharacterCameraFramingDiagnostics(
+    const MdkrCharacterPreviewResult &result, bool compact) {
+    if (!characterPreviewCameraProjectionValid(result) ||
+        !result.camera_projection_valid) {
+        if (!compact) {
+            ui::TextSubtleWrapped(
+                "No exact gameplay-camera envelope was returned. Placement evidence remains usable, but framing must be reviewed in the composed scene.");
+        }
+        return;
+    }
+    const double viewportWidth = result.camera_projection_viewport[2];
+    const double viewportHeight = result.camera_projection_viewport[3];
+    const double boundsWidth =
+        (static_cast<long long>(result.camera_bounds_pixel_milli[2]) -
+         result.camera_bounds_pixel_milli[0]) / 1000.0;
+    const double boundsHeight =
+        (static_cast<long long>(result.camera_bounds_pixel_milli[3]) -
+         result.camera_bounds_pixel_milli[1]) / 1000.0;
+    const double widthOccupancy = boundsWidth / viewportWidth * 100.0;
+    const double heightOccupancy = boundsHeight / viewportHeight * 100.0;
+    constexpr unsigned kVisibleClipFlags =
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_LEFT |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_RIGHT |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_TOP |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_BOTTOM |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_NEAR |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_FAR |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_SCISSOR;
+    const bool volumeClipped =
+        (result.camera_bounds_clip_flags & kVisibleClipFlags) != 0u;
+    const bool hasHead =
+        (result.fit_landmark_mask &
+         (1u << MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD)) != 0u;
+    const bool headClipped = hasHead &&
+        (result.camera_landmark_clip_flags
+             [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD] &
+         kVisibleClipFlags) != 0u;
+    ImGui::TextColored(
+        volumeClipped || headClipped ? AppTheme::bad() : AppTheme::good(),
+        volumeClipped
+            ? "Gameplay camera clips the calibrated character envelope"
+            : headClipped
+                ? "Gameplay camera clips the authored head landmark"
+                : "Gameplay camera contains the calibrated envelope");
+    {
+        const float uiScale = AppTheme::uiScale();
+        const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+        const ImVec2 size(
+            width, (compact ? 112.0f : 145.0f) * uiScale);
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const ImVec2 maximum(origin.x + size.x, origin.y + size.y);
+        ImGui::PushID("gameplay-camera-envelope");
+        ImGui::PushID(static_cast<int>(result.context));
+        ImGui::InvisibleButton("##plot", size);
+        const bool focused = ImGui::IsItemFocused();
+        char spoken[512];
+        std::snprintf(
+            spoken, sizeof(spoken),
+            "Exact gameplay camera envelope. Calibrated bounds occupy %.1f percent of viewport width and %.1f percent of viewport height. Volume %s. Head %s.",
+            widthOccupancy, heightOccupancy,
+            volumeClipped ? "is clipped" : "is inside the camera",
+            hasHead ? (headClipped ? "is clipped" : "is inside the camera")
+                    : "landmark is unavailable");
+        ui::SpeakFocusedItem(
+            "Gameplay camera envelope", nullptr, spoken);
+        ImDrawList *draw = ImGui::GetWindowDrawList();
+        draw->AddRectFilled(origin, maximum, IM_COL32(12, 17, 24, 255),
+                            6.0f * uiScale);
+        draw->AddRect(
+            origin, maximum,
+            focused ? ImGui::GetColorU32(ImGuiCol_NavHighlight)
+                    : IM_COL32(74, 86, 102, 255),
+            6.0f * uiScale, 0, (focused ? 2.0f : 1.0f) * uiScale);
+        const float padding = std::min(
+            9.0f * uiScale,
+            std::max(0.0f, std::min(size.x, size.y) * 0.2f));
+        const ImVec2 plotMin(origin.x + padding, origin.y + padding);
+        const ImVec2 plotMax(maximum.x - padding, maximum.y - padding);
+        const auto project = [&](long long xMilli, long long yMilli) {
+            const double xPixels = xMilli / 1000.0;
+            const double yPixels = yMilli / 1000.0;
+            const double normalizedX = std::clamp(
+                (xPixels - result.camera_projection_viewport[0]) /
+                    viewportWidth,
+                -2.0, 3.0);
+            const double normalizedY = std::clamp(
+                (yPixels - result.camera_projection_viewport[1]) /
+                    viewportHeight,
+                -2.0, 3.0);
+            return ImVec2(
+                plotMin.x + static_cast<float>(normalizedX) *
+                    (plotMax.x - plotMin.x),
+                plotMin.y + static_cast<float>(normalizedY) *
+                    (plotMax.y - plotMin.y));
+        };
+        draw->PushClipRect(plotMin, plotMax, true);
+        const bool customScissor =
+            std::memcmp(
+                result.camera_projection_viewport,
+                result.camera_projection_scissor,
+                sizeof(result.camera_projection_viewport)) != 0;
+        if (customScissor) {
+            const ImVec2 scissorMinimum = project(
+                static_cast<long long>(
+                    result.camera_projection_scissor[0]) * 1000,
+                static_cast<long long>(
+                    result.camera_projection_scissor[1]) * 1000);
+            const ImVec2 scissorMaximum = project(
+                (static_cast<long long>(
+                     result.camera_projection_scissor[0]) +
+                 result.camera_projection_scissor[2]) * 1000,
+                (static_cast<long long>(
+                     result.camera_projection_scissor[1]) +
+                 result.camera_projection_scissor[3]) * 1000);
+            draw->AddRect(
+                scissorMinimum, scissorMaximum,
+                IM_COL32(181, 147, 255, 210), 0.0f, 0,
+                1.0f * uiScale);
+            draw->AddText(
+                ImVec2(scissorMinimum.x + 3.0f * uiScale,
+                       scissorMinimum.y + 2.0f * uiScale),
+                IM_COL32(181, 147, 255, 230), "Scissor");
+        }
+        const ImVec2 boundsMinimum = project(
+            result.camera_bounds_pixel_milli[0],
+            result.camera_bounds_pixel_milli[1]);
+        const ImVec2 boundsMaximum = project(
+            result.camera_bounds_pixel_milli[2],
+            result.camera_bounds_pixel_milli[3]);
+        const ImU32 boundsColour = volumeClipped
+            ? IM_COL32(238, 103, 103, 245)
+            : IM_COL32(112, 210, 154, 245);
+        draw->AddRectFilled(boundsMinimum, boundsMaximum,
+                            volumeClipped ? IM_COL32(238, 103, 103, 38)
+                                          : IM_COL32(112, 210, 154, 38));
+        draw->AddRect(boundsMinimum, boundsMaximum, boundsColour,
+                      0.0f, 0, 2.0f * uiScale);
+        static const char *labels[MDKR_CHARACTER_PREVIEW_LANDMARKS] = {
+            "Hi", "C", "H",
+        };
+        for (unsigned landmark = 0u;
+             landmark < MDKR_CHARACTER_PREVIEW_LANDMARKS; ++landmark) {
+            if ((result.fit_landmark_mask & (1u << landmark)) == 0u) continue;
+            const ImVec2 point = project(
+                result.camera_landmark_pixel_milli[landmark][0],
+                result.camera_landmark_pixel_milli[landmark][1]);
+            const bool clipped =
+                (result.camera_landmark_clip_flags[landmark] &
+                 kVisibleClipFlags) != 0u;
+            const ImU32 colour = clipped
+                ? IM_COL32(238, 103, 103, 255)
+                : landmark == MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD
+                    ? IM_COL32(92, 200, 255, 255)
+                    : IM_COL32(255, 209, 102, 255);
+            draw->AddCircleFilled(point, 5.0f * uiScale, colour);
+            draw->AddText(
+                ImVec2(point.x + 7.0f * uiScale,
+                       point.y - 8.0f * uiScale),
+                colour, labels[landmark]);
+        }
+        draw->PopClipRect();
+        ImGui::PopID();
+        ImGui::PopID();
+    }
+    ImGui::TextDisabled(
+        "Markers: Hi hips · C chest · H head%s",
+        std::memcmp(
+            result.camera_projection_viewport,
+            result.camera_projection_scissor,
+            sizeof(result.camera_projection_viewport)) != 0
+                ? " · inner labelled outline is the scissor"
+                : "");
+    ImGui::Text(
+        "Camera occupancy: %.1f%% wide · %.1f%% tall · viewport %d x %d",
+        widthOccupancy, heightOccupancy,
+        result.camera_projection_viewport[2],
+        result.camera_projection_viewport[3]);
+    if (hasHead) {
+        const unsigned head = MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD;
+        ImGui::Text(
+            "Head landmark: %.1f, %.1f px · depth %.3f%s",
+            result.camera_landmark_pixel_milli[head][0] / 1000.0,
+            result.camera_landmark_pixel_milli[head][1] / 1000.0,
+            result.camera_landmark_depth_millionths[head] / 1000000.0,
+            headClipped ? " · outside camera/scissor" : "");
+    }
+    const unsigned torsoMask =
+        (1u << MDKR_CHARACTER_PREVIEW_LANDMARK_HIPS) |
+        (1u << MDKR_CHARACTER_PREVIEW_LANDMARK_CHEST);
+    if ((result.fit_landmark_mask & torsoMask) == torsoMask) {
+        const unsigned hips = MDKR_CHARACTER_PREVIEW_LANDMARK_HIPS;
+        const unsigned chest = MDKR_CHARACTER_PREVIEW_LANDMARK_CHEST;
+        ImGui::Text(
+            "Torso landmarks: hips %.1f, %.1f px · chest %.1f, %.1f px",
+            result.camera_landmark_pixel_milli[hips][0] / 1000.0,
+            result.camera_landmark_pixel_milli[hips][1] / 1000.0,
+            result.camera_landmark_pixel_milli[chest][0] / 1000.0,
+            result.camera_landmark_pixel_milli[chest][1] / 1000.0);
+        if (result.context != MDKR_CHARACTER_PREVIEW_SELECT) {
+            ImGui::Text(
+                "Seat to hips: X %+.3f m · Y %+.3f m · Z %+.3f m",
+                result.fit_landmark_micrometres[hips][0] / 1000000.0,
+                result.fit_landmark_micrometres[hips][1] / 1000000.0,
+                result.fit_landmark_micrometres[hips][2] / 1000000.0);
+        }
+    } else if (!compact) {
+        ui::TextSubtleWrapped(
+            "Head framing is exact, but hips/chest guidance requires a complete reviewed humanoid role map.");
+    }
+    if (!compact) {
+        ui::TextSubtleWrapped(
+            "This is the real scene camera, viewport, and scissor applied to the calibrated volume and current-pose node origins. It does not inspect the depth buffer, so a kart shell can still hide or intersect geometry even when framing is green.");
+    }
+}
+
 void drawCharacterFitDiagnostics(
     const MdkrCharacterPreviewResult &result, bool compact) {
     if (!result.fit_diagnostics_valid) {
@@ -9176,6 +9659,7 @@ void drawCharacterFitDiagnostics(
                 ? "Facing is off-axis: %.1f degrees from target +Z"
                 : "Facing: %.1f degrees from target +Z",
         facingDegrees);
+    drawCharacterCameraFramingDiagnostics(result, compact);
     if (!compact) {
         const double width =
             (result.fit_bounds_max_micrometres[0] -
@@ -9266,6 +9750,15 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
             "The engine returned an invalid renderer fit measurement.");
         ui::TextSubtleWrapped(
             "No fit conclusion or performance evidence was saved.");
+        ui::CardEnd();
+        return;
+    }
+    if (!characterPreviewCameraProjectionValid(result)) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "The engine returned invalid gameplay-camera fit evidence.");
+        ui::TextSubtleWrapped(
+            "No fit conclusion or performance evidence was saved. Run the exact context again.");
         ui::CardEnd();
         return;
     }
@@ -10802,6 +11295,7 @@ void drawCharacterTestEvidenceMatrix(
                 smokeAction, "publish-inspection-fallback") == 0 ||
             std::strcmp(smokeAction, "publish-mixed-mode") == 0 ||
             std::strcmp(smokeAction, "publish-invalid-fit") == 0 ||
+            std::strcmp(smokeAction, "publish-invalid-camera") == 0 ||
             std::strcmp(smokeAction, "publish-invalid-contact") == 0 ||
             std::strcmp(smokeAction, "publish-invalid-gpu") == 0 ||
             std::strcmp(
@@ -10901,6 +11395,29 @@ void drawCharacterTestEvidenceMatrix(
             result.fit_anchor_micrometres[1] = 20000;
             result.fit_anchor_micrometres[2] = -30000;
             result.fit_forward_milli[2] = 1000;
+            result.fit_landmark_mask = 0x7u;
+            result.fit_landmark_micrometres[0][1] = 100000;
+            result.fit_landmark_micrometres[1][1] = 600000;
+            result.fit_landmark_micrometres[2][1] = 1200000;
+            result.camera_projection_valid = 1;
+            result.camera_projection_width = 2560u;
+            result.camera_projection_height = 1920u;
+            result.camera_projection_viewport[2] = 2560;
+            result.camera_projection_viewport[3] = 1920;
+            result.camera_projection_scissor[2] = 2560;
+            result.camera_projection_scissor[3] = 1920;
+            result.camera_projection_primitive_draws = 2u;
+            result.camera_bounds_pixel_milli[0] = 800000;
+            result.camera_bounds_pixel_milli[1] = 300000;
+            result.camera_bounds_pixel_milli[2] = 1760000;
+            result.camera_bounds_pixel_milli[3] = 1500000;
+            for (unsigned landmark = 0u;
+                 landmark < MDKR_CHARACTER_PREVIEW_LANDMARKS; ++landmark) {
+                result.camera_landmark_pixel_milli[landmark][0] = 1280000;
+                result.camera_landmark_pixel_milli[landmark][1] =
+                    1300000 - static_cast<int>(landmark) * 400000;
+                result.camera_landmark_depth_millionths[landmark] = 500000;
+            }
             std::snprintf(result.renderer_backend,
                           sizeof(result.renderer_backend), "%s",
                           "webgpu-test");
@@ -10947,11 +11464,14 @@ void drawCharacterTestEvidenceMatrix(
                 smokeAction, "publish-mixed-mode") == 0;
             const bool invalidFit = std::strcmp(
                 smokeAction, "publish-invalid-fit") == 0;
+            const bool invalidCamera = std::strcmp(
+                smokeAction, "publish-invalid-camera") == 0;
             const bool invalidContact = std::strcmp(
                 smokeAction, "publish-invalid-contact") == 0;
             const bool invalidGpu = std::strcmp(
                 smokeAction, "publish-invalid-gpu") == 0;
             if (invalidFit) result.fit_diagnostics_valid = 2;
+            if (invalidCamera) result.camera_bounds_clip_flags = 0x80u;
             if (invalidContact) result.contact_witness_mask = 0x3u;
             if (invalidGpu) {
                 const uint32_t invalidStatus = 99u;
@@ -11128,7 +11648,8 @@ void drawCharacterTestEvidenceMatrix(
                 applied = g_characterTestEvidence.records.size() == 16u &&
                     characterPerformanceEvidenceState(entry, tuning) ==
                         CharacterWorkshopPerformanceState::OverTarget;
-            } else if (invalidFit || invalidContact || invalidGpu) {
+            } else if (invalidFit || invalidCamera || invalidContact ||
+                       invalidGpu) {
                 applied = session != g_characterPreviewResults.end() &&
                     latest == nullptr && !sessionMatches;
             } else if (mixedMode) {
@@ -19670,6 +20191,7 @@ void Settings_publishCharacterPreviewResult(
                 result.version == MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
                 result.started && result.warmup_complete &&
                 characterPreviewFitDiagnosticsValid(result) &&
+                characterPreviewCameraProjectionValid(result) &&
                 characterPreviewProjectionValid(result) &&
                 mdkr_modern_character_gpu_timing_metrics_valid(
                     &result.gpu_timing) != 0 &&
@@ -19867,18 +20389,21 @@ void Settings_publishCharacterPreviewResult(
     }
     if (result.version != MDKR_CHARACTER_PREVIEW_RESULT_VERSION ||
         !result.started || !characterPreviewFitDiagnosticsValid(result) ||
+        !characterPreviewCameraProjectionValid(result) ||
         !characterPreviewProjectionValid(result) ||
         !characterPreviewContactDiagnosticsValid(result)) {
         if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
             std::fprintf(
                 stderr,
-                "[app-ui] character-preview-result rejected-evidence=fit-contact-contract package=%s version=%u started=%d fit=%d contactMask=%x\n",
+                "[app-ui] character-preview-result rejected-evidence=fit-camera-contact-contract package=%s version=%u started=%d fit=%d camera=%d cameraFlags=%x contactMask=%x\n",
                 packageId.c_str(), result.version, result.started,
                 result.fit_diagnostics_valid,
+                result.camera_projection_valid,
+                result.camera_bounds_clip_flags,
                 result.contact_witness_mask);
         }
         setStatus(
-            "The engine returned an invalid renderer fit or contact contract; the session is visible for diagnosis but no durable performance evidence was saved.",
+            "The engine returned an invalid renderer fit, gameplay-camera, or contact contract; the session is visible for diagnosis but no durable performance evidence was saved.",
             AppTheme::bad());
         return;
     }

@@ -73,6 +73,12 @@ typedef enum {
 } MdkrCharacterPreviewCaptureKind;
 
 #define MDKR_CHARACTER_PREVIEW_CONTACTS 4u
+#define MDKR_CHARACTER_PREVIEW_LANDMARKS 3u
+typedef enum MdkrCharacterPreviewLandmark {
+    MDKR_CHARACTER_PREVIEW_LANDMARK_HIPS = 0,
+    MDKR_CHARACTER_PREVIEW_LANDMARK_CHEST,
+    MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD,
+} MdkrCharacterPreviewLandmark;
 #define MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS 10u
 #define MDKR_CHARACTER_PREVIEW_PROJECTION_BOUNDS_POINTS 8u
 #define MDKR_CHARACTER_PREVIEW_PROJECTION_ANCHOR_POINT 8u
@@ -129,6 +135,30 @@ typedef struct MdkrCharacterPreviewResult {
     long long fit_bounds_max_micrometres[3];
     long long fit_anchor_micrometres[3];
     int fit_forward_milli[3];
+    /* Exact current-pose anatomy points in the donor target frame. Stable
+     * order is hips, chest, head. Hips/chest require a reviewed humanoid map;
+     * head may fall back to the required package socket. */
+    unsigned fit_landmark_mask;
+    long long fit_landmark_micrometres
+        [MDKR_CHARACTER_PREVIEW_LANDMARKS][3];
+    /* Ordinary scene-camera projection of the calibrated volume and anatomy
+     * points. Unlike the isolated model capture below, this preserves the
+     * gameplay camera and viewport. It proves framing, not depth visibility or
+     * vehicle-shell intersection. */
+    int camera_projection_valid;
+    unsigned camera_projection_width;
+    unsigned camera_projection_height;
+    int camera_projection_viewport[4];
+    int camera_projection_scissor[4];
+    unsigned camera_projection_primitive_draws;
+    int camera_bounds_pixel_milli[4]; /* left, top, right, bottom */
+    unsigned camera_bounds_clip_flags;
+    int camera_landmark_pixel_milli
+        [MDKR_CHARACTER_PREVIEW_LANDMARKS][2];
+    int camera_landmark_depth_millionths
+        [MDKR_CHARACTER_PREVIEW_LANDMARKS];
+    unsigned camera_landmark_clip_flags
+        [MDKR_CHARACTER_PREVIEW_LANDMARKS];
     /* Model-alpha captures additionally bind the donor-target fit to exact PNG
      * pixels. Points 0..7 are the calibrated AABB corners (XYZ bits), point 8
      * is the anchor, and point 9 is a scaled forward endpoint. All values are
@@ -179,7 +209,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 14u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 15u
 #define MDKR_CHARACTER_PREVIEW_TRANSITION_DWELL_MILLI \
     MDKR_MODERN_CHARACTER_INSPECTION_TRANSITION_DWELL_MILLI
 #define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u

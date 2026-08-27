@@ -385,6 +385,59 @@ static int calibration_fit_diagnostics(
     return 1;
 }
 
+static void fit_pose_landmarks(
+    const MdkrModernPose *pose, const float transform[16],
+    MdkrModernCharacterFitDiagnostics *out) {
+    static const uint32_t roles[MDKR_MODERN_CHARACTER_FIT_LANDMARKS] = {
+        0u, /* hips */
+        2u, /* chest */
+        3u, /* head */
+    };
+    unsigned landmark;
+    if (pose == NULL || transform == NULL || out == NULL) return;
+    if (mdkr_modern_pose_humanoid_retarget_ready(pose)) {
+        for (landmark = 0u;
+             landmark < MDKR_MODERN_CHARACTER_FIT_LANDMARKS; ++landmark) {
+            const float *node = mdkr_modern_pose_node_matrix(
+                pose, pose->rig_role_nodes[roles[landmark]], 0);
+            float point[3];
+            if (node == NULL) continue;
+            point[0] = node[12];
+            point[1] = node[13];
+            point[2] = node[14];
+            matrix_transform_point(transform, point,
+                                   out->landmarks[landmark]);
+            if (isfinite(out->landmarks[landmark][0]) &&
+                isfinite(out->landmarks[landmark][1]) &&
+                isfinite(out->landmarks[landmark][2])) {
+                out->landmark_valid_mask |= 1u << landmark;
+            } else {
+                memset(out->landmarks[landmark], 0,
+                       sizeof(out->landmarks[landmark]));
+            }
+        }
+        return;
+    }
+    {
+        float head[16];
+        const unsigned landmark =
+            MDKR_MODERN_CHARACTER_FIT_LANDMARK_HEAD;
+        if (mdkr_modern_pose_socket_matrix(pose, "head", 0, head)) {
+            const float point[3] = {head[12], head[13], head[14]};
+            matrix_transform_point(transform, point,
+                                   out->landmarks[landmark]);
+            if (isfinite(out->landmarks[landmark][0]) &&
+                isfinite(out->landmarks[landmark][1]) &&
+                isfinite(out->landmarks[landmark][2])) {
+                out->landmark_valid_mask |= 1u << landmark;
+            } else {
+                memset(out->landmarks[landmark], 0,
+                       sizeof(out->landmarks[landmark]));
+            }
+        }
+    }
+}
+
 static int calibration_focus(const MdkrModernCalibration *calibration,
                              const float transform[16], float center[3],
                              float *radius) {
@@ -1683,6 +1736,10 @@ int mdkr_modern_character_emit(int player, int view,
         fit_diagnostics_ready = calibration_fit_diagnostics(
             &calibration, adjusted_transform, source_anchor,
             &fit_diagnostics);
+        if (fit_diagnostics_ready) {
+            fit_pose_landmarks(&slot->pose, adjusted_transform,
+                               &fit_diagnostics);
+        }
         if (context != MDKR_CHARACTER_CONTEXT_SELECT &&
             slot->pose.contact_generation == slot->pose.generation &&
             slot->pose.contact_context == (uint32_t)context &&

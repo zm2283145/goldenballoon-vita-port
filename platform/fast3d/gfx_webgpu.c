@@ -573,6 +573,15 @@ static uint32_t s_skinned_capture_height = 0u;
 static bool s_skinned_capture_ready = false;
 static MdkrModernCharacterCaptureProjection
     s_skinned_capture_projection;
+/* Staging is reset for each frame; the public witness changes only after an
+ * accepted draw. An empty teardown/capture frame therefore cannot erase the
+ * last complete scene camera. A frame with conflicting character primitives
+ * invalidates the witness rather than exposing a stale or partial transform. */
+static MdkrModernCharacterCaptureProjection
+    s_skinned_scene_projection;
+static MdkrModernCharacterCaptureProjection
+    s_skinned_frame_scene_projection;
+static bool s_skinned_scene_projection_conflict = false;
 static bool wgpu_render_skinned_capture(void);
 static void wgpu_release_skinned_capture_target(void);
 
@@ -2772,6 +2781,9 @@ static bool wgpu_start_frame(void) {
     s_skinned_capture_overflow = false;
     memset(&s_skinned_capture_projection, 0,
            sizeof(s_skinned_capture_projection));
+    memset(&s_skinned_frame_scene_projection, 0,
+           sizeof(s_skinned_frame_scene_projection));
+    s_skinned_scene_projection_conflict = false;
     if (platform_modern_character_capture_pending()) {
         s_skinned_capture_ready = false;
     }
@@ -4029,6 +4041,14 @@ static void wgpu_end_frame(void) {
         }
         s_frame_open = false;
         return;
+    }
+
+    if (s_skinned_scene_projection_conflict) {
+        memset(&s_skinned_scene_projection, 0,
+               sizeof(s_skinned_scene_projection));
+    } else if (mdkr_modern_character_capture_projection_valid(
+                   &s_skinned_frame_scene_projection)) {
+        s_skinned_scene_projection = s_skinned_frame_scene_projection;
     }
 
     /* The character-only image is an auxiliary render product of this exact
@@ -10031,6 +10051,74 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
     wgpuRenderPassEncoderDrawIndexed(s_pass, primitive->index_count, 1u,
                                      primitive->first_index, 0, 0u);
     wgpu_character_gpu_timing_draw_end(timing_query);
+    if (draw->player == 0u && draw->view == 0u &&
+        !s_skinned_scene_projection_conflict) {
+        MdkrModernCharacterCaptureProjection candidate = {0};
+        const uint32_t target_width = wgpu_draw_target_w();
+        const uint32_t target_height = wgpu_draw_target_h();
+        int viewport_x = s_vp_x;
+        int viewport_y = (int)target_height - (s_vp_y + s_vp_h);
+        int viewport_width = s_vp_w;
+        int viewport_height = s_vp_h;
+        int scissor_x = s_sc_set ? s_sc_x : 0;
+        int scissor_y = s_sc_set
+            ? (int)target_height - (s_sc_y + s_sc_h) : 0;
+        int scissor_width = s_sc_set ? s_sc_w : (int)target_width;
+        int scissor_height = s_sc_set ? s_sc_h : (int)target_height;
+        wgpu_clamp_rect(&viewport_x, &viewport_y,
+                        &viewport_width, &viewport_height,
+                        (int)target_width, (int)target_height);
+        wgpu_clamp_rect(&scissor_x, &scissor_y,
+                        &scissor_width, &scissor_height,
+                        (int)target_width, (int)target_height);
+        candidate.version =
+            MDKR_MODERN_CHARACTER_CAPTURE_PROJECTION_VERSION;
+        candidate.valid = 1u;
+        candidate.subject_player = draw->player;
+        candidate.primitive_draws = 1u;
+        candidate.output_width = target_width;
+        candidate.output_height = target_height;
+        candidate.viewport[0] = viewport_x;
+        candidate.viewport[1] = viewport_y;
+        candidate.viewport[2] = viewport_width;
+        candidate.viewport[3] = viewport_height;
+        candidate.scissor[0] = scissor_x;
+        candidate.scissor[1] = scissor_y;
+        candidate.scissor[2] = scissor_width;
+        candidate.scissor[3] = scissor_height;
+        if (target_width == 0u || target_height == 0u ||
+            viewport_width <= 0 || viewport_height <= 0 ||
+            scissor_width <= 0 || scissor_height <= 0 ||
+            !mdkr_modern_character_capture_projection_compose(
+                &mvp[0][0], draw->target_frame_matrix,
+                candidate.target_to_clip)) {
+            s_skinned_scene_projection_conflict = true;
+            memset(&s_skinned_frame_scene_projection, 0,
+                   sizeof(s_skinned_frame_scene_projection));
+        } else if (s_skinned_frame_scene_projection.primitive_draws == 0u) {
+            s_skinned_frame_scene_projection = candidate;
+        } else if (s_skinned_frame_scene_projection.output_width !=
+                       candidate.output_width ||
+                   s_skinned_frame_scene_projection.output_height !=
+                       candidate.output_height ||
+                   memcmp(s_skinned_frame_scene_projection.viewport,
+                          candidate.viewport,
+                          sizeof(candidate.viewport)) != 0 ||
+                   memcmp(s_skinned_frame_scene_projection.scissor,
+                          candidate.scissor,
+                          sizeof(candidate.scissor)) != 0 ||
+                   memcmp(s_skinned_frame_scene_projection.target_to_clip,
+                          candidate.target_to_clip,
+                          sizeof(candidate.target_to_clip)) != 0 ||
+                   s_skinned_frame_scene_projection.primitive_draws >=
+                       MDKR_MODERN_CHARACTER_MAX_PRIMITIVES) {
+            s_skinned_scene_projection_conflict = true;
+            memset(&s_skinned_frame_scene_projection, 0,
+                   sizeof(s_skinned_frame_scene_projection));
+        } else {
+            s_skinned_frame_scene_projection.primitive_draws++;
+        }
+    }
     if (capture_requested && draw->player == 0u && draw->view == 0u) {
         if (s_skinned_capture_draw_count >=
                 WGPU_SKINNED_CAPTURE_MAX_DRAWS) {
@@ -10478,6 +10566,17 @@ static bool wgpu_get_modern_character_capture_projection(
         return false;
     }
     *projection = s_skinned_capture_projection;
+    return true;
+}
+
+static bool wgpu_get_modern_character_scene_projection(
+    MdkrModernCharacterCaptureProjection *projection) {
+    if (projection == NULL ||
+        !mdkr_modern_character_capture_projection_valid(
+            &s_skinned_scene_projection)) {
+        return false;
+    }
+    *projection = s_skinned_scene_projection;
     return true;
 }
 
@@ -10961,6 +11060,11 @@ static void wgpu_release_device_objects(void) {
     s_skinned_capture_draw_count = 0u;
     s_skinned_capture_overflow = false;
     s_skinned_capture_ready = false;
+    memset(&s_skinned_scene_projection, 0,
+           sizeof(s_skinned_scene_projection));
+    memset(&s_skinned_frame_scene_projection, 0,
+           sizeof(s_skinned_frame_scene_projection));
+    s_skinned_scene_projection_conflict = false;
 
     s_cfg_w = 0;
     s_cfg_h = 0;
@@ -11360,6 +11464,8 @@ struct GfxRenderingAPI gfx_webgpu_api = {
         wgpu_get_modern_character_capture_dimensions,
     .get_modern_character_capture_projection =
         wgpu_get_modern_character_capture_projection,
+    .get_modern_character_scene_projection =
+        wgpu_get_modern_character_scene_projection,
     .read_modern_character_capture_rgba =
         wgpu_read_modern_character_capture_rgba,
     .begin_modern_character_gpu_timing =

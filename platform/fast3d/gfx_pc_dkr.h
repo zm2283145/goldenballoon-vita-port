@@ -119,6 +119,8 @@ bool gfx_get_modern_character_capture_dimensions(uint32_t *width,
                                                   uint32_t *height);
 bool gfx_get_modern_character_capture_projection(
     MdkrModernCharacterCaptureProjection *projection);
+bool gfx_get_modern_character_scene_projection(
+    MdkrModernCharacterCaptureProjection *projection);
 int gfx_read_modern_character_capture_rgba(int width, int height,
                                             uint8_t *rgba_out);
 void gfx_begin_modern_character_gpu_timing(void);

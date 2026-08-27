@@ -742,6 +742,48 @@ def main() -> int:
                     failures.append(
                         f"{label} calibrated volume penetrates the roster floor"
                     )
+            camera_match = re.search(
+                r"fitLandmarks=([0-9a-f]+) "
+                r"headUm=(-?\d+),(-?\d+),(-?\d+) cameraFit=(\d+) "
+                r"cameraBoundsMilli=(-?\d+),(-?\d+),(-?\d+),(-?\d+)/([0-9a-f]+) "
+                r"cameraViewport=(-?\d+),(-?\d+),(\d+),(\d+) "
+                r"cameraHeadMilli=(-?\d+),(-?\d+),(-?\d+)/([0-9a-f]+)",
+                arm_output,
+            )
+            if camera_match is None:
+                failures.append(
+                    f"{label} emitted no exact gameplay-camera/anatomy evidence"
+                )
+            else:
+                values = [int(value, 16) if index in (0, 9, 17) else int(value)
+                          for index, value in enumerate(camera_match.groups())]
+                (landmark_mask, head_x, head_y, head_z, camera_valid,
+                 bounds_left, bounds_top, bounds_right, bounds_bottom,
+                 camera_bounds_flags,
+                 viewport_x, viewport_y, viewport_width, viewport_height,
+                 camera_head_x, camera_head_y, camera_head_depth,
+                 camera_head_flags) = values
+                if (
+                    landmark_mask & 0x4 == 0
+                    or any(abs(value) > 1_000_000_000
+                           for value in (head_x, head_y, head_z))
+                    or camera_valid != 1
+                    or bounds_left >= bounds_right
+                    or bounds_top >= bounds_bottom
+                    or camera_bounds_flags & ~0x7F
+                    or viewport_x < 0
+                    or viewport_y < 0
+                    or viewport_width <= 0
+                    or viewport_height <= 0
+                    or camera_head_flags & ~0x7F
+                ):
+                    failures.append(
+                        f"{label} returned inconsistent gameplay-camera evidence "
+                        f"landmarks={landmark_mask:x} camera={camera_valid} "
+                        f"bounds={(bounds_left, bounds_top, bounds_right, bounds_bottom, camera_bounds_flags)} "
+                        f"viewport={(viewport_x, viewport_y, viewport_width, viewport_height)} "
+                        f"head={(camera_head_x, camera_head_y, camera_head_depth, camera_head_flags)}"
+                    )
             environment_match = re.search(
                 r"character_workshop_result: .* backend=(webgpu-[^ ]+) "
                 r"adapter=(.*?) driver=(.*?) vendor=([0-9a-f]{8}) "
@@ -1127,7 +1169,8 @@ def main() -> int:
         "select/car/hovercraft/plane routes, exact semantic-phase inspection "
         "and runtime A/B cross-fades with per-leg blend/source/fallback "
         "accounting, deterministic camera/light controls, "
-        "target-frame anchor/bounds/facing measurements, exclusive stabilized "
+        "target-frame anchor/bounds/facing plus exact gameplay-camera/anatomy "
+        "measurements, exclusive stabilized "
         "RGB gameplay and transparent RGBA model-only PNG capture, "
         "exact four-contact post-solve witnesses, one-to-four-player WebGPU "
         "stress, exact nonblocking scene/character GPU timestamp contracts "

@@ -173,10 +173,13 @@ explicitly restricted to the generated fixture and exists only for CI.
   an explicit vehicle-only copy action remains available for intentional reuse.
 - **Partially implemented:** visible advisory bands now classify floor/seat
   datum error, facing, and unusual volume proportions as Ready, Review, or
-  Action needed. Camera crop and vehicle occlusion remain explicitly visual-only
-  because target-space bounds cannot see a perspective camera or kart shell;
-  add renderer-derived camera-envelope/intersection evidence before automating
-  either judgement.
+  Action needed. Result v15 also retains the last complete accepted scene MVP,
+  viewport, and scissor and projects the calibrated volume plus exact
+  current-pose hips/chest/head node origins into bounded fixed-point camera
+  evidence. Offset Studio reports camera occupancy, clipping, head placement,
+  torso placement, and seat-to-hips displacement across restart. This proves
+  framing, not depth visibility: vehicle occlusion and shell penetration remain
+  explicitly visual-only until a qualified shell/depth ownership seam exists.
 
 Acceptance: the example faces the camera in select, its feet are floor-aligned,
 and its head/torso land inside each ordinary vehicle camera without manual JSON.
@@ -253,8 +256,10 @@ in the package review and durable evidence.
 - Continue the existing per-context sequence to
   propose root translation/yaw/scale, preview exact gameplay, then propose four
   contact offsets per vehicle.
-- Show head/torso camera occupancy, seat-to-hips displacement, kart/body
-  intersection, floor clearance, and hand/foot reach in one review card.
+- **Partially implemented:** the fit review card now shows exact calibrated
+  camera occupancy, head/torso points, seat-to-hips displacement, floor/seat
+  datum, and hand/foot reach. Add a qualified kart/body shell-intersection
+  witness rather than treating screen overlap as penetration.
 - Use the existing root/bend/target/end witnesses to offer bounded least-squares
   offset suggestions. Never change package/tuning state until the author accepts
   each context.
@@ -392,10 +397,10 @@ remaining order is therefore:
 
 1. qualify richer reference clips and add optional deterministic secondary
    hair/tail motion after the exact held-phase and transition-review contract;
-2. add renderer-derived head/torso occupancy, seat displacement, vehicle/body
-   intersection, penetration, and oscillation witnesses; use controlled
-   perturbation/re-rendering for contact suggestions rather than applying
-   coordinate-incorrect endpoint deltas;
+2. add qualified vehicle/body intersection, penetration, and oscillation
+   witnesses on top of the completed scene-camera/anatomy/seat evidence; use
+   controlled perturbation/re-rendering for contact suggestions rather than
+   applying coordinate-incorrect endpoint deltas;
 3. exercise start, steer, airborne, land, and finish variants per vehicle and
    generate a first portrait suggestion during intake;
 4. execute the M6 renderer tail (shadows, transparent ordering, compressed

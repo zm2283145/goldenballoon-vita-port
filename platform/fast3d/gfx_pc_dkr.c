@@ -8178,6 +8178,15 @@ bool gfx_get_modern_character_capture_projection(
     return gfx_rapi->get_modern_character_capture_projection(projection);
 }
 
+bool gfx_get_modern_character_scene_projection(
+    MdkrModernCharacterCaptureProjection *projection) {
+    if (projection == NULL || gfx_rapi == NULL ||
+        gfx_rapi->get_modern_character_scene_projection == NULL) {
+        return false;
+    }
+    return gfx_rapi->get_modern_character_scene_projection(projection);
+}
+
 void gfx_begin_modern_character_gpu_timing(void) {
     if (gfx_rapi != NULL &&
         gfx_rapi->begin_modern_character_gpu_timing != NULL) {

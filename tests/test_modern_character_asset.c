@@ -1411,6 +1411,10 @@ int main(int argc, char **argv) {
                 fabsf(fit_diagnostics.forward[0] - 0.258819f) < 0.001f &&
                 fabsf(fit_diagnostics.forward[1]) < 0.001f &&
                 fabsf(fit_diagnostics.forward[2] - 0.965926f) < 0.001f &&
+                fit_diagnostics.landmark_valid_mask == 0x7u &&
+                isfinite(fit_diagnostics.landmarks[0][0]) &&
+                isfinite(fit_diagnostics.landmarks[1][1]) &&
+                isfinite(fit_diagnostics.landmarks[2][2]) &&
                 mdkr_modern_character_player_fit_diagnostics(
                     0, MDKR_CHARACTER_CONTEXT_CAR, &fit_diagnostics) &&
                 fit_diagnostics.bounds_min[0] <= fit_diagnostics.bounds_max[0] &&
@@ -1421,7 +1425,7 @@ int main(int argc, char **argv) {
                     &fit_diagnostics) &&
                 !mdkr_modern_character_player_fit_diagnostics(
                     -1, MDKR_CHARACTER_CONTEXT_CAR, &fit_diagnostics),
-            "runtime publishes exact target-space anchor, calibrated bounds, and normalized facing only after a successful context draw");
+            "runtime publishes exact target-space anchor, calibrated bounds, normalized facing, and reviewed current-pose anatomy only after a successful context draw");
     require(mdkr_modern_character_player_contact_diagnostics(
                 0, MDKR_CHARACTER_CONTEXT_CAR, &contact_diagnostics) &&
                 contact_diagnostics.valid_mask == 0xFu &&
