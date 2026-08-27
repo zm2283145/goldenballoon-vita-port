@@ -551,6 +551,48 @@ def main() -> int:
             if evidence_rows(root):
                 raise RuntimeError("package evidence cleanup retained a record")
 
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "character-test-evidence-action "
+                    "action=publish-overbudget-matrix applied=1 "
+                    "records=16 baselines=0",
+                    "character-performance-review package=" + PACKAGE_ID
+                    + " state=over-target-review-required "
+                    "exception-bound=source,fit,lod,build,presentation,"
+                    "resolution,device,driver,timing target-relabeled=0",
+                    "text=Accept performance exception",
+                ),
+                action="publish-overbudget-matrix",
+                accessible=True,
+            )
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "character-test-evidence-action "
+                    "action=accept-overbudget-matrix applied=1 "
+                    "records=16 baselines=0",
+                    "character-performance-review package=" + PACKAGE_ID
+                    + " state=over-target-accepted "
+                    "exception-bound=source,fit,lod,build,presentation,"
+                    "resolution,device,driver,timing target-relabeled=0",
+                ),
+                action="accept-overbudget-matrix",
+            )
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "action=clear-package applied=1 records=0 baselines=0",
+                ),
+                action="clear-package",
+            )
+
             empty_evidence = (
                 root / "saves" / "character_test_evidence-v1.tsv"
             ).read_bytes()

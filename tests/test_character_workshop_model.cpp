@@ -127,6 +127,15 @@ void testVehicleReviewMaskAndRequiredPerformance() {
     assert(std::strcmp(overTarget.nextActionLabel,
                        "Tune performance to target") == 0);
 
+    facts.performance =
+        CharacterWorkshopPerformanceState::OverTargetAccepted;
+    const auto acceptedOverTarget = CharacterWorkshop_evaluate(facts);
+    assert(acceptedOverTarget.readyToEnable);
+    assert(acceptedOverTarget.readyToPlay);
+    assert(row(acceptedOverTarget,
+               CharacterWorkshopReadinessId::Performance).status ==
+           CharacterWorkshopReadinessStatus::Accepted);
+
     facts.performance = CharacterWorkshopPerformanceState::TargetMet;
     const auto targetMet = CharacterWorkshop_evaluate(facts);
     assert(targetMet.readyToEnable);
@@ -166,6 +175,9 @@ void testTabStorageRoundTrip() {
     assert(std::strcmp(CharacterWorkshop_statusLabel(
                            CharacterWorkshopReadinessStatus::Unavailable),
                        "Unavailable") == 0);
+    assert(std::strcmp(CharacterWorkshop_statusLabel(
+                           CharacterWorkshopReadinessStatus::Accepted),
+                       "Exception") == 0);
 }
 
 void testPerformanceTargets() {

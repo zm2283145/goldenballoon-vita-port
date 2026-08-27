@@ -38,6 +38,7 @@ enum class CharacterWorkshopReadinessId : uint8_t {
 
 enum class CharacterWorkshopReadinessStatus : uint8_t {
     Ready = 0,
+    Accepted,
     Review,
     Missing,
     Unavailable,
@@ -46,6 +47,7 @@ enum class CharacterWorkshopReadinessStatus : uint8_t {
 enum class CharacterWorkshopPerformanceState : uint8_t {
     NotMeasured = 0,
     OverTarget,
+    OverTargetAccepted,
     TargetMet,
 };
 

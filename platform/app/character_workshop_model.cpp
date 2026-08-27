@@ -19,7 +19,8 @@ void setRow(CharacterWorkshopReadiness      &readiness,
             CharacterWorkshopTab             tab) {
     const size_t index    = static_cast<size_t>(id);
     readiness.rows[index] = {id, status, tab};
-    if (status == CharacterWorkshopReadinessStatus::Ready) {
+    if (status == CharacterWorkshopReadinessStatus::Ready ||
+        status == CharacterWorkshopReadinessStatus::Accepted) {
         ++readiness.readyCount;
     }
 }
@@ -502,6 +503,9 @@ CharacterWorkshopReadiness CharacterWorkshop_evaluate(
         CharacterWorkshopReadinessStatus::Ready;
     if (!facts.performanceAssemblyReady) {
         performance = CharacterWorkshopReadinessStatus::Missing;
+    } else if (facts.performance ==
+               CharacterWorkshopPerformanceState::OverTargetAccepted) {
+        performance = CharacterWorkshopReadinessStatus::Accepted;
     } else if (facts.performance !=
                CharacterWorkshopPerformanceState::TargetMet) {
         performance = CharacterWorkshopReadinessStatus::Review;
@@ -515,7 +519,8 @@ CharacterWorkshopReadiness CharacterWorkshop_evaluate(
                             facts.attachmentSocketsReady && facts.motionReady &&
                             facts.donorQualified &&
                             vehicleFit == CharacterWorkshopReadinessStatus::Ready &&
-                            performance == CharacterWorkshopReadinessStatus::Ready;
+                            (performance == CharacterWorkshopReadinessStatus::Ready ||
+                             performance == CharacterWorkshopReadinessStatus::Accepted);
     result.readyToPlay    = result.readyToEnable && facts.enabled;
 
     if (!facts.identityReady) {
@@ -624,12 +629,13 @@ const char *CharacterWorkshop_statusLabel(
     CharacterWorkshopReadinessStatus status) {
     static constexpr const char *kLabels[] = {
         "Ready",
+        "Exception",
         "Review",
         "Missing",
         "Unavailable",
     };
     const size_t index = static_cast<size_t>(status);
-    return index < 4u ? kLabels[index] : "Unavailable";
+    return index < 5u ? kLabels[index] : "Unavailable";
 }
 
 const CharacterWorkshopPerformancePreset *

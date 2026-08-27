@@ -2396,6 +2396,7 @@ struct CharacterDraftReviewState {
 };
 std::map<std::string, CharacterDraftReviewState> g_characterDraftReviews;
 std::map<std::string, uint32_t> g_characterPendingContactExceptions;
+std::map<std::string, bool> g_characterPendingPerformanceExceptions;
 std::map<std::string, bool> g_characterPendingDraftFit;
 std::string g_characterPendingDraftRemoval;
 char g_characterDraftName[CharacterDraftStore::kMaximumNameBytes + 1u] = {};
@@ -4578,6 +4579,7 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterActiveDrafts.erase(id);
     g_characterDraftReviews.erase(id);
     g_characterPendingContactExceptions.erase(id);
+    g_characterPendingPerformanceExceptions.erase(id);
     g_characterPendingDraftFit.erase(id);
     if (g_characterDraftNameOwner == id) {
         g_characterDraftNameOwner.clear();
@@ -10381,6 +10383,162 @@ const char *characterTestEvidenceState(
     return "Timing missing";
 }
 
+std::string characterPerformanceExceptionKey(const char *packageId) {
+    return "custom_character_profile_" + std::string(packageId) +
+        "_performance_exception_signature";
+}
+
+std::string characterPerformanceExceptionSignature(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterTuningEdit &tuning) {
+    if (entry == nullptr) return {};
+    loadCharacterTestEvidence();
+    const std::string presentationSignature =
+        characterTestPresentationSignature();
+    if (!g_characterTestEvidenceWritable || presentationSignature.empty()) {
+        return {};
+    }
+    std::string canonical = "mdkr-character-performance-exception-v1\n";
+    const auto appendText = [&canonical](const std::string &value) {
+        canonical += std::to_string(value.size());
+        canonical.push_back(':');
+        canonical += value;
+        canonical.push_back('\n');
+    };
+    const auto appendNumber = [&canonical](uint64_t value) {
+        canonical += std::to_string(value);
+        canonical.push_back('\n');
+    };
+    appendText(entry->id);
+    bool overTarget = false;
+    const uint32_t supported = entry->vehicle_mask & tuning.vehicleMask;
+    for (uint32_t context = 0u;
+         context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+        if (context != MDKR_CHARACTER_CONTEXT_SELECT &&
+            (supported & (1u << (context - 1u))) == 0u) {
+            continue;
+        }
+        for (uint32_t players = 1u; players <= 4u; ++players) {
+            const auto *evidence = CharacterTestEvidenceStore::find(
+                g_characterTestEvidence, entry->id, context + 1u, players,
+                CharacterTestEvidenceStore::Kind::Latest);
+            if (evidence == nullptr ||
+                !characterTestEvidenceCurrent(
+                    entry, tuning, *evidence, presentationSignature)) {
+                return {};
+            }
+            const auto result =
+                CharacterTestEvidenceStore::performanceResult(*evidence);
+            if (result ==
+                CharacterTestEvidenceStore::PerformanceResult::Unqualified) {
+                return {};
+            }
+            overTarget |= result ==
+                CharacterTestEvidenceStore::PerformanceResult::OverBudget;
+            appendNumber(context + 1u);
+            appendNumber(players);
+            appendNumber(evidence->capturedUnix);
+            appendText(evidence->sourceSha256);
+            appendText(evidence->fitSha256);
+            appendText(evidence->presentationSha256);
+            appendText(evidence->buildVersion);
+            appendText(evidence->backend);
+            appendText(evidence->adapter);
+            appendText(evidence->driver);
+            appendNumber(evidence->vendorId);
+            appendNumber(evidence->deviceId);
+            appendNumber(evidence->outputWidth);
+            appendNumber(evidence->outputHeight);
+            appendNumber(evidence->renderWidth);
+            appendNumber(evidence->renderHeight);
+            appendNumber(evidence->warmupTicks);
+            appendNumber(evidence->intervalSamples);
+            appendNumber(evidence->displayedFrames);
+            appendNumber(evidence->intervalP50Us);
+            appendNumber(evidence->intervalP95Us);
+            appendNumber(evidence->intervalP99Us);
+            appendNumber(evidence->intervalMeanUs);
+            appendNumber(evidence->intervalMaxUs);
+            appendNumber(evidence->tickwallSamples);
+            appendNumber(evidence->tickwallMeanNs);
+            appendNumber(evidence->gpuTiming.version);
+            appendNumber(evidence->gpuTiming.status);
+            appendNumber(evidence->gpuTiming.supported_scopes);
+            appendNumber(evidence->gpuTiming.pending_frames);
+            appendNumber(evidence->gpuTiming.ring_full_frames);
+            appendNumber(evidence->gpuTiming.invalid_samples);
+            const auto appendDistribution = [&](const auto &distribution) {
+                appendNumber(distribution.samples);
+                appendNumber(distribution.percentile_window_samples);
+                appendNumber(distribution.p50_ns);
+                appendNumber(distribution.p95_ns);
+                appendNumber(distribution.p99_ns);
+                appendNumber(distribution.mean_ns);
+                appendNumber(distribution.max_ns);
+            };
+            appendDistribution(evidence->gpuTiming.scene_pass);
+            appendDistribution(evidence->gpuTiming.character_draws);
+        }
+    }
+    if (!overTarget) return {};
+    char digest[MDKR_SHA256_HEX_SIZE];
+    mdkr_sha256_hex(canonical.data(), canonical.size(), digest);
+    return digest;
+}
+
+bool characterPerformanceExceptionAccepted(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterTuningEdit &tuning) {
+    const std::string signature = characterPerformanceExceptionSignature(
+        entry, tuning);
+    return !signature.empty() &&
+        AppConfig::get(characterPerformanceExceptionKey(entry->id)) ==
+            signature;
+}
+
+bool persistCharacterPerformanceException(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterTuningEdit &tuning, bool accepted) {
+    if (entry == nullptr) return false;
+    const std::string key = characterPerformanceExceptionKey(entry->id);
+    const std::string previous = AppConfig::get(key);
+    const std::string signature = accepted
+        ? characterPerformanceExceptionSignature(entry, tuning)
+        : std::string();
+    if (accepted && signature.empty()) return false;
+    AppConfig::set(key, signature);
+    const AppConfig::PersistResult result = AppConfig::save();
+    if (AppConfig::persistResultApplied(result)) return true;
+    AppConfig::set(key, previous);
+    return false;
+}
+
+bool clearCharacterTestEvidenceForPackage(
+    const MdkrModernCharacterEntry *entry) {
+    if (entry == nullptr) return false;
+    const std::string exceptionKey =
+        characterPerformanceExceptionKey(entry->id);
+    const std::string previousException = AppConfig::get(exceptionKey);
+    AppConfig::set(exceptionKey, "");
+    if (!AppConfig::persistResultApplied(AppConfig::save())) {
+        AppConfig::set(exceptionKey, previousException);
+        return false;
+    }
+    CharacterTestEvidenceStore::Inventory replacement =
+        g_characterTestEvidence;
+    (void)CharacterTestEvidenceStore::erasePackage(
+        replacement, entry->id);
+    if (replaceCharacterTestEvidence(std::move(replacement))) return true;
+
+    /* Cross-store rollback is deliberately conservative. Restoring the old
+     * acknowledgement after the evidence write fails preserves the exact
+     * pre-action state; if this second persistence fails, the exception is
+     * merely lost and readiness becomes stricter, never looser. */
+    AppConfig::set(exceptionKey, previousException);
+    (void)AppConfig::save();
+    return false;
+}
+
 CharacterWorkshopPerformanceState characterPerformanceEvidenceState(
     const MdkrModernCharacterEntry *entry,
     const CharacterTuningEdit &tuning) {
@@ -10420,8 +10578,10 @@ CharacterWorkshopPerformanceState characterPerformanceEvidenceState(
                 CharacterTestEvidenceStore::PerformanceResult::OverBudget;
         }
     }
-    return overTarget ? CharacterWorkshopPerformanceState::OverTarget
-                      : CharacterWorkshopPerformanceState::TargetMet;
+    if (!overTarget) return CharacterWorkshopPerformanceState::TargetMet;
+    return characterPerformanceExceptionAccepted(entry, tuning)
+        ? CharacterWorkshopPerformanceState::OverTargetAccepted
+        : CharacterWorkshopPerformanceState::OverTarget;
 }
 
 bool pinCharacterTestBaseline(
@@ -10481,6 +10641,7 @@ void drawCharacterTestEvidenceMatrix(
         g_characterTestEvidenceSmokeActionApplied = true;
         bool applied = false;
         if (std::strcmp(smokeAction, "publish-qualified") == 0 ||
+            std::strcmp(smokeAction, "publish-overbudget-matrix") == 0 ||
             std::strcmp(smokeAction, "publish-overlimit-contact") == 0 ||
             std::strcmp(smokeAction, "publish-inspection") == 0 ||
             std::strcmp(
@@ -10604,6 +10765,15 @@ void drawCharacterTestEvidenceMatrix(
             result.output_height = 960u;
             result.render_width = 2560u;
             result.render_height = 1920u;
+            const bool overbudgetMatrix = std::strcmp(
+                smokeAction, "publish-overbudget-matrix") == 0;
+            if (overbudgetMatrix) {
+                result.interval_p50_us = 19000u;
+                result.interval_p95_us = 22000u;
+                result.interval_p99_us = 28000u;
+                result.interval_mean_us = 21000u;
+                result.interval_max_us = 30000u;
+            }
             const bool inspection =
                 std::strcmp(smokeAction, "publish-inspection") == 0 ||
                 std::strcmp(
@@ -10739,8 +10909,41 @@ void drawCharacterTestEvidenceMatrix(
                 : nullptr;
             const std::string capturePath = smokeCapturePath != nullptr
                 ? smokeCapturePath : std::string();
-            Settings_publishCharacterPreviewResult(
-                entry->id, source, fit, presentation, capturePath, result);
+            if (overbudgetMatrix) {
+                for (unsigned context = 0u;
+                     context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+                    for (unsigned players = 1u; players <= 4u; ++players) {
+                        MdkrCharacterPreviewResult cell = result;
+                        cell.context = static_cast<
+                            MdkrCharacterPreviewContext>(context + 1u);
+                        cell.players = static_cast<int>(players);
+                        if (context == MDKR_CHARACTER_CONTEXT_SELECT) {
+                            cell.contact_solves = 0u;
+                            cell.contact_error_mean_micrometres = 0u;
+                            cell.contact_error_max_micrometres = 0u;
+                            cell.contact_witness_mask = 0u;
+                            std::memset(cell.contact_chain_root_micrometres, 0,
+                                        sizeof(cell.contact_chain_root_micrometres));
+                            std::memset(cell.contact_bend_micrometres, 0,
+                                        sizeof(cell.contact_bend_micrometres));
+                            std::memset(cell.contact_target_micrometres, 0,
+                                        sizeof(cell.contact_target_micrometres));
+                            std::memset(cell.contact_end_micrometres, 0,
+                                        sizeof(cell.contact_end_micrometres));
+                            std::memset(
+                                cell.contact_witness_error_micrometres, 0,
+                                sizeof(cell.contact_witness_error_micrometres));
+                        }
+                        Settings_publishCharacterPreviewResult(
+                            entry->id, source,
+                            characterTestTuningSignature(entry, tuning, context),
+                            presentation, std::string(), cell);
+                    }
+                }
+            } else {
+                Settings_publishCharacterPreviewResult(
+                    entry->id, source, fit, presentation, capturePath, result);
+            }
             const auto session = g_characterPreviewResults.find(entry->id);
             const CharacterTestEvidenceStore::Evidence *latest =
                 CharacterTestEvidenceStore::find(
@@ -10751,7 +10954,11 @@ void drawCharacterTestEvidenceMatrix(
                 characterPreviewSessionMatchesTuning(
                     entry, tuning, MDKR_CHARACTER_PREVIEW_CAR,
                     session->second);
-            if (invalidFit || invalidContact || invalidGpu) {
+            if (overbudgetMatrix) {
+                applied = g_characterTestEvidence.records.size() == 16u &&
+                    characterPerformanceEvidenceState(entry, tuning) ==
+                        CharacterWorkshopPerformanceState::OverTarget;
+            } else if (invalidFit || invalidContact || invalidGpu) {
                 applied = session != g_characterPreviewResults.end() &&
                     latest == nullptr && !sessionMatches;
             } else if (mixedMode) {
@@ -10772,6 +10979,13 @@ void drawCharacterTestEvidenceMatrix(
                     latest != nullptr && staleLodPersisted &&
                     (!(staleFit || staleLod) || !sessionMatches);
             }
+        } else if (std::strcmp(
+                       smokeAction, "accept-overbudget-matrix") == 0) {
+            applied = characterPerformanceEvidenceState(entry, tuning) ==
+                    CharacterWorkshopPerformanceState::OverTarget &&
+                persistCharacterPerformanceException(entry, tuning, true) &&
+                characterPerformanceEvidenceState(entry, tuning) ==
+                    CharacterWorkshopPerformanceState::OverTargetAccepted;
         } else if (std::strcmp(smokeAction, "pin-car-4p") == 0) {
             const CharacterTestEvidenceStore::Evidence *latest =
                 CharacterTestEvidenceStore::find(
@@ -10787,11 +11001,8 @@ void drawCharacterTestEvidenceMatrix(
             applied = baseline != nullptr &&
                 clearCharacterTestBaseline(*baseline);
         } else if (std::strcmp(smokeAction, "clear-package") == 0) {
-            CharacterTestEvidenceStore::Inventory replacement =
-                g_characterTestEvidence;
-            applied = CharacterTestEvidenceStore::erasePackage(
-                replacement, entry->id) != 0u &&
-                replaceCharacterTestEvidence(std::move(replacement));
+            applied = characterPackageTestEvidenceCount(entry->id) != 0u &&
+                clearCharacterTestEvidenceForPackage(entry);
         }
         const size_t baselines = static_cast<size_t>(std::count_if(
             g_characterTestEvidence.records.begin(),
@@ -10926,6 +11137,81 @@ void drawCharacterTestEvidenceMatrix(
         targetCells, applicableCells, measuredCells);
     ui::TextSubtleWrapped(
         "Playability target: p95 at or below 18.334 ms and p99 at or below 25.000 ms on every enabled context and 1–4 player layout. Measured over-budget results stay visible and do not become passes.");
+    const CharacterWorkshopPerformanceState performanceState =
+        characterPerformanceEvidenceState(entry, tuning);
+    bool &pendingPerformanceException =
+        g_characterPendingPerformanceExceptions[entry->id];
+    if (performanceState != CharacterWorkshopPerformanceState::OverTarget) {
+        pendingPerformanceException = false;
+    }
+    if (performanceState == CharacterWorkshopPerformanceState::OverTarget) {
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "The complete matrix is trustworthy but misses the playability target. Tune authored LODs/settings and rerun, or explicitly accept this exact measured device cost.");
+        (void)ImGui::Checkbox(
+            "I reviewed every over-target result and accept this local performance exception",
+            &pendingPerformanceException);
+        ui::SpeakFocusedItem(
+            "Accept performance exception",
+            pendingPerformanceException ? "Checked" : "Not checked",
+            "Acknowledges only this exact complete source, fit, LOD, build, presentation, resolution, device, driver, and timing matrix. It does not relabel any result as on target.");
+        const bool exceptionActionReady = pendingPerformanceException;
+        if (!exceptionActionReady) ImGui::BeginDisabled();
+        if (ImGui::Button("Record exact performance exception") &&
+            exceptionActionReady) {
+            const bool persisted = persistCharacterPerformanceException(
+                entry, tuning, true);
+            if (persisted) pendingPerformanceException = false;
+            setStatus(
+                persisted
+                    ? "Exact over-target performance exception recorded; measured warnings remain visible."
+                    : "The performance exception could not be saved; readiness is unchanged.",
+                persisted ? AppTheme::good() : AppTheme::bad());
+        }
+        if (!exceptionActionReady) ImGui::EndDisabled();
+        ui::SpeakFocusedItem(
+            "Record exact performance exception",
+            exceptionActionReady
+                ? nullptr
+                : "Review and check the explicit acceptance first.",
+            "Makes this measured over-target matrix eligible for local play without changing geometry, LOD policy, timing evidence, or the target.");
+    } else if (performanceState ==
+               CharacterWorkshopPerformanceState::OverTargetAccepted) {
+        ImGui::TextColored(
+            AppTheme::good(),
+            "Over-target performance exception recorded for this exact matrix; every measured warning remains authoritative.");
+        if (ImGui::Button("Reopen performance exception")) {
+            const bool persisted = persistCharacterPerformanceException(
+                entry, tuning, false);
+            setStatus(
+                persisted
+                    ? "Performance exception reopened; tune or explicitly review the current matrix again."
+                    : "The performance exception could not be reopened; the saved decision remains active.",
+                persisted ? AppTheme::accent() : AppTheme::bad());
+        }
+        ui::SpeakFocusedItem(
+            "Reopen performance exception", nullptr,
+            "Removes only the local acceptance decision. Exact evidence and package content remain unchanged.");
+    }
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        const char *state =
+            performanceState == CharacterWorkshopPerformanceState::TargetMet
+                ? "target-met"
+            : performanceState ==
+                    CharacterWorkshopPerformanceState::OverTargetAccepted
+                ? "over-target-accepted"
+            : performanceState == CharacterWorkshopPerformanceState::OverTarget
+                ? "over-target-review-required"
+                : "incomplete";
+        static std::set<std::string> tracedPerformanceReviewStates;
+        const std::string traceKey = std::string(entry->id) + ":" + state;
+        if (tracedPerformanceReviewStates.insert(traceKey).second) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-performance-review package=%s state=%s exception-bound=source,fit,lod,build,presentation,resolution,device,driver,timing target-relabeled=0\n",
+                entry->id, state);
+        }
+    }
 
     const uint32_t selectedContext = selectedCell / 4u + 1u;
     const uint32_t selectedPlayers = selectedCell % 4u + 1u;
@@ -11226,18 +11512,15 @@ void drawCharacterTestEvidenceMatrix(
             "Clear character test evidence?", nullptr,
             ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextWrapped(
-            "Delete every latest result and pinned baseline for %s? The package, source, fit, author review, and external files are unchanged.",
+            "Delete every latest result, pinned baseline, and exact-matrix performance exception for %s? The package, source, fit, per-context author review, and external files are unchanged.",
             entry->display_name);
         if (ImGui::Button("Clear test evidence")) {
-            CharacterTestEvidenceStore::Inventory replacement =
-                g_characterTestEvidence;
-            (void)CharacterTestEvidenceStore::erasePackage(
-                replacement, entry->id);
-            if (replaceCharacterTestEvidence(std::move(replacement))) {
+            if (clearCharacterTestEvidenceForPackage(entry)) {
                 g_characterPreviewResults.erase(entry->id);
                 g_characterTestEvidenceSelectedCell.erase(entry->id);
+                g_characterPendingPerformanceExceptions.erase(entry->id);
                 setStatus(
-                    "This character's local test evidence and baselines were cleared.",
+                    "This character's local test evidence, baselines, and performance exception were cleared.",
                     AppTheme::subtle());
                 ImGui::CloseCurrentPopup();
             } else {
@@ -11248,7 +11531,7 @@ void drawCharacterTestEvidenceMatrix(
         }
         ui::SpeakFocusedItem(
             "Clear test evidence", nullptr,
-            "Permanently deletes only this package's local test-result matrix and pinned baselines.");
+            "Permanently deletes only this package's local test-result matrix, pinned baselines, and exact-matrix performance exception.");
         ImGui::SameLine();
         if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
         ui::SpeakFocusedItem(
@@ -15962,6 +16245,7 @@ ImVec4 characterWorkshopStatusColour(
     switch (status) {
         case CharacterWorkshopReadinessStatus::Ready:
             return AppTheme::good();
+        case CharacterWorkshopReadinessStatus::Accepted:
         case CharacterWorkshopReadinessStatus::Review:
             return AppTheme::accent();
         case CharacterWorkshopReadinessStatus::Missing:
@@ -16056,6 +16340,9 @@ void drawCharacterReadiness(
                     const char *measurement =
                         performance == CharacterWorkshopPerformanceState::TargetMet
                             ? "complete matrix meets target"
+                        : performance ==
+                              CharacterWorkshopPerformanceState::OverTargetAccepted
+                            ? "complete matrix exceeds target · explicit exception recorded"
                         : performance == CharacterWorkshopPerformanceState::OverTarget
                             ? "complete matrix exceeds target"
                             : "real-device matrix incomplete";

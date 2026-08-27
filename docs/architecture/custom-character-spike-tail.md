@@ -324,6 +324,11 @@ Current ceilings—1,000,000 vertices, 2,000,000 triangles, 256 joints, 512
 primitives, four authored LODs, 4096 texture sides, and 512 MiB decoded texture
 bytes—are safety boundaries, not recommended budgets. Quality presets should
 warn from measured device profiles rather than impose a low-poly aesthetic.
+The current complete exact matrix now follows that rule: an over-target result
+is never relabelled as a pass, but a deliberate local exception can be recorded
+against the exact source/fit/LOD/build/presentation/resolution/device/driver/
+timing evidence instead of making an expensive-but-safe character impossible
+to enable.
 
 Acceptance: representative high-, mid-, and low-tier devices pass one-to-four
 player evidence with shadows, transparent hair, compressed textures, and stable
