@@ -1334,6 +1334,32 @@ int main(int argc, char **argv) {
                 !mdkr_modern_character_set_inspection_pose(
                     "race.steer", 1.5f, error, sizeof(error)),
             "exact inspector rejects unknown semantics and unsafe phases");
+    require(!mdkr_modern_character_set_inspection_transition(
+                "race.steer", 0.0f, "race.steer", 1.0f,
+                error, sizeof(error)) &&
+                !mdkr_modern_character_set_inspection_transition(
+                    "race.unknown", 0.0f, "race.finish_win", 1.0f,
+                    error, sizeof(error)),
+            "transition inspector rejects one-state and unknown-semantic scripts");
+    require(mdkr_modern_character_set_inspection_transition(
+                "select.idle", 0.25f, "race.finish_win", 0.75f,
+                error, sizeof(error)) &&
+                mdkr_modern_character_tick(
+                    0, "race.damage", 0.5f, error, sizeof(error)) &&
+                mdkr_modern_character_tick(
+                    0, "race.damage", 0.5f, error, sizeof(error)) &&
+                mdkr_modern_character_tick(
+                    0, "race.damage", 0.5f, error, sizeof(error)),
+            "transition inspector alternates exact held states through the runtime pose player");
+    mdkr_modern_character_runtime_metrics(&runtime_metrics);
+    require(runtime_metrics.inspection_transition_switches == 1u &&
+                runtime_metrics.inspection_transition_completions == 1u &&
+                runtime_metrics.inspection_transition_blending_ticks == 1u &&
+                runtime_metrics.inspection_from_motion_source ==
+                    MDKR_MODERN_CHARACTER_MOTION_REVIEWED_REFERENCE &&
+                runtime_metrics.inspection_to_motion_source ==
+                    MDKR_MODERN_CHARACTER_MOTION_REVIEWED_REFERENCE,
+            "transition evidence identifies both motion sources and a completed real cross-fade");
     mdkr_modern_character_clear_inspection_pose();
     require(mdkr_modern_character_tick_phase(
                 0, "race.steer", 0.25f, 1.0f,

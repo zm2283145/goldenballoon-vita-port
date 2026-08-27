@@ -104,6 +104,9 @@ struct LauncherState {
     MdkrCharacterPreviewPose characterPreviewPose =
         MDKR_CHARACTER_PREVIEW_POSE_LIVE;
     unsigned characterPreviewPosePhaseMilli = 0u;
+    MdkrCharacterPreviewPose characterPreviewTransitionFromPose =
+        MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    unsigned characterPreviewTransitionFromPhaseMilli = 0u;
     int characterPreviewViewYawDegrees = 0;
     int characterPreviewViewPitchDegrees = 0;
     MdkrWorkshopPreviewLighting characterPreviewLighting =

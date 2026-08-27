@@ -388,7 +388,7 @@ def main() -> int:
                 or rows[0][0] != "0"
                 or rows[0][1] != PACKAGE_ID
                 or (rows[0][7], rows[0][8]) != ("2", "4")
-                or rows[0][9] != "13"
+                or rows[0][9] != "14"
                 or bytes.fromhex(rows[0][29]).decode("utf-8")
                 != "webgpu-test"
                 or bytes.fromhex(rows[0][30]).decode("utf-8")
@@ -613,6 +613,25 @@ def main() -> int:
             ).read_bytes() != empty_evidence:
                 raise RuntimeError(
                     "session-only pose inspection mutated durable evidence"
+                )
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "character-pose-inspection session-only=1",
+                    "transitionFrom=1 transitionPhase=250 switches=5 "
+                    "completed=5 source=1,2",
+                    "action=publish-transition applied=1 "
+                    "records=0 baselines=0",
+                ),
+                action="publish-transition",
+            )
+            if (
+                root / "saves" / "character_test_evidence-v1.tsv"
+            ).read_bytes() != empty_evidence:
+                raise RuntimeError(
+                    "session-only transition review mutated durable evidence"
                 )
             run(
                 binary,

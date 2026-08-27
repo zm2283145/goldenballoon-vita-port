@@ -22,6 +22,7 @@
     X(RACE_FINISH_LOSE, "race.finish_lose", "Race finish lose")
 
 #define MDKR_MODERN_CHARACTER_INSPECTION_SEMANTIC_COUNT 13u
+#define MDKR_MODERN_CHARACTER_INSPECTION_TRANSITION_DWELL_MILLI 1000u
 /* Enum value after LIVE; race.steer's midpoint is the most useful neutral
  * vehicle-fit default while remaining valid in character select. */
 #define MDKR_MODERN_CHARACTER_INSPECTION_DEFAULT_POSE 4u

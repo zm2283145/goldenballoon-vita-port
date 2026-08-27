@@ -64,7 +64,22 @@ typedef struct MdkrModernCharacterRuntimeMetrics {
     uint64_t contact_error_micrometres_max;
     uint64_t inspection_pose_ticks;
     uint64_t inspection_pose_fallback_ticks;
+    uint64_t inspection_transition_switches;
+    uint64_t inspection_transition_blending_ticks;
+    uint64_t inspection_transition_completions;
+    uint32_t inspection_from_blend_milliseconds;
+    uint32_t inspection_to_blend_milliseconds;
+    uint32_t inspection_from_motion_source;
+    uint32_t inspection_to_motion_source;
 } MdkrModernCharacterRuntimeMetrics;
+
+typedef enum MdkrModernCharacterMotionSource {
+    MDKR_MODERN_CHARACTER_MOTION_NONE = 0,
+    MDKR_MODERN_CHARACTER_MOTION_AUTHORED,
+    MDKR_MODERN_CHARACTER_MOTION_REVIEWED_REFERENCE,
+    MDKR_MODERN_CHARACTER_MOTION_PACKAGE_FALLBACK,
+    MDKR_MODERN_CHARACTER_MOTION_COUNT,
+} MdkrModernCharacterMotionSource;
 
 /* Latest successfully emitted calibrated volume in the donor target frame.
  * This is exact transform evidence from the real replacement draw, not a
@@ -187,6 +202,13 @@ int mdkr_modern_character_tick_phase(int player, const char *semantic,
  * live scene's transient animation choice. Runtime shutdown always clears it. */
 int mdkr_modern_character_set_inspection_pose(
     const char *semantic, float normalized_phase,
+    char *error, size_t error_size);
+/* Repeatedly alternates between two exact held samples, using the ordinary
+ * pose player's semantic-change blend each way. The one-second dwell is an
+ * inspection cadence, not an authored animation duration. */
+int mdkr_modern_character_set_inspection_transition(
+    const char *from_semantic, float from_normalized_phase,
+    const char *to_semantic, float to_normalized_phase,
     char *error, size_t error_size);
 void mdkr_modern_character_clear_inspection_pose(void);
 

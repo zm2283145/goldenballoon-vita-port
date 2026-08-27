@@ -114,6 +114,10 @@ void fillBootConfig(LauncherState &state, MdkrBootConfig &boot) {
         boot.character_preview_pose = state.characterPreviewPose;
         boot.character_preview_pose_phase_milli =
             state.characterPreviewPosePhaseMilli;
+        boot.character_preview_transition_from_pose =
+            state.characterPreviewTransitionFromPose;
+        boot.character_preview_transition_from_phase_milli =
+            state.characterPreviewTransitionFromPhaseMilli;
         boot.character_preview_view_yaw_degrees =
             state.characterPreviewViewYawDegrees;
         boot.character_preview_view_pitch_degrees =
@@ -995,6 +999,9 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
         s.characterPreviewPlayers = preview.players;
         s.characterPreviewPose = preview.pose;
         s.characterPreviewPosePhaseMilli = preview.posePhaseMilli;
+        s.characterPreviewTransitionFromPose = preview.transitionFromPose;
+        s.characterPreviewTransitionFromPhaseMilli =
+            preview.transitionFromPhaseMilli;
         s.characterPreviewViewYawDegrees = preview.viewYawDegrees;
         s.characterPreviewViewPitchDegrees = preview.viewPitchDegrees;
         s.characterPreviewLighting = preview.lighting;
@@ -1034,6 +1041,9 @@ void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out) {
         s.characterPreviewPlayers = preview.players;
         s.characterPreviewPose = preview.pose;
         s.characterPreviewPosePhaseMilli = preview.posePhaseMilli;
+        s.characterPreviewTransitionFromPose = preview.transitionFromPose;
+        s.characterPreviewTransitionFromPhaseMilli =
+            preview.transitionFromPhaseMilli;
         s.characterPreviewViewYawDegrees = preview.viewYawDegrees;
         s.characterPreviewViewPitchDegrees = preview.viewPitchDegrees;
         s.characterPreviewLighting = preview.lighting;
@@ -1090,6 +1100,9 @@ LauncherAction Launcher::draw(AppHost &host) {
         state_.characterPreviewPlayers = 0;
         state_.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
         state_.characterPreviewPosePhaseMilli = 0u;
+        state_.characterPreviewTransitionFromPose =
+            MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+        state_.characterPreviewTransitionFromPhaseMilli = 0u;
         state_.characterPreviewViewYawDegrees = 0;
         state_.characterPreviewViewPitchDegrees = 0;
         state_.characterPreviewLighting =

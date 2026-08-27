@@ -27,6 +27,9 @@ struct SettingsCharacterPreviewRequest {
     int players = 1;
     MdkrCharacterPreviewPose pose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
     unsigned posePhaseMilli = 0u;
+    MdkrCharacterPreviewPose transitionFromPose =
+        MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    unsigned transitionFromPhaseMilli = 0u;
     int viewYawDegrees = 0;
     int viewPitchDegrees = 0;
     MdkrWorkshopPreviewLighting lighting =

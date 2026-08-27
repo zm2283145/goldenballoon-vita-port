@@ -34,6 +34,9 @@ int main() {
     source.testPlayers = 4;
     source.testPose = 12u;
     source.testPosePhaseMilli = 875u;
+    source.testTransition = true;
+    source.testTransitionFromPose = 1u;
+    source.testTransitionFromPhaseMilli = 125u;
     source.testViewYawDegrees = -135;
     source.testViewPitchDegrees = 90;
     source.testLighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT;
@@ -102,6 +105,9 @@ int main() {
                parsed.assemblyPlayers == 3 && parsed.testPlayers == 4 &&
                parsed.testPose == 12u &&
                parsed.testPosePhaseMilli == 875u &&
+               parsed.testTransition &&
+               parsed.testTransitionFromPose == 1u &&
+               parsed.testTransitionFromPhaseMilli == 125u &&
                parsed.testViewYawDegrees == -135 &&
                parsed.testViewPitchDegrees == 90 &&
                parsed.testLighting ==
@@ -163,8 +169,20 @@ int main() {
     constexpr size_t animationIntentTailBytes = 4u;
     constexpr size_t rigReviewTasksTailBytes = 4u;
     constexpr size_t contactExceptionTailBytes = 4u;
+    constexpr size_t transitionInspectionTailBytes = 12u;
+    std::string versionEleven = encoded.substr(
+        0u, encoded.size() - transitionInspectionTailBytes);
+    writeU32(versionEleven, 4u, 11u);
+    writeU32(versionEleven, 8u,
+             static_cast<uint32_t>(versionEleven.size()));
+    expect(decode(versionEleven, parsed, error) &&
+               !parsed.testTransition &&
+               parsed.testTransitionFromPose == 5u &&
+               parsed.testTransitionFromPhaseMilli == 500u,
+           "version-eleven drafts migrate with a safe held-sample default");
     std::string versionTen = encoded.substr(
-        0u, encoded.size() - contactExceptionTailBytes);
+        0u, encoded.size() - transitionInspectionTailBytes -
+            contactExceptionTailBytes);
     writeU32(versionTen, 4u, 10u);
     writeU32(versionTen, 8u,
              static_cast<uint32_t>(versionTen.size()));
@@ -173,7 +191,8 @@ int main() {
                parsed.contactExceptionContexts == 0u,
            "version-ten drafts migrate without inventing contact exceptions");
     std::string versionNine = encoded.substr(
-        0u, encoded.size() - contactExceptionTailBytes -
+        0u, encoded.size() - transitionInspectionTailBytes -
+            contactExceptionTailBytes -
             rigReviewTasksTailBytes);
     writeU32(versionNine, 4u, 9u);
     writeU32(versionNine, 8u,
@@ -184,7 +203,8 @@ int main() {
                parsed.rigReviewTaskMask == 0x1Fu,
            "version-nine reviewed drafts migrate with all anatomy checks complete");
     std::string versionEight = encoded.substr(
-        0u, encoded.size() - animationIntentTailBytes -
+        0u, encoded.size() - transitionInspectionTailBytes -
+            animationIntentTailBytes -
             rigReviewTasksTailBytes - contactExceptionTailBytes);
     writeU32(versionEight, 4u, 8u);
     writeU32(versionEight, 8u,
@@ -196,7 +216,8 @@ int main() {
                parsed.testViewPitchDegrees == source.testViewPitchDegrees,
            "version-eight drafts migrate with active animation mappings");
     std::string versionSeven = encoded.substr(
-        0u, encoded.size() - animationIntentTailBytes -
+        0u, encoded.size() - transitionInspectionTailBytes -
+            animationIntentTailBytes -
             rigReviewTasksTailBytes - contactExceptionTailBytes);
     writeU32(versionSeven, 4u, 7u);
     writeU32(versionSeven, 8u,
@@ -313,6 +334,7 @@ int main() {
     writeU32(badMaskEnabled,
              badMaskEnabled.size() - animationIntentTailBytes -
                  rigReviewTasksTailBytes - contactExceptionTailBytes -
+                 transitionInspectionTailBytes -
                  subjectMaskTailBytes,
              2u);
     expect(!decode(badMaskEnabled, parsed, error),
@@ -355,6 +377,14 @@ int main() {
     hostile.testPosePhaseMilli = 1001u;
     expect(!encode(hostile, encoded, error),
            "out-of-range inspection phases are rejected from persisted state");
+    hostile = source;
+    hostile.testTransitionFromPose = hostile.testPose;
+    expect(!encode(hostile, encoded, error),
+           "transition source and destination must be distinct");
+    hostile = source;
+    hostile.testTransitionFromPhaseMilli = 1001u;
+    expect(!encode(hostile, encoded, error),
+           "transition source phases are bounded in persisted state");
     hostile = source;
     hostile.testViewYawDegrees = 181;
     expect(!encode(hostile, encoded, error),

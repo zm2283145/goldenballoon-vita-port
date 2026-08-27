@@ -468,6 +468,9 @@ static void cancelValidation(LauncherState &s, bool clearUnusableSelection) {
         s.characterPreviewPlayers = 0;
         s.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
         s.characterPreviewPosePhaseMilli = 0u;
+        s.characterPreviewTransitionFromPose =
+            MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+        s.characterPreviewTransitionFromPhaseMilli = 0u;
         s.characterPreviewViewYawDegrees = 0;
         s.characterPreviewViewPitchDegrees = 0;
         s.characterPreviewLighting =
@@ -493,6 +496,17 @@ static const char *characterPreviewContextLabel(
     }
 }
 
+static const char *characterPreviewPoseLabel(MdkrCharacterPreviewPose pose) {
+    switch (pose) {
+#define MDKR_CHARACTER_PREVIEW_LABEL(suffix, semantic, label) \
+        case MDKR_CHARACTER_PREVIEW_POSE_##suffix: return label;
+        MDKR_MODERN_CHARACTER_INSPECTION_SEMANTICS(
+            MDKR_CHARACTER_PREVIEW_LABEL)
+#undef MDKR_CHARACTER_PREVIEW_LABEL
+        default: return nullptr;
+    }
+}
+
 static void cancelCharacterPreview(LauncherState &s) {
     if (s.romPlayValidationPending) {
         cancelValidation(s, /*clearUnusableSelection=*/false);
@@ -505,6 +519,9 @@ static void cancelCharacterPreview(LauncherState &s) {
     s.characterPreviewPlayers = 0;
     s.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
     s.characterPreviewPosePhaseMilli = 0u;
+    s.characterPreviewTransitionFromPose =
+        MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    s.characterPreviewTransitionFromPhaseMilli = 0u;
     s.characterPreviewViewYawDegrees = 0;
     s.characterPreviewViewPitchDegrees = 0;
     s.characterPreviewLighting =
@@ -566,6 +583,9 @@ void RomPanel_serviceValidation(LauncherState &s) {
             s.characterPreviewPlayers = 0;
             s.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
             s.characterPreviewPosePhaseMilli = 0u;
+            s.characterPreviewTransitionFromPose =
+                MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+            s.characterPreviewTransitionFromPhaseMilli = 0u;
             s.characterPreviewViewYawDegrees = 0;
             s.characterPreviewViewPitchDegrees = 0;
             s.characterPreviewLighting =
@@ -668,6 +688,9 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
             ImGui::TextUnformatted(
                 s.characterPreviewPose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
                     ? "Custom Character Test"
+                    : s.characterPreviewTransitionFromPose !=
+                              MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                        ? "Custom Character Transition Review"
                     : "Custom Character Pose Inspection");
             ImGui::PopFont();
             ImGui::PopStyleColor();
@@ -678,9 +701,25 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
                 s.characterPreviewPlayers == 1 ? "player" : "players");
             ui::TextSubtleUnformattedWrapped(
                 s.characterPreviewPackage.c_str());
+            if (s.characterPreviewTransitionFromPose !=
+                    MDKR_CHARACTER_PREVIEW_POSE_LIVE) {
+                const char *from = characterPreviewPoseLabel(
+                    s.characterPreviewTransitionFromPose);
+                const char *to = characterPreviewPoseLabel(
+                    s.characterPreviewPose);
+                ImGui::Text(
+                    "A %s %.1f%%  ↔  B %s %.1f%%",
+                    from != nullptr ? from : "Unknown",
+                    s.characterPreviewTransitionFromPhaseMilli / 10.0,
+                    to != nullptr ? to : "Unknown",
+                    s.characterPreviewPosePhaseMilli / 10.0);
+            }
             ui::TextSubtleWrapped(
                 s.characterPreviewPose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
                     ? "The first 120 authored ticks warm the scene. Stay at least three seconds longer for a useful real-time sample; opening F1 freezes it."
+                    : s.characterPreviewTransitionFromPose !=
+                              MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                        ? "The exact pose player alternates A and B once per second and uses each destination mapping's real blend duration. Return with F1 after several changes; the result identifies authored, reviewed-reference, or package-fallback motion for both states."
                     : "The requested semantic is held at an exact phase when authored or supplied by a reviewed humanoid map. The result reports source fallback explicitly; inspection is session-only and cannot replace performance evidence.");
             const char *cancelLabel =
                 s.characterPreviewPose == MDKR_CHARACTER_PREVIEW_POSE_LIVE

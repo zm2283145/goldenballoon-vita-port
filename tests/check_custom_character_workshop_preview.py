@@ -473,19 +473,22 @@ def main() -> int:
                 expected_phase = int(pose_phase)
                 pose_match = re.search(
                     rf"pose={expected_pose} phase={expected_phase} "
+                    r"transitionFrom=0 transitionPhase=0 "
+                    r"transition=0/0/0 transitionBlend=0,0 "
+                    r"transitionSource=([1-3]),0 "
                     r"poseTicks=(\d+) poseFallback=(\d+)",
                     arm_output,
                 )
-                if pose_match is None or int(pose_match.group(1)) <= 0:
+                if pose_match is None or int(pose_match.group(2)) <= 0:
                     failures.append(
                         f"{label} did not drive the held semantic phase"
                     )
                 elif expect_fallback:
-                    if int(pose_match.group(2)) != int(pose_match.group(1)):
+                    if int(pose_match.group(3)) != int(pose_match.group(2)):
                         failures.append(
                             f"{label} did not report complete source fallback"
                         )
-                elif int(pose_match.group(2)) != 0:
+                elif int(pose_match.group(3)) != 0:
                     failures.append(
                         f"{label} unexpectedly used source fallback"
                     )
@@ -847,6 +850,58 @@ def main() -> int:
                             )
                         subject_capture_draws[label] = rendered
 
+    if not failures:
+        transition_dir = evidence / "car-1p-transition"
+        transition_dir.mkdir(parents=True, exist_ok=True)
+        transition_env = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith(("MDKR", "GE007_"))
+        }
+        transition_env.update(
+            LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
+            MDKR_PRESENT_PERF="1", MDKR_RENDERER="webgpu",
+            MDKR_RENDER_SCALE="1", MDKR_VIDEO_CONFIG_PATH=os.devnull,
+            MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
+            MDKR_CHARACTER_WORKSHOP_PREVIEW="car",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS="1",
+            MDKR_CUSTOM_CHARACTER_P1=PACKAGE_ID,
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE="race.finish_win",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE="750",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_TRANSITION_FROM_POSE=
+                "select.idle",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_TRANSITION_FROM_PHASE="250",
+            MDKR64_HIDDEN="1",
+        )
+        process = run([
+            str(binary), "--headless-frames", str(FRAMES), "--rom",
+            str(rom), "--window-size", "1280x960", "--restored",
+        ], env=transition_env)
+        transition_output = process.stdout or ""
+        output += "\n===== car-1p-transition =====\n" + transition_output
+        transition_match = re.search(
+            r"pose=12 phase=750 transitionFrom=1 transitionPhase=250 "
+            r"transition=(\d+)/(\d+)/(\d+) "
+            r"transitionBlend=(\d+),(\d+) "
+            r"transitionSource=([1-3]),([1-3]) "
+            r"poseTicks=(\d+) poseFallback=(\d+)",
+            transition_output,
+        )
+        if process.returncode != 0 or transition_match is None:
+            failures.append(
+                "exact A-to-B transition did not publish its runtime contract"
+            )
+        else:
+            (switches, blending, completions, _, _, from_source, to_source,
+             ticks, fallback) = map(int, transition_match.groups())
+            if switches <= 0 or completions > switches or blending > ticks:
+                failures.append(
+                    "exact transition counters were internally inconsistent"
+                )
+            if fallback <= 0 or 3 not in (from_source, to_source):
+                failures.append(
+                    "transition did not expose its expected package-fallback leg"
+                )
+
     one_player_subject = subject_capture_draws.get(
         "car-1p-pose-model-alpha-capture"
     )
@@ -897,6 +952,48 @@ def main() -> int:
                 env["MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE"] = pose
             if pose_phase is not None:
                 env["MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE"] = pose_phase
+            process = run([
+                str(binary), "--headless-frames", "60", "--rom", str(rom),
+                "--window-size", "1280x960", "--restored",
+            ], env=env)
+            arm_output = process.stdout or ""
+            output += f"\n===== {label} =====\n{arm_output}"
+            if process.returncode == 0:
+                failures.append(f"{label} did not fail closed")
+            if marker not in arm_output:
+                failures.append(f"{label} did not report its exact refusal")
+
+    transition_rejection_arms = [
+        ("same-transition-semantic", "race.steer", "500",
+         "invalid Character Workshop transition request"),
+        ("unknown-transition-semantic", "race.dance", "500",
+         "invalid Character Workshop transition request"),
+        ("unpaired-transition", "select.idle", None,
+         "transition source and phase must be provided together"),
+    ]
+    if not failures:
+        for label, from_pose, from_phase, marker in transition_rejection_arms:
+            env = {
+                key: value for key, value in os.environ.items()
+                if not key.startswith(("MDKR", "GE007_"))
+            }
+            env.update(
+                LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
+                MDKR_RENDERER="webgpu", MDKR_VIDEO_CONFIG_PATH=os.devnull,
+                MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
+                MDKR_CHARACTER_WORKSHOP_PREVIEW="car",
+                MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS="1",
+                MDKR_CUSTOM_CHARACTER_P1=PACKAGE_ID,
+                MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE="race.steer",
+                MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE="500",
+                MDKR_CHARACTER_WORKSHOP_PREVIEW_TRANSITION_FROM_POSE=
+                    from_pose,
+                MDKR64_HIDDEN="1",
+            )
+            if from_phase is not None:
+                env[
+                    "MDKR_CHARACTER_WORKSHOP_PREVIEW_TRANSITION_FROM_PHASE"
+                ] = from_phase
             process = run([
                 str(binary), "--headless-frames", "60", "--rom", str(rom),
                 "--window-size", "1280x960", "--restored",
@@ -1028,7 +1125,8 @@ def main() -> int:
     print(
         "check_custom_character_workshop_preview: PASS -- direct "
         "select/car/hovercraft/plane routes, exact semantic-phase inspection "
-        "with honest fallback accounting, deterministic camera/light controls, "
+        "and runtime A/B cross-fades with per-leg blend/source/fallback "
+        "accounting, deterministic camera/light controls, "
         "target-frame anchor/bounds/facing measurements, exclusive stabilized "
         "RGB gameplay and transparent RGBA model-only PNG capture, "
         "exact four-contact post-solve witnesses, one-to-four-player WebGPU "

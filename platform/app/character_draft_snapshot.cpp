@@ -9,12 +9,13 @@
 
 namespace {
 
+constexpr uint32_t kTransitionInspectionVersion = 12u;
 constexpr uint32_t kContactExceptionsVersion = 11u;
 constexpr uint32_t kRigReviewTasksVersion = 10u;
 constexpr uint32_t kAnimationIntentVersion = 9u;
 constexpr uint32_t kTopInspectionVersion = 8u;
 constexpr uint32_t kPortraitSubjectMaskVersion = 7u;
-constexpr uint32_t kVersion = kContactExceptionsVersion;
+constexpr uint32_t kVersion = kTransitionInspectionVersion;
 constexpr uint32_t kPortraitSourceVersion = 6u;
 constexpr uint32_t kVisualInspectionVersion = 5u;
 constexpr uint32_t kPoseInspectionVersion = 4u;
@@ -40,7 +41,7 @@ constexpr size_t kPortraitSubjectMaskBytes =
 constexpr size_t kTopInspectionFixedBytes =
     kVisualInspectionFixedBytes + kPortraitSourceRecordBytes +
     kPortraitSubjectMaskBytes;
-constexpr size_t kFixedBytes = kTopInspectionFixedBytes + 12u;
+constexpr size_t kFixedBytes = kTopInspectionFixedBytes + 24u;
 constexpr size_t kMaximumPathBytes = 4095u;
 constexpr size_t kMaximumNameBytes = 96u;
 constexpr size_t kMaximumShortNameBytes = 96u;
@@ -218,6 +219,12 @@ bool snapshotValid(const CharacterDraftSnapshot::Snapshot &snapshot,
         snapshot.testPose >
             MDKR_MODERN_CHARACTER_INSPECTION_SEMANTIC_COUNT ||
         snapshot.testPosePhaseMilli > 1000u ||
+        snapshot.testTransitionFromPose == 0u ||
+        snapshot.testTransitionFromPose >
+            MDKR_MODERN_CHARACTER_INSPECTION_SEMANTIC_COUNT ||
+        snapshot.testTransitionFromPhaseMilli > 1000u ||
+        (snapshot.testTransition &&
+         snapshot.testTransitionFromPose == snapshot.testPose) ||
         snapshot.testViewYawDegrees < -180 ||
         snapshot.testViewYawDegrees > 180 ||
         snapshot.testViewPitchDegrees <
@@ -423,6 +430,9 @@ bool encode(const Snapshot &snapshot, std::string &payload,
     appendU32(result, snapshot.disabledSemanticMask);
     appendU32(result, snapshot.rigReviewTaskMask);
     appendU32(result, snapshot.contactExceptionContexts);
+    appendU32(result, snapshot.testTransition ? 1u : 0u);
+    appendU32(result, snapshot.testTransitionFromPose);
+    appendU32(result, snapshot.testTransitionFromPhaseMilli);
     if (result.size() != kFixedBytes + 16u +
             snapshot.portraitSourcePath.size() + namesBytes) {
         error = "draft snapshot encoder size invariant failed";
@@ -446,6 +456,7 @@ bool decode(const std::string &payload, Snapshot &snapshot,
         payload.compare(0u, 4u, "MDWD") != 0 ||
         !readU32(payload, offset, version) ||
         (version != kVersion &&
+         version != kContactExceptionsVersion &&
          version != kRigReviewTasksVersion &&
          version != kAnimationIntentVersion &&
          version != kTopInspectionVersion &&
@@ -665,6 +676,14 @@ bool decode(const std::string &payload, Snapshot &snapshot,
     if (version >= kContactExceptionsVersion) {
         if (!readU32(payload, offset,
                      parsed.contactExceptionContexts)) goto malformed;
+    }
+    if (version >= kTransitionInspectionVersion) {
+        uint32_t enabled;
+        if (!readU32(payload, offset, enabled) || enabled > 1u ||
+            !readU32(payload, offset, parsed.testTransitionFromPose) ||
+            !readU32(payload, offset,
+                     parsed.testTransitionFromPhaseMilli)) goto malformed;
+        parsed.testTransition = enabled != 0u;
     }
     if (offset != payload.size() ||
         !snapshotValid(parsed, error, version == kLegacyVersion)) return false;

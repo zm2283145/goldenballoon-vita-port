@@ -54,6 +54,14 @@ typedef enum {
     MDKR_CHARACTER_PREVIEW_POSE_COUNT,
 } MdkrCharacterPreviewPose;
 
+typedef enum {
+    MDKR_CHARACTER_PREVIEW_MOTION_NONE = 0,
+    MDKR_CHARACTER_PREVIEW_MOTION_AUTHORED,
+    MDKR_CHARACTER_PREVIEW_MOTION_REVIEWED_REFERENCE,
+    MDKR_CHARACTER_PREVIEW_MOTION_PACKAGE_FALLBACK,
+    MDKR_CHARACTER_PREVIEW_MOTION_COUNT,
+} MdkrCharacterPreviewMotionSource;
+
 /* One-shot inspection captures are explicit render products. SCENE preserves
  * the ordinary composed gameplay frame. MODEL_ALPHA asks the modern-character
  * backend to replay only validated replacement draws into a transparent
@@ -84,6 +92,8 @@ typedef struct MdkrCharacterPreviewResult {
     int players;
     MdkrCharacterPreviewPose pose;
     unsigned pose_phase_milli;
+    MdkrCharacterPreviewPose transition_from_pose;
+    unsigned transition_from_phase_milli;
     unsigned long long warmup_ticks;
     unsigned long long interval_samples;
     unsigned long long displayed_frames;
@@ -137,6 +147,13 @@ typedef struct MdkrCharacterPreviewResult {
         [MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS];
     unsigned long long inspection_pose_ticks;
     unsigned long long inspection_pose_fallback_ticks;
+    unsigned long long inspection_transition_switches;
+    unsigned long long inspection_transition_blending_ticks;
+    unsigned long long inspection_transition_completions;
+    unsigned transition_from_blend_milli;
+    unsigned transition_to_blend_milli;
+    MdkrCharacterPreviewMotionSource transition_from_motion_source;
+    MdkrCharacterPreviewMotionSource transition_to_motion_source;
     int view_yaw_degrees;
     int view_pitch_degrees;
     MdkrWorkshopPreviewLighting lighting;
@@ -162,7 +179,9 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 13u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 14u
+#define MDKR_CHARACTER_PREVIEW_TRANSITION_DWELL_MILLI \
+    MDKR_MODERN_CHARACTER_INSPECTION_TRANSITION_DWELL_MILLI
 #define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u
 
 // Owned by the C engine entry module and non-NULL only during a launcher-owned
@@ -185,6 +204,8 @@ typedef struct {
     int character_preview_players;  // 1..4
     MdkrCharacterPreviewPose character_preview_pose;
     unsigned character_preview_pose_phase_milli;  // 0..1000
+    MdkrCharacterPreviewPose character_preview_transition_from_pose;
+    unsigned character_preview_transition_from_phase_milli;  // 0..1000
     int character_preview_view_yaw_degrees;       // -180..180
     int character_preview_view_pitch_degrees;     // -90..90
     MdkrWorkshopPreviewLighting character_preview_lighting;

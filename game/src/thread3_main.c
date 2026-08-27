@@ -383,6 +383,40 @@ static void workshop_preview_measurement_finish(void) {
                       sWorkshopPreviewCharacterBaseline
                           .inspection_pose_fallback_ticks
                 : 0u;
+        result->inspection_transition_switches =
+            character.inspection_transition_switches >=
+                    sWorkshopPreviewCharacterBaseline
+                        .inspection_transition_switches
+                ? character.inspection_transition_switches -
+                      sWorkshopPreviewCharacterBaseline
+                          .inspection_transition_switches
+                : 0u;
+        result->inspection_transition_blending_ticks =
+            character.inspection_transition_blending_ticks >=
+                    sWorkshopPreviewCharacterBaseline
+                        .inspection_transition_blending_ticks
+                ? character.inspection_transition_blending_ticks -
+                      sWorkshopPreviewCharacterBaseline
+                          .inspection_transition_blending_ticks
+                : 0u;
+        result->inspection_transition_completions =
+            character.inspection_transition_completions >=
+                    sWorkshopPreviewCharacterBaseline
+                        .inspection_transition_completions
+                ? character.inspection_transition_completions -
+                      sWorkshopPreviewCharacterBaseline
+                          .inspection_transition_completions
+                : 0u;
+        result->transition_from_blend_milli =
+            character.inspection_from_blend_milliseconds;
+        result->transition_to_blend_milli =
+            character.inspection_to_blend_milliseconds;
+        result->transition_from_motion_source =
+            (MdkrCharacterPreviewMotionSource)
+                character.inspection_from_motion_source;
+        result->transition_to_motion_source =
+            (MdkrCharacterPreviewMotionSource)
+                character.inspection_to_motion_source;
         if (result->replacement_draws != 0u) {
             (void)workshop_preview_publish_fit_diagnostics(result);
             (void)workshop_preview_publish_contact_diagnostics(result);
@@ -409,6 +443,8 @@ static void workshop_preview_measurement_finish(void) {
         "target:%lld,%lld,%lld end:%lld,%lld,%lld fit=%d "
         "fitAnchorUm=%lld,%lld,%lld fitBoundsYUm=%lld,%lld "
         "fitForwardMilli=%d,%d,%d pose=%d phase=%u "
+        "transitionFrom=%d transitionPhase=%u transition=%llu/%llu/%llu "
+        "transitionBlend=%u,%u transitionSource=%d,%d "
         "poseTicks=%llu poseFallback=%llu view=%d,%d lighting=%d "
         "cameraTicks=%llu lightingDraws=%llu capture=%d/%d/%d kind=%d "
         "captureStableFrames=%llu bytes=%llu "
@@ -448,6 +484,15 @@ static void workshop_preview_measurement_finish(void) {
         result->fit_forward_milli[1],
         result->fit_forward_milli[2],
         (int)result->pose, result->pose_phase_milli,
+        (int)result->transition_from_pose,
+        result->transition_from_phase_milli,
+        result->inspection_transition_switches,
+        result->inspection_transition_blending_ticks,
+        result->inspection_transition_completions,
+        result->transition_from_blend_milli,
+        result->transition_to_blend_milli,
+        (int)result->transition_from_motion_source,
+        (int)result->transition_to_motion_source,
         result->inspection_pose_ticks,
         result->inspection_pose_fallback_ticks,
         result->view_yaw_degrees, result->view_pitch_degrees,
@@ -2674,6 +2719,8 @@ static s32 workshop_preview_start(void) {
     const char *playersText;
     const char *poseText;
     const char *phaseText;
+    const char *transitionFromPoseText;
+    const char *transitionFromPhaseText;
     const char *yawText;
     const char *pitchText;
     const char *lightingText;
@@ -2681,6 +2728,9 @@ static s32 workshop_preview_start(void) {
     const char *captureKindText;
     MdkrCharacterPreviewPose pose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
     unsigned posePhaseMilli = 0u;
+    MdkrCharacterPreviewPose transitionFromPose =
+        MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    unsigned transitionFromPhaseMilli = 0u;
     int viewYawDegrees = 0;
     int viewPitchDegrees = 0;
     MdkrWorkshopPreviewLighting lighting =
@@ -2735,6 +2785,48 @@ static s32 workshop_preview_start(void) {
         posePhaseMilli = (unsigned)parsed;
     } else {
         mdkr_modern_character_clear_inspection_pose();
+    }
+    transitionFromPoseText = getenv(
+        "MDKR_CHARACTER_WORKSHOP_PREVIEW_TRANSITION_FROM_POSE");
+    transitionFromPhaseText = getenv(
+        "MDKR_CHARACTER_WORKSHOP_PREVIEW_TRANSITION_FROM_PHASE");
+    if ((transitionFromPoseText != NULL &&
+         transitionFromPoseText[0] != '\0') ||
+        (transitionFromPhaseText != NULL &&
+         transitionFromPhaseText[0] != '\0')) {
+        char *end = NULL;
+        long parsed;
+        char transitionError[192] = { 0 };
+        if (pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+            transitionFromPoseText == NULL ||
+            transitionFromPoseText[0] == '\0' ||
+            transitionFromPhaseText == NULL ||
+            transitionFromPhaseText[0] == '\0') {
+            fprintf(stderr,
+                    "[FATAL] Character Workshop transition source and phase must be provided together with a destination pose\n");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        transitionFromPose = workshop_preview_pose_from_semantic(
+            transitionFromPoseText);
+        parsed = strtol(transitionFromPhaseText, &end, 10);
+        if (transitionFromPose == MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
+            transitionFromPose == pose || end == transitionFromPhaseText ||
+            *end != '\0' || parsed < 0 || parsed > 1000 ||
+            !mdkr_modern_character_set_inspection_transition(
+                transitionFromPoseText, (float)parsed / 1000.0f,
+                poseText, (float)posePhaseMilli / 1000.0f,
+                transitionError, sizeof(transitionError))) {
+            fprintf(stderr,
+                    "[FATAL] invalid Character Workshop transition request: %s at %s to %s at %u (%s)\n",
+                    transitionFromPoseText, transitionFromPhaseText,
+                    poseText != NULL ? poseText : "none", posePhaseMilli,
+                    transitionError[0] != '\0'
+                        ? transitionError : "invalid contract");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        transitionFromPhaseMilli = (unsigned)parsed;
     }
     yawText = getenv("MDKR_CHARACTER_WORKSHOP_VIEW_YAW_DEGREES");
     pitchText = getenv("MDKR_CHARACTER_WORKSHOP_VIEW_PITCH_DEGREES");
@@ -2795,6 +2887,7 @@ static s32 workshop_preview_start(void) {
     if (captureText != NULL && captureText[0] != '\0') {
         const size_t captureLength = strlen(captureText);
         if (pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+            transitionFromPose != MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
             captureLength >= sizeof(sWorkshopPreviewCapturePath) ||
             captureLength < 4u ||
             strcmp(captureText + captureLength - 4u, ".png") != 0) {
@@ -2862,6 +2955,10 @@ static s32 workshop_preview_start(void) {
         g_mdkrCharacterPreviewResult->started = TRUE;
         g_mdkrCharacterPreviewResult->pose = pose;
         g_mdkrCharacterPreviewResult->pose_phase_milli = posePhaseMilli;
+        g_mdkrCharacterPreviewResult->transition_from_pose =
+            transitionFromPose;
+        g_mdkrCharacterPreviewResult->transition_from_phase_milli =
+            transitionFromPhaseMilli;
         g_mdkrCharacterPreviewResult->view_yaw_degrees = viewYawDegrees;
         g_mdkrCharacterPreviewResult->view_pitch_degrees = viewPitchDegrees;
         g_mdkrCharacterPreviewResult->lighting = lighting;

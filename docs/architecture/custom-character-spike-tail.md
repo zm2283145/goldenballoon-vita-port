@@ -228,8 +228,12 @@ flip, collapse, or mirror inversion.
 - **Implemented:** detect clips with no meaningful joint motion. A generated static `idle` mapped
   to `select.idle` must be labelled “bind/static-looking” and must not silently
   win over a reviewed reference select pose.
-- Add side-by-side held-phase thumbnails and transition playback for every
-  semantic, including blend duration and fallback reason.
+- **Implemented:** Animation Studio exposes exact 0/50/100% held samples and a
+  reversible A/B semantic review. A/B alternates through the ordinary runtime
+  pose player, measures each destination's authored blend duration, and reports
+  authored clip, reviewed reference, or package fallback independently for both
+  ends. Moving reviews cannot create a misleading nondeterministic screenshot;
+  held samples feed the existing digest-bound side-by-side capture tray.
 - Expand the reference library for select hover/confirm, steering, reverse,
   boost, damage, item, spin, airborne/land, and finish states. Add optional
   hair/tail secondary motion only after deterministic base-pose behavior is
@@ -257,7 +261,7 @@ in the package review and durable evidence.
 - **Partially implemented:** hand residual <=25 mm and foot residual <=40 mm
   are visible exact-evidence guides. An over-limit review now requires an
   explicit source-and-fit-bound exception, participates in Fit undo/redo,
-  survives named-draft v11 resume, and rolls back if persistence fails.
+  survives named-draft v12 resume, and rolls back if persistence fails.
   Penetration and frame-to-frame oscillation still require renderer-derived
   witnesses before they can be qualified honestly.
 - Test car, hovercraft, and plane across representative start, steer, airborne,
@@ -386,8 +390,8 @@ rest/bend bases, 72%-occupancy isolated capture, portrait handoff, and fresh
 five-context/performance fixture qualification are complete. The immediate
 remaining order is therefore:
 
-1. add side-by-side held-phase and transition review for the now-reversible
-   animation decisions, then qualify richer reference clips;
+1. qualify richer reference clips and add optional deterministic secondary
+   hair/tail motion after the exact held-phase and transition-review contract;
 2. add renderer-derived head/torso occupancy, seat displacement, vehicle/body
    intersection, penetration, and oscillation witnesses; use controlled
    perturbation/re-rendering for contact suggestions rather than applying

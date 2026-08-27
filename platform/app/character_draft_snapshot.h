@@ -52,6 +52,9 @@ struct Snapshot {
     int testPlayers = 1;
     uint32_t testPose = MDKR_MODERN_CHARACTER_INSPECTION_DEFAULT_POSE;
     uint32_t testPosePhaseMilli = 500u;
+    bool testTransition = false;
+    uint32_t testTransitionFromPose = 5u;
+    uint32_t testTransitionFromPhaseMilli = 500u;
     int32_t testViewYawDegrees = 0;
     int32_t testViewPitchDegrees = 0;
     uint32_t testLighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
@@ -71,7 +74,7 @@ struct Snapshot {
     /* Five source-bound anatomy-region checks used by native Rig Studio.
      * Older reviewed drafts migrate to all checked; older open drafts to none. */
     uint32_t rigReviewTaskMask = 0u;
-    /* Decode-only migration witness. Every newly encoded v11 payload owns an
+    /* Decode-only migration witness. Every newly encoded v12 payload owns an
      * explicit mask; v1-v8 drafts preserve the active source decision. */
     bool animationIntentPresent = false;
     uint32_t disabledSemanticMask = 0u;

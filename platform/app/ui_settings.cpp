@@ -2195,6 +2195,9 @@ std::set<std::string> g_characterPerformanceTracePackages;
 std::map<std::string, int> g_characterTestPlayers;
 std::map<std::string, int> g_characterTestPoses;
 std::map<std::string, int> g_characterTestPosePhases;
+std::map<std::string, bool> g_characterTestTransitions;
+std::map<std::string, int> g_characterTestTransitionFromPoses;
+std::map<std::string, int> g_characterTestTransitionFromPhases;
 std::map<std::string, int> g_characterTestViewYawDegrees;
 std::map<std::string, int> g_characterTestViewPitchDegrees;
 std::map<std::string, int> g_characterTestLighting;
@@ -4564,6 +4567,9 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterTestPlayers.erase(id);
     g_characterTestPoses.erase(id);
     g_characterTestPosePhases.erase(id);
+    g_characterTestTransitions.erase(id);
+    g_characterTestTransitionFromPoses.erase(id);
+    g_characterTestTransitionFromPhases.erase(id);
     g_characterTestViewYawDegrees.erase(id);
     g_characterTestViewPitchDegrees.erase(id);
     g_characterTestLighting.erase(id);
@@ -5717,7 +5723,10 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                                  MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
                              const char *capturePng = nullptr,
                              MdkrCharacterPreviewCaptureKind captureKind =
-                                 MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE);
+                                 MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE,
+                             MdkrCharacterPreviewPose transitionFromPose =
+                                 MDKR_CHARACTER_PREVIEW_POSE_LIVE,
+                             unsigned transitionFromPhaseMilli = 0u);
 
 bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                             bool compact) {
@@ -6004,25 +6013,27 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                     edit.disabledSemanticMask == entry->disabled_semantic_mask;
                 if (!exactInspectionCurrent) ImGui::BeginDisabled();
                 if (ImGui::SmallButton(
-                        exactInspectionCurrent ? "Inspect in Test"
-                                               : "Save before Test") &&
+                        exactInspectionCurrent
+                            ? "Open in Animation Studio"
+                            : "Save before review") &&
                     inspectionPose != MDKR_CHARACTER_PREVIEW_POSE_LIVE) {
                     g_characterTestPoses[entry->id] = inspectionPose;
                     g_characterTestPosePhases[entry->id] = 500;
+                    g_characterTestTransitions[entry->id] = false;
                     persistCharacterWorkshopTab(
                         CharacterWorkshopTab::Test, true);
                     setStatus(
-                        "Semantic and midpoint phase prepared in Test. Choose select or a supported vehicle to launch the exact renderer; no package data changed.",
+                        "Semantic prepared in Animation Studio. Review exact start, middle, end, or choose a second state for a runtime transition; no package data changed.",
                         AppTheme::good());
                 }
                 if (!exactInspectionCurrent) ImGui::EndDisabled();
                 ui::SpeakFocusedItem(
                     exactInspectionCurrent
-                        ? "Inspect semantic in Test"
+                        ? "Open semantic in Animation Studio"
                         : "Save before exact inspection",
                     semantic.name,
                     exactInspectionCurrent
-                        ? "Opens Test with this engine state held at its midpoint. Choose an exact game context to launch; this does not save or change the character."
+                        ? "Opens Animation Studio with this engine state at its midpoint. Review held start, middle, end, or an A-to-B transition in an exact game context; this does not save or change the character."
                         : "Exact Test uses the active installed revision. Save the rig and motion revision before inspecting this draft decision.");
                 ImGui::PopID();
             }
@@ -6244,6 +6255,7 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                     g_characterTestPlayers[entry->id] = 1;
                     g_characterTestPoses[entry->id] = preset.pose;
                     g_characterTestPosePhases[entry->id] = preset.phase;
+                    g_characterTestTransitions[entry->id] = false;
                     g_characterTestViewYawDegrees[entry->id] = 0;
                     g_characterTestViewPitchDegrees[entry->id] = 0;
                     g_characterTestLighting[entry->id] =
@@ -6251,12 +6263,12 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                     persistCharacterWorkshopTab(
                         CharacterWorkshopTab::Test, true);
                     setStatus(
-                        "Motion-battery pose prepared in Test. Launch character select or each supported vehicle after saving the rig revision.",
+                        "Motion-battery pose prepared in Animation Studio. Launch character select or each supported vehicle after saving the rig revision.",
                         AppTheme::good());
                 }
                 ui::SpeakFocusedItem(
                     preset.label, nullptr,
-                    "Prepares this held pose in exact Test at one player with the ordinary camera and neutral lighting; no package data changes.");
+                    "Prepares this held pose in Animation Studio at one player with the ordinary camera and neutral lighting; no package data changes.");
             }
             ImGui::EndTable();
         }
@@ -6383,8 +6395,20 @@ bool characterPreviewSessionMatchesTuning(
                       MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE) &&
            ((session.result.pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
              session.result.pose_phase_milli == 0u &&
+             session.result.transition_from_pose ==
+                 MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+             session.result.transition_from_phase_milli == 0u &&
              session.result.inspection_pose_ticks == 0u &&
              session.result.inspection_pose_fallback_ticks == 0u &&
+             session.result.inspection_transition_switches == 0u &&
+             session.result.inspection_transition_blending_ticks == 0u &&
+             session.result.inspection_transition_completions == 0u &&
+             session.result.transition_from_blend_milli == 0u &&
+             session.result.transition_to_blend_milli == 0u &&
+             session.result.transition_from_motion_source ==
+                 MDKR_CHARACTER_PREVIEW_MOTION_NONE &&
+             session.result.transition_to_motion_source ==
+                 MDKR_CHARACTER_PREVIEW_MOTION_NONE &&
              session.result.view_yaw_degrees == 0 &&
              session.result.view_pitch_degrees == 0 &&
              session.result.lighting ==
@@ -6422,7 +6446,35 @@ bool characterPreviewSessionMatchesTuning(
                session.result.view_pitch_degrees == 0 &&
                session.result.camera_override_ticks == 0u)) &&
              session.result.inspection_pose_ticks != 0u &&
-             session.result.inspection_pose_fallback_ticks == 0u)) &&
+             session.result.inspection_pose_fallback_ticks == 0u &&
+             session.result.transition_from_motion_source >
+                 MDKR_CHARACTER_PREVIEW_MOTION_NONE &&
+             session.result.transition_from_motion_source <
+                 MDKR_CHARACTER_PREVIEW_MOTION_COUNT &&
+             (session.result.transition_from_pose ==
+                      MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                  ? (session.result.transition_from_phase_milli == 0u &&
+                     session.result.inspection_transition_switches == 0u &&
+                     session.result.inspection_transition_blending_ticks ==
+                         0u &&
+                     session.result.inspection_transition_completions == 0u &&
+                     session.result.transition_from_blend_milli == 0u &&
+                     session.result.transition_to_blend_milli == 0u &&
+                     session.result.transition_to_motion_source ==
+                         MDKR_CHARACTER_PREVIEW_MOTION_NONE)
+                  : (session.result.transition_from_pose >
+                         MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+                     session.result.transition_from_pose <
+                         MDKR_CHARACTER_PREVIEW_POSE_COUNT &&
+                     session.result.transition_from_pose !=
+                         session.result.pose &&
+                     session.result.transition_from_phase_milli <= 1000u &&
+                     session.result.inspection_transition_switches != 0u &&
+                     session.result.transition_to_motion_source >
+                         MDKR_CHARACTER_PREVIEW_MOTION_NONE &&
+                     session.result.transition_to_motion_source <
+                         MDKR_CHARACTER_PREVIEW_MOTION_COUNT &&
+                     !session.result.capture_requested)))) &&
            (session.result.capture_requested ==
                 !session.capturePng.empty()) &&
            (session.result.capture_requested
@@ -8592,7 +8644,9 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              int viewPitchDegrees,
                              MdkrWorkshopPreviewLighting lighting,
                              const char *capturePng,
-                             MdkrCharacterPreviewCaptureKind captureKind) {
+                             MdkrCharacterPreviewCaptureKind captureKind,
+                             MdkrCharacterPreviewPose transitionFromPose,
+                             unsigned transitionFromPhaseMilli) {
     const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
     const std::string testTuningSignature = characterTestTuningSignature(
         entry, tuning, static_cast<unsigned>(context - 1));
@@ -8605,6 +8659,8 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
         return;
     }
     const bool inspection = pose != MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    const bool transition =
+        transitionFromPose != MDKR_CHARACTER_PREVIEW_POSE_LIVE;
     const bool capture = capturePng != nullptr && capturePng[0] != '\0';
     int captureExists = 0;
     const size_t captureLength = capture ? std::strlen(capturePng) : 0u;
@@ -8621,6 +8677,7 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
         captureKind >= MDKR_CHARACTER_PREVIEW_CAPTURE_COUNT ||
         (!capture && captureKind !=
              MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE) ||
+        (transition && capture) ||
         (!inspection && (viewYawDegrees != 0 || viewPitchDegrees != 0 ||
                          lighting !=
                              MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
@@ -8632,7 +8689,9 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
           std::strcmp(capturePng + captureLength - 4u, ".png") != 0 ||
           captureExists))) {
         setStatus(
-            capture
+            transition && capture
+                ? "Switch to Held sample before capturing a deterministic PNG; the transition review was not started."
+            : capture
                 ? "Choose a new writable .png filename; captures never overwrite an existing file."
                 : "The inspection view or lighting request was invalid; no preview was started.",
             AppTheme::bad());
@@ -8640,7 +8699,13 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
     }
     if (pose < MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
         pose >= MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
-        posePhaseMilli > 1000u) {
+        posePhaseMilli > 1000u ||
+        transitionFromPose < MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+        transitionFromPose >= MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
+        transitionFromPhaseMilli > 1000u ||
+        (transition
+             ? (!inspection || transitionFromPose == pose)
+             : transitionFromPhaseMilli != 0u)) {
         setStatus("The pose inspection request was invalid; no preview was started.",
                   AppTheme::bad());
         return;
@@ -8656,6 +8721,10 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
     g_characterPreviewRequest.pose = pose;
     g_characterPreviewRequest.posePhaseMilli =
         inspection ? posePhaseMilli : 0u;
+    g_characterPreviewRequest.transitionFromPose = transition
+        ? transitionFromPose : MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    g_characterPreviewRequest.transitionFromPhaseMilli = transition
+        ? transitionFromPhaseMilli : 0u;
     g_characterPreviewRequest.viewYawDegrees =
         inspection ? viewYawDegrees : 0;
     g_characterPreviewRequest.viewPitchDegrees =
@@ -8669,6 +8738,8 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
     setStatus(
         pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
             ? "Checking the selected ROM, then opening the exact game context."
+            : transition
+                ? "Checking the selected ROM, then opening the exact game context with a repeating A-to-B semantic transition."
             : capture
                 ? "Checking the selected ROM, then opening the held inspection pose and saving one stabilized PNG."
                 : "Checking the selected ROM, then opening the exact game context with the inspection pose held.",
@@ -9154,6 +9225,20 @@ const char *characterPreviewCaptureKindLabel(
     }
 }
 
+const char *characterPreviewMotionSourceLabel(
+    MdkrCharacterPreviewMotionSource source) {
+    switch (source) {
+        case MDKR_CHARACTER_PREVIEW_MOTION_AUTHORED:
+            return "authored clip";
+        case MDKR_CHARACTER_PREVIEW_MOTION_REVIEWED_REFERENCE:
+            return "reviewed reference motion";
+        case MDKR_CHARACTER_PREVIEW_MOTION_PACKAGE_FALLBACK:
+            return "package fallback clip";
+        default:
+            return nullptr;
+    }
+}
+
 void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
     const auto found = g_characterPreviewResults.find(entry->id);
     if (found == g_characterPreviewResults.end()) return;
@@ -9233,7 +9318,16 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
             characterInspectionLighting(result.lighting);
         const char *captureKind = characterPreviewCaptureKindLabel(
             result.capture_kind);
+        const CharacterInspectionPose *transitionFromPose =
+            characterInspectionPose(result.transition_from_pose);
+        const char *fromMotionSource = characterPreviewMotionSourceLabel(
+            result.transition_from_motion_source);
+        const char *toMotionSource = characterPreviewMotionSourceLabel(
+            result.transition_to_motion_source);
+        const bool transition = result.transition_from_pose !=
+            MDKR_CHARACTER_PREVIEW_POSE_LIVE;
         if (pose == nullptr || result.pose_phase_milli > 1000u ||
+            fromMotionSource == nullptr ||
             lighting == nullptr || result.view_yaw_degrees < -180 ||
             result.view_yaw_degrees > 180 ||
             result.view_pitch_degrees <
@@ -9256,6 +9350,27 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
              result.camera_override_ticks == 0u) ||
             (result.capture_requested !=
              !found->second.capturePng.empty()) ||
+            (transition
+                 ? (transitionFromPose == nullptr ||
+                    result.transition_from_pose == result.pose ||
+                    result.transition_from_phase_milli > 1000u ||
+                    result.capture_requested ||
+                    toMotionSource == nullptr ||
+                    (result.warmup_complete &&
+                     result.replacement_draws != 0u &&
+                     result.inspection_transition_switches == 0u) ||
+                    result.inspection_transition_blending_ticks >
+                        result.inspection_pose_ticks ||
+                    result.inspection_transition_completions >
+                        result.inspection_transition_switches)
+                 : (result.transition_from_phase_milli != 0u ||
+                    result.inspection_transition_switches != 0u ||
+                    result.inspection_transition_blending_ticks != 0u ||
+                    result.inspection_transition_completions != 0u ||
+                    result.transition_from_blend_milli != 0u ||
+                    result.transition_to_blend_milli != 0u ||
+                    result.transition_to_motion_source !=
+                        MDKR_CHARACTER_PREVIEW_MOTION_NONE)) ||
             (result.capture_requested
                  ? captureKind == nullptr
                  : result.capture_kind !=
@@ -9283,8 +9398,26 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
             ui::CardEnd();
             return;
         }
-        ImGui::Text("%s  •  phase %.1f%%",
-                    pose->label, result.pose_phase_milli / 10.0);
+        if (transition) {
+            ImGui::Text(
+                "A %s %.1f%%  →  B %s %.1f%%",
+                transitionFromPose->label,
+                result.transition_from_phase_milli / 10.0,
+                pose->label, result.pose_phase_milli / 10.0);
+            ImGui::Text(
+                "A: %s · %u ms blend  •  B: %s · %u ms blend",
+                fromMotionSource, result.transition_from_blend_milli,
+                toMotionSource, result.transition_to_blend_milli);
+            ImGui::Text(
+                "%llu switches · %llu blended ticks · %llu completed cross-fades",
+                result.inspection_transition_switches,
+                result.inspection_transition_blending_ticks,
+                result.inspection_transition_completions);
+        } else {
+            ImGui::Text("%s  •  phase %.1f%%",
+                        pose->label, result.pose_phase_milli / 10.0);
+            ImGui::Text("Motion source: %s", fromMotionSource);
+        }
         ImGui::Text(
             "%s light  •  vehicle view yaw %d° · pitch %d°",
             lighting->label, result.view_yaw_degrees,
@@ -9303,7 +9436,9 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
                 : !poseMeasured
                     ? "Inspection ended before held-pose evidence began"
                 : exactPose
-                    ? "Exact pose inspection captured"
+                    ? (transition
+                           ? "Exact runtime transition observed"
+                           : "Exact held-pose inspection captured")
                     : "Requested semantic unavailable — source fallback shown");
         ImGui::PopStyleColor();
         if (!result.warmup_complete) {
@@ -9372,8 +9507,20 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         return;
     }
     if (result.pose_phase_milli != 0u ||
+        result.transition_from_pose !=
+            MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+        result.transition_from_phase_milli != 0u ||
         result.inspection_pose_ticks != 0u ||
         result.inspection_pose_fallback_ticks != 0u ||
+        result.inspection_transition_switches != 0u ||
+        result.inspection_transition_blending_ticks != 0u ||
+        result.inspection_transition_completions != 0u ||
+        result.transition_from_blend_milli != 0u ||
+        result.transition_to_blend_milli != 0u ||
+        result.transition_from_motion_source !=
+            MDKR_CHARACTER_PREVIEW_MOTION_NONE ||
+        result.transition_to_motion_source !=
+            MDKR_CHARACTER_PREVIEW_MOTION_NONE ||
         result.view_yaw_degrees != 0 ||
         result.view_pitch_degrees != 0 ||
         result.lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
@@ -9968,6 +10115,7 @@ bool drawCharacterFacingStudio(
                     MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE;
                 g_characterTestPosePhases[entry->id] =
                     static_cast<int>(kFacingPhaseMilli);
+                g_characterTestTransitions[entry->id] = false;
                 persistCharacterWorkshopTab(
                     CharacterWorkshopTab::Test, true);
                 setStatus(
@@ -10644,6 +10792,7 @@ void drawCharacterTestEvidenceMatrix(
             std::strcmp(smokeAction, "publish-overbudget-matrix") == 0 ||
             std::strcmp(smokeAction, "publish-overlimit-contact") == 0 ||
             std::strcmp(smokeAction, "publish-inspection") == 0 ||
+            std::strcmp(smokeAction, "publish-transition") == 0 ||
             std::strcmp(
                 smokeAction, "publish-inspection-capture") == 0 ||
             std::strcmp(
@@ -10776,6 +10925,7 @@ void drawCharacterTestEvidenceMatrix(
             }
             const bool inspection =
                 std::strcmp(smokeAction, "publish-inspection") == 0 ||
+                std::strcmp(smokeAction, "publish-transition") == 0 ||
                 std::strcmp(
                     smokeAction, "publish-inspection-capture") == 0 ||
                 std::strcmp(
@@ -10791,6 +10941,8 @@ void drawCharacterTestEvidenceMatrix(
                 staleInspectionCapture;
             const bool inspectionFallback = std::strcmp(
                 smokeAction, "publish-inspection-fallback") == 0;
+            const bool transitionInspection = std::strcmp(
+                smokeAction, "publish-transition") == 0;
             const bool mixedMode = std::strcmp(
                 smokeAction, "publish-mixed-mode") == 0;
             const bool invalidFit = std::strcmp(
@@ -10816,6 +10968,24 @@ void drawCharacterTestEvidenceMatrix(
                 result.inspection_pose_ticks = 180u;
                 result.inspection_pose_fallback_ticks =
                     inspectionFallback ? 180u : 0u;
+                result.transition_from_motion_source = inspectionFallback
+                    ? MDKR_CHARACTER_PREVIEW_MOTION_PACKAGE_FALLBACK
+                    : MDKR_CHARACTER_PREVIEW_MOTION_AUTHORED;
+                if (transitionInspection) {
+                    result.pose =
+                        MDKR_CHARACTER_PREVIEW_POSE_RACE_FINISH_WIN;
+                    result.pose_phase_milli = 750u;
+                    result.transition_from_pose =
+                        MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE;
+                    result.transition_from_phase_milli = 250u;
+                    result.inspection_transition_switches = 5u;
+                    result.inspection_transition_blending_ticks = 10u;
+                    result.inspection_transition_completions = 5u;
+                    result.transition_from_blend_milli = 200u;
+                    result.transition_to_blend_milli = 250u;
+                    result.transition_to_motion_source =
+                        MDKR_CHARACTER_PREVIEW_MOTION_REVIEWED_REFERENCE;
+                }
                 if (inspectionCapture) {
                     CharacterCaptureEdit &captureEdit =
                         g_characterCaptureEdits[entry->id];
@@ -10968,7 +11138,9 @@ void drawCharacterTestEvidenceMatrix(
                 applied = session != g_characterPreviewResults.end() &&
                     latest == nullptr &&
                     session->second.result.pose ==
-                        MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER &&
+                        (transitionInspection
+                             ? MDKR_CHARACTER_PREVIEW_POSE_RACE_FINISH_WIN
+                             : MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER) &&
                     ((inspectionFallback || staleInspectionCapture)
                          ? !sessionMatches : sessionMatches) &&
                     (!inspectionCapture ||
@@ -11553,6 +11725,14 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         entry->id, MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER).first->second;
     int &inspectionPhase = g_characterTestPosePhases.try_emplace(
         entry->id, 500).first->second;
+    bool &transition = g_characterTestTransitions[entry->id];
+    int &transitionFromPose =
+        g_characterTestTransitionFromPoses.try_emplace(
+            entry->id, MDKR_CHARACTER_PREVIEW_POSE_RACE_REVERSE)
+            .first->second;
+    int &transitionFromPhase =
+        g_characterTestTransitionFromPhases.try_emplace(entry->id, 500)
+            .first->second;
     int &viewYaw = g_characterTestViewYawDegrees.try_emplace(
         entry->id, 0).first->second;
     int &viewPitch = g_characterTestViewPitchDegrees.try_emplace(
@@ -11569,6 +11749,17 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
     if (inspectionPhase < 0 || inspectionPhase > 1000) {
         inspectionPhase = 500;
     }
+    if (transitionFromPose <= MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+        transitionFromPose >= MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
+        transitionFromPose == inspectionPose) {
+        transitionFromPose = inspectionPose ==
+                MDKR_CHARACTER_PREVIEW_POSE_RACE_REVERSE
+            ? MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER
+            : MDKR_CHARACTER_PREVIEW_POSE_RACE_REVERSE;
+    }
+    if (transitionFromPhase < 0 || transitionFromPhase > 1000) {
+        transitionFromPhase = 500;
+    }
     if (viewYaw < -180 || viewYaw > 180) viewYaw = 0;
     if (viewPitch < MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES ||
         viewPitch > MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES) viewPitch = 0;
@@ -11584,9 +11775,11 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         g_characterPoseInspectionTracePackages.insert(entry->id).second) {
         std::fprintf(
             stderr,
-            "[app-ui] character-pose-inspector package=%s semantics=%zu defaultPose=%d defaultPhase=%d view=%d,%d pitchRange=-90:90 top=exact lighting=%d capture=scene-or-model-alpha-png-create-only performanceEvidence=session-excluded\n",
+            "[app-ui] character-pose-inspector package=%s semantics=%zu defaultPose=%d defaultPhase=%d held-presets=0,500,1000 transition=exact-runtime-bidirectional transitionDwellMs=%u transitionCapture=disabled view=%d,%d pitchRange=-90:90 top=exact lighting=%d capture=scene-or-model-alpha-png-create-only performanceEvidence=session-excluded\n",
             entry->id, std::size(kCharacterInspectionPoses),
-            inspectionPose, inspectionPhase, viewYaw, viewPitch,
+            inspectionPose, inspectionPhase,
+            MDKR_CHARACTER_PREVIEW_TRANSITION_DWELL_MILLI,
+            viewYaw, viewPitch,
             inspectionLighting);
     }
     CharacterHistoryFrame history = beginCharacterHistory(
@@ -11658,9 +11851,19 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         ImGui::EndTable();
     }
 
-    ImGui::SeparatorText("Pose inspection");
+    ImGui::SeparatorText("Animation Studio");
     ui::TextSubtleWrapped(
-        "Freeze any supported animation semantic at an exact normalized phase in the real game renderer. Use this to inspect grounding, facing, seat placement, silhouette, deformation, and hand or foot reach. Inspection results stay in this session and never replace performance evidence or pinned baselines.");
+        "Review an exact held sample or watch the real pose player cross-fade between two engine states. Use held start/middle/end samples for grounding and deformation; use transition review for pops, fallback changes, and blend timing. These sessions never replace performance evidence or pinned baselines.");
+    int inspectionMode = transition ? 1 : 0;
+    (void)ImGui::RadioButton("Held sample", &inspectionMode, 0);
+    ImGui::SameLine();
+    (void)ImGui::RadioButton("A ↔ B transition", &inspectionMode, 1);
+    transition = inspectionMode == 1;
+    ui::SpeakFocusedItem(
+        "Animation review mode", transition ? "A to B transition" : "Held sample",
+        transition
+            ? "Alternates once per second and uses each destination semantic's authored blend duration in the exact runtime."
+            : "Holds one normalized phase in the exact runtime.");
     const auto selectedPose = std::find_if(
         std::begin(kCharacterInspectionPoses),
         std::end(kCharacterInspectionPoses),
@@ -11670,27 +11873,92 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
     const CharacterInspectionPose &pose =
         selectedPose != std::end(kCharacterInspectionPoses)
             ? *selectedPose : kCharacterInspectionPoses[3];
-    if (ImGui::BeginCombo("Semantic pose", pose.label)) {
+    if (transition) {
+        const auto selectedFrom = std::find_if(
+            std::begin(kCharacterInspectionPoses),
+            std::end(kCharacterInspectionPoses),
+            [transitionFromPose](const CharacterInspectionPose &candidate) {
+                return candidate.pose == transitionFromPose;
+            });
+        const CharacterInspectionPose &from =
+            selectedFrom != std::end(kCharacterInspectionPoses)
+                ? *selectedFrom : kCharacterInspectionPoses[0];
+        if (ImGui::BeginCombo("A source semantic", from.label)) {
+            for (const CharacterInspectionPose &candidate :
+                 kCharacterInspectionPoses) {
+                if (candidate.pose == inspectionPose) continue;
+                const bool selected = candidate.pose == transitionFromPose;
+                if (ImGui::Selectable(candidate.label, selected)) {
+                    transitionFromPose = candidate.pose;
+                }
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ui::SpeakFocusedItem(
+            "A source semantic", from.semantic,
+            "Chooses the state held before the exact runtime changes to the B destination.");
+        (void)ImGui::SliderInt(
+            "A source phase", &transitionFromPhase, 0, 1000,
+            "%d / 1000", ImGuiSliderFlags_AlwaysClamp);
+        ui::SpeakFocusedItem(
+            "A source phase", nullptr,
+            "Chooses the exact normalized source sample before each transition.");
+    }
+    if (ImGui::BeginCombo(
+            transition ? "B destination semantic" : "Semantic pose",
+            pose.label)) {
         for (const CharacterInspectionPose &candidate :
              kCharacterInspectionPoses) {
             const bool selected = candidate.pose == inspectionPose;
             if (ImGui::Selectable(candidate.label, selected)) {
                 inspectionPose = candidate.pose;
+                if (transitionFromPose == inspectionPose) {
+                    transitionFromPose = inspectionPose ==
+                            MDKR_CHARACTER_PREVIEW_POSE_RACE_REVERSE
+                        ? MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER
+                        : MDKR_CHARACTER_PREVIEW_POSE_RACE_REVERSE;
+                }
             }
             if (selected) ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
     }
     ui::SpeakFocusedItem(
-        "Semantic pose", nullptr,
-        "Chooses the authored clip or reviewed humanoid reference motion to hold in the exact renderer.");
+        transition ? "B destination semantic" : "Semantic pose", nullptr,
+        transition
+            ? "Chooses the destination engine state for exact transition review."
+            : "Chooses the authored clip or reviewed humanoid reference motion to hold in the exact renderer.");
     (void)ImGui::SliderInt(
-        "Normalized phase", &inspectionPhase, 0, 1000,
+        transition ? "B destination phase" : "Normalized phase",
+        &inspectionPhase, 0, 1000,
         "%d / 1000", ImGuiSliderFlags_AlwaysClamp);
     ui::SpeakFocusedItem(
-        "Normalized phase", nullptr,
+        transition ? "B destination phase" : "Normalized phase", nullptr,
         "Scrubs from the beginning to the end of the selected semantic without changing animation speed.");
+    if (!transition && ImGui::BeginTable(
+            "##character-held-phase-presets", 3,
+            ImGuiTableFlags_SizingStretchSame)) {
+        const auto phasePreset = [&](const char *label, int phase) {
+            ImGui::TableNextColumn();
+            if (ImGui::Button(label, ui::kBtnFullWidth())) {
+                inspectionPhase = phase;
+            }
+            ui::SpeakFocusedItem(
+                label, nullptr,
+                "Sets an exact held sample; it does not launch or modify the package.");
+        };
+        phasePreset("Start · 0%", 0);
+        phasePreset("Middle · 50%", 500);
+        phasePreset("End · 100%", 1000);
+        ImGui::EndTable();
+    }
     ImGui::TextDisabled("Runtime semantic: %s", pose.semantic);
+    if (transition) {
+        ImGui::TextDisabled(
+            "A and B alternate every %u ms. Cross-fade duration comes from each destination mapping and is measured in the result.",
+            MDKR_CHARACTER_PREVIEW_TRANSITION_DWELL_MILLI);
+    }
 
     ImGui::SeparatorText("Inspection view and light");
     ui::TextSubtleWrapped(
@@ -11751,6 +12019,11 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         "Chooses a deterministic light applied only to the custom character in the exact renderer.");
 
     ImGui::SeparatorText("One-shot capture");
+    if (transition) {
+        ui::TextSubtleWrapped(
+            "Transition review stays live so timing and fallback changes remain observable. Switch to Held sample for deterministic start, middle, or end PNGs; your filename is preserved.");
+        ImGui::BeginDisabled();
+    }
     (void)ImGui::Checkbox(
         "Save stabilized PNG during next inspection", &capture.enabled);
     ui::SpeakFocusedItem(
@@ -11824,6 +12097,7 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
             "Choose PNG", nullptr,
             "Opens the operating system save panel for a new inspection capture.");
     }
+    if (transition) ImGui::EndDisabled();
 
     const auto inspectButton = [&](const char *label,
                                    MdkrCharacterPreviewContext context,
@@ -11840,18 +12114,27 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
                 vehicle ? viewPitch : 0,
                 static_cast<MdkrWorkshopPreviewLighting>(
                     inspectionLighting),
-                capture.enabled ? capture.pngPath : nullptr,
-                capture.enabled
+                capture.enabled && !transition ? capture.pngPath : nullptr,
+                capture.enabled && !transition
                     ? capture.kind
-                    : MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE);
-            if (g_characterPreviewRequested && capture.enabled) {
+                    : MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE,
+                transition
+                    ? static_cast<MdkrCharacterPreviewPose>(
+                          transitionFromPose)
+                    : MDKR_CHARACTER_PREVIEW_POSE_LIVE,
+                transition
+                    ? static_cast<unsigned>(transitionFromPhase) : 0u);
+            if (g_characterPreviewRequested && capture.enabled &&
+                !transition) {
                 capture.enabled = false;
             }
         }
         if (!enabled) ImGui::EndDisabled();
         ui::SpeakFocusedItem(
             label, enabled ? nullptr : disabledReason,
-            "Opens the exact game scene and holds the selected semantic phase for visual fit review; no performance evidence is saved.");
+            transition
+                ? "Opens the exact game scene and repeatedly cross-fades A and B through the ordinary runtime pose player; no performance evidence is saved."
+                : "Opens the exact game scene and holds the selected semantic phase for visual fit review; no performance evidence is saved.");
     };
     if (ImGui::BeginTable(
             "##character-pose-inspection-actions", testActionColumns,
@@ -12917,6 +13200,7 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
                     g_characterTestPoses[entry->id] =
                         MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE;
                     g_characterTestPosePhases[entry->id] = 500;
+                    g_characterTestTransitions[entry->id] = false;
                     g_characterTestViewYawDegrees[entry->id] = preset.yaw;
                     g_characterTestViewPitchDegrees[entry->id] = 0;
                     g_characterTestLighting[entry->id] =
@@ -14304,6 +14588,11 @@ bool captureCharacterHistoryPayload(
         int players = g_characterTestPlayers[entry->id];
         int pose = g_characterTestPoses[entry->id];
         int phase = g_characterTestPosePhases[entry->id];
+        bool transition = g_characterTestTransitions[entry->id];
+        int transitionFromPose =
+            g_characterTestTransitionFromPoses[entry->id];
+        int transitionFromPhase =
+            g_characterTestTransitionFromPhases[entry->id];
         int yaw = g_characterTestViewYawDegrees[entry->id];
         int pitch = g_characterTestViewPitchDegrees[entry->id];
         int lighting = g_characterTestLighting[entry->id];
@@ -14313,6 +14602,18 @@ bool captureCharacterHistoryPayload(
             pose = MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER;
         }
         if (phase < 0 || phase > 1000) phase = 500;
+        if (transitionFromPose <= MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+            transitionFromPose >= MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
+            transitionFromPose == pose) {
+            transition = false;
+            transitionFromPose = pose ==
+                    MDKR_CHARACTER_PREVIEW_POSE_RACE_REVERSE
+                ? MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER
+                : MDKR_CHARACTER_PREVIEW_POSE_RACE_REVERSE;
+        }
+        if (transitionFromPhase < 0 || transitionFromPhase > 1000) {
+            transitionFromPhase = 500;
+        }
         if (yaw < -180 || yaw > 180) yaw = 0;
         if (pitch < MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES ||
             pitch > MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES) pitch = 0;
@@ -14320,13 +14621,17 @@ bool captureCharacterHistoryPayload(
             lighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT) {
             lighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
         }
-        payload = "mdkr-test-history-v4\n";
+        payload = "mdkr-test-history-v5\n";
         appendCharacterHistoryValue(payload, players);
         appendCharacterHistoryValue(payload, pose);
         appendCharacterHistoryValue(payload, phase);
         appendCharacterHistoryValue(payload, yaw);
         appendCharacterHistoryValue(payload, pitch);
         appendCharacterHistoryValue(payload, lighting);
+        appendCharacterHistoryValue(payload,
+                                    static_cast<uint32_t>(transition));
+        appendCharacterHistoryValue(payload, transitionFromPose);
+        appendCharacterHistoryValue(payload, transitionFromPhase);
     } else {
         return false;
     }
@@ -14865,7 +15170,10 @@ bool applyCharacterHistoryPayload(
             }
         }
     } else if (tool == CharacterHistoryTool::Test) {
-        const bool current = consumeHeader("mdkr-test-history-v4\n");
+        const bool transitionVersion = consumeHeader(
+            "mdkr-test-history-v5\n");
+        const bool current = transitionVersion ||
+            consumeHeader("mdkr-test-history-v4\n");
         const bool visualVersion = current ||
             consumeHeader("mdkr-test-history-v3\n");
         const bool poseVersion = visualVersion ||
@@ -14880,6 +15188,10 @@ bool applyCharacterHistoryPayload(
         int yaw = 0;
         int pitch = 0;
         int lighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+        uint32_t transition = 0u;
+        int transitionFromPose =
+            MDKR_CHARACTER_PREVIEW_POSE_RACE_REVERSE;
+        int transitionFromPhase = 500;
         if (!readCharacterHistoryValue(payload, offset, players) ||
             (poseVersion &&
              (!readCharacterHistoryValue(payload, offset, pose) ||
@@ -14888,6 +15200,12 @@ bool applyCharacterHistoryPayload(
              (!readCharacterHistoryValue(payload, offset, yaw) ||
               !readCharacterHistoryValue(payload, offset, pitch) ||
               !readCharacterHistoryValue(payload, offset, lighting))) ||
+            (transitionVersion &&
+             (!readCharacterHistoryValue(payload, offset, transition) ||
+              !readCharacterHistoryValue(
+                  payload, offset, transitionFromPose) ||
+              !readCharacterHistoryValue(
+                  payload, offset, transitionFromPhase))) ||
             offset != payload.size() || players < 1 || players > 4 ||
             pose <= MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
             pose >= MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
@@ -14897,13 +15215,22 @@ bool applyCharacterHistoryPayload(
             pitch > (current
                 ? MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES : 45) ||
             lighting < MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
-            lighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT) {
+            lighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT ||
+            transition > 1u ||
+            transitionFromPose <= MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+            transitionFromPose >= MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
+            transitionFromPhase < 0 || transitionFromPhase > 1000 ||
+            (transition != 0u && transitionFromPose == pose)) {
             error = "Test history values are invalid.";
             return false;
         }
         g_characterTestPlayers[entry->id] = players;
         g_characterTestPoses[entry->id] = pose;
         g_characterTestPosePhases[entry->id] = phase;
+        g_characterTestTransitions[entry->id] = transition != 0u;
+        g_characterTestTransitionFromPoses[entry->id] = transitionFromPose;
+        g_characterTestTransitionFromPhases[entry->id] =
+            transitionFromPhase;
         g_characterTestViewYawDegrees[entry->id] = yaw;
         g_characterTestViewPitchDegrees[entry->id] = pitch;
         g_characterTestLighting[entry->id] = lighting;
@@ -15104,6 +15431,14 @@ bool captureCharacterDraftSnapshot(
         entry->id, MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER).first->second;
     int testPosePhase = g_characterTestPosePhases.try_emplace(
         entry->id, 500).first->second;
+    bool testTransition = g_characterTestTransitions[entry->id];
+    int testTransitionFromPose =
+        g_characterTestTransitionFromPoses.try_emplace(
+            entry->id, MDKR_CHARACTER_PREVIEW_POSE_RACE_REVERSE)
+            .first->second;
+    int testTransitionFromPhase =
+        g_characterTestTransitionFromPhases.try_emplace(entry->id, 500)
+            .first->second;
     int testViewYaw = g_characterTestViewYawDegrees.try_emplace(
         entry->id, 0).first->second;
     int testViewPitch = g_characterTestViewPitchDegrees.try_emplace(
@@ -15122,6 +15457,23 @@ bool captureCharacterDraftSnapshot(
     snapshot.testPosePhaseMilli =
         testPosePhase >= 0 && testPosePhase <= 1000
             ? static_cast<uint32_t>(testPosePhase) : 500u;
+    snapshot.testTransition = testTransition &&
+        testTransitionFromPose > MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+        testTransitionFromPose < MDKR_CHARACTER_PREVIEW_POSE_COUNT &&
+        testTransitionFromPose != static_cast<int>(snapshot.testPose);
+    snapshot.testTransitionFromPose =
+        testTransitionFromPose > MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+                testTransitionFromPose < MDKR_CHARACTER_PREVIEW_POSE_COUNT &&
+                testTransitionFromPose != static_cast<int>(snapshot.testPose)
+            ? static_cast<uint32_t>(testTransitionFromPose)
+            : static_cast<uint32_t>(
+                  snapshot.testPose ==
+                          MDKR_CHARACTER_PREVIEW_POSE_RACE_REVERSE
+                      ? MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER
+                      : MDKR_CHARACTER_PREVIEW_POSE_RACE_REVERSE);
+    snapshot.testTransitionFromPhaseMilli =
+        testTransitionFromPhase >= 0 && testTransitionFromPhase <= 1000
+            ? static_cast<uint32_t>(testTransitionFromPhase) : 500u;
     snapshot.testViewYawDegrees =
         testViewYaw >= -180 && testViewYaw <= 180 ? testViewYaw : 0;
     snapshot.testViewPitchDegrees =
@@ -15261,6 +15613,11 @@ bool applyCharacterDraftSnapshot(
     g_characterTestPoses[entry->id] = static_cast<int>(snapshot.testPose);
     g_characterTestPosePhases[entry->id] =
         static_cast<int>(snapshot.testPosePhaseMilli);
+    g_characterTestTransitions[entry->id] = snapshot.testTransition;
+    g_characterTestTransitionFromPoses[entry->id] =
+        static_cast<int>(snapshot.testTransitionFromPose);
+    g_characterTestTransitionFromPhases[entry->id] =
+        static_cast<int>(snapshot.testTransitionFromPhaseMilli);
     g_characterTestViewYawDegrees[entry->id] =
         snapshot.testViewYawDegrees;
     g_characterTestViewPitchDegrees[entry->id] =
@@ -19333,6 +19690,18 @@ void Settings_publishCharacterPreviewResult(
                 result.inspection_pose_ticks != 0u &&
                 result.inspection_pose_fallback_ticks <=
                     result.inspection_pose_ticks &&
+                result.transition_from_pose ==
+                    MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+                result.transition_from_phase_milli == 0u &&
+                result.inspection_transition_switches == 0u &&
+                result.inspection_transition_blending_ticks == 0u &&
+                result.inspection_transition_completions == 0u &&
+                result.transition_from_motion_source >
+                    MDKR_CHARACTER_PREVIEW_MOTION_NONE &&
+                result.transition_from_motion_source <
+                    MDKR_CHARACTER_PREVIEW_MOTION_COUNT &&
+                result.transition_to_motion_source ==
+                    MDKR_CHARACTER_PREVIEW_MOTION_NONE &&
                 result.view_yaw_degrees >= -180 &&
                 result.view_yaw_degrees <= 180 &&
                 result.view_pitch_degrees >=
@@ -19443,18 +19812,37 @@ void Settings_publishCharacterPreviewResult(
         if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
             std::fprintf(
                 stderr,
-                "[app-ui] character-pose-inspection session-only=1 package=%s context=%u players=%d pose=%d phase=%u capture=%d kind=%d tray=%zu\n",
+                "[app-ui] character-pose-inspection session-only=1 package=%s context=%u players=%d pose=%d phase=%u transitionFrom=%d transitionPhase=%u switches=%llu completed=%llu source=%d,%d capture=%d kind=%d tray=%zu\n",
                 packageId.c_str(), static_cast<unsigned>(result.context),
                 result.players, static_cast<int>(result.pose),
-                result.pose_phase_milli, result.capture_written,
+                result.pose_phase_milli,
+                static_cast<int>(result.transition_from_pose),
+                result.transition_from_phase_milli,
+                result.inspection_transition_switches,
+                result.inspection_transition_completions,
+                static_cast<int>(result.transition_from_motion_source),
+                static_cast<int>(result.transition_to_motion_source),
+                result.capture_written,
                 static_cast<int>(result.capture_kind),
                 g_characterVisualCaptures[packageId].size());
         }
         return;
     }
     if (result.pose_phase_milli != 0u ||
+        result.transition_from_pose !=
+            MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+        result.transition_from_phase_milli != 0u ||
         result.inspection_pose_ticks != 0u ||
         result.inspection_pose_fallback_ticks != 0u ||
+        result.inspection_transition_switches != 0u ||
+        result.inspection_transition_blending_ticks != 0u ||
+        result.inspection_transition_completions != 0u ||
+        result.transition_from_blend_milli != 0u ||
+        result.transition_to_blend_milli != 0u ||
+        result.transition_from_motion_source !=
+            MDKR_CHARACTER_PREVIEW_MOTION_NONE ||
+        result.transition_to_motion_source !=
+            MDKR_CHARACTER_PREVIEW_MOTION_NONE ||
         result.view_yaw_degrees != 0 ||
         result.view_pitch_degrees != 0 ||
         result.lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||

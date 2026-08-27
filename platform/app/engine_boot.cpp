@@ -409,6 +409,11 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
              cfg->character_preview_pose >=
                  MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
              cfg->character_preview_pose_phase_milli > 1000u ||
+             cfg->character_preview_transition_from_pose <
+                 MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+             cfg->character_preview_transition_from_pose >=
+                 MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
+             cfg->character_preview_transition_from_phase_milli > 1000u ||
              cfg->character_preview_view_yaw_degrees < -180 ||
              cfg->character_preview_view_yaw_degrees > 180 ||
              cfg->character_preview_view_pitch_degrees <
@@ -432,6 +437,9 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
              (cfg->character_preview_pose ==
                   MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
               (cfg->character_preview_pose_phase_milli != 0u ||
+               cfg->character_preview_transition_from_pose !=
+                   MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+               cfg->character_preview_transition_from_phase_milli != 0u ||
                cfg->character_preview_view_yaw_degrees != 0 ||
                cfg->character_preview_view_pitch_degrees != 0 ||
                cfg->character_preview_lighting !=
@@ -441,7 +449,19 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
              (cfg->character_preview_pose !=
                   MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
               characterPreviewPoseSemantic(cfg->character_preview_pose) ==
-                  nullptr))) {
+                  nullptr) ||
+             (cfg->character_preview_transition_from_pose ==
+                  MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                  ? cfg->character_preview_transition_from_phase_milli != 0u
+                  : (cfg->character_preview_pose ==
+                         MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+                     cfg->character_preview_transition_from_pose ==
+                         cfg->character_preview_pose ||
+                     characterPreviewPoseSemantic(
+                         cfg->character_preview_transition_from_pose) ==
+                         nullptr ||
+                     (cfg->character_preview_capture_png != nullptr &&
+                      cfg->character_preview_capture_png[0] != '\0'))))) {
             std::fprintf(stderr,
                          "[app] boot rejected invalid character preview\n");
             return 2;
@@ -575,6 +595,8 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             characterPreviewContextName(cfg->character_preview_context);
         const char *pose =
             characterPreviewPoseSemantic(cfg->character_preview_pose);
+        const char *transitionFromPose = characterPreviewPoseSemantic(
+            cfg->character_preview_transition_from_pose);
         const char *lighting = characterPreviewLightingName(
             cfg->character_preview_lighting);
         const char *captureKind = characterPreviewCaptureKindName(
@@ -600,6 +622,17 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             previewEnvironment.set(
                 "MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE",
                 posePhase.c_str()) && environmentReady;
+        const std::string transitionFromPhase =
+            transitionFromPose != nullptr
+                ? std::to_string(
+                      cfg->character_preview_transition_from_phase_milli)
+                : std::string();
+        environmentReady = previewEnvironment.set(
+            "MDKR_CHARACTER_WORKSHOP_PREVIEW_TRANSITION_FROM_POSE",
+            transitionFromPose != nullptr ? transitionFromPose : "") &&
+            previewEnvironment.set(
+                "MDKR_CHARACTER_WORKSHOP_PREVIEW_TRANSITION_FROM_PHASE",
+                transitionFromPhase.c_str()) && environmentReady;
         environmentReady = previewEnvironment.set(
             "MDKR_CHARACTER_WORKSHOP_VIEW_YAW_DEGREES",
             pose != nullptr
@@ -640,12 +673,15 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
         std::fprintf(
             stderr,
             "[app] character preview: package=%s context=%s players=%d "
-            "pose=%s phase=%u view=%d,%d lighting=%s captureKind=%s "
+            "pose=%s phase=%u transitionFrom=%s transitionPhase=%u "
+            "view=%d,%d lighting=%s captureKind=%s "
             "capture=%s\n",
             cfg->character_preview_package, context,
             cfg->character_preview_players,
             pose != nullptr ? pose : "live",
             cfg->character_preview_pose_phase_milli,
+            transitionFromPose != nullptr ? transitionFromPose : "none",
+            cfg->character_preview_transition_from_phase_milli,
             cfg->character_preview_view_yaw_degrees,
             cfg->character_preview_view_pitch_degrees,
             lighting != nullptr ? lighting : "neutral",
@@ -669,6 +705,10 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
                 cfg->character_preview_pose;
             cfg->character_preview_result->pose_phase_milli =
                 cfg->character_preview_pose_phase_milli;
+            cfg->character_preview_result->transition_from_pose =
+                cfg->character_preview_transition_from_pose;
+            cfg->character_preview_result->transition_from_phase_milli =
+                cfg->character_preview_transition_from_phase_milli;
             cfg->character_preview_result->view_yaw_degrees =
                 cfg->character_preview_view_yaw_degrees;
             cfg->character_preview_result->view_pitch_degrees =

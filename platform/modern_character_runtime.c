@@ -55,6 +55,10 @@ typedef struct MdkrModernRuntimePlayer {
     uint32_t selected_lod[MDKR_CHARACTER_CONTEXT_COUNT]
                          [MDKR_MODERN_CHARACTER_VIEWS];
     uint32_t selected_lod_valid_mask;
+    uint64_t inspection_generation;
+    float inspection_dwell_seconds;
+    int inspection_to_pose;
+    int inspection_counted_blend;
 } MdkrModernRuntimePlayer;
 
 typedef struct MdkrModernPendingPlayer {
@@ -77,8 +81,18 @@ static uint64_t s_contact_error_micrometres_max;
 static uint64_t s_identity_revision;
 static uint64_t s_inspection_pose_ticks;
 static uint64_t s_inspection_pose_fallback_ticks;
+static uint64_t s_inspection_transition_switches;
+static uint64_t s_inspection_transition_blending_ticks;
+static uint64_t s_inspection_transition_completions;
+static uint32_t s_inspection_from_blend_milliseconds;
+static uint32_t s_inspection_to_blend_milliseconds;
+static MdkrModernCharacterMotionSource s_inspection_from_motion_source;
+static MdkrModernCharacterMotionSource s_inspection_to_motion_source;
+static uint64_t s_inspection_generation;
 static char s_inspection_semantic[32];
 static float s_inspection_phase;
+static char s_inspection_to_semantic[32];
+static float s_inspection_to_phase;
 static int s_playable_filter_active;
 static char s_playable_list[MODERN_RUNTIME_PLAYABLE_LIST_MAX];
 /* A disabled cache is admitted only for the one launcher-authenticated exact
@@ -136,6 +150,44 @@ int mdkr_modern_character_set_inspection_pose(
     (void)snprintf(s_inspection_semantic,
                    sizeof(s_inspection_semantic), "%s", semantic);
     s_inspection_phase = normalized_phase;
+    s_inspection_to_semantic[0] = '\0';
+    s_inspection_to_phase = 0.0f;
+    s_inspection_from_blend_milliseconds = 0u;
+    s_inspection_to_blend_milliseconds = 0u;
+    s_inspection_from_motion_source = MDKR_MODERN_CHARACTER_MOTION_NONE;
+    s_inspection_to_motion_source = MDKR_MODERN_CHARACTER_MOTION_NONE;
+    s_inspection_generation++;
+    if (s_inspection_generation == 0u) s_inspection_generation++;
+    set_error(error, error_size, "");
+    return 1;
+}
+
+int mdkr_modern_character_set_inspection_transition(
+    const char *from_semantic, float from_normalized_phase,
+    const char *to_semantic, float to_normalized_phase,
+    char *error, size_t error_size) {
+    if (!inspection_semantic_valid(from_semantic) ||
+        !inspection_semantic_valid(to_semantic) ||
+        strcmp(from_semantic, to_semantic) == 0 ||
+        !isfinite(from_normalized_phase) || from_normalized_phase < 0.0f ||
+        from_normalized_phase > 1.0f || !isfinite(to_normalized_phase) ||
+        to_normalized_phase < 0.0f || to_normalized_phase > 1.0f) {
+        set_error(error, error_size,
+                  "character inspection transition is invalid");
+        return 0;
+    }
+    (void)snprintf(s_inspection_semantic,
+                   sizeof(s_inspection_semantic), "%s", from_semantic);
+    s_inspection_phase = from_normalized_phase;
+    (void)snprintf(s_inspection_to_semantic,
+                   sizeof(s_inspection_to_semantic), "%s", to_semantic);
+    s_inspection_to_phase = to_normalized_phase;
+    s_inspection_from_blend_milliseconds = 0u;
+    s_inspection_to_blend_milliseconds = 0u;
+    s_inspection_from_motion_source = MDKR_MODERN_CHARACTER_MOTION_NONE;
+    s_inspection_to_motion_source = MDKR_MODERN_CHARACTER_MOTION_NONE;
+    s_inspection_generation++;
+    if (s_inspection_generation == 0u) s_inspection_generation++;
     set_error(error, error_size, "");
     return 1;
 }
@@ -143,6 +195,14 @@ int mdkr_modern_character_set_inspection_pose(
 void mdkr_modern_character_clear_inspection_pose(void) {
     s_inspection_semantic[0] = '\0';
     s_inspection_phase = 0.0f;
+    s_inspection_to_semantic[0] = '\0';
+    s_inspection_to_phase = 0.0f;
+    s_inspection_from_blend_milliseconds = 0u;
+    s_inspection_to_blend_milliseconds = 0u;
+    s_inspection_from_motion_source = MDKR_MODERN_CHARACTER_MOTION_NONE;
+    s_inspection_to_motion_source = MDKR_MODERN_CHARACTER_MOTION_NONE;
+    s_inspection_generation++;
+    if (s_inspection_generation == 0u) s_inspection_generation++;
 }
 
 static void matrix_identity(float output[16]) {
@@ -815,6 +875,13 @@ int mdkr_modern_characters_init(const char *directory) {
     s_contact_error_micrometres_max = 0u;
     s_inspection_pose_ticks = 0u;
     s_inspection_pose_fallback_ticks = 0u;
+    s_inspection_transition_switches = 0u;
+    s_inspection_transition_blending_ticks = 0u;
+    s_inspection_transition_completions = 0u;
+    s_inspection_from_blend_milliseconds = 0u;
+    s_inspection_to_blend_milliseconds = 0u;
+    s_inspection_from_motion_source = MDKR_MODERN_CHARACTER_MOTION_NONE;
+    s_inspection_to_motion_source = MDKR_MODERN_CHARACTER_MOTION_NONE;
     for (index = 0; index < MODERN_RUNTIME_POOLS; index++) {
         s_pools[index].registry_index = -1;
     }
@@ -908,6 +975,20 @@ void mdkr_modern_character_runtime_metrics(
     out->inspection_pose_ticks = s_inspection_pose_ticks;
     out->inspection_pose_fallback_ticks =
         s_inspection_pose_fallback_ticks;
+    out->inspection_transition_switches =
+        s_inspection_transition_switches;
+    out->inspection_transition_blending_ticks =
+        s_inspection_transition_blending_ticks;
+    out->inspection_transition_completions =
+        s_inspection_transition_completions;
+    out->inspection_from_blend_milliseconds =
+        s_inspection_from_blend_milliseconds;
+    out->inspection_to_blend_milliseconds =
+        s_inspection_to_blend_milliseconds;
+    out->inspection_from_motion_source =
+        (uint32_t)s_inspection_from_motion_source;
+    out->inspection_to_motion_source =
+        (uint32_t)s_inspection_to_motion_source;
 }
 
 void mdkr_modern_character_contact_metrics_reset(void) {
@@ -1269,6 +1350,26 @@ int mdkr_modern_character_matches(int player, int donor, int vehicle) {
             (1u << (unsigned)vehicle)) != 0u;
 }
 
+static MdkrModernCharacterMotionSource inspection_motion_source(
+    const MdkrModernPose *pose, const char *semantic) {
+    if (mdkr_modern_pose_has_semantic(pose, semantic)) {
+        return MDKR_MODERN_CHARACTER_MOTION_AUTHORED;
+    }
+    if (mdkr_modern_pose_humanoid_retarget_ready(pose)) {
+        return MDKR_MODERN_CHARACTER_MOTION_REVIEWED_REFERENCE;
+    }
+    return MDKR_MODERN_CHARACTER_MOTION_PACKAGE_FALLBACK;
+}
+
+static uint32_t inspection_blend_milliseconds(const MdkrModernPose *pose) {
+    double milliseconds;
+    if (pose == NULL || !isfinite(pose->blend_duration) ||
+        pose->blend_duration <= 0.0f) return 0u;
+    milliseconds = (double)pose->blend_duration * 1000.0;
+    if (milliseconds >= 4294967295.0) return UINT32_MAX;
+    return (uint32_t)(milliseconds + 0.5);
+}
+
 int mdkr_modern_character_tick(int player, const char *semantic,
                                float seconds, char *error, size_t error_size) {
     MdkrModernRuntimePlayer *slot;
@@ -1298,6 +1399,10 @@ int mdkr_modern_character_tick_phase(int player, const char *semantic,
                                      char *error, size_t error_size) {
     MdkrModernRuntimePlayer *slot;
     int inspection;
+    int transition = 0;
+    int transition_switch = 0;
+    int inspection_reset = 0;
+    float unscaled_seconds = seconds;
     if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
         (slot = &s_players[player])->pool < 0 || semantic == NULL ||
         !isfinite(seconds) || seconds < 0.0f ||
@@ -1308,24 +1413,86 @@ int mdkr_modern_character_tick_phase(int player, const char *semantic,
     }
     inspection = s_inspection_semantic[0] != '\0';
     if (inspection) {
-        semantic = s_inspection_semantic;
-        normalized_phase = s_inspection_phase;
+        transition = s_inspection_to_semantic[0] != '\0';
+        if (slot->inspection_generation != s_inspection_generation) {
+            slot->inspection_generation = s_inspection_generation;
+            slot->inspection_dwell_seconds = 0.0f;
+            slot->inspection_to_pose = 0;
+            slot->inspection_counted_blend = 0;
+            inspection_reset = 1;
+        } else if (transition) {
+            slot->inspection_dwell_seconds += unscaled_seconds;
+            const float dwellSeconds =
+                (float)MDKR_MODERN_CHARACTER_INSPECTION_TRANSITION_DWELL_MILLI /
+                1000.0f;
+            if (slot->inspection_dwell_seconds >= dwellSeconds) {
+                slot->inspection_dwell_seconds = fmodf(
+                    slot->inspection_dwell_seconds, dwellSeconds);
+                slot->inspection_to_pose = !slot->inspection_to_pose;
+                transition_switch = 1;
+                s_inspection_transition_switches++;
+            }
+        }
+        semantic = transition && slot->inspection_to_pose
+            ? s_inspection_to_semantic : s_inspection_semantic;
+        normalized_phase = transition && slot->inspection_to_pose
+            ? s_inspection_to_phase : s_inspection_phase;
     }
     if (strcmp(slot->semantic, semantic) != 0) {
         if (!mdkr_modern_pose_set_semantic(&slot->pose, semantic,
                                            error, error_size)) return 0;
         (void)snprintf(slot->semantic, sizeof(slot->semantic), "%s", semantic);
+        if (transition) {
+            const uint32_t blend = inspection_blend_milliseconds(&slot->pose);
+            if (slot->inspection_to_pose) {
+                s_inspection_to_blend_milliseconds = blend;
+            } else {
+                s_inspection_from_blend_milliseconds = blend;
+            }
+            slot->inspection_counted_blend = transition_switch;
+        }
+    }
+    if (transition && inspection_reset) {
+        s_inspection_from_blend_milliseconds =
+            inspection_blend_milliseconds(&slot->pose);
     }
     if (inspection) s_inspection_pose_ticks++;
     seconds *= slot->tuning.animation_speed;
-    if (!mdkr_modern_pose_has_semantic(&slot->pose, semantic) &&
-        !mdkr_modern_pose_humanoid_retarget_ready(&slot->pose)) {
-        if (inspection) s_inspection_pose_fallback_ticks++;
-        return mdkr_modern_pose_advance(&slot->pose, seconds,
-                                        error, error_size);
+    if (inspection) {
+        const MdkrModernCharacterMotionSource source =
+            inspection_motion_source(&slot->pose, semantic);
+        if (transition && slot->inspection_to_pose) {
+            s_inspection_to_motion_source = source;
+        } else {
+            s_inspection_from_motion_source = source;
+        }
     }
-    return mdkr_modern_pose_advance_phase(
-        &slot->pose, seconds, normalized_phase, error, error_size);
+    {
+        const int package_fallback =
+            !mdkr_modern_pose_has_semantic(&slot->pose, semantic) &&
+            !mdkr_modern_pose_humanoid_retarget_ready(&slot->pose);
+        int advanced;
+        const int blending = transition &&
+            slot->pose.blend_duration > 0.0f &&
+            slot->pose.blend_elapsed < slot->pose.blend_duration;
+        if (package_fallback && inspection) {
+            s_inspection_pose_fallback_ticks++;
+        }
+        advanced = package_fallback
+            ? mdkr_modern_pose_advance(
+                  &slot->pose, seconds, error, error_size)
+            : mdkr_modern_pose_advance_phase(
+                  &slot->pose, seconds, normalized_phase, error, error_size);
+        if (!advanced) return 0;
+        if (blending && slot->inspection_counted_blend) {
+            s_inspection_transition_blending_ticks++;
+            if (slot->pose.blend_elapsed >= slot->pose.blend_duration) {
+                s_inspection_transition_completions++;
+                slot->inspection_counted_blend = 0;
+            }
+        }
+        return 1;
+    }
 }
 
 int mdkr_modern_character_emit(int player, int view,
