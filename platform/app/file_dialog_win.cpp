@@ -10,6 +10,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <commdlg.h>
+#include <shellapi.h>
 
 #include <SDL.h>
 #include <SDL_syswm.h>
@@ -33,6 +34,18 @@ std::string toUtf8(const wchar_t *w) {
         return std::string();
     }
     return std::string(buf.data());
+}
+
+std::wstring toUtf16(const std::string &text) {
+    if (text.empty()) return {};
+    const int need = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, text.c_str(), -1, nullptr, 0);
+    if (need <= 1) return {};
+    std::vector<wchar_t> buffer(static_cast<size_t>(need));
+    if (MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, text.c_str(), -1,
+            buffer.data(), need) <= 0) return {};
+    return std::wstring(buffer.data());
 }
 
 }  // namespace
@@ -328,6 +341,19 @@ bool saveCharacterDiagnostic(std::string &out) {
     if (picked.empty()) return false;
     out = picked;
     return true;
+}
+
+bool revealInFileManager(const std::string &path) {
+    const std::wstring wide = toUtf16(path);
+    if (wide.empty()) return false;
+    /* Windows filenames cannot contain a quote, so the quoted /select value
+     * cannot be split into another explorer argument. The file is selected,
+     * never opened through its association. */
+    const std::wstring arguments = L"/select,\"" + wide + L"\"";
+    const HINSTANCE launched = ShellExecuteW(
+        nullptr, L"open", L"explorer.exe", arguments.c_str(), nullptr,
+        SW_SHOWNORMAL);
+    return reinterpret_cast<INT_PTR>(launched) > 32;
 }
 
 }  // namespace filedialog

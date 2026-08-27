@@ -82,6 +82,11 @@ bool saveCharacterPackage(std::string &out);
 // Choose a destination for bounded failed-import metadata (never model bytes).
 bool saveCharacterDiagnostic(std::string &out);
 
+// Ask the operating system's file manager to reveal and select an existing
+// file. This is deliberately separate from opening the file: package/source
+// bytes are never executed or handed to an associated application.
+bool revealInFileManager(const std::string &path);
+
 }  // namespace filedialog
 
 #endif  // MDKR64_FILE_DIALOG_H

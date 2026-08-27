@@ -1400,10 +1400,12 @@ if(NOT EMSCRIPTEN)
                 "-framework AppKit"
                 "-framework UniformTypeIdentifiers")
         elseif(WIN32)
-            # comdlg32: GetOpenFileNameW. A stock Windows system DLL — it is a
-            # deliberate, documented addition to the import allowlist in
+            # comdlg32: GetOpenFileNameW. shell32: reveal a retained package in
+            # Explorer without opening it. Both are stock Windows system DLLs
+            # and deliberate, documented additions to the import allowlist in
             # .github/workflows/windows-validate.yml and tools/mingw_cross_check.sh.
-            target_link_libraries(mdkr64_app PUBLIC OpenGL::GL comdlg32)
+            target_link_libraries(mdkr64_app PUBLIC
+                OpenGL::GL comdlg32 shell32)
         else()
             target_link_libraries(mdkr64_app PUBLIC OpenGL::GL)
         endif()

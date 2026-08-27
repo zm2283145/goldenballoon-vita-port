@@ -47,6 +47,7 @@
 #include <cstring>
 #include <cstdint>
 #include <ctime>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <set>
@@ -1895,16 +1896,22 @@ public:
         discard_ = false;
         path_ = std::move(path);
         result_ = {};
-        thread_ = std::thread([this]() {
-            MdkrModernCharacterInstallResult result{};
-            const int valid = mdkr_modern_character_inspect_portable(
-                path_.c_str(), &result);
-            std::lock_guard<std::mutex> finished(mutex_);
-            result_ = result;
-            valid_ = valid != 0;
+        try {
+            thread_ = std::thread([this]() {
+                MdkrModernCharacterInstallResult result{};
+                const int valid = mdkr_modern_character_inspect_portable(
+                    path_.c_str(), &result);
+                std::lock_guard<std::mutex> finished(mutex_);
+                result_ = result;
+                valid_ = valid != 0;
+                running_ = false;
+                ready_ = true;
+            });
+        } catch (...) {
             running_ = false;
-            ready_ = true;
-        });
+            path_.clear();
+            return false;
+        }
         return true;
     }
 
@@ -2768,23 +2775,28 @@ std::string characterManagerBesideExecutable(const char *relativePath) {
     return result;
 }
 
-bool runCharacterManager(const char *command,
-                         const std::vector<std::string> &commandArguments,
-                         bool refreshOnSuccess = true) {
+struct CharacterManagerRunResult {
+    bool success = false;
+    std::string report;
+};
+
+CharacterManagerRunResult invokeCharacterManager(
+    const std::string &directory, const char *command,
+    const std::vector<std::string> &commandArguments) {
+    CharacterManagerRunResult outcome;
     std::string toolPath;
     int regular = 0;
     bool pythonSource = false;
-    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
-    if (g_characterRegistryDirectory.empty()) {
-        g_characterManagerReport = "No writable character directory is available.";
-        return false;
+    if (directory.empty()) {
+        outcome.report = "No writable character directory is available.";
+        return outcome;
     }
     const char *overrideTool = std::getenv("MDKR_CHARACTER_MANAGER");
     if (overrideTool != nullptr && overrideTool[0] != '\0') {
         if (!characterManagerOverrideIsAbsolute(overrideTool)) {
-            g_characterManagerReport =
+            outcome.report =
                 "MDKR_CHARACTER_MANAGER must be an absolute path; PATH and the launch directory are not trusted importer locations.";
-            return false;
+            return outcome;
         }
         toolPath = overrideTool;
         pythonSource = characterManagerIsPythonSource(toolPath.c_str());
@@ -2804,9 +2816,9 @@ bool runCharacterManager(const char *command,
             if (!mdkr_user_resource_path(
                     "tools/character_package_manager.py", developmentPath,
                     sizeof(developmentPath))) {
-                g_characterManagerReport =
+                outcome.report =
                     "The character importer could not be located.";
-                return false;
+                return outcome;
             }
             toolPath = developmentPath;
             pythonSource = true;
@@ -2817,11 +2829,11 @@ bool runCharacterManager(const char *command,
             toolPath.c_str(), nullptr, &regular, nullptr) != 0 ||
         !regular ||
         mdkr_path_is_link_or_reparse_utf8(toolPath.c_str()) != 0) {
-        g_characterManagerReport =
+        outcome.report =
             "This build does not include a regular, trusted character importer. Reinstall the complete app or set MDKR_CHARACTER_MANAGER to an absolute development tool path.";
-        return false;
+        return outcome;
     }
-    const std::string resultPath = g_characterRegistryDirectory +
+    const std::string resultPath = directory +
         "/.launcher-character-result.json";
     (void)mdkr_remove_utf8(resultPath.c_str());
     int launchError = 0;
@@ -2832,7 +2844,7 @@ bool runCharacterManager(const char *command,
         arguments.reserve(commandArguments.size() + 8u);
         if (includeScript) arguments.push_back(toolPath.c_str());
         arguments.insert(arguments.end(), {
-            "--directory", g_characterRegistryDirectory.c_str(),
+            "--directory", directory.c_str(),
             "--result-file", resultPath.c_str(), command,
         });
         for (const std::string &argument : commandArguments) {
@@ -2864,29 +2876,156 @@ bool runCharacterManager(const char *command,
             if (pythonOverride != nullptr && pythonOverride[0] != '\0') break;
         }
     }
-    g_characterManagerReport = readCharacterManagerResult(resultPath);
+    outcome.report = readCharacterManagerResult(resultPath);
     (void)mdkr_remove_utf8(resultPath.c_str());
-    // Any manager command can resolve, create, or update recovery metadata.
-    // Invalidate unconditionally instead of coupling native correctness to a
-    // substring in a human-readable JSON report. Inventory loading installs
-    // its freshly parsed snapshot immediately after this call returns.
-    g_characterFailureInventory.loaded = false;
     if (!launched) {
-        g_characterManagerReport = pythonSource
+        outcome.report = pythonSource
             ? "Python 3 could not be started for the development character importer (error " +
                 std::to_string(launchError) + ")."
             : "The bundled character importer could not be started (error " +
                 std::to_string(launchError) +
                 "). Reinstall the complete application.";
-        return false;
+        return outcome;
     }
-    if (g_characterManagerReport.empty()) {
-        g_characterManagerReport = exitCode == 0
+    if (outcome.report.empty()) {
+        outcome.report = exitCode == 0
             ? "The importer completed without a diagnostic report."
             : "The importer failed without a diagnostic report.";
     }
-    if (exitCode == 0 && refreshOnSuccess) refreshCharacterRegistry();
-    return exitCode == 0;
+    outcome.success = exitCode == 0;
+    return outcome;
+}
+
+class CharacterManagerWorker {
+public:
+    ~CharacterManagerWorker() {
+        if (thread_.joinable()) thread_.join();
+    }
+
+    bool start(std::string directory, std::string command,
+               std::vector<std::string> arguments, bool refreshOnSuccess,
+               std::function<void(bool)> completion) {
+        std::lock_guard<std::mutex> guard(mutex_);
+        if (running_ || ready_) return false;
+        running_ = true;
+        label_ = std::move(command);
+        refreshOnSuccess_ = refreshOnSuccess;
+        completion_ = std::move(completion);
+        const std::string workerCommand = label_;
+        try {
+            thread_ = std::thread(
+                [this, directory = std::move(directory),
+                 command = workerCommand,
+                 arguments = std::move(arguments)]() {
+                    CharacterManagerRunResult result = invokeCharacterManager(
+                        directory, command.c_str(), arguments);
+                    std::lock_guard<std::mutex> finished(mutex_);
+                    result_ = std::move(result);
+                    running_ = false;
+                    ready_ = true;
+                });
+        } catch (...) {
+            running_ = false;
+            refreshOnSuccess_ = false;
+            completion_ = {};
+            label_.clear();
+            return false;
+        }
+        return true;
+    }
+
+    bool busy() const {
+        std::lock_guard<std::mutex> guard(mutex_);
+        return running_ || ready_;
+    }
+
+    std::string label() const {
+        std::lock_guard<std::mutex> guard(mutex_);
+        return label_;
+    }
+
+    bool poll(CharacterManagerRunResult &result, bool &refreshOnSuccess,
+              std::function<void(bool)> &completion) {
+        std::thread completed;
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            if (!ready_) return false;
+            result = std::move(result_);
+            refreshOnSuccess = refreshOnSuccess_;
+            completion = std::move(completion_);
+            label_.clear();
+            ready_ = false;
+            completed = std::move(thread_);
+        }
+        if (completed.joinable()) completed.join();
+        return true;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::thread thread_;
+    bool running_ = false;
+    bool ready_ = false;
+    bool refreshOnSuccess_ = false;
+    std::string label_;
+    CharacterManagerRunResult result_;
+    std::function<void(bool)> completion_;
+};
+
+CharacterManagerWorker g_characterManagerWorker;
+
+void serviceCharacterManagerWorker() {
+    CharacterManagerRunResult result;
+    bool refreshOnSuccess = false;
+    std::function<void(bool)> completion;
+    if (!g_characterManagerWorker.poll(
+            result, refreshOnSuccess, completion)) return;
+    g_characterManagerReport = std::move(result.report);
+    g_characterFailureInventory.loaded = false;
+    if (result.success && refreshOnSuccess) refreshCharacterRegistry();
+    if (completion) completion(result.success);
+}
+
+bool queueCharacterManager(
+    const char *command, std::vector<std::string> commandArguments,
+    bool refreshOnSuccess, std::function<void(bool)> completion) {
+    if (g_characterPackageInspection.busy()) {
+        g_characterManagerReport =
+            "The package validator is still finishing; wait for its result before starting a compiler job.";
+        return false;
+    }
+    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
+    if (g_characterRegistryDirectory.empty()) {
+        g_characterManagerReport =
+            "No writable character directory is available.";
+        return false;
+    }
+    if (!g_characterManagerWorker.start(
+            g_characterRegistryDirectory, command,
+            std::move(commandArguments), refreshOnSuccess,
+            std::move(completion))) {
+        g_characterManagerReport =
+            "Another character compiler job is still finishing.";
+        return false;
+    }
+    return true;
+}
+
+bool runCharacterManager(const char *command,
+                         const std::vector<std::string> &commandArguments,
+                         bool refreshOnSuccess = true) {
+    if (g_characterManagerWorker.busy()) {
+        g_characterManagerReport =
+            "Another character compiler job is still finishing.";
+        return false;
+    }
+    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
+    CharacterManagerRunResult result = invokeCharacterManager(
+        g_characterRegistryDirectory, command, commandArguments);
+    g_characterManagerReport = std::move(result.report);
+    g_characterFailureInventory.loaded = false;
+    if (result.success && refreshOnSuccess) refreshCharacterRegistry();
+    return result.success;
 }
 
 bool parseCharacterRevisionInventory(
@@ -3703,21 +3842,22 @@ int characterChoiceIndex(const std::vector<std::string> &choices,
 }
 
 bool stageCharacterPackage(const std::string &path);
+bool queueCompilerCharacterPackage(
+    const std::string &path,
+    std::function<void(bool)> completion = {});
 
-bool inspectCharacterRawGlb(const std::string &path) {
-    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
-    if (g_characterRegistryDirectory.empty()) return false;
+void resetCharacterRawGlbInspection() {
     CharacterRawIntake &intake = g_characterRawIntake;
     intake.inspected = false;
     intake.inventory = CharacterRawIntakeIndex::Inventory{};
     intake.fallback = -1;
     intake.seat = -1;
     intake.head = -1;
-    const std::string indexPath = g_characterRegistryDirectory +
-        "/.launcher-character-glb-intake.tsv";
-    (void)mdkr_remove_utf8(indexPath.c_str());
-    const bool indexed = runCharacterManager(
-        "write-raw-glb-index", {path, indexPath}, false);
+}
+
+bool applyCharacterRawGlbInspection(
+    const std::string &path, const std::string &indexPath, bool indexed) {
+    CharacterRawIntake &intake = g_characterRawIntake;
     const std::string text = indexed
         ? readCharacterManagerResult(indexPath) : "";
     (void)mdkr_remove_utf8(indexPath.c_str());
@@ -3763,7 +3903,24 @@ bool inspectCharacterRawGlb(const std::string &path) {
     return true;
 }
 
-bool buildCharacterRawGlbCandidate() {
+bool queueCharacterRawGlbInspection(
+    const std::string &path, std::function<void(bool)> completion) {
+    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
+    if (g_characterRegistryDirectory.empty()) return false;
+    resetCharacterRawGlbInspection();
+    const std::string indexPath = g_characterRegistryDirectory +
+        "/.launcher-character-glb-intake.tsv";
+    (void)mdkr_remove_utf8(indexPath.c_str());
+    return queueCharacterManager(
+        "write-raw-glb-index", {path, indexPath}, false,
+        [path, indexPath, completion = std::move(completion)](bool indexed) {
+            const bool inspected = applyCharacterRawGlbInspection(
+                path, indexPath, indexed);
+            if (completion) completion(inspected);
+        });
+}
+
+bool buildCharacterRawGlbCandidate(std::function<void(bool)> completion) {
     CharacterRawIntake &intake = g_characterRawIntake;
     if (!saveCharacterRawIntake()) return false;
     if (!intake.inspected || intake.fallback < 0 || intake.seat < 0 ||
@@ -3805,18 +3962,35 @@ bool buildCharacterRawGlbCandidate() {
         std::to_string(vehicleMask),
         std::to_string(intake.targetHeight),
     };
-    if (!runCharacterManager("build-raw-glb", arguments, false)) return false;
     const std::string candidate = g_characterRegistryDirectory +
         "/.launcher-character-raw-candidate.mdkrchar";
-    if (!stageCharacterPackage(candidate)) return false;
-    g_characterImportCandidate.disposableRawCandidate = true;
-    g_characterImportCandidate.rawDraftId = intake.draftId;
-    return true;
+    const std::string rawDraftId = intake.draftId;
+    return queueCharacterManager(
+        "build-raw-glb", std::move(arguments), false,
+        [candidate, rawDraftId, completion](bool built) {
+            if (!built) {
+                if (completion) completion(false);
+                return;
+            }
+            if (!queueCompilerCharacterPackage(
+                    candidate,
+                    [rawDraftId, completion](bool staged) {
+                        if (staged) {
+                            g_characterImportCandidate
+                                .disposableRawCandidate = true;
+                            g_characterImportCandidate.rawDraftId =
+                                rawDraftId;
+                        }
+                        if (completion) completion(staged);
+                    })) {
+                if (completion) completion(false);
+            }
+        });
 }
 
-bool stagePortableCharacterPackage(
+bool publishCharacterImportCandidate(
     const std::string &path,
-    const MdkrModernCharacterInstallResult &nativeResult) {
+    CharacterCandidateIndex::Candidate next, bool portable) {
     CharacterImportCandidate staged;
     if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
     if (g_characterRegistryDirectory.empty()) {
@@ -3824,9 +3998,8 @@ bool stagePortableCharacterPackage(
             "No writable character directory is available.";
         return false;
     }
-    staged.next = nativeCharacterSummary(nativeResult);
-    staged.portable = true;
-    g_characterManagerReport = nativeResult.message;
+    staged.next = std::move(next);
+    staged.portable = portable;
     const int installedIndex = mdkr_modern_character_registry_find(
         &g_characterRegistry, staged.next.id.c_str());
     const MdkrModernCharacterEntry *installed =
@@ -3842,6 +4015,52 @@ bool stagePortableCharacterPackage(
     staged.ready = true;
     g_characterImportCandidate = std::move(staged);
     return true;
+}
+
+bool stagePortableCharacterPackage(
+    const std::string &path,
+    const MdkrModernCharacterInstallResult &nativeResult) {
+    g_characterManagerReport = nativeResult.message;
+    return publishCharacterImportCandidate(
+        path, nativeCharacterSummary(nativeResult), true);
+}
+
+bool queueCompilerCharacterPackage(
+    const std::string &path,
+    std::function<void(bool)> completion) {
+    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
+    if (g_characterRegistryDirectory.empty()) return false;
+    const std::string indexPath = g_characterRegistryDirectory +
+        "/.launcher-character-candidate.tsv";
+    (void)mdkr_remove_utf8(indexPath.c_str());
+    return queueCharacterManager(
+        "write-candidate-index", {path, indexPath}, false,
+        [path, indexPath, completion](bool indexed) {
+            const std::string index = indexed
+                ? readCharacterManagerResult(indexPath) : "";
+            (void)mdkr_remove_utf8(indexPath.c_str());
+            CharacterCandidateIndex::Candidate next;
+            if (!indexed || !CharacterCandidateIndex::parse(index, next) ||
+                !publishCharacterImportCandidate(
+                    path, std::move(next), false)) {
+                g_characterImportCandidate = CharacterImportCandidate{};
+                if (indexed) {
+                    g_characterManagerReport =
+                        "The compiler candidate summary was malformed; review and install remain disabled.";
+                }
+                setStatus(
+                    "Character compilation failed validation; nothing can install.",
+                    AppTheme::bad());
+                if (completion) completion(false);
+                return;
+            }
+            setStatus(
+                g_characterImportCandidate.installed
+                    ? "Character update compiled and validated in the background; review every change before installing."
+                    : "Character compiled and validated in the background; review every change before installing.",
+                AppTheme::good());
+            if (completion) completion(true);
+        });
 }
 
 bool stageCharacterPackage(const std::string &path) {
@@ -3878,21 +4097,8 @@ bool stageCharacterPackage(const std::string &path) {
         g_characterManagerReport = nativeResult.message;
         return false;
     }
-    const int installedIndex = mdkr_modern_character_registry_find(
-        &g_characterRegistry, staged.next.id.c_str());
-    const MdkrModernCharacterEntry *installed =
-        mdkr_modern_character_registry_entry(&g_characterRegistry,
-                                              installedIndex);
-    if (installed != nullptr) {
-        staged.installed = true;
-        staged.installedEnabled = installed->enabled != 0u;
-        staged.current = installedCharacterSummary(*installed);
-        staged.reviewedInstalledDigest = staged.current.sourceDigest;
-    }
-    staged.packagePath = path;
-    staged.ready = true;
-    g_characterImportCandidate = std::move(staged);
-    return true;
+    return publishCharacterImportCandidate(
+        path, std::move(staged.next), false);
 }
 
 void serviceCharacterPackageInspection() {
@@ -3909,6 +4115,19 @@ void serviceCharacterPackageInspection() {
         setStatus(
             "Package validation finished in the background and its result was discarded; nothing was staged or installed.",
             AppTheme::subtle());
+        return;
+    }
+    if (!valid && result.needs_compiler != 0) {
+        if (!queueCompilerCharacterPackage(path)) {
+            g_characterImportCandidate = CharacterImportCandidate{};
+            setStatus(
+                "The source package needs compilation, but the background compiler could not start.",
+                AppTheme::bad());
+        } else {
+            setStatus(
+                "Compiling and validating the source package in the background; nothing can install before review.",
+                AppTheme::accent());
+        }
         return;
     }
     if (!valid || !stagePortableCharacterPackage(path, result)) {
@@ -13753,6 +13972,30 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
                         selected.sourceSha256.c_str());
     ImGui::TextDisabled("Revision recorded: %s",
         characterRevisionTimestamp(selected.installedUnix).c_str());
+    const std::string selectedSourcePath =
+        g_characterRegistryDirectory + "/" + entry->id + "." +
+        selected.sourceSha256 + ".mdkrchar";
+    int selectedSourceRegular = 0;
+    (void)mdkr_path_query_utf8(
+        selectedSourcePath.c_str(), nullptr, &selectedSourceRegular, nullptr);
+    if (!selectedSourceRegular || !filedialog::isAvailable()) {
+        ImGui::BeginDisabled();
+    }
+    if (ImGui::Button("Reveal selected source")) {
+        const bool revealed = filedialog::revealInFileManager(
+            selectedSourcePath);
+        setStatus(
+            revealed ? "Revealed the exact authenticated retained source."
+                     : "The operating system could not reveal the retained source.",
+            revealed ? AppTheme::good() : AppTheme::bad());
+    }
+    if (!selectedSourceRegular || !filedialog::isAvailable()) {
+        ImGui::EndDisabled();
+    }
+    ui::SpeakFocusedItem(
+        "Reveal selected source",
+        selectedSourceRegular ? nullptr : "Retained source unavailable.",
+        "Selects this digest-bound mdkrchar revision in the operating system file manager without opening it.");
 
     if (ImGui::Button("Rebuild current assembly...")) {
         ImGui::OpenPopup("Rebuild current character assembly?");
@@ -14660,6 +14903,29 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             ImGui::PopID();
             return true;
         }
+        ImGui::SeparatorText("Local files");
+        int compiledCacheExists = 0;
+        (void)mdkr_path_query_utf8(
+            entry->path, &compiledCacheExists, nullptr, nullptr);
+        ui::TextSubtleWrapped(
+            "Reveal opens the containing folder and selects the exact active cache. Load revision history below to reveal any authenticated retained source. Golden Balloon does not open or execute either file.");
+        if (!compiledCacheExists || !filedialog::isAvailable()) {
+            ImGui::BeginDisabled();
+        }
+        if (ImGui::Button("Reveal installed cache")) {
+            const bool revealed = filedialog::revealInFileManager(entry->path);
+            setStatus(
+                revealed ? "Revealed the active compiled character cache."
+                         : "The operating system could not reveal the compiled character cache.",
+                revealed ? AppTheme::good() : AppTheme::bad());
+        }
+        if (!compiledCacheExists || !filedialog::isAvailable()) {
+            ImGui::EndDisabled();
+        }
+        ui::SpeakFocusedItem(
+            "Reveal installed cache",
+            compiledCacheExists ? nullptr : "Compiled cache unavailable.",
+            "Selects the active validated cache in the operating system file manager without opening it.");
         if (entry->enabled == 0u) {
             ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
             ImGui::TextWrapped(
@@ -15353,12 +15619,23 @@ void drawCharacterRawIntakeEditor(bool rail) {
                 ? "" : " to resume and verify this saved draft");
         ImGui::PopStyleColor();
         if (ImGui::Button("Inspect GLB model")) {
-            if (inspectCharacterRawGlb(intake.modelPath)) {
-                setStatus("GLB inspected; review every inferred authoring choice.",
-                          AppTheme::good());
+            const std::string modelPath = intake.modelPath;
+            if (queueCharacterRawGlbInspection(
+                    modelPath, [](bool inspected) {
+                        setStatus(
+                            inspected
+                                ? "GLB inspected; review every inferred authoring choice."
+                                : "GLB inspection failed; open the manager report.",
+                            inspected ? AppTheme::good()
+                                      : AppTheme::bad());
+                    })) {
+                setStatus(
+                    "Inspecting the GLB in the background; the launcher remains available.",
+                    AppTheme::accent());
             } else {
-                setStatus("GLB inspection failed; open the manager report.",
-                          AppTheme::bad());
+                setStatus(
+                    "GLB inspection could not start; open the manager report.",
+                    AppTheme::bad());
             }
         }
         ui::SpeakFocusedItem(
@@ -15532,26 +15809,35 @@ void drawCharacterRawIntakeEditor(bool rail) {
         buildRequested = true;
     }
     if (buildRequested) {
-        const bool built = buildCharacterRawGlbCandidate();
-        if (built) {
-            if (smokeBuildRequested) {
-                g_characterRawDraftSmokeInstallFrames = 2;
-            }
+        const std::string smokeBuildAction = smokeBuildRequested
+            ? smokeAction : "";
+        const bool queued = buildCharacterRawGlbCandidate(
+            [smokeBuildRequested, smokeBuildAction](bool built) {
+                if (built && smokeBuildRequested) {
+                    g_characterRawDraftSmokeInstallFrames = 2;
+                }
+                setStatus(
+                    built
+                        ? "Source package built from the inspected GLB; review its exact diff and provenance before installing."
+                        : "Raw GLB build failed; no installed character changed. Open the manager report.",
+                    built ? AppTheme::good() : AppTheme::bad());
+                if (smokeBuildRequested) {
+                    std::fprintf(
+                        stderr,
+                        "[app-ui] raw-draft-action action=%s applied=%d drafts=%zu selected=%s\n",
+                        smokeBuildAction.c_str(), built ? 1 : 0,
+                        g_characterRawDrafts.drafts.size(),
+                        g_characterRawDrafts.selectedId.c_str());
+                }
+            });
+        if (queued) {
             setStatus(
-                "Source package built from the inspected GLB; review its exact diff and provenance before installing.",
-                AppTheme::good());
+                "Building and validating the source package in the background; the installed character remains unchanged until review.",
+                AppTheme::accent());
         } else {
             setStatus(
-                "Raw GLB build failed; no installed character changed. Open the manager report.",
+                "Raw GLB build could not start; no installed character changed. Open the manager report.",
                 AppTheme::bad());
-        }
-        if (smokeBuildRequested) {
-            std::fprintf(
-                stderr,
-                "[app-ui] raw-draft-action action=%s applied=%d drafts=%zu selected=%s\n",
-                smokeAction, built ? 1 : 0,
-                g_characterRawDrafts.drafts.size(),
-                g_characterRawDrafts.selectedId.c_str());
         }
     }
     if (!ready) ImGui::EndDisabled();
@@ -16360,6 +16646,7 @@ void drawSkippedCharacterInventory() {
 
 bool drawCustomCharactersSection(bool compact) {
     bool changed = false;
+    serviceCharacterManagerWorker();
     if (!g_characterRegistryLoaded) refreshCharacterRegistry();
     ui::TextSubtleWrapped(
         "Appearance packages are local presentation only. The selected fingerprint-qualified built-in donor still owns simulation, collision, audio, ghosts, records, and network/rollback identity; no second ROM is required.");
@@ -16368,6 +16655,18 @@ bool drawCustomCharactersSection(bool compact) {
         ImGui::TextWrapped(
             "Modern characters require the WebGPU renderer. This backend keeps the built-in racer visible, so installed packages remain safe but cannot appear in game.");
         ImGui::PopStyleColor();
+    }
+    if (g_characterManagerWorker.busy()) {
+        if (ui::CardBegin("##character-manager-running", AppTheme::accent(),
+                          0.0f)) {
+            ImGui::TextUnformatted("Character job running in the background");
+            const std::string command = g_characterManagerWorker.label();
+            ui::TextSubtleWrapped(
+                "The Workshop is temporarily read-only while %s authenticates, compiles, and transactionally publishes its result. You can use every other launcher page meanwhile.",
+                command.empty() ? "the importer" : command.c_str());
+        }
+        ui::CardEnd();
+        return false;
     }
 
     const bool rail = !compact &&
@@ -16602,54 +16901,83 @@ bool Settings_importCharacterPackage(const char *path) {
             return false;
         }
         const std::string convertedPath = g_characterConversionOutputPath;
-        if (!runCharacterManager(
-                "convert-authoring-source", {path, convertedPath}, false)) {
+        const CharacterSourceKind queuedSourceKind = sourceKind;
+        const bool queued = queueCharacterManager(
+            "convert-authoring-source", {path, convertedPath}, false,
+            [convertedPath, queuedSourceKind](bool converted) {
+                if (!converted) {
+                    setStatus(
+                        "Character source conversion did not complete cleanly and no draft changed. Inspect the report and destination before retrying.",
+                        AppTheme::bad());
+                    return;
+                }
+                const std::string conversionReport =
+                    g_characterManagerReport;
+                const bool archiveMissingLicense =
+                    queuedSourceKind == CharacterSourceKind::Zip &&
+                    conversionReport.find(
+                        "\"archive_license_present\": false") !=
+                        std::string::npos;
+                std::snprintf(
+                    g_characterImportPath, sizeof(g_characterImportPath),
+                    "%s", convertedPath.c_str());
+                g_characterConversionOutputPath[0] = '\0';
+                if (!beginCharacterRawDraft(convertedPath)) {
+                    g_characterManagerReport = conversionReport +
+                        "\n\nThe converted GLB was created, but its raw authoring draft could not be opened: " +
+                        g_characterRawDraftError;
+                    setStatus(
+                        "GLB conversion succeeded, but the authoring draft could not open; the new GLB remains available.",
+                        AppTheme::bad());
+                    return;
+                }
+                if (!queueCharacterRawGlbInspection(
+                        convertedPath,
+                        [convertedPath, queuedSourceKind,
+                         archiveMissingLicense,
+                         conversionReport](bool inspected) {
+                            const std::string inspectionReport =
+                                g_characterManagerReport;
+                            g_characterManagerReport = conversionReport +
+                                "\n\n" + inspectionReport;
+                            if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+                                std::fprintf(
+                                    stderr,
+                                    "[app-ui] character-source-conversion kind=%s converted=1 inspected=%d missing_license=%d output=%s\n",
+                                    queuedSourceKind ==
+                                            CharacterSourceKind::Zip
+                                        ? "zip" : "dae",
+                                    inspected ? 1 : 0,
+                                    archiveMissingLicense ? 1 : 0,
+                                    convertedPath.c_str());
+                            }
+                            setStatus(
+                                inspected
+                                    ? archiveMissingLicense
+                                        ? "Archive converted and inspected. Choose the exact license/notice before building; none was embedded in the archive."
+                                        : "Character source converted and inspected; complete the resumable authoring draft."
+                                    : "The new GLB was created but failed character inspection; review the importer report.",
+                                inspected
+                                    ? (archiveMissingLicense
+                                           ? AppTheme::accent()
+                                           : AppTheme::good())
+                                    : AppTheme::bad());
+                        })) {
+                    setStatus(
+                        "The GLB was created, but background inspection could not start; the new file and draft remain available.",
+                        AppTheme::bad());
+                }
+            });
+        if (!queued) {
             setStatus(
-                "Character source conversion did not complete cleanly and no draft changed. The exclusive destination may exist only if diagnostic persistence failed; inspect the report and path before retrying.",
+                "Character source conversion could not start; no draft changed.",
                 AppTheme::bad());
             return false;
-        }
-        const std::string conversionReport = g_characterManagerReport;
-        const bool archiveMissingLicense =
-            sourceKind == CharacterSourceKind::Zip &&
-            conversionReport.find(
-                "\"archive_license_present\": false") !=
-                std::string::npos;
-        std::snprintf(g_characterImportPath,
-                      sizeof(g_characterImportPath), "%s",
-                      convertedPath.c_str());
-        g_characterConversionOutputPath[0] = '\0';
-        if (!beginCharacterRawDraft(convertedPath)) {
-            g_characterManagerReport = conversionReport +
-                "\n\nThe converted GLB was created, but its raw authoring draft could not be opened: " +
-                g_characterRawDraftError;
-            setStatus(
-                "GLB conversion succeeded, but the authoring draft could not open; the new GLB remains available.",
-                AppTheme::bad());
-            return false;
-        }
-        const bool inspected = inspectCharacterRawGlb(convertedPath);
-        const std::string inspectionReport = g_characterManagerReport;
-        g_characterManagerReport = conversionReport + "\n\n" +
-            inspectionReport;
-        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
-            std::fprintf(
-                stderr,
-                "[app-ui] character-source-conversion kind=%s converted=1 inspected=%d missing_license=%d output=%s\n",
-                sourceKind == CharacterSourceKind::Zip ? "zip" : "dae",
-                inspected ? 1 : 0, archiveMissingLicense ? 1 : 0,
-                convertedPath.c_str());
         }
         setStatus(
-            inspected
-                ? archiveMissingLicense
-                    ? "Archive converted and inspected. Choose the exact license/notice before building; none was embedded in the archive."
-                    : "Character source converted and inspected; complete the resumable authoring draft."
-                : "The new GLB was created but failed character inspection; review the importer report.",
-            inspected ? (archiveMissingLicense ? AppTheme::accent()
-                                               : AppTheme::good())
-                      : AppTheme::bad());
-        return inspected;
+            "Converting the source in the background; the launcher remains available.",
+            AppTheme::accent());
+        return true;
     }
     if (sourceKind == CharacterSourceKind::Glb) {
         if (!beginCharacterRawDraft(path)) {
@@ -16661,15 +16989,31 @@ bool Settings_importCharacterPackage(const char *path) {
                 AppTheme::bad());
             return false;
         }
-        const bool inspected = inspectCharacterRawGlb(path);
+        if (!queueCharacterRawGlbInspection(
+                path, [](bool inspected) {
+                    setStatus(
+                        inspected
+                            ? "GLB inspected; complete and review the resumable authoring draft."
+                            : "GLB inspection failed; no package was built or installed.",
+                        inspected ? AppTheme::good() : AppTheme::bad());
+                })) {
+            setStatus(
+                "GLB inspection could not start; no package was built or installed.",
+                AppTheme::bad());
+            return false;
+        }
         setStatus(
-            inspected
-                ? "GLB inspected; complete and review the resumable authoring draft."
-                : "GLB inspection failed; no package was built or installed.",
-            inspected ? AppTheme::good() : AppTheme::bad());
-        return inspected;
+            "Inspecting the GLB in the background; the launcher remains available.",
+            AppTheme::accent());
+        return true;
     }
     if (sourceKind == CharacterSourceKind::Package) {
+        if (g_characterManagerWorker.busy()) {
+            setStatus(
+                "The character compiler is still finishing; wait for its result before validating another package.",
+                AppTheme::accent());
+            return false;
+        }
         if (!g_characterPackageInspection.start(path)) {
             setStatus(
                 "Another package validation is already finishing; discard or review that result before starting another.",

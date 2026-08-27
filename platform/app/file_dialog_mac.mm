@@ -269,4 +269,17 @@ bool saveCharacterDiagnostic(std::string &out) {
     }
 }
 
+bool revealInFileManager(const std::string &path) {
+    @autoreleasepool {
+        if (![NSThread isMainThread] || path.empty()) return false;
+        NSURL *url = [NSURL fileURLWithFileSystemRepresentation:path.c_str()
+                                                     isDirectory:NO
+                                                   relativeToURL:nil];
+        if (url == nil) return false;
+        [[NSWorkspace sharedWorkspace]
+            activateFileViewerSelectingURLs:@[ url ]];
+        return true;
+    }
+}
+
 }  // namespace filedialog

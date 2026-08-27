@@ -41,7 +41,10 @@ def isolated_environment(root: Path, model: Path, shot: Path, *,
         if not key.startswith(("MDKR", "GE007_"))
     }
     environment.update({
-        "MDKR_APP_SMOKE_FRAMES": "12" if compact else "8",
+        # A dropped GLB is inspected by a real background compiler job. Keep
+        # presenting long enough to observe UI-thread publication instead of
+        # relying on the former blocking call completing in frame one.
+        "MDKR_APP_SMOKE_FRAMES": "60" if drop else ("12" if compact else "8"),
         "MDKR_APP_SMOKE_WINDOW_SIZE": "640x480" if compact else "1280x720",
         "MDKR_APP_SMOKE_SHOT": str(shot),
         "MDKR_APP_PANEL": "Character Workshop",
@@ -288,6 +291,10 @@ def main() -> int:
                 compact=False, drop=True,
             )
             conversion_environment.update({
+                # Conversion and the follow-on GLB inventory are two explicit
+                # background publications. Keep rendering long enough to prove
+                # the UI remains alive while both complete.
+                "MDKR_APP_SMOKE_FRAMES": "120",
                 "MDKR_APP_SMOKE_CHARACTER_CONVERSION_OUTPUT":
                     str(converted),
                 "MDKR_APP_SMOKE_CHARACTER_CONVERSION_TOKEN":
@@ -759,7 +766,10 @@ def main() -> int:
                 compact=False, drop=True
             )
             install_environment.update({
-                "MDKR_APP_SMOKE_FRAMES": "16",
+                # GLB inspection, source build, and candidate compilation are
+                # three separately published background jobs before the
+                # reviewed native install arm can run.
+                "MDKR_APP_SMOKE_FRAMES": "240",
                 "MDKR_APP_SMOKE_RAW_DRAFT_ACTION":
                     "build-reviewed-install",
                 "MDKR_APP_SMOKE_RAW_DRAFT_ACTION_TOKEN":

@@ -61,4 +61,9 @@ bool saveCharacterDiagnostic(std::string &out) {
     return false;
 }
 
+bool revealInFileManager(const std::string &path) {
+    (void)path;
+    return false;
+}
+
 }  // namespace filedialog
