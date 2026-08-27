@@ -259,6 +259,11 @@ public:
          * mdkr_online_live_adapter_retract_race_boot BEFORE this destructor
          * can run on a teardown thread. Never leave a dangling handoff. */
         OnlineRoom_retractEngineRaceBoot(this);
+        /* PD-T6h2c IMPORTANT-1: structural backstop for the ROOM-READY registry
+         * (published as this raw LiveAdapter pointer). Mirrors the race-boot retract
+         * above so a raw-pointer retract happens on destruction regardless of the
+         * teardown path -- never hand runInteractiveLauncher a freed adapter. */
+        OnlineRoom_retractEngineRoomReady(this);
 #endif
         /* W4 m4: a clean teardown tells the room goodbye. Best-effort and
          * fire-and-forget: the reducer refuses LEAVE outside LOBBY/RESULTS

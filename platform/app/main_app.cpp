@@ -1143,6 +1143,11 @@ struct LiveResidentState {
      * regresses to LOBBY -- the engine's per-round re-wait must UNWIND + re-front
      * CHARSELECT (never park). None in normal runs. */
     bool wedgeCancelRound2 = false;
+    /* PD-T6h2c WEDGE (test-only): after a round advance completes (room left LOBBY,
+     * fresh race-ready epoch) NEVER re-arm the match-input, so the engine's per-round
+     * re-wait wall-clock watchdog trips at "per-round re-wait" (the deterministic
+     * per-round proof). None in normal runs. */
+    bool wedgeSkipRearm = false;
 };
 LiveResidentState *g_liveResident = nullptr;
 static void liveResidentServiceStep(void);
@@ -1177,6 +1182,7 @@ struct LiveLobbyStartState {
      * round-2 wedges that fire after race 1, not Lobby-phase wedges below). */
     bool wedgeResultsHold = false;
     bool wedgeCancelRound2 = false;
+    bool wedgeSkipRearm = false;
     /* PD-T6h2b WEDGE sub-tests (MDKR_APP_TEST_ONLINE_LOBBY_WEDGE): prove the engine
      * safety paths (watchdog + unwind) fire cleanly, never hang. None in normal runs. */
     enum class Wedge { None, DescriptorNeverBuilds, CancelLoading } wedge = Wedge::None;
@@ -1861,6 +1867,19 @@ static void liveResidentServiceStep(void) {
             rs->phase = LiveResidentState::Phase::Done;
             return;
         }
+        /* PD-T6h2c WEDGE (test-only): the room advanced to a fresh race-ready epoch
+         * (it LEFT lobby, so no unwind fires) but we NEVER re-arm the match-input --
+         * the engine's per-round re-wait `ready` predicate stays false, so its
+         * WALL-CLOCK watchdog must trip at "per-round re-wait" + ERROR exit. This is
+         * the deterministic per-round wall-clock proof. None in normal runs. */
+        if (rs->wedgeSkipRearm) {
+            std::fprintf(stderr,
+                         "[online-resident-live] WEDGE skip-rearm: NOT re-installing "
+                         "match-input after the round advance (engine per-round "
+                         "re-wait must wall-clock TIMEOUT)\n");
+            rs->phase = LiveResidentState::Phase::Done;
+            return;
+        }
         /* MDKR_RESIDENT_ADVANCE_ADVANCED: race N+1 is race-ready on a FRESH
          * match_epoch. Re-install the match-input source with that new epoch (the
          * installed source's epoch is pinned at install; REMATCH minted a fresh
@@ -2018,6 +2037,7 @@ static void liveLobbyStartServiceStep(void) {
         ls->resident->joinerCharacter = ls->joinerCharacter;
         ls->resident->wedgeResultsHold = ls->wedgeResultsHold;
         ls->resident->wedgeCancelRound2 = ls->wedgeCancelRound2;
+        ls->resident->wedgeSkipRearm = ls->wedgeSkipRearm;
         g_liveResident = ls->resident;
         g_liveLobbyStart = nullptr;
         std::fprintf(stderr,
@@ -2106,6 +2126,10 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
             /* PD-T6h2c Minor-C: cancel loading mid round-2 advance -> the engine's
              * per-round re-wait must UNWIND + re-front CHARSELECT. Single-endpoint. */
             lobbyState.wedgeCancelRound2 = true;
+        } else if (std::strcmp(wedgeEnv, "perround") == 0) {
+            /* PD-T6h2c: skip the per-round match-input re-arm after the advance ->
+             * the engine's per-round re-wait wall-clock watchdog must trip. */
+            lobbyState.wedgeSkipRearm = true;
         }
     }
     g_liveLobbyStart = &lobbyState;
@@ -2225,6 +2249,12 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
     g_liveMatchInput = nullptr;
     g_liveLobbyStart = nullptr;
     g_liveResident = nullptr; /* the compose may have handed off; retire it too */
+    /* PD-T6h2c MINOR-1: make the room-ready vs race-boot mutual exclusion
+     * STRUCTURAL, not incidental. The adapter's per-round setUpRace re-publishes the
+     * race-boot handoff each round; drain any stale pending here so the launcher's
+     * race-boot poll cannot fire on it after this descriptor-less session returns
+     * (previously fenced only by the roster gate incidentally clearing below). */
+    (void)OnlineRoom_pollEngineRaceBoot();
     if (mdkr_match_input_runtime_active()) mdkr_match_input_runtime_clear();
     OnlineRoom_clearPartyLink(); /* also clears the single-endpoint note */
     mdkr_net_roster_runtime_clear();

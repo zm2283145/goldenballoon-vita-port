@@ -2657,6 +2657,15 @@ static void teardownAdapterAsync(std::unique_ptr<IMdkrOnlineAdapter> adapter) {
     // retract is only a backstop, and a detached-thread destruction would race
     // OnlineRoom_pollEngineRaceBoot() against a dying adapter.
     (void)mdkr_online_live_adapter_retract_race_boot(adapter.get());
+    // PD-T6h2c IMPORTANT-1 (same hazard class for the room-ready registry): the
+    // room-ready poll publishes the RESOLVED RAW inner LiveAdapter pointer, so a
+    // "Leave Race" click on the very frame the room first hits SELECTING+2members+
+    // LOBBY+TOURNAMENT could hand runInteractiveLauncher a dying adapter (UAF on
+    // visible->service() + engine boot on freed memory). Retract it here, on the
+    // launcher thread, BEFORE the detached destruction -- using the SAME wrapper->raw
+    // resolution the publish used (a retract-by-wrapper-pointer would not match).
+    OnlineRoom_retractEngineRoomReady(
+        OnlineRoom_resolveRawLiveAdapter(adapter.get()));
     std::thread([owned = std::move(adapter)]() mutable {
         owned.reset();
     }).detach();

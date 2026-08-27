@@ -20,10 +20,12 @@
 
 #include <cstdio>
 
-/* Beta build references these (resetRaceLatches / setUpRace boot handoff); the
+/* Beta build references these (resetRaceLatches / setUpRace boot handoff; the
+ * PD-T6h2c ~LiveAdapter destructor also retracts the room-ready handoff); the
  * decisions under test never invoke them, so no-op stubs suffice. */
 void OnlineRoom_publishEngineRaceBoot(IMdkrOnlineAdapter *) {}
 void OnlineRoom_retractEngineRaceBoot(IMdkrOnlineAdapter *) {}
+void OnlineRoom_retractEngineRoomReady(IMdkrOnlineAdapter *) {}
 
 static int g_failures = 0;
 static int g_checks = 0;

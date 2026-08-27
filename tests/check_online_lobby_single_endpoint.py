@@ -237,7 +237,7 @@ def check_wallclock_wait(binary: Path, rom: Path, verbose: bool, wedge: str,
         "MDKR_ONLINE_SESSION_DESCLESS_WAIT_DEADLINE_MS": "2000",
     }
     if wedge != "descriptor":
-        # RESULTS-hold + cancel wedges need a tournament (they fire after race 1).
+        # results-hold + per-round wedges need a tournament (they fire after race 1).
         env.update({
             "MDKR_APP_TEST_ONLINE_MODE": "tournament",
             "MDKR_APP_TEST_ONLINE_CUP": str(CUP),
@@ -335,6 +335,10 @@ def main() -> int:
         return result
     result = check_wallclock_wait(binary, rom, args.verbose, "results",
                                   "results rematch-hold", ticks=40000, timeout=400)
+    if result is not None:
+        return result
+    result = check_wallclock_wait(binary, rom, args.verbose, "perround",
+                                  "per-round re-wait", ticks=40000, timeout=400)
     if result is not None:
         return result
 
