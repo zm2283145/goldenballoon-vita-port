@@ -305,6 +305,53 @@ python3 tools/character_package_manager.py \
   --directory characters remove org.example.character-name
 ```
 
+### Reproducible release-spike evidence
+
+Maintainers can exercise the complete intake-to-render path without a private
+model. The generated fixture is CC0, deterministic, and deliberately awkward:
+centimeter transforms, sibling pelvis/spine roots, long limbs, hair joints,
+multiple materials, unusual proportions, and a static-looking source idle. The
+command below uses a disposable character library and refuses to overwrite an
+existing evidence directory:
+
+```sh
+python3 tools/run_character_spike_evidence.py \
+  --source fixture \
+  --license tests/fixtures/custom_character_adversarial/LICENSE.txt \
+  --rom /path/to/legally-obtained-dkr.z64 \
+  --evidence-dir /new/path/character-evidence \
+  --build build \
+  --synthetic-validation-seam
+```
+
+The synthetic seam is CI-only and is rejected for private/external assets. For
+a GLB, DAE, or unambiguous ZIP, omit that flag and provide the pinned native
+Khronos validator (or configure it normally), plus a reviewed decisions file:
+
+```sh
+python3 tools/run_character_spike_evidence.py \
+  --source /private/path/model.glb \
+  --license /private/path/LICENSE.txt \
+  --decisions /private/path/reviewed-decisions.json \
+  --rom /private/path/dkr.z64 \
+  --evidence-dir /new/path/private-model-evidence \
+  --build build
+```
+
+The decisions shape is documented in
+[`docs/ref/mdkr-character-spike-decisions-v1.example.json`](ref/mdkr-character-spike-decisions-v1.example.json).
+It records human choices—identity, rights metadata, donor/vehicles, front,
+height, sockets, all 16 humanoid roles, and deliberately disabled animation
+semantics—rather than pretending those decisions are safe to infer. An adjacent
+`model.glb.mdkr-character-spike.json` is discovered automatically when
+`--decisions` is omitted.
+
+Only redacted logs, PNG screenshots, and `evidence.json` are retained. The
+manifest records source/license/ROM digests and sizes, never those payloads or
+their absolute paths. Conversion, packaging, validation, compilation, and the
+temporary installed catalog are destroyed when the run exits. The normal
+Character Workshop library is never read or modified.
+
 The runtime never reads DAE, GLB, JSON, or PNG source packages during a frame.
 Installation validates and compiles them into a bounded `.mdkc`; the launcher
 discovers that cache on its next scan. A portable package carries the exact

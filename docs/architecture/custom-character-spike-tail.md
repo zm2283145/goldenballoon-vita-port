@@ -107,20 +107,39 @@ are `13-select-disabled-reference.png`, `14-car-disabled-reference.png`, and
 
 ### M0 — Make the example reproducible without shipping it (small)
 
-- Add a checked-in, license-clean synthetic/commissioned humanoid that exercises
+- **Implemented:** add a checked-in, license-clean generated CC0 humanoid that exercises
   sibling pelvis/spine roots, non-meter units, hair chains, multiple materials,
   a bad static idle, and unusual proportions. The user-provided model remains a
   private manual arm.
-- Add a one-command local evidence runner accepting `--source`, `--license`,
+- **Implemented:** add a one-command local evidence runner accepting `--source`, `--license`,
   `--rom`, and `--evidence-dir`. It must run conversion, intake, reviewed local
   installation, all context tests, and a contact/performance summary without
   copying the source into the repository.
-- Emit a redacted evidence manifest containing digests, tool versions, decisions,
+- **Implemented:** emit a redacted evidence manifest containing digests, tool versions, decisions,
   metrics, and screenshot names but no model, ROM, absolute source path, or
   claimed license not present in the input.
 
 Acceptance: a clean checkout can run the licensed fixture automatically; a
 private source can run manually; neither path modifies the normal user library.
+
+The deterministic fixture proof now covers select, car, hovercraft, plane, and
+four-player car through the exact linked-ROM WebGPU routes. It has 504 vertices,
+252 triangles, 20 joints, three materials, two embedded textures, a reviewed
+16-role map, and one deliberately static clip whose `select.idle` mapping is
+preserved but disabled. The fixture's explicit `+z` front is visible in select
+and its hair/back is visible from the race chase camera. All five contexts have
+zero package-fallback pose ticks and meet the initial frame-time target on the
+development host. The intentionally uncalibrated contact residuals remain
+roughly 319–336 mm; the evidence runner records those as M4 advisories instead
+of misreporting a successful package as an invalid import.
+
+The runner creates conversion, package, install, and disposable character
+catalog state under the operating-system temporary directory. Its caller-chosen
+evidence directory receives only redacted logs, PNG captures, and
+`evidence.json`; it refuses to overwrite a nonempty directory. A private source
+requires the pinned native validator and a reviewed
+`mdkr-character-spike-decisions-v1` file. The synthetic validator seam is
+explicitly restricted to the generated fixture and exists only for CI.
 
 ### M1 — Guided orientation, scale, and anchor calibration (medium)
 
@@ -302,13 +321,12 @@ then close the visible example defects. Renderer work M6 can proceed in parallel
 after M1 stabilizes the transform contract. M7 follows the format decisions made
 by M6. M8 begins with M0 and remains a release gate throughout.
 
-The immediate next slice should therefore be:
+The immediate next slice is therefore:
 
-1. add the license-clean adversarial humanoid fixture and local evidence runner;
-2. add four-way forward thumbnails plus transform severity/proposal review;
-3. implement structural hips/root suggestions and rest-basis diagnostics;
-4. add side-by-side held-phase and transition review for the now-reversible
+1. add four-way forward thumbnails plus transform severity/proposal review;
+2. implement structural hips/root suggestions and rest-basis diagnostics;
+3. add side-by-side held-phase and transition review for the now-reversible
    animation decisions;
-5. fix isolated-capture framing to the 60–85% occupancy contract; and
-6. re-run this example privately to verify select, car, hovercraft, plane,
+4. fix isolated-capture framing to the 60–85% occupancy contract; and
+5. re-run this example privately to verify select, car, hovercraft, plane,
    portrait, contacts, and four-player performance.
