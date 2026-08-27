@@ -1053,6 +1053,11 @@ CTEST_COMPANION_SCRIPTS = {
 # manufacture that release-only stage, so workflow ownership is explicit here.
 WORKFLOW_COMPANION_SCRIPTS = {
     "check_browser_local_only_release.py",
+    # Release workflows build a platform-specific frozen importer, smoke it
+    # before packaging, then smoke the staged copy again. The ordinary runner
+    # has no frozen-importer artifact role and cannot substitute the game
+    # binary for this executable-shaped contract.
+    "check_frozen_character_importer.py",
 }
 
 
