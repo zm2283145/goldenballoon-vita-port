@@ -12,6 +12,7 @@ import tempfile
 import zipfile
 import zlib
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,7 @@ import character_package_manager as manager  # noqa: E402
 from test_character_asset_probe import (  # noqa: E402
     make_humanoid_glb, make_portrait_png, make_v4_manifest,
 )
+from character_validation_fixture import accepted_validation  # noqa: E402
 
 
 def main() -> int:
@@ -82,7 +84,10 @@ def main() -> int:
             model, manifest, license_file, source_package,
             portrait_path=portrait,
         )
-        manager.prepare(source_package, portable_package)
+        with mock.patch.object(
+                manager, "_validate_character_glb",
+                side_effect=accepted_validation):
+            manager.prepare(source_package, portable_package)
         with zipfile.ZipFile(portable_package) as source:
             members = {
                 name: source.read(name)

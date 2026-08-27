@@ -111,7 +111,20 @@ def check(executable_path: Path) -> None:
                     f"raw intake {key} mismatch: expected {value!r}, "
                     f"found {result.get(key)!r}"
                 )
-        expected_keys = set(expected) | {"model"}
+        validation = result.get("validation")
+        if not isinstance(validation, dict) or validation.get("errors") != 0:
+            raise SmokeError("raw intake did not preserve validator success")
+        if (
+            validation.get("schema") != "mdkr-gltf-validation-v1"
+            or validation.get("source_sha256") != expected["model_sha256"]
+            or validation.get("validator_version") != "2.0.0-dev.3.10"
+            or validation.get("validator_commit") !=
+                "bcd52cc4ba5f333b2999a58f67cc05ddf28b4fb1"
+            or not isinstance(validation.get("validator_sha256"), str)
+            or len(validation["validator_sha256"]) != 64
+        ):
+            raise SmokeError("raw intake validator provenance is malformed")
+        expected_keys = set(expected) | {"model", "validation"}
         if set(result) != expected_keys:
             raise SmokeError("raw intake result has an unexpected schema")
         if Path(result["model"]).resolve(strict=True) != model.resolve(strict=True):

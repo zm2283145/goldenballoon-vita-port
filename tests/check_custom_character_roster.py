@@ -92,7 +92,7 @@ def main() -> int:
     if ok:
         ok, install_output = command_ok([
             sys.executable,
-            str(ROOT / "tools" / "character_package_manager.py"),
+            str(ROOT / "tests" / "run_character_manager_fixture.py"),
             "--directory", str(characters), "install", str(package),
         ], cwd=ROOT)
         output += install_output

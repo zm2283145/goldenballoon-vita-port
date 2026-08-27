@@ -26,6 +26,7 @@ from test_character_asset_probe import (  # noqa: E402
     make_animated_glb,
     make_portrait_png,
 )
+from character_validation_fixture import accepted_character_validation  # noqa: E402
 
 PACKAGE_ID = "org.mdkr.history-proof"
 
@@ -54,7 +55,8 @@ def install_fixture(root: Path) -> Path:
     probe.build_package(
         model, manifest_path, license_path, package, portrait_path=portrait
     )
-    manager.install(package, characters)
+    with accepted_character_validation(manager):
+        manager.install(package, characters)
     return characters
 
 
@@ -105,7 +107,7 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
         "MDKR_SAVE_DIR": str(saves),
         "MDKR_CUSTOM_CHARACTER_DIRECTORY": str(characters),
         "MDKR_CHARACTER_MANAGER": str(
-            ROOT / "tools" / "character_package_manager.py"
+            ROOT / "tests" / "run_character_manager_fixture.py"
         ),
         "MDKR_NO_CRASH_HANDLER": "1",
         "MDKR64_HIDDEN": "1",

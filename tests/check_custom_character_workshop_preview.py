@@ -328,7 +328,7 @@ def main() -> int:
     if not failures:
         installed = run([
             sys.executable,
-            str(ROOT / "tools" / "character_package_manager.py"),
+            str(ROOT / "tests" / "run_character_manager_fixture.py"),
             "--directory", str(characters), "install", str(package),
         ])
         output += installed.stdout or ""
@@ -336,7 +336,7 @@ def main() -> int:
             failures.append("temporary catalog install failed")
         installed_contact = run([
             sys.executable,
-            str(ROOT / "tools" / "character_package_manager.py"),
+            str(ROOT / "tests" / "run_character_manager_fixture.py"),
             "--directory", str(characters), "install", str(contact_package),
         ])
         output += installed_contact.stdout or ""

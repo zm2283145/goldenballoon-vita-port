@@ -70,6 +70,15 @@ def main() -> int:
             "Bootloader Exception",
             "GNU GENERAL PUBLIC LICENSE",
         ),
+        "third_party/gltf_validator/LICENSE.txt": (
+            "Apache License", "Version 2.0, January 2004",
+        ),
+        "third_party/gltf_validator/NOTICES.txt": (
+            "Dart SDK", "args", "collection",
+        ),
+        "third_party/gltf_validator/README.md": (
+            "2.0.0-dev.3.10", "Dart SDK 2.19.6", "pubspec.lock",
+        ),
         "cmake/patches/libdatachannel-windows-mbedtls-verify.patch": (
             "defined(_WIN32) && !USE_MBEDTLS",
             "TLS certificate verification with root CA is not supported on Windows",
@@ -115,6 +124,12 @@ def main() -> int:
             "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb",
         "third_party/character_importer/PyInstaller-COPYING.txt":
             "dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245",
+        "third_party/gltf_validator/LICENSE.txt":
+            "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "third_party/gltf_validator/NOTICES.txt":
+            "d7a1cefe85110c1308632d0384b7a67a18c125193e54175c50d1982d8c81a2f4",
+        "third_party/gltf_validator/pubspec.lock":
+            "9fec69b760a6789506e1d03881e48c0b9024779559b67ba427a1b0309c841749",
         "cmake/patches/libdatachannel-windows-mbedtls-verify.patch":
             "b47d81ee765b2eed51f75b9cb599522fdd6f9eda7511b025214c63cc4c3336a7",
     }
@@ -180,6 +195,10 @@ def main() -> int:
             "third_party/character_importer/CPython-LICENSE.txt",
             "third_party/character_importer/PyInstaller-COPYING.txt",
             "tools/character_importer_build_requirements.txt",
+            "third_party/gltf_validator/",
+            "KhronosGroup/glTF-Validator",
+            "bcd52cc4ba5f333b2999a58f67cc05ddf28b4fb1",
+            "Dart SDK 2.19.6",
             "CPython",
             "PyInstaller",
             "cmake/patches/libdatachannel-windows-mbedtls-verify.patch",
@@ -204,6 +223,8 @@ def main() -> int:
             "third_party/character_importer/",
             "CPython 3.13.13",
             "PyInstaller 6.22.2",
+            "Khronos glTF Validator 2.0.0-dev.3.10",
+            "third_party/gltf_validator/",
         ):
             if needle not in notice_text:
                 problems.append(f"NOTICE.md is missing expected text: {needle!r}")

@@ -189,6 +189,16 @@ package; exact build-wheel and source-module identities are recorded by the
 generated importer manifest. No Python runtime is taken from the player's
 machine for packaged Workshop operations.
 
+The importer is accompanied by Khronos glTF Validator 2.0.0-dev.3.10, used as
+the mandatory standards boundary for user-authored GLB models. Linux and
+Windows ship the hash-pinned official native release; macOS arm64 ships a
+reproducible build of the same exact commit using Dart SDK 2.19.6 and a locked
+dependency graph. Its Apache-2.0 license and complete Dart/dependency notices
+are retained in `third_party/gltf_validator/` and travel in every native
+package. Exact source, archive, toolchain, lockfile, and executable hashes are
+recorded in [THIRD_PARTY.md](THIRD_PARTY.md) and the generated adjacent build
+manifest.
+
 `third_party/qrcodegen/qrcodegen.ts`, its C++ port and the generated browser
 artifact `dist/web/party/qrcodegen.js` are Project Nayuki's QR Code generator library at
 commit `2c9044de6b049ca25cb3cd1649ed7e27aa055138`, under the MIT License. Both

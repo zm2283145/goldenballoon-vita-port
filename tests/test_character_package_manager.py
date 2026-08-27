@@ -29,9 +29,17 @@ from test_character_asset_probe import (  # noqa: E402
     make_v4_manifest,
     rewrite_glb_document,
 )
+from character_validation_fixture import accepted_validation  # noqa: E402
 
 
 class CharacterPackageManagerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = mock.patch.object(
+            manager, "_validate_character_glb", side_effect=accepted_validation
+        )
+        self.validation = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def make_package(self, root: Path,
                      manifest_data: dict[str, object] | None = None,
                      model_data: bytes | None = None) -> Path:
@@ -1207,6 +1215,159 @@ class CharacterPackageManagerTests(unittest.TestCase):
     def test_exact_rgba_canvas_rejects_wrong_size(self) -> None:
         with self.assertRaisesRegex(manager.ManagerError, "40×40"):
             manager._portrait_png_from_rgba(bytes(40 * 40 * 4 - 1))
+
+
+class CharacterValidationBoundaryTests(unittest.TestCase):
+    def test_standards_errors_fail_closed_with_bounded_author_diagnostics(self) -> None:
+        validation = accepted_validation(b"fixture", "fixture")
+        validation["valid"] = False
+        validation["report"]["issues"].update({
+            "numErrors": 1,
+            "messages": [{
+                "code": "ACCESSOR_INVALID",
+                "message": "accessor is outside its buffer view",
+                "severity": 0,
+                "pointer": "/accessors/0",
+            }],
+        })
+        with mock.patch.object(
+                manager.gltf_validator, "validate_glb_bytes",
+                return_value=validation):
+            with self.assertRaisesRegex(
+                    manager.ManagerError,
+                    "ACCESSOR_INVALID: accessor is outside"):
+                manager._validate_character_glb(b"fixture", "raw model")
+
+    def test_validator_tool_failure_is_distinct_from_invalid_author_content(self) -> None:
+        failure = manager.gltf_validator.ValidatorError("attestation mismatch")
+        with mock.patch.object(
+                manager.gltf_validator, "validate_glb_bytes",
+                side_effect=failure):
+            with self.assertRaisesRegex(
+                    manager.ManagerError,
+                    "could not be checked by the pinned Khronos"):
+                manager._validate_character_glb(b"fixture", "package model")
+
+    def test_failed_import_recovery_is_private_metadata_only_and_retryable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            characters = root / "characters"
+            model = root / "author.glb"
+            model_payload = make_animated_glb()
+            model.write_bytes(model_payload)
+            invalid = accepted_validation(model_payload, "raw")
+            invalid["valid"] = False
+            invalid["report"]["issues"].update({
+                "numErrors": 1,
+                "messages": [{
+                    "code": "TEST_INVALID",
+                    "message": "author fixture rejected",
+                    "severity": 0,
+                    "pointer": "/asset",
+                }],
+            })
+            failure = manager.ImportValidationError(
+                "raw character model is not valid glTF 2.0", invalid
+            )
+            index = characters / manager.RAW_INTAKE_INDEX_NAME
+            with mock.patch.object(
+                    manager, "_validate_character_glb", side_effect=failure):
+                with redirect_stdout(io.StringIO()) as output:
+                    status = manager.main([
+                        "--directory", str(characters),
+                        "write-raw-glb-index", str(model), str(index),
+                    ])
+            self.assertEqual(2, status)
+            result = json.loads(output.getvalue())
+            record_id = result["failed_import"]["record_id"]
+            failures = manager.list_failed_imports(characters)
+            self.assertEqual(1, failures["count"])
+            entry = failures["entries"][0]
+            self.assertEqual(record_id, entry["record_id"])
+            self.assertTrue(entry["source_available"])
+            self.assertFalse(entry["source_changed"])
+            self.assertTrue(entry["validation_report_available"])
+            recovery_dir = characters / manager.FAILURE_DIRECTORY_NAME
+            self.assertEqual(
+                [f"{record_id}.json", f"{record_id}.validation.json"],
+                sorted(path.name for path in recovery_dir.iterdir()),
+            )
+            self.assertTrue(all(
+                model_payload not in path.read_bytes()
+                for path in recovery_dir.iterdir()
+            ))
+
+            failure_index = characters / manager.FAILURE_INDEX_NAME
+            indexed = manager.write_failure_index(characters, failure_index)
+            self.assertEqual(1, indexed["indexed_failures"])
+            self.assertEqual(10, len(
+                failure_index.read_text(encoding="ascii").splitlines()[1].split("\t")
+            ))
+            exported = root / "diagnostic.json"
+            export = manager.export_failed_import_report(
+                record_id, characters, exported
+            )
+            self.assertTrue(export["validation_included"])
+            diagnostic = json.loads(exported.read_text(encoding="utf-8"))
+            self.assertEqual(record_id, diagnostic["failure"]["record_id"])
+            self.assertEqual("TEST_INVALID", diagnostic["validation"][
+                "report"]["issues"]["messages"][0]["code"])
+
+            model.write_bytes(model_payload + b"changed")
+            changed = manager.list_failed_imports(characters)["entries"][0]
+            self.assertTrue(changed["source_available"])
+            self.assertTrue(changed["source_changed"])
+            with self.assertRaisesRegex(manager.ManagerError, "source changed"):
+                manager.retry_failed_import(record_id, characters)
+            model.unlink()
+            missing = manager.list_failed_imports(characters)["entries"][0]
+            self.assertFalse(missing["source_available"])
+            self.assertFalse(missing["source_changed"])
+            with self.assertRaisesRegex(manager.ManagerError, "source is missing"):
+                manager.retry_failed_import(record_id, characters)
+            model.write_bytes(model_payload)
+
+            same_size_change = bytearray(model_payload)
+            same_size_change[-1] ^= 1
+            model.write_bytes(same_size_change)
+            quick = manager.list_failed_imports(characters)["entries"][0]
+            self.assertFalse(quick["source_changed"])
+            with self.assertRaisesRegex(manager.ManagerError, "source changed"):
+                manager.retry_failed_import(record_id, characters)
+            model.write_bytes(model_payload)
+
+            with mock.patch.object(
+                    manager, "_validate_character_glb", side_effect=failure):
+                with self.assertRaises(manager.ImportValidationError):
+                    manager.retry_failed_import(record_id, characters)
+            retained = manager.list_failed_imports(characters)["entries"][0]
+            self.assertEqual(2, retained["attempts"])
+            self.assertTrue(retained["validation_report_available"])
+
+            with mock.patch.object(
+                    manager, "_validate_character_glb",
+                    side_effect=accepted_validation):
+                retried = manager.retry_failed_import(record_id, characters)
+            self.assertTrue(retried["resolved"])
+            self.assertEqual(0, manager.list_failed_imports(characters)["count"])
+            self.assertTrue(model.is_file())
+
+            with mock.patch.object(
+                    manager, "_validate_character_glb", side_effect=failure):
+                with redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(2, manager.main([
+                        "--directory", str(characters),
+                        "write-raw-glb-index", str(model), str(index),
+                    ]))
+            forgotten_id = json.loads(output.getvalue())[
+                "failed_import"
+            ]["record_id"]
+            forgotten = manager.forget_failed_import(
+                forgotten_id, characters
+            )
+            self.assertEqual(2, len(forgotten["removed"]))
+            self.assertTrue(model.is_file())
+            self.assertEqual(0, manager.list_failed_imports(characters)["count"])
 
 
 if __name__ == "__main__":

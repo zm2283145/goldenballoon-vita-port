@@ -25,6 +25,7 @@ from test_character_asset_probe import (  # noqa: E402
     rewrite_glb_document,
 )
 from test_collada_to_glb import DAE  # noqa: E402
+import character_package_manager as manager  # noqa: E402
 
 
 def isolated_environment(root: Path, model: Path, shot: Path, *,
@@ -49,7 +50,7 @@ def isolated_environment(root: Path, model: Path, shot: Path, *,
         "MDKR_VIDEO_CONFIG_PATH": str(root / "video.ini"),
         "MDKR_SAVE_DIR": str(saves),
         "MDKR_CHARACTER_MANAGER": str(
-            ROOT / "tools" / "character_package_manager.py"
+            ROOT / "tests" / "run_character_manager_fixture.py"
         ),
         "MDKR_NO_CRASH_HANDLER": "1",
         "MDKR64_HIDDEN": "1",
@@ -206,16 +207,21 @@ def main() -> int:
                 }),
             ))
             hostile_shot = hostile / "raw-intake-hostile.bmp"
+            hostile_environment = isolated_environment(
+                hostile, hostile_model, hostile_shot,
+                compact=False, drop=True,
+            )
+            # Leave a full frame after the synchronous rejection so the
+            # metadata-only recovery inventory is loaded and rendered too.
+            hostile_environment["MDKR_APP_SMOKE_FRAMES"] = "16"
             run(
                 binary, hostile,
-                isolated_environment(
-                    hostile, hostile_model, hostile_shot,
-                    compact=False, drop=True,
-                ),
+                hostile_environment,
                 (
                     "active-panel=Character Workshop",
                     "accessors[0].count must be a positive integer",
                     "raw-intake resumed=1 inspected=0 mappings=0 drafts=1",
+                    "character-failure-recovery total=1 visible=1 metadata_only=1",
                 ),
             )
             check_bmp(hostile_shot, 1280, 720)
@@ -227,6 +233,42 @@ def main() -> int:
                 raise RuntimeError(
                     "a rejected GLB created a package candidate or cache"
                 )
+            recovery_files = sorted(
+                path.name for path in (
+                    hostile / "characters" /
+                    manager.FAILURE_DIRECTORY_NAME
+                ).iterdir()
+            )
+            if len(recovery_files) != 1 or not recovery_files[0].endswith(
+                    ".json"):
+                raise RuntimeError(
+                    "probe rejection did not create exactly one metadata-only "
+                    "recovery record"
+                )
+            (hostile / "video.ini").write_text(
+                "[Accessibility]\nSpeech=1\n", encoding="utf-8"
+            )
+            hostile_accessible = isolated_environment(
+                hostile, hostile_model, hostile / "raw-intake-recovery-a11y.bmp",
+                compact=False, drop=False,
+            )
+            hostile_accessible.update({
+                "MDKR_APP_SMOKE_FRAMES": "260",
+                "MDKR_APP_SMOKE_A11Y_WALK": "1",
+                "MDKR_APP_SMOKE_INPUT": "keyboard",
+                "MDKR_APP_SMOKE_INPUT_TOKEN": "mdkr64-app-ui-input-v1",
+                "MDKR_A11Y_TRACE": "1",
+            })
+            run(
+                binary, hostile, hostile_accessible,
+                (
+                    "character-failure-recovery total=1 visible=1 metadata_only=1",
+                    "text=Retry exact failed import",
+                    "text=Use failed source as a new import",
+                    "text=Copy failed-import error",
+                    "text=Forget failed-import diagnostic",
+                ),
+            )
 
             conversion = root / "conversion"
             conversion.mkdir()

@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import character_asset_probe as probe  # noqa: E402
 import character_manifest_wizard as wizard  # noqa: E402
 import character_package_manager as manager  # noqa: E402
+from character_validation_fixture import accepted_character_validation  # noqa: E402
 from check_adventure_two import eeprom_image  # noqa: E402
 from check_challenge_modes import (  # noqa: E402
     BASE_SCRIPT,
@@ -94,7 +95,8 @@ def install_fixture(root: Path) -> Path:
         package,
         portrait_path=portrait,
     )
-    manager.install(package, characters)
+    with accepted_character_validation(manager):
+        manager.install(package, characters)
     return characters
 
 

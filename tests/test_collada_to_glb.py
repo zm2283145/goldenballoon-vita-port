@@ -12,6 +12,7 @@ import unittest
 import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,7 @@ import character_package_manager as manager  # noqa: E402
 import character_asset_probe as probe  # noqa: E402
 import collada_to_glb as adapter  # noqa: E402
 from test_character_asset_probe import make_animated_glb, make_manifest  # noqa: E402
+from character_validation_fixture import accepted_validation  # noqa: E402
 
 
 DAE = """<?xml version="1.0" encoding="utf-8"?>
@@ -86,6 +88,13 @@ def glb_document(data: bytes) -> dict[str, object]:
 
 
 class ColladaAdapterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = mock.patch.object(
+            manager, "_validate_character_glb", side_effect=accepted_validation
+        )
+        self.validation = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_dae_converts_to_compiler_ready_glb(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "fixture.dae"

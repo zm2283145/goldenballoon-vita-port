@@ -31,6 +31,7 @@ import character_asset_compiler as compiler
 import character_asset_probe as probe
 import character_manifest_wizard as wizard
 import collada_to_glb as collada
+import gltf_validator_adapter as gltf_validator
 
 
 MANAGER_SCHEMA = "mdkr-character-install-v1"
@@ -48,10 +49,75 @@ RAW_INTAKE_CANDIDATE_NAME = ".launcher-character-raw-candidate.mdkrchar"
 RAW_INTAKE_MAX_CLIPS = 256
 RAW_INTAKE_MAX_NODES = 4096
 RAW_INTAKE_MAX_CHOICE_BYTES = 256
+FAILURE_SCHEMA = "mdkr-character-import-failure-v1"
+FAILURE_INDEX_SCHEMA = "mdkr-character-import-failures-v1"
+FAILURE_DIRECTORY_NAME = ".failed-character-imports"
+FAILURE_INDEX_NAME = ".launcher-character-failures.tsv"
+MAX_FAILURE_RECORDS = 4096
+MAX_UI_FAILURES = 256
+MAX_FAILURE_TEXT_BYTES = 8192
+MAX_FAILURE_PATH_BYTES = 4096
 
 
 class ManagerError(ValueError):
     pass
+
+
+class ImportValidationError(ManagerError):
+    """An author model failed with an optional complete bounded report."""
+
+    def __init__(self, message: str,
+                 validation: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.validation = validation
+
+
+def _validation_summary(validation: dict[str, Any]) -> dict[str, Any]:
+    """Return bounded provenance and issue counts suitable for UI reports."""
+    issues = validation["report"]["issues"]
+    identity = validation["validator"]
+    return {
+        "schema": validation["schema"],
+        "source_sha256": validation["source_sha256"],
+        "validator_version": identity["version"],
+        "validator_commit": identity["commit"],
+        "validator_target": identity["target"],
+        "validator_sha256": identity["executable_sha256"],
+        "errors": issues["numErrors"],
+        "warnings": issues["numWarnings"],
+        "infos": issues["numInfos"],
+        "hints": issues["numHints"],
+        "diagnostics_truncated": issues["truncated"],
+    }
+
+
+def _validate_character_glb(payload: bytes, context: str) -> dict[str, Any]:
+    """Require the pinned Khronos validator at every GLB trust boundary."""
+    try:
+        validation = gltf_validator.validate_glb_bytes(payload)
+    except gltf_validator.ValidatorError as exc:
+        raise ImportValidationError(
+            f"{context} could not be checked by the pinned Khronos glTF "
+            f"Validator: {exc}"
+        ) from exc
+    if validation["source_sha256"] != hashlib.sha256(payload).hexdigest():
+        raise ManagerError(f"{context} validation digest disagrees with its bytes")
+    if validation["valid"]:
+        return validation
+    issues = validation["report"]["issues"]
+    errors = [
+        f"{message['code']}: {message['message']}"
+        for message in issues["messages"]
+        if message["severity"] == 0
+    ]
+    detail = "; ".join(errors[:8])
+    if len(errors) > 8 or issues["truncated"]:
+        detail += ("; " if detail else "") + "additional diagnostics omitted"
+    if not detail:
+        detail = f"validator reported {issues['numErrors']} error(s)"
+    raise ImportValidationError(
+        f"{context} is not valid glTF 2.0: {detail}", validation
+    )
 
 
 def _archive_convertible_paths(
@@ -168,6 +234,9 @@ def convert_authoring_source(input_path: Path,
             }
         else:
             converted, report = collada.convert(conversion_source)
+        validation = _validate_character_glb(
+            converted, f"converted model {source_label!r}"
+        )
         try:
             _write_exclusive(destination, converted)
         except FileExistsError as exc:
@@ -186,6 +255,7 @@ def convert_authoring_source(input_path: Path,
                 for blocker in archive_report.get("blockers", [])
             )
         ),
+        "validation": _validation_summary(validation),
         **{
             key: value for key, value in report.items()
             if key not in ("input", "output")
@@ -293,6 +363,238 @@ def _prepare_directory(directory: Path) -> Path:
     if directory.is_symlink() or not directory.is_dir():
         raise ManagerError("character directory must be a real directory")
     return directory.resolve()
+
+
+def _failure_directory(root: Path, *, create: bool = True) -> Path:
+    directory = root / FAILURE_DIRECTORY_NAME
+    if create:
+        directory.mkdir(mode=0o700, exist_ok=True)
+    elif not directory.exists() and not directory.is_symlink():
+        raise ManagerError("failed-import recovery record does not exist")
+    if directory.is_symlink() or not directory.is_dir():
+        raise ManagerError("failed-import recovery directory must be a real directory")
+    resolved = directory.resolve(strict=True)
+    if resolved.parent != root:
+        raise ManagerError("failed-import recovery directory escaped character storage")
+    return resolved
+
+
+def _bounded_failure_text(value: str, maximum: int, label: str) -> str:
+    if not isinstance(value, str):
+        raise ManagerError(f"{label} must be text")
+    encoded = value.encode("utf-8", errors="replace")
+    if len(encoded) <= maximum:
+        return encoded.decode("utf-8")
+    suffix = "\n[diagnostic truncated]".encode("utf-8")
+    clipped = encoded[:maximum - len(suffix)]
+    while True:
+        try:
+            return clipped.decode("utf-8") + suffix.decode("utf-8")
+        except UnicodeDecodeError:
+            clipped = clipped[:-1]
+
+
+def _failure_source_for_command(args: argparse.Namespace) -> tuple[
+        Path | None, str | None, Path | None]:
+    command = args.command
+    if command == "write-raw-glb-index":
+        return args.model, "raw-inspect", None
+    if command == "convert-authoring-source":
+        return args.input, "convert", args.output
+    if command in ("install", "inspect", "write-candidate-index",
+                   "install-reviewed", "prepare"):
+        return args.package, "package-inspect", None
+    if command == "build-raw-glb":
+        try:
+            source = Path(_decode_launcher_hex(
+                args.model_hex, MAX_FAILURE_PATH_BYTES, "model path"
+            ))
+        except ManagerError:
+            return None, None, None
+        return source, "raw-inspect", None
+    return None, None, None
+
+
+def _read_failure_record(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_REPORT_BYTES:
+        raise ManagerError("failed-import recovery record is unsafe or oversized")
+    record = probe.json_loads_strict(path.read_bytes(), "failed-import recovery record")
+    keys = {
+        "schema", "record_id", "command", "retry_kind", "source_path",
+        "source_sha256", "source_bytes", "output_path", "error",
+        "attempts", "first_failed_unix", "last_failed_unix",
+        "validation_report_file",
+    }
+    if not isinstance(record, dict) or set(record) != keys:
+        raise ManagerError("failed-import recovery record has an unexpected schema")
+    record_id = record["record_id"]
+    if (record["schema"] != FAILURE_SCHEMA or
+            not isinstance(record_id, str) or len(record_id) != 64 or
+            any(character not in "0123456789abcdef" for character in record_id) or
+            path.name != f"{record_id}.json"):
+        raise ManagerError("failed-import recovery record identity is invalid")
+    for key in ("command", "retry_kind", "source_path", "error"):
+        if not isinstance(record[key], str):
+            raise ManagerError(f"failed-import recovery {key} is invalid")
+    if record["retry_kind"] not in ("raw-inspect", "package-inspect", "convert"):
+        raise ManagerError("failed-import recovery retry kind is invalid")
+    if (not record["source_path"] or
+            len(record["source_path"].encode("utf-8")) > MAX_FAILURE_PATH_BYTES):
+        raise ManagerError("failed-import recovery source path is invalid")
+    source_sha = record["source_sha256"]
+    if source_sha is not None and (
+            not isinstance(source_sha, str) or len(source_sha) != 64 or
+            any(character not in "0123456789abcdef" for character in source_sha)):
+        raise ManagerError("failed-import recovery source digest is invalid")
+    for key in ("source_bytes", "attempts", "first_failed_unix", "last_failed_unix"):
+        value = record[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ManagerError(f"failed-import recovery {key} is invalid")
+    if record["attempts"] < 1 or record["attempts"] > 0xFFFFFFFF:
+        raise ManagerError("failed-import recovery attempt count is invalid")
+    if (record["source_bytes"] > 0xFFFFFFFFFFFFFFFF or
+            record["first_failed_unix"] > 0xFFFFFFFFFFFFFFFF or
+            record["last_failed_unix"] > 0xFFFFFFFFFFFFFFFF):
+        raise ManagerError("failed-import recovery numeric metadata is invalid")
+    output = record["output_path"]
+    if output is not None and (not isinstance(output, str) or
+                               len(output.encode("utf-8")) > MAX_FAILURE_PATH_BYTES):
+        raise ManagerError("failed-import recovery output path is invalid")
+    report_file = record["validation_report_file"]
+    if report_file not in (None, f"{record_id}.validation.json"):
+        raise ManagerError("failed-import recovery report name is invalid")
+    return record
+
+
+def _failure_source_state(record: dict[str, Any], *,
+                          exact: bool = False) -> tuple[bool, bool]:
+    source = Path(record["source_path"])
+    if source.is_symlink() or not source.is_file():
+        return False, False
+    expected = record["source_sha256"]
+    if expected is None:
+        return True, True
+    try:
+        if source.stat().st_size != record["source_bytes"]:
+            return True, True
+    except OSError:
+        return False, False
+    # Inventory refresh must stay O(record count), not O(total source bytes).
+    # A same-size edit is still caught by the mandatory digest check below
+    # when the author explicitly retries the source.
+    if not exact:
+        return True, False
+    try:
+        payload = _bounded_authoring_input(
+            source, probe.MAX_INPUT_BYTES, "failed-import source"
+        )
+    except ManagerError:
+        return True, True
+    return True, hashlib.sha256(payload).hexdigest() != expected
+
+
+def _record_import_failure(root: Path, args: argparse.Namespace,
+                           error: BaseException) -> dict[str, Any] | None:
+    source, retry_kind, output = _failure_source_for_command(args)
+    if source is None or retry_kind is None:
+        return None
+    source = source.absolute()
+    source_text = _bounded_failure_text(
+        str(source), MAX_FAILURE_PATH_BYTES, "failed-import source path"
+    )
+    payload: bytes | None = None
+    try:
+        payload = _bounded_authoring_input(
+            source, probe.MAX_INPUT_BYTES, "failed-import source"
+        )
+    except ManagerError:
+        pass
+    validation = (
+        error.validation if isinstance(error, ImportValidationError) else None
+    )
+    source_sha = (
+        hashlib.sha256(payload).hexdigest() if payload is not None else
+        validation.get("source_sha256") if isinstance(validation, dict) else None
+    )
+    source_size = len(payload) if payload is not None else 0
+    if payload is None:
+        try:
+            if not source.is_symlink() and source.is_file():
+                source_size = min(source.stat().st_size, 0xFFFFFFFFFFFFFFFF)
+        except OSError:
+            # The source can disappear between the bounded read attempt and
+            # metadata capture. Recovery must still preserve the diagnostic.
+            source_size = 0
+    identity = "\0".join((args.command, source_sha or source_text)).encode("utf-8")
+    record_id = hashlib.sha256(identity).hexdigest()
+    directory = _failure_directory(root)
+    record_path = directory / f"{record_id}.json"
+    report_path = directory / f"{record_id}.validation.json"
+    now = int(time.time())
+    attempts = 1
+    first_failed = now
+    if record_path.exists() or record_path.is_symlink():
+        prior = _read_failure_record(record_path)
+        attempts = min(prior["attempts"] + 1, 0xFFFFFFFF)
+        first_failed = prior["first_failed_unix"]
+    report_file: str | None = None
+    if isinstance(validation, dict):
+        gltf_validator.write_report(report_path, validation)
+        report_file = report_path.name
+    else:
+        report_path.unlink(missing_ok=True)
+    output_text = None if output is None else _bounded_failure_text(
+        str(output.absolute()), MAX_FAILURE_PATH_BYTES,
+        "failed-import output path",
+    )
+    record = {
+        "schema": FAILURE_SCHEMA,
+        "record_id": record_id,
+        "command": args.command,
+        "retry_kind": retry_kind,
+        "source_path": source_text,
+        "source_sha256": source_sha,
+        "source_bytes": source_size,
+        "output_path": output_text,
+        "error": _bounded_failure_text(
+            str(error), MAX_FAILURE_TEXT_BYTES, "failed-import error"
+        ),
+        "attempts": attempts,
+        "first_failed_unix": first_failed,
+        "last_failed_unix": now,
+        "validation_report_file": report_file,
+    }
+    encoded = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if len(encoded) > MAX_REPORT_BYTES:
+        raise ManagerError("failed-import recovery metadata exceeds its bound")
+    _write_atomic(record_path, encoded)
+    return {
+        "record_id": record_id,
+        "attempts": attempts,
+        "source_sha256": source_sha,
+        "report_available": report_file is not None,
+    }
+
+
+def _failure_records(root: Path) -> list[dict[str, Any]]:
+    unresolved = root / FAILURE_DIRECTORY_NAME
+    if not unresolved.exists() and not unresolved.is_symlink():
+        return []
+    directory = _failure_directory(root, create=False)
+    paths = sorted(directory.glob("*.json"))
+    record_paths = [
+        path for path in paths if not path.name.endswith(".validation.json")
+    ]
+    if len(record_paths) > MAX_FAILURE_RECORDS:
+        raise ManagerError(
+            f"failed-import recovery contains more than {MAX_FAILURE_RECORDS} records"
+        )
+    records = [_read_failure_record(path) for path in record_paths]
+    records.sort(
+        key=lambda record: (record["last_failed_unix"], record["record_id"]),
+        reverse=True,
+    )
+    return records
 
 
 @contextmanager
@@ -410,6 +712,9 @@ def _compile_candidate(package_path: Path) -> dict[str, Any]:
         )
         compiler_digest = _compiler_source_digest(archive)
         embedded = archive.read("compiled.mdkc") if verification.get("portable") else None
+    validation = _validate_character_glb(
+        model, f"character package {package_id!r} model"
+    )
     compiled, compile_report = compiler.compile_character(
         model, manifest, compiler_digest, portrait
     )
@@ -428,6 +733,7 @@ def _compile_candidate(package_path: Path) -> dict[str, Any]:
         "compiled": compiled,
         "compiled_sha256": hashlib.sha256(compiled).hexdigest(),
         "compile_report": compile_report,
+        "validation": validation,
         "portable": embedded is not None,
     }
 
@@ -456,6 +762,7 @@ def inspect(package_path: Path) -> dict[str, Any]:
         "license_spdx": license_info["spdx"],
         "attribution": license_info["attribution"],
         "source_url": license_info["source_url"],
+        "validation": _validation_summary(candidate["validation"]),
         "report": report,
     }
 
@@ -550,6 +857,7 @@ def install(package_path: Path, directory: Path, *,
         "compiler": COMPILER_ID,
         "installed_unix": int(time.time()),
         "source_file": f"{package_id}.{source_sha}.mdkrchar",
+        "validation": _validation_summary(candidate["validation"]),
         "report": compile_report,
     }
     source_path = root / provenance["source_file"]
@@ -1446,6 +1754,7 @@ def inspect_raw_glb(model_path: Path) -> dict[str, Any]:
     payload = _bounded_authoring_input(
         model_path, probe.MAX_INPUT_BYTES, "GLB model"
     )
+    validation = _validate_character_glb(payload, "raw character model")
     report = probe.inspect_glb_bytes(payload, require_character=True)
     if report["errors"]:
         raise ManagerError(
@@ -1553,6 +1862,7 @@ def inspect_raw_glb(model_path: Path) -> dict[str, Any]:
         "seat": inferred_sockets.get("seat"),
         "head": inferred_sockets.get("head"),
         "warnings": report["warnings"],
+        "validation": _validation_summary(validation),
     }
 
 
@@ -1620,6 +1930,9 @@ def build_raw_glb_candidate(
             raise ManagerError(
                 "the GLB changed after inspection; inspect the new bytes before building"
             )
+    validation = _validate_character_glb(
+        model_payload, "reviewed raw character model"
+    )
     license_payload = _bounded_authoring_input(
         license_path, probe.MAX_LICENSE_BYTES, "license file"
     )
@@ -1664,6 +1977,7 @@ def build_raw_glb_candidate(
         "license_sha256": hashlib.sha256(license_payload).hexdigest(),
         "bytes": len(candidate_payload),
         "decisions": decisions,
+        "validation": _validation_summary(validation),
         "package": built,
     }
 
@@ -1703,6 +2017,242 @@ def write_revision_index(package_id: str, directory: Path,
     }
 
 
+def _canonical_failure_id(record_id: str) -> str:
+    if (not isinstance(record_id, str) or len(record_id) != 64 or
+            any(character not in "0123456789abcdef" for character in record_id)):
+        raise ManagerError(
+            "failed-import recovery id must be 64 lowercase hexadecimal characters"
+        )
+    return record_id
+
+
+def _list_failed_imports(root: Path) -> dict[str, Any]:
+    entries = []
+    for record in _failure_records(root):
+        available, changed = _failure_source_state(record)
+        report_available = False
+        if record["validation_report_file"]:
+            report_path = _failure_directory(root, create=False) / record[
+                "validation_report_file"
+            ]
+            try:
+                report_available = (
+                    not report_path.is_symlink() and report_path.is_file() and
+                    report_path.stat().st_size <=
+                    gltf_validator.MAX_REPORT_BYTES
+                )
+            except OSError:
+                report_available = False
+        entries.append({
+            **record,
+            "source_available": available,
+            "source_changed": changed,
+            "validation_report_available": report_available,
+        })
+    return {
+        "schema": FAILURE_INDEX_SCHEMA,
+        "entries": entries,
+        "count": len(entries),
+    }
+
+
+def list_failed_imports(directory: Path) -> dict[str, Any]:
+    root = _prepare_directory(directory)
+    with _locked(root):
+        return _list_failed_imports(root)
+
+
+def write_failure_index(directory: Path, index_path: Path) -> dict[str, Any]:
+    """Write bounded fixed-field recovery inventory for the native launcher."""
+    root = _prepare_directory(directory)
+    if (index_path.parent.resolve() != root or
+            index_path.name != FAILURE_INDEX_NAME):
+        raise ManagerError(
+            "failed-import index must use the launcher's exact file inside "
+            "the character directory"
+        )
+    with _locked(root):
+        entries = _list_failed_imports(root)["entries"]
+        rows: list[str] = []
+        row_bytes = 0
+        for record in entries[:MAX_UI_FAILURES]:
+            fields = (
+                record["record_id"], str(record["last_failed_unix"]),
+                str(record["attempts"]),
+                "1" if record["source_available"] else "0",
+                "1" if record["source_changed"] else "0",
+                "1" if record["validation_report_available"] else "0",
+                record["retry_kind"],
+                record["source_path"].encode("utf-8").hex(),
+                "-" if record["output_path"] is None else
+                    record["output_path"].encode("utf-8").hex(),
+                record["error"].encode("utf-8").hex(),
+            )
+            row = "\t".join(fields) + "\n"
+            # readCharacterManagerResult deliberately has the same 64 KiB
+            # bound. Keep each row complete instead of letting the native side
+            # observe a truncated hex field; total remains explicit in header.
+            if row_bytes + len(row) > MAX_REPORT_BYTES - 128:
+                break
+            rows.append(row)
+            row_bytes += len(row)
+        visible_count = len(rows)
+        lines = [
+            f"{FAILURE_INDEX_SCHEMA}\t{len(entries)}\t{visible_count}\n",
+            *rows,
+        ]
+        _write_atomic(index_path, "".join(lines).encode("ascii"))
+    return {
+        "schema": FAILURE_INDEX_SCHEMA,
+        "total_failures": len(entries),
+        "indexed_failures": visible_count,
+        "truncated": len(entries) != visible_count,
+        "index_file": index_path.name,
+    }
+
+
+def _remove_failure_record(root: Path, record_id: str) -> list[str]:
+    directory = _failure_directory(root, create=False)
+    record_path = directory / f"{record_id}.json"
+    record = _read_failure_record(record_path)
+    removed = []
+    report_file = record["validation_report_file"]
+    if report_file is not None:
+        report_path = directory / report_file
+        if report_path.is_symlink():
+            raise ManagerError("failed-import validation report is linked")
+        if report_path.exists():
+            report_path.unlink()
+            removed.append(report_path.name)
+    record_path.unlink()
+    removed.append(record_path.name)
+    return removed
+
+
+def forget_failed_import(record_id: str, directory: Path) -> dict[str, Any]:
+    record_id = _canonical_failure_id(record_id)
+    root = _prepare_directory(directory)
+    with _locked(root):
+        removed = _remove_failure_record(root, record_id)
+    return {
+        "schema": FAILURE_INDEX_SCHEMA,
+        "action": "forget-failed-import",
+        "record_id": record_id,
+        "removed": removed,
+    }
+
+
+def retry_failed_import(record_id: str, directory: Path) -> dict[str, Any]:
+    """Recheck exact unchanged source bytes, then clear resolved recovery state."""
+    record_id = _canonical_failure_id(record_id)
+    root = _prepare_directory(directory)
+    with _locked(root):
+        failure_dir = _failure_directory(root, create=False)
+        record_path = failure_dir / f"{record_id}.json"
+        record = _read_failure_record(record_path)
+        available, changed = _failure_source_state(record, exact=True)
+        if not available:
+            raise ManagerError(
+                "failed-import source is missing; locate it and start a new import"
+            )
+        if record["source_sha256"] is None:
+            raise ManagerError(
+                "failed-import source was never safely hashable; start a new import"
+            )
+        if changed:
+            raise ManagerError(
+                "failed-import source changed; inspect the new bytes as a new import"
+            )
+        source = Path(record["source_path"])
+        try:
+            if record["retry_kind"] == "raw-inspect":
+                result = inspect_raw_glb(source)
+            elif record["retry_kind"] == "package-inspect":
+                result = inspect(source)
+            else:
+                output = record["output_path"]
+                if output is None:
+                    raise ManagerError(
+                        "failed conversion recovery has no output path"
+                    )
+                result = convert_authoring_source(source, Path(output))
+        except (OSError, zipfile.BadZipFile, json.JSONDecodeError, probe.ProbeError,
+                compiler.CompileError, ManagerError) as exc:
+            record["attempts"] += 1
+            record["last_failed_unix"] = int(time.time())
+            record["error"] = _bounded_failure_text(
+                str(exc), MAX_FAILURE_TEXT_BYTES, "failed-import retry error"
+            )
+            report_path = failure_dir / f"{record_id}.validation.json"
+            if isinstance(exc, ImportValidationError) and isinstance(
+                    exc.validation, dict):
+                gltf_validator.write_report(report_path, exc.validation)
+                record["validation_report_file"] = report_path.name
+            encoded = (
+                json.dumps(record, indent=2, sort_keys=True) + "\n"
+            ).encode("utf-8")
+            if len(encoded) > MAX_REPORT_BYTES:
+                raise ManagerError(
+                    "failed-import recovery metadata exceeds its bound"
+                ) from exc
+            _write_atomic(record_path, encoded)
+            raise
+        removed = _remove_failure_record(root, record_id)
+    return {
+        "schema": FAILURE_INDEX_SCHEMA,
+        "action": "retry-failed-import",
+        "record_id": record_id,
+        "resolved": True,
+        "removed": removed,
+        "result": result,
+    }
+
+
+def export_failed_import_report(record_id: str, directory: Path,
+                                output_path: Path) -> dict[str, Any]:
+    record_id = _canonical_failure_id(record_id)
+    root = _prepare_directory(directory)
+    with _locked(root):
+        failure_dir = _failure_directory(root, create=False)
+        record = _read_failure_record(failure_dir / f"{record_id}.json")
+        validation = None
+        if record["validation_report_file"] is not None:
+            report_path = failure_dir / record["validation_report_file"]
+            if (report_path.is_symlink() or not report_path.is_file() or
+                    report_path.stat().st_size >
+                    gltf_validator.MAX_REPORT_BYTES):
+                raise ManagerError(
+                    "failed-import validation report is missing, linked, or oversized"
+                )
+            validation = probe.json_loads_strict(
+                report_path.read_bytes(), "failed-import validation report"
+            )
+    destination = output_path.absolute()
+    if destination.suffix.lower() != ".json":
+        raise ManagerError("failed-import export must use a .json suffix")
+    if destination.parent.is_symlink() or not destination.parent.is_dir():
+        raise ManagerError("failed-import export directory must be a real directory")
+    payload = (json.dumps({
+        "schema": "mdkr-character-import-diagnostic-export-v1",
+        "failure": record,
+        "validation": validation,
+    }, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if len(payload) > gltf_validator.MAX_REPORT_BYTES + MAX_REPORT_BYTES:
+        raise ManagerError("failed-import diagnostic export exceeds its bound")
+    try:
+        _write_exclusive(destination, payload)
+    except FileExistsError as exc:
+        raise ManagerError("failed-import export destination already exists") from exc
+    return {
+        "schema": FAILURE_INDEX_SCHEMA,
+        "action": "export-failed-import-report",
+        "record_id": record_id,
+        "exported_file": str(destination),
+        "bytes": len(payload),
+        "validation_included": validation is not None,
+    }
+
+
 def prepare(package_path: Path, output_path: Path) -> dict[str, Any]:
     verification = probe.verify_package(package_path)
     if not verification["valid"]:
@@ -1717,6 +2267,9 @@ def prepare(package_path: Path, output_path: Path) -> dict[str, Any]:
             ) else None
         )
         digest = _compiler_source_digest(archive)
+    validation = _validate_character_glb(
+        model, f"character package {manifest['id']!r} model"
+    )
     compiled, compile_report = compiler.compile_character(
         model, manifest, digest, portrait
     )
@@ -1728,6 +2281,7 @@ def prepare(package_path: Path, output_path: Path) -> dict[str, Any]:
         "portable_package": str(output_path),
         "package_sha256": package_report["sha256"],
         "compiled_sha256": hashlib.sha256(compiled).hexdigest(),
+        "validation": _validation_summary(validation),
         "report": compile_report,
     }
 
@@ -1920,6 +2474,19 @@ def _parser() -> argparse.ArgumentParser:
     index_parser = sub.add_parser("write-revision-index")
     index_parser.add_argument("id")
     index_parser.add_argument("output", type=Path)
+    sub.add_parser(
+        "failed-imports",
+        help="list private metadata-only failed-import recovery records",
+    )
+    failure_index_parser = sub.add_parser("write-failure-index")
+    failure_index_parser.add_argument("output", type=Path)
+    failure_retry_parser = sub.add_parser("retry-failed-import")
+    failure_retry_parser.add_argument("record_id")
+    failure_forget_parser = sub.add_parser("forget-failed-import")
+    failure_forget_parser.add_argument("record_id")
+    failure_export_parser = sub.add_parser("export-failed-import-report")
+    failure_export_parser.add_argument("record_id")
+    failure_export_parser.add_argument("output", type=Path)
     remove_parser = sub.add_parser("remove")
     remove_parser.add_argument("id")
     enable_parser = sub.add_parser("enable")
@@ -2090,6 +2657,18 @@ def main(argv: list[str] | None = None) -> int:
             report = write_revision_index(
                 args.id, args.directory, args.output
             )
+        elif args.command == "failed-imports":
+            report = list_failed_imports(args.directory)
+        elif args.command == "write-failure-index":
+            report = write_failure_index(args.directory, args.output)
+        elif args.command == "retry-failed-import":
+            report = retry_failed_import(args.record_id, args.directory)
+        elif args.command == "forget-failed-import":
+            report = forget_failed_import(args.record_id, args.directory)
+        elif args.command == "export-failed-import-report":
+            report = export_failed_import_report(
+                args.record_id, args.directory, args.output
+            )
         elif args.command == "enable":
             report = set_enabled(args.id, args.directory, True)
         elif args.command == "disable":
@@ -2103,6 +2682,18 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, zipfile.BadZipFile, json.JSONDecodeError, probe.ProbeError,
             compiler.CompileError, ManagerError) as exc:
         report = {"ok": False, "error": str(exc)}
+        if args.directory is not None:
+            try:
+                recovery_root = _prepare_directory(args.directory)
+                with _locked(recovery_root):
+                    recovery = _record_import_failure(
+                        recovery_root, args, exc
+                    )
+                if recovery is not None:
+                    report["failed_import"] = recovery
+            except (OSError, probe.ProbeError, ManagerError,
+                    gltf_validator.ValidatorError) as recovery_error:
+                report["recovery_error"] = str(recovery_error)
         status = 2
     payload = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode("utf-8")
     print(payload.decode("utf-8"), end="")

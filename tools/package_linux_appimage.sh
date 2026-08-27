@@ -46,6 +46,8 @@ stage_lan_web_assets() {
 binary="build/mdkr64"
 character_importer=""
 character_importer_manifest=""
+gltf_validator=""
+gltf_validator_manifest=""
 version="dev"
 # Release packaging is STRICT by default -- a missing bundled SDL2 runtime or
 # a missing AppImage is a hard failure, so a release can't ship a broken/
@@ -58,10 +60,12 @@ while [[ $# -gt 0 ]]; do
     --binary) binary="$2"; shift 2 ;;
     --character-importer) character_importer="$2"; shift 2 ;;
     --character-importer-manifest) character_importer_manifest="$2"; shift 2 ;;
+    --gltf-validator) gltf_validator="$2"; shift 2 ;;
+    --gltf-validator-manifest) gltf_validator_manifest="$2"; shift 2 ;;
     --version) version="$2"; shift 2 ;;
     --dev) dev=true; shift ;;
     --self-test) self_test=true; shift ;;
-    -h|--help) echo "Usage: $0 [--binary PATH] --character-importer PATH --character-importer-manifest PATH [--version VER] [--dev] [--self-test]"; exit 0 ;;
+    -h|--help) echo "Usage: $0 [--binary PATH] --character-importer PATH --character-importer-manifest PATH --gltf-validator PATH --gltf-validator-manifest PATH [--version VER] [--dev] [--self-test]"; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -108,6 +112,10 @@ verify_linux_tarball() {
       Golden-Balloon.AppDir/usr/bin/tools/character_importer.manifest.json \
       Golden-Balloon.AppDir/usr/bin/tools/CPython-LICENSE.txt \
       Golden-Balloon.AppDir/usr/bin/tools/PyInstaller-COPYING.txt \
+      Golden-Balloon.AppDir/usr/bin/tools/validators/gltf_validator \
+      Golden-Balloon.AppDir/usr/bin/tools/validators/gltf_validator.manifest.json \
+      Golden-Balloon.AppDir/usr/bin/tools/validators/LICENSE.txt \
+      Golden-Balloon.AppDir/usr/bin/tools/validators/NOTICES.txt \
       ${web_files}
     [[ -z "$sdl_entries" ]] || printf '%s\n' "$sdl_entries"
   )"
@@ -164,6 +172,25 @@ with tarfile.open(sys.argv[1], "r:gz") as archive:
     for name, expected in notices.items():
         if hashlib.sha256(payload(name)).hexdigest() != expected:
             raise SystemExit(f"packaged importer notice changed: {name}")
+    validator = payload("validators/gltf_validator")
+    validator_manifest = json.loads(payload(
+        "validators/gltf_validator.manifest.json"))
+    if validator_manifest.get("executable") != "gltf_validator":
+        raise SystemExit("packaged validator manifest names another executable")
+    if validator_manifest.get("executable_bytes") != len(validator):
+        raise SystemExit("packaged validator size differs from its manifest")
+    if validator_manifest.get("executable_sha256") != hashlib.sha256(
+            validator).hexdigest():
+        raise SystemExit("packaged validator hash differs from its manifest")
+    validator_notices = {
+        "validators/LICENSE.txt":
+            "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "validators/NOTICES.txt":
+            "d7a1cefe85110c1308632d0384b7a67a18c125193e54175c50d1982d8c81a2f4",
+    }
+    for name, expected in validator_notices.items():
+        if hashlib.sha256(payload(name)).hexdigest() != expected:
+            raise SystemExit(f"packaged validator notice changed: {name}")
 PY
 }
 
@@ -172,7 +199,7 @@ if [[ "$self_test" == true ]]; then
   test_root="$(mktemp -d "${TMPDIR:-/tmp}/mdkr-linux-package-test.XXXXXX")"
   trap 'rm -rf "$test_root"' EXIT
   test_appdir="$test_root/Golden-Balloon.AppDir"
-  mkdir -p "$test_appdir/usr/bin/tools" "$test_appdir/usr/lib"
+  mkdir -p "$test_appdir/usr/bin/tools/validators" "$test_appdir/usr/lib"
   for path in AppRun LICENSE README.md RUN_ME.txt mdkr64.desktop mdkr64.png; do
     : >"$test_appdir/$path"
   done
@@ -185,6 +212,11 @@ if [[ "$self_test" == true ]]; then
     "$test_appdir/usr/bin/tools/CPython-LICENSE.txt"
   cp third_party/character_importer/PyInstaller-COPYING.txt \
     "$test_appdir/usr/bin/tools/PyInstaller-COPYING.txt"
+  : >"$test_appdir/usr/bin/tools/validators/gltf_validator"
+  cp third_party/gltf_validator/LICENSE.txt \
+    "$test_appdir/usr/bin/tools/validators/LICENSE.txt"
+  cp third_party/gltf_validator/NOTICES.txt \
+    "$test_appdir/usr/bin/tools/validators/NOTICES.txt"
   python3 - "$test_appdir/usr/bin/tools/character_importer.manifest.json" <<'PY'
 import json
 import sys
@@ -192,6 +224,18 @@ import sys
 with open(sys.argv[1], "w", encoding="utf-8") as stream:
     json.dump({
         "executable": "character_importer",
+        "executable_bytes": 0,
+        "executable_sha256":
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    }, stream)
+PY
+  python3 - "$test_appdir/usr/bin/tools/validators/gltf_validator.manifest.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "w", encoding="utf-8") as stream:
+    json.dump({
+        "executable": "gltf_validator",
         "executable_bytes": 0,
         "executable_sha256":
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -224,10 +268,22 @@ fi
   echo "ERROR: --character-importer-manifest must name its attestation." >&2
   exit 1
 }
+[[ -n "$gltf_validator" && -x "$gltf_validator" ]] || {
+  echo "ERROR: --gltf-validator must name the native Linux validator." >&2
+  exit 1
+}
+[[ -n "$gltf_validator_manifest" && -f "$gltf_validator_manifest" ]] || {
+  echo "ERROR: --gltf-validator-manifest must name its attestation." >&2
+  exit 1
+}
 
 python3 tools/verify_character_importer.py \
   --executable "$character_importer" \
   --manifest "$character_importer_manifest" \
+  --target linux-x86_64
+python3 tools/verify_gltf_validator.py \
+  --executable "$gltf_validator" \
+  --manifest "$gltf_validator_manifest" \
   --target linux-x86_64
 
 # appimagetool is a build-time EXECUTABLE dependency, so it is pinned to an
@@ -266,6 +322,14 @@ cp "$character_importer_manifest" \
 cp third_party/character_importer/CPython-LICENSE.txt \
   third_party/character_importer/PyInstaller-COPYING.txt \
   "$appdir/usr/bin/tools/"
+mkdir -p "$appdir/usr/bin/tools/validators"
+cp "$gltf_validator" "$appdir/usr/bin/tools/validators/gltf_validator"
+chmod +x "$appdir/usr/bin/tools/validators/gltf_validator"
+cp "$gltf_validator_manifest" \
+  "$appdir/usr/bin/tools/validators/gltf_validator.manifest.json"
+cp third_party/gltf_validator/LICENSE.txt \
+  third_party/gltf_validator/NOTICES.txt \
+  "$appdir/usr/bin/tools/validators/"
 
 # Community controller-mapping DB (MC.2), next to the binary where
 # SDL_GetBasePath() resolves it at controller init.
@@ -371,8 +435,9 @@ diagnostic OpenGL backend; it is useful for narrowing down a driver problem,
 not the recommended presentation path. Press F1 in-game for the pause overlay.
 
 This app ships no game data. See README.md for controls and support details.
-The complete Character Workshop importer is bundled; no Python installation is
-required. Its CPython and PyInstaller terms are in usr/bin/tools.
+The complete Character Workshop importer and its pinned Khronos glTF Validator
+are bundled; no Python installation is required. Their terms are in
+usr/bin/tools and usr/bin/tools/validators.
 EOF
 
 # Scan the exact tree consumed by both tar and appimagetool, including every

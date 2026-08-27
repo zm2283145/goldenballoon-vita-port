@@ -373,6 +373,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME character_importer_build
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_character_importer_build.py)
+    add_test(NAME gltf_validator_adapter
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_gltf_validator_adapter.py)
     add_test(NAME character_manifest_wizard
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_character_manifest_wizard.py)

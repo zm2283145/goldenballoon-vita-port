@@ -71,6 +71,10 @@ CHARACTER_IMPORTER="${APP_PATH}/Contents/MacOS/tools/character_importer"
 CHARACTER_IMPORTER_MANIFEST="${APP_PATH}/Contents/Resources/ThirdParty/CharacterImporter-MANIFEST.json"
 CHARACTER_CPYTHON_LICENSE="${APP_PATH}/Contents/Resources/ThirdParty/CharacterImporter-CPython-LICENSE.txt"
 CHARACTER_PYINSTALLER_LICENSE="${APP_PATH}/Contents/Resources/ThirdParty/CharacterImporter-PyInstaller-COPYING.txt"
+GLTF_VALIDATOR="${APP_PATH}/Contents/MacOS/tools/validators/gltf_validator"
+GLTF_VALIDATOR_MANIFEST="${APP_PATH}/Contents/MacOS/tools/validators/gltf_validator.manifest.json"
+GLTF_VALIDATOR_LICENSE="${APP_PATH}/Contents/Resources/ThirdParty/GltfValidator-LICENSE.txt"
+GLTF_VALIDATOR_NOTICES="${APP_PATH}/Contents/Resources/ThirdParty/GltfValidator-NOTICES.txt"
 [[ -x "${CHARACTER_IMPORTER}" ]] ||
     die "bundled Character Workshop importer is missing or not executable"
 [[ -f "${CHARACTER_IMPORTER_MANIFEST}" ]] ||
@@ -97,6 +101,31 @@ printf '%s\n' "${CHARACTER_IMPORTER_SIGNATURE}" | grep -Fq 'Signature=adhoc' ||
     die "bundled Character Workshop importer is not ad-hoc integrity signed"
 if printf '%s\n' "${CHARACTER_IMPORTER_SIGNATURE}" | grep -Fq 'Authority='; then
     die "bundled Character Workshop importer unexpectedly carries a trusted signing authority"
+fi
+[[ -x "${GLTF_VALIDATOR}" ]] ||
+    die "bundled Khronos glTF Validator is missing or not executable"
+[[ -f "${GLTF_VALIDATOR_MANIFEST}" && ! -L "${GLTF_VALIDATOR_MANIFEST}" ]] ||
+    die "bundled Khronos glTF Validator manifest is missing or linked"
+[[ -f "${GLTF_VALIDATOR_LICENSE}" && ! -L "${GLTF_VALIDATOR_LICENSE}" ]] ||
+    die "bundled Khronos glTF Validator license is missing or linked"
+[[ -f "${GLTF_VALIDATOR_NOTICES}" && ! -L "${GLTF_VALIDATOR_NOTICES}" ]] ||
+    die "bundled Khronos glTF Validator notices are missing or linked"
+[[ "$(shasum -a 256 "${GLTF_VALIDATOR_LICENSE}" | awk '{print $1}')" ==
+   "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30" ]] ||
+    die "bundled Khronos glTF Validator license changed"
+[[ "$(shasum -a 256 "${GLTF_VALIDATOR_NOTICES}" | awk '{print $1}')" ==
+   "d7a1cefe85110c1308632d0384b7a67a18c125193e54175c50d1982d8c81a2f4" ]] ||
+    die "bundled Khronos glTF Validator notices changed"
+python3 "${PROJECT_ROOT}/tools/verify_gltf_validator.py" \
+    --executable "${GLTF_VALIDATOR}" \
+    --manifest "${GLTF_VALIDATOR_MANIFEST}" \
+    --target darwin-arm64 ||
+    die "bundled Khronos glTF Validator attestation failed"
+GLTF_VALIDATOR_SIGNATURE="$(codesign -dvvv "${GLTF_VALIDATOR}" 2>&1)"
+printf '%s\n' "${GLTF_VALIDATOR_SIGNATURE}" | grep -Fq 'Signature=adhoc' ||
+    die "bundled Khronos glTF Validator is not ad-hoc integrity signed"
+if printf '%s\n' "${GLTF_VALIDATOR_SIGNATURE}" | grep -Fq 'Authority='; then
+    die "bundled Khronos glTF Validator unexpectedly carries a trusted signing authority"
 fi
 SDL2_MANIFEST="${APP_PATH}/Contents/Resources/ThirdParty/SDL2-MANIFEST.txt"
 [[ -f "${SDL2_MANIFEST}" ]] || die "bundled SDL2 provenance manifest is missing"

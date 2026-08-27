@@ -25,6 +25,7 @@ import character_asset_probe as probe  # noqa: E402
 import character_manifest_wizard as wizard  # noqa: E402
 import character_package_manager as manager  # noqa: E402
 from test_character_asset_probe import make_animated_glb  # noqa: E402
+from character_validation_fixture import accepted_character_validation  # noqa: E402
 
 
 PACKAGE_ID = "org.mdkr.identity-surface-proof"
@@ -105,7 +106,8 @@ def install_fixture(root: Path) -> Path:
     probe.build_package(
         model, manifest_path, license_path, package, portrait_path=portrait
     )
-    manager.install(package, characters)
+    with accepted_character_validation(manager):
+        manager.install(package, characters)
     return characters
 
 

@@ -190,12 +190,17 @@ jobs:
             -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF \
             -DMDKR_PARTY_ORIGIN="$PARTY_ORIGIN"
           cmake --build build -j
-      - name: Build and attest the self-contained Character Workshop importer
+      - name: Build and attest the self-contained Character Workshop toolchain
         run: |
           python -m pip install --disable-pip-version-check \
             --require-hashes --only-binary=:all: \
             -r tools/character_importer_build_requirements.txt
-          mkdir -p build-tools
+          mkdir -p build-tools/validators
+          curl -fsSL -o "$RUNNER_TEMP/gltf-validator-linux.tar.xz" \
+            https://github.com/KhronosGroup/glTF-Validator/releases/download/2.0.0-dev.3.10/gltf_validator-2.0.0-dev.3.10-linux64.tar.xz
+          python tools/build_gltf_validator.py \
+            --release-archive "$RUNNER_TEMP/gltf-validator-linux.tar.xz" \
+            --output build-tools/validators/gltf_validator
           python tools/build_character_importer.py \
             --output build-tools/character_importer
           python tests/check_frozen_character_importer.py \
@@ -387,6 +392,8 @@ jobs:
             --binary build/mdkr64 \
             --character-importer build-tools/character_importer \
             --character-importer-manifest build-tools/character_importer.manifest.json \
+            --gltf-validator build-tools/validators/gltf_validator \
+            --gltf-validator-manifest build-tools/validators/gltf_validator.manifest.json \
             --version "${{ needs.validate.outputs.version }}"
       - name: Qualify extracted tar/AppRun from an unrelated directory
         env:
@@ -406,11 +413,16 @@ jobs:
           app_run="$extract/Golden-Balloon.AppDir/AppRun"
           binary="$extract/Golden-Balloon.AppDir/usr/bin/mdkr64"
           importer="$extract/Golden-Balloon.AppDir/usr/bin/tools/character_importer"
+          validator="$extract/Golden-Balloon.AppDir/usr/bin/tools/validators/gltf_validator"
+          validator_manifest="$validator.manifest.json"
           lib_dir="$extract/Golden-Balloon.AppDir/usr/lib"
-          test -x "$app_run" && test -x "$importer"
+          test -x "$app_run" && test -x "$importer" && test -x "$validator"
           (cd "$unrelated" && "$importer" tool-info) | \
             grep -Fq '"frozen": true'
           python tests/check_frozen_character_importer.py "$importer"
+          python tools/verify_gltf_validator.py \
+            --executable "$validator" --manifest "$validator_manifest" \
+            --target linux-x86_64
           LD_LIBRARY_PATH="$lib_dir" ldd "$binary" | \
             grep -E "libSDL2[^ ]* => $lib_dir/libSDL2[^ ]*"
 
@@ -611,12 +623,17 @@ jobs:
           cmake --build build --target mdkr64 mdkr_memory_allocator_test \
             mdkr_native_party_bringup_test mdkr_native_party_host_test \
             mdkr_native_party_qr_test mdkr_native_party_sas_test -j
-      - name: Build and attest the self-contained Character Workshop importer
+      - name: Build and attest the self-contained Character Workshop toolchain
         run: |
           python -m pip install --disable-pip-version-check \
             --require-hashes --only-binary=:all: \
             -r tools/character_importer_build_requirements.txt
-          mkdir -p build-tools
+          mkdir -p build-tools/validators
+          curl -fsSL -o "$RUNNER_TEMP/gltf-validator-windows.zip" \
+            https://github.com/KhronosGroup/glTF-Validator/releases/download/2.0.0-dev.3.10/gltf_validator-2.0.0-dev.3.10-win64.zip
+          python tools/build_gltf_validator.py \
+            --release-archive "$RUNNER_TEMP/gltf-validator-windows.zip" \
+            --output build-tools/validators/gltf_validator.exe
           python tools/build_character_importer.py \
             --output build-tools/character_importer.exe
           python tests/check_frozen_character_importer.py \
@@ -709,6 +726,8 @@ jobs:
             --binary build/mdkr64.exe \
             --character-importer build-tools/character_importer.exe \
             --character-importer-manifest build-tools/character_importer.exe.manifest.json \
+            --gltf-validator build-tools/validators/gltf_validator.exe \
+            --gltf-validator-manifest build-tools/validators/gltf_validator.exe.manifest.json \
             --version "${{ needs.validate.outputs.version }}"
       - name: Verify extracted package startup from an unrelated directory
         env:
@@ -731,12 +750,13 @@ jobs:
           PY
           executable="$package_root/GoldenBalloon/GoldenBalloon.exe"
           importer="$package_root/GoldenBalloon/tools/character_importer.exe"
+          validator="$package_root/GoldenBalloon/tools/validators/gltf_validator.exe"
           test "$(sha256sum build/mdkr64.exe | awk '{print $1}')" = \
             "$(sha256sum "$executable" | awk '{print $1}')"
           # Info-ZIP on MSYS does not preserve an executable mode from a ZIP
           # created on Windows. Restore it only for this Bash launch check;
           # Explorer uses the PE extension and does not depend on POSIX mode.
-          chmod +x "$executable" "$importer"
+          chmod +x "$executable" "$importer" "$validator"
           (
             cd "$unrelated"
             "$importer" tool-info | grep -Fq '"frozen": true'
@@ -746,6 +766,9 @@ jobs:
             grep -q '^Usage: ' help.txt
           )
           python tests/check_frozen_character_importer.py "$importer"
+          python tools/verify_gltf_validator.py \
+            --executable "$validator" --manifest "$validator.manifest.json" \
+            --target windows-x86_64
           # Partyful builds must prove that the packaged .exe carries the
           # configured cloud surface. Partyless builds deliberately omit it.
           if [[ -n "${PARTY_ORIGIN:-}" ]]; then

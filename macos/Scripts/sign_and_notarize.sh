@@ -101,6 +101,48 @@ python3 "${PROJECT_ROOT}/tools/verify_character_importer.py" \
     --target darwin-arm64 \
     --allow-signed || die "Signed Character Workshop importer attestation failed"
 
+GLTF_VALIDATOR="${APP_PATH}/Contents/MacOS/tools/validators/gltf_validator"
+GLTF_VALIDATOR_MANIFEST="${APP_PATH}/Contents/MacOS/tools/validators/gltf_validator.manifest.json"
+[[ -f "${GLTF_VALIDATOR}" && -x "${GLTF_VALIDATOR}" ]] ||
+    die "Khronos glTF Validator is missing or not executable"
+[[ -f "${GLTF_VALIDATOR_MANIFEST}" ]] ||
+    die "Khronos glTF Validator manifest is missing"
+python3 "${PROJECT_ROOT}/tools/verify_gltf_validator.py" \
+    --executable "${GLTF_VALIDATOR}" \
+    --manifest "${GLTF_VALIDATOR_MANIFEST}" \
+    --target darwin-arm64 ||
+    die "Pre-sign Khronos glTF Validator attestation failed"
+info "Signing Khronos glTF Validator"
+codesign --force --sign "${DEVELOPER_ID_APPLICATION}" \
+    --options runtime --timestamp "${GLTF_VALIDATOR}" ||
+    die "Failed to sign Khronos glTF Validator"
+python3 - "${GLTF_VALIDATOR}" "${GLTF_VALIDATOR_MANIFEST}" <<'PY'
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+executable = Path(sys.argv[1])
+manifest_path = Path(sys.argv[2])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+payload = executable.read_bytes()
+manifest["executable_bytes"] = len(payload)
+manifest["executable_sha256"] = hashlib.sha256(payload).hexdigest()
+temporary = manifest_path.with_name(manifest_path.name + ".tmp")
+with temporary.open("x", encoding="utf-8", newline="\n") as stream:
+    json.dump(manifest, stream, indent=2, sort_keys=True)
+    stream.write("\n")
+    stream.flush()
+    os.fsync(stream.fileno())
+os.replace(temporary, manifest_path)
+PY
+python3 "${PROJECT_ROOT}/tools/verify_gltf_validator.py" \
+    --executable "${GLTF_VALIDATOR}" \
+    --manifest "${GLTF_VALIDATOR_MANIFEST}" \
+    --target darwin-arm64 ||
+    die "Signed Khronos glTF Validator attestation failed"
+
 # Developer ID replaces the nested dylib's ad-hoc signature and therefore its
 # full-file SHA-256. Refresh the sealed provenance row after nested signing but
 # before the outer resource seal is created. This is static identity

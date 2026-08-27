@@ -812,6 +812,11 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         "GoldenBalloon/tools/character_importer.exe.manifest.json",
         "GoldenBalloon/tools/CPython-LICENSE.txt",
         "GoldenBalloon/tools/PyInstaller-COPYING.txt",
+        "GoldenBalloon/tools/validators/",
+        "GoldenBalloon/tools/validators/gltf_validator.exe",
+        "GoldenBalloon/tools/validators/gltf_validator.exe.manifest.json",
+        "GoldenBalloon/tools/validators/LICENSE.txt",
+        "GoldenBalloon/tools/validators/NOTICES.txt",
     }
     actual_windows_entries = (
         set(
@@ -847,6 +852,10 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         "Golden-Balloon.AppDir/usr/bin/tools/character_importer.manifest.json",
         "Golden-Balloon.AppDir/usr/bin/tools/CPython-LICENSE.txt",
         "Golden-Balloon.AppDir/usr/bin/tools/PyInstaller-COPYING.txt",
+        "Golden-Balloon.AppDir/usr/bin/tools/validators/gltf_validator",
+        "Golden-Balloon.AppDir/usr/bin/tools/validators/gltf_validator.manifest.json",
+        "Golden-Balloon.AppDir/usr/bin/tools/validators/LICENSE.txt",
+        "Golden-Balloon.AppDir/usr/bin/tools/validators/NOTICES.txt",
     }
     actual_linux_entries = (
         set(

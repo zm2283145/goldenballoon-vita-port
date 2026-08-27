@@ -29,6 +29,7 @@ PINNED_PYTHON = (3, 13, 13)
 MAX_TOOL_INFO_BYTES = 16 * 1024
 SOURCE_MODULES = (
     "tools/character_package_manager.py",
+    "tools/gltf_validator_adapter.py",
     "tools/character_asset_compiler.py",
     "tools/character_asset_probe.py",
     "tools/character_manifest_wizard.py",

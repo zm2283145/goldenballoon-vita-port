@@ -66,7 +66,7 @@ def environment(root: Path, characters: Path, shot: Path, *,
         "MDKR_SAVE_DIR": str(saves),
         "MDKR_CUSTOM_CHARACTER_DIRECTORY": str(characters),
         "MDKR_CHARACTER_MANAGER": str(
-            ROOT / "tools" / "character_package_manager.py"
+            ROOT / "tests" / "run_character_manager_fixture.py"
         ),
         "MDKR_NO_CRASH_HANDLER": "1",
         "MDKR64_HIDDEN": "1",

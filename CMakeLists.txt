@@ -783,6 +783,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/arg_triage.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_candidate_index.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_edit_history.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_failure_index.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_import.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_studio.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_raw_draft_store.cpp
@@ -1473,6 +1474,15 @@ if(NOT EMSCRIPTEN)
             target_compile_features(mdkr_character_revision_index_test PRIVATE cxx_std_17)
             add_test(NAME character_revision_index
                 COMMAND mdkr_character_revision_index_test)
+
+            add_executable(mdkr_character_failure_index_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_failure_index.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_failure_index.cpp)
+            target_include_directories(mdkr_character_failure_index_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_failure_index_test PRIVATE cxx_std_17)
+            add_test(NAME character_failure_index
+                COMMAND mdkr_character_failure_index_test)
 
             add_executable(mdkr_character_candidate_index_test
                 ${CMAKE_SOURCE_DIR}/tests/test_character_candidate_index.cpp

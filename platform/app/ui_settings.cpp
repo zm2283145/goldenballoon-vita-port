@@ -9,6 +9,7 @@
 #include "character_draft_snapshot.h"
 #include "character_draft_store.h"
 #include "character_edit_history.h"
+#include "character_failure_index.h"
 #include "character_portrait_import.h"
 #include "character_portrait_studio.h"
 #include "character_raw_draft_store.h"
@@ -1936,6 +1937,17 @@ struct CharacterRevisionInventory {
 std::map<std::string, CharacterRevisionInventory>
     g_characterRevisionInventories;
 
+struct CharacterFailureInventory {
+    bool loaded = false;
+    unsigned total = 0u;
+    int selected = 0;
+    std::string loadError;
+    std::vector<CharacterFailureIndex::Row> rows;
+};
+
+CharacterFailureInventory g_characterFailureInventory;
+bool g_characterFailureTracePrinted = false;
+
 struct CharacterIdentityEdit {
     bool loaded = false;
     uint8_t sourceSha256[32] = {0};
@@ -2778,6 +2790,11 @@ bool runCharacterManager(const char *command,
     }
     g_characterManagerReport = readCharacterManagerResult(resultPath);
     (void)mdkr_remove_utf8(resultPath.c_str());
+    // Any manager command can resolve, create, or update recovery metadata.
+    // Invalidate unconditionally instead of coupling native correctness to a
+    // substring in a human-readable JSON report. Inventory loading installs
+    // its freshly parsed snapshot immediately after this call returns.
+    g_characterFailureInventory.loaded = false;
     if (!launched) {
         g_characterManagerReport = pythonSource
             ? "Python 3 could not be started for the development character importer (error " +
@@ -2836,6 +2853,95 @@ bool loadCharacterRevisionInventory(const std::string &packageId) {
     }
     g_characterRevisionInventories[packageId] = std::move(inventory);
     return true;
+}
+
+bool loadCharacterFailureInventory() {
+    CharacterFailureInventory parsed;
+    parsed.loaded = true;
+    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
+    if (g_characterRegistryDirectory.empty()) {
+        parsed.loadError = "No writable character directory is available.";
+        g_characterFailureInventory = std::move(parsed);
+        return false;
+    }
+    const std::string path = g_characterRegistryDirectory +
+        "/.launcher-character-failures.tsv";
+    (void)mdkr_remove_utf8(path.c_str());
+    const std::string previousReport = g_characterManagerReport;
+    const bool indexed = runCharacterManager(
+        "write-failure-index", {path}, false);
+    const std::string text = indexed ? readCharacterManagerResult(path) : "";
+    (void)mdkr_remove_utf8(path.c_str());
+    CharacterFailureIndex::Inventory inventory;
+    if (!indexed || !CharacterFailureIndex::parse(text, inventory)) {
+        parsed.loadError = indexed
+            ? "The failed-import recovery index was malformed; no recovery action was enabled."
+            : g_characterManagerReport;
+        g_characterFailureInventory = std::move(parsed);
+        return false;
+    }
+    parsed.total = inventory.total;
+    parsed.rows = std::move(inventory.rows);
+    if (!g_characterFailureInventory.rows.empty() && !parsed.rows.empty()) {
+        const int previous = std::clamp(
+            g_characterFailureInventory.selected, 0,
+            static_cast<int>(g_characterFailureInventory.rows.size()) - 1);
+        const std::string selectedId =
+            g_characterFailureInventory.rows[static_cast<size_t>(previous)]
+                .recordId;
+        const auto matching = std::find_if(
+            parsed.rows.begin(), parsed.rows.end(),
+            [&selectedId](const CharacterFailureIndex::Row &row) {
+                return row.recordId == selectedId;
+            });
+        if (matching != parsed.rows.end()) {
+            parsed.selected = static_cast<int>(matching - parsed.rows.begin());
+        }
+    }
+    g_characterFailureInventory = std::move(parsed);
+    // Inventory refresh is supporting state, not the user's primary report.
+    // Keep the import/validation diagnostic visible until another real action.
+    g_characterManagerReport = previousReport;
+    return true;
+}
+
+bool retryCharacterFailure(const CharacterFailureIndex::Row &row) {
+    if (!row.sourceAvailable || row.sourceChanged) return false;
+    if (!runCharacterManager(
+            "retry-failed-import", {row.recordId}, false)) {
+        g_characterFailureInventory.loaded = false;
+        return false;
+    }
+    const std::string resolvedSource =
+        row.retryKind == CharacterFailureIndex::RetryKind::Convert
+            ? row.outputPath : row.sourcePath;
+    g_characterFailureInventory.loaded = false;
+    if (resolvedSource.empty() ||
+        resolvedSource.size() >= sizeof(g_characterImportPath)) {
+        return true;
+    }
+    std::snprintf(g_characterImportPath, sizeof(g_characterImportPath), "%s",
+                  resolvedSource.c_str());
+    // Recovery succeeded once the exact fingerprinted source passed the same
+    // validator boundary. Reopening the ordinary review is a separate action
+    // with its own precise status; it must not retroactively make that retry
+    // look unsuccessful.
+    (void)Settings_importCharacterPackage(g_characterImportPath);
+    return true;
+}
+
+bool forgetCharacterFailure(const std::string &recordId) {
+    const bool removed = runCharacterManager(
+        "forget-failed-import", {recordId}, false);
+    g_characterFailureInventory.loaded = false;
+    return removed;
+}
+
+bool exportCharacterFailure(const std::string &recordId,
+                            const std::string &outputPath) {
+    if (outputPath.empty()) return false;
+    return runCharacterManager(
+        "export-failed-import-report", {recordId, outputPath}, false);
 }
 
 bool restoreCharacterRevision(const std::string &packageId,
@@ -14448,6 +14554,212 @@ void drawCharacterRawIntakeEditor(bool rail) {
     }
 }
 
+const char *characterFailureKindLabel(CharacterFailureIndex::RetryKind kind) {
+    switch (kind) {
+        case CharacterFailureIndex::RetryKind::RawInspect:
+            return "GLB inspection";
+        case CharacterFailureIndex::RetryKind::PackageInspect:
+            return "Package validation";
+        case CharacterFailureIndex::RetryKind::Convert:
+            return "Authoring conversion";
+    }
+    return "Import validation";
+}
+
+void drawCharacterFailureRecovery(bool rail) {
+    if (!g_characterFailureInventory.loaded) {
+        (void)loadCharacterFailureInventory();
+    }
+    CharacterFailureInventory &inventory = g_characterFailureInventory;
+    if (!inventory.loadError.empty()) {
+        ImGui::SeparatorText("Import recovery unavailable");
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+        ImGui::TextWrapped("%s", inventory.loadError.c_str());
+        ImGui::PopStyleColor();
+        if (ImGui::Button("Retry recovery inventory")) {
+            inventory.loaded = false;
+        }
+        ui::SpeakFocusedItem(
+            "Retry failed-import recovery inventory", nullptr,
+            "Rechecks private diagnostic metadata only. It does not read, copy, install, or delete a source model.");
+        return;
+    }
+    if (inventory.total == 0u) return;
+    ImGui::SeparatorText("Import recovery");
+    if (!g_characterFailureTracePrinted &&
+        std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        std::fprintf(
+            stderr,
+            "[app-ui] character-failure-recovery total=%u visible=%zu metadata_only=1\n",
+            inventory.total, inventory.rows.size());
+        g_characterFailureTracePrinted = true;
+    }
+    ui::TextSubtleWrapped(
+        "Failed imports keep only private metadata and a bounded validator report. Models remain at their original paths and are never copied into recovery storage.");
+    ImGui::TextColored(
+        AppTheme::accent(), "%u unresolved import%s%s",
+        inventory.total, inventory.total == 1u ? "" : "s",
+        inventory.rows.size() < inventory.total ? " · newest shown" : "");
+    if (inventory.rows.empty()) {
+        ui::TextSubtleWrapped(
+            "The recovery inventory is larger than the launcher's bounded view. Export or remove newer entries to reveal older diagnostics.");
+        return;
+    }
+    inventory.selected = std::clamp(
+        inventory.selected, 0, static_cast<int>(inventory.rows.size()) - 1);
+    const auto rowLabel = [](const CharacterFailureIndex::Row &row) {
+        const size_t separator = row.sourcePath.find_last_of("/\\");
+        const std::string name = separator == std::string::npos
+            ? row.sourcePath : row.sourcePath.substr(separator + 1u);
+        return (name.empty() ? row.sourcePath : name) + " — " +
+            characterFailureKindLabel(row.retryKind);
+    };
+    const CharacterFailureIndex::Row &selected =
+        inventory.rows[static_cast<size_t>(inventory.selected)];
+    const std::string preview = rowLabel(selected);
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("Failed import", preview.c_str())) {
+        for (size_t index = 0u; index < inventory.rows.size(); ++index) {
+            const CharacterFailureIndex::Row &row = inventory.rows[index];
+            const std::string label = rowLabel(row) + "##failure-" + row.recordId;
+            if (ImGui::Selectable(
+                    label.c_str(), inventory.selected == static_cast<int>(index))) {
+                inventory.selected = static_cast<int>(index);
+            }
+            const std::string state = row.sourceAvailable
+                ? row.sourceChanged ? "source changed" : "ready to retry"
+                : "source missing";
+            ui::SpeakFocusedItem(label.c_str(), state.c_str(),
+                "Selects one private failed-import diagnostic without reading or changing its source file.");
+        }
+        ImGui::EndCombo();
+    }
+    const CharacterFailureIndex::Row &row =
+        inventory.rows[static_cast<size_t>(inventory.selected)];
+    ImGui::TextDisabled(
+        "%s · %u attempt%s · %s",
+        characterFailureKindLabel(row.retryKind), row.attempts,
+        row.attempts == 1u ? "" : "s",
+        characterRevisionTimestamp(row.lastFailedUnix).c_str());
+    ImGui::TextWrapped("Source: %s", row.sourcePath.c_str());
+    if (!row.sourceAvailable) {
+        ImGui::TextColored(AppTheme::bad(), "Source is missing");
+    } else if (row.sourceChanged) {
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "Source size changed — start a new review instead of retrying stale evidence");
+    } else {
+        ImGui::TextColored(
+            AppTheme::good(),
+            "Source is available; exact bytes will be rehashed before retry");
+    }
+    if (row.reportAvailable) {
+        ImGui::TextDisabled("Complete bounded Khronos report available");
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+    ImGui::TextWrapped("%s", row.error.c_str());
+    ImGui::PopStyleColor();
+
+    const bool canRetry = row.sourceAvailable && !row.sourceChanged;
+    if (!canRetry) ImGui::BeginDisabled();
+    if (ImGui::Button("Retry exact source")) {
+        if (!retryCharacterFailure(row)) {
+            setStatus(
+                "The exact source still fails validation; its recovery record and latest diagnostics were retained.",
+                AppTheme::bad());
+        }
+    }
+    if (!canRetry) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Retry exact failed import",
+        canRetry ? nullptr : row.sourceAvailable
+            ? "The source changed and must enter a new review."
+            : "The source file is no longer available.",
+        "Rechecks the exact fingerprinted source. Success clears only this recovery record and reopens the ordinary review; it never bypasses validation.");
+    if (!rail) ImGui::SameLine();
+    if (!row.sourceAvailable) ImGui::BeginDisabled();
+    if (ImGui::Button("Use as new import")) {
+        std::snprintf(
+            g_characterImportPath, sizeof(g_characterImportPath), "%s",
+            row.sourcePath.c_str());
+        if (row.retryKind == CharacterFailureIndex::RetryKind::Convert &&
+            !row.outputPath.empty()) {
+            std::snprintf(
+                g_characterConversionOutputPath,
+                sizeof(g_characterConversionOutputPath), "%s",
+                row.outputPath.c_str());
+        }
+        setStatus(
+            "Failed source restored to the import form for a new explicit review.",
+            AppTheme::accent());
+    }
+    if (!row.sourceAvailable) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Use failed source as a new import", nullptr,
+        "Copies only the retained path into the import form. The source is not opened until you explicitly validate it.");
+    if (!rail) ImGui::SameLine();
+    if (ImGui::Button("Copy error")) {
+        const std::string diagnostic = row.sourcePath + "\n\n" + row.error;
+        ImGui::SetClipboardText(diagnostic.c_str());
+        setStatus("Failed-import error copied.", AppTheme::good());
+    }
+    ui::SpeakFocusedItem(
+        "Copy failed-import error", nullptr,
+        "Copies the local source path and diagnostic text, but not model bytes.");
+    if (filedialog::isAvailable()) {
+        if (!rail) ImGui::SameLine();
+        if (ImGui::Button("Export diagnostic...")) {
+            std::string output;
+            if (filedialog::saveCharacterReport(output)) {
+                if (exportCharacterFailure(row.recordId, output)) {
+                    setStatus(
+                        "Failed-import diagnostic exported; the private recovery record remains available.",
+                        AppTheme::good());
+                } else {
+                    setStatus(
+                        "Diagnostic export failed; the recovery record and source were unchanged.",
+                        AppTheme::bad());
+                }
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Export failed-import diagnostic", nullptr,
+            "Creates a new JSON file containing recovery metadata and the bounded Khronos report when present. It never includes model bytes or replaces an existing file.");
+    }
+    if (!rail) ImGui::SameLine();
+    if (ImGui::Button("Forget...")) {
+        ImGui::OpenPopup("Forget failed-import diagnostic?");
+    }
+    ui::SpeakFocusedItem(
+        "Forget failed-import diagnostic", nullptr,
+        "Opens a confirmation to remove only private recovery metadata and its validator report. The source file is never deleted.");
+    if (ImGui::BeginPopupModal(
+            "Forget failed-import diagnostic?", nullptr,
+            ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped(
+            "Remove this local recovery record and validator report? The source at %s is not changed or deleted.",
+            row.sourcePath.c_str());
+        if (ImGui::Button("Forget diagnostic")) {
+            if (forgetCharacterFailure(row.recordId)) {
+                setStatus(
+                    "Failed-import diagnostic removed; the external source remains unchanged.",
+                    AppTheme::good());
+                ImGui::CloseCurrentPopup();
+            } else {
+                setStatus(
+                    "The failed-import diagnostic could not be removed; the source was unchanged.",
+                    AppTheme::bad());
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Forget this diagnostic", nullptr,
+            "Deletes only this metadata and report after confirmation.");
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+}
+
 void drawCharacterImportControls(bool rail) {
     loadCharacterRawIntake();
     const char *smokeSource = std::getenv(
@@ -14684,6 +14996,7 @@ void drawCharacterImportControls(bool rail) {
         ImGui::TextWrapped("%s", g_characterManagerReport.c_str());
         ImGui::TreePop();
     }
+    drawCharacterFailureRecovery(rail);
 }
 
 const MdkrModernCharacterEntry *resolveCharacterWorkshopSelection() {

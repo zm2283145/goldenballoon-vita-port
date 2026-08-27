@@ -455,6 +455,7 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
     RESOURCE_FAIL=0
     RESOURCE_DIR="${APP_BUNDLE}/Contents/Resources"
     CHARACTER_IMPORTER="${APP_BUNDLE}/Contents/MacOS/tools/character_importer"
+    GLTF_VALIDATOR="${APP_BUNDLE}/Contents/MacOS/tools/validators/gltf_validator"
 
     # The Workshop importer is code, not a resource, but it is a second opaque
     # executable in the bundle and therefore needs its own exact-layout and ROM
@@ -483,10 +484,35 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
                 ;;
         esac
     fi
+    if [[ ! -f "${GLTF_VALIDATOR}" || -L "${GLTF_VALIDATOR}" ]]; then
+        fail "App bundle is missing its regular Khronos glTF Validator."
+        RESOURCE_FAIL=1
+    elif [[ "$(file -b "${GLTF_VALIDATOR}" 2>/dev/null)" != *Mach-O* ]]; then
+        fail "Khronos glTF Validator is not an inspectable Mach-O executable."
+        RESOURCE_FAIL=1
+    else
+        VALIDATOR_MAGIC_MATCH="$(scan_bootstrap_magic_file \
+            "${GLTF_VALIDATOR}" 2>&1)" && VALIDATOR_MAGIC_STATUS=0 ||
+            VALIDATOR_MAGIC_STATUS=$?
+        case "${VALIDATOR_MAGIC_STATUS}" in
+            0)
+                fail "Embedded N64 ROM bootstrap magic found in Khronos glTF Validator (${VALIDATOR_MAGIC_MATCH})."
+                RESOURCE_FAIL=1
+                ;;
+            1) ;;
+            *)
+                printf '%s\n' "${VALIDATOR_MAGIC_MATCH}" >&2
+                fail "Could not inspect the Khronos glTF Validator."
+                RESOURCE_FAIL=1
+                ;;
+        esac
+    fi
     while IFS= read -r MACOS_FILE; do
         case "${MACOS_FILE#"${APP_BUNDLE}"/}" in
             "Contents/MacOS/${EXECUTABLE_NAME}"|\
-            Contents/MacOS/tools/character_importer) ;;
+            Contents/MacOS/tools/character_importer|\
+            Contents/MacOS/tools/validators/gltf_validator|\
+            Contents/MacOS/tools/validators/gltf_validator.manifest.json) ;;
             *)
                 fail "Unexpected executable-area payload: ${MACOS_FILE#"${APP_BUNDLE}"/}"
                 RESOURCE_FAIL=1
@@ -551,6 +577,11 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
                     # Exact importer attestation and complete embedded-runtime
                     # terms. verify_unsigned_release.sh binds manifest to code;
                     # check_third_party_notices.py pins both license byte sets.
+                    ;;
+                Contents/Resources/ThirdParty/GltfValidator-LICENSE.txt|\
+                Contents/Resources/ThirdParty/GltfValidator-NOTICES.txt)
+                    # Exact Khronos Validator and Dart/dependency terms. The
+                    # unsigned-release verifier pins both byte sets.
                     ;;
                 Contents/Resources/dist/web/controller/*.html|\
                 Contents/Resources/dist/web/controller/*.css|\

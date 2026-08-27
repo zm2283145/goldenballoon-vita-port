@@ -1,6 +1,6 @@
 # Custom character asset pipeline spike
 
-Status: implemented vertical-slice spike, 2026-08-26. The source contract,
+Status: implemented vertical-slice spike, 2026-08-27. The source contract,
 compiler/cache, native transactional portable-package install, launcher
 workshop and per-player fit controls, retained
 WebGPU GPU-skinned renderer, animation sampler, PBR-like materials, authored
@@ -30,6 +30,9 @@ This gives three deliberately separate formats:
 ## What the spike actually implements
 
 - deterministic `.mdkrchar` build/verify and a strict JSON manifest schema;
+- an independently pinned Khronos glTF Validator boundary on every accepted
+  raw, converted, source-package, portable-package and installed GLB, with
+  native attested builds shipped in the macOS, Linux and Windows toolchains;
 - a dependency-free, fail-closed COLLADA 1.4 subset adapter for one skinned
   triangle mesh, including centimeter/Z-up conversion and embedded PNGs;
 - a launcher DAE/ZIP handoff that recursively inventories bounded archives,
@@ -68,6 +71,9 @@ content-addressed paths;
   installed caches;
 - native browse/import/enable/disable/permanent deletion for portable packages,
   with a developer compiler fallback for source-only packages;
+- private metadata-only failed-import recovery with complete bounded Khronos
+  reports, missing/changed-source disclosure, exact digest-checked retry,
+  no-overwrite diagnostic export and source-preserving forget;
 - canonical height/ground/facing normalization, independent select/car/hover/
   plane anchor profiles, and package-specific per-context size/position/
   rotation, animation-rate, vehicle-body and LOD tuning without entering
@@ -1217,15 +1223,19 @@ unfinished pieces into unbounded memory or GPU work.
 
 ## Implementation plan and acceptance gates
 
-### P0 - Freeze the source contract (partly complete)
+### P0 - Freeze the source contract (baseline complete)
 
 - Review and version the manifest schema and semantic animation/socket lists.
 - The checked-in JSON Schema, duplicate-key/non-finite JSON rejection, NFC
   Unicode requirement, bounded SPDX expression parser, pre-decompression
   member/aggregate ZIP expansion gates, and complete cache-v1 GLB accessor
-  preflight are implemented. Pin and integrate the upstream Khronos Validator
-  as the independent complete-format oracle.
-- Pin Khronos Validator and adapter versions with hashes and notices.
+  preflight are implemented. Khronos glTF Validator 2.0.0-dev.3.10 at commit
+  `bcd52cc4ba5f333b2999a58f67cc05ddf28b4fb1` is the independently pinned
+  complete-format oracle. Its executable, distribution/source archive,
+  toolchain and lockfile are hash-attested as applicable; the adapter is
+  bounded for input, output, issues and runtime and never searches `PATH`.
+- Validator licenses/notices, reproducible macOS arm64 source build and exact
+  official Linux/Windows artifacts are part of release packaging and CI.
 - Add several license-clean external fixtures: static, skinned/animated,
   multi-material, morph target, alpha mask, malformed and budget-exceeding.
 
@@ -1251,7 +1261,9 @@ affecting authoritative hashes.
   are implemented through the bounded offline/package-manager toolchain.
 - Integrate meshoptimizer and KTX2/BasisU behind bounded compilation stages.
 - Content-addressed cache invalidation, diagnostic reports and teardown are
-  implemented; add a dedicated quarantine inventory and recovery workflow.
+  implemented. The dedicated failed-import inventory retains metadata and a
+  bounded validator report but never source bytes; its native Workshop surface
+  supports source state, exact retry, changed-source handoff, export and forget.
 
 Gate: cache round-trip is deterministic; corrupt/truncated/oversized sections
 fail before GPU allocation; decoded cost accounting matches actual allocations.
