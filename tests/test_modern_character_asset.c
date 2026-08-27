@@ -574,6 +574,9 @@ int main(int argc, char **argv) {
     }
     free(bytes);
 
+    require(mdkr_modern_character_registry_init(&registry, argv[1]) != 0,
+            "an existing non-directory inventory path fails closed");
+    mdkr_modern_character_registry_shutdown(&registry);
     require(mdkr_modern_character_registry_init(&registry, argv[2]) == 0,
             "scan generated character directory");
     require(mdkr_modern_character_registry_count(&registry) == 1,

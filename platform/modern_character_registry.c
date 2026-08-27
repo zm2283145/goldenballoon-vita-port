@@ -209,7 +209,18 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
     memset(registry, 0, sizeof(*registry));
     if (directory == NULL || directory[0] == '\0') return 0;
     handle = opendir(directory);
-    if (handle == NULL) return 0;
+    if (handle == NULL) {
+        int exists = 0;
+        int is_directory = 0;
+        /* A missing character directory is the documented empty state. An
+         * existing path that cannot be enumerated is different: callers must
+         * not mistake an unavailable inventory for an empty one. */
+        if (mdkr_path_query_utf8(directory, &exists, NULL, &is_directory) == 0 &&
+            !exists) {
+            return 0;
+        }
+        return -1;
+    }
     while ((item = readdir(handle)) != NULL) {
         MdkrModernCharacterAsset asset;
         MdkrModernCharacterDefinition definition;

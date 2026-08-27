@@ -137,7 +137,8 @@ typedef struct MdkrModernCharacterRegistry {
     char skip_reason[MDKR_MODERN_CHARACTER_MAX][MDKR_MODERN_CHARACTER_SKIP_REASON_MAX];
 } MdkrModernCharacterRegistry;
 
-/* Missing directory is the ordinary zero-character state and succeeds. */
+/* A missing directory is the ordinary zero-character state and succeeds;
+ * an existing path that cannot be enumerated fails closed. */
 int mdkr_modern_character_registry_init(MdkrModernCharacterRegistry *registry,
                                         const char *directory);
 /* Workshop-only inventory scan. Disabled caches remain fully validated and

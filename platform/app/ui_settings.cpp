@@ -1850,11 +1850,13 @@ bool drawContentSection(SDL_Window *window, bool compact,
 
 MdkrModernCharacterRegistry g_characterRegistry{};
 bool g_characterRegistryLoaded = false;
+bool g_characterRegistryInventoryAvailable = false;
 std::string g_characterRegistryDirectory;
 char g_characterImportPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
 char g_characterConversionOutputPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
 bool g_characterConversionSmokePrefilled = false;
 std::string g_characterManagerReport;
+std::string g_characterInstallWarning;
 std::string g_characterPendingRemoval;
 char g_characterRemovalConfirmation[MDKR_MODERN_CHARACTER_ID_MAX] = {};
 std::string g_characterWorkshopSelection;
@@ -1882,6 +1884,81 @@ struct CharacterImportCandidate {
 };
 
 CharacterImportCandidate g_characterImportCandidate;
+
+class CharacterPortableInstallWorker {
+public:
+    ~CharacterPortableInstallWorker() {
+        if (thread_.joinable()) thread_.join();
+    }
+
+    bool start(CharacterImportCandidate reviewed, std::string directory,
+               std::function<void(bool)> completion) {
+        std::lock_guard<std::mutex> guard(mutex_);
+        if (running_ || ready_) return false;
+        running_ = true;
+        reviewed_ = std::move(reviewed);
+        completion_ = std::move(completion);
+        result_ = {};
+        try {
+            thread_ = std::thread(
+                [this, directory = std::move(directory)]() {
+                    MdkrModernCharacterInstallResult result{};
+                    const bool installed =
+                        mdkr_modern_character_install_portable_reviewed(
+                            reviewed_.packagePath.c_str(), directory.c_str(),
+                            reviewed_.next.packageSha256.c_str(),
+                            reviewed_.reviewedInstalledDigest.c_str(),
+                            &result) != 0;
+                    std::lock_guard<std::mutex> finished(mutex_);
+                    result_ = result;
+                    installed_ = installed;
+                    running_ = false;
+                    ready_ = true;
+                });
+        } catch (...) {
+            running_ = false;
+            reviewed_ = {};
+            completion_ = {};
+            return false;
+        }
+        return true;
+    }
+
+    bool busy() const {
+        std::lock_guard<std::mutex> guard(mutex_);
+        return running_ || ready_;
+    }
+
+    bool poll(CharacterImportCandidate &reviewed,
+              MdkrModernCharacterInstallResult &result, bool &installed,
+              std::function<void(bool)> &completion) {
+        std::thread completed;
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            if (!ready_) return false;
+            reviewed = std::move(reviewed_);
+            result = result_;
+            installed = installed_;
+            completion = std::move(completion_);
+            ready_ = false;
+            completed = std::move(thread_);
+        }
+        if (completed.joinable()) completed.join();
+        return true;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::thread thread_;
+    bool running_ = false;
+    bool ready_ = false;
+    bool installed_ = false;
+    CharacterImportCandidate reviewed_;
+    MdkrModernCharacterInstallResult result_{};
+    std::function<void(bool)> completion_;
+};
+
+CharacterPortableInstallWorker g_characterPortableInstallWorker;
 
 class CharacterPackageInspectionWorker {
 public:
@@ -2024,6 +2101,8 @@ struct CharacterFailureInventory {
 
 CharacterFailureInventory g_characterFailureInventory;
 bool g_characterFailureTracePrinted = false;
+bool g_characterFailureRecoveryRequested = false;
+bool g_characterFailureSmokeCheckApplied = false;
 
 struct CharacterIdentityEdit {
     bool loaded = false;
@@ -2974,14 +3053,45 @@ private:
 
 CharacterManagerWorker g_characterManagerWorker;
 
+const char *characterManagerJobDescription(const std::string &command) {
+    if (command == "convert-authoring-source") return "converting the source";
+    if (command == "write-raw-glb-index") return "inspecting the model";
+    if (command == "build-raw-glb") return "building the source package";
+    if (command == "write-candidate-index") return "validating the package";
+    if (command == "install-reviewed") return "installing the reviewed package";
+    if (command == "write-revision-index") return "loading revision history";
+    if (command == "write-failure-index") return "checking import recovery";
+    if (command == "retry-failed-import") return "retrying the exact source";
+    if (command == "forget-failed-import") return "removing the diagnostic";
+    if (command == "export-failed-import-report") return "exporting the diagnostic";
+    if (command == "restore") return "restoring the selected revision";
+    if (command == "rebuild") return "rebuilding the character";
+    if (command == "export") return "exporting the retained source";
+    if (command == "export-portable") return "building the portable export";
+    if (command == "revise-identity" ||
+        command == "revise-identity-rgba") return "saving the roster identity";
+    if (command == "revise-profile") return "saving the gameplay profile";
+    if (command == "revise-rig") return "saving the rig and motion map";
+    if (command == "build-draft") return "building the named draft";
+    return "finishing the character operation";
+}
+
 void serviceCharacterManagerWorker() {
     CharacterManagerRunResult result;
     bool refreshOnSuccess = false;
     std::function<void(bool)> completion;
+    const std::string command = g_characterManagerWorker.label();
     if (!g_characterManagerWorker.poll(
             result, refreshOnSuccess, completion)) return;
     g_characterManagerReport = std::move(result.report);
     g_characterFailureInventory.loaded = false;
+    if (!result.success &&
+        (command == "convert-authoring-source" ||
+         command == "write-raw-glb-index" ||
+         command == "build-raw-glb" ||
+         command == "write-candidate-index")) {
+        g_characterFailureRecoveryRequested = true;
+    }
     if (result.success && refreshOnSuccess) refreshCharacterRegistry();
     if (completion) completion(result.success);
 }
@@ -2989,9 +3099,10 @@ void serviceCharacterManagerWorker() {
 bool queueCharacterManager(
     const char *command, std::vector<std::string> commandArguments,
     bool refreshOnSuccess, std::function<void(bool)> completion) {
-    if (g_characterPackageInspection.busy()) {
+    if (g_characterPackageInspection.busy() ||
+        g_characterPortableInstallWorker.busy()) {
         g_characterManagerReport =
-            "The package validator is still finishing; wait for its result before starting a compiler job.";
+            "A package validation or install is still finishing; wait for its result before starting a compiler job.";
         return false;
     }
     if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
@@ -3011,23 +3122,6 @@ bool queueCharacterManager(
     return true;
 }
 
-bool runCharacterManager(const char *command,
-                         const std::vector<std::string> &commandArguments,
-                         bool refreshOnSuccess = true) {
-    if (g_characterManagerWorker.busy()) {
-        g_characterManagerReport =
-            "Another character compiler job is still finishing.";
-        return false;
-    }
-    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
-    CharacterManagerRunResult result = invokeCharacterManager(
-        g_characterRegistryDirectory, command, commandArguments);
-    g_characterManagerReport = std::move(result.report);
-    g_characterFailureInventory.loaded = false;
-    if (result.success && refreshOnSuccess) refreshCharacterRegistry();
-    return result.success;
-}
-
 bool parseCharacterRevisionInventory(
     const std::string &text, CharacterRevisionInventory &inventory) {
     CharacterRevisionIndex::Inventory index;
@@ -3041,42 +3135,52 @@ bool parseCharacterRevisionInventory(
     return true;
 }
 
-bool loadCharacterRevisionInventory(const std::string &packageId) {
+bool loadCharacterRevisionInventory(
+    const std::string &packageId, std::function<void(bool)> completion) {
     if (g_characterRegistryDirectory.empty()) return false;
     const std::string path = g_characterRegistryDirectory +
         "/.launcher-character-revisions.tsv";
     (void)mdkr_remove_utf8(path.c_str());
-    const bool indexed = runCharacterManager(
-        "write-revision-index", {packageId, path}, false);
-    const std::string index = indexed ? readCharacterManagerResult(path) : "";
-    (void)mdkr_remove_utf8(path.c_str());
-    CharacterRevisionInventory inventory;
-    if (!indexed || !parseCharacterRevisionInventory(index, inventory)) {
-        if (indexed) {
-            g_characterManagerReport =
-                "The revision index was malformed; no recovery action was enabled.";
-        }
-        return false;
-    }
-    const auto previous = g_characterRevisionInventories.find(packageId);
-    if (previous != g_characterRevisionInventories.end()) {
-        std::snprintf(inventory.exportPath, sizeof(inventory.exportPath), "%s",
-                      previous->second.exportPath);
-        std::snprintf(
-            inventory.portableExportPath, sizeof(inventory.portableExportPath),
-            "%s", previous->second.portableExportPath);
-        inventory.distributionRightsConfirmed =
-            previous->second.distributionRightsConfirmed;
-    }
-    g_characterRevisionInventories[packageId] = std::move(inventory);
-    return true;
+    return queueCharacterManager(
+        "write-revision-index", {packageId, path}, false,
+        [packageId, path, completion = std::move(completion)](bool indexed) {
+            const std::string index = indexed
+                ? readCharacterManagerResult(path) : "";
+            (void)mdkr_remove_utf8(path.c_str());
+            CharacterRevisionInventory inventory;
+            bool loaded = indexed &&
+                parseCharacterRevisionInventory(index, inventory);
+            if (!loaded) {
+                if (indexed) {
+                    g_characterManagerReport =
+                        "The revision index was malformed; no recovery action was enabled.";
+                }
+            } else {
+                const auto previous =
+                    g_characterRevisionInventories.find(packageId);
+                if (previous != g_characterRevisionInventories.end()) {
+                    std::snprintf(
+                        inventory.exportPath, sizeof(inventory.exportPath),
+                        "%s", previous->second.exportPath);
+                    std::snprintf(
+                        inventory.portableExportPath,
+                        sizeof(inventory.portableExportPath), "%s",
+                        previous->second.portableExportPath);
+                    inventory.distributionRightsConfirmed =
+                        previous->second.distributionRightsConfirmed;
+                }
+                g_characterRevisionInventories[packageId] =
+                    std::move(inventory);
+            }
+            if (completion) completion(loaded);
+        });
 }
 
-bool loadCharacterFailureInventory() {
-    CharacterFailureInventory parsed;
-    parsed.loaded = true;
+bool loadCharacterFailureInventory(std::function<void(bool)> completion) {
     if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
     if (g_characterRegistryDirectory.empty()) {
+        CharacterFailureInventory parsed;
+        parsed.loaded = true;
         parsed.loadError = "No writable character directory is available.";
         g_characterFailureInventory = std::move(parsed);
         return false;
@@ -3085,105 +3189,128 @@ bool loadCharacterFailureInventory() {
         "/.launcher-character-failures.tsv";
     (void)mdkr_remove_utf8(path.c_str());
     const std::string previousReport = g_characterManagerReport;
-    const bool indexed = runCharacterManager(
-        "write-failure-index", {path}, false);
-    const std::string text = indexed ? readCharacterManagerResult(path) : "";
-    (void)mdkr_remove_utf8(path.c_str());
-    CharacterFailureIndex::Inventory inventory;
-    if (!indexed || !CharacterFailureIndex::parse(text, inventory)) {
-        parsed.loadError = indexed
-            ? "The failed-import recovery index was malformed; no recovery action was enabled."
-            : g_characterManagerReport;
-        g_characterFailureInventory = std::move(parsed);
-        return false;
-    }
-    parsed.total = inventory.total;
-    parsed.rows = std::move(inventory.rows);
-    if (!g_characterFailureInventory.rows.empty() && !parsed.rows.empty()) {
-        const int previous = std::clamp(
-            g_characterFailureInventory.selected, 0,
-            static_cast<int>(g_characterFailureInventory.rows.size()) - 1);
-        const std::string selectedId =
-            g_characterFailureInventory.rows[static_cast<size_t>(previous)]
-                .recordId;
-        const auto matching = std::find_if(
-            parsed.rows.begin(), parsed.rows.end(),
-            [&selectedId](const CharacterFailureIndex::Row &row) {
-                return row.recordId == selectedId;
-            });
-        if (matching != parsed.rows.end()) {
-            parsed.selected = static_cast<int>(matching - parsed.rows.begin());
-        }
-    }
-    g_characterFailureInventory = std::move(parsed);
-    // Inventory refresh is supporting state, not the user's primary report.
-    // Keep the import/validation diagnostic visible until another real action.
-    g_characterManagerReport = previousReport;
-    return true;
+    return queueCharacterManager(
+        "write-failure-index", {path}, false,
+        [path, previousReport,
+         completion = std::move(completion)](bool indexed) {
+            CharacterFailureInventory parsed;
+            parsed.loaded = true;
+            const std::string report = g_characterManagerReport;
+            const std::string text = indexed
+                ? readCharacterManagerResult(path) : "";
+            (void)mdkr_remove_utf8(path.c_str());
+            CharacterFailureIndex::Inventory inventory;
+            const bool loaded = indexed &&
+                CharacterFailureIndex::parse(text, inventory);
+            if (!loaded) {
+                parsed.loadError = indexed
+                    ? "The failed-import recovery index was malformed; no recovery action was enabled."
+                    : report;
+            } else {
+                parsed.total = inventory.total;
+                parsed.rows = std::move(inventory.rows);
+                if (!g_characterFailureInventory.rows.empty() &&
+                    !parsed.rows.empty()) {
+                    const int previous = std::clamp(
+                        g_characterFailureInventory.selected, 0,
+                        static_cast<int>(
+                            g_characterFailureInventory.rows.size()) - 1);
+                    const std::string selectedId =
+                        g_characterFailureInventory.rows[
+                            static_cast<size_t>(previous)].recordId;
+                    const auto matching = std::find_if(
+                        parsed.rows.begin(), parsed.rows.end(),
+                        [&selectedId](const CharacterFailureIndex::Row &row) {
+                            return row.recordId == selectedId;
+                        });
+                    if (matching != parsed.rows.end()) {
+                        parsed.selected = static_cast<int>(
+                            matching - parsed.rows.begin());
+                    }
+                }
+            }
+            g_characterFailureInventory = std::move(parsed);
+            // Inventory refresh is supporting state, not the user's primary
+            // report. Keep the import diagnostic visible until a real action.
+            g_characterManagerReport = previousReport;
+            if (completion) completion(loaded);
+        });
 }
 
-bool retryCharacterFailure(const CharacterFailureIndex::Row &row) {
+bool retryCharacterFailure(
+    const CharacterFailureIndex::Row &row,
+    std::function<void(bool)> completion) {
     if (!row.sourceAvailable || row.sourceChanged) return false;
-    if (!runCharacterManager(
-            "retry-failed-import", {row.recordId}, false)) {
-        g_characterFailureInventory.loaded = false;
-        return false;
-    }
     const std::string resolvedSource =
         row.retryKind == CharacterFailureIndex::RetryKind::Convert
             ? row.outputPath : row.sourcePath;
-    g_characterFailureInventory.loaded = false;
-    if (resolvedSource.empty() ||
-        resolvedSource.size() >= sizeof(g_characterImportPath)) {
-        return true;
-    }
-    std::snprintf(g_characterImportPath, sizeof(g_characterImportPath), "%s",
-                  resolvedSource.c_str());
-    // Recovery succeeded once the exact fingerprinted source passed the same
-    // validator boundary. Reopening the ordinary review is a separate action
-    // with its own precise status; it must not retroactively make that retry
-    // look unsuccessful.
-    (void)Settings_importCharacterPackage(g_characterImportPath);
-    return true;
+    return queueCharacterManager(
+        "retry-failed-import", {row.recordId}, false,
+        [resolvedSource, completion = std::move(completion)](bool retried) {
+            g_characterFailureInventory.loaded = false;
+            if (retried && !resolvedSource.empty() &&
+                resolvedSource.size() < sizeof(g_characterImportPath)) {
+                std::snprintf(
+                    g_characterImportPath, sizeof(g_characterImportPath),
+                    "%s", resolvedSource.c_str());
+                // Reopening ordinary review is a distinct validated action.
+                (void)Settings_importCharacterPackage(g_characterImportPath);
+            }
+            if (completion) completion(retried);
+        });
 }
 
-bool forgetCharacterFailure(const std::string &recordId) {
-    const bool removed = runCharacterManager(
-        "forget-failed-import", {recordId}, false);
-    g_characterFailureInventory.loaded = false;
-    return removed;
+bool forgetCharacterFailure(
+    const std::string &recordId, std::function<void(bool)> completion) {
+    return queueCharacterManager(
+        "forget-failed-import", {recordId}, false,
+        [completion = std::move(completion)](bool removed) {
+            g_characterFailureInventory.loaded = false;
+            if (completion) completion(removed);
+        });
 }
 
 bool exportCharacterFailure(const std::string &recordId,
-                            const std::string &outputPath) {
+                            const std::string &outputPath,
+                            std::function<void(bool)> completion) {
     if (outputPath.empty()) return false;
-    return runCharacterManager(
-        "export-failed-import-report", {recordId, outputPath}, false);
+    return queueCharacterManager(
+        "export-failed-import-report", {recordId, outputPath}, false,
+        std::move(completion));
 }
 
 bool restoreCharacterRevision(const std::string &packageId,
-                              const std::string &sourceSha256) {
-    return runCharacterManager("restore", {packageId, sourceSha256});
+                              const std::string &sourceSha256,
+                              std::function<void(bool)> completion) {
+    return queueCharacterManager(
+        "restore", {packageId, sourceSha256}, true,
+        std::move(completion));
 }
 
-bool rebuildCharacterAssembly(const std::string &packageId) {
-    return runCharacterManager("rebuild", {packageId});
+bool rebuildCharacterAssembly(
+    const std::string &packageId, std::function<void(bool)> completion) {
+    return queueCharacterManager(
+        "rebuild", {packageId}, true, std::move(completion));
 }
 
 bool exportCharacterRevision(const std::string &packageId,
                              const std::string &sourceSha256,
-                             const std::string &outputPath) {
+                             const std::string &outputPath,
+                             std::function<void(bool)> completion) {
     if (outputPath.empty()) return false;
-    return runCharacterManager(
-        "export", {packageId, sourceSha256, outputPath}, false);
+    return queueCharacterManager(
+        "export", {packageId, sourceSha256, outputPath}, false,
+        std::move(completion));
 }
 
 bool exportPortableCharacterRevision(const std::string &packageId,
                                      const std::string &sourceSha256,
-                                     const std::string &outputPath) {
+                                     const std::string &outputPath,
+                                     std::function<void(bool)> completion) {
     if (outputPath.empty()) return false;
-    return runCharacterManager(
-        "export-portable", {packageId, sourceSha256, outputPath}, false);
+    return queueCharacterManager(
+        "export-portable", {packageId, sourceSha256, outputPath}, false,
+        std::move(completion));
 }
 
 std::string characterDigestHex(const uint8_t digest[32]) {
@@ -3841,7 +3968,6 @@ int characterChoiceIndex(const std::vector<std::string> &choices,
         ? -1 : static_cast<int>(found - choices.begin());
 }
 
-bool stageCharacterPackage(const std::string &path);
 bool queueCompilerCharacterPackage(
     const std::string &path,
     std::function<void(bool)> completion = {});
@@ -4063,44 +4189,6 @@ bool queueCompilerCharacterPackage(
         });
 }
 
-bool stageCharacterPackage(const std::string &path) {
-    MdkrModernCharacterInstallResult nativeResult{};
-    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
-    if (g_characterRegistryDirectory.empty()) {
-        g_characterManagerReport =
-            "No writable character directory is available.";
-        return false;
-    }
-    if (mdkr_modern_character_inspect_portable(path.c_str(), &nativeResult)) {
-        return stagePortableCharacterPackage(path, nativeResult);
-    }
-    CharacterImportCandidate staged;
-    if (nativeResult.needs_compiler != 0) {
-        const std::string indexPath = g_characterRegistryDirectory +
-            "/.launcher-character-candidate.tsv";
-        (void)mdkr_remove_utf8(indexPath.c_str());
-        const bool indexed = runCharacterManager(
-            "write-candidate-index", {path, indexPath}, false);
-        const std::string index = indexed
-            ? readCharacterManagerResult(indexPath) : "";
-        (void)mdkr_remove_utf8(indexPath.c_str());
-        if (!indexed ||
-            !CharacterCandidateIndex::parse(index, staged.next)) {
-            if (indexed) {
-                g_characterManagerReport =
-                    "The compiler candidate summary was malformed; review and install remain disabled.";
-            }
-            return false;
-        }
-        staged.portable = false;
-    } else {
-        g_characterManagerReport = nativeResult.message;
-        return false;
-    }
-    return publishCharacterImportCandidate(
-        path, std::move(staged.next), false);
-}
-
 void serviceCharacterPackageInspection() {
     std::string path;
     MdkrModernCharacterInstallResult result{};
@@ -4145,29 +4233,14 @@ void serviceCharacterPackageInspection() {
         AppTheme::good());
 }
 
-bool installReviewedCharacterPackage() {
-    if (!g_characterImportCandidate.ready) return false;
-    const CharacterImportCandidate reviewed = g_characterImportCandidate;
-    bool installed = false;
-    if (reviewed.portable) {
-        MdkrModernCharacterInstallResult result{};
-        installed = mdkr_modern_character_install_portable_reviewed(
-            reviewed.packagePath.c_str(), g_characterRegistryDirectory.c_str(),
-            reviewed.next.packageSha256.c_str(),
-            reviewed.reviewedInstalledDigest.c_str(), &result) != 0;
-        g_characterManagerReport = result.message;
-        if (installed) refreshCharacterRegistry();
-    } else {
-        installed = runCharacterManager(
-            "install-reviewed",
-            {reviewed.packagePath, reviewed.next.packageSha256,
-             reviewed.installed ? reviewed.reviewedInstalledDigest : "absent"});
-    }
+void finishReviewedCharacterInstall(const CharacterImportCandidate &reviewed,
+                                    bool installed) {
+    g_characterInstallWarning.clear();
     if (!installed) {
         /* A failed commit never remains armed: file bytes or installed state
          * may have changed, and retrying requires a fresh visible review. */
         g_characterImportCandidate = CharacterImportCandidate{};
-        return false;
+        return;
     }
     if (reviewed.disposableRawCandidate) {
         (void)mdkr_remove_utf8(reviewed.packagePath.c_str());
@@ -4180,29 +4253,92 @@ bool installReviewedCharacterPackage() {
     }
     g_characterWorkshopSelection = reviewed.next.id;
     g_characterWorkshopSelectionLoaded = true;
-    AppConfig::set("character_workshop_last_selected",
-                   g_characterWorkshopSelection);
-    (void)AppConfig::save();
+    const AppConfig::PersistResult selectionSaved = AppConfig::setAndSave(
+        "character_workshop_last_selected", g_characterWorkshopSelection);
+    if (selectionSaved == AppConfig::PersistResult::Failed) {
+        g_characterInstallWarning =
+            "The character installed, but the launcher could not remember the Workshop selection for next launch.";
+    } else if (selectionSaved ==
+               AppConfig::PersistResult::DurabilityUnconfirmed) {
+        g_characterInstallWarning =
+            "The character installed and is selected, but storage could not confirm that selection will survive a restart.";
+    }
+    if (!g_characterInstallWarning.empty()) {
+        g_characterManagerReport += " " + g_characterInstallWarning;
+    }
     g_characterImportCandidate = CharacterImportCandidate{};
     g_characterImportPath[0] = '\0';
+}
+
+bool queueReviewedPortableCharacterPackage(
+    std::function<void(bool)> completion) {
+    if (!g_characterImportCandidate.ready ||
+        !g_characterImportCandidate.portable) return false;
+    const CharacterImportCandidate reviewed = g_characterImportCandidate;
+    if (g_characterManagerWorker.busy() ||
+        g_characterPackageInspection.busy() ||
+        !g_characterPortableInstallWorker.start(
+            reviewed, g_characterRegistryDirectory,
+            std::move(completion))) return false;
+    // The immutable snapshot owned by the worker is now the sole authority.
+    g_characterImportCandidate.ready = false;
     return true;
 }
 
+void serviceCharacterPortableInstallWorker() {
+    CharacterImportCandidate reviewed;
+    MdkrModernCharacterInstallResult result{};
+    bool installed = false;
+    std::function<void(bool)> completion;
+    if (!g_characterPortableInstallWorker.poll(
+            reviewed, result, installed, completion)) return;
+    g_characterManagerReport = result.message;
+    g_characterFailureInventory.loaded = false;
+    if (installed) refreshCharacterRegistry();
+    finishReviewedCharacterInstall(reviewed, installed);
+    if (completion) completion(installed);
+}
+
+bool queueReviewedCompilerCharacterPackage(
+    std::function<void(bool)> completion) {
+    if (!g_characterImportCandidate.ready ||
+        g_characterImportCandidate.portable) return false;
+    const CharacterImportCandidate reviewed = g_characterImportCandidate;
+    const bool queued = queueCharacterManager(
+        "install-reviewed",
+        {reviewed.packagePath, reviewed.next.packageSha256,
+         reviewed.installed ? reviewed.reviewedInstalledDigest : "absent"},
+        true,
+        [reviewed, completion = std::move(completion)](bool installed) {
+            finishReviewedCharacterInstall(reviewed, installed);
+            if (completion) completion(installed);
+        });
+    if (queued) {
+        // The immutable snapshot above is now the only install authority.
+        // Hide stale review controls while its compare-and-swap is pending.
+        g_characterImportCandidate.ready = false;
+    }
+    return queued;
+}
+
 bool reviseCharacterIdentity(const char *packageId, const char *portraitPath,
-                             const float minimapRgb[3]) {
+                             const float minimapRgb[3],
+                             std::function<void(bool)> completion) {
     std::vector<std::string> arguments = {packageId, portraitPath};
     for (unsigned component = 0u; component < 3u; ++component) {
         const int byte = static_cast<int>(std::lround(
             std::clamp(minimapRgb[component], 0.0f, 1.0f) * 255.0f));
         arguments.push_back(std::to_string(byte));
     }
-    return runCharacterManager("revise-identity", arguments);
+    return queueCharacterManager(
+        "revise-identity", std::move(arguments), true,
+        std::move(completion));
 }
 
 bool reviseCharacterIdentityRgba(
     const char *packageId,
     const std::array<uint8_t, MDKR_MODERN_PORTRAIT_BYTES> &rgba,
-    const float minimapRgb[3]) {
+    const float minimapRgb[3], std::function<void(bool)> completion) {
     static const char hexDigits[] = "0123456789abcdef";
     std::string encoded;
     encoded.resize(rgba.size() * 2u);
@@ -4216,11 +4352,14 @@ bool reviseCharacterIdentityRgba(
             std::clamp(minimapRgb[component], 0.0f, 1.0f) * 255.0f));
         arguments.push_back(std::to_string(byte));
     }
-    return runCharacterManager("revise-identity-rgba", arguments);
+    return queueCharacterManager(
+        "revise-identity-rgba", std::move(arguments), true,
+        std::move(completion));
 }
 
 bool reviseCharacterProfile(const char *packageId, uint32_t donor,
-                            uint32_t vehicleMask) {
+                            uint32_t vehicleMask,
+                            std::function<void(bool)> completion) {
     static const char *donorIds[] = {
         "krunch", "bumper", "tiptup", "conker", "timber",
         "banjo", "drumstick", "pipsy", "tt", "diddy",
@@ -4234,10 +4373,14 @@ bool reviseCharacterProfile(const char *packageId, uint32_t donor,
             arguments.emplace_back(vehicleIds[vehicle]);
         }
     }
-    return runCharacterManager("revise-profile", arguments);
+    return queueCharacterManager(
+        "revise-profile", std::move(arguments), true,
+        std::move(completion));
 }
 
-bool reviseCharacterRig(const char *packageId, const std::string &draftJson) {
+bool reviseCharacterRig(
+    const char *packageId, const std::string &draftJson,
+    std::function<void(bool)> completion) {
     if (packageId == nullptr || packageId[0] == '\0' ||
         draftJson.empty() || draftJson.size() > 128u * 1024u ||
         g_characterRegistryDirectory.empty()) return false;
@@ -4260,20 +4403,22 @@ bool reviseCharacterRig(const char *packageId, const std::string &draftJson) {
         g_characterManagerReport = "Could not finish the bounded rig draft.";
         return false;
     }
-    const bool revised = runCharacterManager(
-        "revise-rig", {packageId, draftPath});
-    (void)mdkr_remove_utf8(draftPath.c_str());
-    return revised;
+    const bool queued = queueCharacterManager(
+        "revise-rig", {packageId, draftPath}, true,
+        [draftPath, completion = std::move(completion)](bool revised) {
+            (void)mdkr_remove_utf8(draftPath.c_str());
+            if (completion) completion(revised);
+        });
+    if (!queued) (void)mdkr_remove_utf8(draftPath.c_str());
+    return queued;
 }
 
-bool removeCharacterPackage(const std::string &id) {
+bool removeCharacterPackageFiles(const std::string &id) {
     MdkrModernCharacterInstallResult result{};
-    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
     if (!g_characterRegistryDirectory.empty() &&
         mdkr_modern_character_remove_installed(
             id.c_str(), g_characterRegistryDirectory.c_str(), &result)) {
         g_characterManagerReport = result.message;
-        refreshCharacterRegistry();
         return true;
     }
     g_characterManagerReport = result.message;
@@ -4386,6 +4531,139 @@ bool forgetCharacterPackageTestEvidence(const std::string &id) {
     return true;
 }
 
+constexpr const char *kCharacterCleanupJournalKey =
+    "character_workshop_cleanup_pending";
+
+enum class CharacterCleanupPhase {
+    Invalid,
+    Armed,
+    Retired,
+};
+
+struct CharacterCleanupRecord {
+    CharacterCleanupPhase phase = CharacterCleanupPhase::Invalid;
+    bool present = false;
+    std::string packageId;
+};
+
+bool characterCleanupIdValid(const std::string &id) {
+    return !id.empty() && id.size() < MDKR_MODERN_CHARACTER_ID_MAX &&
+        std::all_of(id.begin(), id.end(), [](char byte) {
+            return (byte >= 'a' && byte <= 'z') ||
+                   (byte >= '0' && byte <= '9') || byte == '-' ||
+                   byte == '_' || byte == '.';
+        });
+}
+
+CharacterCleanupRecord characterCleanupRecord() {
+    const std::string encoded = AppConfig::get(kCharacterCleanupJournalKey);
+    if (encoded.empty()) return {};
+    CharacterCleanupRecord record;
+    record.present = true;
+    const size_t separator = encoded.find(':');
+    if (separator == std::string::npos) return record;
+    record.packageId = encoded.substr(separator + 1u);
+    if (!characterCleanupIdValid(record.packageId)) return record;
+    const std::string phase = encoded.substr(0u, separator);
+    if (phase == "armed") record.phase = CharacterCleanupPhase::Armed;
+    if (phase == "retired") record.phase = CharacterCleanupPhase::Retired;
+    return record;
+}
+
+bool persistCharacterCleanupRecord(CharacterCleanupPhase phase,
+                                   const std::string &packageId) {
+    if (!characterCleanupIdValid(packageId)) return false;
+    AppConfig::set(
+        kCharacterCleanupJournalKey,
+        std::string(phase == CharacterCleanupPhase::Armed
+                        ? "armed:" : "retired:") + packageId);
+    return AppConfig::persistResultApplied(AppConfig::save());
+}
+
+bool clearCharacterCleanupRecord() {
+    AppConfig::set(kCharacterCleanupJournalKey, "");
+    return AppConfig::persistResultApplied(AppConfig::save());
+}
+
+bool finishCharacterPackageCleanup(const std::string &id) {
+    const AppConfig::PersistResult preferences =
+        forgetCharacterPackagePreferences(id);
+    const bool drafts = forgetCharacterPackageDrafts(id);
+    const bool evidence = forgetCharacterPackageTestEvidence(id);
+    if (!AppConfig::persistResultApplied(preferences) || !drafts ||
+        !evidence) return false;
+    return clearCharacterCleanupRecord();
+}
+
+bool removeCharacterPackage(const std::string &id) {
+    if (g_characterRegistryDirectory.empty() ||
+        !g_characterRegistryInventoryAvailable) {
+        refreshCharacterRegistry();
+    }
+    if (g_characterRegistryDirectory.empty() ||
+        !g_characterRegistryInventoryAvailable) {
+        g_characterManagerReport =
+            "Permanent deletion was refused because the installed-character inventory could not be verified.";
+        return false;
+    }
+    if (!persistCharacterCleanupRecord(CharacterCleanupPhase::Armed, id)) {
+        g_characterManagerReport =
+            "Permanent deletion was refused because its recovery journal could not be saved.";
+        return false;
+    }
+    if (!removeCharacterPackageFiles(id)) {
+        // The native transaction either changed no owned file or published a
+        // complete retirement. Keep the durable armed record until a rescan
+        // can distinguish those states without guessing.
+        return false;
+    }
+    (void)persistCharacterCleanupRecord(
+        CharacterCleanupPhase::Retired, id);
+    if (!finishCharacterPackageCleanup(id)) {
+        g_characterManagerReport +=
+            " Package files are retired; launcher metadata cleanup will retry on the next rescan or launch.";
+    }
+    refreshCharacterRegistry();
+    return true;
+}
+
+bool g_characterCleanupReconcileActive = false;
+
+void reconcileCharacterPackageCleanup() {
+    if (g_characterCleanupReconcileActive ||
+        g_characterRegistryDirectory.empty() ||
+        !g_characterRegistryInventoryAvailable) return;
+    const CharacterCleanupRecord record = characterCleanupRecord();
+    if (record.phase == CharacterCleanupPhase::Invalid) {
+        if (record.present) {
+            g_characterManagerReport = clearCharacterCleanupRecord()
+                ? "Discarded an invalid character deletion recovery marker; no package or character metadata was changed."
+                : "An invalid character deletion recovery marker could not be cleared; no package or character metadata was changed.";
+        }
+        return;
+    }
+    g_characterCleanupReconcileActive = true;
+    const bool stillInstalled = mdkr_modern_character_registry_find(
+        &g_characterRegistry, record.packageId.c_str()) >= 0;
+    if (record.phase == CharacterCleanupPhase::Armed && stillInstalled) {
+        if (!clearCharacterCleanupRecord()) {
+            g_characterManagerReport =
+                "The package remains installed, but its unused deletion recovery marker could not be cleared.";
+        }
+    } else {
+        (void)persistCharacterCleanupRecord(
+            CharacterCleanupPhase::Retired, record.packageId);
+        if (finishCharacterPackageCleanup(record.packageId)) {
+            g_characterManagerReport =
+                "Finished recovery cleanup for a previously retired custom character.";
+        } else {
+            g_characterManagerReport =
+                "A retired character still has launcher metadata pending cleanup; rescan after repairing local storage.";
+        }
+    }
+    g_characterCleanupReconcileActive = false;
+}
+
 void refreshCharacterRegistry() {
     char directory[MDKR_MODERN_CHARACTER_PATH_MAX];
     mdkr_modern_character_registry_shutdown(&g_characterRegistry);
@@ -4394,12 +4672,19 @@ void refreshCharacterRegistry() {
     g_characterPreviewResults.clear();
     g_characterRevisionInventories.clear();
     g_characterRegistryDirectory.clear();
+    g_characterRegistryInventoryAvailable = false;
     if (mdkr_user_characters_directory(directory, sizeof(directory))) {
         g_characterRegistryDirectory = directory;
-        (void)mdkr_modern_character_registry_init_inventory(
-            &g_characterRegistry, directory);
+        g_characterRegistryInventoryAvailable =
+            mdkr_modern_character_registry_init_inventory(
+                &g_characterRegistry, directory) == 0;
+        if (!g_characterRegistryInventoryAvailable) {
+            g_characterManagerReport =
+                "The installed-character directory exists but could not be read; destructive recovery and deletion remain disabled.";
+        }
     }
     g_characterRegistryLoaded = true;
+    reconcileCharacterPackageCleanup();
 }
 
 const char *donorName(uint32_t donor) {
@@ -5438,11 +5723,19 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
     if (!canSave || stagingDraft) ImGui::BeginDisabled();
     bool saved = false;
     if (ImGui::Button("Save rig revision")) {
-        saved = reviseCharacterRig(entry->id, characterRigDraftJson(edit));
+        saved = reviseCharacterRig(
+            entry->id, characterRigDraftJson(edit), [](bool revised) {
+                setStatus(
+                    revised
+                        ? "Rig map compiled, validated, and activated."
+                        : "Rig revision failed; the active character was not changed.",
+                    revised ? AppTheme::good() : AppTheme::bad());
+            });
         setStatus(
-            saved ? "Rig map compiled, validated, and activated."
-                  : "Rig revision failed; the active character was not changed.",
-            saved ? AppTheme::good() : AppTheme::bad());
+            saved
+                ? "Saving and validating the rig revision in the background."
+                : "Rig revision could not start; the active character was not changed.",
+            saved ? AppTheme::accent() : AppTheme::bad());
     }
     if (!canSave || stagingDraft) ImGui::EndDisabled();
     ImGui::SameLine();
@@ -6971,6 +7264,19 @@ void drawCharacterPerformanceAssembly(
     };
     ui::TextSubtleWrapped(
         "Choose a named starting point or tune the two independent facts directly: authored LOD preference and local-player layout. These settings affect presentation cost only; physics, handling, donor authority, and import limits never change.");
+    const bool fidelityLimitsOpen = ImGui::TreeNode(
+        "Renderer fidelity and current limits");
+    ui::SpeakFocusedItem(
+        "Renderer fidelity and current limits",
+        fidelityLimitsOpen ? "expanded" : "collapsed",
+        "Explains which high-fidelity model features are executable and which still require source authoring or future renderer work.");
+    if (fidelityLimitsOpen) {
+        ui::TextSubtleWrapped(
+            "Available now: WebGPU GPU skinning, 32-bit indexed high-detail geometry, PBR-style embedded PNG materials with generated mipmaps, authored animation, and up to four authored LODs. Import limits are safety ceilings, not performance recommendations.");
+        ui::TextSubtleWrapped(
+            "Not qualification-ready yet: custom-character geometry does not cast the world's mapped shadows; BLEND material parts render in authored primitive order rather than per-frame depth order; KTX2/BasisU texture transcode, projected-pixel LOD thresholds, and automatic offline mesh simplification are not implemented. Use MASK materials for hair/fur cutouts, author LODs in the source, and prove the result in every exact context.");
+        ImGui::TreePop();
+    }
     const bool hasMultipleLods = entry->stats.lod_levels > 1u;
     CharacterWorkshopPerformanceTarget currentTarget =
         CharacterWorkshop_performanceTarget(players, tuning.lodBias);
@@ -10344,22 +10650,30 @@ bool drawCharacterProfileStudio(const MdkrModernCharacterEntry *entry) {
     if (ImGui::Button("Save gameplay and compatibility revision")) {
         const std::string packageId = entry->id;
         saved = reviseCharacterProfile(
-            packageId.c_str(), edit.donor, edit.vehicleMask);
-        if (saved) {
-            CharacterTuningEdit &tuning = loadCharacterTuning(
-                0, packageId.c_str());
-            tuning.vehicleMask = edit.vehicleMask;
-            const bool tuningSaved = persistCharacterTuning(
-                packageId.c_str(), tuning);
-            setStatus(tuningSaved
-                    ? "Built-in gameplay profile and vehicle compatibility activated."
-                    : "Package profile activated, but its local vehicle enablement could not be saved.",
-                tuningSaved ? AppTheme::good() : AppTheme::accent());
-        } else {
-            setStatus(
-                "Profile revision failed; the active character was not changed.",
-                AppTheme::bad());
-        }
+            packageId.c_str(), edit.donor, edit.vehicleMask,
+            [packageId, vehicleMask = edit.vehicleMask](bool revised) {
+                if (!revised) {
+                    setStatus(
+                        "Profile revision failed; the active character was not changed.",
+                        AppTheme::bad());
+                    return;
+                }
+                CharacterTuningEdit &tuning = loadCharacterTuning(
+                    0, packageId.c_str());
+                tuning.vehicleMask = vehicleMask;
+                const bool tuningSaved = persistCharacterTuning(
+                    packageId.c_str(), tuning);
+                setStatus(
+                    tuningSaved
+                        ? "Built-in gameplay profile and vehicle compatibility activated."
+                        : "Package profile activated, but its local vehicle enablement could not be saved.",
+                    tuningSaved ? AppTheme::good() : AppTheme::accent());
+            });
+        setStatus(
+            saved
+                ? "Saving and validating the gameplay profile in the background."
+                : "Profile revision could not start; the active character was not changed.",
+            saved ? AppTheme::accent() : AppTheme::bad());
     }
     if (!dirty || stagingDraft) ImGui::EndDisabled();
     ImGui::SameLine();
@@ -12064,11 +12378,17 @@ bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
     if (!canSaveCanvas || stagingDraft) ImGui::BeginDisabled();
     if (ImGui::Button("Save pixel canvas revision")) {
         saved = reviseCharacterIdentityRgba(
-            entry->id, edit.canvas, edit.minimapRgb);
-        setStatus(saved
-                ? "Pixel portrait compiled and activated."
-                : "Pixel portrait failed; the active character was not changed.",
-            saved ? AppTheme::good() : AppTheme::bad());
+            entry->id, edit.canvas, edit.minimapRgb, [](bool revised) {
+                setStatus(
+                    revised
+                        ? "Pixel portrait compiled and activated."
+                        : "Pixel portrait failed; the active character was not changed.",
+                    revised ? AppTheme::good() : AppTheme::bad());
+            });
+        setStatus(
+            saved ? "Saving and validating the pixel portrait in the background."
+                  : "Pixel portrait revision could not start; the active character was not changed.",
+            saved ? AppTheme::accent() : AppTheme::bad());
     }
     ui::SpeakFocusedItem(
         "Save pixel canvas revision",
@@ -12278,16 +12598,26 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     if (!canSave) ImGui::BeginDisabled();
     bool saved = false;
     if (ImGui::Button("Save identity revision")) {
+        const std::string packageId = entry->id;
         saved = reviseCharacterIdentity(
-            entry->id, edit.portraitPath, edit.minimapRgb);
+            packageId.c_str(), edit.portraitPath, edit.minimapRgb,
+            [packageId](bool revised) {
+                if (revised) {
+                    g_characterIdentityEdits[packageId].portraitPath[0] = '\0';
+                }
+                setStatus(
+                    revised
+                        ? "Portrait and minimap identity compiled and activated."
+                        : "Identity revision failed; the active character was not changed.",
+                    revised ? AppTheme::good() : AppTheme::bad());
+            });
         if (saved) {
-            edit.portraitPath[0] = '\0';
             setStatus(
-                "Portrait and minimap identity compiled and activated.",
-                AppTheme::good());
+                "Saving and validating the portrait identity in the background.",
+                AppTheme::accent());
         } else {
             setStatus(
-                "Identity revision failed; the active character was not changed.",
+                "Identity revision could not start; the active character was not changed.",
                 AppTheme::bad());
         }
     }
@@ -13545,7 +13875,9 @@ void closeCharacterDraftEditor(const std::string &packageId,
     }
 }
 
-bool buildCharacterDraftSource(const MdkrModernCharacterEntry *entry) {
+bool buildCharacterDraftSource(
+    const MdkrModernCharacterEntry *entry,
+    std::function<void(bool)> completion) {
     static const char *donorIds[] = {
         "krunch", "bumper", "tiptup", "conker", "timber",
         "banjo", "drumstick", "pipsy", "tt", "diddy",
@@ -13622,16 +13954,21 @@ bool buildCharacterDraftSource(const MdkrModernCharacterEntry *entry) {
             "Could not finish the bounded Workshop build draft.";
         return false;
     }
-    const bool built = runCharacterManager(
-        "build-draft", {packageId, draftPath});
-    (void)mdkr_remove_utf8(draftPath.c_str());
-    if (built) {
-        /* The named snapshot remains retained against its exact old base. The
-         * source editors must reload the new revision, while fit stays in its
-         * editor so the user can explicitly apply that separate local state. */
-        closeCharacterDraftEditor(packageId, true);
-    }
-    return built;
+    const bool queued = queueCharacterManager(
+        "build-draft", {packageId, draftPath}, true,
+        [packageId, draftPath,
+         completion = std::move(completion)](bool built) {
+            (void)mdkr_remove_utf8(draftPath.c_str());
+            if (built) {
+                /* The named snapshot remains retained against its exact old
+                 * base. Source editors reload the new revision; fit remains
+                 * explicit local state until the author applies it. */
+                closeCharacterDraftEditor(packageId, true);
+            }
+            if (completion) completion(built);
+        });
+    if (!queued) (void)mdkr_remove_utf8(draftPath.c_str());
+    return queued;
 }
 
 std::string characterRevisionTimestamp(uint64_t installedUnix);
@@ -13783,22 +14120,21 @@ bool drawCharacterDraftLifecycle(const MdkrModernCharacterEntry *entry) {
             if (!canBuild) ImGui::EndDisabled();
             return false;
         }
-        if (buildCharacterDraftSource(entry)) {
-            setStatus(
-                "Draft identity, gameplay profile, and rig were compiled and activated as one retained source revision.",
-                AppTheme::good());
-            if (!canBuild) ImGui::EndDisabled();
-            return true;
-        }
+        const bool queued = buildCharacterDraftSource(
+            entry, [](bool built) {
+                setStatus(
+                    built
+                        ? "Draft identity, gameplay profile, and rig were compiled and activated as one retained source revision."
+                        : "Draft build failed; the playable source and retained draft were not replaced.",
+                    built ? AppTheme::good() : AppTheme::bad());
+            });
         setStatus(
-            "Draft build failed; the playable source and retained draft were not replaced.",
-            AppTheme::bad());
-        /* A compare-and-swap failure can mean another process changed the
-         * installed base. Rescan before drawing any more controls that hold a
-         * pointer into the old registry allocation. */
-        refreshCharacterRegistry();
+            queued
+                ? "Building and validating the named draft in the background. The playable character remains available."
+                : "Draft build could not start; the playable source and retained draft were not replaced.",
+            queued ? AppTheme::accent() : AppTheme::bad());
         if (!canBuild) ImGui::EndDisabled();
-        return true;
+        return queued;
     }
     if (!canBuild) ImGui::EndDisabled();
     ui::SpeakFocusedItem(
@@ -13918,13 +14254,19 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
         ui::TextSubtleWrapped(
             "Load the authenticated source history to restore or export any revision retained by the Workshop. Loading does not change the installed character.");
         if (ImGui::Button("Load revision history")) {
-            if (loadCharacterRevisionInventory(entry->id)) {
-                setStatus("Authenticated revision history loaded.",
-                          AppTheme::good());
-            } else {
-                setStatus("Revision history could not be loaded; open the manager report.",
-                          AppTheme::bad());
-            }
+            const bool queued = loadCharacterRevisionInventory(
+                entry->id, [](bool loaded) {
+                    setStatus(
+                        loaded
+                            ? "Authenticated revision history loaded."
+                            : "Revision history could not be loaded; open the manager report.",
+                        loaded ? AppTheme::good() : AppTheme::bad());
+                });
+            setStatus(
+                queued
+                    ? "Loading and authenticating revision history in the background."
+                    : "Revision history could not start loading; open the manager report.",
+                queued ? AppTheme::accent() : AppTheme::bad());
         }
         ui::SpeakFocusedItem(
             "Load revision history", nullptr,
@@ -14012,17 +14354,19 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
             entry->enabled != 0u ? "enabled" : "disabled");
         if (ImGui::Button("Rebuild assembly")) {
             const std::string id = entry->id;
-            if (rebuildCharacterAssembly(id)) {
-                setStatus(
-                    "Current character assembly rebuilt transactionally.",
-                    AppTheme::good());
-                ImGui::CloseCurrentPopup();
-                ImGui::EndPopup();
-                return true;
-            }
+            const bool queued = rebuildCharacterAssembly(
+                id, [](bool rebuilt) {
+                    setStatus(
+                        rebuilt
+                            ? "Current character assembly rebuilt transactionally."
+                            : "Assembly rebuild failed; the last known-good character is unchanged.",
+                        rebuilt ? AppTheme::good() : AppTheme::bad());
+                });
             setStatus(
-                "Assembly rebuild failed; the last known-good character is unchanged.",
-                AppTheme::bad());
+                queued
+                    ? "Rebuilding the authenticated assembly in the background; the current character remains active."
+                    : "Assembly rebuild could not start; the current character is unchanged.",
+                queued ? AppTheme::accent() : AppTheme::bad());
             ImGui::CloseCurrentPopup();
         }
         ui::SpeakFocusedItem(
@@ -14045,18 +14389,22 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
         selected.current ? "This is already the current revision." : nullptr,
         "Revalidates and compiles the selected source, preserving enabled or disabled state; the current source remains in history.");
     ImGui::SameLine();
-    bool reloaded = false;
     if (ImGui::Button("Reload history")) {
-        reloaded = loadCharacterRevisionInventory(entry->id);
-        if (!reloaded) {
-            setStatus("Revision history could not be reloaded.", AppTheme::bad());
-        }
+        const bool queued = loadCharacterRevisionInventory(
+            entry->id, [](bool loaded) {
+                setStatus(
+                    loaded ? "Authenticated revision history reloaded."
+                           : "Revision history could not be reloaded.",
+                    loaded ? AppTheme::good() : AppTheme::bad());
+            });
+        setStatus(
+            queued ? "Refreshing revision history in the background."
+                   : "Revision history refresh could not start.",
+            queued ? AppTheme::accent() : AppTheme::bad());
     }
     ui::SpeakFocusedItem(
         "Reload history", nullptr,
         "Re-authenticates every retained source and refreshes this list.");
-    if (reloaded) return false;
-
     if (ImGui::BeginPopupModal("Restore retained revision?", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextWrapped(
@@ -14066,15 +14414,19 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
         if (ImGui::Button("Restore revision")) {
             const std::string id = entry->id;
             const std::string digest = selected.sourceSha256;
-            if (restoreCharacterRevision(id, digest)) {
-                setStatus("Retained character revision restored transactionally.",
-                          AppTheme::good());
-                ImGui::CloseCurrentPopup();
-                ImGui::EndPopup();
-                return true;
-            }
-            setStatus("Revision restore failed; the current character was unchanged.",
-                      AppTheme::bad());
+            const bool queued = restoreCharacterRevision(
+                id, digest, [](bool restored) {
+                    setStatus(
+                        restored
+                            ? "Retained character revision restored transactionally."
+                            : "Revision restore failed; the current character was unchanged.",
+                        restored ? AppTheme::good() : AppTheme::bad());
+                });
+            setStatus(
+                queued
+                    ? "Authenticating and restoring the selected revision in the background; the current character remains active meanwhile."
+                    : "Revision restore could not start; the current character is unchanged.",
+                queued ? AppTheme::accent() : AppTheme::bad());
             ImGui::CloseCurrentPopup();
         }
         ui::SpeakFocusedItem(
@@ -14107,14 +14459,19 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
     const bool canExport = inventory.exportPath[0] != '\0';
     if (!canExport) ImGui::BeginDisabled();
     if (ImGui::Button("Export selected source") && canExport) {
-        if (exportCharacterRevision(
-                entry->id, selected.sourceSha256, inventory.exportPath)) {
-            setStatus("Retained source exported without overwriting another file.",
-                      AppTheme::good());
-        } else {
-            setStatus("Source export failed; open the manager report.",
-                      AppTheme::bad());
-        }
+        const bool queued = exportCharacterRevision(
+            entry->id, selected.sourceSha256, inventory.exportPath,
+            [](bool exported) {
+                setStatus(
+                    exported
+                        ? "Retained source exported without overwriting another file."
+                        : "Source export failed; open the manager report.",
+                    exported ? AppTheme::good() : AppTheme::bad());
+            });
+        setStatus(
+            queued ? "Authenticating and exporting the selected source in the background."
+                   : "Source export could not start; no destination was changed.",
+            queued ? AppTheme::accent() : AppTheme::bad());
     }
     if (!canExport) ImGui::EndDisabled();
     ui::SpeakFocusedItem(
@@ -14157,17 +14514,20 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
         inventory.distributionRightsConfirmed;
     if (!canExportPortable) ImGui::BeginDisabled();
     if (ImGui::Button("Export portable package") && canExportPortable) {
-        if (exportPortableCharacterRevision(
-                entry->id, selected.sourceSha256,
-                inventory.portableExportPath)) {
-            setStatus(
-                "Portable package compiled and exported without overwriting another file.",
-                AppTheme::good());
-        } else {
-            setStatus(
-                "Portable package export failed; open the manager report.",
-                AppTheme::bad());
-        }
+        const bool queued = exportPortableCharacterRevision(
+            entry->id, selected.sourceSha256,
+            inventory.portableExportPath, [](bool exported) {
+                setStatus(
+                    exported
+                        ? "Portable package compiled and exported without overwriting another file."
+                        : "Portable package export failed; open the manager report.",
+                    exported ? AppTheme::good() : AppTheme::bad());
+            });
+        setStatus(
+            queued
+                ? "Compiling and exporting the portable package in the background."
+                : "Portable export could not start; no destination was changed.",
+            queued ? AppTheme::accent() : AppTheme::bad());
     }
     if (!canExportPortable) ImGui::EndDisabled();
     ui::SpeakFocusedItem(
@@ -15043,21 +15403,16 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             if (deletePressed) {
                 const std::string removedId = g_characterPendingRemoval;
                 if (removeCharacterPackage(removedId)) {
-                    const AppConfig::PersistResult persist =
-                        forgetCharacterPackagePreferences(removedId);
-                    const bool preferencesSaved =
-                        AppConfig::persistResultApplied(persist);
-                    const bool draftsRemoved =
-                        forgetCharacterPackageDrafts(removedId);
-                    const bool testEvidenceRemoved =
-                        forgetCharacterPackageTestEvidence(removedId);
+                    const bool cleanupPending =
+                        characterCleanupRecord().phase !=
+                            CharacterCleanupPhase::Invalid;
                     setStatus(
-                        preferencesSaved && draftsRemoved && testEvidenceRemoved
+                        !cleanupPending
                             ? "Custom character, named drafts, exact-test evidence, retained revisions, and package settings permanently deleted."
-                            : "Character files were deleted, but some local draft, test-evidence, or preference cleanup could not be saved yet.",
-                        preferencesSaved && draftsRemoved && testEvidenceRemoved
+                            : "Character files were retired safely. Some launcher metadata remains queued for automatic cleanup on the next rescan or launch.",
+                        !cleanupPending
                             ? AppTheme::good()
-                            : AppTheme::bad());
+                            : AppTheme::accent());
                     g_characterPendingRemoval.clear();
                     g_characterRemovalConfirmation[0] = '\0';
                     ImGui::CloseCurrentPopup();
@@ -15192,18 +15547,35 @@ bool drawCharacterCandidateReview(bool compact) {
             const std::string packageId =
                 g_characterImportCandidate.next.id;
             g_characterImportCandidate.rightsConfirmed = true;
-            const bool installed = installReviewedCharacterPackage();
-            std::fprintf(
-                stderr,
-                "[app-ui] raw-reviewed-install reviewed=1 installed=%d draft=%s package=%s remaining=%zu\n",
-                installed ? 1 : 0, draftId.c_str(), packageId.c_str(),
-                g_characterRawDrafts.drafts.size());
-            setStatus(
-                installed
-                    ? "Reviewed raw-source character installed; only its completed authoring draft was removed."
-                    : "Automated reviewed raw-source install failed; a fresh review is required.",
-                installed ? AppTheme::good() : AppTheme::bad());
-            return installed;
+            const bool portable = g_characterImportCandidate.portable;
+            const auto completed = [draftId, packageId](bool installed) {
+                std::fprintf(
+                    stderr,
+                    "[app-ui] raw-reviewed-install reviewed=1 installed=%d draft=%s package=%s remaining=%zu\n",
+                    installed ? 1 : 0, draftId.c_str(), packageId.c_str(),
+                    g_characterRawDrafts.drafts.size());
+                setStatus(
+                    installed
+                        ? g_characterInstallWarning.empty()
+                            ? "Reviewed raw-source character installed; only its completed authoring draft was removed."
+                            : g_characterInstallWarning.c_str()
+                        : "Automated reviewed raw-source install failed; a fresh review is required.",
+                    installed
+                        ? g_characterInstallWarning.empty()
+                            ? AppTheme::good() : AppTheme::accent()
+                        : AppTheme::bad());
+            };
+            const bool started = portable
+                ? queueReviewedPortableCharacterPackage(completed)
+                : queueReviewedCompilerCharacterPackage(completed);
+            if (started) {
+                setStatus(
+                    "Installing the reviewed character in the background; the retained draft and playable roster remain safe.",
+                    AppTheme::accent());
+            } else {
+                completed(false);
+            }
+            return started;
         }
     }
     const CharacterImportCandidate           &review     = g_characterImportCandidate;
@@ -15381,19 +15753,32 @@ bool drawCharacterCandidateReview(bool compact) {
                                                   : "Install reviewed character";
     if (ImGui::Button(installLabel)) {
         const bool wasUpdate = review.installed;
-        if (installReviewedCharacterPackage()) {
+        const bool portable = review.portable;
+        const auto completed = [wasUpdate](bool installed) {
             setStatus(
-                wasUpdate
-                    ? "Reviewed character update installed; local settings and enabled state were preserved."
-                    : "Reviewed character installed and ready for Workshop setup.",
-                AppTheme::good());
-            return true;
+                installed
+                    ? !g_characterInstallWarning.empty()
+                        ? g_characterInstallWarning.c_str()
+                        : wasUpdate
+                        ? "Reviewed character update installed; local settings and enabled state were preserved."
+                        : "Reviewed character installed and ready for Workshop setup."
+                    : "Nothing was installed. The package or installed character may have changed; validate and review it again.",
+                installed
+                    ? g_characterInstallWarning.empty()
+                        ? AppTheme::good() : AppTheme::accent()
+                    : AppTheme::bad());
+        };
+        const bool started = portable
+            ? queueReviewedPortableCharacterPackage(completed)
+            : queueReviewedCompilerCharacterPackage(completed);
+        if (started) {
+            setStatus(
+                "Installing the exact reviewed package in the background. The current playable character remains active until commit.",
+                AppTheme::accent());
         } else {
-            setStatus(
-                "Nothing was installed. The package or installed character may have changed; validate and review it again.",
-                AppTheme::bad());
-            return false;
+            completed(false);
         }
+        return started;
     }
     if (!g_characterImportCandidate.rightsConfirmed) ImGui::EndDisabled();
     ui::SpeakFocusedItem(
@@ -15897,7 +16282,42 @@ const char *characterFailureKindLabel(CharacterFailureIndex::RetryKind kind) {
 
 void drawCharacterFailureRecovery(bool rail) {
     if (!g_characterFailureInventory.loaded) {
-        (void)loadCharacterFailureInventory();
+        ImGui::SeparatorText("Import recovery");
+        ui::TextSubtleWrapped(
+            "If a validation or conversion failed, check its private metadata when you need to retry or export a diagnostic. This does not read or copy model bytes.");
+        const bool checkPressed = ImGui::Button("Check failed imports");
+        const char *smokeAction = std::getenv(
+            "MDKR_APP_SMOKE_CHARACTER_RECOVERY_ACTION");
+        const char *smokeToken = std::getenv(
+            "MDKR_APP_SMOKE_CHARACTER_RECOVERY_TOKEN");
+        const bool smokeCheck = !g_characterFailureSmokeCheckApplied &&
+            smokeAction != nullptr && smokeToken != nullptr &&
+            std::strcmp(smokeAction, "check") == 0 &&
+            std::strcmp(smokeToken, "mdkr64-character-recovery-v1") == 0;
+        if (checkPressed || g_characterFailureRecoveryRequested ||
+            smokeCheck) {
+            const bool queued = loadCharacterFailureInventory(
+                [](bool loaded) {
+                    setStatus(
+                        loaded
+                            ? "Failed-import recovery is up to date."
+                            : "Failed-import recovery could not be loaded; ordinary authoring remains available.",
+                        loaded ? AppTheme::good() : AppTheme::bad());
+                });
+            if (queued) {
+                g_characterFailureRecoveryRequested = false;
+                if (smokeCheck) g_characterFailureSmokeCheckApplied = true;
+            }
+            setStatus(
+                queued
+                    ? "Checking private failed-import metadata in the background."
+                    : "Failed-import recovery could not start; ordinary authoring remains available.",
+                queued ? AppTheme::accent() : AppTheme::bad());
+        }
+        ui::SpeakFocusedItem(
+            "Check failed imports", nullptr,
+            "Loads only private recovery metadata on demand. Normal package and model authoring never waits for this inventory.");
+        return;
     }
     CharacterFailureInventory &inventory = g_characterFailureInventory;
     if (!inventory.loadError.empty()) {
@@ -15992,11 +16412,19 @@ void drawCharacterFailureRecovery(bool rail) {
     const bool canRetry = row.sourceAvailable && !row.sourceChanged;
     if (!canRetry) ImGui::BeginDisabled();
     if (ImGui::Button("Retry exact source")) {
-        if (!retryCharacterFailure(row)) {
-            setStatus(
-                "The exact source still fails validation; its recovery record and latest diagnostics were retained.",
-                AppTheme::bad());
-        }
+        const bool queued = retryCharacterFailure(
+            row, [](bool retried) {
+                setStatus(
+                    retried
+                        ? "Exact source passed recovery validation and returned to the ordinary review flow."
+                        : "The exact source still fails validation; its recovery record and latest diagnostics were retained.",
+                    retried ? AppTheme::good() : AppTheme::bad());
+            });
+        setStatus(
+            queued
+                ? "Revalidating the exact source in the background; its recovery record remains safe."
+                : "Recovery validation could not start; the record was unchanged.",
+            queued ? AppTheme::accent() : AppTheme::bad());
     }
     if (!canRetry) ImGui::EndDisabled();
     ui::SpeakFocusedItem(
@@ -16040,15 +16468,19 @@ void drawCharacterFailureRecovery(bool rail) {
         if (ImGui::Button("Export diagnostic...")) {
             std::string output;
             if (filedialog::saveCharacterDiagnostic(output)) {
-                if (exportCharacterFailure(row.recordId, output)) {
-                    setStatus(
-                        "Failed-import diagnostic exported; the private recovery record remains available.",
-                        AppTheme::good());
-                } else {
-                    setStatus(
-                        "Diagnostic export failed; the recovery record and source were unchanged.",
-                        AppTheme::bad());
-                }
+                const bool queued = exportCharacterFailure(
+                    row.recordId, output, [](bool exported) {
+                        setStatus(
+                            exported
+                                ? "Failed-import diagnostic exported; the private recovery record remains available."
+                                : "Diagnostic export failed; the recovery record and source were unchanged.",
+                            exported ? AppTheme::good() : AppTheme::bad());
+                    });
+                setStatus(
+                    queued
+                        ? "Exporting the bounded diagnostic in the background."
+                        : "Diagnostic export could not start; the recovery record and source were unchanged.",
+                    queued ? AppTheme::accent() : AppTheme::bad());
             }
         }
         ui::SpeakFocusedItem(
@@ -16069,16 +16501,20 @@ void drawCharacterFailureRecovery(bool rail) {
             "Remove this local recovery record and validator report? The source at %s is not changed or deleted.",
             row.sourcePath.c_str());
         if (ImGui::Button("Forget diagnostic")) {
-            if (forgetCharacterFailure(row.recordId)) {
-                setStatus(
-                    "Failed-import diagnostic removed; the external source remains unchanged.",
-                    AppTheme::good());
-                ImGui::CloseCurrentPopup();
-            } else {
-                setStatus(
-                    "The failed-import diagnostic could not be removed; the source was unchanged.",
-                    AppTheme::bad());
-            }
+            const bool queued = forgetCharacterFailure(
+                row.recordId, [](bool removed) {
+                    setStatus(
+                        removed
+                            ? "Failed-import diagnostic removed; the external source remains unchanged."
+                            : "The failed-import diagnostic could not be removed; the source was unchanged.",
+                        removed ? AppTheme::good() : AppTheme::bad());
+                });
+            setStatus(
+                queued
+                    ? "Removing only the private diagnostic in the background."
+                    : "Diagnostic removal could not start; the source was unchanged.",
+                queued ? AppTheme::accent() : AppTheme::bad());
+            ImGui::CloseCurrentPopup();
         }
         ui::SpeakFocusedItem(
             "Forget this diagnostic", nullptr,
@@ -16404,7 +16840,7 @@ const MdkrModernCharacterEntry *drawCharacterLibrary(bool rail) {
     }
     if (characterCount <= 0) {
         ui::TextSubtleWrapped(
-            "No characters are installed yet. Choose a package above, validate its inventory, and explicitly install the reviewed candidate.");
+            "No characters are installed yet. Choose a package or artist source above; every route ends in the same explicit review before install.");
         return nullptr;
     }
     if (!rail) {
@@ -16647,6 +17083,7 @@ void drawSkippedCharacterInventory() {
 bool drawCustomCharactersSection(bool compact) {
     bool changed = false;
     serviceCharacterManagerWorker();
+    serviceCharacterPortableInstallWorker();
     if (!g_characterRegistryLoaded) refreshCharacterRegistry();
     ui::TextSubtleWrapped(
         "Appearance packages are local presentation only. The selected fingerprint-qualified built-in donor still owns simulation, collision, audio, ghosts, records, and network/rollback identity; no second ROM is required.");
@@ -16656,14 +17093,18 @@ bool drawCustomCharactersSection(bool compact) {
             "Modern characters require the WebGPU renderer. This backend keeps the built-in racer visible, so installed packages remain safe but cannot appear in game.");
         ImGui::PopStyleColor();
     }
-    if (g_characterManagerWorker.busy()) {
+    if (g_characterManagerWorker.busy() ||
+        g_characterPortableInstallWorker.busy()) {
         if (ui::CardBegin("##character-manager-running", AppTheme::accent(),
                           0.0f)) {
             ImGui::TextUnformatted("Character job running in the background");
-            const std::string command = g_characterManagerWorker.label();
+            const std::string command =
+                g_characterPortableInstallWorker.busy()
+                    ? "install-reviewed"
+                    : g_characterManagerWorker.label();
             ui::TextSubtleWrapped(
-                "The Workshop is temporarily read-only while %s authenticates, compiles, and transactionally publishes its result. You can use every other launcher page meanwhile.",
-                command.empty() ? "the importer" : command.c_str());
+                "Golden Balloon is %s. The installed character stays usable until a complete validated result is published. You can safely use another launcher page; your selected character and editor tab remain here when you return.",
+                characterManagerJobDescription(command));
         }
         ui::CardEnd();
         return false;
@@ -16741,10 +17182,10 @@ bool drawCustomCharactersSection(bool compact) {
             changed |= drawCharacterPackageInspector(entry, false);
         } else {
             ImGui::PushFont(AppTheme::fonts().section);
-            ImGui::TextUnformatted("Start with a reviewed package");
+            ImGui::TextUnformatted("Add your first character");
             ImGui::PopFont();
             ui::TextSubtleWrapped(
-                "Choose a self-contained .mdkrchar file in the library. Validation is mutation-free; the complete inventory and any installed-version differences appear here before an explicit install.");
+                "Choose a reviewed .mdkrchar package, or bring a self-contained GLB to start a resumable authoring draft. DAE and safe ZIP sources can be converted to a new GLB; Blender and other DCC project files receive an exact export checklist. Nothing installs before inventory, differences, rights, and fit are reviewed.");
         }
         ui::TouchScrollCurrentWindow();
         ImGui::EndChild();
@@ -16856,6 +17297,14 @@ bool Settings_importCharacterPackage(const char *path) {
         g_characterManagerReport =
             "The character source path exceeds the launcher's bounded path profile.";
         setStatus("Character source path is too long.", AppTheme::bad());
+        return false;
+    }
+    if (g_characterPortableInstallWorker.busy()) {
+        g_characterManagerReport =
+            "The exact reviewed package is still being installed.";
+        setStatus(
+            "Finish the current character install before choosing another source.",
+            AppTheme::accent());
         return false;
     }
     std::snprintf(g_characterImportPath, sizeof(g_characterImportPath), "%s",
@@ -17026,30 +17475,28 @@ bool Settings_importCharacterPackage(const char *path) {
             AppTheme::accent());
         return true;
     }
-    if (!stageCharacterPackage(path)) {
-        g_characterImportCandidate = CharacterImportCandidate{};
-        setStatus("Character validation failed; open the importer report below.",
-                  AppTheme::bad());
-        return false;
-    }
+    g_characterImportCandidate = CharacterImportCandidate{};
+    g_characterManagerReport =
+        "Choose a .mdkrchar package, self-contained GLB, DAE, or supported ZIP source.";
     setStatus(
-        g_characterImportCandidate.installed
-            ? "Character update validated; review every change before installing."
-            : "Character validated; review its identity, gameplay donor, rig, and performance before installing.",
-        AppTheme::good());
-    return true;
+        "That file type is not a supported character source; nothing changed.",
+        AppTheme::bad());
+    return false;
 }
 
 bool Settings_drawCharacterWorkshop(SDL_Window *window, bool compact) {
     (void)window;
-    const bool changed = drawCustomCharactersSection(compact);
     if (!g_status.empty()) {
+        if (ui::CardBegin("##character-workshop-status", g_statusColor,
+                          0.0f)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, g_statusColor);
+            ImGui::TextWrapped("%s", g_status.c_str());
+            ImGui::PopStyleColor();
+        }
+        ui::CardEnd();
         ui::Gap(ui::kGapS);
-        ImGui::PushStyleColor(ImGuiCol_Text, g_statusColor);
-        ImGui::TextWrapped("%s", g_status.c_str());
-        ImGui::PopStyleColor();
     }
-    return changed;
+    return drawCustomCharactersSection(compact);
 }
 
 bool Settings_takeCharacterWorkshopOpenRequest() {

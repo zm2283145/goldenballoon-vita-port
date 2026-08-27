@@ -835,7 +835,8 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/platform/net/match_peer_crypto.cpp)
         else()
             list(APPEND APP_SOURCES
-                ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport_stub.cpp)
+                ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport_stub.cpp
+                ${CMAKE_SOURCE_DIR}/platform/party/lan_party_stub.cpp)
         endif()
 
         add_library(mdkr_qrcodegen STATIC

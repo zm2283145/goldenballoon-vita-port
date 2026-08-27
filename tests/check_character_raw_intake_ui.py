@@ -214,9 +214,10 @@ def main() -> int:
                 hostile, hostile_model, hostile_shot,
                 compact=False, drop=True,
             )
-            # Leave a full frame after the synchronous rejection so the
-            # metadata-only recovery inventory is loaded and rendered too.
-            hostile_environment["MDKR_APP_SMOKE_FRAMES"] = "16"
+            # Inspection and the follow-up metadata-only recovery inventory
+            # are two non-blocking jobs. Leave enough frames for both results
+            # to publish and render without assuming local process latency.
+            hostile_environment["MDKR_APP_SMOKE_FRAMES"] = "60"
             run(
                 binary, hostile,
                 hostile_environment,
@@ -261,6 +262,9 @@ def main() -> int:
                 "MDKR_APP_SMOKE_INPUT": "keyboard",
                 "MDKR_APP_SMOKE_INPUT_TOKEN": "mdkr64-app-ui-input-v1",
                 "MDKR_A11Y_TRACE": "1",
+                "MDKR_APP_SMOKE_CHARACTER_RECOVERY_ACTION": "check",
+                "MDKR_APP_SMOKE_CHARACTER_RECOVERY_TOKEN":
+                    "mdkr64-character-recovery-v1",
             })
             run(
                 binary, hostile, hostile_accessible,

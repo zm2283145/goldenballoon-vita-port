@@ -189,7 +189,8 @@ void preparePlay(LauncherState &state) {
     RomPanel_requestPlayValidation(state);
 }
 
-void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size) {
+void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size,
+                               bool workshopWithoutRom) {
     const bool ready = !state.romPath.empty() && state.romInfo.valid;
     const bool busy = state.romPlayValidationPending ||
                       (!ready && state.romValidationPending);
@@ -197,7 +198,7 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size) {
     if (busy) {
         label = "Checking ROM…";
     } else if (!ready) {
-        label = "Choose ROM";
+        label = workshopWithoutRom ? "Add ROM to test" : "Choose ROM";
     } else if (Settings_restartPending()) {
         label = "Play with Changes";
     }
@@ -214,6 +215,8 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size) {
     ui::SpeakFocusedItem(
         label, nullptr,
         ready ? "Starts the game with your current ROM and settings."
+              : workshopWithoutRom
+              ? "Choose your base game ROM only when you are ready to run exact game tests or play. Character authoring remains available now."
               : "Opens a file picker to choose the game ROM before you can play.");
     if (!pressed) return;
 
@@ -444,7 +447,10 @@ void drawNavigation(int &activePanel, LauncherState &state,
 
     const bool ready = !state.romPath.empty() && state.romInfo.valid;
     const bool checking = !ready && state.romValidationPending;
-    const char *status = "ROM required";
+    const bool workshopWithoutRom = !ready && !checking &&
+        activePanel == kLauncherPanelCharacterWorkshop;
+    const char *status = workshopWithoutRom ? "Workshop ready"
+                                            : "ROM required";
     if (checking) {
         status = "Checking ROM…";
     } else if (ready && state.romInfo.integrity_verified) {
@@ -455,7 +461,8 @@ void drawNavigation(int &activePanel, LauncherState &state,
     ImGui::PushFont(AppTheme::fonts().small);
     ImGui::PushStyleColor(ImGuiCol_Text,
                           ready ? AppTheme::good()
-                                : checking ? AppTheme::accent()
+                                : (checking || workshopWithoutRom)
+                                      ? AppTheme::accent()
                                            : AppTheme::subtle());
     ImGui::TextUnformatted(status);
     ImGui::PopStyleColor();
@@ -469,6 +476,9 @@ void drawNavigation(int &activePanel, LauncherState &state,
                 : "modified-ROM developer override active");
     } else if (checking) {
         ui::TextSubtleWrapped("Verifying the complete 12 MB image.");
+    } else if (workshopWithoutRom) {
+        ui::TextSubtleWrapped(
+            "Import and author now; choose a ROM only to test or play.");
     } else {
         ui::TextSubtleWrapped("Choose your own US 1.1 or EU 1.1 ROM.");
     }
@@ -476,7 +486,7 @@ void drawNavigation(int &activePanel, LauncherState &state,
     ui::Gap(ui::kGapS);
 
     drawPrimaryLauncherAction(
-        state, ImVec2(-1, ui::kBtnPrimary().y));
+        state, ImVec2(-1, ui::kBtnPrimary().y), workshopWithoutRom);
 
     if (ImGui::Button("Quit", ui::kBtnFullWidth())) {
         action.type = LauncherActionType::Quit;
@@ -601,7 +611,10 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
     // action remain available on every section.
     const bool ready = !state.romPath.empty() && state.romInfo.valid;
     const bool checking = !ready && state.romValidationPending;
-    const char *status = "ROM required";
+    const bool workshopWithoutRom = !ready && !checking &&
+        activePanel == kLauncherPanelCharacterWorkshop;
+    const char *status = workshopWithoutRom ? "Workshop ready"
+                                            : "ROM required";
     if (checking) {
         status = "Checking ROM…";
     } else if (ready && dense) {
@@ -616,7 +629,8 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
     ImGui::PushFont(AppTheme::fonts().small);
     ImGui::PushStyleColor(ImGuiCol_Text,
                           ready ? AppTheme::good()
-                                : checking ? AppTheme::accent()
+                                : (checking || workshopWithoutRom)
+                                      ? AppTheme::accent()
                                            : AppTheme::subtle());
     ImGui::TextUnformatted(status);
     statusMin = ImGui::GetItemRectMin();
@@ -629,7 +643,7 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
         : 190.0f * scale;
     ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - playWidth);
     drawPrimaryLauncherAction(
-        state, ImVec2(playWidth, ui::kBtnPrimary().y));
+        state, ImVec2(playWidth, ui::kBtnPrimary().y), workshopWithoutRom);
     playMin = ImGui::GetItemRectMin();
     playMax = ImGui::GetItemRectMax();
     // The primary action is the header's last and lowest item in both branches,

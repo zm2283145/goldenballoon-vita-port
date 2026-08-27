@@ -112,6 +112,69 @@ Same-size edits therefore cannot reuse stale evidence. Authors can restore the
 path as a new import, export a self-contained JSON diagnostic without model
 bytes, or forget only the metadata/report after confirmation.
 
+## End-to-end user stories and humane acceptance criteria
+
+These stories are the product contract. They are written around what a person
+is trying to accomplish rather than the pipeline component currently on screen.
+
+1. **A player installs a finished package.** They choose or drop one
+   `.mdkrchar`, see a plain-language inventory and exact installed differences,
+   confirm local-use rights, then install and assign it. No authoring concepts
+   are required and the file is never reselected mid-flow.
+2. **An artist starts with a model.** They choose a self-contained GLB, or
+   safely convert one unambiguous DAE/ZIP to a new GLB. A named, autosaved draft
+   carries normalization, identity, rig, fit, quality, and review state across
+   launcher restarts. Native DCC files get actionable export guidance instead
+   of a generic failure.
+3. **A creator fixes scale, floor contact, facing, and seating.** The Workshop
+   begins from measured bounds, makes front/up/height explicit, separates global
+   normalization from per-context corrections, and previews the exact select,
+   car, hovercraft, and plane paths. Reset, undo, numeric input, and direct
+   manipulation all describe the same coordinate space.
+4. **A creator makes the character recognizable in every UI.** One identity
+   owns names, portrait pixels, minimap colour, and accessible narration.
+   Capture, bounded image import, and exact-pixel drawing all converge on the
+   same 40x40 runtime canvas and disclose retail-font fallback before publish.
+5. **A player chooses fair gameplay.** The selected built-in donor and vehicle
+   compatibility are visible beside the custom appearance. Simulation, audio,
+   saves, ghosts, records, and network identity are never implied to come from
+   the model package.
+6. **A creator targets real hardware.** They choose an understandable quality
+   preset, inspect the underlying geometry/texture/draw cost, test exact player
+   counts, and retain evidence tied to source, fit, presentation, backend, and
+   device. Missing or unreliable timing is labelled unavailable, never green.
+7. **A creator updates or recovers work.** Saves, builds, installs, exports,
+   restores, and retries acknowledge immediately and finish in the background.
+   Failure leaves the last-known-good character playable and states exactly
+   which draft, source, candidate, or diagnostic remains recoverable.
+8. **A creator shares responsibly.** Portable export requires explicit
+   redistribution-rights confirmation, never overwrites, and includes the
+   authenticated source, runtime assembly, license, provenance, and deterministic
+   digest relationship needed by a recipient's ordinary review flow.
+9. **A player disables or deletes a character.** Disable is the prominent,
+   reversible choice. Permanent deletion enumerates package-owned files, drafts,
+   evidence, revisions, preferences, and assignments, requires the exact ID,
+   does not touch the artist's external source, and uses a durable cleanup
+   journal so a crash cannot silently orphan launcher state.
+
+Every story must satisfy the following cross-cutting criteria:
+
+- The first screen offers one obvious next action and uses player language;
+  advanced engine vocabulary is disclosed only where it helps resolve a problem.
+- Every accepted action responds in the same frame. Work that may invoke a
+  compiler, converter, hasher, or filesystem inventory runs in the background,
+  names the operation in progress, preserves navigation, and reports completion.
+- A disabled control exposes the reason through visible text and narration.
+  Readiness never relies on colour, hover, or a mouse-only affordance.
+- Keyboard, controller, touch, and pointer users can reach the same outcome;
+  narrow layouts preserve task order and never require a two-column comparison.
+- Destructive and publishing actions name their scope before confirmation.
+  Success is never reported until durable state is published; partial cleanup is
+  retained as a retryable, user-visible condition.
+- Closing, changing pages, losing renderer support, or failing validation never
+  destroys the external source, a named draft, or the playable last-known-good
+  revision.
+
 ## Overview
 
 Overview answers five questions without expanding advanced controls:
@@ -475,7 +538,7 @@ last known-good assembly remains available if an update fails.
 | Performance controls | Import caps; responsive Quality/Balanced/Performance/Four-player starting points; direct authored-LOD preference and 1P-4P layout controls; separate Performance history; exact runtime-equivalent source/local-bias, clamping and sparse-LOD selection; and a session-only exact distance scrubber with merged interval visualization, selected geometry counts, sparse-level disclosure, non-monotonic ordering warning and greater-than-4× transition warning. Exact selected-LOD draw/triangle/vertex/palette accounting, shared geometry/texture accounting, exact one-click WebGPU stress routes, and returned post-warm-up wall-cadence plus optional exact GPU timestamp distributions are executable. The initial gameplay pass is timed on devices with standard WebGPU timestamp queries; exact accepted character-draw ranges appear only where native in-pass timestamps exist. A six-slot nonblocking ring reports every exclusion and never fabricates unsupported scopes. One-LOD packages explicitly show one all-distance interval and refuse false optimization while retaining unrestricted import. Qualified latest results and explicitly pinned baselines survive restart with signed renderer fit, four-contact witnesses, and independently comparable wall/scene/character timing; they are bound to source, fit plus LOD policy, result contract, app build, presentation settings, physical output/render size and GPU/driver identity. Authenticated v1/v2/v3 evidence migrates to v4 without changing its established file location. The target cards, saved bias, distance inspector, and timing rows are keyboard/speech qualified at 200% scale. | Add representative scene variants, a maintained device-profile corpus, projected-size thresholds/hysteresis and optional recorded offline simplification |
 | Gameplay tuning | Correctly absent from visual package | Build separate opt-in hashed gameplay-profile system |
 | Preview | One-click typed requests launch select or all three vehicles through real game initialization in any 1-4P layout after ROM revalidation; requests are assignment-neutral and support all 13 select/race semantics held at an exact normalized phase. Zero yaw/pitch preserves the ordinary gameplay view; nonzero views are bounded absolute racer-relative orbits around renderer-published fitted bounds, use vehicle/split-screen-aware pull-back, suppress transient cutscene-camera selection, and retain ordinary obstruction resolution. The inclusive -90..90 pitch contract supplies exact top and underside pole views with yaw retained as the stable screen orientation. Select keeps its authored camera. Four deterministic character-only lights preserve world/simulation state. Pose inspection is counted after warm-up, usable as exact session fit proof, saved in Test history and v8 named drafts, and explicitly excluded from durable performance evidence. A one-shot exclusive PNG waits for 12 consecutive fully rendered character/pose/view/light frames after warm-up, then explicitly produces either a composed RGB gameplay frame or a straight-RGBA model-only image from an isolated WebGPU replay that excludes the donor, vehicle, world, and HUD. Model-only capture retains the accepted subject/player, authored viewport, target transform, camera MVP, normalized output viewport/scissor, and primitive count; result v13 publishes only bounded fixed-point projections for eight fit corners, the anchor, and the forward endpoint. Successful results enter a source/fit/product/digest-bound session tray with bounded inline registered overlays, can be sent directly to Portrait Studio through an exact-digest handoff, and export as a self-contained schema-v3 HTML/JSON contact sheet with no model/ROM/path or raw matrix bytes. Thumbnail decode, portrait decode, and export accept only the bound digest; an already-cached thumbnail remains the original captured image if the external path later changes. Live tests return a warmed v13 result with exact device/physical render identity, optional exact GPU scope/distribution evidence, target-frame anchor, calibrated fitted bounds, floor clearance, normalized forward evidence, exact model-capture registration, and complete post-solve contact chains from the successful replacement draw; they persist source/tuning-bound per-context author review plus the bounded 4x4 latest/baseline evidence matrix. Generated authored-only and reviewed-humanoid packages pass the complete WebGPU route/pixel/composition/transparency/stress/result/contact-witness/timestamp gate, including closed 3D top/underside composition. | Embed the renderer and add representative scene variants |
-| Packaging/update/removal | Mutation-free review plus package/base-bound transactional install/update, responsive installed-versus-candidate diff, reversible runtime disable, authenticated revision restore/source export, current-compiler portable export, transactional current-source rebuild, and recoverability-aware deletion are executable. Portable publication refuses overwrite and does not mutate installed state; rebuild preserves enabled state and the last known-good cache on failure. Named full-editor snapshots are bounded, authenticated, atomically persisted, independently resumable/deletable, exact-base locked, and autosaved. A combined optimistic build publishes portrait/profile/rig as one retained revision; launcher-owned fit is separately disclosed and confirmed. A dedicated responsive launcher destination now owns a persistent library rail, seven editor tabs, named readiness rows, a deterministic best-next-action resolver, persisted package/tab selection, safe DAE/ZIP-to-GLB handoff, a multi-draft pre-package GLB authoring library, and independent bounded history for Identity, Profile, Rig, Fit/review, Performance, and Test setup; Settings retains its shortcut and assignment summary. | Add bulk draft export/import after the portable-package sharing contract is finalized |
+| Packaging/update/removal | Mutation-free review plus package/base-bound transactional install/update, responsive installed-versus-candidate diff, reversible runtime disable, authenticated revision restore/source export, current-compiler portable export, transactional current-source rebuild, and recoverability-aware deletion are executable. Every external compiler/manager operation and both portable/source-only reviewed installs acknowledge immediately and complete off the UI thread; the selected package/tab and playable last-known-good character remain stable until publication. Portable publication refuses overwrite and does not mutate installed state; rebuild preserves enabled state and the last known-good cache on failure. Named full-editor snapshots are bounded, authenticated, atomically persisted, independently resumable/deletable, exact-base locked, and autosaved. A combined optimistic build publishes portrait/profile/rig as one retained revision; launcher-owned fit is separately disclosed and confirmed. Permanent removal writes an `armed`/`retired` AppConfig cleanup journal around the native quarantine transaction and idempotently reconciles preferences, named drafts, and exact-test evidence on rescan/launch, so cross-store cleanup is durable across a crash. A dedicated responsive launcher destination now owns a persistent library rail, seven editor tabs, named readiness rows, a deterministic best-next-action resolver, persisted package/tab selection, safe DAE/ZIP-to-GLB handoff, a multi-draft pre-package GLB authoring library, and independent bounded history for Identity, Profile, Rig, Fit/review, Performance, and Test setup; Settings retains its shortcut and assignment summary. | Add bulk draft export/import after the portable-package sharing contract is finalized |
 | Accessibility | Dedicated panel/tab/library/import/assignment controls carry spoken names, textual status, keyboard/controller navigation, and a narrow single-column fallback. Spatial placement/yaw/contact canvases expose spoken values plus adjacent navigable nudge/reset and exact numeric controls, and reflow instead of forcing a wide canvas. The exact-test matrix, baseline/destructive controls, semantic pose selector, phase scrubber, camera presets/sliders, character light, exclusive PNG request, capture tray, report export/removal actions, and all four responsive inspection actions have a rendered 200% keyboard/speech lifecycle gate. Shared cards flatten keyboard navigation so nested actions remain reachable. | Qualify remaining freeform editor gestures with human controller/screen-reader review |
 
 The secure-import baseline now preflights every GLB buffer, buffer view, and
