@@ -186,6 +186,9 @@ UNUSED s32 D_80123568[3]; // BSS Padding
 
 #ifdef NATIVE_PORT
 #define WORKSHOP_PREVIEW_WARMUP_TICKS 120u
+_Static_assert(
+    MDKR_CHARACTER_PREVIEW_CONTACTS == MDKR_MODERN_CHARACTER_CONTACTS,
+    "preview and runtime contact order must remain identical");
 static u64 sWorkshopPreviewWarmupTicks;
 static s32 sWorkshopPreviewMeasurementStarted;
 static s32 sWorkshopPreviewMeasurementFinished;
@@ -244,6 +247,49 @@ static s32 workshop_preview_publish_fit_diagnostics(
     memcpy(result->fit_anchor_micrometres, anchor, sizeof(anchor));
     memcpy(result->fit_forward_milli, forward, sizeof(forward));
     result->fit_diagnostics_valid = TRUE;
+    return TRUE;
+}
+
+static s32 workshop_preview_publish_contact_diagnostics(
+    MdkrCharacterPreviewResult *result) {
+    MdkrModernCharacterContactDiagnostics contacts;
+    s32 context;
+    u32 contact;
+    u32 axis;
+    if (result == NULL ||
+        result->context < MDKR_CHARACTER_PREVIEW_CAR ||
+        result->context > MDKR_CHARACTER_PREVIEW_PLANE) return FALSE;
+    context = (s32)result->context -
+        (s32)MDKR_CHARACTER_PREVIEW_SELECT;
+    if (!mdkr_modern_character_player_contact_diagnostics(
+            0, (MdkrModernCharacterContext)context, &contacts) ||
+        contacts.valid_mask !=
+            ((1u << MDKR_MODERN_CHARACTER_CONTACTS) - 1u)) return FALSE;
+    for (contact = 0u; contact < MDKR_MODERN_CHARACTER_CONTACTS; contact++) {
+        const double errorMicrometres =
+            (double)contacts.error[contact] * 1000000.0;
+        if (!isfinite(errorMicrometres) || errorMicrometres < 0.0 ||
+            errorMicrometres > 1000000000.0) return FALSE;
+        for (axis = 0u; axis < 3u; axis++) {
+            if (!workshop_preview_quantize_micrometres(
+                    contacts.chain_root[contact][axis],
+                    &result->contact_chain_root_micrometres[contact][axis]) ||
+                !workshop_preview_quantize_micrometres(
+                    contacts.bend[contact][axis],
+                    &result->contact_bend_micrometres[contact][axis]) ||
+                !workshop_preview_quantize_micrometres(
+                    contacts.target[contact][axis],
+                    &result->contact_target_micrometres[contact][axis]) ||
+                !workshop_preview_quantize_micrometres(
+                    contacts.end[contact][axis],
+                    &result->contact_end_micrometres[contact][axis])) {
+                return FALSE;
+            }
+        }
+        result->contact_witness_error_micrometres[contact] =
+            (u64)(errorMicrometres + 0.5);
+        result->contact_witness_mask |= 1u << contact;
+    }
     return TRUE;
 }
 
@@ -335,6 +381,7 @@ static void workshop_preview_measurement_finish(void) {
                 : 0u;
         if (result->replacement_draws != 0u) {
             (void)workshop_preview_publish_fit_diagnostics(result);
+            (void)workshop_preview_publish_contact_diagnostics(result);
         }
         mdkr_workshop_preview_visual_metrics(&visual);
         result->camera_override_ticks = visual.camera_override_ticks >=
@@ -352,7 +399,10 @@ static void workshop_preview_measurement_finish(void) {
     MDKR_TRACE(
         "character_workshop_result: warmup=%d realtime=%d samples=%llu "
         "p50us=%llu p95us=%llu p99us=%llu maxus=%llu replacements=%llu "
-        "contacts=%llu contactMaxUm=%llu fit=%d "
+        "contacts=%llu contactMaxUm=%llu contactWitness=%x "
+        "contactWitnessErrorUm=%llu,%llu,%llu,%llu "
+        "contactLHUm=root:%lld,%lld,%lld bend:%lld,%lld,%lld "
+        "target:%lld,%lld,%lld end:%lld,%lld,%lld fit=%d "
         "fitAnchorUm=%lld,%lld,%lld fitBoundsYUm=%lld,%lld "
         "fitForwardMilli=%d,%d,%d pose=%d phase=%u "
         "poseTicks=%llu poseFallback=%llu view=%d,%d lighting=%d "
@@ -365,6 +415,23 @@ static void workshop_preview_measurement_finish(void) {
         result->interval_p95_us, result->interval_p99_us,
         result->interval_max_us, result->replacement_draws,
         result->contact_solves, result->contact_error_max_micrometres,
+        result->contact_witness_mask,
+        result->contact_witness_error_micrometres[0],
+        result->contact_witness_error_micrometres[1],
+        result->contact_witness_error_micrometres[2],
+        result->contact_witness_error_micrometres[3],
+        result->contact_chain_root_micrometres[0][0],
+        result->contact_chain_root_micrometres[0][1],
+        result->contact_chain_root_micrometres[0][2],
+        result->contact_bend_micrometres[0][0],
+        result->contact_bend_micrometres[0][1],
+        result->contact_bend_micrometres[0][2],
+        result->contact_target_micrometres[0][0],
+        result->contact_target_micrometres[0][1],
+        result->contact_target_micrometres[0][2],
+        result->contact_end_micrometres[0][0],
+        result->contact_end_micrometres[0][1],
+        result->contact_end_micrometres[0][2],
         result->fit_diagnostics_valid,
         result->fit_anchor_micrometres[0],
         result->fit_anchor_micrometres[1],

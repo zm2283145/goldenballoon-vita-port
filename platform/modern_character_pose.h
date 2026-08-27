@@ -43,6 +43,16 @@ typedef struct MdkrModernPose {
     uint64_t contact_generation;
     uint32_t contact_context;
     float contact_max_error;
+    /* Exact post-solve chain witnesses in source/model space. The runtime
+     * publishes them only after applying the same target-frame transform as
+     * a successful replacement draw. Stable order is left hand, right hand,
+     * left foot, right foot. */
+    float contact_chain_root[MDKR_MODERN_CHARACTER_CONTACTS][3];
+    float contact_bend[MDKR_MODERN_CHARACTER_CONTACTS][3];
+    float contact_target[MDKR_MODERN_CHARACTER_CONTACTS][3];
+    float contact_end[MDKR_MODERN_CHARACTER_CONTACTS][3];
+    float contact_error[MDKR_MODERN_CHARACTER_CONTACTS];
+    uint32_t contact_valid_mask;
     int contacts_initialized;
     int valid;
 } MdkrModernPose;

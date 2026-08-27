@@ -5005,6 +5005,12 @@ arm must also publish a normalized target-frame forward direction, an ordered
 calibrated vertical volume, and a ground/seat anchor at automatic zero from the
 actual replacement transform. The select volume may not penetrate the roster
 floor beyond the five-millimetre numerical tolerance.
+The gate installs a second reviewed-humanoid package and drives a real car arm
+through automatic contact solving. Result v10 must publish all four bounded
+contact witnesses; the gate independently recomputes the left-hand
+target-to-endpoint distance from quantized coordinates and rejects partial,
+detached, or fabricated select-context evidence. Authored-clips-only arms must
+publish an explicit zero mask when no automatic solve owns the pose.
 
 The pose arm is intentionally not performance qualification. The Workshop
 keeps it as session fit evidence and displays replacement/contact observations,
@@ -5028,8 +5034,9 @@ This ROM-free rendered gate installs a generated CC0 animated package and
 exercises the Test workspace's durable 4-context by 4-player-layout matrix. It
 publishes a qualified Car 4P result through the production result boundary,
 checks exact source/fit/LOD/presentation fingerprints plus timing, device and
-physical-dimension fields on disk, and checks the v2 signed target-frame bounds,
-ground/seat anchor, and normalized facing fields from that replacement draw. It
+physical-dimension fields on disk, and checks the v3 signed target-frame bounds,
+ground/seat anchor, normalized facing, and four hand/foot chain witnesses from
+that replacement draw. It
 restarts the launcher, requires the same fit diagnosis to remain available, and
 pins the result as an explicit comparison baseline. A 200% compact keyboard-only speech walk must
 announce the qualified cell and both baseline controls.
@@ -5062,8 +5069,9 @@ checkerboard transparency presentation, and overwrite refusal;
 proves visual bounds, failure-without-mutation, and measurement epochs.
 The pure `character_test_evidence_store` unit separately covers canonical parsing,
 whole-inventory and row authentication, strict unsigned/signed numeric and UTF-8
-bounds, renderer-fit invariants, exact key replacement, authenticated v1 loading
-and next-write v2 migration, the 64-package/2048-record limits, transaction
+bounds, renderer-fit/contact-witness invariants, exact key replacement,
+authenticated v1/v2 loading and next-write v3 migration, the
+64-package/2048-record limits, transaction
 failures and honest baseline comparability. The durable filename intentionally
 remains `character_test_evidence-v1.tsv`: its authenticated header selects the
 schema, allowing existing v1 stores to be discovered and migrated rather than

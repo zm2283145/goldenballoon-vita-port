@@ -904,6 +904,7 @@ int mdkr_modern_pose_apply_vehicle_contacts(
         target[0] = hips[12] + offset[0];
         target[1] = hips[13] + offset[1];
         target[2] = hips[14] + offset[2];
+        memcpy(pose->contact_target[contact], target, sizeof(target));
         for (iteration = 0u; iteration < 4u; iteration++) {
             if (!ccd_contact_step(pose, chains[contact][1],
                                   chains[contact][2], target,
@@ -930,6 +931,35 @@ int mdkr_modern_pose_apply_vehicle_contacts(
     if (!isfinite(max_error)) {
         set_error(error, error_size, "vehicle contact solve became non-finite");
         return 0;
+    }
+    pose->contact_valid_mask = 0u;
+    for (contact = 0u; contact < MDKR_MODERN_CHARACTER_CONTACTS; contact++) {
+        const float *root = pose->world_current +
+            (size_t)pose->rig_role_nodes[chains[contact][0]] * 16u;
+        const float *bend = pose->world_current +
+            (size_t)pose->rig_role_nodes[chains[contact][1]] * 16u;
+        const float *end = pose->world_current +
+            (size_t)pose->rig_role_nodes[chains[contact][2]] * 16u;
+        float difference[3];
+        unsigned axis;
+        for (axis = 0u; axis < 3u; axis++) {
+            pose->contact_chain_root[contact][axis] = root[12u + axis];
+            pose->contact_bend[contact][axis] = bend[12u + axis];
+            pose->contact_end[contact][axis] = end[12u + axis];
+            difference[axis] = pose->contact_end[contact][axis] -
+                pose->contact_target[contact][axis];
+        }
+        pose->contact_error[contact] = sqrtf(
+            difference[0] * difference[0] +
+            difference[1] * difference[1] +
+            difference[2] * difference[2]);
+        if (!isfinite(pose->contact_error[contact])) {
+            pose->contact_valid_mask = 0u;
+            set_error(error, error_size,
+                      "vehicle contact witness became non-finite");
+            return 0;
+        }
+        pose->contact_valid_mask |= 1u << contact;
     }
     pose->contact_max_error = max_error;
     pose->contact_context = (uint32_t)context;

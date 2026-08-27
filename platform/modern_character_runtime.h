@@ -79,6 +79,17 @@ typedef struct MdkrModernCharacterFitDiagnostics {
     float forward[3];
 } MdkrModernCharacterFitDiagnostics;
 
+/* Latest exact post-solve contact witnesses in the donor target frame. These
+ * are populated only by a successful vehicle replacement draw. */
+typedef struct MdkrModernCharacterContactDiagnostics {
+    float chain_root[MDKR_MODERN_CHARACTER_CONTACTS][3];
+    float bend[MDKR_MODERN_CHARACTER_CONTACTS][3];
+    float target[MDKR_MODERN_CHARACTER_CONTACTS][3];
+    float end[MDKR_MODERN_CHARACTER_CONTACTS][3];
+    float error[MDKR_MODERN_CHARACTER_CONTACTS];
+    uint32_t valid_mask;
+} MdkrModernCharacterContactDiagnostics;
+
 /* Lightweight, borrowed library record for menu/workshop roster surfaces.
  * Catalog inspection never loads GPU mesh data; pointers remain valid until
  * runtime shutdown. `has_identity` is false for legacy donor-fallback media. */
@@ -145,6 +156,9 @@ int mdkr_modern_character_player_focus(
 int mdkr_modern_character_player_fit_diagnostics(
     int player, MdkrModernCharacterContext context,
     MdkrModernCharacterFitDiagnostics *out);
+int mdkr_modern_character_player_contact_diagnostics(
+    int player, MdkrModernCharacterContext context,
+    MdkrModernCharacterContactDiagnostics *out);
 
 /* Presentation-only adapter. Vehicle is 0 car, 1 hovercraft, 2 plane. */
 int mdkr_modern_character_matches(int player, int donor, int vehicle);

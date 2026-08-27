@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cmath>
 #include <set>
 #include <tuple>
 #include <utility>
@@ -12,13 +13,15 @@ namespace {
 
 constexpr const char *kHeaderV1 = "mdkr-character-test-evidence-v1";
 constexpr const char *kHeaderV2 = "mdkr-character-test-evidence-v2";
+constexpr const char *kHeaderV3 = "mdkr-character-test-evidence-v3";
 constexpr size_t kFieldsPerRowV1 = 39u;
 constexpr size_t kFieldsPerRowV2 = 52u;
+constexpr size_t kFieldsPerRowV3 = 105u;
 constexpr size_t      kMaximumRowBytes =
     (CharacterTestEvidenceStore::kMaximumBuildVersionBytes * 2u) +
     (CharacterTestEvidenceStore::kMaximumBackendBytes * 2u) +
     (CharacterTestEvidenceStore::kMaximumAdapterBytes * 2u) +
-    (CharacterTestEvidenceStore::kMaximumDriverBytes * 2u) + 2048u;
+    (CharacterTestEvidenceStore::kMaximumDriverBytes * 2u) + 4096u;
 constexpr size_t kMaximumSerializedBytes =
     CharacterTestEvidenceStore::kMaximumRecords * kMaximumRowBytes + 256u;
 
@@ -266,6 +269,68 @@ bool evidenceValid(const CharacterTestEvidenceStore::Evidence &evidence,
         : evidence.context != 1u &&
               evidence.contactErrorMeanMicrometres <=
                   evidence.contactErrorMaxMicrometres;
+    constexpr uint32_t kAllContactWitnesses = 0xFu;
+    constexpr int64_t kMaximumContactMicrometres = 1000000000LL;
+    bool contactWitnessStateValid =
+        evidence.contactWitnessMask == 0u ||
+        evidence.contactWitnessMask == kAllContactWitnesses;
+    uint64_t latestContactMaximum = 0u;
+    if (evidence.context == 1u && evidence.contactWitnessMask != 0u) {
+        contactWitnessStateValid = false;
+    }
+    if (evidence.contactWitnessMask != 0u &&
+        evidence.replacementDraws == 0u) {
+        contactWitnessStateValid = false;
+    }
+    if (evidence.resultVersion >= 10u && evidence.contactSolves != 0u &&
+        evidence.contactWitnessMask != kAllContactWitnesses) {
+        contactWitnessStateValid = false;
+    }
+    for (size_t contact = 0u; contact < 4u; ++contact) {
+        const bool valid =
+            (evidence.contactWitnessMask & (1u << contact)) != 0u;
+        for (size_t axis = 0u; axis < 3u; ++axis) {
+            const int64_t values[] = {
+                evidence.contactChainRootMicrometres[contact][axis],
+                evidence.contactBendMicrometres[contact][axis],
+                evidence.contactTargetMicrometres[contact][axis],
+                evidence.contactEndMicrometres[contact][axis],
+            };
+            for (int64_t value : values) {
+                contactWitnessStateValid = contactWitnessStateValid &&
+                    (valid || value == 0) &&
+                    value >= -kMaximumContactMicrometres &&
+                    value <= kMaximumContactMicrometres;
+            }
+        }
+        const uint64_t reported =
+            evidence.contactWitnessErrorMicrometres[contact];
+        if (!valid) {
+            contactWitnessStateValid =
+                contactWitnessStateValid && reported == 0u;
+            continue;
+        }
+        long double squared = 0.0L;
+        for (size_t axis = 0u; axis < 3u; ++axis) {
+            const long double difference = static_cast<long double>(
+                evidence.contactEndMicrometres[contact][axis] -
+                evidence.contactTargetMicrometres[contact][axis]);
+            squared += difference * difference;
+        }
+        const uint64_t measured =
+            static_cast<uint64_t>(std::sqrt(squared) + 0.5L);
+        const uint64_t delta = measured > reported
+            ? measured - reported : reported - measured;
+        contactWitnessStateValid = contactWitnessStateValid &&
+            reported <= static_cast<uint64_t>(kMaximumContactMicrometres) &&
+            delta <= 3u;
+        latestContactMaximum = std::max(latestContactMaximum, reported);
+    }
+    if (evidence.contactSolves != 0u &&
+        latestContactMaximum > evidence.contactErrorMaxMicrometres &&
+        latestContactMaximum - evidence.contactErrorMaxMicrometres > 3u) {
+        contactWitnessStateValid = false;
+    }
     const bool dimensionsValid =
         (evidence.outputWidth == 0u) == (evidence.outputHeight == 0u) &&
         (evidence.renderWidth == 0u) == (evidence.renderHeight == 0u);
@@ -334,6 +399,8 @@ bool evidenceValid(const CharacterTestEvidenceStore::Evidence &evidence,
         error = "started test evidence has no render dimensions";
     else if (!contactStateValid)
         error = "test evidence contact state or distribution is inconsistent";
+    else if (!contactWitnessStateValid)
+        error = "test evidence contact witnesses are inconsistent";
     else if (!fitStateValid)
         error = "test evidence fit diagnostics are inconsistent";
     else if (evidence.kind == Kind::Baseline && !qualified(evidence))
@@ -402,6 +469,21 @@ std::vector<std::string> recordFields(
     for (int32_t value : evidence.fitForwardMilli) {
         fields.push_back(signedNumber(value));
     }
+    fields.push_back(number(evidence.contactWitnessMask));
+    const auto appendContactPoints = [&](const int64_t points[4][3]) {
+        for (size_t contact = 0u; contact < 4u; ++contact) {
+            for (size_t axis = 0u; axis < 3u; ++axis) {
+                fields.push_back(signedNumber(points[contact][axis]));
+            }
+        }
+    };
+    appendContactPoints(evidence.contactChainRootMicrometres);
+    appendContactPoints(evidence.contactBendMicrometres);
+    appendContactPoints(evidence.contactTargetMicrometres);
+    appendContactPoints(evidence.contactEndMicrometres);
+    for (uint64_t value : evidence.contactWitnessErrorMicrometres) {
+        fields.push_back(number(value));
+    }
     return fields;
 }
 
@@ -449,7 +531,8 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
     uint64_t                 count     = 0u;
     if (text.size() > kMaximumSerializedBytes || end == std::string::npos ||
         !split(text.substr(0u, end), 3u, fields) ||
-        (fields[0] != kHeaderV1 && fields[0] != kHeaderV2) ||
+        (fields[0] != kHeaderV1 && fields[0] != kHeaderV2 &&
+         fields[0] != kHeaderV3) ||
         !parseUnsigned(fields[1], kMaximumRecords, count) ||
         !digestValid(fields[2])) {
         error = "test evidence inventory header is invalid";
@@ -457,7 +540,9 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
     }
     const std::string header = fields[0];
     const bool legacyV1 = header == kHeaderV1;
-    const size_t rowFields = legacyV1 ? kFieldsPerRowV1 : kFieldsPerRowV2;
+    const bool legacyV2 = header == kHeaderV2;
+    const size_t rowFields = legacyV1 ? kFieldsPerRowV1
+        : legacyV2 ? kFieldsPerRowV2 : kFieldsPerRowV3;
     const std::string countText         = fields[1];
     const std::string inventoryChecksum = fields[2];
     begin                               = end + 1u;
@@ -601,6 +686,40 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
                 return false;
             }
         }
+        if (!legacyV1 && !legacyV2) {
+            uint64_t witnessMask = 0u;
+            bool witnessFieldsValid =
+                parseUnsigned(fields[51], 0xFu, witnessMask);
+            evidence.contactWitnessMask =
+                static_cast<uint32_t>(witnessMask);
+            size_t field = 52u;
+            const auto parseContactPoints =
+                [&](int64_t points[4][3]) {
+                    for (size_t contact = 0u;
+                         contact < 4u && witnessFieldsValid; ++contact) {
+                        for (size_t axis = 0u;
+                             axis < 3u && witnessFieldsValid; ++axis) {
+                            witnessFieldsValid = parseSigned(
+                                fields[field++], -1000000000LL,
+                                1000000000LL, points[contact][axis]);
+                        }
+                    }
+                };
+            parseContactPoints(evidence.contactChainRootMicrometres);
+            parseContactPoints(evidence.contactBendMicrometres);
+            parseContactPoints(evidence.contactTargetMicrometres);
+            parseContactPoints(evidence.contactEndMicrometres);
+            for (size_t contact = 0u;
+                 contact < 4u && witnessFieldsValid; ++contact) {
+                witnessFieldsValid = parseUnsigned(
+                    fields[field++], 1000000000ULL,
+                    evidence.contactWitnessErrorMicrometres[contact]);
+            }
+            if (!witnessFieldsValid || field != 104u) {
+                error = "test evidence contact witness fields are invalid";
+                return false;
+            }
+        }
         const std::string checksum           = fields.back();
         fields.pop_back();
         if (!evidenceValid(evidence, error) ||
@@ -666,8 +785,8 @@ bool serialize(const Inventory &inventory, std::string &output, std::string &err
         }
     }
     const std::string count  = std::to_string(ordered.records.size());
-    std::string       result = std::string(kHeaderV2) + "\t" + count + "\t" +
-                               inventoryDigest(kHeaderV2, count, body) +
+    std::string       result = std::string(kHeaderV3) + "\t" + count + "\t" +
+                               inventoryDigest(kHeaderV3, count, body) +
                                "\n" + body;
     if (result.size() > kMaximumSerializedBytes) {
         error = "serialized test evidence exceeds its byte bound";

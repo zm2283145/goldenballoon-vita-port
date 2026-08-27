@@ -211,6 +211,7 @@ int main(int argc, char **argv) {
     MdkrModernCharacterIdentityView identity_view;
     MdkrModernCharacterRuntimeMetrics runtime_metrics;
     MdkrModernCharacterFitDiagnostics fit_diagnostics;
+    MdkrModernCharacterContactDiagnostics contact_diagnostics;
     MdkrWorkshopPreviewVisualMetrics visual_metrics;
     const uint8_t *portrait_data;
     MdkrModernCharacterRegistry registry;
@@ -678,8 +679,12 @@ int main(int argc, char **argv) {
                 contact_offsets,
                 error, sizeof(error)) &&
                 isfinite(pose.contact_max_error) &&
-                pose.contact_max_error < 0.25f,
-            "bounded contact solver reaches the car hand/foot targets");
+                pose.contact_max_error < 0.25f &&
+                pose.contact_valid_mask == 0xFu &&
+                isfinite(pose.contact_target[0][0]) &&
+                isfinite(pose.contact_end[3][2]) &&
+                pose.contact_error[0] >= 0.0f,
+            "bounded contact solver retains finite chain, target, endpoint, and error witnesses");
     memcpy(procedural_arm_left,
            mdkr_modern_pose_node_matrix(&pose, 6u, 0),
            sizeof(procedural_arm_left));
@@ -1137,6 +1142,21 @@ int main(int argc, char **argv) {
                 !mdkr_modern_character_player_fit_diagnostics(
                     -1, MDKR_CHARACTER_CONTEXT_CAR, &fit_diagnostics),
             "runtime publishes exact target-space anchor, calibrated bounds, and normalized facing only after a successful context draw");
+    require(mdkr_modern_character_player_contact_diagnostics(
+                0, MDKR_CHARACTER_CONTEXT_CAR, &contact_diagnostics) &&
+                contact_diagnostics.valid_mask == 0xFu &&
+                isfinite(contact_diagnostics.chain_root[0][0]) &&
+                isfinite(contact_diagnostics.bend[1][1]) &&
+                isfinite(contact_diagnostics.target[2][2]) &&
+                isfinite(contact_diagnostics.end[3][2]) &&
+                contact_diagnostics.error[0] >= 0.0f &&
+                !mdkr_modern_character_player_contact_diagnostics(
+                    0, MDKR_CHARACTER_CONTEXT_SELECT,
+                    &contact_diagnostics) &&
+                !mdkr_modern_character_player_contact_diagnostics(
+                    0, MDKR_CHARACTER_CONTEXT_HOVERCRAFT,
+                    &contact_diagnostics),
+            "runtime publishes complete contact witnesses only for a successfully rendered solved vehicle context");
     require(command_cursor == commands + 2 && registered_draws == 2u,
             "runtime emits one retained command per selected primitive");
     require(select_model_y - last_model_matrix[13] > 0.70f,

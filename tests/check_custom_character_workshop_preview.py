@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import struct
@@ -23,10 +24,16 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import character_manifest_wizard as wizard  # noqa: E402
-from test_character_asset_probe import make_animated_glb, make_portrait_png  # noqa: E402
+from test_character_asset_probe import (  # noqa: E402
+    make_animated_glb,
+    make_humanoid_glb,
+    make_portrait_png,
+    make_v4_manifest,
+)
 
 
 PACKAGE_ID = "org.mdkr.context-proof"
+CONTACT_PACKAGE_ID = "org.mdkr.contact-proof"
 FRAMES = 180
 PRODUCT_CAPTURE_FRAMES = 360
 
@@ -278,6 +285,24 @@ def main() -> int:
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n",
                              encoding="utf-8")
     license_path.write_text("CC0 1.0 Universal\n", encoding="utf-8")
+    contact_model = source / "contact-model.glb"
+    contact_manifest_path = source / "contact-manifest.json"
+    contact_package = source / "contact-proof.mdkrchar"
+    portrait_bytes = portrait.read_bytes()
+    contact_model.write_bytes(make_humanoid_glb())
+    contact_manifest = make_v4_manifest(portrait_bytes, humanoid=True)
+    contact_manifest["id"] = CONTACT_PACKAGE_ID
+    contact_manifest["display_name"] = "Contact Proof"
+    contact_manifest["license"] = {
+        "spdx": "CC0-1.0",
+        "attribution": "Generated MDKR contact fixture",
+        "source_url": "https://example.invalid/contact-proof",
+    }
+    contact_manifest["gameplay"] = {
+        "donor": "bumper", "vehicles": ["car", "hovercraft", "plane"],
+    }
+    contact_manifest_path.write_text(
+        json.dumps(contact_manifest, indent=2) + "\n", encoding="utf-8")
 
     failures: list[str] = []
     output = ""
@@ -290,6 +315,16 @@ def main() -> int:
     output += packed.stdout or ""
     if packed.returncode != 0:
         failures.append("license-clean package generation failed")
+    packed_contact = run([
+        sys.executable, str(ROOT / "tools" / "character_asset_probe.py"),
+        "pack", "--model", str(contact_model),
+        "--manifest", str(contact_manifest_path),
+        "--license", str(license_path), "--portrait", str(portrait),
+        "--output", str(contact_package),
+    ])
+    output += packed_contact.stdout or ""
+    if packed_contact.returncode != 0:
+        failures.append("contact witness package generation failed")
     if not failures:
         installed = run([
             sys.executable,
@@ -299,6 +334,14 @@ def main() -> int:
         output += installed.stdout or ""
         if installed.returncode != 0:
             failures.append("temporary catalog install failed")
+        installed_contact = run([
+            sys.executable,
+            str(ROOT / "tools" / "character_package_manager.py"),
+            "--directory", str(characters), "install", str(contact_package),
+        ])
+        output += installed_contact.stdout or ""
+        if installed_contact.returncode != 0:
+            failures.append("temporary contact catalog install failed")
 
     arms = [
         ("select", 1, True, None, None, False, None, None, None, None),
@@ -316,6 +359,11 @@ def main() -> int:
         ("car", 1, False, "select.idle", "500", False,
          180, 15, "bright", "model-alpha"),
     ]
+    arms = [arm + (PACKAGE_ID,) for arm in arms]
+    arms.append((
+        "car", 1, False, None, None, False,
+        None, None, None, None, CONTACT_PACKAGE_ID,
+    ))
     arm_draws: dict[str, int] = {}
     captures: dict[str, Path] = {}
     reported_dimensions: dict[str, tuple[int, int, int, int]] = {}
@@ -323,11 +371,13 @@ def main() -> int:
     if not failures:
         for (context, players, capture, pose, pose_phase,
              expect_fallback, view_yaw, view_pitch, lighting,
-             capture_kind) in arms:
+             capture_kind, package_id) in arms:
             label = (f"{context}-{players}p" if pose is None else
                      f"{context}-{players}p-pose" +
                      ("-fallback" if expect_fallback else "") +
                      (f"-{capture_kind}-capture" if capture_kind else ""))
+            if package_id == CONTACT_PACKAGE_ID:
+                label += "-contact-witness"
             arm_dir = evidence / label
             arm_dir.mkdir(parents=True, exist_ok=True)
             env = {key: value for key, value in os.environ.items()
@@ -343,7 +393,7 @@ def main() -> int:
                 MDKR64_HIDDEN="1",
             )
             for player in range(players):
-                env[f"MDKR_CUSTOM_CHARACTER_P{player + 1}"] = PACKAGE_ID
+                env[f"MDKR_CUSTOM_CHARACTER_P{player + 1}"] = package_id
             if pose is not None and pose_phase is not None:
                 env["MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE"] = pose
                 env["MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE"] = pose_phase
@@ -463,6 +513,58 @@ def main() -> int:
                     failures.append(f"{label} result did not isolate a synthetic post-warmup sample")
                 if replacements <= 0:
                     failures.append(f"{label} result counted no package replacements")
+            contact_match = re.search(
+                r"contacts=(\d+) contactMaxUm=\d+ "
+                r"contactWitness=([0-9a-f]+) "
+                r"contactWitnessErrorUm=(\d+),(\d+),(\d+),(\d+) "
+                r"contactLHUm=root:(-?\d+),(-?\d+),(-?\d+) "
+                r"bend:(-?\d+),(-?\d+),(-?\d+) "
+                r"target:(-?\d+),(-?\d+),(-?\d+) "
+                r"end:(-?\d+),(-?\d+),(-?\d+)",
+                arm_output,
+            )
+            if contact_match is None:
+                failures.append(f"{label} emitted no bounded contact witness contract")
+            elif pose is None:
+                values = [int(value, 16) if index == 1 else int(value)
+                          for index, value in enumerate(contact_match.groups())]
+                solves, mask = values[0:2]
+                errors = values[2:6]
+                root, bend = values[6:9], values[9:12]
+                target, endpoint = values[12:15], values[15:18]
+                if context == "select":
+                    if solves != 0 or mask != 0 or any(
+                            errors + root + bend + target + endpoint):
+                        failures.append(
+                            f"{label} fabricated vehicle contacts in character select"
+                        )
+                elif solves == 0:
+                    if mask != 0 or any(
+                            errors + root + bend + target + endpoint):
+                        failures.append(
+                            f"{label} detached witnesses from its zero solve count"
+                        )
+                else:
+                    measured = math.isqrt(sum(
+                        (endpoint[axis] - target[axis]) ** 2
+                        for axis in range(3)
+                    ))
+                    if (
+                        mask != 0xF
+                        or any(value < 0 or value > 1_000_000_000
+                               for value in errors)
+                        or abs(measured - errors[0]) > 3
+                        or root == bend
+                    ):
+                        failures.append(
+                            f"{label} returned inconsistent exact hand/foot witnesses "
+                            f"mask={mask:x} errors={errors} measuredLH={measured} "
+                            f"root={root} bend={bend} target={target} end={endpoint}"
+                        )
+                if package_id == CONTACT_PACKAGE_ID and solves == 0:
+                    failures.append(
+                        f"{label} did not execute automatic humanoid contacts"
+                    )
             fit_match = re.search(
                 r"character_workshop_result: .* fit=(\d+) "
                 r"fitAnchorUm=(-?\d+),(-?\d+),(-?\d+) "
@@ -762,8 +864,8 @@ def main() -> int:
         "with honest fallback accounting, deterministic camera/light controls, "
         "target-frame anchor/bounds/facing measurements, exclusive stabilized "
         "RGB gameplay and transparent RGBA model-only PNG capture, "
-        "one-to-four-player WebGPU stress, and fail-closed invalid "
-        "requests"
+        "exact four-contact post-solve witnesses, one-to-four-player WebGPU "
+        "stress, and fail-closed invalid requests"
     )
     if args.evidence_dir is not None:
         print(f"evidence: {evidence}")

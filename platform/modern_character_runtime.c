@@ -43,6 +43,9 @@ typedef struct MdkrModernRuntimePlayer {
     MdkrModernCharacterFitDiagnostics
         fit_diagnostics[MDKR_CHARACTER_CONTEXT_COUNT];
     uint32_t fit_diagnostics_valid_mask;
+    MdkrModernCharacterContactDiagnostics
+        contact_diagnostics[MDKR_CHARACTER_CONTEXT_COUNT];
+    uint32_t contact_diagnostics_valid_mask;
 } MdkrModernRuntimePlayer;
 
 static MdkrModernCharacterRegistry s_registry;
@@ -990,6 +993,7 @@ int mdkr_modern_character_set_tuning(int player,
     s_players[player].tuning = checked;
     s_players[player].focus_valid_mask = 0u;
     s_players[player].fit_diagnostics_valid_mask = 0u;
+    s_players[player].contact_diagnostics_valid_mask = 0u;
     return 1;
 }
 
@@ -1032,6 +1036,21 @@ int mdkr_modern_character_player_fit_diagnostics(
         (slot->fit_diagnostics_valid_mask &
          (1u << (unsigned)context)) == 0u) return 0;
     *out = slot->fit_diagnostics[context];
+    return 1;
+}
+
+int mdkr_modern_character_player_contact_diagnostics(
+    int player, MdkrModernCharacterContext context,
+    MdkrModernCharacterContactDiagnostics *out) {
+    const MdkrModernRuntimePlayer *slot;
+    if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        context < MDKR_CHARACTER_CONTEXT_CAR ||
+        context > MDKR_CHARACTER_CONTEXT_PLANE || out == NULL) return 0;
+    slot = &s_players[player];
+    if (slot->pool < 0 ||
+        (slot->contact_diagnostics_valid_mask &
+         (1u << (unsigned)context)) == 0u) return 0;
+    *out = slot->contact_diagnostics[context];
     return 1;
 }
 
@@ -1134,8 +1153,10 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
     MdkrModernAttachment attachment;
     MdkrModernCalibration calibration;
     MdkrModernCharacterFitDiagnostics fit_diagnostics;
+    MdkrModernCharacterContactDiagnostics contact_diagnostics;
     int has_calibration;
     int fit_diagnostics_ready = 0;
+    int contact_diagnostics_ready = 0;
     int contact_solved = 0;
     uint64_t contact_error_micrometres = 0u;
     uint32_t primitive_index;
@@ -1169,17 +1190,6 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
             slot->pose.contact_generation == slot->pose.generation &&
             (previous_contact_generation != slot->pose.contact_generation ||
              previous_contact_context != slot->pose.contact_context);
-        if (contact_solved) {
-            double micrometres =
-                (double)slot->pose.contact_max_error * 1000000.0;
-            if (!isfinite(micrometres) || micrometres < 0.0 ||
-                micrometres > (double)UINT64_MAX) {
-                set_error(error, error_size,
-                          "vehicle contact metric is outside its safe range");
-                return 0;
-            }
-            contact_error_micrometres = (uint64_t)(micrometres + 0.5);
-        }
     }
     for (primitive_index = 0u;
          primitive_index < pool->render.gpu.primitive_count;
@@ -1291,6 +1301,73 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
         fit_diagnostics_ready = calibration_fit_diagnostics(
             &calibration, adjusted_transform, source_anchor,
             &fit_diagnostics);
+        if (context != MDKR_CHARACTER_CONTEXT_SELECT &&
+            slot->pose.contact_generation == slot->pose.generation &&
+            slot->pose.contact_context == (uint32_t)context &&
+            slot->pose.contact_valid_mask ==
+                ((1u << MDKR_MODERN_CHARACTER_CONTACTS) - 1u)) {
+            unsigned contact;
+            memset(&contact_diagnostics, 0, sizeof(contact_diagnostics));
+            for (contact = 0u; contact < MDKR_MODERN_CHARACTER_CONTACTS;
+                 contact++) {
+                float difference[3];
+                unsigned axis;
+                matrix_transform_point(
+                    adjusted_transform,
+                    slot->pose.contact_chain_root[contact],
+                    contact_diagnostics.chain_root[contact]);
+                matrix_transform_point(
+                    adjusted_transform, slot->pose.contact_bend[contact],
+                    contact_diagnostics.bend[contact]);
+                matrix_transform_point(
+                    adjusted_transform, slot->pose.contact_target[contact],
+                    contact_diagnostics.target[contact]);
+                matrix_transform_point(
+                    adjusted_transform, slot->pose.contact_end[contact],
+                    contact_diagnostics.end[contact]);
+                for (axis = 0u; axis < 3u; axis++) {
+                    difference[axis] =
+                        contact_diagnostics.end[contact][axis] -
+                        contact_diagnostics.target[contact][axis];
+                    if (!isfinite(contact_diagnostics.chain_root[contact][axis]) ||
+                        !isfinite(contact_diagnostics.bend[contact][axis]) ||
+                        !isfinite(contact_diagnostics.target[contact][axis]) ||
+                        !isfinite(contact_diagnostics.end[contact][axis])) {
+                        set_error(error, error_size,
+                                  "vehicle contact witness is outside its safe range");
+                        return 0;
+                    }
+                }
+                contact_diagnostics.error[contact] = sqrtf(
+                    difference[0] * difference[0] +
+                    difference[1] * difference[1] +
+                    difference[2] * difference[2]);
+                if (!isfinite(contact_diagnostics.error[contact])) {
+                    set_error(error, error_size,
+                              "vehicle contact error is outside its safe range");
+                    return 0;
+                }
+                contact_diagnostics.valid_mask |= 1u << contact;
+            }
+            contact_diagnostics_ready = 1;
+            if (contact_solved) {
+                double micrometres = 0.0;
+                for (contact = 0u; contact < MDKR_MODERN_CHARACTER_CONTACTS;
+                     contact++) {
+                    const double candidate =
+                        (double)contact_diagnostics.error[contact] * 1000000.0;
+                    if (candidate > micrometres) micrometres = candidate;
+                }
+                if (!isfinite(micrometres) || micrometres < 0.0 ||
+                    micrometres > (double)UINT64_MAX) {
+                    set_error(error, error_size,
+                              "vehicle contact metric is outside its safe range");
+                    return 0;
+                }
+                contact_error_micrometres =
+                    (uint64_t)(micrometres + 0.5);
+            }
+        }
     }
     for (primitive_index = 0u;
          primitive_index < pool->render.gpu.primitive_count;
@@ -1393,6 +1470,12 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
         slot->fit_diagnostics_valid_mask |= 1u << (unsigned)context;
     } else {
         slot->fit_diagnostics_valid_mask &= ~(1u << (unsigned)context);
+    }
+    if (contact_diagnostics_ready) {
+        slot->contact_diagnostics[context] = contact_diagnostics;
+        slot->contact_diagnostics_valid_mask |= 1u << (unsigned)context;
+    } else {
+        slot->contact_diagnostics_valid_mask &= ~(1u << (unsigned)context);
     }
     if (inspection_lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL) {
         mdkr_workshop_preview_note_lighting_override();

@@ -1100,11 +1100,15 @@ visible and never count as current, while an LOD-only change does not revoke the
 separate vehicle-fit review. Baseline pinning, exact-cell deletion, package
 deletion, restart recovery, an actual LOD-policy stale transition, and
 malformed-inventory preservation are covered by a rendered ROM-free lifecycle
-gate. Evidence schema v2 also retains the signed target-frame
-bounds, ground/seat anchor, and normalized facing direction from the successful
-replacement draw, so Fit and Performance retain the same renderer measurement
-after restart. Authenticated v1 inventories load with an explicit unavailable
-fit state and migrate in place on the next successful write; the established
+gate. Evidence schema v3 retains the signed target-frame bounds, ground/seat
+anchor, normalized facing direction, and four exact post-solve
+root/bend/target/end/error contact witnesses from the successful replacement
+draw, so Fit and Performance retain the same renderer measurement after
+restart. The v10 result contract requires either all four self-consistent
+witnesses or none; a vehicle result with nonzero automatic solve count cannot
+omit or partially publish them. Authenticated v1/v2 inventories load older
+fields with explicit unavailable states and migrate in place on the next
+successful write; the established
 filename remains unchanged so old evidence is never orphaned. The report
 deliberately does not invent a “GPU time”
 from CPU wall cadence; timestamp/pass attribution, representative scene variants

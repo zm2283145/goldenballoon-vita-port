@@ -60,6 +60,12 @@ struct Evidence {
     uint64_t    contactSolves               = 0u;
     uint64_t    contactErrorMeanMicrometres = 0u;
     uint64_t    contactErrorMaxMicrometres  = 0u;
+    uint32_t    contactWitnessMask          = 0u;
+    int64_t     contactChainRootMicrometres[4][3] = {};
+    int64_t     contactBendMicrometres[4][3]      = {};
+    int64_t     contactTargetMicrometres[4][3]    = {};
+    int64_t     contactEndMicrometres[4][3]       = {};
+    uint64_t    contactWitnessErrorMicrometres[4] = {};
     bool        fitDiagnosticsValid         = false;
     int64_t     fitBoundsMinMicrometres[3]  = {};
     int64_t     fitBoundsMaxMicrometres[3]  = {};

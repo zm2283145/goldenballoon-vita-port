@@ -63,6 +63,8 @@ typedef enum {
     MDKR_CHARACTER_PREVIEW_CAPTURE_COUNT,
 } MdkrCharacterPreviewCaptureKind;
 
+#define MDKR_CHARACTER_PREVIEW_CONTACTS 4u
+
 // Measured evidence returned by an exact Character Workshop session. Interval
 // values describe displayed wall cadence after a 120-authored-tick warm-up;
 // they are not GPU timestamp queries. A short session can legitimately return
@@ -92,6 +94,16 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned long long contact_solves;
     unsigned long long contact_error_mean_micrometres;
     unsigned long long contact_error_max_micrometres;
+    /* Latest successful post-solve vehicle draw. Stable contact order is
+     * left hand, right hand, left foot, right foot. Every point is in the
+     * donor target frame and every valid bit covers one complete witness. */
+    unsigned contact_witness_mask;
+    long long contact_chain_root_micrometres[MDKR_CHARACTER_PREVIEW_CONTACTS][3];
+    long long contact_bend_micrometres[MDKR_CHARACTER_PREVIEW_CONTACTS][3];
+    long long contact_target_micrometres[MDKR_CHARACTER_PREVIEW_CONTACTS][3];
+    long long contact_end_micrometres[MDKR_CHARACTER_PREVIEW_CONTACTS][3];
+    unsigned long long contact_witness_error_micrometres
+        [MDKR_CHARACTER_PREVIEW_CONTACTS];
     /* Latest successful replacement draw, expressed in its donor target
      * frame. Signed micrometres retain sub-millimetre fit evidence without
      * exposing host float representation across the C/C++ app boundary. */
@@ -127,7 +139,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 9u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 10u
 #define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u
 
 // Owned by the C engine entry module and non-NULL only during a launcher-owned

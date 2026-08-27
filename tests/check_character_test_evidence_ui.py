@@ -83,13 +83,13 @@ def evidence_rows(root: Path) -> list[list[str]]:
     header = lines[0].split("\t")
     if (
         len(header) != 3
-        or header[0] != "mdkr-character-test-evidence-v2"
+        or header[0] != "mdkr-character-test-evidence-v3"
         or int(header[1]) != len(lines) - 1
         or len(header[2]) != 64
     ):
         raise RuntimeError("test evidence inventory header is malformed")
     rows = [line.split("\t") for line in lines[1:]]
-    if any(len(row) != 52 for row in rows):
+    if any(len(row) != 105 for row in rows):
         raise RuntimeError("test evidence inventory row is malformed")
     return rows
 
@@ -245,6 +245,9 @@ def main() -> int:
                     "character-test-matrix package=" + PACKAGE_ID,
                     "current=1 required=16 selected=2:4 state=Qualified "
                     "latest=1 baseline=0",
+                    "character-contact-proof context=2 mask=f views=3 "
+                    "coordinate-space=donor-target "
+                    "errorsUm=1000,1500,2000,2500 accessible=numeric-table",
                 ),
                 action="publish-qualified",
             )
@@ -254,7 +257,7 @@ def main() -> int:
                 or rows[0][0] != "0"
                 or rows[0][1] != PACKAGE_ID
                 or (rows[0][7], rows[0][8]) != ("2", "4")
-                or rows[0][9] != "9"
+                or rows[0][9] != "10"
                 or bytes.fromhex(rows[0][29]).decode("utf-8")
                 != "webgpu-test"
                 or bytes.fromhex(rows[0][30]).decode("utf-8")
@@ -269,6 +272,9 @@ def main() -> int:
                 or tuple(map(int, rows[0][45:48]))
                 != (10000, 20000, -30000)
                 or tuple(map(int, rows[0][48:51])) != (0, 0, 1000)
+                or rows[0][51] != "15"
+                or tuple(map(int, rows[0][100:104]))
+                != (1000, 1500, 2000, 2500)
             ):
                 raise RuntimeError(
                     "qualified exact result did not persist exact device and renderer-fit fields"
@@ -425,7 +431,7 @@ def main() -> int:
                 root,
                 characters,
                 (
-                    "character-preview-result rejected-evidence=fit-contract",
+                    "character-preview-result rejected-evidence=fit-contact-contract",
                     "action=publish-invalid-fit applied=1 "
                     "records=0 baselines=0",
                 ),
@@ -436,6 +442,24 @@ def main() -> int:
             ).read_bytes() != empty_evidence:
                 raise RuntimeError(
                     "invalid fit contract contaminated durable performance evidence"
+                )
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "character-preview-result rejected-evidence=fit-contact-contract",
+                    "contactMask=3",
+                    "action=publish-invalid-contact applied=1 "
+                    "records=0 baselines=0",
+                ),
+                action="publish-invalid-contact",
+            )
+            if (
+                root / "saves" / "character_test_evidence-v1.tsv"
+            ).read_bytes() != empty_evidence:
+                raise RuntimeError(
+                    "invalid contact contract contaminated durable performance evidence"
                 )
 
             run(
@@ -511,9 +535,9 @@ def main() -> int:
         return 1
     print(
         "check_character_test_evidence_ui: PASS -- durable source/fit/device-"
-        "bound 4x4 matrix with signed renderer-fit diagnostics, same-"
+        "bound 4x4 matrix with signed renderer-fit and hand/foot contact diagnostics, same-"
         "environment baseline lifecycle, corruption "
-        "and invalid-fit refusal, pose-inspection exclusion, keyboard speech, "
+        "and invalid-fit/contact refusal, pose-inspection exclusion, keyboard speech, "
         "200% rendering, and package-byte purity"
     )
     return 0

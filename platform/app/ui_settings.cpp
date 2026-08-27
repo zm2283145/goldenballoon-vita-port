@@ -4904,6 +4904,8 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
 
 bool characterPreviewFitDiagnosticsValid(
     const MdkrCharacterPreviewResult &result);
+bool characterPreviewContactDiagnosticsValid(
+    const MdkrCharacterPreviewResult &result);
 MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
     const CharacterTestEvidenceStore::Evidence &evidence);
 void drawCharacterFitDiagnostics(
@@ -4937,6 +4939,7 @@ bool characterPreviewSessionMatchesTuning(
            session.result.replacement_draws != 0u &&
            session.result.fit_diagnostics_valid != 0 &&
            characterPreviewFitDiagnosticsValid(session.result) &&
+           characterPreviewContactDiagnosticsValid(session.result) &&
            (session.result.capture_requested
                 ? session.result.capture_kind >=
                       MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE &&
@@ -5061,6 +5064,252 @@ CharacterSpatialAxes characterSpatialAxes(CharacterSpatialPlane plane) {
         default:
             return {0u, 1u, "X", "Y"};
     }
+}
+
+void drawCharacterContactDiagnostics(
+    const MdkrCharacterPreviewResult &result) {
+    if (result.context == MDKR_CHARACTER_PREVIEW_SELECT) return;
+    if (result.contact_witness_mask == 0u) {
+        ui::TextSubtleWrapped(
+            "No post-solve contact witness was published. This is expected for an explicitly authored clip or a rig without the reviewed humanoid role map; automatic hand/foot placement remains unproven.");
+        return;
+    }
+    static const char *const contactNames[] = {
+        "Left hand", "Right hand", "Left foot", "Right foot",
+    };
+    static const char *const contactShort[] = {"LH", "RH", "LF", "RF"};
+    static const ImU32 contactColours[] = {
+        IM_COL32(83, 196, 255, 255), IM_COL32(255, 174, 66, 255),
+        IM_COL32(133, 224, 125, 255), IM_COL32(232, 118, 188, 255),
+    };
+    struct View { const char *name; unsigned horizontal; unsigned vertical; };
+    static const View views[] = {
+        {"Front · X/Y", 0u, 1u}, {"Side · Z/Y", 2u, 1u},
+        {"Top · X/Z", 0u, 2u},
+    };
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static std::set<std::string> traced;
+        const std::string key = std::to_string(result.context) + ":" +
+            std::to_string(result.contact_witness_mask) + ":" +
+            std::to_string(result.contact_witness_error_micrometres[0]) +
+            ":" +
+            std::to_string(result.contact_witness_error_micrometres[3]);
+        if (traced.insert(key).second) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-contact-proof context=%u mask=%x views=3 coordinate-space=donor-target errorsUm=%llu,%llu,%llu,%llu accessible=numeric-table\n",
+                static_cast<unsigned>(result.context),
+                result.contact_witness_mask,
+                result.contact_witness_error_micrometres[0],
+                result.contact_witness_error_micrometres[1],
+                result.contact_witness_error_micrometres[2],
+                result.contact_witness_error_micrometres[3]);
+        }
+    }
+    ImGui::SeparatorText("Hand & foot contact proof");
+    ui::TextSubtleWrapped(
+        "Exact latest post-solve chains from the successful replacement draw. The cross is the tuned target; the solid endpoint and connecting error line show where the hand or foot actually landed. All views use donor target space, not source-model axes.");
+    const float available = ImGui::GetContentRegionAvail().x;
+    const int columns = available >= 780.0f ? 3 : available >= 500.0f ? 2 : 1;
+    if (ImGui::BeginTable("##contact-witness-views", columns,
+                          ImGuiTableFlags_SizingStretchSame)) {
+        for (unsigned viewIndex = 0u; viewIndex < std::size(views);
+             ++viewIndex) {
+            const View &view = views[viewIndex];
+            ImGui::TableNextColumn();
+            ImGui::PushID(static_cast<int>(viewIndex));
+            ImGui::TextUnformatted(view.name);
+            const float uiScale = AppTheme::uiScale();
+            const float width = std::max(
+                1.0f, ImGui::GetContentRegionAvail().x);
+            const ImVec2 size(width, 190.0f * uiScale);
+            const ImVec2 origin = ImGui::GetCursorScreenPos();
+            ImGui::InvisibleButton("Contact witness plot", size);
+            const bool focused = ImGui::IsItemFocused();
+            ui::SpeakFocusedItem(
+                view.name, nullptr,
+                "Exact contact plot. Root to bend to endpoint is the solved chain; crosses are targets. The numeric table after the plots gives every error and coordinate.");
+            ImDrawList *draw = ImGui::GetWindowDrawList();
+            const ImVec2 maximum(origin.x + size.x, origin.y + size.y);
+            const float padX = std::min(10.0f * uiScale, size.x * 0.1f);
+            const float padY = std::min(10.0f * uiScale, size.y * 0.1f);
+            draw->AddRectFilled(origin, maximum, IM_COL32(12, 17, 24, 255),
+                                6.0f * uiScale);
+            draw->AddRect(origin, maximum,
+                          focused ? ImGui::GetColorU32(ImGuiCol_NavHighlight)
+                                  : IM_COL32(74, 86, 102, 255),
+                          6.0f * uiScale, 0,
+                          (focused ? 2.0f : 1.0f) * uiScale);
+            double lowH = std::min<long long>(
+                0, result.fit_bounds_min_micrometres[view.horizontal]);
+            double highH = std::max<long long>(
+                0, result.fit_bounds_max_micrometres[view.horizontal]);
+            double lowV = std::min<long long>(
+                0, result.fit_bounds_min_micrometres[view.vertical]);
+            double highV = std::max<long long>(
+                0, result.fit_bounds_max_micrometres[view.vertical]);
+            for (unsigned contact = 0u;
+                 contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
+                const long long *points[] = {
+                    result.contact_chain_root_micrometres[contact],
+                    result.contact_bend_micrometres[contact],
+                    result.contact_target_micrometres[contact],
+                    result.contact_end_micrometres[contact],
+                };
+                for (const long long *point : points) {
+                    lowH = std::min(lowH,
+                        static_cast<double>(point[view.horizontal]));
+                    highH = std::max(highH,
+                        static_cast<double>(point[view.horizontal]));
+                    lowV = std::min(lowV,
+                        static_cast<double>(point[view.vertical]));
+                    highV = std::max(highV,
+                        static_cast<double>(point[view.vertical]));
+                }
+            }
+            const double spanH = std::max(1000.0, highH - lowH);
+            const double spanV = std::max(1000.0, highV - lowV);
+            lowH -= spanH * 0.12; highH += spanH * 0.12;
+            lowV -= spanV * 0.12; highV += spanV * 0.12;
+            const auto project = [&](const long long point[3]) {
+                const float x = origin.x + padX +
+                    static_cast<float>((point[view.horizontal] - lowH) /
+                        (highH - lowH)) * (size.x - 2.0f * padX);
+                const float y = maximum.y - padY -
+                    static_cast<float>((point[view.vertical] - lowV) /
+                        (highV - lowV)) * (size.y - 2.0f * padY);
+                return ImVec2(x, y);
+            };
+            long long zero[3] = {};
+            const ImVec2 zeroPoint = project(zero);
+            draw->AddLine(ImVec2(origin.x + 5.0f * uiScale, zeroPoint.y),
+                          ImVec2(maximum.x - 5.0f * uiScale, zeroPoint.y),
+                          IM_COL32(75, 84, 96, 150));
+            draw->AddLine(ImVec2(zeroPoint.x, origin.y + 5.0f * uiScale),
+                          ImVec2(zeroPoint.x, maximum.y - 5.0f * uiScale),
+                          IM_COL32(75, 84, 96, 150));
+            long long boundsLow[3] = {};
+            long long boundsHigh[3] = {};
+            boundsLow[view.horizontal] =
+                result.fit_bounds_min_micrometres[view.horizontal];
+            boundsLow[view.vertical] =
+                result.fit_bounds_min_micrometres[view.vertical];
+            boundsHigh[view.horizontal] =
+                result.fit_bounds_max_micrometres[view.horizontal];
+            boundsHigh[view.vertical] =
+                result.fit_bounds_max_micrometres[view.vertical];
+            ImVec2 boxA = project(boundsLow);
+            ImVec2 boxB = project(boundsHigh);
+            draw->AddRect(ImVec2(boxA.x, boxB.y), ImVec2(boxB.x, boxA.y),
+                          IM_COL32(150, 160, 174, 150), 0.0f, 0, 1.0f);
+            for (unsigned contact = 0u;
+                 contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
+                const ImVec2 root = project(
+                    result.contact_chain_root_micrometres[contact]);
+                const ImVec2 bend = project(
+                    result.contact_bend_micrometres[contact]);
+                const ImVec2 target = project(
+                    result.contact_target_micrometres[contact]);
+                const ImVec2 end = project(
+                    result.contact_end_micrometres[contact]);
+                const ImU32 colour = contactColours[contact];
+                draw->AddLine(root, bend, colour, 2.0f * uiScale);
+                draw->AddLine(bend, end, colour, 2.0f * uiScale);
+                draw->AddLine(end, target, IM_COL32(255, 235, 115, 255),
+                              2.0f * uiScale);
+                draw->AddCircle(root, 3.0f * uiScale, colour, 0,
+                                1.5f * uiScale);
+                draw->AddCircleFilled(bend, 3.0f * uiScale, colour);
+                if (contact < 2u) {
+                    draw->AddCircleFilled(end, 4.0f * uiScale, colour);
+                } else {
+                    draw->AddRectFilled(
+                        ImVec2(end.x - 4.0f * uiScale,
+                               end.y - 4.0f * uiScale),
+                        ImVec2(end.x + 4.0f * uiScale,
+                               end.y + 4.0f * uiScale), colour);
+                }
+                draw->AddLine(
+                    ImVec2(target.x - 5.0f * uiScale, target.y),
+                    ImVec2(target.x + 5.0f * uiScale, target.y),
+                    IM_COL32(255, 255, 255, 255), 1.5f * uiScale);
+                draw->AddLine(
+                    ImVec2(target.x, target.y - 5.0f * uiScale),
+                    ImVec2(target.x, target.y + 5.0f * uiScale),
+                    IM_COL32(255, 255, 255, 255), 1.5f * uiScale);
+                draw->AddText(ImVec2(target.x + 6.0f * uiScale,
+                                     target.y - 8.0f * uiScale),
+                              colour, contactShort[contact]);
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    const auto contactSpeech = [&](unsigned contact, char *text,
+                                   size_t size) {
+        const long long *target =
+            result.contact_target_micrometres[contact];
+        const long long *end = result.contact_end_micrometres[contact];
+        std::snprintf(
+            text, size,
+            "Endpoint error %.2f millimetres. Target X %+.3f, Y %+.3f, Z %+.3f metres. Endpoint X %+.3f, Y %+.3f, Z %+.3f metres.",
+            result.contact_witness_error_micrometres[contact] / 1000.0,
+            target[0] / 1000000.0, target[1] / 1000000.0,
+            target[2] / 1000000.0, end[0] / 1000000.0,
+            end[1] / 1000000.0, end[2] / 1000000.0);
+    };
+    if (columns < 3) {
+        for (unsigned contact = 0u;
+             contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
+            ImGui::PushID(100 + static_cast<int>(contact));
+            char spoken[384];
+            contactSpeech(contact, spoken, sizeof(spoken));
+            ImGui::PushStyleColor(
+                ImGuiCol_Text,
+                ImGui::ColorConvertU32ToFloat4(contactColours[contact]));
+            (void)ImGui::Selectable(contactNames[contact], false);
+            ImGui::PopStyleColor();
+            ui::SpeakFocusedItem(contactNames[contact], nullptr, spoken);
+            ImGui::TextWrapped("%s", spoken);
+            ImGui::PopID();
+        }
+    } else if (ImGui::BeginTable("##contact-witness-values", 3,
+                                 ImGuiTableFlags_RowBg |
+                                 ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Contact");
+        ImGui::TableSetupColumn("Endpoint error");
+        ImGui::TableSetupColumn("Target → endpoint (X, Y, Z m)");
+        ImGui::TableHeadersRow();
+        for (unsigned contact = 0u;
+             contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::PushID(100 + static_cast<int>(contact));
+            char spoken[384];
+            contactSpeech(contact, spoken, sizeof(spoken));
+            ImGui::PushStyleColor(
+                ImGuiCol_Text,
+                ImGui::ColorConvertU32ToFloat4(contactColours[contact]));
+            (void)ImGui::Selectable(contactNames[contact], false);
+            ImGui::PopStyleColor();
+            ui::SpeakFocusedItem(contactNames[contact], nullptr, spoken);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.2f mm",
+                result.contact_witness_error_micrometres[contact] / 1000.0);
+            ImGui::TableNextColumn();
+            const long long *target =
+                result.contact_target_micrometres[contact];
+            const long long *end = result.contact_end_micrometres[contact];
+            ImGui::TextWrapped("%+.3f,%+.3f,%+.3f → %+.3f,%+.3f,%+.3f",
+                target[0] / 1000000.0, target[1] / 1000000.0,
+                target[2] / 1000000.0, end[0] / 1000000.0,
+                end[1] / 1000000.0, end[2] / 1000000.0);
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    ui::TextSubtleWrapped(
+        "Root and bend markers expose elbows/knees folding to the wrong side; target-to-endpoint lines expose unreachable or mistuned controls. Re-run this exact context after changing fit or contact offsets—the evidence is tied to that tested fit.");
 }
 
 CharacterSpatialPlane drawCharacterSpatialPlaneSelector(
@@ -6183,6 +6432,22 @@ CharacterTestEvidenceStore::Evidence characterTestEvidenceFromResult(
         result.contact_error_mean_micrometres;
     evidence.contactErrorMaxMicrometres =
         result.contact_error_max_micrometres;
+    evidence.contactWitnessMask = result.contact_witness_mask;
+    for (unsigned contact = 0u;
+         contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
+        for (unsigned axis = 0u; axis < 3u; ++axis) {
+            evidence.contactChainRootMicrometres[contact][axis] =
+                result.contact_chain_root_micrometres[contact][axis];
+            evidence.contactBendMicrometres[contact][axis] =
+                result.contact_bend_micrometres[contact][axis];
+            evidence.contactTargetMicrometres[contact][axis] =
+                result.contact_target_micrometres[contact][axis];
+            evidence.contactEndMicrometres[contact][axis] =
+                result.contact_end_micrometres[contact][axis];
+        }
+        evidence.contactWitnessErrorMicrometres[contact] =
+            result.contact_witness_error_micrometres[contact];
+    }
     evidence.fitDiagnosticsValid = result.fit_diagnostics_valid != 0;
     for (unsigned axis = 0u; axis < 3u; ++axis) {
         evidence.fitBoundsMinMicrometres[axis] =
@@ -6217,6 +6482,12 @@ MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
         evidence.context);
     result.players = static_cast<int>(evidence.players);
     result.replacement_draws = evidence.replacementDraws;
+    result.contact_solves = evidence.contactSolves;
+    result.contact_error_mean_micrometres =
+        evidence.contactErrorMeanMicrometres;
+    result.contact_error_max_micrometres =
+        evidence.contactErrorMaxMicrometres;
+    result.contact_witness_mask = evidence.contactWitnessMask;
     result.fit_diagnostics_valid = evidence.fitDiagnosticsValid ? 1 : 0;
     for (unsigned axis = 0u; axis < 3u; ++axis) {
         result.fit_bounds_min_micrometres[axis] =
@@ -6226,6 +6497,21 @@ MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
         result.fit_anchor_micrometres[axis] =
             evidence.fitAnchorMicrometres[axis];
         result.fit_forward_milli[axis] = evidence.fitForwardMilli[axis];
+    }
+    for (unsigned contact = 0u;
+         contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
+        for (unsigned axis = 0u; axis < 3u; ++axis) {
+            result.contact_chain_root_micrometres[contact][axis] =
+                evidence.contactChainRootMicrometres[contact][axis];
+            result.contact_bend_micrometres[contact][axis] =
+                evidence.contactBendMicrometres[contact][axis];
+            result.contact_target_micrometres[contact][axis] =
+                evidence.contactTargetMicrometres[contact][axis];
+            result.contact_end_micrometres[contact][axis] =
+                evidence.contactEndMicrometres[contact][axis];
+        }
+        result.contact_witness_error_micrometres[contact] =
+            evidence.contactWitnessErrorMicrometres[contact];
     }
     return result;
 }
@@ -6275,6 +6561,61 @@ bool characterPreviewFitDiagnosticsValid(
     }
     return forwardLengthSquared >= 995000LL &&
            forwardLengthSquared <= 1005000LL;
+}
+
+bool characterPreviewContactDiagnosticsValid(
+    const MdkrCharacterPreviewResult &result) {
+    constexpr unsigned kAllContacts =
+        (1u << MDKR_CHARACTER_PREVIEW_CONTACTS) - 1u;
+    constexpr long long kMaximumMicrometres = 1000000000LL;
+    if (result.contact_witness_mask != 0u &&
+        result.contact_witness_mask != kAllContacts) return false;
+    if (result.context == MDKR_CHARACTER_PREVIEW_SELECT &&
+        result.contact_witness_mask != 0u) return false;
+    if (result.contact_solves != 0u &&
+        result.context != MDKR_CHARACTER_PREVIEW_SELECT &&
+        result.contact_witness_mask != kAllContacts) return false;
+    unsigned long long latestMaximum = 0u;
+    for (unsigned contact = 0u;
+         contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
+        const bool valid =
+            (result.contact_witness_mask & (1u << contact)) != 0u;
+        for (unsigned axis = 0u; axis < 3u; ++axis) {
+            const long long values[] = {
+                result.contact_chain_root_micrometres[contact][axis],
+                result.contact_bend_micrometres[contact][axis],
+                result.contact_target_micrometres[contact][axis],
+                result.contact_end_micrometres[contact][axis],
+            };
+            for (long long value : values) {
+                if ((!valid && value != 0) || value < -kMaximumMicrometres ||
+                    value > kMaximumMicrometres) return false;
+            }
+        }
+        const unsigned long long reported =
+            result.contact_witness_error_micrometres[contact];
+        if (!valid) {
+            if (reported != 0u) return false;
+            continue;
+        }
+        long double squared = 0.0L;
+        for (unsigned axis = 0u; axis < 3u; ++axis) {
+            const long double difference = static_cast<long double>(
+                result.contact_end_micrometres[contact][axis] -
+                result.contact_target_micrometres[contact][axis]);
+            squared += difference * difference;
+        }
+        const unsigned long long measured =
+            static_cast<unsigned long long>(std::sqrt(squared) + 0.5L);
+        const unsigned long long delta = measured > reported
+            ? measured - reported : reported - measured;
+        if (reported > static_cast<unsigned long long>(kMaximumMicrometres) ||
+            delta > 3u) return false;
+        latestMaximum = std::max(latestMaximum, reported);
+    }
+    return result.contact_solves == 0u ||
+           latestMaximum <= result.contact_error_max_micrometres ||
+           latestMaximum - result.contact_error_max_micrometres <= 3u;
 }
 
 void drawCharacterFitDiagnostics(
@@ -6416,10 +6757,20 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         ui::CardEnd();
         return;
     }
+    if (!characterPreviewContactDiagnosticsValid(result)) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "The engine returned invalid hand/foot contact evidence.");
+        ui::TextSubtleWrapped(
+            "No fit conclusion or performance evidence was saved.");
+        ui::CardEnd();
+        return;
+    }
     ImGui::Text("%s  •  %d %s",
                 characterPreviewResultContext(result.context), result.players,
                 result.players == 1 ? "player" : "players");
     drawCharacterFitDiagnostics(result, false);
+    drawCharacterContactDiagnostics(result);
     if (result.pose != MDKR_CHARACTER_PREVIEW_POSE_LIVE) {
         const CharacterInspectionPose *pose =
             characterInspectionPose(result.pose);
@@ -6551,7 +6902,7 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         if (result.context != MDKR_CHARACTER_PREVIEW_SELECT &&
             result.contact_solves != 0u) {
             ImGui::Text(
-                "Contact reach: %.2f mm mean · %.2f mm maximum across %llu solves",
+                "Solve worst-contact reach: %.2f mm mean · %.2f mm maximum across %llu solves",
                 result.contact_error_mean_micrometres / 1000.0,
                 result.contact_error_max_micrometres / 1000.0,
                 result.contact_solves);
@@ -6649,7 +7000,7 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
                     value, sizeof(value), "%.2f / %.2f mm",
                     result.contact_error_mean_micrometres / 1000.0,
                     result.contact_error_max_micrometres / 1000.0);
-                metric("Mean / maximum contact error", value);
+                metric("Mean / maximum solve worst-contact error", value);
             } else {
                 metric("Vehicle contact solves",
                        "None — authored clip or solver locked");
@@ -7055,6 +7406,7 @@ void drawCharacterTestEvidenceMatrix(
                 smokeAction, "publish-inspection-fallback") == 0 ||
             std::strcmp(smokeAction, "publish-mixed-mode") == 0 ||
             std::strcmp(smokeAction, "publish-invalid-fit") == 0 ||
+            std::strcmp(smokeAction, "publish-invalid-contact") == 0 ||
             std::strcmp(
                 smokeAction, "publish-stale-fit-session") == 0 ||
             std::strcmp(
@@ -7082,6 +7434,32 @@ void drawCharacterTestEvidenceMatrix(
             result.contact_solves = 1440u;
             result.contact_error_mean_micrometres = 1200u;
             result.contact_error_max_micrometres = 3400u;
+            result.contact_witness_mask = 0xFu;
+            for (unsigned contact = 0u;
+                 contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
+                const long long side = (contact & 1u) != 0u ? -1 : 1;
+                const long long height = contact < 2u ? 250000 : -250000;
+                const unsigned long long error = 1000u + contact * 500u;
+                result.contact_chain_root_micrometres[contact][0] =
+                    side * 120000;
+                result.contact_chain_root_micrometres[contact][1] =
+                    height + 180000;
+                result.contact_bend_micrometres[contact][0] =
+                    side * 200000;
+                result.contact_bend_micrometres[contact][1] =
+                    height + 90000;
+                result.contact_target_micrometres[contact][0] =
+                    side * 270000;
+                result.contact_target_micrometres[contact][1] = height;
+                result.contact_target_micrometres[contact][2] = 320000;
+                std::memcpy(
+                    result.contact_end_micrometres[contact],
+                    result.contact_target_micrometres[contact],
+                    sizeof(result.contact_end_micrometres[contact]));
+                result.contact_end_micrometres[contact][0] +=
+                    static_cast<long long>(error);
+                result.contact_witness_error_micrometres[contact] = error;
+            }
             result.fit_diagnostics_valid = 1;
             result.fit_bounds_min_micrometres[0] = -400000;
             result.fit_bounds_min_micrometres[1] = -600000;
@@ -7120,7 +7498,10 @@ void drawCharacterTestEvidenceMatrix(
                 smokeAction, "publish-mixed-mode") == 0;
             const bool invalidFit = std::strcmp(
                 smokeAction, "publish-invalid-fit") == 0;
+            const bool invalidContact = std::strcmp(
+                smokeAction, "publish-invalid-contact") == 0;
             if (invalidFit) result.fit_diagnostics_valid = 2;
+            if (invalidContact) result.contact_witness_mask = 0x3u;
             if (inspection) {
                 result.pose = MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER;
                 result.pose_phase_milli = 250u;
@@ -7201,7 +7582,7 @@ void drawCharacterTestEvidenceMatrix(
                 characterPreviewSessionMatchesTuning(
                     entry, tuning, MDKR_CHARACTER_PREVIEW_CAR,
                     session->second);
-            if (invalidFit) {
+            if (invalidFit || invalidContact) {
                 applied = session != g_characterPreviewResults.end() &&
                     latest == nullptr && !sessionMatches;
             } else if (mixedMode) {
@@ -7452,8 +7833,10 @@ void drawCharacterTestEvidenceMatrix(
                 latest->contactErrorMaxMicrometres / 1000.0);
         }
         ImGui::SeparatorText("Renderer fit");
-        drawCharacterFitDiagnostics(
-            characterPreviewResultFromEvidence(*latest), false);
+        const MdkrCharacterPreviewResult durableResult =
+            characterPreviewResultFromEvidence(*latest);
+        drawCharacterFitDiagnostics(durableResult, false);
+        drawCharacterContactDiagnostics(durableResult);
         const bool currentQualified =
             characterTestEvidenceCurrent(
                 entry, tuning, *latest, presentationSignature) &&
@@ -14326,6 +14709,7 @@ void Settings_publishCharacterPreviewResult(
                 result.version == MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
                 result.started && result.warmup_complete &&
                 characterPreviewFitDiagnosticsValid(result) &&
+                characterPreviewContactDiagnosticsValid(result) &&
                 result.capture_requested && result.capture_armed &&
                 result.capture_kind >=
                     MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE &&
@@ -14453,16 +14837,18 @@ void Settings_publishCharacterPreviewResult(
         return;
     }
     if (result.version != MDKR_CHARACTER_PREVIEW_RESULT_VERSION ||
-        !result.started || !characterPreviewFitDiagnosticsValid(result)) {
+        !result.started || !characterPreviewFitDiagnosticsValid(result) ||
+        !characterPreviewContactDiagnosticsValid(result)) {
         if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
             std::fprintf(
                 stderr,
-                "[app-ui] character-preview-result rejected-evidence=fit-contract package=%s version=%u started=%d fit=%d\n",
+                "[app-ui] character-preview-result rejected-evidence=fit-contact-contract package=%s version=%u started=%d fit=%d contactMask=%x\n",
                 packageId.c_str(), result.version, result.started,
-                result.fit_diagnostics_valid);
+                result.fit_diagnostics_valid,
+                result.contact_witness_mask);
         }
         setStatus(
-            "The engine returned an invalid renderer fit contract; the session is visible for diagnosis but no durable performance evidence was saved.",
+            "The engine returned an invalid renderer fit or contact contract; the session is visible for diagnosis but no durable performance evidence was saved.",
             AppTheme::bad());
         return;
     }
