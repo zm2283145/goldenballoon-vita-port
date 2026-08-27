@@ -161,6 +161,7 @@ static u32 sWitnessKey = 0xFFFFFFFFu;
 static void results_test_resolve(void);
 static void results_test_accrue(void);
 static void results_test_pump(void);
+static void results_test_reduce(void);
 
 /* ======================================================================== *
  * Small helpers
@@ -625,19 +626,27 @@ static void results_gather_input(ResInput *in) {
     }
 }
 
-/* F5: the HOST publishes its post-race advance intent on the reverse feed each
- * tick (the char/trackselect continuous-publish model). There is no dedicated
- * REMATCH/advance field in the dependency-free party_link intent (adding one AND
- * the launcher reverse-feed -> REMATCH mapping is PD-T6), so reuse start_requested
- * as "the host is driving the post-race flow onward". The reverse pump has no
- * launcher caller during RESULTS yet, so this is inert today (a no-op when the
- * bridge is uninstalled/unpolled) but wires the screen-side authority now; a
- * joiner never publishes it (watch-only). */
-static void results_publish_host_intent(void) {
+/* PD-T6b: the HOST publishes its post-race REMATCH intent on the reverse feed at
+ * the exact moment it advances off a NON-final tournament STANDINGS -- "start the
+ * next race". The launcher pump (PD-T6a/c) polls it and drives the reducer's
+ * leader-only MDKR_ONLINE_REMATCH (return to LOBBY + tournament race_index++).
+ *
+ * This is published only on the advance EDGE (not continuously, not during the
+ * countdown) so the room advances precisely when the screen decides to, and it is
+ * NEVER published for single-race, the final tournament race, or the host's
+ * "A: FINISH" on the final standings -- those are the LEAVE/finish path (PD-T6d
+ * owns the real return). A joiner never publishes it (watch-only). It replaces
+ * the PD-T5 F5 start_requested reuse, which could not work: START_RACE converges
+ * on leaving the LOBBY phase, already true throughout RESULTS, so it was a
+ * permanent no-op here (the reason this dispatch kind exists). Inert (no-op) when
+ * the bridge is uninstalled. */
+static void results_publish_rematch(void) {
     MdkrPartyLinkLocalIntent intent;
     mdkr_party_link_intent_init(&intent);
-    intent.start_requested = 1u; /* PD-T6 maps this to the room REMATCH/advance */
+    intent.rematch_requested = 1u;
     mdkr_party_link_intent_publish(&intent);
+    fprintf(stderr,
+            "[online-results] publish: rematch (host advance -> next race)\n");
 }
 
 MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
@@ -695,12 +704,6 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
     }
     results_witness(&snap, haveSnap);
 
-    /* F5: the host publishes its advance intent continuously (inert until the
-     * PD-T6 reverse pump reads it). */
-    if (sRes.host) {
-        results_publish_host_intent();
-    }
-
     sRes.stageTicks += (u32) updateRate;
     sRes.pulseTicks += (u32) updateRate;
 
@@ -757,6 +760,16 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
         if ((hostAdvance || joinerFollow) && !sRes.advanced) {
             sound_play(RES_SFX_ADVANCE, NULL);
             sRes.advanced = 1u;
+            /* PD-T6b: a HOST advancing off a NON-final tournament STANDINGS is
+             * "start the next race" -> publish the REMATCH reverse feed so the
+             * launcher drives MDKR_ONLINE_REMATCH. ONLY here: single-race / the
+             * final race are terminal (handled above -> the LEAVE/finish path),
+             * and a joiner-follow (which never presses) must not publish. */
+            if (hostAdvance && tournament &&
+                sRes.stage == RES_STAGE_STANDINGS) {
+                results_publish_rematch();
+                results_test_reduce(); /* soak stand-in reducer (inert if off) */
+            }
             fprintf(stderr, "[online-results] advance: screen done (%s)\n",
                     hostAdvance ? (manualEdge ? "host" : "auto")
                                 : "joiner-follow");
@@ -785,6 +798,12 @@ static u8 sTestInstalled;
 static MdkrPartyLinkSnapshot sTestRoom;
 static u16 sTestPoints[RES_SLOTS];   /* running cup totals (persist across races) */
 static u8 sTestSeatChar[RES_SLOTS] = {0u, 5u, 0xFFu, 0xFFu}; /* Diddy / Bumper */
+/* PD-T6b: the stand-in reducer's own cup round counter -- advanced ONLY when it
+ * observes the REMATCH reverse-feed intent (results_test_reduce), NEVER off the
+ * session's boot count, so the soak proves the results screen drives the next
+ * race via rematch (not the old start signal). It is what the scripted forward
+ * feed publishes as race_index. */
+static u8 sTestRaceIndex;
 
 static void results_test_resolve(void) {
     if (sTestActive < 0) {
@@ -805,7 +824,9 @@ static void results_test_accrue(void) {
     memset(&sTestRoom, 0, sizeof(sTestRoom));
     sTestRoom.mode = (uint8_t) RES_MODE_TOURNAMENT;
     sTestRoom.phase = 4u; /* MDKR_ONLINE_RESULTS (display only) */
-    sTestRoom.race_index = sRes.raceIndex;
+    /* PD-T6b: the round is what the stand-in reducer has advanced via observed
+     * REMATCH intents (results_test_reduce), not the session boot count. */
+    sTestRoom.race_index = sTestRaceIndex;
     sTestRoom.configured_track = 0xFFFFu;
     sTestRoom.cup_id = 2u; /* Sherbet cup (matches the trackselect joiner lane) */
     for (i = 0u; i < RES_SLOTS; i++) {
@@ -844,6 +865,30 @@ static void results_test_pump(void) {
                 (unsigned) sTestRoom.points[0], (unsigned) sTestRoom.points[1]);
     }
     mdkr_party_link_publish(&sTestRoom);
+}
+
+/* PD-T6b stand-in reducer: called right after the results screen publishes its
+ * REMATCH reverse-feed intent on a host advance. It POLLS that intent and, on
+ * rematch_requested, advances the scripted room's cup round -- exactly what the
+ * launcher reducer's MDKR_ONLINE_REMATCH does (LOBBY + race_index++). This is the
+ * soak's proof that the screen moves to the next race via REMATCH (not the old
+ * start_requested signal): the next race's accrue publishes the advanced
+ * race_index the STANDINGS witness then shows. Inert in a normal run. */
+static void results_test_reduce(void) {
+    MdkrPartyLinkLocalIntent intent;
+    results_test_resolve();
+    if (!sTestActive) {
+        return;
+    }
+    if (mdkr_party_link_intent_poll(&intent) && intent.rematch_requested) {
+        if (sTestRaceIndex < 0xFFu) {
+            sTestRaceIndex++;
+        }
+        fprintf(stderr,
+                "[online-results] test-reducer: rematch observed -> "
+                "race_index=%u\n",
+                (unsigned) sTestRaceIndex);
+    }
 }
 
 u8 mdkr_online_results_test_active(void) {

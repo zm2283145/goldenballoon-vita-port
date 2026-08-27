@@ -109,6 +109,14 @@ typedef struct MdkrPartyLinkSnapshot {
  * dispatches, per intent, CHOOSE_CHARACTER, then CHOOSE_VEHICLE (before READY,
  * so the vehicle lands first), then READY / START_RACE.
  *
+ * rematch_requested is the HOST-ONLY post-race "advance to the next race" from
+ * the native RESULTS/STANDINGS screen (PD-T6b): it drives the reducer's
+ * leader-only MDKR_ONLINE_REMATCH (return to LOBBY + tournament race_index++).
+ * It is a plain 0/1 request (zero == not wanted), so it needs NO unset sentinel;
+ * a joiner never publishes it (watch-only) and START_RACE must NOT be reused for
+ * it (START_RACE's convergence keys off leaving the LOBBY phase, which is already
+ * true during RESULTS, so it would be a permanent no-op there).
+ *
  * The three session-config fields (mode / config_track / cup_id) are HOST-ONLY
  * (the native TRACK/CUP select screen, PD-T3): the host publishes them, a joiner
  * always leaves them at the UNSET sentinels above. config_track keeps the u16
@@ -122,6 +130,7 @@ typedef struct MdkrPartyLinkLocalIntent {
     uint8_t ready;
     uint8_t backout;
     uint8_t start_requested;
+    uint8_t rematch_requested; /* host: RESULTS-screen "advance to next race" */
     uint8_t mode;            /* host: single/tournament, or MODE_UNSET (0xFF) */
     uint16_t config_track;   /* host single-race: track id, or TRACK_UNSET */
     uint8_t cup_id;          /* host tournament: cup 0..4, or CUP_UNSET (0xFF) */
@@ -188,6 +197,7 @@ bool mdkr_party_link_intent_poll(MdkrPartyLinkLocalIntent *out);
  *   SET_MODE         -> lobby mode == intent.mode            (host only)
  *   SET_CONFIG_TRACK -> lobby configured_track == config_track (host only)
  *   SET_CUP          -> lobby cup_id == intent.cup_id        (host only)
+ *   REMATCH          -> lobby phase left MDKR_ONLINE_RESULTS (host only)
  * The three session-config kinds are HOST-ONLY: the planner wants them only when
  * the local seat is the leader AND the intent carries a non-sentinel value, so a
  * joiner (which always publishes the UNSET sentinels) never plans them. They are
@@ -219,6 +229,12 @@ typedef enum MdkrPartyLinkDispatchKind {
     MDKR_PARTY_LINK_DISPATCH_SET_MODE,
     MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK,
     MDKR_PARTY_LINK_DISPATCH_SET_CUP,
+    /* Host-only post-race "advance to next race" (PD-T6b). Drives the reducer's
+     * leader-only MDKR_ONLINE_REMATCH. Appended AFTER the existing kinds so the
+     * pre-existing enum values are unchanged; kOrder[] runs it LAST (a RESULTS-
+     * phase action, mutually exclusive with the LOBBY-phase config/ready/start
+     * kinds -- different phases -- so its order relative to them is moot). */
+    MDKR_PARTY_LINK_DISPATCH_REMATCH,
     MDKR_PARTY_LINK_DISPATCH_KIND_COUNT
 } MdkrPartyLinkDispatchKind;
 
@@ -229,7 +245,7 @@ typedef struct MdkrPartyLinkDispatchAction {
 } MdkrPartyLinkDispatchAction;
 
 /* One plan may carry every dispatchable kind at once (KIND_COUNT - 1). */
-#define MDKR_PARTY_LINK_MAX_DISPATCH 8u
+#define MDKR_PARTY_LINK_MAX_DISPATCH 9u
 typedef struct MdkrPartyLinkDispatchPlan {
     MdkrPartyLinkDispatchAction actions[MDKR_PARTY_LINK_MAX_DISPATCH];
     uint8_t count;

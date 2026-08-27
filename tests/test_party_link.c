@@ -596,6 +596,97 @@ static void test_dispatch_session_config(void) {
     }
 }
 
+/* PD-T6b: the host-only post-race REMATCH dispatch kind (the RESULTS-screen
+ * "advance to the next race" that drives the reducer's leader-only
+ * MDKR_ONLINE_REMATCH). want/converge/host-gate/refusal, mirroring the SET_*
+ * tests -- and the load-bearing convergence rule (phase left RESULTS). */
+static void test_dispatch_rematch(void) {
+    MdkrPartyLinkDispatchState st;
+    MdkrPartyLinkDispatchPlan plan;
+    MdkrPartyLinkLocalIntent in;
+
+    /* (a) HOST in RESULTS with rematch_requested -> plan REMATCH (no payload). */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.rematch_requested = 1u;
+    {
+        MdkrPartyLinkLocalView host = lv_host(MDKR_ONLINE_MODE_TOURNAMENT,
+                                              MDKR_PARTY_LINK_TRACK_UNSET, 0u, 0u,
+                                              (uint8_t)MDKR_ONLINE_RESULTS);
+        mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+        /* Only REMATCH is wanted (the config kinds are all at UNSET sentinels). */
+        CHECK(plan.count == 1u);
+        {
+            const int idx =
+                plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_REMATCH);
+            CHECK(idx >= 0 && plan.actions[idx].value == 0u);
+        }
+        mark_sent_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_REMATCH);
+    }
+
+    /* (b) CONVERGENCE (the load-bearing rule): once the reducer accepted REMATCH
+     * and the lobby LEFT RESULTS (back to LOBBY; tournament also advances
+     * race_index), the kind drops and never re-fires -- even with
+     * rematch_requested still set. It cannot stick or loop. */
+    {
+        MdkrPartyLinkLocalView lobby = lv_host(MDKR_ONLINE_MODE_TOURNAMENT,
+                                               MDKR_PARTY_LINK_TRACK_UNSET, 0u,
+                                               0u, (uint8_t)MDKR_ONLINE_LOBBY);
+        mdkr_party_link_plan_dispatch(&st, &in, &lobby, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_REMATCH) < 0);
+        mdkr_party_link_plan_dispatch(&st, &in, &lobby, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_REMATCH) < 0);
+    }
+
+    /* (c) HOST-ONLY GATE: a joiner (is_host==0) in RESULTS with rematch_requested
+     * plans nothing (watch-only). */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.rematch_requested = 1u;
+    {
+        MdkrPartyLinkLocalView joiner = lv(MDKR_ONLINE_NO_CHARACTER,
+                                           MDKR_ONLINE_NO_VEHICLE, 0u,
+                                           (uint8_t)MDKR_ONLINE_RESULTS);
+        mdkr_party_link_plan_dispatch(&st, &in, &joiner, &plan);
+        CHECK(plan.count == 0u);
+    }
+
+    /* Not wanted without the request: a host in RESULTS with a bare (init) intent
+     * plans no REMATCH. */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new(); /* rematch_requested == 0 */
+    {
+        MdkrPartyLinkLocalView host = lv_host(MDKR_ONLINE_MODE_TOURNAMENT,
+                                              MDKR_PARTY_LINK_TRACK_UNSET, 0u, 0u,
+                                              (uint8_t)MDKR_ONLINE_RESULTS);
+        mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_REMATCH) < 0);
+    }
+
+    /* (d) REFUSAL re-fire: an optimistic REMATCH still in RESULTS (not converged)
+     * is suppressed while in flight, then re-fires once a refusal clears the
+     * guard -- the same live-adapter contract the other kinds obey. */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.rematch_requested = 1u;
+    {
+        MdkrPartyLinkLocalView host = lv_host(MDKR_ONLINE_MODE_TOURNAMENT,
+                                              MDKR_PARTY_LINK_TRACK_UNSET, 0u, 0u,
+                                              (uint8_t)MDKR_ONLINE_RESULTS);
+        mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_REMATCH) >= 0);
+        mark_sent_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_REMATCH);
+        /* Still RESULTS, no refusal: suppressed. */
+        mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_REMATCH) < 0);
+        /* Refusal observed -> re-fires next pump. */
+        mdkr_party_link_dispatch_note_refusal(&st,
+                                              MDKR_PARTY_LINK_DISPATCH_REMATCH);
+        mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_REMATCH) >= 0);
+    }
+}
+
 /* C1 + M1: the zeroed-intent contract. The UNSET sentinels are deliberately
  * nonzero, so a helper-initialised intent plans NO host config, while a raw
  * memset(0) intent WOULD want it (the exact bug C1 pins) -- and the M1 mode
@@ -664,6 +755,7 @@ int main(void) {
     test_snapshot_field_mapping();
     test_dispatch_plan();
     test_dispatch_session_config();
+    test_dispatch_rematch();
     test_dispatch_zeroed_intent_contract();
     fprintf(stderr, "party_link: %d checks, %d failures\n", g_checks,
             g_failures);

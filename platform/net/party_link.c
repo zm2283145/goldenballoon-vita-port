@@ -252,6 +252,26 @@ static uint8_t party_link_kind_state(uint8_t kind,
         *value = intent->cup_id;
         *converged = local->cup_id == intent->cup_id;
         return 1u;
+    case MDKR_PARTY_LINK_DISPATCH_REMATCH:
+        /* Host-only "advance to the next race" from the RESULTS/STANDINGS screen
+         * (PD-T6b). WANTED only for the leader seat while it has published
+         * rematch_requested (a joiner is watch-only and never publishes it).
+         * CONVERGED once the reducer accepted REMATCH and the lobby LEFT
+         * MDKR_ONLINE_RESULTS (it returns to LOBBY and, in a tournament, advances
+         * race_index -- lobby_core.c REMATCH). Keyed on phase like START_RACE, so
+         * it drops the instant the room moves on: it can neither stick (the
+         * leader in RESULTS is always authorized, so the reducer accepts and the
+         * phase leaves RESULTS) nor re-fire in a loop (once phase != RESULTS the
+         * kind is converged and the guard clears). This is exactly why it cannot
+         * reuse start_requested: that converges on leaving LOBBY, already true
+         * throughout RESULTS, so START_RACE would be a permanent no-op here. No
+         * payload: the reducer command carries none relevant. */
+        if (!intent->rematch_requested) return 0u;
+        if (!have || !local->is_host) return 0u;
+        *value = 0u;
+        *converged =
+            local != NULL && local->phase != (uint8_t)MDKR_ONLINE_RESULTS;
+        return 1u;
     default:
         return 0u;
     }
@@ -272,7 +292,11 @@ void mdkr_party_link_plan_dispatch(MdkrPartyLinkDispatchState *state,
         MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE,
         MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION,
         MDKR_PARTY_LINK_DISPATCH_READY,
-        MDKR_PARTY_LINK_DISPATCH_START_RACE};
+        MDKR_PARTY_LINK_DISPATCH_START_RACE,
+        /* REMATCH is a RESULTS-phase action, mutually exclusive in practice with
+         * the LOBBY-phase kinds above (they can never be wanted in the same
+         * phase), so its position is not contentious; last for clarity. */
+        MDKR_PARTY_LINK_DISPATCH_REMATCH};
     unsigned i;
     if (out == NULL) return;
     memset(out, 0, sizeof(*out));

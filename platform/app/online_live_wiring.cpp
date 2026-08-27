@@ -502,6 +502,8 @@ static uint8_t partyLinkKindForCommand(uint32_t command_type) {
         return MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK;
     case MDKR_ONLINE_SET_CUP:
         return MDKR_PARTY_LINK_DISPATCH_SET_CUP;
+    case MDKR_ONLINE_REMATCH:
+        return MDKR_PARTY_LINK_DISPATCH_REMATCH;
     default:
         return MDKR_PARTY_LINK_DISPATCH_NONE;
     }
@@ -574,6 +576,19 @@ void OnlineRoom_pumpPartyLinkIntent(IMdkrOnlineAdapter *adapter) {
             break;
         case MDKR_PARTY_LINK_DISPATCH_SET_CUP:
             sent = mdkr_online_live_adapter_set_cup(adapter, action.value);
+            break;
+        case MDKR_PARTY_LINK_DISPATCH_REMATCH:
+            /* Host-only post-race "advance to next race" (PD-T6b): reuse the
+             * adapter's EXISTING leader+RESULTS-gated REMATCH path -- the
+             * RACE_AGAIN view action maps to MDKR_ONLINE_REMATCH exactly as the
+             * ImGui results button does (match_live_adapter.cpp). A non-leader or
+             * non-RESULTS submit is refused there (.accepted == false), leaving
+             * the in-flight guard clear; the planner already gates this to the
+             * host while phase == RESULTS, so a real host advance sends once and
+             * converges when the room leaves RESULTS. */
+            sent = partyLinkSubmit(adapter, MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN,
+                                   0u)
+                       .accepted;
             break;
         default:
             break;

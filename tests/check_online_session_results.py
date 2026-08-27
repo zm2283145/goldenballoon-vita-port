@@ -28,6 +28,10 @@ Assertions:
   * the RESULTS witness shows the CORRECT captured placements, and the STANDINGS
     points equal the trophy-weight accrual of those placements (single + running)
   * the countdown decrements and BOTH advance paths fire (host + auto)
+  * PD-T6b: the host advancing off a non-final tournament STANDINGS publishes the
+    REMATCH reverse-feed intent (never on the final race), and the scripted
+    stand-in reducer observes it and advances its own cup race_index -- so the
+    next race is reached via MDKR_ONLINE_REMATCH, not the old start signal
   * the resident-OFF exit path is NOT taken here (no session-end-requested), while
     the live lanes -- which leave the flag OFF -- still exit (checked by their own
     green lanes)
@@ -77,6 +81,16 @@ RESULTS_RENDER_RE = re.compile(
     r"secs=(\d+) final=(\d+)$", re.MULTILINE)
 ADVANCE_RE = re.compile(
     r"^\[online-results\] advance: (results -> standings|screen done) \((\w+)\)$",
+    re.MULTILINE)
+# PD-T6b: the host publishes the REMATCH reverse-feed intent on a non-final
+# tournament STANDINGS advance, and the scripted stand-in reducer observes it and
+# advances its own cup race_index (proving the screen moves to the next race via
+# MDKR_ONLINE_REMATCH, not the old start_requested signal).
+PUBLISH_REMATCH_RE = re.compile(
+    r"^\[online-results\] publish: rematch \(host advance -> next race\)$",
+    re.MULTILINE)
+REDUCE_REMATCH_RE = re.compile(
+    r"^\[online-results\] test-reducer: rematch observed -> race_index=(\d+)$",
     re.MULTILINE)
 POSTRACE_EXIT = "[online-postrace] session end requested"
 
@@ -342,6 +356,23 @@ def main() -> int:
     if "auto" not in kinds:
         return fail("no auto-advance (countdown-to-zero) was witnessed", output)
 
+    # --- PD-T6b: the next race is driven by the REMATCH reverse feed ----------
+    # The host advancing off a NON-final tournament STANDINGS publishes the
+    # rematch intent (one per non-final race; the FINAL standings holds and never
+    # publishes), and the scripted stand-in reducer observes each and advances its
+    # own cup race_index 1..N-1 -- so the STANDINGS race indices the earlier
+    # assertions matched came from OBSERVED rematch, not the boot count.
+    rematch_publishes = PUBLISH_REMATCH_RE.findall(output)
+    if len(rematch_publishes) != args.races - 1:
+        return fail(f"expected {args.races - 1} REMATCH publishes (one per "
+                    f"non-final tournament STANDINGS advance; the final race must "
+                    f"NOT publish), got {len(rematch_publishes)}", output)
+    observed = [int(n) for n in REDUCE_REMATCH_RE.findall(output)]
+    if observed != list(range(1, args.races)):
+        return fail(f"the stand-in reducer did not advance race_index off the "
+                    f"observed REMATCH intents (expected "
+                    f"{list(range(1, args.races))}, got {observed})", output)
+
     # M-3: a NON-vacuous M1 regression guard -- a real tournament->single
     # interlude that diverges if the sticky-stash clear is reverted.
     m3 = check_m3_interlude(binary, rom, args.verbose)
@@ -355,8 +386,10 @@ def main() -> int:
         f"never entered) -- captured placements "
         f"{race_placements}, points accrued to {expected} by trophy weight, "
         f"host + auto advance both fired, countdown decremented to 0, final "
-        f"standings held; no exit-path taken, clean exit 0; M-3 mode-interlude "
-        f"boot honored track 5 (no divergence -- M1 clear proven)"
+        f"standings held; the next race was driven by the REMATCH reverse feed "
+        f"({len(rematch_publishes)} publish(es), stand-in reducer advanced "
+        f"race_index {observed}); no exit-path taken, clean exit 0; M-3 "
+        f"mode-interlude boot honored track 5 (no divergence -- M1 clear proven)"
     )
     return 0
 
