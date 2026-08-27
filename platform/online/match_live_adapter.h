@@ -741,14 +741,51 @@ IMdkrOnlineAdapter *OnlineRoom_testLoopbackPeer(
     MdkrOnlineTestLoopbackRace *race);
 void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race);
 
-/* PD-T6ac: per-round re-cycle for a RESIDENT LIVE session -- drive the room from
- * a just-landed (reverse-feed) REMATCH back to a fresh race-ready transport
- * (clear roster, re-Ready both endpoints, leader START, wait both race-ready,
- * roster re-installed). Returns the visible endpoint's NEW match_epoch, or 0 on
- * failure. Blocking (the RESULTS screen holds while it runs). Defined in
+/* PD-T6h1: FRAME-STEPPED per-round re-cycle for a RESIDENT LIVE session.
+ *
+ * Replaces the T6ac blocking OnlineRoom_residentAdvanceRound: instead of driving
+ * the room from a just-landed (reverse-feed) REMATCH back to a fresh race-ready
+ * transport with sleep-until-converged pumps (which would FREEZE the launcher's
+ * real per-frame service path), the SAME transition is expressed as a resumable
+ * step machine. Each OnlineRoom_residentAdvanceStep call does O(1) bounded work
+ * -- one pump of both adapters + a single state check -- and returns its status,
+ * so the RESULTS->next-race gap steps across serviced frames and NEVER blocks the
+ * service thread. WHAT the transition does and its exact ordering are unchanged
+ * (roster clear -> re-Ready both endpoints -> leader START -> both race-ready on a
+ * fresh epoch -> roster re-installed); only HOW it is driven changed.
+ *
+ * Usage: the caller sets `visible`+`peer`, zero-inits the rest (value-init `{}`),
+ * then calls OnlineRoom_residentAdvanceStep once per frame until it returns a
+ * status != WORKING. On ADVANCED, `newEpoch`/`newActiveMask` carry the visible
+ * endpoint's fresh race transport (already validated ready). A non-blocking frame
+ * budget bounds the wait: exceeding it logs a diagnostic and returns FAILED so the
+ * caller can route to the residency exit path (it never hangs). Defined in
  * platform/app/online_live_wiring.cpp. */
-uint32_t OnlineRoom_residentAdvanceRound(IMdkrOnlineAdapter *visible,
-                                         IMdkrOnlineAdapter *peer);
+enum MdkrResidentAdvanceStatus {
+    MDKR_RESIDENT_ADVANCE_WORKING = 0,  /* not converged; call again next frame */
+    MDKR_RESIDENT_ADVANCE_ADVANCED = 1, /* race N+1 race-ready; newEpoch valid */
+    MDKR_RESIDENT_ADVANCE_FAILED = 2,   /* frame-budget exceeded / hard error */
+};
+
+struct MdkrResidentAdvanceState {
+    /* Set by the caller before the first step: */
+    IMdkrOnlineAdapter *visible;
+    IMdkrOnlineAdapter *peer;
+    /* Internal (zero-init and do not touch): */
+    int stage;             /* MdkrResidentAdvanceStage; 0 == Init */
+    IMdkrOnlineAdapter *leader;
+    IMdkrOnlineAdapter *joiner;
+    unsigned round;
+    unsigned cup;
+    unsigned readyIndex;   /* endpoint being re-Readied (0=visible, 1=peer) */
+    unsigned frames;       /* serviced frames spent in THIS advance (watchdog) */
+    /* Valid on MDKR_RESIDENT_ADVANCE_ADVANCED: */
+    uint32_t newEpoch;
+    uint8_t newActiveMask;
+};
+
+MdkrResidentAdvanceStatus OnlineRoom_residentAdvanceStep(
+    MdkrResidentAdvanceState *state);
 
 /* ---- Test-only single-adapter CLOUD race driver ---------------------------
  * (MDKR_APP_TEST_ONLINE_LIVE_CLOUD) ------------------------------------------

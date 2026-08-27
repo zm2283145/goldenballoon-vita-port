@@ -62,7 +62,7 @@ REPORT_RE = re.compile(
     re.MULTILINE)
 RESUME_RE = re.compile(
     r"^\[online-session\] resume: RESULTS phase \(race (\d+) of (\d+); live "
-    r"reducer RESULTS\)", re.MULTILINE)
+    r"reducer RESULTS\) gGameMode=(\d+)", re.MULTILINE)
 ENTER_RE = re.compile(
     r"^\[online-results\] enter: native results up race=(\d+) final=(\d+) "
     r"haveResults=(\d+) placements=(\d+),(\d+),(\d+),(\d+)", re.MULTILINE)
@@ -74,7 +74,7 @@ OBSERVED_REMATCH_RE = re.compile(
     r"\(reverse feed\)", re.MULTILINE)
 ROUND_READY_RE = re.compile(
     r"^\[online-resident-live\] round (\d+) race-ready track=(\d+) epoch=(\d+) "
-    r"\(roster re-installed\)$", re.MULTILINE)
+    r"frames=(\d+) \(roster re-installed\)$", re.MULTILINE)
 NEXT_ARMED_RE = re.compile(
     r"^\[online-resident-live\] next race armed: epoch=(\d+)", re.MULTILINE)
 POSTRACE_EXIT = "[online-postrace] session end requested"
@@ -248,10 +248,15 @@ def main() -> int:
     if len(resumes) != args.races:
         return fail(f"expected {args.races} live RESULTS resumes, got "
                     f"{len(resumes)}: {resumes!r}", output)
-    for i, (race_no, total) in enumerate(resumes):
+    for i, (race_no, total, gamemode) in enumerate(resumes):
         if int(total) != args.races or int(race_no) != i + 1:
             return fail(f"resume {i} was race {race_no} of {total} (expected "
                         f"{i + 1} of {args.races})", output)
+        # M5: pin the isolation claim on the resume line itself -- the resident
+        # post-race fork re-enters GAMEMODE_ONLINE_SESSION (never the offline menu).
+        if int(gamemode) != GAMEMODE_ONLINE_SESSION:
+            return fail(f"resume {i} had gGameMode={gamemode} (expected "
+                        f"{GAMEMODE_ONLINE_SESSION})", output)
 
     # (b) the native RESULTS screen fronts on the REAL feed (haveResults=1, a
     # valid finish order read from the reducer snapshot), final flag correct.
@@ -291,11 +296,21 @@ def main() -> int:
         return fail(f"expected {args.races - 1} per-round re-cycles "
                     f"(round-ready {len(rounds)}, armed {len(armed)})", output)
     # Fresh epoch each round: epoch strictly advances (race 1 == 1, round k == k+1).
-    epochs = [int(e) for _r, _t, e in rounds]
+    epochs = [int(e) for _r, _t, e, _f in rounds]
     if epochs != list(range(2, args.races + 1)):
         return fail(f"per-round match_epoch did not advance freshly "
                     f"(expected {list(range(2, args.races + 1))}, got {epochs})",
                     output)
+    # PD-T6h1: the round transition is now driven FRAME-BY-FRAME (the T6ac blocking
+    # loopbackPumpUntil drive is gone). Each round-ready line reports how many
+    # SERVICED frames the resumable coordinator spanned to re-cycle the room; a
+    # blocking wait would report 0/1. Assert every advance spanned > 1 frame, i.e.
+    # it genuinely stepped across the launcher's per-frame service path.
+    span_frames = [int(f) for _r, _t, _e, f in rounds]
+    if any(f <= 1 for f in span_frames):
+        return fail(f"a round advance did NOT span multiple serviced frames "
+                    f"(frames per round {span_frames}); the transition must be "
+                    f"frame-stepped, not a blocking wait", output)
 
     # (f) the flag-OFF lane still boots once + exits (byte-behavior unchanged).
     off = check_flag_off(binary, rom, args.verbose)
@@ -309,9 +324,11 @@ def main() -> int:
         f"feed -- native RESULTS fronted each time from the reducer snapshot "
         f"(placements read from last_placements, haveResults=1), the host advance "
         f"drove a REAL REMATCH via the reverse feed (race_index -> {observed}), "
-        f"each round re-cycled the roster + match-input on a fresh epoch {epochs}, "
-        f"gGameMode=2/gCurrentMenuId=0 throughout, no exit-path taken; the flag-"
-        f"OFF lane still booted once + exited (residency strictly opt-in)."
+        f"each round re-cycled the roster + match-input on a fresh epoch {epochs} "
+        f"FRAME-BY-FRAME (advance spanned {span_frames} serviced frames, no "
+        f"blocking wait), gGameMode=2/gCurrentMenuId=0 throughout, no exit-path "
+        f"taken; the flag-OFF lane still booted once + exited (residency strictly "
+        f"opt-in)."
     )
     return 0
 

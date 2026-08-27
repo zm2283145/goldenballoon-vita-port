@@ -92,6 +92,12 @@ typedef struct MdkrOnlineSessionState {
      * resident re-wait, the next boot is gated on the runtime descriptor's epoch
      * having advanced past this (the launcher's fresh per-round install). */
     u32 bootedEpoch;
+    /* PD-T6h1 (M4): throttle the per-tick live re-wait witness. Now that the
+     * launcher-side round advance is FRAME-DRIVEN the re-wait spans MANY engine
+     * ticks, so logging every tick would flood stderr. Log only the FIRST re-wait
+     * tick of each round and every time `ready` changes. 0xFF == not yet logged
+     * this round (reset in online_session_boot_race). */
+    u8 liveReWaitLastReady;
 } MdkrOnlineSessionState;
 
 /* Session-owned state -- deliberately NOT any offline global. */
@@ -270,6 +276,9 @@ static void online_session_boot_race(void) {
     intended = sOnlineSession.intendedTrack;
     manifestTrack = (s32) sOnlineSession.launch->manifest.track_id;
     sOnlineSession.bootedEpoch = sOnlineSession.launch->manifest.match_epoch;
+    /* M4: arm the live re-wait witness throttle so the NEXT round's re-wait logs
+     * its first tick + ready changes afresh (0xFF != any real ready value). */
+    sOnlineSession.liveReWaitLastReady = 0xFFu;
 
     sOnlineSession.raceCount++; /* PD-T5: count engine races booted this process */
     sOnlineSession.phase = MDKR_ONLINE_SESSION_RACE;
@@ -324,6 +333,7 @@ void mdkr_online_session_begin(const MdkrMatchLaunchDescriptorV1 *launch) {
      * a spurious "divergence snapshot=0". */
     sOnlineSession.intendedTrack = MDKR_ONLINE_SESSION_TRACK_NONE;
     sOnlineSession.lastModeSeen = 0xFFu; /* M1: no forward-feed mode observed yet */
+    sOnlineSession.liveReWaitLastReady = 0xFFu; /* M4: re-wait witness unthrottled */
     sOnlineSession.active = 1;
     /* Enter the SEPARATED mode. Offline code never produces this value, so the
      * offline menu state machine is never entered on this route. */
@@ -501,13 +511,19 @@ void mdkr_online_session_tick(s32 updateRate) {
                     online_session_stash_intended(&rsnap);
                 }
             }
-            fprintf(stderr,
-                    "[online-session] phase=LOBBY_WAIT (live re-wait) tick=%u "
-                    "epoch=%u bootedEpoch=%u ready=%d\n",
-                    sOnlineSession.lobbyWaitTicks,
-                    (unsigned) (launch != NULL ? launch->manifest.match_epoch
-                                               : 0u),
-                    (unsigned) sOnlineSession.bootedEpoch, (int) ready);
+            /* M4: throttle to the first re-wait tick + every ready-state change,
+             * not every tick -- the frame-driven advance makes this wait span many
+             * ticks and an unthrottled line would flood stderr. */
+            if (sOnlineSession.liveReWaitLastReady != (u8) ready) {
+                fprintf(stderr,
+                        "[online-session] phase=LOBBY_WAIT (live re-wait) tick=%u "
+                        "epoch=%u bootedEpoch=%u ready=%d\n",
+                        sOnlineSession.lobbyWaitTicks,
+                        (unsigned) (launch != NULL ? launch->manifest.match_epoch
+                                                   : 0u),
+                        (unsigned) sOnlineSession.bootedEpoch, (int) ready);
+                sOnlineSession.liveReWaitLastReady = (u8) ready;
+            }
             sOnlineSession.lobbyWaitTicks++;
             if (ready) {
                 online_session_boot_race();

@@ -1115,7 +1115,12 @@ struct LiveResidentState {
     IMdkrOnlineAdapter *peer = nullptr;
     LiveMatchInputContext *ctx = nullptr;
     std::uint8_t raceIndex = 0u; /* reducer race_index at the last PUBLISH_RESULTS */
-    enum class Phase { Racing, Results, Done } phase = Phase::Racing;
+    /* PD-T6h1: Results -> Advancing -> Racing. The round transition is now driven
+     * FRAME-BY-FRAME through the resumable OnlineRoom_residentAdvanceStep (the
+     * T6ac blocking OnlineRoom_residentAdvanceRound is gone), so the RESULTS->next-
+     * race gap never freezes the launcher's per-frame service path. */
+    enum class Phase { Racing, Results, Advancing, Done } phase = Phase::Racing;
+    MdkrResidentAdvanceState advance{}; /* frame-stepped advance coordinator */
 };
 LiveResidentState *g_liveResident = nullptr;
 static void liveResidentServiceStep(void);
@@ -1721,8 +1726,9 @@ static void liveResidentServiceStep(void) {
         /* The native RESULTS screen fronts; the host's advance publishes rematch on
          * the reverse feed, which the intent pump above dispatches as the reducer's
          * leader-only REMATCH. Wait for it to actually land (LOBBY + race_index
-         * advanced), then drive the per-round re-cycle to a fresh race-ready
-         * transport and re-install the match-input source with the new epoch. */
+         * advanced), then ARM the FRAME-STEPPED advance coordinator (no blocking
+         * wait: the per-round re-cycle is driven one bounded unit per frame in the
+         * Advancing phase below). */
         MdkrOnlineLobby lobby{};
         if (!mdkr_online_live_adapter_lobby(rs->visible, &lobby)) return;
         if (lobby.phase == MDKR_ONLINE_LOBBY && lobby.race_index > rs->raceIndex) {
@@ -1730,48 +1736,64 @@ static void liveResidentServiceStep(void) {
                          "[online-resident-live] rematch observed race_index=%u "
                          "(reverse feed) -> advancing round\n",
                          static_cast<unsigned>(lobby.race_index));
-            const std::uint32_t newEpoch =
-                OnlineRoom_residentAdvanceRound(rs->visible, rs->peer);
-            if (newEpoch == 0u) {
-                std::fprintf(stderr,
-                             "[online-resident-live] round advance FAILED -- "
-                             "ending residency\n");
-                rs->phase = LiveResidentState::Phase::Done;
-                return;
-            }
-            /* Re-install the match-input source with the NEW match_epoch (the
-             * installed source's epoch is pinned at install; REMATCH minted a fresh
-             * one). The engine session is idling in LOBBY_WAIT, so no drain races
-             * this clear/install (single-threaded launcher/engine alternation). */
-            MdkrOnlineLiveRaceInfo info{};
-            (void)mdkr_online_live_adapter_race_info(rs->visible, &info);
-            mdkr_match_input_runtime_clear();
-            rs->ctx->epoch = info.matchEpoch;
-            rs->ctx->activeMask = info.activeSlotMask;
-            rs->ctx->racedTicks = 0u;
-            rs->ctx->drainCalls = 0u;
-            rs->ctx->advanceFailed = false;
-            rs->ctx->endReason = LiveRaceEndReason::Completed;
-            const MdkrMatchInputSource source = {
-                MDKR_MATCH_INPUT_SOURCE_VERSION, info.matchEpoch, rs->ctx,
-                liveDrainMatchInput,   liveInputsForTick,
-                liveTakeDirtyMatchInput, liveAiMaskMatchInput,
-            };
-            if (!mdkr_match_input_runtime_install(&source)) {
-                std::fprintf(stderr,
-                             "[online-resident-live] match-input reinstall "
-                             "refused -- ending residency\n");
-                rs->phase = LiveResidentState::Phase::Done;
-                return;
-            }
-            std::fprintf(stderr,
-                         "[online-resident-live] next race armed: epoch=%u "
-                         "active=0x%02x (match-input re-installed; session "
-                         "LOBBY_WAIT will boot it)\n",
-                         static_cast<unsigned>(info.matchEpoch),
-                         static_cast<unsigned>(info.activeSlotMask));
-            rs->phase = LiveResidentState::Phase::Racing;
+            rs->advance = MdkrResidentAdvanceState{};
+            rs->advance.visible = rs->visible;
+            rs->advance.peer = rs->peer;
+            rs->phase = LiveResidentState::Phase::Advancing;
         }
+        return;
+    }
+
+    if (rs->phase == LiveResidentState::Phase::Advancing) {
+        /* Drive the round transition ONE bounded unit this frame (one pump + a
+         * state check). It returns WORKING until the room is re-cycled to a fresh
+         * race-ready transport -- the native RESULTS screen keeps presenting the
+         * whole time; nothing blocks the service thread. */
+        const MdkrResidentAdvanceStatus status =
+            OnlineRoom_residentAdvanceStep(&rs->advance);
+        if (status == MDKR_RESIDENT_ADVANCE_WORKING) return;
+        if (status == MDKR_RESIDENT_ADVANCE_FAILED) {
+            std::fprintf(stderr,
+                         "[online-resident-live] round advance FAILED -- "
+                         "ending residency\n");
+            rs->phase = LiveResidentState::Phase::Done;
+            return;
+        }
+        /* MDKR_RESIDENT_ADVANCE_ADVANCED: race N+1 is race-ready on a FRESH
+         * match_epoch. Re-install the match-input source with that new epoch (the
+         * installed source's epoch is pinned at install; REMATCH minted a fresh
+         * one). The engine session is idling in LOBBY_WAIT, so no drain races this
+         * clear/install (single-threaded launcher/engine alternation).
+         * M3: use the epoch + active mask the advance step already resolved and
+         * validated (vinfo.ready) -- NOT an unchecked race_info refetch that a
+         * zero-init failure would have wedged the re-wait gate with. */
+        const std::uint32_t newEpoch = rs->advance.newEpoch;
+        mdkr_match_input_runtime_clear();
+        rs->ctx->epoch = newEpoch;
+        rs->ctx->activeMask = rs->advance.newActiveMask;
+        rs->ctx->racedTicks = 0u;
+        rs->ctx->drainCalls = 0u;
+        rs->ctx->advanceFailed = false;
+        rs->ctx->endReason = LiveRaceEndReason::Completed;
+        const MdkrMatchInputSource source = {
+            MDKR_MATCH_INPUT_SOURCE_VERSION, newEpoch, rs->ctx,
+            liveDrainMatchInput,   liveInputsForTick,
+            liveTakeDirtyMatchInput, liveAiMaskMatchInput,
+        };
+        if (!mdkr_match_input_runtime_install(&source)) {
+            std::fprintf(stderr,
+                         "[online-resident-live] match-input reinstall "
+                         "refused -- ending residency\n");
+            rs->phase = LiveResidentState::Phase::Done;
+            return;
+        }
+        std::fprintf(stderr,
+                     "[online-resident-live] next race armed: epoch=%u "
+                     "active=0x%02x (match-input re-installed; session "
+                     "LOBBY_WAIT will boot it)\n",
+                     static_cast<unsigned>(newEpoch),
+                     static_cast<unsigned>(rs->advance.newActiveMask));
+        rs->phase = LiveResidentState::Phase::Racing;
         return;
     }
     /* Phase::Done -- nothing more; the tick budget ends the process. */
