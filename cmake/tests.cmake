@@ -812,6 +812,19 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform)
     add_test(NAME session_core COMMAND mdkr_session_core_test)
 
+    # Native online BETA live selection bridge: forward-feed snapshot runtime,
+    # one-shot reverse-feed intent channel, and the pure view-model+lobby ->
+    # snapshot projection. party_link.c reads the launcher lobby/view-model
+    # structs by value only, so no lobby_core.c/lobby_view_model.c link is
+    # needed. Compiled here WITHOUT the beta macro (the file carries no #if beta
+    # guards) so the bridge is unit-tested in every build. ROM-free.
+    add_executable(mdkr_party_link_test
+        ${CMAKE_SOURCE_DIR}/tests/test_party_link.c
+        ${CMAKE_SOURCE_DIR}/platform/net/party_link.c)
+    target_include_directories(mdkr_party_link_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME party_link COMMAND mdkr_party_link_test)
+
     add_executable(mdkr_session_bridge_test
         ${CMAKE_SOURCE_DIR}/tests/test_session_bridge.c
         ${CMAKE_SOURCE_DIR}/platform/session/session_bridge.c
