@@ -947,28 +947,28 @@ int main(int argc, char **argv) {
             "create an undeletable owned-path-shaped directory witness");
     require(!mdkr_modern_character_remove_installed(
                 "org.example.pipeline-proof", argv[5], &install_result) &&
-                install_result.removed_files == 3u &&
-                install_result.removed_source_revisions == 1u &&
-                install_result.removed_provenance_reports == 1u &&
-                install_result.failed_files == 1u,
-            "partial destructive removal fails visible with exact completed scope");
+                install_result.removed_files == 0u &&
+                install_result.removed_source_revisions == 0u &&
+                install_result.removed_provenance_reports == 0u &&
+                install_result.failed_files == 0u,
+            "invalid owned-path witness refuses deletion before any mutation");
     require(mdkr_rmdir_utf8(deletion_failure_witness) == 0,
             "retire deletion failure witness");
-    require(mdkr_modern_character_install_portable(
-                argv[4], argv[5], &install_result) &&
-                install_result.enabled == 1,
-            "reinstall after an explicitly reported partial deletion");
-    require(mdkr_modern_character_set_enabled(
-                "org.example.pipeline-proof", argv[5], 0, &install_result),
-            install_result.message);
+    require(mdkr_modern_character_registry_init_inventory(
+                &registry, argv[5]) == 0 &&
+                mdkr_modern_character_registry_find(
+                    &registry, "org.example.pipeline-proof") >= 0,
+            "refused deletion preserves the complete installed package");
+    mdkr_modern_character_registry_shutdown(&registry);
     require(mdkr_modern_character_remove_installed(
                 "org.example.pipeline-proof", argv[5], &install_result),
             install_result.message);
     require(install_result.removed_files == 3u &&
                 install_result.removed_source_revisions == 1u &&
                 install_result.removed_provenance_reports == 1u &&
-                install_result.failed_files == 0u,
-            "destructive removal reports its exact cache/source/report scope");
+                install_result.failed_files == 0u &&
+                install_result.cleanup_pending_files == 0u,
+            "transactional removal reports its exact cache/source/report scope");
     require(mdkr_modern_character_registry_init(&registry, argv[5]) == 0 &&
                 mdkr_modern_character_registry_count(&registry) == 0,
             "native removal retires the cache and retained package source");

@@ -16,6 +16,7 @@ typedef struct MdkrModernCharacterInstallResult {
     unsigned removed_source_revisions;
     unsigned removed_provenance_reports;
     unsigned failed_files;
+    unsigned cleanup_pending_files;
     char id[65];
     char display_name[97];
     char short_name[97];
@@ -79,8 +80,11 @@ int mdkr_modern_character_set_enabled(
     const char *package_id, const char *directory, int enabled,
     MdkrModernCharacterInstallResult *result);
 
-/* Destructive: removes active/disabled caches plus every retained source and
- * provenance revision owned by this exact package id. */
+/* Transactionally retires active/disabled caches plus every retained source
+ * and provenance revision owned by this exact package id. The complete set is
+ * validated and moved into a private quarantine before any unlink occurs; a
+ * publication failure rolls the whole set back. Post-commit trash cleanup is
+ * best effort and reported separately from transaction failure. */
 int mdkr_modern_character_remove_installed(
     const char *package_id, const char *directory,
     MdkrModernCharacterInstallResult *result);

@@ -932,16 +932,28 @@ static int content_addressed_leaf(const char *name, const char *package_id,
 int mdkr_modern_character_remove_installed(
     const char *package_id, const char *directory,
     MdkrModernCharacterInstallResult *result) {
+    typedef struct RemovalCandidate {
+        char source[4096];
+        char quarantine[4096];
+        int source_revision;
+        int provenance_report;
+    } RemovalCandidate;
     DIR *handle;
     struct dirent *item;
-    char path[4096];
     char lock_path[4096];
+    char quarantine_path[4096];
     FILE *lock = NULL;
+    RemovalCandidate *candidates = NULL;
+    size_t candidate_count = 0u;
+    size_t candidate_capacity = 0u;
+    size_t moved = 0u;
+    unsigned nonce;
     const size_t id_length = package_id != NULL ? strlen(package_id) : 0u;
-    int removed = 0;
     int removed_sources = 0;
     int removed_reports = 0;
     int failed = 0;
+    int quarantine_created = 0;
+    int okay = 0;
     result_reset(result);
     if (!id_valid(package_id) || directory == NULL ||
         !path_join(lock_path, sizeof(lock_path), directory,
@@ -980,39 +992,127 @@ int mdkr_modern_character_remove_installed(
                 candidate = source_revision || provenance_report;
             }
             if (!candidate) continue;
-            if (!path_join(path, sizeof(path), directory, name) ||
-                mdkr_path_query_utf8(path, NULL, &regular, NULL) != 0 ||
-                !regular || mdkr_path_is_link_or_reparse_utf8(path) != 0) {
-                failed++;
-                continue;
+            if (candidate_count == candidate_capacity) {
+                const size_t next_capacity = candidate_capacity == 0u
+                    ? 8u : candidate_capacity * 2u;
+                RemovalCandidate *grown;
+                if (next_capacity < candidate_capacity ||
+                    next_capacity > SIZE_MAX / sizeof(*candidates)) {
+                    failed = 1;
+                    break;
+                }
+                grown = (RemovalCandidate *)realloc(
+                    candidates, next_capacity * sizeof(*candidates));
+                if (grown == NULL) {
+                    failed = 1;
+                    break;
+                }
+                candidates = grown;
+                candidate_capacity = next_capacity;
             }
-            if (mdkr_remove_utf8(path) == 0) {
-                removed++;
-                if (source_revision) removed_sources++;
-                if (provenance_report) removed_reports++;
-            } else {
-                failed++;
+            memset(&candidates[candidate_count], 0,
+                   sizeof(candidates[candidate_count]));
+            if (!path_join(candidates[candidate_count].source,
+                           sizeof(candidates[candidate_count].source),
+                           directory, name) ||
+                mdkr_path_query_utf8(
+                    candidates[candidate_count].source, NULL, &regular,
+                    NULL) != 0 || !regular ||
+                mdkr_path_is_link_or_reparse_utf8(
+                    candidates[candidate_count].source) != 0) {
+                failed = 1;
+                break;
             }
+            candidates[candidate_count].source_revision = source_revision;
+            candidates[candidate_count].provenance_report = provenance_report;
+            candidate_count++;
         }
     }
     (void)closedir(handle);
-    (void)mdkr_remove_utf8(lock_path);
+    handle = NULL;
+    if (failed != 0) {
+        result_message(result,
+            "Character deletion was refused before changing any file because the complete owned set could not be validated.");
+        goto done;
+    }
+    if (candidate_count == 0u) {
+        result_message(result, "no regular installed files matched that character id");
+        goto done;
+    }
+    for (nonce = 0u; nonce < 1024u; ++nonce) {
+        char leaf[65u + 48u];
+        int exists = 0;
+        if (snprintf(leaf, sizeof(leaf), ".character-trash.%s.%u",
+                     package_id, nonce) < 0 ||
+            !path_join(quarantine_path, sizeof(quarantine_path),
+                       directory, leaf) ||
+            !query_path_state(quarantine_path, &exists, NULL)) {
+            continue;
+        }
+        if (!exists && mdkr_mkdir_utf8(quarantine_path) == 0) {
+            quarantine_created = 1;
+            break;
+        }
+    }
+    if (!quarantine_created) {
+        result_message(result,
+            "Character deletion could not create a private recovery quarantine; no file changed.");
+        goto done;
+    }
+    for (moved = 0u; moved < candidate_count; ++moved) {
+        const char *leaf = strrchr(candidates[moved].source, '/');
+#if defined(_WIN32)
+        const char *backslash = strrchr(candidates[moved].source, '\\');
+        if (backslash != NULL && (leaf == NULL || backslash > leaf)) {
+            leaf = backslash;
+        }
+#endif
+        leaf = leaf != NULL ? leaf + 1 : candidates[moved].source;
+        if (!path_join(candidates[moved].quarantine,
+                       sizeof(candidates[moved].quarantine),
+                       quarantine_path, leaf) ||
+            mdkr_move_utf8(candidates[moved].source,
+                           candidates[moved].quarantine, 0, 1) != 0) {
+            size_t rollback = moved;
+            while (rollback > 0u) {
+                --rollback;
+                if (mdkr_move_utf8(candidates[rollback].quarantine,
+                                   candidates[rollback].source, 0, 1) != 0) {
+                    failed++;
+                }
+            }
+            (void)mdkr_rmdir_utf8(quarantine_path);
+            result_message(result,
+                failed == 0
+                    ? "Character deletion could not publish its complete quarantine and was rolled back; no file changed."
+                    : "Character deletion rollback needs recovery from the private character trash directory.");
+            goto done;
+        }
+    }
+    (void)mdkr_parent_directory_sync_utf8(quarantine_path);
+    for (moved = 0u; moved < candidate_count; ++moved) {
+        if (candidates[moved].source_revision) removed_sources++;
+        if (candidates[moved].provenance_report) removed_reports++;
+        if (mdkr_remove_utf8(candidates[moved].quarantine) != 0) failed++;
+    }
+    if (failed == 0 && mdkr_rmdir_utf8(quarantine_path) != 0) failed++;
+    okay = 1;
     if (result != NULL) {
         (void)snprintf(result->id, sizeof(result->id), "%s", package_id);
-        result->removed_files = (unsigned)removed;
+        result->removed_files = (unsigned)candidate_count;
         result->removed_source_revisions = (unsigned)removed_sources;
         result->removed_provenance_reports = (unsigned)removed_reports;
-        result->failed_files = (unsigned)failed;
+        result->failed_files = 0u;
+        result->cleanup_pending_files = (unsigned)failed;
     }
     if (failed != 0) {
         result_message(result,
-            "Character deletion was partial; one or more owned files could not be removed.");
-        return 0;
+            "Installed character retired transactionally; private trash cleanup remains pending.");
+    } else {
+        result_message(result, "Installed character files removed transactionally.");
     }
-    if (removed == 0) {
-        result_message(result, "no regular installed files matched that character id");
-        return 0;
-    }
-    result_message(result, "Installed character files removed.");
-    return 1;
+done:
+    free(candidates);
+    (void)mdkr_remove_utf8(lock_path);
+    return okay;
 }

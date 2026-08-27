@@ -1853,6 +1853,7 @@ char g_characterConversionOutputPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
 bool g_characterConversionSmokePrefilled = false;
 std::string g_characterManagerReport;
 std::string g_characterPendingRemoval;
+char g_characterRemovalConfirmation[MDKR_MODERN_CHARACTER_ID_MAX] = {};
 std::string g_characterWorkshopSelection;
 bool g_characterWorkshopSelectionLoaded = false;
 CharacterWorkshopTab g_characterWorkshopTab = CharacterWorkshopTab::Overview;
@@ -14544,6 +14545,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         if (!deletionInventoriesWritable) ImGui::BeginDisabled();
         if (ImGui::Button("Permanently delete package...")) {
             g_characterPendingRemoval = entry->id;
+            g_characterRemovalConfirmation[0] = '\0';
             ImGui::OpenPopup("Permanently delete custom character?");
         }
         if (!deletionInventoriesWritable) ImGui::EndDisabled();
@@ -14565,8 +14567,41 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                 entry->source_revisions,
                 entry->provenance_reports);
             ui::TextSubtleWrapped(
-                "The external .mdkrchar file you originally chose is not touched. A revision created only inside the Workshop may have no other copy. This action cannot be undone here.");
-            if (ImGui::Button("Delete package and revisions")) {
+                "The external .mdkrchar file you originally chose is not touched. A revision created only inside the Workshop may have no other copy. Export a retained source above before continuing if you need a recoverable backup.");
+            ImGui::TextWrapped(
+                "To confirm, type the exact package ID: %s",
+                entry->id);
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::InputText(
+                "##character-removal-confirmation",
+                g_characterRemovalConfirmation,
+                sizeof(g_characterRemovalConfirmation));
+            ui::SpeakFocusedItem(
+                "Permanent deletion confirmation", nullptr,
+                "Type the exact package identifier shown above. Display names are not accepted.");
+            const bool deletionConfirmed =
+                g_characterPendingRemoval == entry->id &&
+                std::strcmp(g_characterRemovalConfirmation,
+                            entry->id) == 0;
+            const bool popupAppearing = ImGui::IsWindowAppearing();
+            if (ImGui::Button("Cancel")) {
+                g_characterPendingRemoval.clear();
+                g_characterRemovalConfirmation[0] = '\0';
+                ImGui::CloseCurrentPopup();
+            }
+            if (popupAppearing) ImGui::SetItemDefaultFocus();
+            ui::SpeakFocusedItem(
+                "Cancel", nullptr,
+                "Closes this confirmation without changing the package.");
+            ImGui::SameLine();
+            if (!deletionConfirmed) ImGui::BeginDisabled();
+            ImGui::PushStyleColor(ImGuiCol_Button, AppTheme::bad());
+            const bool deletePressed =
+                ImGui::Button("Delete package and revisions") &&
+                deletionConfirmed;
+            ImGui::PopStyleColor();
+            if (!deletionConfirmed) ImGui::EndDisabled();
+            if (deletePressed) {
                 const std::string removedId = g_characterPendingRemoval;
                 if (removeCharacterPackage(removedId)) {
                     const AppConfig::PersistResult persist =
@@ -14585,6 +14620,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                             ? AppTheme::good()
                             : AppTheme::bad());
                     g_characterPendingRemoval.clear();
+                    g_characterRemovalConfirmation[0] = '\0';
                     ImGui::CloseCurrentPopup();
                     ImGui::EndPopup();
                     ImGui::PopID();
@@ -14598,14 +14634,10 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             }
             ui::SpeakFocusedItem(
                 "Delete package and revisions",
-                nullptr,
-                "Permanently removes every locally retained file and setting owned by this exact package identity. The external file originally imported is unchanged.");
-            ImGui::SameLine();
-            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-            ui::SpeakFocusedItem(
-                "Cancel",
-                nullptr,
-                "Closes this confirmation without changing the package.");
+                deletionConfirmed
+                    ? nullptr
+                    : "Type the exact package identifier to enable deletion.",
+                "Transactionally quarantines every locally retained file before removing package-owned settings and revisions. The external file originally imported is unchanged.");
             ImGui::EndPopup();
         }
     }
