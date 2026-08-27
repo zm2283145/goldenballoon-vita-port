@@ -2307,6 +2307,7 @@ std::map<std::string, CharacterTuningEdit> g_characterTuning;
 std::map<std::string, int> g_characterFitSpatialViews;
 std::map<std::string, int> g_characterContactSpatialViews;
 std::map<std::string, int> g_characterSelectedContacts;
+std::map<std::string, int> g_characterGuidedFitContexts;
 std::map<ImGuiID, bool> g_characterSpatialGestureDirty;
 std::set<std::string> g_characterSpatialControlTracePackages;
 
@@ -7209,7 +7210,7 @@ bool drawCharacterTuningEditor(int player,
             entry->id);
         std::fprintf(
             stderr,
-            "[app-ui] character-offset-studio package=%s contexts=select,car,hovercraft,plane workflow=preview,measure,fine-tune,evidence,review exact-rom-preview=1 disabled-package-preview=1 measured-starting-point=vertical-and-facing reset=package-anchor review=current-source-and-fit\n",
+            "[app-ui] character-offset-studio package=%s contexts=select,car,hovercraft,plane guided-fit=1 workflow=preview,measure,fine-tune,evidence,review exact-rom-preview=1 compact-preview=1 disabled-package-preview=1 measured-starting-point=vertical-and-facing reset=package-anchor review=current-source-and-fit\n",
             entry->id);
     }
 
@@ -7321,13 +7322,59 @@ bool drawCharacterTuningEditor(int player,
             ? AppTheme::good() : AppTheme::accent(),
         "Fit review: %u of %u enabled contexts current",
         reviewedContexts, reviewContexts);
+    int nextFitContext = -1;
+    for (unsigned context = 0u;
+         context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+        const bool enabled = context == MDKR_CHARACTER_CONTEXT_SELECT ||
+            (edit.vehicleMask & (1u << (context - 1u))) != 0u;
+        if (enabled && !characterFitReviewed(entry, edit, context)) {
+            nextFitContext = static_cast<int>(context);
+            break;
+        }
+    }
+    ImGui::SeparatorText("Fit all enabled contexts");
+    ui::TextSubtleWrapped(
+        "Work through Character select, Car, Hovercraft, and Plane in order. Each step keeps its own transform, exact renderer measurement, contact evidence, and source/fit-bound approval; finishing one never marks another ready.");
+    for (unsigned context = 0u;
+         context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+        const bool enabled = context == MDKR_CHARACTER_CONTEXT_SELECT ||
+            (edit.vehicleMask & (1u << (context - 1u))) != 0u;
+        if (!enabled) continue;
+        const bool reviewed = characterFitReviewed(entry, edit, context);
+        ImGui::TextColored(
+            reviewed ? AppTheme::good() : AppTheme::accent(),
+            "%s  %s", reviewed ? "✓" : "○", contextNames[context]);
+    }
+    if (nextFitContext >= 0) {
+        const std::string continueLabel = std::string("Continue fit: ") +
+            contextNames[nextFitContext];
+        if (ImGui::Button(continueLabel.c_str())) {
+            g_characterGuidedFitContexts[entry->id] = nextFitContext;
+        }
+        ui::SpeakFocusedItem(
+            continueLabel.c_str(), "Next incomplete context",
+            "Selects the next incomplete Offset Studio context. Preview, measure, fine-tune, inspect evidence, and explicitly review it before continuing.");
+    } else {
+        ImGui::TextColored(
+            AppTheme::good(),
+            "All enabled contexts have current source-and-fit-bound review");
+    }
+    int &guidedContext = g_characterGuidedFitContexts.try_emplace(
+        entry->id, -1).first->second;
     if (ImGui::BeginTabBar("##character-placement-contexts")) {
         for (unsigned context = 0u;
              context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
             const bool packageContext = context == MDKR_CHARACTER_CONTEXT_SELECT ||
                 (entry->vehicle_mask & (1u << (context - 1u))) != 0u;
             if (!packageContext) continue;
-            if (!ImGui::BeginTabItem(contextNames[context])) continue;
+            const ImGuiTabItemFlags tabFlags =
+                guidedContext == static_cast<int>(context)
+                    ? ImGuiTabItemFlags_SetSelected : 0;
+            if (!ImGui::BeginTabItem(
+                    contextNames[context], nullptr, tabFlags)) continue;
+            if (guidedContext == static_cast<int>(context)) {
+                guidedContext = -1;
+            }
             CharacterTuningEdit::Context &placement = edit.context[context];
             ImGui::TextDisabled(
                 "%s anchor to qualified %s %s frame",
@@ -7336,48 +7383,46 @@ bool drawCharacterTuningEditor(int player,
                 context == MDKR_CHARACTER_CONTEXT_SELECT ? "select" :
                     contextNames[context]);
             ImGui::PushID(static_cast<int>(context));
-            if (!compact) {
-                ImGui::SeparatorText("1. Preview in game");
-                int &testPlayers = g_characterTestPlayers[entry->id];
-                if (testPlayers < 1 || testPlayers > 4) testPlayers = 1;
-                static const char *cameraLayouts[] = {
-                    "1 player", "2 player split-screen",
-                    "3 player split-screen", "4 player split-screen",
-                };
-                int cameraLayout = testPlayers - 1;
-                ImGui::SetNextItemWidth(
-                    std::min(280.0f, ImGui::GetContentRegionAvail().x));
-                if (ImGui::Combo(
-                        "Camera layout", &cameraLayout, cameraLayouts,
-                        static_cast<int>(std::size(cameraLayouts)))) {
-                    testPlayers = cameraLayout + 1;
-                }
-                ui::SpeakFocusedItem(
-                    "Exact preview camera layout",
-                    cameraLayouts[cameraLayout],
-                    "Chooses the real one-to-four-player game camera layout used by the next exact context preview.");
-                const bool exactPreviewReady = donorProfilesAvailable();
-                if (!exactPreviewReady) ImGui::BeginDisabled();
-                const std::string previewLabel = std::string("Open exact ") +
-                    contextNames[context] + " preview";
-                if (ImGui::Button(previewLabel.c_str()) &&
-                    exactPreviewReady &&
-                    persistCharacterTuning(entry->id, edit)) {
-                    requestCharacterPreview(
-                        entry, previewContexts[context], testPlayers);
-                }
-                if (!exactPreviewReady) ImGui::EndDisabled();
-                ui::SpeakFocusedItem(
-                    previewLabel.c_str(),
-                    exactPreviewReady
-                        ? "Ready; current fit will be saved before launch."
-                        : "Unavailable until a supported base ROM is linked and verified on Play.",
-                    "Opens the real game scene with the selected donor character and vehicle. It works while the custom character is still disabled for ordinary play.");
-                ImGui::SameLine();
-                ImGui::TextDisabled(
-                    "%d-player camera · returns here with measurements",
-                    testPlayers);
+            ImGui::SeparatorText("1. Preview in game");
+            int &testPlayers = g_characterTestPlayers[entry->id];
+            if (testPlayers < 1 || testPlayers > 4) testPlayers = 1;
+            static const char *cameraLayouts[] = {
+                "1 player", "2 player split-screen",
+                "3 player split-screen", "4 player split-screen",
+            };
+            int cameraLayout = testPlayers - 1;
+            ImGui::SetNextItemWidth(
+                compact ? -1.0f
+                        : std::min(280.0f, ImGui::GetContentRegionAvail().x));
+            if (ImGui::Combo(
+                    "Camera layout", &cameraLayout, cameraLayouts,
+                    static_cast<int>(std::size(cameraLayouts)))) {
+                testPlayers = cameraLayout + 1;
             }
+            ui::SpeakFocusedItem(
+                "Exact preview camera layout",
+                cameraLayouts[cameraLayout],
+                "Chooses the real one-to-four-player game camera layout used by the next exact context preview.");
+            const bool exactPreviewReady = donorProfilesAvailable();
+            if (!exactPreviewReady) ImGui::BeginDisabled();
+            const std::string previewLabel = std::string("Open exact ") +
+                contextNames[context] + " preview";
+            if (ImGui::Button(previewLabel.c_str()) && exactPreviewReady &&
+                persistCharacterTuning(entry->id, edit)) {
+                requestCharacterPreview(
+                    entry, previewContexts[context], testPlayers);
+            }
+            if (!exactPreviewReady) ImGui::EndDisabled();
+            ui::SpeakFocusedItem(
+                previewLabel.c_str(),
+                exactPreviewReady
+                    ? "Ready; current fit will be saved before launch."
+                    : "Unavailable until a supported base ROM is linked and verified on Play.",
+                "Opens the real game scene with the selected donor character and vehicle. It works while the custom character is still disabled for ordinary play.");
+            if (!compact) ImGui::SameLine();
+            ImGui::TextDisabled(
+                "%d-player camera · returns here with measurements",
+                testPlayers);
             const MdkrCharacterPreviewContext previewContext =
                 previewContexts[context];
             CharacterFitEvidenceSnapshot fitEvidence =

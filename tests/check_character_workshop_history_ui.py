@@ -203,8 +203,10 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
         studio_marker = (
             "character-offset-studio package=" + PACKAGE_ID +
             " contexts=select,car,hovercraft,plane "
+            "guided-fit=1 "
             "workflow=preview,measure,fine-tune,evidence,review "
             "exact-rom-preview=1 "
+            "compact-preview=1 "
             "disabled-package-preview=1 "
             "measured-starting-point=vertical-and-facing "
             "reset=package-anchor "
@@ -215,7 +217,10 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                 "offset studio omitted its exact-preview and measured-fit "
                 "contract\n" + process.stdout[-8000:]
             )
-        spoken_controls = ["text=Exact preview camera layout"]
+        spoken_controls = [
+            "text=Continue fit: Character select",
+            "text=Exact preview camera layout",
+        ]
         if rom is not None:
             spoken_controls.append("text=Open exact Character select preview")
         for spoken in spoken_controls:

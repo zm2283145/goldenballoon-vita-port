@@ -220,7 +220,12 @@ in the package review and durable evidence.
 
 ### M4 — Per-vehicle seating and contact-assist workflow (large)
 
-- Add “Fit all vehicles” as a guided sequence, not one opaque automation:
+- **Implemented:** add “Fit all enabled contexts” as a guided sequence, not one
+  opaque automation. It shows independent current-review state for Select, Car,
+  Hovercraft, and Plane, then routes to the next incomplete context. The exact
+  preview/camera-layout step now reflows at compact width instead of disappearing
+  for handheld or large-text users.
+- Continue the existing per-context sequence to
   propose root translation/yaw/scale, preview exact gameplay, then propose four
   contact offsets per vehicle.
 - Show head/torso camera occupancy, seat-to-hips displacement, kart/body
