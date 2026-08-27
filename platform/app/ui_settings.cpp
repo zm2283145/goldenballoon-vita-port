@@ -5709,13 +5709,15 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
         if (tracedRigSuggestions.insert(entry->id).second) {
             std::fprintf(
                 stderr,
-                "[app-ui] character-rig-suggestion package=%s joints=%zu roles=%u named=%u hierarchy=%u common-ancestor-repairs=%u complete=%d structurally-valid=%d review-required=1 rest-bases=%u bend-preferences=%u ambiguous-bends-automatic=1\n",
+                "[app-ui] character-rig-suggestion package=%s joints=%zu roles=%u named=%u hierarchy=%u common-ancestor-repairs=%u complete=%d structurally-valid=%d review-required=1 geometry=%u rest-bases=%u bend-preferences=%u ambiguous-bends-automatic=1\n",
                 entry->id, edit.joints.size(),
-                rigSuggestion.namedRoles + rigSuggestion.hierarchyRoles,
+                rigSuggestion.namedRoles + rigSuggestion.hierarchyRoles +
+                    rigSuggestion.geometryRoles,
                 rigSuggestion.namedRoles, rigSuggestion.hierarchyRoles,
                 rigSuggestion.commonAncestorRepairs,
                 rigSuggestion.complete ? 1 : 0,
                 rigSuggestion.hierarchyValid ? 1 : 0,
+                rigSuggestion.geometryRoles,
                 rigSuggestion.restBasisRoles,
                 rigSuggestion.bendAxisRoles);
         }
@@ -5725,9 +5727,11 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
         ImGui::TextColored(
             rigSuggestion.complete && rigSuggestion.hierarchyValid
                 ? AppTheme::good() : AppTheme::accent(),
-            "%u of 16 roles proposed · %u name-backed · %u hierarchy-backed",
-            rigSuggestion.namedRoles + rigSuggestion.hierarchyRoles,
-            rigSuggestion.namedRoles, rigSuggestion.hierarchyRoles);
+            "%u of 16 roles proposed · %u name · %u symmetry · %u hierarchy",
+            rigSuggestion.namedRoles + rigSuggestion.hierarchyRoles +
+                rigSuggestion.geometryRoles,
+            rigSuggestion.namedRoles, rigSuggestion.geometryRoles,
+            rigSuggestion.hierarchyRoles);
         ImGui::TextDisabled(
             "%u rest bases derived · %u bend preferences derived · %u automatic",
             rigSuggestion.restBasisRoles, rigSuggestion.bendAxisRoles,
@@ -5751,6 +5755,9 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                 } else if (proposal.evidence ==
                            CharacterWorkshopRigEvidence::HierarchyChain) {
                     evidence = "bracketed hierarchy chain";
+                } else if (proposal.evidence ==
+                           CharacterWorkshopRigEvidence::GeometrySymmetry) {
+                    evidence = "unique bind-pose symmetry";
                 }
                 if (proposal.joint >= 0 &&
                     proposal.joint < static_cast<int>(edit.joints.size())) {

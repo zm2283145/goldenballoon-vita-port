@@ -442,6 +442,30 @@ void testStructuralRigInference() {
         assert(std::fabs(role.restRotation[3] - 1.0f) < 1.0e-6f);
     }
 
+    auto anonymous = siblingPelvis;
+    for (auto &value : anonymous) value.name.clear();
+    const auto geometric = CharacterWorkshop_suggestHumanoidRig(anonymous);
+    assert(geometric.complete && geometric.hierarchyValid);
+    assert(geometric.namedRoles == 0u);
+    assert(geometric.geometryRoles == 16u);
+    assert(geometric.roles[0].joint == 0);
+    assert(geometric.roles[2].joint == 3);
+    assert(geometric.roles[3].joint == 4);
+    assert(geometric.roles[6].joint == 7);
+    assert(geometric.roles[15].joint == 16);
+    assert(geometric.roles[3].evidence ==
+           CharacterWorkshopRigEvidence::GeometrySymmetry);
+    const auto geometricReoriented =
+        CharacterWorkshop_suggestHumanoidRig(anonymous, 1u);
+    assert(geometricReoriented.complete);
+    assert(geometricReoriented.roles[6].joint == 10);
+    assert(geometricReoriented.roles[9].joint == 7);
+
+    auto unsafeHair = anonymous;
+    unsafeHair.push_back(joint("", 4, 0.0f, 1.8f));
+    unsafeHair.push_back(joint("", 17, 0.0f, 0.5f));
+    assert(!CharacterWorkshop_suggestHumanoidRig(unsafeHair).complete);
+
     auto bentLegs = siblingPelvis;
     bentLegs[13].bindPosition[2] = 0.15f;
     bentLegs[16].bindPosition[2] = 0.15f;
@@ -490,7 +514,7 @@ void testStructuralRigInference() {
     assert(!unavailable.roles[0].restBasisAvailable);
 
     auto ambiguous = siblingPelvis;
-    ambiguous.push_back(joint("Head", 3, 0.0f, 1.8f));
+    ambiguous.push_back(joint("Head", 3, 0.0f, 1.7f));
     assert(!CharacterWorkshop_suggestHumanoidRig(ambiguous).complete);
     auto cyclic = siblingPelvis;
     cyclic[0].parent = 3;

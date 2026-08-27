@@ -143,6 +143,24 @@ void setHierarchySuggestion(
     ++suggestion.hierarchyRoles;
 }
 
+void removeRigSuggestionEvidence(CharacterWorkshopRigSuggestion &suggestion,
+                                 size_t role) {
+    switch (suggestion.roles[role].evidence) {
+        case CharacterWorkshopRigEvidence::Name:
+            if (suggestion.namedRoles != 0u) --suggestion.namedRoles;
+            break;
+        case CharacterWorkshopRigEvidence::GeometrySymmetry:
+            if (suggestion.geometryRoles != 0u) --suggestion.geometryRoles;
+            break;
+        case CharacterWorkshopRigEvidence::HierarchyCommonAncestor:
+        case CharacterWorkshopRigEvidence::HierarchyChain:
+            if (suggestion.hierarchyRoles != 0u) --suggestion.hierarchyRoles;
+            break;
+        default: break;
+    }
+    suggestion.roles[role] = {};
+}
+
 void multiplyRigQuaternion(const std::array<float, 4> &left,
                            const std::array<float, 4> &right,
                            std::array<float, 4> &output) {
@@ -211,6 +229,154 @@ std::array<float, 4> sourcePresentationRotation(uint32_t sourceForward) {
     }};
     return sourceForward < rotations.size() ? rotations[sourceForward]
                                              : rotations[0];
+}
+
+bool proposeGeometryRigMap(
+    const std::vector<CharacterWorkshopRigJoint> &joints,
+    uint32_t sourceForward, std::array<int, 16> &mapping) {
+    if (joints.size() < 16u || sourceForward > 3u) return false;
+    const std::array<float, 4> presentation =
+        sourcePresentationRotation(sourceForward);
+    std::vector<std::array<float, 3>> positions(joints.size());
+    std::vector<unsigned> childCount(joints.size(), 0u);
+    float minimum[3] = {INFINITY, INFINITY, INFINITY};
+    float maximum[3] = {-INFINITY, -INFINITY, -INFINITY};
+    for (size_t joint = 0u; joint < joints.size(); ++joint) {
+        rotateRigVector(presentation, joints[joint].bindPosition,
+                        positions[joint]);
+        for (unsigned axis = 0u; axis < 3u; ++axis) {
+            minimum[axis] = std::min(minimum[axis], positions[joint][axis]);
+            maximum[axis] = std::max(maximum[axis], positions[joint][axis]);
+        }
+        if (joints[joint].parent >= 0) {
+            ++childCount[static_cast<size_t>(joints[joint].parent)];
+        }
+    }
+    const float width = maximum[0] - minimum[0];
+    const float height = maximum[1] - minimum[1];
+    if (!std::isfinite(width) || !std::isfinite(height) ||
+        width < 1.0e-5f || height < 1.0e-5f) return false;
+    const float centerX = (minimum[0] + maximum[0]) * 0.5f;
+    const auto uniqueBest = [&](const auto &eligible,
+                                const auto &score) {
+        int best = -1;
+        float bestScore = -INFINITY;
+        float secondScore = -INFINITY;
+        for (size_t joint = 0u; joint < joints.size(); ++joint) {
+            if (!eligible(joint)) continue;
+            const float candidate = score(joint);
+            if (candidate > bestScore) {
+                secondScore = bestScore;
+                bestScore = candidate;
+                best = static_cast<int>(joint);
+            } else if (candidate > secondScore) {
+                secondScore = candidate;
+            }
+        }
+        // A close runner-up is real ambiguity, not a deterministic tie-break.
+        return best >= 0 &&
+            (!std::isfinite(secondScore) || bestScore - secondScore >= 0.03f)
+            ? best : -1;
+    };
+    const auto leaf = [&](size_t joint) { return childCount[joint] == 0u; };
+    const auto upper = [&](size_t joint) {
+        return leaf(joint) &&
+            positions[joint][1] > minimum[1] + height * 0.48f;
+    };
+    const auto lower = [&](size_t joint) {
+        return leaf(joint) &&
+            positions[joint][1] < minimum[1] + height * 0.40f;
+    };
+    const float sideThreshold = width * 0.12f;
+    const int leftHand = uniqueBest(
+        [&](size_t joint) {
+            return upper(joint) &&
+                positions[joint][0] > centerX + sideThreshold;
+        },
+        [&](size_t joint) {
+            return (positions[joint][0] - centerX) / width +
+                (positions[joint][1] - minimum[1]) / height * 0.08f;
+        });
+    const int rightHand = uniqueBest(
+        [&](size_t joint) {
+            return upper(joint) &&
+                positions[joint][0] < centerX - sideThreshold;
+        },
+        [&](size_t joint) {
+            return (centerX - positions[joint][0]) / width +
+                (positions[joint][1] - minimum[1]) / height * 0.08f;
+        });
+    const int leftFoot = uniqueBest(
+        [&](size_t joint) {
+            return lower(joint) &&
+                positions[joint][0] > centerX + sideThreshold * 0.25f;
+        },
+        [&](size_t joint) {
+            return (maximum[1] - positions[joint][1]) / height +
+                (positions[joint][0] - centerX) / width * 0.08f;
+        });
+    const int rightFoot = uniqueBest(
+        [&](size_t joint) {
+            return lower(joint) &&
+                positions[joint][0] < centerX - sideThreshold * 0.25f;
+        },
+        [&](size_t joint) {
+            return (maximum[1] - positions[joint][1]) / height +
+                (centerX - positions[joint][0]) / width * 0.08f;
+        });
+    const int head = uniqueBest(
+        [&](size_t joint) {
+            return upper(joint) &&
+                std::fabs(positions[joint][0] - centerX) < width * 0.20f;
+        },
+        [&](size_t joint) {
+            return (positions[joint][1] - minimum[1]) / height -
+                std::fabs(positions[joint][0] - centerX) / width * 0.08f;
+        });
+    if (leftHand < 0 || rightHand < 0 || leftFoot < 0 ||
+        rightFoot < 0 || head < 0) return false;
+    const auto bilateral = [&](int left, int right, float maximumYDelta,
+                               float maximumSideDelta) {
+        const float leftSide = positions[left][0] - centerX;
+        const float rightSide = centerX - positions[right][0];
+        return std::fabs(positions[left][1] - positions[right][1]) <=
+                   height * maximumYDelta &&
+            std::fabs(leftSide - rightSide) <= width * maximumSideDelta;
+    };
+    if (!bilateral(leftHand, rightHand, 0.20f, 0.20f) ||
+        !bilateral(leftFoot, rightFoot, 0.12f, 0.20f)) return false;
+    const int chest = rigLowestCommonAncestor(
+        joints, {head, leftHand, rightHand});
+    const int hips = rigLowestCommonAncestor(
+        joints, {chest, leftFoot, rightFoot});
+    if (chest < 0 || hips < 0 || chest == hips) return false;
+    mapping.fill(-1);
+    mapping[0] = hips;
+    mapping[1] = rigChildOnPath(joints, hips, chest);
+    mapping[2] = chest;
+    mapping[3] = head;
+    const struct {
+        size_t upperRole;
+        int endpoint;
+        int root;
+    } limbs[] = {
+        {4u, leftHand, chest}, {7u, rightHand, chest},
+        {10u, leftFoot, hips}, {13u, rightFoot, hips},
+    };
+    for (const auto &limb : limbs) {
+        mapping[limb.upperRole] = rigChildOnPath(
+            joints, limb.root, limb.endpoint);
+        mapping[limb.upperRole + 1u] =
+            joints[static_cast<size_t>(limb.endpoint)].parent;
+        mapping[limb.upperRole + 2u] = limb.endpoint;
+    }
+    std::array<bool, 256> used{};
+    for (int joint : mapping) {
+        if (!rigJointValid(joints, joint) ||
+            used[static_cast<size_t>(joint)]) return false;
+        used[static_cast<size_t>(joint)] = true;
+    }
+    return true;
 }
 
 void proposeRigBases(const std::vector<CharacterWorkshopRigJoint> &joints,
@@ -805,6 +971,21 @@ CharacterWorkshopRigSuggestion CharacterWorkshop_suggestHumanoidRig(
         }
     }
 
+    std::array<int, 16> geometryMapping{};
+    if (proposeGeometryRigMap(joints, sourceForward, geometryMapping)) {
+        for (size_t role = 0u; role < result.roles.size(); ++role) {
+            if (result.roles[role].joint >= 0 ||
+                rigSuggestionUses(result, role, geometryMapping[role])) {
+                continue;
+            }
+            result.roles[role] = {
+                geometryMapping[role], 0.72f,
+                CharacterWorkshopRigEvidence::GeometrySymmetry};
+            ambiguous[role] = false;
+            ++result.geometryRoles;
+        }
+    }
+
     // A pelvis-shaped helper may be a sibling of the torso and legs. Repair
     // that common exporter pattern with the nearest skin-joint ancestor shared
     // by the three canonical branches; never force the name-only candidate.
@@ -821,8 +1002,8 @@ CharacterWorkshopRigSuggestion CharacterWorkshop_suggestHumanoidRig(
             const int common = rigLowestCommonAncestor(
                 joints, {spine, leftLeg, rightLeg});
             if (common >= 0 && !rigSuggestionUses(result, 0u, common)) {
-                if (result.roles[0].joint >= 0 && result.namedRoles > 0u) {
-                    --result.namedRoles;
+                if (result.roles[0].joint >= 0) {
+                    removeRigSuggestionEvidence(result, 0u);
                 }
                 result.roles[0] = {
                     common, 0.86f,

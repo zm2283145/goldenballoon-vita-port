@@ -183,17 +183,19 @@ and its head/torso land inside each ordinary vehicle camera without manual JSON.
 
 ### M2 — Rig inference by structure and rest basis (large)
 
-- **Partially implemented:** score role candidates using bounded skin
-  membership and normalized names, then validate the complete canonical
-  ancestor graph. Ambiguous duplicate names remain unresolved instead of being
-  selected by list order.
+- **Implemented:** score role candidates using bounded skin membership and
+  normalized names, then validate the complete canonical ancestor graph.
+  A bounded structural fallback can resolve a clean unnamed humanoid only when
+  it has unique bilateral hand/foot leaves, a unique central head leaf,
+  mirrored height/span agreement, and distinct LCA/path chains for every role.
+  Close candidates, hair/finger/toe continuations, cycles, asymmetry, or
+  duplicate names without decisive structure remain unresolved instead of
+  being selected by list order.
 - **Implemented:** detect the sibling-pelvis pattern and propose the lowest
   common skin-joint ancestor of the torso and both legs as hips. The manifest
   decision report retains per-role provenance; native Rig Studio presents the
   same source-bound proposal, confidence, and rationale before a reversible
   apply action. Applying always clears review.
-- Continue scoring role candidates using bind positions, branching, and
-  symmetry. Names remain evidence, not authority.
 - **Implemented:** derive every role's canonical-to-joint-local rest correction
   from the full normalized bind-orientation chain and the exact reviewed
   `source_forward` convention. Rig Studio discloses whether each basis was

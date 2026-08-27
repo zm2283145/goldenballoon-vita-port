@@ -208,6 +208,7 @@ enum class CharacterWorkshopRigEvidence : uint8_t {
     Name,
     HierarchyCommonAncestor,
     HierarchyChain,
+    GeometrySymmetry,
 };
 
 struct CharacterWorkshopRigJoint {
@@ -234,6 +235,7 @@ struct CharacterWorkshopRigSuggestion {
     bool hierarchyValid = false;
     unsigned namedRoles = 0u;
     unsigned hierarchyRoles = 0u;
+    unsigned geometryRoles = 0u;
     unsigned commonAncestorRepairs = 0u;
     unsigned restBasisRoles = 0u;
     unsigned bendAxisRoles = 0u;
