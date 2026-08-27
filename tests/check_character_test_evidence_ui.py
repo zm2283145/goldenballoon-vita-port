@@ -108,6 +108,64 @@ def check_bmp(path: Path, width: int, height: int) -> None:
         )
 
 
+def check_fit_overlay_bmp(path: Path) -> None:
+    """Require the three independent renderer-fit visual encodings."""
+
+    payload = path.read_bytes()
+    if len(payload) < 54 or payload[:2] != b"BM":
+        raise RuntimeError("fit-overlay evidence is not a BMP")
+    pixel_offset = struct.unpack_from("<I", payload, 10)[0]
+    width, signed_height = struct.unpack_from("<ii", payload, 18)
+    bits_per_pixel = struct.unpack_from("<H", payload, 28)[0]
+    compression = struct.unpack_from("<I", payload, 30)[0]
+    height = abs(signed_height)
+    if (
+        width <= 0
+        or height <= 0
+        or bits_per_pixel not in (24, 32)
+        or compression != 0
+    ):
+        raise RuntimeError(
+            "fit-overlay BMP uses an unsupported pixel layout"
+        )
+    bytes_per_pixel = bits_per_pixel // 8
+    row_bytes = ((width * bits_per_pixel + 31) // 32) * 4
+    if pixel_offset + row_bytes * height > len(payload):
+        raise RuntimeError("fit-overlay BMP pixel payload is truncated")
+    blue: list[tuple[int, int]] = []
+    pixels: list[tuple[int, int, int, int, int]] = []
+    for row in range(height):
+        base = pixel_offset + row * row_bytes
+        for x in range(width):
+            offset = base + x * bytes_per_pixel
+            b, g, r = payload[offset:offset + 3]
+            pixels.append((x, row, r, g, b))
+            if 45 <= r <= 115 and 155 <= g <= 225 and b >= 215:
+                blue.append((x, row))
+    if len(blue) < 24:
+        raise RuntimeError(
+            f"fit overlay has no visible measured-forward vector ({len(blue)} blue pixels)"
+        )
+    minimum_x = max(0, min(x for x, _ in blue) - 140)
+    maximum_x = min(width - 1, max(x for x, _ in blue) + 140)
+    minimum_y = max(0, min(y for _, y in blue) - 140)
+    maximum_y = min(height - 1, max(y for _, y in blue) + 140)
+    nearby = [
+        (r, g, b)
+        for x, y, r, g, b in pixels
+        if minimum_x <= x <= maximum_x and minimum_y <= y <= maximum_y
+    ]
+    gold = sum(r >= 210 and 155 <= g <= 220 and b <= 125
+               for r, g, b in nearby)
+    bounds = sum(135 <= r <= 190 and 155 <= g <= 210 and
+                 175 <= b <= 235 for r, g, b in nearby)
+    if gold < 24 or bounds < 24:
+        raise RuntimeError(
+            "fit overlay is missing its anchor/datum or calibrated-bounds "
+            f"encoding near the forward vector (gold={gold}, bounds={bounds})"
+        )
+
+
 def run(
     binary: Path,
     root: Path,
@@ -119,18 +177,26 @@ def run(
     accessible: bool = False,
     inspection_capture: Path | None = None,
     visual_report: Path | None = None,
+    focus_fit_overlay: bool = False,
 ) -> str:
     prefs = root / "prefs"
     saves = root / "saves"
     prefs.mkdir(exist_ok=True)
     saves.mkdir(exist_ok=True)
-    preferences = (
+    preferences_path = prefs / "mdkr64_app.ini"
+    remembered_rom = ""
+    if preferences_path.is_file():
+        for line in preferences_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("rom_path=") and len(line) > len("rom_path="):
+                remembered_rom = line + "\n"
+                break
+    preferences = remembered_rom + (
         f"character_workshop_last_selected={PACKAGE_ID}\n"
         "character_workshop_last_tab=test\n"
     )
     if compact:
         preferences += "ui_scale=2.0\n"
-    (prefs / "mdkr64_app.ini").write_text(preferences, encoding="utf-8")
+    preferences_path.write_text(preferences, encoding="utf-8")
     if accessible:
         (root / "video.ini").write_text(
             "[Accessibility]\nSpeech=1\n", encoding="utf-8"
@@ -144,7 +210,7 @@ def run(
     environment.update(
         {
             "LC_ALL": "C",
-            "MDKR_APP_SMOKE_FRAMES": "520" if accessible else "12",
+            "MDKR_APP_SMOKE_FRAMES": "640" if accessible else "12",
             "MDKR_APP_SMOKE_WINDOW_SIZE": (
                 "640x480" if compact else "1280x720"
             ),
@@ -170,6 +236,10 @@ def run(
                 "MDKR_APP_SMOKE_CHARACTER_TEST_EVIDENCE_TOKEN": TOKEN,
             }
         )
+    if focus_fit_overlay:
+        environment[
+            "MDKR_APP_SMOKE_CHARACTER_FIT_OVERLAY_FOCUS"
+        ] = "mdkr64-character-fit-overlay-v1"
     if inspection_capture is not None:
         environment["MDKR_APP_SMOKE_CHARACTER_INSPECTION_CAPTURE"] = str(
             inspection_capture
@@ -224,16 +294,29 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build", type=Path, default=Path(DEFAULT_BUILD_DIR))
     parser.add_argument(
-        "--rom", type=Path, help="accepted for run_checks.py compatibility"
+        "--rom", type=Path,
+        help="optional verified ROM used to remove the launcher readiness overlay from rendered evidence",
     )
     args = parser.parse_args()
     binary = Path(resolve_binary(args.build)).resolve()
+    if args.rom is not None and not args.rom.resolve().is_file():
+        print(
+            "check_character_test_evidence_ui: FAIL -- supplied ROM is missing",
+            file=sys.stderr,
+        )
+        return 2
     try:
         with tempfile.TemporaryDirectory(
             prefix="mdkr-character-test-evidence-"
         ) as temporary:
             root = Path(temporary)
             characters = install_fixture(root)
+            if args.rom is not None:
+                prefs = root / "prefs"
+                prefs.mkdir()
+                (prefs / "mdkr64_app.ini").write_text(
+                    f"rom_path={args.rom.resolve()}\n", encoding="utf-8"
+                )
             installed_before = file_inventory(characters)
 
             run(
@@ -250,9 +333,16 @@ def main() -> int:
                     "character-contact-proof context=2 mask=f views=3 "
                     "coordinate-space=donor-target "
                     "errorsUm=1000,1500,2000,2500 accessible=numeric-table",
+                    "character-fit-overlay context=2 views=3 "
+                    "coordinate-space=donor-target bounds=calibrated "
+                    "anchor=ground-or-seat forward=measured "
+                    "accessible=focusable-plots-plus-numeric",
+                    "character-fit-overlay-focus applied=1 context=2 views=3",
                 ),
                 action="publish-qualified",
+                focus_fit_overlay=True,
             )
+            check_fit_overlay_bmp(root / "evidence.bmp")
             rows = evidence_rows(root)
             if (
                 len(rows) != 1
@@ -350,6 +440,9 @@ def main() -> int:
                     "text=Inspect car",
                     "text=Inspect hovercraft",
                     "text=Inspect plane",
+                    "text=Front · X/Y",
+                    "text=Side · Z/Y",
+                    "text=Top · X/Z",
                 ),
                 compact=True,
                 accessible=True,
@@ -570,7 +663,7 @@ def main() -> int:
         return 1
     print(
         "check_character_test_evidence_ui: PASS -- durable source/fit/device-"
-        "bound 4x4 matrix with signed renderer-fit and hand/foot contact diagnostics, same-"
+        "bound 4x4 matrix with focusable three-view bounds/anchor/facing overlays, signed renderer-fit and hand/foot contact diagnostics, same-"
         "environment wall/scene/character GPU baseline lifecycle, corruption "
         "and invalid-fit/contact/GPU refusal, pose-inspection exclusion, keyboard speech, "
         "200% rendering, and package-byte purity"

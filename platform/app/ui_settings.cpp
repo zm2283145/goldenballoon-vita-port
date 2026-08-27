@@ -2125,6 +2125,8 @@ bool g_characterTestEvidenceSmokeActionApplied = false;
 bool g_characterTestEvidenceErrorTracePrinted = false;
 std::set<std::string> g_characterTestEvidenceTracePackages;
 std::set<std::string> g_characterFitEvidenceTraceContexts;
+std::set<std::string> g_characterFitOverlayTraceResults;
+bool g_characterFitOverlaySmokeFocusTraced = false;
 
 struct CharacterTuningEdit {
     bool loaded = false;
@@ -5270,6 +5272,290 @@ CharacterSpatialAxes characterSpatialAxes(CharacterSpatialPlane plane) {
     }
 }
 
+void drawCharacterFitOverlay(const MdkrCharacterPreviewResult &result,
+                             int selectedView, bool compact) {
+    struct View {
+        const char *name;
+        unsigned horizontal;
+        unsigned vertical;
+    };
+    static const View views[] = {
+        {"Front · X/Y", 0u, 1u},
+        {"Side · Z/Y", 2u, 1u},
+        {"Top · X/Z", 0u, 2u},
+    };
+    if (!result.fit_diagnostics_valid) return;
+    const int firstView = selectedView >= 0
+        ? std::clamp(selectedView, 0, 2) : 0;
+    const int viewCount = selectedView >= 0 ? 1 : 3;
+    const std::string traceKey =
+        std::to_string(static_cast<unsigned>(result.context)) + ":" +
+        std::to_string(firstView) + ":" + std::to_string(viewCount);
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
+        g_characterFitOverlayTraceResults.insert(traceKey).second) {
+        std::fprintf(
+            stderr,
+            "[app-ui] character-fit-overlay context=%u views=%d coordinate-space=donor-target bounds=calibrated anchor=ground-or-seat forward=measured accessible=focusable-plots-plus-numeric\n",
+            static_cast<unsigned>(result.context), viewCount);
+    }
+    ui::TextSubtleWrapped(
+        selectedView >= 0
+            ? "Measured target-space fit in the same plane as the editor. The shaded rectangle is the calibrated volume; the diamond is the fitted ground or seat anchor after authored corrections; the blue arrow is the rendered forward direction."
+            : "Exact target-space fit from the successful replacement draw. The shaded rectangle is the calibrated volume; the diamond is the fitted ground or seat anchor after authored corrections; the blue arrow is the rendered forward direction.");
+    const float available = ImGui::GetContentRegionAvail().x;
+    const int columns = viewCount == 1 ? 1
+        : available >= 780.0f ? 3 : available >= 500.0f ? 2 : 1;
+    // Keep keyboard/navigation identity tied to the semantic plot, including
+    // when durable evidence is materialized into a temporary result object.
+    ImGui::PushID("character-fit-overlay");
+    ImGui::PushID(static_cast<int>(result.context));
+    ImGui::PushID(selectedView);
+    if (ImGui::BeginTable("##fit-overlay-views", columns,
+                          ImGuiTableFlags_SizingStretchSame)) {
+        for (int offset = 0; offset < viewCount; ++offset) {
+            const int viewIndex = firstView + offset;
+            const View &view = views[viewIndex];
+            const unsigned horizontal = view.horizontal;
+            const unsigned vertical = view.vertical;
+            ImGui::TableNextColumn();
+            ImGui::PushID(viewIndex);
+            ImGui::TextUnformatted(view.name);
+            const float uiScale = AppTheme::uiScale();
+            const float width = std::max(
+                1.0f, ImGui::GetContentRegionAvail().x);
+            const float requestedHeight =
+                (compact ? 145.0f : 180.0f) * uiScale;
+            const ImVec2 size(width, requestedHeight);
+            const ImVec2 origin = ImGui::GetCursorScreenPos();
+            ImGui::InvisibleButton("##target-space-fit", size);
+            const char *smokeFocus = std::getenv(
+                "MDKR_APP_SMOKE_CHARACTER_FIT_OVERLAY_FOCUS");
+            if (offset == 0 && viewCount == 3 && smokeFocus != nullptr &&
+                std::strcmp(
+                    smokeFocus,
+                    "mdkr64-character-fit-overlay-v1") == 0) {
+                // Render-evidence seam only: keep the authoritative plot in the
+                // capture viewport without synthesizing or changing its data.
+                ImGui::SetScrollHereY(0.35f);
+                if (!g_characterFitOverlaySmokeFocusTraced) {
+                    g_characterFitOverlaySmokeFocusTraced = true;
+                    std::fprintf(
+                        stderr,
+                        "[app-ui] character-fit-overlay-focus applied=1 context=%u views=3\n",
+                        static_cast<unsigned>(result.context));
+                }
+            }
+            const bool focused = ImGui::IsItemFocused();
+            char spoken[640];
+            std::snprintf(
+                spoken, sizeof(spoken),
+                "%s renderer fit. Bounds %s %+.3f to %+.3f metres and %s %+.3f to %+.3f metres. Anchor %s %+.3f and %s %+.3f metres. Forward X %+.3f, Y %+.3f, Z %+.3f.",
+                view.name,
+                characterSpatialAxes(static_cast<CharacterSpatialPlane>(
+                    viewIndex)).horizontalName,
+                result.fit_bounds_min_micrometres[horizontal] / 1000000.0,
+                result.fit_bounds_max_micrometres[horizontal] / 1000000.0,
+                characterSpatialAxes(static_cast<CharacterSpatialPlane>(
+                    viewIndex)).verticalName,
+                result.fit_bounds_min_micrometres[vertical] / 1000000.0,
+                result.fit_bounds_max_micrometres[vertical] / 1000000.0,
+                characterSpatialAxes(static_cast<CharacterSpatialPlane>(
+                    viewIndex)).horizontalName,
+                result.fit_anchor_micrometres[horizontal] / 1000000.0,
+                characterSpatialAxes(static_cast<CharacterSpatialPlane>(
+                    viewIndex)).verticalName,
+                result.fit_anchor_micrometres[vertical] / 1000000.0,
+                result.fit_forward_milli[0] / 1000.0,
+                result.fit_forward_milli[1] / 1000.0,
+                result.fit_forward_milli[2] / 1000.0);
+            ui::SpeakFocusedItem(view.name, nullptr, spoken);
+
+            const long long spans[3] = {
+                result.fit_bounds_max_micrometres[0] -
+                    result.fit_bounds_min_micrometres[0],
+                result.fit_bounds_max_micrometres[1] -
+                    result.fit_bounds_min_micrometres[1],
+                result.fit_bounds_max_micrometres[2] -
+                    result.fit_bounds_min_micrometres[2],
+            };
+            const double maximumSpan = static_cast<double>(std::max(
+                {spans[0], spans[1], spans[2], 1LL}));
+            const double arrowLength = std::clamp(
+                maximumSpan * 0.35, 100000.0, 500000.0);
+            long long forwardEnd[3];
+            for (unsigned axis = 0u; axis < 3u; ++axis) {
+                forwardEnd[axis] = result.fit_anchor_micrometres[axis] +
+                    static_cast<long long>(std::llround(
+                        result.fit_forward_milli[axis] *
+                        arrowLength / 1000.0));
+            }
+            double lowH = static_cast<double>(std::min(
+                {0LL, result.fit_bounds_min_micrometres[horizontal],
+                 result.fit_anchor_micrometres[horizontal],
+                 forwardEnd[horizontal]}));
+            double highH = static_cast<double>(std::max(
+                {0LL, result.fit_bounds_max_micrometres[horizontal],
+                 result.fit_anchor_micrometres[horizontal],
+                 forwardEnd[horizontal]}));
+            double lowV = static_cast<double>(std::min(
+                {0LL, result.fit_bounds_min_micrometres[vertical],
+                 result.fit_anchor_micrometres[vertical],
+                 forwardEnd[vertical]}));
+            double highV = static_cast<double>(std::max(
+                {0LL, result.fit_bounds_max_micrometres[vertical],
+                 result.fit_anchor_micrometres[vertical],
+                 forwardEnd[vertical]}));
+            const double spanH = std::max(1000.0, highH - lowH);
+            const double spanV = std::max(1000.0, highV - lowV);
+            lowH -= spanH * 0.14;
+            highH += spanH * 0.14;
+            lowV -= spanV * 0.14;
+            highV += spanV * 0.14;
+            const float pad = std::min(12.0f * uiScale, size.x * 0.1f);
+            const ImVec2 maximum(origin.x + size.x, origin.y + size.y);
+            const auto project = [&](const long long point[3]) {
+                return ImVec2(
+                    origin.x + pad + static_cast<float>(
+                        (point[horizontal] - lowH) / (highH - lowH)) *
+                            (size.x - 2.0f * pad),
+                    maximum.y - pad - static_cast<float>(
+                        (point[vertical] - lowV) / (highV - lowV)) *
+                            (size.y - 2.0f * pad));
+            };
+            ImDrawList *draw = ImGui::GetWindowDrawList();
+            draw->AddRectFilled(origin, maximum, IM_COL32(12, 17, 24, 255),
+                                6.0f * uiScale);
+            draw->AddRect(
+                origin, maximum,
+                focused ? ImGui::GetColorU32(ImGuiCol_NavHighlight)
+                        : IM_COL32(74, 86, 102, 255),
+                6.0f * uiScale, 0, (focused ? 2.0f : 1.0f) * uiScale);
+            long long zero[3] = {};
+            const ImVec2 zeroPoint = project(zero);
+            const ImU32 datumColour = IM_COL32(241, 196, 83, 220);
+            draw->AddLine(
+                ImVec2(origin.x + pad * 0.5f, zeroPoint.y),
+                ImVec2(maximum.x - pad * 0.5f, zeroPoint.y),
+                vertical == 1u ? datumColour : IM_COL32(75, 84, 96, 160),
+                vertical == 1u ? 2.0f * uiScale : 1.0f * uiScale);
+            draw->AddLine(
+                ImVec2(zeroPoint.x, origin.y + pad * 0.5f),
+                ImVec2(zeroPoint.x, maximum.y - pad * 0.5f),
+                IM_COL32(75, 84, 96, 160), 1.0f * uiScale);
+            long long boundsLow[3] = {};
+            long long boundsHigh[3] = {};
+            boundsLow[horizontal] =
+                result.fit_bounds_min_micrometres[horizontal];
+            boundsLow[vertical] =
+                result.fit_bounds_min_micrometres[vertical];
+            boundsHigh[horizontal] =
+                result.fit_bounds_max_micrometres[horizontal];
+            boundsHigh[vertical] =
+                result.fit_bounds_max_micrometres[vertical];
+            const ImVec2 boxLow = project(boundsLow);
+            const ImVec2 boxHigh = project(boundsHigh);
+            const ImVec2 boxMinimum(
+                std::min(boxLow.x, boxHigh.x),
+                std::min(boxLow.y, boxHigh.y));
+            const ImVec2 boxMaximum(
+                std::max(boxLow.x, boxHigh.x),
+                std::max(boxLow.y, boxHigh.y));
+            draw->AddRectFilled(boxMinimum, boxMaximum,
+                                IM_COL32(119, 144, 172, 42));
+            draw->AddRect(boxMinimum, boxMaximum,
+                          IM_COL32(160, 181, 205, 230), 0.0f, 0,
+                          1.5f * uiScale);
+            const ImVec2 anchor = project(result.fit_anchor_micrometres);
+            const float diamond = 5.5f * uiScale;
+            draw->AddQuadFilled(
+                ImVec2(anchor.x, anchor.y - diamond),
+                ImVec2(anchor.x + diamond, anchor.y),
+                ImVec2(anchor.x, anchor.y + diamond),
+                ImVec2(anchor.x - diamond, anchor.y), datumColour);
+            const ImVec2 forward = project(forwardEnd);
+            const ImU32 forwardColour = IM_COL32(80, 190, 255, 255);
+            draw->AddLine(anchor, forward, forwardColour, 3.0f * uiScale);
+            const float arrowX = forward.x - anchor.x;
+            const float arrowY = forward.y - anchor.y;
+            const float arrowPixels = std::sqrt(
+                arrowX * arrowX + arrowY * arrowY);
+            char forwardLabel[64] = "Forward";
+            if (arrowPixels > 1.0f) {
+                const float unitX = arrowX / arrowPixels;
+                const float unitY = arrowY / arrowPixels;
+                const float head = 9.0f * uiScale;
+                const float wing = 4.5f * uiScale;
+                const ImVec2 base(
+                    forward.x - unitX * head,
+                    forward.y - unitY * head);
+                draw->AddTriangleFilled(
+                    forward,
+                    ImVec2(base.x - unitY * wing,
+                           base.y + unitX * wing),
+                    ImVec2(base.x + unitY * wing,
+                           base.y - unitX * wing),
+                    forwardColour);
+            } else {
+                static const char *const axisNames[] = {"X", "Y", "Z"};
+                const unsigned omittedAxis = 3u - horizontal - vertical;
+                const bool positive =
+                    result.fit_forward_milli[omittedAxis] >= 0;
+                const float ring = 10.0f * uiScale;
+                draw->AddCircle(anchor, ring, forwardColour, 0,
+                                2.0f * uiScale);
+                if (positive) {
+                    draw->AddCircleFilled(
+                        anchor, 3.0f * uiScale, forwardColour);
+                } else {
+                    const float cross = 4.0f * uiScale;
+                    draw->AddLine(
+                        ImVec2(anchor.x - cross, anchor.y - cross),
+                        ImVec2(anchor.x + cross, anchor.y + cross),
+                        forwardColour, 2.0f * uiScale);
+                    draw->AddLine(
+                        ImVec2(anchor.x - cross, anchor.y + cross),
+                        ImVec2(anchor.x + cross, anchor.y - cross),
+                        forwardColour, 2.0f * uiScale);
+                }
+                std::snprintf(
+                    forwardLabel, sizeof(forwardLabel),
+                    "Forward %c%s · %s",
+                    positive ? '+' : '-', axisNames[omittedAxis],
+                    positive ? "out" : "in");
+            }
+            draw->AddText(
+                ImVec2(origin.x + 7.0f * uiScale,
+                       origin.y + 6.0f * uiScale),
+                IM_COL32(197, 211, 226, 255), "Bounds");
+            draw->AddText(
+                ImVec2(std::min(maximum.x - 68.0f * uiScale,
+                                anchor.x + 7.0f * uiScale),
+                       anchor.y + 3.0f * uiScale),
+                datumColour, "Anchor");
+            draw->AddText(
+                ImVec2(std::min(maximum.x - 58.0f * uiScale,
+                                forward.x + 5.0f * uiScale),
+                       forward.y - 15.0f * uiScale),
+                forwardColour, forwardLabel);
+            if (vertical == 1u) {
+                draw->AddText(
+                    ImVec2(origin.x + 7.0f * uiScale,
+                           zeroPoint.y + 3.0f * uiScale),
+                    datumColour,
+                    result.context == MDKR_CHARACTER_PREVIEW_SELECT
+                        ? "Floor" : "Seat datum");
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    ImGui::PopID();
+    ImGui::PopID();
+    ImGui::PopID();
+    ui::TextSubtleWrapped(
+        "Legend: shaded rectangle = calibrated bounds; gold diamond = fitted anchor after authored corrections; gold line = target floor or seat datum; blue arrow = measured target-space forward. A blue ring with a dot means forward points out of that view; a ring with a cross means it points inward. Exact coordinates and alignment warnings follow below.");
+}
+
 void drawCharacterContactDiagnostics(
     const MdkrCharacterPreviewResult &result) {
     if (result.context == MDKR_CHARACTER_PREVIEW_SELECT) return;
@@ -6105,14 +6391,25 @@ bool drawCharacterTuningEditor(int player,
                         result->second.result)) {
                     drawCharacterFitDiagnostics(
                         result->second.result, true);
+                    const std::string overlayKey = std::string(entry->id) +
+                        "#" + std::to_string(context);
+                    drawCharacterFitOverlay(
+                        result->second.result,
+                        g_characterFitSpatialViews[overlayKey], true);
                 } else {
                     ImGui::TextColored(
                         AppTheme::bad(),
                         "Last exact test returned invalid fit measurements.");
                 }
             } else if (durableResult != nullptr) {
-                drawCharacterFitDiagnostics(
-                    characterPreviewResultFromEvidence(*durableResult), true);
+                const MdkrCharacterPreviewResult durablePreview =
+                    characterPreviewResultFromEvidence(*durableResult);
+                drawCharacterFitDiagnostics(durablePreview, true);
+                const std::string overlayKey = std::string(entry->id) +
+                    "#" + std::to_string(context);
+                drawCharacterFitOverlay(
+                    durablePreview, g_characterFitSpatialViews[overlayKey],
+                    true);
                 if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
                     const std::string traceKey = std::string(entry->id) + ":" +
                         std::to_string(static_cast<unsigned>(previewContext));
@@ -6912,6 +7209,19 @@ const char *characterGpuTimingStatusLabel(
     }
 }
 
+uint32_t characterGpuTimingStatusRepresentation(
+    const MdkrModernCharacterGpuTimingMetrics &metrics) {
+    static_assert(
+        sizeof(metrics.status) == sizeof(uint32_t),
+        "the shared C/C++ GPU timing ABI requires a 32-bit status field");
+    uint32_t representation = 0u;
+    // App-boundary bytes may be hostile. Copying the object representation is
+    // defined even when it does not denote a C++ enum value; converting that
+    // enum lvalue before the C validator rejects it is not.
+    std::memcpy(&representation, &metrics.status, sizeof(representation));
+    return representation;
+}
+
 bool characterPreviewFitDiagnosticsValid(
     const MdkrCharacterPreviewResult &result) {
     if (result.fit_diagnostics_valid != 0 &&
@@ -7012,6 +7322,7 @@ void drawCharacterFitDiagnostics(
         }
         return;
     }
+    if (!compact) drawCharacterFitOverlay(result, -1, false);
     const double anchorX =
         result.fit_anchor_micrometres[0] / 1000000.0;
     const double anchorY =
@@ -8068,8 +8379,13 @@ void drawCharacterTestEvidenceMatrix(
             if (invalidFit) result.fit_diagnostics_valid = 2;
             if (invalidContact) result.contact_witness_mask = 0x3u;
             if (invalidGpu) {
-                result.gpu_timing.status =
-                    static_cast<MdkrModernCharacterGpuTimingStatus>(99);
+                const uint32_t invalidStatus = 99u;
+                static_assert(
+                    sizeof(result.gpu_timing.status) ==
+                        sizeof(invalidStatus),
+                    "GPU timing status injection must preserve the ABI width");
+                std::memcpy(&result.gpu_timing.status, &invalidStatus,
+                            sizeof(invalidStatus));
             }
             if (inspection) {
                 result.pose = MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER;
@@ -15778,7 +16094,7 @@ void Settings_publishCharacterPreviewResult(
                 stderr,
                 "[app-ui] character-preview-result rejected-evidence=gpu-timing-contract package=%s timingVersion=%u status=%u scopes=%x\n",
                 packageId.c_str(), result.gpu_timing.version,
-                static_cast<unsigned>(result.gpu_timing.status),
+                characterGpuTimingStatusRepresentation(result.gpu_timing),
                 result.gpu_timing.supported_scopes);
         }
         setStatus(
