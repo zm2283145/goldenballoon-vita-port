@@ -2001,6 +2001,7 @@ struct CharacterProfileEdit {
 std::map<std::string, CharacterProfileEdit> g_characterProfileEdits;
 MdkrDonorGameplayProfiles g_donorGameplayProfiles{};
 std::string g_donorGameplayProfilesUnavailableReason;
+std::set<std::string> g_characterDonorProfileTraceKeys;
 std::map<std::string, int> g_characterAssemblyPlayers;
 std::map<std::string, float> g_characterPerformanceLodGestureStarts;
 std::set<std::string> g_characterPerformanceTracePackages;
@@ -3754,6 +3755,8 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterVisualCaptures.erase(id);
     g_characterCaptureThumbnails.erase(id);
     g_characterPendingPortraitSources.erase(id);
+    g_characterDonorProfileTraceKeys.erase(id + "\n0");
+    g_characterDonorProfileTraceKeys.erase(id + "\n1");
     g_characterPoseInspectionTracePackages.erase(id);
     g_characterPreviewResults.erase(id);
     g_characterTestEvidenceSelectedCell.erase(id);
@@ -3847,20 +3850,6 @@ bool donorProfilesAvailable() {
             MDKR_DONOR_GAMEPLAY_PROFILE_COUNT;
 }
 
-std::string donorChoiceLabel(uint32_t donor) {
-    if (!donorProfilesAvailable() ||
-        donor >= MDKR_DONOR_GAMEPLAY_PROFILE_COUNT) {
-        return donorName(donor);
-    }
-    const MdkrDonorGameplayProfile &profile =
-        g_donorGameplayProfiles.donor[donor];
-    char label[128];
-    std::snprintf(label, sizeof(label), "%s  ·  W %.3f  ·  H %.3f",
-                  donorName(donor), static_cast<double>(profile.weight),
-                  static_cast<double>(profile.handling));
-    return label;
-}
-
 void donorMetricRange(float MdkrDonorGameplayProfile::*member,
                       float &minimum, float &maximum) {
     minimum = g_donorGameplayProfiles.donor[0].*member;
@@ -3889,6 +3878,259 @@ void drawDonorMetricRow(const char *label, float value,
                   static_cast<double>(minimum),
                   static_cast<double>(maximum));
     ImGui::ProgressBar(normalized, ImVec2(-1.0f, 0.0f), overlay);
+}
+
+ImU32 donorProfileAccent(uint32_t donor, uint8_t alpha = 255u) {
+    /* Project-owned, colour-blind-conscious accent sequence. These procedural
+     * badges communicate profile identity without reproducing retail art. */
+    static constexpr uint8_t accents[MDKR_DONOR_GAMEPLAY_PROFILE_COUNT][3] = {
+        { 72u, 137u, 214u}, {230u, 139u,  52u}, { 54u, 162u, 145u},
+        {190u,  98u, 158u}, { 89u, 176u, 223u}, {213u,  94u,  72u},
+        {116u, 167u,  72u}, {139u, 112u, 198u}, {218u, 175u,  55u},
+        {120u, 137u, 153u},
+    };
+    if (donor >= MDKR_DONOR_GAMEPLAY_PROFILE_COUNT) {
+        return IM_COL32(120, 137, 153, alpha);
+    }
+    return IM_COL32(accents[donor][0], accents[donor][1],
+                    accents[donor][2], alpha);
+}
+
+void drawDonorProfileGlyph(ImDrawList *draw, const ImVec2 &centre,
+                           float radius, uint32_t donor) {
+    const ImU32 accent = donorProfileAccent(donor);
+    const ImU32 ink = IM_COL32(245, 248, 252, 235);
+    draw->AddCircleFilled(centre, radius, accent, 24);
+    draw->AddCircle(centre, radius, IM_COL32(255, 255, 255, 145),
+                    24, 1.0f);
+    /* The three strokes encode the profile index rather than a character
+     * likeness, so every badge remains distinguishable without colour. */
+    for (uint32_t bit = 0u; bit < 3u; ++bit) {
+        const float y = centre.y + (static_cast<float>(bit) - 1.0f) *
+            radius * 0.42f;
+        const float inset = ((donor >> bit) & 1u) != 0u
+            ? radius * 0.20f : radius * 0.48f;
+        draw->AddLine(ImVec2(centre.x - radius + inset, y),
+                      ImVec2(centre.x + radius - inset, y), ink,
+                      std::max(1.0f, radius * 0.11f));
+    }
+    const float x = centre.x + (((donor >> 3u) & 1u) != 0u
+                                    ? radius * 0.25f : -radius * 0.25f);
+    draw->AddLine(ImVec2(x, centre.y - radius * 0.58f),
+                  ImVec2(x, centre.y + radius * 0.58f), ink,
+                  std::max(1.0f, radius * 0.10f));
+}
+
+bool drawDonorProfileTile(uint32_t donor, bool selected, float width,
+                          uint32_t vehicle, float weightMinimum,
+                          float weightMaximum, float handlingMinimum,
+                          float handlingMaximum, float curveMinimum,
+                          float curveMaximum) {
+    const float line = ImGui::GetTextLineHeight();
+    const float padding = std::max(8.0f, ImGui::GetStyle().FramePadding.x);
+    const float height = line * 5.6f + padding * 2.0f;
+    const std::string id = "##donor-profile-tile-" + std::to_string(donor);
+    const bool activated = ImGui::Selectable(
+        id.c_str(), selected, ImGuiSelectableFlags_None,
+        ImVec2(width, height));
+    const bool hovered = ImGui::IsItemHovered();
+    const bool focused = ImGui::IsItemFocused();
+    const ImVec2 minimum = ImGui::GetItemRectMin();
+    const ImVec2 maximum = ImGui::GetItemRectMax();
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    const ImU32 accent = donorProfileAccent(donor);
+    const ImU32 background = ImGui::GetColorU32(
+        selected || hovered || focused
+            ? ImGuiCol_HeaderHovered : ImGuiCol_FrameBg);
+    draw->AddRectFilled(minimum, maximum, background,
+                        ImGui::GetStyle().FrameRounding);
+    draw->AddRect(minimum, maximum,
+                  focused ? ImGui::GetColorU32(AppTheme::focusRing())
+                          : selected ? accent
+                                     : ImGui::GetColorU32(ImGuiCol_Border),
+                  ImGui::GetStyle().FrameRounding, 0,
+                  focused ? 3.0f : selected ? 2.5f : 1.0f);
+    const float radius = line * 0.85f;
+    const ImVec2 glyphCentre(minimum.x + padding + radius,
+                             minimum.y + padding + radius);
+    drawDonorProfileGlyph(draw, glyphCentre, radius, donor);
+    draw->AddText(ImVec2(glyphCentre.x + radius + padding,
+                         minimum.y + padding),
+                  ImGui::GetColorU32(ImGuiCol_Text), donorName(donor));
+    char profileCode[24];
+    std::snprintf(profileCode, sizeof(profileCode),
+                  "Profile P%02u%s", donor + 1u,
+                  selected ? " · selected" : "");
+    draw->AddText(ImVec2(glyphCentre.x + radius + padding,
+                         minimum.y + padding + line * 1.15f),
+                  ImGui::GetColorU32(ImGuiCol_TextDisabled), profileCode);
+
+    const bool exact = donorProfilesAvailable();
+    const float metricTop = minimum.y + padding + line * 2.45f;
+    const float trackLeft = minimum.x + padding;
+    const float trackRight = maximum.x - padding;
+    if (exact) {
+        const MdkrDonorGameplayProfile &profile =
+            g_donorGameplayProfiles.donor[donor];
+        const auto normalized = [](float value, float low, float high) {
+            return high > low
+                ? std::clamp((value - low) / (high - low), 0.0f, 1.0f)
+                : 0.5f;
+        };
+        const float weight = normalized(
+            profile.weight, weightMinimum, weightMaximum);
+        const float handling = normalized(
+            profile.handling, handlingMinimum, handlingMaximum);
+        char values[96];
+        std::snprintf(values, sizeof(values), "W %.3f   H %.3f",
+                      static_cast<double>(profile.weight),
+                      static_cast<double>(profile.handling));
+        draw->AddText(ImVec2(trackLeft, metricTop),
+                      ImGui::GetColorU32(ImGuiCol_TextDisabled), values);
+        const float barTop = metricTop + line * 1.15f;
+        const float gap = padding;
+        const float halfWidth = std::max(
+            1.0f, (trackRight - trackLeft - gap) * 0.5f);
+        const auto bar = [&](float left, float amount) {
+            draw->AddRectFilled(
+                ImVec2(left, barTop), ImVec2(left + halfWidth, barTop + 4.0f),
+                IM_COL32(255, 255, 255, 35), 2.0f);
+            draw->AddRectFilled(
+                ImVec2(left, barTop),
+                ImVec2(left + halfWidth * amount, barTop + 4.0f),
+                accent, 2.0f);
+        };
+        bar(trackLeft, weight);
+        bar(trackLeft + halfWidth + gap, handling);
+
+        const float sparkTop = barTop + line * 0.72f;
+        const float sparkBottom = maximum.y - padding;
+        const float curveRange = curveMaximum - curveMinimum;
+        for (uint32_t sample = 1u;
+             sample < MDKR_DONOR_ACCELERATION_SAMPLES; ++sample) {
+            const auto point = [&](uint32_t index) {
+                const float x = trackLeft + (trackRight - trackLeft) *
+                    static_cast<float>(index) /
+                    static_cast<float>(MDKR_DONOR_ACCELERATION_SAMPLES - 1u);
+                const float value = profile.acceleration[vehicle][index];
+                const float unit = curveRange > 0.0f
+                    ? std::clamp((value - curveMinimum) / curveRange,
+                                 0.0f, 1.0f)
+                    : 0.5f;
+                return ImVec2(x, sparkBottom -
+                    unit * std::max(1.0f, sparkBottom - sparkTop));
+            };
+            draw->AddLine(point(sample - 1u), point(sample), accent, 1.6f);
+        }
+    } else {
+        draw->AddText(
+            ImVec2(trackLeft, metricTop),
+            ImGui::GetColorU32(ImGuiCol_TextDisabled),
+            "ROM needed for exact metrics");
+        const float y = metricTop + line * 1.55f;
+        for (uint32_t dash = 0u; dash < 7u; ++dash) {
+            const float x0 = trackLeft + (trackRight - trackLeft) *
+                static_cast<float>(dash) / 7.0f;
+            const float x1 = trackLeft + (trackRight - trackLeft) *
+                static_cast<float>(dash * 2u + 1u) / 14.0f;
+            draw->AddLine(ImVec2(x0, y), ImVec2(x1, y),
+                          donorProfileAccent(donor, 150u), 1.5f);
+        }
+    }
+    char spoken[288];
+    if (exact) {
+        const MdkrDonorGameplayProfile &profile =
+            g_donorGameplayProfiles.donor[donor];
+        static const char *vehicleNames[MDKR_DONOR_VEHICLE_COUNT] = {
+            "car", "hovercraft", "plane",
+        };
+        std::snprintf(
+            spoken, sizeof(spoken),
+            "profile P%02u, effective weight %.4f, handling %.4f, %s acceleration start %.4f, middle %.4f, end %.4f, %s",
+            donor + 1u, static_cast<double>(profile.weight),
+            static_cast<double>(profile.handling),
+            vehicleNames[vehicle],
+            static_cast<double>(profile.acceleration[vehicle][0]),
+            static_cast<double>(profile.acceleration[vehicle][6]),
+            static_cast<double>(profile.acceleration[vehicle][13]),
+            selected ? "selected" : "available");
+    } else {
+        std::snprintf(spoken, sizeof(spoken),
+                      "profile P%02u, exact metrics unavailable, %s",
+                      donor + 1u, selected ? "selected" : "available");
+    }
+    const std::string spokenLabel =
+        std::string(donorName(donor)) + " gameplay profile";
+    ui::SpeakFocusedItem(
+        spokenLabel.c_str(), spoken,
+        "Selects this fingerprint-qualified retail simulation profile. The abstract metric badge is project-owned and contains no retail portrait art.");
+    if (hovered) {
+        ImGui::SetTooltip(
+            "%s gameplay profile\nProject-owned abstract metric badge\nNo retail portrait art",
+            donorName(donor));
+    }
+    return activated;
+}
+
+void drawDonorProfileGallery(uint32_t &selectedDonor, uint32_t vehicle) {
+    if (vehicle >= MDKR_DONOR_VEHICLE_COUNT) {
+        vehicle = MDKR_DONOR_VEHICLE_CAR;
+    }
+    ImGui::TextUnformatted("Gameplay profile library");
+    ui::TextSubtleWrapped(
+        "Choose by authoritative behavior, not by borrowed character art. Each project-owned abstract badge has a colour-independent profile code; with a verified base ROM it also plots exact relative weight, handling, and the selected vehicle's acceleration signature.");
+    const float available = ImGui::GetContentRegionAvail().x;
+    const float minimumCardWidth = std::max(
+        170.0f, ImGui::GetTextLineHeight() * 10.0f);
+    const int columns = std::clamp(
+        static_cast<int>((available + ImGui::GetStyle().ItemSpacing.x) /
+                         (minimumCardWidth +
+                          ImGui::GetStyle().ItemSpacing.x)),
+        1, 5);
+    float weightMinimum = 0.0f;
+    float weightMaximum = 0.0f;
+    float handlingMinimum = 0.0f;
+    float handlingMaximum = 0.0f;
+    float curveMinimum = 0.0f;
+    float curveMaximum = 0.0f;
+    if (donorProfilesAvailable()) {
+        donorMetricRange(&MdkrDonorGameplayProfile::weight,
+                         weightMinimum, weightMaximum);
+        donorMetricRange(&MdkrDonorGameplayProfile::handling,
+                         handlingMinimum, handlingMaximum);
+        curveMinimum = g_donorGameplayProfiles.donor[0]
+            .acceleration[vehicle][0];
+        curveMaximum = curveMinimum;
+        for (uint32_t donor = 0u;
+             donor < MDKR_DONOR_GAMEPLAY_PROFILE_COUNT; ++donor) {
+            for (uint32_t sample = 0u;
+                 sample < MDKR_DONOR_ACCELERATION_SAMPLES; ++sample) {
+                const float value = g_donorGameplayProfiles.donor[donor]
+                    .acceleration[vehicle][sample];
+                curveMinimum = std::min(curveMinimum, value);
+                curveMaximum = std::max(curveMaximum, value);
+            }
+        }
+    }
+    if (ImGui::BeginTable(
+            "##donor-profile-gallery", columns,
+            ImGuiTableFlags_SizingStretchSame)) {
+        for (uint32_t donor = 0u;
+             donor < MDKR_DONOR_GAMEPLAY_PROFILE_COUNT; ++donor) {
+            ImGui::TableNextColumn();
+            ImGui::PushID(static_cast<int>(donor));
+            if (drawDonorProfileTile(
+                    donor, donor == selectedDonor,
+                    ImGui::GetContentRegionAvail().x, vehicle,
+                    weightMinimum, weightMaximum,
+                    handlingMinimum, handlingMaximum,
+                    curveMinimum, curveMaximum)) {
+                selectedDonor = donor;
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
 }
 
 void drawDonorGameplayComparison(uint32_t donor, uint32_t &vehicle) {
@@ -7720,7 +7962,7 @@ void drawCharacterProfileAuthorityCard(
     const MdkrModernCharacterEntry *entry,
     const CharacterProfileEdit &edit) {
     const bool donorDirty = edit.donor != entry->donor;
-    ImGui::Text("%s appearance  →  %s gameplay profile",
+    ImGui::Text("%s appearance uses %s gameplay profile",
                 entry->display_name, donorName(edit.donor));
     if (donorDirty) {
         ImGui::SameLine();
@@ -7804,41 +8046,16 @@ bool drawCharacterProfileStudio(const MdkrModernCharacterEntry *entry) {
         entry, CharacterHistoryTool::Profile);
     ui::TextSubtleWrapped(
         "Choose which built-in racer supplies authoritative gameplay and which vehicle scenes this appearance supports. The package never copies or edits the donor's simulation tables.");
-    ImGui::SetNextItemWidth(std::min(440.0f, ImGui::GetContentRegionAvail().x));
-    const std::string selectedLabel = donorChoiceLabel(edit.donor);
-    const bool profileComboOpen = ImGui::BeginCombo(
-        "Built-in gameplay profile", selectedLabel.c_str());
-    ui::SpeakFocusedItem(
-        "Built-in gameplay profile", donorName(edit.donor),
-        "Choose the built-in racer that supplies authoritative gameplay. "
-        "The appearance package does not replace simulation stats.");
-    if (profileComboOpen) {
-        for (uint32_t donor = 0u; donor < 10u; ++donor) {
-            const bool selected = edit.donor == donor;
-            const std::string optionLabel = donorChoiceLabel(donor);
-            if (ImGui::Selectable(optionLabel.c_str(), selected)) {
-                edit.donor = donor;
-            }
-            char spoken[160];
-            if (donorProfilesAvailable()) {
-                const MdkrDonorGameplayProfile &profile =
-                    g_donorGameplayProfiles.donor[donor];
-                std::snprintf(
-                    spoken, sizeof(spoken),
-                    "effective weight %.4f, handling %.4f%s",
-                    static_cast<double>(profile.weight),
-                    static_cast<double>(profile.handling),
-                    selected ? ", selected" : "");
-            } else {
-                std::snprintf(spoken, sizeof(spoken), "%s",
-                              selected ? "selected" : "available");
-            }
-            ui::SpeakFocusedItem(
-                donorName(donor), spoken,
-                "Select this built-in authoritative gameplay profile.");
-            if (selected) ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
+    drawDonorProfileGallery(edit.donor, edit.comparisonVehicle);
+    const bool exactProfileVisuals = donorProfilesAvailable();
+    const std::string profileTraceKey = std::string(entry->id) + "\n" +
+        (exactProfileVisuals ? "1" : "0");
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
+        g_characterDonorProfileTraceKeys.insert(profileTraceKey).second) {
+        std::fprintf(
+            stderr,
+            "[app-ui] character-donor-profile-gallery package=%s profiles=10 glyph=project-owned-metric-badge copyrighted-art=0 exact=%d responsive=1 keyboard=1\n",
+            entry->id, exactProfileVisuals ? 1 : 0);
     }
     drawCharacterProfileAuthorityCard(entry, edit);
     drawDonorGameplayComparison(edit.donor, edit.comparisonVehicle);

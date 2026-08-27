@@ -68,18 +68,22 @@ def inventory(directory: Path) -> dict[str, str]:
 
 
 def run_tab(binary: Path, root: Path, characters: Path, tab: str,
-            expected: tuple[str, ...]) -> None:
+            expected: tuple[str, ...], rom: Path | None) -> None:
     tab_root = root / tab
     prefs = tab_root / "prefs"
     saves = tab_root / "saves"
     prefs.mkdir(parents=True)
     saves.mkdir()
-    accessible = tab == "performance"
-    (prefs / "mdkr64_app.ini").write_text(
+    accessible = tab in ("vehicles", "performance")
+    preferences = (
         f"character_workshop_last_selected={PACKAGE_ID}\n"
         f"character_workshop_last_tab={tab}\n" +
-        ("ui_scale=2.0\n" if accessible else ""),
-        encoding="utf-8",
+        ("ui_scale=2.0\n" if accessible else "")
+    )
+    if rom is not None:
+        preferences += f"rom_path={rom}\n"
+    (prefs / "mdkr64_app.ini").write_text(
+        preferences, encoding="utf-8"
     )
     if accessible:
         (tab_root / "video.ini").write_text(
@@ -131,6 +135,26 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                 f"{process.stdout[-8000:]}"
             )
     if tab == "vehicles":
+        profile_marker = (
+            "character-donor-profile-gallery package=" + PACKAGE_ID
+            + " profiles=10 glyph=project-owned-metric-badge "
+            + f"copyrighted-art=0 exact={1 if rom else 0} "
+            "responsive=1 keyboard=1"
+        )
+        if profile_marker not in process.stdout:
+            raise RuntimeError(
+                "vehicle route did not render the project-owned donor "
+                "profile library\n" + process.stdout[-8000:]
+            )
+        for spoken in (
+            "text=Krunch gameplay profile",
+            "text=Diddy gameplay profile",
+        ):
+            if spoken not in process.stdout:
+                raise RuntimeError(
+                    "profile keyboard/speech walk missed " + spoken
+                    + "\n" + process.stdout[-8000:]
+                )
         marker = (
             "character-spatial-controls package=" + PACKAGE_ID +
             " planes=front,side,top placement=ground-or-seat yaw=context "
@@ -185,6 +209,7 @@ def main() -> int:
                         help="accepted for run_checks.py compatibility")
     args = parser.parse_args()
     binary = Path(resolve_binary(args.build)).resolve()
+    rom = args.rom.resolve() if args.rom is not None else None
     try:
         with tempfile.TemporaryDirectory(
                 prefix="mdkr-workshop-history-") as temporary:
@@ -199,7 +224,7 @@ def main() -> int:
                 ("test", ("Test setup",)),
             )
             for tab, tools in routes:
-                run_tab(binary, root, characters, tab, tools)
+                run_tab(binary, root, characters, tab, tools, rom)
             if inventory(characters) != before:
                 raise RuntimeError(
                     "rendering history controls mutated installed character bytes"
@@ -210,8 +235,9 @@ def main() -> int:
               file=sys.stderr)
         return 1
     print("check_character_workshop_history_ui: PASS -- exact-source Identity, "
-          "Profile, Rig, Fit, Performance, Test history, spatial fit/contact "
-          "controls, accessible performance targets with runtime-equivalent "
+          "Profile, Rig, Fit, Performance, Test history, project-owned "
+          "accessible donor metric badges, spatial fit/contact controls, "
+          "accessible performance targets with runtime-equivalent "
           "LOD assembly math, and all semantic pose inspection controls render "
           "without mutating installed bytes")
     return 0

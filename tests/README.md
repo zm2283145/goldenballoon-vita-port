@@ -4894,7 +4894,9 @@ opens the exact saved Identity, Rig & Motion, Vehicles, Performance, and Test
 tabs. It requires source-digest-bound history controls for Identity, Profile,
 Rig, Fit/review, Performance assembly, and Test setup, and verifies that merely
 rendering every route leaves the installed source and cache byte-for-byte
-unchanged. The Vehicles route additionally requires the front/side/top
+unchanged. The 200% keyboard/speech Vehicles route additionally requires all
+ten project-owned, colour-independent donor-profile metric badges with no
+retail portrait art, plus the front/side/top
 placement and contact planes, context yaw, vehicle-only copy boundary, and Fit
 undo contract to render. The 200% keyboard/speech Performance route requires
 all four named targets, the exact authored-LOD control, runtime-equivalent
@@ -4913,7 +4915,10 @@ python3 tests/check_character_workshop_history_ui.py \
 
 The rendered gate is registered as the `app_character_workshop_history` CTest
 and `character_workshop_history_ui` run-check. It needs neither a ROM nor a
-community model.
+community model. Passing `--rom` additionally requires the rendered donor cards
+to transition from their honest no-ROM treatment to exact ROM-derived metric
+bars and acceleration signatures; this uses only the game's ordinary verified
+base ROM.
 
 ## Portrait Studio authoring — `tests/check_character_portrait_studio_ui.py`
 
