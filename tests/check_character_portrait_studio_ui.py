@@ -176,7 +176,9 @@ def main() -> int:
                  "character-portrait-variants package=" + PACKAGE_ID +
                  " count=6 source=canvas columns=1 scale=2.00",
                  "character-portrait-readability package=" + PACKAGE_ID +
-                 " views=7 columns=1 scale=2.00"),
+                 " views=7 columns=1 scale=2.00",
+                 "character-portrait-camera package=" + PACKAGE_ID +
+                 " presets=front,left-three-quarter,right-three-quarter"),
             )
             check_bmp(compact_shot, 640, 480)
 
@@ -200,11 +202,16 @@ def main() -> int:
                  "character-portrait-source-action package=" + PACKAGE_ID +
                  " loaded=1 applied=0",
                  "character-portrait-source package=" + PACKAGE_ID,
+                 "character-portrait-camera package=" + PACKAGE_ID +
+                 " presets=front,left-three-quarter,right-three-quarter",
                  "kind=local-png dimensions=96x64",
                  "mask=1 removed=16",
                  "text=Portrait input PNG",
                  "text=Undo portrait framing and mask",
                  "text=Redo portrait framing and mask",
+                 "text=Front portrait",
+                 "text=Left three-quarter",
+                 "text=Right three-quarter",
                  "text=Square crop size",
                  "text=Edge-connected matte removal",
                  "text=Background frame",

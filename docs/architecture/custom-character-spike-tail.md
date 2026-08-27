@@ -281,8 +281,12 @@ fit-bound.
   framing.” Composed captures retain the actual camera; isolated captures use
   an independent replay slot and publish the correspondingly framed exact
   target-to-clip projection witness.
-- Add one-click front/three-quarter portrait arms, subject centering, and direct
-  handoff into the existing crop/matte/palette/outline/readability workflow.
+- **Implemented:** add one-click front, left-three-quarter, and
+  right-three-quarter portrait preparations. Each configures the exact
+  one-player model-only renderer, held select-idle midpoint, bright light,
+  repeatable vehicle-orbit camera, and 60–85% subject-fit contract, then hands
+  the create-only PNG into the existing crop/matte/palette/outline/readability
+  workflow from its capture report card.
 - Generate a first portrait suggestion during intake, while keeping exact 40x40
   pixel editing and explicit author approval.
 

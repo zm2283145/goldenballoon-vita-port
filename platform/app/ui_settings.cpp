@@ -12450,16 +12450,80 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
         "Load and frame image",
         pathReady ? nullptr : "Choose or enter a PNG path first.",
         "Validates and decodes the source without changing the draft canvas.");
-    ImGui::SameLine();
-    if (ImGui::Button("Capture model in exact renderer")) {
-        persistCharacterWorkshopTab(CharacterWorkshopTab::Test, true);
-        setStatus(
-            "Choose a semantic pose and view, enable one-shot PNG capture, then use the saved capture for the portrait from the Test tray.",
-            AppTheme::accent());
+    if (entry != nullptr) {
+        ImGui::SeparatorText("Exact portrait camera");
+        ui::TextSubtleWrapped(
+            "Prepare a centered, transparent, 72%-occupancy model capture with one player, select-idle at midpoint, bright inspection light, and a repeatable vehicle-orbit camera. Test will still require a new PNG filename and an explicit launch, so no file can be overwritten accidentally.");
+        struct PortraitCameraPreset {
+            const char *label;
+            int yaw;
+        };
+        static const PortraitCameraPreset portraitPresets[] = {
+            {"Front portrait", 180},
+            {"Left three-quarter", 145},
+            {"Right three-quarter", -145},
+        };
+        unsigned portraitContext = MDKR_CHARACTER_CONTEXT_CAR;
+        while (portraitContext < MDKR_CHARACTER_CONTEXT_COUNT &&
+               (entry->vehicle_mask &
+                (1u << (portraitContext - 1u))) == 0u) {
+            ++portraitContext;
+        }
+        static const char *contextNames[] = {
+            "Character select", "Car", "Hovercraft", "Plane"
+        };
+        const int portraitColumns =
+            ImGui::GetContentRegionAvail().x >= ui::kPairMinWidth() * 3.0f
+                ? 3 : 1;
+        if (ImGui::BeginTable(
+                "##character-portrait-camera-presets", portraitColumns,
+                ImGuiTableFlags_SizingStretchSame)) {
+            for (const PortraitCameraPreset &preset : portraitPresets) {
+                ImGui::TableNextColumn();
+                if (ImGui::Button(preset.label, ui::kBtnFullWidth())) {
+                    CharacterCaptureEdit &capture =
+                        g_characterCaptureEdits[entry->id];
+                    capture.enabled = true;
+                    capture.kind =
+                        MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA;
+                    g_characterTestPlayers[entry->id] = 1;
+                    g_characterTestPoses[entry->id] =
+                        MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE;
+                    g_characterTestPosePhases[entry->id] = 500;
+                    g_characterTestViewYawDegrees[entry->id] = preset.yaw;
+                    g_characterTestViewPitchDegrees[entry->id] = 0;
+                    g_characterTestLighting[entry->id] =
+                        MDKR_WORKSHOP_PREVIEW_LIGHTING_BRIGHT;
+                    persistCharacterWorkshopTab(
+                        CharacterWorkshopTab::Test, true);
+                    const std::string message = std::string(preset.label) +
+                        " prepared in Test. Choose a new PNG filename, then run " +
+                        (portraitContext < MDKR_CHARACTER_CONTEXT_COUNT
+                             ? contextNames[portraitContext]
+                             : "a supported vehicle") +
+                        "; use the resulting capture for the portrait from its report card.";
+                    setStatus(message.c_str(), AppTheme::good());
+                }
+                ui::SpeakFocusedItem(
+                    preset.label, nullptr,
+                    "Prepares an exact one-player model-only portrait capture with a held neutral pose and bright light. Test asks for a new filename before launch; no package data changes.");
+            }
+            ImGui::EndTable();
+        }
+        ImGui::TextDisabled(
+            "Exact orbit context: %s · transparent model only",
+            portraitContext < MDKR_CHARACTER_CONTEXT_COUNT
+                ? contextNames[portraitContext] : "unavailable");
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            static std::set<std::string> tracedPortraitCameras;
+            if (tracedPortraitCameras.insert(entry->id).second) {
+                std::fprintf(
+                    stderr,
+                    "[app-ui] character-portrait-camera package=%s presets=front,left-three-quarter,right-three-quarter pose=select.idle@500 players=1 pitch=0 light=bright capture=model-alpha occupancy=60-85-target exact-rom=1 create-only=1 handoff=portrait-source\n",
+                    entry->id);
+            }
+        }
     }
-    ui::SpeakFocusedItem(
-        "Capture model in exact renderer", nullptr,
-        "Opens Test. Capture a stabilized exact game-renderer frame, then choose Use for portrait in its report card.");
 
     if (!CharacterPortraitImport::validImage(edit.importImage)) {
         if (edit.portraitSourceRecord.kind !=
