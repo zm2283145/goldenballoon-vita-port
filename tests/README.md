@@ -5008,11 +5008,23 @@ calibrated vertical volume, and a ground/seat anchor at automatic zero from the
 actual replacement transform. The select volume may not penetrate the roster
 floor beyond the five-millimetre numerical tolerance.
 The gate installs a second reviewed-humanoid package and drives a real car arm
-through automatic contact solving. Result v10 must publish all four bounded
+through automatic contact solving. Result v11 must publish all four bounded
 contact witnesses; the gate independently recomputes the left-hand
 target-to-endpoint distance from quantized coordinates and rejects partial,
 detached, or fabricated select-context evidence. Authored-clips-only arms must
 publish an explicit zero mask when no automatic solve owns the pose.
+
+Every arm must also publish the versioned GPU timing contract. One arm
+force-disables it and must remain explicitly unsupported with no values. A
+device without timestamp queries must do the same naturally. A supporting
+device must return exact scene-pass timestamps with monotonic nonzero
+percentiles and at least two-thirds usable post-warm-up frames. At most the six
+readback slots may remain pending; usable, pending, and ring-full counts may
+never exceed the wall sample, and every remaining scene frame must be covered
+by the reported invalid-readback count. A device without in-pass timing must
+balance that partition exactly. Character-draw values are required only when the device exposes
+native in-pass timestamps and are forbidden otherwise; wall cadence is never
+accepted as a substitute.
 
 The pose arm is intentionally not performance qualification. The Workshop
 keeps it as session fit evidence and displays replacement/contact observations,

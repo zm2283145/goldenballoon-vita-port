@@ -10,6 +10,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "modern_character_gpu_timing.h"
+
 struct ShaderProgram;
 
 /* Blend modes for set_blend_mode() */
@@ -156,6 +158,11 @@ struct GfxRenderingAPI {
                                                      uint32_t *height);
     bool (*read_modern_character_capture_rgba)(int width, int height,
                                                 uint8_t *rgba_out);
+    /* Optional exact GPU timestamp evidence for the Workshop. begin() resets
+     * after warm-up; finish() stops admission and never waits for readback. */
+    void (*begin_modern_character_gpu_timing)(void);
+    void (*finish_modern_character_gpu_timing)(
+        MdkrModernCharacterGpuTimingMetrics *out);
     /* Return false when the backend cannot create a usable device/context.
      * Startup must never enter game code with an inert renderer. */
     bool (*init)(void);

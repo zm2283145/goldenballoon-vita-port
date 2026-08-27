@@ -310,6 +310,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/modern_character_identity.c # bounded identity decode and game-ready portrait resampling
     ${CMAKE_SOURCE_DIR}/platform/modern_character_text.c # shared bounded UTF-8 to retail-font identity projection
     ${CMAKE_SOURCE_DIR}/platform/modern_character_runtime.c # assignments, animation instances, retained draw commands
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_gpu_timing.c # bounded exact Workshop GPU timestamp distributions
     ${CMAKE_SOURCE_DIR}/platform/workshop_preview_runtime.c # presentation-only exact inspection view/light state
     ${CMAKE_SOURCE_DIR}/platform/modern_character_donor.c # fail-visible retail driver/vehicle separation
     ${CMAKE_SOURCE_DIR}/platform/modern_character_gameplay_profile.c # exact bounded ROM donor summaries
@@ -1513,6 +1514,7 @@ if(NOT EMSCRIPTEN)
             add_executable(mdkr_character_test_evidence_store_test
                 ${CMAKE_SOURCE_DIR}/tests/test_character_test_evidence_store.cpp
                 ${CMAKE_SOURCE_DIR}/platform/app/character_test_evidence_store.cpp
+                ${CMAKE_SOURCE_DIR}/platform/modern_character_gpu_timing.c
                 ${CMAKE_SOURCE_DIR}/platform/sha256.c)
             target_include_directories(mdkr_character_test_evidence_store_test PRIVATE
                 ${CMAKE_SOURCE_DIR}/platform

@@ -2,6 +2,7 @@
 #define MDKR_APP_CHARACTER_TEST_EVIDENCE_STORE_H
 
 #include "text_state_file.h"
+#include "modern_character_gpu_timing.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -54,6 +55,9 @@ struct Evidence {
     uint64_t    intervalMaxUs               = 0u;
     uint64_t    tickwallSamples             = 0u;
     uint64_t    tickwallMeanNs              = 0u;
+    /* Version zero means the authenticated v1-v3 record predates GPU timing.
+     * Current v4/result-v11 records carry a structurally validated snapshot. */
+    MdkrModernCharacterGpuTimingMetrics gpuTiming{};
     uint64_t    replacementDraws            = 0u;
     uint64_t    replacementPrimitives       = 0u;
     uint64_t    hiddenDonorBatches          = 0u;

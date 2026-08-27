@@ -4940,6 +4940,8 @@ bool characterPreviewSessionMatchesTuning(
            session.result.warmup_complete &&
            session.result.replacement_draws != 0u &&
            session.result.fit_diagnostics_valid != 0 &&
+           mdkr_modern_character_gpu_timing_metrics_valid(
+               &session.result.gpu_timing) != 0 &&
            characterPreviewFitDiagnosticsValid(session.result) &&
            characterPreviewContactDiagnosticsValid(session.result) &&
            (session.result.capture_requested
@@ -6586,6 +6588,7 @@ CharacterTestEvidenceStore::Evidence characterTestEvidenceFromResult(
     evidence.intervalMaxUs = result.interval_max_us;
     evidence.tickwallSamples = result.tickwall_samples;
     evidence.tickwallMeanNs = result.tickwall_mean_ns;
+    evidence.gpuTiming = result.gpu_timing;
     evidence.replacementDraws = result.replacement_draws;
     evidence.replacementPrimitives = result.replacement_primitives;
     evidence.hiddenDonorBatches = result.hidden_donor_batches;
@@ -6643,6 +6646,7 @@ MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
     result.context = static_cast<MdkrCharacterPreviewContext>(
         evidence.context);
     result.players = static_cast<int>(evidence.players);
+    result.gpu_timing = evidence.gpuTiming;
     result.replacement_draws = evidence.replacementDraws;
     result.contact_solves = evidence.contactSolves;
     result.contact_error_mean_micrometres =
@@ -6686,6 +6690,25 @@ const char *characterPreviewResultContext(
         case MDKR_CHARACTER_PREVIEW_HOVERCRAFT: return "Hovercraft";
         case MDKR_CHARACTER_PREVIEW_PLANE: return "Plane";
         default: return "Unknown context";
+    }
+}
+
+const char *characterGpuTimingStatusLabel(
+    MdkrModernCharacterGpuTimingStatus status) {
+    switch (status) {
+        case MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED:
+            return "Unavailable on this renderer or device";
+        case MDKR_MODERN_CHARACTER_GPU_TIMING_IDLE:
+            return "Not collected — test ended before GPU measurement";
+        case MDKR_MODERN_CHARACTER_GPU_TIMING_PENDING:
+            return "Readback pending — no completed sample was guessed";
+        case MDKR_MODERN_CHARACTER_GPU_TIMING_AVAILABLE:
+            return "Exact timestamp samples captured";
+        case MDKR_MODERN_CHARACTER_GPU_TIMING_DEVICE_LOST:
+            return "Device lost during timestamp collection";
+        case MDKR_MODERN_CHARACTER_GPU_TIMING_ERROR:
+        default:
+            return "Timestamp query or readback failed";
     }
 }
 
@@ -6928,6 +6951,16 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         ui::CardEnd();
         return;
     }
+    if (!mdkr_modern_character_gpu_timing_metrics_valid(
+            &result.gpu_timing)) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "The engine returned an invalid GPU timing contract.");
+        ui::TextSubtleWrapped(
+            "No performance conclusion was saved. Run the exact test again.");
+        ui::CardEnd();
+        return;
+    }
     ImGui::Text("%s  •  %d %s",
                 characterPreviewResultContext(result.context), result.players,
                 result.players == 1 ? "player" : "players");
@@ -7129,7 +7162,10 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         const auto metric = [](const char *name, const char *value) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            ui::TextSubtle("%s", name);
+            (void)ImGui::Selectable(name, false);
+            ui::SpeakFocusedItem(
+                name, value,
+                "An exact-context measurement from the completed Workshop test. The adjacent value is selectable and spoken with this row.");
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(value);
         };
@@ -7180,6 +7216,154 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
     }
     ui::TextSubtleWrapped(
         "Measured wall cadence includes the selected presentation policy, renderer, scene, resolution, other racers and this device. It is not a GPU timestamp, spare GPU headroom, or a character-only cost; compare the same context and settings, and use the four-player route for worst-visible stress.");
+    ImGui::SeparatorText("Exact GPU timestamps");
+    const MdkrModernCharacterGpuTimingMetrics &gpu = result.gpu_timing;
+    const char *gpuStatus = characterGpuTimingStatusLabel(gpu.status);
+    ImVec4 gpuStatusColour = AppTheme::accent();
+    switch (gpu.status) {
+        case MDKR_MODERN_CHARACTER_GPU_TIMING_AVAILABLE:
+            gpuStatusColour = AppTheme::good();
+            break;
+        case MDKR_MODERN_CHARACTER_GPU_TIMING_DEVICE_LOST:
+            gpuStatusColour = AppTheme::bad();
+            break;
+        case MDKR_MODERN_CHARACTER_GPU_TIMING_ERROR:
+            gpuStatusColour = AppTheme::bad();
+            break;
+        default: break;
+    }
+    (void)ImGui::Selectable(gpuStatus, false);
+    ui::SpeakFocusedItem(
+        "GPU timestamp status", gpuStatus,
+        "Timestamp evidence is optional and never inferred from wall cadence. Unsupported, pending, lost, and failed states remain explicit.");
+    if (ImGui::IsItemVisible()) {
+        ImGui::GetWindowDrawList()->AddCircleFilled(
+            ImVec2(ImGui::GetItemRectMax().x - 6.0f,
+                   (ImGui::GetItemRectMin().y +
+                    ImGui::GetItemRectMax().y) * 0.5f),
+            3.0f, ImGui::ColorConvertFloat4ToU32(gpuStatusColour));
+    }
+    if (gpu.status == MDKR_MODERN_CHARACTER_GPU_TIMING_AVAILABLE) {
+        if (ImGui::BeginTable(
+                "##character-preview-gpu-measurement", 2,
+                ImGuiTableFlags_SizingStretchProp |
+                    ImGuiTableFlags_RowBg)) {
+            ImGui::TableSetupColumn(
+                "GPU scope", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn(
+                "Timestamp value", ImGuiTableColumnFlags_WidthStretch,
+                1.0f);
+            const auto gpuMetric = [](const char *name,
+                                      const char *value) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                (void)ImGui::Selectable(name, false);
+                ui::SpeakFocusedItem(
+                    name, value,
+                    "GPU nanosecond timestamps converted with the selected device's timestamp period. Percentiles use the explicitly reported bounded window.");
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(value);
+            };
+            char gpuValue[128];
+            const auto distributionRows =
+                [&](const char *scope,
+                    const MdkrModernCharacterGpuDistribution &distribution) {
+                    std::snprintf(
+                        gpuValue, sizeof(gpuValue),
+                        "%llu samples · %llu in percentile window",
+                        distribution.samples,
+                        distribution.percentile_window_samples);
+                    std::string sampleName =
+                        std::string(scope) + " sample";
+                    gpuMetric(sampleName.c_str(), gpuValue);
+                    std::snprintf(
+                        gpuValue, sizeof(gpuValue), "%.3f / %.3f ms",
+                        distribution.p50_ns / 1000000.0,
+                        distribution.p95_ns / 1000000.0);
+                    std::string medianName =
+                        std::string(scope) + " median / p95";
+                    gpuMetric(medianName.c_str(), gpuValue);
+                    std::snprintf(
+                        gpuValue, sizeof(gpuValue), "%.3f / %.3f ms",
+                        distribution.p99_ns / 1000000.0,
+                        distribution.max_ns / 1000000.0);
+                    std::string tailName =
+                        std::string(scope) + " p99 / maximum";
+                    gpuMetric(tailName.c_str(), gpuValue);
+                    std::snprintf(
+                        gpuValue, sizeof(gpuValue), "%.3f ms",
+                        distribution.mean_ns / 1000000.0);
+                    std::string meanName =
+                        std::string(scope) + " mean";
+                    gpuMetric(meanName.c_str(), gpuValue);
+                };
+            if (gpu.scene_pass.samples != 0u) {
+                distributionRows("Scene pass", gpu.scene_pass);
+            }
+            if ((gpu.supported_scopes &
+                    MDKR_MODERN_CHARACTER_GPU_SCOPE_CHARACTER_DRAWS) != 0u) {
+                if (gpu.character_draws.samples != 0u) {
+                    distributionRows(
+                        "Character draws", gpu.character_draws);
+                } else {
+                    gpuMetric(
+                        "Character draws",
+                        "No accepted custom-character draw reached a completed timestamp readback");
+                }
+            } else {
+                gpuMetric(
+                    "Character-only scope",
+                    "Unavailable — this device lacks exact in-pass timestamps; no estimate substituted");
+            }
+            ImGui::EndTable();
+        }
+    }
+    if (gpu.pending_frames != 0u) {
+        char excludedValue[96];
+        std::snprintf(
+            excludedValue, sizeof(excludedValue), "%llu frame(s)",
+            gpu.pending_frames);
+        (void)ImGui::Selectable("Pending timestamp frames", false);
+        ui::SpeakFocusedItem(
+            "Pending GPU timestamp frames", excludedValue,
+            "Submitted readbacks that had not completed when the test ended. They are excluded from every value.");
+        ui::TextSubtleWrapped(
+            "%llu submitted timestamp frame(s) were still pending when the test ended and are excluded from every value above.",
+            gpu.pending_frames);
+    }
+    if (gpu.ring_full_frames != 0u) {
+        char excludedValue[96];
+        std::snprintf(
+            excludedValue, sizeof(excludedValue), "%llu frame(s)",
+            gpu.ring_full_frames);
+        (void)ImGui::Selectable("Readback ring-full frames", false);
+        ui::SpeakFocusedItem(
+            "GPU timestamp ring-full frames", excludedValue,
+            "Frames not timed because every asynchronous readback slot was busy. Rendering was never stalled to wait for one.");
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "%llu frame(s) skipped GPU timing because all readback slots were busy",
+            gpu.ring_full_frames);
+        ui::TextSubtleWrapped(
+            "The renderer did not wait or perturb input/audio to recover those samples.");
+    }
+    if (gpu.invalid_samples != 0u) {
+        char excludedValue[96];
+        std::snprintf(
+            excludedValue, sizeof(excludedValue), "%llu readback(s)",
+            gpu.invalid_samples);
+        (void)ImGui::Selectable("Invalid timestamp readbacks", false);
+        ui::SpeakFocusedItem(
+            "Invalid GPU timestamp readbacks", excludedValue,
+            "Unwritten, non-monotonic, zero-resolution, or failed readbacks excluded from every distribution.");
+        ImGui::TextColored(
+            AppTheme::accent(), "%llu invalid timestamp readback(s) excluded",
+            gpu.invalid_samples);
+        ui::TextSubtleWrapped(
+            "An unwritten, non-monotonic, zero-resolution, or failed readback is never folded into the distribution.");
+    }
+    ui::TextSubtleWrapped(
+        "Scene-pass timing brackets the initial gameplay color/depth pass: world, racers, and visible custom-character draws are included; shadow replay, post effects, output UI, capture replay, and present are excluded. Character-draw timing, when supported, is the sum of exact ranges around accepted modern-skinned primitive draws and excludes CPU animation, world rendering, and refused draws.");
     if (result.context != MDKR_CHARACTER_PREVIEW_SELECT) {
         ui::TextSubtleWrapped(
             "Contact error is the physical distance from each solved hand/foot endpoint to its tuned target. It is evidence for fit review, not an import ceiling: body proportions and intentionally unreachable targets can make a valid character report a larger value.");
@@ -7569,6 +7753,7 @@ void drawCharacterTestEvidenceMatrix(
             std::strcmp(smokeAction, "publish-mixed-mode") == 0 ||
             std::strcmp(smokeAction, "publish-invalid-fit") == 0 ||
             std::strcmp(smokeAction, "publish-invalid-contact") == 0 ||
+            std::strcmp(smokeAction, "publish-invalid-gpu") == 0 ||
             std::strcmp(
                 smokeAction, "publish-stale-fit-session") == 0 ||
             std::strcmp(
@@ -7590,6 +7775,22 @@ void drawCharacterTestEvidenceMatrix(
             result.interval_max_us = 20000u;
             result.tickwall_samples = 180u;
             result.tickwall_mean_ns = 1200000u;
+            result.gpu_timing.version =
+                MDKR_MODERN_CHARACTER_GPU_TIMING_VERSION;
+            result.gpu_timing.status =
+                MDKR_MODERN_CHARACTER_GPU_TIMING_AVAILABLE;
+            result.gpu_timing.supported_scopes =
+                MDKR_MODERN_CHARACTER_GPU_SCOPE_SCENE_PASS |
+                MDKR_MODERN_CHARACTER_GPU_SCOPE_CHARACTER_DRAWS;
+            result.gpu_timing.ring_full_frames = 1u;
+            result.gpu_timing.pending_frames = 1u;
+            result.gpu_timing.invalid_samples = 2u;
+            result.gpu_timing.scene_pass = {
+                176u, 176u, 3000000u, 4000000u, 5000000u,
+                3500000u, 6000000u};
+            result.gpu_timing.character_draws = {
+                176u, 176u, 200000u, 300000u, 400000u,
+                250000u, 500000u};
             result.replacement_draws = 720u;
             result.replacement_primitives = 1440u;
             result.hidden_donor_batches = 720u;
@@ -7662,8 +7863,14 @@ void drawCharacterTestEvidenceMatrix(
                 smokeAction, "publish-invalid-fit") == 0;
             const bool invalidContact = std::strcmp(
                 smokeAction, "publish-invalid-contact") == 0;
+            const bool invalidGpu = std::strcmp(
+                smokeAction, "publish-invalid-gpu") == 0;
             if (invalidFit) result.fit_diagnostics_valid = 2;
             if (invalidContact) result.contact_witness_mask = 0x3u;
+            if (invalidGpu) {
+                result.gpu_timing.status =
+                    static_cast<MdkrModernCharacterGpuTimingStatus>(99);
+            }
             if (inspection) {
                 result.pose = MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER;
                 result.pose_phase_milli = 250u;
@@ -7744,7 +7951,7 @@ void drawCharacterTestEvidenceMatrix(
                 characterPreviewSessionMatchesTuning(
                     entry, tuning, MDKR_CHARACTER_PREVIEW_CAR,
                     session->second);
-            if (invalidFit || invalidContact) {
+            if (invalidFit || invalidContact || invalidGpu) {
                 applied = session != g_characterPreviewResults.end() &&
                     latest == nullptr && !sessionMatches;
             } else if (mixedMode) {
@@ -7926,7 +8133,7 @@ void drawCharacterTestEvidenceMatrix(
         g_characterTestEvidenceTracePackages.insert(entry->id).second) {
         std::fprintf(
             stderr,
-            "[app-ui] character-test-matrix package=%s current=%u required=%u selected=%u:%u state=%s latest=%d baseline=%d comparable=%d fit=%d fitAnchorUm=%lld,%lld,%lld fitBoundsYUm=%lld,%lld fitForwardMilli=%d,%d,%d\n",
+            "[app-ui] character-test-matrix package=%s current=%u required=%u selected=%u:%u state=%s latest=%d baseline=%d comparable=%d fit=%d fitAnchorUm=%lld,%lld,%lld fitBoundsYUm=%lld,%lld fitForwardMilli=%d,%d,%d gpuStatus=%u gpuScopes=%x sceneGpuSamples=%llu sceneGpuP50Ns=%llu characterGpuSamples=%llu characterGpuP50Ns=%llu\n",
             entry->id, qualifiedCells, applicableCells, selectedContext,
             selectedPlayers,
             characterTestEvidenceState(
@@ -7949,7 +8156,20 @@ void drawCharacterTestEvidenceMatrix(
                 latest != nullptr ? latest->fitBoundsMaxMicrometres[1] : 0),
             latest != nullptr ? latest->fitForwardMilli[0] : 0,
             latest != nullptr ? latest->fitForwardMilli[1] : 0,
-            latest != nullptr ? latest->fitForwardMilli[2] : 0);
+            latest != nullptr ? latest->fitForwardMilli[2] : 0,
+            latest != nullptr
+                ? static_cast<unsigned>(latest->gpuTiming.status) : 0u,
+            latest != nullptr ? latest->gpuTiming.supported_scopes : 0u,
+            static_cast<unsigned long long>(
+                latest != nullptr ? latest->gpuTiming.scene_pass.samples : 0u),
+            static_cast<unsigned long long>(
+                latest != nullptr ? latest->gpuTiming.scene_pass.p50_ns : 0u),
+            static_cast<unsigned long long>(
+                latest != nullptr
+                    ? latest->gpuTiming.character_draws.samples : 0u),
+            static_cast<unsigned long long>(
+                latest != nullptr
+                    ? latest->gpuTiming.character_draws.p50_ns : 0u));
     }
     if (latest != nullptr) {
         ImGui::PushID(static_cast<int>(selectedCell));
@@ -7993,6 +8213,74 @@ void drawCharacterTestEvidenceMatrix(
                 static_cast<unsigned long long>(latest->contactSolves),
                 latest->contactErrorMeanMicrometres / 1000.0,
                 latest->contactErrorMaxMicrometres / 1000.0);
+        }
+        ImGui::SeparatorText("GPU timestamp evidence");
+        const char *durableGpuStatus = characterGpuTimingStatusLabel(
+            latest->gpuTiming.status);
+        (void)ImGui::Selectable(durableGpuStatus, false);
+        ui::SpeakFocusedItem(
+            "Saved GPU timestamp status", durableGpuStatus,
+            "The authenticated result preserves exact availability and scope. Wall cadence remains usable when the GPU declines timestamp queries.");
+        if (latest->gpuTiming.status ==
+            MDKR_MODERN_CHARACTER_GPU_TIMING_AVAILABLE) {
+            const auto &scene = latest->gpuTiming.scene_pass;
+            char savedGpuValue[192];
+            std::snprintf(
+                savedGpuValue, sizeof(savedGpuValue),
+                "%.3f ms median · %.3f ms p95 · %llu samples",
+                scene.p50_ns / 1000000.0, scene.p95_ns / 1000000.0,
+                static_cast<unsigned long long>(scene.samples));
+            (void)ImGui::Selectable("Scene pass##saved-gpu-scene", false);
+            ui::SpeakFocusedItem(
+                "Saved scene-pass GPU timestamps", savedGpuValue,
+                "Exact timestamps around the initial gameplay color and depth pass. Shadow replay, post effects, output UI, capture replay, and present are excluded.");
+            ui::TextSubtleWrapped("%s", savedGpuValue);
+            if ((latest->gpuTiming.supported_scopes &
+                    MDKR_MODERN_CHARACTER_GPU_SCOPE_CHARACTER_DRAWS) != 0u &&
+                latest->gpuTiming.character_draws.samples != 0u) {
+                const auto &character =
+                    latest->gpuTiming.character_draws;
+                std::snprintf(
+                    savedGpuValue, sizeof(savedGpuValue),
+                    "%.3f ms median · %.3f ms p95 · %llu samples",
+                    character.p50_ns / 1000000.0,
+                    character.p95_ns / 1000000.0,
+                    static_cast<unsigned long long>(character.samples));
+                (void)ImGui::Selectable(
+                    "Character draws##saved-gpu-character", false);
+                ui::SpeakFocusedItem(
+                    "Saved character-draw GPU timestamps", savedGpuValue,
+                    "The sum of exact GPU ranges around accepted custom-character primitive draws. CPU animation, world rendering, and refused draws are excluded.");
+                ui::TextSubtleWrapped("%s", savedGpuValue);
+            } else {
+                (void)ImGui::Selectable(
+                    "Character-only GPU cost unavailable", false);
+                ui::SpeakFocusedItem(
+                    "Saved character-draw GPU timestamps",
+                    "Unavailable; no estimate substituted",
+                    "The saved device did not expose exact in-pass timestamp ranges. Wall cadence and scene-pass timing remain separate evidence.");
+                ui::TextSubtleWrapped(
+                    "The saved device did not expose exact in-pass timestamp ranges; no estimate was substituted.");
+            }
+            if (latest->gpuTiming.pending_frames != 0u ||
+                latest->gpuTiming.ring_full_frames != 0u ||
+                latest->gpuTiming.invalid_samples != 0u) {
+                std::snprintf(
+                    savedGpuValue, sizeof(savedGpuValue),
+                    "%llu pending · %llu ring-full · %llu invalid",
+                    static_cast<unsigned long long>(
+                        latest->gpuTiming.pending_frames),
+                    static_cast<unsigned long long>(
+                        latest->gpuTiming.ring_full_frames),
+                    static_cast<unsigned long long>(
+                        latest->gpuTiming.invalid_samples));
+                (void)ImGui::Selectable(
+                    "Excluded timestamp frames##saved-gpu-excluded", false);
+                ui::SpeakFocusedItem(
+                    "Saved excluded GPU timestamp frames", savedGpuValue,
+                    "Pending, ring-full, and invalid readbacks are excluded from every saved percentile; no estimate is substituted.");
+                ui::TextSubtleWrapped("%s", savedGpuValue);
+            }
         }
         ImGui::SeparatorText("Renderer fit");
         const MdkrCharacterPreviewResult durableResult =
@@ -8059,8 +8347,44 @@ void drawCharacterTestEvidenceMatrix(
                     delta(latest->intervalP50Us, baseline->intervalP50Us),
                     delta(latest->intervalP95Us, baseline->intervalP95Us),
                     delta(latest->intervalP99Us, baseline->intervalP99Us));
+                const bool comparableSceneGpu =
+                    latest->gpuTiming.status ==
+                        MDKR_MODERN_CHARACTER_GPU_TIMING_AVAILABLE &&
+                    baseline->gpuTiming.status ==
+                        MDKR_MODERN_CHARACTER_GPU_TIMING_AVAILABLE &&
+                    latest->gpuTiming.scene_pass.samples != 0u &&
+                    baseline->gpuTiming.scene_pass.samples != 0u;
+                if (comparableSceneGpu) {
+                    ImGui::Text(
+                        "Scene-pass GPU delta: median %+.1f%% · p95 %+.1f%%",
+                        delta(latest->gpuTiming.scene_pass.p50_ns,
+                              baseline->gpuTiming.scene_pass.p50_ns),
+                        delta(latest->gpuTiming.scene_pass.p95_ns,
+                              baseline->gpuTiming.scene_pass.p95_ns));
+                }
+                const bool comparableCharacterGpu =
+                    comparableSceneGpu &&
+                    (latest->gpuTiming.supported_scopes &
+                         MDKR_MODERN_CHARACTER_GPU_SCOPE_CHARACTER_DRAWS) !=
+                        0u &&
+                    (baseline->gpuTiming.supported_scopes &
+                         MDKR_MODERN_CHARACTER_GPU_SCOPE_CHARACTER_DRAWS) !=
+                        0u &&
+                    latest->gpuTiming.character_draws.samples != 0u &&
+                    baseline->gpuTiming.character_draws.samples != 0u;
+                if (comparableCharacterGpu) {
+                    ImGui::Text(
+                        "Character-draw GPU delta: median %+.1f%% · p95 %+.1f%%",
+                        delta(latest->gpuTiming.character_draws.p50_ns,
+                              baseline->gpuTiming.character_draws.p50_ns),
+                        delta(latest->gpuTiming.character_draws.p95_ns,
+                              baseline->gpuTiming.character_draws.p95_ns));
+                } else {
+                    ImGui::TextDisabled(
+                        "Character-draw GPU delta unavailable for one or both samples");
+                }
                 ui::TextSubtleWrapped(
-                    "Negative means a shorter displayed interval. This is a repeatable same-environment comparison, not a GPU-only cost or an automatic pass/fail verdict.");
+                    "Negative means a shorter interval. Wall and GPU scopes remain separate; this is a repeatable same-environment comparison, not an automatic pass/fail verdict.");
             } else {
                 ImGui::TextColored(
                     AppTheme::accent(),
@@ -14872,6 +15196,8 @@ void Settings_publishCharacterPreviewResult(
                 result.version == MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
                 result.started && result.warmup_complete &&
                 characterPreviewFitDiagnosticsValid(result) &&
+                mdkr_modern_character_gpu_timing_metrics_valid(
+                    &result.gpu_timing) != 0 &&
                 characterPreviewContactDiagnosticsValid(result) &&
                 result.capture_requested && result.capture_armed &&
                 result.capture_kind >=
@@ -15012,6 +15338,21 @@ void Settings_publishCharacterPreviewResult(
         }
         setStatus(
             "The engine returned an invalid renderer fit or contact contract; the session is visible for diagnosis but no durable performance evidence was saved.",
+            AppTheme::bad());
+        return;
+    }
+    if (!mdkr_modern_character_gpu_timing_metrics_valid(
+            &result.gpu_timing)) {
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-preview-result rejected-evidence=gpu-timing-contract package=%s timingVersion=%u status=%u scopes=%x\n",
+                packageId.c_str(), result.gpu_timing.version,
+                static_cast<unsigned>(result.gpu_timing.status),
+                result.gpu_timing.supported_scopes);
+        }
+        setStatus(
+            "The engine returned an invalid GPU timing contract; the session is visible for diagnosis but no durable performance evidence was saved.",
             AppTheme::bad());
         return;
     }

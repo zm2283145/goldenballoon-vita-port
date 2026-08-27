@@ -378,6 +378,9 @@ def main() -> int:
                      (f"-{capture_kind}-capture" if capture_kind else ""))
             if package_id == CONTACT_PACKAGE_ID:
                 label += "-contact-witness"
+            force_gpu_timing_disabled = (
+                context == "select" and players == 1 and pose is None
+            )
             arm_dir = evidence / label
             arm_dir.mkdir(parents=True, exist_ok=True)
             env = {key: value for key, value in os.environ.items()
@@ -394,6 +397,8 @@ def main() -> int:
             )
             for player in range(players):
                 env[f"MDKR_CUSTOM_CHARACTER_P{player + 1}"] = package_id
+            if force_gpu_timing_disabled:
+                env["MDKR_WEBGPU_GPU_TIMING"] = "0"
             if pose is not None and pose_phase is not None:
                 env["MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE"] = pose
                 env["MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE"] = pose_phase
@@ -513,6 +518,68 @@ def main() -> int:
                     failures.append(f"{label} result did not isolate a synthetic post-warmup sample")
                 if replacements <= 0:
                     failures.append(f"{label} result counted no package replacements")
+            gpu_match = re.search(
+                r"gpu=(\d+)/([0-9a-f]+) "
+                r"sceneGpuNs=(\d+),(\d+),(\d+) "
+                r"characterGpuNs=(\d+),(\d+),(\d+) "
+                r"gpuExcluded=(\d+),(\d+),(\d+)",
+                arm_output,
+            )
+            if gpu_match is None:
+                failures.append(
+                    f"{label} emitted no explicit GPU timestamp contract"
+                )
+            else:
+                values = [int(value, 16) if index == 1 else int(value)
+                          for index, value in enumerate(gpu_match.groups())]
+                (gpu_status, gpu_scopes, scene_samples, scene_p50,
+                 scene_p95, character_samples, character_p50,
+                 character_p95, gpu_pending, gpu_ring_full,
+                 gpu_invalid) = values
+                if force_gpu_timing_disabled:
+                    if gpu_status != 0 or gpu_scopes != 0 or any(values[2:]):
+                        failures.append(
+                            f"{label} did not preserve force-disabled GPU "
+                            "timing as explicit unsupported evidence"
+                        )
+                elif gpu_scopes == 0:
+                    if gpu_status != 0 or any(values[2:]):
+                        failures.append(
+                            f"{label} reported values for unsupported GPU timing"
+                        )
+                else:
+                    gpu_noninvalid = (scene_samples + gpu_pending +
+                                      gpu_ring_full)
+                    scene_invalid_gap = samples - gpu_noninvalid
+                    minimum_usable = max(1, (samples * 2) // 3)
+                    if (gpu_status != 3 or not (gpu_scopes & 0x1) or
+                            scene_samples < minimum_usable or
+                            scene_p50 <= 0 or scene_p95 < scene_p50 or
+                            gpu_pending > 6 or gpu_ring_full > samples or
+                            gpu_invalid > samples or
+                            gpu_noninvalid > samples or
+                            scene_invalid_gap > gpu_invalid or
+                            (not (gpu_scopes & 0x2) and
+                             scene_invalid_gap != gpu_invalid)):
+                        failures.append(
+                            f"{label} returned inconsistent scene-pass GPU "
+                            f"timestamps status={gpu_status} scopes={gpu_scopes:x} "
+                            f"scene={scene_samples, scene_p50, scene_p95} "
+                            f"excluded={gpu_pending, gpu_ring_full, gpu_invalid} "
+                            f"wallSamples={samples}"
+                        )
+                    if gpu_scopes & 0x2:
+                        if (character_samples <= 0 or character_p50 <= 0 or
+                                character_p95 < character_p50):
+                            failures.append(
+                                f"{label} exposed in-pass capability without "
+                                "valid character-draw timestamps"
+                            )
+                    elif any((character_samples, character_p50,
+                              character_p95)):
+                        failures.append(
+                            f"{label} fabricated character-only GPU timing"
+                        )
             contact_match = re.search(
                 r"contacts=(\d+) contactMaxUm=\d+ "
                 r"contactWitness=([0-9a-f]+) "
@@ -865,7 +932,8 @@ def main() -> int:
         "target-frame anchor/bounds/facing measurements, exclusive stabilized "
         "RGB gameplay and transparent RGBA model-only PNG capture, "
         "exact four-contact post-solve witnesses, one-to-four-player WebGPU "
-        "stress, and fail-closed invalid requests"
+        "stress, exact nonblocking scene/character GPU timestamp contracts "
+        "with honest capability fallback, and fail-closed invalid requests"
     )
     if args.evidence_dir is not None:
         print(f"evidence: {evidence}")

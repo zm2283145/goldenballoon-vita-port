@@ -300,6 +300,10 @@ static void workshop_preview_measurement_finish(void) {
     MdkrCharacterPreviewResult *result = g_mdkrCharacterPreviewResult;
     const MdkrGpuInfo *gpu;
     if (result == NULL || sWorkshopPreviewMeasurementFinished) return;
+    /* Stop admission and publish only readbacks already completed. This call
+     * is nonblocking; pending frames remain explicit in the result instead of
+     * stalling audio/input or being guessed from wall cadence. */
+    gfx_finish_modern_character_gpu_timing(&result->gpu_timing);
     result->warmup_ticks = sWorkshopPreviewWarmupTicks;
     result->realtime = platform_pace_is_synthetic() ? FALSE : TRUE;
     gpu = mdkr_gpu_info_get();
@@ -408,6 +412,8 @@ static void workshop_preview_measurement_finish(void) {
         "poseTicks=%llu poseFallback=%llu view=%d,%d lighting=%d "
         "cameraTicks=%llu lightingDraws=%llu capture=%d/%d/%d kind=%d "
         "captureStableFrames=%llu bytes=%llu "
+        "gpu=%u/%x sceneGpuNs=%llu,%llu,%llu "
+        "characterGpuNs=%llu,%llu,%llu gpuExcluded=%llu,%llu,%llu "
         "backend=%s adapter=%s driver=%s "
         "vendor=%08x device=%08x output=%ux%u render=%ux%u",
         result->warmup_complete, result->realtime,
@@ -450,6 +456,17 @@ static void workshop_preview_measurement_finish(void) {
         result->capture_armed, result->capture_written,
         (int)result->capture_kind,
         result->capture_stable_frames, result->capture_png_bytes,
+        (unsigned)result->gpu_timing.status,
+        result->gpu_timing.supported_scopes,
+        (unsigned long long)result->gpu_timing.scene_pass.samples,
+        (unsigned long long)result->gpu_timing.scene_pass.p50_ns,
+        (unsigned long long)result->gpu_timing.scene_pass.p95_ns,
+        (unsigned long long)result->gpu_timing.character_draws.samples,
+        (unsigned long long)result->gpu_timing.character_draws.p50_ns,
+        (unsigned long long)result->gpu_timing.character_draws.p95_ns,
+        (unsigned long long)result->gpu_timing.pending_frames,
+        (unsigned long long)result->gpu_timing.ring_full_frames,
+        (unsigned long long)result->gpu_timing.invalid_samples,
         result->renderer_backend,
         result->adapter[0] != '\0' ? result->adapter : "unknown",
         result->driver[0] != '\0' ? result->driver : "unknown",
@@ -565,6 +582,7 @@ static void workshop_preview_measurement_service(s32 overlayPaused) {
         if (sWorkshopPreviewWarmupTicks >= WORKSHOP_PREVIEW_WARMUP_TICKS) {
             present_perf_measurement_reset();
             mdkr_modern_character_contact_metrics_reset();
+            gfx_begin_modern_character_gpu_timing();
             mdkr_modern_character_runtime_metrics(
                 &sWorkshopPreviewCharacterBaseline);
             mdkr_workshop_preview_visual_metrics(
@@ -2810,6 +2828,10 @@ static s32 workshop_preview_start(void) {
               sizeof(sWorkshopPreviewDiagnosticResult));
         sWorkshopPreviewDiagnosticResult.version =
             MDKR_CHARACTER_PREVIEW_RESULT_VERSION;
+        sWorkshopPreviewDiagnosticResult.gpu_timing.version =
+            MDKR_MODERN_CHARACTER_GPU_TIMING_VERSION;
+        sWorkshopPreviewDiagnosticResult.gpu_timing.status =
+            MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED;
         sWorkshopPreviewDiagnosticResult.context = vehicle < 0
             ? MDKR_CHARACTER_PREVIEW_SELECT
             : (MdkrCharacterPreviewContext)(vehicle +

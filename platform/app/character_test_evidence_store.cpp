@@ -14,9 +14,11 @@ namespace {
 constexpr const char *kHeaderV1 = "mdkr-character-test-evidence-v1";
 constexpr const char *kHeaderV2 = "mdkr-character-test-evidence-v2";
 constexpr const char *kHeaderV3 = "mdkr-character-test-evidence-v3";
+constexpr const char *kHeaderV4 = "mdkr-character-test-evidence-v4";
 constexpr size_t kFieldsPerRowV1 = 39u;
 constexpr size_t kFieldsPerRowV2 = 52u;
 constexpr size_t kFieldsPerRowV3 = 105u;
+constexpr size_t kFieldsPerRowV4 = 125u;
 constexpr size_t      kMaximumRowBytes =
     (CharacterTestEvidenceStore::kMaximumBuildVersionBytes * 2u) +
     (CharacterTestEvidenceStore::kMaximumBackendBytes * 2u) +
@@ -253,6 +255,27 @@ bool evidenceValid(const CharacterTestEvidenceStore::Evidence &evidence,
     const bool tickwallStateValid = evidence.tickwallSamples == 0u
         ? evidence.tickwallMeanNs == 0u
         : evidence.warmupComplete && evidence.tickwallMeanNs != 0u;
+    const auto gpuDistributionEmpty = [](
+        const MdkrModernCharacterGpuDistribution &distribution) {
+        return distribution.samples == 0u &&
+            distribution.percentile_window_samples == 0u &&
+            distribution.p50_ns == 0u && distribution.p95_ns == 0u &&
+            distribution.p99_ns == 0u && distribution.mean_ns == 0u &&
+            distribution.max_ns == 0u;
+    };
+    const bool legacyGpuTimingEmpty = evidence.gpuTiming.version == 0u &&
+        evidence.gpuTiming.status ==
+            MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED &&
+        evidence.gpuTiming.supported_scopes == 0u &&
+        evidence.gpuTiming.ring_full_frames == 0u &&
+        evidence.gpuTiming.pending_frames == 0u &&
+        evidence.gpuTiming.invalid_samples == 0u &&
+        gpuDistributionEmpty(evidence.gpuTiming.scene_pass) &&
+        gpuDistributionEmpty(evidence.gpuTiming.character_draws);
+    const bool gpuTimingStateValid = evidence.resultVersion >= 11u
+        ? mdkr_modern_character_gpu_timing_metrics_valid(
+              &evidence.gpuTiming) != 0
+        : legacyGpuTimingEmpty;
     const bool drawStateValid =
         (evidence.replacementDraws != 0u ||
          evidence.replacementPrimitives == 0u) &&
@@ -384,7 +407,8 @@ bool evidenceValid(const CharacterTestEvidenceStore::Evidence &evidence,
     else if (evidence.warmupComplete &&
              (!evidence.started || evidence.warmupTicks == 0u))
         error = "test evidence warm-up state is inconsistent";
-    else if (!timingStateValid || !tickwallStateValid)
+    else if (!timingStateValid || !tickwallStateValid ||
+             !gpuTimingStateValid)
         error = "test evidence timing state or distribution is inconsistent";
     else if (!drawStateValid)
         error = "test evidence draw state is inconsistent";
@@ -484,6 +508,26 @@ std::vector<std::string> recordFields(
     for (uint64_t value : evidence.contactWitnessErrorMicrometres) {
         fields.push_back(number(value));
     }
+    fields.push_back(number(evidence.gpuTiming.version));
+    fields.push_back(number(
+        static_cast<uint32_t>(evidence.gpuTiming.status)));
+    fields.push_back(number(evidence.gpuTiming.supported_scopes));
+    fields.push_back(number(evidence.gpuTiming.ring_full_frames));
+    fields.push_back(number(evidence.gpuTiming.pending_frames));
+    fields.push_back(number(evidence.gpuTiming.invalid_samples));
+    const auto appendGpuDistribution =
+        [&](const MdkrModernCharacterGpuDistribution &distribution) {
+            fields.push_back(number(distribution.samples));
+            fields.push_back(number(
+                distribution.percentile_window_samples));
+            fields.push_back(number(distribution.p50_ns));
+            fields.push_back(number(distribution.p95_ns));
+            fields.push_back(number(distribution.p99_ns));
+            fields.push_back(number(distribution.mean_ns));
+            fields.push_back(number(distribution.max_ns));
+        };
+    appendGpuDistribution(evidence.gpuTiming.scene_pass);
+    appendGpuDistribution(evidence.gpuTiming.character_draws);
     return fields;
 }
 
@@ -532,7 +576,7 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
     if (text.size() > kMaximumSerializedBytes || end == std::string::npos ||
         !split(text.substr(0u, end), 3u, fields) ||
         (fields[0] != kHeaderV1 && fields[0] != kHeaderV2 &&
-         fields[0] != kHeaderV3) ||
+         fields[0] != kHeaderV3 && fields[0] != kHeaderV4) ||
         !parseUnsigned(fields[1], kMaximumRecords, count) ||
         !digestValid(fields[2])) {
         error = "test evidence inventory header is invalid";
@@ -541,8 +585,10 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
     const std::string header = fields[0];
     const bool legacyV1 = header == kHeaderV1;
     const bool legacyV2 = header == kHeaderV2;
+    const bool legacyV3 = header == kHeaderV3;
     const size_t rowFields = legacyV1 ? kFieldsPerRowV1
-        : legacyV2 ? kFieldsPerRowV2 : kFieldsPerRowV3;
+        : legacyV2 ? kFieldsPerRowV2
+        : legacyV3 ? kFieldsPerRowV3 : kFieldsPerRowV4;
     const std::string countText         = fields[1];
     const std::string inventoryChecksum = fields[2];
     begin                               = end + 1u;
@@ -720,6 +766,53 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
                 return false;
             }
         }
+        if (!legacyV1 && !legacyV2 && !legacyV3) {
+            uint64_t values[20]{};
+            bool gpuFieldsValid = true;
+            for (size_t index = 0u; index < 20u; ++index) {
+                uint64_t maximum = UINT64_MAX;
+                if (index == 0u) {
+                    maximum = UINT32_MAX;
+                } else if (index == 1u) {
+                    maximum = MDKR_MODERN_CHARACTER_GPU_TIMING_ERROR;
+                } else if (index == 2u) {
+                    maximum = MDKR_MODERN_CHARACTER_GPU_SCOPE_SCENE_PASS |
+                        MDKR_MODERN_CHARACTER_GPU_SCOPE_CHARACTER_DRAWS;
+                } else if (index == 4u) {
+                    maximum = 64u;
+                }
+                gpuFieldsValid = parseUnsigned(
+                    fields[104u + index], maximum, values[index]);
+                if (!gpuFieldsValid) break;
+            }
+            if (!gpuFieldsValid) {
+                error = "test evidence GPU timing fields are invalid";
+                return false;
+            }
+            size_t index = 0u;
+            evidence.gpuTiming.version =
+                static_cast<uint32_t>(values[index++]);
+            evidence.gpuTiming.status =
+                static_cast<MdkrModernCharacterGpuTimingStatus>(
+                    values[index++]);
+            evidence.gpuTiming.supported_scopes =
+                static_cast<uint32_t>(values[index++]);
+            evidence.gpuTiming.ring_full_frames = values[index++];
+            evidence.gpuTiming.pending_frames = values[index++];
+            evidence.gpuTiming.invalid_samples = values[index++];
+            const auto assignDistribution =
+                [&](MdkrModernCharacterGpuDistribution &distribution) {
+                    distribution.samples = values[index++];
+                    distribution.percentile_window_samples = values[index++];
+                    distribution.p50_ns = values[index++];
+                    distribution.p95_ns = values[index++];
+                    distribution.p99_ns = values[index++];
+                    distribution.mean_ns = values[index++];
+                    distribution.max_ns = values[index++];
+                };
+            assignDistribution(evidence.gpuTiming.scene_pass);
+            assignDistribution(evidence.gpuTiming.character_draws);
+        }
         const std::string checksum           = fields.back();
         fields.pop_back();
         if (!evidenceValid(evidence, error) ||
@@ -785,8 +878,8 @@ bool serialize(const Inventory &inventory, std::string &output, std::string &err
         }
     }
     const std::string count  = std::to_string(ordered.records.size());
-    std::string       result = std::string(kHeaderV3) + "\t" + count + "\t" +
-                               inventoryDigest(kHeaderV3, count, body) +
+    std::string       result = std::string(kHeaderV4) + "\t" + count + "\t" +
+                               inventoryDigest(kHeaderV4, count, body) +
                                "\n" + body;
     if (result.size() > kMaximumSerializedBytes) {
         error = "serialized test evidence exceeds its byte bound";

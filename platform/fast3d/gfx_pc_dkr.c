@@ -8153,6 +8153,24 @@ bool gfx_get_modern_character_capture_dimensions(uint32_t *width,
     return gfx_rapi->get_modern_character_capture_dimensions(width, height);
 }
 
+void gfx_begin_modern_character_gpu_timing(void) {
+    if (gfx_rapi != NULL &&
+        gfx_rapi->begin_modern_character_gpu_timing != NULL) {
+        gfx_rapi->begin_modern_character_gpu_timing();
+    }
+}
+
+void gfx_finish_modern_character_gpu_timing(
+    MdkrModernCharacterGpuTimingMetrics *out) {
+    if (out == NULL) return;
+    mdkr_modern_character_gpu_timing_snapshot(
+        NULL, MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED, 0u, out);
+    if (gfx_rapi != NULL &&
+        gfx_rapi->finish_modern_character_gpu_timing != NULL) {
+        gfx_rapi->finish_modern_character_gpu_timing(out);
+    }
+}
+
 bool gfx_start_frame(uint64_t authored_tick) {
     if (gfx_rapi == NULL || gfx_rapi->start_frame == NULL ||
         !gfx_rapi->start_frame()) {

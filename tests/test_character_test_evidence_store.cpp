@@ -95,14 +95,14 @@ std::vector<std::string> splitFields(const std::string &line) {
     }
 }
 
-std::string legacyFromV3(const std::string &encoded,
+std::string legacyFromV4(const std::string &encoded,
                          const char *legacyHeader, size_t retainedFields) {
     const size_t headerEnd = encoded.find('\n');
     if (headerEnd == std::string::npos) return {};
     const std::vector<std::string> header = splitFields(
         encoded.substr(0u, headerEnd));
     if (header.size() != 3u ||
-        header[0] != "mdkr-character-test-evidence-v3") return {};
+        header[0] != "mdkr-character-test-evidence-v4") return {};
     std::string body;
     size_t begin = headerEnd + 1u;
     while (begin < encoded.size()) {
@@ -110,7 +110,7 @@ std::string legacyFromV3(const std::string &encoded,
         if (end == std::string::npos) return {};
         std::vector<std::string> fields = splitFields(
             encoded.substr(begin, end - begin));
-        if (fields.size() != 105u) return {};
+        if (fields.size() != 125u) return {};
         fields.resize(retainedFields);
         /* V1/V2 predate result contract 10 and therefore cannot claim its
          * required contact witnesses. */
@@ -128,13 +128,45 @@ std::string legacyFromV3(const std::string &encoded,
 }
 
 std::string legacyV1FromV3(const std::string &encoded) {
-    return legacyFromV3(
+    return legacyFromV4(
         encoded, "mdkr-character-test-evidence-v1", 38u);
 }
 
 std::string legacyV2FromV3(const std::string &encoded) {
-    return legacyFromV3(
+    return legacyFromV4(
         encoded, "mdkr-character-test-evidence-v2", 51u);
+}
+
+std::string legacyV3FromV4(const std::string &encoded) {
+    std::string legacy = legacyFromV4(
+        encoded, "mdkr-character-test-evidence-v3", 104u);
+    if (legacy.empty()) return {};
+    /* V3 is the result-v10 contact-witness contract; unlike V1/V2 it must not
+     * be downgraded to result 9. Rebuild from the V4 rows explicitly. */
+    const size_t headerEnd = encoded.find('\n');
+    const std::vector<std::string> header = splitFields(
+        encoded.substr(0u, headerEnd));
+    std::string body;
+    size_t begin = headerEnd + 1u;
+    while (begin < encoded.size()) {
+        const size_t end = encoded.find('\n', begin);
+        if (end == std::string::npos) return {};
+        std::vector<std::string> fields = splitFields(
+            encoded.substr(begin, end - begin));
+        if (fields.size() != 125u) return {};
+        fields.resize(104u);
+        fields[9] = "10";
+        for (const std::string &field : fields) {
+            body += field;
+            body.push_back('\t');
+        }
+        body += digestFields(fields);
+        body.push_back('\n');
+        begin = end + 1u;
+    }
+    const std::string legacyHeader = "mdkr-character-test-evidence-v3";
+    return legacyHeader + "\t" + header[1] + "\t" +
+        digestInventory(legacyHeader, header[1], body) + "\n" + body;
 }
 
 std::string authenticatedV3WithFirstRowField(
@@ -151,10 +183,10 @@ std::string authenticatedV3WithFirstRowField(
     std::vector<std::string> fields = splitFields(
         encoded.substr(headerEnd + 1u, rowEnd - headerEnd - 1u));
     if (header.size() != 3u ||
-        header[0] != "mdkr-character-test-evidence-v3" ||
-        fields.size() != 105u || fieldIndex >= 104u) return {};
+        header[0] != "mdkr-character-test-evidence-v4" ||
+        fields.size() != 125u || fieldIndex >= 124u) return {};
     fields[fieldIndex] = replacement;
-    fields.resize(104u);
+    fields.resize(124u);
     std::string firstRow;
     for (const std::string &field : fields) {
         firstRow += field;
@@ -183,7 +215,7 @@ CharacterTestEvidenceStore::Evidence makeEvidence(
     evidence.buildVersion                = "1.5.2-test";
     evidence.context                     = context;
     evidence.players                     = players;
-    evidence.resultVersion               = 10u;
+    evidence.resultVersion               = 11u;
     evidence.started                     = true;
     evidence.warmupComplete              = true;
     evidence.realtime                    = true;
@@ -197,6 +229,17 @@ CharacterTestEvidenceStore::Evidence makeEvidence(
     evidence.intervalMaxUs               = 20000u;
     evidence.tickwallSamples             = 180u;
     evidence.tickwallMeanNs              = 1200000u;
+    evidence.gpuTiming.version =
+        MDKR_MODERN_CHARACTER_GPU_TIMING_VERSION;
+    evidence.gpuTiming.status =
+        MDKR_MODERN_CHARACTER_GPU_TIMING_AVAILABLE;
+    evidence.gpuTiming.supported_scopes =
+        MDKR_MODERN_CHARACTER_GPU_SCOPE_SCENE_PASS |
+        MDKR_MODERN_CHARACTER_GPU_SCOPE_CHARACTER_DRAWS;
+    evidence.gpuTiming.scene_pass = {
+        176u, 176u, 3000000u, 4000000u, 5000000u, 3500000u, 6000000u};
+    evidence.gpuTiming.character_draws = {
+        176u, 176u, 200000u, 300000u, 400000u, 250000u, 500000u};
     evidence.replacementDraws            = 360u;
     evidence.replacementPrimitives       = 720u;
     evidence.hiddenDonorBatches          = 360u;
@@ -269,9 +312,9 @@ int main() {
 
     std::string encoded;
     expect(serialize(inventory, encoded, error) &&
-               encoded.rfind("mdkr-character-test-evidence-v3\t3\t", 0u) ==
+               encoded.rfind("mdkr-character-test-evidence-v4\t3\t", 0u) ==
                    0u,
-           "v3 test evidence serializes with a whole-inventory checksum");
+           "v4 test evidence serializes with a whole-inventory checksum");
     const size_t body = encoded.find('\n') + 1u;
     expect(encoded.find("org.example.alpha\t", body) != std::string::npos,
            "canonical rows retain their package key");
@@ -292,6 +335,8 @@ int main() {
                        ->contactWitnessMask == 0xFu &&
                find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
                        ->contactWitnessErrorMicrometres[3] == 2500u &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->gpuTiming.character_draws.p95_ns == 300000u &&
                find(parsed, "org.example.alpha", 2u, 4u, Kind::Baseline)
                        ->sourceSha256 == baseline.sourceSha256,
            "round trip preserves timing, device, source, renderer fit, contact witnesses, and kind");
@@ -310,14 +355,20 @@ int main() {
     std::string migrated;
     expect(serialize(legacyParsed, migrated, error) &&
                migrated.rfind(
-                   "mdkr-character-test-evidence-v3\t3\t", 0u) == 0u,
-           "the next successful write migrates a v1 inventory to v3 in place");
+                   "mdkr-character-test-evidence-v4\t3\t", 0u) == 0u,
+           "the next successful write migrates a v1 inventory to v4 in place");
     const std::string legacyV2 = legacyV2FromV3(encoded);
     Inventory legacyV2Parsed;
     expect(!legacyV2.empty() && parse(legacyV2, legacyV2Parsed, error) &&
                find(legacyV2Parsed, "org.example.alpha", 2u, 4u,
                     Kind::Latest)->contactWitnessMask == 0u,
            "authenticated v2 rows migrate with explicitly unavailable contact witnesses");
+    const std::string legacyV3 = legacyV3FromV4(encoded);
+    Inventory legacyV3Parsed;
+    expect(!legacyV3.empty() && parse(legacyV3, legacyV3Parsed, error) &&
+               find(legacyV3Parsed, "org.example.alpha", 2u, 4u,
+                    Kind::Latest)->gpuTiming.version == 0u,
+           "authenticated v3 rows migrate with explicitly unavailable GPU timing");
     expect(qualified(car) && comparable(car, baseline),
            "a source or fit change remains comparable under one exact environment");
     Evidence anotherDevice = baseline;
@@ -391,6 +442,20 @@ int main() {
     invalid.tickwallSamples = 0u;
     expect(!upsert(inventory, invalid, error),
            "a tick-wall mean requires a tick-wall sample count");
+    invalid = select;
+    invalid.gpuTiming.version = 0u;
+    expect(!upsert(inventory, invalid, error),
+           "current evidence requires a versioned GPU availability contract");
+    invalid = select;
+    invalid.gpuTiming.scene_pass.p95_ns =
+        invalid.gpuTiming.scene_pass.p50_ns - 1u;
+    expect(!upsert(inventory, invalid, error),
+           "non-monotonic GPU timestamp percentiles are rejected");
+    invalid = select;
+    invalid.gpuTiming.supported_scopes =
+        MDKR_MODERN_CHARACTER_GPU_SCOPE_CHARACTER_DRAWS;
+    expect(!upsert(inventory, invalid, error),
+           "character-only timing cannot claim support without scene timestamps");
     invalid                  = select;
     invalid.replacementDraws = 0u;
     expect(!upsert(inventory, invalid, error),
@@ -486,6 +551,19 @@ int main() {
     expect(!reversedBounds.empty() && !parse(reversedBounds, parsed, error) &&
                error == "test evidence fit diagnostics are inconsistent",
            "authenticated but reversed renderer bounds fail semantic validation");
+    const std::string invalidGpuStatus = authenticatedV3WithFirstRowField(
+        encoded, 105u, "99");
+    expect(!invalidGpuStatus.empty() &&
+               !parse(invalidGpuStatus, parsed, error) &&
+               error == "test evidence GPU timing fields are invalid",
+           "authenticated rows reject unknown GPU timing states");
+    const std::string staleGpuVersion = authenticatedV3WithFirstRowField(
+        encoded, 104u, "0");
+    expect(!staleGpuVersion.empty() &&
+               !parse(staleGpuVersion, parsed, error) &&
+               error ==
+                   "test evidence timing state or distribution is inconsistent",
+           "result-v11 rows cannot erase the GPU timing contract");
 
     const size_t      headerEnd = encoded.find('\n') + 1u;
     const size_t      rowOneEnd = encoded.find('\n', headerEnd) + 1u;

@@ -1050,25 +1050,27 @@ frame, and proves the RGBA product has a nonempty bounded subject, a genuinely
 transparent background, and no hidden matte color in zero-alpha pixels. It also
 proves an existing capture stays byte-identical.
 This qualifies the direct game route, visual inspection controls, capture seam,
-and stress seam; embedded offscreen preview and GPU timestamp/headroom
-isolation remain open.
+stress seam, and optional exact GPU timestamp seam. Embedded offscreen preview,
+representative scene variants, and a maintained device-profile/headroom corpus
+remain open.
 
 Launcher-owned previews also arm the existing bounded presentation census. The
 game discards a 120-authored-tick warm-up, resets only the observational timing
-window, and freezes a structured version-9 result when the F1 overlay opens (or
+window, and freezes a structured version-11 result when the F1 overlay opens (or
 at engine shutdown). The surviving launcher publishes that result back to the
 same package inspector: displayed interval sample count, median/p95/p99/mean/max,
 authored tick-wall sample/mean, and warmed replacement/part/donor-suppression
 counts, vehicle-contact error, target-frame ground/seat anchor, calibrated
 fitted volume and normalized facing from the actual replacement transform,
-selected backend/adapter/driver and physical
+selected backend/adapter/driver, exact optional GPU timestamp distributions and
+scope/exclusion state, and physical
 output versus scene-render dimensions, held-pose/fallback ticks, camera/light
 application counters, and requested/armed/written capture state, typed render
 product, stable-frame count, and byte count. Fewer than 60 intervals
 and synthetic pacing are explicitly diagnostic-only. Visual-inspection results
 remain session-only and cannot contaminate durable timing evidence.
 
-The launcher collects only version-9 captures armed after at least 12 eligible
+The launcher collects only version-11 captures armed after at least 12 eligible
 frames in bounded session metadata and can export a self-contained HTML
 qualification report. Publication validates the complete typed PNG and binds
 its SHA-256 immediately. The tray lazily decodes at most a 96-pixel bounded
@@ -1100,19 +1102,32 @@ visible and never count as current, while an LOD-only change does not revoke the
 separate vehicle-fit review. Baseline pinning, exact-cell deletion, package
 deletion, restart recovery, an actual LOD-policy stale transition, and
 malformed-inventory preservation are covered by a rendered ROM-free lifecycle
-gate. Evidence schema v3 retains the signed target-frame bounds, ground/seat
+gate. Evidence schema v4 retains the signed target-frame bounds, ground/seat
 anchor, normalized facing direction, and four exact post-solve
 root/bend/target/end/error contact witnesses from the successful replacement
 draw, so Fit and Performance retain the same renderer measurement after
-restart. The v10 result contract requires either all four self-consistent
+restart. The v11 result contract requires either all four self-consistent
 witnesses or none; a vehicle result with nonzero automatic solve count cannot
-omit or partially publish them. Authenticated v1/v2 inventories load older
-fields with explicit unavailable states and migrate in place on the next
+omit or partially publish them. It also carries a versioned GPU timing contract:
+the initial gameplay color/depth pass is timestamped when the device supports
+standard WebGPU queries, while exact ranges around accepted custom-character
+draws are added only on native devices exposing in-pass timestamps. A six-slot
+readback ring never waits in the frame path. Four 4,096-query character sets
+cover the full accepted 512 primitives × four local packages × four viewports;
+each resolve begins at a WebGPU-required 256-byte boundary. Pending, ring-full, invalid,
+unsupported, device-lost, and error states remain explicit, and no wall-cadence
+estimate is substituted. All optional query and readback resources are
+preallocated during renderer initialization inside portable validation and
+out-of-memory error scopes, so allocation failure cannot become a fatal
+uncaptured device error or introduce a wait in gameplay. Authenticated
+v1/v2/v3 inventories load older fields with explicit unavailable states and
+migrate in place on the next
 successful write; the established
-filename remains unchanged so old evidence is never orphaned. The report
-deliberately does not invent a “GPU time”
-from CPU wall cadence; timestamp/pass attribution, representative scene variants
-and a maintained device-profile corpus remain separate work.
+filename remains unchanged so old evidence is never orphaned. Same-environment
+baseline cards compare wall cadence, scene-pass GPU time, and—only when both
+devices expose the scope—custom-character draw GPU time independently.
+Representative scene variants and a maintained device-profile corpus remain
+separate work.
 
 The private Dixie fixture completed the same chain without contributing any
 tracked bytes: DAE -> self-contained GLB -> source and portable `.mdkrchar` ->

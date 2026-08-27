@@ -16,7 +16,6 @@
 #include <string.h>
 
 #define MODERN_RUNTIME_POOLS 4
-#define MODERN_RUNTIME_MAX_PRIMITIVES 512u
 #define MODERN_RUNTIME_MAX_BONES 256u
 
 typedef struct MdkrModernRuntimePool {
@@ -35,7 +34,7 @@ typedef struct MdkrModernRuntimePlayer {
     char semantic[96];
     float palette[MODERN_RUNTIME_MAX_BONES * 16u];
     float previous_palette[MODERN_RUNTIME_MAX_BONES * 16u];
-    uint32_t tokens[MODERN_RUNTIME_MAX_PRIMITIVES];
+    uint32_t tokens[MDKR_MODERN_CHARACTER_MAX_PRIMITIVES];
     uint64_t identity_revision;
     float focus_center[MDKR_CHARACTER_CONTEXT_COUNT][3];
     float focus_radius[MDKR_CHARACTER_CONTEXT_COUNT];
@@ -670,7 +669,8 @@ static int pool_acquire(int registry_index, char *error, size_t error_size) {
             pool->registry_index = -1;
             return -1;
         }
-        if (pool->render.gpu.primitive_count > MODERN_RUNTIME_MAX_PRIMITIVES) {
+        if (pool->render.gpu.primitive_count >
+            MDKR_MODERN_CHARACTER_MAX_PRIMITIVES) {
             set_error(error, error_size,
                       "character exceeds the 512-primitive runtime budget");
             mdkr_modern_render_asset_shutdown(&pool->render);

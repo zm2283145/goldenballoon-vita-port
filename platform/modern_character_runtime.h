@@ -11,13 +11,12 @@
 #include <PR/gbi.h>
 
 #include "modern_character_registry.h"
+#include "modern_character_limits.h"
 #include "modern_character_semantics.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#define MDKR_MODERN_CHARACTER_PLAYERS 4
 
 typedef struct MdkrModernCharacterAdjustment {
     float scale;

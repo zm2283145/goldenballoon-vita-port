@@ -1,0 +1,8 @@
+/* Shared hard bounds for accepted modern-character runtime work. */
+#ifndef MDKR64_MODERN_CHARACTER_LIMITS_H
+#define MDKR64_MODERN_CHARACTER_LIMITS_H
+
+#define MDKR_MODERN_CHARACTER_PLAYERS 4
+#define MDKR_MODERN_CHARACTER_MAX_PRIMITIVES 512u
+
+#endif /* MDKR64_MODERN_CHARACTER_LIMITS_H */

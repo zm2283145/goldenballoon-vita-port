@@ -83,13 +83,13 @@ def evidence_rows(root: Path) -> list[list[str]]:
     header = lines[0].split("\t")
     if (
         len(header) != 3
-        or header[0] != "mdkr-character-test-evidence-v3"
+        or header[0] != "mdkr-character-test-evidence-v4"
         or int(header[1]) != len(lines) - 1
         or len(header[2]) != 64
     ):
         raise RuntimeError("test evidence inventory header is malformed")
     rows = [line.split("\t") for line in lines[1:]]
-    if any(len(row) != 105 for row in rows):
+    if any(len(row) != 125 for row in rows):
         raise RuntimeError("test evidence inventory row is malformed")
     return rows
 
@@ -257,7 +257,7 @@ def main() -> int:
                 or rows[0][0] != "0"
                 or rows[0][1] != PACKAGE_ID
                 or (rows[0][7], rows[0][8]) != ("2", "4")
-                or rows[0][9] != "10"
+                or rows[0][9] != "11"
                 or bytes.fromhex(rows[0][29]).decode("utf-8")
                 != "webgpu-test"
                 or bytes.fromhex(rows[0][30]).decode("utf-8")
@@ -275,6 +275,14 @@ def main() -> int:
                 or rows[0][51] != "15"
                 or tuple(map(int, rows[0][100:104]))
                 != (1000, 1500, 2000, 2500)
+                or tuple(map(int, rows[0][104:117]))
+                != (
+                    1, 3, 3, 1, 1, 2,
+                    176, 176, 3000000, 4000000, 5000000,
+                    3500000, 6000000,
+                )
+                or tuple(map(int, rows[0][117:124]))
+                != (176, 176, 200000, 300000, 400000, 250000, 500000)
             ):
                 raise RuntimeError(
                     "qualified exact result did not persist exact device and renderer-fit fields"
@@ -290,7 +298,10 @@ def main() -> int:
                     "comparable=1 fit=1 "
                     "fitAnchorUm=10000,20000,-30000 "
                     "fitBoundsYUm=-600000,900000 "
-                    "fitForwardMilli=0,0,1000",
+                    "fitForwardMilli=0,0,1000 "
+                    "gpuStatus=3 gpuScopes=3 "
+                    "sceneGpuSamples=176 sceneGpuP50Ns=3000000 "
+                    "characterGpuSamples=176 characterGpuP50Ns=200000",
                 ),
                 action="pin-car-4p",
             )
@@ -307,6 +318,10 @@ def main() -> int:
                 (
                     "state=Qualified latest=1 baseline=1 comparable=1",
                     "text=Car, 4 players, Qualified",
+                    "text=Saved GPU timestamp status, Exact timestamp samples captured.",
+                    "text=Saved scene-pass GPU timestamps, 3.000 ms median · 4.000 ms p95 · 176 samples.",
+                    "text=Saved character-draw GPU timestamps, 0.200 ms median · 0.300 ms p95 · 176 samples.",
+                    "text=Saved excluded GPU timestamp frames, 1 pending · 1 ring-full · 2 invalid.",
                     "text=Pin as comparison baseline",
                     "text=Clear pinned baseline",
                     "text=Semantic pose",
@@ -461,6 +476,24 @@ def main() -> int:
                 raise RuntimeError(
                     "invalid contact contract contaminated durable performance evidence"
                 )
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "character-preview-result rejected-evidence=gpu-timing-contract",
+                    "timingVersion=1 status=99 scopes=3",
+                    "action=publish-invalid-gpu applied=1 "
+                    "records=0 baselines=0",
+                ),
+                action="publish-invalid-gpu",
+            )
+            if (
+                root / "saves" / "character_test_evidence-v1.tsv"
+            ).read_bytes() != empty_evidence:
+                raise RuntimeError(
+                    "invalid GPU timing contract contaminated durable performance evidence"
+                )
 
             run(
                 binary,
@@ -536,8 +569,8 @@ def main() -> int:
     print(
         "check_character_test_evidence_ui: PASS -- durable source/fit/device-"
         "bound 4x4 matrix with signed renderer-fit and hand/foot contact diagnostics, same-"
-        "environment baseline lifecycle, corruption "
-        "and invalid-fit/contact refusal, pose-inspection exclusion, keyboard speech, "
+        "environment wall/scene/character GPU baseline lifecycle, corruption "
+        "and invalid-fit/contact/GPU refusal, pose-inspection exclusion, keyboard speech, "
         "200% rendering, and package-byte purity"
     )
     return 0

@@ -539,6 +539,10 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             *cfg->character_preview_result = MdkrCharacterPreviewResult{};
             cfg->character_preview_result->version =
                 MDKR_CHARACTER_PREVIEW_RESULT_VERSION;
+            cfg->character_preview_result->gpu_timing.version =
+                MDKR_MODERN_CHARACTER_GPU_TIMING_VERSION;
+            cfg->character_preview_result->gpu_timing.status =
+                MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED;
             cfg->character_preview_result->context =
                 cfg->character_preview_context;
             cfg->character_preview_result->players =

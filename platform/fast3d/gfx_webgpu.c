@@ -24,6 +24,7 @@
  */
 #include <stdbool.h>
 #include <stdint.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,7 +40,9 @@
 #include "gfx_shadow_frame.h"
 #include "fs_utf8.h"
 #include "gpu_diagnostics.h"
+#include "modern_character_limits.h"
 #include "present_sched.h"
+#include "viewport_route_cache.h"
 
 /* platform/fast3d/gfx_pc_dkr.c — declared rather than included: gfx_pc_dkr.h
  * pulls in the F3DDKR/gbi headers, which redefine this file's GfxDimensions. */
@@ -537,7 +540,9 @@ static uint32_t s_skinned_ubo_gen = 0;
 /* One isolated-pass command per bounded runtime primitive and local player.
  * Commands reference the immutable asset cache and the already-populated
  * per-frame uniform slot; no model or pose is re-evaluated for capture. */
-#define WGPU_SKINNED_CAPTURE_MAX_DRAWS (512u * 4u)
+#define WGPU_SKINNED_CAPTURE_MAX_DRAWS \
+    (MDKR_MODERN_CHARACTER_MAX_PRIMITIVES * \
+     MDKR_MODERN_CHARACTER_PLAYERS)
 struct WgpuSkinnedCaptureDraw {
     const struct GfxModernSkinnedAsset *asset;
     uint32_t primitive;
@@ -560,6 +565,75 @@ static uint32_t s_skinned_capture_height = 0u;
 static bool s_skinned_capture_ready = false;
 static bool wgpu_render_skinned_capture(void);
 static void wgpu_release_skinned_capture_target(void);
+
+/* Timestamp evidence is deliberately bounded and never waits in the frame
+ * path. Queue order resolves a frame's values before a later frame rewrites
+ * the same indices; each in-flight frame owns separate resolve/readback
+ * buffers so mapping cannot conflict with GPU writes. Query 0/1 bracket the
+ * initial gameplay scene pass. Character queries span enough 4,096-query sets
+ * for every accepted package primitive, every local custom player, and every
+ * split-screen viewport—no runtime-accepted draw is silently omitted. */
+#define WGPU_CHARACTER_GPU_TIMING_RING 6u
+#define WGPU_CHARACTER_GPU_QUERIES_PER_SET 4096u
+#define WGPU_CHARACTER_GPU_PAIRS_PER_SET \
+    (WGPU_CHARACTER_GPU_QUERIES_PER_SET / 2u)
+#define WGPU_CHARACTER_GPU_TIMING_MAX_DRAWS \
+    (MDKR_MODERN_CHARACTER_MAX_PRIMITIVES * \
+     MDKR_MODERN_CHARACTER_PLAYERS * MDKR_VIEWPORT_ROUTE_MAX_VIEWPORTS)
+#define WGPU_CHARACTER_GPU_QUERY_SETS \
+    (WGPU_CHARACTER_GPU_TIMING_MAX_DRAWS / \
+     WGPU_CHARACTER_GPU_PAIRS_PER_SET)
+/* ResolveQuerySet destination offsets are 256-byte aligned. Scene timestamps
+ * occupy the first 16 bytes and the remaining 240 bytes are explicit padding. */
+#define WGPU_CHARACTER_GPU_CHARACTER_OFFSET_BYTES 256u
+#define WGPU_CHARACTER_GPU_CHARACTER_OFFSET_QUERIES \
+    (WGPU_CHARACTER_GPU_CHARACTER_OFFSET_BYTES / sizeof(uint64_t))
+#define WGPU_CHARACTER_GPU_TIMING_QUERY_COUNT \
+    (WGPU_CHARACTER_GPU_CHARACTER_OFFSET_QUERIES + \
+     WGPU_CHARACTER_GPU_TIMING_MAX_DRAWS * 2u)
+#define WGPU_CHARACTER_GPU_TIMING_BYTES \
+    ((uint64_t)WGPU_CHARACTER_GPU_TIMING_QUERY_COUNT * sizeof(uint64_t))
+#if (WGPU_CHARACTER_GPU_TIMING_MAX_DRAWS % \
+     WGPU_CHARACTER_GPU_PAIRS_PER_SET) != 0
+#error "character GPU timing coverage must fill complete query sets"
+#endif
+#if (WGPU_CHARACTER_GPU_CHARACTER_OFFSET_BYTES % 256u) != 0
+#error "character GPU timing resolve offset must be WebGPU-aligned"
+#endif
+
+enum WgpuCharacterGpuTimingSlotState {
+    WGPU_CHARACTER_GPU_TIMING_SLOT_IDLE = 0,
+    WGPU_CHARACTER_GPU_TIMING_SLOT_RECORDING,
+    WGPU_CHARACTER_GPU_TIMING_SLOT_ENCODED,
+    WGPU_CHARACTER_GPU_TIMING_SLOT_MAPPING,
+};
+
+struct WgpuCharacterGpuTimingSlot {
+    WGPUBuffer resolve;
+    WGPUBuffer readback;
+    enum WgpuCharacterGpuTimingSlotState state;
+    uint64_t measurement_generation;
+    uint32_t character_pairs;
+    uint64_t mapped_bytes;
+};
+
+static WGPUQuerySet s_character_gpu_scene_query_set = NULL;
+static WGPUQuerySet
+    s_character_gpu_query_sets[WGPU_CHARACTER_GPU_QUERY_SETS];
+static struct WgpuCharacterGpuTimingSlot
+    s_character_gpu_timing_slots[WGPU_CHARACTER_GPU_TIMING_RING];
+static MdkrModernCharacterGpuTimingAccumulator
+    s_character_gpu_timing_accumulator;
+static bool s_character_gpu_timestamp_supported = false;
+static bool s_character_gpu_inside_pass_supported = false;
+static bool s_character_gpu_timing_active = false;
+static bool s_character_gpu_timing_begun = false;
+static uint64_t s_character_gpu_timing_generation = 1u;
+static float s_character_gpu_timestamp_period_ns = 0.0f;
+static int s_character_gpu_frame_slot = -1;
+static MdkrModernCharacterGpuTimingStatus s_character_gpu_timing_status =
+    MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED;
+static WGPUStringView wgpu_sv(const char *s);
 
 /* Dynamic depth / viewport / scissor state. WebGPU bakes depth into the
  * pipeline, so the depth fields feed the pipeline cache key; viewport/scissor are
@@ -666,6 +740,571 @@ static void wgpu_pipeline_callback_owner_pump(WGPUInstance instance,
             wgpu_pipeline_callback_owner_pump((instance), (device));       \
         }                                                                    \
     } while (0)
+
+static bool wgpu_character_gpu_timing_requested(void) {
+    const char *value = getenv("MDKR_WEBGPU_GPU_TIMING");
+    return value == NULL ||
+        (strcmp(value, "0") != 0 && strcmp(value, "false") != 0 &&
+         strcmp(value, "off") != 0);
+}
+
+static uint32_t wgpu_character_gpu_timing_scopes(void) {
+    uint32_t scopes = 0u;
+    if (s_character_gpu_timestamp_supported) {
+        scopes |= MDKR_MODERN_CHARACTER_GPU_SCOPE_SCENE_PASS;
+    }
+    if (s_character_gpu_inside_pass_supported) {
+        scopes |= MDKR_MODERN_CHARACTER_GPU_SCOPE_CHARACTER_DRAWS;
+    }
+    return scopes;
+}
+
+static void wgpu_character_gpu_timing_refresh_features(void) {
+    s_character_gpu_timestamp_supported =
+        wgpu_character_gpu_timing_requested() && s_device != NULL &&
+        wgpuDeviceHasFeature(s_device, WGPUFeatureName_TimestampQuery) != 0;
+    s_character_gpu_inside_pass_supported =
+        s_character_gpu_timestamp_supported && s_device != NULL &&
+        WGPU_COMPAT_DEVICE_TIMESTAMP_INSIDE_PASS_SUPPORTED(s_device);
+    if (s_character_gpu_timing_status !=
+            MDKR_MODERN_CHARACTER_GPU_TIMING_DEVICE_LOST &&
+        s_character_gpu_timing_status !=
+            MDKR_MODERN_CHARACTER_GPU_TIMING_ERROR) {
+        s_character_gpu_timing_status = s_character_gpu_timestamp_supported
+            ? MDKR_MODERN_CHARACTER_GPU_TIMING_IDLE
+            : MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED;
+    }
+}
+
+static void wgpu_character_gpu_timing_next_generation(void) {
+    s_character_gpu_timing_generation++;
+    if (s_character_gpu_timing_generation == 0u) {
+        s_character_gpu_timing_generation = 1u;
+    }
+}
+
+static void wgpu_character_gpu_timing_abandon_frame(void) {
+    if (s_character_gpu_frame_slot >= 0 &&
+        s_character_gpu_frame_slot <
+            (int)WGPU_CHARACTER_GPU_TIMING_RING) {
+        struct WgpuCharacterGpuTimingSlot *slot =
+            &s_character_gpu_timing_slots[s_character_gpu_frame_slot];
+        if (slot->state == WGPU_CHARACTER_GPU_TIMING_SLOT_RECORDING ||
+            slot->state == WGPU_CHARACTER_GPU_TIMING_SLOT_ENCODED) {
+            slot->state = WGPU_CHARACTER_GPU_TIMING_SLOT_IDLE;
+        }
+    }
+    s_character_gpu_frame_slot = -1;
+}
+
+static void wgpu_character_gpu_timing_release_resources(void) {
+    wgpu_character_gpu_timing_next_generation();
+    s_character_gpu_timing_active = false;
+    s_character_gpu_timing_begun = false;
+    s_character_gpu_frame_slot = -1;
+    for (uint32_t index = 0u;
+         index < WGPU_CHARACTER_GPU_TIMING_RING; ++index) {
+        struct WgpuCharacterGpuTimingSlot *slot =
+            &s_character_gpu_timing_slots[index];
+        /* Destroy first so a pending map completes as cancelled. The callback
+         * context is static and generation-guarded, so a late delivery cannot
+         * dereference a released GPU handle or mutate a newer measurement. */
+        if (slot->readback != NULL) {
+            wgpuBufferDestroy(slot->readback);
+            wgpuBufferRelease(slot->readback);
+        }
+        if (slot->resolve != NULL) {
+            wgpuBufferDestroy(slot->resolve);
+            wgpuBufferRelease(slot->resolve);
+        }
+        memset(slot, 0, sizeof(*slot));
+    }
+    for (uint32_t index = 0u;
+         index < WGPU_CHARACTER_GPU_QUERY_SETS; ++index) {
+        if (s_character_gpu_query_sets[index] == NULL) continue;
+        /* wgpu-native implements QuerySetDestroy as the resource drop itself;
+         * releasing the last C wrapper after that asks wgpu-core to drop the
+         * same storage entry twice. Releasing the owned wrapper performs the
+         * one required drop and is also the portable WebGPU ownership action. */
+        wgpuQuerySetRelease(s_character_gpu_query_sets[index]);
+        s_character_gpu_query_sets[index] = NULL;
+    }
+    if (s_character_gpu_scene_query_set != NULL) {
+        wgpuQuerySetRelease(s_character_gpu_scene_query_set);
+        s_character_gpu_scene_query_set = NULL;
+    }
+}
+
+static void wgpu_character_gpu_timing_scope_callback(
+    WGPUPopErrorScopeStatus status, WGPUErrorType type,
+    WGPUStringView message, void *userdata1, void *userdata2) {
+    GfxWebgpuAsyncRequest *request =
+        (GfxWebgpuAsyncRequest *)userdata1;
+    (void)userdata2;
+    const bool success = status == WGPUPopErrorScopeStatus_Success &&
+        type == WGPUErrorType_NoError;
+    if (!success) {
+        fprintf(stderr,
+                "[WGPU-CHARACTER-GPU] optional resource error "
+                "status=%d type=%d: %.*s\n",
+                (int)status, (int)type, (int)message.length,
+                message.data != NULL ? message.data : "");
+    }
+    gfx_webgpu_async_request_complete(
+        request, success ? 1 : 0, NULL, NULL);
+}
+
+static bool wgpu_character_gpu_timing_pop_scopes(
+    GfxWebgpuAsyncRequest *requests[2]) {
+    bool success = true;
+    for (uint32_t index = 0u; index < 2u; ++index) {
+        WGPUPopErrorScopeCallbackInfo callback =
+            WGPU_POP_ERROR_SCOPE_CALLBACK_INFO_INIT;
+        callback.mode = WGPUCallbackMode_AllowProcessEvents;
+        callback.callback = wgpu_character_gpu_timing_scope_callback;
+        callback.userdata1 = requests[index];
+        (void)wgpuDevicePopErrorScope(s_device, callback);
+    }
+    WGPU_PIPELINE_CALLBACK_OWNER_WAIT(
+        gfx_webgpu_async_request_completed(requests[0]) &&
+            gfx_webgpu_async_request_completed(requests[1]),
+        s_instance, s_device, WGPU_COMPAT_BRINGUP_WAIT_ITERS);
+    for (uint32_t index = 0u; index < 2u; ++index) {
+        int status = 0;
+        void *handle = NULL;
+        success = gfx_webgpu_async_request_finish(
+                      requests[index], &status, &handle) &&
+            status == 1 && success;
+        gfx_webgpu_async_request_release(requests[index]);
+    }
+    return success;
+}
+
+static bool wgpu_character_gpu_timing_resources_ready(void) {
+    if (s_character_gpu_scene_query_set == NULL) return false;
+    for (uint32_t index = 0u;
+         index < WGPU_CHARACTER_GPU_QUERY_SETS; ++index) {
+        if (s_character_gpu_inside_pass_supported &&
+            s_character_gpu_query_sets[index] == NULL) {
+            return false;
+        }
+    }
+    for (uint32_t index = 0u;
+         index < WGPU_CHARACTER_GPU_TIMING_RING; ++index) {
+        if (s_character_gpu_timing_slots[index].resolve == NULL ||
+            s_character_gpu_timing_slots[index].readback == NULL) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool wgpu_character_gpu_timing_resources(void) {
+    if (wgpu_character_gpu_timing_resources_ready()) return true;
+    if (!s_character_gpu_timestamp_supported || s_device == NULL ||
+        s_queue == NULL) {
+        return false;
+    }
+    GfxWebgpuAsyncRequest *scope_requests[2] = {NULL, NULL};
+    bool scopes_popped = false;
+    for (uint32_t index = 0u; index < 2u; ++index) {
+        scope_requests[index] = gfx_webgpu_async_request_create();
+        if (scope_requests[index] == NULL ||
+            !gfx_webgpu_async_request_retain_callback(
+                scope_requests[index])) {
+            for (uint32_t cleanup = 0u; cleanup <= index; ++cleanup) {
+                if (scope_requests[cleanup] == NULL) continue;
+                if (cleanup < index) {
+                    gfx_webgpu_async_request_complete(
+                        scope_requests[cleanup], 0, NULL, NULL);
+                }
+                gfx_webgpu_async_request_release(
+                    scope_requests[cleanup]);
+            }
+            s_character_gpu_timing_status =
+                MDKR_MODERN_CHARACTER_GPU_TIMING_ERROR;
+            return false;
+        }
+    }
+    /* Push broad-to-narrow and pop in reverse order. Portable optional
+     * allocation/validation errors are captured here instead of reaching the
+     * renderer's fatal device callback. True internal device failures remain
+     * fatal. Initialization may yield; the frame path never does. */
+    wgpuDevicePushErrorScope(s_device, WGPUErrorFilter_OutOfMemory);
+    wgpuDevicePushErrorScope(s_device, WGPUErrorFilter_Validation);
+    WGPUQuerySetDescriptor query_descriptor = WGPU_QUERY_SET_DESCRIPTOR_INIT;
+    query_descriptor.label = wgpu_sv("workshop-scene-gpu-timestamps");
+    query_descriptor.type = WGPUQueryType_Timestamp;
+    query_descriptor.count = 2u;
+    s_character_gpu_scene_query_set =
+        wgpuDeviceCreateQuerySet(s_device, &query_descriptor);
+    if (s_character_gpu_scene_query_set == NULL) goto fail;
+    if (s_character_gpu_inside_pass_supported) {
+        query_descriptor.label =
+            wgpu_sv("workshop-character-draw-gpu-timestamps");
+        query_descriptor.count = WGPU_CHARACTER_GPU_QUERIES_PER_SET;
+        for (uint32_t index = 0u;
+             index < WGPU_CHARACTER_GPU_QUERY_SETS; ++index) {
+            s_character_gpu_query_sets[index] =
+                wgpuDeviceCreateQuerySet(s_device, &query_descriptor);
+            if (s_character_gpu_query_sets[index] == NULL) goto fail;
+        }
+    }
+    for (uint32_t index = 0u;
+         index < WGPU_CHARACTER_GPU_TIMING_RING; ++index) {
+        WGPUBufferDescriptor resolve_descriptor = {0};
+        WGPUBufferDescriptor readback_descriptor = {0};
+        resolve_descriptor.label = wgpu_sv("workshop-gpu-query-resolve");
+        resolve_descriptor.usage =
+            WGPUBufferUsage_QueryResolve | WGPUBufferUsage_CopySrc;
+        resolve_descriptor.size = WGPU_CHARACTER_GPU_TIMING_BYTES;
+        readback_descriptor.label = wgpu_sv("workshop-gpu-query-readback");
+        readback_descriptor.usage =
+            WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+        readback_descriptor.size = WGPU_CHARACTER_GPU_TIMING_BYTES;
+        s_character_gpu_timing_slots[index].resolve =
+            wgpuDeviceCreateBuffer(s_device, &resolve_descriptor);
+        s_character_gpu_timing_slots[index].readback =
+            wgpuDeviceCreateBuffer(s_device, &readback_descriptor);
+        if (s_character_gpu_timing_slots[index].resolve == NULL ||
+            s_character_gpu_timing_slots[index].readback == NULL) {
+            goto fail;
+        }
+    }
+    s_character_gpu_timestamp_period_ns =
+        WGPU_COMPAT_TIMESTAMP_PERIOD(s_queue);
+    if (!(s_character_gpu_timestamp_period_ns > 0.0f) ||
+        !isfinite(s_character_gpu_timestamp_period_ns)) {
+        goto fail;
+    }
+    {
+        const bool scope_success =
+            wgpu_character_gpu_timing_pop_scopes(scope_requests);
+        scopes_popped = true;
+        if (!scope_success) goto fail;
+    }
+    return true;
+
+fail:
+    /* If construction jumped before the ordinary pop, close both scopes
+     * before releasing possibly invalid placeholder handles. */
+    if (!scopes_popped) {
+        (void)wgpu_character_gpu_timing_pop_scopes(scope_requests);
+    }
+    fprintf(stderr,
+            "[WGPU-CHARACTER-GPU] optional timestamp resources unavailable\n");
+    wgpu_character_gpu_timing_release_resources();
+    s_character_gpu_timing_status =
+        MDKR_MODERN_CHARACTER_GPU_TIMING_ERROR;
+    return false;
+}
+
+static bool wgpu_character_gpu_ticks_to_ns(uint64_t ticks,
+                                           uint64_t *duration_ns) {
+    const long double converted =
+        (long double)ticks * (long double)s_character_gpu_timestamp_period_ns;
+    if (duration_ns == NULL || ticks == 0u || !(converted > 0.0L) ||
+        converted > (long double)UINT64_MAX) {
+        return false;
+    }
+    *duration_ns = (uint64_t)(converted + 0.5L);
+    return *duration_ns != 0u;
+}
+
+static void wgpu_character_gpu_timing_map_callback(
+    WGPUMapAsyncStatus status, WGPUStringView message,
+    void *userdata1, void *userdata2) {
+    struct WgpuCharacterGpuTimingSlot *slot =
+        (struct WgpuCharacterGpuTimingSlot *)userdata1;
+    (void)message;
+    (void)userdata2;
+    if (slot == NULL) return;
+    const bool current =
+        slot->measurement_generation == s_character_gpu_timing_generation;
+    bool valid_sample = false;
+    bool invalid_sample = false;
+    if (status == WGPUMapAsyncStatus_Success && slot->readback != NULL &&
+        slot->mapped_bytes >= 2u * sizeof(uint64_t)) {
+        const uint64_t *timestamps = (const uint64_t *)
+            wgpuBufferGetConstMappedRange(
+                slot->readback, 0u, (size_t)slot->mapped_bytes);
+        if (current && timestamps != NULL) {
+            uint64_t scene_ns = 0u;
+            if (timestamps[1] > timestamps[0] &&
+                wgpu_character_gpu_ticks_to_ns(
+                    timestamps[1] - timestamps[0], &scene_ns) &&
+                mdkr_modern_character_gpu_timing_accumulator_add_scene(
+                    &s_character_gpu_timing_accumulator, scene_ns)) {
+                valid_sample = true;
+            } else {
+                invalid_sample = true;
+            }
+            if (slot->character_pairs != 0u) {
+                uint64_t character_ticks = 0u;
+                for (uint32_t pair = 0u;
+                     pair < slot->character_pairs; ++pair) {
+                    const uint32_t query =
+                        WGPU_CHARACTER_GPU_CHARACTER_OFFSET_QUERIES +
+                        pair * 2u;
+                    if (timestamps[query + 1u] <= timestamps[query] ||
+                        character_ticks > UINT64_MAX -
+                            (timestamps[query + 1u] - timestamps[query])) {
+                        invalid_sample = true;
+                        character_ticks = 0u;
+                        break;
+                    }
+                    character_ticks +=
+                        timestamps[query + 1u] - timestamps[query];
+                }
+                uint64_t character_ns = 0u;
+                if (character_ticks != 0u &&
+                    wgpu_character_gpu_ticks_to_ns(
+                        character_ticks, &character_ns) &&
+                    mdkr_modern_character_gpu_timing_accumulator_add_character(
+                        &s_character_gpu_timing_accumulator, character_ns)) {
+                    valid_sample = true;
+                } else {
+                    invalid_sample = true;
+                }
+            }
+        } else if (current) {
+            invalid_sample = true;
+        }
+        wgpuBufferUnmap(slot->readback);
+    } else if (current) {
+        invalid_sample = true;
+    }
+    if (current && invalid_sample) {
+        mdkr_modern_character_gpu_timing_accumulator_note_invalid(
+            &s_character_gpu_timing_accumulator);
+    }
+    if (current && valid_sample &&
+        s_character_gpu_timing_status !=
+            MDKR_MODERN_CHARACTER_GPU_TIMING_ERROR &&
+        s_character_gpu_timing_status !=
+            MDKR_MODERN_CHARACTER_GPU_TIMING_DEVICE_LOST) {
+        s_character_gpu_timing_status =
+            MDKR_MODERN_CHARACTER_GPU_TIMING_AVAILABLE;
+    } else if (current && invalid_sample && !valid_sample &&
+               s_character_gpu_timing_accumulator.scene_samples == 0u &&
+               s_character_gpu_timing_accumulator.character_samples == 0u) {
+        s_character_gpu_timing_status =
+            MDKR_MODERN_CHARACTER_GPU_TIMING_ERROR;
+    }
+    slot->state = WGPU_CHARACTER_GPU_TIMING_SLOT_IDLE;
+    slot->character_pairs = 0u;
+    slot->mapped_bytes = 0u;
+}
+
+static bool wgpu_character_gpu_timing_frame_begin(
+    WGPUPassTimestampWrites *writes) {
+    s_character_gpu_frame_slot = -1;
+    if (!s_character_gpu_timing_active || writes == NULL ||
+        s_character_gpu_scene_query_set == NULL) {
+        return false;
+    }
+    for (uint32_t index = 0u;
+         index < WGPU_CHARACTER_GPU_TIMING_RING; ++index) {
+        struct WgpuCharacterGpuTimingSlot *slot =
+            &s_character_gpu_timing_slots[index];
+        if (slot->state != WGPU_CHARACTER_GPU_TIMING_SLOT_IDLE) continue;
+        slot->state = WGPU_CHARACTER_GPU_TIMING_SLOT_RECORDING;
+        slot->measurement_generation =
+            s_character_gpu_timing_generation;
+        slot->character_pairs = 0u;
+        slot->mapped_bytes = 0u;
+        s_character_gpu_frame_slot = (int)index;
+        *writes = (WGPUPassTimestampWrites)
+            WGPU_PASS_TIMESTAMP_WRITES_INIT;
+        writes->querySet = s_character_gpu_scene_query_set;
+        writes->beginningOfPassWriteIndex = 0u;
+        writes->endOfPassWriteIndex = 1u;
+        return true;
+    }
+    mdkr_modern_character_gpu_timing_accumulator_note_ring_full(
+        &s_character_gpu_timing_accumulator);
+    return false;
+}
+
+static uint32_t wgpu_character_gpu_timing_draw_begin(void) {
+    if (!s_character_gpu_timing_active ||
+        !s_character_gpu_inside_pass_supported ||
+        s_character_gpu_frame_slot < 0 || s_pass == NULL) {
+        return UINT32_MAX;
+    }
+    struct WgpuCharacterGpuTimingSlot *slot =
+        &s_character_gpu_timing_slots[s_character_gpu_frame_slot];
+    if (slot->state != WGPU_CHARACTER_GPU_TIMING_SLOT_RECORDING ||
+        slot->character_pairs >= WGPU_CHARACTER_GPU_TIMING_MAX_DRAWS) {
+        return UINT32_MAX;
+    }
+    const uint32_t query = slot->character_pairs * 2u;
+    const uint32_t set = query / WGPU_CHARACTER_GPU_QUERIES_PER_SET;
+    const uint32_t local_query =
+        query % WGPU_CHARACTER_GPU_QUERIES_PER_SET;
+    WGPU_COMPAT_WRITE_PASS_TIMESTAMP(
+        s_pass, s_character_gpu_query_sets[set], local_query);
+    return query;
+}
+
+static void wgpu_character_gpu_timing_draw_end(uint32_t query) {
+    if (query == UINT32_MAX || s_character_gpu_frame_slot < 0 ||
+        s_pass == NULL) {
+        return;
+    }
+    struct WgpuCharacterGpuTimingSlot *slot =
+        &s_character_gpu_timing_slots[s_character_gpu_frame_slot];
+    const uint32_t expected = slot->character_pairs * 2u;
+    if (slot->state != WGPU_CHARACTER_GPU_TIMING_SLOT_RECORDING ||
+        query != expected) {
+        mdkr_modern_character_gpu_timing_accumulator_note_invalid(
+            &s_character_gpu_timing_accumulator);
+        return;
+    }
+    const uint32_t set = query / WGPU_CHARACTER_GPU_QUERIES_PER_SET;
+    const uint32_t local_query =
+        query % WGPU_CHARACTER_GPU_QUERIES_PER_SET;
+    WGPU_COMPAT_WRITE_PASS_TIMESTAMP(
+        s_pass, s_character_gpu_query_sets[set], local_query + 1u);
+    slot->character_pairs++;
+}
+
+static void wgpu_character_gpu_timing_encode_resolve(
+    WGPUCommandEncoder encoder) {
+    if (s_character_gpu_frame_slot < 0 || encoder == NULL) return;
+    struct WgpuCharacterGpuTimingSlot *slot =
+        &s_character_gpu_timing_slots[s_character_gpu_frame_slot];
+    if (slot->state != WGPU_CHARACTER_GPU_TIMING_SLOT_RECORDING) return;
+    const uint32_t query_count = slot->character_pairs == 0u
+        ? 2u : WGPU_CHARACTER_GPU_CHARACTER_OFFSET_QUERIES +
+            slot->character_pairs * 2u;
+    slot->mapped_bytes = (uint64_t)query_count * sizeof(uint64_t);
+    wgpuCommandEncoderResolveQuerySet(
+        encoder, s_character_gpu_scene_query_set, 0u, 2u,
+        slot->resolve, 0u);
+    if (slot->character_pairs != 0u) {
+        uint32_t remaining = slot->character_pairs * 2u;
+        uint32_t destination_query =
+            WGPU_CHARACTER_GPU_CHARACTER_OFFSET_QUERIES;
+        for (uint32_t set = 0u; remaining != 0u; ++set) {
+            const uint32_t count = remaining <
+                    WGPU_CHARACTER_GPU_QUERIES_PER_SET
+                ? remaining : WGPU_CHARACTER_GPU_QUERIES_PER_SET;
+            wgpuCommandEncoderResolveQuerySet(
+                encoder, s_character_gpu_query_sets[set], 0u,
+                count, slot->resolve,
+                (uint64_t)destination_query * sizeof(uint64_t));
+            destination_query += count;
+            remaining -= count;
+        }
+    }
+    wgpuCommandEncoderCopyBufferToBuffer(
+        encoder, slot->resolve, 0u, slot->readback, 0u,
+        slot->mapped_bytes);
+    slot->state = WGPU_CHARACTER_GPU_TIMING_SLOT_ENCODED;
+}
+
+static void wgpu_character_gpu_timing_submitted(bool submitted) {
+    if (s_character_gpu_frame_slot < 0) return;
+    struct WgpuCharacterGpuTimingSlot *slot =
+        &s_character_gpu_timing_slots[s_character_gpu_frame_slot];
+    s_character_gpu_frame_slot = -1;
+    if (!submitted ||
+        slot->state != WGPU_CHARACTER_GPU_TIMING_SLOT_ENCODED ||
+        slot->readback == NULL || slot->mapped_bytes == 0u) {
+        slot->state = WGPU_CHARACTER_GPU_TIMING_SLOT_IDLE;
+        return;
+    }
+    WGPUBufferMapCallbackInfo callback =
+        WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
+    callback.mode = WGPUCallbackMode_AllowProcessEvents;
+    callback.callback = wgpu_character_gpu_timing_map_callback;
+    callback.userdata1 = slot;
+    slot->state = WGPU_CHARACTER_GPU_TIMING_SLOT_MAPPING;
+    (void)wgpuBufferMapAsync(
+        slot->readback, WGPUMapMode_Read, 0u,
+        (size_t)slot->mapped_bytes, callback);
+}
+
+static uint64_t wgpu_character_gpu_timing_pending_frames(void) {
+    uint64_t pending = 0u;
+    for (uint32_t index = 0u;
+         index < WGPU_CHARACTER_GPU_TIMING_RING; ++index) {
+        if (s_character_gpu_timing_slots[index].state !=
+            WGPU_CHARACTER_GPU_TIMING_SLOT_IDLE) {
+            pending++;
+        }
+    }
+    return pending;
+}
+
+static void wgpu_begin_modern_character_gpu_timing(void) {
+    wgpu_character_gpu_timing_next_generation();
+    mdkr_modern_character_gpu_timing_accumulator_reset(
+        &s_character_gpu_timing_accumulator);
+    s_character_gpu_timing_active = false;
+    s_character_gpu_timing_begun = true;
+    s_character_gpu_frame_slot = -1;
+    if (!s_character_gpu_timestamp_supported) {
+        s_character_gpu_timing_status =
+            MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED;
+        return;
+    }
+    if (!wgpu_character_gpu_timing_resources_ready()) {
+        s_character_gpu_timing_status =
+            MDKR_MODERN_CHARACTER_GPU_TIMING_ERROR;
+        return;
+    }
+    s_character_gpu_timing_status =
+        MDKR_MODERN_CHARACTER_GPU_TIMING_PENDING;
+    s_character_gpu_timing_active = true;
+}
+
+static void wgpu_finish_modern_character_gpu_timing(
+    MdkrModernCharacterGpuTimingMetrics *out) {
+    if (out == NULL) return;
+    /* The app-owned WebGPU roots can survive multiple engine sessions. A
+     * preview that exits during warm-up never called begin(), so it must not
+     * inherit the previous session's accumulator merely because the backend
+     * is still alive. Preserve capability, but publish a fresh idle result. */
+    if (!s_character_gpu_timing_begun) {
+        wgpu_character_gpu_timing_next_generation();
+        mdkr_modern_character_gpu_timing_accumulator_reset(
+            &s_character_gpu_timing_accumulator);
+        s_character_gpu_timing_status = s_character_gpu_timestamp_supported
+            ? MDKR_MODERN_CHARACTER_GPU_TIMING_IDLE
+            : MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED;
+        mdkr_modern_character_gpu_timing_snapshot(
+            &s_character_gpu_timing_accumulator,
+            s_character_gpu_timing_status,
+            wgpu_character_gpu_timing_scopes(), out);
+        return;
+    }
+    s_character_gpu_timing_begun = false;
+    s_character_gpu_timing_active = false;
+    wgpu_pipeline_callback_owner_poll();
+    if (!s_character_gpu_timestamp_supported) {
+        s_character_gpu_timing_status =
+            MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED;
+    } else if (s_character_gpu_timing_status !=
+                   MDKR_MODERN_CHARACTER_GPU_TIMING_ERROR &&
+               s_character_gpu_timing_status !=
+                   MDKR_MODERN_CHARACTER_GPU_TIMING_DEVICE_LOST) {
+        if (s_character_gpu_timing_accumulator.scene_samples != 0u ||
+            s_character_gpu_timing_accumulator.character_samples != 0u) {
+            s_character_gpu_timing_status =
+                MDKR_MODERN_CHARACTER_GPU_TIMING_AVAILABLE;
+        } else if (wgpu_character_gpu_timing_pending_frames() == 0u) {
+            s_character_gpu_timing_status =
+                MDKR_MODERN_CHARACTER_GPU_TIMING_PENDING;
+        }
+    }
+    mdkr_modern_character_gpu_timing_snapshot(
+        &s_character_gpu_timing_accumulator,
+        s_character_gpu_timing_status,
+        wgpu_character_gpu_timing_scopes(), out);
+    out->pending_frames = wgpu_character_gpu_timing_pending_frames();
+}
 
 /* PERF-005b: count of draw batches dropped THIS FRAME because their render
  * pipeline is still PENDING (async create in flight). A frame with any such
@@ -1127,6 +1766,10 @@ static void on_device_error(WGPUDevice const *device, WGPUErrorType type,
     uintptr_t generation = (uintptr_t)u1;
     if (!gfx_webgpu_callback_latch_publish(
             generation, GFX_WEBGPU_CALLBACK_DEVICE_ERROR)) return;
+    if (s_character_gpu_timing_active) {
+        s_character_gpu_timing_status =
+            MDKR_MODERN_CHARACTER_GPU_TIMING_ERROR;
+    }
     fprintf(stderr, "[webgpu] device error (type=%d): %.*s\n",
             (int)type, (int)msg.length, msg.data ? msg.data : "");
     fflush(stderr);
@@ -1144,6 +1787,10 @@ static void on_device_lost(WGPUDevice const *device, WGPUDeviceLostReason reason
     }
     if (!gfx_webgpu_callback_latch_publish(
             generation, GFX_WEBGPU_CALLBACK_DEVICE_LOST)) return;
+    if (s_character_gpu_timing_active) {
+        s_character_gpu_timing_status =
+            MDKR_MODERN_CHARACTER_GPU_TIMING_DEVICE_LOST;
+    }
     fprintf(stderr, "[webgpu] device lost (reason=%d): %.*s\n",
             (int)reason, (int)msg.length, msg.data ? msg.data : "");
     fflush(stderr);
@@ -1602,6 +2249,9 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
     WGPUQueue    queue    = NULL;
     WGPUTextureFormat format = WGPUTextureFormat_Undefined;
     uintptr_t device_generation = 0;
+    bool candidate_unclipped_depth_supported = false;
+    bool candidate_timestamp_supported = false;
+    bool candidate_inside_pass_supported = false;
 
     instance = WGPU_FAULT_CREATE(
         BRINGUP_INSTANCE, wgpuCreateInstance(NULL));
@@ -1702,18 +2352,36 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
      * depth — so distant horizon geometry silently vanished (sky slivers over
      * the Dam cliffs; any far terrain on any level). Make the claim honest:
      * request depth-clip-control and set unclippedDepth on the 3D pipelines. */
-    WGPUFeatureName required_features[1];
-    s_unclipped_depth_supported =
+    WGPUFeatureName required_features[3];
+    size_t required_feature_count = 0u;
+    candidate_unclipped_depth_supported =
         !gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_CAPS_DEPTH_CLIP_ABSENT) &&
         wgpuAdapterHasFeature(adapter, WGPUFeatureName_DepthClipControl) != 0;
-    if (s_unclipped_depth_supported) {
-        required_features[0] = WGPUFeatureName_DepthClipControl;
-        ddesc.requiredFeatures = required_features;
-        ddesc.requiredFeatureCount = 1;
+    if (candidate_unclipped_depth_supported) {
+        required_features[required_feature_count++] =
+            WGPUFeatureName_DepthClipControl;
     } else {
         fprintf(stderr,
                 "[webgpu] adapter lacks depth-clip-control: far-plane-crossing "
                 "geometry will use the frontend's homogeneous-z clamp\n");
+    }
+    candidate_timestamp_supported =
+        wgpu_character_gpu_timing_requested() &&
+        wgpuAdapterHasFeature(adapter, WGPUFeatureName_TimestampQuery) != 0;
+    candidate_inside_pass_supported =
+        candidate_timestamp_supported &&
+        WGPU_COMPAT_TIMESTAMP_INSIDE_PASS_SUPPORTED(adapter);
+    if (candidate_timestamp_supported) {
+        required_features[required_feature_count++] =
+            WGPUFeatureName_TimestampQuery;
+        if (candidate_inside_pass_supported) {
+            required_features[required_feature_count++] =
+                WGPU_COMPAT_TIMESTAMP_INSIDE_PASS_FEATURE;
+        }
+    }
+    if (required_feature_count != 0u) {
+        ddesc.requiredFeatures = required_features;
+        ddesc.requiredFeatureCount = required_feature_count;
     }
     ddesc.uncapturedErrorCallbackInfo.callback = on_device_error;
     /* WEB-025: register the device-lost callback at creation so a later GPU loss
@@ -1747,9 +2415,37 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
                 gfx_webgpu_fault_hit(
                     GFX_WEBGPU_FAULT_BRINGUP_DEVICE_DEFAULTS),
                 &device, &device_generation, &device_status)) {
-            fprintf(stderr, "[webgpu] device request failed after default-limits retry (status=%d)\n",
-                    (int)device_status);
-            goto fail;
+            /* Timestamp telemetry is optional and must never prevent the game
+             * from rendering. A provider can advertise a feature yet reject
+             * it during device creation. After both ordinary limit attempts,
+             * retry once without only the timing features. Do not bypass the
+             * deterministic default-device failure point: that test owns the
+             * terminal outcome of its selected attempt. */
+            if (candidate_timestamp_supported &&
+                !gfx_webgpu_fault_selected(
+                    GFX_WEBGPU_FAULT_BRINGUP_DEVICE_DEFAULTS)) {
+                fprintf(stderr,
+                        "[webgpu] optional timestamp feature request failed; retrying without GPU timing\n");
+                candidate_timestamp_supported = false;
+                candidate_inside_pass_supported = false;
+                ddesc.requiredFeatureCount =
+                    candidate_unclipped_depth_supported ? 1u : 0u;
+                ddesc.requiredFeatures = ddesc.requiredFeatureCount != 0u
+                    ? required_features : NULL;
+                if (!wgpu_request_device_attempt(
+                        instance, adapter, &ddesc, false, &device,
+                        &device_generation, &device_status)) {
+                    fprintf(stderr,
+                            "[webgpu] device request failed after optional-feature fallback (status=%d)\n",
+                            (int)device_status);
+                    goto fail;
+                }
+            } else {
+                fprintf(stderr,
+                        "[webgpu] device request failed after default-limits retry (status=%d)\n",
+                        (int)device_status);
+                goto fail;
+            }
         }
     }
 
@@ -1810,6 +2506,24 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
      * device_generation. A borrowed engine session must preserve this token; it
      * is cleared only when the owner releases the actual device. */
     s_callback_device = device;
+    /* Commit candidate capabilities only after the device/root transaction is
+     * proven. A failed recovery must not rewrite the live device's pipeline or
+     * Workshop timing policy. DeviceHasFeature also catches a provider that
+     * accepted a descriptor but did not grant an optional capability. */
+    s_unclipped_depth_supported =
+        candidate_unclipped_depth_supported &&
+        wgpuDeviceHasFeature(device, WGPUFeatureName_DepthClipControl) != 0;
+    s_character_gpu_timestamp_supported =
+        candidate_timestamp_supported &&
+        wgpuDeviceHasFeature(device, WGPUFeatureName_TimestampQuery) != 0;
+    s_character_gpu_inside_pass_supported =
+        candidate_inside_pass_supported &&
+        wgpuDeviceHasFeature(
+            device, WGPU_COMPAT_TIMESTAMP_INSIDE_PASS_FEATURE) != 0;
+    fprintf(stderr,
+            "[WGPU-CHARACTER-GPU] timestamps=%d characterRanges=%d\n",
+            s_character_gpu_timestamp_supported ? 1 : 0,
+            s_character_gpu_inside_pass_supported ? 1 : 0);
 
     *out_instance = instance;
     *out_adapter  = adapter;
@@ -1901,6 +2615,13 @@ static bool wgpu_init(void) {
                 "The graphics device handoff was incomplete. Restart the app.");
             return false;
         }
+        s_unclipped_depth_supported =
+            wgpuDeviceHasFeature(
+                s_device, WGPUFeatureName_DepthClipControl) != 0;
+        wgpu_character_gpu_timing_refresh_features();
+        if (s_character_gpu_timestamp_supported) {
+            (void)wgpu_character_gpu_timing_resources();
+        }
         s_ready = true;
         s_runtime_status = GFX_RENDERING_READY;
         fprintf(stderr, "[webgpu] adopted host device/surface (format=%d)\n",
@@ -1927,6 +2648,10 @@ static bool wgpu_init(void) {
         return false;
     }
     s_surface_format = (WGPUTextureFormat)fmt;
+    wgpu_character_gpu_timing_refresh_features();
+    if (s_character_gpu_timestamp_supported) {
+        (void)wgpu_character_gpu_timing_resources();
+    }
     s_ready = true;
     s_runtime_status = GFX_RENDERING_READY;
     fprintf(stderr, "[webgpu] backend initialized (surface format=%d)\n", (int)s_surface_format);
@@ -2424,12 +3149,18 @@ static bool wgpu_start_frame(void) {
     depth.depthClearValue = 1.0f;   /* 1.0 = far, with WebGPU's 0..1 clip (0 = near) */
 
     WGPURenderPassDescriptor rp = {0};
+    WGPUPassTimestampWrites timestamp_writes =
+        WGPU_PASS_TIMESTAMP_WRITES_INIT;
     rp.colorAttachmentCount = 1;
     rp.colorAttachments = &att;
     rp.depthStencilAttachment = &depth;
+    if (wgpu_character_gpu_timing_frame_begin(&timestamp_writes)) {
+        rp.timestampWrites = &timestamp_writes;
+    }
     s_pass = WGPU_FAULT_CREATE(
         FRAME_PASS, wgpuCommandEncoderBeginRenderPass(s_encoder, &rp));
     if (s_pass == NULL) {
+        wgpu_character_gpu_timing_abandon_frame();
         wgpuCommandEncoderRelease(s_encoder);
         s_encoder = NULL;
         fprintf(stderr,
@@ -3266,6 +3997,7 @@ static void wgpu_end_frame(void) {
      * command stream; the scheduler observes FATAL immediately after return.
      */
     if (s_runtime_status == GFX_RENDERING_FATAL) {
+        wgpu_character_gpu_timing_abandon_frame();
         if (s_encoder != NULL) {
             wgpuCommandEncoderRelease(s_encoder);
             s_encoder = NULL;
@@ -3908,9 +4640,12 @@ static void wgpu_end_frame(void) {
         wgpuQueueWriteBuffer(s_queue, s_vbuf, 0, s_vbuf_shadow, s_vbuf_off);
     }
 
+    wgpu_character_gpu_timing_encode_resolve(s_encoder);
+
     WGPUCommandBuffer cmd = WGPU_FAULT_CREATE(
         FRAME_FINISH, wgpuCommandEncoderFinish(s_encoder, NULL));
     if (cmd == NULL) {
+        wgpu_character_gpu_timing_abandon_frame();
         fprintf(stderr, "[webgpu] command buffer creation failed\n");
         wgpuCommandEncoderRelease(s_encoder);
         s_encoder = NULL;
@@ -3939,6 +4674,7 @@ static void wgpu_end_frame(void) {
         return;
     }
     bool submitted = wgpu_submit_commands(s_queue, 1, &cmd);
+    wgpu_character_gpu_timing_submitted(submitted);
     if (submitted) {
         wgpu_track_frame_submission();
     } else {
@@ -8019,9 +8755,12 @@ static bool wgpu_submit_live_scene_for_readback(void) {
         wgpuQueueWriteBuffer(s_queue, s_vbuf, 0, s_vbuf_shadow, s_vbuf_off);
     }
 
+    wgpu_character_gpu_timing_encode_resolve(s_encoder);
+
     WGPUCommandBuffer cmd = WGPU_FAULT_CREATE(
         PARTIAL_FINISH, wgpuCommandEncoderFinish(s_encoder, NULL));
     if (cmd == NULL) {
+        wgpu_character_gpu_timing_abandon_frame();
         wgpuCommandEncoderRelease(s_encoder);
         s_encoder = NULL;
         s_frame_open = false;
@@ -8031,7 +8770,9 @@ static bool wgpu_submit_live_scene_for_readback(void) {
             "the page to continue from the last persisted save.");
         return false;
     }
-    if (!wgpu_submit_commands(s_queue, 1, &cmd)) {
+    const bool submitted = wgpu_submit_commands(s_queue, 1, &cmd);
+    wgpu_character_gpu_timing_submitted(submitted);
+    if (!submitted) {
         wgpuCommandBufferRelease(cmd);
         wgpuCommandEncoderRelease(s_encoder);
         s_encoder = NULL;
@@ -9111,6 +9852,7 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
     float uniform[WGPU_SKINNED_UNIFORM_FLOATS] = {0};
     uint32_t dynamic_offset;
     uint32_t slot;
+    uint32_t timing_query;
     const bool capture_requested =
         platform_modern_character_capture_pending() != 0;
     if (!s_ready || !s_frame_open || s_pass == NULL || draw == NULL ||
@@ -9175,6 +9917,7 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
         s_skinned_refused_draws++;
         return;
     }
+    timing_query = wgpu_character_gpu_timing_draw_begin();
     wgpuRenderPassEncoderSetPipeline(s_pass, pipeline);
     wgpuRenderPassEncoderSetBindGroup(s_pass, 0u, bind_group, 1u, &dynamic_offset);
     s_pipe_applied = pipeline;
@@ -9186,6 +9929,7 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
                                         (uint64_t)asset->index_count * 4u);
     wgpuRenderPassEncoderDrawIndexed(s_pass, primitive->index_count, 1u,
                                      primitive->first_index, 0, 0u);
+    wgpu_character_gpu_timing_draw_end(timing_query);
     if (capture_requested) {
         if (s_skinned_capture_draw_count >=
                 WGPU_SKINNED_CAPTURE_MAX_DRAWS) {
@@ -9681,6 +10425,8 @@ static void wgpu_release_device_objects(void) {
      * ownership invariant as an ordinary cache eviction. */
     wgpu_reset_pass_dynamic_state();
 
+    wgpu_character_gpu_timing_release_resources();
+
     wgpu_release_shadow_resources();
     if (s_post_bg != NULL) wgpuBindGroupRelease(s_post_bg);
     if (s_mm_bg != NULL) wgpuBindGroupRelease(s_mm_bg);
@@ -10040,6 +10786,11 @@ static void wgpu_shutdown(void) {
     s_surface_format = WGPUTextureFormat_Undefined;
     s_owns_device = false;
     s_unclipped_depth_supported = false;
+    s_character_gpu_timestamp_supported = false;
+    s_character_gpu_inside_pass_supported = false;
+    s_character_gpu_timestamp_period_ns = 0.0f;
+    s_character_gpu_timing_status =
+        MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED;
 
     free(s_tex);
     s_tex = NULL;
@@ -10329,6 +11080,10 @@ struct GfxRenderingAPI gfx_webgpu_api = {
         wgpu_get_modern_character_capture_dimensions,
     .read_modern_character_capture_rgba =
         wgpu_read_modern_character_capture_rgba,
+    .begin_modern_character_gpu_timing =
+        wgpu_begin_modern_character_gpu_timing,
+    .finish_modern_character_gpu_timing =
+        wgpu_finish_modern_character_gpu_timing,
     .init = wgpu_init,
     .on_resize = wgpu_on_resize,
     .start_frame = wgpu_start_frame,

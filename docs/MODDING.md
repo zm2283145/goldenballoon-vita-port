@@ -515,10 +515,15 @@ pacing, the card reports median, 95th/99th percentile and worst displayed
 cadence, authored tick-wall mean, and modern-character replacement/part counts.
 Short or synthetic runs remain visible but are labelled diagnostic-only.
 
-This is an exact in-game test route, not an embedded renderer or a
-character-only GPU benchmark. The wall-cadence result includes the complete
-scene, presentation policy, resolution and device; it is neither a GPU
-timestamp nor spare-headroom measurement. The adjacent pose inspector can hold
+This is an exact in-game test route, not an embedded renderer. Wall cadence
+includes the complete scene, presentation policy, resolution and device. On
+WebGPU devices with timestamp-query support, a separate exact result brackets
+the initial gameplay color/depth pass; native devices that additionally expose
+in-pass timestamps report the sum of exact accepted custom-character draw
+ranges. A six-slot asynchronous readback ring never stalls a frame. Unsupported,
+pending, ring-full, invalid, device-lost and error states stay visible, and the
+Workshop never substitutes wall cadence for GPU time or claims spare headroom.
+The adjacent pose inspector can hold
 every supported animation semantic at an exact normalized phase. Zero
 yaw/pitch uses the ordinary gameplay camera. Every nonzero vehicle view is an
 absolute racer-relative orbit around the imported model's fitted bounds, with
@@ -535,8 +540,8 @@ with exact source/fit digests, context, pose/phase, view, light, dimensions,
 and exact-versus-fallback state. The tray exports a self-contained responsive
 HTML contact sheet containing base64 PNGs and machine-readable JSON, but no
 model, package, ROM, or original capture-path bytes. Existing PNG or HTML files
-are never overwritten. GPU timestamps, representative scene variants, an
-embedded renderer, and maintained device profiles remain product work.
+are never overwritten. Representative scene variants, an embedded renderer,
+and maintained device profiles remain product work.
 
 All ten retail vehicle-model families now have exact revision-1 fingerprint and
 driver-batch profiles for car, hovercraft, plane, and character select. Their

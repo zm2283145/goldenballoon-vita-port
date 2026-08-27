@@ -25,6 +25,7 @@
 #define _LANGUAGE_C
 #endif
 #include <PR/gbi.h> /* Gfx, Mtx */
+#include "modern_character_gpu_timing.h"
 #include "gfx_font_registry.h"
 #include "gfx_shadow_frame.h" /* GfxShadowReplayViewProjection */
 
@@ -117,6 +118,9 @@ bool gfx_get_modern_character_capture_dimensions(uint32_t *width,
                                                   uint32_t *height);
 int gfx_read_modern_character_capture_rgba(int width, int height,
                                             uint8_t *rgba_out);
+void gfx_begin_modern_character_gpu_timing(void);
+void gfx_finish_modern_character_gpu_timing(
+    MdkrModernCharacterGpuTimingMetrics *out);
 
 /** Begin a frame transaction for one immutable game-authored task. False means
  * no display list may be submitted. authored_tick was latched when the game

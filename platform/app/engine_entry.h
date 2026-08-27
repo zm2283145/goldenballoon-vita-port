@@ -11,6 +11,7 @@
 /* Canonical C handoff/recovery seam. Keep these declarations in one header so
  * the C engine and C++ shell cannot drift. */
 #include "../host_window.h"
+#include "../modern_character_gpu_timing.h"
 #include "../modern_character_semantics.h"
 #include "../workshop_preview_runtime.h"
 
@@ -66,9 +67,10 @@ typedef enum {
 #define MDKR_CHARACTER_PREVIEW_CONTACTS 4u
 
 // Measured evidence returned by an exact Character Workshop session. Interval
-// values describe displayed wall cadence after a 120-authored-tick warm-up;
-// they are not GPU timestamp queries. A short session can legitimately return
-// warmup_complete=0 or fewer than 60 interval samples.
+// values describe displayed wall cadence after a 120-authored-tick warm-up.
+// `gpu_timing` separately identifies exact timestamp scope and availability; a
+// short session can legitimately return fewer than 60 wall intervals or
+// pending asynchronous GPU readbacks.
 typedef struct MdkrCharacterPreviewResult {
     unsigned version;
     int started;
@@ -88,6 +90,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned long long interval_max_us;
     unsigned long long tickwall_samples;
     unsigned long long tickwall_mean_ns;
+    MdkrModernCharacterGpuTimingMetrics gpu_timing;
     unsigned long long replacement_draws;
     unsigned long long replacement_primitives;
     unsigned long long hidden_donor_batches;
@@ -139,7 +142,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 10u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 11u
 #define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u
 
 // Owned by the C engine entry module and non-NULL only during a launcher-owned
