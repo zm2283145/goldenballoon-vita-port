@@ -258,6 +258,19 @@ static MdkrPartyLinkLocalIntent intent_new(void) {
     return in;
 }
 
+/* A resolved local seat with the given lobby values. */
+static MdkrPartyLinkLocalView lv(uint8_t character, uint8_t vehicle,
+                                 uint8_t ready, uint8_t phase) {
+    MdkrPartyLinkLocalView v;
+    memset(&v, 0, sizeof(v));
+    v.have_seat = 1u;
+    v.character_id = character;
+    v.vehicle_id = vehicle;
+    v.ready = ready;
+    v.phase = phase;
+    return v;
+}
+
 static int plan_index_of(const MdkrPartyLinkDispatchPlan *plan, uint8_t kind) {
     unsigned i;
     for (i = 0u; i < plan->count; i++) {
@@ -266,111 +279,159 @@ static int plan_index_of(const MdkrPartyLinkDispatchPlan *plan, uint8_t kind) {
     return -1;
 }
 
-/* Latch whichever planned action of `kind` is present (simulating the reducer
- * accepting that submit). */
-static void latch_kind(MdkrPartyLinkDispatchState *st,
-                       const MdkrPartyLinkDispatchPlan *plan, uint8_t kind) {
+/* Mark the planned action of `kind` as sent (simulating a successful transport
+ * send -- NOT a reduction). */
+static void mark_sent_kind(MdkrPartyLinkDispatchState *st,
+                           const MdkrPartyLinkDispatchPlan *plan, uint8_t kind) {
     const int idx = plan_index_of(plan, kind);
     CHECK(idx >= 0);
-    if (idx >= 0) mdkr_party_link_dispatch_latch(st, &plan->actions[idx]);
+    if (idx >= 0) mdkr_party_link_dispatch_mark_sent(st, &plan->actions[idx]);
 }
 
 static void test_dispatch_plan(void) {
     MdkrPartyLinkDispatchState st;
     MdkrPartyLinkDispatchPlan plan;
     MdkrPartyLinkLocalIntent in;
+    MdkrPartyLinkLocalView none = lv(MDKR_ONLINE_NO_CHARACTER,
+                                     MDKR_ONLINE_NO_VEHICLE, 0u,
+                                     (uint8_t)MDKR_ONLINE_LOBBY);
+    unsigned pump;
 
-    /* F1: a REFUSED dispatch does not latch, so it re-fires; an ACCEPTED one
-     * latches and dedupes; a CHANGED pick re-fires. */
+    /* LIVE PATH (the keystone): optimistic send that does NOT converge must NOT
+     * latch. The lobby snapshot -- not the send result -- is authoritative. */
     mdkr_party_link_dispatch_state_reset(&st);
     in = intent_new();
     in.confirmed = 1u;
     in.hover_character = 5u;
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    /* Seat has no character yet -> plan CHOOSE_CHARACTER(5). */
+    mdkr_party_link_plan_dispatch(&st, &in, &none, &plan);
     CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) >= 0);
-    /* refusal: DON'T latch -> the very next intent re-plans it. */
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
-    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) >= 0);
-    /* acceptance: latch -> deduped. */
-    latch_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER);
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    /* Simulate an optimistic SEND (transport accepted) but NO convergence yet. */
+    mark_sent_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER);
+    /* Still not converged, no refusal -> the in-flight guard suppresses a
+     * per-frame re-send (but the command is NOT permanently latched). */
+    mdkr_party_link_plan_dispatch(&st, &in, &none, &plan);
     CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) < 0);
-    /* a changed racer re-fires. */
-    in.hover_character = 6u;
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    /* Async SELECTION_CONFLICT observed -> clears the guard -> re-fires (the old
+     * optimistic-latch bug would have swallowed this forever). */
+    mdkr_party_link_dispatch_note_refusal(&st,
+                                          MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER);
+    mdkr_party_link_plan_dispatch(&st, &in, &none, &plan);
     CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) >= 0);
+    /* The opponent frees the racer: our re-send lands and the lobby CONVERGES.
+     * Now (and only now) it is done -- never re-sent again. */
+    mark_sent_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER);
+    {
+        MdkrPartyLinkLocalView got = lv(5u, MDKR_ONLINE_NO_VEHICLE, 0u,
+                                        (uint8_t)MDKR_ONLINE_LOBBY);
+        mdkr_party_link_plan_dispatch(&st, &in, &got, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) < 0);
+        /* Repeated pumps at convergence never re-send. */
+        mdkr_party_link_plan_dispatch(&st, &in, &got, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) < 0);
+    }
 
-    /* F2: {character, vehicle, ready} plans CHOOSE_CHARACTER, then
-     * CHOOSE_VEHICLE, then READY -- vehicle strictly before ready. */
+    /* SYNCHRONOUS (fake) PATH: convergence is same-/next-pump, so each command
+     * sends exactly once. */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.confirmed = 1u;
+    in.hover_character = 2u;
+    mdkr_party_link_plan_dispatch(&st, &in, &none, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) >= 0);
+    mark_sent_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER);
+    {
+        /* Fake reduced immediately: the next snapshot already shows character 2. */
+        MdkrPartyLinkLocalView got = lv(2u, MDKR_ONLINE_NO_VEHICLE, 0u,
+                                        (uint8_t)MDKR_ONLINE_LOBBY);
+        mdkr_party_link_plan_dispatch(&st, &in, &got, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) < 0);
+    }
+
+    /* ORDER: {character, vehicle, ready} on a fresh seat plans CHOOSE_CHARACTER,
+     * then CHOOSE_VEHICLE, then READY -- vehicle strictly before ready. */
     mdkr_party_link_dispatch_state_reset(&st);
     in = intent_new();
     in.confirmed = 1u;
     in.hover_character = 3u;
     in.vehicle_id = 1u;
     in.ready = 1u;
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
+    mdkr_party_link_plan_dispatch(&st, &in, &none, &plan);
     CHECK(plan.count == 3u);
     CHECK(plan.actions[0].kind == MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER &&
           plan.actions[0].value == 3u);
     CHECK(plan.actions[1].kind == MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE &&
           plan.actions[1].value == 1u);
     CHECK(plan.actions[2].kind == MDKR_PARTY_LINK_DISPATCH_READY);
+    /* Character + vehicle converged, ready not yet -> only READY remains. */
+    {
+        MdkrPartyLinkLocalView got = lv(3u, 1u, 0u, (uint8_t)MDKR_ONLINE_LOBBY);
+        mdkr_party_link_plan_dispatch(&st, &in, &got, &plan);
+        CHECK(plan.count == 1u &&
+              plan.actions[0].kind == MDKR_PARTY_LINK_DISPATCH_READY);
+    }
+    /* Everything converged -> empty plan. */
+    {
+        MdkrPartyLinkLocalView got = lv(3u, 1u, 1u, (uint8_t)MDKR_ONLINE_LOBBY);
+        mdkr_party_link_plan_dispatch(&st, &in, &got, &plan);
+        CHECK(plan.count == 0u);
+    }
 
-    /* READY: rising edge, F1 retry, and re-arm on release. */
+    /* VEHICLE mask-legality: an out-of-range vehicle is never planned. */
     mdkr_party_link_dispatch_state_reset(&st);
     in = intent_new();
-    in.ready = 1u;
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
-    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) >= 0);
-    mdkr_party_link_plan_dispatch(&st, &in, &plan); /* refused -> re-fires */
-    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) >= 0);
-    latch_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_READY); /* accepted */
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
-    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) < 0);
-    in.ready = 0u; /* release re-arms */
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
-    in.ready = 1u;
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
-    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) >= 0);
+    in.vehicle_id = 99u; /* >= MDKR_ONLINE_PLAYER_VEHICLE_COUNT */
+    mdkr_party_link_plan_dispatch(&st, &in, &none, &plan);
+    CHECK(plan.count == 0u);
 
-    /* VEHICLE dedupe: accepted -> deduped; changed -> re-fires; unset -> never. */
+    /* CHANGE_SELECTION (back out): converged once the seat is not ready. */
     mdkr_party_link_dispatch_state_reset(&st);
     in = intent_new();
-    in.vehicle_id = 1u;
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
-    latch_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE);
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
-    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE) < 0);
-    in.vehicle_id = 2u;
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
-    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE) >= 0);
-    in.vehicle_id = MDKR_ONLINE_NO_VEHICLE;
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
-    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE) < 0);
-
-    /* BACK OUT latches once and re-arms the character + vehicle picks. */
-    mdkr_party_link_dispatch_state_reset(&st);
-    in = intent_new();
-    in.confirmed = 1u;
-    in.hover_character = 4u;
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
-    latch_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER);
-    mdkr_party_link_plan_dispatch(&st, &in, &plan); /* same racer -> deduped */
-    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) < 0);
     in.backout = 1u;
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
-    latch_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION);
-    in.backout = 0u; /* the same confirm now re-fires (re-armed) */
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
-    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) >= 0);
+    {
+        MdkrPartyLinkLocalView ready = lv(4u, 0u, 1u, (uint8_t)MDKR_ONLINE_LOBBY);
+        mdkr_party_link_plan_dispatch(&st, &in, &ready, &plan);
+        CHECK(plan_index_of(&plan,
+                            MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION) >= 0);
+        mark_sent_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION);
+    }
+    {
+        MdkrPartyLinkLocalView unready =
+            lv(4u, 0u, 0u, (uint8_t)MDKR_ONLINE_LOBBY);
+        mdkr_party_link_plan_dispatch(&st, &in, &unready, &plan);
+        CHECK(plan_index_of(&plan,
+                            MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION) < 0);
+    }
 
-    /* reset drops all dedupe. */
+    /* START_RACE: converged once the room leaves the lobby phase. */
     mdkr_party_link_dispatch_state_reset(&st);
     in = intent_new();
-    in.confirmed = 1u;
-    in.hover_character = 4u; /* same id as before reset -> fires because cleared */
-    mdkr_party_link_plan_dispatch(&st, &in, &plan);
-    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) >= 0);
+    in.start_requested = 1u;
+    mdkr_party_link_plan_dispatch(&st, &in, &none, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_START_RACE) >= 0);
+    mark_sent_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_START_RACE);
+    {
+        MdkrPartyLinkLocalView loading = lv(MDKR_ONLINE_NO_CHARACTER,
+                                            MDKR_ONLINE_NO_VEHICLE, 0u,
+                                            (uint8_t)MDKR_ONLINE_LOADING);
+        mdkr_party_link_plan_dispatch(&st, &in, &loading, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_START_RACE) < 0);
+    }
+
+    /* SAFETY-NET BOUND: an in-flight command that never converges and gets no
+     * refusal re-fires after MDKR_PARTY_LINK_INFLIGHT_MAX_PUMPS. */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.ready = 1u;
+    mdkr_party_link_plan_dispatch(&st, &in, &none, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) >= 0);
+    mark_sent_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_READY);
+    for (pump = 0u; pump < MDKR_PARTY_LINK_INFLIGHT_MAX_PUMPS - 1u; pump++) {
+        mdkr_party_link_plan_dispatch(&st, &in, &none, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) < 0);
+    }
+    mdkr_party_link_plan_dispatch(&st, &in, &none, &plan); /* bound elapsed */
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) >= 0);
 }
 
 int main(void) {

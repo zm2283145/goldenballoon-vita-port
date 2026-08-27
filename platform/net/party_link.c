@@ -164,90 +164,120 @@ void mdkr_party_link_snapshot_from_lobby(
     /* host_cursor stays zero/invalid (P2-T3). */
 }
 
-/* ---- Reverse-feed dispatch plan (pure) ---------------------------------- */
+/* ---- Reverse-feed dispatch plan (pure, convergence-driven) -------------- */
 
 void mdkr_party_link_dispatch_state_reset(MdkrPartyLinkDispatchState *state) {
     if (state == NULL) return;
     memset(state, 0, sizeof(*state));
-    state->last_character = MDKR_ONLINE_NO_CHARACTER;
-    state->last_vehicle = MDKR_ONLINE_NO_VEHICLE;
 }
 
-static void party_link_plan_push(MdkrPartyLinkDispatchPlan *out, uint8_t kind,
-                                 uint8_t value) {
-    if (out->count >= MDKR_PARTY_LINK_MAX_DISPATCH) return;
-    out->actions[out->count].kind = kind;
-    out->actions[out->count].value = value;
-    out->count++;
+/* What value would this kind's command carry for `intent`, and is the local
+ * seat ALREADY converged to it (so nothing needs sending)? Returns 1 when the
+ * intent WANTS this kind (regardless of convergence); *value / *converged are
+ * only meaningful then. */
+static uint8_t party_link_kind_state(uint8_t kind,
+                                     const MdkrPartyLinkLocalIntent *intent,
+                                     const MdkrPartyLinkLocalView *local,
+                                     uint8_t *value, uint8_t *converged) {
+    uint8_t have = local != NULL && local->have_seat;
+    switch (kind) {
+    case MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER:
+        if (!intent->confirmed) return 0u;
+        *value = intent->hover_character;
+        *converged = have && local->character_id == intent->hover_character;
+        return 1u;
+    case MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE:
+        /* Mask-legal value handling: only a real vehicle id is ever sent; the
+         * reducer's own mask gate rejects a track-illegal pick (refusal ->
+         * re-fire), never a silent launcher default. */
+        if (intent->vehicle_id == MDKR_ONLINE_NO_VEHICLE ||
+            intent->vehicle_id >= MDKR_ONLINE_PLAYER_VEHICLE_COUNT) return 0u;
+        *value = intent->vehicle_id;
+        *converged = have && local->vehicle_id == intent->vehicle_id;
+        return 1u;
+    case MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION:
+        /* Back out == un-ready (SET_READY 0): converged once not ready. */
+        if (!intent->backout) return 0u;
+        *value = 0u;
+        *converged = have && !local->ready;
+        return 1u;
+    case MDKR_PARTY_LINK_DISPATCH_READY:
+        if (!intent->ready) return 0u;
+        *value = 1u;
+        *converged = have && local->ready;
+        return 1u;
+    case MDKR_PARTY_LINK_DISPATCH_START_RACE:
+        /* Converged once the room left the lobby phase (loading started). */
+        if (!intent->start_requested) return 0u;
+        *value = 0u; /* mask filled by the wiring */
+        *converged = local != NULL && local->phase != (uint8_t)MDKR_ONLINE_LOBBY;
+        return 1u;
+    default:
+        return 0u;
+    }
 }
 
 void mdkr_party_link_plan_dispatch(MdkrPartyLinkDispatchState *state,
                                    const MdkrPartyLinkLocalIntent *intent,
+                                   const MdkrPartyLinkLocalView *local,
                                    MdkrPartyLinkDispatchPlan *out) {
+    /* Ordered so vehicle lands before ready. */
+    static const uint8_t kOrder[] = {
+        MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER,
+        MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE,
+        MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION,
+        MDKR_PARTY_LINK_DISPATCH_READY,
+        MDKR_PARTY_LINK_DISPATCH_START_RACE};
+    unsigned i;
     if (out == NULL) return;
     memset(out, 0, sizeof(*out));
     if (state == NULL || intent == NULL) return;
 
-    /* Edge re-arms: a released flag clears its latch so its next assertion fires
-     * (independent of acceptance). */
-    if (!intent->ready) state->ready_dispatched = 0u;
-    if (!intent->start_requested) state->start_dispatched = 0u;
-    if (!intent->backout) state->backout_dispatched = 0u;
-
-    /* CHOOSE_CHARACTER on a changed confirmed id. Hover alone is cursor motion
-     * carried by the forward feed's host_cursor, never a reducer command. */
-    if (intent->confirmed &&
-        (!state->character_dispatched ||
-         state->last_character != intent->hover_character)) {
-        party_link_plan_push(out, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER,
-                             intent->hover_character);
-    }
-    /* CHOOSE_VEHICLE (before READY) when a vehicle is set and changed. */
-    if (intent->vehicle_id != MDKR_ONLINE_NO_VEHICLE &&
-        (!state->vehicle_dispatched ||
-         state->last_vehicle != intent->vehicle_id)) {
-        party_link_plan_push(out, MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE,
-                             intent->vehicle_id);
-    }
-    /* CHANGE_SELECTION (back out) once per assertion. */
-    if (intent->backout && !state->backout_dispatched) {
-        party_link_plan_push(out, MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION, 0u);
-    }
-    /* READY on the rising edge. */
-    if (intent->ready && !state->ready_dispatched) {
-        party_link_plan_push(out, MDKR_PARTY_LINK_DISPATCH_READY, 1u);
-    }
-    /* START_RACE once per press (mask filled by the wiring). */
-    if (intent->start_requested && !state->start_dispatched) {
-        party_link_plan_push(out, MDKR_PARTY_LINK_DISPATCH_START_RACE, 0u);
+    for (i = 0u; i < sizeof(kOrder) / sizeof(kOrder[0]); i++) {
+        const uint8_t kind = kOrder[i];
+        uint8_t value = 0u;
+        uint8_t converged = 0u;
+        const uint8_t wants =
+            party_link_kind_state(kind, intent, local, &value, &converged);
+        if (!wants || converged) {
+            /* Not wanted, or the lobby already reflects it: DONE -- drop any
+             * in-flight guard for this kind. Convergence is the only "latch". */
+            state->inflight_active[kind] = 0u;
+            state->inflight_age[kind] = 0u;
+            continue;
+        }
+        /* Wanted and NOT converged. Suppress a re-send while the same value is
+         * genuinely in flight, until the safety-net bound elapses. */
+        if (state->inflight_active[kind] &&
+            state->inflight_value[kind] == value) {
+            if (state->inflight_age[kind] < 0xFFFFu) state->inflight_age[kind]++;
+            if (state->inflight_age[kind] < MDKR_PARTY_LINK_INFLIGHT_MAX_PUMPS) {
+                continue; /* still in flight: wait for convergence/refusal */
+            }
+            /* Bound elapsed with no convergence and no refusal: re-fire once. */
+            state->inflight_active[kind] = 0u;
+            state->inflight_age[kind] = 0u;
+        }
+        if (out->count < MDKR_PARTY_LINK_MAX_DISPATCH) {
+            out->actions[out->count].kind = kind;
+            out->actions[out->count].value = value;
+            out->count++;
+        }
     }
 }
 
-void mdkr_party_link_dispatch_latch(MdkrPartyLinkDispatchState *state,
-                                    const MdkrPartyLinkDispatchAction *action) {
-    if (state == NULL || action == NULL) return;
-    switch (action->kind) {
-    case MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER:
-        state->character_dispatched = 1u;
-        state->last_character = action->value;
-        break;
-    case MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE:
-        state->vehicle_dispatched = 1u;
-        state->last_vehicle = action->value;
-        break;
-    case MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION:
-        state->backout_dispatched = 1u;
-        /* A fresh selection may follow: re-arm the character + vehicle picks. */
-        state->character_dispatched = 0u;
-        state->vehicle_dispatched = 0u;
-        break;
-    case MDKR_PARTY_LINK_DISPATCH_READY:
-        state->ready_dispatched = 1u;
-        break;
-    case MDKR_PARTY_LINK_DISPATCH_START_RACE:
-        state->start_dispatched = 1u;
-        break;
-    default:
-        break;
-    }
+void mdkr_party_link_dispatch_mark_sent(MdkrPartyLinkDispatchState *state,
+                                        const MdkrPartyLinkDispatchAction *action) {
+    if (state == NULL || action == NULL ||
+        action->kind >= MDKR_PARTY_LINK_DISPATCH_KIND_COUNT) return;
+    state->inflight_active[action->kind] = 1u;
+    state->inflight_value[action->kind] = action->value;
+    state->inflight_age[action->kind] = 0u;
+}
+
+void mdkr_party_link_dispatch_note_refusal(MdkrPartyLinkDispatchState *state,
+                                           uint8_t kind) {
+    if (state == NULL || kind >= MDKR_PARTY_LINK_DISPATCH_KIND_COUNT) return;
+    state->inflight_active[kind] = 0u;
+    state->inflight_age[kind] = 0u;
 }

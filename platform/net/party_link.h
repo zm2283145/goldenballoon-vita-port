@@ -134,24 +134,40 @@ bool mdkr_party_link_intent_poll(MdkrPartyLinkLocalIntent *out);
  *
  * The dedupe/ordering logic is held OUT of the beta wiring so it is directly
  * unit-testable -- the same rationale as mdkr_net_roster_guard_decides_clear
- * (net_roster_runtime.h). The wiring (online_live_wiring.cpp) owns one
- * MdkrPartyLinkDispatchState across a session, plans the ordered actions once
- * per polled intent, submits them IN ORDER, and latches each ONLY when the
- * reducer ACCEPTED it. Latching on acceptance (never on mere submission) is
- * load-bearing: a refusal (SELECTION_CONFLICT while the opponent holds a racer,
- * ILLEGAL_VEHICLE, a stale-revision/in-flight command) must re-fire on the next
- * intent instead of being silently swallowed -- exactly the panel's behavior,
- * where every re-press is a fresh dispatch. These types name only party_link
+ * (net_roster_runtime.h).
+ *
+ * DEDUPE IS AGAINST THE AUTHORITATIVE LOBBY SNAPSHOT, never a submit's return.
+ * On the live adapter a submit's "accepted" is only the OPTIMISTIC transport
+ * SEND result (the reduction, and any SELECTION_CONFLICT / ILLEGAL_VEHICLE
+ * refusal, arrives later out-of-band); latching on it would swallow a command
+ * that was sent, optimistically "accepted", then async-refused -- and never
+ * re-send it once the conflict clears. So a command is DONE only once the local
+ * seat's lobby value equals the intent (CONVERGENCE), which pumpPartyLink reads
+ * from the very same snapshot surface each frame. Convergence per kind:
+ *   CHOOSE_CHARACTER -> local character_id == hover_character
+ *   CHOOSE_VEHICLE   -> local vehicle_id   == vehicle_id
+ *   READY            -> local ready == 1;  CHANGE_SELECTION -> local ready == 0
+ *   START_RACE       -> lobby phase left MDKR_ONLINE_LOBBY
+ *
+ * To avoid re-sending every frame while a command genuinely propagates, an
+ * in-flight guard suppresses re-sending the SAME (kind,value) after a send,
+ * UNTIL one of: the snapshot converges (done -- stop), a refusal is observed
+ * for that kind (mdkr_party_link_dispatch_note_refusal -> re-fire promptly), or
+ * a bounded number of pumps without convergence (a safety-net re-fire). The
+ * synchronous fake adapter reduces immediately, so it converges on the next
+ * pump and sends each command exactly once. These types name only party_link
  * values (no MdkrOnlineViewAction), so the header stays dependency-free; the
- * wiring maps each kind to the EXISTING view action and fills the START_RACE
- * vehicle mask (which needs the live lobby). */
+ * wiring maps each kind to the EXISTING view action, fills the START_RACE
+ * vehicle mask (which needs the live lobby), submits IN ORDER, and marks each
+ * in-flight only on a successful SEND. */
 typedef enum MdkrPartyLinkDispatchKind {
     MDKR_PARTY_LINK_DISPATCH_NONE = 0,
     MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER,
     MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE,
     MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION,
     MDKR_PARTY_LINK_DISPATCH_READY,
-    MDKR_PARTY_LINK_DISPATCH_START_RACE
+    MDKR_PARTY_LINK_DISPATCH_START_RACE,
+    MDKR_PARTY_LINK_DISPATCH_KIND_COUNT
 } MdkrPartyLinkDispatchKind;
 
 typedef struct MdkrPartyLinkDispatchAction {
@@ -165,37 +181,57 @@ typedef struct MdkrPartyLinkDispatchPlan {
     uint8_t count;
 } MdkrPartyLinkDispatchPlan;
 
+/* Current lobby values for the LOCAL seat -- the authoritative convergence
+ * signal. Built by pumpPartyLink from the published snapshot. When no local
+ * seat is resolvable (have_seat == 0) nothing is treated as converged, so the
+ * command is (re-)sent under the in-flight guard. */
+typedef struct MdkrPartyLinkLocalView {
+    uint8_t have_seat;    /* a local seat was resolved in the snapshot */
+    uint8_t character_id; /* local seat's current lobby character (0xFF none) */
+    uint8_t vehicle_id;   /* local seat's current lobby vehicle (0xFF none) */
+    uint8_t ready;        /* local seat's current lobby ready flag */
+    uint8_t phase;        /* lobby phase (MdkrOnlinePhase) */
+} MdkrPartyLinkLocalView;
+
+/* Safety-net re-fire: pumps a still-un-converged in-flight command waits before
+ * re-sending when no refusal is observed (~3 s at 30 Hz). Refusal re-fires
+ * promptly; this only bounds a silently dropped command. */
+#define MDKR_PARTY_LINK_INFLIGHT_MAX_PUMPS 90u
+
+/* Per-kind in-flight guard, indexed by MdkrPartyLinkDispatchKind. */
 typedef struct MdkrPartyLinkDispatchState {
-    uint8_t last_character; /* last accepted CHOOSE_CHARACTER value */
-    uint8_t last_vehicle;   /* last accepted CHOOSE_VEHICLE value */
-    uint8_t character_dispatched;
-    uint8_t vehicle_dispatched;
-    uint8_t ready_dispatched;
-    uint8_t backout_dispatched;
-    uint8_t start_dispatched;
+    uint8_t inflight_active[MDKR_PARTY_LINK_DISPATCH_KIND_COUNT];
+    uint8_t inflight_value[MDKR_PARTY_LINK_DISPATCH_KIND_COUNT];
+    uint16_t inflight_age[MDKR_PARTY_LINK_DISPATCH_KIND_COUNT];
 } MdkrPartyLinkDispatchState;
 
 /* Reset the dedupe state (call on install/clear, before the first intent). */
 void mdkr_party_link_dispatch_state_reset(MdkrPartyLinkDispatchState *state);
 
-/* Plan the ORDERED reducer commands for one polled intent. Order is
- * CHOOSE_CHARACTER, CHOOSE_VEHICLE, CHANGE_SELECTION, READY, START_RACE --
- * vehicle BEFORE ready so a fresh seat's vehicle lands first (a refused ready
- * simply re-fires next intent once the vehicle is accepted). Deduped on CHANGE:
- * confirm/vehicle plan only for a changed id vs. the last ACCEPTED value; ready/
- * start plan on the rising edge. `state` is mutated only for edge RE-ARMS (a
- * released ready/start/backout flag clears its latch); acceptance latches are
- * applied separately via mdkr_party_link_dispatch_latch. NULL args -> empty
- * plan. */
+/* Plan the ORDERED reducer commands for one polled intent against the current
+ * lobby-local values. Order is CHOOSE_CHARACTER, CHOOSE_VEHICLE,
+ * CHANGE_SELECTION, READY, START_RACE -- vehicle BEFORE ready so a fresh seat's
+ * vehicle lands first. A command is emitted only when the local seat is NOT yet
+ * converged to the intent AND the in-flight guard permits (not already sent this
+ * (kind,value), or the safety-net bound elapsed). Convergence auto-clears the
+ * guard. `state` is mutated (guard aging / convergence clears). `local` may be
+ * NULL (treated as no local seat). NULL state/intent/out -> empty plan. */
 void mdkr_party_link_plan_dispatch(MdkrPartyLinkDispatchState *state,
                                    const MdkrPartyLinkLocalIntent *intent,
+                                   const MdkrPartyLinkLocalView *local,
                                    MdkrPartyLinkDispatchPlan *out);
 
-/* Latch one action into the dedupe state after the reducer ACCEPTED it (F1:
- * never latch a refusal). CHANGE_SELECTION also re-arms the next character +
- * vehicle pick. No-op for NULL args. */
-void mdkr_party_link_dispatch_latch(MdkrPartyLinkDispatchState *state,
-                                    const MdkrPartyLinkDispatchAction *action);
+/* Mark an action in-flight after a SUCCESSFUL SEND (the transport accepted the
+ * submit -- NOT a reduction). Suppresses re-sending the same (kind,value) until
+ * convergence, a refusal, or the safety-net bound. No-op for NULL args. */
+void mdkr_party_link_dispatch_mark_sent(MdkrPartyLinkDispatchState *state,
+                                        const MdkrPartyLinkDispatchAction *action);
+
+/* Clear the in-flight guard for `kind` after a refusal was observed on the
+ * adapter's refusal surface, so the same intent re-fires on the next pump
+ * (instead of waiting out the safety-net bound). No-op for NULL/out-of-range. */
+void mdkr_party_link_dispatch_note_refusal(MdkrPartyLinkDispatchState *state,
+                                           uint8_t kind);
 
 /* ---- Launcher-side projection helper ------------------------------------ *
  *

@@ -669,9 +669,12 @@ bool OnlineRoom_liveInvite(IMdkrOnlineAdapter *adapter, std::string *code,
  * ui_online_room.cpp does, IN ORDER: CHOOSE_CHARACTER, then CHOOSE_VEHICLE
  * (before READY, so a fresh seat's vehicle lands first -- the reducer refuses
  * READY until a vehicle is set), then CHANGE_SELECTION / READY / START_RACE.
- * Each is latched ONLY on an accepted step, so a refusal re-fires next intent
- * instead of being swallowed; deduped so a per-frame republish never spams the
- * reducer. install/clear bookend a session and reset the reverse-feed dedupe.
+ * Dedupe is against the AUTHORITATIVE lobby snapshot (a command is done only
+ * once the local seat's lobby value equals the intent), never the live adapter's
+ * OPTIMISTIC submit result -- so an async SELECTION_CONFLICT / ILLEGAL_VEHICLE
+ * (observed via the take_refusal surface) re-fires the same intent instead of
+ * being swallowed. An in-flight guard suppresses per-frame re-sends while a
+ * command propagates. install/clear bookend a session and reset the dedupe.
  * Both pumps are driven from the launcher-code-in-engine-loop service callback
  * during MENUS by later tasks. Defined in platform/app/online_live_wiring.cpp. */
 void OnlineRoom_installPartyLink(void);

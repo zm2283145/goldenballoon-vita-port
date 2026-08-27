@@ -451,14 +451,17 @@ void OnlineRoom_pumpPartyLink(IMdkrOnlineAdapter *adapter) {
     mdkr_party_link_publish(&snap);
 }
 
-/* The local seat's current vehicle in the live lobby, so a CHOOSE_VEHICLE that
- * merely re-states the lobby's existing pick is skipped. NO_VEHICLE when there
- * is no snapshot or no resolvable local seat. */
-unsigned partyLinkLocalVehicle(IMdkrOnlineAdapter *adapter) {
+/* The current lobby values for the LOCAL seat, read from the same snapshot
+ * surface pumpPartyLink publishes -- the authoritative convergence signal for
+ * the reverse-feed dedupe. */
+static void partyLinkBuildLocalView(IMdkrOnlineAdapter *adapter,
+                                    MdkrPartyLinkLocalView *out) {
+    std::memset(out, 0, sizeof(*out));
+    out->character_id = MDKR_ONLINE_NO_CHARACTER;
+    out->vehicle_id = MDKR_ONLINE_NO_VEHICLE;
     MdkrOnlineLobby lobby{};
-    if (!mdkr_online_live_adapter_lobby(adapter, &lobby)) {
-        return MDKR_ONLINE_NO_VEHICLE;
-    }
+    if (!mdkr_online_live_adapter_lobby(adapter, &lobby)) return;
+    out->phase = static_cast<uint8_t>(lobby.phase);
     MdkrOnlineViewModel vm{};
     const bool haveView = adapter->view(&vm);
     MdkrPartyLinkSnapshot snap;
@@ -466,77 +469,95 @@ unsigned partyLinkLocalVehicle(IMdkrOnlineAdapter *adapter) {
                                         0u);
     for (unsigned i = 0u; i < MDKR_PARTY_LINK_SEATS; ++i) {
         if (snap.seats[i].occupied && snap.seats[i].is_local) {
-            return snap.seats[i].vehicle_id;
+            out->have_seat = 1u;
+            out->character_id = snap.seats[i].character_id;
+            out->vehicle_id = snap.seats[i].vehicle_id;
+            out->ready = snap.seats[i].ready;
+            break;
         }
     }
-    return MDKR_ONLINE_NO_VEHICLE;
+}
+
+/* Map a refused lobby command type (MdkrOnlineCommandType from take_refusal)
+ * onto the dispatch kind whose in-flight guard it should clear. */
+static uint8_t partyLinkKindForCommand(uint32_t command_type) {
+    switch (command_type) {
+    case MDKR_ONLINE_SET_CHARACTER:
+        return MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER;
+    case MDKR_ONLINE_SET_VEHICLE:
+        return MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE;
+    case MDKR_ONLINE_SET_READY:
+        return MDKR_PARTY_LINK_DISPATCH_READY;
+    case MDKR_ONLINE_BEGIN_LOADING:
+        return MDKR_PARTY_LINK_DISPATCH_START_RACE;
+    default:
+        return MDKR_PARTY_LINK_DISPATCH_NONE;
+    }
 }
 
 void OnlineRoom_pumpPartyLinkIntent(IMdkrOnlineAdapter *adapter) {
     if (adapter == nullptr) return;
+
+    /* Consult the adapter's one-shot refusal surface every pump: a refused
+     * command clears its in-flight guard so the same intent re-fires promptly
+     * (rather than waiting out the safety-net bound). On the live adapter a
+     * submit is only optimistically "accepted" (a transport SEND); the async
+     * SELECTION_CONFLICT / ILLEGAL_VEHICLE arrives here. */
+    uint32_t refusedCommand = 0u;
+    uint32_t refusedError = 0u;
+    if (mdkr_online_live_adapter_take_refusal(adapter, &refusedCommand,
+                                              &refusedError)) {
+        const uint8_t kind = partyLinkKindForCommand(refusedCommand);
+        if (kind != MDKR_PARTY_LINK_DISPATCH_NONE) {
+            mdkr_party_link_dispatch_note_refusal(&sPartyLinkDispatch, kind);
+        }
+    }
+
     MdkrPartyLinkLocalIntent intent;
     if (!mdkr_party_link_intent_poll(&intent)) return; /* one-shot per publish */
 
+    /* Dedupe against the AUTHORITATIVE lobby snapshot, not the send result. */
+    MdkrPartyLinkLocalView local;
+    partyLinkBuildLocalView(adapter, &local);
+
     MdkrPartyLinkDispatchPlan plan;
-    mdkr_party_link_plan_dispatch(&sPartyLinkDispatch, &intent, &plan);
-    if (plan.count == 0u) return;
+    mdkr_party_link_plan_dispatch(&sPartyLinkDispatch, &intent, &local, &plan);
 
-    const unsigned currentVehicle = partyLinkLocalVehicle(adapter);
-
-    /* Dispatch the planned actions IN ORDER, latching each ONLY on an accepted
-     * step (F1): a refusal (SELECTION_CONFLICT / ILLEGAL_VEHICLE / stale-revision
-     * / in-flight) re-fires on the next intent instead of being swallowed. */
     for (unsigned i = 0u; i < plan.count; ++i) {
         const MdkrPartyLinkDispatchAction &action = plan.actions[i];
+        bool sent = false;
         switch (action.kind) {
         case MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER:
-            if (partyLinkSubmit(adapter,
-                                MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER,
-                                action.value).accepted) {
-                mdkr_party_link_dispatch_latch(&sPartyLinkDispatch, &action);
-            }
+            sent = partyLinkSubmit(adapter,
+                                   MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER,
+                                   action.value).accepted;
             break;
         case MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE:
-            /* Mask-legal value handling: only forward a real vehicle id; the
-             * reducer's own mask gate (ILLEGAL_VEHICLE) rejects a track-illegal
-             * pick, which -- unlatched -- lets the native screen (the source of
-             * truth) re-pick, rather than the launcher silently defaulting. */
-            if (action.value >= MDKR_ONLINE_PLAYER_VEHICLE_COUNT) break;
-            if (action.value == currentVehicle) {
-                /* The lobby already holds this vehicle: nothing to send, but
-                 * latch so it is not re-planned every intent. */
-                mdkr_party_link_dispatch_latch(&sPartyLinkDispatch, &action);
-                break;
-            }
-            if (partyLinkSubmit(adapter, MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE,
-                                action.value).accepted) {
-                mdkr_party_link_dispatch_latch(&sPartyLinkDispatch, &action);
-            }
+            sent = partyLinkSubmit(adapter, MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE,
+                                   action.value).accepted;
             break;
         case MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION:
-            if (partyLinkSubmit(adapter,
-                                MDKR_ONLINE_VIEW_ACTION_CHANGE_SELECTION, 0u)
-                    .accepted) {
-                mdkr_party_link_dispatch_latch(&sPartyLinkDispatch, &action);
-            }
+            sent = partyLinkSubmit(adapter,
+                                   MDKR_ONLINE_VIEW_ACTION_CHANGE_SELECTION, 0u)
+                       .accepted;
             break;
         case MDKR_PARTY_LINK_DISPATCH_READY:
-            if (partyLinkSubmit(adapter, MDKR_ONLINE_VIEW_ACTION_READY, 1u)
-                    .accepted) {
-                mdkr_party_link_dispatch_latch(&sPartyLinkDispatch, &action);
-            }
+            sent = partyLinkSubmit(adapter, MDKR_ONLINE_VIEW_ACTION_READY, 1u)
+                       .accepted;
             break;
         case MDKR_PARTY_LINK_DISPATCH_START_RACE:
-            /* START_RACE value is the resolved track's RAW usable-vehicle mask
-             * (partyLinkStartVehicleMask), not a party_link value. */
-            if (partyLinkSubmit(adapter, MDKR_ONLINE_VIEW_ACTION_START_RACE,
-                                partyLinkStartVehicleMask(adapter)).accepted) {
-                mdkr_party_link_dispatch_latch(&sPartyLinkDispatch, &action);
-            }
+            /* START_RACE value is the resolved track's RAW usable-vehicle mask. */
+            sent = partyLinkSubmit(adapter, MDKR_ONLINE_VIEW_ACTION_START_RACE,
+                                   partyLinkStartVehicleMask(adapter)).accepted;
             break;
         default:
             break;
         }
+        /* `.accepted` is the transport SEND result (optimistic) -- used ONLY to
+         * confirm the command left the launcher, NEVER as a reduction. A sent
+         * command is marked in-flight (suppressed until the snapshot converges
+         * or a refusal arrives); a failed send leaves the guard clear to retry. */
+        if (sent) mdkr_party_link_dispatch_mark_sent(&sPartyLinkDispatch, &action);
     }
 }
 
