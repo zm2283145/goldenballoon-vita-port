@@ -37,6 +37,7 @@
 
 #include "platform_os.h"    // mdkr_render_backend
 #include "present_sched.h"  // authoritative test-schedule tick
+#include "modern_character_studio_bridge.h"
 
 #ifdef MDKR_WEBGPU_BACKEND
 #include "gfx_webgpu_imgui.h"
@@ -55,13 +56,21 @@ extern "C" void  gfx_webgpu_current_overlay_size(int *w, int *h);
 namespace {
 
 enum class LastInputDevice { KeyboardMouse, Gamepad, Touch };
-enum class ConfirmAction { None, RestartGame, ReturnToLauncher, QuitToDesktop };
+enum class OverlayMode { GameMenu, CharacterStudio };
+enum class ConfirmAction {
+    None,
+    RestartGame,
+    ReturnToLauncher,
+    ReturnToWorkshop,
+    QuitToDesktop,
+};
 
 // The overlay is installed through C callbacks, so it has process lifetime.
 // Keep all of that callback-owned state in one place: this makes its lifecycle
 // and transitions visible without scattering independent globals across the
 // file. The app still installs exactly one overlay per engine boot.
 struct OverlayState {
+    OverlayMode mode = OverlayMode::GameMenu;
     bool open = false;
     bool showSettings = false;
     bool showFps = false;
@@ -73,6 +82,17 @@ struct OverlayState {
     OverlayExitRequest exitRequest = OverlayExitRequest::None;
     bool previousRelativeMouse = false;
     LastInputDevice lastInputDevice = LastInputDevice::KeyboardMouse;
+    std::string studioPackage;
+    MdkrCharacterPreviewContext studioContext =
+        MDKR_CHARACTER_PREVIEW_NONE;
+    bool studioReturnPending = false;
+    uint64_t studioReturnRequestedFrame = 0u;
+    uint64_t studioReturnRequestedMillis = 0u;
+    uint64_t renderFrame = 0u;
+    long studioTestReturnFrame = -1;
+    bool studioRenderReported = false;
+    bool studioControlsCollapsed = false;
+    bool studioEditorInitialized = false;
 
     // Scripted render-proof state. Keeping it here (instead of function-local
     // statics) makes every bit of persistent overlay state explicit.
@@ -113,6 +133,7 @@ int menuToggleKey() { return prefInt("menu_toggle_key", SDLK_F1); }
 int fpsToggleKey()  { return prefInt("fps_toggle_key",  SDLK_F10); }
 
 void setOpen(bool open) {
+    if (g_overlay.mode == OverlayMode::CharacterStudio && !open) return;
     if (open == g_overlay.open) return;
     g_overlay.open = open;
     g_overlay.confirm = ConfirmAction::None;
@@ -147,6 +168,12 @@ void returnToLauncher() {
     quitToDesktop();
 }
 
+void returnToLauncherWithoutMeasurement() {
+    g_overlay.exitRequest =
+        OverlayExitRequest::ReturnToLauncherWithoutMeasurement;
+    quitToDesktop();
+}
+
 void restartGame() {
     /* Renderer/pacing resources intentionally latch at engine boot. Unwind all
      * borrowed GPU/audio state first; main_app then exec-replaces the process
@@ -155,7 +182,26 @@ void restartGame() {
     quitToDesktop();
 }
 
+void beginStudioReturn() {
+    g_overlay.confirm = ConfirmAction::None;
+    if (!Settings_commitCharacterOffsetStudio(
+            g_overlay.studioPackage.c_str(), g_overlay.studioContext)) {
+        return;
+    }
+    g_overlay.studioReturnPending = true;
+    g_overlay.studioReturnRequestedFrame = g_overlay.renderFrame;
+    g_overlay.studioReturnRequestedMillis = SDL_GetTicks64();
+}
+
 void navigateBack(OverlayBackInput input, bool keyRepeat) {
+    if (g_overlay.mode == OverlayMode::CharacterStudio) {
+        if (!keyRepeat &&
+            !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
+            g_overlay.studioControlsCollapsed = false;
+            g_overlay.confirm = ConfirmAction::ReturnToWorkshop;
+        }
+        return;
+    }
     const OverlayBackState current = {
         g_overlay.open,
         g_overlay.showSettings,
@@ -275,7 +321,11 @@ static int onProcessEvent(const void *ev) {
 // drops input events instead of feeding them to the pad.
 static int onWantsInput(void) { return g_overlay.open ? 1 : 0; }
 static int onWantsPause(void) {
+    if (g_overlay.mode == OverlayMode::CharacterStudio) return 0;
     return (g_overlay.open && g_overlay.pauseAllowed) ? 1 : 0;
+}
+static int studioWantsFrame(void) {
+    return g_overlay.mode == OverlayMode::CharacterStudio ? 1 : 0;
 }
 // Tools.Enabled joins the render predicate but NOT the input one. The overlay
 // swallows the pad because it is a menu the player is operating; a diagnostic
@@ -283,7 +333,8 @@ static int onWantsPause(void) {
 // be changing the race by being visible -- exactly what the purity gate exists
 // to forbid.
 static int onWantsRender(void) {
-    return (g_overlay.open || g_overlay.showFps || DevTools_wantsFrame()) ? 1 : 0;
+    return (g_overlay.open || g_overlay.showFps || DevTools_wantsFrame() ||
+            studioWantsFrame()) ? 1 : 0;
 }
 
 // The engine's per-frame service call, which during a race is the ONLY place
@@ -505,6 +556,19 @@ bool endImGuiFrame() {
                 gfx_webgpu_imgui_render(drawData, pass, sw, sh);
             if (rendered && drawData != nullptr &&
                 drawData->TotalVtxCount > 0 && drawData->TotalIdxCount > 0 &&
+                g_overlay.mode == OverlayMode::CharacterStudio &&
+                !g_overlay.studioRenderReported &&
+                std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+                std::fprintf(
+                    stderr,
+                    "[app-ui] exact-character-studio overlay-rendered "
+                    "vertices=%d indices=%d context=%d\n",
+                    drawData->TotalVtxCount, drawData->TotalIdxCount,
+                    static_cast<int>(g_overlay.studioContext));
+                g_overlay.studioRenderReported = true;
+            }
+            if (rendered && drawData != nullptr &&
+                drawData->TotalVtxCount > 0 && drawData->TotalIdxCount > 0 &&
                 g_overlay.testFpsOnly && !g_overlay.open &&
                 !g_overlay.testFpsRenderReported) {
                 std::fprintf(stderr,
@@ -622,22 +686,31 @@ OverlayButtonPair fitButtonPair(const ImVec2 &first,
 }
 
 void drawConfirmation(float uiScale) {
-    const bool returning = g_overlay.confirm == ConfirmAction::ReturnToLauncher;
+    const bool workshop =
+        g_overlay.confirm == ConfirmAction::ReturnToWorkshop;
+    const bool returning =
+        g_overlay.confirm == ConfirmAction::ReturnToLauncher || workshop;
     const bool restarting = g_overlay.confirm == ConfirmAction::RestartGame;
     ui::TextSubtle(
         restarting
             ? "Restart and apply saved settings? This ends the current race."
-            : (returning
+            : (workshop
+                   ? "Return to the Workshop? Current fit changes will be saved."
+               : returning
                    ? "Return to the launcher? This ends the current race."
                    : "Quit to desktop? This ends the current race."));
     ui::Gap(ui::kGapM);
     const char *primary = restarting ? "Restart & Apply"
-                                     : (returning ? "Return to Launcher" : "Quit");
+                                     : (workshop ? "Return to Workshop"
+                                        : returning ? "Return to Launcher"
+                                                    : "Quit");
     const OverlayButtonPair actions =
         fitButtonPair(ui::kBtnWide(), ui::kBtnSecondary(), uiScale);
     if (ui::PrimaryButton(primary, actions.first)) {
         if (restarting) restartGame();
-        else if (returning) returnToLauncher();
+        else if (workshop) {
+            beginStudioReturn();
+        } else if (returning) returnToLauncher();
         else quitToDesktop();
     }
     if (actions.sameLine) ImGui::SameLine();
@@ -723,6 +796,137 @@ void drawOverlay() {
     ImGui::End();
 }
 
+void positionCharacterStudioWindow(const ImGuiViewport &viewport,
+                                   float uiScale) {
+    const float margin = 12.0f * uiScale;
+    if (g_overlay.studioControlsCollapsed) {
+        ImGui::SetNextWindowPos(
+            ImVec2(viewport.Pos.x + viewport.Size.x - margin,
+                   viewport.Pos.y + viewport.Size.y - margin),
+            ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+        ImGui::SetNextWindowSize(
+            ImVec2(std::min(460.0f * uiScale,
+                            viewport.Size.x - margin * 2.0f),
+                   std::min(92.0f * uiScale,
+                            viewport.Size.y - margin * 2.0f)),
+            ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(0.94f);
+        return;
+    }
+    const bool sidePanel = viewport.Size.x >= 900.0f * uiScale;
+    if (sidePanel) {
+        const float width = std::min(500.0f * uiScale,
+                                     viewport.Size.x * 0.46f);
+        ImGui::SetNextWindowPos(
+            ImVec2(viewport.Pos.x + viewport.Size.x - margin,
+                   viewport.Pos.y + margin),
+            ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+        ImGui::SetNextWindowSize(
+            ImVec2(width, viewport.Size.y - margin * 2.0f),
+            ImGuiCond_Always);
+    } else {
+        ImGui::SetNextWindowPos(
+            ImVec2(viewport.Pos.x, viewport.Pos.y + viewport.Size.y),
+            ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+        ImGui::SetNextWindowSize(
+            ImVec2(viewport.Size.x,
+                   std::min(viewport.Size.y,
+                            std::max(280.0f * uiScale,
+                                     viewport.Size.y * 0.62f))),
+            ImGuiCond_Always);
+    }
+    ImGui::SetNextWindowBgAlpha(0.94f);
+}
+
+void drawCharacterStudio() {
+    const float uiScale = AppTheme::uiScale();
+    const ImGuiViewport &viewport = *ImGui::GetMainViewport();
+    positionCharacterStudioWindow(viewport, uiScale);
+    ImGui::Begin(
+        "##exact-character-offset-studio", nullptr,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+            ImGuiWindowFlags_NoSavedSettings);
+
+    ImGui::PushFont(AppTheme::fonts().title);
+    ImGui::TextUnformatted("Exact Offset Studio");
+    ImGui::PopFont();
+    if (g_overlay.studioControlsCollapsed) {
+        ImGui::SameLine();
+        if (ImGui::Button("Show controls")) {
+            g_overlay.studioControlsCollapsed = false;
+        }
+        ui::SpeakFocusedItem(
+            "Show Offset Studio controls", nullptr,
+            "Restores the fit controls over the exact game scene.");
+        ui::TextSubtleWrapped(
+            "Inspecting the unobstructed exact scene. Gameplay input remains locked.");
+        ImGui::End();
+        return;
+    }
+    ImGui::SameLine();
+    const float hideWidth = ImGui::CalcTextSize("Hide controls").x +
+        ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::SetCursorPosX(std::max(
+        ImGui::GetCursorPosX(),
+        ImGui::GetWindowContentRegionMax().x - hideWidth));
+    if (ImGui::Button("Hide controls")) {
+        g_overlay.studioControlsCollapsed = true;
+    }
+    ui::SpeakFocusedItem(
+        "Hide Offset Studio controls", nullptr,
+        "Collapses this panel so the exact game scene can be inspected without obstruction. Gameplay input stays locked.");
+    ui::TextSubtleWrapped(
+        "The scene behind this panel is the game—not a substitute preview. Gameplay input is locked while you fit the character.");
+    ImGui::Separator();
+
+    if (g_overlay.justOpened) {
+        ImGui::SetKeyboardFocusHere();
+        g_overlay.justOpened = false;
+    }
+    if (g_overlay.confirm != ConfirmAction::None) {
+        drawConfirmation(uiScale);
+    } else if (g_overlay.studioReturnPending) {
+        const bool timedOut =
+            SDL_GetTicks64() >
+                g_overlay.studioReturnRequestedMillis + 10000u;
+        ImGui::TextColored(
+            timedOut ? AppTheme::bad() : AppTheme::accent(),
+            timedOut ? "The exact renderer did not confirm the saved fit."
+                     : "Rendering the saved fit once more…");
+        ui::TextSubtleWrapped(
+            timedOut
+                ? "You can keep editing and recover the scene, or return safely without recording a current measurement. Your saved fit settings are kept."
+                : "This short handoff prevents the Workshop from receiving measurements from the frame before your last edit.");
+        if (timedOut) {
+            if (ImGui::Button("Keep editing", ui::kBtnSecondary())) {
+                g_overlay.studioReturnPending = false;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Return without measurement",
+                              ui::kBtnWide())) {
+                returnToLauncherWithoutMeasurement();
+            }
+        }
+    } else {
+        ImGui::BeginChild(
+            "##exact-character-offset-studio-content", ImVec2(0, 0),
+            ImGuiChildFlags_None);
+        const SettingsCharacterStudioFrame frame =
+            Settings_drawCharacterOffsetStudio(
+                g_overlay.window, g_overlay.studioPackage.c_str(),
+                g_overlay.studioContext,
+                !g_overlay.studioEditorInitialized);
+        g_overlay.studioEditorInitialized = true;
+        if (frame.returnRequested) {
+            beginStudioReturn();
+        }
+        ui::TouchScrollCurrentWindow();
+        ImGui::EndChild();
+    }
+    ImGui::End();
+}
+
 bool anyDevToolOpen() {
     for (int id = 0; id < MDKR_TOOL_COUNT; ++id) {
         if (DevTools_isOpen(static_cast<MdkrDevToolId>(id))) return true;
@@ -762,6 +966,7 @@ void syncCursorVisibility() {
 extern "C" {
 
 static int onRender(void) {
+    ++g_overlay.renderFrame;
     overlayTestFrameTick();
 
     // Nothing to draw: skip the whole ImGui frame rather than building and
@@ -769,7 +974,7 @@ static int onRender(void) {
     // condition rather than "is a tool open", because the hotkey that opens a
     // tool is dispatched from inside DevTools_draw() -- a frame built only once
     // something is open could never see the key that opens it.
-    if (!g_overlay.open && !g_overlay.showFps && !DevTools_wantsFrame()) {
+    if (!g_overlay.open && !g_overlay.showFps && !DevTools_wantsFrame() && !studioWantsFrame()) {
         // ImGui::NewFrame() is the only consumer of the event queue that
         // onProcessEvent keeps filling, and the only thing that releases a key
         // ImGui still believes is held. Neither runs while the overlay is
@@ -797,7 +1002,31 @@ static int onRender(void) {
 
     beginImGuiFrame();
     if (g_overlay.showFps) drawFpsReadout();
-    if (g_overlay.open) drawOverlay();
+    if (g_overlay.mode == OverlayMode::CharacterStudio) {
+        drawCharacterStudio();
+        if (!g_overlay.studioReturnPending &&
+            g_overlay.studioTestReturnFrame >= 0 &&
+            g_overlay.renderFrame >=
+                static_cast<uint64_t>(g_overlay.studioTestReturnFrame)) {
+            beginStudioReturn();
+        }
+        if (g_overlay.studioReturnPending &&
+            g_overlay.renderFrame > g_overlay.studioReturnRequestedFrame) {
+            MdkrModernCharacterFitDiagnostics diagnostics{};
+            const int context = static_cast<int>(g_overlay.studioContext) -
+                static_cast<int>(MDKR_CHARACTER_PREVIEW_SELECT);
+            if (g_mdkrCharacterPreviewResult != nullptr &&
+                g_mdkrCharacterPreviewResult->warmup_complete &&
+                context >= 0 && context < MDKR_CHARACTER_CONTEXT_COUNT &&
+                mdkr_modern_character_player_fit_diagnostics(
+                    0, static_cast<MdkrModernCharacterContext>(context),
+                    &diagnostics)) {
+                returnToLauncher();
+            }
+        }
+    } else if (g_overlay.open) {
+        drawOverlay();
+    }
     // After the overlay, so a diagnostic window never draws over the menu the
     // player is operating. Self-gating on Tools.Enabled: this call is a no-op
     // and costs one comparison in every normal session.
@@ -820,8 +1049,8 @@ int Overlay_gamepadToggleButton() {
 }
 
 void Overlay_install(SDL_Window *window) {
+    g_overlay = OverlayState{};
     g_overlay.window = window;
-    g_overlay.exitRequest = OverlayExitRequest::None;
     if (std::getenv("MDKR_APP_OVERLAY_TEST")) {
         g_overlay.open = true;   // headless render proof
     }
@@ -833,6 +1062,45 @@ void Overlay_install(SDL_Window *window) {
                      "[overlay-test] FPS-only state wantsRender=%d wantsInput=%d\n",
                      onWantsRender(), onWantsInput());
     }
+    static AppOverlayHooks hooks;
+    hooks.process_event = onProcessEvent;
+    hooks.service       = onService;
+    hooks.wants_input   = onWantsInput;
+    hooks.wants_pause   = onWantsPause;
+    hooks.wants_render  = onWantsRender;
+    hooks.render        = onRender;
+    platformSetOverlayHooks(&hooks);
+}
+
+void Overlay_installCharacterStudio(
+    SDL_Window *window, const char *packageId,
+    MdkrCharacterPreviewContext context) {
+    g_overlay = OverlayState{};
+    g_overlay.mode = OverlayMode::CharacterStudio;
+    g_overlay.open = true;
+    g_overlay.justOpened = true;
+    g_overlay.pauseAllowed = false;
+    g_overlay.window = window;
+    g_overlay.studioPackage = packageId != nullptr ? packageId : "";
+    g_overlay.studioContext = context;
+    g_overlay.previousRelativeMouse =
+        SDL_GetRelativeMouseMode() == SDL_TRUE;
+    SDL_SetRelativeMouseMode(SDL_FALSE);
+    const char *testToken = std::getenv(
+        "MDKR_APP_SMOKE_CHARACTER_STUDIO_TOKEN");
+    const char *testReturn = std::getenv(
+        "MDKR_APP_SMOKE_CHARACTER_STUDIO_RETURN_FRAME");
+    if (testToken != nullptr &&
+        std::strcmp(testToken, "mdkr64-character-studio-v1") == 0 &&
+        testReturn != nullptr) {
+        char *end = nullptr;
+        const long parsed = std::strtol(testReturn, &end, 10);
+        if (end != testReturn && *end == '\0' && parsed >= 1 &&
+            parsed <= 10000) {
+            g_overlay.studioTestReturnFrame = parsed;
+        }
+    }
+
     static AppOverlayHooks hooks;
     hooks.process_event = onProcessEvent;
     hooks.service       = onService;

@@ -910,8 +910,14 @@ int runEngineSession(AppHost &host, SessionRuntime &session,
                               host.wgpuSurface(), host.wgpuFormat());
         platformSetHostWebGpuRecovery(recoverAppHostWebGpu, &host);
     }
-    Overlay_setPauseAllowed(session.overlayMayPause());
-    Overlay_install(host.window());
+    if (config.character_preview_studio) {
+        Overlay_installCharacterStudio(
+            host.window(), config.character_preview_package,
+            config.character_preview_context);
+    } else {
+        Overlay_install(host.window());
+        Overlay_setPauseAllowed(session.overlayMayPause());
+    }
     const int result = mdkr64_engine_boot(&config);
 
     if (matchInputContext.profile != MDKR_NET_PROFILE_COUNT) {
@@ -2520,6 +2526,7 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
                            std::string *bootRecoveryMessage) {
     bool running  = true;
     int  exitCode = 0;
+    bool finishStudioSmokeAfterFrame = false;
     while (running) {
         const bool drawableAvailable =
             host.drawableWidth() > 0 && host.drawableHeight() > 0;
@@ -2543,6 +2550,14 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
             running  = false;
             continue;
         }
+        if (finishStudioSmokeAfterFrame) {
+            std::fprintf(
+                stderr,
+                "[app-ui] exact-character-studio smoke completed "
+                "published launcher return\n");
+            running = false;
+            continue;
+        }
         if (action.type == LauncherActionType::Quit) {
             running = false;
         } else if (action.type == LauncherActionType::Play) {
@@ -2552,10 +2567,23 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
                 describeBootFailure(host, exitCode, bootRecoveryMessage);
             }
             if (exitCode == 0 && transition != nullptr &&
-                transition->request == OverlayExitRequest::ReturnToLauncher) {
+                (transition->request == OverlayExitRequest::ReturnToLauncher ||
+                 transition->request ==
+                     OverlayExitRequest::ReturnToLauncherWithoutMeasurement)) {
                 /* Return through the surviving host/runtime. The engine has
                  * released its adopted children; no exec, second app process,
                  * or lost Party state is needed. */
+                if (transition->request ==
+                        OverlayExitRequest::ReturnToLauncherWithoutMeasurement &&
+                    action.boot.character_preview_result != nullptr) {
+                    MdkrCharacterPreviewResult &result =
+                        *action.boot.character_preview_result;
+                    result.warmup_complete = 0;
+                    result.fit_diagnostics_valid = 0;
+                    result.camera_projection_valid = 0;
+                    result.vehicle_surface_valid = 0;
+                    result.fit_projection_valid = 0;
+                }
                 if (!session.returnHome()) {
                     std::fprintf(stderr,
                                  "[session] could not return engine result Home\n");
@@ -2568,6 +2596,13 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
                                  "[session] returned to persistent launcher id=%llu\n",
                                  static_cast<unsigned long long>(
                                      session.state().session_id));
+                    const char *studioSmokeToken = std::getenv(
+                        "MDKR_APP_SMOKE_CHARACTER_STUDIO_TOKEN");
+                    if (studioSmokeToken != nullptr &&
+                        std::strcmp(studioSmokeToken,
+                                    "mdkr64-character-studio-v1") == 0) {
+                        finishStudioSmokeAfterFrame = true;
+                    }
                 }
             } else {
                 running = false;

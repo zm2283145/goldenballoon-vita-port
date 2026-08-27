@@ -254,6 +254,10 @@ typedef struct {
     const char *character_preview_capture_png;    // optional, create-only
     MdkrCharacterPreviewCaptureKind character_preview_capture_kind;
     int character_preview_auto_return; // return after queued one-shot capture
+    /* Launcher-owned exact Offset Studio. The ordinary game overlay remains
+     * available for every other boot; this mode keeps a focused editor open
+     * over the real preview scene and never admits gameplay input. */
+    int character_preview_studio;
     MdkrCharacterPreviewResult *character_preview_result;
     // Staged RESTART-scope settings, as "Video.Key=Value" strings. The settings
     // panel writes these when the player changes a restart-scope key before

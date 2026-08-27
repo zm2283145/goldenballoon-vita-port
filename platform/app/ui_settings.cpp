@@ -30,6 +30,7 @@
 #include "modern_character_install.h"
 #include "modern_character_donor.h"
 #include "modern_character_registry.h"
+#include "modern_character_studio_bridge.h"
 #include "modern_character_text.h"
 #include "sha256.h"
 #include "user_paths.h"
@@ -2517,6 +2518,21 @@ CharacterTuningEdit &loadCharacterTuning(int player, const char *packageId) {
     }
     edit.loaded = true;
     return edit;
+}
+
+CharacterTuningEdit persistedCharacterTuning(int player,
+                                             const char *packageId) {
+    /* The live Studio mutates the shared edit cache every rendered frame, but
+     * AppConfig remains the durable baseline until a gesture commits. Read
+     * that baseline through the one canonical parser without letting the
+     * temporary reload escape into the visible editor. */
+    CharacterTuningEdit &cached = g_characterTuning[packageId];
+    const CharacterTuningEdit live = cached;
+    cached = CharacterTuningEdit{};
+    const CharacterTuningEdit persisted = loadCharacterTuning(
+        player, packageId);
+    cached = live;
+    return persisted;
 }
 
 std::string characterFloatText(float value) {
@@ -5794,7 +5810,8 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                                  MDKR_CHARACTER_PREVIEW_POSE_LIVE,
                              unsigned transitionFromPhaseMilli = 0u,
                              bool autoReturnAfterCapture = false,
-                             bool launcherOwnedCapture = false);
+                             bool launcherOwnedCapture = false,
+                             bool interactiveStudio = false);
 
 bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                             bool compact) {
@@ -7877,13 +7894,39 @@ bool drawCharacterTuningEditor(int player,
                 cameraLayouts[cameraLayout],
                 "Chooses the real one-to-four-player game camera layout used by the next exact context preview.");
             const bool exactPreviewReady = donorProfilesAvailable();
+            const char *studioSmoke = std::getenv(
+                "MDKR_APP_SMOKE_CHARACTER_STUDIO_TOKEN");
+            static std::set<std::string> studioSmokePackages;
+            if (context == MDKR_CHARACTER_CONTEXT_SELECT &&
+                exactPreviewReady && studioSmoke != nullptr &&
+                std::strcmp(studioSmoke,
+                            "mdkr64-character-studio-v1") == 0 &&
+                studioSmokePackages.insert(entry->id).second &&
+                persistCharacterTuning(entry->id, edit)) {
+                requestCharacterPreview(
+                    entry, previewContexts[context], testPlayers,
+                    MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u, 0, 0,
+                    MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL, nullptr,
+                    MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE,
+                    MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u, false, false,
+                    true);
+                std::fprintf(
+                    stderr,
+                    "[app-ui] exact-character-studio smoke requested package=%s context=%u\n",
+                    entry->id, context);
+            }
             if (!exactPreviewReady) ImGui::BeginDisabled();
             const std::string previewLabel = std::string("Open exact ") +
                 contextNames[context] + " preview";
             if (ImGui::Button(previewLabel.c_str()) && exactPreviewReady &&
                 persistCharacterTuning(entry->id, edit)) {
                 requestCharacterPreview(
-                    entry, previewContexts[context], testPlayers);
+                    entry, previewContexts[context], testPlayers,
+                    MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u, 0, 0,
+                    MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL, nullptr,
+                    MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE,
+                    MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u, false, false,
+                    true);
             }
             if (!exactPreviewReady) ImGui::EndDisabled();
             ui::SpeakFocusedItem(
@@ -8780,7 +8823,8 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              MdkrCharacterPreviewPose transitionFromPose,
                              unsigned transitionFromPhaseMilli,
                              bool autoReturnAfterCapture,
-                             bool launcherOwnedCapture) {
+                             bool launcherOwnedCapture,
+                             bool interactiveStudio) {
     const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
     const std::string testTuningSignature = characterTestTuningSignature(
         entry, tuning, static_cast<unsigned>(context - 1));
@@ -8813,6 +8857,8 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
              MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE) ||
         (autoReturnAfterCapture && !capture) ||
         (launcherOwnedCapture && (!autoReturnAfterCapture || !capture)) ||
+        (interactiveStudio &&
+         (inspection || capture || autoReturnAfterCapture)) ||
         (transition && capture) ||
         (!inspection && (viewYawDegrees != 0 || viewPitchDegrees != 0 ||
                          lighting !=
@@ -8874,9 +8920,12 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
         autoReturnAfterCapture;
     g_characterPreviewRequest.launcherOwnedCapture =
         launcherOwnedCapture;
+    g_characterPreviewRequest.interactiveStudio = interactiveStudio;
     g_characterPreviewRequested = true;
     setStatus(
-        pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
+        interactiveStudio
+            ? "Checking the selected ROM, then opening the live exact Offset Studio."
+        : pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
             ? "Checking the selected ROM, then opening the exact game context."
             : transition
                 ? "Checking the selected ROM, then opening the exact game context with a repeating A-to-B semantic transition."
@@ -11963,13 +12012,13 @@ void drawCharacterTestEvidenceMatrix(
                         Settings_publishCharacterPreviewResult(
                             entry->id, source,
                             characterTestTuningSignature(entry, tuning, context),
-                            presentation, std::string(), false, cell);
+                            presentation, std::string(), false, false, cell);
                     }
                 }
             } else {
                 Settings_publishCharacterPreviewResult(
                     entry->id, source, fit, presentation, capturePath, false,
-                    result);
+                    false, result);
             }
             const auto session = g_characterPreviewResults.find(entry->id);
             const CharacterTestEvidenceStore::Evidence *latest =
@@ -16348,6 +16397,34 @@ bool captureCharacterDraftSnapshot(
     return true;
 }
 
+CharacterTuningEdit characterTuningFromDraftSnapshot(
+    const CharacterDraftSnapshot::Snapshot &snapshot) {
+    CharacterTuningEdit tuning{};
+    tuning.loaded = true;
+    tuning.scale = snapshot.scale;
+    tuning.animationSpeed = snapshot.animationSpeed;
+    tuning.lodBias = snapshot.lodBias;
+    tuning.vehicleMask = snapshot.enabledVehicleMask;
+    for (size_t component = 0u; component < 3u; ++component) {
+        tuning.offset[component] = snapshot.offset[component];
+        tuning.rotation[component] = snapshot.rotation[component];
+    }
+    for (size_t context = 0u;
+         context < CharacterDraftSnapshot::kContexts; ++context) {
+        tuning.context[context].scale = snapshot.contexts[context].scale;
+        std::copy(std::begin(snapshot.contexts[context].offset),
+                  std::end(snapshot.contexts[context].offset),
+                  tuning.context[context].offset);
+        std::copy(std::begin(snapshot.contexts[context].rotation),
+                  std::end(snapshot.contexts[context].rotation),
+                  tuning.context[context].rotation);
+        std::memcpy(tuning.context[context].contacts,
+                    snapshot.contexts[context].contacts,
+                    sizeof(tuning.context[context].contacts));
+    }
+    return tuning;
+}
+
 bool applyCharacterDraftSnapshot(
     const MdkrModernCharacterEntry *entry,
     const CharacterDraftStore::Draft &draft, std::string &error) {
@@ -16394,29 +16471,7 @@ bool applyCharacterDraftSnapshot(
     rig.disabledSemanticMask = snapshot.animationIntentPresent
         ? snapshot.disabledSemanticMask : entry->disabled_semantic_mask;
 
-    CharacterTuningEdit tuning{};
-    tuning.loaded = true;
-    tuning.scale = snapshot.scale;
-    tuning.animationSpeed = snapshot.animationSpeed;
-    tuning.lodBias = snapshot.lodBias;
-    tuning.vehicleMask = snapshot.enabledVehicleMask;
-    for (size_t component = 0u; component < 3u; ++component) {
-        tuning.offset[component] = snapshot.offset[component];
-        tuning.rotation[component] = snapshot.rotation[component];
-    }
-    for (size_t context = 0u;
-         context < CharacterDraftSnapshot::kContexts; ++context) {
-        tuning.context[context].scale = snapshot.contexts[context].scale;
-        std::copy(std::begin(snapshot.contexts[context].offset),
-                  std::end(snapshot.contexts[context].offset),
-                  tuning.context[context].offset);
-        std::copy(std::begin(snapshot.contexts[context].rotation),
-                  std::end(snapshot.contexts[context].rotation),
-                  tuning.context[context].rotation);
-        std::memcpy(tuning.context[context].contacts,
-                    snapshot.contexts[context].contacts,
-                    sizeof(tuning.context[context].contacts));
-    }
+    CharacterTuningEdit tuning = characterTuningFromDraftSnapshot(snapshot);
 
     CharacterProfileEdit profile{};
     profile.loaded = true;
@@ -16607,6 +16662,28 @@ bool autosaveActiveCharacterDraft(const MdkrModernCharacterEntry *entry) {
         return false;
     }
     g_characterDraftError.clear();
+    return true;
+}
+
+bool persistedActiveCharacterDraftTuning(
+    const MdkrModernCharacterEntry *entry, CharacterTuningEdit &out) {
+    if (entry == nullptr) return false;
+    loadCharacterDraftInventory();
+    const auto active = g_characterActiveDrafts.find(entry->id);
+    if (active == g_characterActiveDrafts.end()) return false;
+    const CharacterDraftStore::Draft *saved =
+        CharacterDraftStore::find(g_characterDrafts, active->second);
+    if (saved == nullptr ||
+        saved->baseSourceDigest != characterDigestHex(entry->source_sha256)) {
+        return false;
+    }
+    CharacterDraftSnapshot::Snapshot snapshot;
+    std::string error;
+    if (!CharacterDraftSnapshot::decode(saved->payload, snapshot, error)) {
+        if (!error.empty()) g_characterDraftError = error;
+        return false;
+    }
+    out = characterTuningFromDraftSnapshot(snapshot);
     return true;
 }
 
@@ -20512,6 +20589,345 @@ bool Settings_takeCharacterPreviewRequest(
     return true;
 }
 
+namespace {
+
+const MdkrModernCharacterEntry *characterStudioEntry(const char *packageId) {
+    if (packageId == nullptr || packageId[0] == '\0') return nullptr;
+    if (!g_characterRegistryLoaded) refreshCharacterRegistry();
+    const int index = mdkr_modern_character_registry_find(
+        &g_characterRegistry, packageId);
+    return mdkr_modern_character_registry_entry(&g_characterRegistry, index);
+}
+
+MdkrModernCharacterTuning characterRuntimeTuning(
+    const CharacterTuningEdit &edit) {
+    MdkrModernCharacterTuning tuning{};
+    mdkr_modern_character_tuning_defaults(&tuning);
+    tuning.scale = edit.scale;
+    std::copy(std::begin(edit.offset), std::end(edit.offset),
+              tuning.translation);
+    std::copy(std::begin(edit.rotation), std::end(edit.rotation),
+              tuning.rotation_degrees);
+    tuning.animation_speed = edit.animationSpeed;
+    tuning.lod_bias = edit.lodBias;
+    tuning.vehicle_mask = edit.vehicleMask;
+    for (unsigned context = 0u;
+         context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+        tuning.context[context].scale = edit.context[context].scale;
+        std::copy(std::begin(edit.context[context].offset),
+                  std::end(edit.context[context].offset),
+                  tuning.context[context].translation);
+        std::copy(std::begin(edit.context[context].rotation),
+                  std::end(edit.context[context].rotation),
+                  tuning.context[context].rotation_degrees);
+        for (unsigned contact = 0u;
+             contact < MDKR_MODERN_CHARACTER_CONTACTS; ++contact) {
+            std::copy(std::begin(edit.context[context].contacts[contact]),
+                      std::end(edit.context[context].contacts[contact]),
+                      tuning.contact_offset[context][contact]);
+        }
+    }
+    return tuning;
+}
+
+bool applyCharacterStudioRuntime(const CharacterTuningEdit &edit) {
+    MdkrModernCharacterTuning tuning = characterRuntimeTuning(edit);
+    char error[192] = {};
+    if (mdkr_modern_character_set_tuning(
+            0, &tuning, error, sizeof(error))) return true;
+    setStatus(
+        error[0] != '\0' ? error
+                          : "The exact renderer rejected this fit change.",
+        AppTheme::bad());
+    return false;
+}
+
+bool durableCharacterStudioTuning(
+    const MdkrModernCharacterEntry *entry, CharacterTuningEdit &out) {
+    if (g_characterActiveDrafts.find(entry->id) !=
+        g_characterActiveDrafts.end()) {
+        if (persistedActiveCharacterDraftTuning(entry, out)) return true;
+        setStatus(
+            "The named draft baseline could not be read; this edit was cancelled without changing the draft.",
+            AppTheme::bad());
+        return false;
+    }
+    out = persistedCharacterTuning(0, entry->id);
+    return true;
+}
+
+bool persistCharacterStudioTuning(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterTuningEdit &edit) {
+    if (g_characterActiveDrafts.find(entry->id) ==
+        g_characterActiveDrafts.end()) {
+        return persistCharacterTuning(entry->id, edit);
+    }
+    g_characterPreviewResults.erase(entry->id);
+    if (autosaveActiveCharacterDraft(entry)) {
+        setStatus("Fit change saved in the named draft.", AppTheme::good());
+        return true;
+    }
+    setStatus(
+        "The fit change could not be saved in the named draft.",
+        AppTheme::bad());
+    return false;
+}
+
+void rollbackCharacterStudioPersistence(
+    const MdkrModernCharacterEntry *entry, CharacterTuningEdit &edit,
+    const CharacterTuningEdit &persisted) {
+    edit = persisted;
+    if (g_characterActiveDrafts.find(entry->id) ==
+        g_characterActiveDrafts.end()) {
+        stageCharacterTuningConfig(entry->id, persisted);
+    }
+    (void)applyCharacterStudioRuntime(edit);
+
+    /* An undo/redo or coalesced drag may already have moved the Fit track.
+     * Storage failure restores the durable profile, so retaining that moved
+     * stack would make its labels lie about the state they will restore. */
+    CharacterPackageHistory &package = g_characterEditHistories[entry->id];
+    package.tracks[static_cast<size_t>(CharacterHistoryTool::Fit)] =
+        CharacterEditHistory::Track{};
+}
+
+}  // namespace
+
+SettingsCharacterStudioFrame Settings_drawCharacterOffsetStudio(
+    SDL_Window *window, const char *packageId,
+    MdkrCharacterPreviewContext previewContext, bool initializeRuntime) {
+    (void)window;
+    SettingsCharacterStudioFrame frame;
+    const MdkrModernCharacterEntry *entry = characterStudioEntry(packageId);
+    if (entry == nullptr ||
+        previewContext < MDKR_CHARACTER_PREVIEW_SELECT ||
+        previewContext > MDKR_CHARACTER_PREVIEW_PLANE) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "This character or preview context is no longer available.");
+        ui::TextSubtleWrapped(
+            "Return to the Workshop and reopen the exact context. No game or package data was changed here.");
+        frame.returnRequested = ImGui::Button(
+            "Return to Workshop", ui::kBtnFullWidth());
+        return frame;
+    }
+
+    const unsigned context =
+        static_cast<unsigned>(previewContext - MDKR_CHARACTER_PREVIEW_SELECT);
+    static const char *contextNames[MDKR_CHARACTER_CONTEXT_COUNT] = {
+        "Character select", "Car", "Hovercraft", "Plane",
+    };
+    CharacterTuningEdit &edit = loadCharacterTuning(0, entry->id);
+    const CharacterTuningEdit frameStart = edit;
+    if (initializeRuntime && !applyCharacterStudioRuntime(edit)) {
+        ui::TextSubtleWrapped(
+            "The saved fit remains unchanged. Return to the Workshop and reopen this exact context after resolving the renderer error.");
+    }
+    ImGui::TextColored(AppTheme::accent(), "%s", entry->display_name);
+    ImGui::SameLine();
+    ImGui::TextDisabled("· %s · exact game renderer", contextNames[context]);
+    ui::TextSubtleWrapped(
+        context == MDKR_CHARACTER_CONTEXT_SELECT
+            ? "Adjust the model against the real selection-room floor, donor animation, and game camera. Changes appear in the scene on the next rendered frame."
+            : "Adjust the model against the real donor, vehicle, seat frame, animation, and game camera. Changes appear in the scene on the next rendered frame.");
+
+    CharacterHistoryFrame history = beginCharacterHistory(
+        entry, CharacterHistoryTool::Fit);
+    if (history.actionApplied) {
+        CharacterTuningEdit persisted;
+        if (!durableCharacterStudioTuning(entry, persisted)) {
+            rollbackCharacterStudioPersistence(entry, edit, frameStart);
+        } else if (!applyCharacterStudioRuntime(edit) ||
+                   !persistCharacterStudioTuning(entry, edit)) {
+            rollbackCharacterStudioPersistence(entry, edit, persisted);
+        }
+    }
+    CharacterTuningEdit before = edit;
+    CharacterTuningEdit::Context &placement = edit.context[context];
+
+    ImGui::SeparatorText("Source correction");
+    bool edited = false;
+    bool commit = false;
+    edited |= ImGui::SliderFloat(
+        "Character size", &edit.scale, 0.1f, 5.0f, "%.2fx",
+        ImGuiSliderFlags_AlwaysClamp);
+    commit |= ImGui::IsItemDeactivatedAfterEdit();
+    edited |= ImGui::DragFloat3(
+        "Source rotation", edit.rotation, 0.5f, -180.0f, 180.0f,
+        "%.1f°", ImGuiSliderFlags_AlwaysClamp);
+    commit |= ImGui::IsItemDeactivatedAfterEdit();
+    if (ImGui::Button("Turn around 180°")) {
+        edit.rotation[1] = characterWorkshopWrappedDegrees(
+            edit.rotation[1] + 180.0f);
+        edited = commit = true;
+    }
+    ui::SpeakFocusedItem(
+        "Turn model around 180 degrees", nullptr,
+        "Corrects a model that faces backward in every game context.");
+
+    ImGui::SeparatorText("This context");
+    edited |= ImGui::SliderFloat(
+        "Context size", &placement.scale, 0.5f, 2.0f, "%.2fx",
+        ImGuiSliderFlags_AlwaysClamp);
+    commit |= ImGui::IsItemDeactivatedAfterEdit();
+    edited |= ImGui::DragFloat3(
+        "Position", placement.offset, 0.01f, -10.0f, 10.0f,
+        "%.3f m", ImGuiSliderFlags_AlwaysClamp);
+    commit |= ImGui::IsItemDeactivatedAfterEdit();
+    edited |= ImGui::DragFloat3(
+        "Rotation", placement.rotation, 0.5f, -180.0f, 180.0f,
+        "%.1f°", ImGuiSliderFlags_AlwaysClamp);
+    commit |= ImGui::IsItemDeactivatedAfterEdit();
+    ui::TextSubtleWrapped(
+        "Position is relative to the automatic %s anchor. Y moves up/down; Z moves forward/back; X moves left/right.",
+        context == MDKR_CHARACTER_CONTEXT_SELECT ? "ground" : "seat");
+
+    if (context != MDKR_CHARACTER_CONTEXT_SELECT) {
+        const bool contactReady = entry->rig_present != 0u &&
+            entry->rig_mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 &&
+            (entry->rig_flags & MDKR_MODERN_RIG_REVIEWED) != 0u &&
+            entry->rig_role_mask == MDKR_CHARACTER_RIG_HUMANOID_MASK;
+        if (ImGui::TreeNodeEx(
+                "Hand and foot contact fine-tuning",
+                ImGuiTreeNodeFlags_None)) {
+            ui::TextSubtleWrapped(
+                "Move each solved contact relative to the donor vehicle target. Use these only after body position and rotation are correct.");
+            static const char *contactNames[
+                MDKR_MODERN_CHARACTER_CONTACTS] = {
+                    "Left hand", "Right hand", "Left foot", "Right foot",
+                };
+            if (!contactReady) ImGui::BeginDisabled();
+            for (unsigned contact = 0u;
+                 contact < MDKR_MODERN_CHARACTER_CONTACTS; ++contact) {
+                edited |= ImGui::DragFloat3(
+                    contactNames[contact], placement.contacts[contact],
+                    0.005f, -1.0f, 1.0f, "%.3f m",
+                    ImGuiSliderFlags_AlwaysClamp);
+                commit |= ImGui::IsItemDeactivatedAfterEdit();
+            }
+            if (!contactReady) ImGui::EndDisabled();
+            if (!contactReady) {
+                ui::TextSubtleWrapped(
+                    "Available after the inferred humanoid rig and its contact chains are reviewed.");
+            }
+            ImGui::TreePop();
+        }
+    }
+
+    if (ImGui::Button("Reset this context")) {
+        placement = CharacterTuningEdit::Context{};
+        edited = commit = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset source correction")) {
+        edit.scale = 1.0f;
+        std::fill(std::begin(edit.offset), std::end(edit.offset), 0.0f);
+        std::fill(std::begin(edit.rotation), std::end(edit.rotation), 0.0f);
+        edited = commit = true;
+    }
+
+    if (edited) {
+        if (!applyCharacterStudioRuntime(edit)) {
+            edit = before;
+            (void)applyCharacterStudioRuntime(edit);
+        }
+    }
+    if (commit && edit.loaded &&
+        characterFitReviewSignature(entry, before, context) !=
+            characterFitReviewSignature(entry, edit, context)) {
+        CharacterTuningEdit persisted;
+        if (!durableCharacterStudioTuning(entry, persisted)) {
+            rollbackCharacterStudioPersistence(entry, edit, frameStart);
+        } else if (!persistCharacterStudioTuning(entry, edit)) {
+            rollbackCharacterStudioPersistence(entry, edit, persisted);
+        }
+    }
+
+    MdkrModernCharacterFitDiagnostics diagnostics{};
+    frame.fitReady = mdkr_modern_character_player_fit_diagnostics(
+        0, static_cast<MdkrModernCharacterContext>(context),
+        &diagnostics) != 0;
+    frame.measurementReady = frame.fitReady &&
+        g_mdkrCharacterPreviewResult != nullptr &&
+        g_mdkrCharacterPreviewResult->warmup_complete;
+    ImGui::SeparatorText("Exact renderer status");
+    if (frame.measurementReady) {
+        ImGui::TextColored(
+            AppTheme::good(),
+            "Current fit rendered · height %.3f m · anchor Y %.3f m",
+            static_cast<double>(diagnostics.bounds_max[1] -
+                                diagnostics.bounds_min[1]),
+            static_cast<double>(diagnostics.anchor[1]));
+    } else if (frame.fitReady) {
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "Fit is visible · measuring the warmed exact scene…");
+    } else {
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "Updating the exact scene…");
+    }
+    ui::TextSubtleWrapped(
+        "Returning records renderer measurements for this fit, but performance approval remains a separate clean test without editor interaction.");
+
+    const bool editing = ImGui::IsAnyItemActive();
+    if (editing) ImGui::BeginDisabled();
+    frame.returnRequested = ui::PrimaryButton(
+        "Save & return to Workshop", ui::kBtnFullWidth());
+    if (editing) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Save and return to Character Workshop",
+        frame.measurementReady
+            ? "Current fit rendered and measured"
+            : "Waiting for exact renderer measurement",
+        "Waits for the edited fit to render once, then returns to the same Workshop context with current measurements.");
+
+    finishCharacterHistory(entry, history);
+    return frame;
+}
+
+bool Settings_commitCharacterOffsetStudio(
+    const char *packageId, MdkrCharacterPreviewContext previewContext) {
+    const MdkrModernCharacterEntry *entry = characterStudioEntry(packageId);
+    if (entry == nullptr ||
+        previewContext < MDKR_CHARACTER_PREVIEW_SELECT ||
+        previewContext > MDKR_CHARACTER_PREVIEW_PLANE) {
+        setStatus(
+            "The character or exact context is no longer available; return was cancelled without changing its files.",
+            AppTheme::bad());
+        return false;
+    }
+
+    CharacterTuningEdit &edit = loadCharacterTuning(0, entry->id);
+    const unsigned context = static_cast<unsigned>(
+        previewContext - MDKR_CHARACTER_PREVIEW_SELECT);
+    CharacterTuningEdit persisted;
+    if (!durableCharacterStudioTuning(entry, persisted)) return false;
+    if (characterFitReviewSignature(entry, edit, context) ==
+        characterFitReviewSignature(entry, persisted, context)) {
+        return true;
+    }
+    if (persistCharacterStudioTuning(entry, edit)) return true;
+    rollbackCharacterStudioPersistence(entry, edit, persisted);
+    return false;
+}
+
+std::string Settings_characterPreviewCurrentFitSignature(
+    const std::string &packageId,
+    MdkrCharacterPreviewContext previewContext) {
+    const MdkrModernCharacterEntry *entry = characterStudioEntry(
+        packageId.c_str());
+    if (entry == nullptr ||
+        previewContext < MDKR_CHARACTER_PREVIEW_SELECT ||
+        previewContext > MDKR_CHARACTER_PREVIEW_PLANE) return {};
+    const CharacterTuningEdit &edit = loadCharacterTuning(0, entry->id);
+    return characterTestTuningSignature(
+        entry, edit,
+        static_cast<unsigned>(previewContext -
+                              MDKR_CHARACTER_PREVIEW_SELECT));
+}
+
 void Settings_publishCharacterPreviewResult(
     const std::string &packageId,
     const std::string &sourceSha256,
@@ -20519,12 +20935,32 @@ void Settings_publishCharacterPreviewResult(
     const std::string &presentationSha256,
     const std::string &capturePng,
     bool launcherOwnedCapture,
+    bool interactiveStudio,
     const MdkrCharacterPreviewResult &result) {
     if (packageId.empty()) return;
     g_characterPreviewResults[packageId] = CharacterPreviewSessionResult{
         result, sourceSha256, fitSha256, presentationSha256, capturePng,
         launcherOwnedCapture,
     };
+    if (interactiveStudio) {
+        if (fitSha256.empty() ||
+            result.version != MDKR_CHARACTER_PREVIEW_RESULT_VERSION ||
+            !result.started || !result.warmup_complete ||
+            !characterPreviewFitDiagnosticsValid(result) ||
+            !characterPreviewCameraProjectionValid(result) ||
+            !characterPreviewVehicleSurfaceValid(result) ||
+            !characterPreviewContactDiagnosticsValid(result)) {
+            g_characterPreviewResults.erase(packageId);
+            setStatus(
+                "The exact Offset Studio returned without a current renderer fit; reopen this context before reviewing it.",
+                AppTheme::accent());
+        } else {
+            setStatus(
+                "Exact fit saved and measured. Review this context, then run its clean performance test when ready.",
+                AppTheme::good());
+        }
+        return;
+    }
     if (result.pose != MDKR_CHARACTER_PREVIEW_POSE_LIVE) {
         bool launcherCaptureRetained = false;
         const CharacterInspectionPose *pose =

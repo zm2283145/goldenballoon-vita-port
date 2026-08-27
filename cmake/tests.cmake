@@ -2221,6 +2221,10 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/check_overlay_input_handoff.py)
     add_test(
+        NAME character_offset_studio_contract
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_character_offset_studio.py)
+    add_test(
         NAME web_document_structure
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_web_document_structure.py)

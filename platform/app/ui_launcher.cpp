@@ -130,6 +130,8 @@ void fillBootConfig(LauncherState &state, MdkrBootConfig &boot) {
             state.characterPreviewCaptureKind;
         boot.character_preview_auto_return =
             state.characterPreviewAutoReturn ? 1 : 0;
+        boot.character_preview_studio =
+            state.characterPreviewInteractiveStudio ? 1 : 0;
         state.characterPreviewResult = MdkrCharacterPreviewResult{};
         boot.character_preview_result = &state.characterPreviewResult;
     }
@@ -1012,6 +1014,7 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
         s.characterPreviewAutoReturn = preview.autoReturnAfterCapture;
         s.characterPreviewCaptureLauncherOwned =
             preview.launcherOwnedCapture;
+        s.characterPreviewInteractiveStudio = preview.interactiveStudio;
         Launcher_requestTab(s, kLauncherPanelPlay, kLauncherTabPlayer);
     }
     ui::TouchScrollCurrentWindow();
@@ -1057,6 +1060,7 @@ void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out) {
         s.characterPreviewAutoReturn = preview.autoReturnAfterCapture;
         s.characterPreviewCaptureLauncherOwned =
             preview.launcherOwnedCapture;
+        s.characterPreviewInteractiveStudio = preview.interactiveStudio;
         Launcher_requestTab(s, kLauncherPanelPlay, kLauncherTabPlayer);
     }
 }
@@ -1094,10 +1098,15 @@ LauncherAction Launcher::draw(AppHost &host) {
         Settings_publishCharacterPreviewResult(
             state_.characterPreviewPackage,
             state_.characterPreviewSourceSha256,
-            state_.characterPreviewFitSha256,
+            state_.characterPreviewInteractiveStudio
+                ? Settings_characterPreviewCurrentFitSignature(
+                      state_.characterPreviewPackage,
+                      state_.characterPreviewContext)
+                : state_.characterPreviewFitSha256,
             state_.characterPreviewPresentationSha256,
             state_.characterPreviewCapturePng,
             state_.characterPreviewCaptureLauncherOwned,
+            state_.characterPreviewInteractiveStudio,
             state_.characterPreviewResult);
         Launcher_requestTab(
             state_, kLauncherPanelCharacterWorkshop, kLauncherTabPlayer);
@@ -1121,6 +1130,7 @@ LauncherAction Launcher::draw(AppHost &host) {
             MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
         state_.characterPreviewAutoReturn = false;
         state_.characterPreviewCaptureLauncherOwned = false;
+        state_.characterPreviewInteractiveStudio = false;
         state_.characterPreviewDispatched = false;
     }
     state_.hostWindow = host.window();
@@ -1158,8 +1168,38 @@ LauncherAction Launcher::draw(AppHost &host) {
         state_.characterPreviewContext != MDKR_CHARACTER_PREVIEW_NONE &&
         !state_.romValidationPending &&
         !state_.romPlayValidationPending &&
+        !state_.romPlayValidationPassed &&
         !state_.romPath.empty() && state_.romInfo.valid) {
         RomPanel_requestPlayValidation(state_);
+    }
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
+        !state_.characterPreviewPackage.empty() &&
+        state_.characterPreviewContext != MDKR_CHARACTER_PREVIEW_NONE) {
+        static unsigned previewTraceState = ~0u;
+        const unsigned current =
+            (state_.romValidationPending ? 1u : 0u) |
+            (state_.romPlayValidationPending ? 2u : 0u) |
+            (state_.romPlayValidationPassed ? 4u : 0u) |
+            (!state_.romPath.empty() ? 8u : 0u) |
+            (state_.romInfo.valid ? 16u : 0u) |
+            ((state_.romValidationTotal != 0u
+                  ? std::min(10u,
+                        (state_.romValidationBytes * 10u) /
+                            state_.romValidationTotal)
+                  : 0u) << 8u);
+        if (current != previewTraceState) {
+            previewTraceState = current;
+            std::fprintf(
+                stderr,
+                "[app-ui] character-preview handoff validation=%d play-pending=%d play-passed=%d rom-path=%d rom-valid=%d studio=%d progress=%u/%u\n",
+                state_.romValidationPending ? 1 : 0,
+                state_.romPlayValidationPending ? 1 : 0,
+                state_.romPlayValidationPassed ? 1 : 0,
+                state_.romPath.empty() ? 0 : 1,
+                state_.romInfo.valid ? 1 : 0,
+                state_.characterPreviewInteractiveStudio ? 1 : 0,
+                state_.romValidationBytes, state_.romValidationTotal);
+        }
     }
     if (state_.romPlayValidationPassed) {
         state_.romPlayValidationPassed = false;

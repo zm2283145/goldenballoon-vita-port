@@ -39,6 +39,13 @@ struct SettingsCharacterPreviewRequest {
         MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
     bool autoReturnAfterCapture = false;
     bool launcherOwnedCapture = false;
+    bool interactiveStudio = false;
+};
+
+struct SettingsCharacterStudioFrame {
+    bool fitReady = false;
+    bool measurementReady = false;
+    bool returnRequested = false;
 };
 
 // Draw the settings sections (one per MdkrVideoCategory) inside the current
@@ -80,6 +87,20 @@ bool Settings_importCharacterPackage(const char *path);
 // inside a running engine would violate the host/session lifetime contract.
 bool Settings_takeCharacterPreviewRequest(
     SettingsCharacterPreviewRequest &request);
+// Focused editor drawn by the launcher-owned exact-preview overlay. It edits
+// the same persisted profile as Offset Studio and live-publishes validated
+// presentation tuning to player one; it never starts a nested engine session.
+SettingsCharacterStudioFrame Settings_drawCharacterOffsetStudio(
+    SDL_Window *window, const char *packageId,
+    MdkrCharacterPreviewContext context, bool initializeRuntime);
+// Final save gate shared by the visible button and Escape/controller-back
+// confirmation. Returns false after restoring the last durable fit.
+bool Settings_commitCharacterOffsetStudio(
+    const char *packageId, MdkrCharacterPreviewContext context);
+// Rebind an interactive studio result to the profile that actually left the
+// exact renderer. Empty means the package/context is no longer available.
+std::string Settings_characterPreviewCurrentFitSignature(
+    const std::string &packageId, MdkrCharacterPreviewContext context);
 void Settings_publishCharacterPreviewResult(
     const std::string &packageId,
     const std::string &sourceSha256,
@@ -87,6 +108,7 @@ void Settings_publishCharacterPreviewResult(
     const std::string &presentationSha256,
     const std::string &capturePng,
     bool launcherOwnedCapture,
+    bool interactiveStudio,
     const MdkrCharacterPreviewResult &result);
 
 // Discard any in-progress audible Audio slider preview. Used when navigation

@@ -168,6 +168,13 @@ explicitly restricted to the generated fixture and exists only for CI.
   seat translation plus measured facing correction from exact renderer evidence.
   Applying is an explicit, reversible Fit-history edit and always invalidates
   the evidence until the author reruns that context.
+- **Implemented:** open the exact select/car/hovercraft/plane scene as a live,
+  responsive Offset Studio. Overall and per-context corrections publish through
+  the validated runtime tuning seam on the next frame while the scene continues
+  to simulate and editor input cannot reach gameplay. Save failure restores the
+  prior runtime and staged configuration; return waits for a post-edit warmed
+  diagnostic frame and preserves editor runs as fit evidence rather than clean
+  performance approval.
 - **Implemented:** fit each context independently. The guided sequence never
   treats a car/hovercraft/plane correction or review as evidence for another;
   an explicit vehicle-only copy action remains available for intentional reuse.
