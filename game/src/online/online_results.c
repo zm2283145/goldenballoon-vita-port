@@ -144,8 +144,15 @@ typedef struct MdkrOnlineResultsState {
     u8 assets;        /* portrait group + fonts loaded */
     u8 host;          /* local seat is the room leader (advance authority) */
     u8 leave;         /* B: back-out request (edge; PD-T6 return) */
-    u8 haveResults;   /* the engine-captured placements were polled in */
+    u8 haveResults;   /* THIS race's placements were read from the reducer feed */
     u8 advanced;      /* an ADVANCE was already returned for this stage (edge) */
+    u8 advanceCommitted; /* T6ac: host committed the rematch advance -- republish
+                          * rematch_requested EVERY tick until the room leaves
+                          * RESULTS, THEN return ADVANCE (convergence, not a
+                          * one-shot edge a dropped reverse-feed pump could lose) */
+    u8 advanceAuto;      /* how the committed advance fired: 1 == countdown auto,
+                          * 0 == host press (preserved across the convergence wait
+                          * so the witness still reads "(auto)"/"(host)") */
     u8 prevSecs;      /* last countdown second drawn (for the hurry-up SFX edge) */
     u32 stageTicks;   /* countdown accumulator for the current stage */
     u32 pulseTicks;   /* free-running (drives the terminal-hold pulse, never reset) */
@@ -159,9 +166,11 @@ static u32 sWitnessKey = 0xFFFFFFFFu;
 
 /* ---- forward decls (test seam at the bottom) ------------------------------ */
 static void results_test_resolve(void);
-static void results_test_accrue(void);
+static void results_test_capture(void);
 static void results_test_pump(void);
 static void results_test_reduce(void);
+static u8 results_host_press_active(void);
+static u8 results_host_press_both(void);
 
 /* ======================================================================== *
  * Small helpers
@@ -543,24 +552,31 @@ void mdkr_online_results_enter(u8 isFinalRace, u8 raceIndex) {
     }
     sWitnessKey = 0xFFFFFFFFu;
 
-    /* Read THIS race's engine-captured finishing order ONCE (canonical slot ->
-     * placement; 0xFF absent). The resident post-race fork already gated on a
-     * captured result via the NON-consuming availability query, so this poll
-     * hands out the placements to us (the reader that owns them). */
+    /* PD-T6ac POLL-CONTENTION RESOLUTION. This screen NO LONGER consumes the
+     * one-shot engine results poll -- that single owner is the LAUNCHER pump,
+     * which polls mid-residency and PUBLISH_RESULTS to the reducer. THIS race's
+     * finishing order is read from the forward-feed snapshot's last_placements[]
+     * (which the reducer records at PUBLISH_RESULTS), exactly as the cup points
+     * are already read from snapshot.points[]. In the headless soak the launcher
+     * is stood in by the RESULTS test seam, which OWNS the poll there too:
+     * results_test_capture() polls + accrues + publishes the RESULTS snapshot
+     * BELOW so we read it here (inert in a live run -- the real launcher pump has
+     * already published). */
+    results_test_capture();
     {
-        u8 out[MDKR_ONLINE_RACE_RESULT_SLOTS];
-        if (mdkr_online_race_results_poll(out)) {
+        MdkrPartyLinkSnapshot snap;
+        /* Only a genuine RESULTS publication carries a finishing order; the
+         * reducer reaches RESULTS ONLY via PUBLISH_RESULTS, so phase==RESULTS is
+         * the authoritative "placements are present" signal (a bare/LOBBY snapshot
+         * never sets haveResults). */
+        if (mdkr_party_link_read(&snap) &&
+            snap.phase == (uint8_t) RES_PHASE_RESULTS) {
             for (i = 0u; i < RES_SLOTS; i++) {
-                sRes.placements[i] = out[i];
+                sRes.placements[i] = snap.last_placements[i];
             }
             sRes.haveResults = 1u;
         }
     }
-
-    /* Headless stand-in reducer: accrue this race's trophy points into the
-     * scripted forward feed (inert in a normal run). Must run AFTER the poll so
-     * it sees this race's placements. */
-    results_test_accrue();
 
     /* Borrow the real portraits + fonts (the charselect asset-borrow discipline). */
     menu_assetgroup_load(sPortraitAssetIds);
@@ -613,40 +629,50 @@ static void results_input_live(ResInput *in) {
  * are exercised in one soak; the final STANDINGS then holds (F6). */
 static void results_input_scripted(ResInput *in) {
     memset(in, 0, sizeof(*in));
-    if (sRes.stage == RES_STAGE_RESULTS && sRes.stageTicks >= RES_INPUT_GRACE) {
+    if (sRes.stageTicks < RES_INPUT_GRACE) {
+        return;
+    }
+    if (sRes.stage == RES_STAGE_RESULTS) {
+        in->advanceEdge = 1u; /* RESULTS -> STANDINGS (host press) */
+    } else if (results_host_press_both()) {
+        /* PD-T6ac live-resident lane: also press the STANDINGS stage so the host
+         * advance (-> REMATCH) fires promptly rather than after the full ~10s
+         * countdown, keeping the headless resident lane fast. The scripted soak
+         * (host_press_both false) deliberately leaves STANDINGS on the auto path. */
         in->advanceEdge = 1u;
     }
 }
 
 static void results_gather_input(ResInput *in) {
-    if (mdkr_online_results_test_active()) {
+    /* Scripted host input when EITHER the stand-in-reducer soak seam
+     * (MDKR_TEST_ONLINE_RESIDENT) OR the live-resident host-press seam
+     * (MDKR_TEST_ONLINE_RESULTS_HOST_PRESS) is armed; live pad otherwise. */
+    if (mdkr_online_results_test_active() || results_host_press_active()) {
         results_input_scripted(in);
     } else {
         results_input_live(in);
     }
 }
 
-/* PD-T6b: the HOST publishes its post-race REMATCH intent on the reverse feed at
- * the exact moment it advances off a NON-final tournament STANDINGS -- "start the
- * next race". The launcher pump (PD-T6a/c) polls it and drives the reducer's
- * leader-only MDKR_ONLINE_REMATCH (return to LOBBY + tournament race_index++).
+/* PD-T6b/T6ac: the HOST publishes its post-race REMATCH intent on the reverse
+ * feed to "start the next race". The launcher pump polls it and drives the
+ * reducer's leader-only MDKR_ONLINE_REMATCH (return to LOBBY + tournament
+ * race_index++).
  *
- * This is published only on the advance EDGE (not continuously, not during the
- * countdown) so the room advances precisely when the screen decides to, and it is
- * NEVER published for single-race, the final tournament race, or the host's
- * "A: FINISH" on the final standings -- those are the LEAVE/finish path (PD-T6d
- * owns the real return). A joiner never publishes it (watch-only). It replaces
- * the PD-T5 F5 start_requested reuse, which could not work: START_RACE converges
- * on leaving the LOBBY phase, already true throughout RESULTS, so it was a
- * permanent no-op here (the reason this dispatch kind exists). Inert (no-op) when
+ * CONVERGENCE MODEL (carried T6b Important finding): once the host commits the
+ * advance off a NON-final tournament STANDINGS, this is republished EVERY tick
+ * (silently) until the snapshot phase leaves RESULTS -- a one-shot EDGE could be
+ * dropped by a missed/failed/overwritten reverse-feed pump and permanently wedge
+ * the room. The commit is LOGGED once (by the caller) so the witness stays a
+ * per-race event. It is NEVER published for single-race, the final tournament
+ * race, or the host's "A: FINISH" on the final standings -- those are the
+ * LEAVE/finish path. A joiner never publishes it (watch-only). Inert (no-op) when
  * the bridge is uninstalled. */
 static void results_publish_rematch(void) {
     MdkrPartyLinkLocalIntent intent;
     mdkr_party_link_intent_init(&intent);
     intent.rematch_requested = 1u;
     mdkr_party_link_intent_publish(&intent);
-    fprintf(stderr,
-            "[online-results] publish: rematch (host advance -> next race)\n");
 }
 
 MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
@@ -750,26 +776,45 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
                     sRes.host ? (manualEdge ? "host" : "auto") : "joiner-auto");
             return MDKR_ONLINE_RESULTS_STAY;
         }
+    } else if (sRes.host && tournament && sRes.stage == RES_STAGE_STANDINGS) {
+        /* PD-T6ac CONVERGENCE-DRIVEN host advance off a NON-final tournament
+         * STANDINGS ("start the next race" -> REMATCH). On the host's commit edge
+         * (press/auto) latch committed + LOG the rematch once; then republish the
+         * rematch intent EVERY tick until the snapshot phase leaves RESULTS, and
+         * only THEN return the room-affecting ADVANCE. A one-shot edge here could
+         * be lost to a dropped/overwritten reverse-feed pump and wedge the room;
+         * republishing to convergence is robust (mirrors the char/trackselect
+         * convergence model). */
+        if (!sRes.advanceCommitted && (manualEdge || autoFire)) {
+            sRes.advanceCommitted = 1u;
+            sRes.advanceAuto = manualEdge ? 0u : 1u; /* host press vs countdown */
+            sound_play(RES_SFX_ADVANCE, NULL);
+            fprintf(stderr,
+                    "[online-results] publish: rematch (host advance -> next "
+                    "race)\n");
+        }
+        if (sRes.advanceCommitted) {
+            results_publish_rematch();   /* republish EVERY tick until converged */
+            results_test_reduce();       /* soak stand-in reducer (inert if off) */
+            if (haveSnap && snap.phase != (uint8_t) RES_PHASE_RESULTS) {
+                fprintf(stderr, "[online-results] advance: screen done (%s)\n",
+                        sRes.advanceAuto ? "auto" : "host");
+                return MDKR_ONLINE_RESULTS_ADVANCE;
+            }
+            /* Committed but the room is still in RESULTS: hold + keep republishing
+             * ("STARTING NEXT RACE..."). */
+            return MDKR_ONLINE_RESULTS_STAY;
+        }
     } else {
-        /* Screen done (single-race non-final RESULTS, or a non-final STANDINGS):
-         * return the room-affecting ADVANCE. Host: press/auto. Joiner: ONLY when
-         * the snapshot phase has left RESULTS (the host/reducer moved on). */
+        /* Screen done (single-race non-final RESULTS, or a joiner following the
+         * authoritative phase). Host: press/auto (one-shot -- no REMATCH here).
+         * Joiner: ONLY when the snapshot phase has left RESULTS. */
         u8 hostAdvance = (sRes.host && (manualEdge || autoFire)) ? 1u : 0u;
         u8 joinerFollow = (!sRes.host && haveSnap &&
                            snap.phase != (uint8_t) RES_PHASE_RESULTS) ? 1u : 0u;
         if ((hostAdvance || joinerFollow) && !sRes.advanced) {
             sound_play(RES_SFX_ADVANCE, NULL);
             sRes.advanced = 1u;
-            /* PD-T6b: a HOST advancing off a NON-final tournament STANDINGS is
-             * "start the next race" -> publish the REMATCH reverse feed so the
-             * launcher drives MDKR_ONLINE_REMATCH. ONLY here: single-race / the
-             * final race are terminal (handled above -> the LEAVE/finish path),
-             * and a joiner-follow (which never presses) must not publish. */
-            if (hostAdvance && tournament &&
-                sRes.stage == RES_STAGE_STANDINGS) {
-                results_publish_rematch();
-                results_test_reduce(); /* soak stand-in reducer (inert if off) */
-            }
             fprintf(stderr, "[online-results] advance: screen done (%s)\n",
                     hostAdvance ? (manualEdge ? "host" : "auto")
                                 : "joiner-follow");
@@ -797,6 +842,7 @@ static s8 sTestActive = -1; /* -1 unresolved, 0 off, 1 on */
 static u8 sTestInstalled;
 static MdkrPartyLinkSnapshot sTestRoom;
 static u16 sTestPoints[RES_SLOTS];   /* running cup totals (persist across races) */
+static u8 sTestLastPlacements[RES_SLOTS]; /* THIS race's finish order (the poll) */
 static u8 sTestSeatChar[RES_SLOTS] = {0u, 5u, 0xFFu, 0xFFu}; /* Diddy / Bumper */
 /* PD-T6b: the stand-in reducer's own cup round counter -- advanced ONLY when it
  * observes the REMATCH reverse-feed intent (results_test_reduce), NEVER off the
@@ -814,23 +860,40 @@ static void results_test_resolve(void) {
     }
 }
 
-/* Accrue this race's trophy points (called from _enter, after the poll). */
-static void results_test_accrue(void) {
+/* PD-T6ac stand-in LAUNCHER (headless soak only): the single owner of the
+ * one-shot engine results poll (mirroring the live launcher pump), called from
+ * _enter BEFORE the screen reads the snapshot. It polls THIS race's captured
+ * finishing order, accrues the trophy points into the running cup total, and
+ * PUBLISHES a forward-feed snapshot (mode=TOURNAMENT, phase=RESULTS, race_index,
+ * points[], last_placements[], two seats) -- so the RESULTS screen reads
+ * placements from the snapshot (never the poll), exactly as on the live feed.
+ * Inert in a normal/live run. */
+static void results_test_capture(void) {
     unsigned i;
+    u8 polled[MDKR_ONLINE_RACE_RESULT_SLOTS];
     results_test_resolve();
     if (!sTestActive) {
         return;
     }
+    for (i = 0u; i < RES_SLOTS; i++) {
+        sTestLastPlacements[i] = RES_PLACE_NONE;
+    }
+    /* OWN the consuming poll (stand-in for the launcher's mid-residency poll). */
+    if (mdkr_online_race_results_poll(polled)) {
+        for (i = 0u; i < RES_SLOTS; i++) {
+            sTestLastPlacements[i] = polled[i];
+        }
+    }
     memset(&sTestRoom, 0, sizeof(sTestRoom));
     sTestRoom.mode = (uint8_t) RES_MODE_TOURNAMENT;
-    sTestRoom.phase = 4u; /* MDKR_ONLINE_RESULTS (display only) */
+    sTestRoom.phase = (uint8_t) RES_PHASE_RESULTS; /* MDKR_ONLINE_RESULTS */
     /* PD-T6b: the round is what the stand-in reducer has advanced via observed
      * REMATCH intents (results_test_reduce), not the session boot count. */
     sTestRoom.race_index = sTestRaceIndex;
     sTestRoom.configured_track = 0xFFFFu;
     sTestRoom.cup_id = 2u; /* Sherbet cup (matches the trackselect joiner lane) */
     for (i = 0u; i < RES_SLOTS; i++) {
-        u8 place = sRes.placements[i];
+        u8 place = sTestLastPlacements[i];
         if (place < 8u) {
             sTestPoints[i] = (u16) (sTestPoints[i] + sTrophyPoints[place]);
         }
@@ -848,6 +911,16 @@ static void results_test_accrue(void) {
     sTestRoom.seats[1].connected = 1u;
     sTestRoom.seats[1].character_id = sTestSeatChar[1];
     memcpy(sTestRoom.seats[1].name, "RIVAL", sizeof("RIVAL"));
+    if (!sTestInstalled || !mdkr_party_link_active()) {
+        mdkr_party_link_clear();
+        (void) mdkr_party_link_install();
+        sTestInstalled = 1u;
+        fprintf(stderr,
+                "[online-results] test-script install (scripted STANDINGS feed; "
+                "points=%u,%u)\n",
+                (unsigned) sTestRoom.points[0], (unsigned) sTestRoom.points[1]);
+    }
+    mdkr_party_link_publish(&sTestRoom); /* ready for _enter to read below */
 }
 
 static void results_test_pump(void) {
@@ -859,21 +932,17 @@ static void results_test_pump(void) {
         mdkr_party_link_clear();
         (void) mdkr_party_link_install();
         sTestInstalled = 1u;
-        fprintf(stderr,
-                "[online-results] test-script install (scripted STANDINGS feed; "
-                "points=%u,%u)\n",
-                (unsigned) sTestRoom.points[0], (unsigned) sTestRoom.points[1]);
     }
     mdkr_party_link_publish(&sTestRoom);
 }
 
-/* PD-T6b stand-in reducer: called right after the results screen publishes its
- * REMATCH reverse-feed intent on a host advance. It POLLS that intent and, on
- * rematch_requested, advances the scripted room's cup round -- exactly what the
- * launcher reducer's MDKR_ONLINE_REMATCH does (LOBBY + race_index++). This is the
- * soak's proof that the screen moves to the next race via REMATCH (not the old
- * start_requested signal): the next race's accrue publishes the advanced
- * race_index the STANDINGS witness then shows. Inert in a normal run. */
+/* PD-T6b/T6ac stand-in reducer: polls the RESULTS screen's republished REMATCH
+ * intent and, on rematch_requested, advances the scripted room's cup round AND
+ * leaves the RESULTS phase (-> LOBBY) -- exactly what the launcher reducer's
+ * leader-only, RESULTS-gated MDKR_ONLINE_REMATCH does. The phase gate makes the
+ * every-tick republish idempotent (race_index advances exactly once), and the
+ * phase-leaves-RESULTS is the screen's convergence signal to finally ADVANCE.
+ * Inert in a normal run. */
 static void results_test_reduce(void) {
     MdkrPartyLinkLocalIntent intent;
     results_test_resolve();
@@ -881,14 +950,35 @@ static void results_test_reduce(void) {
         return;
     }
     if (mdkr_party_link_intent_poll(&intent) && intent.rematch_requested) {
-        if (sTestRaceIndex < 0xFFu) {
-            sTestRaceIndex++;
+        if (sTestRoom.phase == (uint8_t) RES_PHASE_RESULTS) {
+            if (sTestRaceIndex < 0xFFu) {
+                sTestRaceIndex++;
+            }
+            sTestRoom.phase = 1u; /* MDKR_ONLINE_LOBBY -- convergence signal */
+            fprintf(stderr,
+                    "[online-results] test-reducer: rematch observed -> "
+                    "race_index=%u\n",
+                    (unsigned) sTestRaceIndex);
         }
-        fprintf(stderr,
-                "[online-results] test-reducer: rematch observed -> "
-                "race_index=%u\n",
-                (unsigned) sTestRaceIndex);
     }
+}
+
+/* PD-T6ac live-resident host-press seam (env MDKR_TEST_ONLINE_RESULTS_HOST_PRESS):
+ * make the RESULTS screen advance via a scripted HOST press (both stages) instead
+ * of the ~25s auto countdown, so the LIVE-loopback resident lane runs fast and
+ * proves the host-advance -> REMATCH path explicitly. This does NOT enable the
+ * stand-in reducer/feed above (that stays MDKR_TEST_ONLINE_RESIDENT-only): the
+ * live launcher pump owns the real feed. Inert unless the env is set. */
+static s8 sHostPressActive = -1;
+static u8 results_host_press_active(void) {
+    if (sHostPressActive < 0) {
+        const char *e = getenv("MDKR_TEST_ONLINE_RESULTS_HOST_PRESS");
+        sHostPressActive = (e != NULL && e[0] != '\0') ? 1 : 0;
+    }
+    return (u8) (sHostPressActive > 0 ? 1 : 0);
+}
+static u8 results_host_press_both(void) {
+    return results_host_press_active();
 }
 
 u8 mdkr_online_results_test_active(void) {

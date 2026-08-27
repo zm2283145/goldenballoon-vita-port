@@ -1689,6 +1689,119 @@ bool loopbackTournamentContinuation(MdkrOnlineTestLoopbackRace *race) {
 
 }  // namespace
 
+/* ======================================================================== *
+ * PD-T6ac: per-round re-cycle for a RESIDENT LIVE session.
+ *
+ * Driven by the launcher overlay service the instant the native RESULTS screen's
+ * host-advance REMATCH (reverse feed) has returned the room to LOBBY with
+ * race_index advanced. Mirrors loopbackTournamentContinuation's PROVEN per-round
+ * dance, but for the IN-PROCESS resident engine (the engine will race the round,
+ * not us): clear the roster runtime (the adapter re-installs at the next
+ * BEGIN_LOADING), re-Ready both endpoints (selections persist across REMATCH; a
+ * tournament offers no track vote -- T6h owns per-round NATIVE re-selection), the
+ * leader STARTs the round with the round track's raw table mask, and both race
+ * transports reach READY on a fresh epoch. Returns the visible endpoint's NEW
+ * match_epoch, or 0 on failure.
+ *
+ * BLOCKING: the RESULTS screen holds its last frame while this runs (single-
+ * threaded launcher/engine alternation -- party_link.h:13-20). That is acceptable
+ * for the headless resident PROOF; making it frame-driven for interactive play is
+ * T6h's job (the biggest carried concern).
+ * ======================================================================== */
+uint32_t OnlineRoom_residentAdvanceRound(IMdkrOnlineAdapter *visible,
+                                         IMdkrOnlineAdapter *peer) {
+    if (visible == nullptr || peer == nullptr) return 0u;
+    std::vector<IMdkrOnlineAdapter *> both{visible, peer};
+    auto fail = [](const char *step) -> uint32_t {
+        std::fprintf(stderr,
+                     "[online-resident-live] round advance error step=%s\n", step);
+        return 0u;
+    };
+    auto lobbyOf = [](IMdkrOnlineAdapter *a) {
+        MdkrOnlineLobby l{};
+        (void)mdkr_online_live_adapter_lobby(a, &l);
+        return l;
+    };
+    /* REMATCH/START are leader-only; resolve the leader by the view model. */
+    IMdkrOnlineAdapter *leader =
+        loopbackView(visible).local_member_is_leader ? visible : peer;
+    IMdkrOnlineAdapter *joiner = (leader == visible) ? peer : visible;
+
+    /* The REMATCH already landed via the reverse feed (caller saw LOBBY +
+     * race_index++). Clear the roster runtime so the next BEGIN_LOADING
+     * re-installs a fresh one (once-only install; mirrors
+     * runOnlineLiveEngineSession's per-race teardown / loopbackTournament-
+     * Continuation's per-round clear). */
+    mdkr_net_roster_runtime_clear();
+
+    const unsigned round = static_cast<unsigned>(lobbyOf(leader).race_index);
+    const unsigned cup = static_cast<unsigned>(lobbyOf(leader).cup_id);
+
+    /* Both endpoints back in SELECTING at the new race_index. */
+    if (!loopbackPumpUntil(both, [&]() {
+            return lobbyOf(leader).phase == MDKR_ONLINE_LOBBY &&
+                   lobbyOf(joiner).phase == MDKR_ONLINE_LOBBY &&
+                   loopbackView(leader).kind == MDKR_ONLINE_VIEW_SELECTING &&
+                   loopbackView(joiner).kind == MDKR_ONLINE_VIEW_SELECTING;
+        }, 15000u)) {
+        return fail("selecting");
+    }
+
+    /* Re-Ready both (selections persist; a tournament has no track vote). */
+    for (IMdkrOnlineAdapter *self : both) {
+        if (!loopbackPumpUntil(both, [&]() {
+                return loopbackView(self).primary.action ==
+                       MDKR_ONLINE_VIEW_ACTION_READY;
+            }, 10000u)) {
+            return fail("ready-offer");
+        }
+        self->submit(loopbackCmd(self, MDKR_ONLINE_VIEW_ACTION_READY, 0u, 1u));
+    }
+    if (!loopbackPumpUntil(both, [&]() {
+            return loopbackView(leader).ready_count == 2u &&
+                   loopbackView(joiner).ready_count == 2u;
+        }, 10000u)) {
+        return fail("ready-both");
+    }
+
+    /* Leader STARTs this round with the round track's raw table mask (the
+     * admission equality the engine enforces at boot). */
+    const uint16_t roundTrack =
+        mdkr_online_cup_track(static_cast<uint8_t>(cup), round);
+    const MdkrOnlineTrackInfo *info = mdkr_online_track_by_id(roundTrack);
+    if (info == nullptr) return fail("round-track");
+    if (!loopbackPumpUntil(both, [&]() {
+            return loopbackView(leader).primary.action ==
+                   MDKR_ONLINE_VIEW_ACTION_START_RACE;
+        }, 10000u)) {
+        return fail("start-offer");
+    }
+    leader->submit(loopbackCmd(leader, MDKR_ONLINE_VIEW_ACTION_START_RACE, 0u,
+                               info->vehicle_mask));
+
+    /* Both race transports reach READY on a fresh epoch; the adapter re-installs
+     * the process-global roster at BEGIN_LOADING. */
+    if (!loopbackPumpUntil(both, [&]() {
+            MdkrOnlineLiveRaceInfo ia{}, ib{};
+            return mdkr_online_live_adapter_race_info(leader, &ia) && ia.ready &&
+                   mdkr_online_live_adapter_race_info(joiner, &ib) && ib.ready;
+        }, 30000u)) {
+        return fail("race-ready");
+    }
+    if (!mdkr_net_roster_runtime_active()) return fail("roster-reinstall");
+
+    MdkrOnlineLiveRaceInfo vinfo{};
+    if (!mdkr_online_live_adapter_race_info(visible, &vinfo) || !vinfo.ready) {
+        return fail("visible-race-info");
+    }
+    std::fprintf(stderr,
+                 "[online-resident-live] round %u race-ready track=%u epoch=%u "
+                 "(roster re-installed)\n",
+                 round + 1u, static_cast<unsigned>(roundTrack),
+                 static_cast<unsigned>(vinfo.matchEpoch));
+    return vinfo.matchEpoch;
+}
+
 void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race) {
     /* Test-only multi-race continuation: only under
      * MDKR_APP_TEST_ONLINE_MODE=tournament (see the block comment above).
@@ -1697,7 +1810,13 @@ void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race) {
      * default env this is a plain delete, exactly as before. */
     if (race != nullptr) {
         const char *mode = std::getenv("MDKR_APP_TEST_ONLINE_MODE");
-        if (mode != nullptr && std::strcmp(mode, "tournament") == 0) {
+        /* PD-T6ac: the RESIDENT LIVE lane already drove every round IN-PROCESS
+         * (OnlineRoom_residentAdvanceRound per round, in the engine boot), so do
+         * NOT also run the post-exit transport-level continuation here -- that is
+         * only for the non-resident tournament gate. */
+        const bool resident =
+            std::getenv("MDKR_APP_TEST_ONLINE_LIVE_RESIDENT") != nullptr;
+        if (!resident && mode != nullptr && std::strcmp(mode, "tournament") == 0) {
             (void)loopbackTournamentContinuation(race);
         }
     }

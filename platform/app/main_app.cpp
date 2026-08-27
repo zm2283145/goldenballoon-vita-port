@@ -1102,12 +1102,31 @@ struct LiveMatchInputContext {
  * menu walk that precedes the race level. Single instance per boot. */
 LiveMatchInputContext *g_liveMatchInput = nullptr;
 
+/* PD-T6ac RESIDENT LIVE coordinator (set only by the resident-live lane; null for
+ * every existing lane). Driven each engine frame from liveOverlayService -- the
+ * ONLY launcher code that runs while the engine is resident -- it OWNS the one-
+ * shot results poll (PUBLISH_RESULTS mid-residency), pumps BOTH party_link feeds
+ * so the native RESULTS screen fronts on the real reducer feed, and drives the
+ * per-round re-cycle (REMATCH via the reverse feed -> re-Ready -> START ->
+ * re-install the match-input source with the fresh match_epoch) so race N+1 boots
+ * IN THE SAME engine process. */
+struct LiveResidentState {
+    IMdkrOnlineAdapter *visible = nullptr;
+    IMdkrOnlineAdapter *peer = nullptr;
+    LiveMatchInputContext *ctx = nullptr;
+    std::uint8_t raceIndex = 0u; /* reducer race_index at the last PUBLISH_RESULTS */
+    enum class Phase { Racing, Results, Done } phase = Phase::Racing;
+};
+LiveResidentState *g_liveResident = nullptr;
+static void liveResidentServiceStep(void);
+
 extern "C" {
 static void liveOverlayService(void) {
     LiveMatchInputContext *ctx = g_liveMatchInput;
     if (ctx == nullptr) return;
     if (ctx->visible != nullptr) ctx->visible->service();
     if (ctx->peer != nullptr) ctx->peer->service();
+    if (g_liveResident != nullptr) liveResidentServiceStep();
 }
 static int liveOverlayProcessEvent(const void * /*sdl_event*/) { return 0; }
 static int liveOverlayWantsInput(void) { return 0; }
@@ -1362,7 +1381,8 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
                                IMdkrOnlineAdapter *peer,
                                unsigned paceAdvanceHz = 0u,
                                bool syntheticInput = false,
-                               LiveRaceEndReason *endReasonOut = nullptr) {
+                               LiveRaceEndReason *endReasonOut = nullptr,
+                               bool resident = false) {
     if (endReasonOut != nullptr) *endReasonOut = LiveRaceEndReason::Completed;
     if (visible == nullptr) return 2;
     if (!mdkr_net_roster_runtime_active()) {
@@ -1426,6 +1446,26 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
         return 2;
     }
     g_liveMatchInput = &context;
+
+    /* PD-T6ac RESIDENT LIVE: install the party_link bridge for the whole session
+     * and arm the per-frame coordinator (g_liveResident) so the session spans
+     * >= 2 races in THIS ONE engine boot -- the native RESULTS screen fronting on
+     * the real reducer feed between races, the host advance driving a REAL REMATCH
+     * via the reverse feed, and race N+1 re-cycled + booted in-process. Only the
+     * resident-live lane sets `resident`; every existing lane leaves it false, so
+     * the bridge is never installed and the coordinator never runs (byte-behavior
+     * unchanged). */
+    LiveResidentState residentState;
+    if (resident) {
+        OnlineRoom_installPartyLink();
+        residentState.visible = visible;
+        residentState.peer = peer;
+        residentState.ctx = &context;
+        g_liveResident = &residentState;
+        std::fprintf(stderr,
+                     "[online-resident-live] residency armed (party_link bridge "
+                     "installed; per-round re-cycle coordinator live)\n");
+    }
 
     static const AppOverlayHooks liveHooks = {
         liveOverlayProcessEvent, liveOverlayService, liveOverlayWantsInput,
@@ -1541,6 +1581,12 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
     platformSetHostWebGpu(nullptr, nullptr, nullptr, nullptr, nullptr, 0);
     platformSetHostWindow(nullptr, nullptr);
     g_liveMatchInput = nullptr;
+    /* PD-T6ac: retire the resident coordinator + party_link bridge (session end).
+     * No-op when not resident. */
+    if (resident) {
+        g_liveResident = nullptr;
+        OnlineRoom_clearPartyLink();
+    }
     mdkr_match_input_runtime_clear();
     /* This boot owned the roster: retire it so nothing downstream inherits it.
      * Multi-race rooms REQUIRE this clear: the runtime install is once-only
@@ -1626,6 +1672,109 @@ void reportOnlineRaceResults(
                  "[online-live] race results: no results captured "
                  "(endReason=%d)\n",
                  static_cast<int>(endReason));
+}
+
+/* PD-T6ac RESIDENT LIVE per-frame coordinator (see LiveResidentState). Runs from
+ * liveOverlayService every engine frame while g_liveResident is set. */
+static void liveResidentServiceStep(void) {
+    LiveResidentState *rs = g_liveResident;
+    if (rs == nullptr || rs->visible == nullptr) return;
+
+    /* Pump BOTH party_link feeds every frame -- the forward feed (reducer lobby ->
+     * snapshot) the native RESULTS screen renders, and the reverse feed (engine
+     * intents -> reducer commands) the host's RESULTS advance publishes REMATCH
+     * on. These pumps have no other production caller; this is their live wiring. */
+    OnlineRoom_pumpPartyLink(rs->visible);
+    OnlineRoom_pumpPartyLinkIntent(rs->visible);
+
+    if (rs->phase == LiveResidentState::Phase::Racing) {
+        /* POLL-CONTENTION single owner: the launcher pump owns the one-shot engine
+         * results poll. When THIS race captures a finish order, PUBLISH_RESULTS to
+         * the reducer (-> RESULTS phase) so the native RESULTS screen fronts on the
+         * real feed and mdkr_online_session_resume_results() sees RESULTS. The
+         * native screen reads placements from snapshot.last_placements, NOT this
+         * poll -- no collision. */
+        std::uint8_t placements[MDKR_ONLINE_RACE_RESULT_SLOTS];
+        if (mdkr_online_race_results_poll(placements)) {
+            const bool reported =
+                mdkr_online_live_adapter_report_results(rs->visible, placements);
+            MdkrOnlineLobby lobby{};
+            (void)mdkr_online_live_adapter_lobby(rs->visible, &lobby);
+            rs->raceIndex = lobby.race_index;
+            std::fprintf(stderr,
+                         "[online-resident-live] race results reported "
+                         "placements=%u,%u,%u,%u accepted=%d race_index=%u\n",
+                         static_cast<unsigned>(placements[0]),
+                         static_cast<unsigned>(placements[1]),
+                         static_cast<unsigned>(placements[2]),
+                         static_cast<unsigned>(placements[3]), reported ? 1 : 0,
+                         static_cast<unsigned>(lobby.race_index));
+            /* Re-publish the forward feed AFTER report so the snapshot carries the
+             * RESULTS phase + last_placements this same frame. */
+            OnlineRoom_pumpPartyLink(rs->visible);
+            rs->phase = LiveResidentState::Phase::Results;
+        }
+        return;
+    }
+
+    if (rs->phase == LiveResidentState::Phase::Results) {
+        /* The native RESULTS screen fronts; the host's advance publishes rematch on
+         * the reverse feed, which the intent pump above dispatches as the reducer's
+         * leader-only REMATCH. Wait for it to actually land (LOBBY + race_index
+         * advanced), then drive the per-round re-cycle to a fresh race-ready
+         * transport and re-install the match-input source with the new epoch. */
+        MdkrOnlineLobby lobby{};
+        if (!mdkr_online_live_adapter_lobby(rs->visible, &lobby)) return;
+        if (lobby.phase == MDKR_ONLINE_LOBBY && lobby.race_index > rs->raceIndex) {
+            std::fprintf(stderr,
+                         "[online-resident-live] rematch observed race_index=%u "
+                         "(reverse feed) -> advancing round\n",
+                         static_cast<unsigned>(lobby.race_index));
+            const std::uint32_t newEpoch =
+                OnlineRoom_residentAdvanceRound(rs->visible, rs->peer);
+            if (newEpoch == 0u) {
+                std::fprintf(stderr,
+                             "[online-resident-live] round advance FAILED -- "
+                             "ending residency\n");
+                rs->phase = LiveResidentState::Phase::Done;
+                return;
+            }
+            /* Re-install the match-input source with the NEW match_epoch (the
+             * installed source's epoch is pinned at install; REMATCH minted a fresh
+             * one). The engine session is idling in LOBBY_WAIT, so no drain races
+             * this clear/install (single-threaded launcher/engine alternation). */
+            MdkrOnlineLiveRaceInfo info{};
+            (void)mdkr_online_live_adapter_race_info(rs->visible, &info);
+            mdkr_match_input_runtime_clear();
+            rs->ctx->epoch = info.matchEpoch;
+            rs->ctx->activeMask = info.activeSlotMask;
+            rs->ctx->racedTicks = 0u;
+            rs->ctx->drainCalls = 0u;
+            rs->ctx->advanceFailed = false;
+            rs->ctx->endReason = LiveRaceEndReason::Completed;
+            const MdkrMatchInputSource source = {
+                MDKR_MATCH_INPUT_SOURCE_VERSION, info.matchEpoch, rs->ctx,
+                liveDrainMatchInput,   liveInputsForTick,
+                liveTakeDirtyMatchInput, liveAiMaskMatchInput,
+            };
+            if (!mdkr_match_input_runtime_install(&source)) {
+                std::fprintf(stderr,
+                             "[online-resident-live] match-input reinstall "
+                             "refused -- ending residency\n");
+                rs->phase = LiveResidentState::Phase::Done;
+                return;
+            }
+            std::fprintf(stderr,
+                         "[online-resident-live] next race armed: epoch=%u "
+                         "active=0x%02x (match-input re-installed; session "
+                         "LOBBY_WAIT will boot it)\n",
+                         static_cast<unsigned>(info.matchEpoch),
+                         static_cast<unsigned>(info.activeSlotMask));
+            rs->phase = LiveResidentState::Phase::Racing;
+        }
+        return;
+    }
+    /* Phase::Done -- nothing more; the tick budget ends the process. */
 }
 #endif /* MDKR_ENABLE_ONLINE_BETA */
 
@@ -2991,6 +3140,42 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
      * MDKR_APP_AUTOPLAY_INPUT_SCRIPT navigate the engine to the agreed track;
      * MDKR_APP_AUTOPLAY_TICKS bounds the run). Ordinary autoplay never sets this
      * variable, so the loopback harness stays inert. */
+    /* PD-T6ac KEYSTONE PROOF: the LIVE-loopback RESIDENT lane. Stand up the SAME
+     * two-real-adapter loopback race the MDKR_APP_TEST_ONLINE_LIVE lane below
+     * uses, but make the engine session RESIDENT: ONE mdkr64_engine_boot spans
+     * >= 2 races, the native RESULTS screen fronting on the REAL reducer feed
+     * between races (party_link bridge + launcher pump), the host advance driving
+     * a REAL REMATCH through the reverse feed, and race N+1 re-cycled + booted in
+     * the same process. Requires a tournament room (MDKR_APP_TEST_ONLINE_MODE=
+     * tournament) so a cup schedules >= 2 rounds. Ordinary autoplay never sets
+     * this, so it stays inert; the existing MDKR_APP_TEST_ONLINE_LIVE lane below
+     * (no resident env) is byte-behavior-unchanged (boots once, exits, continues
+     * at the transport level for the tournament gate). */
+    if (const char *residentLiveEnv =
+            std::getenv("MDKR_APP_TEST_ONLINE_LIVE_RESIDENT");
+        residentLiveEnv != nullptr &&
+        std::strtoul(residentLiveEnv, nullptr, 10) > 0ul) {
+        std::string liveErr;
+        MdkrOnlineTestLoopbackRace *race =
+            OnlineRoom_makeTestLoopbackRace(&liveErr);
+        if (race == nullptr) {
+            std::fprintf(stderr,
+                         "[online-resident-live] loopback race setup failed: %s\n",
+                         liveErr.c_str());
+            host.shutdown();
+            return 2;
+        }
+        const int liveResult = runOnlineLiveEngineSession(
+            host, config, OnlineRoom_testLoopbackVisible(race),
+            OnlineRoom_testLoopbackPeer(race), 0u, /*syntheticInput=*/true,
+            /*endReasonOut=*/nullptr, /*resident=*/true);
+        /* The resident coordinator OWNED every race's results poll + PUBLISH_-
+         * RESULTS mid-residency, so there is NO post-exit report here (unlike the
+         * non-resident lane below). */
+        OnlineRoom_destroyTestLoopbackRace(race);
+        host.shutdown();
+        return liveResult;
+    }
     if (std::getenv("MDKR_APP_TEST_ONLINE_LIVE") != nullptr) {
         std::string liveErr;
         MdkrOnlineTestLoopbackRace *race =

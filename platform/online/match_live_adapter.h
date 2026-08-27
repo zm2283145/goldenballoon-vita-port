@@ -741,6 +741,15 @@ IMdkrOnlineAdapter *OnlineRoom_testLoopbackPeer(
     MdkrOnlineTestLoopbackRace *race);
 void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race);
 
+/* PD-T6ac: per-round re-cycle for a RESIDENT LIVE session -- drive the room from
+ * a just-landed (reverse-feed) REMATCH back to a fresh race-ready transport
+ * (clear roster, re-Ready both endpoints, leader START, wait both race-ready,
+ * roster re-installed). Returns the visible endpoint's NEW match_epoch, or 0 on
+ * failure. Blocking (the RESULTS screen holds while it runs). Defined in
+ * platform/app/online_live_wiring.cpp. */
+uint32_t OnlineRoom_residentAdvanceRound(IMdkrOnlineAdapter *visible,
+                                         IMdkrOnlineAdapter *peer);
+
 /* ---- Test-only single-adapter CLOUD race driver ---------------------------
  * (MDKR_APP_TEST_ONLINE_LIVE_CLOUD) ------------------------------------------
  *

@@ -26,6 +26,8 @@
 #include "thread3_main.h"
 #include "net/party_link.h"
 #include "net/online_race_results.h"   /* PD-T5 captured-placements availability */
+#include "net/net_roster_runtime.h"    /* PD-T6ac per-round launch descriptor re-fetch */
+#include "net/match_input_runtime.h"   /* PD-T6ac live re-wait: match-input epoch gate */
 #include "online/online_charselect.h"  /* PD-T2 native CHARSELECT phase */
 #include "online/online_trackselect.h" /* PD-T3 native TRACKSELECT phase +
                                           mdkr_online_trackselect_cup_track */
@@ -79,6 +81,17 @@ typedef struct MdkrOnlineSessionState {
      * clears the sticky intendedTrack stash instead of carrying a stale pick into
      * the boot's divergence check. 0xFF == none observed yet. */
     u8 lastModeSeen;
+    /* PD-T6ac: LIVE residency (a real two-adapter session, resumed on the reducer
+     * snapshot showing RESULTS -- NOT the scripted MDKR_TEST_ONLINE_RESIDENT
+     * soak). It changes the RESULTS->next-race path: instead of re-booting inline
+     * (the scripted soak, no transport), the session re-enters LOBBY_WAIT and
+     * waits for the launcher to re-cycle the room to a fresh race-ready transport
+     * (a new match_epoch) before booting. */
+    u8 liveResident;
+    /* PD-T6ac: the match_epoch of the race this session last booted. In a LIVE
+     * resident re-wait, the next boot is gated on the runtime descriptor's epoch
+     * having advanced past this (the launcher's fresh per-round install). */
+    u32 bootedEpoch;
 } MdkrOnlineSessionState;
 
 /* Session-owned state -- deliberately NOT any offline global. */
@@ -222,14 +235,41 @@ static void online_session_resident_resolve(void) {
     if (sResidentResolved < 0) {
         const char *e = getenv("MDKR_TEST_ONLINE_RESIDENT");
         unsigned long n = (e != NULL) ? strtoul(e, NULL, 10) : 0ul;
+        if (n == 0ul) {
+            /* PD-T6ac: the LIVE-loopback resident lane's TARGET race count (the
+             * scripted-soak env is unset there). Residency itself latches off the
+             * reducer snapshot at resume -- this only sizes the RESULTS screen's
+             * isFinal decision. Non-resident live lanes set neither env, so this
+             * stays 0 (isFinal path irrelevant -- they exit at postrace). */
+            const char *le = getenv("MDKR_APP_TEST_ONLINE_LIVE_RESIDENT");
+            n = (le != NULL) ? strtoul(le, NULL, 10) : 0ul;
+        }
         sResidentRaces = (u32) n;
         sResidentResolved = (n > 0ul) ? 1 : 0;
     }
 }
 
 static void online_session_boot_race(void) {
-    u16 intended = sOnlineSession.intendedTrack;
-    s32 manifestTrack = (s32) sOnlineSession.launch->manifest.track_id;
+    u16 intended;
+    s32 manifestTrack;
+
+    /* PD-T6ac: RE-FETCH the launch descriptor each boot. mdkr_online_session_begin
+     * stashed race 1's; but in a resident LIVE session the launcher clears +
+     * re-installs the roster/descriptor per round (a fresh match_epoch and, in a
+     * tournament, the next cup track), so a stale race-1 pointer would boot the
+     * wrong race. Re-reading here picks up each round's fresh descriptor. Falls
+     * back to the stashed pointer when the runtime has none (the scripted soak
+     * keeps a single install, so this returns the same descriptor). */
+    {
+        const MdkrMatchLaunchDescriptorV1 *launch =
+            mdkr_net_roster_runtime_launch_descriptor();
+        if (launch != NULL) {
+            sOnlineSession.launch = launch;
+        }
+    }
+    intended = sOnlineSession.intendedTrack;
+    manifestTrack = (s32) sOnlineSession.launch->manifest.track_id;
+    sOnlineSession.bootedEpoch = sOnlineSession.launch->manifest.match_epoch;
 
     sOnlineSession.raceCount++; /* PD-T5: count engine races booted this process */
     sOnlineSession.phase = MDKR_ONLINE_SESSION_RACE;
@@ -369,12 +409,43 @@ static bool online_session_local_seat_ready_in_lobby(
  * this re-arms active=1 + phase=RESULTS; the launch descriptor pointer survived
  * (the roster stays installed while the engine is resident). */
 bool mdkr_online_session_resume_results(void) {
+    if (sOnlineSession.launch == NULL) {
+        return false; /* no session ever began */
+    }
+    if (!mdkr_net_roster_runtime_active()) {
+        /* Roster retired (abnormal end / no residency): caller exits, preserving
+         * the P1 recovery routing. */
+        return false;
+    }
+    /* PD-T6ac LIVE residency (the real behaviour now): the launcher pump PUBLISH_-
+     * RESULTS mid-residency, so the reducer snapshot shows RESULTS for this race.
+     * Resume on that REAL signal (not an env), reading placements/points from the
+     * snapshot. This is what makes a live session resident across races. */
+    {
+        MdkrPartyLinkSnapshot snap;
+        if (mdkr_party_link_read(&snap) &&
+            snap.phase == (uint8_t) 4u /* MDKR_ONLINE_RESULTS */) {
+            sOnlineSession.liveResident = 1u;
+            online_session_resident_resolve();
+            sOnlineSession.active = 1;
+            sOnlineSession.phase = MDKR_ONLINE_SESSION_RESULTS;
+            sOnlineSession.resultsPending = 1u;
+            gGameMode = GAMEMODE_ONLINE_SESSION;
+            fprintf(stderr,
+                    "[online-session] resume: RESULTS phase (race %u of %u; live "
+                    "reducer RESULTS) gGameMode=%d\n",
+                    sOnlineSession.raceCount, sResidentRaces, gGameMode);
+            return true;
+        }
+    }
+    /* Scripted resident soak fallback (env MDKR_TEST_ONLINE_RESIDENT): no live
+     * launcher publishes the RESULTS snapshot mid-grace, so gate on the engine-
+     * captured availability peek (NON-consuming; the RESULTS test seam owns the
+     * consuming poll). Unchanged behaviour, so the scripted soak stays green and
+     * every non-resident live lane (env OFF, no RESULTS snapshot) still exits. */
     online_session_resident_resolve();
     if (!sResidentResolved) {
         return false; /* resident OFF: caller exits (zero live-lane change) */
-    }
-    if (sOnlineSession.launch == NULL) {
-        return false; /* no session ever began */
     }
     if (!mdkr_online_race_results_available()) {
         return false; /* abnormal end / nothing captured (R-B): caller exits */
@@ -407,6 +478,42 @@ void mdkr_online_session_tick(s32 updateRate) {
         bool haveSnap;
         bool readyToBoot = false;
         bool toCharselect = false;
+
+        /* PD-T6ac LIVE residency re-wait: after a RESULTS advance we re-entered
+         * LOBBY_WAIT and the launcher is re-cycling the room (REMATCH -> re-Ready
+         * -> START) to a fresh race-ready transport. Boot the next race ONLY once
+         * a NEW roster/descriptor is installed (match_epoch advanced past the
+         * just-raced one) AND the match-input runtime is live on that epoch. Idle
+         * (keeping intended-track observability fresh) otherwise. This is disjoint
+         * from the first boot (raceCount 0) and from the scripted soak (which
+         * re-boots inline off the RESULTS advance, never through here). */
+        if (sOnlineSession.liveResident && sOnlineSession.raceCount > 0u) {
+            const MdkrMatchLaunchDescriptorV1 *launch =
+                mdkr_net_roster_runtime_launch_descriptor();
+            bool ready =
+                launch != NULL && mdkr_net_roster_runtime_active() &&
+                launch->manifest.match_epoch != sOnlineSession.bootedEpoch &&
+                mdkr_match_input_runtime_active() &&
+                mdkr_match_input_runtime_epoch() == launch->manifest.match_epoch;
+            {
+                MdkrPartyLinkSnapshot rsnap;
+                if (mdkr_party_link_read(&rsnap)) {
+                    online_session_stash_intended(&rsnap);
+                }
+            }
+            fprintf(stderr,
+                    "[online-session] phase=LOBBY_WAIT (live re-wait) tick=%u "
+                    "epoch=%u bootedEpoch=%u ready=%d\n",
+                    sOnlineSession.lobbyWaitTicks,
+                    (unsigned) (launch != NULL ? launch->manifest.match_epoch
+                                               : 0u),
+                    (unsigned) sOnlineSession.bootedEpoch, (int) ready);
+            sOnlineSession.lobbyWaitTicks++;
+            if (ready) {
+                online_session_boot_race();
+            }
+            break;
+        }
 
         /* Dormant unless a headless test seam is enabled. */
         online_session_test_maybe_script();
@@ -560,6 +667,20 @@ void mdkr_online_session_tick(s32 updateRate) {
         MdkrOnlineResultsResult r;
         if (sOnlineSession.resultsPending) {
             online_session_resident_resolve();
+            /* PD-T6ac LIVE residency: FREE the just-finished race level NOW, on
+             * RESULTS entry, before showing the screen. Unlike the scripted soak
+             * (a transport-less autopilot race, harmless to keep loaded), a LIVE
+             * race's rollback runtime keeps DRAINING its transport every frame
+             * while the level stays loaded -- and the host's imminent REMATCH
+             * tears that transport down, so a held level would fault
+             * (mdkr_rollback_game_runtime_prepare_tick). unload_level_game()
+             * deactivates the rollback runtime (level_end), so the RESULTS screen
+             * (which borrows only portraits/fonts, like charselect) renders with
+             * no race resident and the launcher's per-round re-cycle can safely
+             * swap the roster + match-input epoch. */
+            if (sOnlineSession.liveResident) {
+                unload_level_game();
+            }
             {
                 /* isFinal: no further race will boot (the ADVANCE off this
                  * screen would be the (N+1)th boot). The final STANDINGS holds
@@ -576,21 +697,38 @@ void mdkr_online_session_tick(s32 updateRate) {
         r = mdkr_online_results_tick(updateRate);
         if (r == MDKR_ONLINE_RESULTS_ADVANCE) {
             if (sOnlineSession.raceCount < sResidentRaces) {
-                /* Tournament / soak: re-boot the NEXT race IN THIS SAME ENGINE
-                 * PROCESS -- the load-bearing residency proof (>=2 direct
-                 * boots). PD-T6 owns per-round roster cycling + the real
-                 * launcher rematch; here the frozen descriptor re-boots.
-                 * unload_level_game() frees the just-finished race level (kept
-                 * resident, unrendered, through RESULTS) before the next boot's
-                 * load_level_game -- the same "leave the current race level"
-                 * call the offline race->race path makes. */
-                fprintf(stderr,
-                        "[online-session] results -> re-boot race %u "
-                        "(RESULTS-origin, same process)\n",
-                        sOnlineSession.raceCount + 1u);
+                /* Re-boot the NEXT race IN THIS SAME ENGINE PROCESS -- the
+                 * load-bearing residency proof (>=2 direct boots). */
                 mdkr_online_results_exit();
-                unload_level_game();
-                online_session_boot_race();
+                if (!sOnlineSession.liveResident) {
+                    /* Scripted soak held the level resident through RESULTS, so
+                     * free it now before the next boot's load_level_game -- the
+                     * same "leave the current race level" call the offline
+                     * race->race path makes. (The LIVE lane already freed it on
+                     * RESULTS entry, above.) */
+                    unload_level_game();
+                }
+                if (sOnlineSession.liveResident) {
+                    /* PD-T6ac LIVE residency: do NOT boot inline -- the RESULTS
+                     * host-advance drove the reducer's REMATCH via the reverse
+                     * feed, but the launcher must still re-Ready + START the room
+                     * and re-install a fresh roster + match-input source (new
+                     * match_epoch) before the next race can run on the real
+                     * transport. Re-enter LOBBY_WAIT, whose live re-wait gate boots
+                     * once that fresh descriptor + match-input are live. */
+                    sOnlineSession.phase = MDKR_ONLINE_SESSION_LOBBY_WAIT;
+                    fprintf(stderr,
+                            "[online-session] results -> awaiting next race (LIVE "
+                            "residency; launcher re-cycling roster/epoch)\n");
+                } else {
+                    /* Scripted soak (no transport): the single install re-boots
+                     * inline off the frozen descriptor. */
+                    fprintf(stderr,
+                            "[online-session] results -> re-boot race %u "
+                            "(RESULTS-origin, same process)\n",
+                            sOnlineSession.raceCount + 1u);
+                    online_session_boot_race();
+                }
             }
             /* else: soak complete -- the screen returned isFinal, so it holds
              * the final standings; nothing to do. */
