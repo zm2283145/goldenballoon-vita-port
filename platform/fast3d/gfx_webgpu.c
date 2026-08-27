@@ -1029,6 +1029,7 @@ static void wgpu_character_gpu_timing_map_callback(
         slot->measurement_generation == s_character_gpu_timing_generation;
     bool valid_sample = false;
     bool invalid_sample = false;
+    bool invalid_scene_sample = false;
     if (status == WGPUMapAsyncStatus_Success && slot->readback != NULL &&
         slot->mapped_bytes >= 2u * sizeof(uint64_t)) {
         const uint64_t *timestamps = (const uint64_t *)
@@ -1044,6 +1045,7 @@ static void wgpu_character_gpu_timing_map_callback(
                 valid_sample = true;
             } else {
                 invalid_sample = true;
+                invalid_scene_sample = true;
             }
             if (slot->character_pairs != 0u) {
                 uint64_t character_ticks = 0u;
@@ -1075,14 +1077,21 @@ static void wgpu_character_gpu_timing_map_callback(
             }
         } else if (current) {
             invalid_sample = true;
+            invalid_scene_sample = true;
         }
         wgpuBufferUnmap(slot->readback);
     } else if (current) {
         invalid_sample = true;
+        invalid_scene_sample = true;
     }
     if (current && invalid_sample) {
-        mdkr_modern_character_gpu_timing_accumulator_note_invalid(
-            &s_character_gpu_timing_accumulator);
+        if (invalid_scene_sample) {
+            mdkr_modern_character_gpu_timing_accumulator_note_scene_invalid(
+                &s_character_gpu_timing_accumulator);
+        } else {
+            mdkr_modern_character_gpu_timing_accumulator_note_invalid(
+                &s_character_gpu_timing_accumulator);
+        }
     }
     if (current && valid_sample &&
         s_character_gpu_timing_status !=
@@ -1093,10 +1102,9 @@ static void wgpu_character_gpu_timing_map_callback(
             MDKR_MODERN_CHARACTER_GPU_TIMING_AVAILABLE;
     }
     /* A query can legitimately be unmapped or contain a zero/invalid pair at
-     * the start of a measurement window. Its explicit invalid_samples entry
-     * owns that exclusion; it must not latch the whole session into ERROR and
-     * hide later valid distributions. ERROR remains reserved for resource,
-     * device, and callback failures published by their owning paths. */
+     * the start of a measurement window. Its exclusion is counted here; the
+     * completed window is classified once at finish so one startup miss cannot
+     * hide later valid distributions. */
     slot->state = WGPU_CHARACTER_GPU_TIMING_SLOT_IDLE;
     slot->character_pairs = 0u;
     slot->mapped_bytes = 0u;
@@ -1296,7 +1304,12 @@ static void wgpu_finish_modern_character_gpu_timing(
                    MDKR_MODERN_CHARACTER_GPU_TIMING_ERROR &&
                s_character_gpu_timing_status !=
                    MDKR_MODERN_CHARACTER_GPU_TIMING_DEVICE_LOST) {
-        if (s_character_gpu_timing_accumulator.scene_samples != 0u ||
+        if (!mdkr_modern_character_gpu_timing_scene_quality_sufficient(
+                &s_character_gpu_timing_accumulator) &&
+            s_character_gpu_timing_accumulator.scene_invalid_samples != 0u) {
+            s_character_gpu_timing_status =
+                MDKR_MODERN_CHARACTER_GPU_TIMING_ERROR;
+        } else if (s_character_gpu_timing_accumulator.scene_samples != 0u ||
             s_character_gpu_timing_accumulator.character_samples != 0u) {
             s_character_gpu_timing_status =
                 MDKR_MODERN_CHARACTER_GPU_TIMING_AVAILABLE;

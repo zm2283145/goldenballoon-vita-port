@@ -77,6 +77,10 @@ typedef struct MdkrModernCharacterGpuTimingAccumulator {
     uint32_t character_cursor;
     uint64_t ring_full_frames;
     uint64_t invalid_samples;
+    /* Invalid beginning/end scene-pass pairs. This remains separate from the
+     * public aggregate because a valid scene sample can share a frame with an
+     * invalid optional character-draw range. */
+    uint64_t scene_invalid_samples;
 } MdkrModernCharacterGpuTimingAccumulator;
 
 void mdkr_modern_character_gpu_timing_accumulator_reset(
@@ -94,6 +98,16 @@ void mdkr_modern_character_gpu_timing_accumulator_note_ring_full(
     MdkrModernCharacterGpuTimingAccumulator *accumulator);
 void mdkr_modern_character_gpu_timing_accumulator_note_invalid(
     MdkrModernCharacterGpuTimingAccumulator *accumulator);
+void mdkr_modern_character_gpu_timing_accumulator_note_scene_invalid(
+    MdkrModernCharacterGpuTimingAccumulator *accumulator);
+
+/* A percentile window is actionable only when at least two thirds of its
+ * completed scene-pass queries are valid. Devices may expose TimestampQuery
+ * yet return zero pairs under some Metal/driver conditions; callers must
+ * present that as a measurement error, never as a one-sample performance
+ * conclusion. */
+int mdkr_modern_character_gpu_timing_scene_quality_sufficient(
+    const MdkrModernCharacterGpuTimingAccumulator *accumulator);
 
 void mdkr_modern_character_gpu_timing_snapshot(
     const MdkrModernCharacterGpuTimingAccumulator *accumulator,

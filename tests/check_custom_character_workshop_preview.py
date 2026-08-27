@@ -575,14 +575,36 @@ def main() -> int:
                                       gpu_ring_full)
                     scene_invalid_gap = samples - gpu_noninvalid
                     minimum_usable = max(1, (samples * 2) // 3)
-                    if (gpu_status != 3 or not (gpu_scopes & 0x1) or
-                            scene_samples < minimum_usable or
-                            scene_p50 <= 0 or scene_p95 < scene_p50 or
+                    quality_available = (
+                        gpu_status == 3 and
+                        scene_samples >= minimum_usable
+                    )
+                    quality_rejected = (
+                        gpu_status == 5 and
+                        scene_samples < minimum_usable and
+                        gpu_invalid > 0
+                    )
+                    # A rejected window may also contain wall-cadence frames
+                    # where presentation intentionally submitted no scene
+                    # pass. Exact exclusion equality is meaningful only for
+                    # an actionable available window; the error contract must
+                    # still keep every reported counter bounded and honest.
+                    scene_distribution_valid = (
+                        scene_p50 > 0 and scene_p95 >= scene_p50
+                    ) if scene_samples > 0 else (
+                        quality_rejected and
+                        scene_p50 == 0 and scene_p95 == 0
+                    )
+                    if (not (quality_available or quality_rejected) or
+                            not (gpu_scopes & 0x1) or
+                            not scene_distribution_valid or
                             gpu_pending > 6 or gpu_ring_full > samples or
                             gpu_invalid > samples or
                             gpu_noninvalid > samples or
-                            scene_invalid_gap > gpu_invalid or
-                            (not (gpu_scopes & 0x2) and
+                            (quality_available and
+                             scene_invalid_gap > gpu_invalid) or
+                            (quality_available and
+                             not (gpu_scopes & 0x2) and
                              scene_invalid_gap != gpu_invalid)):
                         failures.append(
                             f"{label} returned inconsistent scene-pass GPU "
@@ -592,11 +614,20 @@ def main() -> int:
                             f"wallSamples={samples}"
                         )
                     if gpu_scopes & 0x2:
-                        if (character_samples <= 0 or character_p50 <= 0 or
+                        if quality_available and (
+                                character_samples <= 0 or
+                                character_p50 <= 0 or
                                 character_p95 < character_p50):
                             failures.append(
                                 f"{label} exposed in-pass capability without "
                                 "valid character-draw timestamps"
+                            )
+                        elif (quality_rejected and character_samples > 0 and
+                              (character_p50 <= 0 or
+                               character_p95 < character_p50)):
+                            failures.append(
+                                f"{label} returned malformed partial "
+                                "character-draw timestamps"
                             )
                     elif any((character_samples, character_p50,
                               character_p95)):

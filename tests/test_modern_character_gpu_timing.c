@@ -99,6 +99,30 @@ static void test_bounded_latest_window(void) {
     assert(mdkr_modern_character_gpu_timing_metrics_valid(&metrics));
 }
 
+static void test_scene_sample_quality(void) {
+    mdkr_modern_character_gpu_timing_accumulator_reset(&s_accumulator);
+    assert(!mdkr_modern_character_gpu_timing_scene_quality_sufficient(
+        &s_accumulator));
+    assert(mdkr_modern_character_gpu_timing_accumulator_add_scene(
+        &s_accumulator, 100u));
+    mdkr_modern_character_gpu_timing_accumulator_note_scene_invalid(
+        &s_accumulator);
+    assert(!mdkr_modern_character_gpu_timing_scene_quality_sufficient(
+        &s_accumulator));
+    assert(s_accumulator.invalid_samples == 1u);
+    assert(s_accumulator.scene_invalid_samples == 1u);
+    assert(mdkr_modern_character_gpu_timing_accumulator_add_scene(
+        &s_accumulator, 200u));
+    assert(mdkr_modern_character_gpu_timing_scene_quality_sufficient(
+        &s_accumulator));
+    mdkr_modern_character_gpu_timing_accumulator_note_invalid(
+        &s_accumulator);
+    assert(mdkr_modern_character_gpu_timing_scene_quality_sufficient(
+        &s_accumulator));
+    assert(s_accumulator.invalid_samples == 2u);
+    assert(s_accumulator.scene_invalid_samples == 1u);
+}
+
 static void test_overflow_and_malformed_metrics(void) {
     MdkrModernCharacterGpuTimingMetrics metrics;
     mdkr_modern_character_gpu_timing_accumulator_reset(&s_accumulator);
@@ -129,6 +153,7 @@ int main(void) {
     test_empty_status_contracts();
     test_distribution_and_scope_contract();
     test_bounded_latest_window();
+    test_scene_sample_quality();
     test_overflow_and_malformed_metrics();
     return 0;
 }

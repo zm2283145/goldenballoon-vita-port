@@ -82,6 +82,28 @@ void mdkr_modern_character_gpu_timing_accumulator_note_invalid(
     }
 }
 
+void mdkr_modern_character_gpu_timing_accumulator_note_scene_invalid(
+    MdkrModernCharacterGpuTimingAccumulator *accumulator) {
+    if (accumulator == NULL) return;
+    mdkr_modern_character_gpu_timing_accumulator_note_invalid(accumulator);
+    if (accumulator->scene_invalid_samples != UINT64_MAX) {
+        accumulator->scene_invalid_samples++;
+    }
+}
+
+int mdkr_modern_character_gpu_timing_scene_quality_sufficient(
+    const MdkrModernCharacterGpuTimingAccumulator *accumulator) {
+    if (accumulator == NULL ||
+        (accumulator->scene_samples == 0u &&
+         accumulator->scene_invalid_samples == 0u)) {
+        return 0;
+    }
+    /* valid / (valid + invalid) >= 2/3 is equivalent to
+     * invalid <= valid / 2, without overflow-prone multiplication. */
+    return accumulator->scene_invalid_samples <=
+        accumulator->scene_samples / 2u;
+}
+
 static void distribution_snapshot(
     const uint64_t *window, uint64_t samples, uint64_t sum, uint64_t maximum,
     MdkrModernCharacterGpuDistribution *out) {
