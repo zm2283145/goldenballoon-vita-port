@@ -2640,11 +2640,52 @@ std::string readCharacterManagerResult(const std::string &path) {
     return text;
 }
 
+bool characterManagerIsPythonSource(const char *path) {
+    if (path == nullptr) return false;
+    const size_t length = std::strlen(path);
+    return length >= 3u && path[length - 3u] == '.' &&
+        static_cast<char>(std::tolower(
+            static_cast<unsigned char>(path[length - 2u]))) == 'p' &&
+        static_cast<char>(std::tolower(
+            static_cast<unsigned char>(path[length - 1u]))) == 'y';
+}
+
+bool characterManagerOverrideIsAbsolute(const char *path) {
+    if (path == nullptr || path[0] == '\0') return false;
+#if defined(_WIN32)
+    const unsigned char first = static_cast<unsigned char>(path[0]);
+    return ((std::isalpha(first) != 0) && path[1] == ':' &&
+            (path[2] == '\\' || path[2] == '/')) ||
+        ((path[0] == '\\' || path[0] == '/') &&
+         (path[1] == '\\' || path[1] == '/'));
+#else
+    return path[0] == '/';
+#endif
+}
+
+std::string characterManagerBesideExecutable(const char *relativePath) {
+    char *executable = nullptr;
+    if (relativePath == nullptr || relativePath[0] == '\0' ||
+        mdkr_running_executable_path_utf8(&executable) != 0 ||
+        executable == nullptr) {
+        std::free(executable);
+        return {};
+    }
+    std::string result(executable);
+    std::free(executable);
+    const size_t separator = result.find_last_of("/\\");
+    if (separator == std::string::npos) return {};
+    result.resize(separator + 1u);
+    result += relativePath;
+    return result;
+}
+
 bool runCharacterManager(const char *command,
                          const std::vector<std::string> &commandArguments,
                          bool refreshOnSuccess = true) {
-    char toolPath[MDKR_MODERN_CHARACTER_PATH_MAX];
+    std::string toolPath;
     int regular = 0;
+    bool pythonSource = false;
     if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
     if (g_characterRegistryDirectory.empty()) {
         g_characterManagerReport = "No writable character directory is available.";
@@ -2652,53 +2693,98 @@ bool runCharacterManager(const char *command,
     }
     const char *overrideTool = std::getenv("MDKR_CHARACTER_MANAGER");
     if (overrideTool != nullptr && overrideTool[0] != '\0') {
-        std::snprintf(toolPath, sizeof(toolPath), "%s", overrideTool);
-    } else if (!mdkr_user_resource_path("tools/character_package_manager.py",
-                                        toolPath, sizeof(toolPath))) {
-        g_characterManagerReport = "The character importer could not be located.";
-        return false;
+        if (!characterManagerOverrideIsAbsolute(overrideTool)) {
+            g_characterManagerReport =
+                "MDKR_CHARACTER_MANAGER must be an absolute path; PATH and the launch directory are not trusted importer locations.";
+            return false;
+        }
+        toolPath = overrideTool;
+        pythonSource = characterManagerIsPythonSource(toolPath.c_str());
+    } else {
+#if defined(_WIN32)
+        constexpr const char *nativeTool = "tools/character_importer.exe";
+#else
+        constexpr const char *nativeTool = "tools/character_importer";
+#endif
+        toolPath = characterManagerBesideExecutable(nativeTool);
+        if (toolPath.empty() ||
+            mdkr_path_query_utf8(
+                toolPath.c_str(), nullptr, &regular, nullptr) != 0 ||
+            !regular ||
+            mdkr_path_is_link_or_reparse_utf8(toolPath.c_str()) != 0) {
+            char developmentPath[MDKR_MODERN_CHARACTER_PATH_MAX];
+            if (!mdkr_user_resource_path(
+                    "tools/character_package_manager.py", developmentPath,
+                    sizeof(developmentPath))) {
+                g_characterManagerReport =
+                    "The character importer could not be located.";
+                return false;
+            }
+            toolPath = developmentPath;
+            pythonSource = true;
+        }
     }
-    if (mdkr_path_query_utf8(toolPath, nullptr, &regular, nullptr) != 0 || !regular) {
+    regular = 0;
+    if (mdkr_path_query_utf8(
+            toolPath.c_str(), nullptr, &regular, nullptr) != 0 ||
+        !regular ||
+        mdkr_path_is_link_or_reparse_utf8(toolPath.c_str()) != 0) {
         g_characterManagerReport =
-            "This build does not include the character compiler. Install from a source build or set MDKR_CHARACTER_MANAGER.";
+            "This build does not include a regular, trusted character importer. Reinstall the complete app or set MDKR_CHARACTER_MANAGER to an absolute development tool path.";
         return false;
     }
     const std::string resultPath = g_characterRegistryDirectory +
         "/.launcher-character-result.json";
     (void)mdkr_remove_utf8(resultPath.c_str());
-    const char *pythonOverride = std::getenv("MDKR_CHARACTER_PYTHON");
-    const char *interpreters[] = {
-        pythonOverride != nullptr && pythonOverride[0] != '\0'
-            ? pythonOverride : "python3",
-        "python",
-    };
     int launchError = 0;
     int exitCode = -1;
     bool launched = false;
-    for (const char *interpreter : interpreters) {
-        std::vector<const char *> arguments = {
-            toolPath, "--directory", g_characterRegistryDirectory.c_str(),
+    auto argumentsFor = [&](bool includeScript) {
+        std::vector<const char *> arguments;
+        arguments.reserve(commandArguments.size() + 8u);
+        if (includeScript) arguments.push_back(toolPath.c_str());
+        arguments.insert(arguments.end(), {
+            "--directory", g_characterRegistryDirectory.c_str(),
             "--result-file", resultPath.c_str(), command,
-        };
-        arguments.reserve(arguments.size() + commandArguments.size() + 1u);
+        });
         for (const std::string &argument : commandArguments) {
             arguments.push_back(argument.c_str());
         }
         arguments.push_back(nullptr);
+        return arguments;
+    };
+    if (!pythonSource) {
+        std::vector<const char *> arguments = argumentsFor(false);
         launchError = mdkr_spawn_wait_utf8(
-            interpreter, arguments.data(), &exitCode);
-        if (launchError == 0) {
-            launched = true;
-            break;
+            toolPath.c_str(), arguments.data(), &exitCode);
+        launched = launchError == 0;
+    } else {
+        const char *pythonOverride = std::getenv("MDKR_CHARACTER_PYTHON");
+        const char *interpreters[] = {
+            pythonOverride != nullptr && pythonOverride[0] != '\0'
+                ? pythonOverride : "python3",
+            "python",
+        };
+        std::vector<const char *> arguments = argumentsFor(true);
+        for (const char *interpreter : interpreters) {
+            launchError = mdkr_spawn_wait_utf8(
+                interpreter, arguments.data(), &exitCode);
+            if (launchError == 0) {
+                launched = true;
+                break;
+            }
+            if (pythonOverride != nullptr && pythonOverride[0] != '\0') break;
         }
-        if (pythonOverride != nullptr && pythonOverride[0] != '\0') break;
     }
     g_characterManagerReport = readCharacterManagerResult(resultPath);
     (void)mdkr_remove_utf8(resultPath.c_str());
     if (!launched) {
-        g_characterManagerReport =
-            "Python 3 could not be started for the bundled character compiler (error " +
-            std::to_string(launchError) + ").";
+        g_characterManagerReport = pythonSource
+            ? "Python 3 could not be started for the development character importer (error " +
+                std::to_string(launchError) + ")."
+            : "The bundled character importer could not be started (error " +
+                std::to_string(launchError) +
+                "). Reinstall the complete application.";
         return false;
     }
     if (g_characterManagerReport.empty()) {

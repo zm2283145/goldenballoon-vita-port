@@ -34,6 +34,7 @@ import collada_to_glb as collada
 
 
 MANAGER_SCHEMA = "mdkr-character-install-v1"
+IMPORTER_INFO_SCHEMA = "mdkr-character-importer-info-v1"
 COMPILER_ID = compiler.COMPILER_ID
 LEGACY_COMPILER_IDS = tuple(
     f"mdkr-character-compiler/{version}" for version in range(5, 0, -1)
@@ -1860,6 +1861,10 @@ def _parser() -> argparse.ArgumentParser:
         help="write the same bounded JSON result for a native launcher caller",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser(
+        "tool-info",
+        help="report the frozen/source importer contract without touching user data",
+    )
     install_parser = sub.add_parser("install")
     install_parser.add_argument("package", type=Path)
     inspect_parser = sub.add_parser("inspect")
@@ -1970,9 +1975,17 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        if args.command not in ("prepare", "inspect") and args.directory is None:
+        if args.command not in ("prepare", "inspect", "tool-info") and args.directory is None:
             raise ManagerError("--directory is required for this command")
-        if args.command == "install":
+        if args.command == "tool-info":
+            report = {
+                "schema": IMPORTER_INFO_SCHEMA,
+                "manager_schema": MANAGER_SCHEMA,
+                "compiler_id": COMPILER_ID,
+                "frozen": bool(getattr(sys, "frozen", False)),
+                "python": ".".join(str(part) for part in sys.version_info[:3]),
+            }
+        elif args.command == "install":
             report = install(args.package, args.directory)
         elif args.command == "inspect":
             report = inspect(args.package)

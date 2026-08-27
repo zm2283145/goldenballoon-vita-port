@@ -60,6 +60,16 @@ def main() -> int:
             "Project Nayuki QR Code generator MIT License",
             "b47d81ee765b2eed51f75b9cb599522fdd6f9eda7511b025214c63cc4c3336a7",
         ),
+        "third_party/character_importer/CPython-LICENSE.txt": (
+            "PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2",
+            "A. HISTORY OF THE SOFTWARE",
+            "ZERO-CLAUSE BSD LICENSE FOR CODE IN THE PYTHON DOCUMENTATION",
+        ),
+        "third_party/character_importer/PyInstaller-COPYING.txt": (
+            "The PyInstaller licensing terms",
+            "Bootloader Exception",
+            "GNU GENERAL PUBLIC LICENSE",
+        ),
         "cmake/patches/libdatachannel-windows-mbedtls-verify.patch": (
             "defined(_WIN32) && !USE_MBEDTLS",
             "TLS certificate verification with root CA is not supported on Windows",
@@ -101,6 +111,10 @@ def main() -> int:
             "8948b57053deb5d132bfc675ca2688b7abef9f03ec633c0de59770c945a66fc9",
         "third_party/native_phone_party/NOTICE.txt":
             "dc48863706380100072297911937267b5eaee28a40a972516e07b285cc7635dd",
+        "third_party/character_importer/CPython-LICENSE.txt":
+            "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb",
+        "third_party/character_importer/PyInstaller-COPYING.txt":
+            "dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245",
         "cmake/patches/libdatachannel-windows-mbedtls-verify.patch":
             "b47d81ee765b2eed51f75b9cb599522fdd6f9eda7511b025214c63cc4c3336a7",
     }
@@ -163,6 +177,11 @@ def main() -> int:
             "third_party/qrcodegen/qrcodegen.ts",
             "third_party/qrcodegen/qrcodegen.hpp",
             "third_party/native_phone_party/NOTICE.txt",
+            "third_party/character_importer/CPython-LICENSE.txt",
+            "third_party/character_importer/PyInstaller-COPYING.txt",
+            "tools/character_importer_build_requirements.txt",
+            "CPython",
+            "PyInstaller",
             "cmake/patches/libdatachannel-windows-mbedtls-verify.patch",
             "2c9044de6b049ca25cb3cd1649ed7e27aa055138",
             "c6696d157b5612df2a741d9a03b192b47ab6cefb",
@@ -182,6 +201,9 @@ def main() -> int:
             "game/include/PR/",
             "Project Nayuki",
             "third_party/native_phone_party/NOTICE.txt",
+            "third_party/character_importer/",
+            "CPython 3.13.13",
+            "PyInstaller 6.22.2",
         ):
             if needle not in notice_text:
                 problems.append(f"NOTICE.md is missing expected text: {needle!r}")

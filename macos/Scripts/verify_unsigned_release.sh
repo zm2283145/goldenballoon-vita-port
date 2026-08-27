@@ -67,6 +67,37 @@ PHONE_PARTY_NOTICE="${APP_PATH}/Contents/Resources/ThirdParty/NativePhoneParty-N
 PHONE_PARTY_NOTICE_SHA256="$(shasum -a 256 "${PHONE_PARTY_NOTICE}" | awk '{print $1}')"
 [[ "${PHONE_PARTY_NOTICE_SHA256}" == "dc48863706380100072297911937267b5eaee28a40a972516e07b285cc7635dd" ]] ||
     die "bundled native Phone Party notices do not match the reviewed manifest"
+CHARACTER_IMPORTER="${APP_PATH}/Contents/MacOS/tools/character_importer"
+CHARACTER_IMPORTER_MANIFEST="${APP_PATH}/Contents/Resources/ThirdParty/CharacterImporter-MANIFEST.json"
+CHARACTER_CPYTHON_LICENSE="${APP_PATH}/Contents/Resources/ThirdParty/CharacterImporter-CPython-LICENSE.txt"
+CHARACTER_PYINSTALLER_LICENSE="${APP_PATH}/Contents/Resources/ThirdParty/CharacterImporter-PyInstaller-COPYING.txt"
+[[ -x "${CHARACTER_IMPORTER}" ]] ||
+    die "bundled Character Workshop importer is missing or not executable"
+[[ -f "${CHARACTER_IMPORTER_MANIFEST}" ]] ||
+    die "bundled Character Workshop importer manifest is missing"
+[[ -f "${CHARACTER_CPYTHON_LICENSE}" && ! -L "${CHARACTER_CPYTHON_LICENSE}" ]] ||
+    die "bundled Character Workshop CPython license is missing or linked"
+[[ -f "${CHARACTER_PYINSTALLER_LICENSE}" && ! -L "${CHARACTER_PYINSTALLER_LICENSE}" ]] ||
+    die "bundled Character Workshop PyInstaller terms are missing or linked"
+[[ "$(shasum -a 256 "${CHARACTER_CPYTHON_LICENSE}" | awk '{print $1}')" ==
+   "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb" ]] ||
+    die "bundled Character Workshop CPython license changed"
+[[ "$(shasum -a 256 "${CHARACTER_PYINSTALLER_LICENSE}" | awk '{print $1}')" ==
+   "dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245" ]] ||
+    die "bundled Character Workshop PyInstaller terms changed"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+python3 "${PROJECT_ROOT}/tools/verify_character_importer.py" \
+    --repo-root "${PROJECT_ROOT}" \
+    --executable "${CHARACTER_IMPORTER}" \
+    --manifest "${CHARACTER_IMPORTER_MANIFEST}" \
+    --target darwin-arm64 \
+    --allow-signed || die "bundled Character Workshop importer attestation failed"
+CHARACTER_IMPORTER_SIGNATURE="$(codesign -dvvv "${CHARACTER_IMPORTER}" 2>&1)"
+printf '%s\n' "${CHARACTER_IMPORTER_SIGNATURE}" | grep -Fq 'Signature=adhoc' ||
+    die "bundled Character Workshop importer is not ad-hoc integrity signed"
+if printf '%s\n' "${CHARACTER_IMPORTER_SIGNATURE}" | grep -Fq 'Authority='; then
+    die "bundled Character Workshop importer unexpectedly carries a trusted signing authority"
+fi
 SDL2_MANIFEST="${APP_PATH}/Contents/Resources/ThirdParty/SDL2-MANIFEST.txt"
 [[ -f "${SDL2_MANIFEST}" ]] || die "bundled SDL2 provenance manifest is missing"
 [[ "$(wc -l <"${SDL2_MANIFEST}" | tr -d '[:space:]')" == "4" ]] ||

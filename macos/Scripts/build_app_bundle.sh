@@ -183,6 +183,10 @@ Options:
                          version than --deployment-target.
   --bundle-sdl2          Copy the linked SDL2 dylib into Contents/Frameworks
                          and rewrite the engine binary's load path to the bundle.
+  --character-importer PATH
+                         Frozen arm64 Character Workshop importer to bundle.
+  --character-importer-manifest PATH
+                         Build attestation produced with the importer.
   --validate-output-only Validate --output safety and exit without writing
   --no-cmake             Reuse an existing <build-dir>/mdkr64
   -h, --help             Show this help
@@ -206,6 +210,8 @@ PARTY_ORIGIN=""
 DEPLOYMENT_TARGET="13.0"
 STRICT_DEPLOYMENT_TARGET=false
 BUNDLE_SDL2=false
+CHARACTER_IMPORTER=""
+CHARACTER_IMPORTER_MANIFEST=""
 RUN_CMAKE=true
 VALIDATE_OUTPUT_ONLY=false
 APP_NAME="mdkr64"
@@ -264,6 +270,16 @@ while [[ $# -gt 0 ]]; do
             ;;
         --strict-deployment-target) STRICT_DEPLOYMENT_TARGET=true; shift ;;
         --bundle-sdl2) BUNDLE_SDL2=true; shift ;;
+        --character-importer)
+            [[ $# -ge 2 ]] || die "--character-importer requires a path"
+            CHARACTER_IMPORTER="$2"
+            shift 2
+            ;;
+        --character-importer-manifest)
+            [[ $# -ge 2 ]] || die "--character-importer-manifest requires a path"
+            CHARACTER_IMPORTER_MANIFEST="$2"
+            shift 2
+            ;;
         --validate-output-only) VALIDATE_OUTPUT_ONLY=true; shift ;;
         --no-cmake) RUN_CMAKE=false; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -307,6 +323,21 @@ case "${ARCH}" in
     arm64|x86_64) CMAKE_ARCH="${ARCH}" ;;
     *) die "--arch must be native, arm64, or x86_64" ;;
 esac
+
+if [[ "${BUILD_TYPE}" == "Release" || -n "${CHARACTER_IMPORTER}" ||
+      -n "${CHARACTER_IMPORTER_MANIFEST}" ]]; then
+    [[ -n "${CHARACTER_IMPORTER}" && -x "${CHARACTER_IMPORTER}" ]] ||
+        die "Release bundles require --character-importer with an executable helper."
+    [[ -n "${CHARACTER_IMPORTER_MANIFEST}" &&
+       -f "${CHARACTER_IMPORTER_MANIFEST}" ]] ||
+        die "Release bundles require --character-importer-manifest."
+    python3 "${PROJECT_ROOT}/tools/verify_character_importer.py" \
+        --repo-root "${PROJECT_ROOT}" \
+        --executable "${CHARACTER_IMPORTER}" \
+        --manifest "${CHARACTER_IMPORTER_MANIFEST}" \
+        --target "darwin-${CMAKE_ARCH}" ||
+        die "Character importer verification failed."
+fi
 
 for tool in cmake pkg-config plutil ditto iconutil python3 sips codesign xattr otool shasum strings /usr/libexec/PlistBuddy; do
     if ! command -v "$tool" &>/dev/null; then
@@ -525,6 +556,28 @@ mkdir -p "$(dirname "${PHONE_PARTY_NOTICE_DEST}")"
 ditto "${PHONE_PARTY_NOTICE_SRC}" "${PHONE_PARTY_NOTICE_DEST}" ||
     die "Failed to copy native Phone Party notices into the app bundle."
 
+CHARACTER_IMPORTER_BUNDLED=""
+CHARACTER_IMPORTER_MANIFEST_DEST=""
+if [[ -n "${CHARACTER_IMPORTER}" ]]; then
+    CHARACTER_TOOL_DIR="${OUTPUT_APP}/Contents/MacOS/tools"
+    CHARACTER_NOTICE_DIR="${OUTPUT_APP}/Contents/Resources/ThirdParty"
+    CHARACTER_IMPORTER_BUNDLED="${CHARACTER_TOOL_DIR}/character_importer"
+    CHARACTER_IMPORTER_MANIFEST_DEST="${CHARACTER_NOTICE_DIR}/CharacterImporter-MANIFEST.json"
+    mkdir -p "${CHARACTER_TOOL_DIR}" "${CHARACTER_NOTICE_DIR}"
+    ditto "${CHARACTER_IMPORTER}" "${CHARACTER_IMPORTER_BUNDLED}" ||
+        die "Failed to copy the Character Workshop importer."
+    chmod +x "${CHARACTER_IMPORTER_BUNDLED}"
+    ditto "${CHARACTER_IMPORTER_MANIFEST}" \
+        "${CHARACTER_IMPORTER_MANIFEST_DEST}" ||
+        die "Failed to copy the Character Workshop importer manifest."
+    ditto "${PROJECT_ROOT}/third_party/character_importer/CPython-LICENSE.txt" \
+        "${CHARACTER_NOTICE_DIR}/CharacterImporter-CPython-LICENSE.txt" ||
+        die "Failed to copy the Character Workshop CPython license."
+    ditto "${PROJECT_ROOT}/third_party/character_importer/PyInstaller-COPYING.txt" \
+        "${CHARACTER_NOTICE_DIR}/CharacterImporter-PyInstaller-COPYING.txt" ||
+        die "Failed to copy the Character Workshop PyInstaller terms."
+fi
+
 ICONSET_DIR="${BUILD_DIR}/AppIcon.iconset"
 APP_ICON="${OUTPUT_APP}/Contents/Resources/AppIcon.icns"
 ICON_SOURCE="${PROJECT_ROOT}/brand/appicon-source.png"
@@ -653,6 +706,40 @@ echo "APPL????" > "${OUTPUT_APP}/Contents/PkgInfo"
 # xattrs, sign nested code first, then seal the outer bundle. A later Developer
 # ID release signature replaces these ad-hoc signatures inside-out.
 xattr -cr "${OUTPUT_APP}"
+if [[ -n "${CHARACTER_IMPORTER_BUNDLED}" ]]; then
+    info "Applying ad-hoc integrity signature to Character Workshop importer..."
+    codesign --force --sign - "${CHARACTER_IMPORTER_BUNDLED}" ||
+        die "Failed to ad-hoc sign the Character Workshop importer."
+    python3 - "${CHARACTER_IMPORTER_BUNDLED}" \
+        "${CHARACTER_IMPORTER_MANIFEST_DEST}" <<'PY'
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+executable = Path(sys.argv[1])
+manifest_path = Path(sys.argv[2])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+payload = executable.read_bytes()
+manifest["executable_bytes"] = len(payload)
+manifest["executable_sha256"] = hashlib.sha256(payload).hexdigest()
+temporary = manifest_path.with_name(manifest_path.name + ".tmp")
+with temporary.open("x", encoding="utf-8", newline="\n") as stream:
+    json.dump(manifest, stream, indent=2, sort_keys=True)
+    stream.write("\n")
+    stream.flush()
+    os.fsync(stream.fileno())
+os.replace(temporary, manifest_path)
+PY
+    python3 "${PROJECT_ROOT}/tools/verify_character_importer.py" \
+        --repo-root "${PROJECT_ROOT}" \
+        --executable "${CHARACTER_IMPORTER_BUNDLED}" \
+        --manifest "${CHARACTER_IMPORTER_MANIFEST_DEST}" \
+        --target "darwin-${CMAKE_ARCH}" \
+        --allow-signed ||
+        die "Ad-hoc-signed Character Workshop importer attestation failed."
+fi
 if [[ -n "${SDL2_BUNDLED_PATH}" ]]; then
     info "Applying ad-hoc integrity signature to bundled SDL2..."
     codesign --force --sign - "${SDL2_BUNDLED_PATH}" \
@@ -681,6 +768,9 @@ info "App icon      : ${APP_ICON}"
 info "SDL2 link     : $(otool -L "${ENGINE_PATH}" | grep -E 'libSDL2' | sed 's/^[[:space:]]*//' || echo 'not found')"
 if [[ -n "${SDL2_BUNDLED_PATH}" ]]; then
     info "SDL2 bundled  : ${SDL2_BUNDLED_PATH}"
+fi
+if [[ -n "${CHARACTER_IMPORTER_BUNDLED}" ]]; then
+    info "Char importer : ${CHARACTER_IMPORTER_BUNDLED}"
 fi
 info "Verify assets : ${PROJECT_ROOT}/macos/Scripts/verify_asset_free.sh '${OUTPUT_APP}'"
 info "CLI/CI use    : '${ENGINE_PATH}' --rom ROM --headless-frames N   (any argument bypasses the launcher)"

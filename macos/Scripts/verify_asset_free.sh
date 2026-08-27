@@ -454,6 +454,45 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
 
     RESOURCE_FAIL=0
     RESOURCE_DIR="${APP_BUNDLE}/Contents/Resources"
+    CHARACTER_IMPORTER="${APP_BUNDLE}/Contents/MacOS/tools/character_importer"
+
+    # The Workshop importer is code, not a resource, but it is a second opaque
+    # executable in the bundle and therefore needs its own exact-layout and ROM
+    # signature boundary. Do not let adding a helper create an uninspected
+    # payload directory beside the main executable.
+    if [[ ! -f "${CHARACTER_IMPORTER}" || -L "${CHARACTER_IMPORTER}" ]]; then
+        fail "App bundle is missing its regular Character Workshop importer."
+        RESOURCE_FAIL=1
+    elif [[ "$(file -b "${CHARACTER_IMPORTER}" 2>/dev/null)" != *Mach-O* ]]; then
+        fail "Character Workshop importer is not an inspectable Mach-O executable."
+        RESOURCE_FAIL=1
+    else
+        CHARACTER_MAGIC_MATCH="$(scan_bootstrap_magic_file \
+            "${CHARACTER_IMPORTER}" 2>&1)" && CHARACTER_MAGIC_STATUS=0 ||
+            CHARACTER_MAGIC_STATUS=$?
+        case "${CHARACTER_MAGIC_STATUS}" in
+            0)
+                fail "Embedded N64 ROM bootstrap magic found in Character Workshop importer (${CHARACTER_MAGIC_MATCH})."
+                RESOURCE_FAIL=1
+                ;;
+            1) ;;
+            *)
+                printf '%s\n' "${CHARACTER_MAGIC_MATCH}" >&2
+                fail "Could not inspect the Character Workshop importer."
+                RESOURCE_FAIL=1
+                ;;
+        esac
+    fi
+    while IFS= read -r MACOS_FILE; do
+        case "${MACOS_FILE#"${APP_BUNDLE}"/}" in
+            "Contents/MacOS/${EXECUTABLE_NAME}"|\
+            Contents/MacOS/tools/character_importer) ;;
+            *)
+                fail "Unexpected executable-area payload: ${MACOS_FILE#"${APP_BUNDLE}"/}"
+                RESOURCE_FAIL=1
+                ;;
+        esac
+    done < <(find "${APP_BUNDLE}/Contents/MacOS" -type f -print)
 
     ICON_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "${INFO_PLIST}" 2>/dev/null || true)"
     if [[ -z "${ICON_NAME}" ]]; then
@@ -505,6 +544,13 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
                 Contents/Resources/ThirdParty/NativePhoneParty-NOTICES.txt)
                     # Exact, hash-pinned license/source-form manifest for the
                     # static native Phone Party transport and QR generator.
+                    ;;
+                Contents/Resources/ThirdParty/CharacterImporter-MANIFEST.json|\
+                Contents/Resources/ThirdParty/CharacterImporter-CPython-LICENSE.txt|\
+                Contents/Resources/ThirdParty/CharacterImporter-PyInstaller-COPYING.txt)
+                    # Exact importer attestation and complete embedded-runtime
+                    # terms. verify_unsigned_release.sh binds manifest to code;
+                    # check_third_party_notices.py pins both license byte sets.
                     ;;
                 Contents/Resources/dist/web/controller/*.html|\
                 Contents/Resources/dist/web/controller/*.css|\

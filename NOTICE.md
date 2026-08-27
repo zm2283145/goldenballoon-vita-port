@@ -180,6 +180,15 @@ compiled into or shipped alongside the app: Dear ImGui for the native app shell,
 content packs, `dr_wav` for decoding the music inside them, and the SDL
 game-controller database. Each retains its upstream license.
 
+Native packages also carry a separate, self-contained Character Workshop
+importer built from this project's first-party Python modules. Its embedded
+CPython 3.13.13 runtime and PyInstaller 6.22.2 bootloader are not part of the
+game executable. Their complete, hash-pinned upstream terms live in
+`third_party/character_importer/` and travel beside the helper in every native
+package; exact build-wheel and source-module identities are recorded by the
+generated importer manifest. No Python runtime is taken from the player's
+machine for packaged Workshop operations.
+
 `third_party/qrcodegen/qrcodegen.ts`, its C++ port and the generated browser
 artifact `dist/web/party/qrcodegen.js` are Project Nayuki's QR Code generator library at
 commit `2c9044de6b049ca25cb3cd1649ed7e27aa055138`, under the MIT License. Both

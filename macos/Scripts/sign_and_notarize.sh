@@ -28,7 +28,7 @@ case "${DEVELOPER_ID_APPLICATION}" in
     *) die "DEVELOPER_ID_APPLICATION must name a Developer ID Application certificate" ;;
 esac
 
-for tool in codesign security plutil shasum; do
+for tool in codesign security plutil shasum python3; do
     command -v "${tool}" >/dev/null 2>&1 || die "Required tool not found: ${tool}"
 done
 
@@ -61,6 +61,45 @@ if [[ -d "${FRAMEWORKS_DIR}" ]]; then
             die "Failed to sign framework: ${framework}"
     done < <(find "${FRAMEWORKS_DIR}" -depth -type d -name '*.framework' -print)
 fi
+
+CHARACTER_IMPORTER="${APP_PATH}/Contents/MacOS/tools/character_importer"
+CHARACTER_IMPORTER_MANIFEST="${APP_PATH}/Contents/Resources/ThirdParty/CharacterImporter-MANIFEST.json"
+[[ -f "${CHARACTER_IMPORTER}" && -x "${CHARACTER_IMPORTER}" ]] ||
+    die "Character Workshop importer is missing or not executable"
+[[ -f "${CHARACTER_IMPORTER_MANIFEST}" ]] ||
+    die "Character Workshop importer manifest is missing"
+info "Signing Character Workshop importer"
+codesign --force --sign "${DEVELOPER_ID_APPLICATION}" \
+    --options runtime --timestamp "${CHARACTER_IMPORTER}" ||
+    die "Failed to sign Character Workshop importer"
+python3 - "${CHARACTER_IMPORTER}" "${CHARACTER_IMPORTER_MANIFEST}" <<'PY'
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+executable = Path(sys.argv[1])
+manifest_path = Path(sys.argv[2])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+payload = executable.read_bytes()
+manifest["executable_bytes"] = len(payload)
+manifest["executable_sha256"] = hashlib.sha256(payload).hexdigest()
+temporary = manifest_path.with_name(manifest_path.name + ".tmp")
+with temporary.open("x", encoding="utf-8", newline="\n") as stream:
+    json.dump(manifest, stream, indent=2, sort_keys=True)
+    stream.write("\n")
+    stream.flush()
+    os.fsync(stream.fileno())
+os.replace(temporary, manifest_path)
+PY
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+python3 "${PROJECT_ROOT}/tools/verify_character_importer.py" \
+    --repo-root "${PROJECT_ROOT}" \
+    --executable "${CHARACTER_IMPORTER}" \
+    --manifest "${CHARACTER_IMPORTER_MANIFEST}" \
+    --target darwin-arm64 \
+    --allow-signed || die "Signed Character Workshop importer attestation failed"
 
 # Developer ID replaces the nested dylib's ad-hoc signature and therefore its
 # full-file SHA-256. Refresh the sealed provenance row after nested signing but

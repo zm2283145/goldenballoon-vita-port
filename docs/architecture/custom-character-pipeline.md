@@ -283,7 +283,13 @@ member when developing; the native launcher applies the same complete MDKC
 validator and checks its compiler digest against every exact source member
 before atomically publishing it, so packaged players need no Python and the
 native launcher needs no runtime GLB compiler.
-Source-only packages remain the provenance-first authoring form.
+Source-only packages remain the provenance-first authoring form. Release builds
+freeze the same project-owned manager and standard-library compiler into an
+attested helper shipped at a deterministic path beside the game executable.
+That authoring subprocess handles source-only packages and raw GLB/DAE/ZIP
+without requiring a system Python installation; it never participates in a
+rendered gameplay frame. Source builds retain the `.py` entry point as an
+explicit developer fallback.
 
 Compiler v5 also copies the manifest's bounded SPDX declaration, creator /
 attribution text, and source URL into one optional compiled-cache provenance
@@ -855,8 +861,9 @@ than being distorted by mandatory solving.
 ## Launcher and community workflow
 
 1. User chooses or drops a `.mdkrchar` package.
-2. The launcher validates and, for a source-only developer package, compiles a
-   temporary candidate without publishing a runtime cache or retained revision.
+2. The launcher validates and, for a source-only package, asks its bundled
+   self-contained importer to compile a temporary candidate without publishing
+   a runtime cache or retained revision.
 3. A bounded candidate summary shows identity, portrait presence, donor and
    vehicle compatibility, rig/review state, total and per-LOD geometry,
    animation channels/keys, materials, textures and decoded memory beside the
@@ -868,9 +875,9 @@ than being distorted by mandatory solving.
    source digest. The commit rechecks the package bytes, then checks the current
    enabled or disabled cache under the cross-tool import lock. A changed file,
    newly appeared ID, or changed installed base fails without publishing.
-6. Portable packages follow this path natively without Python. Source-only
-   developer packages emit the same strict fixed-field candidate protocol and
-   use the same optimistic commit pair through the author compiler.
+6. Portable packages follow this path natively without starting the importer.
+   Source-only packages emit the same strict fixed-field candidate protocol and
+   use the same optimistic commit pair through the bundled author compiler.
 7. A successful cache becomes selectable; failed validation or commit retains
    the last-known-good installed cache and requires a fresh visible review.
 8. Named drafts autosave a bounded full editor snapshot without changing the
@@ -982,6 +989,9 @@ The executable proof provides:
 - package verification;
 - deterministic compilation by `tools/character_asset_compiler.py`;
 - transactional local management by `tools/character_package_manager.py`;
+- a pinned, source-digest-attested self-contained importer build plus direct
+  launcher discovery and Windows/Linux/macOS release packaging, so raw authoring
+  does not depend on an ambient Python installation or `PATH` lookup;
 - the bounded DAE convenience path in `tools/collada_to_glb.py`;
 - native `.mdkc` validation, pose sampling, GPU resource construction and
   retained character commands in `platform/modern_character_*`;

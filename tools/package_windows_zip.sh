@@ -53,14 +53,18 @@ stage_lan_web_assets() {
 }
 
 binary="build/mdkr64.exe"
+character_importer=""
+character_importer_manifest=""
 version="dev"
 self_test=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --binary) binary="$2"; shift 2 ;;
+    --character-importer) character_importer="$2"; shift 2 ;;
+    --character-importer-manifest) character_importer_manifest="$2"; shift 2 ;;
     --version) version="$2"; shift 2 ;;
     --self-test) self_test=true; shift ;;
-    -h|--help) echo "Usage: $0 [--binary PATH] [--version VER] [--self-test]"; exit 0 ;;
+    -h|--help) echo "Usage: $0 [--binary PATH] --character-importer PATH --character-importer-manifest PATH [--version VER] [--self-test]"; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -81,6 +85,11 @@ verify_windows_archive() {
   expected="$(printf '%s\n' \
     GoldenBalloon/ \
     GoldenBalloon/GoldenBalloon.exe \
+    GoldenBalloon/tools/ \
+    GoldenBalloon/tools/character_importer.exe \
+    GoldenBalloon/tools/character_importer.exe.manifest.json \
+    GoldenBalloon/tools/CPython-LICENSE.txt \
+    GoldenBalloon/tools/PyInstaller-COPYING.txt \
     GoldenBalloon/LICENSE \
     GoldenBalloon/NativePhoneParty-NOTICES.txt \
     GoldenBalloon/README.md \
@@ -107,11 +116,30 @@ verify_windows_archive() {
   }
   notice_hash="$(python3 - "$archive" <<'PY'
 import hashlib
+import json
 import sys
 import zipfile
 
 with zipfile.ZipFile(sys.argv[1], "r") as archive:
     payload = archive.read("GoldenBalloon/NativePhoneParty-NOTICES.txt")
+    importer = archive.read("GoldenBalloon/tools/character_importer.exe")
+    manifest = json.loads(archive.read(
+        "GoldenBalloon/tools/character_importer.exe.manifest.json"))
+    if manifest.get("executable") != "character_importer.exe":
+        raise SystemExit("packaged importer manifest names another executable")
+    if manifest.get("executable_bytes") != len(importer):
+        raise SystemExit("packaged importer size differs from its manifest")
+    if manifest.get("executable_sha256") != hashlib.sha256(importer).hexdigest():
+        raise SystemExit("packaged importer hash differs from its manifest")
+    notices = {
+        "GoldenBalloon/tools/CPython-LICENSE.txt":
+            "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb",
+        "GoldenBalloon/tools/PyInstaller-COPYING.txt":
+            "dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245",
+    }
+    for name, expected in notices.items():
+        if hashlib.sha256(archive.read(name)).hexdigest() != expected:
+            raise SystemExit(f"packaged importer notice changed: {name}")
 print(hashlib.sha256(payload).hexdigest())
 PY
 )"
@@ -124,7 +152,7 @@ PY
 if [[ "$self_test" == true ]]; then
   test_root="$(mktemp -d "${TMPDIR:-/tmp}/mdkr-windows-package-test.XXXXXX")"
   trap 'rm -rf "$test_root"' EXIT
-  mkdir -p "$test_root/GoldenBalloon"
+  mkdir -p "$test_root/GoldenBalloon/tools"
   : >"$test_root/GoldenBalloon/GoldenBalloon.exe"
   : >"$test_root/GoldenBalloon/LICENSE"
   tr -d '\r' < third_party/native_phone_party/NOTICE.txt \
@@ -132,6 +160,23 @@ if [[ "$self_test" == true ]]; then
   : >"$test_root/GoldenBalloon/README.md"
   : >"$test_root/GoldenBalloon/RUN_ME.txt"
   : >"$test_root/GoldenBalloon/gamecontrollerdb.txt"
+  : >"$test_root/GoldenBalloon/tools/character_importer.exe"
+  cp third_party/character_importer/CPython-LICENSE.txt \
+    "$test_root/GoldenBalloon/tools/CPython-LICENSE.txt"
+  cp third_party/character_importer/PyInstaller-COPYING.txt \
+    "$test_root/GoldenBalloon/tools/PyInstaller-COPYING.txt"
+  python3 - "$test_root/GoldenBalloon/tools/character_importer.exe.manifest.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "w", encoding="utf-8") as stream:
+    json.dump({
+        "executable": "character_importer.exe",
+        "executable_bytes": 0,
+        "executable_sha256":
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    }, stream)
+PY
   while IFS= read -r asset; do
     case "$asset" in ''|\#*) continue ;; esac
     mkdir -p "$test_root/GoldenBalloon/dist/web/$(dirname "$asset")"
@@ -150,12 +195,26 @@ if [[ "$self_test" == true ]]; then
 fi
 
 [[ -f "$binary" ]] || { echo "ERROR: binary not found: $binary" >&2; exit 1; }
+[[ -n "$character_importer" && -f "$character_importer" ]] || {
+  echo "ERROR: --character-importer must name the frozen Windows helper." >&2
+  exit 1
+}
+[[ -n "$character_importer_manifest" && -f "$character_importer_manifest" ]] || {
+  echo "ERROR: --character-importer-manifest must name its attestation." >&2
+  exit 1
+}
+
+python3 tools/verify_character_importer.py \
+  --executable "$character_importer" \
+  --manifest "$character_importer_manifest" \
+  --target windows-x86_64
 
 # CMake links SDL2, libgcc, libstdc++, and winpthread statically for this target.
 # Verify that contract before packaging; copying a build-machine DLL would hide
 # a link regression and recreate the Explorer zip-preview failure this layout
 # is designed to prevent.
 ./tools/check_windows_imports.sh "$binary"
+./tools/check_windows_imports.sh "$character_importer"
 
 dist="$(pwd)/dist"; mkdir -p "$dist"
 package_root="$(mktemp -d "${TMPDIR:-/tmp}/mdkr-windows-package.XXXXXX")"
@@ -164,6 +223,12 @@ trap cleanup EXIT
 stage="$package_root/GoldenBalloon"
 mkdir -p "$stage"
 cp "$binary" "$stage/GoldenBalloon.exe"
+mkdir -p "$stage/tools"
+cp "$character_importer" "$stage/tools/character_importer.exe"
+cp "$character_importer_manifest" \
+  "$stage/tools/character_importer.exe.manifest.json"
+cp third_party/character_importer/CPython-LICENSE.txt \
+  third_party/character_importer/PyInstaller-COPYING.txt "$stage/tools/"
 
 cp LICENSE README.md "$stage/"
 # A Windows Git checkout may materialize tracked text with CRLF. Canonicalize
@@ -200,6 +265,8 @@ before closing it. `set MDKR_RENDERER=gl` selects the diagnostic OpenGL backend
 for that Command Prompt session. Press F1 in-game for the pause overlay.
 
 This app ships no game data. See README.md for controls and support details.
+The complete Character Workshop importer is bundled; no Python installation is
+required. Its CPython and PyInstaller terms are in the tools folder.
 EOF
 
 ./tools/check_no_rom.sh "$stage"

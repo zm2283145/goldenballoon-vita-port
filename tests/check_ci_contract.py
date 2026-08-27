@@ -807,6 +807,11 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         "GoldenBalloon/README.md",
         "GoldenBalloon/RUN_ME.txt",
         "GoldenBalloon/gamecontrollerdb.txt",
+        "GoldenBalloon/tools/",
+        "GoldenBalloon/tools/character_importer.exe",
+        "GoldenBalloon/tools/character_importer.exe.manifest.json",
+        "GoldenBalloon/tools/CPython-LICENSE.txt",
+        "GoldenBalloon/tools/PyInstaller-COPYING.txt",
     }
     actual_windows_entries = (
         set(
@@ -838,6 +843,10 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         "Golden-Balloon.AppDir/mdkr64.png",
         "Golden-Balloon.AppDir/usr/bin/gamecontrollerdb.txt",
         "Golden-Balloon.AppDir/usr/bin/mdkr64",
+        "Golden-Balloon.AppDir/usr/bin/tools/character_importer",
+        "Golden-Balloon.AppDir/usr/bin/tools/character_importer.manifest.json",
+        "Golden-Balloon.AppDir/usr/bin/tools/CPython-LICENSE.txt",
+        "Golden-Balloon.AppDir/usr/bin/tools/PyInstaller-COPYING.txt",
     }
     actual_linux_entries = (
         set(
@@ -862,6 +871,18 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         failures.append("both portable release binaries must assert their exact version")
     if workflow.count("needs.validate.outputs.version") < 8:
         failures.append("portable artifact naming/stamping is not bound to validated version")
+    if workflow.count('python-version: "3.13.13"') != 2:
+        failures.append(
+            "Linux and Windows releases must use the exact importer Python runtime"
+        )
+    if workflow.count("--require-hashes --only-binary=:all:") != 2:
+        failures.append(
+            "Linux and Windows releases must install only hashed importer wheels"
+        )
+    if workflow.count('"$importer" tool-info') != 2:
+        failures.append(
+            "Linux and Windows extracted packages must execute the frozen importer"
+        )
     if workflow.count(
         'python3 tests/check_app_capture.py "$work/launcher.bmp" --self-test'
     ) != 2:

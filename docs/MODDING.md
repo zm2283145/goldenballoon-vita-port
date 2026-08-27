@@ -276,7 +276,7 @@ python3 tools/character_asset_probe.py verify character.mdkrchar
 python3 tools/character_package_manager.py prepare \
   character.mdkrchar character-portable.mdkrchar
 
-# Source-checkout/developer install remains useful for source-only packages.
+# Direct CLI install remains useful for automation and source checkouts.
 python3 tools/character_package_manager.py \
   --directory characters install character.mdkrchar
 
@@ -310,10 +310,13 @@ Installation validates and compiles them into a bounded `.mdkc`; the launcher
 discovers that cache on its next scan. A portable package carries the exact
 validated `.mdkc` generated from its source. The packaged launcher validates
 that cache and cryptographically binds it to the exact manifest, model, and
-license bytes; it does not compile GLB at runtime. The developer package manager
-recompiles and byte-compares portable caches, while a source-only package invokes
-that compiler when it is available and otherwise explains what the author must
-prepare. The manifest must match the complete
+license bytes; gameplay never compiles GLB. Release packages also carry the
+project-owned importer as a self-contained, attested helper beside the game
+executable. The Workshop invokes that helper directly for raw GLB/DAE/ZIP and
+source-only package authoring, so players do not install Python or trust a tool
+from `PATH`. Source checkouts use the same manager through Python as a developer
+fallback. The manager recompiles and byte-compares portable caches. The manifest
+must match the complete
 example and schema in the architecture document, and every named animation or
 socket must exist in the GLB.
 
@@ -332,9 +335,10 @@ current records.
 At commit, both are checked again under the shared import lock. If the package
 changed, an update of the same ID appeared, or the installed revision changed
 after review, nothing is published and the Workshop requires a fresh review.
-Portable packages use this flow without Python; source-only developer packages
-use the same versioned fixed-field, bounded summary and reviewed transaction through the
-author compiler. Drag-and-drop stages the same review instead of bypassing it.
+Portable packages use the native path without invoking the helper. Source-only
+packages use the bundled self-contained helper (or the source-checkout fallback)
+for the same versioned fixed-field, bounded summary and reviewed transaction.
+Drag-and-drop stages the same review instead of bypassing it.
 
 An enabled cache is named `<id>.mdkc`. Disable atomically moves the same
 validated bytes to `<id>.mdkc.disabled`, which the game does not scan but the

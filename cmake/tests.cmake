@@ -370,6 +370,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME character_package_manager
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_character_package_manager.py)
+    add_test(NAME character_importer_build
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_importer_build.py)
     add_test(NAME character_manifest_wizard
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_character_manifest_wizard.py)
