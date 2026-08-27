@@ -23,7 +23,7 @@ import character_manifest_wizard as wizard  # noqa: E402
 import character_package_manager as manager  # noqa: E402
 import character_asset_probe as probe  # noqa: E402
 from test_character_asset_probe import (  # noqa: E402
-    make_animated_glb,
+    make_humanoid_glb,
     make_portrait_png,
 )
 from character_validation_fixture import accepted_character_validation  # noqa: E402
@@ -40,13 +40,13 @@ def install_fixture(root: Path) -> Path:
     manifest_path = source / "manifest.json"
     license_path = source / "LICENSE.txt"
     package = source / "history-proof.mdkrchar"
-    model.write_bytes(make_animated_glb(with_lod=True))
+    model.write_bytes(make_humanoid_glb(with_lod=True))
     portrait.write_bytes(make_portrait_png(40))
     manifest, _ = wizard.build_manifest(
         model, PACKAGE_ID, "History Proof", "CC0-1.0",
         "Generated MDKR fixture", "https://example.invalid/history-proof",
         "diddy", ["car", "hovercraft", "plane"], portrait=portrait,
-        minimap_rgb=[100, 180, 240],
+        minimap_rgb=[100, 180, 240], rig_mode="humanoid-retarget-v1",
     )
     manifest_path.write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
@@ -77,7 +77,7 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
     saves = tab_root / "saves"
     prefs.mkdir(parents=True)
     saves.mkdir()
-    accessible = tab in ("profile", "vehicles", "performance")
+    accessible = tab in ("rig-motion", "profile", "vehicles", "performance")
     preferences = (
         f"character_workshop_last_selected={PACKAGE_ID}\n"
         f"character_workshop_last_tab={tab}\n" +
@@ -171,6 +171,22 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
             raise RuntimeError(
                 "rig and motion route omitted explicit per-semantic animation "
                 "intent\n" + process.stdout[-8000:]
+            )
+        suggestion_marker = (
+            "character-rig-suggestion package=" + PACKAGE_ID +
+            " joints=16 roles=16 named=16 hierarchy=0 "
+            "common-ancestor-repairs=0 complete=1 structurally-valid=1 "
+            "review-required=1"
+        )
+        if suggestion_marker not in process.stdout:
+            raise RuntimeError(
+                "rig route omitted its complete review-required structural "
+                "proposal\n" + process.stdout[-8000:]
+            )
+        if "text=Apply 16-role humanoid proposal" not in process.stdout:
+            raise RuntimeError(
+                "keyboard/speech traversal could not reach the structural "
+                "proposal action\n" + process.stdout[-8000:]
             )
     if tab == "vehicles":
         marker = (

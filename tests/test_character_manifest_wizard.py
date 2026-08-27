@@ -155,6 +155,44 @@ class CharacterManifestWizardTests(unittest.TestCase):
                 )
             )
 
+    def test_humanoid_inference_repairs_sibling_pelvis_by_structure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model = Path(temporary) / "sibling-pelvis.glb"
+            portrait = Path(temporary) / "portrait.png"
+
+            def sibling_pelvis(document: dict) -> None:
+                document["nodes"][0]["name"] = "Skl_Root"
+                document["nodes"].append({
+                    "name": "Hip", "translation": [0.0, 0.0, 0.0],
+                })
+                hip_index = len(document["nodes"]) - 1
+                document["nodes"][0]["children"].append(hip_index)
+                document["skins"][0]["joints"].append(hip_index)
+
+            model.write_bytes(rewrite_glb_document(
+                make_humanoid_glb(), sibling_pelvis,
+            ))
+            portrait.write_bytes(make_portrait_png())
+            manifest, decisions = wizard.build_manifest(
+                model, "org.example.sibling-pelvis", "Sibling Pelvis",
+                "CC0-1.0", "Generated fixture",
+                "https://example.invalid/sibling-pelvis", "diddy", ["car"],
+                portrait=portrait, minimap_rgb=[12, 34, 56],
+                rig_mode="humanoid-retarget-v1",
+            )
+            self.assertEqual(
+                "Skl_Root", manifest["rig"]["roles"]["hips"]["node"]
+            )
+            self.assertEqual(
+                1, decisions["rig"]["common_ancestor_repairs"]
+            )
+            self.assertIn(
+                "lowest common", decisions["rig"]["role_provenance"]["hips"]
+            )
+            self.assertEqual([], probe.validate_manifest(
+                manifest, probe.inspect_glb(model, require_character=True)
+            ))
+
 
 if __name__ == "__main__":
     unittest.main()

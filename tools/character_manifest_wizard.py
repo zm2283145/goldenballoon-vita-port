@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Generate an editable v2/v3/v4 character manifest from names in a GLB.
 
-This is intentionally a deterministic naming assistant, not an animation
-retargeter. It reports every inferred clip/socket so authors can review the
-small manifest instead of guessing the runtime semantic vocabulary.
+This is intentionally a deterministic, review-required naming and skin-
+hierarchy assistant, not an animation retargeter. It reports every inferred
+clip/socket/role so authors can review the small manifest instead of guessing
+the runtime semantic vocabulary.
 """
 
 from __future__ import annotations
@@ -50,30 +51,32 @@ RIG_ROLE_ALIASES = {
     "head": ("head", "headbone"),
     "upper_arm.left": ("leftupperarm", "upperarmleft", "leftarm", "arml"),
     "lower_arm.left": (
-        "leftlowerarm", "lowerarmleft", "leftforearm", "forearmleft", "forearml"
+        "leftlowerarm", "lowerarmleft", "leftforearm", "forearmleft",
+        "forearml", "elbowl"
     ),
     "hand.left": ("lefthand", "handleft", "handl"),
     "upper_arm.right": ("rightupperarm", "upperarmright", "rightarm", "armr"),
     "lower_arm.right": (
-        "rightlowerarm", "lowerarmright", "rightforearm", "forearmright", "forearmr"
+        "rightlowerarm", "lowerarmright", "rightforearm", "forearmright",
+        "forearmr", "elbowr"
     ),
     "hand.right": ("righthand", "handright", "handr"),
     "upper_leg.left": (
         "leftupperleg", "leftupleg", "upperlegleft", "leftthigh",
-        "thighleft", "thighl"
+        "thighleft", "thighl", "legl"
     ),
     "lower_leg.left": (
         "leftlowerleg", "leftleg", "lowerlegleft", "leftshin",
-        "calfleft", "calfl"
+        "calfleft", "calfl", "kneel"
     ),
     "foot.left": ("leftfoot", "footleft", "footl", "leftankle"),
     "upper_leg.right": (
         "rightupperleg", "rightupleg", "upperlegright", "rightthigh",
-        "thighright", "thighr"
+        "thighright", "thighr", "legr"
     ),
     "lower_leg.right": (
         "rightlowerleg", "rightleg", "lowerlegright", "rightshin",
-        "calfright", "calfr"
+        "calfright", "calfr", "kneer"
     ),
     "foot.right": ("rightfoot", "footright", "footr", "rightankle"),
 }
@@ -118,6 +121,66 @@ def choose_with_confidence(
         if len(candidates) > 1:
             return None, 0.0, candidates
     return None, 0.0, []
+
+
+def _skin_joint_graph(
+    document: dict,
+) -> tuple[list[str], dict[str, int], list[int]]:
+    """Return uniquely addressable skin names and their bounded hierarchy."""
+    raw_nodes = document.get("nodes", [])
+    if not isinstance(raw_nodes, list):
+        return [], {}, []
+    parents = [-1] * len(raw_nodes)
+    for parent, node in enumerate(raw_nodes):
+        if not isinstance(node, dict):
+            continue
+        for child in node.get("children", []):
+            if isinstance(child, int) and 0 <= child < len(raw_nodes):
+                parents[child] = parent
+    skin_nodes = {
+        joint for skin in document.get("skins", [])
+        if isinstance(skin, dict)
+        for joint in skin.get("joints", [])
+        if isinstance(joint, int) and 0 <= joint < len(raw_nodes)
+    }
+    name_counts: dict[str, int] = {}
+    for node in raw_nodes:
+        if isinstance(node, dict) and isinstance(node.get("name"), str):
+            name_counts[node["name"]] = name_counts.get(node["name"], 0) + 1
+    by_name = {
+        raw_nodes[index]["name"]: index
+        for index in sorted(skin_nodes)
+        if isinstance(raw_nodes[index], dict)
+        and isinstance(raw_nodes[index].get("name"), str)
+        and raw_nodes[index]["name"].strip()
+        and name_counts.get(raw_nodes[index]["name"]) == 1
+    }
+    return list(by_name), by_name, parents
+
+
+def _ancestor_inclusive(parents: list[int], ancestor: int, child: int) -> bool:
+    current = child
+    for _ in range(len(parents) + 1):
+        if current == ancestor:
+            return True
+        if not 0 <= current < len(parents):
+            return False
+        current = parents[current]
+    return False
+
+
+def _lowest_common_ancestor(parents: list[int], nodes: list[int]) -> int | None:
+    if not nodes:
+        return None
+    candidate = nodes[0]
+    for _ in range(len(parents) + 1):
+        if all(_ancestor_inclusive(parents, candidate, node)
+               for node in nodes[1:]):
+            return candidate
+        if not 0 <= candidate < len(parents):
+            return None
+        candidate = parents[candidate]
+    return None
 
 
 def build_manifest(model: Path, package_id: str, display_name: str,
@@ -241,10 +304,15 @@ def build_manifest(model: Path, package_id: str, display_name: str,
             )
         roles = {}
         ambiguities = {}
+        role_provenance: dict[str, str] = {}
+        common_ancestor_repairs = 0
         if rig_mode == "humanoid-retarget-v1":
+            skin_names, skin_nodes_by_name, node_parents = _skin_joint_graph(
+                document
+            )
             for role in probe.HUMANOID_ROLES:
                 node, confidence, ambiguous = choose_with_confidence(
-                    nodes, RIG_ROLE_ALIASES[role]
+                    skin_names, RIG_ROLE_ALIASES[role]
                 )
                 if ambiguous:
                     ambiguities[role] = ambiguous
@@ -254,6 +322,48 @@ def build_manifest(model: Path, package_id: str, display_name: str,
                         "inferred": True,
                         "confidence": confidence,
                     }
+                    role_provenance[role] = "name + skin membership"
+
+            branch_roles = ("spine", "upper_leg.left", "upper_leg.right")
+            if all(role in roles for role in branch_roles):
+                branch_nodes = [
+                    skin_nodes_by_name[roles[role]["node"]]
+                    for role in branch_roles
+                ]
+                named_hips = (
+                    skin_nodes_by_name[roles["hips"]["node"]]
+                    if "hips" in roles else None
+                )
+                named_hips_valid = named_hips is not None and all(
+                    _ancestor_inclusive(node_parents, named_hips, branch)
+                    for branch in branch_nodes
+                )
+                if not named_hips_valid:
+                    common = _lowest_common_ancestor(
+                        node_parents, branch_nodes
+                    )
+                    raw_nodes = document.get("nodes", [])
+                    common_name = (
+                        raw_nodes[common].get("name")
+                        if common is not None and 0 <= common < len(raw_nodes)
+                        and isinstance(raw_nodes[common], dict)
+                        else None
+                    )
+                    if (isinstance(common_name, str)
+                            and skin_nodes_by_name.get(common_name) == common
+                            and common_name not in {
+                                mapping["node"] for role, mapping in roles.items()
+                                if role != "hips"
+                            }):
+                        roles["hips"] = {
+                            "node": common_name,
+                            "inferred": True,
+                            "confidence": 0.86,
+                        }
+                        role_provenance["hips"] = (
+                            "lowest common skin-joint ancestor of torso and legs"
+                        )
+                        common_ancestor_repairs += 1
             missing = [role for role in probe.HUMANOID_ROLES if role not in roles]
             if missing or ambiguities:
                 detail = []
@@ -279,6 +389,8 @@ def build_manifest(model: Path, package_id: str, display_name: str,
             "reviewed": False,
             "roles": roles,
             "inference_requires_review": bool(roles),
+            "role_provenance": role_provenance,
+            "common_ancestor_repairs": common_ancestor_repairs,
         }
     errors = probe.validate_manifest(manifest, report)
     if errors:

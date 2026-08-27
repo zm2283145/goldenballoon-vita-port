@@ -352,6 +352,53 @@ void testSourceTransformDiagnosis() {
     assert(!CharacterWorkshop_reviewSourceTransform(invalid).valid);
 }
 
+void testStructuralRigInference() {
+    const auto joint = [](const char *name, int parent, float x, float y) {
+        CharacterWorkshopRigJoint value;
+        value.name = name;
+        value.parent = parent;
+        value.bindPosition = {x, y, 0.0f};
+        return value;
+    };
+    const std::vector<CharacterWorkshopRigJoint> siblingPelvis = {
+        joint("Skl_Root", -1, 0.0f, 0.9f),
+        joint("Hip", 0, 0.0f, 0.9f),
+        joint("Spine1", 0, 0.0f, 1.1f),
+        joint("Spine2", 2, 0.0f, 1.35f),
+        joint("Head", 3, 0.0f, 1.7f),
+        joint("ArmL", 3, 0.25f, 1.45f),
+        joint("ElbowL", 5, 0.55f, 1.4f),
+        joint("HandL", 6, 0.8f, 1.35f),
+        joint("ArmR", 3, -0.25f, 1.45f),
+        joint("ElbowR", 8, -0.55f, 1.4f),
+        joint("HandR", 9, -0.8f, 1.35f),
+        joint("LegL", 0, 0.15f, 0.8f),
+        joint("KneeL", 11, 0.15f, 0.45f),
+        joint("FootL", 12, 0.15f, 0.05f),
+        joint("LegR", 0, -0.15f, 0.8f),
+        joint("KneeR", 14, -0.15f, 0.45f),
+        joint("FootR", 15, -0.15f, 0.05f),
+    };
+    const auto suggestion =
+        CharacterWorkshop_suggestHumanoidRig(siblingPelvis);
+    assert(suggestion.complete);
+    assert(suggestion.hierarchyValid);
+    assert(suggestion.roles[0].joint == 0);
+    assert(suggestion.roles[0].evidence ==
+           CharacterWorkshopRigEvidence::HierarchyCommonAncestor);
+    assert(suggestion.commonAncestorRepairs == 1u);
+    assert(suggestion.roles[5].joint == 6);
+    assert(suggestion.roles[11].joint == 12);
+
+    auto ambiguous = siblingPelvis;
+    ambiguous.push_back(joint("Head", 3, 0.0f, 1.8f));
+    assert(!CharacterWorkshop_suggestHumanoidRig(ambiguous).complete);
+    auto cyclic = siblingPelvis;
+    cyclic[0].parent = 3;
+    const auto invalid = CharacterWorkshop_suggestHumanoidRig(cyclic);
+    assert(!invalid.complete && !invalid.hierarchyValid);
+}
+
 } // namespace
 
 int main() {
@@ -365,5 +412,6 @@ int main() {
     testRuntimeLodHysteresis();
     testExactFitSuggestions();
     testSourceTransformDiagnosis();
+    testStructuralRigInference();
     return 0;
 }

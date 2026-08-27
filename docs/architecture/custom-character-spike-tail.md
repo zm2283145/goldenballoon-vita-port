@@ -175,11 +175,18 @@ and its head/torso land inside each ordinary vehicle camera without manual JSON.
 
 ### M2 — Rig inference by structure and rest basis (large)
 
-- Score role candidates using skin membership, ancestor chains, branching,
-  symmetry, bind positions, and names. Names remain evidence, not authority.
-- Detect the sibling-pelvis pattern and propose the lowest common ancestor as
-  hips while explaining the tradeoff. Show why rejected candidates violate the
-  native hierarchy contract.
+- **Partially implemented:** score role candidates using bounded skin
+  membership and normalized names, then validate the complete canonical
+  ancestor graph. Ambiguous duplicate names remain unresolved instead of being
+  selected by list order.
+- **Implemented:** detect the sibling-pelvis pattern and propose the lowest
+  common skin-joint ancestor of the torso and both legs as hips. The manifest
+  decision report retains per-role provenance; native Rig Studio presents the
+  same source-bound proposal, confidence, and rationale before a reversible
+  apply action. Applying always clears review and resets solver bases to the
+  disclosed canonical starting point.
+- Continue scoring role candidates using bind positions, branching, and
+  symmetry. Names remain evidence, not authority.
 - Estimate each role’s rest-basis correction from bind matrices and child
   directions. Display source/canonical axes, mirrored-limb consistency, and the
   exact quaternion; editing any value clears review.

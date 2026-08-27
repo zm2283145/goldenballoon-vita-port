@@ -5670,6 +5670,105 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
         }
         ImGui::EndCombo();
     }
+    std::vector<CharacterWorkshopRigJoint> inferenceJoints;
+    inferenceJoints.reserve(edit.joints.size());
+    for (const CharacterRigEdit::Joint &joint : edit.joints) {
+        CharacterWorkshopRigJoint input;
+        input.name = joint.name;
+        input.parent = joint.parentJoint;
+        std::copy(std::begin(joint.bindPosition),
+                  std::end(joint.bindPosition),
+                  input.bindPosition.begin());
+        inferenceJoints.push_back(std::move(input));
+    }
+    const CharacterWorkshopRigSuggestion rigSuggestion =
+        CharacterWorkshop_suggestHumanoidRig(inferenceJoints);
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static std::set<std::string> tracedRigSuggestions;
+        if (tracedRigSuggestions.insert(entry->id).second) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-rig-suggestion package=%s joints=%zu roles=%u named=%u hierarchy=%u common-ancestor-repairs=%u complete=%d structurally-valid=%d review-required=1\n",
+                entry->id, edit.joints.size(),
+                rigSuggestion.namedRoles + rigSuggestion.hierarchyRoles,
+                rigSuggestion.namedRoles, rigSuggestion.hierarchyRoles,
+                rigSuggestion.commonAncestorRepairs,
+                rigSuggestion.complete ? 1 : 0,
+                rigSuggestion.hierarchyValid ? 1 : 0);
+        }
+    }
+    if (edit.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1) {
+        ImGui::SeparatorText("Suggested humanoid map");
+        ImGui::TextColored(
+            rigSuggestion.complete && rigSuggestion.hierarchyValid
+                ? AppTheme::good() : AppTheme::accent(),
+            "%u of 16 roles proposed · %u name-backed · %u hierarchy-backed",
+            rigSuggestion.namedRoles + rigSuggestion.hierarchyRoles,
+            rigSuggestion.namedRoles, rigSuggestion.hierarchyRoles);
+        if (rigSuggestion.commonAncestorRepairs != 0u) {
+            ui::TextSubtleWrapped(
+                "A pelvis-named joint did not own the torso and both leg chains. The proposal uses their lowest common skin-joint ancestor for hips, avoiding the common sibling-pelvis export trap.");
+        }
+        ui::TextSubtleWrapped(
+            "This is a starting point from skin-only names, ancestry, and bind-pose structure. It never counts as review, never changes the model, and leaves every solver basis canonical until you inspect it.");
+        if (ImGui::TreeNode("Inspect all proposed roles")) {
+            for (size_t role = 0u; role < rigSuggestion.roles.size(); ++role) {
+                const CharacterWorkshopRigRoleSuggestion &proposal =
+                    rigSuggestion.roles[role];
+                const char *evidence = "unresolved";
+                if (proposal.evidence == CharacterWorkshopRigEvidence::Name) {
+                    evidence = "name + skin membership";
+                } else if (proposal.evidence ==
+                           CharacterWorkshopRigEvidence::HierarchyCommonAncestor) {
+                    evidence = "lowest common ancestor";
+                } else if (proposal.evidence ==
+                           CharacterWorkshopRigEvidence::HierarchyChain) {
+                    evidence = "bracketed hierarchy chain";
+                }
+                if (proposal.joint >= 0 &&
+                    proposal.joint < static_cast<int>(edit.joints.size())) {
+                    ImGui::TextWrapped(
+                        "%s → #%u · %s · %.0f%% · %s",
+                        kHumanoidRigRoles[role].name,
+                        edit.joints[proposal.joint].node,
+                        edit.joints[proposal.joint].name.c_str(),
+                        static_cast<double>(proposal.confidence * 100.0f),
+                        evidence);
+                } else {
+                    ImGui::TextColored(
+                        AppTheme::accent(), "%s → unresolved",
+                        kHumanoidRigRoles[role].name);
+                }
+            }
+            ImGui::TreePop();
+        }
+        const bool applicable = rigSuggestion.complete &&
+            rigSuggestion.hierarchyValid;
+        if (!applicable) ImGui::BeginDisabled();
+        if (ImGui::Button("Apply 16-role proposal to draft") && applicable) {
+            for (size_t role = 0u; role < rigSuggestion.roles.size(); ++role) {
+                edit.roles[role] = CharacterRigEdit::Role{};
+                edit.roles[role].joint = rigSuggestion.roles[role].joint;
+                edit.roles[role].inferred = true;
+                edit.roles[role].confidence =
+                    rigSuggestion.roles[role].confidence;
+            }
+            edit.reviewed = false;
+            setStatus(
+                "Structural humanoid proposal applied to the reversible draft; inspect every role, solver basis, and exact context before review.",
+                AppTheme::good());
+        }
+        if (!applicable) ImGui::EndDisabled();
+        ui::SpeakFocusedItem(
+            "Apply 16-role humanoid proposal",
+            applicable ? "Proposal available; author review still required"
+                       : "A complete structurally valid proposal is unavailable; map unresolved roles below.",
+            "Applies the displayed source-bound proposal to the reversible rig draft, resets solver bases to canonical, and keeps review cleared.");
+        if (!applicable) {
+            ui::TextSubtleWrapped(
+                "The Workshop refused to guess an ambiguous or incomplete skeleton. Use the bind-pose canvas and named controls below for unresolved roles.");
+        }
+    }
     ImGui::SeparatorText("Animation intent");
     ui::TextSubtleWrapped(
         "Choose whether each engine state uses its mapped source clip or deliberately falls through. A disabled mapping stays in the authenticated package and can be restored later; reviewed humanoids use engine reference motion, while authored-clips-only characters use the package fallback.");

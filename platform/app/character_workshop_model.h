@@ -11,6 +11,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 enum class CharacterWorkshopTab : uint8_t {
     Overview = 0,
@@ -176,6 +178,34 @@ struct CharacterWorkshopSourceTransformReview {
     bool unusualProportions = false;
 };
 
+enum class CharacterWorkshopRigEvidence : uint8_t {
+    None = 0,
+    Name,
+    HierarchyCommonAncestor,
+    HierarchyChain,
+};
+
+struct CharacterWorkshopRigJoint {
+    std::string name;
+    int parent = -1; // nearest skin-joint parent, or -1 at a skin root
+    std::array<float, 3> bindPosition{};
+};
+
+struct CharacterWorkshopRigRoleSuggestion {
+    int joint = -1;
+    float confidence = 0.0f;
+    CharacterWorkshopRigEvidence evidence = CharacterWorkshopRigEvidence::None;
+};
+
+struct CharacterWorkshopRigSuggestion {
+    std::array<CharacterWorkshopRigRoleSuggestion, 16> roles{};
+    bool complete = false;
+    bool hierarchyValid = false;
+    unsigned namedRoles = 0u;
+    unsigned hierarchyRoles = 0u;
+    unsigned commonAncestorRepairs = 0u;
+};
+
 CharacterWorkshopReadiness CharacterWorkshop_evaluate(
     const CharacterWorkshopFacts &facts);
 
@@ -208,5 +238,7 @@ CharacterWorkshopFitSuggestion CharacterWorkshop_suggestFit(
     const CharacterWorkshopFitMeasurement &measurement);
 CharacterWorkshopSourceTransformReview CharacterWorkshop_reviewSourceTransform(
     const CharacterWorkshopSourceTransformFacts &facts);
+CharacterWorkshopRigSuggestion CharacterWorkshop_suggestHumanoidRig(
+    const std::vector<CharacterWorkshopRigJoint> &joints);
 
 #endif // MDKR64_CHARACTER_WORKSHOP_MODEL_H

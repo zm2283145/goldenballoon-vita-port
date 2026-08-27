@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 
 namespace {
 
@@ -21,6 +22,125 @@ void setRow(CharacterWorkshopReadiness      &readiness,
     if (status == CharacterWorkshopReadinessStatus::Ready) {
         ++readiness.readyCount;
     }
+}
+
+std::string normalizedRigName(const std::string &name) {
+    std::string result;
+    result.reserve(name.size());
+    for (unsigned char byte : name) {
+        if (byte >= 'A' && byte <= 'Z') byte =
+            static_cast<unsigned char>(byte - 'A' + 'a');
+        if ((byte >= 'a' && byte <= 'z') ||
+            (byte >= '0' && byte <= '9')) {
+            result.push_back(static_cast<char>(byte));
+        }
+    }
+    return result;
+}
+
+float rigNameScore(size_t role, const std::string &key) {
+    static const std::vector<std::vector<const char *>> aliases = {
+        {"hips", "pelvis", "hip", "rootpelvis"},
+        {"spine01", "spine1", "spine", "lowerback"},
+        {"upperchest", "chest", "spine02", "spine2", "upperback"},
+        {"head", "headbone"},
+        {"leftupperarm", "upperarmleft", "upperarml", "leftarm", "arml"},
+        {"leftlowerarm", "lowerarmleft", "leftforearm", "forearmleft", "forearml", "elbowl"},
+        {"lefthand", "handleft", "handl"},
+        {"rightupperarm", "upperarmright", "upperarmr", "rightarm", "armr"},
+        {"rightlowerarm", "lowerarmright", "rightforearm", "forearmright", "forearmr", "elbowr"},
+        {"righthand", "handright", "handr"},
+        {"leftupperleg", "leftupleg", "upperlegleft", "upperlegl", "leftthigh", "thighleft", "thighl", "legl"},
+        {"leftlowerleg", "leftleg", "lowerlegleft", "lowerlegl", "leftshin", "calfleft", "calfl", "kneel"},
+        {"leftfoot", "footleft", "footl", "leftankle"},
+        {"rightupperleg", "rightupleg", "upperlegright", "upperlegr", "rightthigh", "thighright", "thighr", "legr"},
+        {"rightlowerleg", "rightleg", "lowerlegright", "lowerlegr", "rightshin", "calfright", "calfr", "kneer"},
+        {"rightfoot", "footright", "footr", "rightankle"},
+    };
+    if (role >= aliases.size() || key.empty()) return 0.0f;
+    float best = 0.0f;
+    for (const char *rawAlias : aliases[role]) {
+        const std::string alias(rawAlias);
+        if (key == alias) best = std::max(best, 0.98f);
+        else if (key.size() > alias.size() &&
+                 key.compare(key.size() - alias.size(), alias.size(), alias) == 0) {
+            best = std::max(best, 0.92f);
+        } else if (key.find(alias) != std::string::npos) {
+            best = std::max(best, 0.78f);
+        }
+    }
+    return best;
+}
+
+bool rigJointValid(const std::vector<CharacterWorkshopRigJoint> &joints,
+                   int joint) {
+    return joint >= 0 && joint < static_cast<int>(joints.size());
+}
+
+bool rigAncestorInclusive(
+    const std::vector<CharacterWorkshopRigJoint> &joints,
+    int ancestor, int descendant) {
+    if (!rigJointValid(joints, ancestor) || !rigJointValid(joints, descendant)) {
+        return false;
+    }
+    int current = descendant;
+    for (size_t depth = 0u; rigJointValid(joints, current) &&
+         depth <= joints.size(); ++depth) {
+        if (current == ancestor) return true;
+        current = joints[static_cast<size_t>(current)].parent;
+    }
+    return false;
+}
+
+int rigLowestCommonAncestor(
+    const std::vector<CharacterWorkshopRigJoint> &joints,
+    const std::vector<int> &mapped) {
+    if (mapped.empty() ||
+        std::any_of(mapped.begin(), mapped.end(), [&](int joint) {
+            return !rigJointValid(joints, joint);
+        })) return -1;
+    int candidate = mapped[0];
+    for (size_t depth = 0u; rigJointValid(joints, candidate) &&
+         depth <= joints.size(); ++depth) {
+        if (std::all_of(mapped.begin() + 1u, mapped.end(), [&](int joint) {
+                return rigAncestorInclusive(joints, candidate, joint);
+            })) return candidate;
+        candidate = joints[static_cast<size_t>(candidate)].parent;
+    }
+    return -1;
+}
+
+int rigChildOnPath(const std::vector<CharacterWorkshopRigJoint> &joints,
+                   int ancestor, int descendant) {
+    if (!rigAncestorInclusive(joints, ancestor, descendant) ||
+        ancestor == descendant) return -1;
+    int current = descendant;
+    for (size_t depth = 0u; rigJointValid(joints, current) &&
+         depth <= joints.size(); ++depth) {
+        const int parent = joints[static_cast<size_t>(current)].parent;
+        if (parent == ancestor) return current;
+        current = parent;
+    }
+    return -1;
+}
+
+bool rigSuggestionUses(
+    const CharacterWorkshopRigSuggestion &suggestion, size_t exceptRole,
+    int joint) {
+    for (size_t role = 0u; role < suggestion.roles.size(); ++role) {
+        if (role != exceptRole && suggestion.roles[role].joint == joint) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void setHierarchySuggestion(
+    CharacterWorkshopRigSuggestion &suggestion, size_t role, int joint,
+    float confidence, CharacterWorkshopRigEvidence evidence) {
+    if (joint < 0 || rigSuggestionUses(suggestion, role, joint)) return;
+    suggestion.roles[role] = {joint, confidence, evidence};
+    ++suggestion.hierarchyRoles;
 }
 
 } // namespace
@@ -410,5 +530,139 @@ CharacterWorkshopSourceTransformReview CharacterWorkshop_reviewSourceTransform(
         : result.suspiciousWorldHeight || result.suspiciousHierarchyScale
             ? CharacterWorkshopTransformSeverity::Review
             : CharacterWorkshopTransformSeverity::Nominal;
+    return result;
+}
+
+CharacterWorkshopRigSuggestion CharacterWorkshop_suggestHumanoidRig(
+    const std::vector<CharacterWorkshopRigJoint> &joints) {
+    CharacterWorkshopRigSuggestion result;
+    if (joints.empty() || joints.size() > 256u) return result;
+    for (size_t joint = 0u; joint < joints.size(); ++joint) {
+        const int parent = joints[joint].parent;
+        if (parent < -1 || parent >= static_cast<int>(joints.size()) ||
+            parent == static_cast<int>(joint) ||
+            !std::isfinite(joints[joint].bindPosition[0]) ||
+            !std::isfinite(joints[joint].bindPosition[1]) ||
+            !std::isfinite(joints[joint].bindPosition[2])) return result;
+        std::vector<bool> seen(joints.size(), false);
+        int current = static_cast<int>(joint);
+        for (size_t depth = 0u; rigJointValid(joints, current) &&
+             depth <= joints.size(); ++depth) {
+            if (seen[static_cast<size_t>(current)]) return result;
+            seen[static_cast<size_t>(current)] = true;
+            current = joints[static_cast<size_t>(current)].parent;
+        }
+    }
+
+    std::array<bool, 16> ambiguous{};
+    for (size_t role = 0u; role < result.roles.size(); ++role) {
+        float best = 0.0f;
+        int bestJoint = -1;
+        bool tied = false;
+        for (size_t joint = 0u; joint < joints.size(); ++joint) {
+            const float score = rigNameScore(
+                role, normalizedRigName(joints[joint].name));
+            if (score > best + 1.0e-6f) {
+                best = score;
+                bestJoint = static_cast<int>(joint);
+                tied = false;
+            } else if (score > 0.0f && std::fabs(score - best) <= 1.0e-6f) {
+                tied = true;
+            }
+        }
+        if (bestJoint >= 0 && !tied &&
+            !rigSuggestionUses(result, role, bestJoint)) {
+            result.roles[role] = {
+                bestJoint, best, CharacterWorkshopRigEvidence::Name};
+            ++result.namedRoles;
+        } else {
+            ambiguous[role] = tied;
+        }
+    }
+
+    // A pelvis-shaped helper may be a sibling of the torso and legs. Repair
+    // that common exporter pattern with the nearest skin-joint ancestor shared
+    // by the three canonical branches; never force the name-only candidate.
+    const int spine = result.roles[1].joint;
+    const int leftLeg = result.roles[10].joint;
+    const int rightLeg = result.roles[13].joint;
+    if (spine >= 0 && leftLeg >= 0 && rightLeg >= 0) {
+        const int hips = result.roles[0].joint;
+        const bool namedHipsValid = hips >= 0 &&
+            rigAncestorInclusive(joints, hips, spine) &&
+            rigAncestorInclusive(joints, hips, leftLeg) &&
+            rigAncestorInclusive(joints, hips, rightLeg);
+        if (!namedHipsValid) {
+            const int common = rigLowestCommonAncestor(
+                joints, {spine, leftLeg, rightLeg});
+            if (common >= 0 && !rigSuggestionUses(result, 0u, common)) {
+                if (result.roles[0].joint >= 0 && result.namedRoles > 0u) {
+                    --result.namedRoles;
+                }
+                result.roles[0] = {
+                    common, 0.86f,
+                    CharacterWorkshopRigEvidence::HierarchyCommonAncestor};
+                ++result.hierarchyRoles;
+                ++result.commonAncestorRepairs;
+            }
+        }
+    }
+
+    const auto fillParent = [&](size_t role, size_t childRole,
+                                size_t ancestorRole) {
+        if (result.roles[role].joint >= 0 || ambiguous[role]) return;
+        const int child = result.roles[childRole].joint;
+        const int ancestor = result.roles[ancestorRole].joint;
+        if (!rigAncestorInclusive(joints, ancestor, child)) return;
+        const int parent = rigJointValid(joints, child)
+            ? joints[static_cast<size_t>(child)].parent : -1;
+        if (parent != ancestor) {
+            setHierarchySuggestion(
+                result, role, parent, 0.62f,
+                CharacterWorkshopRigEvidence::HierarchyChain);
+        }
+    };
+    const auto fillChild = [&](size_t role, size_t ancestorRole,
+                               size_t descendantRole) {
+        if (result.roles[role].joint >= 0 || ambiguous[role]) return;
+        const int candidate = rigChildOnPath(
+            joints, result.roles[ancestorRole].joint,
+            result.roles[descendantRole].joint);
+        setHierarchySuggestion(
+            result, role, candidate, 0.58f,
+            CharacterWorkshopRigEvidence::HierarchyChain);
+    };
+
+    // Fill only a gap bracketed by already identified anatomy. These are
+    // intentionally lower-confidence proposals because helper/twist joints
+    // make a purely structural choice review-worthy.
+    fillChild(1u, 0u, 2u);  // spine between hips and chest
+    fillParent(2u, 3u, 1u); // chest below head and above spine
+    fillParent(5u, 6u, 4u);
+    fillParent(8u, 9u, 7u);
+    fillParent(11u, 12u, 10u);
+    fillParent(14u, 15u, 13u);
+    fillChild(4u, 2u, 5u);
+    fillChild(7u, 2u, 8u);
+    fillChild(10u, 0u, 11u);
+    fillChild(13u, 0u, 14u);
+
+    result.complete = std::all_of(
+        result.roles.begin(), result.roles.end(), [](const auto &role) {
+            return role.joint >= 0;
+        });
+    static const size_t hierarchy[][2] = {
+        {0u, 1u}, {1u, 2u}, {2u, 3u},
+        {2u, 4u}, {4u, 5u}, {5u, 6u},
+        {2u, 7u}, {7u, 8u}, {8u, 9u},
+        {0u, 10u}, {10u, 11u}, {11u, 12u},
+        {0u, 13u}, {13u, 14u}, {14u, 15u},
+    };
+    result.hierarchyValid = result.complete && std::all_of(
+        std::begin(hierarchy), std::end(hierarchy), [&](const auto &edge) {
+            return rigAncestorInclusive(
+                joints, result.roles[edge[0]].joint,
+                result.roles[edge[1]].joint);
+        });
     return result;
 }

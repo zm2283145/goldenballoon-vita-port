@@ -310,7 +310,7 @@ def rewrite_glb_binary(data: bytes, update) -> bytes:
     return bytes(output)
 
 
-def make_humanoid_glb() -> bytes:
+def make_humanoid_glb(*, with_lod: bool = False) -> bytes:
     names = (
         "mixamorig:Hips", "mixamorig:Spine", "mixamorig:Spine2",
         "mixamorig:Head", "mixamorig:LeftArm", "mixamorig:LeftForeArm",
@@ -342,15 +342,24 @@ def make_humanoid_glb() -> bytes:
              **({"children": children[index]} if index in children else {})}
             for index, name in enumerate(names)
         ]
+        character_node = len(nodes)
         nodes.append({"name": "character", "mesh": 0, "skin": 0})
+        if with_lod:
+            lod_node = len(nodes)
+            nodes.append({"name": "character_lod1", "mesh": 1, "skin": 0})
+            nodes[character_node]["extensions"] = {
+                "MSFT_lod": {"ids": [lod_node]},
+            }
         document["nodes"] = nodes
-        document["scenes"] = [{"nodes": [0, 16]}]
+        document["scenes"] = [{"nodes": [0, character_node]}]
         document["skins"] = [{
             "name": "rig", "joints": list(range(16)), "skeleton": 0,
         }]
         document["animations"][0]["channels"][0]["target"]["node"] = 3
 
-    return rewrite_glb_document(make_animated_glb(), update)
+    return rewrite_glb_document(
+        make_animated_glb(with_lod=with_lod), update
+    )
 
 
 def make_v4_manifest(portrait: bytes, *, humanoid: bool = False) -> dict[str, object]:
