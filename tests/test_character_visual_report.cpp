@@ -31,6 +31,18 @@ constexpr unsigned char kOnePixelPng[] = {
     0xae, 0x42, 0x60, 0x82,
 };
 
+constexpr unsigned char kChangedOnePixelPng[] = {
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+    0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41,
+    0x54, 0x78, 0x9c, 0x63, 0x60, 0xf8, 0xcf, 0x00,
+    0x00, 0x02, 0x02, 0x01, 0x00, 0x7b, 0x09, 0x81,
+    0x78, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+    0x44, 0xae, 0x42, 0x60, 0x82,
+};
+
 constexpr unsigned char kOnePixelRgbaPng[] = {
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
     0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -118,8 +130,21 @@ int main() {
     Capture alphaCapture = capture;
     alphaCapture.pngPath = rgbaPath;
     alphaCapture.renderProduct = RenderProduct::ModelAlpha;
-    std::vector<Capture> captures{capture, alphaCapture};
     std::string error;
+    expect(bindPng(capture, error) && bindPng(alphaCapture, error),
+           "capture publication binds each exact typed PNG digest");
+    expect(capture.pngSha256.size() == 64u &&
+               alphaCapture.pngSha256.size() == 64u &&
+               capture.pngSha256 != alphaCapture.pngSha256,
+           "RGB and RGBA products retain distinct immutable image identities");
+    expect(validateBoundPng(capture, error) &&
+               validateBoundPng(alphaCapture, error),
+           "unchanged bound capture files remain eligible for downstream use");
+    Capture alreadyBound = capture;
+    expect(!bindPng(alreadyBound, error) &&
+               alreadyBound.pngSha256 == capture.pngSha256,
+           "published captures cannot be silently rebound to later bytes");
+    std::vector<Capture> captures{capture, alphaCapture};
     const std::string hostileName =
         "Dixie </script><script>alert('x')</script> & friends";
     const bool initialExport = exportHtml(
@@ -149,6 +174,8 @@ int main() {
                    std::string::npos &&
                report.find("\"sourceSha256\":\"") != std::string::npos &&
                report.find("\"fitSha256\":\"") != std::string::npos &&
+               report.find("\"pngSha256\":\"" + capture.pngSha256 +
+                           "\"") != std::string::npos &&
                report.find("\"stableFrames\":12") != std::string::npos &&
                report.find("\"exactPose\":true") != std::string::npos,
            "portable report includes machine-readable qualification identity");
@@ -160,6 +187,19 @@ int main() {
     expect(!exportHtml(reportPath, "dixie.cc0", hostileName,
                        captures, error) && readText(reportPath) == firstReport,
            "existing reports are never overwritten");
+
+    expect(writeBytes(pngPath, kChangedOnePixelPng,
+                      sizeof(kChangedOnePixelPng)),
+           "same-format replacement PNG is written");
+    expect(!validateBoundPng(capture, error) &&
+               error.find("changed after") != std::string::npos,
+           "downstream use detects same-size RGB file replacement by digest");
+    expect(!exportHtml(otherReportPath, "dixie.cc0", "Dixie",
+                       {capture}, error),
+           "same-size same-product replacement cannot enter a report");
+    expect(writeBytes(pngPath, kOnePixelPng, sizeof(kOnePixelPng)) &&
+               validateBoundPng(capture, error),
+           "restoring the exact captured bytes restores eligibility");
 
     Capture invalid = capture;
     invalid.pngPath = truncatedPath;
@@ -186,6 +226,13 @@ int main() {
     expect(!exportHtml(otherReportPath, "dixie.cc0", "Dixie",
                        {invalid}, error),
            "non-canonical source digests are rejected");
+    invalid = capture;
+    invalid.pngSha256[0] = invalid.pngSha256[0] == '0' ? '1' : '0';
+    expect(!validateBoundPng(invalid, error),
+           "downstream capture use refuses a changed image identity");
+    expect(!exportHtml(otherReportPath, "dixie.cc0", "Dixie",
+                       {invalid}, error),
+           "capture bytes changed after publication cannot enter a report");
     invalid = capture;
     invalid.stableFrames = 0u;
     expect(!exportHtml(otherReportPath, "dixie.cc0", "Dixie",

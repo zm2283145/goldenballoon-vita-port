@@ -1984,6 +1984,7 @@ std::set<std::string> g_characterPortraitSourceSmokePackages;
 
 struct CharacterPendingPortraitSource {
     std::string path;
+    std::string sha256;
     bool exactRenderer = false;
 };
 std::map<std::string, CharacterPendingPortraitSource>
@@ -2069,6 +2070,15 @@ std::map<std::string, CharacterPreviewSessionResult>
     g_characterPreviewResults;
 std::map<std::string, std::vector<CharacterVisualReport::Capture>>
     g_characterVisualCaptures;
+struct CharacterCaptureThumbnailCache {
+    bool attempted = false;
+    CharacterPortraitImport::Thumbnail thumbnail;
+    std::string error;
+};
+std::map<std::string,
+         std::map<std::string, CharacterCaptureThumbnailCache>>
+    g_characterCaptureThumbnails;
+std::set<std::string> g_characterCaptureThumbnailTraceKeys;
 SettingsCharacterPreviewRequest g_characterPreviewRequest;
 bool g_characterPreviewRequested = false;
 CharacterTestEvidenceStore::Inventory g_characterTestEvidence;
@@ -3742,6 +3752,7 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterTestLighting.erase(id);
     g_characterCaptureEdits.erase(id);
     g_characterVisualCaptures.erase(id);
+    g_characterCaptureThumbnails.erase(id);
     g_characterPendingPortraitSources.erase(id);
     g_characterPoseInspectionTracePackages.erase(id);
     g_characterPreviewResults.erase(id);
@@ -6412,6 +6423,137 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
     ui::CardEnd();
 }
 
+void drawCharacterCaptureThumbnail(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterVisualReport::Capture &capture) {
+    CharacterCaptureThumbnailCache &cached =
+        g_characterCaptureThumbnails[entry->id][capture.pngSha256];
+    if (!cached.attempted) {
+        cached.attempted = true;
+        CharacterPortraitImport::Image image;
+        if (!CharacterPortraitImport::loadPng(
+                capture.pngPath, image, cached.error)) {
+            /* Keep the bounded decoder's exact refusal visible. Report export
+             * still supports larger valid captures without decoding them. */
+        } else if (image.width != capture.width ||
+                   image.height != capture.height) {
+            cached.error =
+                "The PNG dimensions changed after capture publication.";
+        } else if (image.sha256 != capture.pngSha256) {
+            cached.error =
+                "The PNG bytes changed after capture publication.";
+        } else if (!CharacterPortraitImport::makeThumbnail(
+                       image, cached.thumbnail)) {
+            cached.error = "The bounded preview thumbnail could not be built.";
+        } else {
+            cached.error.clear();
+        }
+    }
+    if (!cached.error.empty()) {
+        ui::TextSubtleWrapped(
+            "Preview unavailable: %s The capture stays listed, but export will refuse changed bytes.",
+            cached.error.c_str());
+        return;
+    }
+    const CharacterPortraitImport::Thumbnail &thumbnail = cached.thumbnail;
+    if (thumbnail.width == 0u || thumbnail.height == 0u ||
+        thumbnail.rgba.size() !=
+            static_cast<size_t>(thumbnail.width) * thumbnail.height * 4u) {
+        ui::TextSubtleWrapped(
+            "Preview unavailable: the thumbnail cache is inconsistent.");
+        return;
+    }
+    const float maximumWidth = std::min(
+        360.0f, std::max(120.0f, ImGui::GetContentRegionAvail().x));
+    const float scale = std::max(
+        1.0f, std::min(maximumWidth / thumbnail.width,
+                       200.0f / thumbnail.height));
+    const ImVec2 extent(thumbnail.width * scale, thumbnail.height * scale);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    /* A selectable is deliberately used as the custom-drawn image's focus
+     * surface. InvisibleButton is mouse-only in keyboard navigation, which
+     * would make the exact capture description unreachable to speech users. */
+    (void)ImGui::Selectable(
+        "##character-capture-thumbnail", false,
+        ImGuiSelectableFlags_None, extent);
+    const char *product = capture.renderProduct ==
+            CharacterVisualReport::RenderProduct::ModelAlpha
+        ? "model-only transparent" : "composed gameplay";
+    char spokenState[160];
+    std::snprintf(
+        spokenState, sizeof(spokenState),
+        "%s image, %u by %u pixels, exact digest %.8s",
+        product, capture.width, capture.height,
+        capture.pngSha256.c_str());
+    ui::SpeakFocusedItem(
+        "Captured renderer preview", spokenState,
+        "A bounded thumbnail of the exact digest-bound PNG. The actions below use the full-resolution file.");
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    const bool transparent = capture.renderProduct ==
+        CharacterVisualReport::RenderProduct::ModelAlpha;
+    if (transparent) {
+        constexpr uint32_t kChecker = 8u;
+        for (uint32_t y = 0u; y < thumbnail.height; y += kChecker) {
+            for (uint32_t x = 0u; x < thumbnail.width; x += kChecker) {
+                const ImU32 colour =
+                    ((x / kChecker + y / kChecker) & 1u) != 0u
+                    ? IM_COL32(72, 79, 90, 255)
+                    : IM_COL32(43, 49, 59, 255);
+                draw->AddRectFilled(
+                    ImVec2(origin.x + x * scale,
+                           origin.y + y * scale),
+                    ImVec2(
+                        origin.x + std::min(
+                            x + kChecker, thumbnail.width) * scale,
+                        origin.y + std::min(
+                            y + kChecker, thumbnail.height) * scale),
+                    colour);
+            }
+        }
+    } else {
+        draw->AddRectFilled(
+            origin, ImVec2(origin.x + extent.x, origin.y + extent.y),
+            IM_COL32(29, 35, 44, 255));
+    }
+    const uint32_t sampleStep = std::max<uint32_t>(
+        1u, (std::max(thumbnail.width, thumbnail.height) + 47u) / 48u);
+    for (uint32_t y = 0u; y < thumbnail.height; y += sampleStep) {
+        for (uint32_t x = 0u; x < thumbnail.width; x += sampleStep) {
+            const uint8_t *pixel = thumbnail.rgba.data() +
+                (static_cast<size_t>(y) * thumbnail.width + x) * 4u;
+            if (pixel[3] == 0u) continue;
+            draw->AddRectFilled(
+                ImVec2(origin.x + x * scale, origin.y + y * scale),
+                ImVec2(
+                    origin.x + std::min(
+                        x + sampleStep, thumbnail.width) * scale,
+                    origin.y + std::min(
+                        y + sampleStep, thumbnail.height) * scale),
+                IM_COL32(pixel[0], pixel[1], pixel[2], pixel[3]));
+        }
+    }
+    draw->AddRect(
+        origin, ImVec2(origin.x + extent.x, origin.y + extent.y),
+        IM_COL32(255, 255, 255, 110));
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "%s\n%u × %u exact renderer PNG\nSHA-256 %.16s…",
+            product, capture.width, capture.height,
+            capture.pngSha256.c_str());
+    }
+    const std::string traceKey = std::string(entry->id) + "\n" +
+        capture.pngSha256;
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
+        g_characterCaptureThumbnailTraceKeys.insert(traceKey).second) {
+        std::fprintf(
+            stderr,
+            "[app-ui] character-capture-thumbnail package=%s product=%s source=%ux%u preview=%ux%u digest=%.12s bounded=1 cached=1\n",
+            entry->id, transparent ? "model-alpha" : "scene",
+            capture.width, capture.height, thumbnail.width,
+            thumbnail.height, capture.pngSha256.c_str());
+    }
+}
+
 void drawCharacterVisualCaptureTray(
     const MdkrModernCharacterEntry *entry,
     CharacterCaptureEdit &edit) {
@@ -6448,19 +6590,30 @@ void drawCharacterVisualCaptureTray(
                 capture.lighting.c_str(), capture.viewYawDegrees,
                 capture.viewPitchDegrees, capture.width, capture.height,
                 capture.exactPose ? "exact semantic" : "source fallback");
-            ImGui::TextDisabled("Source %.8s · fit %.8s",
+            ImGui::TextDisabled("Source %.8s · test tuning %.8s · PNG %.8s",
                                 capture.sourceSha256.c_str(),
-                                capture.fitSha256.c_str());
+                                capture.fitSha256.c_str(),
+                                capture.pngSha256.c_str());
+            drawCharacterCaptureThumbnail(entry, capture);
             ui::TextSubtleUnformattedWrapped(capture.pngPath.c_str());
             if (ImGui::Button("Use for portrait")) {
-                g_characterPendingPortraitSources[entry->id] = {
-                    capture.pngPath, true,
-                };
-                persistCharacterWorkshopTab(
-                    CharacterWorkshopTab::Identity, true);
-                setStatus(
-                    "Exact-renderer capture sent to Portrait Studio; frame the subject before applying it.",
-                    AppTheme::good());
+                std::string captureError;
+                if (CharacterVisualReport::validateBoundPng(
+                        capture, captureError)) {
+                    g_characterPendingPortraitSources[entry->id] = {
+                        capture.pngPath, capture.pngSha256, true,
+                    };
+                    persistCharacterWorkshopTab(
+                        CharacterWorkshopTab::Identity, true);
+                    setStatus(
+                        "Digest-bound exact-renderer capture sent to Portrait Studio; frame the subject before applying it.",
+                        AppTheme::good());
+                } else {
+                    setStatus(
+                        ("The capture changed and was not sent to Portrait Studio: " +
+                         captureError).c_str(),
+                        AppTheme::bad());
+                }
             }
             ui::SpeakFocusedItem(
                 "Use capture for portrait", nullptr,
@@ -6482,6 +6635,8 @@ void drawCharacterVisualCaptureTray(
             captures.size() - shown);
     }
     if (removeIndex < captures.size()) {
+        g_characterCaptureThumbnails[entry->id].erase(
+            captures[removeIndex].pngSha256);
         captures.erase(captures.begin() +
                        static_cast<std::ptrdiff_t>(removeIndex));
         setStatus(
@@ -6541,6 +6696,7 @@ void drawCharacterVisualCaptureTray(
     ImGui::SameLine();
     if (ImGui::Button("Clear capture list")) {
         captures.clear();
+        g_characterCaptureThumbnails.erase(entry->id);
         setStatus(
             "Session capture list cleared; no PNG or report file was deleted.",
             AppTheme::subtle());
@@ -7903,12 +8059,21 @@ void commitPortraitImportSource(CharacterIdentityEdit &edit) {
 
 bool loadPortraitImportSource(CharacterIdentityEdit &edit,
                               const std::string &path,
-                              bool exactRenderer) {
+                              bool exactRenderer,
+                              const std::string &expectedSha256 = {}) {
     CharacterPortraitImport::Image image;
     CharacterPortraitImport::Thumbnail thumbnail;
     std::string error;
-    if (!CharacterPortraitImport::loadPng(path, image, error) ||
-        !CharacterPortraitImport::makeThumbnail(image, thumbnail)) {
+    if (!CharacterPortraitImport::loadPng(path, image, error)) {
+        edit.importError = std::move(error);
+        return false;
+    }
+    if (!expectedSha256.empty() && image.sha256 != expectedSha256) {
+        edit.importError =
+            "The capture PNG changed before Portrait Studio could load it.";
+        return false;
+    }
+    if (!CharacterPortraitImport::makeThumbnail(image, thumbnail)) {
         edit.importError = error.empty()
             ? "The portrait source thumbnail could not be prepared." : error;
         return false;
@@ -9159,7 +9324,7 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
         const CharacterPendingPortraitSource source = pending->second;
         g_characterPendingPortraitSources.erase(pending);
         if (loadPortraitImportSource(
-                edit, source.path, source.exactRenderer)) {
+                edit, source.path, source.exactRenderer, source.sha256)) {
             setStatus(
                 "Exact-renderer capture loaded into Portrait Studio; frame the subject and review the styled result.",
                 AppTheme::good());
@@ -13553,10 +13718,19 @@ void Settings_publishCharacterPreviewResult(
                 capture.stableFrames = result.capture_stable_frames;
                 capture.exactPose = result.inspection_pose_ticks != 0u &&
                     result.inspection_pose_fallback_ticks == 0u;
-                captures.push_back(std::move(capture));
-                setStatus(
-                    "Inspection PNG saved and added to the visual report tray.",
-                    AppTheme::good());
+                std::string captureError;
+                if (CharacterVisualReport::bindPng(
+                        capture, captureError)) {
+                    captures.push_back(std::move(capture));
+                    setStatus(
+                        "Inspection PNG saved, digest-bound, and added to the visual report tray.",
+                        AppTheme::good());
+                } else {
+                    setStatus(
+                        ("The PNG was saved, but it could not enter the session tray: " +
+                         captureError).c_str(),
+                        AppTheme::accent());
+                }
             } else if (!alreadyListed) {
                 setStatus(
                     recordValid

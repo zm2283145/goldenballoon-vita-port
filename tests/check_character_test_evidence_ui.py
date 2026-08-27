@@ -315,6 +315,10 @@ def main() -> int:
                     "text=Save stabilized PNG during next inspection",
                     "text=Model only · transparent",
                     "text=Capture PNG path",
+                    "character-capture-thumbnail package=" + PACKAGE_ID
+                    + " product=model-alpha source=40x40 preview=40x40",
+                    "text=Captured renderer preview",
+                    "text=Use capture for portrait",
                     "text=Remove from report",
                     "text=Visual report path",
                     "text=Export self-contained report",

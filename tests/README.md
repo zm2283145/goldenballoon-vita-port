@@ -5035,11 +5035,13 @@ available for fit review while the durable evidence file remains byte-exact.
 Its paired fallback arm proves that unavailable semantic motion is reported but
 cannot unlock fit approval, while still leaving durable evidence byte-exact.
 The rendered keyboard/speech arm publishes a successful transparent model-only
-camera/light/capture inspection into the session report tray and requires both
-render-product choices, its removal, report path, exclusive export, and
-list-clear controls to remain reachable at 200% scale.
+camera/light/capture inspection into the session report tray, decodes and draws
+its bounded digest-bound thumbnail, announces descriptive preview text, and
+requires both render-product choices, portrait handoff, removal, report path,
+exclusive export, and list-clear controls to remain reachable at 200% scale.
 The pure `character_visual_report` test independently proves embedded PNG/JSON
-output, digest binding, HTML/script escaping, source-path privacy, PNG
+output, capture-time digest binding, same-size/same-product file-replacement
+refusal, rebinding refusal, HTML/script escaping, source-path privacy, PNG
 completeness/dimension/product checks, schema-v2 scene/model-alpha metadata,
 checkerboard transparency presentation, and overwrite refusal;
 `workshop_preview_runtime`

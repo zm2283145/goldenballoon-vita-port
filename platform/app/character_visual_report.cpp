@@ -149,6 +149,10 @@ bool readPng(const CharacterVisualReport::Capture &capture,
     char digest[MDKR_SHA256_HEX_SIZE];
     mdkr_sha256_hex(loaded.data(), loaded.size(), digest);
     sha = digest;
+    if (!capture.pngSha256.empty() && capture.pngSha256 != sha) {
+        error = "A capture PNG changed after it entered the session tray.";
+        return false;
+    }
     bytes = std::move(loaded);
     return true;
 }
@@ -218,8 +222,11 @@ std::string base64(const std::vector<unsigned char> &bytes) {
     return output;
 }
 
-bool captureValid(const CharacterVisualReport::Capture &capture) {
+bool captureMetadataValid(const CharacterVisualReport::Capture &capture,
+                          bool requirePngDigest) {
     return textValid(capture.pngPath, 4095u, true) &&
+           (requirePngDigest ? digestValid(capture.pngSha256)
+                             : capture.pngSha256.empty()) &&
            digestValid(capture.sourceSha256) &&
            digestValid(capture.fitSha256) &&
            textValid(capture.context, 32u, true) &&
@@ -242,6 +249,31 @@ bool captureValid(const CharacterVisualReport::Capture &capture) {
 
 namespace CharacterVisualReport {
 
+bool bindPng(Capture &capture, std::string &error) {
+    if (!captureMetadataValid(capture, false)) {
+        error = "The capture metadata is invalid.";
+        return false;
+    }
+    std::vector<unsigned char> bytes;
+    std::string digest;
+    if (!readPng(capture, bytes, digest, error)) return false;
+    capture.pngSha256 = std::move(digest);
+    error.clear();
+    return true;
+}
+
+bool validateBoundPng(const Capture &capture, std::string &error) {
+    if (!captureMetadataValid(capture, true)) {
+        error = "The digest-bound capture metadata is invalid.";
+        return false;
+    }
+    std::vector<unsigned char> bytes;
+    std::string digest;
+    if (!readPng(capture, bytes, digest, error)) return false;
+    error.clear();
+    return true;
+}
+
 bool exportHtml(const std::string &outputPath,
                 const std::string &packageId,
                 const std::string &displayName,
@@ -252,7 +284,10 @@ bool exportHtml(const std::string &outputPath,
     if (!htmlSuffix || outputPath.size() > 4095u ||
         !slugValid(packageId) || !textValid(displayName, 96u, true) ||
         captures.empty() || captures.size() > kMaximumCaptures ||
-        !std::all_of(captures.begin(), captures.end(), captureValid)) {
+        !std::all_of(captures.begin(), captures.end(),
+                     [](const Capture &capture) {
+                         return captureMetadataValid(capture, true);
+                     })) {
         error = "The visual report request is invalid or empty.";
         return false;
     }
@@ -337,7 +372,7 @@ bool exportHtml(const std::string &outputPath,
             std::string(capture.exactPose ? "true" : "false") +
             ",\"sourceSha256\":\"" + capture.sourceSha256 +
             "\",\"fitSha256\":\"" + capture.fitSha256 +
-            "\",\"pngSha256\":\"" + loaded[index].sha + "\"}";
+            "\",\"pngSha256\":\"" + capture.pngSha256 + "\"}";
     }
     html += "]}</script></main></body></html>\n";
 

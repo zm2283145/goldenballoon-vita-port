@@ -19,6 +19,7 @@ enum class RenderProduct : uint8_t {
 
 struct Capture {
     std::string pngPath;
+    std::string pngSha256;
     std::string sourceSha256;
     std::string fitSha256;
     std::string context;
@@ -34,6 +35,12 @@ struct Capture {
     uint64_t stableFrames = 0u;
     bool exactPose = false;
 };
+
+/* Validate an unbound exact typed PNG at capture-publication time and bind its
+ * digest into session metadata. Export and preview later refuse changed bytes.
+ * The capture changes only on complete success; rebinding is refused. */
+bool bindPng(Capture &capture, std::string &error);
+bool validateBoundPng(const Capture &capture, std::string &error);
 
 /* Writes one self-contained, responsive HTML contact sheet. PNG bytes are
  * embedded as data URIs and a JSON record is embedded beside them, so the

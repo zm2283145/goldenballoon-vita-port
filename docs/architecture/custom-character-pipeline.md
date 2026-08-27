@@ -1050,12 +1050,18 @@ remain session-only and cannot contaminate durable timing evidence.
 
 The launcher collects only version-9 captures armed after at least 12 eligible
 frames in bounded session metadata and can export a self-contained HTML
-qualification report. Report schema v2 records `scene` or `model-alpha` for
+qualification report. Publication validates the complete typed PNG and binds
+its SHA-256 immediately. The tray lazily decodes at most a 96-pixel bounded
+thumbnail per visible digest, presents transparent products over a checkerboard,
+and never retains full-resolution pixels. Report export and Portrait Studio
+handoff reread the external file and refuse any later byte replacement; the
+handoff carries the bound digest through its own decode so a path swap cannot
+cross that boundary. Report schema v2 records `scene` or `model-alpha` for
 every item, displays transparency over a checkerboard, and refuses RGB/RGBA
 files that contradict the recorded product. The launcher and exporter share strict bounded PNG
 validation for chunk ordering, names, CRCs, canonical IHDR dimensions, palette
 requirements, nonempty image data, and terminal IEND; the exporter also checks canonical source/fit digests,
-metadata bounds, total byte budget and destination suffix; it escapes HTML and
+metadata bounds, capture-time identity, total byte budget and destination suffix; it escapes HTML and
 embedded JSON independently, embeds image digests, omits source paths, opens the
 destination exclusively, syncs it, and removes any partial write. Pure unit
 tests cover integrity, injection, privacy, dimensional drift and overwrite
