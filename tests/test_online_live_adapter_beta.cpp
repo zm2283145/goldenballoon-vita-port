@@ -103,9 +103,26 @@ static void test_race_end_no_demotion_rule() {
         MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT));
 }
 
+/* Whole-phase regression: a FIRST-race SAS mismatch drives re-verify ->
+ * re-confirm -> SELECTING -> BEGIN_LOADING WITHOUT ever running
+ * resetRaceLatches (the belt-and-braces reset only fires once race latches are
+ * armed, which they are not before any loading). So a peer-loss latched during
+ * the mismatch teardown must be cleared by the re-verify entry points
+ * themselves; otherwise the re-confirmed race's start barrier reads a stale
+ * race_peer_lost(), aborts, and kicks the HEALTHY peer with a false "Your
+ * Opponent Couldn't Start" card. Cover both entry points and both latch
+ * sources (racePeerLost_ and the folded-in received-abort latch). */
+static void test_reverify_paths_clear_stale_peer_loss() {
+    CHECK(!mdkr_online_live_adapter_test_rekey_clears_peer_loss(false));
+    CHECK(!mdkr_online_live_adapter_test_rekey_clears_peer_loss(true));
+    CHECK(!mdkr_online_live_adapter_test_reverify_clears_peer_loss(false));
+    CHECK(!mdkr_online_live_adapter_test_reverify_clears_peer_loss(true));
+}
+
 int main() {
     test_map_lost_reason_in_race_branches();
     test_race_end_no_demotion_rule();
+    test_reverify_paths_clear_stale_peer_loss();
     std::fprintf(stderr, "online_live_adapter_beta: %d checks, %d failures\n",
                  g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

@@ -1190,8 +1190,10 @@ if(NOT EMSCRIPTEN)
                 # MDKR_ENABLE_ONLINE_BETA (the target above deliberately does not
                 # -- the define breaks its token-gate test), so the beta-only
                 # race-end-card truthfulness decisions (mapLostReason in-race
-                # branches + the F1 no-demotion rule) are actually exercised.
-                # Pure/mesh-free: only the two exposed test wrappers are called,
+                # branches + the F1 no-demotion rule) are actually exercised,
+                # plus the SAS re-verify peer-loss latch-clear regression.
+                # Mesh-free: only the exposed test wrappers are called (the
+                # latch-clear ones build a lobby-free, backend-less adapter),
                 # with no-op stubs for the boot-handoff hooks the beta build
                 # references, so it links the adapter without the wiring TU.
                 add_executable(mdkr_online_live_adapter_beta_test

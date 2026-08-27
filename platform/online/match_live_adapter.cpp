@@ -1193,6 +1193,14 @@ private:
         pendingPeerAtts_.clear();
         raceReady_ = false;
         raceSendOwned_ = false;
+        /* Clear the race-scoped peer-loss latches here too: on a FIRST-race SAS
+         * mismatch the re-verify -> re-confirm -> BEGIN_LOADING path never runs
+         * resetRaceLatches (raceLatchesArmed() is false before any loading), so
+         * a peer-loss latched during the mismatch teardown would otherwise
+         * persist into the re-confirmed race's start barrier -- aborting and
+         * kicking a HEALTHY peer with a false "couldn't start" card. */
+        racePeerLost_ = false;
+        raceAbortReceived_ = false;
         phraseNoticePending_ = false;
 #if MDKR_ENABLE_ONLINE_BETA
         OnlineRoom_retractEngineRaceBoot(this);
@@ -1329,6 +1337,11 @@ private:
             reVerify_ = true;
             raceReady_ = false;
             raceSendOwned_ = false;
+            /* Same stale-latch shape as forcePhraseRekey: clear the race-scoped
+             * peer-loss latches so a mismatch detected on a confirmed phrase
+             * cannot carry a peer-loss into the re-confirmed race's barrier. */
+            racePeerLost_ = false;
+            raceAbortReceived_ = false;
 #if MDKR_ENABLE_ONLINE_BETA
             /* The interrupted race's Ready is never reused: retract the boot
              * handoff so main_app cannot boot on the abandoned transport. */
@@ -2044,6 +2057,35 @@ public:
 #endif
     }
 
+#if MDKR_ENABLE_ONLINE_BETA
+    /* Test-only (beta): pin that the two SAS re-verify entry points clear the
+     * race-scoped peer-loss latches. Static so it can arm the private latch and
+     * drive the private entry point on a mesh-free, lobby-free local adapter,
+     * then report the drain-facing race_peer_lost() the next race's start
+     * barrier would read. `viaAbort` arms raceAbortReceived_ instead of
+     * racePeerLost_ (both fold into race_peer_lost()). Arming the latch to true
+     * first is what makes this a real regression test: without the clear, the
+     * entry point leaves it set and race_peer_lost() stays true. */
+    static bool testRekeyClearsPeerLoss(bool viaAbort) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        if (viaAbort) a.raceAbortReceived_ = true; else a.racePeerLost_ = true;
+        a.forcePhraseRekey();
+        return a.racePeerLost();
+    }
+    static bool testReVerifyClearsPeerLoss(bool viaAbort) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        a.phraseConfirmed_ = true; /* beginReVerify only re-verifies a CONFIRMED
+                                    * phrase -- the bug's first-race scenario. */
+        if (viaAbort) a.raceAbortReceived_ = true; else a.racePeerLost_ = true;
+        a.beginReVerify();
+        return a.racePeerLost();
+    }
+#endif
+
     /* R2/F3: a race-end card fronts while the local session is still mid-race
      * (RACE_CHROME / engine RACING), where the reducer refuses the card's
      * PLAY_HERE -> RETURN_HOME. Walk the abandoned race's engine out of RACING
@@ -2666,6 +2708,14 @@ MdkrOnlineViewFailure mdkr_online_live_adapter_test_map_lost_reason(
 bool mdkr_online_live_adapter_test_race_end_demotes(
     MdkrOnlineViewFailure incoming, MdkrOnlineViewFailure current) {
     return LiveAdapter::raceEndFailureDemotes(incoming, current);
+}
+
+bool mdkr_online_live_adapter_test_rekey_clears_peer_loss(bool via_abort) {
+    return LiveAdapter::testRekeyClearsPeerLoss(via_abort);
+}
+
+bool mdkr_online_live_adapter_test_reverify_clears_peer_loss(bool via_abort) {
+    return LiveAdapter::testReVerifyClearsPeerLoss(via_abort);
 }
 #endif
 

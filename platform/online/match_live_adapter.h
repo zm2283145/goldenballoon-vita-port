@@ -486,6 +486,15 @@ MdkrOnlineViewFailure mdkr_online_live_adapter_test_map_lost_reason(
     MdkrMatchPeerLostReason lostReason, bool raceBegun);
 bool mdkr_online_live_adapter_test_race_end_demotes(
     MdkrOnlineViewFailure incoming, MdkrOnlineViewFailure current);
+/* Pin that the SAS re-verify entry points (forcePhraseRekey / beginReVerify)
+ * clear the race-scoped peer-loss latches, so a FIRST-race SAS mismatch cannot
+ * carry a stale peer-loss into the re-confirmed race's start barrier. Each
+ * pre-arms the latch, runs the entry point on a mesh-free adapter, and returns
+ * race_peer_lost() afterward -- both must report false. `via_abort` arms the
+ * received-abort latch instead of the peer-lost one (both fold into the same
+ * signal). Never called by the launcher. */
+bool mdkr_online_live_adapter_test_rekey_clears_peer_loss(bool via_abort);
+bool mdkr_online_live_adapter_test_reverify_clears_peer_loss(bool via_abort);
 #endif
 
 /* Seal + fan out the race's OPENING input window (firstTick..firstTick+
