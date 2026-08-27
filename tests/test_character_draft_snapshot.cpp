@@ -35,7 +35,7 @@ int main() {
     source.testPose = 12u;
     source.testPosePhaseMilli = 875u;
     source.testViewYawDegrees = -135;
-    source.testViewPitchDegrees = 27;
+    source.testViewPitchDegrees = 90;
     source.testLighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT;
     source.reviewedContexts = 3u;
     source.scale = 1.25f;
@@ -100,7 +100,7 @@ int main() {
                parsed.testPose == 12u &&
                parsed.testPosePhaseMilli == 875u &&
                parsed.testViewYawDegrees == -135 &&
-               parsed.testViewPitchDegrees == 27 &&
+               parsed.testViewPitchDegrees == 90 &&
                parsed.testLighting ==
                    MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT &&
                parsed.reviewedContexts == 3u && parsed.scale == 1.25f &&
@@ -151,8 +151,21 @@ int main() {
     constexpr size_t subjectMaskTailBytes =
         4u + CharacterPortraitImport::kSubjectMaskPixels;
     constexpr size_t sourceRecordTailBytes = 9u * 4u + 64u;
-    std::string versionSix = encoded.substr(
-        0u, encoded.size() - subjectMaskTailBytes);
+    std::string versionSeven = encoded;
+    writeU32(versionSeven, 4u, 7u);
+    /* Version seven stored pitch as unsigned degrees plus 45. Give the legacy
+     * fixture an in-range nonzero value while version eight proves exact top. */
+    writeU32(versionSeven,
+             versionSeven.size() - subjectMaskTailBytes -
+                 sourceRecordTailBytes - 8u,
+             27u + 45u);
+    Snapshot versionSevenParsed;
+    expect(decode(versionSeven, versionSevenParsed, error) &&
+               versionSevenParsed.testViewPitchDegrees == 27 &&
+               versionSevenParsed.portraitSourceRecord.subjectMask.enabled,
+           "version-seven drafts retain legacy pitch encoding and subject mask");
+    std::string versionSix = versionSeven.substr(
+        0u, versionSeven.size() - subjectMaskTailBytes);
     writeU32(versionSix, 4u, 6u);
     writeU32(versionSix, 8u,
              static_cast<uint32_t>(versionSix.size()));
@@ -174,6 +187,7 @@ int main() {
     expect(decode(versionFive, versionFiveParsed, error) &&
                versionFiveParsed.testViewYawDegrees ==
                    source.testViewYawDegrees &&
+               versionFiveParsed.testViewPitchDegrees == 27 &&
                versionFiveParsed.portraitSourceRecord.kind ==
                    CharacterPortraitImport::SourceKind::Canvas,
            "version-five drafts retain inspection state and gain a safe canvas source record");
@@ -275,7 +289,7 @@ int main() {
     expect(!encode(hostile, encoded, error),
            "out-of-range inspection yaw is rejected from persisted state");
     hostile = source;
-    hostile.testViewPitchDegrees = -46;
+    hostile.testViewPitchDegrees = -91;
     expect(!encode(hostile, encoded, error),
            "out-of-range inspection pitch is rejected from persisted state");
     hostile = source;

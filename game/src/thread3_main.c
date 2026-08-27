@@ -2746,7 +2746,8 @@ static s32 workshop_preview_start(void) {
         if (yawEnd == yawText || *yawEnd != '\0' ||
             pitchEnd == pitchText || *pitchEnd != '\0' ||
             parsedYaw < -180 || parsedYaw > 180 ||
-            parsedPitch < -45 || parsedPitch > 45 ||
+            parsedPitch < MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES ||
+            parsedPitch > MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES ||
             (strcmp(context, "select") == 0 &&
              (parsedYaw != 0 || parsedPitch != 0)) ||
             lighting == MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT ||

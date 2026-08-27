@@ -530,9 +530,12 @@ node roles and solver
 bases, global/context/contact tuning, assembly/test player counts, and
 source/tuning-bound review state. A draft resumes only against its exact cache
 source digest; restoring the retained base is required instead of guessing how
-old joint node ids map onto a changed model. Snapshot v7 additionally retains
-the portrait source's 1600-byte target-space subject mask and enabled state;
-v1-v6 inputs decode with a disabled all-keep default.
+old joint node ids map onto a changed model. Snapshot v7 introduced the
+portrait source's 1600-byte target-space subject mask and enabled state.
+Snapshot v8 expands the exact Test camera encoding to the inclusive
+-90..90-degree pitch contract while retaining the stable binary layout; v1-v7
+inputs migrate under their original bounded pitch encodings, and v1-v6 mask
+inputs decode with a disabled all-keep default.
 
 `build-draft` is the corresponding single source transaction. It validates a
 bounded strict build document, checks the active cache digest against the
@@ -1107,7 +1110,7 @@ remain open.
 
 Launcher-owned previews also arm the existing bounded presentation census. The
 game discards a 120-authored-tick warm-up, resets only the observational timing
-window, and freezes a structured version-12 result when the F1 overlay opens (or
+window, and freezes a structured version-13 result when the F1 overlay opens (or
 at engine shutdown). The surviving launcher publishes that result back to the
 same package inspector: displayed interval sample count, median/p95/p99/mean/max,
 authored tick-wall sample/mean, and warmed replacement/part/donor-suppression
@@ -1121,7 +1124,7 @@ product, stable-frame count, and byte count. Fewer than 60 intervals
 and synthetic pacing are explicitly diagnostic-only. Visual-inspection results
 remain session-only and cannot contaminate durable timing evidence.
 
-The launcher collects only version-12 captures armed after at least 12 eligible
+The launcher collects only version-13 captures armed after at least 12 eligible
 frames in bounded session metadata and can export a self-contained HTML
 qualification report. Publication validates the complete typed PNG and binds
 its SHA-256 immediately. A model-only result also requires the renderer's exact
@@ -1168,7 +1171,7 @@ gate. Evidence schema v4 retains the signed target-frame bounds, ground/seat
 anchor, normalized facing direction, and four exact post-solve
 root/bend/target/end/error contact witnesses from the successful replacement
 draw, so Fit and Performance retain the same renderer measurement after
-restart. The v12 result contract requires either all four self-consistent
+restart. The v13 result contract requires either all four self-consistent
 witnesses or none; a vehicle result with nonzero automatic solve count cannot
 omit or partially publish them. It also carries a versioned GPU timing contract:
 the initial gameplay color/depth pass is timestamped when the device supports

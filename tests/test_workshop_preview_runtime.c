@@ -28,25 +28,31 @@ int main(void) {
            "cleared runtime has neutral character lighting");
 
     expect(mdkr_workshop_preview_visual_set(
-               -180, 45, MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT,
+               -180, 90, MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT,
                error, sizeof(error)),
            "inclusive view bounds and known lighting are accepted");
     expect(error[0] == '\0' &&
                mdkr_workshop_preview_view(&yaw, &pitch) &&
-               yaw == -180 && pitch == 45 &&
+               yaw == -180 && pitch == 90 &&
                mdkr_workshop_preview_lighting() ==
                    MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT,
            "accepted visual state is returned exactly");
+    expect(mdkr_workshop_preview_visual_set(
+               0, -90, MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
+               error, sizeof(error)) &&
+               mdkr_workshop_preview_view(&yaw, &pitch) &&
+               yaw == 0 && pitch == -90,
+           "inclusive underside pole is accepted exactly");
 
     expect(!mdkr_workshop_preview_visual_set(
                181, 0, MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
                error, sizeof(error)) && error[0] != '\0',
            "out-of-range yaw is rejected with a bounded diagnostic");
-    expect(mdkr_workshop_preview_view(&yaw, &pitch) && yaw == -180 &&
-               pitch == 45,
+    expect(mdkr_workshop_preview_view(&yaw, &pitch) && yaw == 0 &&
+               pitch == -90,
            "invalid requests do not partially mutate the current view");
     expect(!mdkr_workshop_preview_visual_set(
-               0, -46, MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
+               0, -91, MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
                NULL, 0u),
            "out-of-range pitch is rejected without requiring an error buffer");
     expect(!mdkr_workshop_preview_visual_set(
@@ -54,7 +60,7 @@ int main(void) {
                error, sizeof(error)),
            "unknown lighting is rejected");
     expect(mdkr_workshop_preview_lighting() ==
-               MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT,
+               MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
            "invalid lighting does not mutate the active preset");
 
     mdkr_workshop_preview_note_camera_override();

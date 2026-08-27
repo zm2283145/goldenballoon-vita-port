@@ -4,6 +4,7 @@
 #include "character_png_validation.h"
 #include "fs_utf8.h"
 #include "sha256.h"
+#include "workshop_preview_runtime.h"
 
 #include <algorithm>
 #include <array>
@@ -326,8 +327,10 @@ bool captureMetadataValid(const CharacterVisualReport::Capture &capture,
            capture.phaseMilli <= 1000u &&
            capture.viewYawDegrees >= -180 &&
            capture.viewYawDegrees <= 180 &&
-           capture.viewPitchDegrees >= -45 &&
-           capture.viewPitchDegrees <= 45 &&
+           capture.viewPitchDegrees >=
+               MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES &&
+           capture.viewPitchDegrees <=
+               MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES &&
            capture.width >= 1u && capture.width <= 16384u &&
            capture.height >= 1u && capture.height <= 16384u &&
            capture.stableFrames >=

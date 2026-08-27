@@ -197,19 +197,38 @@ static void racer_apply_workshop_preview_view(Object *obj,
     orbitX = -forwardX * cosine + rightX * sine;
     orbitY = -forwardY * cosine + rightY * sine;
     orbitZ = -forwardZ * cosine + rightZ * sine;
-    cosine = coss_f(pitch);
-    sine = sins_f(pitch);
-    x = distance * (orbitX * cosine + upX * sine);
-    y = distance * (orbitY * cosine + upY * sine);
-    z = distance * (orbitZ * cosine + upZ * sine);
+    if (pitchDegrees == MDKR_WORKSHOP_PREVIEW_TOP_PITCH_DEGREES ||
+        pitchDegrees == MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES) {
+        /* Avoid feeding the exact Euler pole through fixed-angle cosine. The
+         * eye lies exactly on the racer-relative up axis; yaw still selects a
+         * stable screen orientation when world-horizontal look direction is
+         * otherwise undefined. */
+        const f32 vertical = pitchDegrees > 0 ? 1.0f : -1.0f;
+        x = distance * upX * vertical;
+        y = distance * upY * vertical;
+        z = distance * upZ * vertical;
+    } else {
+        cosine = coss_f(pitch);
+        sine = sins_f(pitch);
+        x = distance * (orbitX * cosine + upX * sine);
+        y = distance * (orbitY * cosine + upY * sine);
+        z = distance * (orbitZ * cosine + upZ * sine);
+    }
     horizontal = sqrtf(x * x + z * z);
-    if (horizontal < 0.001f) return;
     gCameraObject->trans.x_position = targetX + x;
     gCameraObject->trans.y_position = targetY + y;
     gCameraObject->trans.z_position = targetZ + z;
-    gCameraObject->trans.rotation.y_rotation =
-        0x8000 - arctan2_f(x, z);
-    gCameraObject->trans.rotation.x_rotation = arctan2_f(y, horizontal);
+    if (horizontal < 0.001f) {
+        gCameraObject->trans.rotation.y_rotation =
+            0x8000 - arctan2_f(orbitX, orbitZ);
+        gCameraObject->trans.rotation.x_rotation =
+            pitchDegrees > 0 ? 0x4000 : -0x4000;
+    } else {
+        gCameraObject->trans.rotation.y_rotation =
+            0x8000 - arctan2_f(x, z);
+        gCameraObject->trans.rotation.x_rotation =
+            arctan2_f(y, horizontal);
+    }
     gCameraObject->trans.rotation.z_rotation = 0;
     gCameraObject->pitch = 0;
     gCameraObject->x_velocity = 0.0f;

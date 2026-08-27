@@ -5181,8 +5181,10 @@ bool characterPreviewSessionMatchesTuning(
              session.result.pose_phase_milli <= 1000u &&
              session.result.view_yaw_degrees >= -180 &&
              session.result.view_yaw_degrees <= 180 &&
-             session.result.view_pitch_degrees >= -45 &&
-             session.result.view_pitch_degrees <= 45 &&
+             session.result.view_pitch_degrees >=
+                 MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES &&
+             session.result.view_pitch_degrees <=
+                 MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES &&
              session.result.lighting >=
                  MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL &&
              session.result.lighting <
@@ -7004,7 +7006,8 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
             capturePng, &captureExists, nullptr, nullptr);
     }
     if (viewYawDegrees < -180 || viewYawDegrees > 180 ||
-        viewPitchDegrees < -45 || viewPitchDegrees > 45 ||
+        viewPitchDegrees < MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES ||
+        viewPitchDegrees > MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES ||
         lighting < MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
         lighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT ||
         captureKind < MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE ||
@@ -7626,8 +7629,10 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         if (pose == nullptr || result.pose_phase_milli > 1000u ||
             lighting == nullptr || result.view_yaw_degrees < -180 ||
             result.view_yaw_degrees > 180 ||
-            result.view_pitch_degrees < -45 ||
-            result.view_pitch_degrees > 45 ||
+            result.view_pitch_degrees <
+                MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES ||
+            result.view_pitch_degrees >
+                MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES ||
             (result.context == MDKR_CHARACTER_PREVIEW_SELECT &&
              (result.view_yaw_degrees != 0 ||
               result.view_pitch_degrees != 0 ||
@@ -8228,6 +8233,15 @@ const char *characterFitReferenceCameraRelation(
         capture.viewPitchDegrees == 0) {
         return "side camera";
     }
+    if (capture.viewYawDegrees == 0 &&
+        capture.viewPitchDegrees == MDKR_WORKSHOP_PREVIEW_TOP_PITCH_DEGREES) {
+        return "top camera";
+    }
+    if (capture.viewYawDegrees == 0 &&
+        capture.viewPitchDegrees ==
+            MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES) {
+        return "underside camera";
+    }
     if (capture.viewYawDegrees == 0 && capture.viewPitchDegrees == 0) {
         return "gameplay camera";
     }
@@ -8248,9 +8262,8 @@ bool characterFitReferenceMatchesPlane(
                 capture.viewYawDegrees == -90) &&
                capture.viewPitchDegrees == 0;
     }
-    // The current exact inspection camera contract caps pitch at 45°.
-    // Never call an oblique image a top-plane match.
-    return false;
+    return selectedView == 2 && capture.viewYawDegrees == 0 &&
+        capture.viewPitchDegrees == MDKR_WORKSHOP_PREVIEW_TOP_PITCH_DEGREES;
 }
 
 void drawCharacterFitReference(
@@ -8263,6 +8276,40 @@ void drawCharacterFitReference(
         context > MDKR_CHARACTER_PREVIEW_PLANE) {
         return;
     }
+    const bool planePreset = context != MDKR_CHARACTER_PREVIEW_SELECT &&
+        selectedView >= 0 && selectedView <= 2;
+    const char *prepareLabel = planePreset
+        ? selectedView == 0
+            ? "Prepare front reference capture"
+            : selectedView == 1
+                ? "Prepare side reference capture"
+                : "Prepare top reference capture"
+        : "Open renderer capture setup";
+    const auto drawPrepareAction = [&]() {
+        if (ImGui::Button(prepareLabel)) {
+            CharacterCaptureEdit &capture = g_characterCaptureEdits[entry->id];
+            capture.enabled = true;
+            capture.kind = MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA;
+            if (planePreset) {
+                g_characterTestViewYawDegrees[entry->id] =
+                    selectedView == 0 ? 180 : selectedView == 1 ? 90 : 0;
+                g_characterTestViewPitchDegrees[entry->id] =
+                    selectedView == 2
+                        ? MDKR_WORKSHOP_PREVIEW_TOP_PITCH_DEGREES : 0;
+            }
+            persistCharacterWorkshopTab(CharacterWorkshopTab::Test, true);
+            setStatus(
+                planePreset
+                    ? "Matching model-only camera prepared in Test. Choose a new PNG filename, then inspect this vehicle; no package setting changed."
+                    : "Model-only capture setup opened in Test. Choose a context, camera, and new PNG filename; no package setting changed.",
+                AppTheme::good());
+        }
+        ui::SpeakFocusedItem(
+            prepareLabel, nullptr,
+            planePreset
+                ? "Opens Test with model-only capture enabled and the matching front, side, or exact top camera. Choose a new PNG path and start the same vehicle inspection; fit settings are unchanged."
+                : "Opens Test with model-only capture enabled. Choose a context, supported camera, and new PNG path; fit settings are unchanged.");
+    };
     const auto captures = g_characterVisualCaptures.find(entry->id);
     const CharacterVisualReport::Capture *best = nullptr;
     int bestScore = -1;
@@ -8305,36 +8352,9 @@ void drawCharacterFitReference(
         }
         ui::TextSubtleWrapped(
             selectedView >= 0
-                ? "No source-, fit-, and vehicle-matching renderer capture is available for this plane yet. In Test, choose a model-only capture and the corresponding front or side camera; the top plot remains coordinate-only until the engine publishes a true top camera and projection witness."
+                ? "No source-, fit-, and vehicle-matching renderer capture is available for this plane yet. Prepare the corresponding front, side, or exact top model-only camera, then run this vehicle inspection."
                 : "No source-, fit-, and vehicle-matching renderer capture is available in this Workshop session. Create a stabilized model-only or gameplay capture in Test to place actual renderer pixels beside these measurements.");
-        const bool planePreset = context != MDKR_CHARACTER_PREVIEW_SELECT &&
-            (selectedView == 0 || selectedView == 1);
-        const char *prepareLabel = planePreset
-            ? selectedView == 0
-                ? "Prepare front reference capture"
-                : "Prepare side reference capture"
-            : "Open renderer capture setup";
-        if (ImGui::Button(prepareLabel)) {
-            CharacterCaptureEdit &capture = g_characterCaptureEdits[entry->id];
-            capture.enabled = true;
-            capture.kind = MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA;
-            if (planePreset) {
-                g_characterTestViewYawDegrees[entry->id] =
-                    selectedView == 0 ? 180 : 90;
-                g_characterTestViewPitchDegrees[entry->id] = 0;
-            }
-            persistCharacterWorkshopTab(CharacterWorkshopTab::Test, true);
-            setStatus(
-                planePreset
-                    ? "Matching model-only camera prepared in Test. Choose a new PNG filename, then inspect this vehicle; no package setting changed."
-                    : "Model-only capture setup opened in Test. Choose a context, camera, and new PNG filename; no package setting changed.",
-                AppTheme::good());
-        }
-        ui::SpeakFocusedItem(
-            prepareLabel, nullptr,
-            planePreset
-                ? "Opens Test with model-only capture enabled and the matching front or side camera. Choose a new PNG path and start the same vehicle inspection; fit settings are unchanged."
-                : "Opens Test with model-only capture enabled. Choose a context, supported camera, and new PNG path; fit settings are unchanged.");
+        drawPrepareAction();
         return;
     }
 
@@ -8354,6 +8374,11 @@ void drawCharacterFitReference(
                 ? "This digest-bound composed capture matches the current source, fit, vehicle, and selected camera plane. It remains a perspective renderer reference beside the orthographic donor-target plot; it is not stretched or falsely registered to the plot."
                 : "This digest-bound composed capture matches the current source, fit, and vehicle. Its camera does not match the selected orthographic plane, so it remains a clearly labelled visual reference rather than an alignment claim.");
     drawCharacterCaptureThumbnail(entry, *best);
+    if (!planeMatch && planePreset) {
+        ui::TextSubtleWrapped(
+            "This fallback remains available for comparison. Prepare an exact plane-matching capture without changing fit or package data.");
+        drawPrepareAction();
+    }
     if (!compact) {
         ImGui::TextDisabled(
             "Pose %s at %.3f · light %s · %d° yaw / %d° pitch · SHA-256 %.12s…",
@@ -9405,7 +9430,8 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         inspectionPhase = 500;
     }
     if (viewYaw < -180 || viewYaw > 180) viewYaw = 0;
-    if (viewPitch < -45 || viewPitch > 45) viewPitch = 0;
+    if (viewPitch < MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES ||
+        viewPitch > MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES) viewPitch = 0;
     if (inspectionLighting < MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
         inspectionLighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT) {
         inspectionLighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
@@ -9418,7 +9444,7 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         g_characterPoseInspectionTracePackages.insert(entry->id).second) {
         std::fprintf(
             stderr,
-            "[app-ui] character-pose-inspector package=%s semantics=%zu defaultPose=%d defaultPhase=%d view=%d,%d lighting=%d capture=scene-or-model-alpha-png-create-only performanceEvidence=session-excluded\n",
+            "[app-ui] character-pose-inspector package=%s semantics=%zu defaultPose=%d defaultPhase=%d view=%d,%d pitchRange=-90:90 top=exact lighting=%d capture=scene-or-model-alpha-png-create-only performanceEvidence=session-excluded\n",
             entry->id, std::size(kCharacterInspectionPoses),
             inspectionPose, inspectionPhase, viewYaw, viewPitch,
             inspectionLighting);
@@ -9536,11 +9562,13 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         "Vehicle camera yaw", nullptr,
         "Sets a repeatable racer-relative inspection angle. Zero with zero pitch uses the ordinary gameplay camera; saved fit is unchanged.");
     (void)ImGui::SliderInt(
-        "Vehicle camera pitch", &viewPitch, -45, 45, "%d degrees",
+        "Vehicle camera pitch", &viewPitch,
+        MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES,
+        MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES, "%d degrees",
         ImGuiSliderFlags_AlwaysClamp);
     ui::SpeakFocusedItem(
         "Vehicle camera pitch", nullptr,
-        "Moves the exact vehicle camera above or below its ordinary view without changing saved fit.");
+        "Moves the exact vehicle camera above or below its ordinary view. Positive ninety is a defined top view and negative ninety is a defined underside view; saved fit is unchanged.");
     if (ImGui::BeginTable(
             "##character-view-presets",
             testActionColumns,
@@ -9559,6 +9587,10 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         viewPreset("Front view", 180, 0);
         viewPreset("Left view", -90, 0);
         viewPreset("Right view", 90, 0);
+        viewPreset("Top view", 0,
+                   MDKR_WORKSHOP_PREVIEW_TOP_PITCH_DEGREES);
+        viewPreset("Underside view", 0,
+                   MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES);
         ImGui::EndTable();
     }
     const CharacterInspectionLighting &selectedLighting =
@@ -12047,12 +12079,13 @@ bool captureCharacterHistoryPayload(
         }
         if (phase < 0 || phase > 1000) phase = 500;
         if (yaw < -180 || yaw > 180) yaw = 0;
-        if (pitch < -45 || pitch > 45) pitch = 0;
+        if (pitch < MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES ||
+            pitch > MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES) pitch = 0;
         if (lighting < MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
             lighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT) {
             lighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
         }
-        payload = "mdkr-test-history-v3\n";
+        payload = "mdkr-test-history-v4\n";
         appendCharacterHistoryValue(payload, players);
         appendCharacterHistoryValue(payload, pose);
         appendCharacterHistoryValue(payload, phase);
@@ -12550,8 +12583,10 @@ bool applyCharacterHistoryPayload(
             }
         }
     } else if (tool == CharacterHistoryTool::Test) {
-        const bool current = consumeHeader("mdkr-test-history-v3\n");
-        const bool poseVersion = current ||
+        const bool current = consumeHeader("mdkr-test-history-v4\n");
+        const bool visualVersion = current ||
+            consumeHeader("mdkr-test-history-v3\n");
+        const bool poseVersion = visualVersion ||
             consumeHeader("mdkr-test-history-v2\n");
         if (!poseVersion && !consumeHeader("mdkr-test-history-v1\n")) {
             error = "Test history header is invalid.";
@@ -12567,7 +12602,7 @@ bool applyCharacterHistoryPayload(
             (poseVersion &&
              (!readCharacterHistoryValue(payload, offset, pose) ||
               !readCharacterHistoryValue(payload, offset, phase))) ||
-            (current &&
+            (visualVersion &&
              (!readCharacterHistoryValue(payload, offset, yaw) ||
               !readCharacterHistoryValue(payload, offset, pitch) ||
               !readCharacterHistoryValue(payload, offset, lighting))) ||
@@ -12575,7 +12610,10 @@ bool applyCharacterHistoryPayload(
             pose <= MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
             pose >= MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
             phase < 0 || phase > 1000 || yaw < -180 || yaw > 180 ||
-            pitch < -45 || pitch > 45 ||
+            pitch < (current
+                ? MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES : -45) ||
+            pitch > (current
+                ? MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES : 45) ||
             lighting < MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
             lighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT) {
             error = "Test history values are invalid.";
@@ -12800,7 +12838,9 @@ bool captureCharacterDraftSnapshot(
     snapshot.testViewYawDegrees =
         testViewYaw >= -180 && testViewYaw <= 180 ? testViewYaw : 0;
     snapshot.testViewPitchDegrees =
-        testViewPitch >= -45 && testViewPitch <= 45 ? testViewPitch : 0;
+        testViewPitch >= MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES &&
+                testViewPitch <= MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES
+            ? testViewPitch : 0;
     snapshot.testLighting =
         testLighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL &&
                 testLighting < MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT
@@ -16374,8 +16414,10 @@ void Settings_publishCharacterPreviewResult(
                     result.inspection_pose_ticks &&
                 result.view_yaw_degrees >= -180 &&
                 result.view_yaw_degrees <= 180 &&
-                result.view_pitch_degrees >= -45 &&
-                result.view_pitch_degrees <= 45 &&
+                result.view_pitch_degrees >=
+                    MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES &&
+                result.view_pitch_degrees <=
+                    MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES &&
                 (result.context != MDKR_CHARACTER_PREVIEW_SELECT ||
                  (result.view_yaw_degrees == 0 &&
                   result.view_pitch_degrees == 0 &&

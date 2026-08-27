@@ -181,9 +181,17 @@ def require_fixture_composition(width: int, height: int, pixels: bytes) -> None:
             largest_area = area
             largest_bounds = (min_x, min_y, max_x, max_y)
     min_x, min_y, max_x, max_y = largest_bounds
+    component_width = max_x - min_x + 1
+    component_height = max_y - min_y + 1
+    component_box_area = component_width * component_height
     centre_x = (min_x + max_x) / 2.0
     centre_y = (min_y + max_y) / 2.0
-    if (largest_area < width * height // 500 or
+    # Judge material occupancy relative to its own bounded component. A top
+    # view legitimately presents less coloured surface than a front view, and
+    # tying this threshold to the full 4K render target rejected a clearly
+    # visible, centered subject. Independent minimum dimensions below still
+    # prevent a tiny speck from satisfying the gate.
+    if (largest_area < max(512, component_box_area // 5) or
             max_x - min_x < width * 3 // 100 or
             max_y - min_y < height * 3 // 100 or
             min_x < width * 15 // 100 or max_x > width * 85 // 100 or
@@ -274,7 +282,10 @@ def main() -> int:
     manifest_path = source / "manifest.json"
     license_path = source / "LICENSE.txt"
     package = source / "context-proof.mdkrchar"
-    model.write_bytes(make_animated_glb())
+    # Preview composition must exercise a genuinely three-dimensional subject;
+    # the probe suite's minimal single triangle is correctly edge-on from the
+    # exact top camera and therefore cannot prove a top-view renderer contract.
+    model.write_bytes(make_animated_glb(volumetric=True))
     portrait.write_bytes(make_portrait_png(40))
     manifest, _ = wizard.build_manifest(
         model, PACKAGE_ID, "Context Proof", "CC0-1.0",
@@ -360,6 +371,10 @@ def main() -> int:
          180, 15, "bright", "model-alpha"),
         ("car", 4, False, "select.idle", "500", False,
          180, 15, "bright", "model-alpha"),
+        ("car", 1, False, "select.idle", "500", False,
+         0, 90, "bright", "model-alpha"),
+        ("car", 1, False, "select.idle", "500", False,
+         0, -90, "bright", "model-alpha"),
     ]
     arms = [arm + (PACKAGE_ID,) for arm in arms]
     arms.append((
@@ -379,6 +394,10 @@ def main() -> int:
                      f"{context}-{players}p-pose" +
                      ("-fallback" if expect_fallback else "") +
                      (f"-{capture_kind}-capture" if capture_kind else ""))
+            if view_pitch == 90:
+                label += "-top"
+            elif view_pitch == -90:
+                label += "-underside"
             if package_id == CONTACT_PACKAGE_ID:
                 label += "-contact-witness"
             force_gpu_timing_disabled = (
@@ -460,7 +479,8 @@ def main() -> int:
             if capture_kind is not None:
                 kind_value = 1 if capture_kind == "model-alpha" else 0
                 visual_match = re.search(
-                    r"view=180,15 lighting=1 cameraTicks=(\d+) "
+                    rf"view={view_yaw},{view_pitch} lighting=1 "
+                    r"cameraTicks=(\d+) "
                     r"lightingDraws=(\d+) capture=1/[01]/[01] "
                     rf"kind={kind_value} "
                     r"captureStableFrames=(\d+) bytes=\d+",
@@ -849,6 +869,8 @@ def main() -> int:
          None, None, None, 60,
          "view and lighting fields must be provided together"),
         ("invalid-view-yaw", "car", "race.steer", "500", "181", "0",
+         "neutral", None, None, 60, "invalid Character Workshop view request"),
+        ("invalid-view-pitch", "car", "race.steer", "500", "0", "91",
          "neutral", None, None, 60, "invalid Character Workshop view request"),
         ("invalid-lighting", "car", "race.steer", "500", "0", "0",
          "studio", None, None, 60, "invalid Character Workshop view request"),

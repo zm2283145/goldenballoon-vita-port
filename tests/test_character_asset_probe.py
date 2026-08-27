@@ -69,7 +69,9 @@ def make_portrait_png(size: int = 16) -> bytes:
     )
 
 
-def make_animated_glb(external_buffer: bool = False, with_lod: bool = False) -> bytes:
+def make_animated_glb(
+        external_buffer: bool = False, with_lod: bool = False,
+        volumetric: bool = False) -> bytes:
     binary = bytearray()
     views: list[dict[str, int]] = []
     accessors: list[dict[str, object]] = []
@@ -93,21 +95,64 @@ def make_animated_glb(external_buffer: bool = False, with_lod: bool = False) -> 
         accessors.append(accessor)
         return len(accessors) - 1
 
-    positions = add(
-        struct.pack("<9f", -0.5, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 1.0, 0.0),
-        5126,
-        "VEC3",
-        3,
-        minimum=[-0.5, 0.0, 0.0],
-        maximum=[0.5, 1.0, 0.0],
+    if volumetric:
+        # A tetrahedron makes the exact front/side/top preview gate meaningful:
+        # unlike the minimal conformance triangle below, it cannot disappear
+        # merely because an inspection camera is edge-on to its only surface.
+        vertex_count = 4
+        positions = add(
+            struct.pack(
+                "<12f", -0.5, 0.0, 0.4, 0.5, 0.0, 0.4,
+                0.0, 0.0, -0.5, 0.0, 1.0, 0.0),
+            5126, "VEC3", vertex_count,
+            minimum=[-0.5, 0.0, -0.5], maximum=[0.5, 1.0, 0.4],
+        )
+        normals = add(
+            struct.pack(
+                "<12f", -0.6188527, 0.3094264, 0.7219949,
+                0.6188527, 0.3094264, 0.7219949,
+                0.0, 0.3011314, -0.9535827, 0.0, 1.0, 0.0),
+            5126, "VEC3", vertex_count,
+        )
+        uvs = add(
+            struct.pack("<8f", 0.0, 0.0, 1.0, 0.0, 0.5, 0.0, 0.5, 1.0),
+            5126, "VEC2", vertex_count,
+        )
+        index_values = struct.pack(
+            "<12H", 0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3)
+        index_count = 12
+    else:
+        vertex_count = 3
+        positions = add(
+            struct.pack("<9f", -0.5, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 1.0, 0.0),
+            5126,
+            "VEC3",
+            vertex_count,
+            minimum=[-0.5, 0.0, 0.0],
+            maximum=[0.5, 1.0, 0.0],
+        )
+        normals = add(
+            struct.pack("<9f", *(0.0, 0.0, 1.0) * vertex_count),
+            5126, "VEC3", vertex_count,
+        )
+        uvs = add(
+            struct.pack("<6f", 0.0, 0.0, 1.0, 0.0, 0.5, 1.0),
+            5126, "VEC2", vertex_count,
+        )
+        index_values = struct.pack("<3H", 0, 1, 2)
+        index_count = 3
+    joints = add(
+        bytes((0, 1, 0, 0) * vertex_count), 5121, "VEC4", vertex_count,
     )
-    normals = add(struct.pack("<9f", *(0.0, 0.0, 1.0) * 3), 5126, "VEC3", 3)
-    uvs = add(struct.pack("<6f", 0.0, 0.0, 1.0, 0.0, 0.5, 1.0), 5126, "VEC2", 3)
-    joints = add(bytes((0, 1, 0, 0) * 3), 5121, "VEC4", 3)
     weights = add(
-        struct.pack("<12f", *(0.5, 0.5, 0.0, 0.0) * 3), 5126, "VEC4", 3
+        struct.pack(
+            f"<{vertex_count * 4}f",
+            *(0.5, 0.5, 0.0, 0.0) * vertex_count),
+        5126, "VEC4", vertex_count,
     )
-    indices = add(struct.pack("<3H", 0, 1, 2), 5123, "SCALAR", 3)
+    # Keep the accessor order stable for the hostile-layout mutation suite:
+    # POSITION, NORMAL, UV, JOINTS, WEIGHTS, then indices.
+    indices = add(index_values, 5123, "SCALAR", index_count)
     identity = (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
                 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
     inverse_bind = add(struct.pack("<32f", *(identity + identity)), 5126, "MAT4", 2)
@@ -361,6 +406,16 @@ class CharacterAssetProbeTests(unittest.TestCase):
         self.assertEqual(1, report["triangle_count"])
         self.assertEqual(2, report["max_joints"])
         self.assertEqual(1.0, report["animations"][0]["duration_seconds"])
+
+    def test_generated_volumetric_glb_covers_inspection_planes(self) -> None:
+        report = probe.inspect_glb_bytes(
+            make_animated_glb(volumetric=True), require_character=True
+        )
+        self.assertEqual([], report["errors"])
+        self.assertTrue(report["character_ready"])
+        self.assertEqual(4, report["triangle_count"])
+        self.assertEqual([-0.5, 0.0, -0.5], report["bbox_min"])
+        self.assertEqual([0.5, 1.0, 0.4], report["bbox_max"])
 
     def test_external_resource_is_rejected(self) -> None:
         report = probe.inspect_glb_bytes(make_animated_glb(external_buffer=True), require_character=True)

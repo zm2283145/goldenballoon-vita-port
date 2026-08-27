@@ -16,6 +16,10 @@ typedef enum MdkrWorkshopPreviewLighting {
     MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT,
 } MdkrWorkshopPreviewLighting;
 
+#define MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES (-90)
+#define MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES 90
+#define MDKR_WORKSHOP_PREVIEW_TOP_PITCH_DEGREES 90
+
 typedef struct MdkrWorkshopPreviewVisualMetrics {
     uint64_t camera_override_ticks;
     uint64_t lighting_override_draws;
@@ -24,8 +28,10 @@ typedef struct MdkrWorkshopPreviewVisualMetrics {
 /* Presentation-only state for an exact Workshop inspection. Zero view angles
  * preserve the ordinary gameplay camera; nonzero angles select an absolute
  * racer-relative orbit which the game aims at renderer-published fitted
- * bounds. Lighting affects only the replacement character. Nothing writes
- * racer, collision, package tuning, or save authority. */
+ * bounds. Inclusive +/-90-degree pitch is a defined vertical view rather than
+ * an undefined Euler singularity. Lighting affects only the replacement
+ * character. Nothing writes racer, collision, package tuning, or save
+ * authority. */
 int mdkr_workshop_preview_visual_set(
     int yaw_degrees, int pitch_degrees,
     MdkrWorkshopPreviewLighting lighting,

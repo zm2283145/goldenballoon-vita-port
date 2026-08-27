@@ -162,7 +162,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 12u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 13u
 #define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u
 
 // Owned by the C engine entry module and non-NULL only during a launcher-owned
@@ -186,7 +186,7 @@ typedef struct {
     MdkrCharacterPreviewPose character_preview_pose;
     unsigned character_preview_pose_phase_milli;  // 0..1000
     int character_preview_view_yaw_degrees;       // -180..180
-    int character_preview_view_pitch_degrees;     // -45..45
+    int character_preview_view_pitch_degrees;     // -90..90
     MdkrWorkshopPreviewLighting character_preview_lighting;
     const char *character_preview_capture_png;    // optional, create-only
     MdkrCharacterPreviewCaptureKind character_preview_capture_kind;

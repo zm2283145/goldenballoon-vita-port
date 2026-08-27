@@ -9,8 +9,9 @@
 
 namespace {
 
+constexpr uint32_t kTopInspectionVersion = 8u;
 constexpr uint32_t kPortraitSubjectMaskVersion = 7u;
-constexpr uint32_t kVersion = kPortraitSubjectMaskVersion;
+constexpr uint32_t kVersion = kTopInspectionVersion;
 constexpr uint32_t kPortraitSourceVersion = 6u;
 constexpr uint32_t kVisualInspectionVersion = 5u;
 constexpr uint32_t kPoseInspectionVersion = 4u;
@@ -215,8 +216,10 @@ bool snapshotValid(const CharacterDraftSnapshot::Snapshot &snapshot,
         snapshot.testPosePhaseMilli > 1000u ||
         snapshot.testViewYawDegrees < -180 ||
         snapshot.testViewYawDegrees > 180 ||
-        snapshot.testViewPitchDegrees < -45 ||
-        snapshot.testViewPitchDegrees > 45 ||
+        snapshot.testViewPitchDegrees <
+            MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES ||
+        snapshot.testViewPitchDegrees >
+            MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES ||
         snapshot.testLighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT ||
         (snapshot.reviewedContexts & ~0xFu) != 0u) {
         error = "draft test or review state is invalid";
@@ -382,7 +385,7 @@ bool encode(const Snapshot &snapshot, std::string &payload,
     appendU32(result,
               static_cast<uint32_t>(snapshot.testViewYawDegrees + 180));
     appendU32(result,
-              static_cast<uint32_t>(snapshot.testViewPitchDegrees + 45));
+              static_cast<uint32_t>(snapshot.testViewPitchDegrees + 90));
     appendU32(result, snapshot.testLighting);
     appendU32(result, static_cast<uint32_t>(
         snapshot.portraitSourceRecord.kind));
@@ -430,7 +433,9 @@ bool decode(const std::string &payload, Snapshot &snapshot,
     if (payload.size() < kLegacyFixedBytes ||
         payload.compare(0u, 4u, "MDWD") != 0 ||
         !readU32(payload, offset, version) ||
-        (version != kVersion && version != kPortraitSourceVersion &&
+        (version != kVersion &&
+         version != kPortraitSubjectMaskVersion &&
+         version != kPortraitSourceVersion &&
          version != kVisualInspectionVersion &&
          version != kPoseInspectionVersion &&
          version != kPortraitStyleVersion &&
@@ -571,9 +576,13 @@ bool decode(const std::string &payload, Snapshot &snapshot,
             !readU32(payload, offset, parsed.testLighting)) {
             goto malformed;
         }
-        if (yaw > 360u || pitch > 90u) goto malformed;
+        if (yaw > 360u ||
+            pitch > (version >= kTopInspectionVersion ? 180u : 90u)) {
+            goto malformed;
+        }
         parsed.testViewYawDegrees = static_cast<int32_t>(yaw) - 180;
-        parsed.testViewPitchDegrees = static_cast<int32_t>(pitch) - 45;
+        parsed.testViewPitchDegrees = static_cast<int32_t>(pitch) -
+            (version >= kTopInspectionVersion ? 90 : 45);
     }
     if (version >= kPortraitSourceVersion) {
         uint32_t kind;

@@ -4963,8 +4963,8 @@ installed source/cache bytes unchanged. Pure `character_portrait_studio` and
 `character_draft_snapshot` tests prove CRC and APNG refusal, mutation-free decode
 failure, image operations, bounded provenance recipes, deterministic output,
 analysis, opaque background compositing and deterministic screening transforms,
-preset invariants, selection semantics, v1-v6 migration, and v7
-source-record/mask round trips independently of rendering. The shared
+preset invariants, selection semantics, v1-v7 migration, and v8
+source-record/mask/top-camera round trips independently of rendering. The shared
 `character_edit_history` and rendered history gates retain the existing
 source-bound, byte-capped undo/redo contract around those draft fields.
 
@@ -5010,6 +5010,12 @@ yaw, unknown lighting, a select-camera orbit, visual fields or capture in live
 mode, uppercase capture suffixes, and an existing destination; the last must
 remain byte-identical.
 
+Paired model-only arms also drive exact +90-degree top and -90-degree underside
+pole cameras against a closed, skinned tetrahedral fixture. Both must retain a
+stable yaw-defined screen orientation and a nonempty centered 3D subject; this
+prevents an edge-on planar fixture from being mistaken for a camera failure or
+an oblique 89-degree approximation from passing as a true top view.
+
 Every valid arm also enables the production presentation census. It must begin
 only after the 120-authored-tick warm-up and emit a bounded structured result
 with at least 40 post-warm-up intervals and nonzero modern-character
@@ -5030,7 +5036,7 @@ aspect-fits that selected viewport into the full output without distortion, and
 publishes bounded fixed-point projections for eight calibrated bounds corners,
 the fitted anchor, and the forward endpoint. The gate installs a second
 reviewed-humanoid package and drives a real car arm through automatic contact
-solving. Result v12 must publish all four bounded
+solving. Result v13 must publish all four bounded
 contact witnesses; the gate independently recomputes the left-hand
 target-to-endpoint distance from quantized coordinates and rejects partial,
 detached, or fabricated select-context evidence. Authored-clips-only arms must

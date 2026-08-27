@@ -122,7 +122,7 @@ int main() {
     capture.players = 4u;
     capture.phaseMilli = 875u;
     capture.viewYawDegrees = -90;
-    capture.viewPitchDegrees = 25;
+    capture.viewPitchDegrees = 90;
     capture.width = 1u;
     capture.height = 1u;
     capture.stableFrames = 12u;
@@ -267,6 +267,11 @@ int main() {
     expect(!exportHtml(otherReportPath, "dixie.cc0", "Dixie",
                        {invalid}, error),
            "partially stabilized captures cannot enter a qualification report");
+    invalid = capture;
+    invalid.viewPitchDegrees = 91;
+    expect(!exportHtml(otherReportPath, "dixie.cc0", "Dixie",
+                       {invalid}, error),
+           "out-of-range vertical camera metadata is rejected");
     invalid = capture;
     invalid.context = "line\nbreak";
     expect(!exportHtml(otherReportPath, "dixie.cc0", "Dixie",

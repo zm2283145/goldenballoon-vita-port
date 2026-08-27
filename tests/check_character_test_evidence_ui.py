@@ -382,7 +382,7 @@ def main() -> int:
                 or rows[0][0] != "0"
                 or rows[0][1] != PACKAGE_ID
                 or (rows[0][7], rows[0][8]) != ("2", "4")
-                or rows[0][9] != "12"
+                or rows[0][9] != "13"
                 or bytes.fromhex(rows[0][29]).decode("utf-8")
                 != "webgpu-test"
                 or bytes.fromhex(rows[0][30]).decode("utf-8")
@@ -457,6 +457,8 @@ def main() -> int:
                     "text=Front view",
                     "text=Left view",
                     "text=Right view",
+                    "text=Top view",
+                    "text=Underside view",
                     "text=Character lighting",
                     "text=Save stabilized PNG during next inspection",
                     "text=Model only · transparent",

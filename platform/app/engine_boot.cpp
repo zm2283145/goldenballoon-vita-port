@@ -372,8 +372,10 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
              cfg->character_preview_pose_phase_milli > 1000u ||
              cfg->character_preview_view_yaw_degrees < -180 ||
              cfg->character_preview_view_yaw_degrees > 180 ||
-             cfg->character_preview_view_pitch_degrees < -45 ||
-             cfg->character_preview_view_pitch_degrees > 45 ||
+             cfg->character_preview_view_pitch_degrees <
+                 MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES ||
+             cfg->character_preview_view_pitch_degrees >
+                 MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES ||
              characterPreviewLightingName(
                  cfg->character_preview_lighting) == nullptr ||
              characterPreviewCaptureKindName(

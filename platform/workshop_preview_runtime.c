@@ -20,7 +20,8 @@ int mdkr_workshop_preview_visual_set(
     MdkrWorkshopPreviewLighting lighting,
     char *error, size_t error_size) {
     if (yaw_degrees < -180 || yaw_degrees > 180 ||
-        pitch_degrees < -45 || pitch_degrees > 45 ||
+        pitch_degrees < MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES ||
+        pitch_degrees > MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES ||
         lighting < MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
         lighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT) {
         set_error(error, error_size,

@@ -1091,12 +1091,12 @@ static void wgpu_character_gpu_timing_map_callback(
             MDKR_MODERN_CHARACTER_GPU_TIMING_DEVICE_LOST) {
         s_character_gpu_timing_status =
             MDKR_MODERN_CHARACTER_GPU_TIMING_AVAILABLE;
-    } else if (current && invalid_sample && !valid_sample &&
-               s_character_gpu_timing_accumulator.scene_samples == 0u &&
-               s_character_gpu_timing_accumulator.character_samples == 0u) {
-        s_character_gpu_timing_status =
-            MDKR_MODERN_CHARACTER_GPU_TIMING_ERROR;
     }
+    /* A query can legitimately be unmapped or contain a zero/invalid pair at
+     * the start of a measurement window. Its explicit invalid_samples entry
+     * owns that exclusion; it must not latch the whole session into ERROR and
+     * hide later valid distributions. ERROR remains reserved for resource,
+     * device, and callback failures published by their owning paths. */
     slot->state = WGPU_CHARACTER_GPU_TIMING_SLOT_IDLE;
     slot->character_pairs = 0u;
     slot->mapped_bytes = 0u;
