@@ -9915,10 +9915,11 @@ static bool wgpu_skinned_draw_posed_ndc_bounds(
                 (double)mvp[12u + row] * model[3];
             if (!isfinite(clip[row])) return false;
         }
-        /* Geometry behind the camera plane cannot contribute a stable point
-         * bound. Visible vertices still produce a conservative crop; the
-         * normal depth pass clips any crossing triangle identically. */
-        if (clip[3] <= 1.0e-9) continue;
+        /* A triangle crossing the camera plane needs polygon clipping to
+         * produce an honest projected bound. Refuse the one-shot authoring
+         * product instead of silently framing only its positive-W vertices;
+         * normal gameplay rendering remains unaffected. */
+        if (clip[3] <= 1.0e-9) return false;
         for (uint32_t axis = 0u; axis < 2u; ++axis) {
             const double ndc = clip[axis] / clip[3];
             if (!isfinite(ndc)) return false;
