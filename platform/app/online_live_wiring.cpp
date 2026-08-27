@@ -573,6 +573,16 @@ void OnlineRoom_pumpPartyLinkIntent(IMdkrOnlineAdapter *adapter) {
         case MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK:
             sent = mdkr_online_live_adapter_set_config_track(adapter,
                                                              action.value);
+            /* PD-T6h2a witness: a track config genuinely driven over the REVERSE
+             * feed (a native TRACKSELECT lock), value + send result. This fires
+             * only when the host's on-screen lock DIVERGES from the current
+             * configured_track (convergence dedupe suppresses a no-op), so the
+             * lobby-start lane asserts it as proof the native screen -- not the
+             * room pre-config -- chose the booted track. No other production caller
+             * dispatches SET_CONFIG_TRACK over this feed. */
+            std::fprintf(stderr,
+                         "[online-reverse] SET_CONFIG_TRACK value=%u sent=%d\n",
+                         static_cast<unsigned>(action.value), sent ? 1 : 0);
             break;
         case MDKR_PARTY_LINK_DISPATCH_SET_CUP:
             sent = mdkr_online_live_adapter_set_cup(adapter, action.value);
@@ -1481,6 +1491,14 @@ MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLobbyStartRoom(std::string *error
         set_err("configured track did not reach both lobby snapshots");
         return nullptr;
     }
+    /* Witness: this pre-config exists ONLY to unlock READY at SELECTING (a
+     * single-race room gates each seat's READY behind a track vote the native
+     * CHARSELECT never casts). The native TRACKSELECT then locks a DIFFERENT track
+     * over the reverse feed (see [online-reverse] SET_CONFIG_TRACK), and THAT is
+     * what boots -- so track 5 here is not the booted track. */
+    std::fprintf(stderr,
+                 "[online-lobby-start] pre-config track=5 (READY-unlock only; the "
+                 "native TRACKSELECT re-selects the booted track)\n");
     /* STOP here: track configured, but NO selection, NO descriptor, NO roster. The
      * native screens (visible engine) + OnlineRoom_lobbyStartServiceJoiner drive
      * the rest once the engine is booted. */

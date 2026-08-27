@@ -514,11 +514,15 @@ static void trackselect_input_live(TsInput *in) {
 /* PD-T6h2a: minimal scripted input for the headless LOBBY-START lane (env
  * MDKR_TEST_ONLINE_LOBBY_START). Unlike the co-designed SINGLE_HOST scenario
  * (which walks specific tracks against the self-contained reducer), this drives a
- * REAL launcher adapter, so it stays trivial + convergence-robust: lock the
- * DEFAULT cursor's track (index 0 == Ancient Lake, id 5, mask 0x07 -- legal for
- * the Car charselect defaults to, so the auto-narrow never flips the vehicle) then
- * request START. Both latch and are republished every frame, so an ASYNC reducer
- * converges regardless of the exact tick timing. */
+ * REAL launcher adapter, so it stays trivial + convergence-robust: browse ONE row
+ * down to track index 1 == Fossil Canyon (id 3, mask 0x07 -- Car-legal, so the
+ * auto-narrow never flips the Car charselect defaults to), LOCK it, then request
+ * START. Index 1 is chosen DELIBERATELY DIFFERENT from the room's READY-unlock
+ * pre-config (track 5): the native SET_CONFIG_TRACK(3) is then a REAL, non-deduped
+ * reverse-feed dispatch, so "the booted track is the one the native TRACKSELECT
+ * chose" is genuinely proven (not vacuously honored by the pre-config). Both the
+ * lock and START latch and are republished every frame, so an ASYNC reducer (with
+ * its ready-clear-on-config-change + re-ready) converges regardless of timing. */
 static s8 sTsLobbyStartInput = -1; /* -1 unresolved, 0 off, 1 on */
 static u8 trackselect_lobby_input_active(void) {
     if (sTsLobbyStartInput < 0) {
@@ -532,9 +536,12 @@ static void trackselect_input_lobby_start(TsInput *in) {
     memset(in, 0, sizeof(*in));
     switch (sTs.ticks) {
     case 2u:
-        in->aEdge = 1u; /* lock track index 0 -> id 5 (SET_CONFIG_TRACK) */
+        in->dy = 1; /* row 0 -> 1: track index 1 == Fossil Canyon (id 3) */
         break;
-    case 8u:
+    case 5u:
+        in->aEdge = 1u; /* lock track index 1 -> id 3 (SET_CONFIG_TRACK clears ready) */
+        break;
+    case 10u:
         in->startEdge = 1u; /* host start; startReq latches + re-fires each frame */
         break;
     default:

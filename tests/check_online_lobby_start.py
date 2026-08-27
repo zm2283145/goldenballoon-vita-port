@@ -23,12 +23,15 @@ Assertions:
   * the race-1 readiness gate DEFERRED the boot when the descriptor was not ready
     -> [online-session] race-1 boot deferred ... -> LOBBY_WAIT re-wait
   * the launcher then built + armed race 1    -> [online-lobby-start] race-1 armed
-  * race 1 booted EXACTLY ONCE and ONLY AFTER the descriptor was ready, with the
-    host-selected track                       -> one phase=RACE, one direct race:
-                                                 track=5, track honored (no divergence)
+  * race 1 booted EXACTLY ONCE and ONLY AFTER the descriptor was ready, on the
+    track the native TRACKSELECT chose (id 3, Fossil Canyon) -- the room pre-config
+    (id 5) exists ONLY to unlock READY at SELECTING; the native screen dispatched
+    SET_CONFIG_TRACK=3 sent=1 over the reverse feed AFTER entering, and the BOOTED
+    track (3) != pre-config (5), so the track choice is genuinely native-owned
+    (not vacuously honored by the pre-config)
   * no NULL deref, no premature/failed boot, no admission rejection
   * gGameMode == GAMEMODE_ONLINE_SESSION (2) and gCurrentMenuId == 0 at hand-off
-  * the engine entered the ONLINE rollback race on the host track (loadedTrack=5)
+  * the engine entered the ONLINE rollback race on the native track (loadedTrack=3)
 """
 
 from __future__ import annotations
@@ -45,7 +48,11 @@ from harness_utils import resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 TICKS = 20000
-HOST_TRACK = 5  # Ancient Lake -- the fixed single-race track the host locks/boots
+# The native TRACKSELECT locks a track DIFFERENT from the room's READY-unlock
+# pre-config, so "the booted track is the one native TRACKSELECT chose" is proven
+# (not vacuously honored by the pre-config).
+HOST_TRACK = 3      # Fossil Canyon -- what the native TRACKSELECT locks + boots
+PRECONFIG_TRACK = 5  # Ancient Lake -- pre-configured ONLY to unlock READY at SELECTING
 
 BEGIN_LOBBY_RE = re.compile(
     r"^\[online-session\] begin: lobby-start \(no descriptor\)", re.MULTILINE)
@@ -75,6 +82,10 @@ DIRECT_BOOT_RE = re.compile(
 ONLINE_RACE_RE = re.compile(
     r"^\[ROLLBACK\] online race: loadedTrack=(\d+) raceType=(\d+) "
     r"authoredHz=(\d+)$", re.MULTILINE)
+PRECONFIG_RE = re.compile(
+    r"^\[online-lobby-start\] pre-config track=(\d+)", re.MULTILINE)
+REVERSE_TRACK_RE = re.compile(
+    r"^\[online-reverse\] SET_CONFIG_TRACK value=(\d+) sent=(\d+)$", re.MULTILINE)
 
 # GAMEMODE_ONLINE_SESSION aliases GAMEMODE_UNUSED_2 == 2 (game/src/thread3_main.h).
 GAMEMODE_ONLINE_SESSION = 2
@@ -225,7 +236,39 @@ def main() -> int:
         return fail("a menu-nav input script was loaded -- native must own the "
                     "flow without one", output)
 
-    # --- The host-selected track boots, exactly once -------------------------
+    # --- The NATIVE-TRACKSELECT-selected track boots, exactly once -----------
+    # This is the non-vacuous track proof: the native TRACKSELECT locks a track
+    # DIFFERENT from the room's READY-unlock pre-config, drives it over the reverse
+    # feed, and THAT is what boots.
+    preconfig = PRECONFIG_RE.findall(output)
+    if not preconfig or int(preconfig[0]) != PRECONFIG_TRACK:
+        return fail(f"the room pre-config witness (track {PRECONFIG_TRACK}) never "
+                    f"fired (saw {preconfig!r})", output)
+
+    # The native TRACKSELECT's SET_CONFIG_TRACK must be a REAL reverse-feed dispatch
+    # (value == the native pick, sent=1) that lands AFTER the screen is entered --
+    # proof the on-screen lock, not the pre-config, chose the track.
+    if ts is None:
+        return fail("no TRACKSELECT enter to anchor the reverse-feed dispatch",
+                    output)
+    reverse_after = [
+        (int(m.group(1)), int(m.group(2)))
+        for m in REVERSE_TRACK_RE.finditer(output)
+        if m.start() > ts.start()
+    ]
+    native_track_sent = [
+        value for value, sent in reverse_after
+        if value == HOST_TRACK and sent == 1
+    ]
+    if not native_track_sent:
+        return fail(f"the native TRACKSELECT never dispatched SET_CONFIG_TRACK="
+                    f"{HOST_TRACK} (sent=1) over the reverse feed after entering "
+                    f"the screen (reverse dispatches after enter: {reverse_after!r})",
+                    output)
+    if HOST_TRACK == PRECONFIG_TRACK:
+        return fail("the native track equals the pre-config -- the track proof "
+                    "would be vacuous (dedupe suppresses the dispatch)", output)
+
     direct = DIRECT_BOOT_RE.findall(output)
     if len(direct) != 1:
         return fail(f"expected exactly one [online-boot] direct race, got "
@@ -233,10 +276,14 @@ def main() -> int:
     direct_track, direct_players = direct[0]
     if int(direct_track) != HOST_TRACK:
         return fail(f"direct boot fired for track {direct_track}, expected the "
-                    f"host-selected track {HOST_TRACK}", output)
+                    f"NATIVE-TRACKSELECT-selected track {HOST_TRACK} (NOT the "
+                    f"pre-config {PRECONFIG_TRACK})", output)
+    if int(direct_track) == PRECONFIG_TRACK:
+        return fail(f"the booted track {direct_track} equals the pre-config -- the "
+                    f"native TRACKSELECT choice did not take effect", output)
     honored = HONORED_RE.findall(output)
     if not honored or int(honored[-1]) != HOST_TRACK:
-        return fail(f"the boot did not honor the host track {HOST_TRACK} "
+        return fail(f"the boot did not honor the native track {HOST_TRACK} "
                     f"(honored={honored!r})", output)
     if "[online-boot] track divergence" in output:
         return fail("the boot logged a track divergence (host track was not "
@@ -245,7 +292,7 @@ def main() -> int:
     online_race = ONLINE_RACE_RE.findall(output)
     if not online_race or int(online_race[0][0]) != HOST_TRACK:
         return fail(f"the engine never entered the ONLINE rollback race on the "
-                    f"host track {HOST_TRACK} (saw {online_race!r})", output)
+                    f"native track {HOST_TRACK} (saw {online_race!r})", output)
 
     print(
         "PASS online lobby-start: NATIVE owns race 1 -- session BEGAN "
@@ -253,11 +300,14 @@ def main() -> int:
         "TRACKSELECT fronted (offline menu bypassed), the race-1 readiness gate "
         f"DEFERRED the boot until the launcher built + armed the descriptor (epoch "
         f"{armed.group(1)}), then race 1 booted EXACTLY ONCE and ONLY THEN on the "
-        f"host-selected track {direct_track} (players={direct_players}, honored, no "
-        f"divergence, no admission reject), gGameMode={boot_gamemode} "
-        f"gCurrentMenuId={boot_menu_id} throughout -- engine entered the online "
-        f"rollback race loadedTrack={online_race[0][0]} after {lobby_ticks} "
-        f"LOBBY_WAIT tick(s)."
+        f"NATIVE-TRACKSELECT-selected track {direct_track} (Fossil Canyon; the host "
+        f"screen dispatched SET_CONFIG_TRACK={HOST_TRACK} sent=1 over the reverse "
+        f"feed AFTER entering, and track {PRECONFIG_TRACK} was pre-configured ONLY "
+        f"to unlock READY -- the booted track {direct_track} != pre-config "
+        f"{PRECONFIG_TRACK}), players={direct_players}, honored, no divergence, no "
+        f"admission reject, gGameMode={boot_gamemode} gCurrentMenuId={boot_menu_id} "
+        f"throughout -- engine entered the online rollback race "
+        f"loadedTrack={online_race[0][0]} after {lobby_ticks} LOBBY_WAIT tick(s)."
     )
     return 0
 
