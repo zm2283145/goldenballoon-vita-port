@@ -1560,6 +1560,33 @@ rollback race (`loadedTrack=5`). This is the descriptor-less-begin + race-1
 readiness-gate proof (never a NULL/stale descriptor deref). Default
 `--build build-beta`.
 
+`check_online_lobby_tournament.py` (standalone lane, not run-checks registered)
+is the PD-T6h2b KEYSTONE gate: it COMPOSES the T6h2a lobby-start boot with the
+T6ac/T6h1 resident multi-race coordinator so a descriptor-less session runs a FULL
+tournament IN ONE engine process. Same descriptor-less begin as the lobby-start
+lane, but `MDKR_APP_TEST_ONLINE_MODE=tournament` + `MDKR_APP_TEST_ONLINE_CUP=1`
+(Snowflake cup: rounds 13/6/9/28, all Car-legal) so the room is pre-configured a
+tournament (READY-unlock; the native TRACKSELECT enters in tournament mode via
+`MDKR_TEST_ONLINE_LOBBY_TOURNAMENT=1` and rides the cup), and
+`MDKR_TEST_ONLINE_RESULTS_HOST_PRESS=1` drives the host's per-round advance. After
+race 1 the lobby-start coordinator HANDS OFF to the resident coordinator
+(`composed: handed off to resident coordinator`), so races 2..4 re-cycle in-process
+via the SAME mid-residency PUBLISH_RESULTS + frame-stepped `OnlineRoom_residentAdvanceStep`.
+Finality is FEED-derived (`MDKR_ONLINE_SESSION_CUP_ROUNDS`, Minor-1): the lane
+asserts EXACTLY 4 `[online-boot] direct race:` boots on the cup-1 schedule
+[13,6,9,28] in one process, native RESULTS each round (`haveResults=1`), feed-isFinal
+0 for races 1-3 and 1 at race 4 ONLY, points accruing by trophy weight to 34,30,
+`race_index` 0->3 via the reverse-feed REMATCH on fresh epochs [2,3,4], and
+`gGameMode=2 gCurrentMenuId=0` throughout with no admission reject / watchdog trip.
+It also runs two WEDGE sub-tests proving the deferred safety findings fire cleanly
+(never hang): (W1) `MDKR_APP_TEST_ONLINE_LOBBY_WEDGE=descriptor` -- the descriptor/
+match-input never arms, so the engine's WALL-CLOCK WATCHDOG
+(`descless wait TIMEOUT`) fires + exits clean; (W2) `...=cancel` -- the leader
+CANCEL_LOADINGs while a boot is pending, so the session UNWINDS (`lobby-start
+UNWIND`) + re-fronts CHARSELECT + recovers (race 1 still boots). A source-scan pins
+`MDKR_ONLINE_SESSION_CUP_ROUNDS == MDKR_ONLINE_CUP_ROUNDS` (Minor-3). Default
+`--build build-beta`.
+
 `check_online_tournament.py` (standalone lane, not run-checks registered)
 drives a FULL 4-race Dino Domain cup (mode
 tournament, cup 0: tracks 5, 3, 29, 7) through ONE loopback room

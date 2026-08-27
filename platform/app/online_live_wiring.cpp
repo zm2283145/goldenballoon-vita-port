@@ -1469,6 +1469,46 @@ MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLobbyStartRoom(std::string *error
         set_err("confirm phrase did not reach SELECTING");
         return nullptr;
     }
+    /* PD-T6h2b TOURNAMENT compose: when MDKR_APP_TEST_ONLINE_MODE=tournament, this
+     * is the demo mode -- pre-configure the room as a tournament + cup (READY-unlock)
+     * exactly as OnlineRoom_makeTestLoopbackRace does, instead of the single track.
+     * A tournament room offers READY DIRECTLY (no per-race track vote gate -- the cup
+     * schedules every round), so the native CHARSELECT can confirm+ready without a
+     * vote; the native TRACKSELECT then rides the SAME mode+cup (a converged no-op)
+     * and issues the real START. The cup schedule drives all 4 rounds; the resident
+     * coordinator (handed off after race 1) re-cycles rounds 2..4 in-process. Still
+     * a SESSION CONFIG, not a descriptor/roster -- the descriptor-less boot property
+     * holds. */
+    const LoopbackSessionConfig lobbyCfg = loopbackSessionConfig();
+    if (!lobbyCfg.valid) {
+        set_err(lobbyCfg.error);
+        return nullptr;
+    }
+    if (lobbyCfg.tournament) {
+        if (!mdkr_online_live_adapter_set_mode(A, MDKR_ONLINE_MODE_TOURNAMENT) ||
+            !mdkr_online_live_adapter_set_cup(A, lobbyCfg.cup)) {
+            set_err("leader session-config submit refused (mode/cup)");
+            return nullptr;
+        }
+        if (!loopbackPumpUntil(both, [&]() {
+                MdkrOnlineLobby la{}, lb{};
+                return mdkr_online_live_adapter_lobby(A, &la) &&
+                       mdkr_online_live_adapter_lobby(B, &lb) &&
+                       la.mode == MDKR_ONLINE_MODE_TOURNAMENT &&
+                       la.cup_id == lobbyCfg.cup &&
+                       lb.mode == MDKR_ONLINE_MODE_TOURNAMENT &&
+                       lb.cup_id == lobbyCfg.cup;
+            }, 5000u)) {
+            set_err("tournament cup did not reach both lobby snapshots");
+            return nullptr;
+        }
+        std::fprintf(stderr,
+                     "[online-lobby-start] pre-config mode=tournament cup=%u "
+                     "round1Track=%u (READY-unlock; the cup schedule owns every "
+                     "round track, native TRACKSELECT rides + STARTs it)\n",
+                     lobbyCfg.cup,
+                     static_cast<unsigned>(mdkr_online_cup_track(lobbyCfg.cup, 0u)));
+    } else {
     /* Configure a fixed single-race track (Ancient Lake, id 5, mask 0x07 -- legal
      * for Car) so the SELECTING view offers READY directly instead of a track VOTE.
      * A single-race UNCONFIGURED room gates each seat's READY behind a vote (the
@@ -1499,6 +1539,7 @@ MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLobbyStartRoom(std::string *error
     std::fprintf(stderr,
                  "[online-lobby-start] pre-config track=5 (READY-unlock only; the "
                  "native TRACKSELECT re-selects the booted track)\n");
+    }
     /* STOP here: track configured, but NO selection, NO descriptor, NO roster. The
      * native screens (visible engine) + OnlineRoom_lobbyStartServiceJoiner drive
      * the rest once the engine is booted. */
@@ -1569,6 +1610,27 @@ void OnlineRoom_lobbyStartServiceJoiner(IMdkrOnlineAdapter *joiner,
         return;
     }
     if (sent) sLobbyStartJoinerLastAction = action;
+}
+
+/* PD-T6h2b WEDGE (b): the LEADER cancels loading (RETURN_TO_LOBBY -> the reducer's
+ * leader-only MDKR_ONLINE_CANCEL_LOADING). Only applicable while the leader's lobby
+ * is in the LOADING phase; the accepted cancel's LOBBY-phase snapshot walks the room
+ * back to SELECTING. Returns true when a cancel was applicable + submitted. */
+bool OnlineRoom_lobbyStartCancelLoading(IMdkrOnlineAdapter *leader) {
+    if (leader == nullptr) return false;
+    MdkrOnlineLobby lobby{};
+    if (!mdkr_online_live_adapter_lobby(leader, &lobby) ||
+        lobby.phase != MDKR_ONLINE_LOADING) {
+        return false;
+    }
+    const bool sent =
+        leader->submit(loopbackCmd(leader, MDKR_ONLINE_VIEW_ACTION_RETURN_TO_LOBBY))
+            .accepted;
+    std::fprintf(stderr,
+                 "[online-lobby-start] WEDGE cancel-loading: leader RETURN_TO_LOBBY "
+                 "(CANCEL_LOADING) submitted=%d\n",
+                 sent ? 1 : 0);
+    return sent;
 }
 
 IMdkrOnlineAdapter *OnlineRoom_testLoopbackVisible(
@@ -2082,7 +2144,17 @@ void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race) {
             std::getenv("MDKR_APP_TEST_ONLINE_LIVE_RESIDENT");
         const bool resident =
             residentEnv != nullptr && std::strtoul(residentEnv, nullptr, 10) > 0u;
-        if (!resident && mode != nullptr && std::strcmp(mode, "tournament") == 0) {
+        /* PD-T6h2b: the LOBBY-START tournament lane ALSO drove every round in-process
+         * (the lobby-start coordinator fronts race 1, then hands off to the resident
+         * coordinator for rounds 2..N -- exactly like the resident lane), so it must
+         * NOT also run the post-exit transport-level continuation. Only the
+         * NON-resident, NON-lobby-start tournament gate (check_online_tournament) does. */
+        const char *lobbyStartEnv =
+            std::getenv("MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START");
+        const bool lobbyStart =
+            lobbyStartEnv != nullptr && std::strtoul(lobbyStartEnv, nullptr, 10) > 0u;
+        if (!resident && !lobbyStart && mode != nullptr &&
+            std::strcmp(mode, "tournament") == 0) {
             (void)loopbackTournamentContinuation(race);
         }
     }

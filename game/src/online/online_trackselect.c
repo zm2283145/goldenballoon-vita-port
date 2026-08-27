@@ -532,6 +532,23 @@ static u8 trackselect_lobby_input_active(void) {
     return (u8) (sTsLobbyStartInput > 0 ? 1 : 0);
 }
 
+/* PD-T6h2b: the lobby-start TOURNAMENT lane (the demo mode). When set, the native
+ * TRACKSELECT ENTERS in TOURNAMENT mode focused on the room's pre-configured cup
+ * (read from the forward feed), so it publishes mode=TOURNAMENT + that cup from the
+ * FIRST frame -- a converged no-op with the room, never a stray SET_MODE(SINGLE)
+ * that would flip the pre-configured tournament back to single. The scripted input
+ * then LOCKs the focused cup (aEdge) and issues the real START. The cup schedule
+ * owns every round's track, so no per-round native track pick is needed here (the
+ * resident coordinator re-cycles rounds 2..4). */
+static s8 sTsLobbyTournament = -1; /* -1 unresolved, 0 off, 1 on */
+static u8 trackselect_lobby_tournament_active(void) {
+    if (sTsLobbyTournament < 0) {
+        sTsLobbyTournament =
+            (getenv("MDKR_TEST_ONLINE_LOBBY_TOURNAMENT") != NULL) ? 1 : 0;
+    }
+    return (u8) (sTsLobbyTournament > 0 ? 1 : 0);
+}
+
 static void trackselect_input_lobby_start(TsInput *in) {
     memset(in, 0, sizeof(*in));
     switch (sTs.ticks) {
@@ -1018,6 +1035,21 @@ void mdkr_online_trackselect_enter(void) {
         sTs.cursorRow = (u8) (sLastLockedTrack % TS_ROWS);
     } else if (sTs.mode == TS_MODE_TOURNAMENT && sLastLockedCup != TS_NONE) {
         sTs.cursorCol = sLastLockedCup;
+    }
+
+    /* PD-T6h2b: the lobby-start TOURNAMENT lane enters in TOURNAMENT mode focused on
+     * the room's PRE-CONFIGURED cup (from the forward feed), so the very first
+     * published intent carries mode=TOURNAMENT + that cup -- converged with the room,
+     * never a stray SET_MODE(SINGLE) that would flip the pre-configured tournament.
+     * The scripted input then LOCKs this focused cup + STARTs. */
+    if (trackselect_lobby_tournament_active()) {
+        MdkrPartyLinkSnapshot esnap;
+        sTs.mode = TS_MODE_TOURNAMENT;
+        sTs.cursorRow = 0u;
+        if (mdkr_party_link_read(&esnap) && esnap.cup_id < TS_COLS) {
+            sTs.cursorCol = esnap.cup_id;
+        }
+        sLastMode = TS_MODE_TOURNAMENT;
     }
 
     /* Seed the vehicle exactly as CHARSELECT does; the per-tick auto-narrow then

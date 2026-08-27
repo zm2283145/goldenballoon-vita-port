@@ -1139,6 +1139,16 @@ struct LiveLobbyStartState {
     LiveMatchInputContext *ctx = nullptr;
     unsigned joinerCharacter = 1u; /* host native picks Pipsy(2); joiner != 2 */
     enum class Phase { Lobby, Racing, Done } phase = Phase::Lobby;
+    /* PD-T6h2b: when non-null (the TOURNAMENT lobby-start lane), the race-1 arm
+     * HANDS OFF to the resident coordinator (g_liveResident) so races 2..4 re-cycle
+     * in-process via the SAME machinery the resident lane uses -- the lobby-start
+     * coordinator only fronts race 1. Null for the single-race lobby-start lane
+     * (byte-behaviour-unchanged: it just arms race 1 and lets it race + exit). */
+    LiveResidentState *resident = nullptr;
+    /* PD-T6h2b WEDGE sub-tests (MDKR_APP_TEST_ONLINE_LOBBY_WEDGE): prove the engine
+     * safety paths (watchdog + unwind) fire cleanly, never hang. None in normal runs. */
+    enum class Wedge { None, DescriptorNeverBuilds, CancelLoading } wedge = Wedge::None;
+    bool wedgeCancelDone = false; /* CancelLoading: cancel exactly once, then recover */
 };
 LiveLobbyStartState *g_liveLobbyStart = nullptr;
 static void liveLobbyStartServiceStep(void);
@@ -1839,6 +1849,29 @@ static void liveLobbyStartServiceStep(void) {
 
     if (ls->phase != LiveLobbyStartState::Phase::Lobby) return;
 
+    /* PD-T6h2b WEDGE sub-tests (test-only; None in every real lane). */
+    if (ls->wedge == LiveLobbyStartState::Wedge::DescriptorNeverBuilds) {
+        /* Let the room reach LOADING (so the engine defers boot + parks in the
+         * descriptor-less re-wait) but NEVER arm the match-input source -- so the
+         * engine's race-1 readiness gate never passes and its WALL-CLOCK WATCHDOG
+         * must fire + exit cleanly (never hang). Keep pumping so the room progresses. */
+        return;
+    }
+    if (ls->wedge == LiveLobbyStartState::Wedge::CancelLoading &&
+        !ls->wedgeCancelDone) {
+        /* Once the host's START has driven the room to LOADING (engine now parked in
+         * the descriptor-less re-wait with a boot pending), the LEADER cancels
+         * loading -> the room returns to SELECTING. The engine must UNWIND the
+         * pending boot and re-front CHARSELECT (never park forever). After the single
+         * cancel we fall through to the normal arm so race 1 still boots (proving
+         * RECOVERY, not just unwind). */
+        if (OnlineRoom_lobbyStartCancelLoading(ls->visible)) {
+            ls->wedgeCancelDone = true;
+            return;
+        }
+        return; /* not LOADING yet -- keep pumping until the START lands */
+    }
+
     /* Race-1 ARM. The host's START drove BEGIN_LOADING; the adapters built the
      * descriptor, installed the process-global roster and stood up the race
      * transport. The instant the visible endpoint's race is ready on a real epoch,
@@ -1885,6 +1918,30 @@ static void liveLobbyStartServiceStep(void) {
                  static_cast<unsigned>(info.matchEpoch),
                  static_cast<unsigned>(info.activeSlotMask));
     ls->phase = LiveLobbyStartState::Phase::Racing;
+
+    /* PD-T6h2b COMPOSE: hand race 2..N off to the RESIDENT coordinator. The
+     * lobby-start coordinator only fronts race 1; the resident coordinator
+     * (g_liveResident) then OWNS the mid-residency results poll -> PUBLISH_RESULTS,
+     * the host-advance REMATCH observation, and the per-round frame-stepped re-cycle
+     * (OnlineRoom_residentAdvanceStep) EXACTLY as the resident-live lane does -- so a
+     * descriptor-less session runs a FULL tournament in this one engine process.
+     * Clear g_liveLobbyStart so only ONE coordinator pumps the feeds from the next
+     * frame on (liveOverlayService checks g_liveResident BEFORE g_liveLobbyStart, and
+     * g_liveResident was null this frame, so the resident step first runs next frame
+     * -- no double-pump). Null resident (single-race lobby-start lane): keep the
+     * existing arm-and-race behaviour, byte-unchanged. */
+    if (ls->resident != nullptr) {
+        ls->resident->visible = ls->visible;
+        ls->resident->peer = ls->peer;
+        ls->resident->ctx = ls->ctx;
+        ls->resident->raceIndex = 0u;
+        ls->resident->phase = LiveResidentState::Phase::Racing;
+        g_liveResident = ls->resident;
+        g_liveLobbyStart = nullptr;
+        std::fprintf(stderr,
+                     "[online-lobby-start] composed: handed off to resident "
+                     "coordinator for races 2..N (in-process tournament)\n");
+    }
 }
 
 /* PD-T6h2a: boot the VISIBLE engine DESCRIPTOR-LESS on a lobby-start loopback
@@ -1924,17 +1981,36 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
     OnlineRoom_pumpPartyLink(visible);
     OnlineRoom_lobbyStartResetJoiner();
 
+    /* PD-T6h2b: the TOURNAMENT lobby-start composes with the resident coordinator so
+     * races 2..N re-cycle in-process (the demo's real flow). Detect it from the SAME
+     * env the room builder used to pre-configure the cup. A single-race lobby-start
+     * (no tournament env) keeps the resident pointer null -> arm-and-race, unchanged. */
+    const char *modeEnv = std::getenv("MDKR_APP_TEST_ONLINE_MODE");
+    const bool tournament = modeEnv != nullptr && std::strcmp(modeEnv, "tournament") == 0;
+    LiveResidentState residentState; /* races 2..N (used only when tournament) */
+
     LiveLobbyStartState lobbyState;
     lobbyState.visible = visible;
     lobbyState.peer = peer;
     lobbyState.ctx = &context;
     lobbyState.joinerCharacter = 1u; /* host native picks Pipsy(2); joiner != 2 */
     lobbyState.phase = LiveLobbyStartState::Phase::Lobby;
+    lobbyState.resident = tournament ? &residentState : nullptr;
+    /* PD-T6h2b WEDGE sub-tests (test-only; unset -> Wedge::None in every real lane). */
+    if (const char *wedgeEnv = std::getenv("MDKR_APP_TEST_ONLINE_LOBBY_WEDGE")) {
+        if (std::strcmp(wedgeEnv, "descriptor") == 0) {
+            lobbyState.wedge = LiveLobbyStartState::Wedge::DescriptorNeverBuilds;
+        } else if (std::strcmp(wedgeEnv, "cancel") == 0) {
+            lobbyState.wedge = LiveLobbyStartState::Wedge::CancelLoading;
+        }
+    }
     g_liveLobbyStart = &lobbyState;
 
     std::fprintf(stderr,
                  "[online-lobby-start] residency armed: party_link installed, no "
-                 "descriptor -- native online screens own race 1\n");
+                 "descriptor -- native online screens own race 1 (tournament=%d "
+                 "wedge=%d)\n",
+                 tournament ? 1 : 0, static_cast<int>(lobbyState.wedge));
 
     static const AppOverlayHooks lobbyHooks = {
         liveOverlayProcessEvent, liveOverlayService, liveOverlayWantsInput,
@@ -1957,6 +2033,9 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
     platformSetHostWindow(nullptr, nullptr);
     g_liveMatchInput = nullptr;
     g_liveLobbyStart = nullptr;
+    /* PD-T6h2b: the tournament compose may have handed off to the resident
+     * coordinator; retire it too (no-op when it was never armed). */
+    g_liveResident = nullptr;
     if (mdkr_match_input_runtime_active()) mdkr_match_input_runtime_clear();
     OnlineRoom_clearPartyLink();
     mdkr_net_roster_runtime_clear();

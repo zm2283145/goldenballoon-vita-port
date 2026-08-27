@@ -753,6 +753,12 @@ void OnlineRoom_lobbyStartResetJoiner(void);
  * START can leave LOBBY. `character` must differ from the host's native pick. */
 void OnlineRoom_lobbyStartServiceJoiner(IMdkrOnlineAdapter *joiner,
                                         unsigned character);
+/* PD-T6h2b WEDGE (b): the LEADER cancels loading. If `leader`'s lobby is in the
+ * LOADING phase, submit RETURN_TO_LOBBY (-> reducer CANCEL_LOADING) so the room
+ * returns to SELECTING; returns true when a cancel was applicable+submitted. Used
+ * only by the descriptor-less UNWIND wedge lane to prove the engine re-fronts
+ * CHARSELECT (never parks) when a leader cancel returns the room to LOBBY. */
+bool OnlineRoom_lobbyStartCancelLoading(IMdkrOnlineAdapter *leader);
 
 /* PD-T6h1: FRAME-STEPPED per-round re-cycle for a RESIDENT LIVE session.
  *
