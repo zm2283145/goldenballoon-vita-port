@@ -183,10 +183,26 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                 "rig route omitted its complete review-required structural "
                 "proposal\n" + process.stdout[-8000:]
             )
+        review_marker = (
+            "character-rig-review package=" + PACKAGE_ID +
+            " anatomy-tasks=5 motion-presets=5 source-bound=1 "
+            "reset-on-basis-change=1 exact-test-handoff=1 "
+            "context-claim=manual-after-save"
+        )
+        if review_marker not in process.stdout:
+            raise RuntimeError(
+                "rig route omitted its source-bound anatomy checklist and "
+                "exact motion-battery handoff\n" + process.stdout[-8000:]
+            )
         if "text=Apply 16-role humanoid proposal" not in process.stdout:
             raise RuntimeError(
                 "keyboard/speech traversal could not reach the structural "
                 "proposal action\n" + process.stdout[-8000:]
+            )
+        if "text=Standing silhouette" not in process.stdout:
+            raise RuntimeError(
+                "keyboard/speech traversal could not reach the motion battery\n"
+                + process.stdout[-8000:]
             )
     if tab == "vehicles":
         marker = (

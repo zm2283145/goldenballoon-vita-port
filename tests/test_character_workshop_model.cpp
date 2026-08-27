@@ -432,6 +432,62 @@ void testStructuralRigInference() {
     assert(suggestion.commonAncestorRepairs == 1u);
     assert(suggestion.roles[5].joint == 6);
     assert(suggestion.roles[11].joint == 12);
+    assert(suggestion.restBasisRoles == 16u);
+    assert(suggestion.bendAxisRoles == 0u);
+    for (const auto &role : suggestion.roles) {
+        assert(role.restBasisAvailable);
+        assert(std::fabs(role.restRotation[0]) < 1.0e-6f);
+        assert(std::fabs(role.restRotation[1]) < 1.0e-6f);
+        assert(std::fabs(role.restRotation[2]) < 1.0e-6f);
+        assert(std::fabs(role.restRotation[3] - 1.0f) < 1.0e-6f);
+    }
+
+    auto bentLegs = siblingPelvis;
+    bentLegs[13].bindPosition[2] = 0.15f;
+    bentLegs[16].bindPosition[2] = 0.15f;
+    const auto sideways = CharacterWorkshop_suggestHumanoidRig(bentLegs, 2u);
+    assert(sideways.complete && sideways.hierarchyValid);
+    assert(sideways.restBasisRoles == 16u);
+    assert(sideways.bendAxisRoles == 4u);
+    assert(sideways.roles[10].bendAxisAvailable);
+    assert(sideways.roles[11].bendAxisAvailable);
+    assert(sideways.roles[13].bendAxisAvailable);
+    assert(sideways.roles[14].bendAxisAvailable);
+    assert(!sideways.roles[4].bendAxisAvailable);
+    assert(std::fabs(sideways.roles[0].restRotation[1] -
+                     std::sqrt(0.5f)) < 1.0e-5f);
+    assert(std::fabs(sideways.roles[0].restRotation[3] -
+                     std::sqrt(0.5f)) < 1.0e-5f);
+    assert(std::fabs(sideways.roles[10].bendAxis[0] + 1.0f) < 1.0e-5f);
+
+    auto rotatedBind = siblingPelvis;
+    rotatedBind[0].bindRotation = {
+        0.0f, 0.0f, std::sqrt(0.5f), std::sqrt(0.5f)};
+    const auto rotated = CharacterWorkshop_suggestHumanoidRig(rotatedBind);
+    assert(rotated.roles[0].restBasisAvailable);
+    assert(std::fabs(rotated.roles[0].restRotation[2] +
+                     std::sqrt(0.5f)) < 1.0e-5f);
+    assert(std::fabs(rotated.roles[0].restRotation[3] -
+                     std::sqrt(0.5f)) < 1.0e-5f);
+
+    std::array<int, 16> partialMapping;
+    partialMapping.fill(-1);
+    partialMapping[0] = 0;
+    const auto partialBases = CharacterWorkshop_suggestHumanoidBases(
+        siblingPelvis, partialMapping, 3u);
+    assert(!partialBases.complete && !partialBases.hierarchyValid);
+    assert(partialBases.restBasisRoles == 1u);
+    assert(partialBases.roles[0].restBasisAvailable);
+    assert(std::fabs(partialBases.roles[0].restRotation[1] +
+                     std::sqrt(0.5f)) < 1.0e-5f);
+
+    auto invalidBasis = siblingPelvis;
+    invalidBasis[0].bindRotation = {0.0f, 0.0f, 0.0f, 0.0f};
+    const auto unavailable = CharacterWorkshop_suggestHumanoidRig(
+        invalidBasis);
+    assert(unavailable.complete && unavailable.hierarchyValid);
+    assert(unavailable.restBasisRoles == 15u);
+    assert(!unavailable.roles[0].restBasisAvailable);
 
     auto ambiguous = siblingPelvis;
     ambiguous.push_back(joint("Head", 3, 0.0f, 1.8f));
@@ -440,6 +496,9 @@ void testStructuralRigInference() {
     cyclic[0].parent = 3;
     const auto invalid = CharacterWorkshop_suggestHumanoidRig(cyclic);
     assert(!invalid.complete && !invalid.hierarchyValid);
+    assert(CharacterWorkshop_suggestHumanoidBases(
+               cyclic, partialMapping).restBasisRoles == 0u);
+    assert(!CharacterWorkshop_suggestHumanoidRig(siblingPelvis, 4u).complete);
 }
 
 } // namespace

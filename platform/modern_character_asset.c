@@ -303,6 +303,56 @@ int mdkr_modern_character_asset_node_bind_position(
     return parent < 0;
 }
 
+static void multiply_bind_quaternion(const float left[4],
+                                     const float right[4], float output[4]) {
+    const float value[4] = {
+        left[3] * right[0] + left[0] * right[3] +
+            left[1] * right[2] - left[2] * right[1],
+        left[3] * right[1] - left[0] * right[2] +
+            left[1] * right[3] + left[2] * right[0],
+        left[3] * right[2] + left[0] * right[1] -
+            left[1] * right[0] + left[2] * right[3],
+        left[3] * right[3] - left[0] * right[0] -
+            left[1] * right[1] - left[2] * right[2]
+    };
+    memcpy(output, value, sizeof(value));
+}
+
+int mdkr_modern_character_asset_node_bind_rotation(
+    const MdkrModernCharacterAsset *asset, uint32_t node_index,
+    float output[4]) {
+    const MdkrModernSectionView *nodes = mdkr_modern_character_asset_section(
+        asset, MDKR_MDKC_NODES);
+    MdkrModernNode node;
+    int32_t parent;
+    uint32_t depth;
+    float length;
+    if (nodes == NULL || output == NULL || node_index >= nodes->count ||
+        !mdkr_modern_character_asset_node(asset, node_index, &node)) return 0;
+    memcpy(output, node.rotation, sizeof(node.rotation));
+    parent = node.parent;
+    for (depth = 0u; parent >= 0 && depth < nodes->count; depth++) {
+        if ((uint32_t)parent >= nodes->count ||
+            !mdkr_modern_character_asset_node(asset, (uint32_t)parent,
+                                              &node)) return 0;
+        multiply_bind_quaternion(node.rotation, output, output);
+        parent = node.parent;
+    }
+    if (parent >= 0) return 0;
+    length = sqrtf(output[0] * output[0] + output[1] * output[1] +
+                   output[2] * output[2] + output[3] * output[3]);
+    if (!isfinite(length) || length < 1.0e-8f) return 0;
+    output[0] /= length;
+    output[1] /= length;
+    output[2] /= length;
+    output[3] /= length;
+    if (output[3] < 0.0f) {
+        output[0] = -output[0]; output[1] = -output[1];
+        output[2] = -output[2]; output[3] = -output[3];
+    }
+    return 1;
+}
+
 int mdkr_modern_character_asset_joint_parent_node(
     const MdkrModernCharacterAsset *asset, uint32_t joint_index,
     int32_t *parent_node) {

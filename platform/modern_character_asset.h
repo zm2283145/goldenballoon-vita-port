@@ -333,10 +333,15 @@ int mdkr_modern_character_asset_node(const MdkrModernCharacterAsset *asset,
                                      uint32_t index, MdkrModernNode *out);
 /* Bind-pose spatial queries shared by authoring diagnostics and tests. The
  * position follows the same glTF parent TRS convention as pose evaluation.
+ * Rotation is the normalized node-local-to-source-model quaternion composed
+ * through the complete parent hierarchy; scale and translation do not affect
+ * that orientation query.
  * Joint parent returns the node index of the nearest skin-joint ancestor,
  * skipping helpers, or -1 for a skin root. */
 int mdkr_modern_character_asset_node_bind_position(
     const MdkrModernCharacterAsset *asset, uint32_t node, float output[3]);
+int mdkr_modern_character_asset_node_bind_rotation(
+    const MdkrModernCharacterAsset *asset, uint32_t node, float output[4]);
 int mdkr_modern_character_asset_joint_parent_node(
     const MdkrModernCharacterAsset *asset, uint32_t joint,
     int32_t *parent_node);

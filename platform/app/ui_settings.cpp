@@ -2319,6 +2319,7 @@ struct CharacterRigEdit {
         int parentJoint = -1;
         int32_t parentNode = -1;
         float bindPosition[3] = {};
+        float bindRotation[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     };
     struct Role {
         int joint = -1;
@@ -2330,6 +2331,7 @@ struct CharacterRigEdit {
     bool loaded = false;
     int mode = MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY;
     bool reviewed = false;
+    uint32_t reviewTaskMask = 0u;
     uint32_t disabledSemanticMask = 0u;
     uint8_t sourceSha256[32] = {};
     std::vector<Joint> joints;
@@ -2341,6 +2343,13 @@ struct CharacterRigEdit {
     bool showAllJoints = true;
     std::string error;
 };
+
+constexpr uint32_t kCharacterRigReviewTaskMask = 0x1Fu;
+
+void invalidateCharacterRigReview(CharacterRigEdit &edit) {
+    edit.reviewed = false;
+    edit.reviewTaskMask = 0u;
+}
 
 std::map<std::string, CharacterRigEdit> g_characterRigEdits;
 
@@ -5227,6 +5236,7 @@ CharacterRigEdit &loadCharacterRigEdit(
         ? static_cast<int>(entry->rig_mode)
         : MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY;
     edit.reviewed = (entry->rig_flags & MDKR_MODERN_RIG_REVIEWED) != 0u;
+    edit.reviewTaskMask = edit.reviewed ? kCharacterRigReviewTaskMask : 0u;
     edit.disabledSemanticMask = entry->disabled_semantic_mask;
     MdkrModernCharacterAsset asset{};
     char error[256];
@@ -5265,6 +5275,11 @@ CharacterRigEdit &loadCharacterRigEdit(
         if (!mdkr_modern_character_asset_node_bind_position(
                 &asset, joint.node, target.bindPosition)) {
             edit.error = "A skin joint has an invalid bind hierarchy.";
+            continue;
+        }
+        if (!mdkr_modern_character_asset_node_bind_rotation(
+                &asset, joint.node, target.bindRotation)) {
+            edit.error = "A skin joint has an invalid bind orientation.";
             continue;
         }
         if (!mdkr_modern_character_asset_joint_parent_node(
@@ -5498,7 +5513,7 @@ void drawCharacterRigSkeleton(const MdkrModernCharacterEntry *entry,
                 CharacterRigEdit::Role &role = edit.roles[edit.selectedRole];
                 role = CharacterRigEdit::Role{};
                 role.joint = edit.selectedJoint;
-                edit.reviewed = false;
+                invalidateCharacterRigReview(edit);
             }
             if (used) ImGui::EndDisabled();
             ui::SpeakFocusedItem(
@@ -5667,7 +5682,7 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
         for (int candidate = 0; candidate < 2; ++candidate) {
             if (ImGui::Selectable(modeNames[candidate], candidate == mode)) {
                 edit.mode = candidate;
-                edit.reviewed = false;
+                invalidateCharacterRigReview(edit);
             }
         }
         ImGui::EndCombo();
@@ -5681,22 +5696,28 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
         std::copy(std::begin(joint.bindPosition),
                   std::end(joint.bindPosition),
                   input.bindPosition.begin());
+        std::copy(std::begin(joint.bindRotation),
+                  std::end(joint.bindRotation),
+                  input.bindRotation.begin());
         inferenceJoints.push_back(std::move(input));
     }
     const CharacterWorkshopRigSuggestion rigSuggestion =
-        CharacterWorkshop_suggestHumanoidRig(inferenceJoints);
+        CharacterWorkshop_suggestHumanoidRig(
+            inferenceJoints, entry->source_forward);
     if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
         static std::set<std::string> tracedRigSuggestions;
         if (tracedRigSuggestions.insert(entry->id).second) {
             std::fprintf(
                 stderr,
-                "[app-ui] character-rig-suggestion package=%s joints=%zu roles=%u named=%u hierarchy=%u common-ancestor-repairs=%u complete=%d structurally-valid=%d review-required=1\n",
+                "[app-ui] character-rig-suggestion package=%s joints=%zu roles=%u named=%u hierarchy=%u common-ancestor-repairs=%u complete=%d structurally-valid=%d review-required=1 rest-bases=%u bend-preferences=%u ambiguous-bends-automatic=1\n",
                 entry->id, edit.joints.size(),
                 rigSuggestion.namedRoles + rigSuggestion.hierarchyRoles,
                 rigSuggestion.namedRoles, rigSuggestion.hierarchyRoles,
                 rigSuggestion.commonAncestorRepairs,
                 rigSuggestion.complete ? 1 : 0,
-                rigSuggestion.hierarchyValid ? 1 : 0);
+                rigSuggestion.hierarchyValid ? 1 : 0,
+                rigSuggestion.restBasisRoles,
+                rigSuggestion.bendAxisRoles);
         }
     }
     if (edit.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1) {
@@ -5707,12 +5728,16 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
             "%u of 16 roles proposed · %u name-backed · %u hierarchy-backed",
             rigSuggestion.namedRoles + rigSuggestion.hierarchyRoles,
             rigSuggestion.namedRoles, rigSuggestion.hierarchyRoles);
+        ImGui::TextDisabled(
+            "%u rest bases derived · %u bend preferences derived · %u automatic",
+            rigSuggestion.restBasisRoles, rigSuggestion.bendAxisRoles,
+            8u - std::min(8u, rigSuggestion.bendAxisRoles));
         if (rigSuggestion.commonAncestorRepairs != 0u) {
             ui::TextSubtleWrapped(
                 "A pelvis-named joint did not own the torso and both leg chains. The proposal uses their lowest common skin-joint ancestor for hips, avoiding the common sibling-pelvis export trap.");
         }
         ui::TextSubtleWrapped(
-            "This is a starting point from skin-only names, ancestry, and bind-pose structure. It never counts as review, never changes the model, and leaves every solver basis canonical until you inspect it.");
+            "This is a starting point from skin-only names, ancestry, bind orientation, the reviewed source-facing direction, and stable limb planes. It never counts as review or changes the model. Ambiguous near-straight bends deliberately stay automatic.");
         if (ImGui::TreeNode("Inspect all proposed roles")) {
             for (size_t role = 0u; role < rigSuggestion.roles.size(); ++role) {
                 const CharacterWorkshopRigRoleSuggestion &proposal =
@@ -5730,12 +5755,14 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                 if (proposal.joint >= 0 &&
                     proposal.joint < static_cast<int>(edit.joints.size())) {
                     ImGui::TextWrapped(
-                        "%s → #%u · %s · %.0f%% · %s",
+                        "%s → #%u · %s · %.0f%% · %s · rest %s · bend %s",
                         kHumanoidRigRoles[role].name,
                         edit.joints[proposal.joint].node,
                         edit.joints[proposal.joint].name.c_str(),
                         static_cast<double>(proposal.confidence * 100.0f),
-                        evidence);
+                        evidence,
+                        proposal.restBasisAvailable ? "derived" : "unavailable",
+                        proposal.bendAxisAvailable ? "derived" : "automatic");
                 } else {
                     ImGui::TextColored(
                         AppTheme::accent(), "%s → unresolved",
@@ -5745,7 +5772,8 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
             ImGui::TreePop();
         }
         const bool applicable = rigSuggestion.complete &&
-            rigSuggestion.hierarchyValid;
+            rigSuggestion.hierarchyValid &&
+            rigSuggestion.restBasisRoles == rigSuggestion.roles.size();
         if (!applicable) ImGui::BeginDisabled();
         if (ImGui::Button("Apply 16-role proposal to draft") && applicable) {
             for (size_t role = 0u; role < rigSuggestion.roles.size(); ++role) {
@@ -5754,10 +5782,20 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                 edit.roles[role].inferred = true;
                 edit.roles[role].confidence =
                     rigSuggestion.roles[role].confidence;
+                if (rigSuggestion.roles[role].restBasisAvailable) {
+                    std::copy(rigSuggestion.roles[role].restRotation.begin(),
+                              rigSuggestion.roles[role].restRotation.end(),
+                              edit.roles[role].rest);
+                }
+                if (rigSuggestion.roles[role].bendAxisAvailable) {
+                    std::copy(rigSuggestion.roles[role].bendAxis.begin(),
+                              rigSuggestion.roles[role].bendAxis.end(),
+                              edit.roles[role].bend);
+                }
             }
-            edit.reviewed = false;
+            invalidateCharacterRigReview(edit);
             setStatus(
-                "Structural humanoid proposal applied to the reversible draft; inspect every role, solver basis, and exact context before review.",
+            "Structural humanoid proposal and evidence-backed solver bases applied to the reversible draft; inspect every role and motion context before review.",
                 AppTheme::good());
         }
         if (!applicable) ImGui::EndDisabled();
@@ -5765,7 +5803,7 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
             "Apply 16-role humanoid proposal",
             applicable ? "Proposal available; author review still required"
                        : "A complete structurally valid proposal is unavailable; map unresolved roles below.",
-            "Applies the displayed source-bound proposal to the reversible rig draft, resets solver bases to canonical, and keeps review cleared.");
+            "Applies the displayed source-bound proposal and trustworthy derived bases to the reversible rig draft. Ambiguous bends stay automatic and review remains cleared.");
         if (!applicable) {
             ui::TextSubtleWrapped(
                 "The Workshop refused to guess an ambiguous or incomplete skeleton. Use the bind-pose canvas and named controls below for unresolved roles.");
@@ -5941,13 +5979,20 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
             "A disabled semantic no longer exists in this exact source; discard the draft or restore its matching revision.");
     }
     if (edit.mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY) {
-        edit.reviewed = false;
+        invalidateCharacterRigReview(edit);
         ui::TextSubtleWrapped(
             "Use this for creatures, unusual skeletons, or a character whose package supplies every intended clip. Any retained role notes stay inert; the engine will not procedurally alter the rig.");
     } else {
         ui::TextSubtleWrapped(
             "Changing a joint or solver basis clears review automatically. Intervening shoulder, neck, twist, and helper joints are allowed, but every semantic chain must preserve ancestry and every role must use a distinct skin joint.");
         drawCharacterRigSkeleton(entry, edit);
+        std::array<int, 16> currentRoleJoints{};
+        for (size_t role = 0u; role < currentRoleJoints.size(); ++role) {
+            currentRoleJoints[role] = edit.roles[role].joint;
+        }
+        const CharacterWorkshopRigSuggestion currentBasisSuggestion =
+            CharacterWorkshop_suggestHumanoidBases(
+                inferenceJoints, currentRoleJoints, entry->source_forward);
         for (size_t slot = 0u; slot < std::size(kHumanoidRigRoles); ++slot) {
             CharacterRigEdit::Role &role = edit.roles[slot];
             ImGui::PushID(static_cast<int>(slot));
@@ -5965,7 +6010,7 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                     role.joint >= 0) {
                     role = CharacterRigEdit::Role{};
                     edit.selectedJoint = -1;
-                    edit.reviewed = false;
+                    invalidateCharacterRigReview(edit);
                 }
                 for (size_t jointIndex = 0u; jointIndex < edit.joints.size();
                      ++jointIndex) {
@@ -5985,7 +6030,7 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                         role = CharacterRigEdit::Role{};
                         role.joint = static_cast<int>(jointIndex);
                         edit.selectedJoint = role.joint;
-                        edit.reviewed = false;
+                        invalidateCharacterRigReview(edit);
                     }
                     if (used) ImGui::EndDisabled();
                     ImGui::PopID();
@@ -6004,13 +6049,48 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                 if (ImGui::TreeNode("Advanced solver basis")) {
                     ui::TextSubtleWrapped(
                         "Rest correction maps canonical engine axes into this joint's local basis. Bend is the preferred joint-local axis only for the exactly-opposite contact case; zero selects a stable automatic axis.");
+                    const CharacterWorkshopRigRoleSuggestion &basisProposal =
+                        currentBasisSuggestion.roles[slot];
+                    const bool sameProposedJoint =
+                        basisProposal.joint == role.joint;
+                    if (sameProposedJoint &&
+                        basisProposal.restBasisAvailable) {
+                        ImGui::TextDisabled(
+                            "Proposal: rest derived from the full bind orientation%s.",
+                            basisProposal.bendAxisAvailable
+                                ? "; bend derived from a stable limb plane"
+                                : "; bend remains automatic (plane ambiguous)");
+                        if (ImGui::SmallButton("Restore derived basis")) {
+                            std::copy(basisProposal.restRotation.begin(),
+                                      basisProposal.restRotation.end(),
+                                      role.rest);
+                            if (basisProposal.bendAxisAvailable) {
+                                std::copy(basisProposal.bendAxis.begin(),
+                                          basisProposal.bendAxis.end(),
+                                          role.bend);
+                            } else {
+                                role.bend[0] = role.bend[1] =
+                                    role.bend[2] = 0.0f;
+                            }
+                            invalidateCharacterRigReview(edit);
+                        }
+                        ui::SpeakFocusedItem(
+                            "Restore derived solver basis",
+                            basisProposal.bendAxisAvailable
+                                ? "Rest and stable bend evidence available"
+                                : "Rest evidence available; automatic bend retained",
+                            "Restores only the current mapped role's reversible basis proposal and clears rig review.");
+                    } else {
+                        ImGui::TextDisabled(
+                            "No source-bound basis proposal matches this manual mapping.");
+                    }
                     (void)ImGui::DragFloat4(
                         "Rest correction XYZW", role.rest, 0.005f,
                         -1.0f, 1.0f, "%.4f",
                         ImGuiSliderFlags_AlwaysClamp);
                     if (ImGui::IsItemDeactivatedAfterEdit()) {
                         normalizeCharacterRigVector(role.rest, 4u, false);
-                        edit.reviewed = false;
+                        invalidateCharacterRigReview(edit);
                     }
                     (void)ImGui::DragFloat3(
                         "Preferred bend axis", role.bend, 0.005f,
@@ -6018,13 +6098,13 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                         ImGuiSliderFlags_AlwaysClamp);
                     if (ImGui::IsItemDeactivatedAfterEdit()) {
                         normalizeCharacterRigVector(role.bend, 3u, true);
-                        edit.reviewed = false;
+                        invalidateCharacterRigReview(edit);
                     }
                     if (ImGui::Button("Reset canonical basis")) {
                         role.rest[0] = role.rest[1] = role.rest[2] = 0.0f;
                         role.rest[3] = 1.0f;
                         role.bend[0] = role.bend[1] = role.bend[2] = 0.0f;
-                        edit.reviewed = false;
+                        invalidateCharacterRigReview(edit);
                     }
                     ImGui::TreePop();
                 }
@@ -6038,16 +6118,110 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
     if (!hierarchyError.empty()) {
         ImGui::TextColored(AppTheme::bad(), "%s", hierarchyError.c_str());
     }
+    if (edit.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1) {
+        ImGui::SeparatorText("Guided anatomy review");
+        ui::TextSubtleWrapped(
+            "Confirm the five readable regions in the bind-pose canvas before approving reference motion. These checks are tied to this reversible draft and clear together whenever a role or basis changes.");
+        static const char *taskLabels[] = {
+            "Torso and head: hips → spine → chest → head",
+            "Left arm: upper arm → lower arm → hand",
+            "Right arm: upper arm → lower arm → hand",
+            "Left leg: upper leg → lower leg → foot",
+            "Right leg: upper leg → lower leg → foot",
+        };
+        const bool tasksAvailable = hierarchyError.empty();
+        if (!tasksAvailable) ImGui::BeginDisabled();
+        for (size_t task = 0u; task < std::size(taskLabels); ++task) {
+            bool checked = (edit.reviewTaskMask & (1u << task)) != 0u;
+            ImGui::PushID(static_cast<int>(task));
+            if (ImGui::Checkbox(taskLabels[task], &checked)) {
+                if (checked) edit.reviewTaskMask |= 1u << task;
+                else edit.reviewTaskMask &= ~(1u << task);
+                edit.reviewed = false;
+            }
+            ui::SpeakFocusedItem(
+                taskLabels[task], checked ? "Checked" : "Not checked",
+                "Records an explicit visual inspection of this anatomy chain in the current reversible rig draft.");
+            ImGui::PopID();
+        }
+        if (!tasksAvailable) ImGui::EndDisabled();
+        const unsigned completedTasks = countCharacterBits(
+            edit.reviewTaskMask & kCharacterRigReviewTaskMask);
+        ImGui::TextColored(
+            completedTasks == 5u ? AppTheme::good() : AppTheme::accent(),
+            "%u of 5 anatomy regions checked", completedTasks);
+
+        ImGui::SeparatorText("Exact motion battery");
+        ui::TextSubtleWrapped(
+            "After saving this revision, run these held poses in Character select and every supported vehicle. Look for inverted twists, collapsed elbows or knees, detached hands or feet, and contact reach. Preparing a test changes only Test controls; it does not claim that you passed it.");
+        struct MotionPreset {
+            const char *label;
+            int pose;
+            int phase;
+        };
+        static const MotionPreset presets[] = {
+            {"Standing silhouette", MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE,
+             500},
+            {"Celebration reach", MDKR_CHARACTER_PREVIEW_POSE_SELECT_CONFIRM,
+             500},
+            {"Steer left reach", MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER,
+             250},
+            {"Steer right reach", MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER,
+             750},
+            {"Landing compression", MDKR_CHARACTER_PREVIEW_POSE_RACE_LAND,
+             500},
+        };
+        const int columns = compact ? 1 : 2;
+        if (ImGui::BeginTable(
+                "##character-rig-motion-battery", columns,
+                ImGuiTableFlags_SizingStretchSame)) {
+            for (const MotionPreset &preset : presets) {
+                ImGui::TableNextColumn();
+                if (ImGui::Button(preset.label, ui::kBtnFullWidth())) {
+                    g_characterTestPlayers[entry->id] = 1;
+                    g_characterTestPoses[entry->id] = preset.pose;
+                    g_characterTestPosePhases[entry->id] = preset.phase;
+                    g_characterTestViewYawDegrees[entry->id] = 0;
+                    g_characterTestViewPitchDegrees[entry->id] = 0;
+                    g_characterTestLighting[entry->id] =
+                        MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+                    persistCharacterWorkshopTab(
+                        CharacterWorkshopTab::Test, true);
+                    setStatus(
+                        "Motion-battery pose prepared in Test. Launch character select or each supported vehicle after saving the rig revision.",
+                        AppTheme::good());
+                }
+                ui::SpeakFocusedItem(
+                    preset.label, nullptr,
+                    "Prepares this held pose in exact Test at one player with the ordinary camera and neutral lighting; no package data changes.");
+            }
+            ImGui::EndTable();
+        }
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            static std::set<std::string> tracedMotionBatteries;
+            if (tracedMotionBatteries.insert(entry->id).second) {
+                std::fprintf(
+                    stderr,
+                    "[app-ui] character-rig-review package=%s anatomy-tasks=5 motion-presets=5 source-bound=1 reset-on-basis-change=1 exact-test-handoff=1 context-claim=manual-after-save\n",
+                    entry->id);
+            }
+        }
+    }
+    const bool reviewTasksComplete =
+        (edit.reviewTaskMask & kCharacterRigReviewTaskMask) ==
+        kCharacterRigReviewTaskMask;
     const bool canReview = edit.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 &&
-        hierarchyError.empty();
+        hierarchyError.empty() && reviewTasksComplete;
     if (!canReview) ImGui::BeginDisabled();
     (void)ImGui::Checkbox(
-        "I reviewed all roles and solver bases in every supported context",
+        "I approve these mappings and bases for provisional reference-motion testing",
         &edit.reviewed);
     if (!canReview) ImGui::EndDisabled();
     ui::SpeakFocusedItem(
         "Rig review", edit.reviewed ? "Approved" : "Not approved",
-        "Only an explicit author review unlocks engine reference motion and vehicle contacts.");
+        canReview
+            ? "Approves this exact mapping and basis revision so it can be saved and exercised through the exact motion battery. Any later role or basis change clears the anatomy checklist and approval."
+            : "Complete the structurally valid mapping and five guided anatomy checks before provisional approval becomes available.");
     const bool canSave = invalidDisabledSemantics == 0u &&
         (edit.mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY ||
          hierarchyError.empty());
@@ -13564,10 +13738,11 @@ bool captureCharacterHistoryPayload(
     } else if (tool == CharacterHistoryTool::Rig) {
         const CharacterRigEdit &edit = loadCharacterRigEdit(entry);
         if (!edit.error.empty()) return false;
-        payload = "mdkr-rig-history-v2\n";
+        payload = "mdkr-rig-history-v3\n";
         appendCharacterHistoryValue(payload, edit.mode);
         const uint8_t reviewed = edit.reviewed ? 1u : 0u;
         appendCharacterHistoryValue(payload, reviewed);
+        appendCharacterHistoryValue(payload, edit.reviewTaskMask);
         appendCharacterHistoryValue(payload, edit.disabledSemanticMask);
         for (const CharacterRigEdit::Role &role : edit.roles) {
             appendCharacterHistoryValue(payload, role.joint);
@@ -13871,7 +14046,9 @@ bool applyCharacterHistoryPayload(
         }
         g_characterProfileEdits[entry->id] = std::move(replacement);
     } else if (tool == CharacterHistoryTool::Rig) {
-        const bool hasAnimationIntent =
+        const bool hasReviewTasks =
+            consumeHeader("mdkr-rig-history-v3\n");
+        const bool hasAnimationIntent = hasReviewTasks ||
             consumeHeader("mdkr-rig-history-v2\n");
         if (!hasAnimationIntent &&
             !consumeHeader("mdkr-rig-history-v1\n")) {
@@ -13889,6 +14066,18 @@ bool applyCharacterHistoryPayload(
             return false;
         }
         replacement.reviewed = reviewed != 0u;
+        if (hasReviewTasks) {
+            if (!readCharacterHistoryValue(
+                    payload, offset, replacement.reviewTaskMask) ||
+                (replacement.reviewTaskMask &
+                 ~kCharacterRigReviewTaskMask) != 0u) {
+                error = "Rig history review checklist is invalid.";
+                return false;
+            }
+        } else {
+            replacement.reviewTaskMask = replacement.reviewed
+                ? kCharacterRigReviewTaskMask : 0u;
+        }
         if (hasAnimationIntent &&
             (!readCharacterHistoryValue(
                  payload, offset, replacement.disabledSemanticMask) ||
@@ -13941,7 +14130,9 @@ bool applyCharacterHistoryPayload(
         }
         if (offset != payload.size() ||
             (replacement.mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY &&
-             replacement.reviewed)) {
+             replacement.reviewed) ||
+            (replacement.reviewed &&
+             replacement.reviewTaskMask != kCharacterRigReviewTaskMask)) {
             error = "Rig history has trailing or inconsistent state.";
             return false;
         }
@@ -14350,6 +14541,7 @@ bool captureCharacterDraftSnapshot(
     snapshot.lodBias = tuning.lodBias;
     snapshot.rigMode = static_cast<uint32_t>(rig.mode);
     snapshot.rigReviewed = rig.reviewed;
+    snapshot.rigReviewTaskMask = rig.reviewTaskMask;
     snapshot.disabledSemanticMask = rig.disabledSemanticMask;
     for (size_t context = 0u;
          context < CharacterDraftSnapshot::kContexts; ++context) {
@@ -14462,6 +14654,7 @@ bool applyCharacterDraftSnapshot(
     }
     rig.mode = static_cast<int>(snapshot.rigMode);
     rig.reviewed = snapshot.rigReviewed;
+    rig.reviewTaskMask = snapshot.rigReviewTaskMask;
     rig.disabledSemanticMask = snapshot.animationIntentPresent
         ? snapshot.disabledSemanticMask : entry->disabled_semantic_mask;
 

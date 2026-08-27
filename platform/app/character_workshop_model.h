@@ -214,12 +214,18 @@ struct CharacterWorkshopRigJoint {
     std::string name;
     int parent = -1; // nearest skin-joint parent, or -1 at a skin root
     std::array<float, 3> bindPosition{};
+    // Normalized node-local-to-source-model bind orientation.
+    std::array<float, 4> bindRotation{{0.0f, 0.0f, 0.0f, 1.0f}};
 };
 
 struct CharacterWorkshopRigRoleSuggestion {
     int joint = -1;
     float confidence = 0.0f;
     CharacterWorkshopRigEvidence evidence = CharacterWorkshopRigEvidence::None;
+    std::array<float, 4> restRotation{{0.0f, 0.0f, 0.0f, 1.0f}};
+    std::array<float, 3> bendAxis{};
+    bool restBasisAvailable = false;
+    bool bendAxisAvailable = false;
 };
 
 struct CharacterWorkshopRigSuggestion {
@@ -229,6 +235,8 @@ struct CharacterWorkshopRigSuggestion {
     unsigned namedRoles = 0u;
     unsigned hierarchyRoles = 0u;
     unsigned commonAncestorRepairs = 0u;
+    unsigned restBasisRoles = 0u;
+    unsigned bendAxisRoles = 0u;
 };
 
 CharacterWorkshopReadiness CharacterWorkshop_evaluate(
@@ -270,6 +278,14 @@ bool CharacterWorkshop_facingCorrectionDegrees(
 CharacterWorkshopSourceTransformReview CharacterWorkshop_reviewSourceTransform(
     const CharacterWorkshopSourceTransformFacts &facts);
 CharacterWorkshopRigSuggestion CharacterWorkshop_suggestHumanoidRig(
-    const std::vector<CharacterWorkshopRigJoint> &joints);
+    const std::vector<CharacterWorkshopRigJoint> &joints,
+    uint32_t sourceForward = 0u);
+/* Derives bases for an explicit author mapping without re-running name
+ * inference. Valid mapped roles receive independent rest bases even while the
+ * complete anatomy graph is still being assembled; bend evidence remains
+ * conditional on a valid, non-degenerate three-joint limb chain. */
+CharacterWorkshopRigSuggestion CharacterWorkshop_suggestHumanoidBases(
+    const std::vector<CharacterWorkshopRigJoint> &joints,
+    const std::array<int, 16> &roleJoints, uint32_t sourceForward = 0u);
 
 #endif // MDKR64_CHARACTER_WORKSHOP_MODEL_H

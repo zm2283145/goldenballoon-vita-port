@@ -733,6 +733,21 @@ static void vector_cross(const float left[3], const float right[3],
     output[2] = left[0] * right[1] - left[1] * right[0];
 }
 
+static void quat_rotate_vector(const float rotation[4], const float input[3],
+                               float output[3]) {
+    const float twice_cross[3] = {
+        2.0f * (rotation[1] * input[2] - rotation[2] * input[1]),
+        2.0f * (rotation[2] * input[0] - rotation[0] * input[2]),
+        2.0f * (rotation[0] * input[1] - rotation[1] * input[0])
+    };
+    output[0] = input[0] + rotation[3] * twice_cross[0] +
+        rotation[1] * twice_cross[2] - rotation[2] * twice_cross[1];
+    output[1] = input[1] + rotation[3] * twice_cross[1] +
+        rotation[2] * twice_cross[0] - rotation[0] * twice_cross[2];
+    output[2] = input[2] + rotation[3] * twice_cross[2] +
+        rotation[0] * twice_cross[1] - rotation[1] * twice_cross[0];
+}
+
 static int axis_world_to_parent(const float *parent_world,
                                 const float world_axis[3],
                                 float local_axis[3]) {
@@ -781,6 +796,15 @@ static int ccd_contact_step(MdkrModernPose *pose, int joint_role,
     float rotated[4];
     if (vector_normalize(current) == 0.0f ||
         vector_normalize(desired) == 0.0f) return 1;
+    if (!mdkr_modern_character_asset_node(pose->asset, joint_node, &joint)) {
+        set_error(error, error_size,
+                  "vehicle contact joint could not be resolved");
+        return 0;
+    }
+    if (joint.parent >= 0) {
+        parent_world = pose->world_current +
+            (size_t)joint.parent * 16u;
+    }
     dot = current[0] * desired[0] + current[1] * desired[1] +
           current[2] * desired[2];
     if (dot > 1.0f) dot = 1.0f;
@@ -790,18 +814,31 @@ static int ccd_contact_step(MdkrModernPose *pose, int joint_role,
         if (dot > 0.99999f) return 1;
         memcpy(local_axis, pose->rig_bend_axis[joint_role],
                sizeof(local_axis));
-        if (vector_normalize(local_axis) == 0.0f) {
-            local_axis[0] = fabsf(current[0]) < 0.8f ? 1.0f : 0.0f;
-            local_axis[1] = local_axis[0] == 0.0f ? 1.0f : 0.0f;
-            local_axis[2] = 0.0f;
+        if (vector_normalize(local_axis) != 0.0f) {
+            float parent_axis[3];
+            /* The package contract is joint-local. This solver pre-multiplies
+             * the node rotation, so convert the preference into parent space
+             * before constructing that delta. */
+            quat_rotate_vector(pose->local[joint_node].rotation, local_axis,
+                               parent_axis);
+            memcpy(local_axis, parent_axis, sizeof(parent_axis));
+            (void)vector_normalize(local_axis);
+        } else {
+            const float candidate[3] = {
+                fabsf(current[0]) < 0.8f ? 1.0f : 0.0f,
+                fabsf(current[0]) < 0.8f ? 0.0f : 1.0f,
+                0.0f
+            };
+            vector_cross(current, candidate, world_axis);
+            if (vector_normalize(world_axis) == 0.0f ||
+                !axis_world_to_parent(parent_world, world_axis,
+                                      local_axis)) {
+                set_error(error, error_size,
+                          "automatic contact bend axis could not be resolved");
+                return 0;
+            }
         }
     } else {
-        (void)mdkr_modern_character_asset_node(pose->asset, joint_node,
-                                               &joint);
-        if (joint.parent >= 0) {
-            parent_world = pose->world_current +
-                (size_t)joint.parent * 16u;
-        }
         if (!axis_world_to_parent(parent_world, world_axis, local_axis)) {
             set_error(error, error_size,
                       "vehicle contact joint parent is not invertible");

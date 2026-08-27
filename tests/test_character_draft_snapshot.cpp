@@ -48,6 +48,7 @@ int main() {
     source.contexts[1].contacts[0][0] = -0.25f;
     source.rigMode = 1u;
     source.rigReviewed = true;
+    source.rigReviewTaskMask = 0x1Fu;
     source.disabledSemanticMask = 1u << 11u;
     for (size_t role = 0u; role < kRoles; ++role) {
         source.roles[role].node = static_cast<uint32_t>(role * 2u);
@@ -108,6 +109,7 @@ int main() {
                parsed.offset[1] == -12.5f &&
                parsed.contexts[1].contacts[0][0] == -0.25f &&
                parsed.rigReviewed &&
+               parsed.rigReviewTaskMask == 0x1Fu &&
                parsed.animationIntentPresent &&
                parsed.disabledSemanticMask == (1u << 11u) &&
                parsed.roles[15].node == 30u &&
@@ -156,18 +158,32 @@ int main() {
         4u + CharacterPortraitImport::kSubjectMaskPixels;
     constexpr size_t sourceRecordTailBytes = 9u * 4u + 64u;
     constexpr size_t animationIntentTailBytes = 4u;
+    constexpr size_t rigReviewTasksTailBytes = 4u;
+    std::string versionNine = encoded.substr(
+        0u, encoded.size() - rigReviewTasksTailBytes);
+    writeU32(versionNine, 4u, 9u);
+    writeU32(versionNine, 8u,
+             static_cast<uint32_t>(versionNine.size()));
+    expect(decode(versionNine, parsed, error) &&
+               parsed.animationIntentPresent &&
+               parsed.disabledSemanticMask == source.disabledSemanticMask &&
+               parsed.rigReviewTaskMask == 0x1Fu,
+           "version-nine reviewed drafts migrate with all anatomy checks complete");
     std::string versionEight = encoded.substr(
-        0u, encoded.size() - animationIntentTailBytes);
+        0u, encoded.size() - animationIntentTailBytes -
+            rigReviewTasksTailBytes);
     writeU32(versionEight, 4u, 8u);
     writeU32(versionEight, 8u,
              static_cast<uint32_t>(versionEight.size()));
     expect(decode(versionEight, parsed, error) &&
                !parsed.animationIntentPresent &&
                parsed.disabledSemanticMask == 0u &&
+               parsed.rigReviewTaskMask == 0x1Fu &&
                parsed.testViewPitchDegrees == source.testViewPitchDegrees,
            "version-eight drafts migrate with active animation mappings");
     std::string versionSeven = encoded.substr(
-        0u, encoded.size() - animationIntentTailBytes);
+        0u, encoded.size() - animationIntentTailBytes -
+            rigReviewTasksTailBytes);
     writeU32(versionSeven, 4u, 7u);
     writeU32(versionSeven, 8u,
              static_cast<uint32_t>(versionSeven.size()));
@@ -282,7 +298,7 @@ int main() {
     std::string badMaskEnabled = encoded;
     writeU32(badMaskEnabled,
              badMaskEnabled.size() - animationIntentTailBytes -
-                 subjectMaskTailBytes,
+                 rigReviewTasksTailBytes - subjectMaskTailBytes,
              2u);
     expect(!decode(badMaskEnabled, parsed, error),
            "subject-mask enabled state is strictly bounded");
@@ -299,6 +315,14 @@ int main() {
     hostile.disabledSemanticMask = 1u;
     expect(!encode(hostile, encoded, error),
            "fallback cannot be disabled in a persisted animation decision");
+    hostile = source;
+    hostile.rigReviewTaskMask = 0x3Fu;
+    expect(!encode(hostile, encoded, error),
+           "unknown rig review tasks are rejected");
+    hostile = source;
+    hostile.rigReviewTaskMask = 0x0Fu;
+    expect(!encode(hostile, encoded, error),
+           "approved rigs require every anatomy review task");
     hostile = source;
     hostile.testPose =
         MDKR_MODERN_CHARACTER_INSPECTION_SEMANTIC_COUNT + 1u;

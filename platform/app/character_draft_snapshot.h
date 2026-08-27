@@ -67,7 +67,10 @@ struct Snapshot {
 
     uint32_t rigMode = 0u;
     bool rigReviewed = false;
-    /* Decode-only migration witness. Every newly encoded v9 payload owns an
+    /* Five source-bound anatomy-region checks used by native Rig Studio.
+     * Older reviewed drafts migrate to all checked; older open drafts to none. */
+    uint32_t rigReviewTaskMask = 0u;
+    /* Decode-only migration witness. Every newly encoded v10 payload owns an
      * explicit mask; v1-v8 drafts preserve the active source decision. */
     bool animationIntentPresent = false;
     uint32_t disabledSemanticMask = 0u;

@@ -9,10 +9,11 @@
 
 namespace {
 
+constexpr uint32_t kRigReviewTasksVersion = 10u;
 constexpr uint32_t kAnimationIntentVersion = 9u;
 constexpr uint32_t kTopInspectionVersion = 8u;
 constexpr uint32_t kPortraitSubjectMaskVersion = 7u;
-constexpr uint32_t kVersion = kAnimationIntentVersion;
+constexpr uint32_t kVersion = kRigReviewTasksVersion;
 constexpr uint32_t kPortraitSourceVersion = 6u;
 constexpr uint32_t kVisualInspectionVersion = 5u;
 constexpr uint32_t kPoseInspectionVersion = 4u;
@@ -38,7 +39,7 @@ constexpr size_t kPortraitSubjectMaskBytes =
 constexpr size_t kTopInspectionFixedBytes =
     kVisualInspectionFixedBytes + kPortraitSourceRecordBytes +
     kPortraitSubjectMaskBytes;
-constexpr size_t kFixedBytes = kTopInspectionFixedBytes + 4u;
+constexpr size_t kFixedBytes = kTopInspectionFixedBytes + 8u;
 constexpr size_t kMaximumPathBytes = 4095u;
 constexpr size_t kMaximumNameBytes = 96u;
 constexpr size_t kMaximumShortNameBytes = 96u;
@@ -251,6 +252,8 @@ bool snapshotValid(const CharacterDraftSnapshot::Snapshot &snapshot,
     }
     if (snapshot.rigMode > 1u ||
         (snapshot.rigMode == 0u && snapshot.rigReviewed) ||
+        (snapshot.rigReviewTaskMask & ~0x1Fu) != 0u ||
+        (snapshot.rigReviewed && snapshot.rigReviewTaskMask != 0x1Fu) ||
         (snapshot.disabledSemanticMask & ~kAnimationSemanticMask) != 0u) {
         error = "draft rig mode or review state is invalid";
         return false;
@@ -415,6 +418,7 @@ bool encode(const Snapshot &snapshot, std::string &payload,
             snapshot.portraitSourceRecord.subjectMask.alpha.data()),
         snapshot.portraitSourceRecord.subjectMask.alpha.size());
     appendU32(result, snapshot.disabledSemanticMask);
+    appendU32(result, snapshot.rigReviewTaskMask);
     if (result.size() != kFixedBytes + 16u +
             snapshot.portraitSourcePath.size() + namesBytes) {
         error = "draft snapshot encoder size invariant failed";
@@ -438,6 +442,7 @@ bool decode(const std::string &payload, Snapshot &snapshot,
         payload.compare(0u, 4u, "MDWD") != 0 ||
         !readU32(payload, offset, version) ||
         (version != kVersion &&
+         version != kAnimationIntentVersion &&
          version != kTopInspectionVersion &&
          version != kPortraitSubjectMaskVersion &&
          version != kPortraitSourceVersion &&
@@ -645,6 +650,13 @@ bool decode(const std::string &payload, Snapshot &snapshot,
         goto malformed;
     }
     parsed.animationIntentPresent = version >= kAnimationIntentVersion;
+    if (version >= kRigReviewTasksVersion) {
+        if (!readU32(payload, offset, parsed.rigReviewTaskMask)) {
+            goto malformed;
+        }
+    } else {
+        parsed.rigReviewTaskMask = parsed.rigReviewed ? 0x1Fu : 0u;
+    }
     if (offset != payload.size() ||
         !snapshotValid(parsed, error, version == kLegacyVersion)) return false;
     snapshot = std::move(parsed);

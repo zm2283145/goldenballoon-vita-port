@@ -191,17 +191,28 @@ and its head/torso land inside each ordinary vehicle camera without manual JSON.
   common skin-joint ancestor of the torso and both legs as hips. The manifest
   decision report retains per-role provenance; native Rig Studio presents the
   same source-bound proposal, confidence, and rationale before a reversible
-  apply action. Applying always clears review and resets solver bases to the
-  disclosed canonical starting point.
+  apply action. Applying always clears review.
 - Continue scoring role candidates using bind positions, branching, and
   symmetry. Names remain evidence, not authority.
-- Estimate each role’s rest-basis correction from bind matrices and child
-  directions. Display source/canonical axes, mirrored-limb consistency, and the
-  exact quaternion; editing any value clears review.
-- Generate stable bend-axis suggestions and an explicit “automatic” option.
-  Add joint-limit visualization before introducing optional anatomical limits.
-- Provide a task checklist: torso, left/right arms, left/right legs, head, then
-  a motion battery. “16 roles present” must not imply “pose quality approved.”
+- **Implemented:** derive every role's canonical-to-joint-local rest correction
+  from the full normalized bind-orientation chain and the exact reviewed
+  `source_forward` convention. Rig Studio discloses whether each basis was
+  derived, applies it reversibly, exposes its exact quaternion, and offers a
+  per-role restore action after manual edits. A one-click role proposal is
+  unavailable unless all 16 rest bases are valid.
+- **Implemented:** derive joint-local bend preferences only from stable bind-pose
+  limb planes. Near-straight or degenerate chains remain visibly automatic;
+  the runtime now converts an authored joint-local fallback into parent space,
+  matching the documented contract instead of interpreting it in the wrong
+  frame. Add joint-limit visualization before introducing optional anatomical
+  limits.
+- **Implemented:** provide a source-bound five-region anatomy checklist that
+  clears with mapping/basis edits, participates in undo/redo, and survives
+  named-draft resume (v10 with reviewed-draft migration). Provisional solver
+  approval is unavailable until all five regions are checked. Five one-click
+  motion-battery presets hand off to exact Test without claiming a pass; the UI
+  explicitly asks authors to exercise select and every supported vehicle after
+  saving. “16 roles present” no longer implies “pose quality approved.”
 
 Acceptance: inferred mappings compile on the first structurally valid proposal,
 all corrections remain reviewable, and the complete pose battery has no limb

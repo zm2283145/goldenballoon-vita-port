@@ -143,6 +143,149 @@ void setHierarchySuggestion(
     ++suggestion.hierarchyRoles;
 }
 
+void multiplyRigQuaternion(const std::array<float, 4> &left,
+                           const std::array<float, 4> &right,
+                           std::array<float, 4> &output) {
+    const std::array<float, 4> value{{
+        left[3] * right[0] + left[0] * right[3] +
+            left[1] * right[2] - left[2] * right[1],
+        left[3] * right[1] - left[0] * right[2] +
+            left[1] * right[3] + left[2] * right[0],
+        left[3] * right[2] + left[0] * right[1] -
+            left[1] * right[0] + left[2] * right[3],
+        left[3] * right[3] - left[0] * right[0] -
+            left[1] * right[1] - left[2] * right[2]
+    }};
+    output = value;
+}
+
+bool normalizeRigQuaternion(std::array<float, 4> &value) {
+    const float length = std::sqrt(
+        value[0] * value[0] + value[1] * value[1] +
+        value[2] * value[2] + value[3] * value[3]);
+    if (!std::isfinite(length) || length < 1.0e-8f) return false;
+    for (float &component : value) component /= length;
+    if (value[3] < 0.0f) {
+        for (float &component : value) component = -component;
+    }
+    return true;
+}
+
+std::array<float, 4> conjugateRigQuaternion(
+    const std::array<float, 4> &value) {
+    return {{-value[0], -value[1], -value[2], value[3]}};
+}
+
+void rotateRigVector(const std::array<float, 4> &rotation,
+                     const std::array<float, 3> &input,
+                     std::array<float, 3> &output) {
+    const std::array<float, 3> twiceCross{{
+        2.0f * (rotation[1] * input[2] - rotation[2] * input[1]),
+        2.0f * (rotation[2] * input[0] - rotation[0] * input[2]),
+        2.0f * (rotation[0] * input[1] - rotation[1] * input[0])
+    }};
+    output[0] = input[0] + rotation[3] * twiceCross[0] +
+        rotation[1] * twiceCross[2] - rotation[2] * twiceCross[1];
+    output[1] = input[1] + rotation[3] * twiceCross[1] +
+        rotation[2] * twiceCross[0] - rotation[0] * twiceCross[2];
+    output[2] = input[2] + rotation[3] * twiceCross[2] +
+        rotation[0] * twiceCross[1] - rotation[1] * twiceCross[0];
+}
+
+bool normalizeRigVector(std::array<float, 3> &value) {
+    const float length = std::sqrt(
+        value[0] * value[0] + value[1] * value[1] +
+        value[2] * value[2]);
+    if (!std::isfinite(length) || length < 1.0e-8f) return false;
+    for (float &component : value) component /= length;
+    return true;
+}
+
+std::array<float, 4> sourcePresentationRotation(uint32_t sourceForward) {
+    constexpr float halfRoot = 0.7071067811865475244f;
+    static const std::array<std::array<float, 4>, 4> rotations{{
+        {{0.0f, 0.0f, 0.0f, 1.0f}},
+        {{0.0f, 1.0f, 0.0f, 0.0f}},
+        {{0.0f, -halfRoot, 0.0f, halfRoot}},
+        {{0.0f, halfRoot, 0.0f, halfRoot}},
+    }};
+    return sourceForward < rotations.size() ? rotations[sourceForward]
+                                             : rotations[0];
+}
+
+void proposeRigBases(const std::vector<CharacterWorkshopRigJoint> &joints,
+                     uint32_t sourceForward,
+                     CharacterWorkshopRigSuggestion &suggestion) {
+    if (sourceForward > 3u) return;
+    const std::array<float, 4> inversePresentation =
+        conjugateRigQuaternion(sourcePresentationRotation(sourceForward));
+    for (CharacterWorkshopRigRoleSuggestion &role : suggestion.roles) {
+        if (!rigJointValid(joints, role.joint)) continue;
+        std::array<float, 4> bind = joints[role.joint].bindRotation;
+        if (!normalizeRigQuaternion(bind)) continue;
+        multiplyRigQuaternion(conjugateRigQuaternion(bind),
+                             inversePresentation, role.restRotation);
+        if (!normalizeRigQuaternion(role.restRotation)) continue;
+        role.restBasisAvailable = true;
+        ++suggestion.restBasisRoles;
+    }
+
+    static const size_t limbs[][3] = {
+        {4u, 5u, 6u}, {7u, 8u, 9u},
+        {10u, 11u, 12u}, {13u, 14u, 15u},
+    };
+    for (const auto &limb : limbs) {
+        const int upper = suggestion.roles[limb[0]].joint;
+        const int middle = suggestion.roles[limb[1]].joint;
+        const int end = suggestion.roles[limb[2]].joint;
+        if (!rigJointValid(joints, upper) ||
+            !rigJointValid(joints, middle) ||
+            !rigJointValid(joints, end) ||
+            !rigAncestorInclusive(joints, upper, middle) ||
+            !rigAncestorInclusive(joints, middle, end)) continue;
+        std::array<float, 3> first{{
+            joints[middle].bindPosition[0] - joints[upper].bindPosition[0],
+            joints[middle].bindPosition[1] - joints[upper].bindPosition[1],
+            joints[middle].bindPosition[2] - joints[upper].bindPosition[2],
+        }};
+        std::array<float, 3> second{{
+            joints[end].bindPosition[0] - joints[middle].bindPosition[0],
+            joints[end].bindPosition[1] - joints[middle].bindPosition[1],
+            joints[end].bindPosition[2] - joints[middle].bindPosition[2],
+        }};
+        const float firstLength = std::sqrt(
+            first[0] * first[0] + first[1] * first[1] + first[2] * first[2]);
+        const float secondLength = std::sqrt(
+            second[0] * second[0] + second[1] * second[1] +
+            second[2] * second[2]);
+        std::array<float, 3> normal{{
+            first[1] * second[2] - first[2] * second[1],
+            first[2] * second[0] - first[0] * second[2],
+            first[0] * second[1] - first[1] * second[0],
+        }};
+        const float normalLength = std::sqrt(
+            normal[0] * normal[0] + normal[1] * normal[1] +
+            normal[2] * normal[2]);
+        // Below roughly two degrees the plane is too sensitive to export
+        // noise; the runtime's stable automatic fallback is more truthful.
+        if (!std::isfinite(firstLength) || !std::isfinite(secondLength) ||
+            firstLength < 1.0e-6f || secondLength < 1.0e-6f ||
+            normalLength / (firstLength * secondLength) < 0.035f ||
+            !normalizeRigVector(normal)) continue;
+        for (size_t roleIndex : {limb[0], limb[1]}) {
+            CharacterWorkshopRigRoleSuggestion &role =
+                suggestion.roles[roleIndex];
+            std::array<float, 4> bind = joints[role.joint].bindRotation;
+            if (!normalizeRigQuaternion(bind)) continue;
+            rotateRigVector(conjugateRigQuaternion(bind), normal,
+                            role.bendAxis);
+            if (!normalizeRigVector(role.bendAxis)) continue;
+            role.bendAxisAvailable = true;
+            ++suggestion.bendAxisRoles;
+        }
+    }
+}
+
 } // namespace
 
 CharacterWorkshopReadiness CharacterWorkshop_evaluate(
@@ -608,16 +751,24 @@ CharacterWorkshopSourceTransformReview CharacterWorkshop_reviewSourceTransform(
 }
 
 CharacterWorkshopRigSuggestion CharacterWorkshop_suggestHumanoidRig(
-    const std::vector<CharacterWorkshopRigJoint> &joints) {
+    const std::vector<CharacterWorkshopRigJoint> &joints,
+    uint32_t sourceForward) {
     CharacterWorkshopRigSuggestion result;
-    if (joints.empty() || joints.size() > 256u) return result;
+    if (joints.empty() || joints.size() > 256u || sourceForward > 3u) {
+        return result;
+    }
     for (size_t joint = 0u; joint < joints.size(); ++joint) {
         const int parent = joints[joint].parent;
         if (parent < -1 || parent >= static_cast<int>(joints.size()) ||
             parent == static_cast<int>(joint) ||
             !std::isfinite(joints[joint].bindPosition[0]) ||
             !std::isfinite(joints[joint].bindPosition[1]) ||
-            !std::isfinite(joints[joint].bindPosition[2])) return result;
+            !std::isfinite(joints[joint].bindPosition[2]) ||
+            !std::all_of(joints[joint].bindRotation.begin(),
+                         joints[joint].bindRotation.end(),
+                         [](float value) { return std::isfinite(value); })) {
+            return result;
+        }
         std::vector<bool> seen(joints.size(), false);
         int current = static_cast<int>(joint);
         for (size_t depth = 0u; rigJointValid(joints, current) &&
@@ -738,5 +889,61 @@ CharacterWorkshopRigSuggestion CharacterWorkshop_suggestHumanoidRig(
                 joints, result.roles[edge[0]].joint,
                 result.roles[edge[1]].joint);
         });
+    proposeRigBases(joints, sourceForward, result);
+    return result;
+}
+
+CharacterWorkshopRigSuggestion CharacterWorkshop_suggestHumanoidBases(
+    const std::vector<CharacterWorkshopRigJoint> &joints,
+    const std::array<int, 16> &roleJoints, uint32_t sourceForward) {
+    CharacterWorkshopRigSuggestion result;
+    if (joints.empty() || joints.size() > 256u || sourceForward > 3u) {
+        return result;
+    }
+    for (size_t joint = 0u; joint < joints.size(); ++joint) {
+        if (joints[joint].parent < -1 ||
+            joints[joint].parent >= static_cast<int>(joints.size()) ||
+            joints[joint].parent == static_cast<int>(joint) ||
+            !std::all_of(joints[joint].bindPosition.begin(),
+                         joints[joint].bindPosition.end(),
+                         [](float value) { return std::isfinite(value); }) ||
+            !std::all_of(joints[joint].bindRotation.begin(),
+                         joints[joint].bindRotation.end(),
+                         [](float value) { return std::isfinite(value); })) {
+            return result;
+        }
+        std::vector<bool> seen(joints.size(), false);
+        int current = static_cast<int>(joint);
+        for (size_t depth = 0u; rigJointValid(joints, current) &&
+             depth <= joints.size(); ++depth) {
+            if (seen[static_cast<size_t>(current)]) return {};
+            seen[static_cast<size_t>(current)] = true;
+            current = joints[static_cast<size_t>(current)].parent;
+        }
+    }
+    std::array<bool, 256> used{};
+    for (size_t role = 0u; role < roleJoints.size(); ++role) {
+        const int joint = roleJoints[role];
+        if (joint < -1 || joint >= static_cast<int>(joints.size()) ||
+            (joint >= 0 && used[static_cast<size_t>(joint)])) return {};
+        result.roles[role].joint = joint;
+        if (joint >= 0) used[static_cast<size_t>(joint)] = true;
+    }
+    result.complete = std::all_of(
+        roleJoints.begin(), roleJoints.end(),
+        [](int joint) { return joint >= 0; });
+    static const size_t hierarchy[][2] = {
+        {0u, 1u}, {1u, 2u}, {2u, 3u},
+        {2u, 4u}, {4u, 5u}, {5u, 6u},
+        {2u, 7u}, {7u, 8u}, {8u, 9u},
+        {0u, 10u}, {10u, 11u}, {11u, 12u},
+        {0u, 13u}, {13u, 14u}, {14u, 15u},
+    };
+    result.hierarchyValid = result.complete && std::all_of(
+        std::begin(hierarchy), std::end(hierarchy), [&](const auto &edge) {
+            return rigAncestorInclusive(
+                joints, roleJoints[edge[0]], roleJoints[edge[1]]);
+        });
+    proposeRigBases(joints, sourceForward, result);
     return result;
 }

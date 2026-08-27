@@ -241,6 +241,7 @@ int main(int argc, char **argv) {
     float procedural_arm_right[16];
     float contact_offsets[MDKR_MODERN_CHARACTER_CONTACTS][3] = {{0}};
     float bind_position[3];
+    float bind_rotation[4];
     int32_t parent_joint_node;
     float palette[256];
     char error[256];
@@ -488,6 +489,13 @@ int main(int argc, char **argv) {
                 fabsf(bind_position[1]) < 1.0e-6f &&
                 fabsf(bind_position[2] - 0.10f) < 1.0e-6f,
             "bind-pose query retains lateral and depth limb placement");
+    require(mdkr_modern_character_asset_node_bind_rotation(
+                &asset, 12u, bind_rotation) &&
+                fabsf(bind_rotation[0]) < 1.0e-6f &&
+                fabsf(bind_rotation[1]) < 1.0e-6f &&
+                fabsf(bind_rotation[2]) < 1.0e-6f &&
+                fabsf(bind_rotation[3] - 1.0f) < 1.0e-6f,
+            "bind-orientation query composes and normalizes the node chain");
     require(mdkr_modern_character_asset_joint_parent_node(
                 &asset, 6u, &parent_joint_node) &&
                 parent_joint_node == 5 &&
@@ -497,6 +505,8 @@ int main(int argc, char **argv) {
             "rig view query resolves nearest joint ancestry and skin roots");
     require(!mdkr_modern_character_asset_node_bind_position(
                 &asset, stats.nodes, bind_position) &&
+                !mdkr_modern_character_asset_node_bind_rotation(
+                    &asset, stats.nodes, bind_rotation) &&
                 !mdkr_modern_character_asset_joint_parent_node(
                     &asset, stats.joints, &parent_joint_node),
             "rig view queries reject out-of-range nodes and joints");
