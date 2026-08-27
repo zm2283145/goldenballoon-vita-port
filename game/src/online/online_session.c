@@ -25,7 +25,8 @@
 #include "types.h"
 #include "thread3_main.h"
 #include "net/party_link.h"
-#include "online/online_charselect.h" /* PD-T2 native CHARSELECT phase */
+#include "online/online_charselect.h"  /* PD-T2 native CHARSELECT phase */
+#include "online/online_trackselect.h" /* PD-T3 native TRACKSELECT phase */
 
 /* The engine's live game-mode selector. Defined (external linkage) in
  * thread3_main.c; no shared header declares it, so the session declares the
@@ -155,6 +156,37 @@ static bool online_session_snapshot_has_local_seat(
     return false;
 }
 
+/* PD-T3: whether CHARSELECT should hand off to the native TRACKSELECT screen once
+ * the local seat is confirmed+ready. It does in real play and in the TRACKSELECT
+ * lane; the STANDALONE CHARSELECT lane (which scripts its own host-start straight
+ * to LOADING and asserts the historical charselect->race hand-off) deliberately
+ * keeps that behaviour, so we DON'T insert TRACKSELECT when the CHARSELECT seam is
+ * armed WITHOUT the TRACKSELECT seam. This is the smallest wiring that satisfies
+ * ruling R-B while keeping check_online_charselect.py green unchanged. */
+static bool online_session_trackselect_enabled(void) {
+    return !(mdkr_online_charselect_test_active() &&
+             !mdkr_online_trackselect_test_active());
+}
+
+/* True once the LOCAL seat has both a locked character and its ready flag while
+ * the room is still in LOBBY -- the R-B signal that CHARSELECT is done and the
+ * host/joiner should move on to the native TRACKSELECT screen. */
+static bool online_session_local_seat_ready_in_lobby(
+    const MdkrPartyLinkSnapshot *snap) {
+    unsigned i;
+    if (snap->phase != (uint8_t) MDKR_ONLINE_SESSION_LOBBY_PHASE) {
+        return false;
+    }
+    for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
+        const MdkrPartyLinkSeat *seat = &snap->seats[i];
+        if (seat->occupied && seat->is_local && seat->ready &&
+            seat->character_id != 0xFFu) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void mdkr_online_session_tick(s32 updateRate) {
     (void) updateRate;
 
@@ -180,6 +212,10 @@ void mdkr_online_session_tick(s32 updateRate) {
         /* PD-T2: inert unless the CHARSELECT headless seam is armed; then it
          * installs the forward feed and publishes a scripted LOBBY room. */
         mdkr_online_charselect_test_lobby_pump();
+        /* PD-T3: inert unless the TRACKSELECT headless seam is armed AND nothing
+         * else installed the feed (the CHARSELECT seam owns install in the
+         * combined lane); a defensive standalone install otherwise. */
+        mdkr_online_trackselect_test_lobby_pump();
 
         haveSnap = mdkr_party_link_read(&snap);
         if (!haveSnap) {
@@ -218,10 +254,25 @@ void mdkr_online_session_tick(s32 updateRate) {
     case MDKR_ONLINE_SESSION_CHARSELECT: {
         MdkrOnlineCharselectResult r = mdkr_online_charselect_tick(updateRate);
         if (r == MDKR_ONLINE_CHARSELECT_ADVANCE) {
-            /* PD-T3 will route to TRACKSELECT; for now hand straight to the race
-             * so the separated flow still completes end-to-end. */
+            /* The authoritative lobby left LOBBY (host started / loading). This
+             * is the safety path (R-B) and the historical CHARSELECT-lane
+             * hand-off: boot the race directly. */
             mdkr_online_charselect_exit();
             online_session_boot_race();
+        } else if (r == MDKR_ONLINE_CHARSELECT_STAY &&
+                   online_session_trackselect_enabled()) {
+            /* PD-T3 (R-B): once the local seat is confirmed+ready while the room
+             * is still in LOBBY, hand off to the native TRACKSELECT screen. */
+            MdkrPartyLinkSnapshot snap;
+            if (mdkr_party_link_read(&snap) &&
+                online_session_local_seat_ready_in_lobby(&snap)) {
+                mdkr_online_charselect_exit();
+                sOnlineSession.phase = MDKR_ONLINE_SESSION_TRACKSELECT;
+                mdkr_online_trackselect_enter();
+                fprintf(stderr,
+                        "[online-session] charselect -> trackselect (local seat "
+                        "ready in LOBBY)\n");
+            }
         } else if (r == MDKR_ONLINE_CHARSELECT_LEAVE) {
             /* Backing all the way out to the launcher room requires the
              * engine->launcher return handshake that is PD-T6 (the same wiring
@@ -239,13 +290,37 @@ void mdkr_online_session_tick(s32 updateRate) {
         }
         break;
     }
+    case MDKR_ONLINE_SESSION_TRACKSELECT: {
+        MdkrOnlineTrackselectResult r =
+            mdkr_online_trackselect_tick(updateRate);
+        if (r == MDKR_ONLINE_TRACKSELECT_ADVANCE) {
+            /* Host started -> lobby left LOBBY -> boot the race. */
+            mdkr_online_trackselect_exit();
+            online_session_boot_race();
+        } else if (r == MDKR_ONLINE_TRACKSELECT_LEAVE) {
+            /* R-B: B on TRACKSELECT is a clean "back one level" to CHARSELECT
+             * (NOT the leave-to-launcher stub). The local player re-readies on
+             * CHARSELECT as a natural consequence. Deliberately do NOT reset
+             * sCharselectLeaveWarned: this is a continuation of the same session,
+             * so the PD-T6 leave-to-launcher warn-once latch is preserved (a
+             * browse-B on the re-entered CHARSELECT never re-spams the stub). */
+            mdkr_online_trackselect_exit();
+            sOnlineSession.phase = MDKR_ONLINE_SESSION_CHARSELECT;
+            mdkr_online_charselect_enter();
+            fprintf(stderr,
+                    "[online-session] trackselect -> charselect (back one "
+                    "level)\n");
+        }
+        break;
+    }
     case MDKR_ONLINE_SESSION_RACE:
-        /* The boot normally fires inline from LOBBY_WAIT / CHARSELECT; boot here
-         * too if the mode is somehow re-entered before the hand-off completed. */
+        /* The boot normally fires inline from LOBBY_WAIT / CHARSELECT /
+         * TRACKSELECT; boot here too if the mode is somehow re-entered before the
+         * hand-off completed. */
         online_session_boot_race();
         break;
     default:
-        /* TRACKSELECT / RESULTS / CEREMONY arrive in PD-T3..T6. */
+        /* RESULTS / CEREMONY arrive in PD-T5..T6. */
         break;
     }
 }

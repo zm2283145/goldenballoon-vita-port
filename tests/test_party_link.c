@@ -255,6 +255,11 @@ static MdkrPartyLinkLocalIntent intent_new(void) {
     MdkrPartyLinkLocalIntent in;
     memset(&in, 0, sizeof(in));
     in.vehicle_id = MDKR_ONLINE_NO_VEHICLE; /* "unset" unless a test sets it */
+    /* Host-only session-config fields default to their UNSET sentinels so a
+     * plain intent never spuriously plans SET_MODE/SET_CONFIG_TRACK/SET_CUP. */
+    in.mode = MDKR_PARTY_LINK_MODE_UNSET;
+    in.config_track = MDKR_PARTY_LINK_TRACK_UNSET;
+    in.cup_id = MDKR_PARTY_LINK_CUP_UNSET;
     return in;
 }
 
@@ -268,6 +273,26 @@ static MdkrPartyLinkLocalView lv(uint8_t character, uint8_t vehicle,
     v.vehicle_id = vehicle;
     v.ready = ready;
     v.phase = phase;
+    v.configured_track = MDKR_PARTY_LINK_TRACK_UNSET;
+    v.cup_id = MDKR_PARTY_LINK_CUP_UNSET;
+    return v;
+}
+
+/* A resolved local HOST seat (leader) with the given lobby session config. */
+static MdkrPartyLinkLocalView lv_host(uint8_t mode, uint16_t configured_track,
+                                      uint8_t cup_id, uint8_t ready,
+                                      uint8_t phase) {
+    MdkrPartyLinkLocalView v;
+    memset(&v, 0, sizeof(v));
+    v.have_seat = 1u;
+    v.is_host = 1u;
+    v.character_id = MDKR_ONLINE_NO_CHARACTER;
+    v.vehicle_id = MDKR_ONLINE_NO_VEHICLE;
+    v.ready = ready;
+    v.phase = phase;
+    v.mode = mode;
+    v.configured_track = configured_track;
+    v.cup_id = cup_id;
     return v;
 }
 
@@ -434,12 +459,152 @@ static void test_dispatch_plan(void) {
     CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) >= 0);
 }
 
+/* PD-T3: the host-only session-config dispatch kinds (SET_MODE /
+ * SET_CONFIG_TRACK / SET_CUP): want/converged/ordering/host-gating/refusal. */
+static void test_dispatch_session_config(void) {
+    MdkrPartyLinkDispatchState st;
+    MdkrPartyLinkDispatchPlan plan;
+    MdkrPartyLinkLocalIntent in;
+
+    /* HOST-ONLY GATE: a joiner (is_host==0) never plans the config kinds even
+     * with a fully populated host-style intent. */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.mode = MDKR_ONLINE_MODE_SINGLE_RACE;
+    in.config_track = 7u; /* Hot Top Volcano */
+    {
+        MdkrPartyLinkLocalView joiner = lv(MDKR_ONLINE_NO_CHARACTER,
+                                           MDKR_ONLINE_NO_VEHICLE, 0u,
+                                           (uint8_t)MDKR_ONLINE_LOBBY);
+        mdkr_party_link_plan_dispatch(&st, &in, &joiner, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_MODE) < 0);
+        CHECK(plan_index_of(&plan,
+                            MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK) < 0);
+    }
+
+    /* UNSET SENTINELS: a host whose intent leaves the config unset plans nothing
+     * (the joiner/idle-host default; SET_MODE not wanted when mode==UNSET). */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new(); /* all config fields at UNSET */
+    {
+        MdkrPartyLinkLocalView host = lv_host(MDKR_ONLINE_MODE_SINGLE_RACE,
+                                              MDKR_PARTY_LINK_TRACK_UNSET,
+                                              MDKR_PARTY_LINK_CUP_UNSET, 0u,
+                                              (uint8_t)MDKR_ONLINE_LOBBY);
+        mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+        CHECK(plan.count == 0u);
+    }
+
+    /* SINGLE-RACE HOST: mode already single, track not yet set -> plan only
+     * SET_CONFIG_TRACK (SET_MODE(0) is already converged). */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.mode = MDKR_ONLINE_MODE_SINGLE_RACE;
+    in.config_track = 5u; /* Ancient Lake */
+    {
+        MdkrPartyLinkLocalView host = lv_host(MDKR_ONLINE_MODE_SINGLE_RACE,
+                                              MDKR_PARTY_LINK_TRACK_UNSET,
+                                              MDKR_PARTY_LINK_CUP_UNSET, 0u,
+                                              (uint8_t)MDKR_ONLINE_LOBBY);
+        mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_MODE) < 0);
+        CHECK(plan_index_of(&plan,
+                            MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK) >= 0);
+        {
+            const int idx = plan_index_of(
+                &plan, MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK);
+            CHECK(idx >= 0 && plan.actions[idx].value == 5u);
+        }
+    }
+    /* Once configured_track converges, the kind drops. */
+    {
+        MdkrPartyLinkLocalView host = lv_host(MDKR_ONLINE_MODE_SINGLE_RACE, 5u,
+                                              MDKR_PARTY_LINK_CUP_UNSET, 0u,
+                                              (uint8_t)MDKR_ONLINE_LOBBY);
+        mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+        CHECK(plan_index_of(&plan,
+                            MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK) < 0);
+    }
+
+    /* TOURNAMENT HOST: lobby still single, host wants tournament + a cup. Plan
+     * SET_MODE(1) then SET_CUP -- and SET_MODE strictly precedes SET_CUP. */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.mode = MDKR_ONLINE_MODE_TOURNAMENT;
+    in.cup_id = 3u; /* Dragon Forest cup */
+    {
+        MdkrPartyLinkLocalView host = lv_host(MDKR_ONLINE_MODE_SINGLE_RACE,
+                                              MDKR_PARTY_LINK_TRACK_UNSET,
+                                              MDKR_PARTY_LINK_CUP_UNSET, 0u,
+                                              (uint8_t)MDKR_ONLINE_LOBBY);
+        mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_MODE) >= 0);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_CUP) >= 0);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_MODE) <
+              plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_CUP));
+        {
+            const int idx = plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_CUP);
+            CHECK(idx >= 0 && plan.actions[idx].value == 3u);
+        }
+    }
+
+    /* ORDER vs READY: on a config change the reducer clears all ready, so a host
+     * plan carrying BOTH SET_CONFIG_TRACK and READY must send config FIRST so the
+     * re-asserted ready sticks. */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.mode = MDKR_ONLINE_MODE_SINGLE_RACE;
+    in.config_track = 8u; /* Whale Bay */
+    in.ready = 1u;
+    {
+        /* Host lobby: single mode already, no track, not ready. */
+        MdkrPartyLinkLocalView host = lv_host(MDKR_ONLINE_MODE_SINGLE_RACE,
+                                              MDKR_PARTY_LINK_TRACK_UNSET,
+                                              MDKR_PARTY_LINK_CUP_UNSET, 0u,
+                                              (uint8_t)MDKR_ONLINE_LOBBY);
+        mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+        CHECK(plan_index_of(&plan,
+                            MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK) >= 0);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) >= 0);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK) <
+              plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY));
+    }
+
+    /* REFUSAL re-fire: an optimistic SET_CONFIG_TRACK that does not converge is
+     * suppressed until a refusal clears the guard, then re-fires. */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.mode = MDKR_ONLINE_MODE_SINGLE_RACE;
+    in.config_track = 9u; /* Snowball Valley */
+    {
+        MdkrPartyLinkLocalView host = lv_host(MDKR_ONLINE_MODE_SINGLE_RACE,
+                                              MDKR_PARTY_LINK_TRACK_UNSET,
+                                              MDKR_PARTY_LINK_CUP_UNSET, 0u,
+                                              (uint8_t)MDKR_ONLINE_LOBBY);
+        mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+        CHECK(plan_index_of(&plan,
+                            MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK) >= 0);
+        mark_sent_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK);
+        /* Still in flight (no convergence, no refusal): suppressed. */
+        mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+        CHECK(plan_index_of(&plan,
+                            MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK) < 0);
+        /* Refusal observed -> re-fires next pump. */
+        mdkr_party_link_dispatch_note_refusal(
+            &st, MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK);
+        mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+        CHECK(plan_index_of(&plan,
+                            MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK) >= 0);
+    }
+}
+
 int main(void) {
     test_round_trip();
     test_generation_monotonicity();
     test_intent_one_shot();
     test_snapshot_field_mapping();
     test_dispatch_plan();
+    test_dispatch_session_config();
     fprintf(stderr, "party_link: %d checks, %d failures\n", g_checks,
             g_failures);
     return g_failures == 0 ? 0 : 1;

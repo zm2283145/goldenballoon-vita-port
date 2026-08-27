@@ -241,9 +241,11 @@ def main() -> int:
     # ADVANCE on the host-start (asserted below via the RACE hand-off), and the
     # PD-T6 leave stub must log at most once -- not per frame at ~60 Hz.
     leave_stub_count = output.count(LEAVE_STUB)
-    if leave_stub_count > 1:
+    if leave_stub_count != 1:
         return fail(f"the PD-T6 leave stub logged {leave_stub_count} times "
-                    f"(a B press wedged/spammed the session; expected <= 1)",
+                    f"(expected EXACTLY 1: >1 means a B press wedged/spammed the "
+                    f"session; 0 means the scripted browse-B was dropped and the "
+                    f"I1 no-wedge coverage silently died)",
                     output)
 
     # --- The phase advanced on the scripted host-start ----------------------

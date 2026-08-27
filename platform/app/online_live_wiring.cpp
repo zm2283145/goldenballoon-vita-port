@@ -462,6 +462,11 @@ static void partyLinkBuildLocalView(IMdkrOnlineAdapter *adapter,
     MdkrOnlineLobby lobby{};
     if (!mdkr_online_live_adapter_lobby(adapter, &lobby)) return;
     out->phase = static_cast<uint8_t>(lobby.phase);
+    /* Session-config convergence signals for the host-only dispatch kinds
+     * (PD-T3). These are lobby-wide, not per-seat. */
+    out->mode = lobby.mode;
+    out->configured_track = lobby.configured_track;
+    out->cup_id = lobby.cup_id;
     MdkrOnlineViewModel vm{};
     const bool haveView = adapter->view(&vm);
     MdkrPartyLinkSnapshot snap;
@@ -470,6 +475,7 @@ static void partyLinkBuildLocalView(IMdkrOnlineAdapter *adapter,
     for (unsigned i = 0u; i < MDKR_PARTY_LINK_SEATS; ++i) {
         if (snap.seats[i].occupied && snap.seats[i].is_local) {
             out->have_seat = 1u;
+            out->is_host = snap.seats[i].is_host;
             out->character_id = snap.seats[i].character_id;
             out->vehicle_id = snap.seats[i].vehicle_id;
             out->ready = snap.seats[i].ready;
@@ -490,6 +496,12 @@ static uint8_t partyLinkKindForCommand(uint32_t command_type) {
         return MDKR_PARTY_LINK_DISPATCH_READY;
     case MDKR_ONLINE_BEGIN_LOADING:
         return MDKR_PARTY_LINK_DISPATCH_START_RACE;
+    case MDKR_ONLINE_SET_MODE:
+        return MDKR_PARTY_LINK_DISPATCH_SET_MODE;
+    case MDKR_ONLINE_SET_CONFIG_TRACK:
+        return MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK;
+    case MDKR_ONLINE_SET_CUP:
+        return MDKR_PARTY_LINK_DISPATCH_SET_CUP;
     default:
         return MDKR_PARTY_LINK_DISPATCH_NONE;
     }
@@ -549,6 +561,19 @@ void OnlineRoom_pumpPartyLinkIntent(IMdkrOnlineAdapter *adapter) {
             /* START_RACE value is the resolved track's RAW usable-vehicle mask. */
             sent = partyLinkSubmit(adapter, MDKR_ONLINE_VIEW_ACTION_START_RACE,
                                    partyLinkStartVehicleMask(adapter)).accepted;
+            break;
+        /* Host-only session config (PD-T3): the adapter helpers are themselves
+         * leader-gated, so a non-leader submit is a no-op (and the planner never
+         * offers these to a joiner in the first place). */
+        case MDKR_PARTY_LINK_DISPATCH_SET_MODE:
+            sent = mdkr_online_live_adapter_set_mode(adapter, action.value);
+            break;
+        case MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK:
+            sent = mdkr_online_live_adapter_set_config_track(adapter,
+                                                             action.value);
+            break;
+        case MDKR_PARTY_LINK_DISPATCH_SET_CUP:
+            sent = mdkr_online_live_adapter_set_cup(adapter, action.value);
             break;
         default:
             break;

@@ -69,6 +69,7 @@
 #include "joypad.h"     /* input_pressed, input_clamp_stick_x/y */
 #include "PR/os_cont.h" /* A_BUTTON / B_BUTTON / *_JPAD / START_BUTTON */
 #include "net/party_link.h"
+#include "online/online_trackselect.h" /* PD-T3: defer self-start to TRACKSELECT */
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -330,6 +331,9 @@ static void charselect_apply_input(const CsInput *in, u8 remoteChar) {
         sCs.cursor = (u8) (row * CS_COLS + col);
         if (sCs.cursor != previous) {
             sound_play(CS_SFX_MOVE, NULL);
+            /* PD-T2 nit: end the "TAKEN BY x" flash as soon as the cursor leaves
+             * the taken cell, so it cannot linger ~1.5s while hovering elsewhere. */
+            sCs.takenFlashEnd = 0u;
         }
         if (in->aEdge) {
             if (remoteChar != CS_NO_CHARACTER && sCs.cursor == remoteChar) {
@@ -870,8 +874,15 @@ static void charselect_test_reduce_and_script(void) {
 
     /* Script the host-start: once both seats are ready, hold a few frames (so the
      * converged, both-ready screen is genuinely rendered) then advance the lobby
-     * to LOADING -- the authoritative signal the screen reacts to. */
-    if (sTestRoom.seats[0].ready && sTestRoom.seats[1].ready) {
+     * to LOADING -- the authoritative signal the screen reacts to.
+     *
+     * PD-T3: when the TRACKSELECT headless seam is ALSO armed (the combined
+     * trackselect lane), do NOT self-start here -- leave the room in LOBBY so the
+     * session hands off CHARSELECT -> TRACKSELECT on the local-ready signal and
+     * the TRACKSELECT seam drives the eventual host-start. The standalone
+     * CHARSELECT lane (trackselect seam off) keeps its historical self-start. */
+    if (sTestRoom.seats[0].ready && sTestRoom.seats[1].ready &&
+        !mdkr_online_trackselect_test_active()) {
         sTestStartArmed++;
         if (sTestStartArmed >= 6u) {
             sTestRoom.phase = (uint8_t) (CS_LOBBY_PHASE + 1u); /* LOADING */

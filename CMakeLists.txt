@@ -295,8 +295,9 @@ file(GLOB GAME_SOURCES CONFIGURE_DEPENDS
 # every other game/src TU does. Every TU here is itself #if MDKR_ENABLE_ONLINE_BETA.
 if(MDKR_ENABLE_ONLINE_BETA)
     list(APPEND GAME_SOURCES
-        ${CMAKE_SOURCE_DIR}/game/src/online/online_session.c   # separated online session
-        ${CMAKE_SOURCE_DIR}/game/src/online/online_charselect.c) # native online character select
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_session.c    # separated online session
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_charselect.c  # native online character select
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_trackselect.c) # native online track/cup select
 endif()
 
 # Native platform layer (this project's own M1 code). Listed explicitly rather

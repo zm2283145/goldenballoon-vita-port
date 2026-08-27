@@ -212,6 +212,30 @@ static uint8_t party_link_kind_state(uint8_t kind,
         *value = 0u; /* mask filled by the wiring */
         *converged = local != NULL && local->phase != (uint8_t)MDKR_ONLINE_LOBBY;
         return 1u;
+    /* Host-only session config (PD-T3). Wanted only for the leader seat and only
+     * when the intent carries a non-sentinel value; the joiner always publishes
+     * the UNSET sentinels, so it never wants these regardless of the is_host
+     * gate. The reducer clears every member's ready on any of these, which is why
+     * kOrder[] runs them before READY (the same plan re-asserts ready after). */
+    case MDKR_PARTY_LINK_DISPATCH_SET_MODE:
+        if (!have || !local->is_host) return 0u;
+        if (intent->mode == MDKR_PARTY_LINK_MODE_UNSET) return 0u;
+        *value = intent->mode;
+        *converged = local->mode == intent->mode;
+        return 1u;
+    case MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK:
+        if (!have || !local->is_host) return 0u;
+        if (intent->config_track == MDKR_PARTY_LINK_TRACK_UNSET) return 0u;
+        /* Track ids are all <= 33, so the u8 action value never truncates. */
+        *value = (uint8_t)intent->config_track;
+        *converged = local->configured_track == intent->config_track;
+        return 1u;
+    case MDKR_PARTY_LINK_DISPATCH_SET_CUP:
+        if (!have || !local->is_host) return 0u;
+        if (intent->cup_id == MDKR_PARTY_LINK_CUP_UNSET) return 0u;
+        *value = intent->cup_id;
+        *converged = local->cup_id == intent->cup_id;
+        return 1u;
     default:
         return 0u;
     }
@@ -221,8 +245,13 @@ void mdkr_party_link_plan_dispatch(MdkrPartyLinkDispatchState *state,
                                    const MdkrPartyLinkLocalIntent *intent,
                                    const MdkrPartyLinkLocalView *local,
                                    MdkrPartyLinkDispatchPlan *out) {
-    /* Ordered so vehicle lands before ready. */
+    /* Ordered so the host's session config (which clears all ready) lands FIRST,
+     * then vehicle before ready, then start last -- so a single plan that carries
+     * both a config change and READY ends converged to all-ready. */
     static const uint8_t kOrder[] = {
+        MDKR_PARTY_LINK_DISPATCH_SET_MODE,
+        MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK,
+        MDKR_PARTY_LINK_DISPATCH_SET_CUP,
         MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER,
         MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE,
         MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION,

@@ -81,6 +81,15 @@ typedef struct MdkrPartyLinkSnapshot {
     MdkrPartyLinkHostCursor host_cursor;
 } MdkrPartyLinkSnapshot;
 
+/* "Unset" sentinels for the host-only session-config intent fields below. They
+ * are deliberately NONZERO so a memset(0)'d intent reads as "host wants nothing"
+ * (mode 0 is a REAL mode value, so a zero could not double as unset). A screen
+ * that is not the host -- or a host screen that has not chosen yet -- publishes
+ * these sentinels, and the dispatch planner then never wants the host kinds. */
+#define MDKR_PARTY_LINK_MODE_UNSET 0xFFu   /* intent.mode: no SET_MODE wanted */
+#define MDKR_PARTY_LINK_TRACK_UNSET 0xFFFFu /* intent.config_track: no SET_CONFIG_TRACK */
+#define MDKR_PARTY_LINK_CUP_UNSET 0xFFu    /* intent.cup_id: no SET_CUP wanted */
+
 /* REVERSE FEED record: the local player's latest in-menu intent. The native
  * screen is the source of truth for the pick, so it carries BOTH the racer and
  * the vehicle -- the reducer refuses READY until a vehicle is set, so a bridge
@@ -88,7 +97,14 @@ typedef struct MdkrPartyLinkSnapshot {
  * vehicle_id == 0xFF (MDKR_ONLINE_NO_VEHICLE) means "unset" (no CHOOSE_VEHICLE).
  * start_requested is the host pressing Start on the native screen. The launcher
  * dispatches, per intent, CHOOSE_CHARACTER, then CHOOSE_VEHICLE (before READY,
- * so the vehicle lands first), then READY / START_RACE. */
+ * so the vehicle lands first), then READY / START_RACE.
+ *
+ * The three session-config fields (mode / config_track / cup_id) are HOST-ONLY
+ * (the native TRACK/CUP select screen, PD-T3): the host publishes them, a joiner
+ * always leaves them at the UNSET sentinels above. config_track keeps the u16
+ * width the lobby/snapshot use, but the dispatch ACTION.value is a u8 -- fine,
+ * because every one of the 20 standard race track ids is <= 33 (a documented
+ * ceiling; the reducer's known_race_track() rejects anything else). */
 typedef struct MdkrPartyLinkLocalIntent {
     uint8_t hover_character;
     uint8_t vehicle_id;      /* chosen vehicle, or 0xFF (NO_VEHICLE) == unset */
@@ -96,6 +112,9 @@ typedef struct MdkrPartyLinkLocalIntent {
     uint8_t ready;
     uint8_t backout;
     uint8_t start_requested;
+    uint8_t mode;            /* host: single/tournament, or MODE_UNSET (0xFF) */
+    uint16_t config_track;   /* host single-race: track id, or TRACK_UNSET */
+    uint8_t cup_id;          /* host tournament: cup 0..4, or CUP_UNSET (0xFF) */
 } MdkrPartyLinkLocalIntent;
 
 /* ---- Forward feed lifecycle (launcher only) ----------------------------- */
@@ -148,6 +167,15 @@ bool mdkr_party_link_intent_poll(MdkrPartyLinkLocalIntent *out);
  *   CHOOSE_VEHICLE   -> local vehicle_id   == vehicle_id
  *   READY            -> local ready == 1;  CHANGE_SELECTION -> local ready == 0
  *   START_RACE       -> lobby phase left MDKR_ONLINE_LOBBY
+ *   SET_MODE         -> lobby mode == intent.mode            (host only)
+ *   SET_CONFIG_TRACK -> lobby configured_track == config_track (host only)
+ *   SET_CUP          -> lobby cup_id == intent.cup_id        (host only)
+ * The three session-config kinds are HOST-ONLY: the planner wants them only when
+ * the local seat is the leader AND the intent carries a non-sentinel value, so a
+ * joiner (which always publishes the UNSET sentinels) never plans them. They are
+ * ordered BEFORE ready/start (see kOrder[]) because the reducer clears EVERY
+ * member's ready on any mode/track/cup change; landing the config first and then
+ * re-asserting ready in the SAME plan keeps the seat converged to all-ready.
  *
  * To avoid re-sending every frame while a command genuinely propagates, an
  * in-flight guard suppresses re-sending the SAME (kind,value) after a send,
@@ -167,15 +195,23 @@ typedef enum MdkrPartyLinkDispatchKind {
     MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION,
     MDKR_PARTY_LINK_DISPATCH_READY,
     MDKR_PARTY_LINK_DISPATCH_START_RACE,
+    /* Host-only session config (PD-T3). Appended AFTER the existing kinds so the
+     * pre-existing enum values are unchanged; the processing order is set by
+     * kOrder[] in party_link.c (config before ready/start), not by this order. */
+    MDKR_PARTY_LINK_DISPATCH_SET_MODE,
+    MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK,
+    MDKR_PARTY_LINK_DISPATCH_SET_CUP,
     MDKR_PARTY_LINK_DISPATCH_KIND_COUNT
 } MdkrPartyLinkDispatchKind;
 
 typedef struct MdkrPartyLinkDispatchAction {
     uint8_t kind;  /* MdkrPartyLinkDispatchKind */
-    uint8_t value; /* character/vehicle id; START_RACE mask is filled by wiring */
+    uint8_t value; /* character/vehicle/mode/cup id or track id (all <= 33);
+                    * START_RACE mask is filled by wiring */
 } MdkrPartyLinkDispatchAction;
 
-#define MDKR_PARTY_LINK_MAX_DISPATCH 5u
+/* One plan may carry every dispatchable kind at once (KIND_COUNT - 1). */
+#define MDKR_PARTY_LINK_MAX_DISPATCH 8u
 typedef struct MdkrPartyLinkDispatchPlan {
     MdkrPartyLinkDispatchAction actions[MDKR_PARTY_LINK_MAX_DISPATCH];
     uint8_t count;
@@ -187,10 +223,14 @@ typedef struct MdkrPartyLinkDispatchPlan {
  * command is (re-)sent under the in-flight guard. */
 typedef struct MdkrPartyLinkLocalView {
     uint8_t have_seat;    /* a local seat was resolved in the snapshot */
+    uint8_t is_host;      /* the local seat is the room leader (host-only kinds) */
     uint8_t character_id; /* local seat's current lobby character (0xFF none) */
     uint8_t vehicle_id;   /* local seat's current lobby vehicle (0xFF none) */
     uint8_t ready;        /* local seat's current lobby ready flag */
     uint8_t phase;        /* lobby phase (MdkrOnlinePhase) */
+    uint8_t mode;         /* lobby mode (single/tournament) -- SET_MODE converge */
+    uint16_t configured_track; /* lobby configured_track -- SET_CONFIG_TRACK converge */
+    uint8_t cup_id;       /* lobby cup_id -- SET_CUP converge */
 } MdkrPartyLinkLocalView;
 
 /* Safety-net re-fire: pumps a still-un-converged in-flight command waits before
