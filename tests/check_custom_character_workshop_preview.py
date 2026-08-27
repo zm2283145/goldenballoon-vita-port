@@ -230,15 +230,19 @@ def require_model_alpha_composition(
     bounds = (min(xs), min(ys), max(xs), max(ys))
     centre_x = (bounds[0] + bounds[2]) / 2.0
     centre_y = (bounds[1] + bounds[3]) / 2.0
+    subject_height = bounds[3] - bounds[1] + 1
     if (bounds[0] < width * 5 // 100 or
             bounds[2] > width * 95 // 100 or
             bounds[1] < height * 5 // 100 or
             bounds[3] > height * 95 // 100 or
+            subject_height < height * 60 // 100 or
+            subject_height > height * 85 // 100 or
             abs(centre_x - width / 2.0) > width * 20 // 100 or
             abs(centre_y - height / 2.0) > height * 20 // 100):
         raise ValueError(
-            "model-only subject is clipped or outside the inspection frame "
-            f"(bounds={bounds})"
+            "model-only subject is clipped, outside the inspection frame, or "
+            "outside 60-85% portrait occupancy "
+            f"(bounds={bounds}, height={subject_height}/{height})"
         )
     rgb = bytearray(total * 3)
     for index in range(total):
