@@ -2899,7 +2899,11 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
      * re-boots the next race IN THIS SAME PROCESS. The autoplay tick budget ends
      * the run while the final standings holds. Ordinary autoplay never sets the
      * variable, so this stays inert. */
-    if (std::getenv("MDKR_TEST_ONLINE_RESIDENT") != nullptr) {
+    if (const char *residentEnv = std::getenv("MDKR_TEST_ONLINE_RESIDENT");
+        residentEnv != nullptr && std::strtoul(residentEnv, nullptr, 10) > 0ul) {
+        /* M-4: the flag is the RACE COUNT -- arm only for a positive value, so all
+         * three readers (here, online_session.c, online_results.c) agree that
+         * "=0" is OFF and a half-armed harness cannot prove nothing. */
         MdkrMatchManifestV1 manifest{};
         MdkrNetRoster roster{};
         MdkrMatchLaunchDescriptorV1 desc{};

@@ -100,6 +100,23 @@ static u8 sCharselectLeaveWarned;
  * OnlineRoom_runTestPartyLinkFake uses. Beta-only by construction. */
 static u8 sTestScriptInstalled;
 static u32 sTestHoldTicks;
+/* M-3: optional tournament->single MODE INTERLUDE (env
+ * MDKR_TEST_ONLINE_SESSION_MODE_INTERLUDE = the cup id to stash under tournament).
+ * -1 unresolved, -2 off. When on, the first half of the hold publishes
+ * mode=TOURNAMENT + that cup (so the session STASHES the cup's round-0 track),
+ * then the second half flips to mode=SINGLE (no track). M1 must clear the sticky
+ * stash on that mode change, so the boot logs "track honored" on the SINGLE
+ * manifest; if the M1 clear is reverted the stale cup track lingers and the boot
+ * logs a "track divergence" -- which the session-boot lane's interlude scenario
+ * asserts against, making this a NON-vacuous M1 regression guard. */
+static s8 sInterludeCup = -1;
+
+static void online_session_interlude_resolve(void) {
+    if (sInterludeCup == -1) {
+        const char *e = getenv("MDKR_TEST_ONLINE_SESSION_MODE_INTERLUDE");
+        sInterludeCup = (e != NULL) ? (s8) strtoul(e, NULL, 10) : (s8) -2;
+    }
+}
 
 static void online_session_test_maybe_script(void) {
     const char *env = getenv("MDKR_TEST_ONLINE_SESSION_SCRIPT");
@@ -108,6 +125,7 @@ static void online_session_test_maybe_script(void) {
     if (env == NULL) {
         return;
     }
+    online_session_interlude_resolve();
     if (!sTestScriptInstalled) {
         sTestHoldTicks = (u32) strtoul(env, NULL, 10);
         mdkr_party_link_clear();
@@ -129,6 +147,14 @@ static void online_session_test_maybe_script(void) {
      * silent "track honored" path this lane expects. (mode stays 0 == SINGLE.) */
     snap.configured_track = MDKR_PARTY_LINK_TRACK_UNSET; /* 0xFFFF == none */
     snap.cup_id = MDKR_PARTY_LINK_CUP_UNSET;             /* 0xFF == none */
+    snap.mode = (uint8_t) MDKR_PARTY_LINK_MODE_SINGLE;
+    /* M-3 interlude: TOURNAMENT (stash the cup's round-0 track) for the first half
+     * of the hold, then SINGLE (M1 must clear the stale stash). */
+    if (sInterludeCup >= 0 &&
+        sOnlineSession.lobbyWaitTicks < (sTestHoldTicks / 2u)) {
+        snap.mode = (uint8_t) MDKR_PARTY_LINK_MODE_TOURNAMENT;
+        snap.cup_id = (uint8_t) sInterludeCup;
+    }
     mdkr_party_link_publish(&snap);
 }
 
@@ -210,11 +236,17 @@ static void online_session_boot_race(void) {
     /* Isolation witness: on the online path control reached the session
      * (gGameMode == GAMEMODE_ONLINE_SESSION) and the offline boot menu was
      * never loaded (gCurrentMenuId still 0, i.e. not MENU_BOOT). */
+    /* M-6: the LOBBY_WAIT tick count is meaningful only for the FIRST boot; a
+     * RESULTS-origin re-boot (race >= 2) reuses that stale counter, so the trailing
+     * [race=N] disambiguates which engine race this is (the re-boot itself is
+     * announced separately at the RESULTS ADVANCE). The witness prefix through
+     * gCurrentMenuId is unchanged, so every lane's regex still matches. */
     fprintf(stderr,
             "[online-session] phase=RACE booting after %u LOBBY_WAIT tick(s); "
             "isolation gGameMode=%d gCurrentMenuId=%d (0 == offline MENU_BOOT "
-            "never loaded)\n",
-            sOnlineSession.lobbyWaitTicks, gGameMode, gCurrentMenuId);
+            "never loaded) [race=%u]\n",
+            sOnlineSession.lobbyWaitTicks, gGameMode, gCurrentMenuId,
+            sOnlineSession.raceCount);
 
     /* PD-T4 observable agreement check. The race ALWAYS boots the manifest's
      * track (the peer rollback-admission authority: the launcher froze the
@@ -552,6 +584,10 @@ void mdkr_online_session_tick(s32 updateRate) {
                  * resident, unrendered, through RESULTS) before the next boot's
                  * load_level_game -- the same "leave the current race level"
                  * call the offline race->race path makes. */
+                fprintf(stderr,
+                        "[online-session] results -> re-boot race %u "
+                        "(RESULTS-origin, same process)\n",
+                        sOnlineSession.raceCount + 1u);
                 mdkr_online_results_exit();
                 unload_level_game();
                 online_session_boot_race();

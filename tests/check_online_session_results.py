@@ -106,6 +106,78 @@ def trophy(place: int) -> int:
     return TROPHY[place] if 0 <= place < len(TROPHY) else 0
 
 
+def run_engine(binary: Path, rom: Path, ticks: int, timeout: int, verbose: bool,
+               extra_env: dict[str, str] | None = None) -> tuple[int, str]:
+    with tempfile.TemporaryDirectory(prefix="mdkr64-online-results-") as temp:
+        run_dir = Path(temp)
+        (run_dir / "saves").mkdir()
+        (run_dir / "preferences").mkdir()
+        environment = clean_environment(
+            LC_ALL="C",
+            MDKR_APP_AUTOPLAY="1",
+            MDKR_APP_AUTOPLAY_TICKS=str(ticks),
+            MDKR_APP_PREFS_DIR=str(run_dir / "preferences"),
+            MDKR_AUDIO="0",
+            MDKR_AUTOPILOT="1",
+            MDKR_NO_CRASH_HANDLER="1",
+            MDKR_PRESENT_RATE="original",
+            MDKR_RENDERER="gl",
+            MDKR_ROM=str(rom),
+            MDKR_SAVE_DIR=str(run_dir / "saves"),
+            MDKR_STATE_HASH="3",
+            MDKR_TEST_SCRIPT_ONLY_INPUT="1",
+            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
+            MDKR64_HIDDEN="1",
+        )
+        if extra_env:
+            environment.update(extra_env)
+        if verbose:
+            extras = " ".join(f"{k}={v}" for k, v in (extra_env or {}).items())
+            print(f"$ {extras} {binary}", flush=True)
+        process = subprocess.run(
+            [str(binary)], cwd=run_dir, env=environment, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=timeout, check=False,
+        )
+        return process.returncode, (process.stdout or "")
+
+
+def check_m3_interlude(binary: Path, rom: Path, verbose: bool) -> int | None:
+    """M-3: a real tournament->single interlude that FAILS if the M1 stash-clear
+    is reverted. The LOBBY_WAIT seam publishes mode=TOURNAMENT + cup 1 (whose
+    round-0 track is 13) for the first half of the hold -- so the session stashes
+    intended track 13 -- then flips to mode=SINGLE. M1 must clear that stale stash
+    on the mode change, so the boot logs 'track honored: 5' (the SINGLE manifest);
+    without the clear it logs 'track divergence: snapshot=13 manifest=5'. Verified
+    out-of-band: reverting the M1 clear makes exactly this scenario diverge."""
+    scn = "m3-interlude"
+    try:
+        rc, output = run_engine(
+            binary, rom, ticks=4000, timeout=200, verbose=verbose,
+            extra_env={
+                "MDKR_TEST_ONLINE_RESIDENT": "1",
+                "MDKR_TEST_ONLINE_SESSION_SCRIPT": "8",
+                "MDKR_TEST_ONLINE_SESSION_MODE_INTERLUDE": "1",
+            })
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[{scn}] engine run timed out: {error}")
+    for marker in FORBIDDEN:
+        if marker in output:
+            return fail(f"[{scn}] observed forbidden marker {marker!r}", output)
+    if rc != 0:
+        return fail(f"[{scn}] process exited {rc}", output)
+    if "[online-boot] track divergence" in output:
+        return fail(f"[{scn}] a track divergence was logged -- the M1 sticky-stash "
+                    f"clear did not fire on the tournament->single interlude",
+                    output)
+    honored = re.findall(r"^\[online-boot\] track honored: (\d+)$", output,
+                         re.MULTILINE)
+    if not honored or int(honored[0]) != 5:
+        return fail(f"[{scn}] expected the first boot to log 'track honored: 5' "
+                    f"after the mode interlude, got {honored!r}", output)
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default="build-beta")
@@ -122,48 +194,21 @@ def main() -> int:
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
 
-    with tempfile.TemporaryDirectory(prefix="mdkr64-online-results-") as temp:
-        run_dir = Path(temp)
-        (run_dir / "saves").mkdir()
-        (run_dir / "preferences").mkdir()
-        environment = clean_environment(
-            LC_ALL="C",
-            MDKR_APP_AUTOPLAY="1",
-            MDKR_APP_AUTOPLAY_TICKS=str(args.ticks),
-            MDKR_APP_PREFS_DIR=str(run_dir / "preferences"),
-            MDKR_AUDIO="0",
-            MDKR_AUTOPILOT="1",
-            MDKR_NO_CRASH_HANDLER="1",
-            MDKR_PRESENT_RATE="original",
-            MDKR_RENDERER="gl",
-            MDKR_ROM=str(rom),
-            MDKR_SAVE_DIR=str(run_dir / "saves"),
-            MDKR_STATE_HASH="3",
-            MDKR_TEST_SCRIPT_ONLY_INPUT="1",
-            # The seam under test: resident post-race re-entry, driving N races
-            # + RESULTS in one engine process via the session loop.
-            MDKR_TEST_ONLINE_RESIDENT=str(args.races),
-            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
-            MDKR64_HIDDEN="1",
-        )
-        if args.verbose:
-            print(f"$ MDKR_TEST_ONLINE_RESIDENT={args.races} {binary}", flush=True)
-        try:
-            process = subprocess.run(
-                [str(binary)], cwd=run_dir, env=environment, text=True,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                timeout=args.timeout, check=False,
-            )
-        except subprocess.TimeoutExpired as error:
-            return fail(f"engine run timed out (a resident stall would look like "
-                        f"this): {error}")
-        output = process.stdout or ""
+    # Primary soak: resident post-race re-entry driving N races + RESULTS in one
+    # engine process via the session loop.
+    try:
+        rc, output = run_engine(
+            binary, rom, args.ticks, args.timeout, args.verbose,
+            extra_env={"MDKR_TEST_ONLINE_RESIDENT": str(args.races)})
+    except subprocess.TimeoutExpired as error:
+        return fail(f"engine run timed out (a resident stall would look like "
+                    f"this): {error}")
 
     for marker in FORBIDDEN:
         if marker in output:
             return fail(f"observed forbidden marker {marker!r}", output)
-    if process.returncode != 0:
-        return fail(f"process exited {process.returncode}", output)
+    if rc != 0:
+        return fail(f"process exited {rc}", output)
 
     # --- Resident install + separated boot ----------------------------------
     install = RESIDENT_INSTALL_RE.search(output)
@@ -297,6 +342,12 @@ def main() -> int:
     if "auto" not in kinds:
         return fail("no auto-advance (countdown-to-zero) was witnessed", output)
 
+    # M-3: a NON-vacuous M1 regression guard -- a real tournament->single
+    # interlude that diverges if the sticky-stash clear is reverted.
+    m3 = check_m3_interlude(binary, rom, args.verbose)
+    if m3 is not None:
+        return m3
+
     print(
         "PASS online session results: RESIDENT soak drove "
         f"{len(boots)} engine races + RESULTS/STANDINGS in ONE process via the "
@@ -304,7 +355,8 @@ def main() -> int:
         f"never entered) -- captured placements "
         f"{race_placements}, points accrued to {expected} by trophy weight, "
         f"host + auto advance both fired, countdown decremented to 0, final "
-        f"standings held; no exit-path taken, clean exit 0"
+        f"standings held; no exit-path taken, clean exit 0; M-3 mode-interlude "
+        f"boot honored track 5 (no divergence -- M1 clear proven)"
     )
     return 0
 
