@@ -325,6 +325,11 @@ bool validRecipe(const Image &image, const Recipe &recipe) {
         recipe.background <= Background::Charcoal;
 }
 
+bool validSubjectMask(const SubjectMask &mask) {
+    (void)mask;
+    return true;
+}
+
 bool validSourceRecord(const SourceRecord &record) {
     if (record.kind == SourceKind::Canvas) {
         const Recipe defaults;
@@ -333,7 +338,12 @@ bool validSourceRecord(const SourceRecord &record) {
             record.recipe.cropY == 0u && record.recipe.cropSize == 0u &&
             record.recipe.edgeMatteTolerance == 0u &&
             record.recipe.sampling == defaults.sampling &&
-            record.recipe.background == defaults.background;
+            record.recipe.background == defaults.background &&
+            validSubjectMask(record.subjectMask) &&
+            !record.subjectMask.enabled &&
+            std::all_of(record.subjectMask.alpha.begin(),
+                        record.subjectMask.alpha.end(),
+                        [](uint8_t alpha) { return alpha == 255u; });
     }
     if (record.kind != SourceKind::LocalPng &&
         record.kind != SourceKind::ExactRenderer) return false;
@@ -353,17 +363,20 @@ bool validSourceRecord(const SourceRecord &record) {
         record.recipe.sampling >= Sampling::Crisp &&
         record.recipe.sampling <= Sampling::Area &&
         record.recipe.background >= Background::Transparent &&
-        record.recipe.background <= Background::Charcoal;
+        record.recipe.background <= Background::Charcoal &&
+        validSubjectMask(record.subjectMask);
 }
 
 SourceRecord sourceRecord(const Image &image, const Recipe &recipe,
-                          SourceKind kind) {
+                          SourceKind kind,
+                          const SubjectMask &subjectMask) {
     SourceRecord record;
     record.kind = kind;
     record.sha256 = image.sha256;
     record.width = image.width;
     record.height = image.height;
     record.recipe = recipe;
+    record.subjectMask = subjectMask;
     return validImage(image) && validRecipe(image, recipe) &&
             validSourceRecord(record)
         ? record : SourceRecord{};
@@ -371,7 +384,13 @@ SourceRecord sourceRecord(const Image &image, const Recipe &recipe,
 
 bool render(const Image &image, const Recipe &recipe,
             CharacterPortraitStudio::Canvas &output, std::string &error) {
-    if (!validRecipe(image, recipe)) {
+    return render(image, recipe, SubjectMask{}, output, error);
+}
+
+bool render(const Image &image, const Recipe &recipe,
+            const SubjectMask &subjectMask,
+            CharacterPortraitStudio::Canvas &output, std::string &error) {
+    if (!validRecipe(image, recipe) || !validSubjectMask(subjectMask)) {
         error = "The portrait crop or conversion recipe is invalid.";
         return false;
     }
@@ -390,6 +409,15 @@ bool render(const Image &image, const Recipe &recipe,
                       top + sourcePerPixel * 0.5)
                 : sampleArea(image, matte, left, top,
                       left + sourcePerPixel, top + sourcePerPixel);
+            if (subjectMask.enabled) {
+                const size_t maskIndex = static_cast<size_t>(y) * size + x;
+                pixel[3] = static_cast<uint8_t>(
+                    (static_cast<unsigned>(pixel[3]) *
+                     subjectMask.alpha[maskIndex] + 127u) / 255u);
+                if (pixel[3] == 0u) {
+                    pixel[0] = pixel[1] = pixel[2] = 0u;
+                }
+            }
             compositeBackground(pixel, recipe.background, x, y, size);
             std::memcpy(
                 rendered.data() + (static_cast<size_t>(y) * size + x) * 4u,

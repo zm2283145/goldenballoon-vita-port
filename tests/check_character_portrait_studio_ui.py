@@ -193,12 +193,22 @@ def main() -> int:
                  " loaded=1 applied=0",
                  "character-portrait-source package=" + PACKAGE_ID,
                  "kind=local-png dimensions=96x64",
+                 "mask=1 removed=16",
                  "text=Portrait input PNG",
-                 "text=Undo portrait framing",
-                 "text=Redo portrait framing",
+                 "text=Undo portrait framing and mask",
+                 "text=Redo portrait framing and mask",
                  "text=Square crop size",
                  "text=Edge-connected matte removal",
                  "text=Background frame",
+                 "text=Enable freeform subject mask",
+                 "text=Remove from subject",
+                 "text=Restore subject",
+                 "text=Mask brush size",
+                 "text=Freeform subject mask canvas",
+                 "text=Mask pixel coordinates",
+                 "text=Apply mask brush to selected pixel",
+                 "text=Invert subject mask",
+                 "text=Reset subject mask to keep all",
                  "text=Apply styled source to pixel canvas",
                  "palette=32",
                  "text=Framing zoom",
@@ -225,7 +235,8 @@ def main() -> int:
         return 1
     print("check_character_portrait_studio_ui: PASS -- deterministic style "
           "lab and six-variant comparison sheet, bounded PNG source/capture "
-          "framing, advanced pixel tools, 200% compact rendering, keyboard "
+          "framing with durable freeform subject mask, advanced pixel tools, "
+          "200% compact rendering, keyboard "
           "speech, and installed-byte purity")
     return 0
 

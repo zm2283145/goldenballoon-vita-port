@@ -474,6 +474,18 @@ losslessly into calibrated context transforms; non-uniform or out-of-range v1
 transforms are refused because v3 cannot represent them without a visible
 change.
 
+High-resolution PNG and exact-renderer sources use a deterministic 40x40
+conversion record: bounded square crop, crisp or premultiplied-area sampling,
+edge-connected matte removal, and a project-owned background. A fixed-size
+target-pixel subject mask is applied after source sampling and edge-matte
+removal but before background compositing. It is non-destructive, remains
+aligned to the output canvas across crop changes, and retains painted alpha
+while disabled. The editor exposes both direct painting and exact numeric
+coordinates; its checkerboard view deliberately suppresses the selected
+background so background pixels cannot be mistaken for subject pixels. The
+mask is compiled only into the resulting portrait canvas and does not add a
+runtime asset format or gameplay resource.
+
 The same revision transaction backs `revise-profile`: all ten qualified retail
 donors can be selected as the built-in gameplay owner, and any non-empty subset
 of car, hovercraft, and plane can be declared compatible. Enabling a previously
@@ -502,7 +514,9 @@ node roles and solver
 bases, global/context/contact tuning, assembly/test player counts, and
 source/tuning-bound review state. A draft resumes only against its exact cache
 source digest; restoring the retained base is required instead of guessing how
-old joint node ids map onto a changed model.
+old joint node ids map onto a changed model. Snapshot v7 additionally retains
+the portrait source's 1600-byte target-space subject mask and enabled state;
+v1-v6 inputs decode with a disabled all-keep default.
 
 `build-draft` is the corresponding single source transaction. It validates a
 bounded strict build document, checks the active cache digest against the
@@ -528,11 +542,12 @@ Later schema versions should add, without changing the principles above:
 - expanded project-owned reference clips, per-context author target offsets,
   and richer joint/pole constraints over the bounded contact solver;
 - optional material variants and eye/mouth morph mappings;
-- freeform subject selection, richer background/frame presets, contact
-  overlays, and icon derivatives beyond the implemented imported/exact-renderer
+- richer background/frame presets, contact overlays, and icon derivatives
+  beyond the implemented imported/exact-renderer
   portrait, transparent model-only render product, six-treatment comparison
-  sheet, exact 40x40 pixel editor, rectangular move/copy and deterministic
-  framing, resampling, palette, dithering, outline and cleanup recipe;
+  sheet, exact 40x40 pixel editor, non-destructive freeform subject mask,
+  rectangular move/copy and deterministic framing, resampling, palette,
+  dithering, outline and cleanup recipe;
 - feature requirements such as morph targets or alpha blending.
 
 The schema is declarative. JavaScript, Lua, native libraries, Blender Python,
@@ -1224,8 +1239,8 @@ GPU limits are exceeded.
 - Validated package portraits, exact and selection-based pixel editing,
   deterministic style recipes, identity revisions, game-surface fallbacks,
   composed gameplay capture, and transparent model-only renderer capture are
-  complete; freeform subject selection and derivative background/frame presets
-  remain.
+  complete, including non-destructive target-space subject masking; derivative
+  background/frame presets and contact overlays remain.
 - Add local ordering policy and online digest/fallback diagnostics.
 - Publish an SDK containing schemas, the generated animated fixture, validator,
   packer, semantic state reference, and examples that contain no Nintendo asset.

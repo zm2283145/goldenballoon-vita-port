@@ -1953,7 +1953,9 @@ struct CharacterIdentityEdit {
     char importPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
     CharacterPortraitImport::Image importImage{};
     CharacterPortraitImport::Recipe importRecipe{};
+    CharacterPortraitImport::SubjectMask importSubjectMask{};
     CharacterPortraitImport::Thumbnail importThumbnail{};
+    CharacterPortraitStudio::Canvas importUnmaskedPreview{};
     CharacterPortraitStudio::Canvas importPreview{};
     std::string importError;
     CharacterEditHistory::Track importHistory{};
@@ -1962,6 +1964,10 @@ struct CharacterIdentityEdit {
     bool importPreviewValid = false;
     bool importPreviewDirty = false;
     bool importFromExactRenderer = false;
+    int importMaskTool = 0;
+    int importMaskBrushSize = 1;
+    int importMaskPixel[2] = {20, 20};
+    bool importMaskStrokeActive = false;
     float paintRgba[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     float replaceFromRgba[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     int tool = 0;
@@ -8249,14 +8255,21 @@ void refreshPortraitStylePreview(CharacterIdentityEdit &edit) {
 }
 
 bool refreshPortraitImportPreview(CharacterIdentityEdit &edit) {
+    CharacterPortraitStudio::Canvas unmasked{};
     CharacterPortraitStudio::Canvas preview{};
     std::string error;
+    CharacterPortraitImport::Recipe matteRecipe = edit.importRecipe;
+    matteRecipe.background = CharacterPortraitImport::Background::Transparent;
     if (!CharacterPortraitImport::render(
-            edit.importImage, edit.importRecipe, preview, error)) {
+            edit.importImage, matteRecipe, unmasked, error) ||
+        !CharacterPortraitImport::render(
+            edit.importImage, edit.importRecipe, edit.importSubjectMask,
+            preview, error)) {
         edit.importPreviewValid = false;
         edit.importError = std::move(error);
         return false;
     }
+    edit.importUnmaskedPreview = unmasked;
     edit.importPreview = preview;
     edit.importPreviewValid = true;
     edit.importPreviewDirty = false;
@@ -8269,7 +8282,8 @@ void commitPortraitImportSource(CharacterIdentityEdit &edit) {
         edit.importImage, edit.importRecipe,
         edit.importFromExactRenderer
             ? CharacterPortraitImport::SourceKind::ExactRenderer
-            : CharacterPortraitImport::SourceKind::LocalPng);
+            : CharacterPortraitImport::SourceKind::LocalPng,
+        edit.importSubjectMask);
     std::snprintf(edit.portraitPath, sizeof(edit.portraitPath), "%s",
                   edit.importPath);
 }
@@ -8297,6 +8311,7 @@ bool loadPortraitImportSource(CharacterIdentityEdit &edit,
     }
     CharacterPortraitImport::Recipe recipe =
         CharacterPortraitImport::centredRecipe(image);
+    CharacterPortraitImport::SubjectMask subjectMask;
     bool resolvedExactRenderer = exactRenderer;
     if (edit.portraitSourceRecord.kind !=
             CharacterPortraitImport::SourceKind::Canvas &&
@@ -8304,56 +8319,84 @@ bool loadPortraitImportSource(CharacterIdentityEdit &edit,
         edit.portraitSourceRecord.width == image.width &&
         edit.portraitSourceRecord.height == image.height) {
         recipe = edit.portraitSourceRecord.recipe;
+        subjectMask = edit.portraitSourceRecord.subjectMask;
         resolvedExactRenderer = edit.portraitSourceRecord.kind ==
             CharacterPortraitImport::SourceKind::ExactRenderer;
     }
+    CharacterPortraitStudio::Canvas unmasked{};
     CharacterPortraitStudio::Canvas preview{};
-    if (!CharacterPortraitImport::render(image, recipe, preview, error)) {
+    CharacterPortraitImport::Recipe matteRecipe = recipe;
+    matteRecipe.background = CharacterPortraitImport::Background::Transparent;
+    if (!CharacterPortraitImport::render(
+            image, matteRecipe, unmasked, error) ||
+        !CharacterPortraitImport::render(
+            image, recipe, subjectMask, preview, error)) {
         edit.importError = std::move(error);
         return false;
     }
     edit.importImage = std::move(image);
     edit.importThumbnail = std::move(thumbnail);
     edit.importRecipe = recipe;
+    edit.importSubjectMask = subjectMask;
+    edit.importUnmaskedPreview = unmasked;
     edit.importPreview = preview;
     edit.importPreviewValid = true;
     edit.importPreviewDirty = false;
     edit.importFromExactRenderer = resolvedExactRenderer;
+    edit.importMaskStrokeActive = false;
     edit.importError.clear();
     CharacterEditHistory::clear(edit.importHistory);
     std::snprintf(edit.importPath, sizeof(edit.importPath), "%s", path.c_str());
     return true;
 }
 
-std::string portraitImportRecipePayload(
-    const CharacterPortraitImport::Recipe &recipe) {
+std::string portraitImportStatePayload(const CharacterIdentityEdit &edit) {
+    const CharacterPortraitImport::Recipe &recipe = edit.importRecipe;
     const uint32_t values[] = {
         recipe.cropX, recipe.cropY, recipe.cropSize,
         recipe.edgeMatteTolerance,
         static_cast<uint32_t>(recipe.sampling),
         static_cast<uint32_t>(recipe.background),
     };
-    std::string payload = "mdkr-portrait-frame-v1\n";
+    std::string payload = "mdkr-portrait-frame-v2\n";
     for (uint32_t value : values) {
         for (unsigned shift = 0u; shift < 32u; shift += 8u) {
             payload.push_back(static_cast<char>(value >> shift));
         }
     }
+    const uint32_t maskEnabled = edit.importSubjectMask.enabled ? 1u : 0u;
+    for (unsigned shift = 0u; shift < 32u; shift += 8u) {
+        payload.push_back(static_cast<char>(maskEnabled >> shift));
+    }
+    payload.append(
+        reinterpret_cast<const char *>(edit.importSubjectMask.alpha.data()),
+        edit.importSubjectMask.alpha.size());
     return payload;
 }
 
-bool decodePortraitImportRecipe(
+bool decodePortraitImportState(
     const std::string &payload,
     const CharacterPortraitImport::Image &image,
-    CharacterPortraitImport::Recipe &recipe) {
-    constexpr char header[] = "mdkr-portrait-frame-v1\n";
+    CharacterPortraitImport::Recipe &recipe,
+    CharacterPortraitImport::SubjectMask &subjectMask) {
+    constexpr char currentHeader[] = "mdkr-portrait-frame-v2\n";
+    constexpr char legacyHeader[] = "mdkr-portrait-frame-v1\n";
     constexpr size_t valueCount = 6u;
-    if (payload.size() != sizeof(header) - 1u + valueCount * 4u ||
-        payload.compare(0u, sizeof(header) - 1u, header) != 0) {
+    const bool current = payload.size() ==
+            sizeof(currentHeader) - 1u + (valueCount + 1u) * 4u +
+                CharacterPortraitImport::kSubjectMaskPixels &&
+        payload.compare(0u, sizeof(currentHeader) - 1u,
+                        currentHeader) == 0;
+    const bool legacy = payload.size() ==
+            sizeof(legacyHeader) - 1u + valueCount * 4u &&
+        payload.compare(0u, sizeof(legacyHeader) - 1u,
+                        legacyHeader) == 0;
+    if (!current && !legacy) {
         return false;
     }
     uint32_t values[valueCount] = {};
-    size_t offset = sizeof(header) - 1u;
+    size_t offset = current ? sizeof(currentHeader) - 1u
+                            : sizeof(legacyHeader) - 1u;
     for (uint32_t &value : values) {
         for (unsigned shift = 0u; shift < 32u; shift += 8u) {
             value |= static_cast<uint32_t>(
@@ -8370,7 +8413,28 @@ bool decodePortraitImportRecipe(
     parsed.background = static_cast<CharacterPortraitImport::Background>(
         values[5]);
     if (!CharacterPortraitImport::validRecipe(image, parsed)) return false;
+    CharacterPortraitImport::SubjectMask parsedMask;
+    if (current) {
+        uint32_t enabled = 0u;
+        for (unsigned shift = 0u; shift < 32u; shift += 8u) {
+            enabled |= static_cast<uint32_t>(
+                static_cast<unsigned char>(payload[offset++])) << shift;
+        }
+        if (enabled > 1u ||
+            parsedMask.alpha.size() > payload.size() - offset) {
+            return false;
+        }
+        parsedMask.enabled = enabled != 0u;
+        std::memcpy(parsedMask.alpha.data(), payload.data() + offset,
+                    parsedMask.alpha.size());
+        offset += parsedMask.alpha.size();
+        if (offset != payload.size() ||
+            !CharacterPortraitImport::validSubjectMask(parsedMask)) {
+            return false;
+        }
+    }
     recipe = parsed;
+    subjectMask = parsedMask;
     return true;
 }
 
@@ -8537,6 +8601,213 @@ bool drawPortraitImportThumbnail(CharacterIdentityEdit &edit) {
     return changed;
 }
 
+uint32_t portraitSubjectMaskRemovedPixels(
+    const CharacterPortraitImport::SubjectMask &mask) {
+    return static_cast<uint32_t>(std::count_if(
+        mask.alpha.begin(), mask.alpha.end(),
+        [](uint8_t alpha) { return alpha == 0u; }));
+}
+
+bool applyPortraitSubjectMaskBrush(CharacterIdentityEdit &edit,
+                                   int centreX, int centreY, bool keep) {
+    constexpr int size = CharacterPortraitStudio::kSize;
+    const int brush = std::clamp(edit.importMaskBrushSize, 1, 7);
+    const int low = (brush - 1) / 2;
+    const int high = brush / 2;
+    const uint8_t value = keep ? 255u : 0u;
+    bool changed = false;
+    for (int y = centreY - low; y <= centreY + high; ++y) {
+        for (int x = centreX - low; x <= centreX + high; ++x) {
+            if (x < 0 || y < 0 || x >= size || y >= size) continue;
+            uint8_t &alpha = edit.importSubjectMask.alpha[
+                static_cast<size_t>(y) * size + x];
+            if (alpha != value) {
+                alpha = value;
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
+bool drawPortraitSubjectMask(CharacterIdentityEdit &edit) {
+    constexpr int size = CharacterPortraitStudio::kSize;
+    bool changed = false;
+    ImGui::SeparatorText("Non-destructive subject mask");
+    ui::TextSubtleWrapped(
+        "Paint only the sampled 40 × 40 subject matte. Removed pixels become transparent before the selected project-owned background is composited; the checkerboard view intentionally excludes that background. The source image and edge-matte recipe remain unchanged.");
+    if (ImGui::Checkbox("Enable freeform subject mask",
+                        &edit.importSubjectMask.enabled)) {
+        changed = true;
+    }
+    ui::SpeakFocusedItem(
+        "Enable freeform subject mask",
+        edit.importSubjectMask.enabled ? "On" : "Off",
+        "Turns the retained non-destructive mask on or off without discarding its painted pixels.");
+    if (!edit.importSubjectMask.enabled) {
+        const uint32_t retained = portraitSubjectMaskRemovedPixels(
+            edit.importSubjectMask);
+        ui::TextSubtleWrapped(
+            retained == 0u
+                ? "Mask is off; every sampled pixel is kept."
+                : "Mask is off; %u fully removed pixels are retained for later reuse.",
+            retained);
+        return changed;
+    }
+
+    static const char *tools[] = {"Remove from subject", "Restore subject"};
+    for (int tool = 0; tool < 2; ++tool) {
+        if (tool != 0) ImGui::SameLine();
+        (void)ImGui::RadioButton(tools[tool], &edit.importMaskTool, tool);
+        ui::SpeakFocusedItem(
+            tools[tool], edit.importMaskTool == tool ? "selected" : "available",
+            tool == 0
+                ? "Paints selected target pixels out of the subject without changing source RGB."
+                : "Restores selected target pixels to the subject matte.");
+    }
+    ImGui::SetNextItemWidth(
+        std::min(320.0f, ImGui::GetContentRegionAvail().x));
+    if (ImGui::SliderInt("Mask brush size", &edit.importMaskBrushSize,
+                         1, 7)) {
+        changed = true;
+    }
+    ui::SpeakFocusedItem(
+        "Mask brush size",
+        (std::to_string(edit.importMaskBrushSize) + " target pixels").c_str(),
+        "Sets the square freeform mask brush from one through seven exact portrait pixels.");
+
+    const float pixelSize = std::clamp(
+        std::floor(ImGui::GetContentRegionAvail().x / size), 3.0f, 8.0f);
+    const float extent = pixelSize * size;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::Selectable("##portrait-subject-mask-canvas", false,
+                      ImGuiSelectableFlags_None, ImVec2(extent, extent));
+    const bool focused = ImGui::IsItemFocused();
+    const bool hovered = ImGui::IsItemHovered();
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            const size_t index = static_cast<size_t>(y) * size + x;
+            const uint8_t *pixel = edit.importUnmaskedPreview.data() + index * 4u;
+            const ImVec2 minimum(origin.x + x * pixelSize,
+                                 origin.y + y * pixelSize);
+            const ImVec2 maximum(minimum.x + pixelSize,
+                                 minimum.y + pixelSize);
+            const ImU32 checker = ((x / 4 + y / 4) & 1) != 0
+                ? IM_COL32(73, 79, 89, 255)
+                : IM_COL32(48, 53, 62, 255);
+            draw->AddRectFilled(minimum, maximum, checker);
+            if (pixel[3] != 0u) {
+                draw->AddRectFilled(
+                    minimum, maximum,
+                    IM_COL32(pixel[0], pixel[1], pixel[2], pixel[3]));
+            }
+            const uint8_t maskAlpha = edit.importSubjectMask.alpha[index];
+            if (maskAlpha != 255u) {
+                const uint8_t overlay = static_cast<uint8_t>(
+                    55u + (255u - maskAlpha) * 120u / 255u);
+                draw->AddRectFilled(
+                    minimum, maximum, IM_COL32(229, 103, 94, overlay));
+                if (maskAlpha == 0u && pixelSize >= 5.0f) {
+                    draw->AddLine(minimum, maximum,
+                                  IM_COL32(255, 225, 220, 175), 1.0f);
+                }
+            }
+        }
+    }
+    const ImU32 border = focused
+        ? ImGui::GetColorU32(AppTheme::focusRing())
+        : IM_COL32(255, 255, 255, 140);
+    draw->AddRect(origin, ImVec2(origin.x + extent, origin.y + extent),
+                  border, 0.0f, 0, focused ? 3.0f : 1.0f);
+    const std::string maskState =
+        std::to_string(portraitSubjectMaskRemovedPixels(
+            edit.importSubjectMask)) +
+        " fully removed pixels; selected pixel " +
+        std::to_string(edit.importMaskPixel[0]) + ", " +
+        std::to_string(edit.importMaskPixel[1]);
+    ui::SpeakFocusedItem(
+        "Freeform subject mask canvas", maskState.c_str(),
+        "Pointer painting is optional. The numeric coordinates and Apply mask brush button below provide the same operation for keyboard and controller users.");
+    if (hovered) {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const int x = std::clamp(
+            static_cast<int>((mouse.x - origin.x) / pixelSize), 0, size - 1);
+        const int y = std::clamp(
+            static_cast<int>((mouse.y - origin.y) / pixelSize), 0, size - 1);
+        edit.importMaskPixel[0] = x;
+        edit.importMaskPixel[1] = y;
+        const int brush = std::clamp(edit.importMaskBrushSize, 1, 7);
+        const int low = (brush - 1) / 2;
+        const int high = brush / 2;
+        draw->AddRect(
+            ImVec2(origin.x + std::max(0, x - low) * pixelSize,
+                   origin.y + std::max(0, y - low) * pixelSize),
+            ImVec2(origin.x + std::min(size, x + high + 1) * pixelSize,
+                   origin.y + std::min(size, y + high + 1) * pixelSize),
+            IM_COL32(255, 255, 255, 255), 0.0f, 0, 2.0f);
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            edit.importMaskStrokeActive = true;
+            changed |= applyPortraitSubjectMaskBrush(
+                edit, x, y, edit.importMaskTool == 1);
+        } else if (edit.importMaskStrokeActive &&
+                   ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            changed |= applyPortraitSubjectMaskBrush(
+                edit, x, y, edit.importMaskTool == 1);
+        }
+    }
+    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        edit.importMaskStrokeActive = false;
+    }
+
+    ImGui::SetNextItemWidth(
+        std::min(220.0f, ImGui::GetContentRegionAvail().x));
+    (void)ImGui::InputInt2("Mask pixel coordinates", edit.importMaskPixel);
+    edit.importMaskPixel[0] = std::clamp(edit.importMaskPixel[0], 0, size - 1);
+    edit.importMaskPixel[1] = std::clamp(edit.importMaskPixel[1], 0, size - 1);
+    ui::SpeakFocusedItem(
+        "Mask pixel coordinates",
+        ("x " + std::to_string(edit.importMaskPixel[0]) + ", y " +
+         std::to_string(edit.importMaskPixel[1])).c_str(),
+        "Chooses the exact target pixel for the keyboard-accessible mask brush action.");
+    if (ImGui::Button("Apply mask brush to selected pixel")) {
+        changed |= applyPortraitSubjectMaskBrush(
+            edit, edit.importMaskPixel[0], edit.importMaskPixel[1],
+            edit.importMaskTool == 1);
+    }
+    ui::SpeakFocusedItem(
+        "Apply mask brush to selected pixel", tools[edit.importMaskTool],
+        "Applies the current mask brush at the numeric target coordinate and can be undone with Undo framing and mask.");
+    ImGui::SameLine();
+    if (ImGui::Button("Invert subject mask")) {
+        for (uint8_t &alpha : edit.importSubjectMask.alpha) {
+            alpha = static_cast<uint8_t>(255u - alpha);
+        }
+        changed = true;
+    }
+    ui::SpeakFocusedItem(
+        "Invert subject mask", nullptr,
+        "Inverts every retained mask alpha and can be undone without changing the source image.");
+    if (ImGui::Button("Reset mask to keep all")) {
+        if (std::any_of(edit.importSubjectMask.alpha.begin(),
+                        edit.importSubjectMask.alpha.end(),
+                        [](uint8_t alpha) { return alpha != 255u; })) {
+            edit.importSubjectMask.alpha.fill(255u);
+            changed = true;
+        }
+    }
+    ui::SpeakFocusedItem(
+        "Reset subject mask to keep all", nullptr,
+        "Restores every target pixel to the subject while leaving the mask enabled; Undo framing and mask restores the prior matte.");
+    ImGui::TextDisabled(
+        "%u / %zu pixels fully removed · mask is retained with the source recipe",
+        portraitSubjectMaskRemovedPixels(edit.importSubjectMask),
+        edit.importSubjectMask.alpha.size());
+    ui::TextSubtleWrapped(
+        "The mask is aligned to output pixels, so changing the crop keeps the same 40 × 40 matte. Review it after reframing, or reset it explicitly.");
+    return changed;
+}
+
 bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
                               CharacterIdentityEdit &edit) {
     bool changed = false;
@@ -8557,6 +8828,13 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
                 (edit.importImage.height - edit.importRecipe.cropSize) / 2u;
             edit.importRecipe.background =
                 CharacterPortraitImport::Background::Sky;
+            edit.importSubjectMask.enabled = true;
+            for (uint32_t y = 0u; y < 4u; ++y) {
+                for (uint32_t x = 0u; x < 4u; ++x) {
+                    edit.importSubjectMask.alpha[
+                        y * CharacterPortraitStudio::kSize + x] = 0u;
+                }
+            }
             (void)refreshPortraitImportPreview(edit);
             std::fprintf(
                 stderr,
@@ -8653,55 +8931,60 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
         edit.importImage.sha256.c_str());
     ui::TextSubtleWrapped(
         "Drag the highlighted square to move it; use the mouse wheel over the image to resize it. Exact numeric controls remain authoritative and keyboard accessible.");
-    const std::string framingBefore = portraitImportRecipePayload(
-        edit.importRecipe);
+    const std::string framingBefore = portraitImportStatePayload(edit);
     bool framingHistoryApplied = false;
     changed |= drawPortraitImportThumbnail(edit);
 
     const bool canUndoFraming =
         CharacterEditHistory::canUndo(edit.importHistory);
-    if (ImGui::Button("Undo framing") && canUndoFraming) {
+    if (ImGui::Button("Undo framing and mask") && canUndoFraming) {
         std::string target;
         CharacterPortraitImport::Recipe restored;
+        CharacterPortraitImport::SubjectMask restoredMask;
         if (CharacterEditHistory::undoTarget(edit.importHistory, target) &&
-            decodePortraitImportRecipe(target, edit.importImage, restored) &&
+            decodePortraitImportState(
+                target, edit.importImage, restored, restoredMask) &&
             CharacterEditHistory::commitUndo(
                 edit.importHistory, framingBefore)) {
             edit.importRecipe = restored;
+            edit.importSubjectMask = restoredMask;
             (void)refreshPortraitImportPreview(edit);
             framingHistoryApplied = true;
             changed = true;
         }
     }
     ui::SpeakFocusedItem(
-        "Undo portrait framing",
+        "Undo portrait framing and mask",
         CharacterEditHistory::canUndo(edit.importHistory)
             ? nullptr : "No earlier framing edit.",
-        "Restores the preceding crop, sampling, matte, and background recipe without changing the draft canvas.");
+        "Restores the preceding crop, sampling, edge matte, background, and freeform subject mask without changing the draft canvas.");
     ImGui::SameLine();
     const bool canRedoFraming =
         CharacterEditHistory::canRedo(edit.importHistory);
-    if (ImGui::Button("Redo framing") && canRedoFraming) {
+    if (ImGui::Button("Redo framing and mask") && canRedoFraming) {
         std::string target;
         CharacterPortraitImport::Recipe restored;
+        CharacterPortraitImport::SubjectMask restoredMask;
         if (CharacterEditHistory::redoTarget(edit.importHistory, target) &&
-            decodePortraitImportRecipe(target, edit.importImage, restored) &&
+            decodePortraitImportState(
+                target, edit.importImage, restored, restoredMask) &&
             CharacterEditHistory::commitRedo(
                 edit.importHistory, framingBefore)) {
             edit.importRecipe = restored;
+            edit.importSubjectMask = restoredMask;
             (void)refreshPortraitImportPreview(edit);
             framingHistoryApplied = true;
             changed = true;
         }
     }
     ui::SpeakFocusedItem(
-        "Redo portrait framing",
+        "Redo portrait framing and mask",
         CharacterEditHistory::canRedo(edit.importHistory)
             ? nullptr : "No later framing edit.",
-        "Reapplies the next crop, sampling, matte, and background recipe without changing the draft canvas.");
+        "Reapplies the next crop, sampling, edge matte, background, and freeform subject mask without changing the draft canvas.");
     if (!canUndoFraming && !canRedoFraming) {
         ImGui::SameLine();
-        ImGui::TextDisabled("No framing edits yet");
+        ImGui::TextDisabled("No framing or mask edits yet");
     }
 
     int cropOrigin[2] = {
@@ -8774,6 +9057,7 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
     ui::SpeakFocusedItem(
         "Background frame", backgroundNames[std::clamp(background, 0, 3)],
         "Project-owned background colours fill transparent or matte-removed pixels without altering opaque subject pixels.");
+    changed |= drawPortraitSubjectMask(edit);
     if (changed && !framingHistoryApplied) edit.importPreviewDirty = true;
     if (edit.importPreviewDirty && !ImGui::IsAnyItemActive()) {
         (void)refreshPortraitImportPreview(edit);
@@ -8818,7 +9102,7 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
     if (!framingHistoryApplied) {
         (void)CharacterEditHistory::observe(
             edit.importHistory, framingBefore,
-            portraitImportRecipePayload(edit.importRecipe),
+            portraitImportStatePayload(edit),
             ImGui::IsAnyItemActive());
     }
     if (std::getenv("MDKR_APP_UI_TRACE") != nullptr && entry != nullptr) {
@@ -8830,11 +9114,14 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
             std::to_string(edit.importRecipe.edgeMatteTolerance) + "," +
             std::to_string(static_cast<unsigned>(edit.importRecipe.sampling)) +
             "," + std::to_string(
-                static_cast<unsigned>(edit.importRecipe.background));
+                static_cast<unsigned>(edit.importRecipe.background)) +
+            "," + (edit.importSubjectMask.enabled ? "1" : "0") +
+            "," + std::to_string(
+                portraitSubjectMaskRemovedPixels(edit.importSubjectMask));
         if (g_characterPortraitSourceTraceKeys.insert(traceKey).second) {
             std::fprintf(
                 stderr,
-                "[app-ui] character-portrait-source package=%s kind=%s dimensions=%ux%u crop=%u,%u,%u sampling=%u matte=%u background=%u digest=%.12s\n",
+                "[app-ui] character-portrait-source package=%s kind=%s dimensions=%ux%u crop=%u,%u,%u sampling=%u matte=%u background=%u mask=%d removed=%u digest=%.12s\n",
                 entry->id,
                 edit.importFromExactRenderer ? "exact-renderer" : "local-png",
                 edit.importImage.width, edit.importImage.height,
@@ -8843,6 +9130,8 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
                 static_cast<unsigned>(edit.importRecipe.sampling),
                 edit.importRecipe.edgeMatteTolerance,
                 static_cast<unsigned>(edit.importRecipe.background),
+                edit.importSubjectMask.enabled ? 1 : 0,
+                portraitSubjectMaskRemovedPixels(edit.importSubjectMask),
                 edit.importImage.sha256.c_str());
         }
     }
@@ -9686,7 +9975,7 @@ bool captureCharacterHistoryPayload(
                 edit.portraitSourceRecord)) {
             return false;
         }
-        payload = "mdkr-identity-history-v3\n";
+        payload = "mdkr-identity-history-v4\n";
         payload.append(edit.displayName, sizeof(edit.displayName));
         payload.append(edit.shortName, sizeof(edit.shortName));
         payload.append(edit.narrationName, sizeof(edit.narrationName));
@@ -9738,6 +10027,13 @@ bool captureCharacterHistoryPayload(
         } else {
             payload += edit.portraitSourceRecord.sha256;
         }
+        const uint8_t maskEnabled =
+            edit.portraitSourceRecord.subjectMask.enabled ? 1u : 0u;
+        appendCharacterHistoryValue(payload, maskEnabled);
+        payload.append(
+            reinterpret_cast<const char *>(
+                edit.portraitSourceRecord.subjectMask.alpha.data()),
+            edit.portraitSourceRecord.subjectMask.alpha.size());
     } else if (tool == CharacterHistoryTool::Profile) {
         const CharacterProfileEdit &edit = loadCharacterProfileEdit(entry);
         payload = "mdkr-profile-history-v1\n";
@@ -9858,7 +10154,9 @@ bool applyCharacterHistoryPayload(
         return true;
     };
     if (tool == CharacterHistoryTool::Identity) {
-        const bool hasSourceRecord =
+        const bool hasSubjectMask =
+            consumeHeader("mdkr-identity-history-v4\n");
+        const bool hasSourceRecord = hasSubjectMask ||
             consumeHeader("mdkr-identity-history-v3\n");
         if (!hasSourceRecord &&
             !consumeHeader("mdkr-identity-history-v2\n")) {
@@ -9980,6 +10278,22 @@ bool applyCharacterHistoryPayload(
                 record.sha256.assign(payload.data() + offset, 64u);
             }
             offset += 64u;
+            if (hasSubjectMask) {
+                uint8_t maskEnabled;
+                if (!readCharacterHistoryValue(
+                        payload, offset, maskEnabled) || maskEnabled > 1u ||
+                    offset > payload.size() ||
+                    record.subjectMask.alpha.size() >
+                        payload.size() - offset) {
+                    error = "Identity portrait subject-mask history is invalid.";
+                    return false;
+                }
+                record.subjectMask.enabled = maskEnabled != 0u;
+                std::memcpy(
+                    record.subjectMask.alpha.data(), payload.data() + offset,
+                    record.subjectMask.alpha.size());
+                offset += record.subjectMask.alpha.size();
+            }
         }
         if (offset != payload.size() ||
             !CharacterPortraitStudio::validRecipe(replacement.styleRecipe) ||
@@ -10000,9 +10314,14 @@ bool applyCharacterHistoryPayload(
         replacement.strokeActive = false;
         replacement.importImage = CharacterPortraitImport::Image{};
         replacement.importThumbnail = CharacterPortraitImport::Thumbnail{};
+        replacement.importSubjectMask =
+            replacement.portraitSourceRecord.subjectMask;
+        replacement.importUnmaskedPreview =
+            CharacterPortraitStudio::Canvas{};
         replacement.importPreviewValid = false;
         replacement.importPreviewDirty = false;
         replacement.importFromExactRenderer = false;
+        replacement.importMaskStrokeActive = false;
         replacement.importError.clear();
         CharacterEditHistory::clear(replacement.importHistory);
         std::snprintf(replacement.importPath,
@@ -10637,6 +10956,7 @@ bool applyCharacterDraftSnapshot(
     identity.styleSource = snapshot.portraitStyleSource;
     identity.styleRecipe = snapshot.portraitRecipe;
     identity.portraitSourceRecord = snapshot.portraitSourceRecord;
+    identity.importSubjectMask = snapshot.portraitSourceRecord.subjectMask;
     refreshPortraitStylePreview(identity);
     identity.minimapRgb[0] = snapshot.minimapRgb[0] / 255.0f;
     identity.minimapRgb[1] = snapshot.minimapRgb[1] / 255.0f;

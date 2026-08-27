@@ -297,12 +297,25 @@ int main() {
     SourceRecord record = sourceRecord(
         wide, importRecipe, SourceKind::ExactRenderer);
     assert(validSourceRecord(record) && record.width == wide.width &&
-           record.sha256 == wide.sha256);
+           record.sha256 == wide.sha256 &&
+           !record.subjectMask.enabled &&
+           record.subjectMask.alpha[0] == 255u);
     record.recipe.cropX = wide.width;
     assert(!validSourceRecord(record));
     record = SourceRecord{};
     record.sha256 = std::string(64u, 'a');
     assert(!validSourceRecord(record));
+    SubjectMask noncanonicalDisabledMask;
+    noncanonicalDisabledMask.alpha[0] = 0u;
+    assert(validSubjectMask(noncanonicalDisabledMask));
+    record = sourceRecord(
+        wide, importRecipe, SourceKind::LocalPng,
+        noncanonicalDisabledMask);
+    assert(validSourceRecord(record) && !record.subjectMask.enabled &&
+           record.subjectMask.alpha[0] == 0u);
+    SourceRecord canvasWithHiddenMask;
+    canvasWithHiddenMask.subjectMask = noncanonicalDisabledMask;
+    assert(!validSourceRecord(canvasWithHiddenMask));
 
     Image keyed;
     keyed.width = keyed.height = 40u;
@@ -328,10 +341,29 @@ int main() {
     assert(pixel(imported, 0, 0)[3] == 0u &&
            pixel(imported, 20, 20)[0] == 230u &&
            pixel(imported, 20, 20)[3] == 255u);
+    SubjectMask subjectMask;
+    subjectMask.enabled = true;
+    subjectMask.alpha[20u * 40u + 20u] = 0u;
+    subjectMask.alpha[20u * 40u + 19u] = 128u;
+    assert(validSubjectMask(subjectMask) &&
+           render(keyed, importRecipe, subjectMask, imported, importError));
+    assert(pixel(imported, 20, 20)[0] == 0u &&
+           pixel(imported, 20, 20)[3] == 0u &&
+           pixel(imported, 19, 20)[0] == 230u &&
+           pixel(imported, 19, 20)[3] == 128u);
+    record = sourceRecord(
+        keyed, importRecipe, SourceKind::LocalPng, subjectMask);
+    assert(validSourceRecord(record) && record.subjectMask.enabled &&
+           record.subjectMask.alpha[20u * 40u + 20u] == 0u &&
+           record.subjectMask.alpha[20u * 40u + 19u] == 128u);
     importRecipe.background = Background::Sunset;
-    assert(render(keyed, importRecipe, imported, importError));
+    assert(render(keyed, importRecipe, subjectMask, imported, importError));
     assert(pixel(imported, 0, 0)[3] == 255u &&
-           pixel(imported, 0, 0)[0] != 20u);
+           pixel(imported, 0, 0)[0] != 20u &&
+           pixel(imported, 20, 20)[3] == 255u &&
+           pixel(imported, 20, 20)[0] != 230u &&
+           pixel(imported, 19, 20)[3] == 255u &&
+           pixel(imported, 19, 20)[0] != 230u);
     const Canvas beforeInvalid = imported;
     importRecipe.cropSize = 41u;
     assert(!render(keyed, importRecipe, imported, importError) &&

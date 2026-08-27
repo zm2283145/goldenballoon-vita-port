@@ -9,7 +9,9 @@
 
 namespace {
 
-constexpr uint32_t kVersion = 6u;
+constexpr uint32_t kPortraitSubjectMaskVersion = 7u;
+constexpr uint32_t kVersion = kPortraitSubjectMaskVersion;
+constexpr uint32_t kPortraitSourceVersion = 6u;
 constexpr uint32_t kVisualInspectionVersion = 5u;
 constexpr uint32_t kPoseInspectionVersion = 4u;
 constexpr uint32_t kPortraitStyleVersion = 3u;
@@ -29,8 +31,11 @@ constexpr size_t kPoseInspectionFixedBytes = kPortraitStyleFixedBytes + 8u;
 constexpr size_t kVisualInspectionFixedBytes =
     kPoseInspectionFixedBytes + 12u;
 constexpr size_t kPortraitSourceRecordBytes = 9u * 4u + 64u;
+constexpr size_t kPortraitSubjectMaskBytes =
+    4u + CharacterPortraitImport::kSubjectMaskPixels;
 constexpr size_t kFixedBytes =
-    kVisualInspectionFixedBytes + kPortraitSourceRecordBytes;
+    kVisualInspectionFixedBytes + kPortraitSourceRecordBytes +
+    kPortraitSubjectMaskBytes;
 constexpr size_t kMaximumPathBytes = 4095u;
 constexpr size_t kMaximumNameBytes = 96u;
 constexpr size_t kMaximumShortNameBytes = 96u;
@@ -397,6 +402,12 @@ bool encode(const Snapshot &snapshot, std::string &payload,
     } else {
         result += snapshot.portraitSourceRecord.sha256;
     }
+    appendU32(result,
+              snapshot.portraitSourceRecord.subjectMask.enabled ? 1u : 0u);
+    result.append(
+        reinterpret_cast<const char *>(
+            snapshot.portraitSourceRecord.subjectMask.alpha.data()),
+        snapshot.portraitSourceRecord.subjectMask.alpha.size());
     if (result.size() != kFixedBytes + 16u +
             snapshot.portraitSourcePath.size() + namesBytes) {
         error = "draft snapshot encoder size invariant failed";
@@ -419,7 +430,8 @@ bool decode(const std::string &payload, Snapshot &snapshot,
     if (payload.size() < kLegacyFixedBytes ||
         payload.compare(0u, 4u, "MDWD") != 0 ||
         !readU32(payload, offset, version) ||
-        (version != kVersion && version != kVisualInspectionVersion &&
+        (version != kVersion && version != kPortraitSourceVersion &&
+         version != kVisualInspectionVersion &&
          version != kPoseInspectionVersion &&
          version != kPortraitStyleVersion &&
          version != kNamesVersion &&
@@ -563,7 +575,7 @@ bool decode(const std::string &payload, Snapshot &snapshot,
         parsed.testViewYawDegrees = static_cast<int32_t>(yaw) - 180;
         parsed.testViewPitchDegrees = static_cast<int32_t>(pitch) - 45;
     }
-    if (version >= kVersion) {
+    if (version >= kPortraitSourceVersion) {
         uint32_t kind;
         uint32_t sampling;
         uint32_t background;
@@ -600,6 +612,19 @@ bool decode(const std::string &payload, Snapshot &snapshot,
                 payload.data() + offset, 64u);
         }
         offset += 64u;
+    }
+    if (version >= kPortraitSubjectMaskVersion) {
+        uint32_t enabled;
+        auto &mask = parsed.portraitSourceRecord.subjectMask;
+        if (!readU32(payload, offset, enabled) || enabled > 1u ||
+            offset > payload.size() ||
+            mask.alpha.size() > payload.size() - offset) {
+            goto malformed;
+        }
+        mask.enabled = enabled != 0u;
+        std::memcpy(mask.alpha.data(), payload.data() + offset,
+                    mask.alpha.size());
+        offset += mask.alpha.size();
     }
     if (offset != payload.size() ||
         !snapshotValid(parsed, error, version == kLegacyVersion)) return false;

@@ -80,6 +80,9 @@ int main() {
         CharacterPortraitImport::Sampling::Area;
     source.portraitSourceRecord.recipe.background =
         CharacterPortraitImport::Background::Charcoal;
+    source.portraitSourceRecord.subjectMask.enabled = true;
+    source.portraitSourceRecord.subjectMask.alpha[0] = 0u;
+    source.portraitSourceRecord.subjectMask.alpha[799] = 96u;
     source.portraitSourcePath = "/tmp/portrait-\xC2\xA9.png";
     source.displayName = "Dixie Kong";
     source.shortName = "Dixie";
@@ -129,6 +132,9 @@ int main() {
                parsed.portraitSourceRecord.recipe.edgeMatteTolerance == 12u &&
                parsed.portraitSourceRecord.recipe.background ==
                    CharacterPortraitImport::Background::Charcoal &&
+               parsed.portraitSourceRecord.subjectMask.enabled &&
+               parsed.portraitSourceRecord.subjectMask.alpha[0] == 0u &&
+               parsed.portraitSourceRecord.subjectMask.alpha[799] == 96u &&
                parsed.portraitSourcePath == source.portraitSourcePath &&
                parsed.displayName == source.displayName &&
                parsed.shortName == source.shortName &&
@@ -142,9 +148,25 @@ int main() {
     const size_t identityTailBytes = 16u + source.displayName.size() +
         source.shortName.size() + source.narrationName.size() +
         source.sortLabel.size();
+    constexpr size_t subjectMaskTailBytes =
+        4u + CharacterPortraitImport::kSubjectMaskPixels;
     constexpr size_t sourceRecordTailBytes = 9u * 4u + 64u;
-    std::string versionFive = encoded.substr(
-        0u, encoded.size() - sourceRecordTailBytes);
+    std::string versionSix = encoded.substr(
+        0u, encoded.size() - subjectMaskTailBytes);
+    writeU32(versionSix, 4u, 6u);
+    writeU32(versionSix, 8u,
+             static_cast<uint32_t>(versionSix.size()));
+    Snapshot versionSixParsed;
+    expect(decode(versionSix, versionSixParsed, error) &&
+               versionSixParsed.portraitSourceRecord.kind ==
+                   source.portraitSourceRecord.kind &&
+               !versionSixParsed.portraitSourceRecord.subjectMask.enabled &&
+               versionSixParsed.portraitSourceRecord.subjectMask.alpha[0] ==
+                   255u,
+           "version-six drafts retain source recipes and gain an all-keep subject mask");
+
+    std::string versionFive = versionSix.substr(
+        0u, versionSix.size() - sourceRecordTailBytes);
     writeU32(versionFive, 4u, 5u);
     writeU32(versionFive, 8u,
              static_cast<uint32_t>(versionFive.size()));
@@ -225,6 +247,11 @@ int main() {
     std::string trailing = encoded + "x";
     expect(!decode(trailing, parsed, error),
            "trailing payload bytes are rejected");
+    std::string badMaskEnabled = encoded;
+    writeU32(badMaskEnabled,
+             badMaskEnabled.size() - subjectMaskTailBytes, 2u);
+    expect(!decode(badMaskEnabled, parsed, error),
+           "subject-mask enabled state is strictly bounded");
     std::string badReserved = encoded;
     badReserved[27] = 1;
     expect(!decode(badReserved, parsed, error),
