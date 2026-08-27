@@ -1336,6 +1336,7 @@ static int s_dumpFrom = -2;
 static int s_dumpEvery = 1;
 static int s_frameCapturePending;
 static int s_frameCaptureModernCharacter;
+static int s_frameCaptureAutoReturnReady;
 static char s_frameCapturePath[1024];
 static MdkrModernCharacterCaptureProjection
     s_modernCharacterCaptureProjection;
@@ -1720,12 +1721,16 @@ static void platform_dump_frame(void) {
          * present thread (counted, reported at CAPTURE-STOP/drain). */
         free(pix);
     } else if (oneShot) {
+        const char *auto_return = getenv(
+            "MDKR_CHARACTER_WORKSHOP_CAPTURE_AUTO_RETURN");
         if (modern_character) {
             s_modernCharacterCaptureProjection = captureProjection;
             s_modernCharacterCaptureProjectionValid = 1;
         }
         s_frameCapturePending = 0;
         s_frameCaptureModernCharacter = 0;
+        s_frameCaptureAutoReturnReady =
+            auto_return != NULL && strcmp(auto_return, "1") == 0;
         s_frameCapturePath[0] = '\0';
         fprintf(stderr,
                 "[WORKSHOP-CAPTURE] queued frame=%d kind=%s channels=%d path=%s\n",
@@ -5876,6 +5881,13 @@ static void platform_frame_sync_impl(int swap, int count_present) {
         return;
     }
     g_frameCounter++;
+    if (s_frameCaptureAutoReturnReady) {
+        s_frameCaptureAutoReturnReady = 0;
+        fprintf(stderr,
+                "[WORKSHOP-CAPTURE] auto-return after presented frame=%d\n",
+                g_frameCounter);
+        platform_request_exit(0);
+    }
     MDKR_TRACE("frame %d presented", g_frameCounter);
     {
         extern void mdkr_oracle_trace_racers(int frame);
@@ -6416,6 +6428,7 @@ int platform_engine_session_begin(void) {
     s_dumpEvery = 1;
     s_frameCapturePending = 0;
     s_frameCaptureModernCharacter = 0;
+    s_frameCaptureAutoReturnReady = 0;
     s_frameCapturePath[0] = '\0';
     memset(&s_modernCharacterCaptureProjection, 0,
            sizeof(s_modernCharacterCaptureProjection));

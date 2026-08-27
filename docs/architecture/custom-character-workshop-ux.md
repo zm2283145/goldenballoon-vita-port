@@ -432,8 +432,15 @@ Offset Studio is separate from Gameplay profile selection: choosing simulation
 authority and fitting presentation are distinct user jobs. With a verified ROM,
 each context launches the real donor, vehicle, animation, camera, and scene
 through ordinary engine initialization, even while the package remains disabled
-for normal play. The task order is deliberately linear: preview, apply the
-measured starting point, fine-tune, inspect exact evidence, then review. The
+for normal play. Offset Studio can also request a create-only composed still
+directly without asking for a filename: it saves the current fit into a bounded
+launcher-owned cache slot, holds a representative semantic at its
+midpoint, waits for warm-up plus twelve fully rendered frames, queues the PNG,
+presents that captured frame, and returns automatically to the same context.
+The digest-bound result appears inline with the fit evidence; changing the
+source or fit makes it ineligible instead of showing stale pixels. The task
+order is deliberately linear: preview, apply the measured starting point,
+fine-tune, inspect exact evidence, then review. The
 returned source-and-fit-bound measurement can propose a preview-only
 vertical/facing starting point. Selection targets the exact floor;
 vehicle proposals retain a conservative lower-body envelope below the donor
@@ -522,7 +529,7 @@ without affecting item or collision logic.
 
 ## Test workspace
 
-The embedded exact-renderer preview supplies deterministic presets:
+The exact-renderer inspection workflow supplies deterministic presets:
 
 - select idle/hover/confirm;
 - car/hovercraft/plane at rest, steer extrema, boost, damage, airborne/land,
@@ -589,6 +596,32 @@ last known-good assembly remains available if an update fails.
 | Packaging/update/removal | Mutation-free review plus package/base-bound transactional install/update, responsive installed-versus-candidate diff, reversible runtime disable, authenticated revision restore/source export, current-compiler portable export, transactional current-source rebuild, and recoverability-aware deletion are executable. Every external compiler/manager operation and both portable/source-only reviewed installs acknowledge immediately and complete off the UI thread; the selected package/tab and playable last-known-good character remain stable until publication. Portable publication refuses overwrite and does not mutate installed state; rebuild preserves enabled state and the last known-good cache on failure. Named full-editor snapshots are bounded, authenticated, atomically persisted, independently resumable/deletable, exact-base locked, and autosaved. A combined optimistic build publishes portrait/profile/rig as one retained revision; launcher-owned fit is separately disclosed and confirmed. Permanent removal writes an `armed`/`retired` AppConfig cleanup journal around the native quarantine transaction and idempotently reconciles preferences, named drafts, and exact-test evidence on rescan/launch, so cross-store cleanup is durable across a crash. A dedicated responsive launcher destination now owns a persistent library rail, eight editor tabs (including distinct Gameplay and Offset Studio jobs), named readiness rows, a deterministic best-next-action resolver, persisted package/tab selection, safe DAE/ZIP-to-GLB handoff, a multi-draft pre-package GLB authoring library, and independent bounded history for Identity, Profile, Rig, Fit/review, Performance, and Test setup; Settings retains its shortcut and assignment summary. | Add bulk draft export/import after the portable-package sharing contract is finalized |
 | Accessibility | Dedicated panel/tab/library/import/assignment controls carry spoken names, textual status, keyboard/controller navigation, and a narrow single-column fallback. Spatial placement/yaw/contact canvases expose spoken values plus adjacent navigable nudge/reset and exact numeric controls, and reflow instead of forcing a wide canvas. The exact-test matrix, baseline/destructive controls, held/transition mode, A/B semantic and phase controls, held presets, camera presets/sliders, character light, capture-disabled explanation, capture tray, report export/removal actions, and all four responsive inspection actions carry spoken labels and textual state; the surrounding Workshop has rendered 200% keyboard/speech lifecycle gates. Shared cards flatten keyboard navigation so nested actions remain reachable. | Qualify remaining freeform editor gestures and the complete Animation Studio traversal with observed controller/screen-reader review |
 
+### Open release-tail defects
+
+These are explicit product gaps, not implied capabilities or unanswered user
+stories. Each has an owner in the audit above and must retain its stated gate:
+
+1. A continuously embedded, interactive exact renderer still requires an
+   incremental engine-scene service; the current inline still is exact and
+   automatic, but intentionally not described as live.
+2. Depth/containment, donor-reference occlusion, attachments, representative
+   course/vehicle/motion conditions, and unusual-proportion fixtures need
+   qualified evidence contracts before the Workshop can diagnose them.
+3. Richer reference motion, joint-limit inspection, and full controller plus
+   screen-reader traversal of Animation Studio/freeform gestures remain.
+4. Localization-aware game-font shaping is still needed beyond the disclosed
+   deterministic unsupported-codepoint fallback.
+5. The device-profile corpus, projected-size LOD thresholds/hysteresis, and an
+   optional offline simplification workflow remain performance follow-up.
+6. Bulk draft transfer remains downstream of a finalized portable sharing
+   contract; third-party format adapters remain outside the trusted runtime
+   until sandbox, signature, and update policy are explicit.
+7. Any future character-indexed game surface must still declare package,
+   donor, or scene ownership; the current audited surfaces are complete, not a
+   license to infer ownership for new code.
+8. Custom physics remains a separate opt-in, hashed multiplayer system and is
+   not part of a visual package or this release spike.
+
 The secure-import baseline now preflights every GLB buffer, buffer view, and
 accessor for exact bounds, alignment, stride, type, count, and consumed binary
 facts before source height, anchoring, animation, skinning, or compiler byte
@@ -636,7 +669,12 @@ model-only stabilized PNG products, and self-contained schema-v3 qualification
 contact sheets are implemented through the exact renderer. Test captures hand
 directly to bounded Portrait Studio crop, edge matte, freeform subject mask,
 background, style, six-treatment comparison, readability proof, and pixel
-stages. An embedded renderer and localization-aware game-font shaping remain.
+stages. Offset Studio now offers a create-only inline exact still and returns
+automatically after its presented stabilized capture. Its one hashed cache
+slot per package/context is removed with the report entry or package and is
+reconciled on the next launcher start; explicit Test exports remain user-owned
+documents. A continuously embedded
+renderer and localization-aware game-font shaping remain.
 The launcher-owned Test
 workspace now exposes every supported select/race semantic plus a normalized
 phase scrubber. Its typed request survives ROM revalidation, is applied inside

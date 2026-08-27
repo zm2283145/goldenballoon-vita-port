@@ -330,6 +330,20 @@ def main() -> int:
                 root,
                 characters,
                 (
+                    "character-offset-studio package=" + PACKAGE_ID
+                    + " contexts=select,car,hovercraft,plane guided-fit=1 "
+                    "workflow=preview,measure,fine-tune,evidence,review "
+                    "exact-rom-preview=1 "
+                    "inline-exact-still=managed-cache,scene-held-midpoint-auto-return",
+                ),
+                tab="vehicles",
+            )
+
+            run(
+                binary,
+                root,
+                characters,
+                (
                     "character-fit-reference package=" + PACKAGE_ID
                     + " context=2 source-fit-context=current plane=-1 "
                     "planeMatch=0 product=model-alpha "

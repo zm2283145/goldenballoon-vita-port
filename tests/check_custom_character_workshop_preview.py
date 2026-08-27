@@ -447,6 +447,14 @@ def main() -> int:
                     product_capture_path
                 )
                 env["MDKR_CHARACTER_WORKSHOP_CAPTURE_KIND"] = capture_kind
+            auto_return = (
+                context == "car" and players == 1
+                and pose == "select.idle" and pose_phase == "500"
+                and view_yaw == 180 and view_pitch == 15
+                and lighting == "bright" and capture_kind == "scene"
+            )
+            if auto_return:
+                env["MDKR_CHARACTER_WORKSHOP_CAPTURE_AUTO_RETURN"] = "1"
             run_frames = (
                 PRODUCT_CAPTURE_FRAMES if capture_kind is not None else FRAMES
             )
@@ -510,6 +518,15 @@ def main() -> int:
                     failures.append(
                         f"{label} did not prove camera and character-light application"
                     )
+                if auto_return and (
+                    "[WORKSHOP-CAPTURE] auto-return after presented frame="
+                    not in arm_output
+                    or "[SDL] headless: reached" in arm_output
+                ):
+                    failures.append(
+                        f"{label} did not return immediately after its "
+                        "presented stabilized capture"
+                    )
                 armed_match = re.search(
                     rf"character_workshop_capture: armed kind={capture_kind} "
                     r"stableFrames=(\d+) "
@@ -553,8 +570,15 @@ def main() -> int:
             else:
                 warmup, realtime, samples, replacements = map(
                     int, result_match.groups())
-                if warmup != 1 or realtime != 0 or samples < 40:
-                    failures.append(f"{label} result did not isolate a synthetic post-warmup sample")
+                minimum_samples = 12 if auto_return else 40
+                if (
+                    warmup != 1 or realtime != 0
+                    or samples < minimum_samples
+                ):
+                    failures.append(
+                        f"{label} result did not isolate its synthetic "
+                        "post-warmup capture/performance sample"
+                    )
                 if replacements <= 0:
                     failures.append(f"{label} result counted no package replacements")
             gpu_match = re.search(

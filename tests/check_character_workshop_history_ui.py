@@ -222,6 +222,7 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
             "guided-fit=1 "
             "workflow=preview,measure,fine-tune,evidence,review "
             "exact-rom-preview=1 "
+            "inline-exact-still=managed-cache,scene-held-midpoint-auto-return "
             "compact-preview=1 "
             "disabled-package-preview=1 "
             "measured-starting-point=vertical-and-facing "
@@ -254,6 +255,7 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
         ]
         if rom is not None:
             spoken_controls.append("text=Open exact Character select preview")
+            spoken_controls.append("text=Capture exact still")
         for spoken in spoken_controls:
             if spoken not in process.stdout:
                 raise RuntimeError(

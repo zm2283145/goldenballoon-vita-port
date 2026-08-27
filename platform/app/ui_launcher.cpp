@@ -128,6 +128,8 @@ void fillBootConfig(LauncherState &state, MdkrBootConfig &boot) {
                 ? nullptr : state.characterPreviewCapturePng.c_str();
         boot.character_preview_capture_kind =
             state.characterPreviewCaptureKind;
+        boot.character_preview_auto_return =
+            state.characterPreviewAutoReturn ? 1 : 0;
         state.characterPreviewResult = MdkrCharacterPreviewResult{};
         boot.character_preview_result = &state.characterPreviewResult;
     }
@@ -1007,6 +1009,9 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
         s.characterPreviewLighting = preview.lighting;
         s.characterPreviewCapturePng = std::move(preview.capturePng);
         s.characterPreviewCaptureKind = preview.captureKind;
+        s.characterPreviewAutoReturn = preview.autoReturnAfterCapture;
+        s.characterPreviewCaptureLauncherOwned =
+            preview.launcherOwnedCapture;
         Launcher_requestTab(s, kLauncherPanelPlay, kLauncherTabPlayer);
     }
     ui::TouchScrollCurrentWindow();
@@ -1049,6 +1054,9 @@ void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out) {
         s.characterPreviewLighting = preview.lighting;
         s.characterPreviewCapturePng = std::move(preview.capturePng);
         s.characterPreviewCaptureKind = preview.captureKind;
+        s.characterPreviewAutoReturn = preview.autoReturnAfterCapture;
+        s.characterPreviewCaptureLauncherOwned =
+            preview.launcherOwnedCapture;
         Launcher_requestTab(s, kLauncherPanelPlay, kLauncherTabPlayer);
     }
 }
@@ -1089,6 +1097,7 @@ LauncherAction Launcher::draw(AppHost &host) {
             state_.characterPreviewFitSha256,
             state_.characterPreviewPresentationSha256,
             state_.characterPreviewCapturePng,
+            state_.characterPreviewCaptureLauncherOwned,
             state_.characterPreviewResult);
         Launcher_requestTab(
             state_, kLauncherPanelCharacterWorkshop, kLauncherTabPlayer);
@@ -1110,6 +1119,8 @@ LauncherAction Launcher::draw(AppHost &host) {
         state_.characterPreviewCapturePng.clear();
         state_.characterPreviewCaptureKind =
             MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+        state_.characterPreviewAutoReturn = false;
+        state_.characterPreviewCaptureLauncherOwned = false;
         state_.characterPreviewDispatched = false;
     }
     state_.hostWindow = host.window();

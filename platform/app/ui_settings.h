@@ -37,6 +37,8 @@ struct SettingsCharacterPreviewRequest {
     std::string capturePng;
     MdkrCharacterPreviewCaptureKind captureKind =
         MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+    bool autoReturnAfterCapture = false;
+    bool launcherOwnedCapture = false;
 };
 
 // Draw the settings sections (one per MdkrVideoCategory) inside the current
@@ -84,6 +86,7 @@ void Settings_publishCharacterPreviewResult(
     const std::string &fitSha256,
     const std::string &presentationSha256,
     const std::string &capturePng,
+    bool launcherOwnedCapture,
     const MdkrCharacterPreviewResult &result);
 
 // Discard any in-progress audible Audio slider preview. Used when navigation

@@ -114,6 +114,8 @@ struct LauncherState {
     std::string characterPreviewCapturePng;
     MdkrCharacterPreviewCaptureKind characterPreviewCaptureKind =
         MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+    bool characterPreviewAutoReturn = false;
+    bool characterPreviewCaptureLauncherOwned = false;
     bool characterPreviewDispatched = false;
     MdkrCharacterPreviewResult characterPreviewResult{};
     // No discovery state: the launcher never searches the disk. The ROM arrives

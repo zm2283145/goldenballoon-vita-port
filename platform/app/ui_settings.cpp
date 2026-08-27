@@ -12,6 +12,7 @@
 #include "character_failure_index.h"
 #include "character_portrait_import.h"
 #include "character_portrait_studio.h"
+#include "character_preview_cache.h"
 #include "character_raw_draft_store.h"
 #include "character_raw_intake_index.h"
 #include "character_revision_index.h"
@@ -1851,6 +1852,7 @@ bool drawContentSection(SDL_Window *window, bool compact,
 MdkrModernCharacterRegistry g_characterRegistry{};
 bool g_characterRegistryLoaded = false;
 bool g_characterRegistryInventoryAvailable = false;
+std::string g_characterPreviewCacheReconciledDirectory;
 std::string g_characterRegistryDirectory;
 char g_characterImportPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
 char g_characterConversionOutputPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
@@ -2256,6 +2258,7 @@ struct CharacterPreviewSessionResult {
     std::string fitSha256;
     std::string presentationSha256;
     std::string capturePng;
+    bool launcherOwnedCapture = false;
 };
 std::map<std::string, CharacterPreviewSessionResult>
     g_characterPreviewResults;
@@ -3392,6 +3395,64 @@ std::string characterDigestHex(const uint8_t digest[32]) {
         text[index * 2u + 1u] = digits[digest[index] & 0xFu];
     }
     return text;
+}
+
+bool characterPreviewCacheDirectory(std::string &directory) {
+    char path[MDKR_MODERN_CHARACTER_PATH_MAX];
+    if (!mdkr_user_characters_directory(path, sizeof(path))) return false;
+    directory = path;
+    return !directory.empty();
+}
+
+bool prepareInlineCharacterCapture(
+    const MdkrModernCharacterEntry *entry,
+    MdkrCharacterPreviewContext context,
+    std::string &capturePath) {
+    std::string directory;
+    std::string error;
+    if (entry == nullptr ||
+        context < MDKR_CHARACTER_PREVIEW_SELECT ||
+        context > MDKR_CHARACTER_PREVIEW_PLANE ||
+        !characterPreviewCacheDirectory(directory) ||
+        !CharacterPreviewCache::prepare(
+            directory, entry->id, static_cast<uint32_t>(context),
+            capturePath, error)) {
+        setStatus(
+            error.empty()
+                ? "The launcher could not resolve its bounded local preview cache."
+                : error.c_str(),
+            AppTheme::bad());
+        return false;
+    }
+    auto captures = g_characterVisualCaptures.find(entry->id);
+    if (captures != g_characterVisualCaptures.end()) {
+        captures->second.erase(
+            std::remove_if(
+                captures->second.begin(), captures->second.end(),
+                [&](const CharacterVisualReport::Capture &capture) {
+                    if (capture.pngPath != capturePath) return false;
+                    g_characterCaptureThumbnails[entry->id].erase(
+                        capture.pngSha256);
+                    return true;
+                }),
+            captures->second.end());
+    }
+    return true;
+}
+
+bool characterCaptureIsLauncherOwned(
+    const std::string &packageId, const std::string &capturePath) {
+    std::string directory;
+    return characterPreviewCacheDirectory(directory) &&
+        CharacterPreviewCache::owns(
+            directory, packageId, capturePath);
+}
+
+void removeLauncherOwnedCharacterCaptures(const std::string &packageId) {
+    std::string directory;
+    if (characterPreviewCacheDirectory(directory)) {
+        CharacterPreviewCache::removePackage(directory, packageId);
+    }
 }
 
 bool characterDigestTextValid(const std::string &digest) {
@@ -4548,6 +4609,7 @@ bool setCharacterPackageEnabled(const std::string &id, bool enabled) {
 
 AppConfig::PersistResult forgetCharacterPackagePreferences(
     const std::string &id) {
+    removeLauncherOwnedCharacterCaptures(id);
     for (int slot = 0; slot < 4; ++slot) {
         const std::string slotKey = "custom_character_p" +
             std::to_string(slot + 1);
@@ -4785,6 +4847,10 @@ void refreshCharacterRegistry() {
     g_characterRegistryDirectory.clear();
     g_characterRegistryInventoryAvailable = false;
     if (mdkr_user_characters_directory(directory, sizeof(directory))) {
+        if (g_characterPreviewCacheReconciledDirectory != directory &&
+            CharacterPreviewCache::removeAll(directory)) {
+            g_characterPreviewCacheReconciledDirectory = directory;
+        }
         g_characterRegistryDirectory = directory;
         g_characterRegistryInventoryAvailable =
             mdkr_modern_character_registry_init_inventory(
@@ -5726,7 +5792,9 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                                  MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE,
                              MdkrCharacterPreviewPose transitionFromPose =
                                  MDKR_CHARACTER_PREVIEW_POSE_LIVE,
-                             unsigned transitionFromPhaseMilli = 0u);
+                             unsigned transitionFromPhaseMilli = 0u,
+                             bool autoReturnAfterCapture = false,
+                             bool launcherOwnedCapture = false);
 
 bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                             bool compact) {
@@ -7599,7 +7667,7 @@ bool drawCharacterTuningEditor(int player,
             entry->id);
         std::fprintf(
             stderr,
-            "[app-ui] character-offset-studio package=%s contexts=select,car,hovercraft,plane guided-fit=1 workflow=preview,measure,fine-tune,evidence,review exact-rom-preview=1 compact-preview=1 disabled-package-preview=1 measured-starting-point=vertical-and-facing quality-bands=datum,facing,proportions camera-occlusion=exact-visual-only reset=package-anchor review=current-source-and-fit\n",
+            "[app-ui] character-offset-studio package=%s contexts=select,car,hovercraft,plane guided-fit=1 workflow=preview,measure,fine-tune,evidence,review exact-rom-preview=1 inline-exact-still=managed-cache,scene-held-midpoint-auto-return compact-preview=1 disabled-package-preview=1 measured-starting-point=vertical-and-facing quality-bands=datum,facing,proportions camera-occlusion=exact-visual-only reset=package-anchor review=current-source-and-fit\n",
             entry->id);
     }
 
@@ -7830,6 +7898,40 @@ bool drawCharacterTuningEditor(int player,
                 testPlayers);
             const MdkrCharacterPreviewContext previewContext =
                 previewContexts[context];
+            {
+                const char *inlineCaptureLabel = "Capture exact still";
+                if (!exactPreviewReady) ImGui::BeginDisabled();
+                if (ImGui::Button(inlineCaptureLabel,
+                                  ui::kBtnSecondary()) && exactPreviewReady) {
+                    std::string capturePath;
+                    if (persistCharacterTuning(entry->id, edit) &&
+                        prepareInlineCharacterCapture(
+                            entry, previewContext, capturePath)) {
+                        requestCharacterPreview(
+                            entry, previewContext, testPlayers,
+                            context == MDKR_CHARACTER_CONTEXT_SELECT
+                                ? MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE
+                                : MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER,
+                            500u, 0, 0,
+                            MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
+                            capturePath.c_str(),
+                            MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE,
+                            MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u,
+                            true, true);
+                    }
+                }
+                if (!exactPreviewReady) ImGui::EndDisabled();
+                ui::SpeakFocusedItem(
+                    inlineCaptureLabel,
+                    exactPreviewReady
+                        ? "Ready; saves the current fit before capture."
+                        : "Unavailable until a supported base ROM is linked and verified on Play.",
+                    "Renders one stabilized current-context frame with the exact game assets into a bounded launcher-owned cache, then returns automatically to this Offset Studio context. The digest-bound still appears with the exact evidence below; no filename is required.");
+                if (!compact && ImGui::GetContentRegionAvail().x >= 360.0f) {
+                    ImGui::SameLine();
+                }
+                ImGui::TextDisabled("held midpoint · neutral gameplay light");
+            }
             CharacterFitEvidenceSnapshot fitEvidence =
                 currentCharacterFitEvidenceSnapshot(
                     entry, edit, previewContext);
@@ -8676,7 +8778,9 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              const char *capturePng,
                              MdkrCharacterPreviewCaptureKind captureKind,
                              MdkrCharacterPreviewPose transitionFromPose,
-                             unsigned transitionFromPhaseMilli) {
+                             unsigned transitionFromPhaseMilli,
+                             bool autoReturnAfterCapture,
+                             bool launcherOwnedCapture) {
     const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
     const std::string testTuningSignature = characterTestTuningSignature(
         entry, tuning, static_cast<unsigned>(context - 1));
@@ -8707,6 +8811,8 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
         captureKind >= MDKR_CHARACTER_PREVIEW_CAPTURE_COUNT ||
         (!capture && captureKind !=
              MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE) ||
+        (autoReturnAfterCapture && !capture) ||
+        (launcherOwnedCapture && (!autoReturnAfterCapture || !capture)) ||
         (transition && capture) ||
         (!inspection && (viewYawDegrees != 0 || viewPitchDegrees != 0 ||
                          lighting !=
@@ -8764,6 +8870,10 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
     if (capture) g_characterPreviewRequest.capturePng = capturePng;
     g_characterPreviewRequest.captureKind = capture
         ? captureKind : MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+    g_characterPreviewRequest.autoReturnAfterCapture =
+        autoReturnAfterCapture;
+    g_characterPreviewRequest.launcherOwnedCapture =
+        launcherOwnedCapture;
     g_characterPreviewRequested = true;
     setStatus(
         pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
@@ -8771,7 +8881,9 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
             : transition
                 ? "Checking the selected ROM, then opening the exact game context with a repeating A-to-B semantic transition."
             : capture
-                ? "Checking the selected ROM, then opening the held inspection pose and saving one stabilized PNG."
+                ? autoReturnAfterCapture
+                    ? "Checking the selected ROM, then capturing one stabilized exact-renderer frame and returning automatically."
+                    : "Checking the selected ROM, then opening the held inspection pose and saving one stabilized PNG."
                 : "Checking the selected ROM, then opening the exact game context with the inspection pose held.",
         AppTheme::good());
 }
@@ -10129,11 +10241,19 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
             if (result.capture_written) {
                 ImGui::TextColored(
                     AppTheme::good(),
-                    "PNG saved  •  %llu bytes  •  %llu stable frames",
+                    "%s  •  %llu bytes  •  %llu stable frames",
+                    found->second.launcherOwnedCapture
+                        ? "Inline exact still ready"
+                        : "PNG saved",
                     result.capture_png_bytes,
                     result.capture_stable_frames);
-                ui::TextSubtleUnformattedWrapped(
-                    found->second.capturePng.c_str());
+                if (found->second.launcherOwnedCapture) {
+                    ui::TextSubtleWrapped(
+                        "Temporary launcher-owned cache; use the inline evidence or visual report actions below.");
+                } else {
+                    ui::TextSubtleUnformattedWrapped(
+                        found->second.capturePng.c_str());
+                }
             } else if (!result.capture_armed) {
                 ImGui::TextColored(
                     AppTheme::accent(),
@@ -11010,13 +11130,15 @@ void drawCharacterVisualCaptureTray(
     ImGui::Text("%zu captured %s in this Workshop session",
                 captures.size(), captures.size() == 1u ? "view" : "views");
     ui::TextSubtleWrapped(
-        "The list is session-only metadata. Its PNG files are independent local documents; removing an entry or closing the Workshop never deletes them.");
+        "Explicit Test exports are independent local documents. Offset Studio exact stills use a bounded launcher-owned cache and are removed with their entry, package, or on the next launcher start.");
 
     const size_t shown = std::min<size_t>(captures.size(), 8u);
     size_t removeIndex = captures.size();
     for (size_t row = 0u; row < shown; ++row) {
         const size_t index = captures.size() - 1u - row;
         const CharacterVisualReport::Capture &capture = captures[index];
+        const bool launcherOwned = characterCaptureIsLauncherOwned(
+            entry->id, capture.pngPath);
         ImGui::PushID(static_cast<int>(index));
         if (ui::CardBegin("##character-visual-capture", AppTheme::surface(),
                           0.0f)) {
@@ -11037,7 +11159,12 @@ void drawCharacterVisualCaptureTray(
                                 capture.fitSha256.c_str(),
                                 capture.pngSha256.c_str());
             drawCharacterCaptureThumbnail(entry, capture);
-            ui::TextSubtleUnformattedWrapped(capture.pngPath.c_str());
+            if (launcherOwned) {
+                ui::TextSubtleUnformattedWrapped(
+                    "Inline preview cache · temporary local file");
+            } else {
+                ui::TextSubtleUnformattedWrapped(capture.pngPath.c_str());
+            }
             if (ImGui::Button("Use for portrait")) {
                 std::string captureError;
                 if (CharacterVisualReport::validateBoundPng(
@@ -11059,12 +11186,16 @@ void drawCharacterVisualCaptureTray(
             }
             ui::SpeakFocusedItem(
                 "Use capture for portrait", nullptr,
-                "Opens Portrait Studio with this exact stabilized PNG as a reversible local source. The capture file is not changed or deleted.");
+                launcherOwned
+                    ? "Opens Portrait Studio with this exact stabilized still as a reversible local source. Apply or save the portrait before refreshing or removing this inline still."
+                    : "Opens Portrait Studio with this exact stabilized PNG as a reversible local source. The capture file is not changed or deleted.");
             ImGui::SameLine();
             if (ImGui::Button("Remove from report")) removeIndex = index;
             ui::SpeakFocusedItem(
                 "Remove from report", nullptr,
-                "Removes only this session's report entry. The PNG file remains untouched.");
+                launcherOwned
+                    ? "Removes this session entry and its launcher-owned temporary PNG."
+                    : "Removes only this session's report entry. The PNG file remains untouched.");
             ui::CardEnd();
         } else {
             ui::CardEnd();
@@ -11077,12 +11208,28 @@ void drawCharacterVisualCaptureTray(
             captures.size() - shown);
     }
     if (removeIndex < captures.size()) {
+        const bool launcherOwned = characterCaptureIsLauncherOwned(
+            entry->id, captures[removeIndex].pngPath);
+        if (launcherOwned) {
+            std::string directory;
+            if (!characterPreviewCacheDirectory(directory) ||
+                !CharacterPreviewCache::removeOwnedPath(
+                    directory, entry->id,
+                    captures[removeIndex].pngPath)) {
+                setStatus(
+                    "The inline preview cache file could not be removed safely; its entry was preserved so cleanup can be retried.",
+                    AppTheme::bad());
+                return;
+            }
+        }
         g_characterCaptureThumbnails[entry->id].erase(
             captures[removeIndex].pngSha256);
         captures.erase(captures.begin() +
                        static_cast<std::ptrdiff_t>(removeIndex));
         setStatus(
-            "Capture removed from the session report; its PNG file was not deleted.",
+            launcherOwned
+                ? "Inline still and its launcher-owned cache file removed."
+                : "Capture removed from the session report; its PNG file was not deleted.",
             AppTheme::subtle());
     }
 
@@ -11816,12 +11963,13 @@ void drawCharacterTestEvidenceMatrix(
                         Settings_publishCharacterPreviewResult(
                             entry->id, source,
                             characterTestTuningSignature(entry, tuning, context),
-                            presentation, std::string(), cell);
+                            presentation, std::string(), false, cell);
                     }
                 }
             } else {
                 Settings_publishCharacterPreviewResult(
-                    entry->id, source, fit, presentation, capturePath, result);
+                    entry->id, source, fit, presentation, capturePath, false,
+                    result);
             }
             const auto session = g_characterPreviewResults.find(entry->id);
             const CharacterTestEvidenceStore::Evidence *latest =
@@ -20370,12 +20518,15 @@ void Settings_publishCharacterPreviewResult(
     const std::string &fitSha256,
     const std::string &presentationSha256,
     const std::string &capturePng,
+    bool launcherOwnedCapture,
     const MdkrCharacterPreviewResult &result) {
     if (packageId.empty()) return;
     g_characterPreviewResults[packageId] = CharacterPreviewSessionResult{
         result, sourceSha256, fitSha256, presentationSha256, capturePng,
+        launcherOwnedCapture,
     };
     if (result.pose != MDKR_CHARACTER_PREVIEW_POSE_LIVE) {
+        bool launcherCaptureRetained = false;
         const CharacterInspectionPose *pose =
             characterInspectionPose(result.pose);
         const CharacterInspectionLighting *lighting =
@@ -20401,6 +20552,8 @@ void Settings_publishCharacterPreviewResult(
                     MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES &&
                 result.capture_png_bytes != 0u &&
                 !capturePng.empty() && pose != nullptr && lighting != nullptr &&
+                (!launcherOwnedCapture ||
+                 characterCaptureIsLauncherOwned(packageId, capturePng)) &&
                 result.context >= MDKR_CHARACTER_PREVIEW_SELECT &&
                 result.context <= MDKR_CHARACTER_PREVIEW_PLANE &&
                 result.players >= 1 && result.players <= 4 &&
@@ -20510,21 +20663,37 @@ void Settings_publishCharacterPreviewResult(
                 if (CharacterVisualReport::bindPng(
                         capture, captureError)) {
                     captures.push_back(std::move(capture));
+                    launcherCaptureRetained = launcherOwnedCapture;
                     setStatus(
-                        "Inspection PNG saved, digest-bound, and added to the visual report tray.",
+                        launcherOwnedCapture
+                            ? "Exact still captured, digest-bound, and returned inline."
+                            : "Inspection PNG saved, digest-bound, and added to the visual report tray.",
                         AppTheme::good());
                 } else {
                     setStatus(
-                        ("The PNG was saved, but it could not enter the session tray: " +
+                        ((launcherOwnedCapture
+                              ? "The inline still was discarded because it could not be validated: "
+                              : "The PNG was saved, but it could not enter the session tray: ") +
                          captureError).c_str(),
                         AppTheme::accent());
                 }
             } else if (!alreadyListed) {
                 setStatus(
-                    recordValid
-                        ? "The PNG was saved, but the session report reached its safety capacity; export or clear the tray before capturing more."
-                        : "The PNG was saved, but inconsistent inspection metadata prevented adding it to the report tray.",
+                    launcherOwnedCapture
+                        ? recordValid
+                            ? "The inline still was discarded because the session report is full; export or clear the tray before trying again."
+                            : "The inline still was discarded because its inspection metadata was inconsistent."
+                        : recordValid
+                            ? "The PNG was saved, but the session report reached its safety capacity; export or clear the tray before capturing more."
+                            : "The PNG was saved, but inconsistent inspection metadata prevented adding it to the report tray.",
                     AppTheme::accent());
+            }
+        }
+        if (launcherOwnedCapture && !launcherCaptureRetained) {
+            std::string directory;
+            if (characterPreviewCacheDirectory(directory)) {
+                (void)CharacterPreviewCache::removeOwnedPath(
+                    directory, packageId, capturePng);
             }
         }
         if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {

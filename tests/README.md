@@ -5111,6 +5111,10 @@ refusal, rebinding refusal, HTML/script escaping, source-path privacy, PNG
 completeness/dimension/product checks, schema-v3 scene/model-alpha and fixed
 projection metadata, integer-space registered SVG overlay, checkerboard
 transparency presentation, and overwrite refusal;
+`character_preview_cache` proves the Offset Studio no-filename path derives one
+bounded hashed slot per package/context, preserves unrelated files, cleans only
+regular non-link owned files, rejects cross-package ownership and hostile links,
+and leaves the renderer destination absent for exclusive PNG creation;
 `workshop_preview_runtime`
 proves visual bounds, failure-without-mutation, and measurement epochs.
 The pure `character_test_evidence_store` unit separately covers canonical parsing,

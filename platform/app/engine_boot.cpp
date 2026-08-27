@@ -424,12 +424,19 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
                  cfg->character_preview_lighting) == nullptr ||
              characterPreviewCaptureKindName(
                  cfg->character_preview_capture_kind) == nullptr ||
+             (cfg->character_preview_auto_return != 0 &&
+              cfg->character_preview_auto_return != 1) ||
              !characterPreviewCapturePathValid(
                  cfg->character_preview_capture_png) ||
              ((cfg->character_preview_capture_png == nullptr ||
                cfg->character_preview_capture_png[0] == '\0') &&
               cfg->character_preview_capture_kind !=
                   MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE) ||
+             (cfg->character_preview_auto_return &&
+              (cfg->character_preview_capture_png == nullptr ||
+               cfg->character_preview_capture_png[0] == '\0' ||
+               cfg->character_preview_pose ==
+                   MDKR_CHARACTER_PREVIEW_POSE_LIVE)) ||
              (cfg->character_preview_context ==
                   MDKR_CHARACTER_PREVIEW_SELECT &&
               (cfg->character_preview_view_yaw_degrees != 0 ||
@@ -612,6 +619,9 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             previewEnvironment.set(
                 "MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS",
                 std::to_string(cfg->character_preview_players).c_str()) &&
+            previewEnvironment.set(
+                "MDKR_CHARACTER_WORKSHOP_CAPTURE_AUTO_RETURN",
+                cfg->character_preview_auto_return ? "1" : "") &&
             previewEnvironment.set("MDKR_PRESENT_PERF", "1");
         const std::string posePhase = pose != nullptr
             ? std::to_string(cfg->character_preview_pose_phase_milli)
@@ -674,7 +684,7 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             stderr,
             "[app] character preview: package=%s context=%s players=%d "
             "pose=%s phase=%u transitionFrom=%s transitionPhase=%u "
-            "view=%d,%d lighting=%s captureKind=%s "
+            "view=%d,%d lighting=%s captureKind=%s autoReturn=%d "
             "capture=%s\n",
             cfg->character_preview_package, context,
             cfg->character_preview_players,
@@ -686,6 +696,7 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             cfg->character_preview_view_pitch_degrees,
             lighting != nullptr ? lighting : "neutral",
             captureRequested ? captureKind : "none",
+            cfg->character_preview_auto_return,
             cfg->character_preview_capture_png != nullptr &&
                     cfg->character_preview_capture_png[0] != '\0'
                 ? cfg->character_preview_capture_png : "none");
