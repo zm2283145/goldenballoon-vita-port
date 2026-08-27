@@ -411,8 +411,10 @@ Offset Studio is separate from Gameplay profile selection: choosing simulation
 authority and fitting presentation are distinct user jobs. With a verified ROM,
 each context launches the real donor, vehicle, animation, camera, and scene
 through ordinary engine initialization, even while the package remains disabled
-for normal play. The returned source-and-fit-bound measurement can propose a
-preview-only vertical/facing starting point. Selection targets the exact floor;
+for normal play. The task order is deliberately linear: preview, apply the
+measured starting point, fine-tune, inspect exact evidence, then review. The
+returned source-and-fit-bound measurement can propose a preview-only
+vertical/facing starting point. Selection targets the exact floor;
 vehicle proposals retain a conservative lower-body envelope below the donor
 seat. Applying a proposal invalidates the measurement and requires another exact
 preview before review. Bounds never claim to solve shell occlusion, silhouette,

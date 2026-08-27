@@ -5899,6 +5899,49 @@ const CharacterTestEvidenceStore::Evidence *currentRenderedCharacterTestEvidence
     return newest;
 }
 
+/* Keep renderer evidence value-owned while the editor is drawing. Tuning
+ * persistence deliberately invalidates session evidence, and durable evidence
+ * lookups point into a store that may be refreshed. No UI action should retain
+ * either iterator/pointer across an edit. */
+struct CharacterFitEvidenceSnapshot {
+    bool current = false;
+    bool fromDurableStore = false;
+    uint32_t players = 0u;
+    MdkrCharacterPreviewResult result{};
+    std::string sourceSha256;
+    std::string fitSha256;
+};
+
+CharacterFitEvidenceSnapshot currentCharacterFitEvidenceSnapshot(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterTuningEdit &tuning,
+    MdkrCharacterPreviewContext context) {
+    CharacterFitEvidenceSnapshot snapshot;
+    const auto session = g_characterPreviewResults.find(entry->id);
+    if (session != g_characterPreviewResults.end() &&
+        characterPreviewSessionMatchesTuning(
+            entry, tuning, context, session->second)) {
+        snapshot.current = true;
+        snapshot.players = static_cast<uint32_t>(
+            std::max(0, session->second.result.players));
+        snapshot.result = session->second.result;
+        snapshot.sourceSha256 = session->second.sourceSha256;
+        snapshot.fitSha256 = session->second.fitSha256;
+        return snapshot;
+    }
+
+    const CharacterTestEvidenceStore::Evidence *durable =
+        currentRenderedCharacterTestEvidence(entry, tuning, context);
+    if (durable == nullptr) return snapshot;
+    snapshot.current = true;
+    snapshot.fromDurableStore = true;
+    snapshot.players = durable->players;
+    snapshot.result = characterPreviewResultFromEvidence(*durable);
+    snapshot.sourceSha256 = durable->sourceSha256;
+    snapshot.fitSha256 = durable->fitSha256;
+    return snapshot;
+}
+
 enum class CharacterSpatialPlane : int {
     Front = 0,
     Side,
@@ -6747,7 +6790,6 @@ bool drawCharacterOffsetSuggestion(
     const CharacterWorkshopFitSuggestion suggestion =
         CharacterWorkshop_suggestFit(characterWorkshopFitMeasurement(
             result, context != MDKR_CHARACTER_CONTEXT_SELECT));
-    ImGui::SeparatorText("Measured fit assistant");
     if (!suggestion.available) {
         ImGui::TextColored(
             AppTheme::bad(),
@@ -6836,78 +6878,89 @@ bool drawCharacterTuningEditor(int player,
             entry->id);
         std::fprintf(
             stderr,
-            "[app-ui] character-offset-studio package=%s contexts=select,car,hovercraft,plane exact-rom-preview=1 disabled-package-preview=1 measured-starting-point=vertical-and-facing reset=package-anchor review=current-source-and-fit\n",
+            "[app-ui] character-offset-studio package=%s contexts=select,car,hovercraft,plane workflow=preview,measure,fine-tune,evidence,review exact-rom-preview=1 disabled-package-preview=1 measured-starting-point=vertical-and-facing reset=package-anchor review=current-source-and-fit\n",
             entry->id);
     }
 
-    ImGui::TextUnformatted("Enable this appearance in game on");
-    for (unsigned vehicle = 0u; vehicle < 3u; ++vehicle) {
-        if (vehicle != 0u) ImGui::SameLine();
-        const unsigned bit = 1u << vehicle;
-        const bool qualified = (entry->vehicle_mask & bit) != 0u;
-        bool enabled = (edit.vehicleMask & bit) != 0u;
-        if (!qualified) ImGui::BeginDisabled();
-        const std::string label = std::string(vehicleNames[vehicle]) +
-            "##vehicle-" + std::to_string(vehicle);
-        if (ImGui::Checkbox(label.c_str(), &enabled)) {
-            const unsigned candidate = enabled
-                ? edit.vehicleMask | bit : edit.vehicleMask & ~bit;
-            if ((candidate & entry->vehicle_mask) != 0u) {
-                edit.vehicleMask = candidate;
-                changed |= persistCharacterTuning(entry->id, edit);
-            } else {
-                setStatus("Keep at least one qualified vehicle pairing enabled.",
-                          AppTheme::bad());
+    const bool showFitInputs = ImGui::TreeNode(
+        "Setup: source size, facing, and vehicle coverage");
+    ui::SpeakFocusedItem(
+        "Offset Studio setup", showFitInputs ? "expanded" : "collapsed",
+        "Contains infrequent source normalization and vehicle coverage controls. Exact context preview and fitting follow immediately after it.");
+    if (showFitInputs) {
+        ImGui::TextUnformatted("Enable this appearance in game on");
+        for (unsigned vehicle = 0u; vehicle < 3u; ++vehicle) {
+            if (vehicle != 0u) ImGui::SameLine();
+            const unsigned bit = 1u << vehicle;
+            const bool qualified = (entry->vehicle_mask & bit) != 0u;
+            bool enabled = (edit.vehicleMask & bit) != 0u;
+            if (!qualified) ImGui::BeginDisabled();
+            const std::string label = std::string(vehicleNames[vehicle]) +
+                "##vehicle-" + std::to_string(vehicle);
+            if (ImGui::Checkbox(label.c_str(), &enabled)) {
+                const unsigned candidate = enabled
+                    ? edit.vehicleMask | bit : edit.vehicleMask & ~bit;
+                if ((candidate & entry->vehicle_mask) != 0u) {
+                    edit.vehicleMask = candidate;
+                    changed |= persistCharacterTuning(entry->id, edit);
+                } else {
+                    setStatus(
+                        "Keep at least one qualified vehicle pairing enabled.",
+                        AppTheme::bad());
+                }
             }
+            if (!qualified) ImGui::EndDisabled();
         }
-        if (!qualified) ImGui::EndDisabled();
-    }
-    ui::TextSubtleWrapped(
-        "This is a local enable/disable subset of the package compatibility saved above. The in-game vehicle choice still owns physics and handling.");
+        ui::TextSubtleWrapped(
+            "This is a local enable/disable subset of the package compatibility saved above. The in-game vehicle choice still owns physics and handling.");
 
-    ImGui::SeparatorText("Source normalization");
-    if ((entry->calibration_flags & 1u) != 0u) {
-        ImGui::TextColored(
-            AppTheme::good(), "Normalized v2 profile · source faces %s",
-            entry->source_forward < std::size(forwardNames)
-                ? forwardNames[entry->source_forward] : "unknown");
-    } else {
-        ImGui::TextColored(
-            AppTheme::accent(),
-            "Legacy transform: confirm height and facing before use");
-    }
-    if (entry->source_height > 0.0f && entry->target_height > 0.0f) {
-        ImGui::TextDisabled(
-            "Measured source extent %.4g m · intended standing height %.3g m",
-            static_cast<double>(entry->source_height),
-            static_cast<double>(entry->target_height));
-        float height = entry->target_height * edit.scale;
-        (void)ImGui::SliderFloat("Standing height", &height, 0.25f, 3.0f,
-                                 "%.2f m", ImGuiSliderFlags_AlwaysClamp);
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            edit.scale = height / entry->target_height;
-            if (edit.scale < 0.1f) edit.scale = 0.1f;
-            if (edit.scale > 5.0f) edit.scale = 5.0f;
+        ImGui::SeparatorText("Source normalization");
+        if ((entry->calibration_flags & 1u) != 0u) {
+            ImGui::TextColored(
+                AppTheme::good(), "Normalized v2 profile · source faces %s",
+                entry->source_forward < std::size(forwardNames)
+                    ? forwardNames[entry->source_forward] : "unknown");
+        } else {
+            ImGui::TextColored(
+                AppTheme::accent(),
+                "Legacy transform: confirm height and facing before use");
         }
-    } else {
-        (void)ImGui::SliderFloat("Character size", &edit.scale, 0.1f, 5.0f,
-                                 "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+        if (entry->source_height > 0.0f && entry->target_height > 0.0f) {
+            ImGui::TextDisabled(
+                "Measured source extent %.4g m · intended standing height %.3g m",
+                static_cast<double>(entry->source_height),
+                static_cast<double>(entry->target_height));
+            float height = entry->target_height * edit.scale;
+            (void)ImGui::SliderFloat(
+                "Standing height", &height, 0.25f, 3.0f, "%.2f m",
+                ImGuiSliderFlags_AlwaysClamp);
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                edit.scale = height / entry->target_height;
+                if (edit.scale < 0.1f) edit.scale = 0.1f;
+                if (edit.scale > 5.0f) edit.scale = 5.0f;
+            }
+        } else {
+            (void)ImGui::SliderFloat(
+                "Character size", &edit.scale, 0.1f, 5.0f, "%.2fx",
+                ImGuiSliderFlags_AlwaysClamp);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            changed |= persistCharacterTuning(entry->id, edit);
+        }
+        if (ImGui::Button("Turn model around 180°")) {
+            edit.rotation[1] += 180.0f;
+            if (edit.rotation[1] > 180.0f) edit.rotation[1] -= 360.0f;
+            changed |= persistCharacterTuning(entry->id, edit);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset source facing")) {
+            edit.rotation[0] = edit.rotation[1] = edit.rotation[2] = 0.0f;
+            changed |= persistCharacterTuning(entry->id, edit);
+        }
+        ui::TextSubtleWrapped(
+            "Facing cannot be inferred safely from arbitrary geometry. Use the author-declared axis first, then this explicit correction if the preview is backward.");
+        ImGui::TreePop();
     }
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        changed |= persistCharacterTuning(entry->id, edit);
-    }
-    if (ImGui::Button("Turn model around 180°")) {
-        edit.rotation[1] += 180.0f;
-        if (edit.rotation[1] > 180.0f) edit.rotation[1] -= 360.0f;
-        changed |= persistCharacterTuning(entry->id, edit);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Reset source facing")) {
-        edit.rotation[0] = edit.rotation[1] = edit.rotation[2] = 0.0f;
-        changed |= persistCharacterTuning(entry->id, edit);
-    }
-    ui::TextSubtleWrapped(
-        "Facing cannot be inferred safely from arbitrary geometry. Use the author-declared axis first, then this explicit correction if the preview is backward.");
 
     ImGui::SeparatorText("Offset Studio");
     ui::TextSubtleWrapped(
@@ -6994,7 +7047,25 @@ bool drawCharacterTuningEditor(int player,
                     "%d-player camera · returns here with measurements",
                     testPlayers);
             }
-            ImGui::SeparatorText("2. Adjust this context");
+            const MdkrCharacterPreviewContext previewContext =
+                previewContexts[context];
+            CharacterFitEvidenceSnapshot fitEvidence =
+                currentCharacterFitEvidenceSnapshot(
+                    entry, edit, previewContext);
+            ImGui::SeparatorText("2. Apply measured starting point");
+            if (!fitEvidence.current) {
+                ImGui::TextDisabled(
+                    "No measurement matches this source and fit yet. Open the exact preview, inspect the scene, then return here.");
+            } else {
+                const bool appliedSuggestion = drawCharacterOffsetSuggestion(
+                    entry, edit, context, fitEvidence.result);
+                changed |= appliedSuggestion;
+                if (appliedSuggestion) {
+                    fitEvidence = currentCharacterFitEvidenceSnapshot(
+                        entry, edit, previewContext);
+                }
+            }
+            ImGui::SeparatorText("3. Fine-tune this context");
             (void)ImGui::SliderFloat("Context size", &placement.scale,
                                      0.5f, 2.0f, "%.2fx",
                                      ImGuiSliderFlags_AlwaysClamp);
@@ -7177,63 +7248,30 @@ bool drawCharacterTuningEditor(int player,
                 }
                 ImGui::TreePop();
             }
-            const MdkrCharacterPreviewContext previewContext =
-                previewContexts[context];
-            const auto result = g_characterPreviewResults.find(entry->id);
-            const bool currentSessionResult =
-                result != g_characterPreviewResults.end() &&
-                characterPreviewSessionMatchesTuning(
-                    entry, edit, previewContext, result->second);
-            const CharacterTestEvidenceStore::Evidence *durableResult =
-                currentRenderedCharacterTestEvidence(
-                    entry, edit, previewContext);
-            bool currentResult = currentSessionResult ||
-                durableResult != nullptr;
-            MdkrCharacterPreviewResult measuredResult{};
-            if (currentSessionResult) {
-                measuredResult = result->second.result;
-            } else if (durableResult != nullptr) {
-                measuredResult = characterPreviewResultFromEvidence(
-                    *durableResult);
-            }
-            ImGui::SeparatorText("3. Exact measurements");
-            if (!currentResult) {
+            /* Re-resolve after every fine-tuning control. Any accepted edit
+             * invalidates the evidence by signature, including edits made in
+             * this same frame. */
+            fitEvidence = currentCharacterFitEvidenceSnapshot(
+                entry, edit, previewContext);
+            ImGui::SeparatorText("4. Inspect exact evidence");
+            if (!fitEvidence.current) {
                 ImGui::TextDisabled(
-                    "No measurements match the current source and fit. Open this context's exact preview first.");
-            }
-            if (currentSessionResult) {
-                if (characterPreviewFitDiagnosticsValid(
-                        result->second.result)) {
-                    drawCharacterFitDiagnostics(
-                        result->second.result, true);
-                    const std::string overlayKey = std::string(entry->id) +
-                        "#" + std::to_string(context);
-                    drawCharacterFitOverlay(
-                        result->second.result,
-                        g_characterFitSpatialViews[overlayKey], true);
-                    drawCharacterFitReference(
-                        entry, result->second.sourceSha256,
-                        result->second.fitSha256, previewContext,
-                        g_characterFitSpatialViews[overlayKey], true);
-                } else {
-                    ImGui::TextColored(
-                        AppTheme::bad(),
-                        "Last exact test returned invalid fit measurements.");
-                }
-            } else if (durableResult != nullptr) {
-                const MdkrCharacterPreviewResult durablePreview =
-                    characterPreviewResultFromEvidence(*durableResult);
-                drawCharacterFitDiagnostics(durablePreview, true);
+                    "No exact evidence matches the current source and fit. Rerun this context before approval.");
+            } else if (characterPreviewFitDiagnosticsValid(
+                           fitEvidence.result)) {
+                drawCharacterFitDiagnostics(fitEvidence.result, true);
                 const std::string overlayKey = std::string(entry->id) +
                     "#" + std::to_string(context);
                 drawCharacterFitOverlay(
-                    durablePreview, g_characterFitSpatialViews[overlayKey],
+                    fitEvidence.result,
+                    g_characterFitSpatialViews[overlayKey],
                     true);
                 drawCharacterFitReference(
-                    entry, durableResult->sourceSha256,
-                    durableResult->fitSha256, previewContext,
+                    entry, fitEvidence.sourceSha256,
+                    fitEvidence.fitSha256, previewContext,
                     g_characterFitSpatialViews[overlayKey], true);
-                if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+                if (fitEvidence.fromDurableStore &&
+                    std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
                     const std::string traceKey = std::string(entry->id) + ":" +
                         std::to_string(static_cast<unsigned>(previewContext));
                     if (g_characterFitEvidenceTraceContexts.insert(
@@ -7243,45 +7281,43 @@ bool drawCharacterTuningEditor(int player,
                             "[app-ui] character-fit-evidence durable=1 package=%s context=%u players=%u fit=%d fitAnchorUm=%lld,%lld,%lld fitBoundsYUm=%lld,%lld fitForwardMilli=%d,%d,%d\n",
                             entry->id,
                             static_cast<unsigned>(previewContext),
-                            durableResult->players,
-                            durableResult->fitDiagnosticsValid ? 1 : 0,
+                            fitEvidence.players,
+                            fitEvidence.result.fit_diagnostics_valid ? 1 : 0,
                             static_cast<long long>(
-                                durableResult->fitAnchorMicrometres[0]),
+                                fitEvidence.result.fit_anchor_micrometres[0]),
                             static_cast<long long>(
-                                durableResult->fitAnchorMicrometres[1]),
+                                fitEvidence.result.fit_anchor_micrometres[1]),
                             static_cast<long long>(
-                                durableResult->fitAnchorMicrometres[2]),
+                                fitEvidence.result.fit_anchor_micrometres[2]),
                             static_cast<long long>(
-                                durableResult->fitBoundsMinMicrometres[1]),
+                                fitEvidence.result.fit_bounds_min_micrometres[1]),
                             static_cast<long long>(
-                                durableResult->fitBoundsMaxMicrometres[1]),
-                            durableResult->fitForwardMilli[0],
-                            durableResult->fitForwardMilli[1],
-                            durableResult->fitForwardMilli[2]);
+                                fitEvidence.result.fit_bounds_max_micrometres[1]),
+                            fitEvidence.result.fit_forward_milli[0],
+                            fitEvidence.result.fit_forward_milli[1],
+                            fitEvidence.result.fit_forward_milli[2]);
                     }
                 }
+            } else {
+                ImGui::TextColored(
+                    AppTheme::bad(),
+                    "Last exact test returned invalid fit measurements.");
             }
-            if (currentResult &&
+            if (fitEvidence.current &&
                 context != MDKR_CHARACTER_CONTEXT_SELECT) {
-                const uint64_t contactSolves = currentSessionResult
-                    ? result->second.result.contact_solves
-                    : durableResult->contactSolves;
-                const uint64_t contactMean = currentSessionResult
-                    ? result->second.result.contact_error_mean_micrometres
-                    : durableResult->contactErrorMeanMicrometres;
-                const uint64_t contactMaximum = currentSessionResult
-                    ? result->second.result.contact_error_max_micrometres
-                    : durableResult->contactErrorMaxMicrometres;
+                const uint64_t contactSolves =
+                    fitEvidence.result.contact_solves;
+                const uint64_t contactMean =
+                    fitEvidence.result.contact_error_mean_micrometres;
+                const uint64_t contactMaximum =
+                    fitEvidence.result.contact_error_max_micrometres;
                 if (contactSolves != 0u) {
                     bool contactsWithinGuide = true;
                     for (unsigned contact = 0u;
                          contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
                         const uint64_t guide = contact < 2u ? 25000u : 40000u;
-                        const uint64_t error = currentSessionResult
-                            ? result->second.result
-                                  .contact_witness_error_micrometres[contact]
-                            : durableResult
-                                  ->contactWitnessErrorMicrometres[contact];
+                        const uint64_t error = fitEvidence.result
+                            .contact_witness_error_micrometres[contact];
                         if (error > guide) contactsWithinGuide = false;
                     }
                     ImGui::Text(
@@ -7300,13 +7336,7 @@ bool drawCharacterTuningEditor(int player,
                         "Last exact test: no procedural contacts (authored clip or solver locked)");
                 }
             }
-            if (currentResult) {
-                const bool appliedSuggestion = drawCharacterOffsetSuggestion(
-                    entry, edit, context, measuredResult);
-                changed |= appliedSuggestion;
-                if (appliedSuggestion) currentResult = false;
-            }
-            ImGui::SeparatorText("4. Review this context");
+            ImGui::SeparatorText("5. Review this context");
             const bool fitReviewed = characterFitReviewed(
                 entry, edit, context);
             ImGui::TextColored(
@@ -7315,17 +7345,18 @@ bool drawCharacterTuningEditor(int player,
                     ? "Fit reviewed for this exact source and tuning"
                     : "Fit review required for current source or tuning");
             if (!fitReviewed) {
-                if (!currentResult) ImGui::BeginDisabled();
+                if (!fitEvidence.current) ImGui::BeginDisabled();
                 const std::string reviewLabel = std::string("Mark ") +
                     contextNames[context] + " fit reviewed";
-                if (ImGui::Button(reviewLabel.c_str()) && currentResult) {
+                if (ImGui::Button(reviewLabel.c_str()) &&
+                    fitEvidence.current) {
                     changed |= persistCharacterFitReview(
                         entry, edit, context);
                 }
-                if (!currentResult) ImGui::EndDisabled();
+                if (!fitEvidence.current) ImGui::EndDisabled();
                 ui::SpeakFocusedItem(
                     reviewLabel.c_str(),
-                    currentResult
+                    fitEvidence.current
                         ? nullptr
                         : "Run and complete the matching exact renderer test first.",
                     "Saves review only for the current package source and fit values.");

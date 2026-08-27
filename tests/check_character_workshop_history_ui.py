@@ -172,7 +172,9 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
             )
         studio_marker = (
             "character-offset-studio package=" + PACKAGE_ID +
-            " contexts=select,car,hovercraft,plane exact-rom-preview=1 "
+            " contexts=select,car,hovercraft,plane "
+            "workflow=preview,measure,fine-tune,evidence,review "
+            "exact-rom-preview=1 "
             "disabled-package-preview=1 "
             "measured-starting-point=vertical-and-facing "
             "reset=package-anchor "
