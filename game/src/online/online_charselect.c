@@ -379,7 +379,11 @@ static void charselect_apply_input(const CsInput *in, u8 remoteChar) {
  * start_requested stays 0 -- host-start belongs to the track screen (PD-T3). */
 static void charselect_publish_intent(void) {
     MdkrPartyLinkLocalIntent intent;
-    memset(&intent, 0, sizeof(intent));
+    /* C1: start from the shared baseline so the host-only session-config fields
+     * (mode/config_track/cup_id) carry their UNSET sentinels, NOT a bare zero --
+     * charselect is never a host-config screen, so it must never dispatch
+     * SET_MODE(0)/SET_CONFIG_TRACK(0)/SET_CUP(0) once the reverse pump goes live. */
+    mdkr_party_link_intent_init(&intent);
     intent.hover_character = sCs.cursor;
     intent.vehicle_id = sCs.vehicle;
     intent.confirmed = sCs.confirmed;
@@ -895,6 +899,13 @@ static void charselect_test_reduce_and_script(void) {
 u8 mdkr_online_charselect_test_active(void) {
     charselect_test_resolve();
     return (u8) (sTestActive > 0 ? 1 : 0);
+}
+
+/* F-I1: the screen's OWN locked+ready latch (reset by _enter's memset), used by
+ * the session to gate the CHARSELECT -> TRACKSELECT hand-off so a live B-back
+ * cannot bounce on the lagging snapshot ready flag. */
+u8 mdkr_online_charselect_local_ready(void) {
+    return (u8) ((sCs.confirmed && sCs.ready) ? 1 : 0);
 }
 
 #endif /* MDKR_ENABLE_ONLINE_BETA */

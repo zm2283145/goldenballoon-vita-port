@@ -260,9 +260,16 @@ void mdkr_online_session_tick(s32 updateRate) {
             mdkr_online_charselect_exit();
             online_session_boot_race();
         } else if (r == MDKR_ONLINE_CHARSELECT_STAY &&
-                   online_session_trackselect_enabled()) {
+                   online_session_trackselect_enabled() &&
+                   mdkr_online_charselect_local_ready()) {
             /* PD-T3 (R-B): once the local seat is confirmed+ready while the room
-             * is still in LOBBY, hand off to the native TRACKSELECT screen. */
+             * is still in LOBBY, hand off to the native TRACKSELECT screen.
+             * F-I1: gate on the SCREEN's own confirmed+ready latch AS WELL AS the
+             * snapshot's ready flag. The snapshot ready lags un-ready by >=1 pump
+             * after a TRACKSELECT->CHARSELECT back-out, so relying on it alone
+             * would one-frame flash charselect and re-advance; the screen latch
+             * resets immediately on _enter(), so requiring it keeps the player on
+             * charselect until they genuinely re-confirm+re-ready. */
             MdkrPartyLinkSnapshot snap;
             if (mdkr_party_link_read(&snap) &&
                 online_session_local_seat_ready_in_lobby(&snap)) {

@@ -1028,6 +1028,61 @@ static void test_config_track_requires_known_race_track(void) {
     }
 }
 
+/* F-I3: pin the EXACT 20-id literal that the native track-select screen offers
+ * (game/src/online/online_trackselect.c sTrackIds) and the standalone lane copies
+ * (tests/check_online_trackselect.py EXPECTED_TRACKS) against the reducer's
+ * authoritative set. Three anchors so a drift in ANY of the three copies fails
+ * here: (1) the literal, in order, equals the reducer's cup schedule; (2) every
+ * literal id is accepted by SET_CONFIG_TRACK; (3) an id NOT in the literal is
+ * refused. Keep this literal byte-identical to the other two copies. */
+static void test_offered_track_ids_match_reducer_set(void) {
+    static const uint16_t offered[20] = {
+        5u,  3u,  29u, 7u,  13u, 6u,  9u,  28u, 8u,  4u,
+        10u, 30u, 19u, 18u, 20u, 31u, 17u, 32u, 33u, 15u};
+    MdkrOnlineCompatibilityV1 compat = compatibility();
+    MdkrOnlineLobby lobby;
+    uint64_t host_cid;
+    uint64_t guest_cid;
+    unsigned i;
+    unsigned cup;
+    unsigned round;
+
+    /* (1) literal (cup-major, round order) == the reducer's cup schedule. */
+    for (i = 0u; i < 20u; i++) {
+        char message[96];
+        cup = i / MDKR_ONLINE_CUP_ROUNDS;
+        round = i % MDKR_ONLINE_CUP_ROUNDS;
+        snprintf(message, sizeof(message),
+                 "offered id[%u]=%u == cup_track(%u,%u)", i, offered[i], cup,
+                 round);
+        expect(mdkr_online_cup_track(cup, round) == offered[i], message);
+    }
+
+    /* (2) every offered id is accepted by SET_CONFIG_TRACK. */
+    build_two_seat_room(&lobby, &compat, &host_cid, &guest_cid);
+    for (i = 0u; i < 20u; i++) {
+        char message[96];
+        MdkrOnlineStep step = simple(&lobby, 10u, host_cid++,
+                                     MDKR_ONLINE_SET_CONFIG_TRACK, offered[i]);
+        snprintf(message, sizeof(message),
+                 "reducer accepts offered track %u", offered[i]);
+        expect(step.accepted && lobby.configured_track == offered[i], message);
+    }
+
+    /* (3) an id NOT in the offered literal is refused (drift would surface here or
+     * in the .py's convergence assertion). */
+    {
+        MdkrOnlineLobby before;
+        MdkrOnlineStep step;
+        build_two_seat_room(&lobby, &compat, &host_cid, &guest_cid);
+        before = lobby;
+        step = simple(&lobby, 10u, host_cid, MDKR_ONLINE_SET_CONFIG_TRACK, 1u);
+        expect(!step.accepted &&
+                   memcmp(&lobby, &before, sizeof(lobby)) == 0,
+               "reducer refuses a non-offered track id (1) atomically");
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--rewrite-parity-trace") == 0)
         return rewrite_parity_trace();
@@ -1045,6 +1100,7 @@ int main(int argc, char **argv) {
     test_tournament_cup_progression_and_scoring();
     test_leave_compaction_rejoin_and_attribution();
     test_leave_in_lobby_compacts_middle_seat();
+    test_offered_track_ids_match_reducer_set();
     test_config_track_requires_known_race_track();
     if (failures != 0) return 1;
     puts("online lobby core contract passed");

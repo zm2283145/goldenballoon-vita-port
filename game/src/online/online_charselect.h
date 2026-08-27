@@ -47,6 +47,13 @@ MdkrOnlineCharselectResult mdkr_online_charselect_tick(s32 updateRate);
  * MDKR_TEST_ONLINE_CHARSELECT). Ordinary runs always return false. */
 u8 mdkr_online_charselect_test_active(void);
 
+/* True when the LOCAL player has locked a character AND readied on THIS screen
+ * (the screen's own latch, not the lagging lobby snapshot). The session gates the
+ * CHARSELECT -> TRACKSELECT hand-off on this so a live B-back (whose snapshot
+ * ready flag lags un-ready by >=1 pump) cannot one-frame bounce straight back to
+ * TRACKSELECT before the player can re-pick. Resets to false on _enter(). */
+u8 mdkr_online_charselect_local_ready(void);
+
 /* Headless test seam only (inert unless the env above is set): from LOBBY_WAIT,
  * install the party_link forward feed and publish a scripted 2-seat LOBBY room
  * whose local seat is occupied, so the session enters CHARSELECT. No-op in a

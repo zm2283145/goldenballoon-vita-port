@@ -253,13 +253,11 @@ static void test_snapshot_field_mapping(void) {
 
 static MdkrPartyLinkLocalIntent intent_new(void) {
     MdkrPartyLinkLocalIntent in;
-    memset(&in, 0, sizeof(in));
-    in.vehicle_id = MDKR_ONLINE_NO_VEHICLE; /* "unset" unless a test sets it */
-    /* Host-only session-config fields default to their UNSET sentinels so a
-     * plain intent never spuriously plans SET_MODE/SET_CONFIG_TRACK/SET_CUP. */
-    in.mode = MDKR_PARTY_LINK_MODE_UNSET;
-    in.config_track = MDKR_PARTY_LINK_TRACK_UNSET;
-    in.cup_id = MDKR_PARTY_LINK_CUP_UNSET;
+    /* C1: go through the shared init helper so every test starts from the SAME
+     * "want nothing extra" baseline every real publisher must use (vehicle_id +
+     * the host-only mode/config_track/cup_id fields all at their UNSET sentinels).
+     * A bare memset(0) here would be the exact bug C1 pins. */
+    mdkr_party_link_intent_init(&in);
     return in;
 }
 
@@ -598,6 +596,67 @@ static void test_dispatch_session_config(void) {
     }
 }
 
+/* C1 + M1: the zeroed-intent contract. The UNSET sentinels are deliberately
+ * nonzero, so a helper-initialised intent plans NO host config, while a raw
+ * memset(0) intent WOULD want it (the exact bug C1 pins) -- and the M1 mode
+ * cross-gate keeps a stray intent from dispatching cup+track together. */
+static void test_dispatch_zeroed_intent_contract(void) {
+    MdkrPartyLinkDispatchState st;
+    MdkrPartyLinkDispatchPlan plan;
+    MdkrPartyLinkLocalIntent in;
+    /* Fresh single-race host lobby: nothing configured yet. */
+    MdkrPartyLinkLocalView host = lv_host(MDKR_ONLINE_MODE_SINGLE_RACE,
+                                          MDKR_PARTY_LINK_TRACK_UNSET,
+                                          MDKR_PARTY_LINK_CUP_UNSET, 0u,
+                                          (uint8_t)MDKR_ONLINE_LOBBY);
+
+    /* Helper-initialised intent (what every publisher MUST use): the sentinels
+     * mean "want nothing", so ZERO host-config kinds are planned. */
+    mdkr_party_link_dispatch_state_reset(&st);
+    mdkr_party_link_intent_init(&in);
+    mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_MODE) < 0);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK) < 0);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_CUP) < 0);
+
+    /* The TRAP, pinned: a RAW memset(0) intent (NOT via the helper) reads
+     * config_track 0 as a REAL wanted track, so it WOULD dispatch
+     * SET_CONFIG_TRACK(0) -- proving the sentinels are load-bearing. (SET_MODE(0)
+     * is already converged on this single lobby; SET_CUP is cross-gated off in
+     * single mode by M1.) */
+    mdkr_party_link_dispatch_state_reset(&st);
+    memset(&in, 0, sizeof(in)); /* the bug: no sentinels */
+    mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK) >= 0);
+    {
+        const int idx =
+            plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK);
+        CHECK(idx >= 0 && plan.actions[idx].value == 0u);
+    }
+    /* M1 cross-gate: a raw-zero intent in single mode never plans SET_CUP. */
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_CUP) < 0);
+
+    /* M1 cross-gates, both directions: tournament intent never plans a track; a
+     * single-mode intent never plans a cup, even with both fields set. */
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.mode = MDKR_ONLINE_MODE_TOURNAMENT;
+    in.config_track = 5u; /* set, but tournament -> must NOT plan track */
+    in.cup_id = 2u;
+    mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK) < 0);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_CUP) >= 0);
+
+    mdkr_party_link_dispatch_state_reset(&st);
+    in = intent_new();
+    in.mode = MDKR_ONLINE_MODE_SINGLE_RACE;
+    in.config_track = 5u;
+    in.cup_id = 2u; /* set, but single -> must NOT plan cup */
+    mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_CUP) < 0);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK) >= 0);
+}
+
 int main(void) {
     test_round_trip();
     test_generation_monotonicity();
@@ -605,6 +664,7 @@ int main(void) {
     test_snapshot_field_mapping();
     test_dispatch_plan();
     test_dispatch_session_config();
+    test_dispatch_zeroed_intent_contract();
     fprintf(stderr, "party_link: %d checks, %d failures\n", g_checks,
             g_failures);
     return g_failures == 0 ? 0 : 1;

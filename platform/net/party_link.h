@@ -82,13 +82,23 @@ typedef struct MdkrPartyLinkSnapshot {
 } MdkrPartyLinkSnapshot;
 
 /* "Unset" sentinels for the host-only session-config intent fields below. They
- * are deliberately NONZERO so a memset(0)'d intent reads as "host wants nothing"
- * (mode 0 is a REAL mode value, so a zero could not double as unset). A screen
- * that is not the host -- or a host screen that has not chosen yet -- publishes
- * these sentinels, and the dispatch planner then never wants the host kinds. */
+ * are deliberately NONZERO because a ZEROED intent WANTS config: mode 0 is a REAL
+ * mode value (SINGLE_RACE), config_track 0 / cup_id 0 are valid ids, so a plain
+ * memset(0) would read as "host wants SET_MODE(0) + SET_CONFIG_TRACK(0) +
+ * SET_CUP(0)". EVERY publisher MUST therefore reset these to the UNSET sentinels
+ * -- use mdkr_party_link_intent_init() below, which centralizes the invariant so
+ * a new screen author cannot reintroduce the zeroed-intent bug. A non-host screen
+ * (or a host that has not chosen) leaves them at UNSET and the planner then never
+ * wants the host kinds. */
 #define MDKR_PARTY_LINK_MODE_UNSET 0xFFu   /* intent.mode: no SET_MODE wanted */
 #define MDKR_PARTY_LINK_TRACK_UNSET 0xFFFFu /* intent.config_track: no SET_CONFIG_TRACK */
 #define MDKR_PARTY_LINK_CUP_UNSET 0xFFu    /* intent.cup_id: no SET_CUP wanted */
+
+/* Mode values carried in intent.mode / the lobby snapshot (mirrors
+ * MDKR_ONLINE_MODE_SINGLE_RACE / _TOURNAMENT; this header stays dependency-free
+ * so the constants are duplicated with a lock-step comment). */
+#define MDKR_PARTY_LINK_MODE_SINGLE 0u
+#define MDKR_PARTY_LINK_MODE_TOURNAMENT 1u
 
 /* REVERSE FEED record: the local player's latest in-menu intent. The native
  * screen is the source of truth for the pick, so it carries BOTH the racer and
@@ -139,6 +149,14 @@ void mdkr_party_link_publish(const MdkrPartyLinkSnapshot *snapshot);
 bool mdkr_party_link_read(MdkrPartyLinkSnapshot *out);
 
 /* ---- Reverse feed (engine publishes, launcher polls) -------------------- */
+
+/* Initialize an intent to the "want nothing extra" baseline: zero every field,
+ * then set the UNSET sentinels for the fields whose zero is a REAL value
+ * (vehicle_id, mode, config_track, cup_id). EVERY screen's per-frame publisher
+ * MUST start from this (never a bare memset) so a host-on-a-non-config screen
+ * cannot dispatch a spurious SET_MODE(0)/SET_CONFIG_TRACK(0)/SET_CUP(0). Safe on
+ * NULL. */
+void mdkr_party_link_intent_init(MdkrPartyLinkLocalIntent *intent);
 
 /* Engine publishes the local player's intent. Each publish re-arms the poll
  * below (a per-publish epoch, exactly like online_race_results). No-op when

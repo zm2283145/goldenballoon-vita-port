@@ -2,43 +2,31 @@
 """Prove the native online HOST TRACK / CUP SELECT screen (PD-T3, Strategy D2).
 
 Where check_online_charselect.py proves the FIRST player-facing screen of the
-separated online path, THIS lane proves the SECOND: the session enters its
-TRACKSELECT phase (game/src/online/online_trackselect.c, which re-implements the
-presentation with the game's OWN per-world background art + font instead of
-calling the offline track-select _loop), the host locks a track over the
-party_link reverse feed, the local vehicle auto-narrows to that track's usable
-mask (R-A), the reducer's ready-clear on the config change is followed by both
-seats reconverging to ready (R-B continuous republish), the host starts, and the
-race boots + converges byte-for-byte -- all without ever entering the offline menu
-state machine.
+separated online path, THIS lane proves the SECOND (game/src/online/
+online_trackselect.c), which re-implements the presentation with the game's OWN
+per-world sky art + font in a two-stage layout (a world/cup banner strip + the
+hovered world's full-width untruncated track list) instead of calling the offline
+track-select _loop.
 
 It stands up the same in-process two-adapter live session as the charselect lane
-(real libdatachannel DTLS over the loopback hub, roster + launch descriptor from
-the vote) and sets BOTH MDKR_TEST_ONLINE_CHARSELECT=1 (so the CHARSELECT seam
-installs the feed, scripts the character pick, and converges the local seat) AND
-MDKR_TEST_ONLINE_TRACKSELECT=1 (so the CHARSELECT seam DEFERS its self-start,
-the session hands off CHARSELECT -> TRACKSELECT on the local-ready signal, and the
-TRACKSELECT seam acts as the launcher reducer: it converges the local seat,
-applies the host's SET_CONFIG_TRACK with the reducer's ready-clear, re-asserts the
-scripted joiner's ready, and flips the lobby to LOADING on the host's start).
+(real libdatachannel DTLS over the loopback hub) and runs TWO scenarios via the
+MDKR_TEST_ONLINE_TRACKSELECT env value (with MDKR_TEST_ONLINE_CHARSELECT=1 so the
+CHARSELECT seam installs the feed + scripts the character pick and then DEFERS its
+self-start so the session hands off CHARSELECT -> TRACKSELECT on local-ready):
 
-The scripted TRACKSELECT input FIRST proves the B -> CHARSELECT back path (no
-wedge), then on re-entry walks the cursor to Whale Bay (cup 2 round 0, track 8,
-hovercraft-only mask 0x2), LOCKS it, and presses Start.
-
-Assertions:
-  * the CHARSELECT screen was entered, then handed off to TRACKSELECT
-  * the TRACKSELECT screen was entered (>= twice: the B round-trip)
-  * the offered track-id list equals the reducer-accepted set (R-D)
-  * B on TRACKSELECT returned to CHARSELECT (no wedge; the PD-T6 leave stub still
-    logs EXACTLY once across the whole run)
-  * the host lock reached the reducer: the snapshot configured_track converged to
-    track 8
-  * the vehicle auto-narrowed to hovercraft (1) for Whale Bay's 0x2 mask (R-A)
-  * both seats' ready cleared then reconverged around the config change (R-B)
-  * the phase advanced on the scripted host-start; assets were freed on exit
-  * the session handed off to the race WITHOUT the offline menu (gGameMode=2,
-    gCurrentMenuId=0) and the race still boots + converges byte-for-byte
+  * "1"      SINGLE-RACE HOST: first proves B -> CHARSELECT back (no wedge), then
+             on re-entry locks Whale Bay (track 8, hovercraft-only 0x2) -- the R-A
+             auto-narrow moves the seat off Car -- then browses AWAY to Spaceport
+             Alpha (whose 2P mask drops hovercraft) to prove F-D5 (the publishable
+             vehicle stays legal for the LOCKED track, not the hovered one), then
+             starts. The reducer's ready-clear on the lock is followed by both
+             seats reconverging to ready (R-B), the host starts, the race boots +
+             converges byte-for-byte, all without the offline menu.
+  * "joiner" TOURNAMENT JOINER: the local seat is a JOINER; the seam scripts a
+             remote HOST locking cup 2 (Sherbet; round 0 == Whale Bay). Proves the
+             joiner renders the ROOM snapshot (F-D3: host=0, snap.mode=TOURNAMENT,
+             snap.cup=2) and auto-narrows its OWN vehicle to the cup's round-0
+             track (F-I2) so BEGIN_LOADING is never refused, and the race boots.
 """
 
 from __future__ import annotations
@@ -57,13 +45,17 @@ ROOT = Path(__file__).resolve().parent.parent
 TICKS = 3000
 
 # The reducer-accepted set (kCupTracks in platform/online/lobby_core.c ==
-# online_track_table.c), cup-major then round order. R-D: the screen's offered
-# list must equal this exactly.
+# online_track_table.c == the screen's sTrackIds == test_online_lobby_core.c's
+# literal pin), cup-major then round order. R-D: the screen's offered list must
+# equal this exactly.
 EXPECTED_TRACKS = [5, 3, 29, 7, 13, 6, 9, 28, 8, 4, 10, 30,
                    19, 18, 20, 31, 17, 32, 33, 15]
 LOCKED_TRACK = 8      # Whale Bay (cup 2 round 0)
 LOCKED_MASK = 0x2     # hovercraft-only
 NARROWED_VEHICLE = 1  # VEHICLE_HOVERCRAFT
+SPACEPORT_COL = 4     # Future Fun Land column
+SPACEPORT_ROW = 3     # Spaceport Alpha (track 15) row
+TOURN_CUP = 2         # Sherbet cup (round 0 == Whale Bay)
 
 GAMEMODE_ONLINE_SESSION = 2
 
@@ -88,12 +80,12 @@ SESS_TS_TO_CS_RE = re.compile(
 TS_RENDER_RE = re.compile(
     r"^\[online-trackselect\] render mode=(\d+) col=(\d+) row=(\d+) host=(\d+) "
     r"track=(\d+) mask=0x([0-9a-f]+) vehicle=(\d+) locked\{track=(-?\d+) "
-    r"cup=(-?\d+)\} seat\{r0=(\d+) r1=(\d+)\} snap\{cfgTrack=(\d+) cup=(\d+) "
-    r"phase=(\d+)\} start=(\d+)$",
+    r"cup=(-?\d+)\} seat\{r0=(\d+) r1=(\d+)\} snap\{mode=(\d+) cfgTrack=(\d+) "
+    r"cup=(\d+) phase=(\d+)\} start=(\d+)$",
     re.MULTILINE)
 # findall tuple indices:
 #  0 mode 1 col 2 row 3 host 4 track 5 mask 6 vehicle 7 lockedTrack 8 lockedCup
-#  9 r0 10 r1 11 snapCfgTrack 12 snapCup 13 snapPhase 14 start
+#  9 r0 10 r1 11 snapMode 12 snapCfgTrack 13 snapCup 14 snapPhase 15 start
 
 SESSION_RACE_RE = re.compile(
     r"^\[online-session\] phase=RACE booting after (\d+) LOBBY_WAIT tick\(s\); "
@@ -107,9 +99,14 @@ ENGINE_LIVE_RE = re.compile(
     r"foldPeer=(\d+) hashVisible=([0-9a-f]{16}) hashPeer=([0-9a-f]{16}) "
     r"converged=(\d+)$", re.MULTILINE)
 
+FORBIDDEN = ("[FATAL]", "[CRASH]", "AddressSanitizer",
+             "online race admission rejected",
+             "launcher input provider rejected",
+             "engine startup rejected before authored tick one")
 
-def fail(message: str, output: str = "") -> int:
-    print(f"FAIL online trackselect: {message}", file=sys.stderr)
+
+def fail(scenario: str, message: str, output: str = "") -> int:
+    print(f"FAIL online trackselect [{scenario}]: {message}", file=sys.stderr)
     if output:
         print(output[-16000:], file=sys.stderr)
     return 1
@@ -122,6 +119,228 @@ def clean_environment(**updates: str) -> dict[str, str]:
     }
     environment.update(updates)
     return environment
+
+
+def run_engine(binary: Path, rom: Path, ts_value: str, ticks: int,
+               timeout: int, verbose: bool) -> tuple[int, str]:
+    with tempfile.TemporaryDirectory(prefix="mdkr64-online-trackselect-") as temp:
+        run_dir = Path(temp)
+        (run_dir / "saves").mkdir()
+        (run_dir / "preferences").mkdir()
+        environment = clean_environment(
+            LC_ALL="C",
+            MDKR_APP_AUTOPLAY="1",
+            MDKR_APP_TEST_ONLINE_LIVE="1",
+            MDKR_APP_AUTOPLAY_TICKS=str(ticks),
+            MDKR_APP_PREFS_DIR=str(run_dir / "preferences"),
+            MDKR_AUDIO="0",
+            MDKR_AUTOPILOT="1",
+            MDKR_NO_CRASH_HANDLER="1",
+            MDKR_PRESENT_RATE="original",
+            MDKR_RENDERER="gl",
+            MDKR_ROM=str(rom),
+            MDKR_SAVE_DIR=str(run_dir / "saves"),
+            MDKR_STATE_HASH="3",
+            MDKR_TEST_SCRIPT_ONLY_INPUT="1",
+            MDKR_TEST_ONLINE_CHARSELECT="1",
+            MDKR_TEST_ONLINE_TRACKSELECT=ts_value,
+            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
+            MDKR64_HIDDEN="1",
+        )
+        if verbose:
+            print(f"$ MDKR_TEST_ONLINE_TRACKSELECT={ts_value} {binary}",
+                  flush=True)
+        process = subprocess.run(
+            [str(binary)], cwd=run_dir, env=environment, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=timeout, check=False,
+        )
+        return process.returncode, (process.stdout or "")
+
+
+def assert_race_converges(scn: str, output: str) -> int | None:
+    """Shared: the session handed off to the race without the offline menu and
+    the two endpoints converged byte-for-byte."""
+    race = SESSION_RACE_RE.findall(output)
+    if len(race) != 1:
+        return fail(scn, f"expected exactly one session RACE hand-off, got "
+                    f"{race!r}", output)
+    _t, boot_gamemode, boot_menu_id = race[0]
+    if int(boot_gamemode) != GAMEMODE_ONLINE_SESSION:
+        return fail(scn, f"at hand-off gGameMode={boot_gamemode}, expected "
+                    f"{GAMEMODE_ONLINE_SESSION}", output)
+    if int(boot_menu_id) != 0:
+        return fail(scn, f"gCurrentMenuId={boot_menu_id} at hand-off -- offline "
+                    f"menu entered (expected 0)", output)
+    if "input-script" in output or "race_2p_split" in output:
+        return fail(scn, "a menu-nav input script was loaded", output)
+    if not DIRECT_BOOT_RE.search(output):
+        return fail(scn, "the race boot never fired after TRACKSELECT", output)
+    stats = ENGINE_LIVE_RE.findall(output)
+    if len(stats) != 1:
+        return fail(scn, f"expected one ENGINE-ONLINE-LIVE witness, got "
+                    f"{stats!r}", output)
+    (result, raced, drains, advance_failed, _e, _a, _c, _d, fold_visible,
+     _fp, hash_visible, hash_peer, converged) = stats[0]
+    if int(result) != 0:
+        return fail(scn, f"engine boot returned {result}", output)
+    if int(advance_failed) != 0:
+        return fail(scn, "the live match-input source failed to advance", output)
+    if int(raced) < 100 or int(drains) < 100:
+        return fail(scn, f"race did not sustain ticks (raced={raced} "
+                    f"drains={drains})", output)
+    if not (int(converged) == 1 and hash_visible == hash_peer and
+            int(fold_visible) >= 20):
+        return fail(scn, f"endpoints did not converge (converged={converged} "
+                    f"fold={fold_visible} v={hash_visible} p={hash_peer})",
+                    output)
+    return None  # ok
+
+
+def check_common(scn: str, rc: int, output: str) -> int | None:
+    for marker in FORBIDDEN:
+        if marker in output:
+            return fail(scn, f"observed forbidden marker {marker!r}", output)
+    if rc != 0:
+        return fail(scn, f"process exited {rc}", output)
+    if not CS_ENTER_RE.search(output):
+        return fail(scn, "CHARSELECT was never entered (flow must pass through "
+                    "charselect first)", output)
+    if not SESS_CS_TO_TS_RE.search(output):
+        return fail(scn, "CHARSELECT never handed off to TRACKSELECT", output)
+    if not TS_ENTER_RE.search(output):
+        return fail(scn, "TRACKSELECT was never entered", output)
+    tracks_line = TS_TRACKS_RE.search(output)
+    if not tracks_line:
+        return fail(scn, "the screen never emitted its offered track-id list",
+                    output)
+    offered = [int(x) for x in tracks_line.group(1).split()]
+    if offered != EXPECTED_TRACKS:
+        return fail(scn, f"offered ids {offered} != reducer set {EXPECTED_TRACKS}",
+                    output)
+    if not TS_RENDER_RE.findall(output):
+        return fail(scn, "no TRACKSELECT render witnesses", output)
+    return None
+
+
+def check_single_host(output: str) -> int | None:
+    scn = "single-host"
+    err = check_common(scn, 0, output)
+    if err is not None:
+        return err
+    renders = TS_RENDER_RE.findall(output)
+
+    # B -> CHARSELECT round-trip (no wedge): >=2 handoffs, a back log, and the
+    # PD-T6 charselect leave stub EXACTLY once across the whole run.
+    if len(SESS_CS_TO_TS_RE.findall(output)) < 2:
+        return fail(scn, "expected CHARSELECT -> TRACKSELECT at least twice (the "
+                    "B round-trip)", output)
+    if max(int(e) for e in TS_ENTER_RE.findall(output)) < 2:
+        return fail(scn, "TRACKSELECT entered < 2 times (B round-trip)", output)
+    if not TS_BACK_RE.search(output):
+        return fail(scn, "B on TRACKSELECT never returned to CHARSELECT", output)
+    if not SESS_TS_TO_CS_RE.search(output):
+        return fail(scn, "no TRACKSELECT -> CHARSELECT back transition", output)
+    leave_stub = output.count(CS_LEAVE_STUB)
+    if leave_stub != 1:
+        return fail(scn, f"charselect leave stub logged {leave_stub} times "
+                    f"(expected EXACTLY 1)", output)
+
+    # F-I1 regression: the back-out keeps CHARSELECT for more than one tick (the
+    # session gates the re-advance on the screen's OWN confirmed+ready latch, not
+    # only the lagging snapshot). NOTE the synchronous seam cannot inject the live
+    # reduce lag, so this guards no one-frame bounce; the async correctness is by
+    # construction (the screen latch resets on _enter, independent of snapshot).
+    cs_enters = len(CS_ENTER_RE.findall(output))
+    if cs_enters < 2:
+        return fail(scn, f"CHARSELECT re-entered {cs_enters}x; the back-out did "
+                    f"not return to a fresh charselect", output)
+
+    # Host lock reached the reducer: configured_track converged to 8.
+    if not [r for r in renders if int(r[12]) == LOCKED_TRACK]:
+        return fail(scn, f"snapshot configured_track never converged to "
+                    f"{LOCKED_TRACK}", output)
+
+    # Vehicle auto-narrow held for Whale Bay's 0x2 mask (R-A).
+    narrow_rows = [r for r in renders
+                   if int(r[4]) == LOCKED_TRACK and int(r[5], 16) == LOCKED_MASK]
+    if not narrow_rows:
+        return fail(scn, f"no render row resolved track {LOCKED_TRACK} mask "
+                    f"0x{LOCKED_MASK:x}", output)
+    if any(int(r[6]) != NARROWED_VEHICLE for r in narrow_rows):
+        return fail(scn, f"vehicle did not auto-narrow to {NARROWED_VEHICLE}",
+                    output)
+    if any(((1 << int(r[6])) & LOCKED_MASK) == 0 for r in narrow_rows):
+        return fail(scn, "a resolved vehicle bit was NOT inside the track mask",
+                    output)
+
+    # F-D5: after the lock, browsing to Spaceport Alpha (col4,row3, 2P mask drops
+    # hovercraft) must NOT re-narrow off the LOCKED track's legal vehicle.
+    spaceport_rows = [r for r in renders
+                      if int(r[1]) == SPACEPORT_COL and int(r[2]) == SPACEPORT_ROW]
+    if not spaceport_rows:
+        return fail(scn, "cursor never browsed to Spaceport Alpha after locking "
+                    "(F-D5 coverage would be silently skipped)", output)
+    locked_while_browsing = [r for r in spaceport_rows if int(r[7]) == LOCKED_TRACK]
+    if not locked_while_browsing:
+        return fail(scn, "no Spaceport Alpha hover row while Whale Bay was locked",
+                    output)
+    if any(int(r[6]) != NARROWED_VEHICLE for r in locked_while_browsing):
+        bad = [int(r[6]) for r in locked_while_browsing
+               if int(r[6]) != NARROWED_VEHICLE]
+        return fail(scn, f"F-D5: after locking Whale Bay, hovering Spaceport "
+                    f"Alpha re-narrowed the published vehicle to {bad} (must stay "
+                    f"{NARROWED_VEHICLE}, legal for the LOCKED track)", output)
+
+    # Ready cleared then reconverged around the config change (R-B).
+    cfg_rows = [r for r in renders if int(r[12]) == LOCKED_TRACK]
+    if not [r for r in cfg_rows if int(r[9]) == 0 and int(r[10]) == 0]:
+        return fail(scn, "never witnessed the ready-clear after the config "
+                    "change", output)
+    if not [r for r in cfg_rows if int(r[9]) == 1 and int(r[10]) == 1]:
+        return fail(scn, "both seats never reconverged to ready after the "
+                    "config-clear", output)
+
+    if not TS_ADVANCE_RE.search(output):
+        return fail(scn, "never advanced on the scripted host-start", output)
+    if not TS_EXIT_RE.search(output):
+        return fail(scn, "never freed world bg assets on exit", output)
+    return assert_race_converges(scn, output)
+
+
+def check_joiner(output: str) -> int | None:
+    scn = "joiner"
+    err = check_common(scn, 0, output)
+    if err is not None:
+        return err
+    renders = TS_RENDER_RE.findall(output)
+
+    # F-D3: the JOINER renders the ROOM snapshot -- host=0, and the mode + locked
+    # cup come from the snapshot, not local state.
+    joiner_rows = [r for r in renders if int(r[3]) == 0]
+    if not joiner_rows:
+        return fail(scn, "no render row with host=0 -- the joiner render path "
+                    "never executed (F-D3)", output)
+    room_rows = [r for r in joiner_rows
+                 if int(r[11]) == 1 and int(r[13]) == TOURN_CUP]
+    if not room_rows:
+        return fail(scn, f"joiner never reflected the room snapshot "
+                    f"(host=0, snap.mode=TOURNAMENT, snap.cup={TOURN_CUP}) -- "
+                    f"F-D3 render-from-snapshot", output)
+
+    # F-I2: the joiner auto-narrowed its OWN vehicle to the cup's round-0 track
+    # (Whale Bay, hovercraft-only) so BEGIN_LOADING is never refused.
+    if not [r for r in room_rows if int(r[6]) == NARROWED_VEHICLE]:
+        return fail(scn, f"joiner never narrowed its vehicle to "
+                    f"{NARROWED_VEHICLE} for the cup's round-0 track (F-I2)",
+                    output)
+    if "ILLEGAL_VEHICLE" in output:
+        return fail(scn, "a BEGIN_LOADING ILLEGAL_VEHICLE refusal was observed "
+                    "(F-I2 livelock)", output)
+
+    if not TS_ADVANCE_RE.search(output):
+        return fail(scn, "never advanced on the scripted host-start", output)
+    return assert_race_converges(scn, output)
 
 
 def main() -> int:
@@ -139,200 +358,25 @@ def main() -> int:
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
 
-    with tempfile.TemporaryDirectory(prefix="mdkr64-online-trackselect-") as temp:
-        run_dir = Path(temp)
-        (run_dir / "saves").mkdir()
-        (run_dir / "preferences").mkdir()
-        environment = clean_environment(
-            LC_ALL="C",
-            MDKR_APP_AUTOPLAY="1",
-            MDKR_APP_TEST_ONLINE_LIVE="1",
-            MDKR_APP_AUTOPLAY_TICKS=str(args.ticks),
-            MDKR_APP_PREFS_DIR=str(run_dir / "preferences"),
-            MDKR_AUDIO="0",
-            MDKR_AUTOPILOT="1",
-            MDKR_NO_CRASH_HANDLER="1",
-            MDKR_PRESENT_RATE="original",
-            MDKR_RENDERER="gl",
-            MDKR_ROM=str(rom),
-            MDKR_SAVE_DIR=str(run_dir / "saves"),
-            MDKR_STATE_HASH="3",
-            MDKR_TEST_SCRIPT_ONLY_INPUT="1",
-            # CHARSELECT seam converges the character; TRACKSELECT seam drives the
-            # track lock + host-start (and CHARSELECT defers its self-start).
-            MDKR_TEST_ONLINE_CHARSELECT="1",
-            MDKR_TEST_ONLINE_TRACKSELECT="1",
-            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
-            MDKR64_HIDDEN="1",
-        )
-        if args.verbose:
-            print(f"$ {binary}", flush=True)
+    scenarios = (("1", check_single_host), ("joiner", check_joiner))
+    for ts_value, checker in scenarios:
         try:
-            process = subprocess.run(
-                [str(binary)], cwd=run_dir, env=environment, text=True,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                timeout=args.timeout, check=False,
-            )
+            rc, output = run_engine(binary, rom, ts_value, args.ticks,
+                                    args.timeout, args.verbose)
         except subprocess.TimeoutExpired as error:
-            return fail(f"engine run timed out (a TRACKSELECT stall would look "
-                        f"like this): {error}")
-        output = process.stdout or ""
-
-    for marker in ("[FATAL]", "[CRASH]", "AddressSanitizer",
-                   "online race admission rejected",
-                   "launcher input provider rejected",
-                   "engine startup rejected before authored tick one"):
-        if marker in output:
-            return fail(f"observed forbidden marker {marker!r}", output)
-
-    if process.returncode != 0:
-        return fail(f"process exited {process.returncode}", output)
-
-    # --- CHARSELECT ran and handed off to TRACKSELECT ----------------------
-    if not CS_ENTER_RE.search(output):
-        return fail("the CHARSELECT screen was never entered (the flow must "
-                    "pass through charselect first)", output)
-    cs_to_ts = SESS_CS_TO_TS_RE.findall(output)
-    if len(cs_to_ts) < 2:
-        return fail(f"expected CHARSELECT -> TRACKSELECT at least twice (the B "
-                    f"round-trip), got {len(cs_to_ts)}", output)
-
-    # --- TRACKSELECT entered (>= twice) ------------------------------------
-    entries = [int(e) for e in TS_ENTER_RE.findall(output)]
-    if not entries:
-        return fail("the TRACKSELECT screen was never entered "
-                    "([online-trackselect] enter)", output)
-    if max(entries) < 2:
-        return fail(f"TRACKSELECT was entered only {max(entries)} time(s); the "
-                    f"B->CHARSELECT round-trip requires >= 2", output)
-
-    # --- Offered track-id list == the reducer-accepted set (R-D) ------------
-    tracks_line = TS_TRACKS_RE.search(output)
-    if not tracks_line:
-        return fail("the screen never emitted its offered track-id list", output)
-    offered = [int(x) for x in tracks_line.group(1).split()]
-    if offered != EXPECTED_TRACKS:
-        return fail(f"offered track ids {offered} != reducer-accepted set "
-                    f"{EXPECTED_TRACKS} (R-D drift)", output)
-
-    # --- Back-to-charselect path exercised, no wedge -----------------------
-    if not TS_BACK_RE.search(output):
-        return fail("B on TRACKSELECT never returned to CHARSELECT "
-                    "([online-trackselect] back to charselect)", output)
-    if not SESS_TS_TO_CS_RE.search(output):
-        return fail("the session never logged the TRACKSELECT -> CHARSELECT "
-                    "back transition", output)
-    # The PD-T6 charselect leave-to-launcher stub must still log EXACTLY once
-    # across the whole run: the session preserves the warn-once latch across the
-    # trackselect-back re-entry, so the browse-B on the re-entered charselect does
-    # NOT re-spam it (and >1 would mean a wedge/spam; 0 would mean the I1
-    # browse-B was dropped).
-    leave_stub_count = output.count(CS_LEAVE_STUB)
-    if leave_stub_count != 1:
-        return fail(f"the PD-T6 charselect leave stub logged {leave_stub_count} "
-                    f"times (expected EXACTLY 1 across the whole flow)", output)
-
-    renders = TS_RENDER_RE.findall(output)
-    if not renders:
-        return fail("the TRACKSELECT screen produced no render witnesses", output)
-
-    # --- Host lock reached the reducer: configured_track converged to 8 -----
-    converged_cfg = [r for r in renders if int(r[11]) == LOCKED_TRACK]
-    if not converged_cfg:
-        return fail(f"the snapshot configured_track never converged to the "
-                    f"locked track {LOCKED_TRACK} (SET_CONFIG_TRACK did not "
-                    f"reach the reducer)", output)
-
-    # --- Vehicle auto-narrow held for Whale Bay's 0x2 mask (R-A) -----------
-    narrow_rows = [
-        r for r in renders
-        if int(r[4]) == LOCKED_TRACK and int(r[5], 16) == LOCKED_MASK
-    ]
-    if not narrow_rows:
-        return fail(f"no render row resolved track {LOCKED_TRACK} with mask "
-                    f"0x{LOCKED_MASK:x}", output)
-    if any(int(r[6]) != NARROWED_VEHICLE for r in narrow_rows):
-        bad = [int(r[6]) for r in narrow_rows if int(r[6]) != NARROWED_VEHICLE]
-        return fail(f"vehicle did not auto-narrow to {NARROWED_VEHICLE} for "
-                    f"track {LOCKED_TRACK} (mask 0x{LOCKED_MASK:x}); saw {bad}",
-                    output)
-    if any(((1 << int(r[6])) & LOCKED_MASK) == 0 for r in narrow_rows):
-        return fail("a resolved vehicle bit was NOT inside the track mask (R-A "
-                    "violation)", output)
-
-    # --- Ready cleared then reconverged around the config change (R-B) -------
-    cfg_rows = [r for r in renders if int(r[11]) == LOCKED_TRACK]
-    cleared = [r for r in cfg_rows if int(r[9]) == 0 and int(r[10]) == 0]
-    reconverged = [r for r in cfg_rows if int(r[9]) == 1 and int(r[10]) == 1]
-    if not cleared:
-        return fail("never witnessed the ready-clear after the config change "
-                    "(both seats r0=0 r1=0 with configured_track locked)", output)
-    if not reconverged:
-        return fail("both seats never reconverged to ready after the "
-                    "config-clear (r0=1 r1=1 with configured_track locked)",
-                    output)
-
-    # --- Phase advanced on the scripted host-start; assets freed -----------
-    if not TS_ADVANCE_RE.search(output):
-        return fail("the screen never advanced on the scripted host-start "
-                    "([online-trackselect] advance)", output)
-    if not TS_EXIT_RE.search(output):
-        return fail("the screen never freed its world bg assets on exit", output)
-
-    # --- Offline isolation preserved through the hand-off ------------------
-    race = SESSION_RACE_RE.findall(output)
-    if len(race) != 1:
-        return fail(f"expected exactly one session RACE hand-off, got {race!r}",
-                    output)
-    _lobby_ticks, boot_gamemode, boot_menu_id = race[0]
-    if int(boot_gamemode) != GAMEMODE_ONLINE_SESSION:
-        return fail(f"at hand-off gGameMode={boot_gamemode}, expected "
-                    f"GAMEMODE_ONLINE_SESSION ({GAMEMODE_ONLINE_SESSION})", output)
-    if int(boot_menu_id) != 0:
-        return fail(f"gCurrentMenuId={boot_menu_id} at hand-off -- the offline "
-                    f"menu state machine was entered (expected 0)", output)
-    if "input-script" in output or "race_2p_split" in output:
-        return fail("a menu-nav input script was loaded -- the online path must "
-                    "reach the race without one", output)
-
-    # --- The race still boots (via the session) and converges --------------
-    if not DIRECT_BOOT_RE.search(output):
-        return fail("the race boot never fired after TRACKSELECT", output)
-    if "[online-live] booting visible engine" not in output:
-        return fail("the visible engine was never booted on the live transport",
-                    output)
-    stats = ENGINE_LIVE_RE.findall(output)
-    if len(stats) != 1:
-        return fail(f"expected one ENGINE-ONLINE-LIVE witness, got {stats!r}",
-                    output)
-    (result, raced, drains, advance_failed, _env, _acc, _corr, _drn,
-     fold_visible, _foldp, hash_visible, hash_peer, converged) = stats[0]
-    if int(result) != 0:
-        return fail(f"engine boot returned {result}", output)
-    if int(advance_failed) != 0:
-        return fail("the live match-input source failed to advance the race",
-                    output)
-    if int(raced) < 100 or int(drains) < 100:
-        return fail(f"the visible race did not sustain enough authored ticks "
-                    f"(racedTicks={raced} drainCalls={drains})", output)
-    if "[HOST-SHUTDOWN]" not in output:
-        return fail("the engine did not tear down its host cleanly", output)
-    if not (int(converged) == 1 and hash_visible == hash_peer and
-            int(fold_visible) >= 20):
-        return fail(f"the two endpoints did not converge (converged={converged} "
-                    f"foldVisible={fold_visible} hashVisible={hash_visible} "
-                    f"hashPeer={hash_peer})", output)
+            return fail(ts_value, f"engine run timed out: {error}")
+        result = checker(output)
+        if result is not None:
+            return result
 
     print(
-        "PASS online trackselect: native TRACKSELECT entered (real per-world "
-        "art + font), offered the reducer-accepted 20-track set, B returned to "
-        "CHARSELECT (no wedge, 1 stub), host locked Whale Bay (track "
-        f"{LOCKED_TRACK}) -> configured_track converged, vehicle auto-narrowed "
-        f"to {NARROWED_VEHICLE} for mask 0x{LOCKED_MASK:x}, both seats "
-        "reconverged to ready after the config-clear, advanced on host-start, "
-        f"freed assets, handed off (gGameMode={boot_gamemode} "
-        f"gCurrentMenuId={boot_menu_id}) -- race converged racedTicks={raced} "
-        f"hash={hash_visible}"
+        "PASS online trackselect: two-stage native screen -- SINGLE-HOST "
+        "(B->charselect no-wedge; locked Whale Bay -> configured_track converged; "
+        "auto-narrow to hovercraft; F-D5 vehicle stays legal browsing Spaceport "
+        "Alpha; ready clear->reconverge; host-start; race converged) and "
+        "TOURNAMENT-JOINER (renders room snapshot host=0/mode=TOURNAMENT/cup=2; "
+        "narrows to the cup round-0 track; no ILLEGAL_VEHICLE; race converged) -- "
+        "both handed off gGameMode=2 gCurrentMenuId=0, offered ids == reducer set"
     )
     return 0
 

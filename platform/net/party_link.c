@@ -61,6 +61,16 @@ bool mdkr_party_link_read(MdkrPartyLinkSnapshot *out) {
     return true;
 }
 
+void mdkr_party_link_intent_init(MdkrPartyLinkLocalIntent *intent) {
+    if (intent == NULL) return;
+    memset(intent, 0, sizeof(*intent));
+    /* Fields whose zero is a REAL value must start at their UNSET sentinel. */
+    intent->vehicle_id = MDKR_ONLINE_NO_VEHICLE;
+    intent->mode = MDKR_PARTY_LINK_MODE_UNSET;
+    intent->config_track = MDKR_PARTY_LINK_TRACK_UNSET;
+    intent->cup_id = MDKR_PARTY_LINK_CUP_UNSET;
+}
+
 void mdkr_party_link_intent_publish(const MdkrPartyLinkLocalIntent *intent) {
     if (!sActive || intent == NULL) return;
     sIntent = *intent;
@@ -226,6 +236,10 @@ static uint8_t party_link_kind_state(uint8_t kind,
     case MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK:
         if (!have || !local->is_host) return 0u;
         if (intent->config_track == MDKR_PARTY_LINK_TRACK_UNSET) return 0u;
+        /* M1 cross-gate: a configured track only applies in single-race mode, so
+         * never want it when the intent asks for tournament -- a stray intent must
+         * not dispatch cup+track together. */
+        if (intent->mode == MDKR_PARTY_LINK_MODE_TOURNAMENT) return 0u;
         /* Track ids are all <= 33, so the u8 action value never truncates. */
         *value = (uint8_t)intent->config_track;
         *converged = local->configured_track == intent->config_track;
@@ -233,6 +247,8 @@ static uint8_t party_link_kind_state(uint8_t kind,
     case MDKR_PARTY_LINK_DISPATCH_SET_CUP:
         if (!have || !local->is_host) return 0u;
         if (intent->cup_id == MDKR_PARTY_LINK_CUP_UNSET) return 0u;
+        /* M1 cross-gate: a cup only applies in tournament mode. */
+        if (intent->mode != MDKR_PARTY_LINK_MODE_TOURNAMENT) return 0u;
         *value = intent->cup_id;
         *converged = local->cup_id == intent->cup_id;
         return 1u;
