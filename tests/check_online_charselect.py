@@ -60,11 +60,16 @@ ENTER_RE = re.compile(
 INSTALL_RE = re.compile(
     r"^\[online-charselect\] test-script install", re.MULTILINE)
 RENDER_RE = re.compile(
-    r"^\[online-charselect\] render cursor=(\d+) name=(\S+) "
+    r"^\[online-charselect\] render cursor=(\d+) name=(\S+) portrait=(\d+) "
     r"local\{conf=(\d+) ready=(\d+) seatChar=(\d+) seatReady=(\d+)\} "
     r"remote\{seat=(-?\d+) char=(\d+) ready=(\d+) name=(\S+)\} "
     r"intent\{hover=(\d+) vehicle=(\d+) confirmed=(\d+) ready=(\d+)\}$",
     re.MULTILINE)
+# Named groups of RENDER_RE (1-based -> 0-based tuple index in findall):
+#  0 cursor  1 name  2 portrait  3 conf  4 ready(latch)  5 seatChar  6 seatReady
+#  7 remoteSeat  8 remoteChar  9 remoteReady  10 remoteName
+#  11 hover  12 vehicle  13 confirmed  14 ready(intent)
+LEAVE_STUB = "[online-charselect] leave requested"
 ADVANCE_RE = re.compile(
     r"^\[online-charselect\] advance: lobby left LOBBY \(phase=(\d+)\)",
     re.MULTILINE)
@@ -83,8 +88,9 @@ ENGINE_LIVE_RE = re.compile(
     r"converged=(\d+)$", re.MULTILINE)
 
 GAMEMODE_ONLINE_SESSION = 2
-TARGET_CHARACTER = 2   # Pipsy, in the online id space (== grid cell == hover)
-REMOTE_CHARACTER = 5   # Bumper, the scripted remote pick
+TARGET_CHARACTER = 2    # Pipsy, in the online id space (== grid cell == hover)
+TARGET_PORTRAIT = 8     # sOnlineToPortrait[2] == gRacerPortraits[8] (Pipsy)
+REMOTE_CHARACTER = 5    # Bumper, the scripted remote pick
 REMOTE_NAME = "RIVAL"
 
 
@@ -187,21 +193,33 @@ def main() -> int:
     # --- The remote seat rendered from the snapshot (display-only) ----------
     remote_rows = [
         r for r in renders
-        if int(r[7]) == REMOTE_CHARACTER and int(r[8]) == 1 and r[9] == REMOTE_NAME
+        if int(r[8]) == REMOTE_CHARACTER and int(r[9]) == 1 and r[10] == REMOTE_NAME
     ]
     if not remote_rows:
         return fail(f"no render row showed the remote seat from the snapshot "
                     f"(char={REMOTE_CHARACTER} ready=1 name={REMOTE_NAME})", output)
 
+    # --- Portrait/character mapping (M4): a swapped sOnlineToPortrait[] entry
+    #     would draw the wrong face; the cursor->character->portrait slot must
+    #     hold for the moved-to character. ----------------------------------
+    cursor_target_rows = [r for r in renders if int(r[0]) == TARGET_CHARACTER]
+    if not cursor_target_rows:
+        return fail(f"cursor never reached character {TARGET_CHARACTER}", output)
+    bad_portrait = [r for r in cursor_target_rows if int(r[2]) != TARGET_PORTRAIT]
+    if bad_portrait:
+        return fail(f"character {TARGET_CHARACTER} mapped to portrait "
+                    f"{bad_portrait[0][2]}, expected {TARGET_PORTRAIT} "
+                    f"(sOnlineToPortrait[] is wrong)", output)
+
     # --- The published intent (character + default vehicle + ready) ---------
     intent_rows = [
         r for r in renders
-        if int(r[10]) == TARGET_CHARACTER and int(r[12]) == 1 and int(r[13]) == 1
+        if int(r[11]) == TARGET_CHARACTER and int(r[13]) == 1 and int(r[14]) == 1
     ]
     if not intent_rows:
         return fail(f"the local intent never reached character={TARGET_CHARACTER} "
                     f"confirmed=1 ready=1", output)
-    intent_vehicle = int(intent_rows[0][11])
+    intent_vehicle = int(intent_rows[0][12])
     if intent_vehicle != default_vehicle:
         return fail(f"published intent vehicle {intent_vehicle} != enter()'s "
                     f"default vehicle {default_vehicle}", output)
@@ -212,11 +230,21 @@ def main() -> int:
     # --- The LOCAL seat converged + rendered (round-trip closed) ------------
     local_converged = [
         r for r in renders
-        if int(r[4]) == TARGET_CHARACTER and int(r[5]) == 1
+        if int(r[5]) == TARGET_CHARACTER and int(r[6]) == 1
     ]
     if not local_converged:
         return fail(f"no render row showed the local seat converged "
                     f"(seatChar={TARGET_CHARACTER} seatReady=1)", output)
+
+    # --- B-in-browse must NOT wedge the session (I1) ------------------------
+    # The scripted input presses B once while browsing. The session must still
+    # ADVANCE on the host-start (asserted below via the RACE hand-off), and the
+    # PD-T6 leave stub must log at most once -- not per frame at ~60 Hz.
+    leave_stub_count = output.count(LEAVE_STUB)
+    if leave_stub_count > 1:
+        return fail(f"the PD-T6 leave stub logged {leave_stub_count} times "
+                    f"(a B press wedged/spammed the session; expected <= 1)",
+                    output)
 
     # --- The phase advanced on the scripted host-start ----------------------
     advance = ADVANCE_RE.findall(output)

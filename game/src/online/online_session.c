@@ -58,6 +58,11 @@ typedef struct MdkrOnlineSessionState {
 /* Session-owned state -- deliberately NOT any offline global. */
 static MdkrOnlineSessionState sOnlineSession;
 
+/* Warn-once latch for the CHARSELECT leave stub (PD-T6): the engine->launcher
+ * return handshake is not wired yet, so a browse-B is logged exactly once, not
+ * per-frame. Reset when CHARSELECT is entered. */
+static u8 sCharselectLeaveWarned;
+
 /* ---- Headless test seam (beta + env gated; inert in normal runs) ----------
  *
  * Ordinary runs never set MDKR_TEST_ONLINE_SESSION_SCRIPT, so this is dormant.
@@ -203,6 +208,7 @@ void mdkr_online_session_tick(s32 updateRate) {
 
         if (toCharselect) {
             sOnlineSession.phase = MDKR_ONLINE_SESSION_CHARSELECT;
+            sCharselectLeaveWarned = 0u;
             mdkr_online_charselect_enter();
         } else if (readyToBoot) {
             online_session_boot_race();
@@ -220,11 +226,16 @@ void mdkr_online_session_tick(s32 updateRate) {
             /* Backing all the way out to the launcher room requires the
              * engine->launcher return handshake that is PD-T6 (the same wiring
              * that boots this session at LOBBY phase in the first place). For now
-             * this is a documented stub: log it and remain on the screen rather
-             * than half-tear-down into an unwired state. */
-            fprintf(stderr,
-                    "[online-charselect] leave requested; engine->launcher return "
-                    "is PD-T6, staying on screen\n");
+             * this is a documented stub: log it ONCE and remain on the screen
+             * rather than half-tear-down into an unwired state. The tick returns
+             * LEAVE as an edge (ADVANCE always wins), so this can never wedge the
+             * session -- a host-start still boots this endpoint. */
+            if (!sCharselectLeaveWarned) {
+                sCharselectLeaveWarned = 1u;
+                fprintf(stderr,
+                        "[online-charselect] leave requested; engine->launcher "
+                        "return is PD-T6, staying on screen\n");
+            }
         }
         break;
     }

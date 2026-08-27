@@ -5,8 +5,8 @@
  * Strategy D2 means: RE-IMPLEMENT the presentation here using the GAME'S OWN
  * decoded assets, rather than calling the offline menu's character-select loop.
  * That is the whole point -- it lets a decomp do what a static recompilation
- * cannot: draw the real N64 racer portraits and the real DKR font, natively,
- * without any custom chrome.
+ * cannot: draw the real N64 racer portraits, play the real DKR menu SFX, and use
+ * the real DKR font, natively, without any custom chrome.
  *
  * WHAT IT BORROWS (read-only reuse of already-compiled game code/data; NO edit
  * to menu.c is required -- every symbol below already has external linkage):
@@ -19,10 +19,11 @@
  *   - menu_racer_portraits       (menu.c) binds those loaded textures into
  *                                gRacerPortraits[] -- the exact call the results
  *                                screen makes right after loading the group.
- *   - draw_text / set_text_*     (font.h) the real DKR font, already resident
- *                                (load_fonts() ran at boot).
+ *   - draw_text / set_text_*     (font.h) the real DKR font.
  *   - texrect_draw / bgdraw_*    (rcp_dkr.h) the game's own 2D blit, drawing
  *                                straight into the engine frame's gCurrDisplayList.
+ *   - sound_play + SOUND_*       (audio.h / sound_ids.h) the real menu SFX, the
+ *                                same enums/API menu.c uses (e.g. menu.c:4564).
  *   - input_pressed / stick      (joypad.h) the real pad, local player only.
  *   - get_player_selected_vehicle(menu.c) the SAME default vehicle value
  *                                menu_online_versus_race_setup() applies at boot,
@@ -40,7 +41,7 @@
  * local split-screen player assignment, AI fill, music state). Entering it would
  * defeat the separated-boot isolation guarantee that keeps the shipped offline
  * game provably unimpacted, and it has no notion of a remote seat or the
- * party_link feeds. So we reuse the DATA and the DRAW primitives, not the loop.
+ * party_link feeds. So we reuse the DATA and the DRAW/SFX primitives, not the loop.
  *
  * The ENTIRE TU is #if MDKR_ENABLE_ONLINE_BETA and it is added to the build only
  * inside the beta CMake gate (game/src/online/ is not globbed), so a normal
@@ -63,6 +64,8 @@
                            menu_racer_portraits, get_player_selected_vehicle,
                            TEXTURE_ICON_PORTRAIT_*, font.h (draw_text, ...) */
 #include "rcp_dkr.h"    /* texrect_draw, bgdraw_fillcolour */
+#include "audio.h"      /* sound_play */
+#include "sound_ids.h"  /* SOUND_MENU_PICK2 / SOUND_SELECT2 / ... */
 #include "joypad.h"     /* input_pressed, input_clamp_stick_x/y */
 #include "PR/os_cont.h" /* A_BUTTON / B_BUTTON / *_JPAD / START_BUTTON */
 #include "net/party_link.h"
@@ -112,6 +115,15 @@ extern DrawTexture *gRacerPortraits[10];
 #define CS_GRID_X 22 /* top-left x of column 0's portrait */
 #define CS_GRID_Y 44 /* top-left y of row 0's portrait */
 #define CS_PORTRAIT_HALF 22 /* ~half a portrait, for centering labels */
+#define CS_TAKEN_FLASH_TICKS 45u /* "TAKEN BY x" flash duration (~1.5s @ 30Hz) */
+
+/* Menu SFX (the real DKR enums -- same reuse as the portraits; verified against
+ * menu.c:4564/4577/4778). */
+#define CS_SFX_MOVE SOUND_MENU_PICK2
+#define CS_SFX_CONFIRM SOUND_SELECT2
+#define CS_SFX_READY SOUND_SELECT3
+#define CS_SFX_BACK SOUND_MENU_BACK3
+#define CS_SFX_REJECT SOUND_ELECTRIC_BUZZ
 
 /* ---- Online character id -> gRacerPortraits index -------------------------
  * THREE different orderings exist for the ten racers and mixing them silently
@@ -126,7 +138,9 @@ extern DrawTexture *gRacerPortraits[10];
  *
  * The screen is laid out in ONLINE id order (grid cell index == online char id
  * == what we publish as hover_character and what the reducer validates), so this
- * table maps that id to the portrait slot to blit. */
+ * table maps that id to the portrait slot to blit. The headless lane emits the
+ * resolved slot (witness `portrait=`) and asserts the mapping, so a swapped entry
+ * is caught. */
 static const u8 sOnlineToPortrait[CS_CHAR_COUNT] = {
     1u, /* 0 Diddy     -> gRacerPortraits[1] */
     9u, /* 1 Timber    -> [9] */
@@ -143,23 +157,35 @@ static const u8 sOnlineToPortrait[CS_CHAR_COUNT] = {
 /* Short display names, in online id order (matches the launcher's kCharacters). */
 static const char *const sOnlineNames[CS_CHAR_COUNT] = {
     "DIDDY", "TIMBER", "PIPSY", "TIPTUP", "CONKER",
-    "BUMPER", "BANJO", "KRUNCH", "DRUMSTK", "T.T.",
+    "BUMPER", "BANJO", "KRUNCH", "DRUMSTICK", "T.T.",
 };
 
 /* ---- Session-owned screen state (never an offline global) ------------------ */
 typedef struct MdkrOnlineCharselectState {
-    u8 cursor;    /* online char id under the cursor (grid cell) */
-    u8 confirmed; /* local player has locked a character */
-    u8 ready;     /* local player is ready */
-    u8 vehicle;   /* mask-legal default vehicle id published with the pick */
-    u8 assets;    /* portrait group is loaded */
-    u8 leave;     /* local player asked to back all the way out */
-    u32 ticks;    /* CHARSELECT ticks elapsed (also drives the test input) */
+    u8 cursor;         /* online char id under the cursor (grid cell) */
+    u8 confirmed;      /* local player has locked a character */
+    u8 ready;          /* local player is ready (the single ready-truth: P3) */
+    u8 vehicle;        /* mask-legal default vehicle id published with the pick */
+    u8 assets;         /* portrait group + fonts are loaded */
+    u8 leave;          /* B-in-browse: leave request (edge; see tick) */
+    u8 seeded;         /* P1: first-snapshot cursor seed applied */
+    u32 ticks;         /* CHARSELECT ticks elapsed (also drives the test input) */
+    u32 takenFlashEnd; /* F3: "TAKEN BY x" flash deadline, in ticks */
     s8 stickLatchX;
     s8 stickLatchY;
 } MdkrOnlineCharselectState;
 
 static MdkrOnlineCharselectState sCs;
+
+/* P1: persists ACROSS entries (deliberately NOT reset by _enter's memset) so a
+ * tournament group's next race restarts on the racer you last confirmed, not
+ * always Diddy. */
+static u8 sLastConfirmedChar;
+
+/* M3: witness change-detect state at file scope so _enter() can reset it for a
+ * clean second entry. */
+static u32 sWitnessKey = 0xFFFFFFFFu;
+static s32 sWitnessRemoteSeat = -2;
 
 /* The exact portrait texture ids (TEXTURE_ICON_PORTRAIT_KRUNCH .. _TIMBER, all
  * ASSET_MASK_TEXTURE assets) plus the -1 terminator menu_assetgroup_load stops
@@ -175,8 +201,19 @@ static s16 sPortraitAssetIds[] = {
     -1,
 };
 
+/* Resolved (display-only) view of the remote seat, with a bounded, NUL-forced
+ * name copy -- seat->name is untrusted (T6 makes it remote-controlled). */
+typedef struct CsRemoteView {
+    s8 seat;      /* remote seat index, -1 when none */
+    u8 present;   /* an occupied remote seat exists */
+    u8 character; /* CS_NO_CHARACTER when no pick yet */
+    u8 ready;
+    char name[MDKR_PARTY_LINK_NAME_BYTES + 1u];
+} CsRemoteView;
+
 /* ---- forward decls (test seam defined at the bottom) ---------------------- */
 static void charselect_test_resolve(void);
+static void charselect_test_reset(void);
 static void charselect_test_reduce_and_script(void);
 
 /* ======================================================================== *
@@ -190,15 +227,20 @@ typedef struct CsInput {
 } CsInput;
 
 /* Scripted headless input (env MDKR_TEST_ONLINE_CHARSELECT): move the cursor two
- * cells right (to Pipsy, online id 2), confirm, then ready. Deterministic and
- * inert in a normal run. Exercises the SAME cursor/confirm/ready logic the live
- * pad drives. */
+ * cells right (to Pipsy, online id 2), press B once WHILE BROWSING (the I1
+ * no-wedge coverage), confirm, then ready. Deterministic and inert in a normal
+ * run. Exercises the SAME cursor/confirm/ready logic the live pad drives. */
 static void charselect_input_scripted(CsInput *in) {
     memset(in, 0, sizeof(*in));
     switch (sCs.ticks) {
     case 2u:
+        in->dx = 1; /* 0 -> 1 */
+        break;
+    case 3u:
+        in->bEdge = 1u; /* B while browsing: must NOT wedge the session */
+        break;
     case 4u:
-        in->dx = 1; /* 0 -> 1 -> 2 (Pipsy) */
+        in->dx = 1; /* 1 -> 2 (Pipsy) */
         break;
     case 6u:
         in->aEdge = 1u; /* confirm */
@@ -266,20 +308,19 @@ static void charselect_gather_input(CsInput *in) {
     }
 }
 
-/* Apply one input step to the local cursor/confirm/ready latches. */
-static void charselect_apply_input(const CsInput *in) {
+/* Apply one input step to the local cursor/confirm/ready latches. `remoteChar`
+ * is the remote seat's taken racer (CS_NO_CHARACTER when none) so a confirm on a
+ * taken cell can be REJECTED (ruling: DISALLOW -- matches offline DKR and avoids
+ * the SELECTION_CONFLICT divergence). */
+static void charselect_apply_input(const CsInput *in, u8 remoteChar) {
     if (!sCs.confirmed) {
-        /* Browsing: move the cursor over the grid. */
+        /* Browsing: move the cursor over the grid. Columns wrap (native DKR 2D
+         * menus wrap); rows clamp. */
         s32 col = (s32) (sCs.cursor % CS_COLS);
         s32 row = (s32) (sCs.cursor / CS_COLS);
-        col += in->dx;
+        u8 previous = sCs.cursor;
+        col = (col + in->dx + CS_COLS) % CS_COLS;
         row += in->dy;
-        if (col < 0) {
-            col = 0;
-        }
-        if (col >= CS_COLS) {
-            col = CS_COLS - 1;
-        }
         if (row < 0) {
             row = 0;
         }
@@ -287,22 +328,39 @@ static void charselect_apply_input(const CsInput *in) {
             row = CS_ROWS - 1;
         }
         sCs.cursor = (u8) (row * CS_COLS + col);
+        if (sCs.cursor != previous) {
+            sound_play(CS_SFX_MOVE, NULL);
+        }
         if (in->aEdge) {
-            sCs.confirmed = 1u; /* lock this character */
+            if (remoteChar != CS_NO_CHARACTER && sCs.cursor == remoteChar) {
+                /* DISALLOW: do not publish a confirm for a taken racer; flash a
+                 * TAKEN notice and play a negative cue. */
+                sCs.takenFlashEnd = sCs.ticks + CS_TAKEN_FLASH_TICKS;
+                sound_play(CS_SFX_REJECT, NULL);
+            } else {
+                sCs.confirmed = 1u;
+                sLastConfirmedChar = sCs.cursor; /* P1 persistence */
+                sound_play(CS_SFX_CONFIRM, NULL);
+            }
         } else if (in->bEdge) {
-            sCs.leave = 1u; /* back out of the room (see tick) */
+            /* Leave-to-launcher PLUMBING only (kept for PD-T6); it is NOT wired
+             * yet, so the browse help never advertises B. Edge-handled in the
+             * tick (cleared after one return) so it can never wedge the session. */
+            sCs.leave = 1u;
         }
         return;
     }
     /* Confirmed: A readies, B steps back one level (unready, then unconfirm). */
     if (in->aEdge) {
         sCs.ready = 1u;
+        sound_play(CS_SFX_READY, NULL);
     } else if (in->bEdge) {
         if (sCs.ready) {
             sCs.ready = 0u;
         } else {
             sCs.confirmed = 0u;
         }
+        sound_play(CS_SFX_BACK, NULL);
     }
 }
 
@@ -353,15 +411,15 @@ static void charselect_draw_label(u8 onlineId, s32 dy, s32 fontId, char *text,
     draw_text(&gCurrDisplayList, cx, y, text, ALIGN_MIDDLE_CENTER);
 }
 
-static void charselect_draw_centered(s32 y, s32 fontId, char *text, s32 r, s32 g,
-                                     s32 b) {
+static void charselect_draw_text_at(s32 x, s32 y, s32 fontId, char *text,
+                                    AlignmentFlags align, s32 r, s32 g, s32 b) {
     set_text_font(fontId);
     set_text_background_colour(0, 0, 0, 0);
     set_text_colour(r, g, b, 0, 255);
-    draw_text(&gCurrDisplayList, CS_SCREEN_W_HALF, y, text, ALIGN_MIDDLE_CENTER);
+    draw_text(&gCurrDisplayList, x, y, text, align);
 }
 
-/* Which snapshot seat is the local one / a remote one (display-only). */
+/* Which snapshot seat is the local one (display-only lookups). */
 static s32 charselect_local_seat(const MdkrPartyLinkSnapshot *snap) {
     unsigned i;
     for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
@@ -372,168 +430,217 @@ static s32 charselect_local_seat(const MdkrPartyLinkSnapshot *snap) {
     return -1;
 }
 
-static void charselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
-    s32 localSeat = haveSnap ? charselect_local_seat(snap) : -1;
-    u8 remoteChar = CS_NO_CHARACTER;
-    u8 localReady = sCs.ready;
-    u8 remoteReady = 0u;
-    const char *remoteName = "RIVAL";
-    u8 id;
+/* Resolve the (first occupied, non-local) remote seat into a bounded view.
+ * NOTE fenced 2-endpoint beta: first remote seat only (code M6). T6 revisits for
+ * true 4-player rendering. */
+static void charselect_resolve_remote(const MdkrPartyLinkSnapshot *snap,
+                                      bool haveSnap, s32 localSeat,
+                                      CsRemoteView *out) {
     unsigned i;
-
-    /* Title. */
-    charselect_draw_centered(18, ASSET_FONTS_BIGFONT, "CHOOSE YOUR RACER", 255,
-                             224, 96);
-
-    /* Resolve the remote seat's pick (display-only) so we can grey it out and
-     * label it with the remote player's name from the snapshot. */
-    if (haveSnap) {
-        for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
-            const MdkrPartyLinkSeat *seat = &snap->seats[i];
-            if (!seat->occupied || (s32) i == localSeat) {
-                continue;
-            }
-            if (seat->character_id < CS_CHAR_COUNT) {
-                remoteChar = seat->character_id;
-            }
-            remoteReady = seat->ready;
-            if (seat->name[0] != '\0') {
-                remoteName = seat->name;
-            }
-            break;
+    memset(out, 0, sizeof(*out));
+    out->seat = -1;
+    out->character = CS_NO_CHARACTER;
+    if (!haveSnap) {
+        return;
+    }
+    for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
+        const MdkrPartyLinkSeat *seat = &snap->seats[i];
+        if (!seat->occupied || (s32) i == localSeat) {
+            continue;
         }
-        if (localSeat >= 0) {
-            localReady = snap->seats[localSeat].ready;
+        out->seat = (s8) i;
+        out->present = 1u;
+        if (seat->character_id < CS_CHAR_COUNT) {
+            out->character = seat->character_id;
         }
+        out->ready = seat->ready ? 1u : 0u;
+        /* Untrusted: bounded copy, never assume NUL termination (M5 / F6). */
+        memcpy(out->name, seat->name, MDKR_PARTY_LINK_NAME_BYTES);
+        out->name[MDKR_PARTY_LINK_NAME_BYTES] = '\0';
+        break;
+    }
+}
+
+static void charselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
+                              s32 localSeat, const CsRemoteView *rv) {
+    const char *rname = rv->name[0] != '\0' ? rv->name : "RIVAL";
+    /* P4: triangle-wave pulse (0..16) off the tick counter for a native cursor
+     * highlight feel with zero assets. */
+    s32 tri = (s32) (sCs.ticks & 31u);
+    u8 id;
+
+    (void) snap;
+    (void) localSeat;
+    if (tri > 16) {
+        tri = 32 - tri;
     }
 
-    /* The grid: every racer's portrait + name. Colour tells the story --
-     * cursor (gold), local confirmed pick (green), remote's taken pick (greyed),
-     * everything else plain. */
+    /* Title. */
+    charselect_draw_text_at(CS_SCREEN_W_HALF, 18, ASSET_FONTS_BIGFONT,
+                            "CHOOSE YOUR RACER", ALIGN_MIDDLE_CENTER, 255, 224,
+                            96);
+
+    /* The grid: every racer's portrait + name. Colour + shape carry the state so
+     * a colorblind player still reads it: cursor = pulsing gold + >NAME< brackets
+     * (F7), local confirmed pick = green + YOU tag, remote's taken pick = big
+     * luminance drop + name tag. */
     for (id = 0u; id < CS_CHAR_COUNT; id++) {
-        u8 r = 210u, g = 210u, b = 210u;
+        u8 pr = 210u, pg = 210u, pb = 210u;
         s32 nr = 200, ng = 200, nb = 200;
-        bool taken = (remoteChar != CS_NO_CHARACTER && id == remoteChar);
+        bool taken = (rv->character != CS_NO_CHARACTER && id == rv->character);
         bool onCursor = (id == sCs.cursor);
         bool localPick = (sCs.confirmed && id == sCs.cursor);
+        char label[24];
 
         if (taken) {
-            r = g = b = 80u;
+            pr = pg = pb = 80u;
             nr = ng = nb = 90;
         }
-        if (onCursor) {
-            r = 255u;
-            g = 224u;
-            b = 96u;
-            nr = 255;
-            ng = 224;
-            nb = 96;
+        if (onCursor && !localPick) {
+            if (taken) {
+                /* Dimmed gold: keep BOTH "this is my cursor" and "this is taken"
+                 * legible (also aids colorblind players) -- F3.2. */
+                pr = 200u;
+                pg = 170u;
+                pb = 80u;
+                nr = 200;
+                ng = 170;
+                nb = 80;
+            } else {
+                pr = 255u;
+                pg = (u8) (190 + tri * 4);
+                pb = (u8) (60 + tri * 3);
+                nr = 255;
+                ng = 190 + tri * 4;
+                nb = 60 + tri * 3;
+            }
         }
         if (localPick) {
-            r = 120u;
-            g = 255u;
-            b = 120u;
+            pr = 120u;
+            pg = 255u;
+            pb = 120u;
             nr = 120;
             ng = 255;
             nb = 120;
         }
-        charselect_draw_portrait(id, r, g, b);
-        charselect_draw_label(id, 46, ASSET_FONTS_SMALLFONT,
-                              (char *) sOnlineNames[id], nr, ng, nb);
-        /* Seat markers under the chosen faces. */
-        if (sCs.confirmed && id == sCs.cursor) {
+
+        charselect_draw_portrait(id, pr, pg, pb);
+        /* Shape redundancy for the hover cursor (F7). */
+        if (onCursor) {
+            (void) snprintf(label, sizeof(label), ">%s<", sOnlineNames[id]);
+        } else {
+            (void) snprintf(label, sizeof(label), "%s", sOnlineNames[id]);
+        }
+        charselect_draw_label(id, 46, ASSET_FONTS_SMALLFONT, label, nr, ng, nb);
+
+        /* Seat markers on separate rows so they never overprint during the brief
+         * same-character latency window (F3.3). */
+        if (localPick) {
             charselect_draw_label(id, 56, ASSET_FONTS_SMALLFONT, "YOU", 120, 255,
                                   120);
         }
         if (taken) {
-            charselect_draw_label(id, 56, ASSET_FONTS_SMALLFONT,
-                                  (char *) remoteName, 255, 160, 160);
+            char tag[16];
+            (void) snprintf(tag, sizeof(tag), "%.7s", rname); /* F6 */
+            charselect_draw_label(id, 66, ASSET_FONTS_SMALLFONT, tag, 255, 160,
+                                  160);
         }
     }
 
-    /* Status: both seats' ready state, always visible. */
+    /* Status lines: drawn edge-anchored (F1 -- render_text_string subtracts half
+     * the width from x, so a CENTER-aligned edge string clips off-screen). Local
+     * status is driven by the ready LATCH (single ready-truth, P3). */
     {
         char line[64];
-        (void) snprintf(line, sizeof(line), "YOU: %s",
-                        localReady ? "READY" : (sCs.confirmed ? "PICKED" : "..."));
-        set_text_font(ASSET_FONTS_SMALLFONT);
-        set_text_background_colour(0, 0, 0, 0);
-        set_text_colour(localReady ? 120 : 220, localReady ? 255 : 220,
-                        localReady ? 120 : 220, 0, 255);
-        draw_text(&gCurrDisplayList, 24, 196, line, ALIGN_MIDDLE_CENTER);
+        const char *you = sCs.ready ? "READY" : (sCs.confirmed ? "PICKED"
+                                                              : "CHOOSING");
+        (void) snprintf(line, sizeof(line), "YOU: %s", you);
+        charselect_draw_text_at(24, 196, ASSET_FONTS_SMALLFONT, line,
+                                ALIGN_MIDDLE_LEFT, sCs.ready ? 120 : 220,
+                                sCs.ready ? 255 : 220, sCs.ready ? 120 : 220);
 
-        if (remoteChar != CS_NO_CHARACTER) {
-            (void) snprintf(line, sizeof(line), "%s: %s", remoteName,
-                            remoteReady ? "READY" : "PICKING");
-            set_text_colour(remoteReady ? 120 : 220, remoteReady ? 255 : 220,
-                            remoteReady ? 120 : 220, 0, 255);
-            draw_text(&gCurrDisplayList, CS_SCREEN_W - 24, 196, line,
-                      ALIGN_MIDDLE_CENTER);
+        /* Right status is ALWAYS drawn (F2): a first-time host must see the
+         * remote's presence/waiting state, not an empty half. */
+        if (!rv->present) {
+            charselect_draw_text_at(CS_SCREEN_W - 24, 196, ASSET_FONTS_SMALLFONT,
+                                    "WAITING FOR PLAYER...", ALIGN_MIDDLE_RIGHT,
+                                    150, 150, 150);
+        } else {
+            (void) snprintf(line, sizeof(line), "%.12s: %s", rname,
+                            rv->ready ? "READY" : "CHOOSING"); /* F6 */
+            charselect_draw_text_at(CS_SCREEN_W - 24, 196, ASSET_FONTS_SMALLFONT,
+                                    line, ALIGN_MIDDLE_RIGHT,
+                                    rv->ready ? 120 : 220, rv->ready ? 255 : 220,
+                                    rv->ready ? 120 : 220);
         }
     }
 
-    /* Context help. */
-    if (!sCs.confirmed) {
-        charselect_draw_centered(224, ASSET_FONTS_SMALLFONT, "A: CONFIRM   B: BACK",
-                                 255, 255, 255);
+    /* Context help / transient TAKEN flash (object-complete copy, F5). Browse
+     * never advertises B (leave-to-launcher is not wired). */
+    if (sCs.ticks < sCs.takenFlashEnd) {
+        char msg[32];
+        (void) snprintf(msg, sizeof(msg), "TAKEN BY %.7s", rname);
+        charselect_draw_text_at(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, msg,
+                                ALIGN_MIDDLE_CENTER, 255, 80, 80);
+    } else if (!sCs.confirmed) {
+        charselect_draw_text_at(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
+                                "A: SELECT", ALIGN_MIDDLE_CENTER, 255, 255, 255);
     } else if (!sCs.ready) {
-        charselect_draw_centered(224, ASSET_FONTS_SMALLFONT, "A: READY   B: BACK",
-                                 255, 255, 255);
+        charselect_draw_text_at(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
+                                "A: READY   B: CHANGE PICK", ALIGN_MIDDLE_CENTER,
+                                255, 255, 255);
     } else {
-        charselect_draw_centered(224, ASSET_FONTS_SMALLFONT,
-                                 "READY - WAITING   B: BACK", 120, 255, 120);
+        char msg[64];
+        if (rv->ready) {
+            (void) snprintf(msg, sizeof(msg),
+                            "WAITING FOR HOST TO START...   B: UNREADY");
+        } else {
+            (void) snprintf(msg, sizeof(msg),
+                            "READY! WAITING FOR %.12s...   B: UNREADY", rname);
+        }
+        charselect_draw_text_at(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, msg,
+                                ALIGN_MIDDLE_CENTER, 120, 255, 120);
     }
 }
 
 /* Bounded stderr witness: one line only when the visible state changes, so a
- * headless lane can read the drawn picks/names + the published intent without
- * flooding the log. */
-static void charselect_witness(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
-    static u32 last = 0xFFFFFFFFu;
-    static s32 lastRemote = -2;
-    s32 localSeat = haveSnap ? charselect_local_seat(snap) : -1;
+ * headless lane can read the drawn picks/names + published intent without
+ * flooding. The change-detect key folds the remote pick/ready too (M2), so a
+ * remote-only change still emits a row. */
+static void charselect_witness(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
+                               s32 localSeat, const CsRemoteView *rv) {
     u8 localSeatChar = CS_NO_CHARACTER;
     u8 localSeatReady = 0u;
-    s32 remoteSeat = -1;
-    u8 remoteChar = CS_NO_CHARACTER;
-    u8 remoteReady = 0u;
-    const char *remoteName = "";
-    unsigned i;
+    u8 remoteNibble;
     u32 key;
 
     if (haveSnap && localSeat >= 0) {
         localSeatChar = snap->seats[localSeat].character_id;
         localSeatReady = snap->seats[localSeat].ready;
     }
-    if (haveSnap) {
-        for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
-            if (snap->seats[i].occupied && (s32) i != localSeat) {
-                remoteSeat = (s32) i;
-                remoteChar = snap->seats[i].character_id;
-                remoteReady = snap->seats[i].ready;
-                remoteName = snap->seats[i].name;
-                break;
-            }
-        }
-    }
 
+    remoteNibble = (rv->character < CS_CHAR_COUNT) ? rv->character : 0xFu;
     key = ((u32) sCs.cursor) | ((u32) sCs.confirmed << 8) |
-          ((u32) sCs.ready << 9) | ((u32) localSeatChar << 16) |
-          ((u32) localSeatReady << 24);
-    if (key == last && remoteSeat == lastRemote) {
+          ((u32) sCs.ready << 9) | ((u32) remoteNibble << 10) |
+          ((u32) (rv->ready ? 1u : 0u) << 14) | ((u32) rv->present << 15) |
+          ((u32) localSeatChar << 16) | ((u32) localSeatReady << 24);
+    if (key == sWitnessKey && rv->seat == sWitnessRemoteSeat) {
         return;
     }
-    last = key;
-    lastRemote = remoteSeat;
+    sWitnessKey = key;
+    sWitnessRemoteSeat = rv->seat;
 
     fprintf(stderr,
-            "[online-charselect] render cursor=%u name=%s local{conf=%u ready=%u "
-            "seatChar=%u seatReady=%u} remote{seat=%d char=%u ready=%u name=%s} "
+            "[online-charselect] render cursor=%u name=%s portrait=%u "
+            "local{conf=%u ready=%u seatChar=%u seatReady=%u} "
+            "remote{seat=%d char=%u ready=%u name=%.*s} "
             "intent{hover=%u vehicle=%u confirmed=%u ready=%u}\n",
-            sCs.cursor, sOnlineNames[sCs.cursor], sCs.confirmed, sCs.ready,
-            (unsigned) localSeatChar, (unsigned) localSeatReady, remoteSeat,
-            (unsigned) remoteChar, (unsigned) remoteReady,
-            remoteName[0] != '\0' ? remoteName : "-", sCs.cursor,
+            sCs.cursor, sOnlineNames[sCs.cursor],
+            (unsigned) sOnlineToPortrait[sCs.cursor], sCs.confirmed, sCs.ready,
+            (unsigned) localSeatChar, (unsigned) localSeatReady, (int) rv->seat,
+            (unsigned) rv->character, (unsigned) rv->ready,
+            (int) MDKR_PARTY_LINK_NAME_BYTES,
+            rv->name[0] != '\0' ? rv->name : "-", sCs.cursor,
             (unsigned) sCs.vehicle, sCs.confirmed, sCs.ready);
 }
 
@@ -544,6 +651,15 @@ void mdkr_online_charselect_enter(void) {
     s8 defaultVehicle;
 
     memset(&sCs, 0, sizeof(sCs));
+    /* P1: start on the last confirmed racer (or Diddy the first time). A valid
+     * first snapshot may re-seed this (see tick). sLastConfirmedChar persists. */
+    sCs.cursor = sLastConfirmedChar < CS_CHAR_COUNT ? sLastConfirmedChar : 0u;
+
+    /* M3: reset the witness change-detect + the headless seam so a second entry
+     * is clean (a re-entered CHARSELECT re-scripts from scratch). */
+    sWitnessKey = 0xFFFFFFFFu;
+    sWitnessRemoteSeat = -2;
+    charselect_test_reset();
 
     /* Reuse the EXACT default vehicle menu_online_versus_race_setup() applies at
      * boot (get_player_selected_vehicle(PLAYER_ONE)); clamp to a base vehicle so
@@ -573,8 +689,8 @@ void mdkr_online_charselect_enter(void) {
 
     fprintf(stderr,
             "[online-charselect] enter: native screen up defaultVehicle=%u "
-            "(portraits loaded, offline _loop bypassed)\n",
-            (unsigned) sCs.vehicle);
+            "cursor=%u (portraits loaded, offline _loop bypassed)\n",
+            (unsigned) sCs.vehicle, (unsigned) sCs.cursor);
 }
 
 void mdkr_online_charselect_exit(void) {
@@ -594,6 +710,8 @@ void mdkr_online_charselect_exit(void) {
 MdkrOnlineCharselectResult mdkr_online_charselect_tick(s32 updateRate) {
     MdkrPartyLinkSnapshot snap;
     bool haveSnap;
+    s32 localSeat;
+    CsRemoteView rv;
     CsInput in;
 
     (void) updateRate;
@@ -601,17 +719,29 @@ MdkrOnlineCharselectResult mdkr_online_charselect_tick(s32 updateRate) {
     /* Read the authoritative forward feed the launcher publishes (both seats'
      * picks/ready + the remote name). Display-only for the remote seat. */
     haveSnap = mdkr_party_link_read(&snap);
+    localSeat = haveSnap ? charselect_local_seat(&snap) : -1;
+    charselect_resolve_remote(&snap, haveSnap, localSeat, &rv);
 
-    /* Local pad drives the cursor / confirm / ready. */
+    /* P1: seed the cursor from the first snapshot's local pick (e.g. a reconnect
+     * lands on your existing racer), once, before input. */
+    if (!sCs.seeded && haveSnap) {
+        if (localSeat >= 0 &&
+            snap.seats[localSeat].character_id < CS_CHAR_COUNT) {
+            sCs.cursor = snap.seats[localSeat].character_id;
+        }
+        sCs.seeded = 1u;
+    }
+
+    /* Local pad drives the cursor / confirm / ready (taken racer disallowed). */
     charselect_gather_input(&in);
-    charselect_apply_input(&in);
+    charselect_apply_input(&in, rv.character);
 
     /* Continuous reverse-feed publish (see charselect_publish_intent). */
     charselect_publish_intent();
 
     /* Native render into the engine frame's display list. */
-    charselect_render(&snap, haveSnap);
-    charselect_witness(&snap, haveSnap);
+    charselect_render(&snap, haveSnap, localSeat, &rv);
+    charselect_witness(&snap, haveSnap, localSeat, &rv);
 
     /* Headless test seam: reflect the intent into the scripted room + script the
      * host-start. Inert (and installs nothing) in a normal run. */
@@ -619,18 +749,19 @@ MdkrOnlineCharselectResult mdkr_online_charselect_tick(s32 updateRate) {
 
     sCs.ticks++;
 
-    if (sCs.leave) {
-        return MDKR_ONLINE_CHARSELECT_LEAVE;
-    }
-    /* The authoritative lobby leaving LOBBY (host started / loading) is the
-     * signal to move on -- exactly the party_link phase the session watched in
-     * LOBBY_WAIT. */
+    /* F4: the authoritative lobby leaving LOBBY (host started / loading) is the
+     * signal to move on, and it WINS over a pending leave -- otherwise a stray B
+     * would keep this endpoint from ever booting while the room raced on. */
     if (haveSnap && snap.phase != (uint8_t) CS_LOBBY_PHASE) {
         fprintf(stderr,
                 "[online-charselect] advance: lobby left LOBBY (phase=%u) -> hand "
                 "off\n",
                 (unsigned) snap.phase);
         return MDKR_ONLINE_CHARSELECT_ADVANCE;
+    }
+    if (sCs.leave) {
+        sCs.leave = 0u; /* edge: return LEAVE once, never shadow ADVANCE */
+        return MDKR_ONLINE_CHARSELECT_LEAVE;
     }
     return MDKR_ONLINE_CHARSELECT_STAY;
 }
@@ -681,6 +812,20 @@ static void charselect_test_init_room(void) {
     memcpy(sTestRoom.seats[1].name, "RIVAL", sizeof("RIVAL"));
 }
 
+/* M3: called from _enter so a re-entered CHARSELECT re-scripts from scratch. The
+ * reducer gates on mdkr_party_link_active() (not sTestInstalled), so clearing the
+ * install latch here does not disturb the current session -- it only forces a
+ * fresh install on a future session's LOBBY_WAIT pump. */
+static void charselect_test_reset(void) {
+    charselect_test_resolve();
+    if (!sTestActive) {
+        return;
+    }
+    sTestStartArmed = 0u;
+    sTestInstalled = 0u;
+    charselect_test_init_room();
+}
+
 void mdkr_online_charselect_test_lobby_pump(void) {
     charselect_test_resolve();
     if (!sTestActive) {
@@ -703,7 +848,7 @@ static void charselect_test_reduce_and_script(void) {
     MdkrPartyLinkLocalIntent intent;
 
     charselect_test_resolve();
-    if (!sTestActive || !sTestInstalled) {
+    if (!sTestActive || !mdkr_party_link_active()) {
         return;
     }
 
