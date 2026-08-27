@@ -638,7 +638,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
 
     add_executable(mdkr_custom_character_roster_test
         ${CMAKE_SOURCE_DIR}/tests/test_custom_character_roster.c
-        ${CMAKE_SOURCE_DIR}/game/src/custom_character_roster.c)
+        ${CMAKE_SOURCE_DIR}/game/src/custom_character_roster.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_text.c)
     target_include_directories(mdkr_custom_character_roster_test PRIVATE
         ${CMAKE_SOURCE_DIR}/game/src
         ${CMAKE_SOURCE_DIR}/game/include

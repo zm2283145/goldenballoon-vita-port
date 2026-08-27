@@ -27,6 +27,7 @@
 #include "modern_character_install.h"
 #include "modern_character_donor.h"
 #include "modern_character_registry.h"
+#include "modern_character_text.h"
 #include "sha256.h"
 #include "user_paths.h"
 #include "video_config.h"
@@ -1988,6 +1989,7 @@ std::set<std::string> g_characterPortraitVariantTraceKeys;
 std::set<std::string> g_characterPortraitProofTraceKeys;
 std::set<std::string> g_characterPortraitSourceTraceKeys;
 std::set<std::string> g_characterPortraitSourceSmokePackages;
+std::set<std::string> g_characterNameProjectionTraceKeys;
 
 struct CharacterPendingPortraitSource {
     std::string path;
@@ -9922,21 +9924,88 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     (void)ImGui::InputTextWithHint(
         "Display name##character-display-name", "Dixie Kong",
         edit.displayName, sizeof(edit.displayName));
+    ui::SpeakFocusedItem(
+        "Display name", edit.displayName,
+        "Sets the full player-facing name. The exact retail game-font projection is shown below; narration remains a separate field.");
     ImGui::SetNextItemWidth(std::min(420.0f, ImGui::GetContentRegionAvail().x));
     (void)ImGui::InputTextWithHint(
         "Short name##character-short-name", "Dixie",
         edit.shortName, sizeof(edit.shortName));
+    ui::SpeakFocusedItem(
+        "Short name", edit.shortName,
+        "Sets the compact custom-roster label. The exact retail game-font projection is shown below and the live roster performs the final pixel-width fit.");
     ImGui::SetNextItemWidth(std::min(420.0f, ImGui::GetContentRegionAvail().x));
     (void)ImGui::InputTextWithHint(
         "Narration name##character-narration-name", "Dixie Kong",
         edit.narrationName, sizeof(edit.narrationName));
+    ui::SpeakFocusedItem(
+        "Narration name", edit.narrationName,
+        "Sets the language-aware spoken label independently of the retail visual game font.");
     ImGui::SetNextItemWidth(std::min(420.0f, ImGui::GetContentRegionAvail().x));
     (void)ImGui::InputTextWithHint(
         "Sort label##character-sort-label", "Kong, Dixie",
         edit.sortLabel, sizeof(edit.sortLabel));
+    ui::SpeakFocusedItem(
+        "Sort label", edit.sortLabel,
+        "Controls deterministic custom-roster order. ASCII letters compare case-insensitively; the package id breaks ties.");
     if (!stagingDraft) ImGui::EndDisabled();
     ui::TextSubtleWrapped(
-        "Display name is the full visible label; short name fits compact roster tiles; narration name is the accessible spoken label; sort label controls alphabetical roster order. Each must be non-empty printable UTF-8. The current game font safely substitutes unsupported glyphs until full text shaping is available.");
+        "Display name is the full visible label; short name fits compact roster tiles; narration name is the accessible spoken label; sort label controls deterministic roster order. Each must be non-empty printable UTF-8.");
+    {
+        char displayProjection[MDKR_MODERN_CHARACTER_NAME_MAX];
+        char shortProjection[MDKR_MODERN_CHARACTER_SHORT_NAME_MAX];
+        MdkrModernCharacterTextProjection displayEvidence;
+        MdkrModernCharacterTextProjection shortEvidence;
+        const bool displayValid = mdkr_modern_character_text_project(
+            edit.displayName, sizeof(edit.displayName), displayProjection,
+            sizeof(displayProjection), &displayEvidence) != 0;
+        const bool shortValid = mdkr_modern_character_text_project(
+            edit.shortName, sizeof(edit.shortName), shortProjection,
+            sizeof(shortProjection), &shortEvidence) != 0;
+        const bool projectionReady =
+            displayValid && shortValid && displayEvidence.valid_utf8 &&
+            shortEvidence.valid_utf8 &&
+            displayEvidence.replaced_controls == 0u &&
+            shortEvidence.replaced_controls == 0u &&
+            displayEvidence.input_codepoints != 0u &&
+            shortEvidence.input_codepoints != 0u &&
+            !displayEvidence.output_truncated &&
+            !shortEvidence.output_truncated;
+        ImGui::SeparatorText("Exact retail game-font projection");
+        ui::TextSubtleWrapped(
+            "The custom roster draws the retail 96-glyph font. Printable ASCII is exact; each other Unicode codepoint becomes one question-mark cell instead of one cell per UTF-8 byte. Narration keeps authored UTF-8. Test performs the final ROM-font pixel-width fit.");
+        ImGui::Text("Display: %s", displayValid ? displayProjection : "invalid");
+        ImGui::Text("Short tile: %s", shortValid ? shortProjection : "invalid");
+        const uint32_t unsupported = displayEvidence.unsupported_codepoints +
+            shortEvidence.unsupported_codepoints;
+        if (!projectionReady) {
+            ImGui::TextColored(
+                AppTheme::bad(),
+                "Invalid or truncated text cannot be published.");
+        } else if (unsupported != 0u) {
+            ImGui::TextColored(
+                AppTheme::accent(),
+                "%u unsupported visual %s use '?'; author an ASCII display/short name to avoid fallback.",
+                unsupported, unsupported == 1u ? "codepoint" : "codepoints");
+        } else {
+            ImGui::TextColored(
+                AppTheme::good(),
+                "Display and short names use only supported visual glyphs.");
+        }
+        ui::TextSubtleWrapped(
+            "Sort labels use ASCII-case-insensitive byte order, then package id. Use an ASCII sort label when locale-independent ordering matters.");
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
+            g_characterNameProjectionTraceKeys.insert(entry->id).second) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-name-projection package=%s display_codepoints=%u display_fallback=%u short_codepoints=%u short_fallback=%u valid=%d shared-engine-path=1\n",
+                entry->id, displayEvidence.input_codepoints,
+                displayEvidence.unsupported_codepoints,
+                shortEvidence.input_codepoints,
+                shortEvidence.unsupported_codepoints,
+                projectionReady ? 1 : 0);
+        }
+    }
     if (!stagingDraft) {
         ui::TextSubtleWrapped(
             "Create or resume a named draft to edit names. This prevents a metadata-only shortcut from publishing a partial identity revision.");

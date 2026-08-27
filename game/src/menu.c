@@ -16,6 +16,7 @@
 #include "net/net_roster_runtime.h"
 #include "custom_character_roster.h"
 #include "modern_character_runtime.h"
+#include "modern_character_text.h"
 extern int g_frameCounter;
 #endif
 #include "asset_enums.h"
@@ -9014,23 +9015,19 @@ void titlescreen_controller_assign(s32 controllerIndex) {
 #ifdef NATIVE_PORT
 static void charselect_custom_fit_text(const char *source, char *output,
                                        size_t outputSize, s32 maxWidth) {
-    size_t input = 0u;
     size_t used = 0u;
     s32 truncated;
+    MdkrModernCharacterTextProjection projection;
     if (output == NULL || outputSize == 0u) return;
     if (source == NULL) source = "";
-    while (source[input] != '\0' && used + 1u < outputSize) {
-        unsigned char character = (unsigned char)source[input++];
-        if (character >= 0x80u) {
-            while (((unsigned char)source[input] & 0xC0u) == 0x80u) input++;
-            character = '?';
-        } else if (character < 0x20u || character == 0x7Fu) {
-            character = ' ';
-        }
-        output[used++] = (char)character;
+    if (!mdkr_modern_character_text_project(
+            source, MDKR_MODERN_CHARACTER_NAME_MAX,
+            output, outputSize, &projection)) {
+        output[0] = '\0';
+        return;
     }
-    truncated = source[input] != '\0';
-    output[used] = '\0';
+    used = projection.output_bytes;
+    truncated = projection.output_truncated;
     while (used > 0u &&
            get_text_width(output, 0, ASSET_FONTS_FUNFONT) > maxWidth) {
         used--;

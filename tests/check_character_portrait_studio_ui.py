@@ -193,6 +193,10 @@ def main() -> int:
                  " count=6 source=canvas",
                  "character-portrait-readability package=" + PACKAGE_ID +
                  " views=7",
+                 "character-name-projection package=" + PACKAGE_ID +
+                 " display_codepoints=13 display_fallback=0 "
+                 "short_codepoints=13 short_fallback=0 valid=1 "
+                 "shared-engine-path=1",
                  "character-portrait-source-action package=" + PACKAGE_ID +
                  " loaded=1 applied=0",
                  "character-portrait-source package=" + PACKAGE_ID,

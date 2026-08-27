@@ -1,6 +1,5 @@
 #include "custom_character_roster.h"
 
-#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,8 +17,10 @@ static int roster_ascii_compare(const char *left, const char *right) {
     unsigned char a;
     unsigned char b;
     while (*left != '\0' && *right != '\0') {
-        a = (unsigned char)tolower((unsigned char)*left++);
-        b = (unsigned char)tolower((unsigned char)*right++);
+        a = (unsigned char)*left++;
+        b = (unsigned char)*right++;
+        if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + ('a' - 'A'));
+        if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + ('a' - 'A'));
         if (a != b) return a < b ? -1 : 1;
     }
     if (*left != *right) return *left == '\0' ? -1 : 1;

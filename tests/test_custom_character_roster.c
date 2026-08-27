@@ -1,4 +1,5 @@
 #include "custom_character_roster.h"
+#include "modern_character_text.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,6 +41,57 @@ int main(void) {
     char ids[MDKR_CUSTOM_ROSTER_CAPACITY][16];
     char names[MDKR_CUSTOM_ROSTER_CAPACITY][24];
     int i;
+    char projected[32];
+    MdkrModernCharacterTextProjection text_projection;
+
+    require(mdkr_modern_character_text_project(
+                "Dixie Kong", 11u, projected, sizeof(projected),
+                &text_projection) &&
+                strcmp(projected, "Dixie Kong") == 0 &&
+                text_projection.valid_utf8 &&
+                text_projection.input_codepoints == 10u &&
+                text_projection.unsupported_codepoints == 0u &&
+                !text_projection.output_truncated,
+            "printable ASCII game-font projection changed supported text");
+    require(mdkr_modern_character_text_project(
+                "Dixie \xC3\x89 \xF0\x9F\x8F\x81", 14u,
+                projected, sizeof(projected), &text_projection) &&
+                strcmp(projected, "Dixie ? ?") == 0 &&
+                text_projection.valid_utf8 &&
+                text_projection.input_codepoints == 9u &&
+                text_projection.unsupported_codepoints == 2u,
+            "UTF-8 codepoints did not project one-for-one into fallback cells");
+    require(mdkr_modern_character_text_project(
+                "A\tB", 4u, projected, sizeof(projected),
+                &text_projection) &&
+                strcmp(projected, "A B") == 0 &&
+                text_projection.replaced_controls == 1u,
+            "control bytes were not neutralized in the game-font projection");
+    {
+        static const char malformed[] = {
+            (char)0xF0, '(', (char)0x8C, '(', '\0'
+        };
+        require(mdkr_modern_character_text_project(
+                    malformed, sizeof(malformed), projected,
+                    sizeof(projected), &text_projection) &&
+                    strcmp(projected, "?(?(") == 0 &&
+                    !text_projection.valid_utf8 &&
+                    text_projection.unsupported_codepoints == 2u,
+                "malformed UTF-8 projection was not bounded and explicit");
+    }
+    require(mdkr_modern_character_text_project(
+                "Dixie", 6u, projected, 4u, &text_projection) &&
+                strcmp(projected, "Dix") == 0 &&
+                text_projection.output_truncated,
+            "bounded projection did not report output truncation");
+    {
+        static const char unterminated[] = {'A', 'B'};
+        require(!mdkr_modern_character_text_project(
+                    unterminated, sizeof(unterminated), projected,
+                    sizeof(projected), &text_projection) &&
+                    strcmp(projected, "AB") == 0,
+                "unterminated source was accepted by the bounded projection");
+    }
 
     mdkr_custom_roster_reset(&roster);
     memset(&cursor, 0, sizeof(cursor));

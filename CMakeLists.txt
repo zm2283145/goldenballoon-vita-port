@@ -308,6 +308,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/modern_character_pose.c # semantic clips, cross-fades, sockets, skin palettes
     ${CMAKE_SOURCE_DIR}/platform/modern_character_render.c # bounded PNG decode and immutable GPU resources
     ${CMAKE_SOURCE_DIR}/platform/modern_character_identity.c # bounded identity decode and game-ready portrait resampling
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_text.c # shared bounded UTF-8 to retail-font identity projection
     ${CMAKE_SOURCE_DIR}/platform/modern_character_runtime.c # assignments, animation instances, retained draw commands
     ${CMAKE_SOURCE_DIR}/platform/workshop_preview_runtime.c # presentation-only exact inspection view/light state
     ${CMAKE_SOURCE_DIR}/platform/modern_character_donor.c # fail-visible retail driver/vehicle separation

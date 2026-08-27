@@ -4807,7 +4807,12 @@ python3 tests/check_custom_character_roster.py \
 ```
 
 The gate is registered as `custom_character_roster` in `tools/run_checks.py`
-and is serialized with the other native GPU/pixel checks.
+and is serialized with the other native GPU/pixel checks. Its pure C companion
+also proves the shared retail-font projection: printable ASCII survives exactly,
+one valid Unicode codepoint becomes one fallback cell, malformed UTF-8 and
+unterminated input fail boundedly, controls become spaces, and output truncation
+is explicit. The rendered Portrait Studio gate requires the same shared engine
+path to report display/short fallback counts before Build.
 
 ## Custom-character identity surfaces — `tests/check_custom_character_identity_surfaces.py`
 
