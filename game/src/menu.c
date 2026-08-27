@@ -9172,7 +9172,13 @@ static void charselect_custom_draw_panel(void) {
                   ALIGN_MIDDLE_CENTER);
     }
     set_text_colour(208, 216, 232, 0, 255);
-    draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 224,
+    if (mdkr_net_roster_runtime_active()) {
+        draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 218,
+                  "LOCAL LOOK ONLY - PEERS MAY SEE BUILT-IN",
+                  ALIGN_MIDDLE_CENTER);
+    }
+    draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF,
+              mdkr_net_roster_runtime_active() ? 230 : 224,
               "STICK: MOVE  L/R: PAGE  A: CHOOSE  B: BACK",
               ALIGN_MIDDLE_CENTER);
     rendermode_reset(&sMenuCurrDisplayList);

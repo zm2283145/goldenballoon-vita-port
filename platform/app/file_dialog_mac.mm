@@ -224,4 +224,49 @@ bool saveCharacterReport(std::string &out) {
     }
 }
 
+bool saveCharacterPackage(std::string &out) {
+    @autoreleasepool {
+        if (![NSThread isMainThread]) return false;
+        NSSavePanel *panel = [NSSavePanel savePanel];
+        panel.title = @"Export custom character package";
+        panel.message = @"Choose a new mdkrchar filename. Golden Balloon never overwrites an existing package.";
+        panel.prompt = @"Choose Filename";
+        panel.nameFieldStringValue = @"custom-character.mdkrchar";
+        panel.canCreateDirectories = YES;
+        UTType *type = [UTType typeWithFilenameExtension:@"mdkrchar"];
+        if (type != nil) panel.allowedContentTypes = @[ type ];
+        panel.allowsOtherFileTypes = NO;
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([panel runModal] != NSModalResponseOK) return false;
+        NSURL *url = panel.URL;
+        if (url == nil || !url.isFileURL) return false;
+        const char *path = url.fileSystemRepresentation;
+        if (path == nullptr || path[0] == '\0') return false;
+        out = path;
+        return true;
+    }
+}
+
+bool saveCharacterDiagnostic(std::string &out) {
+    @autoreleasepool {
+        if (![NSThread isMainThread]) return false;
+        NSSavePanel *panel = [NSSavePanel savePanel];
+        panel.title = @"Export failed-import diagnostic";
+        panel.message = @"Choose a new JSON filename. The diagnostic contains no model bytes and never overwrites an existing file.";
+        panel.prompt = @"Choose Filename";
+        panel.nameFieldStringValue = @"character-import-diagnostic.json";
+        panel.canCreateDirectories = YES;
+        panel.allowedContentTypes = @[ UTTypeJSON ];
+        panel.allowsOtherFileTypes = NO;
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([panel runModal] != NSModalResponseOK) return false;
+        NSURL *url = panel.URL;
+        if (url == nil || !url.isFileURL) return false;
+        const char *path = url.fileSystemRepresentation;
+        if (path == nullptr || path[0] == '\0') return false;
+        out = path;
+        return true;
+    }
+}
+
 }  // namespace filedialog

@@ -48,8 +48,10 @@
 #include <cstdint>
 #include <ctime>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -1880,6 +1882,72 @@ struct CharacterImportCandidate {
 
 CharacterImportCandidate g_characterImportCandidate;
 
+class CharacterPackageInspectionWorker {
+public:
+    ~CharacterPackageInspectionWorker() {
+        if (thread_.joinable()) thread_.join();
+    }
+
+    bool start(std::string path) {
+        std::lock_guard<std::mutex> guard(mutex_);
+        if (running_ || ready_) return false;
+        running_ = true;
+        discard_ = false;
+        path_ = std::move(path);
+        result_ = {};
+        thread_ = std::thread([this]() {
+            MdkrModernCharacterInstallResult result{};
+            const int valid = mdkr_modern_character_inspect_portable(
+                path_.c_str(), &result);
+            std::lock_guard<std::mutex> finished(mutex_);
+            result_ = result;
+            valid_ = valid != 0;
+            running_ = false;
+            ready_ = true;
+        });
+        return true;
+    }
+
+    bool busy() const {
+        std::lock_guard<std::mutex> guard(mutex_);
+        return running_ || ready_;
+    }
+
+    void discardResult() {
+        std::lock_guard<std::mutex> guard(mutex_);
+        discard_ = true;
+    }
+
+    bool poll(std::string &path, MdkrModernCharacterInstallResult &result,
+              bool &valid, bool &discarded) {
+        std::thread completed;
+        {
+            std::lock_guard<std::mutex> guard(mutex_);
+            if (!ready_) return false;
+            path = path_;
+            result = result_;
+            valid = valid_;
+            discarded = discard_;
+            ready_ = false;
+            completed = std::move(thread_);
+        }
+        if (completed.joinable()) completed.join();
+        return true;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::thread thread_;
+    bool running_ = false;
+    bool ready_ = false;
+    bool valid_ = false;
+    bool discard_ = false;
+    std::string path_;
+    MdkrModernCharacterInstallResult result_{};
+};
+
+CharacterPackageInspectionWorker g_characterPackageInspection;
+
 struct CharacterRawIntake {
     bool loaded = false;
     bool inspected = false;
@@ -1932,6 +2000,7 @@ struct CharacterRevisionInventory {
     int selected = 0;
     char exportPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
     char portableExportPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
+    bool distributionRightsConfirmed = false;
     std::vector<CharacterRevisionRow> rows;
 };
 
@@ -2373,7 +2442,10 @@ std::string characterTestPresentationSignature() {
         MDKR_ENH_LOD_BIAS,
         MDKR_VIDEO_WIDESCREEN_HUD,
     };
-    std::string canonical = "mdkr-character-test-presentation-v1\n";
+    /* v2 binds the representative per-vehicle Workshop courses introduced
+     * with the car/Whale Bay/Windmill Plains route matrix. Timing evidence
+     * from the former all-Ancient-Lake matrix must never satisfy readiness. */
+    std::string canonical = "mdkr-character-test-presentation-v2\n";
     canonical += AppVersion();
     canonical.push_back('\n');
     for (MdkrVideoKey key : keys) {
@@ -2854,6 +2926,8 @@ bool loadCharacterRevisionInventory(const std::string &packageId) {
         std::snprintf(
             inventory.portableExportPath, sizeof(inventory.portableExportPath),
             "%s", previous->second.portableExportPath);
+        inventory.distributionRightsConfirmed =
+            previous->second.distributionRightsConfirmed;
     }
     g_characterRevisionInventories[packageId] = std::move(inventory);
     return true;
@@ -3740,8 +3814,9 @@ bool buildCharacterRawGlbCandidate() {
     return true;
 }
 
-bool stageCharacterPackage(const std::string &path) {
-    MdkrModernCharacterInstallResult nativeResult{};
+bool stagePortableCharacterPackage(
+    const std::string &path,
+    const MdkrModernCharacterInstallResult &nativeResult) {
     CharacterImportCandidate staged;
     if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
     if (g_characterRegistryDirectory.empty()) {
@@ -3749,11 +3824,39 @@ bool stageCharacterPackage(const std::string &path) {
             "No writable character directory is available.";
         return false;
     }
+    staged.next = nativeCharacterSummary(nativeResult);
+    staged.portable = true;
+    g_characterManagerReport = nativeResult.message;
+    const int installedIndex = mdkr_modern_character_registry_find(
+        &g_characterRegistry, staged.next.id.c_str());
+    const MdkrModernCharacterEntry *installed =
+        mdkr_modern_character_registry_entry(&g_characterRegistry,
+                                              installedIndex);
+    if (installed != nullptr) {
+        staged.installed = true;
+        staged.installedEnabled = installed->enabled != 0u;
+        staged.current = installedCharacterSummary(*installed);
+        staged.reviewedInstalledDigest = staged.current.sourceDigest;
+    }
+    staged.packagePath = path;
+    staged.ready = true;
+    g_characterImportCandidate = std::move(staged);
+    return true;
+}
+
+bool stageCharacterPackage(const std::string &path) {
+    MdkrModernCharacterInstallResult nativeResult{};
+    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
+    if (g_characterRegistryDirectory.empty()) {
+        g_characterManagerReport =
+            "No writable character directory is available.";
+        return false;
+    }
     if (mdkr_modern_character_inspect_portable(path.c_str(), &nativeResult)) {
-        staged.next = nativeCharacterSummary(nativeResult);
-        staged.portable = true;
-        g_characterManagerReport = nativeResult.message;
-    } else if (nativeResult.needs_compiler != 0) {
+        return stagePortableCharacterPackage(path, nativeResult);
+    }
+    CharacterImportCandidate staged;
+    if (nativeResult.needs_compiler != 0) {
         const std::string indexPath = g_characterRegistryDirectory +
             "/.launcher-character-candidate.tsv";
         (void)mdkr_remove_utf8(indexPath.c_str());
@@ -3790,6 +3893,37 @@ bool stageCharacterPackage(const std::string &path) {
     staged.ready = true;
     g_characterImportCandidate = std::move(staged);
     return true;
+}
+
+void serviceCharacterPackageInspection() {
+    std::string path;
+    MdkrModernCharacterInstallResult result{};
+    bool valid = false;
+    bool discarded = false;
+    if (!g_characterPackageInspection.poll(
+            path, result, valid, discarded)) {
+        return;
+    }
+    if (discarded) {
+        g_characterManagerReport = result.message;
+        setStatus(
+            "Package validation finished in the background and its result was discarded; nothing was staged or installed.",
+            AppTheme::subtle());
+        return;
+    }
+    if (!valid || !stagePortableCharacterPackage(path, result)) {
+        g_characterImportCandidate = CharacterImportCandidate{};
+        g_characterManagerReport = result.message;
+        setStatus(
+            "Character validation failed; open the importer report below.",
+            AppTheme::bad());
+        return;
+    }
+    setStatus(
+        g_characterImportCandidate.installed
+            ? "Character update validated in the background; review every change before installing."
+            : "Character validated in the background; review its identity, gameplay donor, rig, and performance before installing.",
+        AppTheme::good());
 }
 
 bool installReviewedCharacterPackage() {
@@ -13714,6 +13848,19 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
     ImGui::InputTextWithHint(
         "##character-revision-export", "/path/to/recovered-character.mdkrchar",
         inventory.exportPath, sizeof(inventory.exportPath));
+    if (filedialog::isAvailable()) {
+        if (ImGui::Button("Choose source export...")) {
+            std::string path;
+            if (filedialog::saveCharacterPackage(path)) {
+                std::snprintf(inventory.exportPath,
+                              sizeof(inventory.exportPath), "%s",
+                              path.c_str());
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Choose exact source export", nullptr,
+            "Opens the operating system save panel for a new mdkrchar filename. Existing files are still never replaced.");
+    }
     const bool canExport = inventory.exportPath[0] != '\0';
     if (!canExport) ImGui::BeginDisabled();
     if (ImGui::Button("Export selected source") && canExport) {
@@ -13741,7 +13888,30 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
         "/path/to/shareable-character.mdkrchar",
         inventory.portableExportPath,
         sizeof(inventory.portableExportPath));
-    const bool canExportPortable = inventory.portableExportPath[0] != '\0';
+    if (filedialog::isAvailable()) {
+        if (ImGui::Button("Choose portable export...")) {
+            std::string path;
+            if (filedialog::saveCharacterPackage(path)) {
+                std::snprintf(
+                    inventory.portableExportPath,
+                    sizeof(inventory.portableExportPath), "%s",
+                    path.c_str());
+                inventory.distributionRightsConfirmed = false;
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Choose portable package export", nullptr,
+            "Opens the operating system save panel for a new shareable mdkrchar filename. Existing files are still never replaced.");
+    }
+    (void)ImGui::Checkbox(
+        "I confirm I have the right to redistribute this package",
+        &inventory.distributionRightsConfirmed);
+    ui::SpeakFocusedItem(
+        "Redistribution rights confirmation", nullptr,
+        "Required for portable export. Package metadata may describe a license, but Golden Balloon cannot establish copyright, trademark, attribution, or redistribution rights.");
+    const bool canExportPortable =
+        inventory.portableExportPath[0] != '\0' &&
+        inventory.distributionRightsConfirmed;
     if (!canExportPortable) ImGui::BeginDisabled();
     if (ImGui::Button("Export portable package") && canExportPortable) {
         if (exportPortableCharacterRevision(
@@ -13759,7 +13929,10 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
     if (!canExportPortable) ImGui::EndDisabled();
     ui::SpeakFocusedItem(
         "Export portable package",
-        canExportPortable ? nullptr : "Enter a destination path first.",
+        canExportPortable ? nullptr
+            : inventory.portableExportPath[0] == '\0'
+                ? "Choose a destination path first."
+                : "Confirm redistribution rights first.",
         "Compiles this exact authenticated retained source into a shareable mdkrchar package and refuses to overwrite an existing file.");
     return false;
 }
@@ -15580,7 +15753,7 @@ void drawCharacterFailureRecovery(bool rail) {
         if (!rail) ImGui::SameLine();
         if (ImGui::Button("Export diagnostic...")) {
             std::string output;
-            if (filedialog::saveCharacterReport(output)) {
+            if (filedialog::saveCharacterDiagnostic(output)) {
                 if (exportCharacterFailure(row.recordId, output)) {
                     setStatus(
                         "Failed-import diagnostic exported; the private recovery record remains available.",
@@ -15632,6 +15805,28 @@ void drawCharacterFailureRecovery(bool rail) {
 
 void drawCharacterImportControls(bool rail) {
     loadCharacterRawIntake();
+    serviceCharacterPackageInspection();
+    const bool packageInspectionBusy =
+        g_characterPackageInspection.busy();
+    if (packageInspectionBusy &&
+        ui::CardBegin("##character-package-validation-running",
+                      AppTheme::accent(), 0.0f)) {
+        ImGui::TextUnformatted("Validating package in the background");
+        ui::TextSubtleWrapped(
+            "The Workshop remains usable. Validation is bounded and mutation-free; install stays unavailable until the complete result is published on this UI thread.");
+        if (ImGui::Button("Discard result when finished")) {
+            g_characterPackageInspection.discardResult();
+            setStatus(
+                "The running validator will finish safely, then its result will be discarded without staging or installing anything.",
+                AppTheme::subtle());
+        }
+        ui::SpeakFocusedItem(
+            "Discard validation result when finished", nullptr,
+            "Keeps the app responsive and discards the completed validation. The bounded validator is not falsely reported as interrupted mid-read.");
+        ui::CardEnd();
+    } else if (packageInspectionBusy) {
+        ui::CardEnd();
+    }
     const char *smokeSource = std::getenv(
         "MDKR_APP_SMOKE_CHARACTER_CONVERSION_SOURCE");
     const char *smokeOutput = std::getenv(
@@ -15805,7 +16000,8 @@ void drawCharacterImportControls(bool rail) {
                 "Opens the operating system destination picker. Selecting an existing filename still does not grant overwrite authority.");
         }
     }
-    const bool canImport = g_characterImportPath[0] != '\0' &&
+    const bool canImport = !packageInspectionBusy &&
+        g_characterImportPath[0] != '\0' &&
         !dccExportRequired &&
         (!convertibleSource || g_characterConversionOutputPath[0] != '\0');
     if (filedialog::isAvailable() && inlineActions &&
@@ -16472,6 +16668,19 @@ bool Settings_importCharacterPackage(const char *path) {
                 : "GLB inspection failed; no package was built or installed.",
             inspected ? AppTheme::good() : AppTheme::bad());
         return inspected;
+    }
+    if (sourceKind == CharacterSourceKind::Package) {
+        if (!g_characterPackageInspection.start(path)) {
+            setStatus(
+                "Another package validation is already finishing; discard or review that result before starting another.",
+                AppTheme::accent());
+            return false;
+        }
+        g_characterImportCandidate = CharacterImportCandidate{};
+        setStatus(
+            "Validating the package in the background; the Workshop remains available and nothing can install before review.",
+            AppTheme::accent());
+        return true;
     }
     if (!stageCharacterPackage(path)) {
         g_characterImportCandidate = CharacterImportCandidate{};

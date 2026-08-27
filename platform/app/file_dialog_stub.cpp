@@ -51,4 +51,14 @@ bool saveCharacterReport(std::string &out) {
     return false;
 }
 
+bool saveCharacterPackage(std::string &out) {
+    (void)out;
+    return false;
+}
+
+bool saveCharacterDiagnostic(std::string &out) {
+    (void)out;
+    return false;
+}
+
 }  // namespace filedialog

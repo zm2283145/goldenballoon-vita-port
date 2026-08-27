@@ -267,4 +267,67 @@ bool saveCharacterReport(std::string &out) {
     return true;
 }
 
+bool saveCharacterPackage(std::string &out) {
+    static const wchar_t kFilter[] =
+        L"Golden Balloon character packages\0*.mdkrchar\0\0";
+    std::vector<wchar_t> file(32768, L'\0');
+    const wchar_t initial[] = L"custom-character.mdkrchar";
+    std::copy(std::begin(initial), std::end(initial), file.begin());
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    SDL_Window *window = SDL_GetKeyboardFocus();
+    if (window == nullptr) window = SDL_GetMouseFocus();
+    SDL_SysWMinfo windowInfo;
+    SDL_VERSION(&windowInfo.version);
+    if (window != nullptr &&
+        SDL_GetWindowWMInfo(window, &windowInfo) == SDL_TRUE &&
+        windowInfo.subsystem == SDL_SYSWM_WINDOWS) {
+        ofn.hwndOwner = windowInfo.info.win.window;
+    }
+    ofn.lpstrFilter = kFilter;
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFile = file.data();
+    ofn.nMaxFile = (DWORD)file.size();
+    ofn.lpstrTitle = L"Export custom character package";
+    ofn.lpstrDefExt = L"mdkrchar";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+    if (!GetSaveFileNameW(&ofn)) return false;
+    std::string picked = toUtf8(file.data());
+    if (picked.empty()) return false;
+    out = picked;
+    return true;
+}
+
+bool saveCharacterDiagnostic(std::string &out) {
+    static const wchar_t kFilter[] = L"JSON documents\0*.json\0\0";
+    std::vector<wchar_t> file(32768, L'\0');
+    const wchar_t initial[] = L"character-import-diagnostic.json";
+    std::copy(std::begin(initial), std::end(initial), file.begin());
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    SDL_Window *window = SDL_GetKeyboardFocus();
+    if (window == nullptr) window = SDL_GetMouseFocus();
+    SDL_SysWMinfo windowInfo;
+    SDL_VERSION(&windowInfo.version);
+    if (window != nullptr &&
+        SDL_GetWindowWMInfo(window, &windowInfo) == SDL_TRUE &&
+        windowInfo.subsystem == SDL_SYSWM_WINDOWS) {
+        ofn.hwndOwner = windowInfo.info.win.window;
+    }
+    ofn.lpstrFilter = kFilter;
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFile = file.data();
+    ofn.nMaxFile = (DWORD)file.size();
+    ofn.lpstrTitle = L"Export failed-import diagnostic";
+    ofn.lpstrDefExt = L"json";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+    if (!GetSaveFileNameW(&ofn)) return false;
+    std::string picked = toUtf8(file.data());
+    if (picked.empty()) return false;
+    out = picked;
+    return true;
+}
+
 }  // namespace filedialog

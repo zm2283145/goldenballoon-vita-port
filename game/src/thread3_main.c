@@ -2651,6 +2651,24 @@ static MdkrWorkshopPreviewLighting workshop_preview_lighting_from_name(
     return MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT;
 }
 
+/* Exercise each vehicle in a course that exposes its ordinary presentation
+ * pressures. Ancient Lake is a clean car baseline, Whale Bay contains the
+ * water/shore transitions a hovercraft appearance must survive, and Windmill
+ * Plains provides the open elevation and camera angles needed to judge a
+ * plane rider. These routes are part of the evidence contract: changing one
+ * must also invalidate the launcher's presentation signature. */
+static s32 workshop_preview_level_for_vehicle(s32 vehicle) {
+    switch (vehicle) {
+        case VEHICLE_HOVERCRAFT:
+            return ASSET_LEVEL_WHALEBAY;
+        case VEHICLE_PLANE:
+            return ASSET_LEVEL_WINDMILLPLAINS;
+        case VEHICLE_CAR:
+        default:
+            return ASSET_LEVEL_ANCIENTLAKE;
+    }
+}
+
 static s32 workshop_preview_start(void) {
     const char *context = getenv("MDKR_CHARACTER_WORKSHOP_PREVIEW");
     const char *playersText;
@@ -2859,7 +2877,7 @@ static s32 workshop_preview_start(void) {
     } else {
         set_time_trial_enabled(FALSE);
         init_racer_headers();
-        gPlayableMapId = ASSET_LEVEL_ANCIENTLAKE;
+        gPlayableMapId = workshop_preview_level_for_vehicle(vehicle);
         gGameNumPlayers = players - 1;
         gGameCurrentEntrance = 0;
         gGameCurrentCutscene = CUTSCENE_NONE;
@@ -2872,8 +2890,9 @@ static s32 workshop_preview_start(void) {
     }
     MDKR_TRACE(
         "character_workshop_preview: started context=%s players=%d "
-        "vehicle=%d pose=%s phase=%u view=%d,%d lighting=%d capture=%d kind=%s",
+        "vehicle=%d level=%d pose=%s phase=%u view=%d,%d lighting=%d capture=%d kind=%s",
         context, players, vehicle,
+        vehicle < 0 ? ASSET_LEVEL_CHARACTERSELECT : gPlayableMapId,
         pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ? "live" : poseText,
         posePhaseMilli, viewYawDegrees, viewPitchDegrees, (int)lighting,
         sWorkshopPreviewCapturePath[0] != '\0',

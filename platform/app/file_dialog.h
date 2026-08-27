@@ -74,6 +74,14 @@ bool saveCharacterCapture(std::string &out);
 // not authorize the Workshop to replace it.
 bool saveCharacterReport(std::string &out);
 
+// Choose a destination for an exact or compiler-enriched portable package.
+// Export remains exclusive-create; the dialog does not imply redistribution
+// rights and callers must collect that confirmation separately.
+bool saveCharacterPackage(std::string &out);
+
+// Choose a destination for bounded failed-import metadata (never model bytes).
+bool saveCharacterDiagnostic(std::string &out);
+
 }  // namespace filedialog
 
 #endif  // MDKR64_FILE_DIALOG_H

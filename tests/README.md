@@ -4980,8 +4980,9 @@ The gate is registered as `app_character_portrait_studio` and
 
 This gate generates and transactionally installs a license-clean package with
 a Bumper donor into a temporary isolated catalog. It directly starts the real
-character-select scene and Ancient Lake car, hovercraft, and plane races without
-an input script. The matrix includes one-, three-, and four-player layouts and
+character-select scene plus representative Ancient Lake car, Whale Bay
+hovercraft, and Windmill Plains plane races without an input script. The matrix
+includes one-, three-, and four-player layouts and
 requires the package's non-Diddy donor, one shared WebGPU asset upload, nonzero
 modern draws and triangles, zero refused draws, nonempty captures, and real
 four-player viewport dividers. Four-player rendering must materially multiply
