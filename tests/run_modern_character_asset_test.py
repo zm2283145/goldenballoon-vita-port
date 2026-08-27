@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import struct
 import subprocess
@@ -47,6 +48,28 @@ def main() -> int:
             model_bytes, manifest_data, bytes(range(32)), portrait_bytes
         )
         cache.write_bytes(compiled)
+        fixture_directory = Path(directory) / "fixtures"
+        fixture_directory.mkdir()
+        donors = (
+            "krunch", "bumper", "tiptup", "conker",
+            "timber", "banjo", "drumstick", "pipsy",
+        )
+        for index, donor in enumerate(donors):
+            transaction_manifest = copy.deepcopy(manifest_data)
+            transaction_manifest["id"] = (
+                f"org.example.pipeline-stage-{index}"
+            )
+            transaction_manifest["display_name"] = (
+                f"Pipeline Stage {index}"
+            )
+            transaction_manifest["gameplay"]["donor"] = donor
+            transaction_compiled, _ = compiler.compile_character(
+                model_bytes, transaction_manifest, bytes(range(32)),
+                portrait_bytes,
+            )
+            (fixture_directory / f"transaction-stage-{index}.mdkc").write_bytes(
+                transaction_compiled
+            )
         (Path(directory) / "duplicate.mdkc").write_bytes(compiled)
         (Path(directory) / "bad.mdkc").write_bytes(compiled[:-7])
         hostile_identity = bytearray(compiled)
@@ -158,7 +181,8 @@ def main() -> int:
             [str(args.loader), str(cache), directory, str(source_package),
              str(portable_package), str(install_directory),
              str(corrupt_portable), str(mismatched_portable),
-             str(legacy_portable), str(legacy_v5_portable)],
+             str(legacy_portable), str(legacy_v5_portable),
+             str(fixture_directory)],
             check=False, text=True
         )
         return completed.returncode

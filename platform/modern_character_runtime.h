@@ -131,6 +131,13 @@ int mdkr_modern_character_assign_player_index(
     int player, int catalog_index, char *error, size_t error_size);
 int mdkr_modern_character_assign_player(int player, const char *package_id,
                                         char *error, size_t error_size);
+/* Atomically publishes the complete race-player assignment. Each entry is a
+ * catalog index or -1 for a retail/unassigned player. Every selected cache,
+ * decoded render asset, pose, and tuning profile is staged before any current
+ * player changes; failure preserves the entire last-known-good assignment. */
+int mdkr_modern_character_apply_catalog_plan(
+    const int catalog_indices[MDKR_MODERN_CHARACTER_PLAYERS],
+    char *error, size_t error_size);
 void mdkr_modern_character_clear_player(int player);
 const char *mdkr_modern_character_player_package(int player);
 int mdkr_modern_character_player_donor(int player);

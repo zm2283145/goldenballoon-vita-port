@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define TRANSACTION_FIXTURES 8
+
 #if defined(_WIN32)
 static int set_env(const char *name, const char *value) {
     return _putenv_s(name, value);
@@ -37,9 +39,10 @@ static void require(int condition, const char *message) {
 static uint32_t registered_draws;
 static uint32_t released_assets;
 static float last_model_matrix[16];
+static bool modern_character_supported = true;
 
 bool gfx_modern_character_supported(void) {
-    return true;
+    return modern_character_supported;
 }
 
 uint32_t gfx_modern_character_register_draw(
@@ -88,6 +91,15 @@ static unsigned char *read_file(const char *path, size_t *out_size) {
     require(fclose(file) == 0, "close generated cache");
     *out_size = (size_t)end;
     return bytes;
+}
+
+static void write_file(const char *path, const unsigned char *bytes,
+                       size_t size) {
+    FILE *file = mdkr_fopen_utf8(path, "wb");
+    require(file != NULL, "open runtime transaction fixture for writing");
+    require(fwrite(bytes, 1u, size, file) == size,
+            "write runtime transaction fixture");
+    require(fclose(file) == 0, "close runtime transaction fixture");
 }
 
 static uint32_t read_u32_le(const unsigned char *bytes) {
@@ -233,6 +245,8 @@ int main(int argc, char **argv) {
     char import_lock[4096];
     char prefix_witness[4096];
     char deletion_failure_witness[4096];
+    char transaction_cache[TRANSACTION_FIXTURES][4096];
+    char transaction_source[4096];
     char reviewed_package_sha[65];
     char reviewed_source_digest[65];
     FILE *lock_file;
@@ -240,9 +254,17 @@ int main(int argc, char **argv) {
     float select_model_y;
     float focus_center[3];
     float focus_radius;
+    unsigned char *transaction_bytes[TRANSACTION_FIXTURES];
+    size_t transaction_size[TRANSACTION_FIXTURES];
+    int original_index;
+    int transaction_index[TRANSACTION_FIXTURES];
+    int fixture;
+    int assignment_plan[MDKR_MODERN_CHARACTER_PLAYERS];
+    uint64_t stable_identity_revision;
+    uint64_t roster_identity_revision[MDKR_MODERN_CHARACTER_PLAYERS];
 
-    require(argc == 10,
-            "usage: test_modern_character_asset <generated.mdkc> <directory> <source.mdkrchar> <portable.mdkrchar> <install-directory> <corrupt-portable.mdkrchar> <mismatched-portable.mdkrchar> <legacy-portable.mdkrchar> <legacy-v5-portable.mdkrchar>");
+    require(argc == 11,
+            "usage: test_modern_character_asset <generated.mdkc> <directory> <source.mdkrchar> <portable.mdkrchar> <install-directory> <corrupt-portable.mdkrchar> <mismatched-portable.mdkrchar> <legacy-portable.mdkrchar> <legacy-v5-portable.mdkrchar> <transaction-fixture-directory>");
     test_retained_pose_interpolation();
     require(mdkr_modern_character_asset_load_file(argv[1], &asset,
                                                    error, sizeof(error)),
@@ -951,6 +973,24 @@ int main(int argc, char **argv) {
     require(mdkr_remove_utf8(prefix_witness) == 0,
             "retire prefix-collision provenance witness");
 
+    for (fixture = 0; fixture < TRANSACTION_FIXTURES; fixture++) {
+        int source_length = snprintf(
+            transaction_source, sizeof(transaction_source),
+            "%s/transaction-stage-%d.mdkc", argv[10], fixture);
+        int cache_length = snprintf(
+            transaction_cache[fixture], sizeof(transaction_cache[fixture]),
+            "%s/transaction-stage-%d.mdkc", argv[2], fixture);
+        require(source_length > 0 &&
+                    (size_t)source_length < sizeof(transaction_source) &&
+                    cache_length > 0 &&
+                    (size_t)cache_length < sizeof(transaction_cache[fixture]),
+                "construct bounded runtime transaction fixture paths");
+        transaction_bytes[fixture] = read_file(
+            transaction_source, &transaction_size[fixture]);
+        write_file(transaction_cache[fixture], transaction_bytes[fixture],
+                   transaction_size[fixture]);
+    }
+
     require(set_env(
                 "MDKR_CUSTOM_CHARACTER_PROFILE_org.example.pipeline-proof_SCALE",
                 "1.75") == 0 &&
@@ -962,10 +1002,25 @@ int main(int argc, char **argv) {
             "configure package tuning and a higher-priority player override");
     require(mdkr_modern_characters_init(argv[2]),
             "initialize process-level character runtime");
+    original_index = mdkr_modern_character_registry_find(
+        mdkr_modern_characters_registry(), "org.example.pipeline-proof");
+    for (fixture = 0; fixture < TRANSACTION_FIXTURES; fixture++) {
+        char id[65];
+        int id_length = snprintf(
+            id, sizeof(id), "org.example.pipeline-stage-%d", fixture);
+        require(id_length > 0 && (size_t)id_length < sizeof(id),
+                "construct bounded staged package id");
+        transaction_index[fixture] = mdkr_modern_character_registry_find(
+            mdkr_modern_characters_registry(), id);
+    }
     {
         MdkrModernCharacterCatalogView catalog;
-        require(mdkr_modern_character_catalog_count() == 1 &&
-                    mdkr_modern_character_catalog_entry(0, &catalog) &&
+        require(mdkr_modern_character_catalog_count() == 9 &&
+                    original_index >= 0 &&
+                    transaction_index[0] >= 0 &&
+                    transaction_index[7] >= 0 &&
+                    mdkr_modern_character_catalog_entry(
+                        original_index, &catalog) &&
                     strcmp(catalog.id, "org.example.pipeline-proof") == 0 &&
                     strcmp(catalog.display_name, "Pipeline Proof") == 0 &&
                     strcmp(catalog.short_name, "Proof") == 0 &&
@@ -985,11 +1040,11 @@ int main(int argc, char **argv) {
                     catalog.revision != 0u,
                 "runtime publishes a bounded library catalog without GPU activation");
         require(!mdkr_modern_character_catalog_entry(-1, &catalog) &&
-                    !mdkr_modern_character_catalog_entry(1, &catalog),
+                    !mdkr_modern_character_catalog_entry(9, &catalog),
                 "runtime catalog rejects out-of-range rows");
     }
     require(mdkr_modern_character_assign_player_index(
-                0, 0, error, sizeof(error)),
+                0, original_index, error, sizeof(error)),
             error);
     require(mdkr_modern_character_get_tuning(0, &tuning) &&
                 tuning.scale == 1.75f &&
@@ -1015,6 +1070,114 @@ int main(int argc, char **argv) {
                 identity_view.minimap_rgba[3] == 255u &&
                 identity_view.revision != 0u,
             "runtime publishes one decoded game-ready identity view");
+    stable_identity_revision = identity_view.revision;
+    write_file(transaction_cache[0], transaction_bytes[0],
+               transaction_size[0] - 7u);
+    require(!mdkr_modern_character_assign_player(
+                0, "org.example.pipeline-stage-0", error, sizeof(error)) &&
+                strcmp(mdkr_modern_character_player_package(0),
+                       "org.example.pipeline-proof") == 0 &&
+                mdkr_modern_character_player_identity(0, &identity_view) &&
+                identity_view.revision == stable_identity_revision,
+            "failed single-player activation preserves the complete prior assignment");
+    assignment_plan[0] = original_index;
+    assignment_plan[1] = transaction_index[0];
+    assignment_plan[2] = -1;
+    assignment_plan[3] = -1;
+    require(!mdkr_modern_character_apply_catalog_plan(
+                assignment_plan, error, sizeof(error)) &&
+                strcmp(mdkr_modern_character_player_package(0),
+                       "org.example.pipeline-proof") == 0 &&
+                mdkr_modern_character_player_package(1) == NULL &&
+                mdkr_modern_character_player_identity(0, &identity_view) &&
+                identity_view.revision == stable_identity_revision,
+            "failed multiplayer staging preserves every last-known-good slot");
+    assignment_plan[1] = 999;
+    require(!mdkr_modern_character_apply_catalog_plan(
+                assignment_plan, error, sizeof(error)) &&
+                strcmp(mdkr_modern_character_player_package(0),
+                       "org.example.pipeline-proof") == 0,
+            "invalid multiplayer plans reject before changing runtime state");
+    write_file(transaction_cache[0], transaction_bytes[0],
+               transaction_size[0]);
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        assignment_plan[player] = transaction_index[player];
+    }
+    require(mdkr_modern_character_apply_catalog_plan(
+                assignment_plan, error, sizeof(error)) &&
+                strcmp(mdkr_modern_character_player_package(0),
+                       "org.example.pipeline-stage-0") == 0 &&
+                strcmp(mdkr_modern_character_player_package(1),
+                       "org.example.pipeline-stage-1") == 0 &&
+                strcmp(mdkr_modern_character_player_package(3),
+                       "org.example.pipeline-stage-3") == 0,
+            "transaction publishes four distinct staged identities together");
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        require(mdkr_modern_character_player_identity(
+                    player, &identity_view),
+                "read each four-player identity before rollback test");
+        roster_identity_revision[player] = identity_view.revision;
+    }
+    write_file(transaction_cache[7], transaction_bytes[7],
+               transaction_size[7] - 7u);
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        assignment_plan[player] = transaction_index[player + 4];
+    }
+    require(!mdkr_modern_character_apply_catalog_plan(
+                assignment_plan, error, sizeof(error)) &&
+                strcmp(mdkr_modern_character_player_package(0),
+                       "org.example.pipeline-stage-0") == 0 &&
+                strcmp(mdkr_modern_character_player_package(1),
+                       "org.example.pipeline-stage-1") == 0 &&
+                strcmp(mdkr_modern_character_player_package(2),
+                       "org.example.pipeline-stage-2") == 0 &&
+                strcmp(mdkr_modern_character_player_package(3),
+                       "org.example.pipeline-stage-3") == 0 &&
+                mdkr_modern_character_player_identity(0, &identity_view) &&
+                identity_view.revision == roster_identity_revision[0],
+            "failure in the final disjoint stage preserves all four active players");
+    for (player = 1; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        require(mdkr_modern_character_player_identity(
+                    player, &identity_view) &&
+                    identity_view.revision == roster_identity_revision[player],
+                "failed disjoint stage preserves every identity revision");
+    }
+    write_file(transaction_cache[7], transaction_bytes[7],
+               transaction_size[7]);
+    require(mdkr_modern_character_apply_catalog_plan(
+                assignment_plan, error, sizeof(error)) &&
+                strcmp(mdkr_modern_character_player_package(0),
+                       "org.example.pipeline-stage-4") == 0 &&
+                strcmp(mdkr_modern_character_player_package(3),
+                       "org.example.pipeline-stage-7") == 0,
+            "a disjoint four-player plan commits after every stage validates");
+    assignment_plan[0] = original_index;
+    assignment_plan[1] = -1;
+    assignment_plan[2] = -1;
+    assignment_plan[3] = -1;
+    require(mdkr_modern_character_apply_catalog_plan(
+                assignment_plan, error, sizeof(error)) &&
+                strcmp(mdkr_modern_character_player_package(0),
+                       "org.example.pipeline-proof") == 0 &&
+                mdkr_modern_character_player_package(1) == NULL,
+            "transaction can atomically return mixed custom slots to retail");
+    modern_character_supported = false;
+    require(!mdkr_modern_character_apply_catalog_plan(
+                assignment_plan, error, sizeof(error)) &&
+                strcmp(mdkr_modern_character_player_package(0),
+                       "org.example.pipeline-proof") == 0,
+            "renderer capability loss preserves an active custom assignment");
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        assignment_plan[player] = -1;
+    }
+    require(mdkr_modern_character_apply_catalog_plan(
+                assignment_plan, error, sizeof(error)) &&
+                mdkr_modern_character_player_package(0) == NULL,
+            "renderer capability loss still permits an atomic retail fallback");
+    modern_character_supported = true;
+    require(mdkr_modern_character_assign_player_index(
+                0, original_index, error, sizeof(error)),
+            "runtime recovers custom assignment after renderer support returns");
     mdkr_modern_character_tuning_defaults(&tuning);
     tuning.scale = 1.5f;
     tuning.translation[0] = 12.0f;
@@ -1213,10 +1376,13 @@ int main(int argc, char **argv) {
                     0, MDKR_CHARACTER_CONTEXT_CAR, &fit_diagnostics),
             "any tuning publication invalidates every stale fit measurement until each context renders again");
     mdkr_modern_characters_shutdown();
+    for (fixture = 0; fixture < TRANSACTION_FIXTURES; fixture++) {
+        free(transaction_bytes[fixture]);
+    }
     (void)clear_env(
         "MDKR_CUSTOM_CHARACTER_PROFILE_org.example.pipeline-proof_SCALE");
     (void)clear_env("MDKR_CUSTOM_CHARACTER_P2_SCALE");
-    require(released_assets == 1u,
+    require(released_assets == 14u,
             "runtime retires GPU ownership before freeing CPU asset bytes");
 
     puts("PASS: compiled modern character cache and retained runtime validate and fail closed");

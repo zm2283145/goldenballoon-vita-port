@@ -1159,6 +1159,7 @@ static void charselect_custom_set_error(const char *message) {
  * launcher assignment from surviving after its player chooses retail. */
 static s32 charselect_custom_sync_runtime(char *error, size_t errorSize) {
     MdkrCustomRosterRaceSelection plan[MDKR_MODERN_CHARACTER_PLAYERS];
+    int catalogIndices[MDKR_MODERN_CHARACTER_PLAYERS];
     int active[MDKR_MODERN_CHARACTER_PLAYERS];
     int selection[MDKR_MODERN_CHARACTER_PLAYERS];
     s32 controller;
@@ -1168,6 +1169,7 @@ static s32 charselect_custom_sync_runtime(char *error, size_t errorSize) {
          controller++) {
         active[controller] = gActivePlayersArray[controller] != 0;
         selection[controller] = sCustomCharacterSelection[controller];
+        catalogIndices[controller] = -1;
     }
     count = mdkr_custom_roster_race_plan(
         &sCustomCharacterRoster, active, selection, plan);
@@ -1178,16 +1180,12 @@ static s32 charselect_custom_sync_runtime(char *error, size_t errorSize) {
         }
         return FALSE;
     }
-    for (raceSlot = 0; raceSlot < MDKR_MODERN_CHARACTER_PLAYERS;
-         raceSlot++) {
-        mdkr_modern_character_clear_player(raceSlot);
-    }
     for (raceSlot = 0; raceSlot < count; raceSlot++) {
-        if (plan[raceSlot].catalog_index >= 0 &&
-            !mdkr_modern_character_assign_player_index(
-                raceSlot, plan[raceSlot].catalog_index, error, errorSize)) {
-            return FALSE;
-        }
+        catalogIndices[raceSlot] = plan[raceSlot].catalog_index;
+    }
+    if (!mdkr_modern_character_apply_catalog_plan(
+            catalogIndices, error, errorSize)) {
+        return FALSE;
     }
     if (error != NULL && errorSize > 0u) error[0] = '\0';
     return TRUE;

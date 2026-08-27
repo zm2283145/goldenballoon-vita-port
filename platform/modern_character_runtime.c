@@ -15,7 +15,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MODERN_RUNTIME_POOLS 4
+#define MODERN_RUNTIME_ACTIVE_POOLS MDKR_MODERN_CHARACTER_PLAYERS
+/* A complete four-player replacement must be prepared without releasing the
+ * four active assets it may replace. Reused assets only add references, while
+ * a disjoint plan can require all four staging slots until atomic publication. */
+#define MODERN_RUNTIME_POOLS \
+    (MODERN_RUNTIME_ACTIVE_POOLS * 2)
 #define MODERN_RUNTIME_MAX_BONES 256u
 
 typedef struct MdkrModernRuntimePool {
@@ -46,6 +51,13 @@ typedef struct MdkrModernRuntimePlayer {
         contact_diagnostics[MDKR_CHARACTER_CONTEXT_COUNT];
     uint32_t contact_diagnostics_valid_mask;
 } MdkrModernRuntimePlayer;
+
+typedef struct MdkrModernPendingPlayer {
+    int pool;
+    MdkrModernPose pose;
+    MdkrModernCharacterTuning tuning;
+    char semantic[96];
+} MdkrModernPendingPlayer;
 
 static MdkrModernCharacterRegistry s_registry;
 static MdkrModernRuntimePool s_pools[MODERN_RUNTIME_POOLS];
@@ -682,8 +694,79 @@ static int pool_acquire(int registry_index, char *error, size_t error_size) {
         pool->references = 1;
         return index;
     }
-    set_error(error, error_size, "four distinct active character assets are already loaded");
+    set_error(error, error_size,
+              "character assignment staging capacity is exhausted");
     return -1;
+}
+
+static void pending_player_init(MdkrModernPendingPlayer *pending) {
+    memset(pending, 0, sizeof(*pending));
+    pending->pool = -1;
+    mdkr_modern_character_tuning_defaults(&pending->tuning);
+}
+
+static void pending_player_release(MdkrModernPendingPlayer *pending) {
+    int pool;
+    if (pending == NULL) return;
+    pool = pending->pool;
+    mdkr_modern_pose_shutdown(&pending->pose);
+    pending_player_init(pending);
+    pool_release(pool);
+}
+
+static int pending_player_prepare(int player, int registry_index,
+                                  MdkrModernPendingPlayer *pending,
+                                  char *error, size_t error_size) {
+    const MdkrModernCharacterEntry *entry;
+    int pool;
+    pending_player_init(pending);
+    entry = mdkr_modern_character_registry_entry(&s_registry, registry_index);
+    if (entry == NULL) {
+        set_error(error, error_size,
+                  "character catalog selection is unavailable");
+        return 0;
+    }
+    pool = pool_acquire(registry_index, error, error_size);
+    if (pool < 0) return 0;
+    pending->pool = pool;
+    player_tuning_from_environment(player, entry->id, &pending->tuning);
+    pending->tuning.vehicle_mask &= s_pools[pool].definition.vehicle_mask;
+    if (pending->tuning.vehicle_mask == 0u) {
+        pending->tuning.vehicle_mask = s_pools[pool].definition.vehicle_mask;
+    }
+    if (!mdkr_modern_pose_init(&pending->pose, &s_pools[pool].asset,
+                               error, error_size)) {
+        pending_player_release(pending);
+        return 0;
+    }
+    (void)snprintf(pending->semantic, sizeof(pending->semantic), "%s",
+                   "fallback");
+    return 1;
+}
+
+static void pending_player_publish(int player,
+                                   MdkrModernPendingPlayer *pending) {
+    MdkrModernRuntimePlayer *slot = &s_players[player];
+    int old_pool = slot->pool;
+    int new_pool = pending->pool;
+    mdkr_modern_pose_shutdown(&slot->pose);
+    memset(slot, 0, sizeof(*slot));
+    slot->pool = new_pool;
+    slot->pose = pending->pose;
+    slot->tuning = pending->tuning;
+    (void)snprintf(slot->semantic, sizeof(slot->semantic), "%s",
+                   pending->semantic);
+    memset(&pending->pose, 0, sizeof(pending->pose));
+    pending->pool = -1;
+    if (new_pool >= 0) {
+        slot->identity_revision = ++s_identity_revision;
+        if (slot->identity_revision == 0u) {
+            slot->identity_revision = ++s_identity_revision;
+        }
+    } else {
+        mdkr_modern_character_tuning_defaults(&slot->tuning);
+    }
+    pool_release(old_pool);
 }
 
 int mdkr_modern_characters_init(const char *directory) {
@@ -827,16 +910,30 @@ int mdkr_modern_character_catalog_entry(
 
 int mdkr_modern_character_assign_player_index(
     int player, int catalog_index, char *error, size_t error_size) {
-    const MdkrModernCharacterEntry *entry;
-    if (!s_initialized ||
+    MdkrModernPendingPlayer pending;
+    const MdkrModernCharacterEntry *entry = NULL;
+    if (!s_initialized || player < 0 ||
+        player >= MDKR_MODERN_CHARACTER_PLAYERS ||
         (entry = mdkr_modern_character_registry_entry(
              &s_registry, catalog_index)) == NULL) {
         set_error(error, error_size,
                   "character catalog selection is unavailable");
         return 0;
     }
-    return mdkr_modern_character_assign_player(
-        player, entry->id, error, error_size);
+    if (!gfx_modern_character_supported()) {
+        set_error(error, error_size,
+                  "active renderer does not support GPU-skinned characters");
+        return 0;
+    }
+    if (!pending_player_prepare(player, catalog_index, &pending,
+                                error, error_size)) return 0;
+    pending_player_publish(player, &pending);
+    fprintf(stderr, "[modern-character] P%d=%s donor=%u triangles=%u\n",
+            player + 1, entry->id,
+            s_pools[s_players[player].pool].definition.donor,
+            s_pools[s_players[player].pool].render.gpu.index_count / 3u);
+    set_error(error, error_size, "");
+    return 1;
 }
 
 void mdkr_modern_character_clear_player(int player) {
@@ -854,9 +951,7 @@ void mdkr_modern_character_clear_player(int player) {
 
 int mdkr_modern_character_assign_player(int player, const char *package_id,
                                         char *error, size_t error_size) {
-    MdkrModernRuntimePlayer *slot;
     int registry_index;
-    int pool;
     if (!s_initialized || player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
         package_id == NULL || package_id[0] == '\0') {
         set_error(error, error_size, "character assignment arguments are invalid");
@@ -872,31 +967,66 @@ int mdkr_modern_character_assign_player(int player, const char *package_id,
         set_error(error, error_size, "character package id is not installed");
         return 0;
     }
-    mdkr_modern_character_clear_player(player);
-    pool = pool_acquire(registry_index, error, error_size);
-    if (pool < 0) return 0;
-    slot = &s_players[player];
-    slot->pool = pool;
-    slot->identity_revision = ++s_identity_revision;
-    if (slot->identity_revision == 0u) {
-        slot->identity_revision = ++s_identity_revision;
-    }
-    player_tuning_from_environment(
-        player, package_id, &slot->tuning);
-    slot->tuning.vehicle_mask &= s_pools[pool].definition.vehicle_mask;
-    if (slot->tuning.vehicle_mask == 0u) {
-        slot->tuning.vehicle_mask = s_pools[pool].definition.vehicle_mask;
-    }
-    if (!mdkr_modern_pose_init(&slot->pose, &s_pools[pool].asset,
-                               error, error_size)) {
-        slot->pool = -1;
-        pool_release(pool);
+    return mdkr_modern_character_assign_player_index(
+        player, registry_index, error, error_size);
+}
+
+int mdkr_modern_character_apply_catalog_plan(
+    const int catalog_indices[MDKR_MODERN_CHARACTER_PLAYERS],
+    char *error, size_t error_size) {
+    MdkrModernPendingPlayer pending[MDKR_MODERN_CHARACTER_PLAYERS];
+    int player;
+    if (!s_initialized || catalog_indices == NULL) {
+        set_error(error, error_size,
+                  "character assignment plan is unavailable");
         return 0;
     }
-    (void)snprintf(slot->semantic, sizeof(slot->semantic), "%s", "fallback");
-    fprintf(stderr, "[modern-character] P%d=%s donor=%u triangles=%u\n",
-            player + 1, package_id, s_pools[pool].definition.donor,
-            s_pools[pool].render.gpu.index_count / 3u);
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        pending_player_init(&pending[player]);
+        if (catalog_indices[player] < -1 ||
+            (catalog_indices[player] >= 0 &&
+             mdkr_modern_character_registry_entry(
+                 &s_registry, catalog_indices[player]) == NULL)) {
+            set_error(error, error_size,
+                      "character assignment plan contains an unavailable selection");
+            return 0;
+        }
+    }
+    if (!gfx_modern_character_supported()) {
+        for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+            if (catalog_indices[player] >= 0) {
+                set_error(error, error_size,
+                          "active renderer does not support GPU-skinned characters");
+                return 0;
+            }
+        }
+    }
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        if (catalog_indices[player] >= 0 &&
+            !pending_player_prepare(player, catalog_indices[player],
+                                    &pending[player], error, error_size)) {
+            int staged;
+            for (staged = 0; staged < MDKR_MODERN_CHARACTER_PLAYERS;
+                 staged++) {
+                pending_player_release(&pending[staged]);
+            }
+            return 0;
+        }
+    }
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        pending_player_publish(player, &pending[player]);
+        if (s_players[player].pool >= 0) {
+            const MdkrModernRuntimePool *pool =
+                &s_pools[s_players[player].pool];
+            const char *id = mdkr_modern_character_asset_string(
+                &pool->asset, pool->definition.id);
+            fprintf(stderr,
+                    "[modern-character] P%d=%s donor=%u triangles=%u\n",
+                    player + 1, id != NULL ? id : "<invalid>",
+                    pool->definition.donor,
+                    pool->render.gpu.index_count / 3u);
+        }
+    }
     set_error(error, error_size, "");
     return 1;
 }

@@ -688,10 +688,17 @@ index resolves back through the registry and then uses the ordinary validated
 player-assignment path. The select browser copies only bounded identity tokens,
 sorts deterministically by display name and ID, never enters an empty grid
 cell, preserves columns across partial pages, and derives a tested race plan
-from potentially sparse controller slots. Selection loads the real package
-before confirmation; a load failure restores the previous selection, while an
-unexpected commit-time failure falls back all affected presentation identities
-to retail rather than pairing a custom donor with a missing model.
+from potentially sparse controller slots. Selection stages the complete
+race-player plan before confirmation: every selected cache, decoded immutable
+render asset, independent pose, package tuning profile, and retail-clear slot
+must succeed before any live assignment changes. The runtime retains four
+bounded transient pool slots in addition to the four-player active set, so even
+a four-distinct-character roster can move to a disjoint four-character roster
+without first sacrificing its last-known-good models. A failed stage releases
+only the transient resources and preserves all prior package identities and
+identity revisions. An unexpected failure at the final menu commit falls back
+the complete affected presentation set to retail rather than ever pairing a
+custom donor with a missing or different model.
 
 Launcher-authored fit and motion tuning crosses the process boundary under the
 stable package ID, not the player slot that happened to own it at startup. A
