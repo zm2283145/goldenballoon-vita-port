@@ -1030,6 +1030,40 @@ class CharacterAssetProbeTests(unittest.TestCase):
         with self.assertRaises(probe.ProbeError):
             probe.inspect_portrait_png(animated)
 
+    def test_animationless_skin_uses_explicit_compiler_bind_fallback(self) -> None:
+        model = rewrite_glb_document(
+            make_animated_glb(),
+            lambda document: document.pop("animations", None),
+        )
+        report = probe.inspect_glb_bytes(model, require_character=True)
+        self.assertEqual([], report["errors"])
+        self.assertTrue(any(
+            "no source animation" in warning for warning in report["warnings"]
+        ))
+        manifest = make_manifest()
+        manifest["animations"] = {
+            "fallback": probe.BIND_POSE_FALLBACK,
+            "states": {},
+        }
+        self.assertEqual([], probe.validate_manifest(manifest, report))
+        first, first_report = compiler.compile_character(
+            model, manifest, bytes(range(32))
+        )
+        second, second_report = compiler.compile_character(
+            model, manifest, bytes(range(32))
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(first_report, second_report)
+        self.assertEqual(1, first_report["animations"])
+        self.assertEqual(0, first_report["motion_channels"])
+        self.assertEqual(
+            [probe.BIND_POSE_FALLBACK], first_report["static_animations"]
+        )
+        sections = _compiled_sections(first)
+        self.assertEqual(1, sections[compiler.SECTION_ANIMATIONS]["count"])
+        self.assertEqual(1, sections[compiler.SECTION_CHANNELS]["count"])
+        self.assertEqual(2, sections[compiler.SECTION_KEYS]["count"])
+
     def test_compiled_cache_is_deterministic_and_sectioned(self) -> None:
         model = make_animated_glb()
         manifest = make_manifest()

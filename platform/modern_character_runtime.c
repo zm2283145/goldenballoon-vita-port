@@ -81,6 +81,10 @@ static char s_inspection_semantic[32];
 static float s_inspection_phase;
 static int s_playable_filter_active;
 static char s_playable_list[MODERN_RUNTIME_PLAYABLE_LIST_MAX];
+/* A disabled cache is admitted only for the one launcher-authenticated exact
+ * Workshop preview that named it. Ordinary runtime discovery continues to
+ * scan enabled .mdkc files only. */
+static char s_workshop_preview_package[MDKR_MODERN_CHARACTER_ID_MAX + 1u];
 
 static int playable_list_contains(const char *list, const char *id) {
     const char *begin;
@@ -818,7 +822,21 @@ int mdkr_modern_characters_init(const char *directory) {
         s_players[index].pool = -1;
         mdkr_modern_character_tuning_defaults(&s_players[index].tuning);
     }
-    if (mdkr_modern_character_registry_init(&s_registry, directory) != 0) return 0;
+    {
+        const char *preview = getenv("MDKR_CHARACTER_WORKSHOP_PREVIEW_PACKAGE");
+        s_workshop_preview_package[0] = '\0';
+        if (preview != NULL && preview[0] != '\0' &&
+            strlen(preview) < sizeof(s_workshop_preview_package)) {
+            memcpy(s_workshop_preview_package, preview, strlen(preview) + 1u);
+        }
+    }
+    if ((s_workshop_preview_package[0] != '\0'
+             ? mdkr_modern_character_registry_init_inventory(
+                   &s_registry, directory)
+             : mdkr_modern_character_registry_init(&s_registry, directory)) != 0) {
+        s_workshop_preview_package[0] = '\0';
+        return 0;
+    }
     s_initialized = 1;
     playable = getenv("MDKR_CUSTOM_CHARACTER_PLAYABLE");
     s_playable_filter_active = playable != NULL;
@@ -872,6 +890,7 @@ void mdkr_modern_characters_shutdown(void) {
     mdkr_modern_character_clear_inspection_pose();
     s_playable_filter_active = 0;
     s_playable_list[0] = '\0';
+    s_workshop_preview_package[0] = '\0';
     s_initialized = 0;
 }
 
@@ -915,6 +934,11 @@ int mdkr_modern_character_catalog_playable(int index) {
     if (!s_initialized) return 0;
     entry = mdkr_modern_character_registry_entry(&s_registry, index);
     if (entry == NULL) return 0;
+    if (!entry->enabled &&
+        (s_workshop_preview_package[0] == '\0' ||
+         strcmp(entry->id, s_workshop_preview_package) != 0)) {
+        return 0;
+    }
     return !s_playable_filter_active ||
            playable_list_contains(s_playable_list, entry->id);
 }

@@ -316,8 +316,16 @@ void handoffCharacterPackageTuning(const MdkrBootConfig *cfg) {
     char directory[MDKR_MODERN_CHARACTER_PATH_MAX];
     MdkrModernCharacterRegistry registry{};
     std::string existing;
+    const bool exactPreview = cfg != nullptr &&
+        cfg->character_preview_context != MDKR_CHARACTER_PREVIEW_NONE &&
+        cfg->character_preview_package != nullptr &&
+        cfg->character_preview_package[0] != '\0';
     if (!mdkr_user_characters_directory(directory, sizeof(directory)) ||
-        mdkr_modern_character_registry_init(&registry, directory) != 0) {
+        (exactPreview
+             ? mdkr_modern_character_registry_init_inventory(
+                   &registry, directory)
+             : mdkr_modern_character_registry_init(
+                   &registry, directory)) != 0) {
         AppRestart_setEnv("MDKR_CUSTOM_CHARACTER_PLAYABLE", "");
         s_launcherPlayableEnvironment.clear();
         return;
@@ -331,11 +339,9 @@ void handoffCharacterPackageTuning(const MdkrBootConfig *cfg) {
         const std::string attestationKey =
             "custom_character_profile_" + std::string(entry->id) +
             "_playable_source_sha256";
-        const bool exactPreview = cfg != nullptr &&
-            cfg->character_preview_context != MDKR_CHARACTER_PREVIEW_NONE &&
-            cfg->character_preview_package != nullptr &&
+        const bool exactPreviewEntry = exactPreview &&
             std::strcmp(cfg->character_preview_package, entry->id) == 0;
-        if (exactPreview ||
+        if (exactPreviewEntry ||
             AppConfig::get(attestationKey) == characterSourceDigestHex(*entry)) {
             if (!playable.empty()) playable.push_back(',');
             playable += entry->id;
@@ -578,6 +584,9 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             cfg->character_preview_capture_png[0] != '\0';
         bool environmentReady = previewEnvironment.set(
             "MDKR_CHARACTER_WORKSHOP_PREVIEW", context) &&
+            previewEnvironment.set(
+                "MDKR_CHARACTER_WORKSHOP_PREVIEW_PACKAGE",
+                cfg->character_preview_package) &&
             previewEnvironment.set(
                 "MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS",
                 std::to_string(cfg->character_preview_players).c_str()) &&

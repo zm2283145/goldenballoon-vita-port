@@ -3,8 +3,9 @@
 
 The model is deliberately authored in an awkward but valid form: centimeter
 coordinates sit beneath an additional scene scale, the pelvis and spine are
-siblings, limbs are unusually long, the head and hair are oversized, two
-materials are used, and the only source clip is static.  Those properties make
+siblings, limbs are unusually long, the head and hair are oversized, three
+materials are used, and the skinned source intentionally has no animation.
+Those properties make
 the fixture useful for authoring UX regressions without shipping third-party
 art or relying on Blender output.
 
@@ -27,6 +28,7 @@ from typing import Iterable
 
 FIXTURE_ID = "org.mdkr.adversarial-humanoid"
 FIXTURE_NAME = "Adversarial Humanoid"
+BIND_POSE_FALLBACK = "$bind"
 FIXTURE_ATTRIBUTION = "Golden Balloon contributors; procedural CC0 fixture"
 FIXTURE_SOURCE_URL = (
     "https://github.com/akratch/goldenballoon/"
@@ -342,17 +344,6 @@ def model_glb() -> bytes:
         struct.pack(f"<{len(inverse_values)}f", *inverse_values),
         5126, "MAT4", len(node_specs),
     )
-    times = builder.add_accessor(
-        struct.pack("<2f", 0.0, 1.0), 5126, "SCALAR", 2,
-        minimum=[0.0], maximum=[1.0],
-    )
-    # Deliberately identical keys: this is a valid animation container but a
-    # static/bind-looking motion source that must never silently win.
-    rotations = builder.add_accessor(
-        struct.pack("<8f", 0.0, 0.0, 0.0, 1.0,
-                    0.0, 0.0, 0.0, 1.0),
-        5126, "VEC4", 2,
-    )
     body_png = _png(1, 1, bytes((204, 112, 62, 255)))
     hair_png = _png(1, 1, bytes((184, 54, 142, 255)))
     body_view = builder.add_blob_view(body_png)
@@ -423,18 +414,6 @@ def model_glb() -> bytes:
             "skeleton": 0,
             "inverseBindMatrices": inverse_bind,
         }],
-        "animations": [{
-            "name": "idle",
-            "samplers": [{
-                "input": times,
-                "output": rotations,
-                "interpolation": "LINEAR",
-            }],
-            "channels": [{
-                "sampler": 0,
-                "target": {"node": 4, "path": "rotation"},
-            }],
-        }],
         "bufferViews": builder.views,
         "accessors": builder.accessors,
         "buffers": [{"byteLength": len(builder.payload)}],
@@ -502,9 +481,8 @@ def manifest(portrait: bytes) -> dict[str, object]:
             "sort_label": "Adversarial Humanoid",
         },
         "animations": {
-            "fallback": "idle",
-            "states": {"select.idle": "idle"},
-            "disabled_states": ["select.idle"],
+            "fallback": BIND_POSE_FALLBACK,
+            "states": {},
         },
         "gameplay": {
             "donor": "diddy",
@@ -563,7 +541,7 @@ def write_fixture(directory: Path) -> dict[str, object]:
             "nested_centimeter_scale": True,
             "hair_chain_joints": 3,
             "materials": 3,
-            "static_idle": True,
+            "animationless_skin": True,
             "unusual_proportions": True,
         },
     }

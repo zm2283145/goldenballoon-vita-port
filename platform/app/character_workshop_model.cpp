@@ -81,13 +81,13 @@ CharacterWorkshopReadiness CharacterWorkshop_evaluate(
            CharacterWorkshopTab::Performance);
 
     result.readyToPreview = facts.geometryAvailable;
-    result.readyToPlay    = facts.geometryAvailable && facts.identityReady &&
+    result.readyToEnable  = facts.geometryAvailable && facts.identityReady &&
                             facts.normalized && facts.anchorsReady &&
                             facts.attachmentSocketsReady && facts.motionReady &&
                             facts.donorQualified &&
                             vehicleFit == CharacterWorkshopReadinessStatus::Ready &&
-                            performance == CharacterWorkshopReadinessStatus::Ready &&
-                            facts.enabled;
+                            performance == CharacterWorkshopReadinessStatus::Ready;
+    result.readyToPlay    = result.readyToEnable && facts.enabled;
 
     if (!facts.identityReady) {
         result.nextActionTab   = CharacterWorkshopTab::Identity;

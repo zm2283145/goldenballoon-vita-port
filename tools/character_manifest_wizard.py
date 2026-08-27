@@ -142,7 +142,8 @@ def build_manifest(model: Path, package_id: str, display_name: str,
              if isinstance(node, dict) and isinstance(node.get("name"), str)
              and node["name"].strip()]
     fallback = fallback_clip
-    if fallback is not None and fallback not in clips:
+    if (fallback is not None and fallback != probe.BIND_POSE_FALLBACK and
+            fallback not in clips):
         raise probe.ProbeError(
             f"selected fallback animation {fallback!r} does not exist in the GLB"
         )
@@ -151,7 +152,7 @@ def build_manifest(model: Path, package_id: str, display_name: str,
     if fallback is None:
         fallback = clips[0] if clips else None
     if fallback is None:
-        raise probe.ProbeError("GLB has no named animation for the required fallback")
+        fallback = probe.BIND_POSE_FALLBACK
     states = {}
     for semantic, aliases in CLIP_ALIASES.items():
         clip = choose(clips, aliases)

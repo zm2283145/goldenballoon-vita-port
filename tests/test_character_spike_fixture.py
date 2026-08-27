@@ -25,7 +25,7 @@ class CharacterSpikeFixtureTests(unittest.TestCase):
         portrait = fixture.portrait_png()
         self.assertEqual(model, fixture.model_glb())
         self.assertEqual(
-            "0931340e824bd88af51d008c8ed2e4c52f8e65e20d782108cba96a282e4bc711",
+            "6d7ac5c22ff57070e5febb08d460021ad2dea4283527e6650570d2d93d9f9681",
             hashlib.sha256(model).hexdigest(),
         )
         report = probe.inspect_glb_bytes(model, require_character=True)
@@ -61,19 +61,23 @@ class CharacterSpikeFixtureTests(unittest.TestCase):
         self.assertEqual([], probe.validate_manifest(source, report))
         self.assertEqual("+z", source["presentation"]["source_forward"])
         self.assertEqual("Skl_Root", source["rig"]["roles"]["hips"]["node"])
-        self.assertEqual(["select.idle"],
-                         source["animations"]["disabled_states"])
+        self.assertEqual(
+            probe.BIND_POSE_FALLBACK,
+            source["animations"]["fallback"],
+        )
+        self.assertEqual({}, source["animations"]["states"])
         compiled, compile_report = compiler.compile_character(
             model, source, bytes(range(32)), portrait
         )
         self.assertGreater(len(compiled), 0)
-        self.assertEqual(["idle"], compile_report["static_animations"])
+        self.assertEqual(
+            [probe.BIND_POSE_FALLBACK],
+            compile_report["static_animations"],
+        )
         self.assertEqual(0, compile_report["motion_channels"])
-        self.assertEqual(["select.idle"],
-                         compile_report["disabled_semantics"])
+        self.assertEqual([], compile_report["disabled_semantics"])
         self.assertEqual(1, compile_report["semantic_mask"])
-        self.assertEqual(1 << 11,
-                         compile_report["disabled_semantic_mask"])
+        self.assertEqual(0, compile_report["disabled_semantic_mask"])
         self.assertEqual(0xFFFF, compile_report["rig_role_mask"])
 
     def test_materialization_is_bounded_and_contains_no_absolute_paths(self) -> None:

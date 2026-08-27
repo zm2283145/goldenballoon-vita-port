@@ -36,6 +36,7 @@ void testEmptyCharacter() {
     const CharacterWorkshopReadiness readiness =
         CharacterWorkshop_evaluate({});
     assert(!readiness.readyToPreview);
+    assert(!readiness.readyToEnable);
     assert(!readiness.readyToPlay);
     assert(readiness.readyCount == 0u);
     assert(readiness.nextActionTab == CharacterWorkshopTab::Identity);
@@ -97,10 +98,12 @@ void testReadinessOrdering() {
     facts.performance = CharacterWorkshopPerformanceState::TargetMet;
     readiness         = CharacterWorkshop_evaluate(facts);
     assert(readiness.nextActionTab == CharacterWorkshopTab::Package);
+    assert(readiness.readyToEnable);
     assert(!readiness.readyToPlay);
 
     facts.enabled = true;
     readiness     = CharacterWorkshop_evaluate(facts);
+    assert(readiness.readyToEnable);
     assert(readiness.readyToPlay);
     assert(readiness.nextActionTab == CharacterWorkshopTab::Test);
 }
@@ -119,16 +122,19 @@ void testVehicleReviewMaskAndRequiredPerformance() {
 
     facts.performance = CharacterWorkshopPerformanceState::OverTarget;
     const auto overTarget = CharacterWorkshop_evaluate(facts);
+    assert(!overTarget.readyToEnable);
     assert(!overTarget.readyToPlay);
     assert(std::strcmp(overTarget.nextActionLabel,
                        "Tune performance to target") == 0);
 
     facts.performance = CharacterWorkshopPerformanceState::TargetMet;
     const auto targetMet = CharacterWorkshop_evaluate(facts);
+    assert(targetMet.readyToEnable);
     assert(targetMet.readyToPlay);
 
     facts.reviewedContextMask = 0x1u;
     const auto missingCar     = CharacterWorkshop_evaluate(facts);
+    assert(!missingCar.readyToEnable);
     assert(!missingCar.readyToPlay);
     assert(row(missingCar, CharacterWorkshopReadinessId::VehicleFit).status ==
            CharacterWorkshopReadinessStatus::Review);

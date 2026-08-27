@@ -16,6 +16,7 @@ import character_asset_probe as probe  # noqa: E402
 import character_manifest_wizard as wizard  # noqa: E402
 from test_character_asset_probe import (  # noqa: E402
     make_animated_glb, make_humanoid_glb, make_portrait_png,
+    rewrite_glb_document,
 )
 
 
@@ -60,6 +61,28 @@ class CharacterManifestWizardTests(unittest.TestCase):
             self.assertEqual("-z", manifest["presentation"]["source_forward"])
             self.assertEqual(1.4, manifest["presentation"]["target_height_m"])
             self.assertEqual("-z", decisions["source_forward"])
+
+    def test_animationless_skin_enters_review_with_bind_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            model = Path(temporary) / "static-rig.glb"
+            model.write_bytes(rewrite_glb_document(
+                make_animated_glb(),
+                lambda document: document.pop("animations", None),
+            ))
+            manifest, decisions = wizard.build_manifest(
+                model, "org.example.static-rig", "Static Rig", "CC0-1.0",
+                "Generated fixture", "https://example.invalid/static-rig",
+                "diddy", ["car"],
+            )
+            self.assertEqual(
+                probe.BIND_POSE_FALLBACK,
+                manifest["animations"]["fallback"],
+            )
+            self.assertEqual({}, manifest["animations"]["states"])
+            self.assertEqual(probe.BIND_POSE_FALLBACK, decisions["fallback"])
+            self.assertEqual([], probe.validate_manifest(
+                manifest, probe.inspect_glb(model, require_character=True)
+            ))
 
     def test_author_can_override_required_clip_and_socket_inference(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

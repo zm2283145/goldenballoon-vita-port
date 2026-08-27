@@ -79,6 +79,10 @@ GAMEPLAY_DONORS = {
 VEHICLE_NAMES = {"car", "hovercraft", "plane"}
 PRESENTATION_CONTEXTS = {"select", *VEHICLE_NAMES}
 SOURCE_FORWARD_AXES = {"+z", "-z", "+x", "-x"}
+# Explicit manifest token for a compiler-owned, bind-pose fallback animation.
+# It lets a valid skinned model enter Rig Studio without asking the artist to
+# add a meaningless source clip. It is not an engine semantic or a GLB name.
+BIND_POSE_FALLBACK = "$bind"
 RECOMMENDED_RACE_SEMANTICS = (
     "race.steer", "race.reverse", "race.boost", "race.damage", "race.item",
     "race.spin", "race.airborne", "race.land", "race.finish_win",
@@ -2300,9 +2304,13 @@ def inspect_glb_bytes(data: bytes, require_character: bool = False) -> dict[str,
         if not skins or not skinned_primitive_count:
             errors.append("character package requires a skin and skinned primitives")
         if not animations:
-            errors.append("character package requires at least one named animation")
+            warnings.append(
+                "character has no source animation; use the explicit bind-pose fallback and review humanoid reference motion before enabling"
+            )
         elif not any(animation["duration_seconds"] > 0.0 for animation in animations):
-            errors.append("character package has no animation with positive duration")
+            warnings.append(
+                "character source animations have no positive duration; review the explicit bind/reference-motion path"
+            )
         if world_bbox_min is None or world_bbox_max is None:
             errors.append("character package requires finite scene-world bounds")
         else:
@@ -2556,7 +2564,8 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
     clip_names = {animation["name"] for animation in glb_report.get("animations", [])}
     if not isinstance(animation_info, dict) or not isinstance(animation_info.get("fallback"), str):
         errors.append("manifest.animations.fallback is required")
-    elif animation_info["fallback"] not in clip_names:
+    elif (animation_info["fallback"] != BIND_POSE_FALLBACK and
+          animation_info["fallback"] not in clip_names):
         errors.append("manifest.animations.fallback does not name a GLB animation")
     states = animation_info.get("states", {}) if isinstance(animation_info, dict) else {}
     disabled_states = (

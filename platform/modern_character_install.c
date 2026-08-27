@@ -16,7 +16,8 @@
 #define MANIFEST_MAX (1024u * 1024u)
 #define LICENSE_MAX (1024u * 1024u)
 #define PORTRAIT_MAX (8u * 1024u * 1024u)
-#define COMPILER_ID "mdkr-character-compiler/7"
+#define COMPILER_ID "mdkr-character-compiler/8"
+#define LEGACY_COMPILER_ID_V7 "mdkr-character-compiler/7"
 #define LEGACY_COMPILER_ID_V6 "mdkr-character-compiler/6"
 #define LEGACY_COMPILER_ID_V5 "mdkr-character-compiler/5"
 #define LEGACY_COMPILER_ID_V4 "mdkr-character-compiler/4"
@@ -356,6 +357,7 @@ static int portable_package_operation(
     mz_uint64 package_size = 0u;
     mz_uint64 member_sizes[5] = {0u, 0u, 0u, 0u, 0u};
     uint8_t source_digest[32];
+    uint8_t legacy_source_digest_v7[32];
     uint8_t legacy_source_digest_v6[32];
     uint8_t legacy_source_digest_v5[32];
     uint8_t legacy_source_digest_v3[32];
@@ -494,6 +496,9 @@ static int portable_package_operation(
     if (!archive_source_digest(&archive, names, member_sizes, source_count,
                                COMPILER_ID, source_digest) ||
         !archive_source_digest(&archive, names, member_sizes, source_count,
+                               LEGACY_COMPILER_ID_V7,
+                               legacy_source_digest_v7) ||
+        !archive_source_digest(&archive, names, member_sizes, source_count,
                                LEGACY_COMPILER_ID_V6,
                                legacy_source_digest_v6) ||
         !archive_source_digest(&archive, names, member_sizes, source_count,
@@ -527,6 +532,8 @@ static int portable_package_operation(
         goto done;
     }
     if (memcmp(asset.source_sha256, source_digest, sizeof(source_digest)) != 0 &&
+        memcmp(asset.source_sha256, legacy_source_digest_v7,
+               sizeof(legacy_source_digest_v7)) != 0 &&
         memcmp(asset.source_sha256, legacy_source_digest_v6,
                sizeof(legacy_source_digest_v6)) != 0 &&
         memcmp(asset.source_sha256, legacy_source_digest_v5,

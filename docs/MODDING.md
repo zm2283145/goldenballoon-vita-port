@@ -310,7 +310,7 @@ python3 tools/character_package_manager.py \
 Maintainers can exercise the complete intake-to-render path without a private
 model. The generated fixture is CC0, deterministic, and deliberately awkward:
 centimeter transforms, sibling pelvis/spine roots, long limbs, hair joints,
-multiple materials, unusual proportions, and a static-looking source idle. The
+multiple materials, unusual proportions, and an animationless skinned source. The
 command below uses a disposable character library and refuses to overwrite an
 existing evidence directory:
 
@@ -445,7 +445,7 @@ itself into an allocation problem.
 This is not an install shortcut. A resumable first-import draft fingerprints and
 inventories the bounded GLB, then requires a stable package ID, display name,
 exact license/notice file, SPDX expression, attribution, source URL, built-in
-gameplay donor, vehicle scope, forward axis, standing height, fallback clip,
+gameplay donor, vehicle scope, forward axis, standing height, motion starting point,
 seat/pelvis node, and head node. Inferred clip/socket names are starting points,
 not truth, and remain directly selectable from the exact model inventory. SPDX
 syntax is parsed in the editor and again at the package trust boundary; this
@@ -495,7 +495,10 @@ recommended race states are `race.steer`, `race.reverse`, `race.boost`,
 `race.damage`, `race.item`, `race.spin`, `race.airborne`, `race.land`,
 `race.finish_win`, and `race.finish_lose`; selection clips are `select.idle`,
 `select.hover`, and `select.confirm`. Missing optional states use the required
-`fallback` clip. Author `race.steer` as a pose strip: phase 0 full left, 0.5
+`fallback` clip. A skinned GLB with no animation may instead use the Workshop's
+explicit bind-pose starting point; the compiler creates no source animation and
+the character cannot be enabled until reviewed humanoid reference motion or
+moving source clips cover every required semantic. Author `race.steer` as a pose strip: phase 0 full left, 0.5
 neutral, and 1 full right. Damage, land, and selection confirmation are
 one-shots; landing is driven for 0.2 seconds after an airborne-to-grounded
 edge. The launcher names missing mappings, reports which mapped clips actually

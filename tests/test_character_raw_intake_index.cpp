@@ -34,6 +34,18 @@ int main() {
                inventory.head == "head" && inventory.clips.size() == 2u &&
                inventory.nodes.size() == 3u,
            "raw intake values remain exact");
+    const std::string bindOnly =
+        "mdkr-character-glb-intake-v1\t" + digest +
+        "\t3000\t2000\t2\t3\t1\t64\t1.75\t1\t2\n"
+        "defaults\t2462696e64\t68697073\t68656164\n"
+        "clip\t2462696e64\n"
+        "node\t68697073\n"
+        "node\t68656164\n";
+    CharacterRawIntakeIndex::Inventory bindInventory;
+    expect(CharacterRawIntakeIndex::parse(bindOnly, bindInventory) &&
+               bindInventory.fallback == "$bind" &&
+               bindInventory.clips.size() == 1u,
+           "animationless intake preserves the explicit bind fallback token");
     const CharacterRawIntakeIndex::Inventory before = inventory;
     expect(!CharacterRawIntakeIndex::parse(valid + "trailing", inventory) &&
                inventory.modelSha256 == before.modelSha256,

@@ -82,6 +82,11 @@ struct CharacterWorkshopReadiness {
                          rows{};
     unsigned             readyCount      = 0u;
     bool                 readyToPreview  = false;
+    // All authoring, fit, and measured-performance gates are satisfied. This
+    // is intentionally independent of the local normal-play enable switch so
+    // a disabled draft can be tested and can truthfully say it is ready to
+    // enable.
+    bool                 readyToEnable   = false;
     bool                 readyToPlay     = false;
     CharacterWorkshopTab nextActionTab   = CharacterWorkshopTab::Overview;
     const char          *nextActionLabel = "Inspect character";

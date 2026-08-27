@@ -953,6 +953,32 @@ int main(int argc, char **argv) {
                 mdkr_modern_character_registry_entry(&registry, 0)->provenance_reports == 1u,
             "disabled cache remains validated and editable with source history intact");
     mdkr_modern_character_registry_shutdown(&registry);
+    require(clear_env("MDKR_CHARACTER_WORKSHOP_PREVIEW_PACKAGE") == 0 &&
+                clear_env("MDKR_CUSTOM_CHARACTER_PLAYABLE") == 0 &&
+                mdkr_modern_characters_init(argv[5]) &&
+                mdkr_modern_character_catalog_count() == 0,
+            "disabled cache remains absent from an ordinary runtime session");
+    mdkr_modern_characters_shutdown();
+    require(set_env("MDKR_CHARACTER_WORKSHOP_PREVIEW_PACKAGE",
+                    "org.example.pipeline-proof") == 0 &&
+                set_env("MDKR_CUSTOM_CHARACTER_PLAYABLE",
+                    "org.example.pipeline-proof") == 0 &&
+                mdkr_modern_characters_init(argv[5]),
+            "exact Workshop session admits the one named disabled package");
+    original_index = mdkr_modern_character_registry_find(
+        mdkr_modern_characters_registry(), "org.example.pipeline-proof");
+    require(mdkr_modern_character_catalog_count() == 1 &&
+                original_index >= 0 &&
+                mdkr_modern_character_registry_entry(
+                    mdkr_modern_characters_registry(), original_index)->enabled == 0u &&
+                mdkr_modern_character_catalog_playable(original_index) &&
+                mdkr_modern_character_assign_player_index(
+                    0, original_index, error, sizeof(error)),
+            "disabled Workshop package can be rendered without enabling normal play");
+    mdkr_modern_characters_shutdown();
+    require(clear_env("MDKR_CHARACTER_WORKSHOP_PREVIEW_PACKAGE") == 0 &&
+                clear_env("MDKR_CUSTOM_CHARACTER_PLAYABLE") == 0,
+            "exact Workshop admission is session scoped");
     require(mdkr_modern_character_install_portable(
                 argv[4], argv[5], &install_result) &&
                 install_result.enabled == 0,
@@ -1448,7 +1474,7 @@ int main(int argc, char **argv) {
     (void)clear_env(
         "MDKR_CUSTOM_CHARACTER_PROFILE_org.example.pipeline-proof_SCALE");
     (void)clear_env("MDKR_CUSTOM_CHARACTER_P2_SCALE");
-    require(released_assets == 14u,
+    require(released_assets == 15u,
             "runtime retires GPU ownership before freeing CPU asset bytes");
 
     puts("PASS: compiled modern character cache and retained runtime validate and fail closed");

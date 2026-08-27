@@ -609,7 +609,7 @@ def run_evidence(args: argparse.Namespace) -> dict[str, Any]:
                 "rig_mode": "humanoid-retarget-v1",
                 "rig_reviewed": True,
                 "rig_roles": 16,
-                "disabled_semantics": ["select.idle"],
+                "disabled_semantics": [],
                 "portrait_source": "procedural CC0 fixture",
                 "adversarial_properties": fixture_report["properties"],
             }

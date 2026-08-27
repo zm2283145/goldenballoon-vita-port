@@ -109,7 +109,8 @@ are `13-select-disabled-reference.png`, `14-car-disabled-reference.png`, and
 
 - **Implemented:** add a checked-in, license-clean generated CC0 humanoid that exercises
   sibling pelvis/spine roots, non-meter units, hair chains, multiple materials,
-  a bad static idle, and unusual proportions. The user-provided model remains a
+  an animationless skin using compiler-v8's explicit bind fallback, and unusual
+  proportions. The user-provided model remains a
   private manual arm.
 - **Implemented:** add a one-command local evidence runner accepting `--source`, `--license`,
   `--rom`, and `--evidence-dir`. It must run conversion, intake, reviewed local

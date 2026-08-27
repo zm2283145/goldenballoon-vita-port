@@ -38,7 +38,7 @@ MANAGER_SCHEMA = "mdkr-character-install-v1"
 IMPORTER_INFO_SCHEMA = "mdkr-character-importer-info-v1"
 COMPILER_ID = compiler.COMPILER_ID
 LEGACY_COMPILER_IDS = tuple(
-    f"mdkr-character-compiler/{version}" for version in range(6, 0, -1)
+    f"mdkr-character-compiler/{version}" for version in range(7, 0, -1)
 )
 LOCK_NAME = ".character-import.lock"
 MAX_REPORT_BYTES = 64 * 1024
@@ -1893,6 +1893,12 @@ def inspect_raw_glb(model_path: Path) -> dict[str, Any]:
     )
     if fallback is None and clips:
         fallback = clips[0]
+    if fallback is None:
+        # The launcher presents this as an explicit bind/reference-motion path,
+        # not as a source clip. Keeping it in the bounded choice protocol lets
+        # old draft persistence remain deterministic without inventing GLB data.
+        fallback = probe.BIND_POSE_FALLBACK
+    fallback_choices = clips if clips else [probe.BIND_POSE_FALLBACK]
     inferred_sockets = {
         semantic: node
         for semantic, aliases in wizard.SOCKET_ALIASES.items()
@@ -1922,7 +1928,8 @@ def inspect_raw_glb(model_path: Path) -> dict[str, Any]:
         "skins": report["skin_count"],
         "joints": report["max_joints"],
         "source_height_m": source_height_m,
-        "clips": clips,
+        "clips": fallback_choices,
+        "source_animation_count": len(clips),
         "nodes": nodes,
         "fallback": fallback,
         "seat": inferred_sockets.get("seat"),

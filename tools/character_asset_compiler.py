@@ -30,7 +30,7 @@ MDKC_HEADER_BYTES = 832
 MDKC_SECTION_SLOTS = 24
 MDKC_SECTION_ENTRY_BYTES = 32
 MDKC_FILE_MAX = 1024 * 1024 * 1024
-COMPILER_ID = "mdkr-character-compiler/7"
+COMPILER_ID = "mdkr-character-compiler/8"
 
 SECTION_STRINGS = 1
 SECTION_VERTICES = 2
@@ -1044,6 +1044,32 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         animation_records.append((strings.add(animation_name),
                                   duration, first_channel, len(channel_records) - first_channel))
 
+    # A skinned source does not need to carry a fake idle merely to enter the
+    # reviewed humanoid workflow. Materialize one deterministic cache-local
+    # translation channel that exactly preserves the skeleton root's bind TRS.
+    # The source GLB and its provenance remain untouched; motion readiness still
+    # requires authored moving semantics or a fully reviewed humanoid rig.
+    bind_fallback_clip = "__mdkr_bind_pose__"
+    if manifest["animations"]["fallback"] == probe.BIND_POSE_FALLBACK:
+        if not skin_records:
+            raise CompileError("bind-pose fallback requires a skinned character")
+        skeleton_node = int(skin_records[0][3])
+        bind_translation = tuple(float(value) for value in node_records[skeleton_node][2:5])
+        first_key = len(key_records)
+        zero4 = (0.0, 0.0, 0.0, 0.0)
+        for time in (0.0, 1.0):
+            value4 = (*bind_translation, 0.0)
+            key_records.append((time, *value4, *zero4, *zero4))
+        first_channel = len(channel_records)
+        channel_records.append((
+            skeleton_node, PATH_IDS["translation"],
+            INTERPOLATION_IDS["LINEAR"], first_key, 2, 3,
+        ))
+        animation_records.append((
+            strings.add(bind_fallback_clip), 1.0, first_channel, 1,
+        ))
+        static_animations.append(probe.BIND_POSE_FALLBACK)
+
     gameplay = manifest["gameplay"]
     presentation = manifest["presentation"]
     vehicle_mask = sum(VEHICLE_BITS[name] for name in gameplay["vehicles"])
@@ -1098,7 +1124,12 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
     semantic_records = []
     animations_manifest = manifest["animations"]
     fallback_flags, fallback_blend = _semantic_policy("fallback")
-    semantic_records.append((strings.add("fallback"), strings.add(animations_manifest["fallback"]),
+    fallback_clip = (
+        bind_fallback_clip
+        if animations_manifest["fallback"] == probe.BIND_POSE_FALLBACK
+        else animations_manifest["fallback"]
+    )
+    semantic_records.append((strings.add("fallback"), strings.add(fallback_clip),
                              fallback_flags, fallback_blend))
     disabled_semantics = set(animations_manifest.get("disabled_states", []))
     semantic_mask = SEMANTIC_MASK_BITS["fallback"]

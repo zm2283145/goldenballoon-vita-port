@@ -295,6 +295,45 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 manifest = probe.json_loads_strict(archive.read("manifest.json"))
             self.assertEqual("org.example.raw-cli", manifest["id"])
 
+    def test_animationless_raw_glb_builds_without_a_fabricated_source_clip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model = root / "static-rig.glb"
+            license_file = root / "LICENSE.txt"
+            characters = root / "characters"
+            model.write_bytes(rewrite_glb_document(
+                make_animated_glb(),
+                lambda document: document.pop("animations", None),
+            ))
+            license_file.write_text("CC0 fixture\n", encoding="utf-8")
+            inventory = manager.inspect_raw_glb(model)
+            self.assertEqual(0, inventory["source_animation_count"])
+            self.assertEqual([probe.BIND_POSE_FALLBACK], inventory["clips"])
+            self.assertEqual(probe.BIND_POSE_FALLBACK, inventory["fallback"])
+            candidate_report = manager.build_raw_glb_candidate(
+                model, license_file,
+                "org.example.static-raw", "Static Raw", "CC0-1.0",
+                "Generated fixture", "https://example.invalid/static-raw",
+                "diddy", ("car",), "+z", 1.25,
+                probe.BIND_POSE_FALLBACK, "root", "head", characters,
+                expected_model_sha256=inventory["model_sha256"],
+            )
+            candidate = Path(candidate_report["candidate"])
+            verification = probe.verify_package(candidate)
+            self.assertTrue(verification["valid"], verification["errors"])
+            portable = root / "static-portable.mdkrchar"
+            prepared = manager.prepare(candidate, portable)
+            self.assertEqual(1, prepared["report"]["animations"])
+            self.assertEqual(0, prepared["report"]["motion_channels"])
+            self.assertEqual(
+                [probe.BIND_POSE_FALLBACK],
+                prepared["report"]["static_animations"],
+            )
+            with zipfile.ZipFile(candidate) as archive:
+                packaged_model = archive.read("model.glb")
+                document, _ = probe.parse_glb(packaged_model)
+                self.assertNotIn("animations", document)
+
     def test_raw_glb_intake_rejects_ambiguous_or_uncalibrated_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

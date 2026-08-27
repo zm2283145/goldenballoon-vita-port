@@ -15304,7 +15304,14 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
     ImGui::TextUnformatted(entry->display_name);
     ImGui::PopFont();
     ImGui::SameLine();
-    ImGui::TextDisabled("%s · %s", entry->enabled != 0u ? "Enabled" : "Disabled", readiness.readyToPlay ? "Ready to play" : "Workshop incomplete");
+    const char *lifecycleSummary = readiness.readyToPlay
+        ? "Enabled · Ready to play"
+        : readiness.readyToEnable
+            ? "Disabled · Ready to enable"
+            : entry->enabled != 0u
+                ? "Enabled · Play blocked — review required"
+                : "Disabled · Workshop incomplete";
+    ImGui::TextDisabled("%s", lifecycleSummary);
     ImGui::TextDisabled("%s · %s gameplay profile",
                         entry->short_name,
                         donorName(entry->donor));
@@ -15656,12 +15663,11 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
 
     if (g_characterWorkshopTab == CharacterWorkshopTab::Test) {
         ImGui::SeparatorText("Test in the exact game renderer");
-        if (entry->enabled != 0u) {
-            drawCharacterExactTests(entry, compact);
-        } else {
+        if (entry->enabled == 0u) {
             ui::TextSubtleWrapped(
-                "Exact game tests are unavailable while this package is disabled because the runtime deliberately cannot discover it. Re-enable it to test; source editing and structural performance review remain available above.");
+                "Workshop test mode temporarily admits this disabled package for the requested exact scene only. It remains unavailable to ordinary play and retained player assignments.");
         }
+        drawCharacterExactTests(entry, compact);
     }
 
     if (g_characterWorkshopTab == CharacterWorkshopTab::Package) {
@@ -15699,7 +15705,9 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             ImGui::TextWrapped(
                 "Disabled — the game uses the built-in racer for any retained player assignment. Workshop source history and package settings are preserved.");
             ImGui::PopStyleColor();
-            if (ImGui::Button("Enable character")) {
+            if (!readiness.readyToEnable) ImGui::BeginDisabled();
+            if (ImGui::Button("Enable for normal play") &&
+                readiness.readyToEnable) {
                 const std::string id = entry->id;
                 if (setCharacterPackageEnabled(id, true)) {
                     setStatus(
@@ -15711,10 +15719,17 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                 setStatus("The custom character could not be enabled; open the lifecycle report.",
                           AppTheme::bad());
             }
+            if (!readiness.readyToEnable) ImGui::EndDisabled();
             ui::SpeakFocusedItem(
-                "Enable character",
-                nullptr,
-                "Makes this retained package available to the game without changing its source revisions or fit settings.");
+                "Enable for normal play",
+                readiness.readyToEnable
+                    ? nullptr
+                    : "Complete every Workshop readiness area first. Exact tests remain available while disabled.",
+                "Makes this validated retained package available to normal play without changing its source revisions or fit settings.");
+            if (!readiness.readyToEnable) {
+                ui::TextSubtleWrapped(
+                    "Finish the readiness checklist before enabling. You can run every exact Test while the package stays safely disabled.");
+            }
         }
         ImGui::SeparatorText("Revision history and recovery");
         if (drawCharacterRevisionRecovery(entry)) {
@@ -16591,9 +16606,25 @@ void drawCharacterRawIntakeEditor(bool rail) {
         "Sets normalized authored height from 0.1 to 10 metres; vehicle placement is calibrated separately after import.");
 
     if (intake.inspected) {
-        changed |= drawCharacterRawChoice(
-            "Fallback animation", intake.inventory.clips, intake.fallback,
-            "Required motion source used when a semantic clip is absent.");
+        const bool bindFallback = intake.inventory.clips.size() == 1u &&
+            intake.inventory.clips[0] == "$bind";
+        if (bindFallback) {
+            ImGui::TextUnformatted("Motion starting point");
+            ImGui::TextColored(
+                AppTheme::accent(),
+                "Bind pose · review humanoid reference motion after import");
+            ui::TextSubtleWrapped(
+                "No source animation was found. The compiler preserves the model's bind pose without modifying the GLB; normal play remains blocked until Rig Studio has a complete reviewed humanoid mapping.");
+            intake.fallback = 0;
+            ui::SpeakFocusedItem(
+                "Motion starting point",
+                "Bind pose; humanoid reference motion review required",
+                "The source has no animation. Workshop testing is available, but enabling normal play requires a reviewed humanoid rig.");
+        } else {
+            changed |= drawCharacterRawChoice(
+                "Fallback animation", intake.inventory.clips, intake.fallback,
+                "Required motion source used when a semantic clip is absent.");
+        }
         changed |= drawCharacterRawChoice(
             "Seat or pelvis node", intake.inventory.nodes, intake.seat,
             "Required vehicle anchor. Review the inference; a root node is not always the pelvis.");

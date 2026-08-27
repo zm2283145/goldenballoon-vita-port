@@ -324,6 +324,13 @@ v4 carries active and disabled semantic masks for both portable and source-only
 packages, so an update cannot change runtime motion precedence behind unchanged
 clip/channel/key counts.
 
+Compiler v8 adds the explicit `$bind` fallback. When a skinned GLB has no source
+animation, the compiler creates one cache-local, motionless bind channel without
+changing the GLB or pretending the artist authored a clip. The package remains
+unready for normal play until it gains moving semantic clips or a complete
+reviewed humanoid role map; exact Workshop testing remains available.
+Compiler-v1 through compiler-v7 portable packages remain accepted.
+
 A minimal manifest is:
 
 ```json
@@ -825,8 +832,11 @@ maps semantic names to clips. `race.steer` is sampled continuously: phase 0 is
 full left, 0.5 is neutral, and 1 is full right. `race.damage`, `race.land`, and
 `select.confirm` clamp as one-shots; persistent states loop. A landing edge owns
 a bounded 0.2-second reaction window. Missing optional mappings use `fallback`
-with ordinary playback (never parameter scrubbing); missing fallback or a
-zero-duration mapped clip rejects the package.
+with ordinary playback (never parameter scrubbing). The fallback normally names
+a GLB clip. `$bind` is the reserved alternative for an animationless skinned
+source: it preserves bind TRS for inspection and Rig Studio, but never counts as
+moving-animation or readiness evidence. An unknown fallback or a zero-duration
+authored mapping rejects the package.
 
 `animations.disabled_states` is an optional, bounded list containing only names
 that remain present in `animations.states`. It records an author's reversible
@@ -1231,10 +1241,11 @@ upload, 1,194 complete model draws (2,082,933 triangles), 13,061 suppressed
 qualified donor batches, and zero refused modern draws. The measured car-driver
 body was 101 local units high; the calibrated character's pelvis landed on the
 independent car seat frame and its declared -Z front was converted to the engine
-forward direction. The T-pose is expected: the adapter supplied one
-positive-duration but motionless witness channel because the archive has no
-authored clips. The compiler and launcher now report that distinction instead
-of mistaking “one clip exists” for real motion.
+forward direction. The initial adapter supplied a positive-duration but
+motionless witness channel because the archive had no authored clips. Compiler
+v8 removes that workaround: an animationless skinned source uses the explicit
+cache-local `$bind` fallback and remains blocked from normal play until its
+reference-motion rig review is complete.
 The corrected character-select run independently measured the donor body from
 (-50, 1, -116) to (50, 179, 140), derived a 178-unit target scale and ground
 point (0, 1, 12), recorded 304 primitive draws (530,328 triangles), 153 complete
