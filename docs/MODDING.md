@@ -350,7 +350,9 @@ Only redacted logs, PNG screenshots, and `evidence.json` are retained. The
 manifest records source/license/ROM digests and sizes, never those payloads or
 their absolute paths. Conversion, packaging, validation, compilation, and the
 temporary installed catalog are destroyed when the run exits. The normal
-Character Workshop library is never read or modified.
+Character Workshop library is never read or modified. Cadence is measured only
+after warm-up under real-time enhanced pacing; screenshots come from a separate
+exact-context run so capture I/O cannot manufacture a p99 regression or pass.
 
 The runtime never reads DAE, GLB, JSON, or PNG source packages during a frame.
 Installation validates and compiles them into a bounded `.mdkc`; the launcher

@@ -43,7 +43,7 @@ import character_spike_fixture as fixture  # noqa: E402
 EVIDENCE_SCHEMA = "mdkr-character-spike-evidence-v1"
 DECISIONS_SCHEMA = "mdkr-character-spike-decisions-v1"
 MAX_LOG_BYTES = 8 * 1024 * 1024
-RUN_FRAMES = 220
+RUN_FRAMES = 360
 CONTEXTS = (
     ("select", 1, "select.idle"),
     ("car", 1, "race.steer"),
@@ -322,6 +322,7 @@ def _parse_result(output: str, label: str) -> dict[str, Any]:
         raise EvidenceError(f"{label} emitted no exact result")
     line = result_lines[-1]
     patterns = {
+        "measurement": r"warmup=(\d+) realtime=(\d+)",
         "timing": (
             r"samples=(\d+) p50us=(\d+) p95us=(\d+) p99us=(\d+) "
             r"maxus=(\d+) replacements=(\d+)"
@@ -350,6 +351,7 @@ def _parse_result(output: str, label: str) -> dict[str, Any]:
     missing = [name for name, match in matches.items() if match is None]
     if missing:
         raise EvidenceError(f"{label} result omits: {', '.join(missing)}")
+    measurement = [int(value) for value in matches["measurement"].groups()]
     timing = [int(value) for value in matches["timing"].groups()]
     contact_groups = matches["contact"].groups()
     contact = [int(contact_groups[0]), int(contact_groups[1]),
@@ -361,6 +363,10 @@ def _parse_result(output: str, label: str) -> dict[str, Any]:
     gpu = [int(gpu_groups[0]), int(gpu_groups[1], 16),
            *(int(value) for value in gpu_groups[2:])]
     environment = matches["environment"].groups()
+    if measurement != [1, 1]:
+        raise EvidenceError(
+            f"{label} did not produce a warmed real-time measurement"
+        )
     if timing[0] < 40 or timing[5] <= 0:
         raise EvidenceError(f"{label} did not produce a warmed replacement window")
     if fit[0] != 1 or fit[4] > fit[5]:
@@ -370,6 +376,10 @@ def _parse_result(output: str, label: str) -> dict[str, Any]:
     if "[WGPU-MODERN-CHARACTER]" not in output or "refusedDraws=0" not in output:
         raise EvidenceError(f"{label} did not render a clean modern character")
     return {
+        "measurement": {
+            "warmup_completed": True,
+            "realtime_pacing": True,
+        },
         "wall_microseconds": {
             "samples": timing[0], "p50": timing[1], "p95": timing[2],
             "p99": timing[3], "max": timing[4],
@@ -422,25 +432,28 @@ def _exact_context(
     env.update({
         "LC_ALL": "C", "MDKR_AUDIO": "0", "MDKR_TRACE": "1",
         "MDKR_PRESENT_PERF": "1", "MDKR_RENDERER": "webgpu",
+        "MDKR_PACE_REALTIME": "1",
+        "MDKR_SIMULATION_CADENCE": "enhanced",
         "MDKR_RENDER_SCALE": "1", "MDKR_VIDEO_CONFIG_PATH": os.devnull,
         "MDKR_CUSTOM_CHARACTER_DIRECTORY": str(characters),
         "MDKR_CHARACTER_WORKSHOP_PREVIEW": context,
         "MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS": str(players),
         "MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE": semantic,
         "MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE": "500",
-        "MDKR64_HIDDEN": "1", "MDKR_DUMP_FROM": str(RUN_FRAMES - 2),
-        "MDKR_DUMP_EVERY": "10000",
+        "MDKR64_HIDDEN": "1",
     })
     for player in range(players):
         env[f"MDKR_CUSTOM_CHARACTER_P{player + 1}"] = package_id
-    process = _run([
+    command = [
         str(binary), "--headless-frames", str(RUN_FRAMES), "--rom", str(rom),
-        "--window-size", "1280x960", "--restored", "--dump-frames", str(arm),
-    ], env=env, timeout=180)
+        "--window-size", "1280x960", "--restored",
+    ]
+    process = _run(command, env=env, timeout=180)
     output = process.stdout or ""
     log_name = f"{label}.log"
     (evidence / log_name).write_text(
-        _redact(output, secrets), encoding="utf-8"
+        _redact("[REALTIME-MEASUREMENT]\n" + output, secrets),
+        encoding="utf-8",
     )
     if process.returncode != 0:
         raise EvidenceError(f"{label} exact renderer exited with {process.returncode}")
@@ -448,6 +461,43 @@ def _exact_context(
     if expected not in output:
         raise EvidenceError(f"{label} did not enter the requested game context")
     parsed = _parse_result(output, label)
+
+    # Screenshot publication performs synchronous filesystem work by design.
+    # Keep that cost out of the real-time cadence window instead of allowing
+    # one PNG/PPM write to masquerade as a rendering p99 regression. The
+    # second, deterministic run must still enter the exact context and render
+    # the same clean replacement; only its timing is deliberately discarded.
+    capture_env = dict(env)
+    capture_env.pop("MDKR_PACE_REALTIME", None)
+    capture_env.update({
+        "MDKR_DUMP_FROM": str(RUN_FRAMES - 2),
+        "MDKR_DUMP_EVERY": "10000",
+    })
+    capture = _run(
+        command + ["--dump-frames", str(arm)],
+        env=capture_env, timeout=180,
+    )
+    capture_output = capture.stdout or ""
+    combined_log = (
+        "[REALTIME-MEASUREMENT]\n" + output +
+        "\n[ISOLATED-SCREENSHOT-CAPTURE]\n" + capture_output
+    )
+    (evidence / log_name).write_text(
+        _redact(combined_log, secrets), encoding="utf-8"
+    )
+    if capture.returncode != 0:
+        raise EvidenceError(
+            f"{label} screenshot renderer exited with {capture.returncode}"
+        )
+    if expected not in capture_output:
+        raise EvidenceError(
+            f"{label} screenshot run did not enter the requested game context"
+        )
+    if ("[WGPU-MODERN-CHARACTER]" not in capture_output or
+            "refusedDraws=0" not in capture_output):
+        raise EvidenceError(
+            f"{label} screenshot run did not render a clean modern character"
+        )
     ppm_files = sorted(arm.glob("frame_*.ppm"))
     if len(ppm_files) != 1:
         raise EvidenceError(f"{label} produced {len(ppm_files)} screenshots")
@@ -463,6 +513,7 @@ def _exact_context(
             "file": screenshot_name,
             "width": width,
             "height": height,
+            "separate_from_timing": True,
             **_file_record(screenshot),
         },
         "log": log_name,

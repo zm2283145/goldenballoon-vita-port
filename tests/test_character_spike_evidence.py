@@ -43,7 +43,7 @@ class CharacterSpikeEvidenceTests(unittest.TestCase):
 
     def test_result_parser_requires_warmed_fit_pose_and_renderer_evidence(self) -> None:
         output = (
-            "[TRACE] character_workshop_result: warmup=1 realtime=0 "
+            "[TRACE] character_workshop_result: warmup=1 realtime=1 "
             "samples=60 p50us=1000 p95us=2000 p99us=3000 maxus=4000 "
             "replacements=61 contacts=60 contactMaxUm=42000 "
             "contactWitness=f contactWitnessErrorUm=10000,20000,30000,40000 "
@@ -57,6 +57,10 @@ class CharacterSpikeEvidenceTests(unittest.TestCase):
             "triangles=240 refusedDraws=0\n"
         )
         parsed = evidence._parse_result(output, "car-1p")
+        self.assertEqual(
+            {"warmup_completed": True, "realtime_pacing": True},
+            parsed["measurement"],
+        )
         self.assertEqual(2000, parsed["wall_microseconds"]["p95"])
         self.assertEqual(42000, parsed["contacts"]["maximum_micrometres"])
         self.assertEqual([0, 1250000], parsed["fit"]["bounds_y_micrometres"])
@@ -64,6 +68,10 @@ class CharacterSpikeEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(evidence.EvidenceError, "package fallback"):
             evidence._parse_result(output.replace("poseFallback=0",
                                                   "poseFallback=1"), "car-1p")
+        with self.assertRaisesRegex(evidence.EvidenceError,
+                                    "warmed real-time"):
+            evidence._parse_result(output.replace("realtime=1", "realtime=0"),
+                                   "car-1p")
 
     def test_existing_evidence_is_never_overwritten(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

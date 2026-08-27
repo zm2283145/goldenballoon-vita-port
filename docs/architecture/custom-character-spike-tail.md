@@ -129,8 +129,10 @@ four-player car through the exact linked-ROM WebGPU routes. It has 504 vertices,
 preserved but disabled. The fixture's explicit `+z` front is visible in select
 and its hair/back is visible from the race chase camera. All five contexts have
 zero package-fallback pose ticks and meet the initial frame-time target on the
-development host. The intentionally uncalibrated contact residuals remain
-roughly 319–336 mm; the evidence runner records those as M4 advisories instead
+development host under a warmed, real-time enhanced-cadence window. Screenshot
+publication runs separately so filesystem work cannot contaminate p95/p99. The
+intentionally uncalibrated contact residuals remain roughly 277–298 mm; the
+evidence runner records those as M4 advisories instead
 of misreporting a successful package as an invalid import.
 
 The runner creates conversion, package, install, and disposable character
