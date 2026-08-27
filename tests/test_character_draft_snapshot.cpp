@@ -38,6 +38,7 @@ int main() {
     source.testViewPitchDegrees = 90;
     source.testLighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT;
     source.reviewedContexts = 3u;
+    source.contactExceptionContexts = 2u;
     source.scale = 1.25f;
     source.offset[1] = -12.5f;
     source.rotation[1] = 180.0f;
@@ -105,7 +106,9 @@ int main() {
                parsed.testViewPitchDegrees == 90 &&
                parsed.testLighting ==
                    MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT &&
-               parsed.reviewedContexts == 3u && parsed.scale == 1.25f &&
+               parsed.reviewedContexts == 3u &&
+               parsed.contactExceptionContexts == 2u &&
+               parsed.scale == 1.25f &&
                parsed.offset[1] == -12.5f &&
                parsed.contexts[1].contacts[0][0] == -0.25f &&
                parsed.rigReviewed &&
@@ -159,8 +162,19 @@ int main() {
     constexpr size_t sourceRecordTailBytes = 9u * 4u + 64u;
     constexpr size_t animationIntentTailBytes = 4u;
     constexpr size_t rigReviewTasksTailBytes = 4u;
+    constexpr size_t contactExceptionTailBytes = 4u;
+    std::string versionTen = encoded.substr(
+        0u, encoded.size() - contactExceptionTailBytes);
+    writeU32(versionTen, 4u, 10u);
+    writeU32(versionTen, 8u,
+             static_cast<uint32_t>(versionTen.size()));
+    expect(decode(versionTen, parsed, error) &&
+               parsed.rigReviewTaskMask == 0x1Fu &&
+               parsed.contactExceptionContexts == 0u,
+           "version-ten drafts migrate without inventing contact exceptions");
     std::string versionNine = encoded.substr(
-        0u, encoded.size() - rigReviewTasksTailBytes);
+        0u, encoded.size() - contactExceptionTailBytes -
+            rigReviewTasksTailBytes);
     writeU32(versionNine, 4u, 9u);
     writeU32(versionNine, 8u,
              static_cast<uint32_t>(versionNine.size()));
@@ -171,7 +185,7 @@ int main() {
            "version-nine reviewed drafts migrate with all anatomy checks complete");
     std::string versionEight = encoded.substr(
         0u, encoded.size() - animationIntentTailBytes -
-            rigReviewTasksTailBytes);
+            rigReviewTasksTailBytes - contactExceptionTailBytes);
     writeU32(versionEight, 4u, 8u);
     writeU32(versionEight, 8u,
              static_cast<uint32_t>(versionEight.size()));
@@ -183,7 +197,7 @@ int main() {
            "version-eight drafts migrate with active animation mappings");
     std::string versionSeven = encoded.substr(
         0u, encoded.size() - animationIntentTailBytes -
-            rigReviewTasksTailBytes);
+            rigReviewTasksTailBytes - contactExceptionTailBytes);
     writeU32(versionSeven, 4u, 7u);
     writeU32(versionSeven, 8u,
              static_cast<uint32_t>(versionSeven.size()));
@@ -298,7 +312,8 @@ int main() {
     std::string badMaskEnabled = encoded;
     writeU32(badMaskEnabled,
              badMaskEnabled.size() - animationIntentTailBytes -
-                 rigReviewTasksTailBytes - subjectMaskTailBytes,
+                 rigReviewTasksTailBytes - contactExceptionTailBytes -
+                 subjectMaskTailBytes,
              2u);
     expect(!decode(badMaskEnabled, parsed, error),
            "subject-mask enabled state is strictly bounded");
@@ -323,6 +338,14 @@ int main() {
     hostile.rigReviewTaskMask = 0x0Fu;
     expect(!encode(hostile, encoded, error),
            "approved rigs require every anatomy review task");
+    hostile = source;
+    hostile.contactExceptionContexts = 1u;
+    expect(!encode(hostile, encoded, error),
+           "select cannot carry a vehicle-contact exception");
+    hostile = source;
+    hostile.contactExceptionContexts = 4u;
+    expect(!encode(hostile, encoded, error),
+           "contact exceptions require a matching context review");
     hostile = source;
     hostile.testPose =
         MDKR_MODERN_CHARACTER_INSPECTION_SEMANTIC_COUNT + 1u;

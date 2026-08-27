@@ -2391,9 +2391,11 @@ std::string g_characterDraftError;
 std::map<std::string, std::string> g_characterActiveDrafts;
 struct CharacterDraftReviewState {
     uint32_t mask = 0u;
+    uint32_t contactExceptionMask = 0u;
     std::string signature[MDKR_CHARACTER_CONTEXT_COUNT];
 };
 std::map<std::string, CharacterDraftReviewState> g_characterDraftReviews;
+std::map<std::string, uint32_t> g_characterPendingContactExceptions;
 std::map<std::string, bool> g_characterPendingDraftFit;
 std::string g_characterPendingDraftRemoval;
 char g_characterDraftName[CharacterDraftStore::kMaximumNameBytes + 1u] = {};
@@ -2661,6 +2663,12 @@ std::string characterFitReviewKey(const char *packageId, unsigned context) {
         characterFitContextId(context) + "_review_signature";
 }
 
+std::string characterFitExceptionKey(const char *packageId,
+                                     unsigned context) {
+    return "custom_character_profile_" + std::string(packageId) + "_" +
+        characterFitContextId(context) + "_contact_exception_signature";
+}
+
 bool characterFitReviewed(const MdkrModernCharacterEntry *entry,
                           const CharacterTuningEdit &edit,
                           unsigned context) {
@@ -2678,11 +2686,32 @@ bool characterFitReviewed(const MdkrModernCharacterEntry *entry,
         AppConfig::get(characterFitReviewKey(entry->id, context)) == signature;
 }
 
+bool characterFitContactException(const MdkrModernCharacterEntry *entry,
+                                  const CharacterTuningEdit &edit,
+                                  unsigned context) {
+    if (entry == nullptr || context == MDKR_CHARACTER_CONTEXT_SELECT ||
+        context >= MDKR_CHARACTER_CONTEXT_COUNT) return false;
+    const std::string signature = characterFitReviewSignature(
+        entry, edit, context);
+    const auto activeDraft = g_characterActiveDrafts.find(entry->id);
+    const auto draftReview = g_characterDraftReviews.find(entry->id);
+    if (activeDraft != g_characterActiveDrafts.end() &&
+        draftReview != g_characterDraftReviews.end()) {
+        return (draftReview->second.contactExceptionMask &
+                (1u << context)) != 0u &&
+            draftReview->second.signature[context] == signature;
+    }
+    return !signature.empty() &&
+        AppConfig::get(characterFitExceptionKey(entry->id, context)) ==
+            signature;
+}
+
 bool autosaveActiveCharacterDraft(const MdkrModernCharacterEntry *entry);
 
 bool persistCharacterFitReview(const MdkrModernCharacterEntry *entry,
                                const CharacterTuningEdit &edit,
-                               unsigned context) {
+                               unsigned context,
+                               bool contactException = false) {
     const std::string signature = characterFitReviewSignature(
         entry, edit, context);
     if (signature.empty()) return false;
@@ -2690,23 +2719,36 @@ bool persistCharacterFitReview(const MdkrModernCharacterEntry *entry,
         g_characterActiveDrafts.end()) {
         CharacterDraftReviewState &review =
             g_characterDraftReviews[entry->id];
+        const CharacterDraftReviewState previous = review;
         review.mask |= 1u << context;
+        if (contactException) review.contactExceptionMask |= 1u << context;
+        else review.contactExceptionMask &= ~(1u << context);
         review.signature[context] = signature;
         if (autosaveActiveCharacterDraft(entry)) {
             setStatus("Exact-context review autosaved in the named draft.",
                       AppTheme::good());
             return true;
         }
+        review = previous;
         setStatus("Draft review could not be autosaved.", AppTheme::bad());
         return false;
     }
-    AppConfig::set(characterFitReviewKey(entry->id, context), signature);
+    const std::string reviewKey = characterFitReviewKey(entry->id, context);
+    const std::string exceptionKey = characterFitExceptionKey(
+        entry->id, context);
+    const std::string previousReview = AppConfig::get(reviewKey);
+    const std::string previousException = AppConfig::get(exceptionKey);
+    AppConfig::set(reviewKey, signature);
+    AppConfig::set(exceptionKey,
+                   contactException ? signature : "");
     const AppConfig::PersistResult result = AppConfig::save();
     if (AppConfig::persistResultApplied(result)) {
         setStatus("Exact-context fit review saved for this source and tuning.",
                   AppTheme::good());
         return true;
     }
+    AppConfig::set(reviewKey, previousReview);
+    AppConfig::set(exceptionKey, previousException);
     setStatus("The exact-context fit review could not be saved.",
               AppTheme::bad());
     return false;
@@ -2721,24 +2763,35 @@ bool clearCharacterFitReview(const MdkrModernCharacterEntry *entry,
         g_characterActiveDrafts.end()) {
         CharacterDraftReviewState &review =
             g_characterDraftReviews[entry->id];
+        const CharacterDraftReviewState previous = review;
         review.mask &= ~(1u << context);
+        review.contactExceptionMask &= ~(1u << context);
         review.signature[context].clear();
         if (autosaveActiveCharacterDraft(entry)) {
             setStatus("Fit review reopened in the named draft.",
                       AppTheme::accent());
             return true;
         }
+        review = previous;
         setStatus("Draft review change could not be autosaved.",
                   AppTheme::bad());
         return false;
     }
-    AppConfig::set(characterFitReviewKey(entry->id, context), "");
+    const std::string reviewKey = characterFitReviewKey(entry->id, context);
+    const std::string exceptionKey = characterFitExceptionKey(
+        entry->id, context);
+    const std::string previousReview = AppConfig::get(reviewKey);
+    const std::string previousException = AppConfig::get(exceptionKey);
+    AppConfig::set(reviewKey, "");
+    AppConfig::set(exceptionKey, "");
     const AppConfig::PersistResult result = AppConfig::save();
     if (AppConfig::persistResultApplied(result)) {
         setStatus("This context is open for fit review again.",
                   AppTheme::accent());
         return true;
     }
+    AppConfig::set(reviewKey, previousReview);
+    AppConfig::set(exceptionKey, previousException);
     setStatus("The fit review could not be reopened.", AppTheme::bad());
     return false;
 }
@@ -4524,6 +4577,7 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterTestEvidenceSelectedCell.erase(id);
     g_characterActiveDrafts.erase(id);
     g_characterDraftReviews.erase(id);
+    g_characterPendingContactExceptions.erase(id);
     g_characterPendingDraftFit.erase(id);
     if (g_characterDraftNameOwner == id) {
         g_characterDraftNameOwner.clear();
@@ -7614,6 +7668,20 @@ bool drawCharacterTuningEditor(int player,
     }
     int &guidedContext = g_characterGuidedFitContexts.try_emplace(
         entry->id, -1).first->second;
+    const char *contactReviewFocus = std::getenv(
+        "MDKR_APP_SMOKE_CHARACTER_CONTACT_REVIEW_FOCUS");
+    static std::set<std::string> focusedContactReviewPackages;
+    if (contactReviewFocus != nullptr &&
+        std::strcmp(contactReviewFocus,
+                    "mdkr64-character-contact-review-v1") == 0 &&
+        focusedContactReviewPackages.insert(entry->id).second) {
+        guidedContext = MDKR_CHARACTER_CONTEXT_CAR;
+        std::fprintf(
+            stderr,
+            "[app-ui] character-contact-review-focus package=%s context=%u applied=1\n",
+            entry->id,
+            static_cast<unsigned>(MDKR_CHARACTER_CONTEXT_CAR));
+    }
     if (ImGui::BeginTabBar("##character-placement-contexts")) {
         for (unsigned context = 0u;
              context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
@@ -7932,6 +8000,8 @@ bool drawCharacterTuningEditor(int player,
                     AppTheme::bad(),
                     "Last exact test returned invalid fit measurements.");
             }
+            bool contactQualityMeasured = false;
+            bool contactsWithinGuide = true;
             if (fitEvidence.current &&
                 context != MDKR_CHARACTER_CONTEXT_SELECT) {
                 const uint64_t contactSolves =
@@ -7941,7 +8011,7 @@ bool drawCharacterTuningEditor(int player,
                 const uint64_t contactMaximum =
                     fitEvidence.result.contact_error_max_micrometres;
                 if (contactSolves != 0u) {
-                    bool contactsWithinGuide = true;
+                    contactQualityMeasured = true;
                     for (unsigned contact = 0u;
                          contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
                         const uint64_t guide = contact < 2u ? 25000u : 40000u;
@@ -7968,27 +8038,83 @@ bool drawCharacterTuningEditor(int player,
             ImGui::SeparatorText("5. Review this context");
             const bool fitReviewed = characterFitReviewed(
                 entry, edit, context);
+            const bool recordedContactException =
+                characterFitContactException(entry, edit, context);
             ImGui::TextColored(
                 fitReviewed ? AppTheme::good() : AppTheme::accent(),
                 fitReviewed
-                    ? "Fit reviewed for this exact source and tuning"
+                    ? recordedContactException
+                        ? "Fit reviewed with an explicit contact exception for this exact source and tuning"
+                        : "Fit reviewed for this exact source and tuning"
                     : "Fit review required for current source or tuning");
             if (!fitReviewed) {
-                if (!fitEvidence.current) ImGui::BeginDisabled();
+                uint32_t &pendingExceptions =
+                    g_characterPendingContactExceptions[entry->id];
+                if (!fitEvidence.current || !contactQualityMeasured ||
+                    contactsWithinGuide) {
+                    pendingExceptions &= ~(1u << context);
+                }
+                bool approveException =
+                    (pendingExceptions & (1u << context)) != 0u;
+                const bool exceptionRequired = fitEvidence.current &&
+                    contactQualityMeasured && !contactsWithinGuide;
+                if (exceptionRequired) {
+                    ImGui::TextColored(
+                        AppTheme::accent(),
+                        "The measured hand/foot guide is not met. Tune and rerun, or explicitly approve this unusual-anatomy/contact exception.");
+                    if (ImGui::Checkbox(
+                            "I inspected the exact scene and approve this contact exception",
+                            &approveException)) {
+                        if (approveException) {
+                            pendingExceptions |= 1u << context;
+                        } else {
+                            pendingExceptions &= ~(1u << context);
+                        }
+                    }
+                    ui::SpeakFocusedItem(
+                        "Approve contact exception",
+                        approveException ? "Checked" : "Not checked",
+                        "Records an explicit source-and-fit-bound exception when this context is marked reviewed. It does not change contact targets or claim the numeric guide was met.");
+                }
+                const bool reviewReady = fitEvidence.current &&
+                    (!exceptionRequired || approveException);
+                if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+                    const std::string traceKey = std::string(entry->id) + ":" +
+                        std::to_string(context) + ":" +
+                        (exceptionRequired ? "exception" : "guide") + ":" +
+                        (approveException ? "approved" : "open");
+                    static std::set<std::string> tracedContactReviewStates;
+                    if (tracedContactReviewStates.insert(traceKey).second) {
+                        std::fprintf(
+                            stderr,
+                            "[app-ui] character-contact-review package=%s context=%u measured=%d guide-met=%d exception-required=%d exception-approved=%d review-ready=%d\n",
+                            entry->id, context,
+                            contactQualityMeasured ? 1 : 0,
+                            contactsWithinGuide ? 1 : 0,
+                            exceptionRequired ? 1 : 0,
+                            approveException ? 1 : 0,
+                            reviewReady ? 1 : 0);
+                    }
+                }
+                if (!reviewReady) ImGui::BeginDisabled();
                 const std::string reviewLabel = std::string("Mark ") +
                     contextNames[context] + " fit reviewed";
                 if (ImGui::Button(reviewLabel.c_str()) &&
-                    fitEvidence.current) {
-                    changed |= persistCharacterFitReview(
-                        entry, edit, context);
+                    reviewReady) {
+                    const bool persisted = persistCharacterFitReview(
+                        entry, edit, context, exceptionRequired);
+                    changed |= persisted;
+                    if (persisted) pendingExceptions &= ~(1u << context);
                 }
-                if (!fitEvidence.current) ImGui::EndDisabled();
+                if (!reviewReady) ImGui::EndDisabled();
                 ui::SpeakFocusedItem(
                     reviewLabel.c_str(),
-                    fitEvidence.current
-                        ? nullptr
-                        : "Run and complete the matching exact renderer test first.",
-                    "Saves review only for the current package source and fit values.");
+                    !fitEvidence.current
+                        ? "Run and complete the matching exact renderer test first."
+                        : exceptionRequired && !approveException
+                            ? "Inspect and explicitly approve the over-limit contact exception first."
+                            : nullptr,
+                    "Saves review only for the current package source and fit values, including whether an over-limit contact exception was explicitly approved.");
             } else {
                 const std::string reopenLabel = std::string("Reopen ") +
                     contextNames[context] + " fit review";
@@ -10355,6 +10481,7 @@ void drawCharacterTestEvidenceMatrix(
         g_characterTestEvidenceSmokeActionApplied = true;
         bool applied = false;
         if (std::strcmp(smokeAction, "publish-qualified") == 0 ||
+            std::strcmp(smokeAction, "publish-overlimit-contact") == 0 ||
             std::strcmp(smokeAction, "publish-inspection") == 0 ||
             std::strcmp(
                 smokeAction, "publish-inspection-capture") == 0 ||
@@ -10435,6 +10562,23 @@ void drawCharacterTestEvidenceMatrix(
                 result.contact_end_micrometres[contact][0] +=
                     static_cast<long long>(error);
                 result.contact_witness_error_micrometres[contact] = error;
+            }
+            if (std::strcmp(
+                    smokeAction, "publish-overlimit-contact") == 0) {
+                static const unsigned long long overLimitErrors[] = {
+                    26000u, 1500u, 41000u, 2500u,
+                };
+                result.contact_error_mean_micrometres = 17750u;
+                result.contact_error_max_micrometres = 41000u;
+                for (unsigned contact = 0u;
+                     contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
+                    const long long delta = static_cast<long long>(
+                        overLimitErrors[contact]);
+                    result.contact_end_micrometres[contact][0] =
+                        result.contact_target_micrometres[contact][0] + delta;
+                    result.contact_witness_error_micrometres[contact] =
+                        overLimitErrors[contact];
+                }
             }
             result.fit_diagnostics_valid = 1;
             result.fit_bounds_min_micrometres[0] = -400000;
@@ -13829,7 +13973,7 @@ bool captureCharacterHistoryPayload(
         }
     } else if (tool == CharacterHistoryTool::Fit) {
         const CharacterTuningEdit &edit = loadCharacterTuning(0, entry->id);
-        payload = "mdkr-fit-history-v2\n";
+        payload = "mdkr-fit-history-v3\n";
         appendCharacterHistoryValue(payload, edit.scale);
         for (float value : edit.offset) {
             appendCharacterHistoryValue(payload, value);
@@ -13854,13 +13998,18 @@ bool captureCharacterHistoryPayload(
             }
         }
         uint32_t reviewed = 0u;
+        uint32_t contactExceptions = 0u;
         for (unsigned context = 0u;
              context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
             if (characterFitReviewed(entry, edit, context)) {
                 reviewed |= 1u << context;
+                if (characterFitContactException(entry, edit, context)) {
+                    contactExceptions |= 1u << context;
+                }
             }
         }
         appendCharacterHistoryValue(payload, reviewed);
+        appendCharacterHistoryValue(payload, contactExceptions);
     } else if (tool == CharacterHistoryTool::Performance) {
         int players = g_characterAssemblyPlayers[entry->id];
         if (players < 1 || players > 4) players = 4;
@@ -14209,7 +14358,10 @@ bool applyCharacterHistoryPayload(
         }
         g_characterRigEdits[entry->id] = std::move(replacement);
     } else if (tool == CharacterHistoryTool::Fit) {
-        const bool current = consumeHeader("mdkr-fit-history-v2\n");
+        const bool hasContactExceptions =
+            consumeHeader("mdkr-fit-history-v3\n");
+        const bool current = hasContactExceptions ||
+            consumeHeader("mdkr-fit-history-v2\n");
         if (!current && !consumeHeader("mdkr-fit-history-v1\n")) {
             error = "Fit history header is invalid.";
             return false;
@@ -14253,7 +14405,10 @@ bool applyCharacterHistoryPayload(
             }
         }
         uint32_t reviewed = 0u;
+        uint32_t contactExceptions = 0u;
         if (!readCharacterHistoryValue(payload, offset, reviewed) ||
+            (hasContactExceptions && !readCharacterHistoryValue(
+                payload, offset, contactExceptions)) ||
             offset != payload.size()) {
             error = "Fit history review state is malformed.";
             return false;
@@ -14277,7 +14432,9 @@ bool applyCharacterHistoryPayload(
             !inRange(replacement.lodBias, -3.0f, 3.0f) ||
             replacement.vehicleMask == 0u ||
             (replacement.vehicleMask & ~entry->vehicle_mask) != 0u ||
-            (reviewed & ~0xFu) != 0u) {
+            (reviewed & ~0xFu) != 0u ||
+            (contactExceptions & ~0xEu) != 0u ||
+            (contactExceptions & ~reviewed) != 0u) {
             error = "Fit history global values are invalid.";
             return false;
         }
@@ -14319,6 +14476,7 @@ bool applyCharacterHistoryPayload(
         g_characterTuning[entry->id] = replacement;
         CharacterDraftReviewState review;
         review.mask = reviewed;
+        review.contactExceptionMask = contactExceptions;
         for (unsigned context = 0u;
              context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
             if ((reviewed & (1u << context)) != 0u) {
@@ -14330,6 +14488,8 @@ bool applyCharacterHistoryPayload(
             g_characterActiveDrafts.end();
         std::array<std::string, MDKR_CHARACTER_CONTEXT_COUNT>
             oldPersistedReviews;
+        std::array<std::string, MDKR_CHARACTER_CONTEXT_COUNT>
+            oldPersistedExceptions;
         bool persisted = false;
         if (activeDraft) {
             g_characterDraftReviews[entry->id] = review;
@@ -14339,6 +14499,8 @@ bool applyCharacterHistoryPayload(
                  context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
                 oldPersistedReviews[context] = AppConfig::get(
                     characterFitReviewKey(entry->id, context));
+                oldPersistedExceptions[context] = AppConfig::get(
+                    characterFitExceptionKey(entry->id, context));
             }
             stageCharacterTuningConfig(entry->id, replacement);
             for (unsigned context = 0u;
@@ -14346,6 +14508,10 @@ bool applyCharacterHistoryPayload(
                 AppConfig::set(
                     characterFitReviewKey(entry->id, context),
                     (reviewed & (1u << context)) != 0u
+                        ? review.signature[context] : "");
+                AppConfig::set(
+                    characterFitExceptionKey(entry->id, context),
+                    (contactExceptions & (1u << context)) != 0u
                         ? review.signature[context] : "");
             }
             persisted = AppConfig::persistResultApplied(AppConfig::save());
@@ -14368,6 +14534,9 @@ bool applyCharacterHistoryPayload(
                     AppConfig::set(
                         characterFitReviewKey(entry->id, context),
                         oldPersistedReviews[context]);
+                    AppConfig::set(
+                        characterFitExceptionKey(entry->id, context),
+                        oldPersistedExceptions[context]);
                 }
             }
             error = "Fit history could not be persisted; history was not consumed.";
@@ -14628,6 +14797,9 @@ bool captureCharacterDraftSnapshot(
                     sizeof(snapshot.contexts[context].contacts));
         if (characterFitReviewed(entry, tuning, context)) {
             snapshot.reviewedContexts |= 1u << context;
+            if (characterFitContactException(entry, tuning, context)) {
+                snapshot.contactExceptionContexts |= 1u << context;
+            }
         }
     }
     for (size_t slot = 0u;
@@ -14814,6 +14986,7 @@ bool applyCharacterDraftSnapshot(
         static_cast<int>(snapshot.testLighting);
     CharacterDraftReviewState review;
     review.mask = snapshot.reviewedContexts;
+    review.contactExceptionMask = snapshot.contactExceptionContexts;
     for (size_t context = 0u;
          context < CharacterDraftSnapshot::kContexts; ++context) {
         review.signature[context] = characterFitReviewSignature(
@@ -14890,6 +15063,7 @@ bool saveCharacterDraft(const MdkrModernCharacterEntry *entry,
     g_characterActiveDrafts[entry->id] = draft.id;
     CharacterDraftReviewState review;
     review.mask = snapshot.reviewedContexts;
+    review.contactExceptionMask = snapshot.contactExceptionContexts;
     CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
     for (size_t context = 0u;
          context < CharacterDraftSnapshot::kContexts; ++context) {
@@ -14942,6 +15116,7 @@ void closeCharacterDraftEditor(const std::string &packageId,
                                bool preserveFitEditor) {
     g_characterActiveDrafts.erase(packageId);
     g_characterDraftReviews.erase(packageId);
+    g_characterPendingContactExceptions.erase(packageId);
     g_characterProfileEdits.erase(packageId);
     g_characterIdentityEdits.erase(packageId);
     g_characterRigEdits.erase(packageId);

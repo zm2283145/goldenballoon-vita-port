@@ -9,11 +9,12 @@
 
 namespace {
 
+constexpr uint32_t kContactExceptionsVersion = 11u;
 constexpr uint32_t kRigReviewTasksVersion = 10u;
 constexpr uint32_t kAnimationIntentVersion = 9u;
 constexpr uint32_t kTopInspectionVersion = 8u;
 constexpr uint32_t kPortraitSubjectMaskVersion = 7u;
-constexpr uint32_t kVersion = kRigReviewTasksVersion;
+constexpr uint32_t kVersion = kContactExceptionsVersion;
 constexpr uint32_t kPortraitSourceVersion = 6u;
 constexpr uint32_t kVisualInspectionVersion = 5u;
 constexpr uint32_t kPoseInspectionVersion = 4u;
@@ -39,7 +40,7 @@ constexpr size_t kPortraitSubjectMaskBytes =
 constexpr size_t kTopInspectionFixedBytes =
     kVisualInspectionFixedBytes + kPortraitSourceRecordBytes +
     kPortraitSubjectMaskBytes;
-constexpr size_t kFixedBytes = kTopInspectionFixedBytes + 8u;
+constexpr size_t kFixedBytes = kTopInspectionFixedBytes + 12u;
 constexpr size_t kMaximumPathBytes = 4095u;
 constexpr size_t kMaximumNameBytes = 96u;
 constexpr size_t kMaximumShortNameBytes = 96u;
@@ -224,7 +225,9 @@ bool snapshotValid(const CharacterDraftSnapshot::Snapshot &snapshot,
         snapshot.testViewPitchDegrees >
             MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES ||
         snapshot.testLighting >= MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT ||
-        (snapshot.reviewedContexts & ~0xFu) != 0u) {
+        (snapshot.reviewedContexts & ~0xFu) != 0u ||
+        (snapshot.contactExceptionContexts & ~0xEu) != 0u ||
+        (snapshot.contactExceptionContexts & ~snapshot.reviewedContexts) != 0u) {
         error = "draft test or review state is invalid";
         return false;
     }
@@ -419,6 +422,7 @@ bool encode(const Snapshot &snapshot, std::string &payload,
         snapshot.portraitSourceRecord.subjectMask.alpha.size());
     appendU32(result, snapshot.disabledSemanticMask);
     appendU32(result, snapshot.rigReviewTaskMask);
+    appendU32(result, snapshot.contactExceptionContexts);
     if (result.size() != kFixedBytes + 16u +
             snapshot.portraitSourcePath.size() + namesBytes) {
         error = "draft snapshot encoder size invariant failed";
@@ -442,6 +446,7 @@ bool decode(const std::string &payload, Snapshot &snapshot,
         payload.compare(0u, 4u, "MDWD") != 0 ||
         !readU32(payload, offset, version) ||
         (version != kVersion &&
+         version != kRigReviewTasksVersion &&
          version != kAnimationIntentVersion &&
          version != kTopInspectionVersion &&
          version != kPortraitSubjectMaskVersion &&
@@ -656,6 +661,10 @@ bool decode(const std::string &payload, Snapshot &snapshot,
         }
     } else {
         parsed.rigReviewTaskMask = parsed.rigReviewed ? 0x1Fu : 0u;
+    }
+    if (version >= kContactExceptionsVersion) {
+        if (!readU32(payload, offset,
+                     parsed.contactExceptionContexts)) goto malformed;
     }
     if (offset != payload.size() ||
         !snapshotValid(parsed, error, version == kLegacyVersion)) return false;

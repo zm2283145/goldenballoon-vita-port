@@ -56,6 +56,7 @@ struct Snapshot {
     int32_t testViewPitchDegrees = 0;
     uint32_t testLighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
     uint32_t reviewedContexts = 0u;
+    uint32_t contactExceptionContexts = 0u;
 
     float scale = 1.0f;
     float offset[3] = {};
@@ -70,7 +71,7 @@ struct Snapshot {
     /* Five source-bound anatomy-region checks used by native Rig Studio.
      * Older reviewed drafts migrate to all checked; older open drafts to none. */
     uint32_t rigReviewTaskMask = 0u;
-    /* Decode-only migration witness. Every newly encoded v10 payload owns an
+    /* Decode-only migration witness. Every newly encoded v11 payload owns an
      * explicit mask; v1-v8 drafts preserve the active source decision. */
     bool animationIntentPresent = false;
     uint32_t disabledSemanticMask = 0u;

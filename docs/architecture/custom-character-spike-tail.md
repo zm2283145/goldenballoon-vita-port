@@ -254,10 +254,12 @@ in the package review and durable evidence.
 - Use the existing root/bend/target/end witnesses to offer bounded least-squares
   offset suggestions. Never change package/tuning state until the author accepts
   each context.
-- Define quality targets, initially advisory: hand residual <=25 mm, foot
-  residual <=40 mm, no unexplained body/vehicle penetration, and no meaningful
-  frame-to-frame contact oscillation. Explicitly record approved exceptions for
-  unusual anatomy.
+- **Partially implemented:** hand residual <=25 mm and foot residual <=40 mm
+  are visible exact-evidence guides. An over-limit review now requires an
+  explicit source-and-fit-bound exception, participates in Fit undo/redo,
+  survives named-draft v11 resume, and rolls back if persistence fails.
+  Penetration and frame-to-frame oscillation still require renderer-derived
+  witnesses before they can be qualified honestly.
 - Test car, hovercraft, and plane across representative start, steer, airborne,
   and finish states rather than one parked frame.
 

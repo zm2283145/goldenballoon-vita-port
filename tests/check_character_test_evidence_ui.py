@@ -178,6 +178,8 @@ def run(
     inspection_capture: Path | None = None,
     visual_report: Path | None = None,
     focus_fit_overlay: bool = False,
+    focus_contact_review: bool = False,
+    tab: str = "test",
 ) -> str:
     prefs = root / "prefs"
     saves = root / "saves"
@@ -192,7 +194,7 @@ def run(
                 break
     preferences = remembered_rom + (
         f"character_workshop_last_selected={PACKAGE_ID}\n"
-        "character_workshop_last_tab=test\n"
+        f"character_workshop_last_tab={tab}\n"
     )
     if compact:
         preferences += "ui_scale=2.0\n"
@@ -240,6 +242,10 @@ def run(
         environment[
             "MDKR_APP_SMOKE_CHARACTER_FIT_OVERLAY_FOCUS"
         ] = "mdkr64-character-fit-overlay-v1"
+    if focus_contact_review:
+        environment[
+            "MDKR_APP_SMOKE_CHARACTER_CONTACT_REVIEW_FOCUS"
+        ] = "mdkr64-character-contact-review-v1"
     if inspection_capture is not None:
         environment["MDKR_APP_SMOKE_CHARACTER_INSPECTION_CAPTURE"] = str(
             inspection_capture
@@ -412,6 +418,35 @@ def main() -> int:
                 raise RuntimeError(
                     "qualified exact result did not persist exact device and renderer-fit fields"
                 )
+
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "character-test-evidence-action "
+                    "action=publish-overlimit-contact applied=1 "
+                    "records=1 baselines=0",
+                ),
+                action="publish-overlimit-contact",
+            )
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "character-contact-review-focus package=" + PACKAGE_ID
+                    + " context=1 applied=1",
+                    "character-fit-evidence durable=1 package=" + PACKAGE_ID
+                    + " context=2 players=4",
+                    "character-contact-review package=" + PACKAGE_ID
+                    + " context=1 measured=1 guide-met=0 "
+                    "exception-required=1 exception-approved=0 "
+                    "review-ready=0",
+                ),
+                focus_contact_review=True,
+                tab="vehicles",
+            )
 
             run(
                 binary,
