@@ -155,6 +155,16 @@ public:
         return belt != nullptr ? belt->inner() : room_.get();
     }
 
+    /* PD-T6h2c: the RAW inner LiveAdapter. The wrapper's submit/view/service just
+     * delegate to inner_ (the belt lives on room_, not on the adapter methods), but
+     * mdkr_online_live_adapter_lobby / _race_info / _race_set_local_input all
+     * dynamic_cast their argument to the CONCRETE LiveAdapter and so fail-closed on
+     * this wrapper. The descriptor-less room-ready boot must drive the party_link
+     * FORWARD feed + the race arm through the concrete adapter, so it resolves this
+     * inner pointer once and uses it throughout. Lifetime is this wrapper's (the
+     * panel-owned adapter), which outlives the blocking engine boot. */
+    IMdkrOnlineAdapter *innerLiveAdapter() const { return inner_.get(); }
+
 private:
     std::unique_ptr<MdkrOnlineRoomTransport> room_;
     std::unique_ptr<MdkrOnlineMeshSignalBackend> mesh_;
@@ -668,6 +678,93 @@ IMdkrOnlineAdapter *OnlineRoom_pollEngineRaceBoot(void) {
     IMdkrOnlineAdapter *pending = sPendingEngineRaceBoot;
     sPendingEngineRaceBoot = nullptr; /* consume once: boot exactly one race */
     return pending;
+}
+
+/* ======================================================================== *
+ * PD-T6h2c: engine ROOM-READY handoff registry (production native takeover)
+ *
+ * The SECOND consume-once registry (mirrors the race-boot one above), for the
+ * PRE-descriptor room-ready moment. The panel/test detects a TOURNAMENT room at
+ * SELECTING (2 members, LOBBY phase) and publishes the visible adapter here; the
+ * interactive launcher polls it BEFORE the race-boot poll and boots the visible
+ * engine DESCRIPTOR-LESS (peer == nullptr) so native owns race 1. Launcher-thread
+ * only, so a plain pointer needs no lock.
+ * ======================================================================== */
+namespace {
+IMdkrOnlineAdapter *sPendingEngineRoomReady = nullptr;
+/* One-shot latch so the panel publishes room-ready exactly ONCE per adapter (the
+ * SELECTING condition holds for many frames). Reset when a fresh adapter/session
+ * begins. */
+bool sRoomReadyLatched = false;
+}  // namespace
+
+IMdkrOnlineAdapter *OnlineRoom_resolveRawLiveAdapter(IMdkrOnlineAdapter *adapter) {
+    if (adapter == nullptr) return nullptr;
+    /* The panel builds an OwningLiveAdapter wrapper; the loopback lanes hand back a
+     * raw LiveAdapter directly. Resolve to the concrete adapter the race_* / lobby
+     * accessors dynamic_cast to, so the descriptor-less room-ready boot's forward-feed
+     * pump + race arm actually see the room state. */
+    OwningLiveAdapter *wrapper = dynamic_cast<OwningLiveAdapter *>(adapter);
+    if (wrapper != nullptr) return wrapper->innerLiveAdapter();
+    return adapter;
+}
+
+void OnlineRoom_publishEngineRoomReady(IMdkrOnlineAdapter *adapter) {
+    sPendingEngineRoomReady = adapter;
+}
+
+void OnlineRoom_retractEngineRoomReady(IMdkrOnlineAdapter *adapter) {
+    if (sPendingEngineRoomReady == adapter) sPendingEngineRoomReady = nullptr;
+}
+
+IMdkrOnlineAdapter *OnlineRoom_pollEngineRoomReady(void) {
+    IMdkrOnlineAdapter *pending = sPendingEngineRoomReady;
+    sPendingEngineRoomReady = nullptr; /* consume once */
+    return pending;
+}
+
+void OnlineRoom_resetRoomReadyLatch(void) {
+    sRoomReadyLatched = false;
+    sPendingEngineRoomReady = nullptr;
+}
+
+bool OnlineRoom_roomReadyConditionHolds(IMdkrOnlineAdapter *adapter) {
+    /* Resolve the concrete LiveAdapter: the panel passes its OwningLiveAdapter
+     * wrapper, on which mdkr_online_live_adapter_lobby() (a dynamic_cast) fails
+     * closed. view() delegates through the virtual interface, but the lobby check
+     * below needs the concrete adapter. The loopback probe passes a raw adapter
+     * (resolve returns it unchanged). */
+    IMdkrOnlineAdapter *raw = OnlineRoom_resolveRawLiveAdapter(adapter);
+    if (raw == nullptr) return false;
+    MdkrOnlineViewModel vm{};
+    if (!raw->view(&vm)) return false;
+    /* Mirror drawBetaRoom's SELECTING-body condition (ui_online_room.cpp:2457-2458)
+     * PLUS the TOURNAMENT scope: only a tournament room offers READY DIRECTLY (the
+     * cup schedules every round -- no per-race track VOTE gate), so the native
+     * CHARSELECT can confirm+ready and hand to TRACKSELECT without the READY-before-
+     * track wedge. A single-race / unconfigured room is deferred to the race-ready
+     * ImGui fallback (READY there is vote-gated, which native never casts). */
+    if (vm.kind != MDKR_ONLINE_VIEW_SELECTING) return false;
+    if (vm.member_count != 2u) return false;
+    MdkrOnlineLobby lobby{};
+    if (!mdkr_online_live_adapter_lobby(raw, &lobby)) return false;
+    if (lobby.phase != MDKR_ONLINE_LOBBY) return false;
+    if (lobby.mode != MDKR_ONLINE_MODE_TOURNAMENT) return false;
+    return true;
+}
+
+bool OnlineRoom_pollRoomReadyTransition(IMdkrOnlineAdapter *adapter) {
+    if (sRoomReadyLatched) return false;
+    if (!OnlineRoom_roomReadyConditionHolds(adapter)) return false;
+    sRoomReadyLatched = true;
+    /* Publish the RAW concrete adapter (resolve the panel's wrapper) so the
+     * descriptor-less boot's forward-feed pump + race arm see the real room state. */
+    OnlineRoom_publishEngineRoomReady(OnlineRoom_resolveRawLiveAdapter(adapter));
+    std::fprintf(stderr,
+                 "[online-room-ready] tournament room at SELECTING (2 members, "
+                 "LOBBY) -> route=lobby-start (native takeover; descriptor-less "
+                 "engine boot, peer=nullptr)\n");
+    return true;
 }
 
 void OnlineRoom_setRosterOwner(uint64_t token) {
@@ -1992,7 +2089,11 @@ const unsigned kResidentAdvanceFrameBudget = 900u;
 
 MdkrResidentAdvanceStatus OnlineRoom_residentAdvanceStep(
     MdkrResidentAdvanceState *st) {
-    if (st == nullptr || st->visible == nullptr || st->peer == nullptr) {
+    /* PD-T6h2c: peer may be NULL for a SINGLE-ENDPOINT (real 2-process) advance;
+     * the two-endpoint loopback path still requires it. */
+    const bool single = (st != nullptr) && st->singleEndpoint;
+    if (st == nullptr || st->visible == nullptr ||
+        (!single && st->peer == nullptr)) {
         return MDKR_RESIDENT_ADVANCE_FAILED;
     }
     auto failStep = [&](const char *step) -> MdkrResidentAdvanceStatus {
@@ -2008,12 +2109,14 @@ MdkrResidentAdvanceStatus OnlineRoom_residentAdvanceStep(
         return l;
     };
 
-    /* ONE pump: service both endpoints exactly once this frame. No sleep, no
+    /* ONE pump: service the endpoint(s) exactly once this frame. No sleep, no
      * pump-until-converged -- the single state check below decides whether we
      * are done or need another frame. (liveOverlayService also services these
-     * two adapters each frame; a second idempotent service is harmless.) */
+     * adapters each frame; a second idempotent service is harmless.) In
+     * single-endpoint mode only the LOCAL endpoint exists here (the remote runs
+     * in its own process); a non-null test-only peer stand-in is serviced too. */
     st->visible->service();
-    st->peer->service();
+    if (st->peer != nullptr) st->peer->service();
 
     /* Non-blocking frame-budget watchdog. Init does no waiting (it only clears
      * the roster + resolves the leader), so start the count once real convergence
@@ -2035,17 +2138,43 @@ MdkrResidentAdvanceStatus OnlineRoom_residentAdvanceStep(
          * runOnlineLiveEngineSession's per-race teardown). REMATCH/START are
          * leader-only; resolve the leader by the view model and pin round/cup. */
         mdkr_net_roster_runtime_clear();
+        if (single) {
+            /* SINGLE-ENDPOINT: only the LOCAL endpoint exists here. Resolve
+             * leadership from the local view (the remote is a separate process);
+             * pin round/cup from the local snapshot. leader==visible iff local is
+             * leader, else NULL (the remote leader drives START over the transport
+             * and we only observe it). */
+            st->leader = loopbackView(st->visible).local_member_is_leader
+                             ? st->visible
+                             : nullptr;
+            st->joiner = nullptr;
+            st->round = static_cast<unsigned>(lobbyOf(st->visible).race_index);
+            st->cup = static_cast<unsigned>(lobbyOf(st->visible).cup_id);
+        } else {
+        /* The REMATCH already landed via the reverse feed (caller saw LOBBY +
+         * race_index++). REMATCH/START are leader-only; resolve the leader by the
+         * view model and pin round/cup. */
         st->leader = loopbackView(st->visible).local_member_is_leader
                          ? st->visible
                          : st->peer;
         st->joiner = (st->leader == st->visible) ? st->peer : st->visible;
         st->round = static_cast<unsigned>(lobbyOf(st->leader).race_index);
         st->cup = static_cast<unsigned>(lobbyOf(st->leader).cup_id);
+        }
         st->readyIndex = 0u;
         st->stage = kResidentAdvanceWaitSelecting;
         return MDKR_RESIDENT_ADVANCE_WORKING;
     }
     case kResidentAdvanceWaitSelecting: {
+        if (single) {
+            /* Only the LOCAL endpoint's view is observable; the remote's SELECTING
+             * arrives over the transport (reflected in ready_count later). */
+            if (lobbyOf(st->visible).phase == MDKR_ONLINE_LOBBY &&
+                loopbackView(st->visible).kind == MDKR_ONLINE_VIEW_SELECTING) {
+                st->stage = kResidentAdvanceReadyOffer;
+            }
+            return MDKR_RESIDENT_ADVANCE_WORKING;
+        }
         /* Both endpoints back in SELECTING at the new race_index. */
         if (lobbyOf(st->leader).phase == MDKR_ONLINE_LOBBY &&
             lobbyOf(st->joiner).phase == MDKR_ONLINE_LOBBY &&
@@ -2056,6 +2185,19 @@ MdkrResidentAdvanceStatus OnlineRoom_residentAdvanceStep(
         return MDKR_RESIDENT_ADVANCE_WORKING;
     }
     case kResidentAdvanceReadyOffer: {
+        if (single) {
+            /* Re-Ready ONLY the LOCAL seat (selections persist across REMATCH; a
+             * tournament offers no track vote, so the primary lands on READY). The
+             * remote readies ITS OWN local endpoint in its own process -- never
+             * poked here. */
+            if (loopbackView(st->visible).primary.action ==
+                MDKR_ONLINE_VIEW_ACTION_READY) {
+                st->visible->submit(loopbackCmd(
+                    st->visible, MDKR_ONLINE_VIEW_ACTION_READY, 0u, 1u));
+                st->stage = kResidentAdvanceReadyBoth;
+            }
+            return MDKR_RESIDENT_ADVANCE_WORKING;
+        }
         /* Re-Ready each endpoint in the SAME order the blocking dance used
          * ({visible, peer}): selections persist across REMATCH and a tournament
          * offers no track vote, so the primary lands straight on READY. One
@@ -2070,6 +2212,14 @@ MdkrResidentAdvanceStatus OnlineRoom_residentAdvanceStep(
         return MDKR_RESIDENT_ADVANCE_WORKING;
     }
     case kResidentAdvanceReadyBoth: {
+        if (single) {
+            /* The remote's READY arrives over the real transport and shows in the
+             * LOCAL view's ready_count -- observe convergence, never poke a peer. */
+            if (loopbackView(st->visible).ready_count == 2u) {
+                st->stage = kResidentAdvanceStartOffer;
+            }
+            return MDKR_RESIDENT_ADVANCE_WORKING;
+        }
         if (loopbackView(st->leader).ready_count == 2u &&
             loopbackView(st->joiner).ready_count == 2u) {
             st->stage = kResidentAdvanceStartOffer;
@@ -2083,6 +2233,23 @@ MdkrResidentAdvanceStatus OnlineRoom_residentAdvanceStep(
             mdkr_online_cup_track(static_cast<uint8_t>(st->cup), st->round);
         const MdkrOnlineTrackInfo *info = mdkr_online_track_by_id(roundTrack);
         if (info == nullptr) return failStep("round-track");
+        if (single) {
+            /* Only the LOCAL endpoint may START, and only if it is the leader. If
+             * the local seat is the JOINER, the remote leader STARTs over the
+             * transport -- we just fall through to observe race-ready. */
+            if (st->leader == st->visible) {
+                if (loopbackView(st->visible).primary.action ==
+                    MDKR_ONLINE_VIEW_ACTION_START_RACE) {
+                    st->visible->submit(loopbackCmd(
+                        st->visible, MDKR_ONLINE_VIEW_ACTION_START_RACE, 0u,
+                        info->vehicle_mask));
+                    st->stage = kResidentAdvanceRaceReady;
+                }
+            } else {
+                st->stage = kResidentAdvanceRaceReady; /* remote leader STARTs */
+            }
+            return MDKR_RESIDENT_ADVANCE_WORKING;
+        }
         if (loopbackView(st->leader).primary.action ==
             MDKR_ONLINE_VIEW_ACTION_START_RACE) {
             st->leader->submit(loopbackCmd(
@@ -2093,6 +2260,30 @@ MdkrResidentAdvanceStatus OnlineRoom_residentAdvanceStep(
         return MDKR_RESIDENT_ADVANCE_WORKING;
     }
     case kResidentAdvanceRaceReady: {
+        if (single) {
+            /* Only the LOCAL race transport is observable; it reaches READY on a
+             * fresh epoch once the (remote-driven) BEGIN_LOADING re-installs the
+             * roster and both endpoints' preflight converges over the transport. */
+            MdkrOnlineLiveRaceInfo vinfo{};
+            if (!mdkr_online_live_adapter_race_info(st->visible, &vinfo) ||
+                !vinfo.ready || vinfo.matchEpoch == 0u) {
+                return MDKR_RESIDENT_ADVANCE_WORKING;
+            }
+            if (!mdkr_net_roster_runtime_active()) {
+                return MDKR_RESIDENT_ADVANCE_WORKING; /* roster not re-installed yet */
+            }
+            st->newEpoch = vinfo.matchEpoch;
+            st->newActiveMask = vinfo.activeSlotMask;
+            const uint16_t roundTrack =
+                mdkr_online_cup_track(static_cast<uint8_t>(st->cup), st->round);
+            std::fprintf(stderr,
+                         "[online-resident-live] round %u race-ready track=%u "
+                         "epoch=%u frames=%u (single-endpoint; roster "
+                         "re-installed)\n",
+                         st->round + 1u, static_cast<unsigned>(roundTrack),
+                         static_cast<unsigned>(vinfo.matchEpoch), st->frames);
+            return MDKR_RESIDENT_ADVANCE_ADVANCED;
+        }
         /* Both race transports reach READY on a fresh epoch; the adapter
          * re-installs the process-global roster at BEGIN_LOADING. */
         MdkrOnlineLiveRaceInfo ia{}, ib{};

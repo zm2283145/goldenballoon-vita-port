@@ -136,6 +136,28 @@ typedef struct MdkrOnlineSessionState {
      * descriptor-first begin (beganWithoutDescriptor == 0), so the resident lane's
      * shared live re-wait is byte-behaviour-unchanged. */
     u32 desclessWaitTicks;
+    /* PD-T6h2c: this descriptor-less session drives a SINGLE local endpoint (a real
+     * 2-process room -- the remote readies itself over the transport), latched from
+     * mdkr_party_link_is_single_endpoint() at begin. When set, the descriptor-less
+     * waits use the WALL-CLOCK deadline below (a real cross-process DTLS handshake +
+     * preflight is seconds and variable; a frame count is wrong when the frame rate
+     * varies) and route a stuck wait to an ERROR exit (Minor-B), and the per-round
+     * re-wait gains a mid-tournament CANCEL unwind (Minor-C). The two-endpoint
+     * loopback lanes leave this 0 -> the existing frame-count + clean-exit path is
+     * byte-behaviour-unchanged. */
+    u8 singleEndpoint;
+    /* PD-T6h2c WALL-CLOCK deadline (ns, platform_perf_monotonic_ns). Absolute
+     * deadline of the CURRENT descriptor-less wait; 0 == not armed. Re-armed at each
+     * boot, at RESULTS enter (the REMATCH-convergence hold -- Minor-A), and when a
+     * per-round re-wait begins, so each of the THREE descriptor-less waits gets its
+     * own fresh budget. Used only when singleEndpoint. */
+    u64 desclessWaitDeadlineNs;
+    /* PD-T6h2c (Minor-C): in the per-round re-wait, set once the room has LEFT LOBBY
+     * this round (the launcher advance drove it to LOADING). Only AFTER that does a
+     * return to LOBBY unambiguously mean a mid-tournament CANCEL_LOADING (vs. the
+     * initial next-round SELECTING the re-wait first observes). Reset at each boot.
+     * Single-endpoint only. */
+    u8 desclessRoundLeftLobby;
 } MdkrOnlineSessionState;
 
 /* Session-owned state -- deliberately NOT any offline global. */
@@ -341,10 +363,69 @@ static bool online_session_descless_boot_ready(void) {
  * budget stands in here) and retune against measured WAN convergence. */
 #define MDKR_ONLINE_SESSION_DESCLESS_WAIT_FRAME_BUDGET 2700u
 
-/* Advance the descriptor-less wait watchdog one frame; return true (after logging +
- * requesting the clean engine exit) if the current wait has exceeded its budget.
- * Called only from the descriptor-less waits, only under beganWithoutDescriptor. */
+/* PD-T6h2c WALL-CLOCK watchdog. The SINGLE-ENDPOINT (real 2-process) path bounds
+ * every descriptor-less wait by REAL wall clock (platform_perf_monotonic_ns), not a
+ * frame count: a cross-process DTLS handshake + preflight is seconds and variable,
+ * and a frame count over-/under-shoots as the interactive frame rate varies. The
+ * deadline is armed (absolute ns) when a wait BEGINS -- see arm below -- so each of
+ * the THREE waits (race-1 re-wait, per-round re-wait, RESULTS REMATCH-hold) gets a
+ * fresh budget. Default is generous for a real WAN; MDKR_ONLINE_SESSION_DESCLESS_
+ * WAIT_DEADLINE_MS overrides it (the single-endpoint test lanes pin a short one). */
+#define MDKR_ONLINE_SESSION_DESCLESS_WAIT_DEADLINE_MS_DEFAULT 45000u
+
+static u64 online_session_descless_deadline_ns(void) {
+    static s64 sBudgetMs = -1; /* resolved once; -1 == unresolved */
+    if (sBudgetMs < 0) {
+        const char *e = getenv("MDKR_ONLINE_SESSION_DESCLESS_WAIT_DEADLINE_MS");
+        unsigned long ms = (e != NULL) ? strtoul(e, NULL, 10) : 0ul;
+        if (ms == 0ul || ms > 600000ul) {
+            ms = MDKR_ONLINE_SESSION_DESCLESS_WAIT_DEADLINE_MS_DEFAULT;
+        }
+        sBudgetMs = (s64) ms;
+    }
+    return (u64) sBudgetMs * UINT64_C(1000000); /* ms -> ns */
+}
+
+/* Arm the wall-clock deadline for a NEW descriptor-less wait (single-endpoint only;
+ * inert otherwise). Idempotent-per-wait: call once when a wait begins. */
+static void online_session_descless_wallclock_arm(void) {
+    if (!sOnlineSession.singleEndpoint) return;
+    sOnlineSession.desclessWaitDeadlineNs =
+        platform_perf_monotonic_ns() + online_session_descless_deadline_ns();
+}
+
+/* Advance the descriptor-less wait watchdog; return true (after logging + routing to
+ * the platform exit) if the current wait has exceeded its budget. Called only from
+ * the descriptor-less waits, only under beganWithoutDescriptor.
+ *
+ * PD-T6h2c: two modes. SINGLE-ENDPOINT (real 2-process) uses the WALL-CLOCK deadline
+ * and requests a NONZERO exit (Minor-B: a genuine stuck trip is DISTINGUISHABLE from
+ * a normal finish, so the launcher routes back to the room / surfaces the failure to
+ * the human). The two-endpoint LOOPBACK path keeps the exact frame-count budget +
+ * clean exit(0) it had, so those lanes are byte-behaviour-unchanged. */
 static bool online_session_descless_watchdog_tick(const char *where) {
+    if (sOnlineSession.singleEndpoint) {
+        const u64 now = platform_perf_monotonic_ns();
+        if (sOnlineSession.desclessWaitDeadlineNs == 0u) {
+            /* Not armed yet (first tick of this wait): arm and let it run. */
+            online_session_descless_wallclock_arm();
+            return false;
+        }
+        if (now <= sOnlineSession.desclessWaitDeadlineNs) return false;
+        fprintf(stderr,
+                "[online-session] descless wait TIMEOUT: exceeded %ums wall-clock "
+                "deadline at %s (raceCount=%u) -- ERROR: routing to return-to-room "
+                "(no hang, no silent finish)\n",
+                (unsigned) (online_session_descless_deadline_ns() /
+                            UINT64_C(1000000)),
+                where, sOnlineSession.raceCount);
+        /* Nonzero code: strengthens the clean exit into a FAILURE the launcher's
+         * online engine-session caller sees (liveResult != 0 -> stay in the Online
+         * Room, panel surfaces recovery) rather than a normal finish. The thread3
+         * loop honors the flag, the engine returns, teardown runs. */
+        platform_request_exit(2);
+        return true;
+    }
     sOnlineSession.desclessWaitTicks++;
     if (sOnlineSession.desclessWaitTicks > MDKR_ONLINE_SESSION_DESCLESS_WAIT_FRAME_BUDGET) {
         fprintf(stderr,
@@ -407,6 +488,10 @@ static void online_session_boot_race(void) {
         !online_session_descless_boot_ready()) {
         if (!sOnlineSession.desclessBootPending) {
             sOnlineSession.desclessBootPending = 1u;
+            /* PD-T6h2c: the race-1 re-wait begins now -- arm its wall-clock deadline
+             * fresh (single-endpoint only; inert otherwise). */
+            sOnlineSession.desclessWaitTicks = 0u;
+            online_session_descless_wallclock_arm();
             fprintf(stderr,
                     "[online-session] race-1 boot deferred: descriptor not ready "
                     "yet (lobby-start gate) -> LOBBY_WAIT re-wait\n");
@@ -432,6 +517,12 @@ static void online_session_boot_race(void) {
     /* PD-T6h2b: a boot just fired, so the next descriptor-less wait (the per-round
      * live re-wait) starts its watchdog budget fresh. */
     sOnlineSession.desclessWaitTicks = 0u;
+    /* PD-T6h2c: also disarm the wall-clock deadline; the next descriptor-less wait
+     * (RESULTS REMATCH-hold, then the per-round re-wait) re-arms it fresh. And clear
+     * the per-round "left LOBBY" latch so the NEXT round's cancel detection starts
+     * fresh (Minor-C). */
+    sOnlineSession.desclessWaitDeadlineNs = 0u;
+    sOnlineSession.desclessRoundLeftLobby = 0u;
 
     sOnlineSession.raceCount++; /* PD-T5: count engine races booted this process */
     sOnlineSession.phase = MDKR_ONLINE_SESSION_RACE;
@@ -500,11 +591,16 @@ void mdkr_online_session_begin(const MdkrMatchLaunchDescriptorV1 *launch) {
          * descriptor + roster + match-input are live, so the NULL launch stashed
          * here is never dereferenced. */
         sOnlineSession.beganWithoutDescriptor = 1u;
+        /* PD-T6h2c: latch whether the launcher drives a SINGLE local endpoint (a
+         * real 2-process room) vs the two-adapter loopback. Selects the WALL-CLOCK
+         * watchdog + error-signal + mid-tournament-cancel unwind path below. */
+        sOnlineSession.singleEndpoint =
+            mdkr_party_link_is_single_endpoint() ? 1u : 0u;
         fprintf(stderr,
                 "[online-session] begin: lobby-start (no descriptor) "
-                "(gGameMode=%d phase=LOBBY_WAIT); offline menu state machine "
-                "bypassed\n",
-                gGameMode);
+                "(gGameMode=%d phase=LOBBY_WAIT singleEndpoint=%d); offline menu "
+                "state machine bypassed\n",
+                gGameMode, (int) sOnlineSession.singleEndpoint);
         return;
     }
     fprintf(stderr,
@@ -696,6 +792,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                 sOnlineSession.desclessBootPending = 0u;
                 sOnlineSession.desclessReWaitLastReady = 0xFFu;
                 sOnlineSession.desclessWaitTicks = 0u;
+                sOnlineSession.desclessWaitDeadlineNs = 0u; /* PD-T6h2c */
                 sOnlineSession.phase = MDKR_ONLINE_SESSION_CHARSELECT;
                 sCharselectLeaveWarned = 0u;
                 mdkr_online_charselect_enter();
@@ -746,6 +843,41 @@ void mdkr_online_session_tick(s32 updateRate) {
                 MdkrPartyLinkSnapshot rsnap;
                 if (mdkr_party_link_read(&rsnap)) {
                     online_session_stash_intended(&rsnap);
+                    /* PD-T6h2c MID-TOURNAMENT CANCEL unwind (Minor-C). SINGLE-ENDPOINT
+                     * only: rounds 2..N re-cycle the room from the launcher (LOBBY ->
+                     * LOADING -> race-ready). If the LEADER cancels mid-tournament
+                     * (RETURN_TO_LOBBY -> CANCEL_LOADING) the room regresses LOADING ->
+                     * LOBBY and the next race's descriptor/epoch never arms -- parking
+                     * would leave only watchdog-bounded death with no re-front. Latch
+                     * "left LOBBY this round" first (so the initial next-round SELECTING
+                     * the re-wait observes is NOT mistaken for a cancel), then, on a
+                     * return to LOBBY with our seat still present while not ready,
+                     * re-front native CHARSELECT so the human re-selects for the
+                     * restarted round (production UX). Gated on singleEndpoint, so the
+                     * loopback resident/lobby-tournament lanes are byte-unchanged. */
+                    if (sOnlineSession.singleEndpoint) {
+                        if (rsnap.phase !=
+                            (uint8_t) MDKR_ONLINE_SESSION_LOBBY_PHASE) {
+                            sOnlineSession.desclessRoundLeftLobby = 1u;
+                        } else if (sOnlineSession.desclessRoundLeftLobby && !ready &&
+                                   online_session_snapshot_has_local_seat(&rsnap)) {
+                            sOnlineSession.liveReWaitLastReady = 0xFFu;
+                            sOnlineSession.desclessWaitTicks = 0u;
+                            sOnlineSession.desclessWaitDeadlineNs = 0u;
+                            sOnlineSession.desclessRoundLeftLobby = 0u;
+                            sOnlineSession.phase = MDKR_ONLINE_SESSION_CHARSELECT;
+                            sCharselectLeaveWarned = 0u;
+                            mdkr_online_charselect_enter();
+                            fprintf(stderr,
+                                    "[online-session] mid-tournament UNWIND: room "
+                                    "regressed to LOBBY during the per-round re-wait "
+                                    "(leader CANCEL_LOADING) -> re-fronting CHARSELECT "
+                                    "(race=%u tick=%u)\n",
+                                    sOnlineSession.raceCount,
+                                    sOnlineSession.lobbyWaitTicks);
+                            break;
+                        }
+                    }
                 }
             }
             /* M4: throttle to the first re-wait tick + every ready-state change,
@@ -963,8 +1095,30 @@ void mdkr_online_session_tick(s32 updateRate) {
                 mdkr_online_results_enter(isFinal, raceIndex);
             }
             sOnlineSession.resultsPending = 0u;
+            /* PD-T6h2c (Minor-A): the RESULTS-phase REMATCH-convergence hold is the
+             * THIRD descriptor-less wait. After the host commits the advance the
+             * screen republishes REMATCH and HOLDS "STARTING NEXT RACE..." until the
+             * snapshot leaves RESULTS -- on a real WAN a link drop mid-RESULTS (after
+             * PUBLISH_RESULTS, before the REMATCH lands) would park the engine in
+             * RESULTS forever. Arm the wall-clock deadline at RESULTS enter so this
+             * hold is bounded too (single-endpoint only; the frame-count loopback
+             * lanes never enter this branch -> unchanged). */
+            sOnlineSession.desclessWaitDeadlineNs = 0u;
+            online_session_descless_wallclock_arm();
         }
         r = mdkr_online_results_tick(updateRate);
+        /* PD-T6h2c (Minor-A): bound the RESULTS hold. The results screen returns STAY
+         * during both its countdown and the post-commit REMATCH-convergence hold; the
+         * wall-clock deadline (armed at enter) covers both. On a non-final race a wedge
+         * after PUBLISH_RESULTS (REMATCH never lands) trips it -> route to a clean
+         * ERROR exit (Minor-B) rather than a silent RESULTS hang. The final STANDINGS
+         * legitimately hold (resultsIsFinal), so do NOT bound that -- only a non-final
+         * race is waiting for the next round. Single-endpoint only. */
+        if (sOnlineSession.singleEndpoint && !sOnlineSession.resultsIsFinal &&
+            r == MDKR_ONLINE_RESULTS_STAY &&
+            online_session_descless_watchdog_tick("results rematch-hold")) {
+            break;
+        }
         if (r == MDKR_ONLINE_RESULTS_ADVANCE) {
             /* PD-T6h2b (Minor-1): the RESULTS->next-race decision. A DESCRIPTOR-LESS
              * (lobby-start) session has no MDKR_APP_TEST_ONLINE_LIVE_RESIDENT env
@@ -1001,6 +1155,11 @@ void mdkr_online_session_tick(s32 updateRate) {
                      * transport. Re-enter LOBBY_WAIT, whose live re-wait gate boots
                      * once that fresh descriptor + match-input are live. */
                     sOnlineSession.phase = MDKR_ONLINE_SESSION_LOBBY_WAIT;
+                    /* PD-T6h2c: the per-round re-wait begins now -- arm its own fresh
+                     * wall-clock budget (single-endpoint only), separate from the
+                     * RESULTS hold's budget just consumed. */
+                    sOnlineSession.desclessWaitDeadlineNs = 0u;
+                    online_session_descless_wallclock_arm();
                     fprintf(stderr,
                             "[online-session] results -> awaiting next race (LIVE "
                             "residency; launcher re-cycling roster/epoch)\n");

@@ -149,6 +149,17 @@ void mdkr_party_link_clear(void);
 /* Engine-facing predicate: false when uninstalled. */
 bool mdkr_party_link_active(void);
 
+/* PD-T6h2c SINGLE-ENDPOINT signal (launcher writes, engine reads). A REAL
+ * 2-process room drives only the LOCAL endpoint (the remote readies itself over
+ * the transport); the in-process loopback lanes drive both. The launcher's
+ * production room-ready boot (and the single-endpoint test lane) note this after
+ * mdkr_party_link_install() and before mdkr64_engine_boot(); the descriptor-less
+ * engine session reads it at begin to select the WALL-CLOCK watchdog + error
+ * signal path instead of the loopback frame-count + clean-exit path. Reset by
+ * install/clear, so the two-endpoint loopback lanes report false (unchanged). */
+void mdkr_party_link_note_single_endpoint(bool single);
+bool mdkr_party_link_is_single_endpoint(void);
+
 /* Launcher writes the latest snapshot. Monotonic generation: if the caller did
  * not advance snapshot->generation past the stored one, publish bumps it, so a
  * reader can always detect a new snapshot. No-op when uninstalled. */

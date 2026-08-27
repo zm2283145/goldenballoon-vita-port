@@ -850,6 +850,10 @@ bool buildBetaLiveAdapter(const LauncherState &state, MdkrOnlineJourney journey,
         return false;
     }
     g_online.adapter = std::move(adapter);
+    /* PD-T6h2c: a fresh adapter/session -- re-arm the one-shot room-ready latch so
+     * the next tournament SELECTING transition can publish this adapter for the
+     * native descriptor-less takeover. */
+    OnlineRoom_resetRoomReadyLatch();
     g_online.initialized = true;
     g_online.betaHostJourney = journey == MDKR_ONLINE_JOURNEY_CREATE;
     g_online.betaBuildFailed = false;
@@ -2456,6 +2460,16 @@ void drawBetaRoom(LauncherState &state) {
     bool primaryDrawn = false;
     if (haveLobby && model.kind == MDKR_ONLINE_VIEW_SELECTING &&
         lobby.phase == MDKR_ONLINE_LOBBY) {
+        /* PD-T6h2c PRODUCTION ROOM-READY takeover: the instant a TOURNAMENT room
+         * first reaches this SELECTING body with 2 members in LOBBY, publish this
+         * adapter for the descriptor-less native takeover (consume-once). The
+         * launcher's interactive loop polls it and boots the engine so native
+         * CHARSELECT -> TRACKSELECT own race 1. Single-race / unconfigured rooms do
+         * NOT match (READY there is vote-gated, which native never casts) -> they
+         * keep drawing this ImGui SELECTING body and use the race-boot fallback. The
+         * detection is inert until the condition holds, so this body still draws
+         * every frame until the boot fires. */
+        (void)OnlineRoom_pollRoomReadyTransition(g_online.adapter.get());
         drawBetaSelectingBody(state, model, lobby);
         primaryDrawn = true;
     } else if (haveLobby && model.kind == MDKR_ONLINE_VIEW_RESULTS &&

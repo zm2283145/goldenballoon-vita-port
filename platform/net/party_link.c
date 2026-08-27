@@ -21,6 +21,13 @@ static MdkrPartyLinkLocalIntent sIntent;
  * later stops an already-read intent from being re-read (online_race_results). */
 static uint32_t sIntentEpoch;
 static uint32_t sIntentPolledEpoch;
+/* PD-T6h2c: the launcher notes whether this descriptor-less session drives a
+ * SINGLE local endpoint (a real 2-process room -- the remote readies itself over
+ * the transport) rather than the two-adapter in-process loopback. The engine
+ * session reads it at begin to select the WALL-CLOCK watchdog + error-signal path
+ * (production) instead of the frame-count + clean-exit path (headless loopback).
+ * Reset by install/clear; the launcher sets it AFTER install, before boot. */
+static bool sSingleEndpoint;
 
 bool mdkr_party_link_install(void) {
     if (sActive) return false;
@@ -28,6 +35,7 @@ bool mdkr_party_link_install(void) {
     memset(&sIntent, 0, sizeof(sIntent));
     sIntentEpoch = 0u;
     sIntentPolledEpoch = 0u;
+    sSingleEndpoint = false;
     sActive = true;
     return true;
 }
@@ -37,11 +45,20 @@ void mdkr_party_link_clear(void) {
     memset(&sIntent, 0, sizeof(sIntent));
     sIntentEpoch = 0u;
     sIntentPolledEpoch = 0u;
+    sSingleEndpoint = false;
     sActive = false;
 }
 
 bool mdkr_party_link_active(void) {
     return sActive;
+}
+
+void mdkr_party_link_note_single_endpoint(bool single) {
+    sSingleEndpoint = single;
+}
+
+bool mdkr_party_link_is_single_endpoint(void) {
+    return sActive && sSingleEndpoint;
 }
 
 void mdkr_party_link_publish(const MdkrPartyLinkSnapshot *snapshot) {

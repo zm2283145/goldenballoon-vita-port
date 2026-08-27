@@ -709,6 +709,41 @@ void OnlineRoom_publishEngineRaceBoot(IMdkrOnlineAdapter *adapter);
 void OnlineRoom_retractEngineRaceBoot(IMdkrOnlineAdapter *adapter);
 IMdkrOnlineAdapter *OnlineRoom_pollEngineRaceBoot(void);
 
+/* ---- PD-T6h2c: engine ROOM-READY handoff registry (production takeover) ---- *
+ *
+ * The SECOND consume-once registry, mirroring the race-boot one above but for the
+ * PRE-descriptor room-ready moment: the instant both endpoints reach SELECTING in a
+ * TOURNAMENT room (member_count 2, lobby phase LOBBY, mode tournament + a cup set),
+ * the Online Room panel publishes the visible adapter here. The launcher's
+ * interactive loop polls it BEFORE the race-boot poll and, when it fires, boots the
+ * visible engine DESCRIPTOR-LESS (peer == nullptr) so the NATIVE CHARSELECT ->
+ * TRACKSELECT own race 1 for a real human. The race-boot poll stays the fallback for
+ * every non-lobby-start path (single-race, or a room that never took the takeover),
+ * byte-behaviour-unchanged.
+ *
+ * OnlineRoom_pollRoomReadyTransition() is the pure detection + consume-once publish:
+ * it reads the adapter's view + lobby, and on the FIRST frame the tournament
+ * room-ready condition holds it publishes the adapter (returns true, once). The panel
+ * calls it each frame; a test seam calls it directly. Defined in
+ * platform/app/online_live_wiring.cpp. */
+void OnlineRoom_publishEngineRoomReady(IMdkrOnlineAdapter *adapter);
+void OnlineRoom_retractEngineRoomReady(IMdkrOnlineAdapter *adapter);
+IMdkrOnlineAdapter *OnlineRoom_pollEngineRoomReady(void);
+/* Pure detection of the tournament room-ready condition on `adapter` (no publish,
+ * no latch) -- exposed for direct headless assertion. */
+bool OnlineRoom_roomReadyConditionHolds(IMdkrOnlineAdapter *adapter);
+/* Resolve the RAW concrete LiveAdapter behind the panel's owning wrapper (or the
+ * adapter itself for the loopback lanes' raw adapters). The mdkr_online_live_adapter_
+ * lobby / _race_info accessors dynamic_cast to the concrete type, so the descriptor-
+ * less room-ready boot resolves this once and drives the feed + race arm through it. */
+IMdkrOnlineAdapter *OnlineRoom_resolveRawLiveAdapter(IMdkrOnlineAdapter *adapter);
+/* Per-frame driver: on the FIRST frame the condition holds, publish `adapter` for
+ * room-ready and latch so it is not re-published. Returns true on that first frame.
+ * Reset the latch with OnlineRoom_resetRoomReadyLatch() when a new adapter/session
+ * begins (the panel does this when it builds a fresh adapter). */
+bool OnlineRoom_pollRoomReadyTransition(IMdkrOnlineAdapter *adapter);
+void OnlineRoom_resetRoomReadyLatch(void);
+
 /* ---- Engine-roster ownership guard (local-Play beach-ball fix, beta only) -- *
  *
  * The process-global engine roster (platform/net/net_roster_runtime) is installed
@@ -790,6 +825,14 @@ struct MdkrResidentAdvanceState {
     /* Set by the caller before the first step: */
     IMdkrOnlineAdapter *visible;
     IMdkrOnlineAdapter *peer;
+    /* PD-T6h2c: SINGLE-ENDPOINT advance (a real 2-process room). When true the step
+     * drives ONLY the local (visible) endpoint's per-round re-cycle -- re-Ready the
+     * LOCAL seat, START only if the local seat is leader, and observe both-ready /
+     * race-ready via the VIEW (the remote readies itself over the real transport) --
+     * and NEVER pokes a peer adapter (peer may be null). When false the two-endpoint
+     * LOOPBACK dance runs EXACTLY as before (re-Ready both, leader START), so the
+     * resident-live + lobby-tournament loopback lanes are byte-behaviour-unchanged. */
+    bool singleEndpoint;
     /* Internal (zero-init and do not touch): */
     int stage;             /* MdkrResidentAdvanceStage; 0 == Init */
     IMdkrOnlineAdapter *leader;
