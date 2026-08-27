@@ -464,6 +464,80 @@ CharacterWorkshopFitSuggestion CharacterWorkshop_suggestFit(
     return result;
 }
 
+CharacterWorkshopFitAssessment CharacterWorkshop_assessFit(
+    const CharacterWorkshopFitMeasurement &measurement) {
+    CharacterWorkshopFitAssessment result;
+    const CharacterWorkshopFitSuggestion suggestion =
+        CharacterWorkshop_suggestFit(measurement);
+    if (!suggestion.available) return result;
+    const int64_t widthMicrometres =
+        measurement.boundsMaximumMicrometres[0] -
+        measurement.boundsMinimumMicrometres[0];
+    const int64_t depthMicrometres =
+        measurement.boundsMaximumMicrometres[2] -
+        measurement.boundsMinimumMicrometres[2];
+    if (widthMicrometres < 0 || depthMicrometres < 0) return result;
+
+    result.valid = true;
+    result.vehicleContext = measurement.vehicleContext;
+    result.datumErrorMetres = std::fabs(
+        suggestion.measuredMinimumYMetres -
+        suggestion.targetMinimumYMetres);
+    const float datumReview = measurement.vehicleContext
+        ? std::max(0.025f, suggestion.measuredHeightMetres * 0.05f)
+        : 0.005f;
+    const float datumCritical = measurement.vehicleContext
+        ? std::max(0.075f, suggestion.measuredHeightMetres * 0.15f)
+        : 0.025f;
+    result.datum = result.datumErrorMetres <= datumReview
+        ? CharacterWorkshopQualitySeverity::Nominal
+        : result.datumErrorMetres <= datumCritical
+            ? CharacterWorkshopQualitySeverity::Review
+            : CharacterWorkshopQualitySeverity::Critical;
+
+    const float forwardX =
+        static_cast<float>(measurement.forwardMilli[0]);
+    const float forwardZ =
+        static_cast<float>(measurement.forwardMilli[2]);
+    const float horizontalLength = std::hypot(forwardX, forwardZ);
+    if (horizontalLength >= 500.0f) {
+        result.facingMeasured = true;
+        result.facingDegrees = std::acos(std::clamp(
+            forwardZ / horizontalLength, -1.0f, 1.0f)) *
+            57.295779513082320876f;
+        result.facing = result.facingDegrees <= 5.0f
+            ? CharacterWorkshopQualitySeverity::Nominal
+            : result.facingDegrees <= 20.0f
+                ? CharacterWorkshopQualitySeverity::Review
+                : CharacterWorkshopQualitySeverity::Critical;
+    } else {
+        result.facing = CharacterWorkshopQualitySeverity::Review;
+    }
+
+    result.widthToHeight = static_cast<float>(widthMicrometres) /
+        (suggestion.measuredHeightMetres * 1000000.0f);
+    result.depthToHeight = static_cast<float>(depthMicrometres) /
+        (suggestion.measuredHeightMetres * 1000000.0f);
+    const float largestRatio = std::max(
+        result.widthToHeight, result.depthToHeight);
+    result.proportions = largestRatio <= 1.5f
+        ? CharacterWorkshopQualitySeverity::Nominal
+        : largestRatio <= 2.5f
+            ? CharacterWorkshopQualitySeverity::Review
+            : CharacterWorkshopQualitySeverity::Critical;
+    return result;
+}
+
+bool CharacterWorkshop_facingCorrectionDegrees(
+    uint32_t sourceForward, float &outputDegrees) {
+    static constexpr float kCorrections[] = {
+        0.0f, 180.0f, -90.0f, 90.0f,
+    };
+    if (sourceForward >= std::size(kCorrections)) return false;
+    outputDegrees = kCorrections[sourceForward];
+    return true;
+}
+
 CharacterWorkshopSourceTransformReview CharacterWorkshop_reviewSourceTransform(
     const CharacterWorkshopSourceTransformFacts &facts) {
     CharacterWorkshopSourceTransformReview result;

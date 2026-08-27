@@ -140,6 +140,31 @@ struct CharacterWorkshopFitSuggestion {
     float targetMinimumYMetres = 0.0f;
 };
 
+enum class CharacterWorkshopQualitySeverity : uint8_t {
+    Nominal = 0,
+    Review,
+    Critical,
+    Invalid,
+};
+
+/* Plain-language quality bands derived from the same exact renderer evidence
+ * as the fit proposal. They guide review and never block unusual anatomy. */
+struct CharacterWorkshopFitAssessment {
+    bool valid = false;
+    bool vehicleContext = false;
+    bool facingMeasured = false;
+    CharacterWorkshopQualitySeverity datum =
+        CharacterWorkshopQualitySeverity::Invalid;
+    CharacterWorkshopQualitySeverity facing =
+        CharacterWorkshopQualitySeverity::Invalid;
+    CharacterWorkshopQualitySeverity proportions =
+        CharacterWorkshopQualitySeverity::Invalid;
+    float datumErrorMetres = 0.0f;
+    float facingDegrees = 0.0f;
+    float widthToHeight = 0.0f;
+    float depthToHeight = 0.0f;
+};
+
 enum class CharacterWorkshopTransformSeverity : uint8_t {
     Nominal = 0,
     Review,
@@ -236,6 +261,12 @@ size_t CharacterWorkshop_lodBands(
 
 CharacterWorkshopFitSuggestion CharacterWorkshop_suggestFit(
     const CharacterWorkshopFitMeasurement &measurement);
+CharacterWorkshopFitAssessment CharacterWorkshop_assessFit(
+    const CharacterWorkshopFitMeasurement &measurement);
+/* Matches the compiler's +Z/-Z/+X/-X source-forward convention. Output is
+ * unchanged for an invalid candidate. */
+bool CharacterWorkshop_facingCorrectionDegrees(
+    uint32_t sourceForward, float &outputDegrees);
 CharacterWorkshopSourceTransformReview CharacterWorkshop_reviewSourceTransform(
     const CharacterWorkshopSourceTransformFacts &facts);
 CharacterWorkshopRigSuggestion CharacterWorkshop_suggestHumanoidRig(

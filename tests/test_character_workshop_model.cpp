@@ -305,9 +305,52 @@ void testExactFitSuggestions() {
     const auto noForward = CharacterWorkshop_suggestFit(invalid);
     assert(noForward.available && !noForward.facingMeasured &&
            !noForward.facingAdjustment);
+
+    CharacterWorkshopFitMeasurement assessed = vehicle;
+    assessed.boundsMinimumMicrometres = {-400000, -250000, -250000};
+    assessed.boundsMaximumMicrometres = {400000, 750000, 250000};
+    assessed.forwardMilli = {0, 0, 1000};
+    auto assessment = CharacterWorkshop_assessFit(assessed);
+    assert(assessment.valid && assessment.vehicleContext);
+    assert(assessment.datum == CharacterWorkshopQualitySeverity::Nominal);
+    assert(assessment.facing == CharacterWorkshopQualitySeverity::Nominal);
+    assert(assessment.proportions ==
+           CharacterWorkshopQualitySeverity::Nominal);
+    assert(std::fabs(assessment.datumErrorMetres) < 1.0e-6f);
+
+    assessed.boundsMinimumMicrometres[1] = -350000;
+    assessed.boundsMaximumMicrometres[1] = 650000;
+    assessed.forwardMilli = {342, 0, 940};
+    assessment = CharacterWorkshop_assessFit(assessed);
+    assert(assessment.datum == CharacterWorkshopQualitySeverity::Review);
+    assert(assessment.facing == CharacterWorkshopQualitySeverity::Review);
+
+    assessed.boundsMinimumMicrometres = {-1600000, -800000, -200000};
+    assessed.boundsMaximumMicrometres = {1600000, 200000, 200000};
+    assessed.forwardMilli = {0, 0, -1000};
+    assessment = CharacterWorkshop_assessFit(assessed);
+    assert(assessment.datum == CharacterWorkshopQualitySeverity::Critical);
+    assert(assessment.facing == CharacterWorkshopQualitySeverity::Critical);
+    assert(assessment.proportions ==
+           CharacterWorkshopQualitySeverity::Critical);
+    invalid.valid = false;
+    assert(!CharacterWorkshop_assessFit(invalid).valid);
 }
 
 void testSourceTransformDiagnosis() {
+    float correction = 321.0f;
+    assert(CharacterWorkshop_facingCorrectionDegrees(0u, correction) &&
+           correction == 0.0f);
+    assert(CharacterWorkshop_facingCorrectionDegrees(1u, correction) &&
+           correction == 180.0f);
+    assert(CharacterWorkshop_facingCorrectionDegrees(2u, correction) &&
+           correction == -90.0f);
+    assert(CharacterWorkshop_facingCorrectionDegrees(3u, correction) &&
+           correction == 90.0f);
+    correction = 321.0f;
+    assert(!CharacterWorkshop_facingCorrectionDegrees(4u, correction) &&
+           correction == 321.0f);
+
     CharacterWorkshopSourceTransformFacts ordinary;
     ordinary.meshLocalMinimum = {-0.4, 0.0, -0.2};
     ordinary.meshLocalMaximum = {0.4, 1.8, 0.2};

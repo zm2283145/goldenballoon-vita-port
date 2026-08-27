@@ -209,6 +209,8 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
             "compact-preview=1 "
             "disabled-package-preview=1 "
             "measured-starting-point=vertical-and-facing "
+            "quality-bands=datum,facing,proportions "
+            "camera-occlusion=exact-visual-only "
             "reset=package-anchor "
             "review=current-source-and-fit"
         )
@@ -217,7 +219,20 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                 "offset studio omitted its exact-preview and measured-fit "
                 "contract\n" + process.stdout[-8000:]
             )
+        facing_marker = (
+            "character-facing-studio package=" + PACKAGE_ID +
+            " candidates=+z,-z,+x,-x equal-thumbnails=1 "
+            "responsive-columns=4 available=0 source-fit-context=current "
+            "comparison=1p-select.idle@500-bright "
+            "selection=reversible-global-yaw capture=model-alpha exact-rom=1"
+        )
+        if facing_marker not in process.stdout:
+            raise RuntimeError(
+                "offset studio omitted its equal exact-renderer facing "
+                "candidate workflow\n" + process.stdout[-8000:]
+            )
         spoken_controls = [
+            "text=Prepare +Z view",
             "text=Continue fit: Character select",
             "text=Exact preview camera layout",
         ]

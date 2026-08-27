@@ -2268,6 +2268,7 @@ std::map<std::string,
     g_characterCaptureThumbnails;
 std::set<std::string> g_characterCaptureThumbnailTraceKeys;
 std::set<std::string> g_characterFitReferenceTraceKeys;
+std::set<std::string> g_characterFacingStudioTracePackages;
 SettingsCharacterPreviewRequest g_characterPreviewRequest;
 bool g_characterPreviewRequested = false;
 CharacterTestEvidenceStore::Inventory g_characterTestEvidence;
@@ -6100,6 +6101,9 @@ void drawCharacterFitReference(
     const MdkrModernCharacterEntry *entry, const std::string &sourceSha256,
     const std::string &fitSha256, MdkrCharacterPreviewContext context,
     int selectedView, bool compact);
+bool drawCharacterFacingStudio(
+    const MdkrModernCharacterEntry *entry, CharacterTuningEdit &edit,
+    bool compact);
 
 bool characterTestEvidenceMatchesTuning(
     const MdkrModernCharacterEntry *entry,
@@ -7115,13 +7119,77 @@ float characterWorkshopWrappedDegrees(float degrees) {
     return degrees;
 }
 
+const char *characterWorkshopQualityLabel(
+    CharacterWorkshopQualitySeverity severity) {
+    switch (severity) {
+        case CharacterWorkshopQualitySeverity::Nominal: return "Ready";
+        case CharacterWorkshopQualitySeverity::Review: return "Review";
+        case CharacterWorkshopQualitySeverity::Critical:
+            return "Action needed";
+        default: return "Unavailable";
+    }
+}
+
+ImVec4 characterWorkshopQualityColour(
+    CharacterWorkshopQualitySeverity severity) {
+    switch (severity) {
+        case CharacterWorkshopQualitySeverity::Nominal:
+            return AppTheme::good();
+        case CharacterWorkshopQualitySeverity::Review:
+            return AppTheme::accent();
+        case CharacterWorkshopQualitySeverity::Critical:
+            return AppTheme::bad();
+        default:
+            return AppTheme::subtle();
+    }
+}
+
+void drawCharacterFitQualityBands(
+    const CharacterWorkshopFitAssessment &assessment) {
+    if (!assessment.valid) return;
+    ImGui::TextUnformatted("Measured quality bands");
+    ImGui::TextColored(
+        characterWorkshopQualityColour(assessment.datum),
+        "%s datum · %s · %.1f mm from the starting target",
+        assessment.vehicleContext ? "Seat" : "Floor",
+        characterWorkshopQualityLabel(assessment.datum),
+        static_cast<double>(assessment.datumErrorMetres * 1000.0f));
+    ImGui::TextColored(
+        characterWorkshopQualityColour(assessment.facing),
+        "Facing · %s%s",
+        characterWorkshopQualityLabel(assessment.facing),
+        assessment.facingMeasured ? " · measured from target +Z" :
+                                     " · horizontal direction unavailable");
+    if (assessment.facingMeasured) {
+        ImGui::SameLine();
+        ImGui::TextDisabled(
+            "(%.1f°)", static_cast<double>(assessment.facingDegrees));
+    }
+    ImGui::TextColored(
+        characterWorkshopQualityColour(assessment.proportions),
+        "Volume proportions · %s",
+        characterWorkshopQualityLabel(assessment.proportions));
+    ImGui::SameLine();
+    ImGui::TextDisabled(
+        "(width/height %.2f · depth/height %.2f)",
+        static_cast<double>(assessment.widthToHeight),
+        static_cast<double>(assessment.depthToHeight));
+    ImGui::TextColored(
+        AppTheme::accent(),
+        "Camera and vehicle occlusion · Visual review required");
+    ui::TextSubtleWrapped(
+        "Green means the measured starting range is ordinary, amber asks for judgement, and red identifies a likely placement defect. These advisory bands never reject unusual anatomy. Bounds cannot see the kart shell, costume silhouette, or gameplay camera crop, so the exact scene remains the authority.");
+}
+
 bool drawCharacterOffsetSuggestion(
     const MdkrModernCharacterEntry *entry, CharacterTuningEdit &edit,
     unsigned context, const MdkrCharacterPreviewResult &result) {
     CharacterTuningEdit::Context &placement = edit.context[context];
+    const CharacterWorkshopFitMeasurement measurement =
+        characterWorkshopFitMeasurement(
+            result, context != MDKR_CHARACTER_CONTEXT_SELECT);
     const CharacterWorkshopFitSuggestion suggestion =
-        CharacterWorkshop_suggestFit(characterWorkshopFitMeasurement(
-            result, context != MDKR_CHARACTER_CONTEXT_SELECT));
+        CharacterWorkshop_suggestFit(measurement);
     if (!suggestion.available) {
         ImGui::TextColored(
             AppTheme::bad(),
@@ -7130,6 +7198,8 @@ bool drawCharacterOffsetSuggestion(
             "Keep the current values, inspect the package validation report, and rerun this context. No correction was guessed.");
         return false;
     }
+    drawCharacterFitQualityBands(
+        CharacterWorkshop_assessFit(measurement));
 
     ImGui::Text(
         "Rendered height %.3f m · lowest point %.3f m · visibility target %.3f m",
@@ -7210,7 +7280,7 @@ bool drawCharacterTuningEditor(int player,
             entry->id);
         std::fprintf(
             stderr,
-            "[app-ui] character-offset-studio package=%s contexts=select,car,hovercraft,plane guided-fit=1 workflow=preview,measure,fine-tune,evidence,review exact-rom-preview=1 compact-preview=1 disabled-package-preview=1 measured-starting-point=vertical-and-facing reset=package-anchor review=current-source-and-fit\n",
+            "[app-ui] character-offset-studio package=%s contexts=select,car,hovercraft,plane guided-fit=1 workflow=preview,measure,fine-tune,evidence,review exact-rom-preview=1 compact-preview=1 disabled-package-preview=1 measured-starting-point=vertical-and-facing quality-bands=datum,facing,proportions camera-occlusion=exact-visual-only reset=package-anchor review=current-source-and-fit\n",
             entry->id);
     }
 
@@ -7293,6 +7363,8 @@ bool drawCharacterTuningEditor(int player,
             "Facing cannot be inferred safely from arbitrary geometry. Use the author-declared axis first, then this explicit correction if the preview is backward.");
         ImGui::TreePop();
     }
+
+    changed |= drawCharacterFacingStudio(entry, edit, compact);
 
     ImGui::SeparatorText("Offset Studio");
     ui::TextSubtleWrapped(
@@ -9441,6 +9513,182 @@ void drawCharacterCaptureThumbnail(
             capture.fitProjection.valid ? "registered" : "none",
             capture.fitProjection.primitiveDraws);
     }
+}
+
+bool drawCharacterFacingStudio(
+    const MdkrModernCharacterEntry *entry, CharacterTuningEdit &edit,
+    bool compact) {
+    if (entry == nullptr) return false;
+    struct FacingCandidate {
+        const char *axis;
+        int cameraYaw;
+    };
+    static constexpr FacingCandidate candidates[] = {
+        {"+Z", 180},
+        {"-Z", 0},
+        {"+X", 90},
+        {"-X", -90},
+    };
+    unsigned context = MDKR_CHARACTER_CONTEXT_CAR;
+    while (context < MDKR_CHARACTER_CONTEXT_COUNT &&
+           (edit.vehicleMask & (1u << (context - 1u))) == 0u) {
+        ++context;
+    }
+    if (context >= MDKR_CHARACTER_CONTEXT_COUNT) return false;
+    const MdkrCharacterPreviewContext previewContext =
+        static_cast<MdkrCharacterPreviewContext>(context + 1u);
+    const std::string sourceSha256 =
+        characterDigestHex(entry->source_sha256);
+    const std::string fitSha256 = characterTestTuningSignature(
+        entry, edit, context);
+    const std::string contextName =
+        characterPreviewResultContext(previewContext);
+    constexpr unsigned kFacingPhaseMilli = 500u;
+    const CharacterInspectionPose *facingPose = characterInspectionPose(
+        MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE);
+    const CharacterInspectionLighting *facingLighting =
+        characterInspectionLighting(
+            MDKR_WORKSHOP_PREVIEW_LIGHTING_BRIGHT);
+    if (facingPose == nullptr || facingLighting == nullptr) return false;
+    std::array<const CharacterVisualReport::Capture *, 4> captures{};
+    const auto found = g_characterVisualCaptures.find(entry->id);
+    if (found != g_characterVisualCaptures.end()) {
+        for (auto capture = found->second.rbegin();
+             capture != found->second.rend(); ++capture) {
+            if (capture->sourceSha256 != sourceSha256 ||
+                capture->fitSha256 != fitSha256 ||
+                capture->context != contextName ||
+                capture->players != 1u ||
+                capture->pose != facingPose->label ||
+                capture->phaseMilli != kFacingPhaseMilli ||
+                capture->lighting != facingLighting->label ||
+                capture->renderProduct !=
+                    CharacterVisualReport::RenderProduct::ModelAlpha ||
+                capture->viewPitchDegrees != 0) continue;
+            for (size_t candidate = 0u;
+                 candidate < std::size(candidates); ++candidate) {
+                if (captures[candidate] == nullptr &&
+                    capture->viewYawDegrees ==
+                        candidates[candidate].cameraYaw) {
+                    captures[candidate] = &*capture;
+                }
+            }
+        }
+    }
+
+    ImGui::SeparatorText("Facing Studio");
+    ui::TextSubtleWrapped(
+        "Capture the same held select-idle pose, phase, light, source, and fit from four equal target-space sides, then choose the side where the face actually points toward you. The choice applies only a reversible overall yaw correction; it never rewrites the GLB or guesses from geometry.");
+    ImGui::TextDisabled(
+        "Qualification context: %s · exact source and current fit",
+        contextName.c_str());
+    unsigned available = 0u;
+    bool changed = false;
+    const int columns = compact ? 1 : 4;
+    if (ImGui::BeginTable(
+            "##character-facing-candidates", columns,
+            ImGuiTableFlags_SizingStretchSame |
+                ImGuiTableFlags_BordersInnerV)) {
+        for (size_t candidate = 0u;
+             candidate < std::size(candidates); ++candidate) {
+            ImGui::TableNextColumn();
+            ImGui::PushID(static_cast<int>(candidate));
+            ImGui::Text("Model side %s", candidates[candidate].axis);
+            if (captures[candidate] != nullptr) {
+                ++available;
+                drawCharacterCaptureThumbnail(entry, *captures[candidate]);
+                const std::string choose = std::string("Use ") +
+                    candidates[candidate].axis + " as front";
+                if (ImGui::Button(choose.c_str())) {
+                    float correctionYaw = 0.0f;
+                    if (!CharacterWorkshop_facingCorrectionDegrees(
+                            static_cast<uint32_t>(candidate),
+                            correctionYaw)) {
+                        setStatus(
+                            "The facing candidate was invalid; no fit or evidence changed.",
+                            AppTheme::bad());
+                    } else if (std::fabs(correctionYaw) < 0.01f) {
+                        setStatus(
+                            "The rendered +Z side is already the current front; no fit or evidence changed.",
+                            AppTheme::good());
+                    } else {
+                        const float previousYaw = edit.rotation[1];
+                        edit.rotation[1] = characterWorkshopWrappedDegrees(
+                            edit.rotation[1] + correctionYaw);
+                        if (persistCharacterTuning(entry->id, edit)) {
+                            changed = true;
+                            setStatus(
+                                "Rendered facing correction saved. Every exact context and facing capture is now stale until rerun.",
+                                AppTheme::good());
+                        } else {
+                            edit.rotation[1] = previousYaw;
+                            setStatus(
+                                "The rendered facing choice could not be saved; the previous persisted fit remains recoverable.",
+                                AppTheme::bad());
+                        }
+                    }
+                }
+                ui::SpeakFocusedItem(
+                    choose.c_str(), "Exact rendered candidate available",
+                    "Rotates the complete custom appearance so this captured target-space side becomes forward. This is reversible Fit history and invalidates prior fit evidence.");
+            } else {
+                (void)ImGui::Selectable(
+                    "No exact capture yet", false,
+                    ImGuiSelectableFlags_Disabled, ImVec2(-1.0f, 72.0f));
+                ui::SpeakFocusedItem(
+                    (std::string("Model side ") +
+                     candidates[candidate].axis).c_str(),
+                    "Exact capture missing",
+                    "Prepare this view, choose a new PNG filename in Test, and run the named vehicle inspection.");
+            }
+            const std::string prepare = std::string("Prepare ") +
+                candidates[candidate].axis + " view";
+            if (ImGui::Button(prepare.c_str())) {
+                CharacterCaptureEdit &captureEdit =
+                    g_characterCaptureEdits[entry->id];
+                captureEdit.enabled = true;
+                captureEdit.kind =
+                    MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA;
+                g_characterTestViewYawDegrees[entry->id] =
+                    candidates[candidate].cameraYaw;
+                g_characterTestViewPitchDegrees[entry->id] = 0;
+                g_characterTestLighting[entry->id] =
+                    MDKR_WORKSHOP_PREVIEW_LIGHTING_BRIGHT;
+                g_characterTestPlayers[entry->id] = 1;
+                g_characterTestPoses[entry->id] =
+                    MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE;
+                g_characterTestPosePhases[entry->id] =
+                    static_cast<int>(kFacingPhaseMilli);
+                persistCharacterWorkshopTab(
+                    CharacterWorkshopTab::Test, true);
+                setStatus(
+                    (std::string("Facing candidate ") +
+                     candidates[candidate].axis +
+                     " prepared in Test. Choose a new PNG filename and run " +
+                     contextName + "; no fit changed.").c_str(),
+                    AppTheme::good());
+            }
+            ui::SpeakFocusedItem(
+                prepare.c_str(), nullptr,
+                "Opens Test with a one-player held select-idle pose at fifty percent phase, model-only capture, bright inspection lighting, and the matching horizontal camera. Choose a new PNG filename and run the displayed vehicle context; no fit or package data changes.");
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    ImGui::TextColored(
+        available == std::size(candidates)
+            ? AppTheme::good() : AppTheme::accent(),
+        "%u of 4 exact facing candidates current", available);
+    ui::TextSubtleWrapped(
+        "All four captures must match the same source and fit. Changing size, placement, or facing intentionally clears the gallery instead of comparing stale pixels.");
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
+        g_characterFacingStudioTracePackages.insert(entry->id).second) {
+        std::fprintf(
+            stderr,
+            "[app-ui] character-facing-studio package=%s candidates=+z,-z,+x,-x equal-thumbnails=1 responsive-columns=%d available=%u source-fit-context=current comparison=1p-select.idle@500-bright selection=reversible-global-yaw capture=model-alpha exact-rom=1\n",
+            entry->id, columns, available);
+    }
+    return changed;
 }
 
 const char *characterFitReferenceCameraRelation(

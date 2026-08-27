@@ -158,17 +158,25 @@ explicitly restricted to the generated fixture and exists only for CI.
   equal, keyboard/speech-accessible choices rather than hiding them in a
   dropdown. The UI labels them honestly as coordinate-axis choices pending
   exact visual confirmation.
-- Render four front candidates (`+z`, `-z`, `+x`, `-x`) as equally framed
-  thumbnails. Let the author choose the face they recognize; never silently
-  infer front from geometry.
-- Propose ground and seat translations from compiled sockets and measured bounds,
-  but keep them preview-only until accepted. Show before/after and offer one-step
-  undo.
-- Fit each context independently. Never seed car/hovercraft/plane from one shared
-  accepted offset without immediately testing all three.
-- Add visible severity bands for floor clearance, camera-envelope occupancy, and
-  seat-relative bounds. Bands guide review and do not become arbitrary import
-  blockers.
+- **Implemented:** the post-compile Facing Studio prepares four exact,
+  model-only `+z`, `-z`, `+x`, and `-x` side captures and presents only
+  source/fit-matching results as equal thumbnails (reflowing to one column at
+  compact width). Choosing the recognizable face applies a reversible overall
+  yaw correction and invalidates every old fit/capture; geometry is never used
+  to infer front and the GLB remains byte-exact.
+- **Implemented:** propose a source/fit-bound vertical ground or conservative
+  seat translation plus measured facing correction from exact renderer evidence.
+  Applying is an explicit, reversible Fit-history edit and always invalidates
+  the evidence until the author reruns that context.
+- **Implemented:** fit each context independently. The guided sequence never
+  treats a car/hovercraft/plane correction or review as evidence for another;
+  an explicit vehicle-only copy action remains available for intentional reuse.
+- **Partially implemented:** visible advisory bands now classify floor/seat
+  datum error, facing, and unusual volume proportions as Ready, Review, or
+  Action needed. Camera crop and vehicle occlusion remain explicitly visual-only
+  because target-space bounds cannot see a perspective camera or kart shell;
+  add renderer-derived camera-envelope/intersection evidence before automating
+  either judgement.
 
 Acceptance: the example faces the camera in select, its feet are floor-aligned,
 and its head/torso land inside each ordinary vehicle camera without manual JSON.
