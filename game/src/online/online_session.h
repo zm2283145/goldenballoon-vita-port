@@ -57,12 +57,9 @@ void mdkr_online_session_begin(const MdkrMatchLaunchDescriptorV1 *launch);
  * selection, then hands off to the race boot (which sets GAMEMODE_INGAME). */
 void mdkr_online_session_tick(s32 updateRate);
 
-/* The race-setup body still lives in thread3_main.c (it reuses the game's own
- * tracks-mode versus race start). PD-T1 CALLS it rather than duplicating the
- * setup logic; extraction into game/src/online/ is deferred to PD-T4. It is
- * beta-only (defined inside #if MDKR_ENABLE_ONLINE_BETA there) and un-static'd
- * so the session TU can call it. Sets gGameMode = GAMEMODE_INGAME. */
-void mdkr_online_boot_direct_race(const MdkrMatchLaunchDescriptorV1 *launch);
+/* The direct online race boot (mdkr_online_boot_direct_race) was extracted in
+ * PD-T4 into game/src/online/online_race_boot.{c,h}; online_session.c includes
+ * that header and calls it for the RACE hand-off. */
 
 #ifdef __cplusplus
 }

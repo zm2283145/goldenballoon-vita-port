@@ -53,6 +53,14 @@ MdkrOnlineTrackselectResult mdkr_online_trackselect_tick(s32 updateRate);
  * MDKR_TEST_ONLINE_TRACKSELECT). Ordinary runs always return false. */
 u8 mdkr_online_trackselect_test_active(void);
 
+/* Resolve a tournament cup's scheduled round track id from the screen's
+ * authoritative sTrackIds mirror (cup-major, round order -- the same table the
+ * lane already asserts equals the reducer's kCupTracks). PD-T4 uses this so the
+ * online session can resolve the host-intended tournament track WITHOUT pulling a
+ * launcher/platform online header (the no-launcher-header discipline). Returns 0
+ * for an out-of-range cup/round. */
+u16 mdkr_online_trackselect_cup_track(unsigned cup, unsigned round);
+
 /* Headless test seam only (inert unless the env above is set): from LOBBY_WAIT,
  * install the party_link forward feed if nothing else has (the CHARSELECT seam
  * normally owns install in this lane). No-op in a normal run, so it never

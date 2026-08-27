@@ -2173,69 +2173,6 @@ void set_frame_blackout_timer(void) {
 /**
  * Give the player 8 frames to enter the CPak menu with start, then load the intro sequence.
  */
-#if MDKR_ENABLE_ONLINE_BETA
-/**
- * Boot straight into the online race described by the installed launch
- * descriptor, bypassing the entire single-player front-end (title screen,
- * Wizpig hub, Adventure/Time-Trial select, tracks menu, in-game character
- * select). The player never drives or even sees those screens.
- *
- * This reuses the game's own tracks-mode versus race-start rather than
- * re-implementing it: menu_online_versus_race_setup() lays down the same
- * mode/track/count globals the menu walk left behind, init_racer_headers()
- * bakes the manifest's per-seat characters into the racer table, and the
- * ordinary in-game loader (load_next_ingame_level -> load_level_game ->
- * level_load) does the rest. gGameCurrentCutscene stays CUTSCENE_NONE (0) so
- * the launch-descriptor seam in level_load() applies the manifest track/vehicle.
- */
-/* Un-static (still entirely #if MDKR_ENABLE_ONLINE_BETA): the separated online
- * session (game/src/online/online_session.c) calls this to reuse the game's own
- * race boot rather than duplicating the race-setup logic. Prototype lives in
- * online/online_session.h. */
-void mdkr_online_boot_direct_race(
-    const MdkrMatchLaunchDescriptorV1 *launch) {
-    s32 canonicalPlayers = (s32) mdkr_net_roster_runtime_canonical_player_count(2u);
-    s32 trackId = (s32) launch->manifest.track_id;
-
-    if (canonicalPlayers < 1) {
-        canonicalPlayers = 1;
-    }
-
-    fprintf(stderr, "[online-boot] direct race: track=%d players=%d\n", trackId,
-            canonicalPlayers);
-
-    /* Manifest RNG seed (hostile m1). The frozen manifest's rng_seed is
-     * derived identically on both endpoints, but the engine otherwise boots
-     * on the compile-time constant seed 'QAVM' (platform/math_util_native.c)
-     * and nothing re-seeds it -- set_rng_seed()'s only other caller is
-     * waves.c, bracketed by save_rng_seed()/load_rng_seed() -- so every
-     * online race replayed one fixed item/AI random stream. Seeding here,
-     * before the level loads, gives each race its own per-race item/RNG
-     * variety while keeping both endpoints identical: each applies the same
-     * fold at the same boot point and every authoritative draw afterwards is
-     * lockstep (presentation randomness runs on its own separate stream).
-     * Fold the u64 to the generator's 32-bit width by XOR of the halves.
-     * Online-only by construction: this function runs only for a validated
-     * online launch descriptor. */
-    {
-        u64 manifestSeed = launch->manifest.rng_seed;
-        s32 foldedSeed = (s32) (u32) (manifestSeed ^ (manifestSeed >> 32));
-
-        set_rng_seed(foldedSeed);
-        fprintf(stderr, "[online-boot] rng seed applied: %08x\n",
-                (unsigned) (u32) foldedSeed);
-    }
-
-    menu_online_versus_race_setup(trackId, canonicalPlayers);
-    init_racer_headers();
-
-    gGameCurrentEntrance = 0;
-    gGameCurrentCutscene = CUTSCENE_NONE;
-    gGameMode = GAMEMODE_INGAME;
-    load_next_ingame_level(canonicalPlayers, -1, get_level_default_vehicle());
-}
-#endif
-
 void mode_intro(void) {
     s32 i;
     s32 buttonInputs = 0;

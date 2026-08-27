@@ -1335,4 +1335,14 @@ u8 mdkr_online_trackselect_test_active(void) {
     return (u8) (sTsTestActive > 0 ? 1 : 0);
 }
 
+/* PD-T4: cup round -> track id from the authoritative sTrackIds mirror (track
+ * index == cup*TS_ROWS + round). Kept here (not duplicated in online_session.c)
+ * so there is a single engine-side copy of the accepted set. */
+u16 mdkr_online_trackselect_cup_track(unsigned cup, unsigned round) {
+    if (cup >= TS_COLS || round >= TS_ROWS) {
+        return 0u;
+    }
+    return (u16) sTrackIds[(cup * TS_ROWS) + round];
+}
+
 #endif /* MDKR_ENABLE_ONLINE_BETA */

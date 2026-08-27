@@ -92,6 +92,28 @@ SESSION_RACE_RE = re.compile(
     r"isolation gGameMode=(\d+) gCurrentMenuId=(-?\d+)", re.MULTILINE)
 DIRECT_BOOT_RE = re.compile(
     r"^\[online-boot\] direct race: track=(\d+) players=(\d+)$", re.MULTILINE)
+# PD-T4: the observable agreement check the session logs at the RACE hand-off.
+# "honored" == the last-seen host-intended track (from the forward feed) equals
+# the booted manifest track; "divergence" == they differ (the manifest still
+# wins -- it is the peer-admission authority -- but we must never see it here).
+TRACK_HONORED_RE = re.compile(
+    r"^\[online-boot\] track honored: (\d+)$", re.MULTILINE)
+TRACK_DIVERGENCE_RE = re.compile(
+    r"^\[online-boot\] track divergence: snapshot=(\d+) manifest=(\d+)",
+    re.MULTILINE)
+# The engine's loaded-race witness (the track the rollback runtime actually
+# booted) -- the BOOTED half of LOCKED==BOOTED.
+ONLINE_RACE_RE = re.compile(
+    r"^\[ROLLBACK\] online race: loadedTrack=(\d+) raceType=(\d+) "
+    r"authoredHz=(\d+)$", re.MULTILINE)
+# The loopback wiring's manifest-config witness (the LOCKED half): the leader
+# froze the manifest via SET_CONFIG_TRACK (single) / SET_MODE+SET_CUP (tournament).
+CONFIG_SINGLE_RE = re.compile(
+    r"^\[online-live\] loopback config mode=single track=(\d+) "
+    r"startMask=0x([0-9a-f]{2}) vehicle=(\d+)$", re.MULTILINE)
+CONFIG_TOURNAMENT_RE = re.compile(
+    r"^\[online-live\] loopback config mode=tournament cup=(\d+) "
+    r"round1Track=(\d+) startMask=0x([0-9a-f]{2}) vehicle=(\d+)$", re.MULTILINE)
 ENGINE_LIVE_RE = re.compile(
     r"^\[ENGINE-ONLINE-LIVE\] result=(-?\d+) racedTicks=(\d+) drainCalls=(\d+) "
     r"advanceFailed=(\d+) inputEnvelopes=(\d+) transportAccepted=(\d+) "
@@ -122,7 +144,8 @@ def clean_environment(**updates: str) -> dict[str, str]:
 
 
 def run_engine(binary: Path, rom: Path, ts_value: str, ticks: int,
-               timeout: int, verbose: bool) -> tuple[int, str]:
+               timeout: int, verbose: bool,
+               extra_env: dict[str, str] | None = None) -> tuple[int, str]:
     with tempfile.TemporaryDirectory(prefix="mdkr64-online-trackselect-") as temp:
         run_dir = Path(temp)
         (run_dir / "saves").mkdir()
@@ -147,8 +170,15 @@ def run_engine(binary: Path, rom: Path, ts_value: str, ticks: int,
             MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
             MDKR64_HIDDEN="1",
         )
+        # PD-T4: per-scenario loopback session-config seams so the frozen manifest
+        # equals the host's on-screen LOCK (single-race track / tournament cup) --
+        # the LOCKED==BOOTED proof. These drive the launcher-side manifest; the
+        # MDKR_TEST_ONLINE_* seams above drive the in-engine SCREEN.
+        if extra_env:
+            environment.update(extra_env)
         if verbose:
-            print(f"$ MDKR_TEST_ONLINE_TRACKSELECT={ts_value} {binary}",
+            extras = " ".join(f"{k}={v}" for k, v in (extra_env or {}).items())
+            print(f"$ MDKR_TEST_ONLINE_TRACKSELECT={ts_value} {extras} {binary}",
                   flush=True)
         process = subprocess.run(
             [str(binary)], cwd=run_dir, env=environment, text=True,
@@ -156,6 +186,35 @@ def run_engine(binary: Path, rom: Path, ts_value: str, ticks: int,
             timeout=timeout, check=False,
         )
         return process.returncode, (process.stdout or "")
+
+
+def assert_locked_equals_booted(scn: str, output: str,
+                                expected_track: int) -> int | None:
+    """PD-T4: the host's LOCKED track is exactly what BOOTS. The session logs the
+    manifest track as HONORED (never a divergence), the direct-boot witness fires
+    on it, and the engine's rollback runtime loaded that same track -- so the
+    manifest (peer-admission authority) carried the locked pick end to end."""
+    if TRACK_DIVERGENCE_RE.findall(output):
+        div = TRACK_DIVERGENCE_RE.findall(output)
+        return fail(scn, f"a track divergence was logged {div!r} -- the booted "
+                    f"manifest did not match the host-intended (locked) track",
+                    output)
+    honored = TRACK_HONORED_RE.findall(output)
+    if len(honored) != 1:
+        return fail(scn, f"expected exactly one [online-boot] track honored line, "
+                    f"got {honored!r}", output)
+    if int(honored[0]) != expected_track:
+        return fail(scn, f"track honored={honored[0]}, expected {expected_track} "
+                    f"(intended != manifest)", output)
+    direct = DIRECT_BOOT_RE.findall(output)
+    if not direct or int(direct[0][0]) != expected_track:
+        return fail(scn, f"direct-boot witness track {direct!r}, expected "
+                    f"{expected_track}", output)
+    race = ONLINE_RACE_RE.findall(output)
+    if not race or int(race[0][0]) != expected_track:
+        return fail(scn, f"engine loadedTrack {race!r}, expected {expected_track} "
+                    f"-- LOCKED ({expected_track}) != BOOTED", output)
+    return None
 
 
 def assert_race_converges(scn: str, output: str) -> int | None:
@@ -305,7 +364,19 @@ def check_single_host(output: str) -> int | None:
         return fail(scn, "never advanced on the scripted host-start", output)
     if not TS_EXIT_RE.search(output):
         return fail(scn, "never freed world bg assets on exit", output)
-    return assert_race_converges(scn, output)
+
+    # PD-T4 LOCKED==BOOTED: the loopback froze the manifest to the SAME track the
+    # screen locked (Whale Bay, 8), so the session sees snapshot==manifest, logs
+    # HONORED (no divergence), and the engine boots exactly track 8.
+    config = CONFIG_SINGLE_RE.findall(output)
+    if len(config) != 1 or int(config[0][0]) != LOCKED_TRACK:
+        return fail(scn, f"the loopback did not freeze the manifest to the locked "
+                    f"track {LOCKED_TRACK} (single config witness={config!r})",
+                    output)
+    err = assert_race_converges(scn, output)
+    if err is not None:
+        return err
+    return assert_locked_equals_booted(scn, output, LOCKED_TRACK)
 
 
 def check_joiner(output: str) -> int | None:
@@ -340,7 +411,21 @@ def check_joiner(output: str) -> int | None:
 
     if not TS_ADVANCE_RE.search(output):
         return fail(scn, "never advanced on the scripted host-start", output)
-    return assert_race_converges(scn, output)
+
+    # PD-T4 LOCKED==BOOTED: the loopback ran tournament cup 2, whose round-0 track
+    # is Whale Bay (8) -- the SAME track the joiner's screen resolves the room's
+    # locked cup to. The manifest froze that track, the session logs HONORED, and
+    # the engine boots exactly track 8.
+    config = CONFIG_TOURNAMENT_RE.findall(output)
+    if (len(config) != 1 or int(config[0][0]) != TOURN_CUP or
+            int(config[0][1]) != LOCKED_TRACK):
+        return fail(scn, f"the loopback did not freeze the manifest to cup "
+                    f"{TOURN_CUP} round-0 track {LOCKED_TRACK} (tournament config "
+                    f"witness={config!r})", output)
+    err = assert_race_converges(scn, output)
+    if err is not None:
+        return err
+    return assert_locked_equals_booted(scn, output, LOCKED_TRACK)
 
 
 def main() -> int:
@@ -358,11 +443,22 @@ def main() -> int:
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
 
-    scenarios = (("1", check_single_host), ("joiner", check_joiner))
-    for ts_value, checker in scenarios:
+    # PD-T4: each scenario aligns the frozen manifest with the on-screen LOCK so
+    # the lane proves LOCKED==BOOTED. single-host fixes the manifest track to
+    # Whale Bay (8) via SET_CONFIG_TRACK; the tournament joiner runs cup 2, whose
+    # round-0 track is Whale Bay (8). The tournament seam also drives a teardown-
+    # time transport continuation (rounds 2..4), so it gets a wider timeout.
+    scenarios = (
+        ("1", check_single_host,
+         {"MDKR_APP_TEST_ONLINE_TRACK": str(LOCKED_TRACK)}, args.timeout),
+        ("joiner", check_joiner,
+         {"MDKR_APP_TEST_ONLINE_MODE": "tournament",
+          "MDKR_APP_TEST_ONLINE_CUP": str(TOURN_CUP)}, max(args.timeout, 600)),
+    )
+    for ts_value, checker, extra_env, scn_timeout in scenarios:
         try:
             rc, output = run_engine(binary, rom, ts_value, args.ticks,
-                                    args.timeout, args.verbose)
+                                    scn_timeout, args.verbose, extra_env)
         except subprocess.TimeoutExpired as error:
             return fail(ts_value, f"engine run timed out: {error}")
         result = checker(output)
@@ -373,10 +469,12 @@ def main() -> int:
         "PASS online trackselect: two-stage native screen -- SINGLE-HOST "
         "(B->charselect no-wedge; locked Whale Bay -> configured_track converged; "
         "auto-narrow to hovercraft; F-D5 vehicle stays legal browsing Spaceport "
-        "Alpha; ready clear->reconverge; host-start; race converged) and "
-        "TOURNAMENT-JOINER (renders room snapshot host=0/mode=TOURNAMENT/cup=2; "
-        "narrows to the cup round-0 track; no ILLEGAL_VEHICLE; race converged) -- "
-        "both handed off gGameMode=2 gCurrentMenuId=0, offered ids == reducer set"
+        "Alpha; ready clear->reconverge; host-start; LOCKED==BOOTED: manifest "
+        "honored track 8, engine loadedTrack 8) and TOURNAMENT-JOINER (renders "
+        "room snapshot host=0/mode=TOURNAMENT/cup=2; narrows to the cup round-0 "
+        "track; no ILLEGAL_VEHICLE; LOCKED==BOOTED: cup-2 round-0 manifest honored "
+        "track 8, engine loadedTrack 8) -- both handed off gGameMode=2 "
+        "gCurrentMenuId=0, offered ids == reducer set, no track divergence"
     )
     return 0
 

@@ -26,7 +26,9 @@
 #include "thread3_main.h"
 #include "net/party_link.h"
 #include "online/online_charselect.h"  /* PD-T2 native CHARSELECT phase */
-#include "online/online_trackselect.h" /* PD-T3 native TRACKSELECT phase */
+#include "online/online_trackselect.h" /* PD-T3 native TRACKSELECT phase +
+                                          mdkr_online_trackselect_cup_track */
+#include "online/online_race_boot.h"   /* PD-T4 direct race boot (extracted) */
 
 /* The engine's live game-mode selector. Defined (external linkage) in
  * thread3_main.c; no shared header declares it, so the session declares the
@@ -49,10 +51,21 @@ extern s32 gCurrentMenuId;
 #define MDKR_ONLINE_SESSION_LOBBY_PHASE 1u   /* MDKR_ONLINE_LOBBY */
 #define MDKR_ONLINE_SESSION_LOADING_PHASE 2u /* MDKR_ONLINE_LOADING */
 
+/* "No track resolved yet" sentinel for intendedTrack below -- matches the
+ * forward-feed / lobby "none" width (configured_track 0xFFFF). */
+#define MDKR_ONLINE_SESSION_TRACK_NONE 0xFFFFu
+
 typedef struct MdkrOnlineSessionState {
     MdkrOnlineSessionPhase phase;
     const MdkrMatchLaunchDescriptorV1 *launch;
     u32 lobbyWaitTicks;
+    /* PD-T4: the last-seen resolved host-INTENDED race track from the forward
+     * feed (single race -> configured_track; tournament -> the cup's scheduled
+     * round track), or MDKR_ONLINE_SESSION_TRACK_NONE. This is an OBSERVABILITY
+     * value ONLY -- the boot always loads launch->manifest.track_id (the peer
+     * rollback-admission authority); intendedTrack is logged against it so "the
+     * host's locked track is what loads" is explicit and testable. */
+    u16 intendedTrack;
     u8 active;
 } MdkrOnlineSessionState;
 
@@ -96,6 +109,14 @@ static void online_session_test_maybe_script(void) {
     snap.phase = (sOnlineSession.lobbyWaitTicks < sTestHoldTicks)
                      ? (uint8_t) MDKR_ONLINE_SESSION_LOBBY_PHASE
                      : (uint8_t) MDKR_ONLINE_SESSION_LOADING_PHASE;
+    /* PD-T4: publish the config "none" sentinels, not the bare memset zeros. This
+     * lane scripts an EMPTY room with no host pick -- it boots the vote-derived
+     * manifest -- so the session's intended-track resolution must read NONE. A
+     * plain memset(0) would read as mode=SINGLE + configured_track=0 == "intended
+     * track 0" (garbage) and log a spurious divergence; the sentinels give the
+     * silent "track honored" path this lane expects. (mode stays 0 == SINGLE.) */
+    snap.configured_track = MDKR_PARTY_LINK_TRACK_UNSET; /* 0xFFFF == none */
+    snap.cup_id = MDKR_PARTY_LINK_CUP_UNSET;             /* 0xFF == none */
     mdkr_party_link_publish(&snap);
 }
 
@@ -108,7 +129,40 @@ static void online_session_test_script_teardown(void) {
 
 /* ---- Session ------------------------------------------------------------- */
 
+/* PD-T4: resolve the host-intended race track from a forward-feed snapshot,
+ * mirroring the launcher reducer's own resolution: tournament -> the cup's
+ * scheduled round track (mdkr_online_cup_track / kCupTracks, re-exposed engine-
+ * side as mdkr_online_trackselect_cup_track over the same accepted set); single
+ * race -> configured_track. Returns MDKR_ONLINE_SESSION_TRACK_NONE when nothing
+ * is configured yet. Pure observation -- never drives the boot. */
+static u16 online_session_resolve_intended(const MdkrPartyLinkSnapshot *snap) {
+    if (snap->mode == MDKR_PARTY_LINK_MODE_TOURNAMENT &&
+        snap->cup_id != MDKR_PARTY_LINK_CUP_UNSET) {
+        u16 track =
+            mdkr_online_trackselect_cup_track(snap->cup_id, snap->race_index);
+        return (track != 0u) ? track : MDKR_ONLINE_SESSION_TRACK_NONE;
+    }
+    if (snap->configured_track != MDKR_PARTY_LINK_TRACK_UNSET) {
+        return snap->configured_track;
+    }
+    return MDKR_ONLINE_SESSION_TRACK_NONE;
+}
+
+/* Stash the last-seen resolved host-intended track (only when one is actually
+ * configured, so a transient "none" -- e.g. the reducer clearing the pick on a
+ * mode toggle before the host re-locks -- never clobbers a real pick right before
+ * boot). Observability only; the boot still loads launch->manifest.track_id. */
+static void online_session_stash_intended(const MdkrPartyLinkSnapshot *snap) {
+    u16 intended = online_session_resolve_intended(snap);
+    if (intended != MDKR_ONLINE_SESSION_TRACK_NONE) {
+        sOnlineSession.intendedTrack = intended;
+    }
+}
+
 static void online_session_boot_race(void) {
+    u16 intended = sOnlineSession.intendedTrack;
+    s32 manifestTrack = (s32) sOnlineSession.launch->manifest.track_id;
+
     sOnlineSession.phase = MDKR_ONLINE_SESSION_RACE;
     /* Isolation witness: on the online path control reached the session
      * (gGameMode == GAMEMODE_ONLINE_SESSION) and the offline boot menu was
@@ -118,10 +172,31 @@ static void online_session_boot_race(void) {
             "isolation gGameMode=%d gCurrentMenuId=%d (0 == offline MENU_BOOT "
             "never loaded)\n",
             sOnlineSession.lobbyWaitTicks, gGameMode, gCurrentMenuId);
+
+    /* PD-T4 observable agreement check. The race ALWAYS boots the manifest's
+     * track (the peer rollback-admission authority: the launcher froze the
+     * manifest from the CONVERGED lobby at the LOADING barrier, so in live play
+     * it already equals the host's locked pick -- rollback_game_runtime.c ->
+     * match_manifest.c require manifest.track_id == loaded_track_id or the peer
+     * rejects the race). We compare the last-seen host-intended track from the
+     * forward feed against it so "the host's locked track is what loads" is
+     * explicit and testable, but we NEVER substitute the intended track for the
+     * manifest -- doing so would fail peer admission. */
+    if (intended != MDKR_ONLINE_SESSION_TRACK_NONE &&
+        (s32) intended != manifestTrack) {
+        fprintf(stderr,
+                "[online-boot] track divergence: snapshot=%d manifest=%d "
+                "(booting manifest -- admission authority)\n",
+                (int) intended, manifestTrack);
+    } else {
+        fprintf(stderr, "[online-boot] track honored: %d\n", manifestTrack);
+    }
+
     online_session_test_script_teardown();
     sOnlineSession.active = 0;
-    /* Reuse the game's own race boot; it sets gGameMode = GAMEMODE_INGAME. No
-     * race-setup logic is duplicated (PD-T4 owns any extraction). */
+    /* Reuse the game's own race boot (extracted to online/online_race_boot.c in
+     * PD-T4); it loads launch->manifest.track_id and sets gGameMode =
+     * GAMEMODE_INGAME. No race-setup logic is duplicated. */
     mdkr_online_boot_direct_race(sOnlineSession.launch);
 }
 
@@ -129,6 +204,10 @@ void mdkr_online_session_begin(const MdkrMatchLaunchDescriptorV1 *launch) {
     memset(&sOnlineSession, 0, sizeof(sOnlineSession));
     sOnlineSession.phase = MDKR_ONLINE_SESSION_LOBBY_WAIT;
     sOnlineSession.launch = launch;
+    /* NONE, not the memset 0 (a real track id) -- so a boot with no forward feed
+     * (legacy direct boot) reads "intended none" and logs the honored path, never
+     * a spurious "divergence snapshot=0". */
+    sOnlineSession.intendedTrack = MDKR_ONLINE_SESSION_TRACK_NONE;
     sOnlineSession.active = 1;
     /* Enter the SEPARATED mode. Offline code never produces this value, so the
      * offline menu state machine is never entered on this route. */
@@ -218,6 +297,9 @@ void mdkr_online_session_tick(s32 updateRate) {
         mdkr_online_trackselect_test_lobby_pump();
 
         haveSnap = mdkr_party_link_read(&snap);
+        if (haveSnap) {
+            online_session_stash_intended(&snap); /* PD-T4 observability */
+        }
         if (!haveSnap) {
             /* No live forward feed installed (legacy direct-boot / the launcher
              * is not yet publishing): the validated launch descriptor IS the
@@ -252,7 +334,15 @@ void mdkr_online_session_tick(s32 updateRate) {
         break;
     }
     case MDKR_ONLINE_SESSION_CHARSELECT: {
-        MdkrOnlineCharselectResult r = mdkr_online_charselect_tick(updateRate);
+        MdkrOnlineCharselectResult r;
+        {
+            /* PD-T4: track the host-intended pick as the room converges. */
+            MdkrPartyLinkSnapshot csSnap;
+            if (mdkr_party_link_read(&csSnap)) {
+                online_session_stash_intended(&csSnap);
+            }
+        }
+        r = mdkr_online_charselect_tick(updateRate);
         if (r == MDKR_ONLINE_CHARSELECT_ADVANCE) {
             /* The authoritative lobby left LOBBY (host started / loading). This
              * is the safety path (R-B) and the historical CHARSELECT-lane
@@ -300,6 +390,14 @@ void mdkr_online_session_tick(s32 updateRate) {
     case MDKR_ONLINE_SESSION_TRACKSELECT: {
         MdkrOnlineTrackselectResult r =
             mdkr_online_trackselect_tick(updateRate);
+        {
+            /* PD-T4: read AFTER the tick so the host's just-reduced config
+             * (SET_CONFIG_TRACK / SET_CUP) is captured before any boot. */
+            MdkrPartyLinkSnapshot tsSnap;
+            if (mdkr_party_link_read(&tsSnap)) {
+                online_session_stash_intended(&tsSnap);
+            }
+        }
         if (r == MDKR_ONLINE_TRACKSELECT_ADVANCE) {
             /* Host started -> lobby left LOBBY -> boot the race. */
             mdkr_online_trackselect_exit();

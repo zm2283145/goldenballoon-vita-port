@@ -297,7 +297,8 @@ if(MDKR_ENABLE_ONLINE_BETA)
     list(APPEND GAME_SOURCES
         ${CMAKE_SOURCE_DIR}/game/src/online/online_session.c    # separated online session
         ${CMAKE_SOURCE_DIR}/game/src/online/online_charselect.c  # native online character select
-        ${CMAKE_SOURCE_DIR}/game/src/online/online_trackselect.c) # native online track/cup select
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_trackselect.c # native online track/cup select
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_race_boot.c) # direct online race boot (PD-T4 extraction)
 endif()
 
 # Native platform layer (this project's own M1 code). Listed explicitly rather
