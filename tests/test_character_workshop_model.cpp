@@ -171,6 +171,7 @@ void testPerformanceTargets() {
 }
 
 void testRuntimeEquivalentLodSelection() {
+    CharacterWorkshopLodBand bands[4] = {};
     assert(CharacterWorkshop_selectLod(0.0f, 0.0f, 0.0f, 0xFu) == 0u);
     assert(CharacterWorkshop_selectLod(650.0f, 0.0f, 0.0f, 0xFu) == 1u);
     assert(CharacterWorkshop_selectLod(1300.0f, 0.0f, 0.0f, 0xFu) == 2u);
@@ -187,6 +188,28 @@ void testRuntimeEquivalentLodSelection() {
     assert(CharacterWorkshop_selectLod(NAN, 0.0f, 0.0f, 1u) == UINT32_MAX);
     assert(CharacterWorkshop_selectLod(0.0f, 0.0f, NAN, 1u) == UINT32_MAX);
     assert(CharacterWorkshop_selectLod(0.0f, 5.0f, 0.0f, 1u) == UINT32_MAX);
+    assert(CharacterWorkshop_lodBands(0.0f, 0.0f, 0xFu, bands) == 4u &&
+           bands[0].minimumDistance == 0.0f &&
+           bands[0].maximumDistance == 650.0f && bands[0].lod == 0u &&
+           bands[1].minimumDistance == 650.0f && bands[1].lod == 1u &&
+           bands[2].minimumDistance == 1300.0f && bands[2].lod == 2u &&
+           bands[3].minimumDistance == 2400.0f &&
+           std::isinf(bands[3].maximumDistance) && bands[3].lod == 3u);
+    assert(CharacterWorkshop_lodBands(0.0f, 0.0f, 0xBu, bands) == 3u &&
+           bands[0].lod == 0u && bands[0].maximumDistance == 650.0f &&
+           bands[1].lod == 1u && bands[1].maximumDistance == 2400.0f &&
+           bands[2].lod == 3u);
+    assert(CharacterWorkshop_lodBands(0.0f, 2.0f, 0xFu, bands) == 2u &&
+           bands[0].lod == 0u && bands[0].maximumDistance == 2400.0f &&
+           bands[1].lod == 1u && std::isinf(bands[1].maximumDistance));
+    assert(CharacterWorkshop_lodBands(0.0f, 0.0f, 0x1u, bands) == 1u &&
+           bands[0].lod == 0u && std::isinf(bands[0].maximumDistance));
+    const CharacterWorkshopLodBand sentinel = bands[0];
+    assert(CharacterWorkshop_lodBands(NAN, 0.0f, 0xFu, bands) == 0u &&
+           bands[0].minimumDistance == sentinel.minimumDistance &&
+           bands[0].maximumDistance == sentinel.maximumDistance &&
+           bands[0].lod == sentinel.lod);
+    assert(CharacterWorkshop_lodBands(0.0f, 0.0f, 0xFu, nullptr) == 0u);
 }
 
 } // namespace

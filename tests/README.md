@@ -4905,8 +4905,10 @@ retail portrait art, plus the front/side/top
 placement and contact planes, context yaw, vehicle-only copy boundary, and Fit
 undo contract to render. The 200% keyboard/speech Performance route requires
 all four named targets, the exact authored-LOD control, runtime-equivalent
-source/local-bias selection, selected-LOD structural accounting, and independent
-Performance history to render. The Test route also requires all 13 semantic inspection choices,
+source/local-bias selection, merged distance intervals, session-only distance
+scrubbing, selected-LOD structural accounting, transition quality warnings,
+keyboard/speech access to the plot, and independent Performance history to
+render. The Test route also requires all 13 semantic inspection choices,
 the safe midpoint phase default, neutral camera/light defaults, exclusive-
 capture disclosure, and the explicit session-only/no-performance-evidence
 contract to render. `character_edit_history` separately proves discrete edits,

@@ -93,6 +93,12 @@ struct CharacterWorkshopPerformancePreset {
     float lodBias;
 };
 
+struct CharacterWorkshopLodBand {
+    float minimumDistance = 0.0f;
+    float maximumDistance = 0.0f; // +infinity is the final open interval.
+    uint32_t lod = 0u;
+};
+
 CharacterWorkshopReadiness CharacterWorkshop_evaluate(
     const CharacterWorkshopFacts &facts);
 
@@ -114,5 +120,11 @@ CharacterWorkshopPerformanceTarget CharacterWorkshop_performanceTarget(
 uint32_t CharacterWorkshop_selectLod(
     float viewDistance, float sourceLodBias, float localLodBias,
     uint32_t authoredLodMask);
+/* Returns the renderer policy's merged distance intervals. Adjacent base
+ * bands that resolve to the same authored level after bias, clamping, and
+ * sparse fallback are intentionally coalesced. Zero means invalid input. */
+size_t CharacterWorkshop_lodBands(
+    float sourceLodBias, float localLodBias, uint32_t authoredLodMask,
+    CharacterWorkshopLodBand output[4]);
 
 #endif // MDKR64_CHARACTER_WORKSHOP_MODEL_H

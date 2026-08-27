@@ -1153,7 +1153,7 @@ legacy-engine representation blockers:
 | Materials | Core PBR-like factors/maps plus DKR fog/sun/ambient; OPAQUE/MASK/BLEND | IBL, calibrated tone mapping, shadow receive/cast, transparent ordering, then optional hair/clearcoat/subsurface profiles |
 | Animation | TRS tracks, LINEAR/STEP/CUBICSPLINE, cross-fade, semantic clips, immutable previous/current replay interpolation | Real authored clips, local-TRS/quaternion presentation interpolation, additive masks, root-motion policy and possibly morph/facial animation |
 | Morphs | Rejected | Cache v2 storage, bounded weight tracks and shader path |
-| LOD | Authored `MSFT_lod`, per-viewport distance bands | Projected-size thresholds, hysteresis, optional offline simplification and measured 4P targets |
+| LOD | Authored `MSFT_lod`, per-viewport distance bands, exact merged-band scrubber, sparse fallback and structural transition warnings | Projected-size thresholds, hysteresis, optional offline simplification and GPU-timed 4P targets |
 | Backends | WebGPU; retail fallback on OpenGL | Implement GL parity or formally ship the modern profile as WebGPU-only |
 
 The closest thing to a firm blocker is not polygon count. It is finishing the

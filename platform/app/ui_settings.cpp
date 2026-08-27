@@ -2013,6 +2013,7 @@ std::string g_donorGameplayProfilesUnavailableReason;
 std::set<std::string> g_characterDonorProfileTraceKeys;
 std::map<std::string, int> g_characterAssemblyPlayers;
 std::map<std::string, float> g_characterPerformanceLodGestureStarts;
+std::map<std::string, float> g_characterLodInspectionDistances;
 std::set<std::string> g_characterPerformanceTracePackages;
 std::map<std::string, int> g_characterTestPlayers;
 std::map<std::string, int> g_characterTestPoses;
@@ -2097,7 +2098,7 @@ bool g_characterTestEvidenceWritable = false;
 std::string g_characterTestEvidenceError;
 MdkrTextStateFileSpec g_characterTestEvidenceFileSpec{
     // Keep the established filename so authenticated v1 inventories are found
-    // and migrated in place; the serialized header carries the v2 schema.
+    // and migrated in place; the serialized header carries the v3 schema.
     "character_test_evidence-v1.tsv", nullptr, nullptr,
 };
 std::map<std::string, unsigned> g_characterTestEvidenceSelectedCell;
@@ -3753,6 +3754,7 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterTuning.erase(id);
     g_characterAssemblyPlayers.erase(id);
     g_characterPerformanceLodGestureStarts.erase(id);
+    g_characterLodInspectionDistances.erase(id);
     g_characterPerformanceTracePackages.erase(id);
     g_characterTestPlayers.erase(id);
     g_characterTestPoses.erase(id);
@@ -5124,7 +5126,9 @@ void drawCharacterContactDiagnostics(
                 1.0f, ImGui::GetContentRegionAvail().x);
             const ImVec2 size(width, 190.0f * uiScale);
             const ImVec2 origin = ImGui::GetCursorScreenPos();
-            ImGui::InvisibleButton("Contact witness plot", size);
+            (void)ImGui::Selectable(
+                "Contact witness plot", false, ImGuiSelectableFlags_None,
+                size);
             const bool focused = ImGui::IsItemFocused();
             ui::SpeakFocusedItem(
                 view.name, nullptr,
@@ -6208,6 +6212,161 @@ void drawCharacterPerformanceAssembly(
          lod < MDKR_MODERN_CHARACTER_LOD_LEVELS; ++lod) {
         if (entry->lod_primitives[lod] != 0u) authoredLodMask |= 1u << lod;
     }
+    CharacterWorkshopLodBand lodBands[MDKR_MODERN_CHARACTER_LOD_LEVELS] = {};
+    const size_t lodBandCount = CharacterWorkshop_lodBands(
+        entry->source_lod_bias, tuning.lodBias, authoredLodMask, lodBands);
+    float &inspectionDistance =
+        g_characterLodInspectionDistances[entry->id];
+    if (!std::isfinite(inspectionDistance) || inspectionDistance < 0.0f ||
+        inspectionDistance > 3200.0f) inspectionDistance = 0.0f;
+    const uint32_t inspectionLod = CharacterWorkshop_selectLod(
+        inspectionDistance, entry->source_lod_bias, tuning.lodBias,
+        authoredLodMask);
+    const uint32_t safeInspectionLod =
+        inspectionLod < MDKR_MODERN_CHARACTER_LOD_LEVELS
+            ? inspectionLod : 0u;
+    ImGui::SeparatorText("LOD transition inspector");
+    ui::TextSubtleWrapped(
+        "Scrub the renderer's exact DKR camera-distance policy. These are engine world units, not metres or a screen-size claim. The control changes only this explanation; it does not move the game camera or alter the saved character.");
+    (void)ImGui::SliderFloat(
+        "Inspection distance", &inspectionDistance, 0.0f, 3200.0f,
+        "%.0f world units", ImGuiSliderFlags_AlwaysClamp);
+    char inspectionSpeech[192];
+    std::snprintf(
+        inspectionSpeech, sizeof(inspectionSpeech),
+        "At %.0f DKR world units the exact current policy selects authored LOD %u. This session-only scrubber does not change saved settings",
+        static_cast<double>(inspectionDistance), safeInspectionLod);
+    ui::SpeakFocusedItem(
+        "Inspection distance", inspectionSpeech,
+        "Direct entry and arrow keys are supported. Distance bands include package and local bias, clamping, and sparse authored-level fallback.");
+    ImGui::TextColored(
+        AppTheme::good(), "At %.0f units: LOD%u · %u triangles · %u vertices",
+        static_cast<double>(inspectionDistance), safeInspectionLod,
+        entry->lod_triangles[safeInspectionLod],
+        entry->lod_vertices[safeInspectionLod]);
+    const ImVec2 plotOrigin = ImGui::GetCursorScreenPos();
+    const ImVec2 plotSize(
+        std::max(1.0f, ImGui::GetContentRegionAvail().x),
+        44.0f * AppTheme::uiScale());
+    (void)ImGui::Selectable(
+        "Exact LOD distance bands", false, ImGuiSelectableFlags_None,
+        plotSize);
+    const bool plotFocused = ImGui::IsItemFocused();
+    ui::SpeakFocusedItem(
+        "Exact LOD distance bands", inspectionSpeech,
+        "The exact interval list following this plot is authoritative and keyboard-readable.");
+    ImDrawList *lodDraw = ImGui::GetWindowDrawList();
+    static const ImU32 lodColours[] = {
+        IM_COL32(78, 163, 255, 255), IM_COL32(87, 201, 145, 255),
+        IM_COL32(238, 180, 72, 255), IM_COL32(213, 112, 162, 255),
+    };
+    const ImVec2 plotMaximum(
+        plotOrigin.x + plotSize.x, plotOrigin.y + plotSize.y);
+    lodDraw->AddRectFilled(
+        plotOrigin, plotMaximum, IM_COL32(12, 17, 24, 255), 5.0f);
+    for (size_t band = 0u; band < lodBandCount; ++band) {
+        const float minimum = std::clamp(
+            lodBands[band].minimumDistance, 0.0f, 3200.0f);
+        const float maximum = std::isinf(lodBands[band].maximumDistance)
+            ? 3200.0f
+            : std::clamp(lodBands[band].maximumDistance, 0.0f, 3200.0f);
+        const float left = plotOrigin.x + plotSize.x * minimum / 3200.0f;
+        const float right = plotOrigin.x + plotSize.x * maximum / 3200.0f;
+        lodDraw->AddRectFilled(
+            ImVec2(left, plotOrigin.y), ImVec2(right, plotMaximum.y),
+            lodColours[lodBands[band].lod]);
+        char label[16];
+        std::snprintf(label, sizeof(label), "LOD%u", lodBands[band].lod);
+        const ImVec2 textSize = ImGui::CalcTextSize(label);
+        if (right - left >= textSize.x + 8.0f * AppTheme::uiScale()) {
+            lodDraw->AddText(
+                ImVec2((left + right - textSize.x) * 0.5f,
+                       plotOrigin.y + (plotSize.y - textSize.y) * 0.5f),
+                IM_COL32(10, 18, 26, 255), label);
+        }
+    }
+    const float marker = plotOrigin.x +
+        plotSize.x * inspectionDistance / 3200.0f;
+    lodDraw->AddLine(
+        ImVec2(marker, plotOrigin.y), ImVec2(marker, plotMaximum.y),
+        IM_COL32(255, 255, 255, 255), 3.0f * AppTheme::uiScale());
+    lodDraw->AddRect(
+        plotOrigin, plotMaximum,
+        plotFocused ? ImGui::GetColorU32(ImGuiCol_NavHighlight)
+                    : IM_COL32(75, 84, 96, 255),
+        5.0f, 0, (plotFocused ? 2.0f : 1.0f) * AppTheme::uiScale());
+    const bool compactLodTable = ImGui::GetContentRegionAvail().x < 620.0f;
+    bool nonMonotonic = false;
+    bool dramaticStep = false;
+    uint32_t priorTriangles = 0u;
+    for (size_t band = 0u; band < lodBandCount; ++band) {
+        const uint32_t triangles = entry->lod_triangles[lodBands[band].lod];
+        if (band != 0u) {
+            nonMonotonic |= triangles > priorTriangles;
+            dramaticStep |= triangles != 0u &&
+                static_cast<uint64_t>(triangles) * 4u < priorTriangles;
+        }
+        priorTriangles = triangles;
+    }
+    if (compactLodTable) {
+        for (size_t band = 0u; band < lodBandCount; ++band) {
+            const CharacterWorkshopLodBand &range = lodBands[band];
+            if (std::isinf(range.maximumDistance)) {
+                ImGui::BulletText(
+                    "%.0f+ units → LOD%u · %u triangles · %u vertices",
+                    static_cast<double>(range.minimumDistance), range.lod,
+                    entry->lod_triangles[range.lod],
+                    entry->lod_vertices[range.lod]);
+            } else {
+                ImGui::BulletText(
+                    "%.0f–%.0f units → LOD%u · %u triangles · %u vertices",
+                    static_cast<double>(range.minimumDistance),
+                    static_cast<double>(range.maximumDistance), range.lod,
+                    entry->lod_triangles[range.lod],
+                    entry->lod_vertices[range.lod]);
+            }
+        }
+    } else if (ImGui::BeginTable(
+                   "##lod-transition-bands", 4,
+                   ImGuiTableFlags_RowBg |
+                       ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Exact distance interval");
+        ImGui::TableSetupColumn("Selected authored level");
+        ImGui::TableSetupColumn("Triangles");
+        ImGui::TableSetupColumn("Vertices");
+        ImGui::TableHeadersRow();
+        for (size_t band = 0u; band < lodBandCount; ++band) {
+            const CharacterWorkshopLodBand &range = lodBands[band];
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            if (std::isinf(range.maximumDistance)) {
+                ImGui::Text("%.0f+", static_cast<double>(range.minimumDistance));
+            } else {
+                ImGui::Text("%.0f–%.0f",
+                            static_cast<double>(range.minimumDistance),
+                            static_cast<double>(range.maximumDistance));
+            }
+            ImGui::TableNextColumn(); ImGui::Text("LOD%u", range.lod);
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", entry->lod_triangles[range.lod]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", entry->lod_vertices[range.lod]);
+        }
+        ImGui::EndTable();
+    }
+    if (nonMonotonic) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "Farther distance selects more triangles at least once — review authored LOD ordering.");
+    } else if (dramaticStep) {
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "At least one transition removes more than 75%% of triangles — inspect silhouette and material popping in the exact game.");
+    } else {
+        ImGui::TextColored(
+            AppTheme::good(),
+            "Triangle counts descend without an extreme greater-than-4× step.");
+    }
     const uint32_t selectedLod = CharacterWorkshop_selectLod(
         0.0f, entry->source_lod_bias, tuning.lodBias, authoredLodMask);
     const uint32_t assemblyLod = selectedLod <
@@ -6290,9 +6449,12 @@ void drawCharacterPerformanceAssembly(
         g_characterPerformanceTracePackages.insert(entry->id).second) {
         std::fprintf(
             stderr,
-            "[app-ui] character-performance-targets package=%s targets=quality,balanced,performance,four-player custom=1 sourceBias=%.1f localBias=%.1f players=%d selectedLod=%u exactAssembly=1 importCeiling=unchanged history=performance\n",
+            "[app-ui] character-performance-targets package=%s targets=quality,balanced,performance,four-player custom=1 sourceBias=%.1f localBias=%.1f players=%d selectedLod=%u exactAssembly=1 lodBands=%zu inspectionDistance=%.0f inspectionLod=%u monotonic=%d dramatic=%d importCeiling=unchanged history=performance\n",
             entry->id, static_cast<double>(entry->source_lod_bias),
-            static_cast<double>(tuning.lodBias), players, assemblyLod);
+            static_cast<double>(tuning.lodBias), players, assemblyLod,
+            lodBandCount, static_cast<double>(inspectionDistance),
+            safeInspectionLod, nonMonotonic ? 0 : 1,
+            dramaticStep ? 1 : 0);
     }
     finishCharacterHistory(entry, history);
 }
@@ -11662,6 +11824,7 @@ void closeCharacterDraftEditor(const std::string &packageId,
     if (!preserveFitEditor) {
         g_characterTuning.erase(packageId);
         g_characterAssemblyPlayers.erase(packageId);
+        g_characterLodInspectionDistances.erase(packageId);
         g_characterTestPlayers.erase(packageId);
         g_characterTestPoses.erase(packageId);
         g_characterTestPosePhases.erase(packageId);

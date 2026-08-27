@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -184,9 +185,16 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
             "character-performance-targets package=" + PACKAGE_ID +
             " targets=quality,balanced,performance,four-player custom=1 "
             "sourceBias=0.0 localBias=0.0 players=4 selectedLod=0 "
-            "exactAssembly=1 importCeiling=unchanged history=performance"
+            "exactAssembly=1"
         )
-        if marker not in process.stdout:
+        transition = re.search(
+            r"lodBands=(\d+) inspectionDistance=0 inspectionLod=0 "
+            r"monotonic=([01]) dramatic=([01]) "
+            r"importCeiling=unchanged history=performance",
+            process.stdout,
+        )
+        if marker not in process.stdout or transition is None or \
+                int(transition.group(1)) < 1:
             raise RuntimeError(
                 "performance route did not use the exact runtime-equivalent "
                 f"target and assembly policy\n{process.stdout[-8000:]}"
@@ -194,6 +202,7 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
         for spoken in (
             "text=Quality", "text=Balanced", "text=Performance",
             "text=Four-player", "text=Authored LOD preference",
+            "text=Inspection distance", "text=Exact LOD distance bands",
         ):
             if spoken not in process.stdout:
                 raise RuntimeError(

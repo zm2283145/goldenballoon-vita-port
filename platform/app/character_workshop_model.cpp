@@ -2,6 +2,7 @@
 
 #include "modern_character_lod.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -228,4 +229,30 @@ uint32_t CharacterWorkshop_selectLod(
     uint32_t authoredLodMask) {
     return mdkr_modern_character_select_lod(
         viewDistance, sourceLodBias, localLodBias, authoredLodMask);
+}
+
+size_t CharacterWorkshop_lodBands(
+    float sourceLodBias, float localLodBias, uint32_t authoredLodMask,
+    CharacterWorkshopLodBand output[MDKR_MODERN_CHARACTER_LOD_LEVELS]) {
+    static constexpr float minimums[] = {0.0f, 650.0f, 1300.0f, 2400.0f};
+    static constexpr float maximums[] = {
+        650.0f, 1300.0f, 2400.0f, INFINITY,
+    };
+    CharacterWorkshopLodBand resolved[MDKR_MODERN_CHARACTER_LOD_LEVELS];
+    size_t count = 0u;
+    if (output == nullptr) return 0u;
+    for (size_t base = 0u; base < MDKR_MODERN_CHARACTER_LOD_LEVELS; ++base) {
+        const uint32_t selected = CharacterWorkshop_selectLod(
+            minimums[base], sourceLodBias, localLodBias, authoredLodMask);
+        if (selected == UINT32_MAX) return 0u;
+        if (count != 0u && resolved[count - 1u].lod == selected) {
+            resolved[count - 1u].maximumDistance = maximums[base];
+        } else {
+            resolved[count++] = {
+                minimums[base], maximums[base], selected,
+            };
+        }
+    }
+    std::copy(resolved, resolved + count, output);
+    return count;
 }
