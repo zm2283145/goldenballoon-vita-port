@@ -29,10 +29,11 @@ int main() {
         "\t9\t7\t1000\t500\t3\t2\t2\t4\t20\t1\t16\t8\t30\t400"
         "\t1\t2\t1\t16\t4096\t16384"
         "\t700\t300\t0\t0\t350\t150\t0\t0\t2\t1\t0\t0"
+        "\t1\t0"
         "\t1\t43432d42592d342e30"
         "\t416e6120c2a9204578616d706c65"
         "\t68747470733a2f2f6578616d706c652e696e76616c69642f6865726f";
-    const std::string valid = "mdkr-character-candidate-v3\n" + fields + "\n";
+    const std::string valid = "mdkr-character-candidate-v4\n" + fields + "\n";
     CharacterCandidateIndex::Candidate candidate;
     expect(CharacterCandidateIndex::parse(valid, candidate),
            "valid candidate index parses");
@@ -46,6 +47,9 @@ int main() {
                candidate.rigReviewed && candidate.rigRoles == 16u &&
                candidate.animationChannels == 30u &&
                candidate.animationKeys == 400u &&
+               candidate.semanticIntentPresent &&
+               candidate.semanticMask == 1u &&
+               candidate.disabledSemanticMask == 0u &&
                candidate.decodedTextureBytes == 16384u &&
                candidate.lodVertices[0] == 700u &&
                candidate.lodTriangles[1] == 150u &&
@@ -57,19 +61,19 @@ int main() {
            "candidate index retains exact comparison fields");
     const CharacterCandidateIndex::Candidate before = candidate;
     expect(!CharacterCandidateIndex::parse(
-               "mdkr-character-candidate-v3\n" +
+        "mdkr-character-candidate-v4\n" +
                    std::string("org.example.hero\tff\t4865726f\t"
                                "4865726f\t4865726f\t") + digest + "\t" +
-                   digest + "\t9\t7" + zeroFields(30u) + "\t0\t\t\t\n",
+                   digest + "\t9\t7" + zeroFields(32u) + "\t0\t\t\t\n",
                candidate) && candidate.displayName == before.displayName,
            "invalid UTF-8 fails without changing output");
     expect(!CharacterCandidateIndex::parse(valid + "trailing", candidate),
            "trailing candidate data is rejected");
     expect(!CharacterCandidateIndex::parse(
-               "mdkr-character-candidate-v3\n" +
+        "mdkr-character-candidate-v4\n" +
                    std::string("org.example.hero\t4865726f\t4865726f\t"
                                "4865726f\t4865726f\t") + digest + "\t" +
-                   digest + "\t10\t7" + zeroFields(30u) + "\t0\t\t\t\n",
+                   digest + "\t10\t7" + zeroFields(32u) + "\t0\t\t\t\n",
                candidate),
            "out-of-range donor is rejected");
     expect(!CharacterCandidateIndex::parse(
@@ -84,6 +88,17 @@ int main() {
         inconsistent.replace(rig, 9u, "\t1\t0\t1\t16");
         expect(!CharacterCandidateIndex::parse(inconsistent, candidate),
                "inconsistent absent-rig review data is rejected");
+    }
+    {
+        std::string overlappingIntent = valid;
+        const size_t intent =
+            overlappingIntent.rfind("\t1\t0\t1\t43432d42592d342e30");
+        expect(intent != std::string::npos,
+               "candidate animation-intent fixture is present");
+        overlappingIntent.replace(intent, 4u, "\t1\t1");
+        expect(!CharacterCandidateIndex::parse(
+                   overlappingIntent, candidate),
+               "candidate summary rejects active and disabled overlap");
     }
     {
         const size_t provenance = valid.rfind("\t1\t43432d42592d342e30");
@@ -104,6 +119,20 @@ int main() {
                    valid.substr(0u, provenance) +
                        "\t1\t4343300a\t41\t42\n", candidate),
                "control characters in provenance are rejected");
+    }
+    {
+        std::string legacyFields = fields;
+        const size_t semanticIntent =
+            legacyFields.rfind("\t1\t0\t1\t43432d42592d342e30");
+        expect(semanticIntent != std::string::npos,
+               "semantic-intent fixture is present");
+        legacyFields.erase(semanticIntent, 4u);
+        CharacterCandidateIndex::Candidate legacyCandidate;
+        expect(CharacterCandidateIndex::parse(
+                   "mdkr-character-candidate-v3\n" + legacyFields + "\n",
+                   legacyCandidate) &&
+                   !legacyCandidate.semanticIntentPresent,
+               "version-three candidate summaries migrate with explicit unavailable intent");
     }
     if (failures != 0) return 1;
     std::puts("character candidate index passed");

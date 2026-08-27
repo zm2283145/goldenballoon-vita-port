@@ -80,7 +80,7 @@ static int content_addressed_leaf(const char *name, const char *package_id,
     return 1;
 }
 
-static uint32_t semantic_bit(const char *name) {
+uint32_t mdkr_modern_character_semantic_bit(const char *name) {
     static const struct { const char *name; uint32_t bit; } table[] = {
         {"fallback", MDKR_CHARACTER_SEMANTIC_FALLBACK},
         {"race.steer", MDKR_CHARACTER_SEMANTIC_RACE_STEER},
@@ -515,8 +515,12 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
                     &asset, semantic.semantic);
                 clip = mdkr_modern_character_asset_string(
                     &asset, semantic.clip);
-                bit = semantic_bit(name);
-                entry.semantic_mask |= bit;
+                bit = mdkr_modern_character_semantic_bit(name);
+                if ((semantic.flags & MDKR_MODERN_SEMANTIC_DISABLED) != 0u) {
+                    entry.disabled_semantic_mask |= bit;
+                } else {
+                    entry.semantic_mask |= bit;
+                }
                 for (animation_index = 0u;
                      animation_index < entry.stats.animations;
                      animation_index++) {
@@ -529,7 +533,11 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
                     if (clip != NULL && animation_name != NULL &&
                         strcmp(clip, animation_name) == 0) {
                         if (animation_moves[animation_index]) {
-                            entry.moving_semantic_mask |= bit;
+                            entry.authored_moving_semantic_mask |= bit;
+                            if ((semantic.flags &
+                                 MDKR_MODERN_SEMANTIC_DISABLED) == 0u) {
+                                entry.moving_semantic_mask |= bit;
+                            }
                         }
                         break;
                     }

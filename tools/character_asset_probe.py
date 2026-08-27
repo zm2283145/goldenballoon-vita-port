@@ -87,6 +87,9 @@ RECOMMENDED_RACE_SEMANTICS = (
 RECOMMENDED_SELECT_SEMANTICS = (
     "select.idle", "select.hover", "select.confirm",
 )
+DISABLEABLE_SEMANTICS = frozenset(
+    (*RECOMMENDED_RACE_SEMANTICS, *RECOMMENDED_SELECT_SEMANTICS)
+)
 REQUIRED_PRESENTATION_SOCKETS = {"seat", "head"}
 RIG_MODES = {"authored-clips-only", "humanoid-retarget-v1"}
 HUMANOID_ROLES = (
@@ -2556,18 +2559,55 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
     elif animation_info["fallback"] not in clip_names:
         errors.append("manifest.animations.fallback does not name a GLB animation")
     states = animation_info.get("states", {}) if isinstance(animation_info, dict) else {}
+    disabled_states = (
+        animation_info.get("disabled_states", [])
+        if isinstance(animation_info, dict) else []
+    )
     if isinstance(animation_info, dict):
-        for field in sorted(set(animation_info) - {"fallback", "states"}):
+        for field in sorted(
+                set(animation_info) - {"fallback", "states", "disabled_states"}):
             errors.append(f"manifest.animations contains unknown field {field!r}")
     if not isinstance(states, dict):
         errors.append("manifest.animations.states must be an object")
     else:
         for semantic, clip in states.items():
-            if (not isinstance(semantic, str) or not SEMANTIC_RE.fullmatch(semantic) or
+            if semantic == "fallback":
+                errors.append(
+                    "animation mapping 'fallback' is reserved; use "
+                    "manifest.animations.fallback instead"
+                )
+            elif (not isinstance(semantic, str) or not SEMANTIC_RE.fullmatch(semantic) or
                     not isinstance(clip, str) or clip not in clip_names):
                 errors.append(f"animation mapping {semantic!r} does not name a GLB animation")
         if len(states) > 64:
             errors.append("manifest.animations.states exceeds 64 mappings")
+    if (
+        not isinstance(disabled_states, list)
+        or any(not isinstance(semantic, str) for semantic in disabled_states)
+        or len(set(disabled_states)) != len(disabled_states)
+        or len(disabled_states) > 64
+    ):
+        errors.append(
+            "manifest.animations.disabled_states must contain at most 64 unique semantic names"
+        )
+    elif isinstance(states, dict):
+        unsupported_disabled = [
+            semantic for semantic in disabled_states
+            if semantic not in DISABLEABLE_SEMANTICS
+        ]
+        if unsupported_disabled:
+            errors.append(
+                "manifest.animations.disabled_states contains unsupported "
+                "engine semantics: " + ", ".join(unsupported_disabled)
+            )
+        unknown_disabled = [
+            semantic for semantic in disabled_states if semantic not in states
+        ]
+        if unknown_disabled:
+            errors.append(
+                "manifest.animations.disabled_states names unmapped states: "
+                + ", ".join(unknown_disabled)
+            )
 
     gameplay = manifest.get("gameplay")
     if not isinstance(gameplay, dict):
@@ -2952,12 +2992,22 @@ def verify_package(path: Path) -> dict[str, Any]:
         errors.append("compiled.mdkc is invalid")
     animation_info = manifest.get("animations", {})
     states = animation_info.get("states", {}) if isinstance(animation_info, dict) else {}
+    disabled_states = set(
+        animation_info.get("disabled_states", [])
+        if isinstance(animation_info, dict)
+        and isinstance(animation_info.get("disabled_states", []), list)
+        else []
+    )
+    active_states = {
+        semantic: clip for semantic, clip in states.items()
+        if semantic not in disabled_states
+    } if isinstance(states, dict) else {}
     sockets = manifest.get("sockets", {})
     missing_states = [semantic for semantic in RECOMMENDED_RACE_SEMANTICS
-                      if semantic not in states]
+                      if semantic not in active_states]
     missing_select_states = [
         semantic for semantic in RECOMMENDED_SELECT_SEMANTICS
-        if semantic not in states
+        if semantic not in active_states
     ]
     author_warnings = []
     if manifest.get("schema") == PACKAGE_SCHEMA_V1:
@@ -3007,11 +3057,12 @@ def verify_package(path: Path) -> dict[str, Any]:
             "fallback_clip": animation_info.get("fallback")
                 if isinstance(animation_info, dict) else None,
             "mapped_recommended_states": [semantic for semantic in RECOMMENDED_RACE_SEMANTICS
-                                           if semantic in states],
+                                           if semantic in active_states],
             "missing_recommended_states": missing_states,
+            "disabled_states": sorted(disabled_states),
             "mapped_select_states": [
                 semantic for semantic in RECOMMENDED_SELECT_SEMANTICS
-                if semantic in states
+                if semantic in active_states
             ],
             "missing_select_states": missing_select_states,
             "sockets": sorted(sockets) if isinstance(sockets, dict) else [],

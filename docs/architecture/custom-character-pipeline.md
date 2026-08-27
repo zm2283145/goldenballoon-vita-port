@@ -317,6 +317,13 @@ any absent role. Candidate review protocol v3 carries all four names for both
 portable and source-only packages, so a reviewed update cannot hide a label or
 roster-order change.
 
+Compiler v7 gives the existing semantic-record flags an authenticated
+author-disabled meaning. Compiler-v1 through compiler-v6 caches remain valid;
+only v7 source can publish disabled semantic intent. Candidate review protocol
+v4 carries active and disabled semantic masks for both portable and source-only
+packages, so an update cannot change runtime motion precedence behind unchanged
+clip/channel/key counts.
+
 A minimal manifest is:
 
 ```json
@@ -332,7 +339,8 @@ A minimal manifest is:
   },
   "animations": {
     "fallback": "idle",
-    "states": {}
+    "states": {},
+    "disabled_states": []
   },
   "gameplay": {
     "donor": "diddy",
@@ -820,6 +828,21 @@ a bounded 0.2-second reaction window. Missing optional mappings use `fallback`
 with ordinary playback (never parameter scrubbing); missing fallback or a
 zero-duration mapped clip rejects the package.
 
+`animations.disabled_states` is an optional, bounded list containing only names
+that remain present in `animations.states`. It records an author's reversible
+decision that a mapping is unsuitable without deleting the source clip or its
+semantic association. The compiler authenticates both the mapping and disabled
+bit in the cache. Runtime lookup treats a disabled mapping as intentionally
+missing: a reviewed humanoid receives the corresponding engine-reference pose,
+while authored-clips-only content receives the package fallback. `fallback`
+itself cannot be disabled. Registry diagnostics retain separate active,
+disabled, and authored-moving masks so readiness and the Workshop never confuse
+a preserved mapping with motion that will actually play.
+Only the 13 engine select/race semantics may appear in `disabled_states`;
+extension mappings remain preserved and active. Legacy rig-draft v1 revisions
+do not own animation intent and therefore preserve the active source list
+unchanged.
+
 Sockets are similarly semantic. The importer resolves manifest socket names to
 joint/node indices once. Gameplay references `seat`, `head`, or `hand` without
 depending on an artist's bone naming convention.
@@ -842,13 +865,16 @@ The current spike distinguishes four independent outcomes in its diagnostics:
 Source-v4 and Rig Studio implement the role map, provenance/confidence, review
 lock and hierarchy validation. The runtime uses this precedence:
 
-1. use an authored context clip when supplied;
-2. apply a bounded project-owned semantic reference pose through the reviewed
-   rest-basis corrections when the mapping is missing;
-3. apply four-iteration bounded CCD contacts for hands and feet in vehicle
+1. use an active authored context clip when supplied;
+2. treat an author-disabled mapping exactly like an intentionally missing
+   mapping, while retaining it for later restoration;
+3. apply a bounded project-owned semantic reference pose through the reviewed
+   rest-basis corrections when the active mapping is missing;
+4. apply four-iteration bounded CCD contacts for hands and feet in vehicle
    contexts, using optional author bend preferences and persisted target
    offsets; and
-4. fall back to the source clip/bind pose with an explicit incomplete warning.
+5. fall back to the package fallback clip/bind pose with an explicit incomplete
+   warning when reviewed reference motion is unavailable.
 
 Base contact targets are engine-owned by vehicle context; package-local
 Workshop offsets tune proportions without entering gameplay authority. Bone

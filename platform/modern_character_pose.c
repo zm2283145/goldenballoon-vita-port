@@ -209,6 +209,9 @@ static int semantic_lookup(const MdkrModernCharacterAsset *asset,
         mapping_name = mdkr_modern_character_asset_string(asset, mapping.semantic);
         if (strcmp(mapping_name, "fallback") == 0) fallback = (int)index;
         if (semantic != NULL && strcmp(mapping_name, semantic) == 0) {
+            /* Keep scanning for the package fallback. Current compilers emit it
+             * first, but runtime correctness must not depend on record order. */
+            if ((mapping.flags & MDKR_MODERN_SEMANTIC_DISABLED) != 0u) continue;
             fallback = (int)index;
             *explicit_match = 1;
             break;
@@ -246,7 +249,8 @@ int mdkr_modern_pose_has_semantic(const MdkrModernPose *pose,
             pose->asset, index, &mapping);
         name = mdkr_modern_character_asset_string(pose->asset,
                                                    mapping.semantic);
-        if (name != NULL && strcmp(name, semantic) == 0) return 1;
+        if (name != NULL && strcmp(name, semantic) == 0 &&
+            (mapping.flags & MDKR_MODERN_SEMANTIC_DISABLED) == 0u) return 1;
     }
     return 0;
 }
@@ -660,7 +664,8 @@ static int pose_advance(MdkrModernPose *pose, float seconds,
         pose->time += seconds;
     }
     pose->procedural_time += seconds;
-    if (!phase_driven && (pose->animation_flags & 1u) != 0u) {
+    if (!phase_driven &&
+        (pose->animation_flags & MDKR_MODERN_SEMANTIC_LOOP) != 0u) {
         if (animation.duration > 0.0f) pose->time = fmodf(pose->time, animation.duration);
     } else if (!phase_driven && pose->time > animation.duration) {
         pose->time = animation.duration;

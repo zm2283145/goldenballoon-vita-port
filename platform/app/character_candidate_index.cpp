@@ -110,7 +110,8 @@ bool decodeText(const std::string &hex, size_t maximumBytes,
     return true;
 }
 
-bool splitFields(const std::string &line, std::vector<std::string> &fields) {
+bool splitFields(const std::string &line, size_t expected,
+                 std::vector<std::string> &fields) {
     fields.clear();
     size_t begin = 0u;
     while (true) {
@@ -120,7 +121,7 @@ bool splitFields(const std::string &line, std::vector<std::string> &fields) {
         if (tab == std::string::npos) break;
         begin = tab + 1u;
     }
-    return fields.size() == 43u;
+    return fields.size() == expected;
 }
 
 }  // namespace
@@ -128,22 +129,32 @@ bool splitFields(const std::string &line, std::vector<std::string> &fields) {
 namespace CharacterCandidateIndex {
 
 bool parse(const std::string &text, Candidate &output) {
-    static const std::string header = "mdkr-character-candidate-v3\n";
+    static const std::string currentHeader =
+        "mdkr-character-candidate-v4\n";
+    static const std::string legacyHeader =
+        "mdkr-character-candidate-v3\n";
     Candidate parsed;
     std::vector<std::string> fields;
-    uint64_t numbers[32] = {};
-    if (text.compare(0u, header.size(), header) != 0 ||
+    uint64_t numbers[34] = {};
+    const bool current =
+        text.compare(0u, currentHeader.size(), currentHeader) == 0;
+    const std::string &header = current ? currentHeader : legacyHeader;
+    const size_t numberCount = current ? 34u : 32u;
+    const size_t provenanceField = current ? 41u : 39u;
+    if ((!current &&
+         text.compare(0u, legacyHeader.size(), legacyHeader) != 0) ||
         text.empty() || text.back() != '\n' ||
         text.find('\n', header.size()) != text.size() - 1u ||
-        !splitFields(text.substr(
-            header.size(), text.size() - header.size() - 1u), fields) ||
+        !splitFields(
+            text.substr(header.size(), text.size() - header.size() - 1u),
+            current ? 45u : 43u, fields) ||
         !idValid(fields[0]) ||
         !decodeText(fields[1], 96u, parsed.displayName) ||
         !decodeText(fields[2], 96u, parsed.shortName) ||
         !decodeText(fields[3], 96u, parsed.narrationName) ||
         !decodeText(fields[4], 96u, parsed.sortLabel) ||
         !digestValid(fields[5]) || !digestValid(fields[6])) return false;
-    for (size_t index = 0u; index < 32u; ++index) {
+    for (size_t index = 0u; index < numberCount; ++index) {
         const uint64_t maximum = index == 18u || index == 19u
             ? UINT64_MAX : UINT_MAX;
         if (!parseUnsigned(fields[index + 7u], maximum, numbers[index])) {
@@ -162,19 +173,33 @@ bool parse(const std::string &text, Candidate &output) {
         numbers[20] == 0u || numbers[24] == 0u || numbers[28] == 0u) {
         return false;
     }
+    constexpr uint64_t semanticMask = 0x3FFFu;
+    if (current &&
+        ((numbers[32] & ~semanticMask) != 0u ||
+         (numbers[33] & ~(semanticMask & ~1u)) != 0u ||
+         (numbers[32] & numbers[33]) != 0u ||
+         (numbers[32] & 1u) == 0u)) {
+        return false;
+    }
     for (size_t lod = static_cast<size_t>(numbers[5]); lod < 4u; ++lod) {
         if (numbers[20u + lod] != 0u || numbers[24u + lod] != 0u ||
             numbers[28u + lod] != 0u) return false;
     }
     uint64_t provenancePresent = 0u;
-    if (!parseUnsigned(fields[39], 1u, provenancePresent)) return false;
+    if (!parseUnsigned(fields[provenanceField], 1u, provenancePresent)) {
+        return false;
+    }
     if (provenancePresent != 0u) {
-        if (!decodeText(fields[40], 128u, parsed.licenseSpdx) ||
-            !decodeText(fields[41], 256u, parsed.attribution) ||
-            !decodeText(fields[42], 2048u, parsed.sourceUrl)) return false;
+        if (!decodeText(fields[provenanceField + 1u], 128u,
+                        parsed.licenseSpdx) ||
+            !decodeText(fields[provenanceField + 2u], 256u,
+                        parsed.attribution) ||
+            !decodeText(fields[provenanceField + 3u], 2048u,
+                        parsed.sourceUrl)) return false;
         parsed.provenancePresent = true;
-    } else if (!fields[40].empty() || !fields[41].empty() ||
-               !fields[42].empty()) {
+    } else if (!fields[provenanceField + 1u].empty() ||
+               !fields[provenanceField + 2u].empty() ||
+               !fields[provenanceField + 3u].empty()) {
         return false;
     }
     parsed.id = fields[0];
@@ -194,6 +219,11 @@ bool parse(const std::string &text, Candidate &output) {
     parsed.animations = static_cast<uint32_t>(numbers[11]);
     parsed.animationChannels = static_cast<uint32_t>(numbers[12]);
     parsed.animationKeys = static_cast<uint32_t>(numbers[13]);
+    if (current) {
+        parsed.semanticMask = static_cast<uint32_t>(numbers[32]);
+        parsed.disabledSemanticMask = static_cast<uint32_t>(numbers[33]);
+        parsed.semanticIntentPresent = true;
+    }
     parsed.identityPresent = numbers[14] != 0u;
     parsed.rigMode = static_cast<uint32_t>(numbers[15]);
     parsed.rigReviewed = numbers[16] != 0u;

@@ -367,9 +367,9 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 source, character_dir, index_path
             )
             index_lines = index_path.read_text(encoding="ascii").splitlines()
-            self.assertEqual("mdkr-character-candidate-v3", index_lines[0])
+            self.assertEqual("mdkr-character-candidate-v4", index_lines[0])
             fields = index_lines[1].split("\t")
-            self.assertEqual(43, len(fields))
+            self.assertEqual(45, len(fields))
             self.assertEqual(inspected["id"], fields[0])
             self.assertEqual(inspected["display_name"], bytes.fromhex(
                 fields[1]
@@ -394,6 +394,13 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 inspected["report"]["animation_keys"], int(fields[20])
             )
             self.assertEqual(
+                inspected["report"]["semantic_mask"], int(fields[39])
+            )
+            self.assertEqual(
+                inspected["report"]["disabled_semantic_mask"],
+                int(fields[40]),
+            )
+            self.assertEqual(
                 inspected["report"]["lod_vertices"],
                 [int(value) for value in fields[27:31]],
             )
@@ -405,18 +412,18 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 inspected["report"]["lod_primitives"],
                 [int(value) for value in fields[35:39]],
             )
-            self.assertEqual("1", fields[39])
+            self.assertEqual("1", fields[41])
             self.assertEqual(
                 inspected["license_spdx"],
-                bytes.fromhex(fields[40]).decode("utf-8"),
+                bytes.fromhex(fields[42]).decode("utf-8"),
             )
             self.assertEqual(
                 inspected["attribution"],
-                bytes.fromhex(fields[41]).decode("utf-8"),
+                bytes.fromhex(fields[43]).decode("utf-8"),
             )
             self.assertEqual(
                 inspected["source_url"],
-                bytes.fromhex(fields[42]).decode("utf-8"),
+                bytes.fromhex(fields[44]).decode("utf-8"),
             )
             with self.assertRaisesRegex(manager.ManagerError, "exact file"):
                 manager.write_candidate_index(
@@ -979,6 +986,68 @@ class CharacterPackageManagerTests(unittest.TestCase):
             self.assertTrue(reviewed["rig_reviewed"])
             self.assertTrue(reviewed["report"]["rig_reviewed"])
             self.assertEqual(3, len(list(installed.glob("*.mdkrchar"))))
+
+    def test_rig_revision_preserves_reversible_animation_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            portrait = make_portrait_png()
+            source = make_v4_manifest(portrait, humanoid=True)
+            source["rig"]["reviewed"] = True
+            source["animations"]["states"]["select.idle"] = "idle"
+            original = manager.install(
+                self.make_package(root, source, make_humanoid_glb()), installed
+            )
+            draft = root / "motion-draft.json"
+            draft.write_text(json.dumps({
+                "schema": "mdkr-character-rig-draft-v2",
+                **source["rig"],
+                "disabled_semantics": ["select.idle"],
+            }), encoding="utf-8")
+            disabled = manager.revise_rig(original["id"], draft, installed)
+            self.assertEqual(["select.idle"], disabled["disabled_semantics"])
+            self.assertEqual(
+                ["select.idle"],
+                disabled["report"]["disabled_semantics"],
+            )
+            with zipfile.ZipFile(self.active_source(installed)) as archive:
+                manifest = probe.json_loads_strict(archive.read("manifest.json"))
+            self.assertEqual(
+                "idle", manifest["animations"]["states"]["select.idle"]
+            )
+            self.assertEqual(
+                ["select.idle"], manifest["animations"]["disabled_states"]
+            )
+
+            draft.write_text(json.dumps({
+                "schema": "mdkr-character-rig-draft-v1",
+                **source["rig"],
+            }), encoding="utf-8")
+            preserved = manager.revise_rig(
+                original["id"], draft, installed
+            )
+            self.assertEqual(
+                ["select.idle"], preserved["disabled_semantics"]
+            )
+            with zipfile.ZipFile(self.active_source(installed)) as archive:
+                manifest = probe.json_loads_strict(archive.read("manifest.json"))
+            self.assertEqual(
+                ["select.idle"], manifest["animations"]["disabled_states"]
+            )
+
+            draft.write_text(json.dumps({
+                "schema": "mdkr-character-rig-draft-v2",
+                **source["rig"],
+                "disabled_semantics": [],
+            }), encoding="utf-8")
+            restored = manager.revise_rig(original["id"], draft, installed)
+            self.assertEqual([], restored["disabled_semantics"])
+            with zipfile.ZipFile(self.active_source(installed)) as archive:
+                manifest = probe.json_loads_strict(archive.read("manifest.json"))
+            self.assertNotIn("disabled_states", manifest["animations"])
+            self.assertEqual(
+                "idle", manifest["animations"]["states"]["select.idle"]
+            )
 
     def test_invalid_rig_revision_never_replaces_active_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

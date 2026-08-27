@@ -72,9 +72,12 @@ The proof exposed six release-blocking authoring defects:
 
 1. `+z` initially showed the character from behind. Geometry alone could not
    safely infer the semantic front.
-2. The only explicit `select.idle` mapping points to a generated static bind
-   pose. Because authored mappings correctly outrank fallback motion, select
-   remains in a T pose even after the rig is reviewed.
+2. The initial proof's explicit `select.idle` mapping points to a generated
+   static bind pose. Because authored mappings correctly outranked fallback
+   motion, select remained in a T pose even after the rig was reviewed. The
+   pipeline now preserves a reversible author decision to disable that mapping
+   and use reviewed reference motion; refreshed private-model visual evidence
+   remains part of this milestone's acceptance pass.
 3. Name-only rig inference selected `Hip`, but the actual skeleton has `Hip`
    and `Spine1` as siblings under `Skl_Root`. The native hierarchy validator
    refused it; `Skl_Root` is the structurally valid common hips role.
@@ -87,6 +90,18 @@ The proof exposed six release-blocking authoring defects:
    diagnosis or portrait handoff on this unusual source transform.
 
 These are pipeline/UX findings, not Blender-skill findings.
+
+The 2026-08-27 private refresh rebuilt the same GLB as compiler-v7 with the
+static `select.idle` mapping preserved and disabled. The report records one
+static animation, active semantic mask `fallback`, disabled semantic mask
+`select.idle`, and a reviewed 16-role humanoid map. The exact linked-ROM select
+route rendered 200 held `select.idle` inspection ticks with zero source-fallback
+ticks: Dixie is grounded, front-facing, and no longer in the authored T pose.
+The exact car route likewise rendered 200 held steering ticks with zero source
+fallback; it still reports the known 176 mm maximum contact residual, correctly
+leaving vehicle fit/rest-basis work incomplete. Local, unbundled review images
+are `13-select-disabled-reference.png`, `14-car-disabled-reference.png`, and
+`15-animation-intent-studio.png` under the ignored Dixie evidence directory.
 
 ## Ordered execution plan
 
@@ -149,10 +164,10 @@ flip, collapse, or mirror inversion.
 
 ### M3 — Intentional animation-semantic precedence (medium)
 
-- Let authors disable or unmap a bad source clip without deleting it. Make the
+- **Implemented:** let authors disable or unmap a bad source clip without deleting it. Make the
   choice among authored clip, reviewed reference motion, and static fallback
   explicit for every one of the 13 semantics.
-- Detect clips with no meaningful joint motion. A generated static `idle` mapped
+- **Implemented:** detect clips with no meaningful joint motion. A generated static `idle` mapped
   to `select.idle` must be labelled “bind/static-looking” and must not silently
   win over a reviewed reference select pose.
 - Add side-by-side held-phase thumbnails and transition playback for every
@@ -290,8 +305,10 @@ by M6. M8 begins with M0 and remains a release gate throughout.
 The immediate next slice should therefore be:
 
 1. add the license-clean adversarial humanoid fixture and local evidence runner;
-2. add four-way forward thumbnails plus explicit static-clip detection/unmapping;
+2. add four-way forward thumbnails plus transform severity/proposal review;
 3. implement structural hips/root suggestions and rest-basis diagnostics;
-4. fix isolated-capture framing to the 60–85% occupancy contract; and
-5. re-run this example privately to verify select, car, hovercraft, plane,
+4. add side-by-side held-phase and transition review for the now-reversible
+   animation decisions;
+5. fix isolated-capture framing to the 60–85% occupancy contract; and
+6. re-run this example privately to verify select, car, hovercraft, plane,
    portrait, contacts, and four-player performance.

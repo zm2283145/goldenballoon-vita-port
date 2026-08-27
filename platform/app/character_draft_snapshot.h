@@ -18,6 +18,7 @@ constexpr size_t kContexts = 4u;
 constexpr size_t kContacts = 4u;
 constexpr size_t kRoles = 16u;
 constexpr uint32_t kNoNode = UINT32_MAX;
+constexpr uint32_t kAnimationSemanticMask = 0x3FFEu;
 
 enum Flags : uint32_t {
     Profile = 1u << 0,
@@ -66,6 +67,10 @@ struct Snapshot {
 
     uint32_t rigMode = 0u;
     bool rigReviewed = false;
+    /* Decode-only migration witness. Every newly encoded v9 payload owns an
+     * explicit mask; v1-v8 drafts preserve the active source decision. */
+    bool animationIntentPresent = false;
+    uint32_t disabledSemanticMask = 0u;
     RigRole roles[kRoles];
 
     std::array<uint8_t, kPortraitBytes> portrait{};

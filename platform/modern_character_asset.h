@@ -165,6 +165,13 @@ typedef struct MdkrModernSemantic {
     float blend_seconds;
 } MdkrModernSemantic;
 
+enum MdkrModernSemanticFlags {
+    MDKR_MODERN_SEMANTIC_LOOP = 1u << 0,
+    /* The authored mapping and clip remain in the authenticated source/cache,
+     * but runtime selection treats this semantic as intentionally unmapped. */
+    MDKR_MODERN_SEMANTIC_DISABLED = 1u << 1,
+};
+
 typedef struct MdkrModernSocket {
     uint32_t semantic;
     uint32_t node;

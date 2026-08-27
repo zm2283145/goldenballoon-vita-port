@@ -38,7 +38,7 @@ MANAGER_SCHEMA = "mdkr-character-install-v1"
 IMPORTER_INFO_SCHEMA = "mdkr-character-importer-info-v1"
 COMPILER_ID = compiler.COMPILER_ID
 LEGACY_COMPILER_IDS = tuple(
-    f"mdkr-character-compiler/{version}" for version in range(5, 0, -1)
+    f"mdkr-character-compiler/{version}" for version in range(6, 0, -1)
 )
 LOCK_NAME = ".character-import.lock"
 MAX_REPORT_BYTES = 64 * 1024
@@ -811,13 +811,15 @@ def write_candidate_index(package_path: Path, directory: Path,
         *(str(value) for value in report["lod_vertices"]),
         *(str(value) for value in report["lod_triangles"]),
         *(str(value) for value in report["lod_primitives"]),
+        str(report["semantic_mask"]),
+        str(report["disabled_semantic_mask"]),
         "1",
         candidate["license_spdx"].encode("utf-8").hex(),
         candidate["attribution"].encode("utf-8").hex(),
         candidate["source_url"].encode("utf-8").hex(),
     ]
     payload = (
-        "mdkr-character-candidate-v3\n" + "\t".join(fields) + "\n"
+        "mdkr-character-candidate-v4\n" + "\t".join(fields) + "\n"
     ).encode("ascii")
     _write_atomic(index_path, payload)
     return {
@@ -1303,24 +1305,80 @@ def _read_bounded_json_object(path: Path, maximum: int,
     return value
 
 
-def _validated_rig_draft(draft: dict[str, Any]) -> dict[str, Any]:
+def _validated_rig_draft(
+        draft: dict[str, Any]) -> tuple[dict[str, Any], list[str] | None]:
+    schema = draft.get("schema")
     expected = {"schema", "mode", "reviewed", "roles"}
+    if schema == "mdkr-character-rig-draft-v2":
+        expected.add("disabled_semantics")
     unknown = set(draft) - expected
     missing = expected - set(draft)
-    if unknown or missing or draft.get("schema") != "mdkr-character-rig-draft-v1":
+    if unknown or missing or schema not in (
+            "mdkr-character-rig-draft-v1", "mdkr-character-rig-draft-v2"):
         detail = []
         if unknown:
             detail.append("unknown: " + ", ".join(sorted(unknown)))
         if missing:
             detail.append("missing: " + ", ".join(sorted(missing)))
-        if draft.get("schema") != "mdkr-character-rig-draft-v1":
+        if schema not in (
+                "mdkr-character-rig-draft-v1",
+                "mdkr-character-rig-draft-v2"):
             detail.append("unsupported schema")
         raise ManagerError("invalid rig draft (" + "; ".join(detail) + ")")
-    return {
+    disabled = (
+        draft.get("disabled_semantics")
+        if schema == "mdkr-character-rig-draft-v2" else None
+    )
+    if disabled is None and schema == "mdkr-character-rig-draft-v1":
+        return ({
+            "mode": draft["mode"],
+            "reviewed": draft["reviewed"],
+            "roles": draft["roles"],
+        }, None)
+    if (
+        not isinstance(disabled, list)
+        or any(
+            not isinstance(semantic, str)
+            or probe.SEMANTIC_RE.fullmatch(semantic) is None
+            or semantic not in probe.DISABLEABLE_SEMANTICS
+            for semantic in disabled
+        )
+        or len(disabled) > 64
+        or len(set(disabled)) != len(disabled)
+    ):
+        raise ManagerError(
+            "rig draft disabled_semantics must contain at most 64 unique "
+            "supported engine semantic names"
+        )
+    return ({
         "mode": draft["mode"],
         "reviewed": draft["reviewed"],
         "roles": draft["roles"],
-    }
+    }, list(disabled))
+
+
+def _apply_disabled_semantics(
+        manifest: dict[str, Any], disabled: list[str] | None) -> None:
+    if disabled is None:
+        return
+    animations = manifest.get("animations")
+    if not isinstance(animations, dict):
+        raise ManagerError("active source has no animation mapping object")
+    states = animations.get("states", {})
+    if not isinstance(states, dict):
+        raise ManagerError("active source has no animation state mapping")
+    unknown = [semantic for semantic in disabled if semantic not in states]
+    if unknown:
+        raise ManagerError(
+            "disabled animation semantics are absent from the active source: "
+            + ", ".join(unknown)
+        )
+    revised_animations = dict(animations)
+    if disabled:
+        revised_animations["disabled_states"] = list(disabled)
+    else:
+        revised_animations.pop("disabled_states", None)
+    manifest["animations"] = revised_animations
 
 
 def revise_rig(package_id: str, rig_draft_path: Path,
@@ -1329,7 +1387,7 @@ def revise_rig(package_id: str, rig_draft_path: Path,
     draft = _read_bounded_json_object(
         rig_draft_path, 128 * 1024, "rig draft"
     )
-    rig = _validated_rig_draft(draft)
+    rig, disabled = _validated_rig_draft(draft)
 
     def transform(manifest: dict[str, Any], _: dict[str, Any]) -> dict[str, Any]:
         schema = manifest.get("schema")
@@ -1340,6 +1398,7 @@ def revise_rig(package_id: str, rig_draft_path: Path,
         revised = dict(manifest)
         revised["schema"] = probe.PACKAGE_SCHEMA_V4
         revised["rig"] = rig
+        _apply_disabled_semantics(revised, disabled)
         return revised
 
     installed, based_on_sha = _revise_manifest(
@@ -1352,6 +1411,9 @@ def revise_rig(package_id: str, rig_draft_path: Path,
         "rig_mode": rig["mode"],
         "rig_reviewed": rig["reviewed"],
         "rig_roles": len(rig["roles"]) if isinstance(rig["roles"], dict) else 0,
+        "disabled_semantics": installed["report"].get(
+            "disabled_semantics", []
+        ),
     }
 
 
@@ -1425,7 +1487,7 @@ def build_workshop_draft(package_id: str, draft_path: Path,
     rig_draft = draft["rig_draft"]
     if not isinstance(rig_draft, dict):
         raise ManagerError("rig_draft must be an object")
-    rig = _validated_rig_draft(rig_draft)
+    rig, disabled = _validated_rig_draft(rig_draft)
 
     root = _prepare_directory(directory)
     package, based_on_sha, based_on_digest = _active_source_snapshot(
@@ -1487,6 +1549,7 @@ def build_workshop_draft(package_id: str, draft_path: Path,
         revised["presentation"] = presentation
         revised["schema"] = probe.PACKAGE_SCHEMA_V4
         revised["rig"] = rig
+        _apply_disabled_semantics(revised, disabled)
 
         model_path = work / "model.glb"
         manifest_path = work / "manifest.json"
@@ -1518,6 +1581,9 @@ def build_workshop_draft(package_id: str, draft_path: Path,
         "rig_mode": rig["mode"],
         "rig_reviewed": rig["reviewed"],
         "rig_roles": len(rig["roles"]) if isinstance(rig["roles"], dict) else 0,
+        "disabled_semantics": installed["report"].get(
+            "disabled_semantics", []
+        ),
     }
 
 

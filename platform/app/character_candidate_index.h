@@ -28,6 +28,9 @@ struct Candidate {
     uint32_t animations = 0u;
     uint32_t animationChannels = 0u;
     uint32_t animationKeys = 0u;
+    uint32_t semanticMask = 0u;
+    uint32_t disabledSemanticMask = 0u;
+    bool semanticIntentPresent = false;
     bool identityPresent = false;
     uint32_t rigMode = 0u;
     bool rigReviewed = false;

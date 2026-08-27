@@ -81,6 +81,20 @@ static int compiled_id_valid(const char *text) {
     return 1;
 }
 
+static int compiled_semantic_valid(const char *text) {
+    size_t index;
+    const size_t length = text != NULL ? strlen(text) : 0u;
+    if (length == 0u || length > 64u ||
+        text[0] < 'a' || text[0] > 'z') return 0;
+    for (index = 1u; index < length; ++index) {
+        const char byte = text[index];
+        if (!((byte >= 'a' && byte <= 'z') ||
+              (byte >= '0' && byte <= '9') || byte == '.' ||
+              byte == '_' || byte == '-')) return 0;
+    }
+    return 1;
+}
+
 static int bounded_printable_utf8(const char *text, size_t maximum_bytes) {
     const unsigned char *bytes = (const unsigned char *)text;
     size_t remaining;
@@ -823,13 +837,51 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
             return 0;
         }
     }
-    for (index = 0u; index < asset->sections[MDKR_MDKC_SEMANTICS].count; index++) {
-        MdkrModernSemantic semantic;
-        (void)mdkr_modern_character_asset_semantic(asset, index, &semantic);
-        if (mdkr_modern_character_asset_string(asset, semantic.semantic) == NULL ||
-            mdkr_modern_character_asset_string(asset, semantic.clip) == NULL ||
-            !isfinite(semantic.blend_seconds) || semantic.blend_seconds < 0.0f || semantic.blend_seconds > 5.0f) {
-            set_error(error, error_size, "compiled animation semantic is invalid");
+    {
+        uint32_t fallback_count = 0u;
+        for (index = 0u;
+             index < asset->sections[MDKR_MDKC_SEMANTICS].count; index++) {
+            MdkrModernSemantic semantic;
+            const char *semantic_name;
+            uint32_t previous_index;
+            (void)mdkr_modern_character_asset_semantic(
+                asset, index, &semantic);
+            semantic_name = mdkr_modern_character_asset_string(
+                asset, semantic.semantic);
+            if (!compiled_semantic_valid(semantic_name) ||
+                mdkr_modern_character_asset_string(
+                    asset, semantic.clip) == NULL ||
+                (semantic.flags & ~(MDKR_MODERN_SEMANTIC_LOOP |
+                                    MDKR_MODERN_SEMANTIC_DISABLED)) != 0u ||
+                (strcmp(semantic_name, "fallback") == 0 &&
+                 (semantic.flags & MDKR_MODERN_SEMANTIC_DISABLED) != 0u) ||
+                !isfinite(semantic.blend_seconds) ||
+                semantic.blend_seconds < 0.0f ||
+                semantic.blend_seconds > 5.0f) {
+                set_error(error, error_size,
+                          "compiled animation semantic is invalid");
+                return 0;
+            }
+            if (strcmp(semantic_name, "fallback") == 0) fallback_count++;
+            for (previous_index = 0u; previous_index < index;
+                 ++previous_index) {
+                MdkrModernSemantic previous;
+                const char *previous_name;
+                (void)mdkr_modern_character_asset_semantic(
+                    asset, previous_index, &previous);
+                previous_name = mdkr_modern_character_asset_string(
+                    asset, previous.semantic);
+                if (previous_name != NULL &&
+                    strcmp(previous_name, semantic_name) == 0) {
+                    set_error(error, error_size,
+                              "compiled animation semantics are duplicated");
+                    return 0;
+                }
+            }
+        }
+        if (fallback_count != 1u) {
+            set_error(error, error_size,
+                      "compiled animation fallback is missing or duplicated");
             return 0;
         }
     }

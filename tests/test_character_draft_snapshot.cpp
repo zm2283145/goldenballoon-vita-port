@@ -48,6 +48,7 @@ int main() {
     source.contexts[1].contacts[0][0] = -0.25f;
     source.rigMode = 1u;
     source.rigReviewed = true;
+    source.disabledSemanticMask = 1u << 11u;
     for (size_t role = 0u; role < kRoles; ++role) {
         source.roles[role].node = static_cast<uint32_t>(role * 2u);
         source.roles[role].inferred = (role & 1u) != 0u;
@@ -106,7 +107,10 @@ int main() {
                parsed.reviewedContexts == 3u && parsed.scale == 1.25f &&
                parsed.offset[1] == -12.5f &&
                parsed.contexts[1].contacts[0][0] == -0.25f &&
-               parsed.rigReviewed && parsed.roles[15].node == 30u &&
+               parsed.rigReviewed &&
+               parsed.animationIntentPresent &&
+               parsed.disabledSemanticMask == (1u << 11u) &&
+               parsed.roles[15].node == 30u &&
                parsed.roles[1].inferred &&
                parsed.portrait == source.portrait &&
                parsed.portraitStyleSource == source.portraitStyleSource &&
@@ -151,8 +155,22 @@ int main() {
     constexpr size_t subjectMaskTailBytes =
         4u + CharacterPortraitImport::kSubjectMaskPixels;
     constexpr size_t sourceRecordTailBytes = 9u * 4u + 64u;
-    std::string versionSeven = encoded;
+    constexpr size_t animationIntentTailBytes = 4u;
+    std::string versionEight = encoded.substr(
+        0u, encoded.size() - animationIntentTailBytes);
+    writeU32(versionEight, 4u, 8u);
+    writeU32(versionEight, 8u,
+             static_cast<uint32_t>(versionEight.size()));
+    expect(decode(versionEight, parsed, error) &&
+               !parsed.animationIntentPresent &&
+               parsed.disabledSemanticMask == 0u &&
+               parsed.testViewPitchDegrees == source.testViewPitchDegrees,
+           "version-eight drafts migrate with active animation mappings");
+    std::string versionSeven = encoded.substr(
+        0u, encoded.size() - animationIntentTailBytes);
     writeU32(versionSeven, 4u, 7u);
+    writeU32(versionSeven, 8u,
+             static_cast<uint32_t>(versionSeven.size()));
     /* Version seven stored pitch as unsigned degrees plus 45. Give the legacy
      * fixture an in-range nonzero value while version eight proves exact top. */
     writeU32(versionSeven,
@@ -263,7 +281,9 @@ int main() {
            "trailing payload bytes are rejected");
     std::string badMaskEnabled = encoded;
     writeU32(badMaskEnabled,
-             badMaskEnabled.size() - subjectMaskTailBytes, 2u);
+             badMaskEnabled.size() - animationIntentTailBytes -
+                 subjectMaskTailBytes,
+             2u);
     expect(!decode(badMaskEnabled, parsed, error),
            "subject-mask enabled state is strictly bounded");
     std::string badReserved = encoded;
@@ -275,6 +295,10 @@ int main() {
     hostile.enabledVehicleMask = 2u;
     expect(!encode(hostile, encoded, error),
            "enabled vehicles cannot exceed package compatibility");
+    hostile = source;
+    hostile.disabledSemanticMask = 1u;
+    expect(!encode(hostile, encoded, error),
+           "fallback cannot be disabled in a persisted animation decision");
     hostile = source;
     hostile.testPose =
         MDKR_MODERN_CHARACTER_INSPECTION_SEMANTIC_COUNT + 1u;

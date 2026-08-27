@@ -42,6 +42,8 @@ def main() -> int:
             "sort_label": "Proof, Pipeline",
         })
         manifest_data["animations"]["states"]["race.item"] = "idle"
+        manifest_data["animations"]["states"]["select.idle"] = "idle"
+        manifest_data["animations"]["disabled_states"] = ["select.idle"]
         model_bytes = make_humanoid_glb()
         cache = Path(directory) / "generated.mdkc"
         compiled, _ = compiler.compile_character(

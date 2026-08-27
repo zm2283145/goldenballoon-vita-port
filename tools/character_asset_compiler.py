@@ -30,7 +30,7 @@ MDKC_HEADER_BYTES = 832
 MDKC_SECTION_SLOTS = 24
 MDKC_SECTION_ENTRY_BYTES = 32
 MDKC_FILE_MAX = 1024 * 1024 * 1024
-COMPILER_ID = "mdkr-character-compiler/6"
+COMPILER_ID = "mdkr-character-compiler/7"
 
 SECTION_STRINGS = 1
 SECTION_VERTICES = 2
@@ -134,6 +134,23 @@ SOURCE_FORWARD_ROTATIONS = {
 PATH_IDS = {"translation": 0, "rotation": 1, "scale": 2, "weights": 3}
 INTERPOLATION_IDS = {"LINEAR": 0, "STEP": 1, "CUBICSPLINE": 2}
 MIME_IDS = {"image/png": 1}
+SEMANTIC_DISABLED = 1 << 1
+SEMANTIC_MASK_BITS = {
+    "fallback": 1 << 0,
+    "race.steer": 1 << 1,
+    "race.reverse": 1 << 2,
+    "race.boost": 1 << 3,
+    "race.damage": 1 << 4,
+    "race.item": 1 << 5,
+    "race.spin": 1 << 6,
+    "race.airborne": 1 << 7,
+    "race.land": 1 << 8,
+    "race.finish_win": 1 << 9,
+    "race.finish_lose": 1 << 10,
+    "select.idle": 1 << 11,
+    "select.hover": 1 << 12,
+    "select.confirm": 1 << 13,
+}
 MAX_TEXTURE_DIMENSION = probe.MAX_TEXTURE_DIMENSION
 MAX_DECODED_TEXTURE_BYTES = probe.MAX_DECODED_TEXTURE_BYTES
 
@@ -1083,8 +1100,16 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
     fallback_flags, fallback_blend = _semantic_policy("fallback")
     semantic_records.append((strings.add("fallback"), strings.add(animations_manifest["fallback"]),
                              fallback_flags, fallback_blend))
+    disabled_semantics = set(animations_manifest.get("disabled_states", []))
+    semantic_mask = SEMANTIC_MASK_BITS["fallback"]
+    disabled_semantic_mask = 0
     for semantic, clip in sorted(animations_manifest.get("states", {}).items()):
         flags, blend = _semantic_policy(semantic)
+        if semantic in disabled_semantics:
+            flags |= SEMANTIC_DISABLED
+            disabled_semantic_mask |= SEMANTIC_MASK_BITS.get(semantic, 0)
+        else:
+            semantic_mask |= SEMANTIC_MASK_BITS.get(semantic, 0)
         semantic_records.append((strings.add(semantic), strings.add(clip), flags, blend))
     socket_records = []
     for semantic, node_name in sorted(manifest["sockets"].items()):
@@ -1280,6 +1305,9 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         "animation_channels": len(channel_records),
         "motion_channels": motion_channels,
         "static_animations": static_animations,
+        "disabled_semantics": sorted(disabled_semantics),
+        "semantic_mask": semantic_mask,
+        "disabled_semantic_mask": disabled_semantic_mask,
         "animation_keys": len(key_records),
         "lod_vertices": lod_vertices,
         "lod_triangles": lod_triangles,

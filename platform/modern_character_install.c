@@ -2,6 +2,7 @@
 
 #include "fs_utf8.h"
 #include "modern_character_asset.h"
+#include "modern_character_registry.h"
 #include "sha256.h"
 #include "miniz.h"
 
@@ -15,7 +16,8 @@
 #define MANIFEST_MAX (1024u * 1024u)
 #define LICENSE_MAX (1024u * 1024u)
 #define PORTRAIT_MAX (8u * 1024u * 1024u)
-#define COMPILER_ID "mdkr-character-compiler/6"
+#define COMPILER_ID "mdkr-character-compiler/7"
+#define LEGACY_COMPILER_ID_V6 "mdkr-character-compiler/6"
 #define LEGACY_COMPILER_ID_V5 "mdkr-character-compiler/5"
 #define LEGACY_COMPILER_ID_V4 "mdkr-character-compiler/4"
 #define LEGACY_COMPILER_ID_V3 "mdkr-character-compiler/3"
@@ -354,6 +356,7 @@ static int portable_package_operation(
     mz_uint64 package_size = 0u;
     mz_uint64 member_sizes[5] = {0u, 0u, 0u, 0u, 0u};
     uint8_t source_digest[32];
+    uint8_t legacy_source_digest_v6[32];
     uint8_t legacy_source_digest_v5[32];
     uint8_t legacy_source_digest_v3[32];
     uint8_t legacy_source_digest_v4[32];
@@ -491,6 +494,9 @@ static int portable_package_operation(
     if (!archive_source_digest(&archive, names, member_sizes, source_count,
                                COMPILER_ID, source_digest) ||
         !archive_source_digest(&archive, names, member_sizes, source_count,
+                               LEGACY_COMPILER_ID_V6,
+                               legacy_source_digest_v6) ||
+        !archive_source_digest(&archive, names, member_sizes, source_count,
                                LEGACY_COMPILER_ID_V5,
                                legacy_source_digest_v5) ||
         !archive_source_digest(&archive, names, member_sizes, source_count,
@@ -521,6 +527,8 @@ static int portable_package_operation(
         goto done;
     }
     if (memcmp(asset.source_sha256, source_digest, sizeof(source_digest)) != 0 &&
+        memcmp(asset.source_sha256, legacy_source_digest_v6,
+               sizeof(legacy_source_digest_v6)) != 0 &&
         memcmp(asset.source_sha256, legacy_source_digest_v5,
                sizeof(legacy_source_digest_v5)) != 0 &&
         memcmp(asset.source_sha256, legacy_source_digest_v4,
@@ -574,6 +582,26 @@ static int portable_package_operation(
             result->animations = stats.animations;
             result->animation_channels = stats.animation_channels;
             result->animation_keys = stats.animation_keys;
+            {
+                uint32_t semantic_index;
+                for (semantic_index = 0u;
+                     semantic_index < stats.semantics; ++semantic_index) {
+                    MdkrModernSemantic semantic;
+                    const char *semantic_name;
+                    uint32_t bit;
+                    if (!mdkr_modern_character_asset_semantic(
+                            &asset, semantic_index, &semantic)) continue;
+                    semantic_name = mdkr_modern_character_asset_string(
+                        &asset, semantic.semantic);
+                    bit = mdkr_modern_character_semantic_bit(semantic_name);
+                    if ((semantic.flags &
+                         MDKR_MODERN_SEMANTIC_DISABLED) != 0u) {
+                        result->disabled_semantic_mask |= bit;
+                    } else {
+                        result->semantic_mask |= bit;
+                    }
+                }
+            }
             result->rig_roles = stats.rig_roles;
             result->encoded_texture_bytes = stats.encoded_texture_bytes;
             result->decoded_texture_bytes = stats.decoded_texture_bytes;

@@ -44,6 +44,10 @@ enum MdkrModernCharacterSemanticBits {
     MDKR_CHARACTER_SEMANTIC_SELECT_CONFIRM = 1u << 13,
 };
 
+/* Shared bounded translation used by registry diagnostics and mutation-free
+ * package review. Unknown extension semantics deliberately return zero. */
+uint32_t mdkr_modern_character_semantic_bit(const char *name);
+
 enum MdkrModernCharacterSocketBits {
     MDKR_CHARACTER_SOCKET_SEAT = 1u << 0,
     MDKR_CHARACTER_SOCKET_HEAD = 1u << 1,
@@ -89,6 +93,8 @@ typedef struct MdkrModernCharacterEntry {
     uint32_t vehicle_mask;
     uint32_t semantic_mask;
     uint32_t moving_semantic_mask;
+    uint32_t disabled_semantic_mask;
+    uint32_t authored_moving_semantic_mask;
     uint32_t socket_mask;
     uint32_t rig_present;
     uint32_t rig_mode;

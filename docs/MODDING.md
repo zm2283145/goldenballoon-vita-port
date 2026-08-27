@@ -327,7 +327,7 @@ attribution, and source URL beside the installed revision. The exact
 `LICENSE.txt` is included in the same source digest, but neither those bytes nor
 the manifest declarations establish that the person importing the package has
 the necessary rights; the final local-use confirmation therefore remains
-required. Compiler-v1 through compiler-v5 portable caches continue to work.
+required. Compiler-v1 through compiler-v6 portable caches continue to work.
 Versions before v5 are labeled as legacy when their cache cannot expose
 provenance; versions before v6 fall back to the display name for compact,
 narrated, and sorting identity. Use `prepare` with current tools to add the

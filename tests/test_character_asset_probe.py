@@ -1084,6 +1084,44 @@ class CharacterAssetProbeTests(unittest.TestCase):
         self.assertEqual(1, flags)
         self.assertEqual(4, first_report["decoded_texture_bytes"])
 
+    def test_disabled_animation_mapping_is_preserved_in_compiled_cache(self) -> None:
+        model = make_animated_glb()
+        manifest = make_manifest()
+        manifest["animations"]["states"] = {"select.idle": "idle"}
+        manifest["animations"]["disabled_states"] = ["select.idle"]
+        policy = probe.inspect_glb_bytes(model, require_character=True)
+        self.assertEqual([], probe.validate_manifest(manifest, policy))
+        compiled, _ = compiler.compile_character(
+            model, manifest, bytes(range(32))
+        )
+        sections = _compiled_sections(compiled)
+        semantics = sections[compiler.SECTION_SEMANTICS]
+        self.assertEqual(2, semantics["count"])
+        _, _, flags, _ = struct.unpack_from(
+            compiler.SEMANTIC_FORMAT,
+            compiled,
+            semantics["offset"] + semantics["stride"],
+        )
+        self.assertEqual(compiler.SEMANTIC_DISABLED, flags & 2)
+        manifest["animations"]["disabled_states"] = ["race.missing"]
+        errors = probe.validate_manifest(manifest, policy)
+        self.assertTrue(any("unmapped states" in error for error in errors))
+        manifest["animations"]["states"]["extension.wave"] = "idle"
+        manifest["animations"]["disabled_states"] = ["extension.wave"]
+        errors = probe.validate_manifest(manifest, policy)
+        self.assertTrue(any("unsupported engine semantics" in error
+                            for error in errors))
+
+    def test_fallback_cannot_be_duplicated_as_a_state_mapping(self) -> None:
+        manifest = make_manifest()
+        manifest["animations"]["states"]["fallback"] = "idle"
+        errors = probe.validate_manifest(
+            manifest,
+            probe.inspect_glb_bytes(make_animated_glb(), require_character=True),
+        )
+        self.assertTrue(any("'fallback' is reserved" in error
+                            for error in errors))
+
     def test_v1_manifest_remains_valid_and_gets_safe_context_defaults(self) -> None:
         manifest = make_manifest()
         manifest["schema"] = probe.PACKAGE_SCHEMA_V1

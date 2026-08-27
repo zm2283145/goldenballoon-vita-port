@@ -2326,6 +2326,7 @@ struct CharacterRigEdit {
     bool loaded = false;
     int mode = MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY;
     bool reviewed = false;
+    uint32_t disabledSemanticMask = 0u;
     uint8_t sourceSha256[32] = {};
     std::vector<Joint> joints;
     std::vector<int32_t> nodeParents;
@@ -3354,6 +3355,9 @@ CharacterCandidateIndex::Candidate installedCharacterSummary(
     summary.animations = entry.stats.animations;
     summary.animationChannels = entry.stats.animation_channels;
     summary.animationKeys = entry.stats.animation_keys;
+    summary.semanticMask = entry.semantic_mask;
+    summary.disabledSemanticMask = entry.disabled_semantic_mask;
+    summary.semanticIntentPresent = true;
     summary.identityPresent =
         (entry.identity_flags & 1u) != 0u && entry.portrait_bytes != 0u;
     summary.rigMode = entry.rig_present != 0u ? entry.rig_mode + 1u : 0u;
@@ -3400,6 +3404,9 @@ CharacterCandidateIndex::Candidate nativeCharacterSummary(
     summary.animations = result.animations;
     summary.animationChannels = result.animation_channels;
     summary.animationKeys = result.animation_keys;
+    summary.semanticMask = result.semantic_mask;
+    summary.disabledSemanticMask = result.disabled_semantic_mask;
+    summary.semanticIntentPresent = true;
     summary.identityPresent = result.identity_present != 0u;
     summary.rigMode = result.rig_mode;
     summary.rigReviewed = result.rig_reviewed != 0u;
@@ -5129,25 +5136,30 @@ unsigned countCharacterBits(uint32_t value) {
 struct CharacterSemanticLabel {
     const char *name;
     uint32_t bit;
+    const char *label = nullptr;
 };
 
 const CharacterSemanticLabel kRaceCharacterSemantics[] = {
-    {"race.steer", MDKR_CHARACTER_SEMANTIC_RACE_STEER},
-    {"race.reverse", MDKR_CHARACTER_SEMANTIC_RACE_REVERSE},
-    {"race.boost", MDKR_CHARACTER_SEMANTIC_RACE_BOOST},
-    {"race.damage", MDKR_CHARACTER_SEMANTIC_RACE_DAMAGE},
-    {"race.item", MDKR_CHARACTER_SEMANTIC_RACE_ITEM},
-    {"race.spin", MDKR_CHARACTER_SEMANTIC_RACE_SPIN},
-    {"race.airborne", MDKR_CHARACTER_SEMANTIC_RACE_AIRBORNE},
-    {"race.land", MDKR_CHARACTER_SEMANTIC_RACE_LAND},
-    {"race.finish_win", MDKR_CHARACTER_SEMANTIC_RACE_FINISH_WIN},
-    {"race.finish_lose", MDKR_CHARACTER_SEMANTIC_RACE_FINISH_LOSE},
+    {"race.steer", MDKR_CHARACTER_SEMANTIC_RACE_STEER, "Steering"},
+    {"race.reverse", MDKR_CHARACTER_SEMANTIC_RACE_REVERSE, "Reversing"},
+    {"race.boost", MDKR_CHARACTER_SEMANTIC_RACE_BOOST, "Boost"},
+    {"race.damage", MDKR_CHARACTER_SEMANTIC_RACE_DAMAGE, "Taking damage"},
+    {"race.item", MDKR_CHARACTER_SEMANTIC_RACE_ITEM, "Using an item"},
+    {"race.spin", MDKR_CHARACTER_SEMANTIC_RACE_SPIN, "Spinning out"},
+    {"race.airborne", MDKR_CHARACTER_SEMANTIC_RACE_AIRBORNE, "Airborne"},
+    {"race.land", MDKR_CHARACTER_SEMANTIC_RACE_LAND, "Landing"},
+    {"race.finish_win", MDKR_CHARACTER_SEMANTIC_RACE_FINISH_WIN,
+     "Winning finish"},
+    {"race.finish_lose", MDKR_CHARACTER_SEMANTIC_RACE_FINISH_LOSE,
+     "Losing finish"},
 };
 
 const CharacterSemanticLabel kSelectCharacterSemantics[] = {
-    {"select.idle", MDKR_CHARACTER_SEMANTIC_SELECT_IDLE},
-    {"select.hover", MDKR_CHARACTER_SEMANTIC_SELECT_HOVER},
-    {"select.confirm", MDKR_CHARACTER_SEMANTIC_SELECT_CONFIRM},
+    {"select.idle", MDKR_CHARACTER_SEMANTIC_SELECT_IDLE, "Selection idle"},
+    {"select.hover", MDKR_CHARACTER_SEMANTIC_SELECT_HOVER,
+     "Selection focus"},
+    {"select.confirm", MDKR_CHARACTER_SEMANTIC_SELECT_CONFIRM,
+     "Selection confirm"},
 };
 
 const CharacterSemanticLabel kHumanoidRigRoles[] = {
@@ -5182,6 +5194,7 @@ CharacterRigEdit &loadCharacterRigEdit(
         ? static_cast<int>(entry->rig_mode)
         : MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY;
     edit.reviewed = (entry->rig_flags & MDKR_MODERN_RIG_REVIEWED) != 0u;
+    edit.disabledSemanticMask = entry->disabled_semantic_mask;
     MdkrModernCharacterAsset asset{};
     char error[256];
     if (!mdkr_modern_character_asset_load_file(
@@ -5523,13 +5536,30 @@ std::string characterJsonString(const std::string &value) {
 }
 
 std::string characterRigDraftJson(const CharacterRigEdit &edit) {
-    std::string json = "{\n  \"schema\": \"mdkr-character-rig-draft-v1\",\n";
+    std::string json = "{\n  \"schema\": \"mdkr-character-rig-draft-v2\",\n";
     json += "  \"mode\": \"";
     json += edit.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1
         ? "humanoid-retarget-v1" : "authored-clips-only";
     json += "\",\n  \"reviewed\": ";
     json += edit.reviewed ? "true" : "false";
-    json += ",\n  \"roles\": {";
+    json += ",\n  \"disabled_semantics\": [";
+    bool firstDisabled = true;
+    const auto appendDisabled = [&](const CharacterSemanticLabel *semantics,
+                                    size_t count) {
+        for (size_t index = 0u; index < count; ++index) {
+            if ((edit.disabledSemanticMask & semantics[index].bit) == 0u) {
+                continue;
+            }
+            if (!firstDisabled) json += ", ";
+            firstDisabled = false;
+            json += characterJsonString(semantics[index].name);
+        }
+    };
+    appendDisabled(kRaceCharacterSemantics,
+                   std::size(kRaceCharacterSemantics));
+    appendDisabled(kSelectCharacterSemantics,
+                   std::size(kSelectCharacterSemantics));
+    json += "],\n  \"roles\": {";
     bool first = true;
     for (size_t slot = 0u; slot < std::size(kHumanoidRigRoles); ++slot) {
         const CharacterRigEdit::Role &role = edit.roles[slot];
@@ -5585,7 +5615,8 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              MdkrCharacterPreviewCaptureKind captureKind =
                                  MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE);
 
-bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
+bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
+                            bool compact) {
     CharacterRigEdit &edit = loadCharacterRigEdit(entry);
     if (!edit.error.empty()) {
         ImGui::TextColored(AppTheme::bad(), "%s", edit.error.c_str());
@@ -5607,6 +5638,175 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
             }
         }
         ImGui::EndCombo();
+    }
+    ImGui::SeparatorText("Animation intent");
+    ui::TextSubtleWrapped(
+        "Choose whether each engine state uses its mapped source clip or deliberately falls through. A disabled mapping stays in the authenticated package and can be restored later; reviewed humanoids use engine reference motion, while authored-clips-only characters use the package fallback.");
+    const bool referenceMotionReady =
+        edit.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 &&
+        characterRigRolesComplete(edit) && edit.reviewed;
+    constexpr uint32_t requiredAnimationSemantics =
+        CharacterDraftSnapshot::kAnimationSemanticMask;
+    const uint32_t authoredSemanticMask =
+        (entry->semantic_mask | entry->disabled_semantic_mask) &
+        requiredAnimationSemantics;
+    const uint32_t draftActiveSemanticMask = authoredSemanticMask &
+        ~edit.disabledSemanticMask;
+    const uint32_t activeStaticSemantics = draftActiveSemanticMask &
+        ~entry->authored_moving_semantic_mask & requiredAnimationSemantics;
+    const unsigned authoredAnimationStates = countCharacterBits(
+        authoredSemanticMask);
+    const unsigned disabledAnimationStates = countCharacterBits(
+        edit.disabledSemanticMask & requiredAnimationSemantics);
+    const unsigned activeStaticCount = countCharacterBits(
+        activeStaticSemantics);
+    ImGui::TextColored(
+        activeStaticSemantics == 0u ? AppTheme::good() : AppTheme::accent(),
+        "%u of 13 authored · %u disabled · %u active static-looking",
+        authoredAnimationStates, disabledAnimationStates, activeStaticCount);
+    const bool animationIntentDirty =
+        edit.disabledSemanticMask != entry->disabled_semantic_mask;
+    if (animationIntentDirty) {
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "Unsaved animation choices. Save the rig and motion revision before exact Test inspection.");
+    }
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static std::set<std::string> tracedPackages;
+        if (tracedPackages.insert(entry->id).second) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-animation-intent package=%s semantics=13 static-detection=1 authored-toggle=1 disabled-preserved=1 fallback=reviewed-reference-or-package inspect-handoff=1 active-revision-guard=1 human-labels=1 responsive=table-or-cards\n",
+                entry->id);
+        }
+    }
+    const bool showAnimationStates = ImGui::TreeNodeEx(
+        "Review all 13 animation states",
+        (activeStaticSemantics | edit.disabledSemanticMask) != 0u
+            ? ImGuiTreeNodeFlags_DefaultOpen : 0);
+    ui::SpeakFocusedItem(
+        "Animation state review",
+        showAnimationStates ? "expanded" : "collapsed",
+        "Shows each engine state, its authored mapping decision, and the exact runtime motion source.");
+    if (showAnimationStates) {
+        const bool table = !compact && ImGui::BeginTable(
+            "##character-animation-intent", 3,
+            ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_SizingStretchProp);
+        if (table) {
+            ImGui::TableSetupColumn("Engine state",
+                                    ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("Authored mapping",
+                                    ImGuiTableColumnFlags_WidthStretch, 1.1f);
+            ImGui::TableSetupColumn("Runtime result",
+                                    ImGuiTableColumnFlags_WidthStretch, 1.6f);
+            ImGui::TableHeadersRow();
+        }
+        const auto drawSemantics = [&](const CharacterSemanticLabel *semantics,
+                                       size_t count) {
+            for (size_t index = 0u; index < count; ++index) {
+                const CharacterSemanticLabel &semantic = semantics[index];
+                const bool authored =
+                    (authoredSemanticMask & semantic.bit) != 0u;
+                const bool moving =
+                    (entry->authored_moving_semantic_mask & semantic.bit) != 0u;
+                bool useAuthored = authored &&
+                    (edit.disabledSemanticMask & semantic.bit) == 0u;
+                ImGui::PushID(semantic.name);
+                if (table) {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                } else {
+                    ImGui::Separator();
+                }
+                ImGui::TextUnformatted(
+                    semantic.label != nullptr ? semantic.label
+                                              : semantic.name);
+                if (semantic.label != nullptr) {
+                    ImGui::TextDisabled("%s", semantic.name);
+                }
+                if (table) ImGui::TableNextColumn();
+                if (!authored) ImGui::BeginDisabled();
+                const char *mappingLabel = !authored ? "No source mapping"
+                    : moving ? "Use moving clip" : "Use static clip";
+                if (ImGui::Checkbox(mappingLabel, &useAuthored) && authored) {
+                    if (useAuthored) {
+                        edit.disabledSemanticMask &= ~semantic.bit;
+                    } else {
+                        edit.disabledSemanticMask |= semantic.bit;
+                    }
+                }
+                if (!authored) ImGui::EndDisabled();
+                ui::SpeakFocusedItem(
+                    semantic.label != nullptr ? semantic.label
+                                              : semantic.name,
+                    !authored ? "No authored mapping"
+                    : useAuthored ? (moving ? "Moving authored clip"
+                                            : "Static authored clip")
+                                  : "Authored mapping disabled",
+                    "Toggles this source mapping without deleting its clip. Save the rig and motion revision to apply the choice.");
+                if (table) ImGui::TableNextColumn();
+                if (useAuthored) {
+                    ImGui::TextColored(
+                        moving ? AppTheme::good() : AppTheme::accent(),
+                        moving ? "Authored motion" : "Static/bind-looking authored pose");
+                } else {
+                    ImGui::TextColored(
+                        referenceMotionReady ? AppTheme::good()
+                                             : AppTheme::accent(),
+                        referenceMotionReady
+                            ? "Reviewed reference motion"
+                            : "Package fallback clip");
+                }
+                int inspectionPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+                for (const CharacterInspectionPose &candidate :
+                     kCharacterInspectionPoses) {
+                    if (std::strcmp(candidate.semantic, semantic.name) == 0) {
+                        inspectionPose = candidate.pose;
+                        break;
+                    }
+                }
+                if (table) ImGui::SameLine();
+                const bool exactInspectionCurrent =
+                    edit.disabledSemanticMask == entry->disabled_semantic_mask;
+                if (!exactInspectionCurrent) ImGui::BeginDisabled();
+                if (ImGui::SmallButton(
+                        exactInspectionCurrent ? "Inspect in Test"
+                                               : "Save before Test") &&
+                    inspectionPose != MDKR_CHARACTER_PREVIEW_POSE_LIVE) {
+                    g_characterTestPoses[entry->id] = inspectionPose;
+                    g_characterTestPosePhases[entry->id] = 500;
+                    persistCharacterWorkshopTab(
+                        CharacterWorkshopTab::Test, true);
+                    setStatus(
+                        "Semantic and midpoint phase prepared in Test. Choose select or a supported vehicle to launch the exact renderer; no package data changed.",
+                        AppTheme::good());
+                }
+                if (!exactInspectionCurrent) ImGui::EndDisabled();
+                ui::SpeakFocusedItem(
+                    exactInspectionCurrent
+                        ? "Inspect semantic in Test"
+                        : "Save before exact inspection",
+                    semantic.name,
+                    exactInspectionCurrent
+                        ? "Opens Test with this engine state held at its midpoint. Choose an exact game context to launch; this does not save or change the character."
+                        : "Exact Test uses the active installed revision. Save the rig and motion revision before inspecting this draft decision.");
+                ImGui::PopID();
+            }
+        };
+        drawSemantics(kSelectCharacterSemantics,
+                      std::size(kSelectCharacterSemantics));
+        drawSemantics(kRaceCharacterSemantics,
+                      std::size(kRaceCharacterSemantics));
+        if (table) ImGui::EndTable();
+        ImGui::TreePop();
+    }
+    const uint32_t invalidDisabledSemantics = edit.disabledSemanticMask &
+        ~authoredSemanticMask;
+    if (invalidDisabledSemantics != 0u) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "A disabled semantic no longer exists in this exact source; discard the draft or restore its matching revision.");
     }
     if (edit.mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY) {
         edit.reviewed = false;
@@ -5716,25 +5916,26 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
     ui::SpeakFocusedItem(
         "Rig review", edit.reviewed ? "Approved" : "Not approved",
         "Only an explicit author review unlocks engine reference motion and vehicle contacts.");
-    const bool canSave = edit.mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY ||
-        hierarchyError.empty();
+    const bool canSave = invalidDisabledSemantics == 0u &&
+        (edit.mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY ||
+         hierarchyError.empty());
     const bool stagingDraft = g_characterActiveDrafts.find(entry->id) !=
         g_characterActiveDrafts.end();
     if (!canSave || stagingDraft) ImGui::BeginDisabled();
     bool saved = false;
-    if (ImGui::Button("Save rig revision")) {
+    if (ImGui::Button("Save rig and motion revision")) {
         saved = reviseCharacterRig(
             entry->id, characterRigDraftJson(edit), [](bool revised) {
                 setStatus(
                     revised
-                        ? "Rig map compiled, validated, and activated."
-                        : "Rig revision failed; the active character was not changed.",
+                        ? "Rig map and animation intent compiled, validated, and activated."
+                        : "Rig and motion revision failed; the active character was not changed.",
                     revised ? AppTheme::good() : AppTheme::bad());
             });
         setStatus(
             saved
-                ? "Saving and validating the rig revision in the background."
-                : "Rig revision could not start; the active character was not changed.",
+                ? "Saving and validating the rig and motion revision in the background."
+                : "Rig and motion revision could not start; the active character was not changed.",
             saved ? AppTheme::accent() : AppTheme::bad());
     }
     if (!canSave || stagingDraft) ImGui::EndDisabled();
@@ -12940,10 +13141,11 @@ bool captureCharacterHistoryPayload(
     } else if (tool == CharacterHistoryTool::Rig) {
         const CharacterRigEdit &edit = loadCharacterRigEdit(entry);
         if (!edit.error.empty()) return false;
-        payload = "mdkr-rig-history-v1\n";
+        payload = "mdkr-rig-history-v2\n";
         appendCharacterHistoryValue(payload, edit.mode);
         const uint8_t reviewed = edit.reviewed ? 1u : 0u;
         appendCharacterHistoryValue(payload, reviewed);
+        appendCharacterHistoryValue(payload, edit.disabledSemanticMask);
         for (const CharacterRigEdit::Role &role : edit.roles) {
             appendCharacterHistoryValue(payload, role.joint);
             const uint8_t inferred = role.inferred ? 1u : 0u;
@@ -13246,7 +13448,10 @@ bool applyCharacterHistoryPayload(
         }
         g_characterProfileEdits[entry->id] = std::move(replacement);
     } else if (tool == CharacterHistoryTool::Rig) {
-        if (!consumeHeader("mdkr-rig-history-v1\n")) {
+        const bool hasAnimationIntent =
+            consumeHeader("mdkr-rig-history-v2\n");
+        if (!hasAnimationIntent &&
+            !consumeHeader("mdkr-rig-history-v1\n")) {
             error = "Rig history header is invalid.";
             return false;
         }
@@ -13261,6 +13466,14 @@ bool applyCharacterHistoryPayload(
             return false;
         }
         replacement.reviewed = reviewed != 0u;
+        if (hasAnimationIntent &&
+            (!readCharacterHistoryValue(
+                 payload, offset, replacement.disabledSemanticMask) ||
+             (replacement.disabledSemanticMask &
+              ~CharacterDraftSnapshot::kAnimationSemanticMask) != 0u)) {
+            error = "Rig history animation intent is invalid.";
+            return false;
+        }
         std::set<int> mappedJoints;
         for (CharacterRigEdit::Role &role : replacement.roles) {
             uint8_t inferred = 0u;
@@ -13714,6 +13927,7 @@ bool captureCharacterDraftSnapshot(
     snapshot.lodBias = tuning.lodBias;
     snapshot.rigMode = static_cast<uint32_t>(rig.mode);
     snapshot.rigReviewed = rig.reviewed;
+    snapshot.disabledSemanticMask = rig.disabledSemanticMask;
     for (size_t context = 0u;
          context < CharacterDraftSnapshot::kContexts; ++context) {
         snapshot.contexts[context].scale = tuning.context[context].scale;
@@ -13825,6 +14039,8 @@ bool applyCharacterDraftSnapshot(
     }
     rig.mode = static_cast<int>(snapshot.rigMode);
     rig.reviewed = snapshot.rigReviewed;
+    rig.disabledSemanticMask = snapshot.animationIntentPresent
+        ? snapshot.disabledSemanticMask : entry->disabled_semantic_mask;
 
     CharacterTuningEdit tuning{};
     tuning.loaded = true;
@@ -15300,7 +15516,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             ImGui::PopStyleColor();
         } else if (humanoidRolesComplete && rigReviewed) {
             ImGui::TextWrapped(
-                "The humanoid hierarchy is structurally validated. Engine reference motion and bounded vehicle hand/foot contacts fill missing semantic clips; authored package clips win.");
+                "The humanoid hierarchy is structurally validated. Engine reference motion and bounded vehicle hand/foot contacts fill missing or author-disabled semantic clips; active authored package clips win.");
         } else if (entry->rig_present != 0u) {
             ImGui::TextWrapped(
                 "Authored-clips-only is a supported final mode for creatures and unusual skeletons; no humanoid solver will alter this character.");
@@ -15309,7 +15525,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                 "This legacy package has attachment sockets but no semantic skeleton contract. Its authored clips remain usable; re-author as source-v4 to opt into reviewed humanoid roles.");
         }
         ImGui::TextDisabled(
-            "%u/10 race states · %u/3 select states · %u/%u mapped clips move",
+            "%u/10 active authored race states · %u/3 active authored select states · %u/%u active authored clips move",
             mappedRaceStates,
             mappedSelectStates,
             countCharacterBits(entry->moving_semantic_mask &
@@ -15346,7 +15562,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             staticStates += staticSelect;
             ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
             ImGui::TextWrapped(
-                "One or more explicitly mapped states are static. Authored mappings intentionally bypass reference motion; remove or animate those mappings before calling motion complete. Review: %s",
+                "One or more active authored states are static-looking and bypass reference motion. In Animation intent, disable each unsuitable mapping without deleting its clip, or animate the source before calling motion complete. Review: %s",
                 staticStates.c_str());
             ImGui::PopStyleColor();
         }
@@ -15398,7 +15614,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
 
         ImGui::SeparatorText("Rig Studio");
         if (identityReady) {
-            if (drawCharacterRigStudio(entry)) {
+            if (drawCharacterRigStudio(entry, compact)) {
                 /* The transaction rescans the registry and invalidates `entry`. */
                 ImGui::PopID();
                 return true;
@@ -15692,6 +15908,25 @@ std::string candidateVehicleName(uint32_t mask) {
     return text.empty() ? "None" : text;
 }
 
+std::string candidateSemanticNames(
+    const CharacterCandidateIndex::Candidate &candidate, bool disabled) {
+    if (!candidate.semanticIntentPresent) return "Unavailable (legacy summary)";
+    const uint32_t mask = disabled ? candidate.disabledSemanticMask
+                                   : candidate.semanticMask;
+    std::string text;
+    const auto append = [&text, mask](
+            const CharacterSemanticLabel *semantics, size_t count) {
+        for (size_t index = 0u; index < count; ++index) {
+            if ((mask & semantics[index].bit) == 0u) continue;
+            if (!text.empty()) text += ", ";
+            text += semantics[index].name;
+        }
+    };
+    append(kSelectCharacterSemantics, std::size(kSelectCharacterSemantics));
+    append(kRaceCharacterSemantics, std::size(kRaceCharacterSemantics));
+    return text.empty() ? "None" : text;
+}
+
 std::string candidateBytes(uint64_t bytes) {
     char text[64];
     std::snprintf(text, sizeof(text), "%.2f MiB", static_cast<double>(bytes) / (1024.0 * 1024.0));
@@ -15836,6 +16071,14 @@ bool drawCharacterCandidateReview(bool compact) {
     addCandidateNumberRow(rows, "Animations", current.animations, next.animations, review.installed);
     addCandidateNumberRow(rows, "Animation channels", current.animationChannels, next.animationChannels, review.installed);
     addCandidateNumberRow(rows, "Animation keys", current.animationKeys, next.animationKeys, review.installed);
+    addCandidateTextRow(
+        rows, "Active authored states",
+        candidateSemanticNames(current, false),
+        candidateSemanticNames(next, false), review.installed);
+    addCandidateTextRow(
+        rows, "Disabled authored states",
+        candidateSemanticNames(current, true),
+        candidateSemanticNames(next, true), review.installed);
     rows.push_back({"Decoded texture memory",
                     review.installed ? candidateBytes(current.decodedTextureBytes)
                                      : "Not installed",

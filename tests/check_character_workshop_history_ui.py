@@ -158,6 +158,20 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                     "profile keyboard/speech walk missed " + spoken
                     + "\n" + process.stdout[-8000:]
                 )
+    if tab == "rig-motion":
+        marker = (
+            "character-animation-intent package=" + PACKAGE_ID +
+            " semantics=13 static-detection=1 authored-toggle=1 "
+            "disabled-preserved=1 "
+            "fallback=reviewed-reference-or-package "
+            "inspect-handoff=1 active-revision-guard=1 human-labels=1 "
+            "responsive=table-or-cards"
+        )
+        if marker not in process.stdout:
+            raise RuntimeError(
+                "rig and motion route omitted explicit per-semantic animation "
+                "intent\n" + process.stdout[-8000:]
+            )
     if tab == "vehicles":
         marker = (
             "character-spatial-controls package=" + PACKAGE_ID +
@@ -273,7 +287,8 @@ def main() -> int:
         return 1
     print("check_character_workshop_history_ui: PASS -- exact-source Identity, "
           "Profile, Rig, Fit, Performance, Test history, project-owned "
-          "accessible donor metric badges, spatial fit/contact controls, "
+          "accessible donor metric badges, reversible animation intent, "
+          "spatial fit/contact controls, "
           "accessible performance targets with runtime-equivalent "
           "LOD assembly math, and all semantic pose inspection controls render "
           "without mutating installed bytes")

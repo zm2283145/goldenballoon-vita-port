@@ -42,6 +42,8 @@ typedef struct MdkrModernCharacterInstallResult {
     uint32_t animations;
     uint32_t animation_channels;
     uint32_t animation_keys;
+    uint32_t semantic_mask;
+    uint32_t disabled_semantic_mask;
     uint32_t identity_present;
     uint32_t rig_mode;
     uint32_t rig_reviewed;

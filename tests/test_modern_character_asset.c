@@ -287,6 +287,27 @@ int main(int argc, char **argv) {
     require(definition.donor == 9u && definition.vehicle_mask == 7u,
             "donor and vehicle characteristics");
     {
+        MdkrModernCharacterAsset duplicate_asset;
+        uint8_t *duplicate_bytes = (uint8_t *)malloc(asset.size);
+        const size_t semantic_offset = (size_t)(
+            asset.sections[MDKR_MDKC_SEMANTICS].data - asset.owned_bytes);
+        memset(&duplicate_asset, 0, sizeof(duplicate_asset));
+        require(duplicate_bytes != NULL &&
+                    asset.sections[MDKR_MDKC_SEMANTICS].count >= 2u,
+                "prepare duplicate-semantic mutation fixture");
+        memcpy(duplicate_bytes, asset.owned_bytes, asset.size);
+        memcpy(duplicate_bytes + semantic_offset +
+                   asset.sections[MDKR_MDKC_SEMANTICS].stride,
+               duplicate_bytes + semantic_offset, sizeof(uint32_t));
+        refresh_payload_crc(duplicate_bytes, asset.size);
+        require(!mdkr_modern_character_asset_load_memory(
+                    duplicate_bytes, asset.size, &duplicate_asset,
+                    error, sizeof(error)) &&
+                    strstr(error, "duplicated") != NULL,
+                "native cache validation rejects ambiguous semantic precedence");
+        free(duplicate_bytes);
+    }
+    {
         static const struct {
             int car_model, car_v, car_t, car_b;
             int hover_model, hover_v, hover_t, hover_b;
@@ -399,7 +420,7 @@ int main(int argc, char **argv) {
     require(stats.animations == 1u && stats.animation_channels == 1u &&
                 stats.animation_keys == 2u,
             "compiled animation statistics");
-    require(stats.semantics == 3u && stats.sockets == 2u &&
+    require(stats.semantics == 4u && stats.sockets == 2u &&
                 stats.rig_roles == 16u,
             "compiled presentation mapping statistics");
     require(stats.encoded_texture_bytes > 64u &&
@@ -590,6 +611,12 @@ int main(int argc, char **argv) {
              MDKR_CHARACTER_SEMANTIC_FALLBACK) != 0u &&
                 (registry.entries[0].moving_semantic_mask &
                  MDKR_CHARACTER_SEMANTIC_FALLBACK) != 0u &&
+                (registry.entries[0].disabled_semantic_mask &
+                 MDKR_CHARACTER_SEMANTIC_SELECT_IDLE) != 0u &&
+                (registry.entries[0].semantic_mask &
+                 MDKR_CHARACTER_SEMANTIC_SELECT_IDLE) == 0u &&
+                (registry.entries[0].authored_moving_semantic_mask &
+                 MDKR_CHARACTER_SEMANTIC_SELECT_IDLE) != 0u &&
                 (registry.entries[0].socket_mask &
                  MDKR_CHARACTER_SOCKET_SEAT) != 0u &&
                 registry.entries[0].attachment_context_mask == 15u &&
@@ -645,8 +672,9 @@ int main(int argc, char **argv) {
     require(socket_matrix[0] > 0.90f && socket_matrix[0] < 0.95f,
             "half-time quaternion sampling reaches the expected angle");
     require(mdkr_modern_pose_has_semantic(&pose, "idle") &&
+                !mdkr_modern_pose_has_semantic(&pose, "select.idle") &&
                 !mdkr_modern_pose_has_semantic(&pose, "race.steer"),
-            "pose distinguishes an explicit semantic from fallback");
+            "pose distinguishes active, intentionally disabled, and missing semantics");
     require(mdkr_modern_pose_advance_phase(
                 &pose, 0.0f, 0.0f, error, sizeof(error)) &&
                 mdkr_modern_pose_socket_matrix(
@@ -688,6 +716,18 @@ int main(int argc, char **argv) {
     require(fabsf(procedural_arm_left[1]) > 0.1f ||
                 fabsf(procedural_arm_left[4]) > 0.1f,
             "reference confirmation pose moves the mapped upper arm");
+    require(mdkr_modern_pose_set_semantic(
+                &pose, "select.idle", error, sizeof(error)) &&
+                mdkr_modern_pose_advance(&pose, 0.2f,
+                                         error, sizeof(error)) &&
+                !mdkr_modern_pose_has_semantic(&pose, "select.idle"),
+            "an intentionally disabled authored select clip falls through to reviewed reference motion");
+    memcpy(procedural_arm_left,
+           mdkr_modern_pose_node_matrix(&pose, 4u, 0),
+           sizeof(procedural_arm_left));
+    require(fabsf(procedural_arm_left[1]) > 0.1f ||
+                fabsf(procedural_arm_left[4]) > 0.1f,
+            "disabled bind-looking select idle no longer forces a T pose");
     require(mdkr_modern_pose_set_semantic(
                 &pose, "race.steer", error, sizeof(error)) &&
                 mdkr_modern_pose_advance_phase(
@@ -802,6 +842,12 @@ int main(int argc, char **argv) {
                 install_result.animations == 1u &&
                 install_result.animation_channels == 1u &&
                 install_result.animation_keys == 2u &&
+                (install_result.semantic_mask &
+                 MDKR_CHARACTER_SEMANTIC_FALLBACK) != 0u &&
+                (install_result.semantic_mask &
+                 MDKR_CHARACTER_SEMANTIC_SELECT_IDLE) == 0u &&
+                (install_result.disabled_semantic_mask &
+                 MDKR_CHARACTER_SEMANTIC_SELECT_IDLE) != 0u &&
                 install_result.identity_present == 1u &&
                 install_result.rig_mode == 2u &&
                 install_result.rig_reviewed == 1u &&
