@@ -24,6 +24,7 @@
  */
 #include <stdbool.h>
 #include <stdint.h>
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -554,7 +555,10 @@ struct WgpuSkinnedCaptureDraw {
     uint32_t source_height;
     uint32_t player;
     uint32_t view;
+    float original_mvp[16];
     float target_to_clip[16];
+    float posed_ndc_bounds[4];
+    float framing_scale;
 };
 static struct WgpuSkinnedCaptureDraw
     s_skinned_capture_draws[WGPU_SKINNED_CAPTURE_MAX_DRAWS];
@@ -9860,6 +9864,79 @@ static WGPUBindGroup wgpu_skinned_material_bg(
     return entry->material_bg[material_index];
 }
 
+static bool wgpu_skinned_draw_posed_ndc_bounds(
+    const struct GfxModernSkinnedDraw *draw, const float mvp[16],
+    const struct GfxModernPrimitive *primitive, float output[4]) {
+    double minimum[2] = {DBL_MAX, DBL_MAX};
+    double maximum[2] = {-DBL_MAX, -DBL_MAX};
+    bool found = false;
+    if (draw == NULL || draw->asset == NULL || mvp == NULL ||
+        primitive == NULL || output == NULL) return false;
+    for (uint32_t offset = 0u; offset < primitive->index_count; ++offset) {
+        const uint32_t vertex_index =
+            draw->asset->indices[primitive->first_index + offset];
+        double local[4] = {0.0, 0.0, 0.0, 0.0};
+        double model[4];
+        double clip[4];
+        if (vertex_index >= draw->asset->vertex_count) return false;
+        const struct GfxModernSkinnedVertex *vertex =
+            &draw->asset->vertices[vertex_index];
+        for (uint32_t influence = 0u; influence < 4u; ++influence) {
+            const double weight = vertex->weights[influence];
+            const uint32_t joint = vertex->joints[influence];
+            if (weight == 0.0) continue;
+            if (!isfinite(weight) || joint >= WGPU_SKINNED_MAX_BONES) {
+                return false;
+            }
+            for (uint32_t row = 0u; row < 4u; ++row) {
+                double transformed;
+                if (draw->bone_matrices != NULL && joint < draw->bone_count) {
+                    const float *bone = &draw->bone_matrices[joint * 16u];
+                    transformed = (double)bone[row] * vertex->position[0] +
+                        (double)bone[4u + row] * vertex->position[1] +
+                        (double)bone[8u + row] * vertex->position[2] +
+                        bone[12u + row];
+                } else {
+                    transformed = row < 3u ? vertex->position[row] : 1.0;
+                }
+                local[row] += weight * transformed;
+            }
+        }
+        for (uint32_t row = 0u; row < 4u; ++row) {
+            model[row] = (double)draw->model_matrix[row] * local[0] +
+                (double)draw->model_matrix[4u + row] * local[1] +
+                (double)draw->model_matrix[8u + row] * local[2] +
+                (double)draw->model_matrix[12u + row] * local[3];
+        }
+        for (uint32_t row = 0u; row < 4u; ++row) {
+            clip[row] = (double)mvp[row] * model[0] +
+                (double)mvp[4u + row] * model[1] +
+                (double)mvp[8u + row] * model[2] +
+                (double)mvp[12u + row] * model[3];
+            if (!isfinite(clip[row])) return false;
+        }
+        /* Geometry behind the camera plane cannot contribute a stable point
+         * bound. Visible vertices still produce a conservative crop; the
+         * normal depth pass clips any crossing triangle identically. */
+        if (clip[3] <= 1.0e-9) continue;
+        for (uint32_t axis = 0u; axis < 2u; ++axis) {
+            const double ndc = clip[axis] / clip[3];
+            if (!isfinite(ndc)) return false;
+            if (ndc < minimum[axis]) minimum[axis] = ndc;
+            if (ndc > maximum[axis]) maximum[axis] = ndc;
+        }
+        found = true;
+    }
+    if (!found || maximum[0] - minimum[0] <= 1.0e-9 ||
+        maximum[1] - minimum[1] <= 1.0e-9) return false;
+    output[0] = (float)minimum[0];
+    output[1] = (float)minimum[1];
+    output[2] = (float)maximum[0];
+    output[3] = (float)maximum[1];
+    return isfinite(output[0]) && isfinite(output[1]) &&
+        isfinite(output[2]) && isfinite(output[3]);
+}
+
 static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
                                      const float mvp[4][4],
                                      const float fog_color[3], float fog_mul,
@@ -9897,12 +9974,14 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
     }
     resources = wgpu_skinned_resources(asset);
     int reserve_slots = s_skinned_ubo_used + 1;
-    if (capture_requested &&
-        reserve_slots < (int)WGPU_SKINNED_CAPTURE_MAX_DRAWS) {
+    if (capture_requested && reserve_slots <
+            (int)(WGPU_SKINNED_CAPTURE_MAX_DRAWS +
+                  MDKR_MODERN_CHARACTER_MAX_PRIMITIVES)) {
         /* Pre-grow before the first recorded command. Recreating the ring
          * later would invalidate the dynamic offsets the isolated replay must
          * consume after the scene pass. */
-        reserve_slots = (int)WGPU_SKINNED_CAPTURE_MAX_DRAWS;
+        reserve_slots = (int)(WGPU_SKINNED_CAPTURE_MAX_DRAWS +
+                              MDKR_MODERN_CHARACTER_MAX_PRIMITIVES);
     }
     if (resources == NULL || !wgpu_skinned_ubo_reserve(reserve_slots)) {
         s_skinned_refused_draws++;
@@ -9958,11 +10037,27 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
         } else {
             struct WgpuSkinnedCaptureDraw *capture =
                 &s_skinned_capture_draws[s_skinned_capture_draw_count++];
+            float target_to_clip[16];
+            float capture_uniform[WGPU_SKINNED_UNIFORM_FLOATS];
             const uint32_t target_width = wgpu_draw_target_w();
             const uint32_t target_height = wgpu_draw_target_h();
+            if (draw->capture_bounds_valid != 1u ||
+                !mdkr_modern_character_capture_projection_compose(
+                    &mvp[0][0], draw->target_frame_matrix, target_to_clip) ||
+                !wgpu_skinned_draw_posed_ndc_bounds(
+                    draw, &mvp[0][0], primitive,
+                    capture->posed_ndc_bounds)) {
+                s_skinned_capture_overflow = true;
+                return;
+            }
+            memcpy(capture_uniform, uniform, sizeof(capture_uniform));
+            slot = (uint32_t)s_skinned_ubo_used++;
+            capture->dynamic_offset = slot * WGPU_SKINNED_SLOT_BYTES;
+            wgpuQueueWriteBuffer(
+                s_queue, s_skinned_ubo, capture->dynamic_offset,
+                capture_uniform, sizeof(capture_uniform));
             capture->asset = asset;
             capture->primitive = draw->primitive;
-            capture->dynamic_offset = dynamic_offset;
             capture->viewport[0] = s_vp_x;
             capture->viewport[1] = s_vp_y;
             capture->viewport[2] = s_vp_w;
@@ -9977,11 +10072,11 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
             capture->source_height = target_height;
             capture->player = draw->player;
             capture->view = draw->view;
-            if (!mdkr_modern_character_capture_projection_compose(
-                    &mvp[0][0], draw->target_frame_matrix,
-                    capture->target_to_clip)) {
-                s_skinned_capture_overflow = true;
-            }
+            memcpy(capture->original_mvp, &mvp[0][0],
+                   sizeof(capture->original_mvp));
+            memcpy(capture->target_to_clip, target_to_clip,
+                   sizeof(capture->target_to_clip));
+            capture->framing_scale = 0.0f;
         }
     }
     s_skinned_draws++;
@@ -10093,6 +10188,61 @@ static bool wgpu_render_skinned_capture(void) {
                 s_skinned_capture_overflow ? 1 : 0,
                 s_resolve_w, s_resolve_h);
         return false;
+    }
+    /* Fit one crop to the union of every visible vertex in the current,
+     * interpolated skin pose. Static authoring bounds are deliberately not
+     * used for camera framing: a tall bind pose, hair controls, or an extreme
+     * kart animation must not push the subject through an edge. The replay
+     * UBO slots are capture-only, so rewriting their MVP cannot affect the
+     * gameplay pass recorded above. */
+    MdkrModernCharacterCaptureFraming framing;
+    float posed_bounds[4] = {FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX};
+    for (uint32_t index = 0u;
+         index < s_skinned_capture_draw_count; ++index) {
+        const struct WgpuSkinnedCaptureDraw *command =
+            &s_skinned_capture_draws[index];
+        if (command->posed_ndc_bounds[0] < posed_bounds[0]) {
+            posed_bounds[0] = command->posed_ndc_bounds[0];
+        }
+        if (command->posed_ndc_bounds[1] < posed_bounds[1]) {
+            posed_bounds[1] = command->posed_ndc_bounds[1];
+        }
+        if (command->posed_ndc_bounds[2] > posed_bounds[2]) {
+            posed_bounds[2] = command->posed_ndc_bounds[2];
+        }
+        if (command->posed_ndc_bounds[3] > posed_bounds[3]) {
+            posed_bounds[3] = command->posed_ndc_bounds[3];
+        }
+    }
+    if (!mdkr_modern_character_capture_framing_solve_ndc(
+            posed_bounds, &framing)) {
+        fprintf(stderr,
+                "[WGPU-CHARACTER-CAPTURE] ready=0 draws=%u framing=posed-subject-fit reason=invalid-posed-bounds\n",
+                s_skinned_capture_draw_count);
+        return false;
+    }
+    for (uint32_t index = 0u;
+         index < s_skinned_capture_draw_count; ++index) {
+        struct WgpuSkinnedCaptureDraw *command =
+            &s_skinned_capture_draws[index];
+        float framed_mvp[16];
+        float framed_target_to_clip[16];
+        if (!mdkr_modern_character_capture_framing_apply(
+                command->original_mvp, &framing, framed_mvp) ||
+            !mdkr_modern_character_capture_framing_apply(
+                command->target_to_clip, &framing,
+                framed_target_to_clip)) {
+            fprintf(stderr,
+                    "[WGPU-CHARACTER-CAPTURE] ready=0 draws=%u framing=posed-subject-fit reason=matrix-apply\n",
+                    s_skinned_capture_draw_count);
+            return false;
+        }
+        wgpuQueueWriteBuffer(s_queue, s_skinned_ubo,
+                             command->dynamic_offset,
+                             framed_mvp, sizeof(framed_mvp));
+        memcpy(command->target_to_clip, framed_target_to_clip,
+               sizeof(command->target_to_clip));
+        command->framing_scale = framing.scale;
     }
     WGPURenderPassColorAttachment color = {0};
     color.view = s_skinned_capture_view;
@@ -10264,6 +10414,8 @@ static bool wgpu_render_skinned_capture(void) {
                        s_skinned_capture_projection.target_to_clip,
                        command->target_to_clip,
                        sizeof(command->target_to_clip)) != 0 ||
+                   fabsf(s_skinned_capture_draws[0].framing_scale -
+                         command->framing_scale) > 1.0e-5f ||
                    s_skinned_capture_projection.viewport[0] != viewport_x ||
                    s_skinned_capture_projection.viewport[1] != viewport_y ||
                    s_skinned_capture_projection.viewport[2] != viewport_width ||
@@ -10307,11 +10459,13 @@ static bool wgpu_render_skinned_capture(void) {
                sizeof(s_skinned_capture_projection));
     }
     fprintf(stderr,
-            "[WGPU-CHARACTER-CAPTURE] ready=%d subject=0 draws=%u/%u target=%ux%u projection=%s readback=straight-rgba\n",
+            "[WGPU-CHARACTER-CAPTURE] ready=%d subject=0 draws=%u/%u target=%ux%u projection=%s framing=posed-subject-fit scale=%.4g readback=straight-rgba\n",
             s_skinned_capture_ready ? 1 : 0, rendered,
             s_skinned_capture_draw_count,
             s_skinned_capture_width, s_skinned_capture_height,
-            s_skinned_capture_ready ? "target-to-clip" : "none");
+            s_skinned_capture_ready ? "target-to-clip" : "none",
+            s_skinned_capture_ready
+                ? (double)s_skinned_capture_draws[0].framing_scale : 0.0);
     return s_skinned_capture_ready;
 }
 

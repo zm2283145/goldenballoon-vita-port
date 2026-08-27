@@ -162,6 +162,15 @@ uint32_t gfx_modern_character_register_draw(
     for (component = 0u; component < 16u; ++component) {
         if (!isfinite(draw->target_frame_matrix[component])) return 0u;
     }
+    if (draw->capture_bounds_valid > 1u) return 0u;
+    if (draw->capture_bounds_valid != 0u) {
+        for (component = 0u; component < 3u; ++component) {
+            if (!isfinite(draw->capture_bounds_min[component]) ||
+                !isfinite(draw->capture_bounds_max[component]) ||
+                draw->capture_bounds_min[component] >
+                    draw->capture_bounds_max[component]) return 0u;
+        }
+    }
     token = dkr_modern_draw_serial++;
     if (token == 0u) token = dkr_modern_draw_serial++;
     entry = &dkr_modern_draw_ring[token % DKR_MODERN_DRAW_RING];

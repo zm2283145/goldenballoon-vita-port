@@ -17,6 +17,42 @@ static int finite_matrix(const float matrix[16]) {
     return 1;
 }
 
+int mdkr_modern_character_capture_framing_solve_ndc(
+    const float source_ndc_bounds[4],
+    MdkrModernCharacterCaptureFraming *output) {
+    MdkrModernCharacterCaptureFraming solved;
+    double span_x;
+    double span_y;
+    double scale;
+    unsigned component;
+    if (source_ndc_bounds == NULL || output == NULL) return 0;
+    for (component = 0u; component < 4u; ++component) {
+        if (!isfinite(source_ndc_bounds[component])) return 0;
+    }
+    if (source_ndc_bounds[0] > source_ndc_bounds[2] ||
+        source_ndc_bounds[1] > source_ndc_bounds[3]) return 0;
+    span_x = (double)source_ndc_bounds[2] - source_ndc_bounds[0];
+    span_y = (double)source_ndc_bounds[3] - source_ndc_bounds[1];
+    if (!isfinite(span_x) || !isfinite(span_y) ||
+        span_x <= 1.0e-9 || span_y <= 1.0e-9) return 0;
+    /* 82% horizontal and 72% vertical occupancy leave space for hair,
+     * animation overshoot, outline generation, and a portrait crop. */
+    scale = fmin(1.64 / span_x, 1.44 / span_y);
+    if (scale < 0.25) scale = 0.25;
+    if (scale > 8.0) scale = 8.0;
+    memset(&solved, 0, sizeof(solved));
+    solved.scale = (float)scale;
+    solved.center_ndc[0] =
+        (float)(((double)source_ndc_bounds[0] + source_ndc_bounds[2]) * 0.5);
+    solved.center_ndc[1] =
+        (float)(((double)source_ndc_bounds[1] + source_ndc_bounds[3]) * 0.5);
+    memcpy(solved.source_ndc_bounds, source_ndc_bounds,
+           sizeof(solved.source_ndc_bounds));
+    solved.valid = 1u;
+    *output = solved;
+    return 1;
+}
+
 int mdkr_modern_character_capture_projection_compose(
     const float mvp[16], const float target_frame[16], float output[16]) {
     float composed[16];
@@ -40,6 +76,80 @@ int mdkr_modern_character_capture_projection_compose(
         }
     }
     memcpy(output, composed, sizeof(composed));
+    return 1;
+}
+
+int mdkr_modern_character_capture_framing_solve(
+    const float target_to_clip[16], const float bounds_min[3],
+    const float bounds_max[3], MdkrModernCharacterCaptureFraming *output) {
+    double minimum[2] = {DBL_MAX, DBL_MAX};
+    double maximum[2] = {-DBL_MAX, -DBL_MAX};
+    unsigned corner;
+    unsigned axis;
+    if (!finite_matrix(target_to_clip) || bounds_min == NULL ||
+        bounds_max == NULL || output == NULL) return 0;
+    for (axis = 0u; axis < 3u; ++axis) {
+        if (!isfinite(bounds_min[axis]) || !isfinite(bounds_max[axis]) ||
+            bounds_min[axis] > bounds_max[axis]) return 0;
+    }
+    for (corner = 0u; corner < 8u; ++corner) {
+        double clip[4];
+        float point[3];
+        unsigned row;
+        for (axis = 0u; axis < 3u; ++axis) {
+            point[axis] = (corner & (1u << axis)) != 0u
+                ? bounds_max[axis] : bounds_min[axis];
+        }
+        for (row = 0u; row < 4u; ++row) {
+            clip[row] = (double)target_to_clip[row] * point[0] +
+                (double)target_to_clip[4u + row] * point[1] +
+                (double)target_to_clip[8u + row] * point[2] +
+                target_to_clip[12u + row];
+            if (!isfinite(clip[row])) return 0;
+        }
+        if (clip[3] <= 1.0e-9) return 0;
+        for (axis = 0u; axis < 2u; ++axis) {
+            const double ndc = clip[axis] / clip[3];
+            if (!isfinite(ndc)) return 0;
+            if (ndc < minimum[axis]) minimum[axis] = ndc;
+            if (ndc > maximum[axis]) maximum[axis] = ndc;
+        }
+    }
+    {
+        const float ndc_bounds[4] = {
+            (float)minimum[0], (float)minimum[1],
+            (float)maximum[0], (float)maximum[1],
+        };
+        return mdkr_modern_character_capture_framing_solve_ndc(
+            ndc_bounds, output);
+    }
+}
+
+int mdkr_modern_character_capture_framing_apply(
+    const float matrix[16],
+    const MdkrModernCharacterCaptureFraming *framing, float output[16]) {
+    float framed[16];
+    unsigned column;
+    if (!finite_matrix(matrix) || framing == NULL || output == NULL ||
+        framing->valid != 1u || !isfinite(framing->scale) ||
+        framing->scale < 0.25f || framing->scale > 8.0f ||
+        !isfinite(framing->center_ndc[0]) ||
+        !isfinite(framing->center_ndc[1])) return 0;
+    memcpy(framed, matrix, sizeof(framed));
+    for (column = 0u; column < 4u; ++column) {
+        const unsigned base = column * 4u;
+        const double x = (double)framing->scale *
+            ((double)matrix[base] -
+             framing->center_ndc[0] * matrix[base + 3u]);
+        const double y = (double)framing->scale *
+            ((double)matrix[base + 1u] -
+             framing->center_ndc[1] * matrix[base + 3u]);
+        if (!isfinite(x) || !isfinite(y) || x < -FLT_MAX || x > FLT_MAX ||
+            y < -FLT_MAX || y > FLT_MAX) return 0;
+        framed[base] = (float)x;
+        framed[base + 1u] = (float)y;
+    }
+    memcpy(output, framed, sizeof(framed));
     return 1;
 }
 

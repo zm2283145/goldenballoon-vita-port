@@ -1609,6 +1609,13 @@ int mdkr_modern_character_emit(int player, int view,
         draw.view = (uint32_t)view;
         memcpy(draw.target_frame_matrix, target_context,
                sizeof(draw.target_frame_matrix));
+        if (fit_diagnostics_ready) {
+            draw.capture_bounds_valid = 1u;
+            memcpy(draw.capture_bounds_min, fit_diagnostics.bounds_min,
+                   sizeof(draw.capture_bounds_min));
+            memcpy(draw.capture_bounds_max, fit_diagnostics.bounds_max,
+                   sizeof(draw.capture_bounds_max));
+        }
         matrix_multiply(anchored_transform, node_world, draw.model_matrix);
         matrix_multiply(previous_anchored_transform, previous_node_world,
                         draw.previous_model_matrix);

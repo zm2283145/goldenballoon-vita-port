@@ -36,10 +36,34 @@ typedef struct MdkrModernCharacterCaptureProjection {
     float target_to_clip[16];
 } MdkrModernCharacterCaptureProjection;
 
+/* A bounded clip-space crop for author inspection. It is derived only from
+ * positive-W projections of either exact fitted bounds or the renderer's
+ * current posed vertices. Applying it changes an isolated replay matrix,
+ * never the gameplay camera or package. */
+typedef struct MdkrModernCharacterCaptureFraming {
+    uint32_t valid;
+    float scale;
+    float center_ndc[2];
+    float source_ndc_bounds[4]; /* min X/Y, max X/Y */
+} MdkrModernCharacterCaptureFraming;
+
 /* Compose camera/object MVP * donor-target transform without relying on a
  * backend-specific matrix helper. Output changes only on complete success. */
 int mdkr_modern_character_capture_projection_compose(
     const float mvp[16], const float target_frame[16], float output[16]);
+
+int mdkr_modern_character_capture_framing_solve(
+    const float target_to_clip[16], const float bounds_min[3],
+    const float bounds_max[3], MdkrModernCharacterCaptureFraming *output);
+/* Solve the same bounded authoring crop from an already-projected subject
+ * rectangle. This lets a renderer frame the exact current skinned pose while
+ * retaining target-space bounds for the projection witness. */
+int mdkr_modern_character_capture_framing_solve_ndc(
+    const float source_ndc_bounds[4],
+    MdkrModernCharacterCaptureFraming *output);
+int mdkr_modern_character_capture_framing_apply(
+    const float matrix[16],
+    const MdkrModernCharacterCaptureFraming *framing, float output[16]);
 
 int mdkr_modern_character_capture_projection_valid(
     const MdkrModernCharacterCaptureProjection *projection);

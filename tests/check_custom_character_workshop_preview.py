@@ -136,7 +136,9 @@ def read_png_rgba(path: Path) -> tuple[int, int, bytes]:
     return read_png(path, 6)
 
 
-def require_fixture_composition(width: int, height: int, pixels: bytes) -> None:
+def require_fixture_composition(
+        width: int, height: int, pixels: bytes, *, require_central: bool = True
+) -> None:
     """Find the generated fixture's contiguous brown-red material on screen.
 
     The threshold intentionally allows normal GPU/lighting variation. The
@@ -194,10 +196,11 @@ def require_fixture_composition(width: int, height: int, pixels: bytes) -> None:
     if (largest_area < max(512, component_box_area // 5) or
             max_x - min_x < width * 3 // 100 or
             max_y - min_y < height * 3 // 100 or
-            min_x < width * 15 // 100 or max_x > width * 85 // 100 or
-            min_y < height * 15 // 100 or max_y > height * 80 // 100 or
-            abs(centre_x - width / 2.0) > width * 15 // 100 or
-            abs(centre_y - height / 2.0) > height * 15 // 100):
+            (require_central and (
+                min_x < width * 15 // 100 or max_x > width * 85 // 100 or
+                min_y < height * 15 // 100 or max_y > height * 80 // 100 or
+                abs(centre_x - width / 2.0) > width * 15 // 100 or
+                abs(centre_y - height / 2.0) > height * 15 // 100))):
         raise ValueError(
             "generated character is absent, clipped, or outside the central "
             f"inspection frame (area={largest_area}, bounds={largest_bounds})"
@@ -240,7 +243,13 @@ def require_model_alpha_composition(
     rgb = bytearray(total * 3)
     for index in range(total):
         rgb[index * 3:index * 3 + 3] = pixels[index * 4:index * 4 + 3]
-    require_fixture_composition(width, height, bytes(rgb))
+    # Alpha bounds above describe the complete isolated subject. A particular
+    # lit material face can legitimately sit off-centre on a rotated 3D model
+    # (especially in exact top/underside views), so use it only as a material-
+    # presence witness here. Scene captures still require the coloured fixture
+    # itself to occupy the expected central gameplay region.
+    require_fixture_composition(
+        width, height, bytes(rgb), require_central=False)
 
 
 def run(command: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:

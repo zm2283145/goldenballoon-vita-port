@@ -121,6 +121,9 @@ struct GfxModernSkinnedDraw {
     uint32_t player;
     uint32_t view;
     float target_frame_matrix[16];
+    uint32_t capture_bounds_valid;
+    float capture_bounds_min[3];
+    float capture_bounds_max[3];
     /* Primitive-local glTF node transform, including the package's authored
      * presentation transform. Column-major, applied after skinning and before
      * the display-list object's MVP. */

@@ -66,7 +66,7 @@ Measured input/runtime facts:
 | Requested standing height | 1.25 m |
 | Runtime source schema after review | v4, 16/16 roles reviewed |
 | Contact maximum, car / hovercraft / plane | 176 / 180 / 146 mm |
-| Isolated-capture subject height | 266/1,920 px (13.85%) |
+| Pre-fix isolated-capture subject height | 266/1,920 px (13.85%) |
 
 The proof exposed six release-blocking authoring defects:
 
@@ -246,15 +246,20 @@ fit-bound.
 
 ### M5 — Inspection and portrait framing (medium)
 
-- Make isolated capture solve a subject-fit camera from projected animated
-  bounds, with padding and hysteresis, after the held pose stabilizes. Do not
-  reuse a conservative gameplay pull-back for portrait products.
-- Target 60–85% subject-height occupancy for portrait-ready model-only captures;
-  disclose clipping and wide-proportion exceptions. The example’s current
-  13.85% is a failing regression fixture.
-- Separate “gameplay camera proof” from “author inspection framing.” Composed
-  captures may retain the actual camera; isolated captures should optimize the
-  subject while preserving the exact transform/projection witness.
+- **Implemented:** after the existing held-pose stabilization gate, isolated
+  capture mirrors the exact current CPU skin/model/MVP transform for every
+  selected primitive, unions positive-W posed vertices, and applies a bounded
+  padded subject fit to capture-only UBO slots. The one-shot stabilized product
+  does not need temporal camera hysteresis and never changes gameplay framing.
+- **Implemented:** target 60–85% subject-height occupancy for portrait-ready
+  model-only captures and fail closed on degenerate/behind-camera subjects. The
+  volumetric ROM-backed regression fixture now occupies exactly 72% of the
+  1,920-pixel output height and is centered to within one pixel in front, top,
+  underside, one-player, and four-player capture arms.
+- **Implemented:** separate “gameplay camera proof” from “author inspection
+  framing.” Composed captures retain the actual camera; isolated captures use
+  an independent replay slot and publish the correspondingly framed exact
+  target-to-clip projection witness.
 - Add one-click front/three-quarter portrait arms, subject centering, and direct
   handoff into the existing crop/matte/palette/outline/readability workflow.
 - Generate a first portrait suggestion during intake, while keeping exact 40x40
@@ -346,10 +351,12 @@ by M6. M8 begins with M0 and remains a release gate throughout.
 
 The immediate next slice is therefore:
 
-1. add four-way forward thumbnails plus transform severity/proposal review;
-2. implement structural hips/root suggestions and rest-basis diagnostics;
+1. render the already-reviewable four forward-axis choices as equal thumbnails;
+2. extend the structural rig proposal with bind-position/symmetry scoring and
+   reviewable rest-basis/bend-axis diagnostics;
 3. add side-by-side held-phase and transition review for the now-reversible
    animation decisions;
-4. fix isolated-capture framing to the 60–85% occupancy contract; and
-5. re-run this example privately to verify select, car, hovercraft, plane,
-   portrait, contacts, and four-player performance.
+4. turn the guided per-vehicle sequence into evidence-bound root/contact
+   proposals with advisory residual and occlusion targets; and
+5. re-run the private example through the new 72%-occupancy isolated capture,
+   complete its portrait handoff, and qualify all contexts/performance again.

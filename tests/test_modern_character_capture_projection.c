@@ -25,6 +25,7 @@ int main(void) {
     int32_t pixel[2];
     int32_t depth;
     uint32_t flags;
+    MdkrModernCharacterCaptureFraming framing;
     identity(camera);
     identity(target);
     target[12] = 0.25f;
@@ -43,6 +44,47 @@ int main(void) {
                 camera, target, composed) && composed[0] == 2.0f &&
                 composed[12] == 7.0f,
             "composition did not preserve camera-times-target order");
+    {
+        const float bounds_min[3] = {-0.10f, -0.20f, 0.25f};
+        const float bounds_max[3] = {0.10f, 0.20f, 0.75f};
+        float framed[16];
+        identity(camera);
+        require(mdkr_modern_character_capture_framing_solve(
+                    camera, bounds_min, bounds_max, &framing) &&
+                    fabsf(framing.scale - 3.6f) < 0.0001f,
+                "small centered bounds did not receive a bounded subject fit");
+        require(mdkr_modern_character_capture_framing_apply(
+                    camera, &framing, framed) &&
+                    fabsf(framed[0] - 3.6f) < 0.0001f &&
+                    fabsf(framed[5] - 3.6f) < 0.0001f,
+                "subject framing did not scale the clip-space matrix");
+    }
+    {
+        const float bounds_min[3] = {0.40f, -0.10f, 0.25f};
+        const float bounds_max[3] = {0.60f, 0.30f, 0.75f};
+        float framed[16];
+        identity(camera);
+        require(mdkr_modern_character_capture_framing_solve(
+                    camera, bounds_min, bounds_max, &framing) &&
+                    mdkr_modern_character_capture_framing_apply(
+                        camera, &framing, framed) &&
+                    fabsf(framed[12] + 1.8f) < 0.0001f &&
+                    fabsf(framed[13] + 0.36f) < 0.0001f,
+                "off-centre bounds were not centered by the fitted matrix");
+    }
+    {
+        const float ndc_bounds[4] = {-0.25f, -0.10f, 0.15f, 0.30f};
+        float framed[16];
+        identity(camera);
+        require(mdkr_modern_character_capture_framing_solve_ndc(
+                    ndc_bounds, &framing) &&
+                    fabsf(framing.scale - 3.6f) < 0.0001f &&
+                    mdkr_modern_character_capture_framing_apply(
+                        camera, &framing, framed) &&
+                    fabsf(framed[12] - 0.18f) < 0.0001f &&
+                    fabsf(framed[13] + 0.36f) < 0.0001f,
+                "posed NDC bounds did not produce a centered bounded fit");
+    }
     composed[0] = NAN;
     memset(camera, 0x5a, sizeof(camera));
     require(!mdkr_modern_character_capture_projection_compose(
