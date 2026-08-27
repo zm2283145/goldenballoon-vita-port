@@ -4878,7 +4878,11 @@ editing, legacy singleton migration, and rendered captures without publishing a
 package candidate or runtime cache. A fresh
 process and every switch require reinspection, so stale model bytes never inherit
 an in-memory fingerprint. A checksum-corrupt inventory is rendered read-only and
-must remain byte-for-byte untouched. The gate also drives reviewed installation,
+must remain byte-for-byte untouched. Hostile unit fixtures prove per-member and
+aggregate ZIP expansion-ratio rejection before reads and unsupported-compression
+rejection. The rendered lifecycle supplies an otherwise complete draft with a
+malformed SPDX expression, requires the exact inline parser refusal, and proves
+that neither a review candidate nor an installed cache appears. The gate also drives reviewed installation,
 requires exact completed-draft/candidate cleanup, hashes both external GLBs and
 the license before and after the lifecycle, keyboard-walks the spoken draft
 controls, and renders at 640x480 with 200% UI scale and touch scrolling.

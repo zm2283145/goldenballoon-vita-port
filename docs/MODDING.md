@@ -237,6 +237,8 @@ player. Those settings never alter physics or the vehicle selected by the game.
 ```sh
 # Optional CLI equivalent of the Workshop's no-overwrite DAE/ZIP conversion.
 # A ZIP must contain exactly one DAE or character-ready self-contained GLB.
+# Stored and Deflate members are accepted; per-member and aggregate expansion
+# ratios are checked from ZIP metadata before any model or nested archive read.
 python3 tools/character_package_manager.py --directory characters \
   convert-authoring-source downloaded-model.zip model.glb
 
@@ -357,18 +359,26 @@ The Workshop accepts a self-contained GLB 2.0 file as an authoring source. It
 also accepts an explicit DAE or a recursively nested authoring ZIP when the ZIP
 contains exactly one DAE or character-ready GLB. The user chooses a new `.glb`
 destination; traversal, symlinks, encryption, unsafe nesting, expanded-size and
-member-count overflow, ambiguous model choices, external resources, and every
-overwrite fail closed. Conversion uses a private temporary extraction and never
-changes the download. Missing archive license material is reported, but the
+member-count overflow, excessive per-member or aggregate compression ratios,
+unsupported compression, ambiguous model choices, external resources, and
+every overwrite fail closed. Conversion uses a private temporary extraction
+and never changes the download. Missing archive license material is reported, but the
 raw draft still requires the user to choose exact license/notice bytes before
-Build.
+Build. The published intake ceiling is expanded bytes <= 200 times compressed
+member bytes plus 1 MiB, applied to each regular member and to the whole archive
+at every nesting level. Inventory JSON reports compressed/expanded totals and
+both policy constants so rejection is diagnosable rather than a hidden limit.
 
 This is not an install shortcut. A resumable first-import draft fingerprints and
 inventories the bounded GLB, then requires a stable package ID, display name,
 exact license/notice file, SPDX expression, attribution, source URL, built-in
 gameplay donor, vehicle scope, forward axis, standing height, fallback clip,
 seat/pelvis node, and head node. Inferred clip/socket names are starting points,
-not truth, and remain directly selectable from the exact model inventory.
+not truth, and remain directly selectable from the exact model inventory. SPDX
+syntax is parsed in the editor and again at the package trust boundary; this
+checks expression structure and identifier spelling, not whether an identifier
+is present in a particular evolving License List or whether the declaration
+grants the user rights.
 Duplicate animation or node names fail explicitly because a name-based manifest
 could not identify them unambiguously. If the GLB changes after inspection,
 Build refuses it and requires a new inventory. The deterministic source-only

@@ -676,6 +676,80 @@ class CharacterAssetProbeTests(unittest.TestCase):
         errors = probe.validate_manifest(manifest, report)
         self.assertTrue(any("printable UTF-8 bytes" in error for error in errors))
 
+    def test_spdx_expression_grammar_is_structurally_validated(self) -> None:
+        for expression in (
+            "MIT",
+            "CC-BY-4.0",
+            "GPL-2.0-or-later+",
+            "MIT OR Apache-2.0",
+            "MIT or Apache-2.0",
+            "MIT AND (Apache-2.0 OR BSD-3-Clause)",
+            "GPL-2.0-only WITH Classpath-exception-2.0",
+            "GPL-2.0-only with AdditionRef-Artist-Permission",
+            "LicenseRef-Community-Grant",
+            "LicenseRef-.community-",
+            "DocumentRef-Pack:LicenseRef-Artist-Terms",
+            "DocumentRef-.pack-:LicenseRef-.artist-terms",
+            "GPL-2.0-only WITH DocumentRef-Pack:AdditionRef-Terms",
+        ):
+            self.assertIsNone(
+                probe.validate_spdx_expression(expression), expression
+            )
+        for expression in (
+            "",
+            "NONE",
+            "NOASSERTION",
+            "MIT Or Apache-2.0",
+            "MIT Apache-2.0",
+            "MIT OR",
+            "OR MIT",
+            "(MIT OR Apache-2.0",
+            "MIT OR Apache-2.0)",
+            "(MIT OR Apache-2.0) WITH Classpath-exception-2.0",
+            "MIT WITH",
+            "MIT WITH LicenseRef-Exception",
+            "MIT WITH AdditionRef-",
+            "AdditionRef-Artist-Permission",
+            "LicenseRef-",
+            "LicenseRef-Custom+",
+            "GPL-2.0 +",
+            "DocumentRef-Pack:MIT",
+            "DocumentRef-:LicenseRef-Terms",
+            "MIT/Apache-2.0",
+            "MIT ∨ Apache-2.0",
+        ):
+            self.assertIsNotNone(
+                probe.validate_spdx_expression(expression), expression
+            )
+        manifest = make_manifest()
+        manifest["license"]["spdx"] = "MIT Or Apache-2.0"
+        errors = probe.validate_manifest(
+            manifest,
+            probe.inspect_glb_bytes(make_animated_glb(), require_character=True),
+        )
+        self.assertTrue(any("valid SPDX expression" in error for error in errors))
+
+    def test_checked_in_schema_matches_provenance_text_bounds(self) -> None:
+        for schema_name in (
+            "mdkr-character-source-v1.schema.json",
+            "mdkr-character-source-v2.schema.json",
+        ):
+            schema = json.loads(
+                (ROOT / "docs" / "ref" / schema_name).read_text(
+                    encoding="utf-8"
+                )
+            )
+            license_properties = schema["properties"]["license"]["properties"]
+            self.assertEqual(128, license_properties["spdx"]["maxLength"])
+            self.assertIn("authoritative expression grammar",
+                          license_properties["spdx"]["description"])
+            self.assertEqual(
+                256, license_properties["attribution"]["maxLength"]
+            )
+            self.assertEqual(
+                2048, license_properties["source_url"]["maxLength"]
+            )
+
     def test_archive_inventory_fails_closed_without_license(self) -> None:
         dae = b'''<?xml version="1.0"?><COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1"><asset><unit meter="1"/><up_axis>Y_UP</up_axis></asset><library_geometries><geometry/></library_geometries></COLLADA>'''
         nested = io.BytesIO()
@@ -688,6 +762,18 @@ class CharacterAssetProbeTests(unittest.TestCase):
         report = probe.inspect_archive_bytes(outer.getvalue(), "source.zip")
         self.assertIn("no embedded license or copyright file", report["blockers"])
         self.assertEqual("dae", report["nested_archives"][0]["models"][0]["format"])
+        self.assertGreater(report["compressed_member_bytes"], 0)
+        self.assertEqual(
+            report["expanded_bytes"], report["declared_expanded_bytes"]
+        )
+        self.assertEqual(
+            probe.MAX_ARCHIVE_EXPANSION_RATIO,
+            report["expansion_ratio_limit"],
+        )
+        self.assertEqual(
+            probe.ARCHIVE_EXPANSION_SLACK_BYTES,
+            report["expansion_slack_bytes"],
+        )
 
     def test_archive_inventory_finds_deep_license_and_requires_real_model(self) -> None:
         deep = io.BytesIO()
@@ -724,6 +810,63 @@ class CharacterAssetProbeTests(unittest.TestCase):
             archive.writestr("../escape.glb", b"not a model")
         with self.assertRaises(probe.ProbeError):
             probe.inspect_archive_bytes(archive_file.getvalue(), "bad.zip")
+
+    def test_archive_member_compression_bomb_is_rejected_before_read(self) -> None:
+        archive_file = io.BytesIO()
+        with zipfile.ZipFile(
+            archive_file, "w", compression=zipfile.ZIP_DEFLATED
+        ) as archive:
+            archive.writestr("model.glb", b"\0" * (8 * 1024 * 1024))
+            archive.writestr("LICENSE.txt", "CC0 fixture")
+        with self.assertRaisesRegex(
+            probe.ProbeError, "member compression ratio"
+        ):
+            probe.inspect_archive_bytes(archive_file.getvalue(), "bomb.zip")
+
+    def test_archive_aggregate_compression_bomb_is_rejected_before_read(self) -> None:
+        archive_file = io.BytesIO()
+        with zipfile.ZipFile(
+            archive_file, "w", compression=zipfile.ZIP_DEFLATED
+        ) as archive:
+            for index in range(4):
+                archive.writestr(
+                    f"padding-{index}.bin", b"\0" * (512 * 1024)
+                )
+            archive.writestr("LICENSE.txt", "CC0 fixture")
+        with self.assertRaisesRegex(
+            probe.ProbeError, "aggregate compression ratio"
+        ):
+            probe.inspect_archive_bytes(
+                archive_file.getvalue(), "aggregate-bomb.zip"
+            )
+
+    def test_nested_archive_reapplies_compression_budget(self) -> None:
+        nested = io.BytesIO()
+        with zipfile.ZipFile(
+            nested, "w", compression=zipfile.ZIP_DEFLATED
+        ) as archive:
+            archive.writestr("model.glb", b"\0" * (8 * 1024 * 1024))
+            archive.writestr("LICENSE.txt", "CC0 fixture")
+        outer = io.BytesIO()
+        with zipfile.ZipFile(
+            outer, "w", compression=zipfile.ZIP_STORED
+        ) as archive:
+            archive.writestr("nested.zip", nested.getvalue())
+        with self.assertRaisesRegex(
+            probe.ProbeError, "member compression ratio"
+        ):
+            probe.inspect_archive_bytes(outer.getvalue(), "nested-bomb.zip")
+
+    def test_archive_rejects_nonportable_compression_method(self) -> None:
+        archive_file = io.BytesIO()
+        with zipfile.ZipFile(
+            archive_file, "w", compression=zipfile.ZIP_BZIP2
+        ) as archive:
+            archive.writestr("LICENSE.txt", "CC0 fixture")
+        with self.assertRaisesRegex(
+            probe.ProbeError, "unsupported ZIP compression method"
+        ):
+            probe.inspect_archive_bytes(archive_file.getvalue(), "bzip2.zip")
 
 
 if __name__ == "__main__":

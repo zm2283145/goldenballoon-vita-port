@@ -563,6 +563,18 @@ all forbidden.
 
 Import is a hostile-input boundary even when the user trusts the artist.
 
+The general authoring-ZIP expansion policy is explicit: each member and the
+aggregate must satisfy `expanded <= compressed * 200 + 1 MiB` before any member
+read, at every accepted nesting level. Stored and Deflate are the only accepted
+methods. Inventory JSON exposes both byte totals and policy constants. This
+guard is independent from the absolute compressed/expanded/member/depth caps.
+The SPDX structural parser follows the [normative stable SPDX 3.0.1 expression
+grammar](https://spdx.github.io/spdx-spec/v3.0.1/annexes/spdx-license-expressions/),
+including uppercase or lowercase Boolean operators, `AdditionRef`,
+custom document references, precedence, and the no-space `+` rule. It does not
+freeze or imply membership in a particular revision of the evolving SPDX
+License List, and it never interprets whether a declaration grants rights.
+
 ### Package gate
 
 - Reject absolute, parent-relative, drive-qualified, duplicate, encrypted, and
@@ -570,7 +582,7 @@ Import is a hostile-input boundary even when the user trusts the artist.
 - Cap members, nesting, compressed bytes, expanded bytes, individual resources,
   and compression ratio before allocation.
 - Require an exact schema version, model digest, non-empty license text, SPDX
-  declaration, attribution, and source URL.
+  expression that passes the bounded grammar, attribution, and source URL.
 - Treat license metadata as a declaration, not proof of rights. The launcher
   must say that the importer cannot verify copyright or trademark ownership.
 - Never automatically upload, synchronize, or redistribute imported content.
@@ -870,8 +882,9 @@ than being distorted by mandatory solving.
     the last-known-good cache and enabled/disabled state.
 13. Raw-source intake accepts self-contained GLB directly. DAE and ZIP inputs
     first require an explicit new GLB destination. ZIP traversal, symlinks,
-    encryption, nesting, expanded bytes and member count are bounded; exactly
-    one DAE or character-ready GLB must be unambiguous. Conversion happens in a
+    encryption, nesting, expanded bytes, member count, supported compression,
+    and per-member plus aggregate expansion ratio are bounded before member
+    reads; exactly one DAE or character-ready GLB must be unambiguous. Conversion happens in a
     private temporary extraction, exclusively creates the chosen output, leaves
     the download unchanged, and reports missing archive license material before
     authoring. The resulting GLB is then fingerprinted and inventoried. Up to 64
@@ -1182,10 +1195,10 @@ unfinished pieces into unbounded memory or GPU work.
 ### P0 - Freeze the source contract (partly complete)
 
 - Review and version the manifest schema and semantic animation/socket lists.
-- The checked-in JSON Schema, duplicate-key/non-finite JSON rejection and NFC
-  Unicode requirement are complete. Add SPDX expression parsing,
-  compression-ratio gates for general source archives, and complete GLB
-  accessor checks.
+- The checked-in JSON Schema, duplicate-key/non-finite JSON rejection, NFC
+  Unicode requirement, bounded SPDX expression parser, and pre-decompression
+  member/aggregate ZIP expansion gates are complete. Complete the remaining
+  GLB accessor checks.
 - Pin Khronos Validator and adapter versions with hashes and notices.
 - Add several license-clean external fixtures: static, skinned/animated,
   multi-material, morph target, alpha mask, malformed and budget-exceeding.

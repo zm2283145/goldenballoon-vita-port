@@ -28,8 +28,13 @@
       "additionalProperties": false,
       "required": ["spdx", "attribution", "source_url"],
       "properties": {
-        "spdx": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "attribution": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "spdx": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "SPDX expression; the package validator applies the authoritative expression grammar."
+        },
+        "attribution": { "type": "string", "minLength": 1, "maxLength": 256 },
         "source_url": { "type": "string", "format": "uri", "maxLength": 2048 }
       }
     },

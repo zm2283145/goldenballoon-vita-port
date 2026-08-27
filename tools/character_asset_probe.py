@@ -36,6 +36,8 @@ MAX_PORTRAIT_BYTES = 8 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 4096
 MAX_NESTED_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_ARCHIVE_DEPTH = 2
+MAX_ARCHIVE_EXPANSION_RATIO = 200
+ARCHIVE_EXPANSION_SLACK_BYTES = 1024 * 1024
 MAX_JOINTS = 256
 MAX_VERTICES = 1_000_000
 MAX_TRIANGLES = 2_000_000
@@ -98,10 +100,191 @@ HUMANOID_ROLE_SET = set(HUMANOID_ROLES)
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")
 SEMANTIC_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+SPDX_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
+SPDX_REFERENCE_NAME_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 
 
 class ProbeError(ValueError):
     """A bounded, user-facing asset validation failure."""
+
+
+def _spdx_reference_name(text: str) -> bool:
+    return SPDX_REFERENCE_NAME_RE.fullmatch(text) is not None
+
+
+def _spdx_ordinary_identifier(text: str) -> bool:
+    return (
+        _spdx_reference_name(text)
+        and SPDX_IDENTIFIER_RE.fullmatch(text) is not None
+        and text not in {
+            "AND", "OR", "WITH", "and", "or", "with",
+            "NONE", "NOASSERTION",
+        }
+    )
+
+
+def _spdx_license_identifier(text: str) -> bool:
+    license_prefix = "LicenseRef-"
+    addition_prefix = "AdditionRef-"
+    document_prefix = "DocumentRef-"
+    if text.startswith(license_prefix):
+        return _spdx_reference_name(text[len(license_prefix):])
+    if text.startswith(document_prefix):
+        document, separator, license_ref = text.partition(":")
+        return (
+            bool(separator)
+            and ":" not in license_ref
+            and _spdx_reference_name(document[len(document_prefix):])
+            and license_ref.startswith(license_prefix)
+            and _spdx_reference_name(license_ref[len(license_prefix):])
+        )
+    if text.startswith(addition_prefix):
+        return False
+    return _spdx_ordinary_identifier(text)
+
+
+def _spdx_addition_identifier(text: str) -> bool:
+    addition_prefix = "AdditionRef-"
+    document_prefix = "DocumentRef-"
+    if text.startswith(addition_prefix):
+        return _spdx_reference_name(text[len(addition_prefix):])
+    if text.startswith(document_prefix):
+        document, separator, addition_ref = text.partition(":")
+        return (
+            bool(separator)
+            and ":" not in addition_ref
+            and _spdx_reference_name(document[len(document_prefix):])
+            and addition_ref.startswith(addition_prefix)
+            and _spdx_reference_name(addition_ref[len(addition_prefix):])
+        )
+    return _spdx_ordinary_identifier(text) and not text.startswith("LicenseRef-")
+
+
+def validate_spdx_expression(expression: str) -> str | None:
+    """Return an actionable syntax error, or None for a valid SPDX expression.
+
+    This deliberately validates the stable expression grammar and identifier
+    spelling without embedding a revision of the evolving SPDX License List.
+    A syntactically valid declaration is not a rights or provenance verdict.
+    """
+    if not isinstance(expression, str) or not expression.strip():
+        return "enter an SPDX license expression"
+    try:
+        encoded = expression.encode("ascii")
+    except UnicodeEncodeError:
+        return "SPDX expressions use ASCII identifiers and operators"
+    if len(encoded) > 128:
+        return "SPDX expression exceeds 128 bytes"
+
+    tokens: list[tuple[str, int]] = []
+    offset = 0
+    while offset < len(expression):
+        if expression[offset].isspace():
+            offset += 1
+            continue
+        start = offset
+        if expression[offset] in "()+":
+            tokens.append((expression[offset], offset))
+            offset += 1
+            continue
+        while (
+            offset < len(expression)
+            and not expression[offset].isspace()
+            and expression[offset] not in "()+"
+        ):
+            offset += 1
+        tokens.append((expression[start:offset], start))
+
+    class Parser:
+        def __init__(self) -> None:
+            self.index = 0
+
+        def current(self) -> tuple[str, int] | None:
+            return tokens[self.index] if self.index < len(tokens) else None
+
+        def take(self, *values: str) -> bool:
+            current = self.current()
+            if current is None or current[0] not in values:
+                return False
+            self.index += 1
+            return True
+
+        def parse_or(self) -> str | None:
+            error = self.parse_and()
+            if error is not None:
+                return error
+            while self.take("OR", "or"):
+                error = self.parse_and()
+                if error is not None:
+                    return error
+            return None
+
+        def parse_and(self) -> str | None:
+            error = self.parse_with()
+            if error is not None:
+                return error
+            while self.take("AND", "and"):
+                error = self.parse_with()
+                if error is not None:
+                    return error
+            return None
+
+        def parse_with(self) -> str | None:
+            simple, error = self.parse_primary()
+            if error is not None or not self.take("WITH", "with"):
+                return error
+            with_offset = tokens[self.index - 1][1]
+            if not simple:
+                return (
+                    f"SPDX WITH at byte {with_offset} must follow one license "
+                    "identifier, not a parenthesized expression"
+                )
+            current = self.current()
+            if current is None or not _spdx_addition_identifier(current[0]):
+                return (
+                    "SPDX WITH must be followed by a license exception or "
+                    "AdditionRef identifier"
+                )
+            self.index += 1
+            return None
+
+        def parse_primary(self) -> tuple[bool, str | None]:
+            current = self.current()
+            if current is None:
+                return False, "expected an SPDX license identifier or '('"
+            text, token_offset = current
+            if text == "(":
+                self.index += 1
+                error = self.parse_or()
+                if error is not None:
+                    return False, error
+                if not self.take(")"):
+                    return False, "SPDX parenthesized expression is missing ')'"
+                return False, None
+            if not _spdx_license_identifier(text):
+                return False, (
+                    f"invalid SPDX license identifier {text!r} at byte "
+                    f"{token_offset}"
+                )
+            self.index += 1
+            current_index = self.index
+            if self.take("+"):
+                if text.startswith(("LicenseRef-", "DocumentRef-")):
+                    return False, "SPDX '+' cannot qualify a custom LicenseRef"
+                if tokens[current_index][1] != token_offset + len(text):
+                    return False, (
+                        "SPDX '+' must immediately follow its license identifier"
+                    )
+            return True, None
+
+    parser = Parser()
+    error = parser.parse_or()
+    if error is not None:
+        return error
+    if parser.index != len(tokens):
+        token, token_offset = tokens[parser.index]
+        return f"unexpected SPDX token {token!r} at byte {token_offset}"
+    return None
 
 
 def _sha256(data: bytes) -> str:
@@ -279,6 +462,44 @@ def _archive_report_has_model(report: dict[str, Any]) -> bool:
     )
 
 
+def _validate_general_archive_budget(
+    infos: list[zipfile.ZipInfo], name: str
+) -> tuple[int, int]:
+    """Reject costly ZIP payloads from central-directory facts before reads."""
+    total_expanded = 0
+    total_compressed = 0
+    for info in infos:
+        if info.is_dir():
+            continue
+        safe_name = _safe_archive_name(info.filename)
+        if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+            raise ProbeError(
+                f"unsupported ZIP compression method for archive member: {safe_name}"
+            )
+        if info.file_size < 0 or info.compress_size < 0:
+            raise ProbeError(f"invalid ZIP member sizes: {safe_name}")
+        allowed = (
+            info.compress_size * MAX_ARCHIVE_EXPANSION_RATIO
+            + ARCHIVE_EXPANSION_SLACK_BYTES
+        )
+        if info.file_size > allowed:
+            raise ProbeError(
+                "archive member compression ratio exceeds the bounded intake "
+                f"policy: {safe_name}"
+            )
+        total_expanded += info.file_size
+        total_compressed += info.compress_size
+    aggregate_allowed = (
+        total_compressed * MAX_ARCHIVE_EXPANSION_RATIO
+        + ARCHIVE_EXPANSION_SLACK_BYTES
+    )
+    if total_expanded > aggregate_allowed:
+        raise ProbeError(
+            f"archive aggregate compression ratio exceeds the bounded intake policy: {name}"
+        )
+    return total_compressed, total_expanded
+
+
 def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
@@ -342,6 +563,9 @@ def inspect_archive_bytes(data: bytes, name: str, depth: int = 0) -> dict[str, A
     infos = archive.infolist()
     if len(infos) > MAX_ARCHIVE_MEMBERS:
         raise ProbeError(f"archive contains more than {MAX_ARCHIVE_MEMBERS} members")
+    compressed_total, declared_expanded_total = (
+        _validate_general_archive_budget(infos, name)
+    )
     total = 0
     files: list[dict[str, Any]] = []
     models: list[dict[str, Any]] = []
@@ -386,6 +610,10 @@ def inspect_archive_bytes(data: bytes, name: str, depth: int = 0) -> dict[str, A
         "archive_depth": depth,
         "member_count": len(files),
         "expanded_bytes": total,
+        "compressed_member_bytes": compressed_total,
+        "declared_expanded_bytes": declared_expanded_total,
+        "expansion_ratio_limit": MAX_ARCHIVE_EXPANSION_RATIO,
+        "expansion_slack_bytes": ARCHIVE_EXPANSION_SLACK_BYTES,
         "license_files": licenses,
         "models": models,
         "nested_archives": nested,
@@ -922,6 +1150,18 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
                     value, maximum):
                 errors.append(
                     f"manifest.license.{field} exceeds its bounded printable profile"
+                )
+        spdx = license_info.get("spdx")
+        if (
+            isinstance(spdx, str)
+            and spdx.strip()
+            and _bounded_printable_text(spdx, limits["spdx"])
+        ):
+            spdx_error = validate_spdx_expression(spdx)
+            if spdx_error is not None:
+                errors.append(
+                    "manifest.license.spdx is not a structurally valid SPDX expression: "
+                    + spdx_error
                 )
     animation_info = manifest.get("animations")
     clip_names = {animation["name"] for animation in glb_report.get("animations", [])}

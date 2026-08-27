@@ -788,6 +788,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/character_raw_draft_store.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_raw_intake_index.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_revision_index.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_spdx_expression.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_test_evidence_store.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_draft_store.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_draft_snapshot.cpp
@@ -1510,6 +1511,15 @@ if(NOT EMSCRIPTEN)
             target_compile_features(mdkr_character_raw_draft_store_test PRIVATE cxx_std_17)
             add_test(NAME character_raw_draft_store
                 COMMAND mdkr_character_raw_draft_store_test)
+
+            add_executable(mdkr_character_spdx_expression_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_spdx_expression.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_spdx_expression.cpp)
+            target_include_directories(mdkr_character_spdx_expression_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_spdx_expression_test PRIVATE cxx_std_17)
+            add_test(NAME character_spdx_expression
+                COMMAND mdkr_character_spdx_expression_test)
 
             add_executable(mdkr_character_test_evidence_store_test
                 ${CMAKE_SOURCE_DIR}/tests/test_character_test_evidence_store.cpp

@@ -591,6 +591,60 @@ def main() -> int:
                     "malformed raw draft inventory was partially loaded or overwritten"
                 )
 
+            invalid_spdx = root / "invalid-spdx"
+            invalid_spdx.mkdir()
+            invalid_spdx_prefs = invalid_spdx / "prefs"
+            invalid_spdx_prefs.mkdir()
+            invalid_spdx_license = invalid_spdx / "LICENSE.txt"
+            invalid_spdx_license.write_text(
+                "Fixture notice\n", encoding="utf-8"
+            )
+            (invalid_spdx_prefs / "mdkr64_app.ini").write_text(
+                f"character_raw_intake_model={model}\n"
+                f"character_raw_intake_license={invalid_spdx_license}\n"
+                "character_raw_intake_id=org.example.invalid-spdx\n"
+                "character_raw_intake_display_name=Invalid SPDX Proof\n"
+                "character_raw_intake_spdx=MIT Or Apache-2.0\n"
+                "character_raw_intake_attribution=Generated test fixture\n"
+                "character_raw_intake_source_url=https://example.invalid/spdx\n"
+                "character_raw_intake_donor=9\n"
+                "character_raw_intake_vehicles=7\n"
+                "character_raw_intake_forward=0\n"
+                "character_raw_intake_height=1.25\n"
+                f"character_raw_intake_mapping_sha256={source_before[model]}\n"
+                "character_raw_intake_fallback=idle\n"
+                "character_raw_intake_seat=root\n"
+                "character_raw_intake_head=head\n",
+                encoding="utf-8",
+            )
+            invalid_spdx_environment = isolated_environment(
+                invalid_spdx, model, invalid_spdx / "invalid-spdx.bmp",
+                compact=False, drop=True,
+            )
+            invalid_spdx_environment.update({
+                "MDKR_APP_SMOKE_FRAMES": "16",
+                "MDKR_APP_SMOKE_RAW_DRAFT_ACTION":
+                    "build-reviewed-install",
+                "MDKR_APP_SMOKE_RAW_DRAFT_ACTION_TOKEN":
+                    "mdkr64-app-raw-draft-v1",
+            })
+            invalid_spdx_log = run(
+                binary, invalid_spdx, invalid_spdx_environment,
+                ("raw-spdx valid=0 build-ready=0 "
+                 "error=Unexpected SPDX token 'Or' at byte 4.",),
+            )
+            if "raw-draft-action action=build-reviewed-install applied=1" in invalid_spdx_log:
+                raise RuntimeError(
+                    "invalid SPDX expression reached source-package build"
+                )
+            if (
+                invalid_spdx / "characters" /
+                ".launcher-character-raw-candidate.mdkrchar"
+            ).exists():
+                raise RuntimeError(
+                    "invalid SPDX expression produced a review candidate"
+                )
+
             install = root / "install"
             install.mkdir()
             install_prefs = install / "prefs"
@@ -714,6 +768,7 @@ def main() -> int:
               file=sys.stderr)
         return 1
     print("check_character_raw_intake_ui: PASS -- bounded DAE/ZIP conversion, "
+          "ZIP-bomb and invalid-SPDX refusal, "
           "mutation-free FBX/OBJ/BLEND/glTF/USD/DCC export guidance, "
           "multi-draft GLB intake, "
           "same-source branching, source-bound mapping restore, exact "

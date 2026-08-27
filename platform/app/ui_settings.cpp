@@ -14,6 +14,7 @@
 #include "character_raw_draft_store.h"
 #include "character_raw_intake_index.h"
 #include "character_revision_index.h"
+#include "character_spdx_expression.h"
 #include "character_test_evidence_store.h"
 #include "character_visual_report.h"
 #include "character_workshop_model.h"
@@ -53,6 +54,11 @@
 #include <vector>
 
 namespace {
+
+static_assert(
+    CharacterSpdxExpression::kMaximumBytes ==
+        CharacterRawDraftStore::kMaximumSpdxBytes,
+    "raw-draft and parser SPDX bounds must match");
 
 // --- Status line -----------------------------------------------------------
 // The panel never claims success it did not observe: every edit routes through
@@ -1880,7 +1886,7 @@ struct CharacterRawIntake {
     char licensePath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
     char packageId[65] = {0};
     char displayName[97] = {0};
-    char spdx[129] = {0};
+    char spdx[CharacterSpdxExpression::kMaximumBytes + 1u] = {0};
     char attribution[257] = {0};
     char sourceUrl[2049] = {0};
     int donor = 9;
@@ -1899,6 +1905,7 @@ struct CharacterRawIntake {
 
 CharacterRawIntake g_characterRawIntake;
 bool g_characterRawIntakeTracePrinted = false;
+bool g_characterRawSpdxTracePrinted = false;
 // Token-gated rendered-test actions. They call the same transactional paths as
 // the widgets; the two-frame install delay ensures the ordinary candidate
 // review is submitted and rendered before the test confirms local rights.
@@ -3039,6 +3046,7 @@ void applyCharacterRawDraft(const CharacterRawDraftStore::Draft *draft) {
     CharacterRawIntake &intake = g_characterRawIntake;
     intake.loaded = true;
     g_characterRawIntakeTracePrinted = false;
+    g_characterRawSpdxTracePrinted = false;
     if (draft == nullptr) return;
     intake.draftId = draft->id;
     const auto copy = [](char *target, size_t capacity,
@@ -14178,7 +14186,27 @@ void drawCharacterRawIntakeEditor(bool rail) {
         "##raw-spdx", "CC-BY-4.0", intake.spdx, sizeof(intake.spdx));
     ui::SpeakFocusedItem(
         "SPDX license expression", intake.spdx,
-        "A declaration supplied by the author; the Workshop does not guess it from the license file.");
+        "A structurally validated declaration supplied by the author. The Workshop does not guess it from the license file or claim that it grants rights.");
+    std::string spdxError;
+    const bool spdxValid = CharacterSpdxExpression::validate(
+        intake.spdx, spdxError);
+    if (intake.spdx[0] != '\0') {
+        if (spdxValid) {
+            ImGui::TextColored(
+                AppTheme::good(), "Valid SPDX expression structure");
+        } else {
+            ImGui::TextColored(
+                AppTheme::bad(), "%s", spdxError.c_str());
+        }
+    }
+    if (!spdxValid && intake.spdx[0] != '\0' &&
+        !g_characterRawSpdxTracePrinted &&
+        std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        std::fprintf(stderr,
+                     "[app-ui] raw-spdx valid=0 build-ready=0 error=%s\n",
+                     spdxError.c_str());
+        g_characterRawSpdxTracePrinted = true;
+    }
     ImGui::TextUnformatted("Creator / attribution");
     ImGui::SetNextItemWidth(-1.0f);
     changed |= ImGui::InputText(
@@ -14252,7 +14280,7 @@ void drawCharacterRawIntakeEditor(bool rail) {
     const bool ready = intake.inspected &&
         characterRawPackageIdValid(intake.packageId) &&
         intake.displayName[0] != '\0' && intake.licensePath[0] != '\0' &&
-        intake.spdx[0] != '\0' && intake.attribution[0] != '\0' &&
+        spdxValid && intake.attribution[0] != '\0' &&
         intake.sourceUrl[0] != '\0' && hasVehicle &&
         intake.targetHeight >= 0.1f && intake.targetHeight <= 10.0f &&
         intake.fallback >= 0 && intake.seat >= 0 && intake.head >= 0;
@@ -14294,7 +14322,10 @@ void drawCharacterRawIntakeEditor(bool rail) {
     if (!ready) ImGui::EndDisabled();
     ui::SpeakFocusedItem(
         "Build source package for review",
-        ready ? nullptr : "Complete inspection, identity, provenance, vehicle, calibration, and required mappings first.",
+        ready ? nullptr :
+            (intake.spdx[0] != '\0' && !spdxValid
+                 ? spdxError.c_str()
+                 : "Complete inspection, identity, provenance, vehicle, calibration, and required mappings first."),
         "Snapshots the GLB and license, builds a deterministic source package, and opens the ordinary mutation-free package review. It does not install the character.");
     if (!rail) ImGui::SameLine();
     if (ImGui::Button("Delete raw authoring draft...")) {
