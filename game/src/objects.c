@@ -71,6 +71,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #endif
 #include "vehicle_misc.h"
 #include "video.h"
@@ -104,6 +105,12 @@ static u32 sModernCharacterWarningBits;
 static const Object *sModernCharacterSelectObjects[MDKR_MODERN_CHARACTER_PLAYERS];
 static u8 sModernCharacterWasAirborne[MDKR_MODERN_CHARACTER_PLAYERS];
 static s16 sModernCharacterLandTicks[MDKR_MODERN_CHARACTER_PLAYERS];
+/* Workshop surface evidence is requested for one draw at a time on the game
+ * thread. The qualified retail corpus contains at most 273 triangles per
+ * racer model; the shared 512-triangle contract leaves room without allocating
+ * in ordinary rendering. */
+static MdkrModernSurfaceTriangle
+    sModernCharacterVehicleShell[MDKR_MODERN_CHARACTER_SHELL_TRIANGLE_MAX];
 
 static s32 modern_character_select_player_for_object(const Object *obj) {
     s32 player;
@@ -200,6 +207,179 @@ static s32 modern_character_donor_target_frame(
                 maximum[0], maximum[1], maximum[2],
                 output[12], output[13], output[14], output[0]);
     }
+    return TRUE;
+}
+
+static s32 modern_character_affine_inverse(
+    const f32 input[16], f32 output[16]) {
+    const f32 a00 = input[0], a01 = input[4], a02 = input[8];
+    const f32 a10 = input[1], a11 = input[5], a12 = input[9];
+    const f32 a20 = input[2], a21 = input[6], a22 = input[10];
+    const f32 tx = input[12], ty = input[13], tz = input[14];
+    const f32 determinant = a00 * (a11 * a22 - a12 * a21) -
+        a01 * (a10 * a22 - a12 * a20) +
+        a02 * (a10 * a21 - a11 * a20);
+    f32 inverse;
+    if (!isfinite(determinant) || fabsf(determinant) < 1.0e-12f ||
+        output == NULL) return FALSE;
+    inverse = 1.0f / determinant;
+    memset(output, 0, sizeof(f32) * 16u);
+    output[0] = (a11 * a22 - a12 * a21) * inverse;
+    output[4] = (a02 * a21 - a01 * a22) * inverse;
+    output[8] = (a01 * a12 - a02 * a11) * inverse;
+    output[1] = (a12 * a20 - a10 * a22) * inverse;
+    output[5] = (a00 * a22 - a02 * a20) * inverse;
+    output[9] = (a02 * a10 - a00 * a12) * inverse;
+    output[2] = (a10 * a21 - a11 * a20) * inverse;
+    output[6] = (a01 * a20 - a00 * a21) * inverse;
+    output[10] = (a00 * a11 - a01 * a10) * inverse;
+    output[12] = -(output[0] * tx + output[4] * ty + output[8] * tz);
+    output[13] = -(output[1] * tx + output[5] * ty + output[9] * tz);
+    output[14] = -(output[2] * tx + output[6] * ty + output[10] * tz);
+    output[15] = 1.0f;
+    return TRUE;
+}
+
+static s32 modern_character_head_local_matrix(
+    const ModelInstance *model_instance, s16 head_angle, f32 output[16]) {
+    f32 cosine_head;
+    f32 sine_head;
+    f32 cosine_tilt;
+    f32 sine_tilt;
+    f32 offset_x;
+    f32 offset_y;
+    f32 offset_z;
+    if (model_instance == NULL || output == NULL) return FALSE;
+    offset_x = model_instance->offsetX;
+    offset_y = model_instance->offsetY;
+    offset_z = model_instance->offsetZ;
+    cosine_tilt = coss_f(model_instance->headTilt);
+    sine_tilt = sins_f(model_instance->headTilt);
+    cosine_head = coss_f(head_angle);
+    sine_head = sins_f(head_angle);
+    output[0] = cosine_head * cosine_tilt;
+    output[1] = cosine_head * sine_tilt;
+    output[2] = -sine_head;
+    output[3] = 0.0f;
+    output[4] = -sine_tilt;
+    output[5] = cosine_tilt;
+    output[6] = 0.0f;
+    output[7] = 0.0f;
+    output[8] = sine_head * cosine_tilt;
+    output[9] = sine_head * sine_tilt;
+    output[10] = cosine_head;
+    output[11] = 0.0f;
+    output[12] =
+        (-offset_x * (cosine_head * cosine_tilt)) +
+        (-offset_y * -sine_tilt) +
+        (-offset_z * (sine_head * cosine_tilt)) + offset_x;
+    output[13] =
+        (-offset_x * (cosine_head * sine_tilt)) +
+        (-offset_y * cosine_tilt) +
+        (-offset_z * (sine_head * sine_tilt)) + offset_y;
+    output[14] =
+        (-offset_x * -sine_head) +
+        (-offset_z * cosine_head) + offset_z;
+    output[15] = 1.0f;
+    return TRUE;
+}
+
+static s32 modern_character_vehicle_shell(
+    const ObjectModel *model, const Object *object, s32 donor, s32 vehicle,
+    s32 lod, const f32 target_frame[16],
+    const ModelInstance *model_instance, s16 head_angle,
+    MdkrModernCharacterVehicleShell *out) {
+    const TriangleBatchInfo *batches;
+    const Triangle *triangles;
+    const Vertex *vertices;
+    f32 inverse_target[16];
+    f32 secondary_matrix[16];
+    const s32 secondary_matrix_active = model_instance != NULL;
+    u32 output_count = 0u;
+    s32 batch;
+    if (out == NULL) return FALSE;
+    out->triangles = NULL;
+    out->triangle_count = 0u;
+    if (model == NULL || object == NULL || object->curVertData == NULL ||
+        target_frame == NULL || model->numberOfBatches <= 0 ||
+        model->numberOfVertices <= 0 || model->numberOfTriangles <= 0 ||
+        !modern_character_affine_inverse(target_frame, inverse_target)) {
+        return FALSE;
+    }
+    if (secondary_matrix_active &&
+        !modern_character_head_local_matrix(
+            model_instance, head_angle, secondary_matrix)) return FALSE;
+    batches = DKR_PTR(const TriangleBatchInfo, model->batches);
+    triangles = DKR_PTR(const Triangle, model->triangles);
+    vertices = object->curVertData;
+    for (batch = 0; batch < model->numberOfBatches; ++batch) {
+        const TriangleBatchInfo *current = &batches[batch];
+        const TriangleBatchInfo *next = &batches[batch + 1];
+        const s32 vertex_count = next->verticesOffset -
+            current->verticesOffset;
+        const s32 triangle_count = next->facesOffset - current->facesOffset;
+        s32 triangle_index;
+        if (!mdkr_modern_donor_batch_visible(
+                donor, vehicle, lod, batch) ||
+            (current->flags & RENDER_HIDDEN) != 0u) continue;
+        if (current->verticesOffset < 0 || current->facesOffset < 0 ||
+            vertex_count <= 0 || triangle_count < 0 ||
+            next->verticesOffset > model->numberOfVertices ||
+            next->facesOffset > model->numberOfTriangles ||
+            (secondary_matrix_active &&
+             current->vertOverride > vertex_count)) {
+            return FALSE;
+        }
+        if ((u32)triangle_count >
+            MDKR_MODERN_CHARACTER_SHELL_TRIANGLE_MAX - output_count) {
+            return FALSE;
+        }
+        for (triangle_index = current->facesOffset;
+             triangle_index < next->facesOffset; ++triangle_index) {
+            const Triangle *source = &triangles[triangle_index];
+            const u8 indices[3] = {source->vi0, source->vi1, source->vi2};
+            MdkrModernSurfaceTriangle *destination =
+                &sModernCharacterVehicleShell[output_count];
+            u32 point;
+            for (point = 0u; point < 3u; ++point) {
+                const Vertex *vertex;
+                f32 local[3];
+                u32 axis;
+                if (indices[point] >= vertex_count) return FALSE;
+                vertex = &vertices[
+                    current->verticesOffset + indices[point]];
+                local[0] = vertex->x;
+                local[1] = vertex->y;
+                local[2] = vertex->z;
+                if (secondary_matrix_active &&
+                    indices[point] >= current->vertOverride) {
+                    f32 transformed_local[3];
+                    for (axis = 0u; axis < 3u; ++axis) {
+                        transformed_local[axis] =
+                            secondary_matrix[axis] * local[0] +
+                            secondary_matrix[4u + axis] * local[1] +
+                            secondary_matrix[8u + axis] * local[2] +
+                            secondary_matrix[12u + axis];
+                    }
+                    memcpy(local, transformed_local, sizeof(local));
+                }
+                for (axis = 0u; axis < 3u; ++axis) {
+                    const double transformed =
+                        (double)inverse_target[axis] * local[0] +
+                        (double)inverse_target[4u + axis] * local[1] +
+                        (double)inverse_target[8u + axis] * local[2] +
+                        inverse_target[12u + axis];
+                    if (!isfinite(transformed) || transformed < -1000.0 ||
+                        transformed > 1000.0) return FALSE;
+                    destination->point[point][axis] = (f32)transformed;
+                }
+            }
+            ++output_count;
+        }
+    }
+    if (output_count == 0u) return FALSE;
+    out->triangles = sModernCharacterVehicleShell;
+    out->triangle_count = output_count;
     return TRUE;
 }
 
@@ -6337,7 +6517,7 @@ void render_3d_model(Object *obj) {
                     if (mdkr_modern_character_emit(
                             player, get_current_viewport(),
                             MDKR_CHARACTER_CONTEXT_SELECT,
-                            targetFrame,
+                            targetFrame, NULL,
                             obj->distanceToCamera,
                             &gObjectCurrDisplayList,
                             modernError, sizeof(modernError))) {
@@ -6389,6 +6569,8 @@ modern_select_done:;
             } else {
                 char modernError[192];
                 f32 targetFrame[16];
+                MdkrModernCharacterVehicleShell vehicleShell;
+                const MdkrModernCharacterVehicleShell *vehicleShellPtr = NULL;
                 const MdkrModernCharacterContext context =
                     (MdkrModernCharacterContext)(
                         MDKR_CHARACTER_CONTEXT_CAR +
@@ -6402,9 +6584,23 @@ modern_select_done:;
                         "fallback: donor seat frame is unavailable");
                     goto modern_racer_done;
                 }
+                if (mdkr_modern_character_surface_diagnostics_requested(
+                        player, context)) {
+                    /* A failed shell build deliberately passes an empty shell:
+                     * emit consumes the one-shot request and leaves evidence
+                     * unavailable instead of retaining stale geometry. */
+                    memset(&vehicleShell, 0, sizeof(vehicleShell));
+                    (void)modern_character_vehicle_shell(
+                        objModel, obj, racerObj->characterId,
+                        racerObj->vehicleIDPrev, modernModelIndex,
+                        targetFrame,
+                        obj->animationID == 0 ? modInst : NULL,
+                        racerObj->headAngle, &vehicleShell);
+                    vehicleShellPtr = &vehicleShell;
+                }
                 if (mdkr_modern_character_emit(
                         player, get_current_viewport(),
-                        context, targetFrame,
+                        context, targetFrame, vehicleShellPtr,
                         gSceneDrawDistanceValid ? gSceneDrawDistance
                                                 : obj->distanceToCamera,
                         &gObjectCurrDisplayList,

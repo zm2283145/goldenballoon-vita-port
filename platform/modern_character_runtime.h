@@ -13,6 +13,7 @@
 #include "modern_character_registry.h"
 #include "modern_character_limits.h"
 #include "modern_character_semantics.h"
+#include "modern_character_surface_intersection.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -117,6 +118,11 @@ typedef struct MdkrModernCharacterContactDiagnostics {
     float error[MDKR_MODERN_CHARACTER_CONTACTS];
     uint32_t valid_mask;
 } MdkrModernCharacterContactDiagnostics;
+
+typedef struct MdkrModernCharacterVehicleShell {
+    const MdkrModernSurfaceTriangle *triangles;
+    uint32_t triangle_count;
+} MdkrModernCharacterVehicleShell;
 
 /* Lightweight, borrowed library record for menu/workshop roster surfaces.
  * Catalog inspection never loads GPU mesh data; pointers remain valid until
@@ -231,8 +237,22 @@ void mdkr_modern_character_clear_inspection_pose(void);
 int mdkr_modern_character_emit(int player, int view,
                                MdkrModernCharacterContext context,
                                const float target_frame[16],
+                               const MdkrModernCharacterVehicleShell *shell,
                                float view_distance, Gfx **display_list,
                                char *error, size_t error_size);
+
+/* One-shot Workshop-only surface witness. Requesting clears any prior result;
+ * the next complete player/context draw consumes the request. Vehicle shell
+ * geometry must come from fingerprint-qualified retained batches in the same
+ * donor-target frame as the replacement. Ordinary gameplay never requests or
+ * pays for this CPU geometry walk. */
+int mdkr_modern_character_request_surface_diagnostics(
+    int player, MdkrModernCharacterContext context);
+int mdkr_modern_character_surface_diagnostics_requested(
+    int player, MdkrModernCharacterContext context);
+int mdkr_modern_character_player_surface_diagnostics(
+    int player, MdkrModernCharacterContext context,
+    MdkrModernSurfaceIntersectionDiagnostics *out);
 
 /* Copies the package's validated bind-space measurements for diagnostics and
  * assisted calibration. Returns zero for a legacy cache compiled before the

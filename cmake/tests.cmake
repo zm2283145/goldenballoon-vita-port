@@ -347,6 +347,7 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform/modern_character_render.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_identity.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_surface_intersection.c
         ${CMAKE_SOURCE_DIR}/platform/workshop_preview_runtime.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_donor.c
         ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_mipgen.c
@@ -413,6 +414,22 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME modern_character_capture_projection
         COMMAND mdkr_modern_character_capture_projection_test)
+
+    add_executable(mdkr_modern_character_surface_intersection_test
+        ${CMAKE_SOURCE_DIR}/tests/test_modern_character_surface_intersection.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_surface_intersection.c)
+    target_include_directories(
+        mdkr_modern_character_surface_intersection_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_options(
+        mdkr_modern_character_surface_intersection_test PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+    if(NOT MSVC)
+        target_link_libraries(
+            mdkr_modern_character_surface_intersection_test PRIVATE m)
+    endif()
+    add_test(NAME modern_character_surface_intersection
+        COMMAND mdkr_modern_character_surface_intersection_test)
     add_executable(mdkr_character_portrait_studio_test
         ${CMAKE_SOURCE_DIR}/tests/test_character_portrait_studio.cpp
         ${CMAKE_SOURCE_DIR}/platform/app/character_png_validation.cpp

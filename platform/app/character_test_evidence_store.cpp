@@ -17,11 +17,13 @@ constexpr const char *kHeaderV2 = "mdkr-character-test-evidence-v2";
 constexpr const char *kHeaderV3 = "mdkr-character-test-evidence-v3";
 constexpr const char *kHeaderV4 = "mdkr-character-test-evidence-v4";
 constexpr const char *kHeaderV5 = "mdkr-character-test-evidence-v5";
+constexpr const char *kHeaderV6 = "mdkr-character-test-evidence-v6";
 constexpr size_t kFieldsPerRowV1 = 39u;
 constexpr size_t kFieldsPerRowV2 = 52u;
 constexpr size_t kFieldsPerRowV3 = 105u;
 constexpr size_t kFieldsPerRowV4 = 125u;
 constexpr size_t kFieldsPerRowV5 = 164u;
+constexpr size_t kFieldsPerRowV6 = 174u;
 constexpr size_t      kMaximumRowBytes =
     (CharacterTestEvidenceStore::kMaximumBuildVersionBytes * 2u) +
     (CharacterTestEvidenceStore::kMaximumBackendBytes * 2u) +
@@ -573,6 +575,53 @@ bool evidenceValid(const CharacterTestEvidenceStore::Evidence &evidence,
         !evidence.cameraProjectionValid) {
         cameraStateValid = false;
     }
+    const auto surfaceValuesZero = [&evidence]() {
+        if (evidence.vehicleShellTrianglesSubmitted != 0u ||
+            evidence.vehicleShellTrianglesTested != 0u ||
+            evidence.characterSurfaceTrianglesSubmitted != 0u ||
+            evidence.characterSurfaceTrianglesTested != 0u ||
+            evidence.vehicleSurfaceCrossingTriangles != 0u ||
+            evidence.vehicleSurfaceCrossingPairs != 0u) return false;
+        for (int64_t value :
+             evidence.vehicleSurfaceFirstCrossingMicrometres) {
+            if (value != 0) return false;
+        }
+        return true;
+    };
+    bool vehicleSurfaceStateValid = evidence.vehicleSurfaceValid ||
+        surfaceValuesZero();
+    if (evidence.vehicleSurfaceValid) {
+        vehicleSurfaceStateValid = evidence.context != 1u &&
+            evidence.replacementDraws != 0u &&
+            evidence.vehicleShellTrianglesSubmitted != 0u &&
+            evidence.vehicleShellTrianglesSubmitted <= 512u &&
+            evidence.vehicleShellTrianglesTested != 0u &&
+            evidence.vehicleShellTrianglesTested <=
+                evidence.vehicleShellTrianglesSubmitted &&
+            evidence.characterSurfaceTrianglesSubmitted != 0u &&
+            evidence.characterSurfaceTrianglesTested != 0u &&
+            evidence.characterSurfaceTrianglesTested <=
+                evidence.characterSurfaceTrianglesSubmitted &&
+            evidence.vehicleSurfaceCrossingTriangles <=
+                evidence.characterSurfaceTrianglesTested &&
+            evidence.vehicleSurfaceCrossingPairs >=
+                evidence.vehicleSurfaceCrossingTriangles &&
+            ((evidence.vehicleSurfaceCrossingTriangles == 0u) ==
+             (evidence.vehicleSurfaceCrossingPairs == 0u));
+        for (int64_t value :
+             evidence.vehicleSurfaceFirstCrossingMicrometres) {
+            vehicleSurfaceStateValid = vehicleSurfaceStateValid &&
+                value >= -1000000000LL && value <= 1000000000LL &&
+                (evidence.vehicleSurfaceCrossingPairs != 0u || value == 0);
+        }
+    }
+    if (evidence.resultVersion >= 16u && evidence.warmupComplete &&
+        evidence.replacementDraws != 0u) {
+        vehicleSurfaceStateValid = vehicleSurfaceStateValid &&
+            (evidence.context == 1u
+                 ? !evidence.vehicleSurfaceValid && surfaceValuesZero()
+                 : evidence.vehicleSurfaceValid);
+    }
     if (evidence.kind != Kind::Latest && evidence.kind != Kind::Baseline)
         error = "test evidence kind is invalid";
     else if (!slugValid(evidence.packageId))
@@ -613,8 +662,9 @@ bool evidenceValid(const CharacterTestEvidenceStore::Evidence &evidence,
         error = "test evidence contact witnesses are inconsistent";
     else if (!fitStateValid)
         error = "test evidence fit diagnostics are inconsistent";
-    else if (!landmarkStateValid || !cameraStateValid)
-        error = "test evidence camera or anatomy diagnostics are inconsistent";
+    else if (!landmarkStateValid || !cameraStateValid ||
+             !vehicleSurfaceStateValid)
+        error = "test evidence spatial diagnostics are inconsistent";
     else if (evidence.kind == Kind::Baseline && !qualified(evidence))
         error = "a comparison baseline must be qualified evidence";
     else
@@ -747,6 +797,17 @@ std::vector<std::string> recordFields(
         fields.push_back(number(value));
     }
     fields.push_back(number(evidence.cameraBoundsClipFlags));
+    fields.push_back(evidence.vehicleSurfaceValid ? "1" : "0");
+    fields.push_back(number(evidence.vehicleShellTrianglesSubmitted));
+    fields.push_back(number(evidence.vehicleShellTrianglesTested));
+    fields.push_back(number(evidence.characterSurfaceTrianglesSubmitted));
+    fields.push_back(number(evidence.characterSurfaceTrianglesTested));
+    fields.push_back(number(evidence.vehicleSurfaceCrossingTriangles));
+    fields.push_back(number(evidence.vehicleSurfaceCrossingPairs));
+    for (int64_t value :
+         evidence.vehicleSurfaceFirstCrossingMicrometres) {
+        fields.push_back(signedNumber(value));
+    }
     return fields;
 }
 
@@ -822,7 +883,7 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
         !split(text.substr(0u, end), 3u, fields) ||
         (fields[0] != kHeaderV1 && fields[0] != kHeaderV2 &&
          fields[0] != kHeaderV3 && fields[0] != kHeaderV4 &&
-         fields[0] != kHeaderV5) ||
+         fields[0] != kHeaderV5 && fields[0] != kHeaderV6) ||
         !parseUnsigned(fields[1], kMaximumRecords, count) ||
         !digestValid(fields[2])) {
         error = "test evidence inventory header is invalid";
@@ -833,10 +894,12 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
     const bool legacyV2 = header == kHeaderV2;
     const bool legacyV3 = header == kHeaderV3;
     const bool legacyV4 = header == kHeaderV4;
+    const bool legacyV5 = header == kHeaderV5;
     const size_t rowFields = legacyV1 ? kFieldsPerRowV1
         : legacyV2 ? kFieldsPerRowV2
         : legacyV3 ? kFieldsPerRowV3
-        : legacyV4 ? kFieldsPerRowV4 : kFieldsPerRowV5;
+        : legacyV4 ? kFieldsPerRowV4
+        : legacyV5 ? kFieldsPerRowV5 : kFieldsPerRowV6;
     const std::string countText         = fields[1];
     const std::string inventoryChecksum = fields[2];
     begin                               = end + 1u;
@@ -1061,7 +1124,7 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
             assignDistribution(evidence.gpuTiming.scene_pass);
             assignDistribution(evidence.gpuTiming.character_draws);
         }
-        if (header == kHeaderV5) {
+        if (header == kHeaderV5 || header == kHeaderV6) {
             size_t field = 124u;
             uint64_t unsignedValue = 0u;
             int64_t signedValue = 0;
@@ -1129,6 +1192,47 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
                 return false;
             }
         }
+        if (header == kHeaderV6) {
+            size_t field = 163u;
+            uint64_t value = 0u;
+            bool surfaceFieldsValid = parseUnsigned(
+                fields[field++], 1u, value);
+            evidence.vehicleSurfaceValid = value != 0u;
+            surfaceFieldsValid = surfaceFieldsValid && parseUnsigned(
+                fields[field++], 512u, value);
+            evidence.vehicleShellTrianglesSubmitted =
+                static_cast<uint32_t>(value);
+            surfaceFieldsValid = surfaceFieldsValid && parseUnsigned(
+                fields[field++], 512u, value);
+            evidence.vehicleShellTrianglesTested =
+                static_cast<uint32_t>(value);
+            surfaceFieldsValid = surfaceFieldsValid && parseUnsigned(
+                fields[field++], UINT32_MAX, value);
+            evidence.characterSurfaceTrianglesSubmitted =
+                static_cast<uint32_t>(value);
+            surfaceFieldsValid = surfaceFieldsValid && parseUnsigned(
+                fields[field++], UINT32_MAX, value);
+            evidence.characterSurfaceTrianglesTested =
+                static_cast<uint32_t>(value);
+            surfaceFieldsValid = surfaceFieldsValid && parseUnsigned(
+                fields[field++], UINT32_MAX, value);
+            evidence.vehicleSurfaceCrossingTriangles =
+                static_cast<uint32_t>(value);
+            surfaceFieldsValid = surfaceFieldsValid && parseUnsigned(
+                fields[field++], UINT32_MAX, value);
+            evidence.vehicleSurfaceCrossingPairs =
+                static_cast<uint32_t>(value);
+            for (int64_t &coordinate :
+                 evidence.vehicleSurfaceFirstCrossingMicrometres) {
+                surfaceFieldsValid = surfaceFieldsValid && parseSigned(
+                    fields[field++], -1000000000LL, 1000000000LL,
+                    coordinate);
+            }
+            if (!surfaceFieldsValid || field != 173u) {
+                error = "test evidence vehicle surface fields are invalid";
+                return false;
+            }
+        }
         const std::string checksum           = fields.back();
         fields.pop_back();
         if (!evidenceValid(evidence, error) ||
@@ -1182,6 +1286,10 @@ bool serialize(const Inventory &inventory, std::string &output, std::string &err
         }
         packages.insert(evidence.packageId);
         const std::vector<std::string> fields = recordFields(evidence);
+        if (fields.size() + 1u != kFieldsPerRowV6) {
+            error = "test evidence serializer field contract drifted";
+            return false;
+        }
         for (const std::string &field : fields) {
             body += field;
             body.push_back('\t');
@@ -1194,8 +1302,8 @@ bool serialize(const Inventory &inventory, std::string &output, std::string &err
         }
     }
     const std::string count  = std::to_string(ordered.records.size());
-    std::string       result = std::string(kHeaderV5) + "\t" + count + "\t" +
-                               inventoryDigest(kHeaderV5, count, body) +
+    std::string       result = std::string(kHeaderV6) + "\t" + count + "\t" +
+                               inventoryDigest(kHeaderV6, count, body) +
                                "\n" + body;
     if (result.size() > kMaximumSerializedBytes) {
         error = "serialized test evidence exceeds its byte bound";

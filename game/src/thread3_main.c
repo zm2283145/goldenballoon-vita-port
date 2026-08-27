@@ -387,6 +387,58 @@ static s32 workshop_preview_publish_contact_diagnostics(
     return TRUE;
 }
 
+static s32 workshop_preview_publish_vehicle_surface_diagnostics(
+    MdkrCharacterPreviewResult *result) {
+    MdkrModernSurfaceIntersectionDiagnostics diagnostics;
+    s32 context;
+    u32 axis;
+    if (result == NULL ||
+        result->context < MDKR_CHARACTER_PREVIEW_CAR ||
+        result->context > MDKR_CHARACTER_PREVIEW_PLANE) return FALSE;
+    context = (s32)result->context -
+        (s32)MDKR_CHARACTER_PREVIEW_SELECT;
+    if (!mdkr_modern_character_player_surface_diagnostics(
+            0, (MdkrModernCharacterContext)context, &diagnostics) ||
+        diagnostics.shell_triangles_tested == 0u ||
+        diagnostics.subject_triangles_tested == 0u ||
+        diagnostics.shell_triangles_tested >
+            diagnostics.shell_triangles_submitted ||
+        diagnostics.subject_triangles_tested >
+            diagnostics.subject_triangles_submitted ||
+        diagnostics.crossing_subject_triangles >
+            diagnostics.subject_triangles_tested ||
+        diagnostics.crossing_pairs <
+            diagnostics.crossing_subject_triangles) return FALSE;
+    if (diagnostics.crossing_pairs == 0u) {
+        for (axis = 0u; axis < 3u; ++axis) {
+            if (diagnostics.first_crossing_subject_center[axis] != 0.0f) {
+                return FALSE;
+            }
+        }
+    } else {
+        for (axis = 0u; axis < 3u; ++axis) {
+            if (!workshop_preview_quantize_micrometres(
+                    diagnostics.first_crossing_subject_center[axis],
+                    &result->vehicle_surface_first_crossing_micrometres[axis])) {
+                return FALSE;
+            }
+        }
+    }
+    result->vehicle_shell_triangles_submitted =
+        diagnostics.shell_triangles_submitted;
+    result->vehicle_shell_triangles_tested =
+        diagnostics.shell_triangles_tested;
+    result->character_surface_triangles_submitted =
+        diagnostics.subject_triangles_submitted;
+    result->character_surface_triangles_tested =
+        diagnostics.subject_triangles_tested;
+    result->vehicle_surface_crossing_triangles =
+        diagnostics.crossing_subject_triangles;
+    result->vehicle_surface_crossing_pairs = diagnostics.crossing_pairs;
+    result->vehicle_surface_valid = TRUE;
+    return TRUE;
+}
+
 static void workshop_preview_measurement_finish(void) {
     MdkrPresentPerfSnapshot present;
     MdkrModernCharacterRuntimeMetrics character;
@@ -516,6 +568,8 @@ static void workshop_preview_measurement_finish(void) {
                 (void)workshop_preview_publish_camera_projection(result);
             }
             (void)workshop_preview_publish_contact_diagnostics(result);
+            (void)workshop_preview_publish_vehicle_surface_diagnostics(
+                result);
         }
         mdkr_workshop_preview_visual_metrics(&visual);
         result->camera_override_ticks = visual.camera_override_ticks >=
@@ -542,6 +596,8 @@ static void workshop_preview_measurement_finish(void) {
         "headUm=%lld,%lld,%lld cameraFit=%d "
         "cameraBoundsMilli=%d,%d,%d,%d/%x "
         "cameraViewport=%d,%d,%d,%d cameraHeadMilli=%d,%d,%d/%x "
+        "surface=%d shell=%u/%u subject=%u/%u crossings=%u/%u "
+        "crossingUm=%lld,%lld,%lld "
         "pose=%d phase=%u "
         "transitionFrom=%d transitionPhase=%u transition=%llu/%llu/%llu "
         "transitionBlend=%u,%u transitionSource=%d,%d "
@@ -608,6 +664,16 @@ static void workshop_preview_measurement_finish(void) {
             [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD],
         result->camera_landmark_clip_flags
             [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD],
+        result->vehicle_surface_valid,
+        result->vehicle_shell_triangles_tested,
+        result->vehicle_shell_triangles_submitted,
+        result->character_surface_triangles_tested,
+        result->character_surface_triangles_submitted,
+        result->vehicle_surface_crossing_triangles,
+        result->vehicle_surface_crossing_pairs,
+        result->vehicle_surface_first_crossing_micrometres[0],
+        result->vehicle_surface_first_crossing_micrometres[1],
+        result->vehicle_surface_first_crossing_micrometres[2],
         (int)result->pose, result->pose_phase_milli,
         (int)result->transition_from_pose,
         result->transition_from_phase_milli,
@@ -749,6 +815,27 @@ static void workshop_preview_measurement_service(s32 overlayPaused) {
     if (!sWorkshopPreviewMeasurementStarted) {
         sWorkshopPreviewWarmupTicks++;
         result->warmup_ticks = sWorkshopPreviewWarmupTicks;
+        /* Collect the expensive exact surface witness during warm-up only.
+         * Retry a consumed/failed request while there is still a 20-tick
+         * settling margin, but never let this authoring diagnostic pollute the
+         * measured performance interval. */
+        if (result->context >= MDKR_CHARACTER_PREVIEW_CAR &&
+            result->context <= MDKR_CHARACTER_PREVIEW_PLANE &&
+            sWorkshopPreviewWarmupTicks <=
+                WORKSHOP_PREVIEW_WARMUP_TICKS - 20u) {
+            const MdkrModernCharacterContext context =
+                (MdkrModernCharacterContext)(
+                    (s32)result->context -
+                    (s32)MDKR_CHARACTER_PREVIEW_SELECT);
+            MdkrModernSurfaceIntersectionDiagnostics diagnostics;
+            if (!mdkr_modern_character_player_surface_diagnostics(
+                    0, context, &diagnostics) &&
+                !mdkr_modern_character_surface_diagnostics_requested(
+                    0, context)) {
+                (void)mdkr_modern_character_request_surface_diagnostics(
+                    0, context);
+            }
+        }
         if (sWorkshopPreviewWarmupTicks >= WORKSHOP_PREVIEW_WARMUP_TICKS) {
             present_perf_measurement_reset();
             mdkr_modern_character_contact_metrics_reset();

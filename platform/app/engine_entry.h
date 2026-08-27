@@ -159,6 +159,18 @@ typedef struct MdkrCharacterPreviewResult {
         [MDKR_CHARACTER_PREVIEW_LANDMARKS];
     unsigned camera_landmark_clip_flags
         [MDKR_CHARACTER_PREVIEW_LANDMARKS];
+    /* One exact posed-frame surface witness against fingerprint-qualified,
+     * retained vehicle-body batches. This detects triangle contact/intersection;
+     * it is not a depth-buffer, containment, attachment, or penetration-depth
+     * measurement. SELECT contexts deliberately leave it unavailable. */
+    int vehicle_surface_valid;
+    unsigned vehicle_shell_triangles_submitted;
+    unsigned vehicle_shell_triangles_tested;
+    unsigned character_surface_triangles_submitted;
+    unsigned character_surface_triangles_tested;
+    unsigned vehicle_surface_crossing_triangles;
+    unsigned vehicle_surface_crossing_pairs;
+    long long vehicle_surface_first_crossing_micrometres[3];
     /* Model-alpha captures additionally bind the donor-target fit to exact PNG
      * pixels. Points 0..7 are the calibrated AABB corners (XYZ bits), point 8
      * is the anchor, and point 9 is a scaled forward endpoint. All values are
@@ -209,7 +221,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 15u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 16u
 #define MDKR_CHARACTER_PREVIEW_TRANSITION_DWELL_MILLI \
     MDKR_MODERN_CHARACTER_INSPECTION_TRANSITION_DWELL_MILLI
 #define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u

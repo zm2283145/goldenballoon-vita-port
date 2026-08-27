@@ -6342,6 +6342,8 @@ bool characterPreviewProjectionValid(
     const MdkrCharacterPreviewResult &result);
 bool characterPreviewCameraProjectionValid(
     const MdkrCharacterPreviewResult &result);
+bool characterPreviewVehicleSurfaceValid(
+    const MdkrCharacterPreviewResult &result);
 bool characterPreviewContactDiagnosticsValid(
     const MdkrCharacterPreviewResult &result);
 MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
@@ -6387,6 +6389,7 @@ bool characterPreviewSessionMatchesTuning(
                &session.result.gpu_timing) != 0 &&
            characterPreviewFitDiagnosticsValid(session.result) &&
            characterPreviewCameraProjectionValid(session.result) &&
+           characterPreviewVehicleSurfaceValid(session.result) &&
            characterPreviewProjectionValid(session.result) &&
            characterPreviewContactDiagnosticsValid(session.result) &&
            (session.result.capture_requested
@@ -7475,11 +7478,26 @@ void drawCharacterFitQualityBands(
         exactFraming
             ? "Gameplay-camera framing · Exact envelope measured"
             : "Gameplay-camera framing · Exact evidence unavailable");
+    const bool exactVehicleSurface = assessment.vehicleContext &&
+        characterPreviewVehicleSurfaceValid(result) &&
+        result.vehicle_surface_valid;
+    ImGui::TextColored(
+        exactVehicleSurface
+            ? (result.vehicle_surface_crossing_pairs == 0u
+                   ? AppTheme::good() : AppTheme::accent())
+            : AppTheme::accent(),
+        exactVehicleSurface
+            ? (result.vehicle_surface_crossing_pairs == 0u
+                   ? "Vehicle-body contact / intersection · Exact sample clear"
+                   : "Vehicle-body contact / intersection · Exact sample needs review")
+            : assessment.vehicleContext
+                ? "Vehicle-body contact / intersection · Exact evidence unavailable"
+                : "Vehicle-body contact / intersection · Not applicable");
     ImGui::TextColored(
         AppTheme::accent(),
-        "Vehicle occlusion and shell intersection · Visual review required");
+        "Depth visibility, attachments, containment, and motion clearance · Visual review required");
     ui::TextSubtleWrapped(
-        "Green means the measured starting range is ordinary, amber asks for judgement, and red identifies a likely placement defect. These advisory bands never reject unusual anatomy. The camera envelope uses the real scene projection, but calibrated bounds still cannot prove depth visibility, costume silhouette, or kart-shell penetration; the composed scene remains authoritative for those checks.");
+        "Green means the measured starting range is ordinary, amber asks for judgement, and red identifies a likely placement defect. These advisory bands never reject unusual anatomy. Camera framing and one posed retained-body surface sample are exact; the composed scene and representative poses remain authoritative for depth visibility, attachments, containment, costume silhouette, and motion clearance.");
 }
 
 bool drawCharacterOffsetSuggestion(
@@ -8862,6 +8880,23 @@ CharacterTestEvidenceStore::Evidence characterTestEvidenceFromResult(
         evidence.cameraLandmarkClipFlags[landmark] =
             result.camera_landmark_clip_flags[landmark];
     }
+    evidence.vehicleSurfaceValid = result.vehicle_surface_valid != 0;
+    evidence.vehicleShellTrianglesSubmitted =
+        result.vehicle_shell_triangles_submitted;
+    evidence.vehicleShellTrianglesTested =
+        result.vehicle_shell_triangles_tested;
+    evidence.characterSurfaceTrianglesSubmitted =
+        result.character_surface_triangles_submitted;
+    evidence.characterSurfaceTrianglesTested =
+        result.character_surface_triangles_tested;
+    evidence.vehicleSurfaceCrossingTriangles =
+        result.vehicle_surface_crossing_triangles;
+    evidence.vehicleSurfaceCrossingPairs =
+        result.vehicle_surface_crossing_pairs;
+    for (unsigned axis = 0u; axis < 3u; ++axis) {
+        evidence.vehicleSurfaceFirstCrossingMicrometres[axis] =
+            result.vehicle_surface_first_crossing_micrometres[axis];
+    }
     evidence.backend = boundedCharacterPreviewText(
         result.renderer_backend, sizeof(result.renderer_backend));
     evidence.adapter = boundedCharacterPreviewText(
@@ -8937,6 +8972,23 @@ MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
             evidence.cameraLandmarkDepthMillionths[landmark];
         result.camera_landmark_clip_flags[landmark] =
             evidence.cameraLandmarkClipFlags[landmark];
+    }
+    result.vehicle_surface_valid = evidence.vehicleSurfaceValid ? 1 : 0;
+    result.vehicle_shell_triangles_submitted =
+        evidence.vehicleShellTrianglesSubmitted;
+    result.vehicle_shell_triangles_tested =
+        evidence.vehicleShellTrianglesTested;
+    result.character_surface_triangles_submitted =
+        evidence.characterSurfaceTrianglesSubmitted;
+    result.character_surface_triangles_tested =
+        evidence.characterSurfaceTrianglesTested;
+    result.vehicle_surface_crossing_triangles =
+        evidence.vehicleSurfaceCrossingTriangles;
+    result.vehicle_surface_crossing_pairs =
+        evidence.vehicleSurfaceCrossingPairs;
+    for (unsigned axis = 0u; axis < 3u; ++axis) {
+        result.vehicle_surface_first_crossing_micrometres[axis] =
+            evidence.vehicleSurfaceFirstCrossingMicrometres[axis];
     }
     result.output_width = evidence.outputWidth;
     result.output_height = evidence.outputHeight;
@@ -9219,6 +9271,56 @@ bool characterPreviewCameraProjectionValid(
             ((flags & MDKR_MODERN_CHARACTER_PROJECTION_CLIP_SCISSOR) != 0u)) {
             return false;
         }
+    }
+    return true;
+}
+
+bool characterPreviewVehicleSurfaceValid(
+    const MdkrCharacterPreviewResult &result) {
+    if (result.vehicle_surface_valid != 0 &&
+        result.vehicle_surface_valid != 1) return false;
+    const auto allZero = [&result]() {
+        if (result.vehicle_shell_triangles_submitted != 0u ||
+            result.vehicle_shell_triangles_tested != 0u ||
+            result.character_surface_triangles_submitted != 0u ||
+            result.character_surface_triangles_tested != 0u ||
+            result.vehicle_surface_crossing_triangles != 0u ||
+            result.vehicle_surface_crossing_pairs != 0u) return false;
+        for (long long coordinate :
+             result.vehicle_surface_first_crossing_micrometres) {
+            if (coordinate != 0) return false;
+        }
+        return true;
+    };
+    if (!result.vehicle_surface_valid) {
+        return allZero() &&
+            !(result.version >= 16u && result.warmup_complete &&
+              result.replacement_draws != 0u &&
+              result.context != MDKR_CHARACTER_PREVIEW_SELECT);
+    }
+    if (result.context < MDKR_CHARACTER_PREVIEW_CAR ||
+        result.context > MDKR_CHARACTER_PREVIEW_PLANE ||
+        result.replacement_draws == 0u ||
+        result.vehicle_shell_triangles_submitted == 0u ||
+        result.vehicle_shell_triangles_submitted > 512u ||
+        result.vehicle_shell_triangles_tested == 0u ||
+        result.vehicle_shell_triangles_tested >
+            result.vehicle_shell_triangles_submitted ||
+        result.character_surface_triangles_submitted == 0u ||
+        result.character_surface_triangles_tested == 0u ||
+        result.character_surface_triangles_tested >
+            result.character_surface_triangles_submitted ||
+        result.vehicle_surface_crossing_triangles >
+            result.character_surface_triangles_tested ||
+        result.vehicle_surface_crossing_pairs <
+            result.vehicle_surface_crossing_triangles ||
+        ((result.vehicle_surface_crossing_triangles == 0u) !=
+         (result.vehicle_surface_crossing_pairs == 0u))) return false;
+    for (long long coordinate :
+         result.vehicle_surface_first_crossing_micrometres) {
+        if (coordinate < -1000000000LL || coordinate > 1000000000LL ||
+            (result.vehicle_surface_crossing_pairs == 0u &&
+             coordinate != 0)) return false;
     }
     return true;
 }
@@ -9594,7 +9696,61 @@ void drawCharacterCameraFramingDiagnostics(
     }
     if (!compact) {
         ui::TextSubtleWrapped(
-            "This is the real scene camera, viewport, and scissor applied to the calibrated volume and current-pose node origins. It does not inspect the depth buffer, so a kart shell can still hide or intersect geometry even when framing is green.");
+            "This is the real scene camera, viewport, and scissor applied to the calibrated volume and current-pose node origins. It does not inspect the depth buffer; use the vehicle-body surface witness below for sampled contact/intersection and the composed scene for visibility.");
+    }
+}
+
+void drawCharacterVehicleSurfaceDiagnostics(
+    const MdkrCharacterPreviewResult &result, bool compact) {
+    if (result.context == MDKR_CHARACTER_PREVIEW_SELECT) return;
+    if (!characterPreviewVehicleSurfaceValid(result) ||
+        !result.vehicle_surface_valid) {
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "Vehicle-body contact / intersection · Exact evidence unavailable");
+        if (!compact) {
+            ui::TextSubtleWrapped(
+                "Rerun this exact vehicle context. No clearance conclusion is guessed when the qualified retained vehicle shell or posed character geometry cannot be measured.");
+        }
+        return;
+    }
+    const bool crossing =
+        result.vehicle_surface_crossing_pairs != 0u;
+    ImGui::TextColored(
+        crossing ? AppTheme::accent() : AppTheme::good(),
+        crossing
+            ? "Vehicle body contacts or intersects the posed character surface"
+            : "No vehicle-body contact or intersection in this sampled pose");
+    ImGui::Text(
+        "Exact triangles: vehicle %u / %u · character %u / %u",
+        result.vehicle_shell_triangles_tested,
+        result.vehicle_shell_triangles_submitted,
+        result.character_surface_triangles_tested,
+        result.character_surface_triangles_submitted);
+    if (crossing) {
+        ImGui::Text(
+            "%u character %s met the vehicle in %u triangle %s",
+            result.vehicle_surface_crossing_triangles,
+            result.vehicle_surface_crossing_triangles == 1u
+                ? "triangle" : "triangles",
+            result.vehicle_surface_crossing_pairs,
+            result.vehicle_surface_crossing_pairs == 1u ? "pair" : "pairs");
+        ImGui::Text(
+            "First intersecting triangle centre: X %+.3f m · Y %+.3f m · Z %+.3f m",
+            result.vehicle_surface_first_crossing_micrometres[0] /
+                1000000.0,
+            result.vehicle_surface_first_crossing_micrometres[1] /
+                1000000.0,
+            result.vehicle_surface_first_crossing_micrometres[2] /
+                1000000.0);
+        if (!compact) {
+            ui::TextSubtleWrapped(
+                "Use the triangle centre to inspect the relevant Front, Side, or Top placement view. Intended hand or foot contact can be correct; for unwanted body clipping, adjust the vehicle root offset in small steps, apply it, then rerun this pose. The Workshop never guesses a correction from one ambiguous intersection sample.");
+        }
+    }
+    if (!compact) {
+        ui::TextSubtleWrapped(
+            "Scope: exact current-pose triangles against fingerprint-qualified retained batches in the main vehicle model. Touching and coplanar triangles count, so this witness cannot distinguish intended contact from penetration. It also does not prove depth-buffer visibility, closed-volume containment, penetration depth, clearance from separately attached wheels or props, or motion across unsampled frames; review the composed scene and representative poses for those cases.");
     }
 }
 
@@ -9660,6 +9816,7 @@ void drawCharacterFitDiagnostics(
                 : "Facing: %.1f degrees from target +Z",
         facingDegrees);
     drawCharacterCameraFramingDiagnostics(result, compact);
+    drawCharacterVehicleSurfaceDiagnostics(result, compact);
     if (!compact) {
         const double width =
             (result.fit_bounds_max_micrometres[0] -
@@ -9757,6 +9914,15 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         ImGui::TextColored(
             AppTheme::bad(),
             "The engine returned invalid gameplay-camera fit evidence.");
+        ui::TextSubtleWrapped(
+            "No fit conclusion or performance evidence was saved. Run the exact context again.");
+        ui::CardEnd();
+        return;
+    }
+    if (!characterPreviewVehicleSurfaceValid(result)) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "The engine returned invalid vehicle-body surface evidence.");
         ui::TextSubtleWrapped(
             "No fit conclusion or performance evidence was saved. Run the exact context again.");
         ui::CardEnd();
@@ -11296,6 +11462,7 @@ void drawCharacterTestEvidenceMatrix(
             std::strcmp(smokeAction, "publish-mixed-mode") == 0 ||
             std::strcmp(smokeAction, "publish-invalid-fit") == 0 ||
             std::strcmp(smokeAction, "publish-invalid-camera") == 0 ||
+            std::strcmp(smokeAction, "publish-invalid-surface") == 0 ||
             std::strcmp(smokeAction, "publish-invalid-contact") == 0 ||
             std::strcmp(smokeAction, "publish-invalid-gpu") == 0 ||
             std::strcmp(
@@ -11418,6 +11585,11 @@ void drawCharacterTestEvidenceMatrix(
                     1300000 - static_cast<int>(landmark) * 400000;
                 result.camera_landmark_depth_millionths[landmark] = 500000;
             }
+            result.vehicle_surface_valid = 1;
+            result.vehicle_shell_triangles_submitted = 200u;
+            result.vehicle_shell_triangles_tested = 200u;
+            result.character_surface_triangles_submitted = 500u;
+            result.character_surface_triangles_tested = 500u;
             std::snprintf(result.renderer_backend,
                           sizeof(result.renderer_backend), "%s",
                           "webgpu-test");
@@ -11466,12 +11638,17 @@ void drawCharacterTestEvidenceMatrix(
                 smokeAction, "publish-invalid-fit") == 0;
             const bool invalidCamera = std::strcmp(
                 smokeAction, "publish-invalid-camera") == 0;
+            const bool invalidSurface = std::strcmp(
+                smokeAction, "publish-invalid-surface") == 0;
             const bool invalidContact = std::strcmp(
                 smokeAction, "publish-invalid-contact") == 0;
             const bool invalidGpu = std::strcmp(
                 smokeAction, "publish-invalid-gpu") == 0;
             if (invalidFit) result.fit_diagnostics_valid = 2;
             if (invalidCamera) result.camera_bounds_clip_flags = 0x80u;
+            if (invalidSurface) {
+                result.vehicle_shell_triangles_tested = 201u;
+            }
             if (invalidContact) result.contact_witness_mask = 0x3u;
             if (invalidGpu) {
                 const uint32_t invalidStatus = 99u;
@@ -11623,6 +11800,18 @@ void drawCharacterTestEvidenceMatrix(
                             std::memset(
                                 cell.contact_witness_error_micrometres, 0,
                                 sizeof(cell.contact_witness_error_micrometres));
+                            cell.vehicle_surface_valid = 0;
+                            cell.vehicle_shell_triangles_submitted = 0u;
+                            cell.vehicle_shell_triangles_tested = 0u;
+                            cell.character_surface_triangles_submitted = 0u;
+                            cell.character_surface_triangles_tested = 0u;
+                            cell.vehicle_surface_crossing_triangles = 0u;
+                            cell.vehicle_surface_crossing_pairs = 0u;
+                            std::memset(
+                                cell.vehicle_surface_first_crossing_micrometres,
+                                0,
+                                sizeof(cell
+                                    .vehicle_surface_first_crossing_micrometres));
                         }
                         Settings_publishCharacterPreviewResult(
                             entry->id, source,
@@ -11648,8 +11837,8 @@ void drawCharacterTestEvidenceMatrix(
                 applied = g_characterTestEvidence.records.size() == 16u &&
                     characterPerformanceEvidenceState(entry, tuning) ==
                         CharacterWorkshopPerformanceState::OverTarget;
-            } else if (invalidFit || invalidCamera || invalidContact ||
-                       invalidGpu) {
+            } else if (invalidFit || invalidCamera || invalidSurface ||
+                       invalidContact || invalidGpu) {
                 applied = session != g_characterPreviewResults.end() &&
                     latest == nullptr && !sessionMatches;
             } else if (mixedMode) {
@@ -20192,6 +20381,7 @@ void Settings_publishCharacterPreviewResult(
                 result.started && result.warmup_complete &&
                 characterPreviewFitDiagnosticsValid(result) &&
                 characterPreviewCameraProjectionValid(result) &&
+                characterPreviewVehicleSurfaceValid(result) &&
                 characterPreviewProjectionValid(result) &&
                 mdkr_modern_character_gpu_timing_metrics_valid(
                     &result.gpu_timing) != 0 &&
@@ -20390,20 +20580,23 @@ void Settings_publishCharacterPreviewResult(
     if (result.version != MDKR_CHARACTER_PREVIEW_RESULT_VERSION ||
         !result.started || !characterPreviewFitDiagnosticsValid(result) ||
         !characterPreviewCameraProjectionValid(result) ||
+        !characterPreviewVehicleSurfaceValid(result) ||
         !characterPreviewProjectionValid(result) ||
         !characterPreviewContactDiagnosticsValid(result)) {
         if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
             std::fprintf(
                 stderr,
-                "[app-ui] character-preview-result rejected-evidence=fit-camera-contact-contract package=%s version=%u started=%d fit=%d camera=%d cameraFlags=%x contactMask=%x\n",
+                "[app-ui] character-preview-result rejected-evidence=spatial-contact-contract package=%s version=%u started=%d fit=%d camera=%d cameraFlags=%x surface=%d crossingPairs=%u contactMask=%x\n",
                 packageId.c_str(), result.version, result.started,
                 result.fit_diagnostics_valid,
                 result.camera_projection_valid,
                 result.camera_bounds_clip_flags,
+                result.vehicle_surface_valid,
+                result.vehicle_surface_crossing_pairs,
                 result.contact_witness_mask);
         }
         setStatus(
-            "The engine returned an invalid renderer fit, gameplay-camera, or contact contract; the session is visible for diagnosis but no durable performance evidence was saved.",
+            "The engine returned an invalid renderer fit, gameplay-camera, vehicle-surface, or contact contract; the session is visible for diagnosis but no durable performance evidence was saved.",
             AppTheme::bad());
         return;
     }

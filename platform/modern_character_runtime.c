@@ -52,6 +52,10 @@ typedef struct MdkrModernRuntimePlayer {
     MdkrModernCharacterContactDiagnostics
         contact_diagnostics[MDKR_CHARACTER_CONTEXT_COUNT];
     uint32_t contact_diagnostics_valid_mask;
+    MdkrModernSurfaceIntersectionDiagnostics
+        surface_diagnostics[MDKR_CHARACTER_CONTEXT_COUNT];
+    uint32_t surface_diagnostics_valid_mask;
+    uint32_t surface_diagnostics_requested_mask;
     uint32_t selected_lod[MDKR_CHARACTER_CONTEXT_COUNT]
                          [MDKR_MODERN_CHARACTER_VIEWS];
     uint32_t selected_lod_valid_mask;
@@ -1329,6 +1333,8 @@ int mdkr_modern_character_set_tuning(int player,
     s_players[player].focus_valid_mask = 0u;
     s_players[player].fit_diagnostics_valid_mask = 0u;
     s_players[player].contact_diagnostics_valid_mask = 0u;
+    s_players[player].surface_diagnostics_valid_mask = 0u;
+    s_players[player].surface_diagnostics_requested_mask = 0u;
     s_players[player].selected_lod_valid_mask = 0u;
     return 1;
 }
@@ -1387,6 +1393,47 @@ int mdkr_modern_character_player_contact_diagnostics(
         (slot->contact_diagnostics_valid_mask &
          (1u << (unsigned)context)) == 0u) return 0;
     *out = slot->contact_diagnostics[context];
+    return 1;
+}
+
+int mdkr_modern_character_request_surface_diagnostics(
+    int player, MdkrModernCharacterContext context) {
+    MdkrModernRuntimePlayer *slot;
+    const uint32_t bit = 1u << (unsigned)context;
+    if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        context < MDKR_CHARACTER_CONTEXT_CAR ||
+        context > MDKR_CHARACTER_CONTEXT_PLANE) return 0;
+    slot = &s_players[player];
+    if (slot->pool < 0) return 0;
+    memset(&slot->surface_diagnostics[context], 0,
+           sizeof(slot->surface_diagnostics[context]));
+    slot->surface_diagnostics_valid_mask &= ~bit;
+    slot->surface_diagnostics_requested_mask |= bit;
+    return 1;
+}
+
+int mdkr_modern_character_surface_diagnostics_requested(
+    int player, MdkrModernCharacterContext context) {
+    if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        context < MDKR_CHARACTER_CONTEXT_CAR ||
+        context > MDKR_CHARACTER_CONTEXT_PLANE ||
+        s_players[player].pool < 0) return 0;
+    return (s_players[player].surface_diagnostics_requested_mask &
+            (1u << (unsigned)context)) != 0u;
+}
+
+int mdkr_modern_character_player_surface_diagnostics(
+    int player, MdkrModernCharacterContext context,
+    MdkrModernSurfaceIntersectionDiagnostics *out) {
+    const MdkrModernRuntimePlayer *slot;
+    if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        context < MDKR_CHARACTER_CONTEXT_CAR ||
+        context > MDKR_CHARACTER_CONTEXT_PLANE || out == NULL) return 0;
+    slot = &s_players[player];
+    if (slot->pool < 0 ||
+        (slot->surface_diagnostics_valid_mask &
+         (1u << (unsigned)context)) == 0u) return 0;
+    *out = slot->surface_diagnostics[context];
     return 1;
 }
 
@@ -1548,9 +1595,188 @@ int mdkr_modern_character_tick_phase(int player, const char *semantic,
     }
 }
 
+typedef struct MdkrSurfaceSubjectReaderContext {
+    MdkrModernRuntimePool *pool;
+    MdkrModernRuntimePlayer *slot;
+    const float *adjusted_transform;
+    uint32_t primitive[MDKR_MODERN_CHARACTER_MAX_PRIMITIVES];
+    uint32_t first_triangle[MDKR_MODERN_CHARACTER_MAX_PRIMITIVES + 1u];
+    uint32_t primitive_count;
+    uint32_t active_primitive;
+    uint32_t bone_count;
+    float model[16];
+    int failed;
+} MdkrSurfaceSubjectReaderContext;
+
+static int surface_subject_prepare_primitive(
+    MdkrSurfaceSubjectReaderContext *context, uint32_t selected) {
+    const struct GfxModernPrimitive *primitive;
+    const float *node_world;
+    if (context == NULL || selected >= context->primitive_count) return 0;
+    primitive = &context->pool->render.gpu.primitives[
+        context->primitive[selected]];
+    node_world = mdkr_modern_pose_node_matrix(
+        &context->slot->pose, primitive->node, 0);
+    if (node_world == NULL) return 0;
+    matrix_multiply(context->adjusted_transform, node_world, context->model);
+    context->bone_count = 0u;
+    if (primitive->skin >= 0) {
+        MdkrModernSkin skin;
+        char ignored_error[128];
+        if (!mdkr_modern_character_asset_skin(
+                &context->pool->asset, (uint32_t)primitive->skin, &skin) ||
+            skin.joint_count > MODERN_RUNTIME_MAX_BONES ||
+            !mdkr_modern_pose_skin_palette(
+                &context->slot->pose, (uint32_t)primitive->skin,
+                primitive->node, 0, context->slot->palette,
+                MODERN_RUNTIME_MAX_BONES, ignored_error,
+                sizeof(ignored_error))) return 0;
+        context->bone_count = skin.joint_count;
+    }
+    context->active_primitive = selected;
+    return 1;
+}
+
+static int surface_subject_vertex(
+    const MdkrSurfaceSubjectReaderContext *context,
+    const struct GfxModernSkinnedVertex *vertex, float output[3]) {
+    double local[4] = {0.0, 0.0, 0.0, 0.0};
+    unsigned influence;
+    unsigned row;
+    if (context == NULL || vertex == NULL || output == NULL) return 0;
+    for (influence = 0u; influence < 4u; ++influence) {
+        const double weight = vertex->weights[influence];
+        const uint32_t joint = vertex->joints[influence];
+        if (weight == 0.0) continue;
+        if (!isfinite(weight) ||
+            (context->bone_count != 0u && joint >= context->bone_count)) {
+            return 0;
+        }
+        for (row = 0u; row < 4u; ++row) {
+            double transformed;
+            if (context->bone_count != 0u) {
+                const float *bone =
+                    &context->slot->palette[(size_t)joint * 16u];
+                transformed = (double)bone[row] * vertex->position[0] +
+                    (double)bone[4u + row] * vertex->position[1] +
+                    (double)bone[8u + row] * vertex->position[2] +
+                    bone[12u + row];
+            } else {
+                transformed = row < 3u ? vertex->position[row] : 1.0;
+            }
+            local[row] += weight * transformed;
+        }
+    }
+    for (row = 0u; row < 3u; ++row) {
+        const double transformed =
+            (double)context->model[row] * local[0] +
+            (double)context->model[4u + row] * local[1] +
+            (double)context->model[8u + row] * local[2] +
+            (double)context->model[12u + row] * local[3];
+        if (!isfinite(transformed) || transformed < -1000.0 ||
+            transformed > 1000.0) return 0;
+        output[row] = (float)transformed;
+    }
+    return 1;
+}
+
+static int surface_subject_triangle_reader(
+    void *user, uint32_t triangle_index,
+    MdkrModernSurfaceTriangle *triangle) {
+    MdkrSurfaceSubjectReaderContext *context =
+        (MdkrSurfaceSubjectReaderContext *)user;
+    uint32_t low = 0u;
+    uint32_t high;
+    uint32_t selected;
+    uint32_t local_triangle;
+    const struct GfxModernPrimitive *primitive;
+    unsigned point;
+    if (context == NULL || triangle == NULL || context->failed ||
+        context->primitive_count == 0u ||
+        triangle_index >= context->first_triangle[context->primitive_count]) {
+        return 0;
+    }
+    high = context->primitive_count;
+    while (low + 1u < high) {
+        const uint32_t middle = low + (high - low) / 2u;
+        if (context->first_triangle[middle] <= triangle_index) {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    selected = low;
+    if (context->active_primitive != selected &&
+        !surface_subject_prepare_primitive(context, selected)) {
+        context->failed = 1;
+        return 0;
+    }
+    primitive = &context->pool->render.gpu.primitives[
+        context->primitive[selected]];
+    local_triangle = triangle_index - context->first_triangle[selected];
+    for (point = 0u; point < 3u; ++point) {
+        const uint32_t index_offset = primitive->first_index +
+            local_triangle * 3u + point;
+        uint32_t vertex_index;
+        if (index_offset >= context->pool->render.gpu.index_count) {
+            context->failed = 1;
+            return 0;
+        }
+        vertex_index = context->pool->render.gpu.indices[index_offset];
+        if (vertex_index >= context->pool->render.gpu.vertex_count ||
+            !surface_subject_vertex(
+                context,
+                &context->pool->render.gpu.vertices[vertex_index],
+                triangle->point[point])) {
+            context->failed = 1;
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int surface_diagnostics_measure(
+    MdkrModernRuntimePool *pool, MdkrModernRuntimePlayer *slot,
+    uint32_t selected_lod, const float adjusted_transform[16],
+    const MdkrModernCharacterVehicleShell *shell,
+    MdkrModernSurfaceIntersectionDiagnostics *out) {
+    MdkrSurfaceSubjectReaderContext context;
+    uint32_t primitive_index;
+    uint32_t triangles = 0u;
+    if (pool == NULL || slot == NULL || adjusted_transform == NULL ||
+        shell == NULL || shell->triangles == NULL ||
+        shell->triangle_count == 0u || out == NULL) return 0;
+    memset(&context, 0, sizeof(context));
+    context.pool = pool;
+    context.slot = slot;
+    context.adjusted_transform = adjusted_transform;
+    context.active_primitive = UINT32_MAX;
+    for (primitive_index = 0u;
+         primitive_index < pool->render.gpu.primitive_count;
+         ++primitive_index) {
+        const struct GfxModernPrimitive *primitive =
+            &pool->render.gpu.primitives[primitive_index];
+        const uint32_t primitive_triangles = primitive->index_count / 3u;
+        if (primitive->lod != selected_lod) continue;
+        if (context.primitive_count >=
+                MDKR_MODERN_CHARACTER_MAX_PRIMITIVES ||
+            UINT32_MAX - triangles < primitive_triangles) return 0;
+        context.primitive[context.primitive_count] = primitive_index;
+        context.first_triangle[context.primitive_count] = triangles;
+        ++context.primitive_count;
+        triangles += primitive_triangles;
+    }
+    if (context.primitive_count == 0u || triangles == 0u) return 0;
+    context.first_triangle[context.primitive_count] = triangles;
+    return mdkr_modern_surface_intersections(
+        shell->triangles, shell->triangle_count, triangles,
+        surface_subject_triangle_reader, &context, out);
+}
+
 int mdkr_modern_character_emit(int player, int view,
                                MdkrModernCharacterContext context,
                                const float target_frame[16],
+                               const MdkrModernCharacterVehicleShell *shell,
                                float view_distance, Gfx **display_list,
                                char *error, size_t error_size) {
     MdkrModernRuntimePlayer *slot;
@@ -1907,6 +2133,23 @@ int mdkr_modern_character_emit(int player, int view,
     for (primitive_index = 0u; primitive_index < emitted; primitive_index++) {
         gMoveWd((*display_list)++, G_MW_DKR_MODERN_CHARACTER, 0,
                 slot->tokens[primitive_index]);
+    }
+    {
+        const uint32_t context_bit = 1u << (unsigned)context;
+        if ((slot->surface_diagnostics_requested_mask & context_bit) != 0u) {
+            MdkrModernSurfaceIntersectionDiagnostics diagnostics;
+            slot->surface_diagnostics_requested_mask &= ~context_bit;
+            slot->surface_diagnostics_valid_mask &= ~context_bit;
+            memset(&slot->surface_diagnostics[context], 0,
+                   sizeof(slot->surface_diagnostics[context]));
+            if (context != MDKR_CHARACTER_CONTEXT_SELECT &&
+                surface_diagnostics_measure(
+                    pool, slot, selected_lod, adjusted_transform, shell,
+                    &diagnostics)) {
+                slot->surface_diagnostics[context] = diagnostics;
+                slot->surface_diagnostics_valid_mask |= context_bit;
+            }
+        }
     }
     if (has_calibration && calibration_focus(
             &calibration, anchored_transform,

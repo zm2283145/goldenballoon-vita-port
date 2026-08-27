@@ -784,6 +784,53 @@ def main() -> int:
                         f"viewport={(viewport_x, viewport_y, viewport_width, viewport_height)} "
                         f"head={(camera_head_x, camera_head_y, camera_head_depth, camera_head_flags)}"
                     )
+            surface_match = re.search(
+                r"surface=(\d+) shell=(\d+)/(\d+) "
+                r"subject=(\d+)/(\d+) crossings=(\d+)/(\d+) "
+                r"crossingUm=(-?\d+),(-?\d+),(-?\d+)",
+                arm_output,
+            )
+            if surface_match is None:
+                failures.append(
+                    f"{label} emitted no exact vehicle-body surface witness"
+                )
+            else:
+                (surface_valid, shell_tested, shell_submitted,
+                 subject_tested, subject_submitted, crossing_triangles,
+                 crossing_pairs, crossing_x, crossing_y,
+                 crossing_z) = map(int, surface_match.groups())
+                if context == "select":
+                    if any((surface_valid, shell_tested, shell_submitted,
+                            subject_tested, subject_submitted,
+                            crossing_triangles, crossing_pairs, crossing_x,
+                            crossing_y, crossing_z)):
+                        failures.append(
+                            f"{label} fabricated a vehicle shell in character select"
+                        )
+                elif (
+                    surface_valid != 1
+                    or shell_tested <= 0
+                    or shell_tested > shell_submitted
+                    or subject_tested <= 0
+                    or subject_tested > subject_submitted
+                    or crossing_triangles > subject_tested
+                    or crossing_pairs < crossing_triangles
+                    or ((crossing_triangles == 0) != (crossing_pairs == 0))
+                    or any(abs(value) > 1_000_000_000 for value in (
+                        crossing_x, crossing_y, crossing_z
+                    ))
+                    or (crossing_pairs == 0 and any((
+                        crossing_x, crossing_y, crossing_z
+                    )))
+                ):
+                    failures.append(
+                        f"{label} returned inconsistent vehicle-body surface "
+                        f"evidence valid={surface_valid} "
+                        f"shell={shell_tested, shell_submitted} "
+                        f"subject={subject_tested, subject_submitted} "
+                        f"crossings={crossing_triangles, crossing_pairs} "
+                        f"first={crossing_x, crossing_y, crossing_z}"
+                    )
             environment_match = re.search(
                 r"character_workshop_result: .* backend=(webgpu-[^ ]+) "
                 r"adapter=(.*?) driver=(.*?) vendor=([0-9a-f]{8}) "
@@ -1172,7 +1219,8 @@ def main() -> int:
         "target-frame anchor/bounds/facing plus exact gameplay-camera/anatomy "
         "measurements, exclusive stabilized "
         "RGB gameplay and transparent RGBA model-only PNG capture, "
-        "exact four-contact post-solve witnesses, one-to-four-player WebGPU "
+        "exact four-contact post-solve witnesses and qualified retained-vehicle "
+        "surface intersection samples, one-to-four-player WebGPU "
         "stress, exact nonblocking scene/character GPU timestamp contracts "
         "with honest capability fallback, and fail-closed invalid requests"
     )

@@ -230,6 +230,9 @@ int main(int argc, char **argv) {
     MdkrModernCharacterRuntimeMetrics runtime_metrics;
     MdkrModernCharacterFitDiagnostics fit_diagnostics;
     MdkrModernCharacterContactDiagnostics contact_diagnostics;
+    MdkrModernSurfaceIntersectionDiagnostics surface_diagnostics;
+    MdkrModernSurfaceTriangle shell_triangle;
+    MdkrModernCharacterVehicleShell vehicle_shell;
     MdkrWorkshopPreviewVisualMetrics visual_metrics;
     const uint8_t *portrait_data;
     MdkrModernCharacterRegistry registry;
@@ -1379,12 +1382,12 @@ int main(int argc, char **argv) {
                 error, sizeof(error)),
             "exact renderer accepts a bounded character-light preset");
     require(mdkr_modern_character_emit(0, 0, MDKR_CHARACTER_CONTEXT_SELECT,
-                                       NULL, 0.0f, &command_cursor,
+                                       NULL, NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)),
             error);
     select_model_y = last_model_matrix[13];
     require(mdkr_modern_character_emit(0, 0, MDKR_CHARACTER_CONTEXT_CAR,
-                                       NULL, 0.0f, &command_cursor,
+                                       NULL, NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)),
             error);
     require(mdkr_modern_character_player_focus(
@@ -1484,21 +1487,53 @@ int main(int argc, char **argv) {
                 "each local player owns an independent semantic pose");
     }
     require(mdkr_modern_character_emit(3, 3, MDKR_CHARACTER_CONTEXT_CAR,
-                                       NULL, 0.0f, &command_cursor,
+                                       NULL, NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)) &&
                 command_cursor == commands + 3 && registered_draws == 3u,
             "four-player assignment reuses GPU ownership and emits independently");
     require(mdkr_modern_character_emit(3, 7, MDKR_CHARACTER_CONTEXT_CAR,
-                                       NULL, 0.0f, &command_cursor,
+                                       NULL, NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)) &&
                 command_cursor == commands + 4 && registered_draws == 4u,
             "cutscene camera ownership remains a valid ordinary draw");
     require(!mdkr_modern_character_emit(
                 3, MDKR_MODERN_CHARACTER_VIEWS,
-                MDKR_CHARACTER_CONTEXT_CAR, NULL, 0.0f, &command_cursor,
+                MDKR_CHARACTER_CONTEXT_CAR, NULL, NULL, 0.0f, &command_cursor,
                 error, sizeof(error)) &&
                 command_cursor == commands + 4 && registered_draws == 4u,
             "out-of-range camera ownership fails before draw publication");
+    shell_triangle = (MdkrModernSurfaceTriangle){{
+        {900.0f, 900.0f, 900.0f},
+        {901.0f, 900.0f, 900.0f},
+        {900.0f, 901.0f, 900.0f},
+    }};
+    vehicle_shell.triangles = &shell_triangle;
+    vehicle_shell.triangle_count = 1u;
+    require(!mdkr_modern_character_request_surface_diagnostics(
+                3, MDKR_CHARACTER_CONTEXT_SELECT) &&
+                mdkr_modern_character_request_surface_diagnostics(
+                    3, MDKR_CHARACTER_CONTEXT_CAR) &&
+                mdkr_modern_character_surface_diagnostics_requested(
+                    3, MDKR_CHARACTER_CONTEXT_CAR) &&
+                mdkr_modern_character_emit(
+                    3, 3, MDKR_CHARACTER_CONTEXT_CAR, NULL, &vehicle_shell,
+                    0.0f, &command_cursor, error, sizeof(error)) &&
+                command_cursor == commands + 5 && registered_draws == 5u &&
+                !mdkr_modern_character_surface_diagnostics_requested(
+                    3, MDKR_CHARACTER_CONTEXT_CAR) &&
+                mdkr_modern_character_player_surface_diagnostics(
+                    3, MDKR_CHARACTER_CONTEXT_CAR,
+                    &surface_diagnostics) &&
+                surface_diagnostics.shell_triangles_submitted == 1u &&
+                surface_diagnostics.shell_triangles_tested == 1u &&
+                surface_diagnostics.subject_triangles_submitted != 0u &&
+                surface_diagnostics.subject_triangles_tested != 0u &&
+                surface_diagnostics.crossing_subject_triangles == 0u &&
+                surface_diagnostics.crossing_pairs == 0u &&
+                !mdkr_modern_character_player_surface_diagnostics(
+                    3, MDKR_CHARACTER_CONTEXT_SELECT,
+                    &surface_diagnostics),
+            "one requested vehicle draw streams exact posed triangles through a bounded retained-shell witness without charging ordinary draws");
     require(mdkr_modern_character_get_tuning(0, &tuning) &&
                 mdkr_modern_character_set_tuning(
                     0, &tuning, error, sizeof(error)) &&

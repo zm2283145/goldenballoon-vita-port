@@ -85,13 +85,13 @@ def evidence_rows(root: Path) -> list[list[str]]:
     header = lines[0].split("\t")
     if (
         len(header) != 3
-        or header[0] != "mdkr-character-test-evidence-v5"
+        or header[0] != "mdkr-character-test-evidence-v6"
         or int(header[1]) != len(lines) - 1
         or len(header[2]) != 64
     ):
         raise RuntimeError("test evidence inventory header is malformed")
     rows = [line.split("\t") for line in lines[1:]]
-    if any(len(row) != 164 for row in rows):
+    if any(len(row) != 174 for row in rows):
         raise RuntimeError("test evidence inventory row is malformed")
     return rows
 
@@ -388,7 +388,7 @@ def main() -> int:
                 or rows[0][0] != "0"
                 or rows[0][1] != PACKAGE_ID
                 or (rows[0][7], rows[0][8]) != ("2", "4")
-                or rows[0][9] != "15"
+                or rows[0][9] != "16"
                 or bytes.fromhex(rows[0][29]).decode("utf-8")
                 != "webgpu-test"
                 or bytes.fromhex(rows[0][30]).decode("utf-8")
@@ -433,9 +433,11 @@ def main() -> int:
                     0, 0, 0,
                 )
                 or rows[0][162] != "0"
+                or tuple(map(int, rows[0][163:173]))
+                != (1, 200, 200, 500, 500, 0, 0, 0, 0, 0)
             ):
                 raise RuntimeError(
-                    "qualified exact result did not persist exact device, renderer-fit, anatomy, and camera fields"
+                    "qualified exact result did not persist exact device, fit, anatomy, camera, and vehicle-surface fields"
                 )
 
             run(
@@ -691,7 +693,7 @@ def main() -> int:
                 root,
                 characters,
                 (
-                    "character-preview-result rejected-evidence=fit-camera-contact-contract",
+                    "character-preview-result rejected-evidence=spatial-contact-contract",
                     "action=publish-invalid-fit applied=1 "
                     "records=0 baselines=0",
                 ),
@@ -708,7 +710,7 @@ def main() -> int:
                 root,
                 characters,
                 (
-                    "character-preview-result rejected-evidence=fit-camera-contact-contract",
+                    "character-preview-result rejected-evidence=spatial-contact-contract",
                     "camera=1 cameraFlags=80",
                     "action=publish-invalid-camera applied=1 "
                     "records=0 baselines=0",
@@ -726,7 +728,25 @@ def main() -> int:
                 root,
                 characters,
                 (
-                    "character-preview-result rejected-evidence=fit-camera-contact-contract",
+                    "character-preview-result rejected-evidence=spatial-contact-contract",
+                    "surface=1 crossingPairs=0",
+                    "action=publish-invalid-surface applied=1 "
+                    "records=0 baselines=0",
+                ),
+                action="publish-invalid-surface",
+            )
+            if (
+                root / "saves" / "character_test_evidence-v1.tsv"
+            ).read_bytes() != empty_evidence:
+                raise RuntimeError(
+                    "invalid vehicle-surface contract contaminated durable performance evidence"
+                )
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "character-preview-result rejected-evidence=spatial-contact-contract",
                     "contactMask=3",
                     "action=publish-invalid-contact applied=1 "
                     "records=0 baselines=0",
