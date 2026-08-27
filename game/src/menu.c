@@ -14,6 +14,13 @@
 #include "taj_mod_state_file.h"
 #include "video_config.h"
 #include "net/net_roster_runtime.h"
+#if MDKR_ENABLE_ONLINE_BETA
+/* PD-T5 resident post-race re-entry (scoping ruling R-A). Both includes are
+ * beta-gated, so a normal (beta OFF) build sees neither and the release menu.o is
+ * byte-identical -- proven by rebuilding the OFF object. */
+#include "online/online_session.h"   /* mdkr_online_session_resume_results */
+#include "net/online_race_results.h" /* (availability query, via the session) */
+#endif
 extern int g_frameCounter;
 #endif
 #include "asset_enums.h"
@@ -12980,6 +12987,10 @@ static DrawTexture *menu_racer_portrait_for_player(UNUSED s32 playerIndex,
  * post-race behavior is untouched. */
 static s32 sOnlinePostraceTicks;
 static s8 sOnlinePostraceEndRequested;
+/* PD-T5: the postrace-viewport latch (defined in thread3_main.c, no header) --
+ * the resident post-race fork clears it before handing control to the session so
+ * the next resident race does not re-enter menu_postrace with a stale TRUE. */
+extern s8 gPostRaceViewPort;
 #endif
 
 /**
@@ -13751,8 +13762,30 @@ s32 menu_postrace(Gfx **dList, Mtx **matrices, Vertex **vertices, s32 updateRate
                 /* 150 time units ~= 2.5 s (see normalise_time(240) == 4 s). */
                 if (sOnlinePostraceTicks > 150 && !sOnlinePostraceEndRequested) {
                     sOnlinePostraceEndRequested = TRUE;
-                    fprintf(stderr, "[online-postrace] session end requested\n");
-                    platform_request_exit(0);
+                    /* PD-T5 resident soak (scoping ruling R-A/R-B): re-enter the
+                     * separated session's RESULTS phase in THIS engine process
+                     * instead of exiting, proving >=2 races + RESULTS per process
+                     * via the session loop. mdkr_online_session_resume_results()
+                     * returns true ONLY when resident mode is on (the scripted
+                     * soak's MDKR_TEST_ONLINE_RESIDENT flag) AND this race
+                     * captured a finish order; for EVERY live lane (flag OFF) and
+                     * every abnormal end it returns false and we call
+                     * platform_request_exit(0) EXACTLY as before -- zero
+                     * behaviour change on any existing lane. On resume we run the
+                     * same teardown the normal POSTRACE_STAGE_END arm does before
+                     * leaving postrace; the just-finished race level is freed by
+                     * the session right before it re-boots the next race. */
+                    if (mdkr_online_session_resume_results()) {
+                        camDisableUserView(0, FALSE);
+                        postrace_free();
+                        dialogue_close(7);
+                        dialogue_clear(7);
+                        gPostRaceViewPort = FALSE;
+                    } else {
+                        fprintf(stderr,
+                                "[online-postrace] session end requested\n");
+                        platform_request_exit(0);
+                    }
                 }
                 break;
             }

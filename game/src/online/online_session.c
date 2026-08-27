@@ -25,10 +25,12 @@
 #include "types.h"
 #include "thread3_main.h"
 #include "net/party_link.h"
+#include "net/online_race_results.h"   /* PD-T5 captured-placements availability */
 #include "online/online_charselect.h"  /* PD-T2 native CHARSELECT phase */
 #include "online/online_trackselect.h" /* PD-T3 native TRACKSELECT phase +
                                           mdkr_online_trackselect_cup_track */
 #include "online/online_race_boot.h"   /* PD-T4 direct race boot (extracted) */
+#include "online/online_results.h"     /* PD-T5 native RESULTS/STANDINGS phase */
 
 /* The engine's live game-mode selector. Defined (external linkage) in
  * thread3_main.c; no shared header declares it, so the session declares the
@@ -67,6 +69,16 @@ typedef struct MdkrOnlineSessionState {
      * host's locked track is what loads" is explicit and testable. */
     u16 intendedTrack;
     u8 active;
+    /* PD-T5: number of engine races booted this process (>=2 in the resident
+     * soak; the ADVANCE off the last race's STANDINGS does NOT re-boot). */
+    u32 raceCount;
+    /* PD-T5: the RESULTS phase must call the screen's _enter on its next tick
+     * (set by mdkr_online_session_resume_results, cleared once entered). */
+    u8 resultsPending;
+    /* M1: the last observed forward-feed mode, so a tournament->single interlude
+     * clears the sticky intendedTrack stash instead of carrying a stale pick into
+     * the boot's divergence check. 0xFF == none observed yet. */
+    u8 lastModeSeen;
 } MdkrOnlineSessionState;
 
 /* Session-owned state -- deliberately NOT any offline global. */
@@ -153,9 +165,39 @@ static u16 online_session_resolve_intended(const MdkrPartyLinkSnapshot *snap) {
  * mode toggle before the host re-locks -- never clobbers a real pick right before
  * boot). Observability only; the boot still loads launch->manifest.track_id. */
 static void online_session_stash_intended(const MdkrPartyLinkSnapshot *snap) {
-    u16 intended = online_session_resolve_intended(snap);
+    u16 intended;
+    /* M1: a mode interlude (e.g. tournament -> single before the host re-locks)
+     * must not leave the previous mode's resolved track stuck in intendedTrack --
+     * that stale pick would then log a spurious "[online-boot] track divergence"
+     * against the freshly-booted manifest. When the observed forward-feed mode
+     * changes, drop the stash back to NONE so the honored/divergence check
+     * re-resolves from the new mode's feed (or reads NONE and logs honored). */
+    if (sOnlineSession.lastModeSeen != snap->mode) {
+        sOnlineSession.lastModeSeen = snap->mode;
+        sOnlineSession.intendedTrack = MDKR_ONLINE_SESSION_TRACK_NONE;
+    }
+    intended = online_session_resolve_intended(snap);
     if (intended != MDKR_ONLINE_SESSION_TRACK_NONE) {
         sOnlineSession.intendedTrack = intended;
+    }
+}
+
+/* ---- PD-T5 resident-mode flag (scoping ruling R-A) ------------------------ *
+ * The post-race fork re-enters the session (RESULTS -> next race in ONE engine
+ * process) ONLY when this flag is on. It is set ONLY by the scripted resident
+ * soak (env MDKR_TEST_ONLINE_RESIDENT = the number of engine races to drive).
+ * With it OFF -- every existing live lane and real play today -- the menu.c
+ * post-race hook keeps calling platform_request_exit(0) exactly as now, so no
+ * live lane changes behaviour. Making LIVE play resident is PD-T6. */
+static s8 sResidentResolved = -1; /* -1 unresolved, 0 off, 1 on */
+static u32 sResidentRaces;        /* total engine races the soak drives (0 == off) */
+
+static void online_session_resident_resolve(void) {
+    if (sResidentResolved < 0) {
+        const char *e = getenv("MDKR_TEST_ONLINE_RESIDENT");
+        unsigned long n = (e != NULL) ? strtoul(e, NULL, 10) : 0ul;
+        sResidentRaces = (u32) n;
+        sResidentResolved = (n > 0ul) ? 1 : 0;
     }
 }
 
@@ -163,6 +205,7 @@ static void online_session_boot_race(void) {
     u16 intended = sOnlineSession.intendedTrack;
     s32 manifestTrack = (s32) sOnlineSession.launch->manifest.track_id;
 
+    sOnlineSession.raceCount++; /* PD-T5: count engine races booted this process */
     sOnlineSession.phase = MDKR_ONLINE_SESSION_RACE;
     /* Isolation witness: on the online path control reached the session
      * (gGameMode == GAMEMODE_ONLINE_SESSION) and the offline boot menu was
@@ -208,6 +251,7 @@ void mdkr_online_session_begin(const MdkrMatchLaunchDescriptorV1 *launch) {
      * (legacy direct boot) reads "intended none" and logs the honored path, never
      * a spurious "divergence snapshot=0". */
     sOnlineSession.intendedTrack = MDKR_ONLINE_SESSION_TRACK_NONE;
+    sOnlineSession.lastModeSeen = 0xFFu; /* M1: no forward-feed mode observed yet */
     sOnlineSession.active = 1;
     /* Enter the SEPARATED mode. Offline code never produces this value, so the
      * offline menu state machine is never entered on this route. */
@@ -266,9 +310,55 @@ static bool online_session_local_seat_ready_in_lobby(
     return false;
 }
 
-void mdkr_online_session_tick(s32 updateRate) {
-    (void) updateRate;
+/* DEFERRED to PD-T6 (do NOT build here -- documented so the seam is explicit):
+ *   - Making LIVE play resident: pumping OnlineRoom_pumpPartyLink / the reverse
+ *     intent feed from the overlay-service hook during residency, publishing
+ *     results mid-residency, per-round roster re-freeze/cycling, and replacing
+ *     the live-path platform_request_exit(0) with the resident return. PD-T5
+ *     gates all of that behind MDKR_TEST_ONLINE_RESIDENT so only the scripted
+ *     soak re-enters and every live lane still exits unchanged.
+ *   - The champion CEREMONY 3D cutscene (the MDKR_ONLINE_SESSION_CEREMONY phase,
+ *     still default:-swallowed below): the final STANDINGS holds in its place.
+ *   - The real engine->launcher return handshake (the same wiring that boots this
+ *     session at LOBBY phase): a RESULTS/CHARSELECT LEAVE is a documented stub.
+ *   - ABANDON_RACE is NOT needed: abnormal ends keep platform_request_exit(0)
+ *     (R-B), which resume_results below preserves by returning false when no
+ *     finish was captured. */
 
+/* PD-T5 post-race RE-ENTRY (scoping ruling R-A / R-B). Called from the online
+ * post-race hook (menu.c) when the grace period elapses. Returns true -- and
+ * re-arms the session into its RESULTS phase in THIS engine process -- ONLY when
+ * BOTH: resident mode is on (the scripted soak) AND this race captured a finish
+ * order (a NON-consuming availability peek, so the RESULTS screen still polls the
+ * placements). Returns false for every live lane (resident OFF) and every
+ * abnormal end (no captured results), so the caller keeps calling
+ * platform_request_exit(0) exactly as today -- preserving the proven recovery
+ * routing. A bare gGameMode write would hit the tick's active==0 fail-safe, so
+ * this re-arms active=1 + phase=RESULTS; the launch descriptor pointer survived
+ * (the roster stays installed while the engine is resident). */
+bool mdkr_online_session_resume_results(void) {
+    online_session_resident_resolve();
+    if (!sResidentResolved) {
+        return false; /* resident OFF: caller exits (zero live-lane change) */
+    }
+    if (sOnlineSession.launch == NULL) {
+        return false; /* no session ever began */
+    }
+    if (!mdkr_online_race_results_available()) {
+        return false; /* abnormal end / nothing captured (R-B): caller exits */
+    }
+    sOnlineSession.active = 1;
+    sOnlineSession.phase = MDKR_ONLINE_SESSION_RESULTS;
+    sOnlineSession.resultsPending = 1u;
+    gGameMode = GAMEMODE_ONLINE_SESSION;
+    fprintf(stderr,
+            "[online-session] resume: RESULTS phase (race %u of %u; results "
+            "captured) gGameMode=%d\n",
+            sOnlineSession.raceCount, sResidentRaces, gGameMode);
+    return true;
+}
+
+void mdkr_online_session_tick(s32 updateRate) {
     if (!sOnlineSession.active) {
         /* Only reachable if something set GAMEMODE_ONLINE_SESSION without a
          * begin() -- which offline code never does. Fail safe to intro. */
@@ -336,7 +426,12 @@ void mdkr_online_session_tick(s32 updateRate) {
     case MDKR_ONLINE_SESSION_CHARSELECT: {
         MdkrOnlineCharselectResult r;
         {
-            /* PD-T4: track the host-intended pick as the room converges. */
+            /* PD-T4: track the host-intended pick as the room converges. M2:
+             * stashing PRE-tick is correct here (unlike TRACKSELECT, which reads
+             * POST-tick to capture the host's just-reduced SET_CONFIG_TRACK /
+             * SET_CUP): CHARSELECT reduces NO host session config, so its tick
+             * cannot change the intended track and there is nothing to read after
+             * it -- the pre-tick snapshot already carries the freshest config. */
             MdkrPartyLinkSnapshot csSnap;
             if (mdkr_party_link_read(&csSnap)) {
                 online_session_stash_intended(&csSnap);
@@ -424,8 +519,55 @@ void mdkr_online_session_tick(s32 updateRate) {
          * hand-off completed. */
         online_session_boot_race();
         break;
+    case MDKR_ONLINE_SESSION_RESULTS: {
+        /* PD-T5: the native RESULTS/STANDINGS screen, re-entered by the resident
+         * post-race fork (mdkr_online_session_resume_results). Enter it once on
+         * the first tick after the resume (the enter polls this race's captured
+         * placements); the screen renders placements from the poll + the cup
+         * points from the party_link snapshot. */
+        MdkrOnlineResultsResult r;
+        if (sOnlineSession.resultsPending) {
+            online_session_resident_resolve();
+            {
+                /* isFinal: no further race will boot (the ADVANCE off this
+                 * screen would be the (N+1)th boot). The final STANDINGS holds
+                 * on screen and the autoplay tick budget ends the process. */
+                u8 isFinal = (sOnlineSession.raceCount >= sResidentRaces) ? 1u
+                                                                          : 0u;
+                u8 raceIndex = (sOnlineSession.raceCount > 0u)
+                                   ? (u8) (sOnlineSession.raceCount - 1u)
+                                   : 0u;
+                mdkr_online_results_enter(isFinal, raceIndex);
+            }
+            sOnlineSession.resultsPending = 0u;
+        }
+        r = mdkr_online_results_tick(updateRate);
+        if (r == MDKR_ONLINE_RESULTS_ADVANCE) {
+            if (sOnlineSession.raceCount < sResidentRaces) {
+                /* Tournament / soak: re-boot the NEXT race IN THIS SAME ENGINE
+                 * PROCESS -- the load-bearing residency proof (>=2 direct
+                 * boots). PD-T6 owns per-round roster cycling + the real
+                 * launcher rematch; here the frozen descriptor re-boots.
+                 * unload_level_game() frees the just-finished race level (kept
+                 * resident, unrendered, through RESULTS) before the next boot's
+                 * load_level_game -- the same "leave the current race level"
+                 * call the offline race->race path makes. */
+                mdkr_online_results_exit();
+                unload_level_game();
+                online_session_boot_race();
+            }
+            /* else: soak complete -- the screen returned isFinal, so it holds
+             * the final standings; nothing to do. */
+        } else if (r == MDKR_ONLINE_RESULTS_LEAVE) {
+            /* Backing out to the launcher room is the PD-T6 engine->launcher
+             * return handshake (same wiring that boots this session). For now,
+             * hold on the screen rather than half-tear-down into an unwired
+             * state; the resident soak never presses B. */
+        }
+        break;
+    }
     default:
-        /* RESULTS / CEREMONY arrive in PD-T5..T6. */
+        /* CEREMONY (the champion cutscene) arrives in PD-T6. */
         break;
     }
 }

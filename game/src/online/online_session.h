@@ -61,6 +61,16 @@ void mdkr_online_session_tick(s32 updateRate);
  * PD-T4 into game/src/online/online_race_boot.{c,h}; online_session.c includes
  * that header and calls it for the RACE hand-off. */
 
+/* PD-T5 post-race RE-ENTRY (scoping ruling R-A). Called from the online
+ * post-race hook (menu.c) when the grace period elapses. Re-arms the session
+ * into its RESULTS phase in THIS engine process and returns true ONLY when
+ * resident mode is on (env MDKR_TEST_ONLINE_RESIDENT, set only by the scripted
+ * soak) AND this race captured a finish order. Returns false for every live lane
+ * (resident OFF) and every abnormal end (no captured results), so the caller
+ * keeps calling platform_request_exit(0) exactly as today -- zero live-lane
+ * behaviour change. Making LIVE play resident is PD-T6. */
+bool mdkr_online_session_resume_results(void);
+
 #ifdef __cplusplus
 }
 #endif

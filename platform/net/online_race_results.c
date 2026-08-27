@@ -29,3 +29,16 @@ bool mdkr_online_race_results_poll(
     sPolledEpoch = sRaceEpoch;
     return true;
 }
+
+#if MDKR_ENABLE_ONLINE_BETA
+/* Beta-only so a normal (beta OFF) build's online_race_results.c.o is byte-
+ * identical before/after this addition -- the OFF preprocessor emits nothing
+ * here, exactly like the beta-gated engine TUs. Its only caller
+ * (mdkr_online_session_resume_results) is itself compiled only under the beta
+ * gate. */
+bool mdkr_online_race_results_available(void) {
+    /* Same guard the poll reads, but WITHOUT advancing sPolledEpoch: a peek, not
+     * a take. */
+    return sPolledEpoch != sRaceEpoch;
+}
+#endif

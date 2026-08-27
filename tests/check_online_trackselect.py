@@ -124,7 +124,12 @@ ENGINE_LIVE_RE = re.compile(
 FORBIDDEN = ("[FATAL]", "[CRASH]", "AddressSanitizer",
              "online race admission rejected",
              "launcher input provider rejected",
-             "engine startup rejected before authored tick one")
+             "engine startup rejected before authored tick one",
+             # M3 (PD-T4 carry-forward): the tournament joiner scenario drives a
+             # teardown-time transport continuation that logs
+             # "[online-tournament] result=error step=..." on any stall; treat it
+             # as fatal so a silently-degraded continuation can never pass.
+             "[online-tournament] result=error")
 
 
 def fail(scenario: str, message: str, output: str = "") -> int:

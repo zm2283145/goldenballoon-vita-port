@@ -2884,6 +2884,102 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         host.shutdown();
         return 0;
     }
+    /* PD-T5 scripted RESIDENT SOAK: prove >=2 engine races + RESULTS in ONE
+     * engine process via the separated session loop, WITHOUT the live-loopback
+     * harness (whose boot-once wall + post-exit results report is exactly what
+     * makes multi-race impossible there -- PD-T6 makes LIVE play resident).
+     *
+     * This installs a validated 2-slot roster + launch descriptor DIRECTLY (no
+     * DTLS mesh, no match-input source), so mode_intro forks into the session and
+     * the race runs as a plain autopilot race (network_input == false, because
+     * the match-input runtime is NOT installed): both racers are AI-driven and
+     * finish, objects.c captures the placements, and -- with MDKR_TEST_ONLINE_-
+     * RESIDENT set -- the menu.c post-race hook re-enters the session's RESULTS
+     * phase instead of exiting. The session shows RESULTS -> STANDINGS, then
+     * re-boots the next race IN THIS SAME PROCESS. The autoplay tick budget ends
+     * the run while the final standings holds. Ordinary autoplay never sets the
+     * variable, so this stays inert. */
+    if (std::getenv("MDKR_TEST_ONLINE_RESIDENT") != nullptr) {
+        MdkrMatchManifestV1 manifest{};
+        MdkrNetRoster roster{};
+        MdkrMatchLaunchDescriptorV1 desc{};
+        const std::uint8_t bothSlots[2] = {0u, 1u};
+        unsigned bi;
+        manifest.match_epoch = 1u;
+        manifest.protocol_version = 1u;
+        for (bi = 0u; bi < sizeof(manifest.build_id); ++bi) {
+            manifest.build_id[bi] = static_cast<std::uint8_t>(bi + 1u);
+        }
+        for (bi = 0u; bi < sizeof(manifest.gameplay_digest); ++bi) {
+            manifest.gameplay_digest[bi] = static_cast<std::uint8_t>(bi + 1u);
+        }
+        manifest.slot_owner[0] = UINT64_C(0x1001);
+        manifest.slot_owner[1] = UINT64_C(0x1002);
+        manifest.rng_seed = UINT64_C(0x0123456789ABCDEF);
+        manifest.track_id = 5u; /* Ancient Lake (a real standard race track) */
+        manifest.rom_revision = static_cast<std::uint8_t>(MDKR_ROM_US_11);
+        manifest.cadence_hz = 30u;
+        manifest.slot_count = 2u; /* >= 2 (manifest_validate floor) */
+        manifest.rules = MDKR_MATCH_RULES_STANDARD_RACE;
+        manifest.vehicle_mask = 0x7u; /* car/hovercraft/plane */
+        manifest.input_delay = 2u;
+        /* Both canonical slots are LOCAL here: the race then runs as the proven
+         * offline 2-player split autopilot scenario (both AI-driven, both
+         * finish). The RESULTS screen's local/remote split is driven separately
+         * by the party_link snapshot the RESULTS test seam publishes. */
+        if (!mdkr_net_roster_init(&roster, &manifest) ||
+            !mdkr_net_roster_configure_local(&roster, bothSlots, 2u) ||
+            !mdkr_net_roster_set_viewports(&roster, bothSlots, 2u)) {
+            std::fprintf(stderr,
+                         "[online-resident] roster build failed\n");
+            host.shutdown();
+            return 2;
+        }
+        desc.version = MDKR_MATCH_LAUNCH_DESCRIPTOR_VERSION;
+        desc.manifest = manifest;
+        desc.selections[0].selection_revision = 1u;
+        desc.selections[0].character_id = 1u; /* distinct valid characters */
+        desc.selections[0].vehicle_id = 0u;   /* car (bit set in mask) */
+        desc.selections[1].selection_revision = 1u;
+        desc.selections[1].character_id = 2u;
+        desc.selections[1].vehicle_id = 0u;
+        desc.selections[2].character_id = MDKR_MATCH_NO_CHARACTER;
+        desc.selections[2].vehicle_id = MDKR_MATCH_NO_VEHICLE;
+        desc.selections[3].character_id = MDKR_MATCH_NO_CHARACTER;
+        desc.selections[3].vehicle_id = MDKR_MATCH_NO_VEHICLE;
+        if (!mdkr_match_launch_descriptor_validate(&desc)) {
+            std::fprintf(stderr,
+                         "[online-resident] launch descriptor invalid\n");
+            host.shutdown();
+            return 2;
+        }
+        mdkr_net_roster_runtime_clear();
+        if (!mdkr_net_roster_runtime_install_launch(&desc, &roster)) {
+            std::fprintf(stderr,
+                         "[online-resident] roster/descriptor install refused\n");
+            host.shutdown();
+            return 2;
+        }
+        std::fprintf(stderr,
+                     "[online-resident] soak: roster installed (track=%u "
+                     "slots=%u); resident post-race re-entry armed\n",
+                     static_cast<unsigned>(manifest.track_id),
+                     static_cast<unsigned>(manifest.slot_count));
+        platformSetHostWindow(host.window(), host.glContext());
+        if (host.usingWebGpu()) {
+            platformSetHostWebGpu(host.wgpuInstance(), host.wgpuAdapter(),
+                                  host.wgpuDevice(), host.wgpuQueue(),
+                                  host.wgpuSurface(), host.wgpuFormat());
+            platformSetHostWebGpuRecovery(recoverAppHostWebGpu, &host);
+        }
+        const int residentResult = mdkr64_engine_boot(&config);
+        platformSetHostWebGpuRecovery(nullptr, nullptr);
+        platformSetHostWebGpu(nullptr, nullptr, nullptr, nullptr, nullptr, 0);
+        platformSetHostWindow(nullptr, nullptr);
+        mdkr_net_roster_runtime_clear();
+        host.shutdown();
+        return residentResult;
+    }
     /* Headless proof of the make-or-break wiring: stand up two REAL live adapters
      * over the in-process loopback mesh, drive them to a ready race transport,
      * then boot the VISIBLE engine on endpoint A's live transport while endpoint

@@ -37,6 +37,18 @@ void mdkr_online_race_results_publish(
 bool mdkr_online_race_results_poll(
     uint8_t out[MDKR_ONLINE_RACE_RESULT_SLOTS]);
 
+/* NON-consuming availability query: true when a race result has been published
+ * that the one-shot poll above has NOT yet handed out. Unlike the poll it never
+ * advances the epoch guard, so a caller can decide "were results captured?"
+ * without stealing them from the reader that owns the poll. PD-T5 uses it in the
+ * resident post-race fork (via mdkr_online_session_resume_results) to gate
+ * re-entering the session's RESULTS phase on a genuinely captured finish while
+ * leaving the placements for the RESULTS screen to poll. Beta-only (its callers
+ * are beta-gated), so the release online_race_results.c.o stays byte-identical. */
+#if MDKR_ENABLE_ONLINE_BETA
+bool mdkr_online_race_results_available(void);
+#endif
+
 #ifdef __cplusplus
 }
 #endif
