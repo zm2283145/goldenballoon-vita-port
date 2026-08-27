@@ -381,14 +381,21 @@ then close the visible example defects. Renderer work M6 can proceed in parallel
 after M1 stabilizes the transform contract. M7 follows the format decisions made
 by M6. M8 begins with M0 and remains a release gate throughout.
 
-The immediate next slice is therefore:
+The forward-axis thumbnail studio, structural/symmetry rig proposal, derived
+rest/bend bases, 72%-occupancy isolated capture, portrait handoff, and fresh
+five-context/performance fixture qualification are complete. The immediate
+remaining order is therefore:
 
-1. render the already-reviewable four forward-axis choices as equal thumbnails;
-2. extend the structural rig proposal with bind-position/symmetry scoring and
-   reviewable rest-basis/bend-axis diagnostics;
-3. add side-by-side held-phase and transition review for the now-reversible
-   animation decisions;
-4. turn the guided per-vehicle sequence into evidence-bound root/contact
-   proposals with advisory residual and occlusion targets; and
-5. re-run the private example through the new 72%-occupancy isolated capture,
-   complete its portrait handoff, and qualify all contexts/performance again.
+1. add side-by-side held-phase and transition review for the now-reversible
+   animation decisions, then qualify richer reference clips;
+2. add renderer-derived head/torso occupancy, seat displacement, vehicle/body
+   intersection, penetration, and oscillation witnesses; use controlled
+   perturbation/re-rendering for contact suggestions rather than applying
+   coordinate-incorrect endpoint deltas;
+3. exercise start, steer, airborne, land, and finish variants per vehicle and
+   generate a first portrait suggestion during intake;
+4. execute the M6 renderer tail (shadows, transparent ordering, compressed
+   textures, projected LOD, optional simplification, and material expansion);
+5. complete packaged cross-platform/offline/adapter/online contracts; and
+6. run the observed human, controller/screen-reader, perceptual, and maintained
+   multi-device qualification matrix in M8.
