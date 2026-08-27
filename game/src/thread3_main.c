@@ -424,6 +424,57 @@ static s32 workshop_preview_publish_vehicle_surface_diagnostics(
             }
         }
     }
+    if (diagnostics.containment_samples_tested >
+            MDKR_MODERN_CHARACTER_CONTAINMENT_SAMPLE_MAX ||
+        diagnostics.containment_inside_samples +
+                diagnostics.containment_boundary_samples +
+                diagnostics.containment_outside_samples !=
+            diagnostics.containment_samples_tested) return FALSE;
+    if (diagnostics.containment_qualified) {
+        double maximumDepthMicrometres;
+        if (diagnostics.shell_boundary_edges != 0u ||
+            diagnostics.shell_nonmanifold_edges != 0u ||
+            diagnostics.shell_orientation_mismatch_edges != 0u ||
+            diagnostics.shell_self_intersection_pairs != 0u ||
+            diagnostics.shell_triangles_submitted !=
+                diagnostics.shell_triangles_tested ||
+            diagnostics.containment_samples_tested == 0u) return FALSE;
+        maximumDepthMicrometres =
+            (double)diagnostics.containment_maximum_inside_depth * 1000000.0;
+        if (!isfinite(maximumDepthMicrometres) ||
+            maximumDepthMicrometres < 0.0 ||
+            maximumDepthMicrometres > 1000000000.0) return FALSE;
+        if (diagnostics.containment_inside_samples == 0u) {
+            u32 pointAxis;
+            if (diagnostics.containment_maximum_inside_depth != 0.0f) {
+                return FALSE;
+            }
+            for (pointAxis = 0u; pointAxis < 3u; ++pointAxis) {
+                if (diagnostics.containment_deepest_subject_point[pointAxis] !=
+                    0.0f) return FALSE;
+            }
+        } else {
+            u32 pointAxis;
+            if (diagnostics.containment_maximum_inside_depth <= 0.0f) {
+                return FALSE;
+            }
+            for (pointAxis = 0u; pointAxis < 3u; ++pointAxis) {
+                if (!workshop_preview_quantize_micrometres(
+                        diagnostics.containment_deepest_subject_point[pointAxis],
+                        &result->vehicle_containment_deepest_micrometres
+                            [pointAxis])) return FALSE;
+            }
+        }
+        result->vehicle_containment_maximum_depth_micrometres =
+            (u64)(maximumDepthMicrometres + 0.5);
+        result->vehicle_volume_qualified = TRUE;
+    } else if (diagnostics.containment_samples_tested != 0u ||
+               diagnostics.containment_inside_samples != 0u ||
+               diagnostics.containment_boundary_samples != 0u ||
+               diagnostics.containment_outside_samples != 0u ||
+               diagnostics.containment_maximum_inside_depth != 0.0f) {
+        return FALSE;
+    }
     result->vehicle_shell_triangles_submitted =
         diagnostics.shell_triangles_submitted;
     result->vehicle_shell_triangles_tested =
@@ -435,6 +486,21 @@ static s32 workshop_preview_publish_vehicle_surface_diagnostics(
     result->vehicle_surface_crossing_triangles =
         diagnostics.crossing_subject_triangles;
     result->vehicle_surface_crossing_pairs = diagnostics.crossing_pairs;
+    result->vehicle_shell_boundary_edges = diagnostics.shell_boundary_edges;
+    result->vehicle_shell_nonmanifold_edges =
+        diagnostics.shell_nonmanifold_edges;
+    result->vehicle_shell_orientation_mismatch_edges =
+        diagnostics.shell_orientation_mismatch_edges;
+    result->vehicle_shell_self_intersection_pairs =
+        diagnostics.shell_self_intersection_pairs;
+    result->vehicle_containment_samples_tested =
+        diagnostics.containment_samples_tested;
+    result->vehicle_containment_inside_samples =
+        diagnostics.containment_inside_samples;
+    result->vehicle_containment_boundary_samples =
+        diagnostics.containment_boundary_samples;
+    result->vehicle_containment_outside_samples =
+        diagnostics.containment_outside_samples;
     result->vehicle_surface_valid = TRUE;
     return TRUE;
 }
@@ -598,6 +664,8 @@ static void workshop_preview_measurement_finish(void) {
         "cameraViewport=%d,%d,%d,%d cameraHeadMilli=%d,%d,%d/%x "
         "surface=%d shell=%u/%u subject=%u/%u crossings=%u/%u "
         "crossingUm=%lld,%lld,%lld "
+        "volume=%d topology=%u,%u,%u,%u containment=%u,%u,%u,%u "
+        "containmentDepthUm=%llu containmentPointUm=%lld,%lld,%lld "
         "pose=%d phase=%u "
         "transitionFrom=%d transitionPhase=%u transition=%llu/%llu/%llu "
         "transitionBlend=%u,%u transitionSource=%d,%d "
@@ -674,6 +742,19 @@ static void workshop_preview_measurement_finish(void) {
         result->vehicle_surface_first_crossing_micrometres[0],
         result->vehicle_surface_first_crossing_micrometres[1],
         result->vehicle_surface_first_crossing_micrometres[2],
+        result->vehicle_volume_qualified,
+        result->vehicle_shell_boundary_edges,
+        result->vehicle_shell_nonmanifold_edges,
+        result->vehicle_shell_orientation_mismatch_edges,
+        result->vehicle_shell_self_intersection_pairs,
+        result->vehicle_containment_samples_tested,
+        result->vehicle_containment_inside_samples,
+        result->vehicle_containment_boundary_samples,
+        result->vehicle_containment_outside_samples,
+        result->vehicle_containment_maximum_depth_micrometres,
+        result->vehicle_containment_deepest_micrometres[0],
+        result->vehicle_containment_deepest_micrometres[1],
+        result->vehicle_containment_deepest_micrometres[2],
         (int)result->pose, result->pose_phase_milli,
         (int)result->transition_from_pose,
         result->transition_from_phase_milli,

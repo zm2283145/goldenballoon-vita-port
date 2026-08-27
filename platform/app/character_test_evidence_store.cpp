@@ -18,12 +18,14 @@ constexpr const char *kHeaderV3 = "mdkr-character-test-evidence-v3";
 constexpr const char *kHeaderV4 = "mdkr-character-test-evidence-v4";
 constexpr const char *kHeaderV5 = "mdkr-character-test-evidence-v5";
 constexpr const char *kHeaderV6 = "mdkr-character-test-evidence-v6";
+constexpr const char *kHeaderV7 = "mdkr-character-test-evidence-v7";
 constexpr size_t kFieldsPerRowV1 = 39u;
 constexpr size_t kFieldsPerRowV2 = 52u;
 constexpr size_t kFieldsPerRowV3 = 105u;
 constexpr size_t kFieldsPerRowV4 = 125u;
 constexpr size_t kFieldsPerRowV5 = 164u;
 constexpr size_t kFieldsPerRowV6 = 174u;
+constexpr size_t kFieldsPerRowV7 = 187u;
 constexpr size_t      kMaximumRowBytes =
     (CharacterTestEvidenceStore::kMaximumBuildVersionBytes * 2u) +
     (CharacterTestEvidenceStore::kMaximumBackendBytes * 2u) +
@@ -588,6 +590,25 @@ bool evidenceValid(const CharacterTestEvidenceStore::Evidence &evidence,
         }
         return true;
     };
+    const auto volumeValuesZero = [&evidence]() {
+        if (evidence.vehicleVolumeQualified ||
+            evidence.vehicleShellBoundaryEdges != 0u ||
+            evidence.vehicleShellNonmanifoldEdges != 0u ||
+            evidence.vehicleShellOrientationMismatchEdges != 0u ||
+            evidence.vehicleShellSelfIntersectionPairs != 0u ||
+            evidence.vehicleContainmentSamplesTested != 0u ||
+            evidence.vehicleContainmentInsideSamples != 0u ||
+            evidence.vehicleContainmentBoundarySamples != 0u ||
+            evidence.vehicleContainmentOutsideSamples != 0u ||
+            evidence.vehicleContainmentMaximumDepthMicrometres != 0u) {
+            return false;
+        }
+        for (int64_t value :
+             evidence.vehicleContainmentDeepestMicrometres) {
+            if (value != 0) return false;
+        }
+        return true;
+    };
     bool vehicleSurfaceStateValid = evidence.vehicleSurfaceValid ||
         surfaceValuesZero();
     if (evidence.vehicleSurfaceValid) {
@@ -621,6 +642,61 @@ bool evidenceValid(const CharacterTestEvidenceStore::Evidence &evidence,
             (evidence.context == 1u
                  ? !evidence.vehicleSurfaceValid && surfaceValuesZero()
                  : evidence.vehicleSurfaceValid);
+    }
+    if (evidence.resultVersion < 17u) {
+        vehicleSurfaceStateValid = vehicleSurfaceStateValid &&
+            volumeValuesZero();
+    } else if (!evidence.vehicleSurfaceValid) {
+        vehicleSurfaceStateValid = vehicleSurfaceStateValid &&
+            volumeValuesZero();
+    } else {
+        const uint64_t classified =
+            static_cast<uint64_t>(
+                evidence.vehicleContainmentInsideSamples) +
+            evidence.vehicleContainmentBoundarySamples +
+            evidence.vehicleContainmentOutsideSamples;
+        vehicleSurfaceStateValid = vehicleSurfaceStateValid &&
+            evidence.vehicleContainmentSamplesTested <= 2048u &&
+            classified == evidence.vehicleContainmentSamplesTested &&
+            evidence.vehicleContainmentMaximumDepthMicrometres <=
+                1000000000ULL;
+        if (evidence.vehicleVolumeQualified) {
+            vehicleSurfaceStateValid = vehicleSurfaceStateValid &&
+                evidence.vehicleShellTrianglesSubmitted ==
+                    evidence.vehicleShellTrianglesTested &&
+                evidence.vehicleShellBoundaryEdges == 0u &&
+                evidence.vehicleShellNonmanifoldEdges == 0u &&
+                evidence.vehicleShellOrientationMismatchEdges == 0u &&
+                evidence.vehicleShellSelfIntersectionPairs == 0u &&
+                evidence.vehicleContainmentSamplesTested != 0u &&
+                ((evidence.vehicleContainmentInsideSamples == 0u) ==
+                 (evidence.vehicleContainmentMaximumDepthMicrometres == 0u));
+            for (int64_t value :
+                 evidence.vehicleContainmentDeepestMicrometres) {
+                vehicleSurfaceStateValid = vehicleSurfaceStateValid &&
+                    value >= -1000000000LL && value <= 1000000000LL &&
+                    (evidence.vehicleContainmentInsideSamples != 0u ||
+                     value == 0);
+            }
+        } else {
+            vehicleSurfaceStateValid = vehicleSurfaceStateValid &&
+                evidence.vehicleContainmentSamplesTested == 0u &&
+                evidence.vehicleContainmentInsideSamples == 0u &&
+                evidence.vehicleContainmentBoundarySamples == 0u &&
+                evidence.vehicleContainmentOutsideSamples == 0u &&
+                evidence.vehicleContainmentMaximumDepthMicrometres == 0u &&
+                (evidence.vehicleShellTrianglesSubmitted !=
+                     evidence.vehicleShellTrianglesTested ||
+                 evidence.vehicleShellBoundaryEdges != 0u ||
+                 evidence.vehicleShellNonmanifoldEdges != 0u ||
+                 evidence.vehicleShellOrientationMismatchEdges != 0u ||
+                 evidence.vehicleShellSelfIntersectionPairs != 0u);
+            for (int64_t value :
+                 evidence.vehicleContainmentDeepestMicrometres) {
+                vehicleSurfaceStateValid = vehicleSurfaceStateValid &&
+                    value == 0;
+            }
+        }
     }
     if (evidence.kind != Kind::Latest && evidence.kind != Kind::Baseline)
         error = "test evidence kind is invalid";
@@ -808,6 +884,21 @@ std::vector<std::string> recordFields(
          evidence.vehicleSurfaceFirstCrossingMicrometres) {
         fields.push_back(signedNumber(value));
     }
+    fields.push_back(evidence.vehicleVolumeQualified ? "1" : "0");
+    fields.push_back(number(evidence.vehicleShellBoundaryEdges));
+    fields.push_back(number(evidence.vehicleShellNonmanifoldEdges));
+    fields.push_back(number(evidence.vehicleShellOrientationMismatchEdges));
+    fields.push_back(number(evidence.vehicleShellSelfIntersectionPairs));
+    fields.push_back(number(evidence.vehicleContainmentSamplesTested));
+    fields.push_back(number(evidence.vehicleContainmentInsideSamples));
+    fields.push_back(number(evidence.vehicleContainmentBoundarySamples));
+    fields.push_back(number(evidence.vehicleContainmentOutsideSamples));
+    fields.push_back(number(
+        evidence.vehicleContainmentMaximumDepthMicrometres));
+    for (int64_t value :
+         evidence.vehicleContainmentDeepestMicrometres) {
+        fields.push_back(signedNumber(value));
+    }
     return fields;
 }
 
@@ -883,7 +974,8 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
         !split(text.substr(0u, end), 3u, fields) ||
         (fields[0] != kHeaderV1 && fields[0] != kHeaderV2 &&
          fields[0] != kHeaderV3 && fields[0] != kHeaderV4 &&
-         fields[0] != kHeaderV5 && fields[0] != kHeaderV6) ||
+         fields[0] != kHeaderV5 && fields[0] != kHeaderV6 &&
+         fields[0] != kHeaderV7) ||
         !parseUnsigned(fields[1], kMaximumRecords, count) ||
         !digestValid(fields[2])) {
         error = "test evidence inventory header is invalid";
@@ -895,11 +987,13 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
     const bool legacyV3 = header == kHeaderV3;
     const bool legacyV4 = header == kHeaderV4;
     const bool legacyV5 = header == kHeaderV5;
+    const bool legacyV6 = header == kHeaderV6;
     const size_t rowFields = legacyV1 ? kFieldsPerRowV1
         : legacyV2 ? kFieldsPerRowV2
         : legacyV3 ? kFieldsPerRowV3
         : legacyV4 ? kFieldsPerRowV4
-        : legacyV5 ? kFieldsPerRowV5 : kFieldsPerRowV6;
+        : legacyV5 ? kFieldsPerRowV5
+        : legacyV6 ? kFieldsPerRowV6 : kFieldsPerRowV7;
     const std::string countText         = fields[1];
     const std::string inventoryChecksum = fields[2];
     begin                               = end + 1u;
@@ -1124,7 +1218,8 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
             assignDistribution(evidence.gpuTiming.scene_pass);
             assignDistribution(evidence.gpuTiming.character_draws);
         }
-        if (header == kHeaderV5 || header == kHeaderV6) {
+        if (header == kHeaderV5 || header == kHeaderV6 ||
+            header == kHeaderV7) {
             size_t field = 124u;
             uint64_t unsignedValue = 0u;
             int64_t signedValue = 0;
@@ -1192,7 +1287,7 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
                 return false;
             }
         }
-        if (header == kHeaderV6) {
+        if (header == kHeaderV6 || header == kHeaderV7) {
             size_t field = 163u;
             uint64_t value = 0u;
             bool surfaceFieldsValid = parseUnsigned(
@@ -1230,6 +1325,43 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
             }
             if (!surfaceFieldsValid || field != 173u) {
                 error = "test evidence vehicle surface fields are invalid";
+                return false;
+            }
+        }
+        if (header == kHeaderV7) {
+            size_t field = 173u;
+            uint64_t value = 0u;
+            bool volumeFieldsValid = parseUnsigned(
+                fields[field++], 1u, value);
+            evidence.vehicleVolumeQualified = value != 0u;
+            const auto parseCount = [&](uint32_t &output,
+                                        uint64_t maximum) {
+                if (!volumeFieldsValid) return;
+                volumeFieldsValid = parseUnsigned(
+                    fields[field++], maximum, value);
+                output = static_cast<uint32_t>(value);
+            };
+            parseCount(evidence.vehicleShellBoundaryEdges, 1536u);
+            parseCount(evidence.vehicleShellNonmanifoldEdges, 1536u);
+            parseCount(
+                evidence.vehicleShellOrientationMismatchEdges, 1536u);
+            parseCount(
+                evidence.vehicleShellSelfIntersectionPairs, 130816u);
+            parseCount(evidence.vehicleContainmentSamplesTested, 2048u);
+            parseCount(evidence.vehicleContainmentInsideSamples, 2048u);
+            parseCount(evidence.vehicleContainmentBoundarySamples, 2048u);
+            parseCount(evidence.vehicleContainmentOutsideSamples, 2048u);
+            volumeFieldsValid = volumeFieldsValid && parseUnsigned(
+                fields[field++], 1000000000ULL,
+                evidence.vehicleContainmentMaximumDepthMicrometres);
+            for (int64_t &coordinate :
+                 evidence.vehicleContainmentDeepestMicrometres) {
+                volumeFieldsValid = volumeFieldsValid && parseSigned(
+                    fields[field++], -1000000000LL, 1000000000LL,
+                    coordinate);
+            }
+            if (!volumeFieldsValid || field != 186u) {
+                error = "test evidence vehicle volume fields are invalid";
                 return false;
             }
         }
@@ -1286,7 +1418,7 @@ bool serialize(const Inventory &inventory, std::string &output, std::string &err
         }
         packages.insert(evidence.packageId);
         const std::vector<std::string> fields = recordFields(evidence);
-        if (fields.size() + 1u != kFieldsPerRowV6) {
+        if (fields.size() + 1u != kFieldsPerRowV7) {
             error = "test evidence serializer field contract drifted";
             return false;
         }
@@ -1302,8 +1434,8 @@ bool serialize(const Inventory &inventory, std::string &output, std::string &err
         }
     }
     const std::string count  = std::to_string(ordered.records.size());
-    std::string       result = std::string(kHeaderV6) + "\t" + count + "\t" +
-                               inventoryDigest(kHeaderV6, count, body) +
+    std::string       result = std::string(kHeaderV7) + "\t" + count + "\t" +
+                               inventoryDigest(kHeaderV7, count, body) +
                                "\n" + body;
     if (result.size() > kMaximumSerializedBytes) {
         error = "serialized test evidence exceeds its byte bound";

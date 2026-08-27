@@ -808,6 +808,7 @@ def main() -> int:
                         f"viewport={(viewport_x, viewport_y, viewport_width, viewport_height)} "
                         f"head={(camera_head_x, camera_head_y, camera_head_depth, camera_head_flags)}"
                     )
+            shell_tested = shell_submitted = 0
             surface_match = re.search(
                 r"surface=(\d+) shell=(\d+)/(\d+) "
                 r"subject=(\d+)/(\d+) crossings=(\d+)/(\d+) "
@@ -854,6 +855,67 @@ def main() -> int:
                         f"subject={subject_tested, subject_submitted} "
                         f"crossings={crossing_triangles, crossing_pairs} "
                         f"first={crossing_x, crossing_y, crossing_z}"
+                    )
+            volume_match = re.search(
+                r"volume=(\d+) topology=(\d+),(\d+),(\d+),(\d+) "
+                r"containment=(\d+),(\d+),(\d+),(\d+) "
+                r"containmentDepthUm=(\d+) "
+                r"containmentPointUm=(-?\d+),(-?\d+),(-?\d+)",
+                arm_output,
+            )
+            if volume_match is None:
+                failures.append(
+                    f"{label} emitted no closed-volume qualification witness"
+                )
+            else:
+                (volume_qualified, open_edges, nonmanifold_edges,
+                 winding_edges, self_pairs, containment_samples,
+                 inside_samples, boundary_samples, outside_samples,
+                 depth_um, deepest_x, deepest_y,
+                 deepest_z) = map(int, volume_match.groups())
+                topology_defects = (
+                    open_edges + nonmanifold_edges + winding_edges + self_pairs
+                )
+                if context == "select":
+                    if any(map(int, volume_match.groups())):
+                        failures.append(
+                            f"{label} fabricated a vehicle volume in character select"
+                        )
+                elif (
+                    volume_qualified not in (0, 1)
+                    or containment_samples > 2048
+                    or inside_samples + boundary_samples + outside_samples
+                    != containment_samples
+                    or depth_um > 1_000_000_000
+                    or any(abs(value) > 1_000_000_000 for value in (
+                        deepest_x, deepest_y, deepest_z
+                    ))
+                ):
+                    failures.append(
+                        f"{label} returned structurally invalid volume evidence"
+                    )
+                elif volume_qualified:
+                    if (
+                        topology_defects != 0
+                        or shell_tested != shell_submitted
+                        or containment_samples == 0
+                        or ((inside_samples == 0) != (depth_um == 0))
+                        or (inside_samples == 0 and any((
+                            deepest_x, deepest_y, deepest_z
+                        )))
+                    ):
+                        failures.append(
+                            f"{label} made an unqualified containment claim"
+                        )
+                elif (
+                    containment_samples != 0
+                    or any((inside_samples, boundary_samples, outside_samples,
+                            depth_um, deepest_x, deepest_y, deepest_z))
+                    or (topology_defects == 0
+                        and shell_tested == shell_submitted)
+                ):
+                    failures.append(
+                        f"{label} retained samples for an unqualified volume"
                     )
             environment_match = re.search(
                 r"character_workshop_result: .* backend=(webgpu-[^ ]+) "

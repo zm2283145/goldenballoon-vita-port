@@ -92,6 +92,59 @@ int main(void) {
                 fabsf(diagnostics.first_crossing_subject_center[2]) <
                     0.0001f,
             "crossing counts or the first source-triangle locator are wrong");
+    require(!diagnostics.containment_qualified &&
+                diagnostics.shell_boundary_edges != 0u &&
+                diagnostics.containment_samples_tested == 0u,
+            "an open retained surface fabricated containment evidence");
+
+    {
+        MdkrModernSurfaceTriangle closed_shell[4] = {
+            triangle(0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                     1.0f, 0.0f, 0.0f),
+            triangle(0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                     0.0f, 0.0f, 1.0f),
+            triangle(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+                     0.0f, 1.0f, 0.0f),
+            triangle(1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                     0.0f, 0.0f, 1.0f),
+        };
+        MdkrModernSurfaceTriangle samples[3] = {
+            triangle(0.08f, 0.08f, 0.08f, 0.11f, 0.08f, 0.08f,
+                     0.08f, 0.11f, 0.08f),
+            triangle(2.0f, 2.0f, 2.0f, 2.1f, 2.0f, 2.0f,
+                     2.0f, 2.1f, 2.0f),
+            triangle(0.2f, 0.2f, 0.0f, 0.3f, 0.2f, 0.0f,
+                     0.2f, 0.3f, 0.0f),
+        };
+        SubjectFixture closed_fixture = {samples, 3u, 0};
+        require(mdkr_modern_surface_intersections(
+                    closed_shell, 4u, closed_fixture.count, read_subject,
+                    &closed_fixture, &diagnostics),
+                "a closed tetrahedron did not produce diagnostics");
+        require(diagnostics.containment_qualified == 1u &&
+                    diagnostics.shell_boundary_edges == 0u &&
+                    diagnostics.shell_nonmanifold_edges == 0u &&
+                    diagnostics.shell_orientation_mismatch_edges == 0u &&
+                    diagnostics.shell_self_intersection_pairs == 0u &&
+                    diagnostics.containment_samples_tested == 3u &&
+                    diagnostics.containment_inside_samples == 1u &&
+                    diagnostics.containment_boundary_samples == 1u &&
+                    diagnostics.containment_outside_samples == 1u &&
+                    diagnostics.containment_maximum_inside_depth > 0.07f &&
+                    diagnostics.containment_maximum_inside_depth < 0.11f,
+                "closed-volume sample classification or depth is wrong");
+
+        closed_shell[0] = triangle(
+            0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f);
+        require(mdkr_modern_surface_intersections(
+                    closed_shell, 4u, closed_fixture.count, read_subject,
+                    &closed_fixture, &diagnostics) &&
+                    !diagnostics.containment_qualified &&
+                    diagnostics.shell_orientation_mismatch_edges != 0u &&
+                    diagnostics.containment_samples_tested == 0u,
+                "inconsistent winding was not refused as a volume");
+    }
 
     fixture.fail = 1;
     memset(&diagnostics, 0xA5, sizeof(diagnostics));
@@ -117,6 +170,43 @@ int main(void) {
     require(!mdkr_modern_surface_intersections(
                 shell, 5u, 0u, read_subject, &fixture, &diagnostics),
             "an empty subject surface was accepted");
+
+    {
+        const uint32_t count =
+            MDKR_MODERN_CHARACTER_CONTAINMENT_SAMPLE_MAX + 17u;
+        MdkrModernSurfaceTriangle *many = (MdkrModernSurfaceTriangle *)calloc(
+            count, sizeof(*many));
+        MdkrModernSurfaceTriangle closed_shell[4] = {
+            triangle(0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                     1.0f, 0.0f, 0.0f),
+            triangle(0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                     0.0f, 0.0f, 1.0f),
+            triangle(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+                     0.0f, 1.0f, 0.0f),
+            triangle(1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                     0.0f, 0.0f, 1.0f),
+        };
+        uint32_t index;
+        require(many != NULL, "could not allocate bounded sample fixture");
+        for (index = 0u; index < count; ++index) {
+            many[index] = triangle(
+                2.0f, 2.0f, 2.0f, 2.1f, 2.0f, 2.0f,
+                2.0f, 2.1f, 2.0f);
+        }
+        {
+            SubjectFixture many_fixture = {many, count, 0};
+            require(mdkr_modern_surface_intersections(
+                        closed_shell, 4u, count, read_subject,
+                        &many_fixture, &diagnostics) &&
+                        diagnostics.containment_qualified &&
+                        diagnostics.containment_samples_tested ==
+                            MDKR_MODERN_CHARACTER_CONTAINMENT_SAMPLE_MAX &&
+                        diagnostics.containment_outside_samples ==
+                            MDKR_MODERN_CHARACTER_CONTAINMENT_SAMPLE_MAX,
+                    "high-poly containment sampling exceeded or missed its fixed bound");
+        }
+        free(many);
+    }
 
     puts("test_modern_character_surface_intersection: PASS");
     return 0;

@@ -71,7 +71,7 @@ struct Evidence {
     uint64_t    tickwallSamples             = 0u;
     uint64_t    tickwallMeanNs              = 0u;
     /* Version zero means the authenticated v1-v3 record predates GPU timing.
-     * Current v6/result-v16 records carry a structurally validated snapshot. */
+     * Current v7/result-v17 records carry a structurally validated snapshot. */
     MdkrModernCharacterGpuTimingMetrics gpuTiming{};
     uint64_t    replacementDraws            = 0u;
     uint64_t    replacementPrimitives       = 0u;
@@ -111,6 +111,17 @@ struct Evidence {
     uint32_t    vehicleSurfaceCrossingTriangles = 0u;
     uint32_t    vehicleSurfaceCrossingPairs = 0u;
     int64_t     vehicleSurfaceFirstCrossingMicrometres[3] = {};
+    bool        vehicleVolumeQualified = false;
+    uint32_t    vehicleShellBoundaryEdges = 0u;
+    uint32_t    vehicleShellNonmanifoldEdges = 0u;
+    uint32_t    vehicleShellOrientationMismatchEdges = 0u;
+    uint32_t    vehicleShellSelfIntersectionPairs = 0u;
+    uint32_t    vehicleContainmentSamplesTested = 0u;
+    uint32_t    vehicleContainmentInsideSamples = 0u;
+    uint32_t    vehicleContainmentBoundarySamples = 0u;
+    uint32_t    vehicleContainmentOutsideSamples = 0u;
+    uint64_t    vehicleContainmentMaximumDepthMicrometres = 0u;
+    int64_t     vehicleContainmentDeepestMicrometres[3] = {};
     std::string backend;
     std::string adapter;
     std::string driver;

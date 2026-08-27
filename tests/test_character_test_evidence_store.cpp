@@ -102,7 +102,7 @@ std::string legacyFromV6(const std::string &encoded,
     const std::vector<std::string> header = splitFields(
         encoded.substr(0u, headerEnd));
     if (header.size() != 3u ||
-        header[0] != "mdkr-character-test-evidence-v6") return {};
+        header[0] != "mdkr-character-test-evidence-v7") return {};
     std::string body;
     size_t begin = headerEnd + 1u;
     while (begin < encoded.size()) {
@@ -110,7 +110,7 @@ std::string legacyFromV6(const std::string &encoded,
         if (end == std::string::npos) return {};
         std::vector<std::string> fields = splitFields(
             encoded.substr(begin, end - begin));
-        if (fields.size() != 174u) return {};
+        if (fields.size() != 187u) return {};
         fields.resize(retainedFields);
         /* V1/V2 predate result contract 10 and therefore cannot claim its
          * required contact witnesses. */
@@ -153,7 +153,7 @@ std::string legacyV3FromV6(const std::string &encoded) {
         if (end == std::string::npos) return {};
         std::vector<std::string> fields = splitFields(
             encoded.substr(begin, end - begin));
-        if (fields.size() != 174u) return {};
+        if (fields.size() != 187u) return {};
         fields.resize(104u);
         fields[9] = "10";
         for (const std::string &field : fields) {
@@ -175,7 +175,7 @@ std::string legacyV4FromV6(const std::string &encoded) {
     const std::vector<std::string> header = splitFields(
         encoded.substr(0u, headerEnd));
     if (header.size() != 3u ||
-        header[0] != "mdkr-character-test-evidence-v6") return {};
+        header[0] != "mdkr-character-test-evidence-v7") return {};
     std::string body;
     size_t begin = headerEnd + 1u;
     while (begin < encoded.size()) {
@@ -183,7 +183,7 @@ std::string legacyV4FromV6(const std::string &encoded) {
         if (end == std::string::npos) return {};
         std::vector<std::string> fields = splitFields(
             encoded.substr(begin, end - begin));
-        if (fields.size() != 174u) return {};
+        if (fields.size() != 187u) return {};
         fields.resize(124u);
         fields[9] = "14";
         for (const std::string &field : fields) {
@@ -206,7 +206,7 @@ std::string legacyV5FromV6(const std::string &encoded) {
     const std::vector<std::string> header = splitFields(
         encoded.substr(0u, headerEnd));
     if (header.size() != 3u ||
-        header[0] != "mdkr-character-test-evidence-v6") return {};
+        header[0] != "mdkr-character-test-evidence-v7") return {};
     std::string body;
     size_t begin = headerEnd + 1u;
     while (begin < encoded.size()) {
@@ -214,7 +214,7 @@ std::string legacyV5FromV6(const std::string &encoded) {
         if (end == std::string::npos) return {};
         std::vector<std::string> fields = splitFields(
             encoded.substr(begin, end - begin));
-        if (fields.size() != 174u) return {};
+        if (fields.size() != 187u) return {};
         fields.resize(163u);
         fields[9] = "15";
         for (const std::string &field : fields) {
@@ -245,10 +245,10 @@ std::string authenticatedV6WithFirstRowField(
     std::vector<std::string> fields = splitFields(
         encoded.substr(headerEnd + 1u, rowEnd - headerEnd - 1u));
     if (header.size() != 3u ||
-        header[0] != "mdkr-character-test-evidence-v6" ||
-        fields.size() != 174u || fieldIndex >= 173u) return {};
+        header[0] != "mdkr-character-test-evidence-v7" ||
+        fields.size() != 187u || fieldIndex >= 186u) return {};
     fields[fieldIndex] = replacement;
-    fields.resize(173u);
+    fields.resize(186u);
     std::string firstRow;
     for (const std::string &field : fields) {
         firstRow += field;
@@ -277,7 +277,7 @@ CharacterTestEvidenceStore::Evidence makeEvidence(
     evidence.buildVersion                = "1.5.2-test";
     evidence.context                     = context;
     evidence.players                     = players;
-    evidence.resultVersion               = 16u;
+    evidence.resultVersion               = 17u;
     evidence.started                     = true;
     evidence.warmupComplete              = true;
     evidence.realtime                    = true;
@@ -372,6 +372,9 @@ CharacterTestEvidenceStore::Evidence makeEvidence(
         evidence.vehicleShellTrianglesTested = 200u;
         evidence.characterSurfaceTrianglesSubmitted = 500u;
         evidence.characterSurfaceTrianglesTested = 500u;
+        evidence.vehicleVolumeQualified = true;
+        evidence.vehicleContainmentSamplesTested = 3u;
+        evidence.vehicleContainmentOutsideSamples = 3u;
     }
     evidence.backend                     = "webgpu-metal";
     evidence.adapter                     = "Test GPU \xC2\xA9";
@@ -420,9 +423,9 @@ int main() {
 
     std::string encoded;
     expect(serialize(inventory, encoded, error) &&
-               encoded.rfind("mdkr-character-test-evidence-v6\t3\t", 0u) ==
+               encoded.rfind("mdkr-character-test-evidence-v7\t3\t", 0u) ==
                    0u,
-           "v6 test evidence serializes with a whole-inventory checksum");
+           "v7 test evidence serializes with a whole-inventory checksum");
     const size_t body = encoded.find('\n') + 1u;
     expect(encoded.find("org.example.alpha\t", body) != std::string::npos,
            "canonical rows retain their package key");
@@ -449,6 +452,10 @@ int main() {
                        ->vehicleSurfaceValid &&
                find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
                        ->characterSurfaceTrianglesTested == 500u &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->vehicleVolumeQualified &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->vehicleContainmentOutsideSamples == 3u &&
                find(parsed, "org.example.alpha", 2u, 4u, Kind::Baseline)
                        ->sourceSha256 == baseline.sourceSha256,
            "round trip preserves timing, device, source, renderer fit, contact and vehicle-surface witnesses, and kind");
@@ -467,8 +474,8 @@ int main() {
     std::string migrated;
     expect(serialize(legacyParsed, migrated, error) &&
                migrated.rfind(
-                   "mdkr-character-test-evidence-v6\t3\t", 0u) == 0u,
-           "the next successful write migrates a v1 inventory to v6 in place");
+                   "mdkr-character-test-evidence-v7\t3\t", 0u) == 0u,
+           "the next successful write migrates a v1 inventory to v7 in place");
     const std::string legacyV2 = legacyV2FromV6(encoded);
     Inventory legacyV2Parsed;
     expect(!legacyV2.empty() && parse(legacyV2, legacyV2Parsed, error) &&
@@ -497,8 +504,8 @@ int main() {
            "authenticated v4/result-v14 rows migrate with explicitly unavailable camera and anatomy evidence");
     expect(serialize(legacyV4Parsed, migrated, error) &&
                migrated.rfind(
-                   "mdkr-character-test-evidence-v6\t3\t", 0u) == 0u,
-           "the next successful write migrates a v4 inventory to v6 in place");
+                   "mdkr-character-test-evidence-v7\t3\t", 0u) == 0u,
+           "the next successful write migrates a v4 inventory to v7 in place");
     const std::string legacyV5 = legacyV5FromV6(encoded);
     Inventory legacyV5Parsed;
     const Evidence *legacyV5Car = nullptr;
@@ -513,8 +520,8 @@ int main() {
            "authenticated v5/result-v15 rows migrate with explicitly unavailable vehicle-surface evidence");
     expect(serialize(legacyV5Parsed, migrated, error) &&
                migrated.rfind(
-                   "mdkr-character-test-evidence-v6\t3\t", 0u) == 0u,
-           "the next successful write migrates a v5 inventory to v6 in place");
+                   "mdkr-character-test-evidence-v7\t3\t", 0u) == 0u,
+           "the next successful write migrates a v5 inventory to v7 in place");
     expect(qualified(car) && comparable(car, baseline),
            "a source or fit change remains comparable under one exact environment");
     Evidence anotherDevice = baseline;
@@ -701,6 +708,24 @@ int main() {
     invalid.vehicleSurfaceFirstCrossingMicrometres[0] = 1;
     expect(!upsert(inventory, invalid, error),
            "a clear vehicle surface sample cannot retain a stale locator");
+    invalid = car;
+    invalid.vehicleShellBoundaryEdges = 1u;
+    expect(!upsert(inventory, invalid, error),
+           "a topology defect cannot coexist with a qualified volume");
+    invalid = car;
+    invalid.vehicleContainmentInsideSamples = 1u;
+    expect(!upsert(inventory, invalid, error),
+           "containment classifications must sum to the bounded sample census");
+    invalid = car;
+    invalid.vehicleVolumeQualified = false;
+    invalid.vehicleContainmentSamplesTested = 0u;
+    invalid.vehicleContainmentOutsideSamples = 0u;
+    expect(!upsert(inventory, invalid, error),
+           "an unqualified volume must retain an exact topology reason");
+    invalid = car;
+    invalid.vehicleContainmentMaximumDepthMicrometres = 1u;
+    expect(!upsert(inventory, invalid, error),
+           "a clear qualified volume cannot retain stale inside depth");
     invalid = select;
     invalid.vehicleSurfaceValid = true;
     invalid.vehicleShellTrianglesSubmitted = 1u;

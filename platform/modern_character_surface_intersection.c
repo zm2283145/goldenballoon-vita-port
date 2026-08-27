@@ -11,6 +11,13 @@
 #define MDKR_SURFACE_LEAF_TRIANGLES 4u
 #define MDKR_SURFACE_AXIS_EPSILON_SQUARED 1.0e-18
 #define MDKR_SURFACE_SEPARATION_EPSILON 1.0e-7
+#define MDKR_SURFACE_CONTAINMENT_EPSILON_SCALE 1.0e-6
+#define MDKR_SURFACE_PI 3.14159265358979323846
+
+typedef struct MdkrSurfaceEdge {
+    uint16_t from;
+    uint16_t to;
+} MdkrSurfaceEdge;
 
 typedef struct MdkrSurfaceBvhNode {
     float minimum[3];
@@ -252,6 +259,272 @@ static int bounds_overlap(
     return 1;
 }
 
+static int same_point(const float a[3], const float b[3]) {
+    return a[0] == b[0] && a[1] == b[1] && a[2] == b[2];
+}
+
+static uint16_t shell_vertex_id(
+    const MdkrSurfaceBvh *bvh, uint16_t triangle_index, unsigned point) {
+    uint16_t prior_triangle;
+    unsigned prior_point;
+    uint16_t id = 0u;
+    for (prior_triangle = 0u; prior_triangle <= triangle_index;
+         ++prior_triangle) {
+        const unsigned point_limit = prior_triangle == triangle_index
+            ? point : 3u;
+        for (prior_point = 0u; prior_point < point_limit; ++prior_point) {
+            if (same_point(
+                    bvh->triangle[triangle_index].point[point],
+                    bvh->triangle[prior_triangle].point[prior_point])) {
+                return id;
+            }
+            ++id;
+        }
+    }
+    return id;
+}
+
+static unsigned shared_vertices(
+    const MdkrModernSurfaceTriangle *a,
+    const MdkrModernSurfaceTriangle *b) {
+    unsigned shared = 0u;
+    unsigned first;
+    unsigned second;
+    for (first = 0u; first < 3u; ++first) {
+        for (second = 0u; second < 3u; ++second) {
+            if (same_point(a->point[first], b->point[second])) {
+                ++shared;
+                break;
+            }
+        }
+    }
+    return shared;
+}
+
+static void qualify_shell_topology(
+    const MdkrSurfaceBvh *bvh,
+    MdkrModernSurfaceIntersectionDiagnostics *out) {
+    MdkrSurfaceEdge edges[MDKR_MODERN_CHARACTER_SHELL_TRIANGLE_MAX * 3u];
+    const uint32_t edge_count = (uint32_t)bvh->triangle_count * 3u;
+    uint32_t edge_index;
+    uint16_t triangle_index;
+    for (triangle_index = 0u; triangle_index < bvh->triangle_count;
+         ++triangle_index) {
+        unsigned point;
+        for (point = 0u; point < 3u; ++point) {
+            edges[(uint32_t)triangle_index * 3u + point].from =
+                shell_vertex_id(bvh, triangle_index, point);
+            edges[(uint32_t)triangle_index * 3u + point].to =
+                shell_vertex_id(bvh, triangle_index, (point + 1u) % 3u);
+        }
+    }
+    for (edge_index = 0u; edge_index < edge_count; ++edge_index) {
+        const MdkrSurfaceEdge *edge = &edges[edge_index];
+        uint32_t match_count = 0u;
+        uint32_t reverse_count = 0u;
+        uint32_t candidate_index;
+        int first_occurrence = 1;
+        for (candidate_index = 0u; candidate_index < edge_index;
+             ++candidate_index) {
+            const MdkrSurfaceEdge *candidate = &edges[candidate_index];
+            if ((candidate->from == edge->from && candidate->to == edge->to) ||
+                (candidate->from == edge->to && candidate->to == edge->from)) {
+                first_occurrence = 0;
+                break;
+            }
+        }
+        if (!first_occurrence) continue;
+        for (candidate_index = edge_index; candidate_index < edge_count;
+             ++candidate_index) {
+            const MdkrSurfaceEdge *candidate = &edges[candidate_index];
+            if ((candidate->from == edge->from && candidate->to == edge->to) ||
+                (candidate->from == edge->to && candidate->to == edge->from)) {
+                ++match_count;
+                if (candidate->from == edge->to &&
+                    candidate->to == edge->from) ++reverse_count;
+            }
+        }
+        if (match_count == 1u) {
+            ++out->shell_boundary_edges;
+        } else if (match_count != 2u) {
+            ++out->shell_nonmanifold_edges;
+        } else if (reverse_count != 1u) {
+            ++out->shell_orientation_mismatch_edges;
+        }
+    }
+    for (triangle_index = 0u; triangle_index < bvh->triangle_count;
+         ++triangle_index) {
+        uint16_t candidate_index;
+        for (candidate_index = (uint16_t)(triangle_index + 1u);
+             candidate_index < bvh->triangle_count; ++candidate_index) {
+            if (shared_vertices(
+                    &bvh->triangle[triangle_index],
+                    &bvh->triangle[candidate_index]) == 0u &&
+                triangles_intersect(
+                    &bvh->triangle[triangle_index],
+                    &bvh->triangle[candidate_index])) {
+                ++out->shell_self_intersection_pairs;
+            }
+        }
+    }
+    out->containment_qualified =
+        out->shell_triangles_submitted == out->shell_triangles_tested &&
+        out->shell_boundary_edges == 0u &&
+        out->shell_nonmanifold_edges == 0u &&
+        out->shell_orientation_mismatch_edges == 0u &&
+        out->shell_self_intersection_pairs == 0u;
+}
+
+static double point_triangle_distance_squared(
+    const double point[3], const MdkrModernSurfaceTriangle *triangle) {
+    double a[3];
+    double b[3];
+    double c[3];
+    double ab[3];
+    double ac[3];
+    double ap[3];
+    double bp[3];
+    double cp[3];
+    double projection[3];
+    double d1;
+    double d2;
+    double d3;
+    double d4;
+    double d5;
+    double d6;
+    unsigned axis;
+    for (axis = 0u; axis < 3u; ++axis) {
+        a[axis] = triangle->point[0][axis];
+        b[axis] = triangle->point[1][axis];
+        c[axis] = triangle->point[2][axis];
+        ab[axis] = b[axis] - a[axis];
+        ac[axis] = c[axis] - a[axis];
+        ap[axis] = point[axis] - a[axis];
+        bp[axis] = point[axis] - b[axis];
+        cp[axis] = point[axis] - c[axis];
+    }
+#define MDKR_DOT3(x, y) \
+    ((x)[0] * (y)[0] + (x)[1] * (y)[1] + (x)[2] * (y)[2])
+    d1 = MDKR_DOT3(ab, ap);
+    d2 = MDKR_DOT3(ac, ap);
+    if (d1 <= 0.0 && d2 <= 0.0) return MDKR_DOT3(ap, ap);
+    d3 = MDKR_DOT3(ab, bp);
+    d4 = MDKR_DOT3(ac, bp);
+    if (d3 >= 0.0 && d4 <= d3) return MDKR_DOT3(bp, bp);
+    {
+        const double vc = d1 * d4 - d3 * d2;
+        if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) {
+            const double v = d1 / (d1 - d3);
+            for (axis = 0u; axis < 3u; ++axis) {
+                projection[axis] = ap[axis] - v * ab[axis];
+            }
+            return MDKR_DOT3(projection, projection);
+        }
+    }
+    d5 = MDKR_DOT3(ab, cp);
+    d6 = MDKR_DOT3(ac, cp);
+    if (d6 >= 0.0 && d5 <= d6) return MDKR_DOT3(cp, cp);
+    {
+        const double vb = d5 * d2 - d1 * d6;
+        if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) {
+            const double w = d2 / (d2 - d6);
+            for (axis = 0u; axis < 3u; ++axis) {
+                projection[axis] = ap[axis] - w * ac[axis];
+            }
+            return MDKR_DOT3(projection, projection);
+        }
+    }
+    {
+        const double va = d3 * d6 - d5 * d4;
+        if (va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0) {
+            const double denominator =
+                (d4 - d3) + (d5 - d6);
+            const double w = (d4 - d3) / denominator;
+            double bc[3];
+            for (axis = 0u; axis < 3u; ++axis) {
+                bc[axis] = c[axis] - b[axis];
+                projection[axis] = bp[axis] - w * bc[axis];
+            }
+            return MDKR_DOT3(projection, projection);
+        }
+    }
+    {
+        const double denominator = 1.0 /
+            ((d1 * d4 - d3 * d2) + (d5 * d2 - d1 * d6) +
+             (d3 * d6 - d5 * d4));
+        const double v = (d5 * d2 - d1 * d6) * denominator;
+        const double w = (d1 * d4 - d3 * d2) * denominator;
+        for (axis = 0u; axis < 3u; ++axis) {
+            projection[axis] = ap[axis] - v * ab[axis] - w * ac[axis];
+        }
+    }
+#undef MDKR_DOT3
+    return length_squared3(projection);
+}
+
+static void classify_containment_sample(
+    const MdkrSurfaceBvh *bvh, const float sample[3], double epsilon,
+    MdkrModernSurfaceIntersectionDiagnostics *out) {
+    const double point[3] = {sample[0], sample[1], sample[2]};
+    double minimum_distance_squared = DBL_MAX;
+    double solid_angle = 0.0;
+    uint16_t triangle_index;
+    for (triangle_index = 0u; triangle_index < bvh->triangle_count;
+         ++triangle_index) {
+        const MdkrModernSurfaceTriangle *triangle =
+            &bvh->triangle[triangle_index];
+        double vector[3][3];
+        double cross[3];
+        double lengths[3];
+        double denominator;
+        double numerator;
+        unsigned vertex;
+        unsigned axis;
+        const double distance_squared =
+            point_triangle_distance_squared(point, triangle);
+        if (distance_squared < minimum_distance_squared) {
+            minimum_distance_squared = distance_squared;
+        }
+        for (vertex = 0u; vertex < 3u; ++vertex) {
+            for (axis = 0u; axis < 3u; ++axis) {
+                vector[vertex][axis] =
+                    (double)triangle->point[vertex][axis] - point[axis];
+            }
+            lengths[vertex] = sqrt(length_squared3(vector[vertex]));
+        }
+        cross3(vector[1], vector[2], cross);
+        numerator = vector[0][0] * cross[0] +
+            vector[0][1] * cross[1] + vector[0][2] * cross[2];
+        denominator = lengths[0] * lengths[1] * lengths[2] +
+            (vector[0][0] * vector[1][0] +
+             vector[0][1] * vector[1][1] +
+             vector[0][2] * vector[1][2]) * lengths[2] +
+            (vector[1][0] * vector[2][0] +
+             vector[1][1] * vector[2][1] +
+             vector[1][2] * vector[2][2]) * lengths[0] +
+            (vector[2][0] * vector[0][0] +
+             vector[2][1] * vector[0][1] +
+             vector[2][2] * vector[0][2]) * lengths[1];
+        solid_angle += 2.0 * atan2(numerator, denominator);
+    }
+    ++out->containment_samples_tested;
+    if (minimum_distance_squared <= epsilon * epsilon) {
+        ++out->containment_boundary_samples;
+    } else if (fabs(solid_angle) > 2.0 * MDKR_SURFACE_PI) {
+        const float depth = (float)sqrt(minimum_distance_squared);
+        ++out->containment_inside_samples;
+        if (depth > out->containment_maximum_inside_depth) {
+            unsigned axis;
+            out->containment_maximum_inside_depth = depth;
+            for (axis = 0u; axis < 3u; ++axis) {
+                out->containment_deepest_subject_point[axis] = sample[axis];
+            }
+        }
+    } else {
+        ++out->containment_outside_samples;
+    }
+}
+
 int mdkr_modern_surface_intersections(
     const MdkrModernSurfaceTriangle *shell, uint32_t shell_triangles,
     uint32_t subject_triangles, MdkrModernSurfaceTriangleReader subject_reader,
@@ -259,6 +532,7 @@ int mdkr_modern_surface_intersections(
     MdkrSurfaceBvh bvh;
     uint32_t shell_index;
     uint32_t subject_index;
+    uint32_t containment_sample_ordinal = 0u;
     if (out == NULL) return 0;
     memset(out, 0, sizeof(*out));
     if (shell == NULL || shell_triangles == 0u ||
@@ -285,6 +559,7 @@ int mdkr_modern_surface_intersections(
     }
     out->shell_triangles_tested = bvh.triangle_count;
     (void)build_node(&bvh, 0u, bvh.triangle_count);
+    qualify_shell_topology(&bvh, out);
     for (subject_index = 0u; subject_index < subject_triangles;
          ++subject_index) {
         MdkrModernSurfaceTriangle subject;
@@ -295,13 +570,47 @@ int mdkr_modern_surface_intersections(
         uint16_t stack[MDKR_SURFACE_BVH_STACK];
         uint16_t stack_size = 0u;
         uint32_t pairs = 0u;
+        int containment_sample = 0;
         if (!subject_reader(subject_user, subject_index, &subject) ||
             !triangle_finite(&subject)) {
             memset(out, 0, sizeof(*out));
             return 0;
         }
+        if (out->containment_qualified) {
+            if (subject_triangles <=
+                    MDKR_MODERN_CHARACTER_CONTAINMENT_SAMPLE_MAX) {
+                containment_sample = 1;
+            } else if (containment_sample_ordinal <
+                    MDKR_MODERN_CHARACTER_CONTAINMENT_SAMPLE_MAX &&
+                subject_index == (uint32_t)(
+                    ((uint64_t)containment_sample_ordinal *
+                     subject_triangles) /
+                    MDKR_MODERN_CHARACTER_CONTAINMENT_SAMPLE_MAX)) {
+                containment_sample = 1;
+            }
+            if (containment_sample) ++containment_sample_ordinal;
+        }
         if (!triangle_edges(&subject, edges, normal)) continue;
         ++out->subject_triangles_tested;
+        if (containment_sample) {
+            float sample[3];
+            double diagonal_squared = 0.0;
+            unsigned axis;
+            for (axis = 0u; axis < 3u; ++axis) {
+                const double extent =
+                    (double)bvh.node[0].maximum[axis] -
+                    bvh.node[0].minimum[axis];
+                diagonal_squared += extent * extent;
+                sample[axis] = (float)(((double)subject.point[0][axis] +
+                    subject.point[1][axis] + subject.point[2][axis]) / 3.0);
+            }
+            classify_containment_sample(
+                &bvh, sample,
+                fmax(MDKR_SURFACE_SEPARATION_EPSILON,
+                     sqrt(diagonal_squared) *
+                         MDKR_SURFACE_CONTAINMENT_EPSILON_SCALE),
+                out);
+        }
         triangle_bounds(&subject, subject_minimum, subject_maximum);
         stack[stack_size++] = 0u;
         while (stack_size != 0u) {
@@ -359,6 +668,17 @@ int mdkr_modern_surface_intersections(
         }
     }
     if (out->subject_triangles_tested == 0u) {
+        memset(out, 0, sizeof(*out));
+        return 0;
+    }
+    if (out->containment_qualified &&
+        (out->containment_samples_tested == 0u ||
+         out->containment_samples_tested >
+             MDKR_MODERN_CHARACTER_CONTAINMENT_SAMPLE_MAX ||
+         out->containment_inside_samples +
+                 out->containment_boundary_samples +
+                 out->containment_outside_samples !=
+             out->containment_samples_tested)) {
         memset(out, 0, sizeof(*out));
         return 0;
     }

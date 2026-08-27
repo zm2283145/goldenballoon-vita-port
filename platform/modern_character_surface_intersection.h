@@ -16,6 +16,7 @@ extern "C" {
 #endif
 
 #define MDKR_MODERN_CHARACTER_SHELL_TRIANGLE_MAX 512u
+#define MDKR_MODERN_CHARACTER_CONTAINMENT_SAMPLE_MAX 2048u
 
 typedef struct MdkrModernSurfaceTriangle {
     float point[3][3];
@@ -36,6 +37,22 @@ typedef struct MdkrModernSurfaceIntersectionDiagnostics {
      * This is an exact source-triangle locator, not a penetration depth or the
      * mathematical intersection segment. */
     float first_crossing_subject_center[3];
+    /* A containment result is published only when the retained shell proves
+     * a closed, consistently oriented two-manifold topology and has no
+     * non-adjacent triangle intersections. Subject triangle centroids are
+     * sampled deterministically up to the fixed bound above. This is a
+     * bounded posed-mesh witness, not a claim about unsampled points. */
+    uint32_t shell_boundary_edges;
+    uint32_t shell_nonmanifold_edges;
+    uint32_t shell_orientation_mismatch_edges;
+    uint32_t shell_self_intersection_pairs;
+    uint32_t containment_qualified;
+    uint32_t containment_samples_tested;
+    uint32_t containment_inside_samples;
+    uint32_t containment_boundary_samples;
+    uint32_t containment_outside_samples;
+    float containment_maximum_inside_depth;
+    float containment_deepest_subject_point[3];
 } MdkrModernSurfaceIntersectionDiagnostics;
 
 /* Returns one for a complete, structurally valid measurement, including a

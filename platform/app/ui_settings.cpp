@@ -31,6 +31,7 @@
 #include "modern_character_donor.h"
 #include "modern_character_registry.h"
 #include "modern_character_studio_bridge.h"
+#include "modern_character_surface_intersection.h"
 #include "modern_character_text.h"
 #include "sha256.h"
 #include "user_paths.h"
@@ -7580,9 +7581,9 @@ void drawCharacterFitQualityBands(
                 : "Vehicle-body contact / intersection · Not applicable");
     ImGui::TextColored(
         AppTheme::accent(),
-        "Depth visibility, attachments, containment, and motion clearance · Visual review required");
+        "Opaque-depth visibility, attachments, and motion clearance · Visual review required");
     ui::TextSubtleWrapped(
-        "Green means the measured starting range is ordinary, amber asks for judgement, and red identifies a likely placement defect. These advisory bands never reject unusual anatomy. Camera framing and one posed retained-body surface sample are exact; the composed scene and representative poses remain authoritative for depth visibility, attachments, containment, costume silhouette, and motion clearance.");
+        "Green means the measured starting range is ordinary, amber asks for judgement, and red identifies a likely placement defect. These advisory bands never reject unusual anatomy. Camera framing, retained-body surface crossings, and—when the shell qualifies—bounded closed-volume containment are exact; the composed scene and representative poses remain authoritative for opaque-depth visibility, attachments, costume silhouette, unsampled geometry, and motion clearance.");
 }
 
 bool drawCharacterOffsetSuggestion(
@@ -9058,6 +9059,30 @@ CharacterTestEvidenceStore::Evidence characterTestEvidenceFromResult(
         evidence.vehicleSurfaceFirstCrossingMicrometres[axis] =
             result.vehicle_surface_first_crossing_micrometres[axis];
     }
+    evidence.vehicleVolumeQualified =
+        result.vehicle_volume_qualified != 0;
+    evidence.vehicleShellBoundaryEdges =
+        result.vehicle_shell_boundary_edges;
+    evidence.vehicleShellNonmanifoldEdges =
+        result.vehicle_shell_nonmanifold_edges;
+    evidence.vehicleShellOrientationMismatchEdges =
+        result.vehicle_shell_orientation_mismatch_edges;
+    evidence.vehicleShellSelfIntersectionPairs =
+        result.vehicle_shell_self_intersection_pairs;
+    evidence.vehicleContainmentSamplesTested =
+        result.vehicle_containment_samples_tested;
+    evidence.vehicleContainmentInsideSamples =
+        result.vehicle_containment_inside_samples;
+    evidence.vehicleContainmentBoundarySamples =
+        result.vehicle_containment_boundary_samples;
+    evidence.vehicleContainmentOutsideSamples =
+        result.vehicle_containment_outside_samples;
+    evidence.vehicleContainmentMaximumDepthMicrometres =
+        result.vehicle_containment_maximum_depth_micrometres;
+    for (unsigned axis = 0u; axis < 3u; ++axis) {
+        evidence.vehicleContainmentDeepestMicrometres[axis] =
+            result.vehicle_containment_deepest_micrometres[axis];
+    }
     evidence.backend = boundedCharacterPreviewText(
         result.renderer_backend, sizeof(result.renderer_backend));
     evidence.adapter = boundedCharacterPreviewText(
@@ -9150,6 +9175,30 @@ MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
     for (unsigned axis = 0u; axis < 3u; ++axis) {
         result.vehicle_surface_first_crossing_micrometres[axis] =
             evidence.vehicleSurfaceFirstCrossingMicrometres[axis];
+    }
+    result.vehicle_volume_qualified =
+        evidence.vehicleVolumeQualified ? 1 : 0;
+    result.vehicle_shell_boundary_edges =
+        evidence.vehicleShellBoundaryEdges;
+    result.vehicle_shell_nonmanifold_edges =
+        evidence.vehicleShellNonmanifoldEdges;
+    result.vehicle_shell_orientation_mismatch_edges =
+        evidence.vehicleShellOrientationMismatchEdges;
+    result.vehicle_shell_self_intersection_pairs =
+        evidence.vehicleShellSelfIntersectionPairs;
+    result.vehicle_containment_samples_tested =
+        evidence.vehicleContainmentSamplesTested;
+    result.vehicle_containment_inside_samples =
+        evidence.vehicleContainmentInsideSamples;
+    result.vehicle_containment_boundary_samples =
+        evidence.vehicleContainmentBoundarySamples;
+    result.vehicle_containment_outside_samples =
+        evidence.vehicleContainmentOutsideSamples;
+    result.vehicle_containment_maximum_depth_micrometres =
+        evidence.vehicleContainmentMaximumDepthMicrometres;
+    for (unsigned axis = 0u; axis < 3u; ++axis) {
+        result.vehicle_containment_deepest_micrometres[axis] =
+            evidence.vehicleContainmentDeepestMicrometres[axis];
     }
     result.output_width = evidence.outputWidth;
     result.output_height = evidence.outputHeight;
@@ -9446,9 +9495,25 @@ bool characterPreviewVehicleSurfaceValid(
             result.character_surface_triangles_submitted != 0u ||
             result.character_surface_triangles_tested != 0u ||
             result.vehicle_surface_crossing_triangles != 0u ||
-            result.vehicle_surface_crossing_pairs != 0u) return false;
+            result.vehicle_surface_crossing_pairs != 0u ||
+            result.vehicle_volume_qualified != 0 ||
+            result.vehicle_shell_boundary_edges != 0u ||
+            result.vehicle_shell_nonmanifold_edges != 0u ||
+            result.vehicle_shell_orientation_mismatch_edges != 0u ||
+            result.vehicle_shell_self_intersection_pairs != 0u ||
+            result.vehicle_containment_samples_tested != 0u ||
+            result.vehicle_containment_inside_samples != 0u ||
+            result.vehicle_containment_boundary_samples != 0u ||
+            result.vehicle_containment_outside_samples != 0u ||
+            result.vehicle_containment_maximum_depth_micrometres != 0u) {
+            return false;
+        }
         for (long long coordinate :
              result.vehicle_surface_first_crossing_micrometres) {
+            if (coordinate != 0) return false;
+        }
+        for (long long coordinate :
+             result.vehicle_containment_deepest_micrometres) {
             if (coordinate != 0) return false;
         }
         return true;
@@ -9482,6 +9547,59 @@ bool characterPreviewVehicleSurfaceValid(
         if (coordinate < -1000000000LL || coordinate > 1000000000LL ||
             (result.vehicle_surface_crossing_pairs == 0u &&
              coordinate != 0)) return false;
+    }
+    if (result.version >= 17u) {
+        if ((result.vehicle_volume_qualified != 0 &&
+             result.vehicle_volume_qualified != 1) ||
+            result.vehicle_containment_samples_tested >
+                MDKR_MODERN_CHARACTER_CONTAINMENT_SAMPLE_MAX ||
+            static_cast<unsigned long long>(
+                result.vehicle_containment_inside_samples) +
+                    result.vehicle_containment_boundary_samples +
+                    result.vehicle_containment_outside_samples !=
+                result.vehicle_containment_samples_tested ||
+            result.vehicle_containment_maximum_depth_micrometres >
+                1000000000ULL) return false;
+        if (result.vehicle_volume_qualified) {
+            if (result.vehicle_shell_triangles_submitted !=
+                    result.vehicle_shell_triangles_tested ||
+                result.vehicle_shell_boundary_edges != 0u ||
+                result.vehicle_shell_nonmanifold_edges != 0u ||
+                result.vehicle_shell_orientation_mismatch_edges != 0u ||
+                result.vehicle_shell_self_intersection_pairs != 0u ||
+                result.vehicle_containment_samples_tested == 0u ||
+                ((result.vehicle_containment_inside_samples == 0u) !=
+                 (result.vehicle_containment_maximum_depth_micrometres == 0u))) {
+                return false;
+            }
+            for (long long coordinate :
+                 result.vehicle_containment_deepest_micrometres) {
+                if (coordinate < -1000000000LL ||
+                    coordinate > 1000000000LL ||
+                    (result.vehicle_containment_inside_samples == 0u &&
+                     coordinate != 0)) return false;
+            }
+        } else {
+            if (result.vehicle_containment_samples_tested != 0u ||
+                result.vehicle_containment_inside_samples != 0u ||
+                result.vehicle_containment_boundary_samples != 0u ||
+                result.vehicle_containment_outside_samples != 0u ||
+                result.vehicle_containment_maximum_depth_micrometres != 0u) {
+                return false;
+            }
+            for (long long coordinate :
+                 result.vehicle_containment_deepest_micrometres) {
+                if (coordinate != 0) return false;
+            }
+            if (result.vehicle_shell_triangles_submitted ==
+                    result.vehicle_shell_triangles_tested &&
+                result.vehicle_shell_boundary_edges == 0u &&
+                result.vehicle_shell_nonmanifold_edges == 0u &&
+                result.vehicle_shell_orientation_mismatch_edges == 0u &&
+                result.vehicle_shell_self_intersection_pairs == 0u) {
+                return false;
+            }
+        }
     }
     return true;
 }
@@ -9909,9 +10027,48 @@ void drawCharacterVehicleSurfaceDiagnostics(
                 "Use the triangle centre to inspect the relevant Front, Side, or Top placement view. Intended hand or foot contact can be correct; for unwanted body clipping, adjust the vehicle root offset in small steps, apply it, then rerun this pose. The Workshop never guesses a correction from one ambiguous intersection sample.");
         }
     }
+    if (result.version >= 17u && result.vehicle_volume_qualified) {
+        const bool inside =
+            result.vehicle_containment_inside_samples != 0u;
+        ImGui::TextColored(
+            inside ? AppTheme::accent() : AppTheme::good(),
+            inside
+                ? "Closed-volume containment · Posed surface enters retained vehicle volume"
+                : "Closed-volume containment · No sampled posed point is inside");
+        ImGui::Text(
+            "Bounded centroid samples: %u inside · %u on surface · %u outside · %u total",
+            result.vehicle_containment_inside_samples,
+            result.vehicle_containment_boundary_samples,
+            result.vehicle_containment_outside_samples,
+            result.vehicle_containment_samples_tested);
+        if (inside) {
+            ImGui::Text(
+                "Deepest sampled point: %.1f mm inside · X %+.3f m · Y %+.3f m · Z %+.3f m",
+                result.vehicle_containment_maximum_depth_micrometres / 1000.0,
+                result.vehicle_containment_deepest_micrometres[0] / 1000000.0,
+                result.vehicle_containment_deepest_micrometres[1] / 1000000.0,
+                result.vehicle_containment_deepest_micrometres[2] / 1000000.0);
+        }
+    } else if (result.version >= 17u) {
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "Closed-volume containment · Retained shell is not a qualified volume");
+        ImGui::Text(
+            "Topology: %u open %s · %u non-manifold · %u winding mismatch · %u self-crossing %s%s",
+            result.vehicle_shell_boundary_edges,
+            result.vehicle_shell_boundary_edges == 1u ? "edge" : "edges",
+            result.vehicle_shell_nonmanifold_edges,
+            result.vehicle_shell_orientation_mismatch_edges,
+            result.vehicle_shell_self_intersection_pairs,
+            result.vehicle_shell_self_intersection_pairs == 1u
+                ? "pair" : "pairs",
+            result.vehicle_shell_triangles_submitted !=
+                    result.vehicle_shell_triangles_tested
+                ? " · degenerate triangles omitted" : "");
+    }
     if (!compact) {
         ui::TextSubtleWrapped(
-            "Scope: exact current-pose triangles against fingerprint-qualified retained batches in the main vehicle model. Touching and coplanar triangles count, so this witness cannot distinguish intended contact from penetration. It also does not prove depth-buffer visibility, closed-volume containment, penetration depth, clearance from separately attached wheels or props, or motion across unsampled frames; review the composed scene and representative poses for those cases.");
+            "Scope: exact current-pose triangles against fingerprint-qualified retained batches in the main vehicle model. Touching and coplanar triangles count. Closed, consistently oriented, non-self-crossing shells additionally classify at most 2,048 deterministic posed-triangle centroids and report nearest-surface depth for the deepest inside sample. This bounded witness does not claim that unsampled points are clear, inspect the depth buffer, include separately attached wheels or props, or cover motion across other frames; review the composed scene and representative poses for those cases.");
     }
 }
 
@@ -11786,6 +11943,9 @@ void drawCharacterTestEvidenceMatrix(
             result.vehicle_shell_triangles_tested = 200u;
             result.character_surface_triangles_submitted = 500u;
             result.character_surface_triangles_tested = 500u;
+            result.vehicle_volume_qualified = 1;
+            result.vehicle_containment_samples_tested = 3u;
+            result.vehicle_containment_outside_samples = 3u;
             std::snprintf(result.renderer_backend,
                           sizeof(result.renderer_backend), "%s",
                           "webgpu-test");
@@ -12008,6 +12168,22 @@ void drawCharacterTestEvidenceMatrix(
                                 0,
                                 sizeof(cell
                                     .vehicle_surface_first_crossing_micrometres));
+                            cell.vehicle_volume_qualified = 0;
+                            cell.vehicle_shell_boundary_edges = 0u;
+                            cell.vehicle_shell_nonmanifold_edges = 0u;
+                            cell.vehicle_shell_orientation_mismatch_edges = 0u;
+                            cell.vehicle_shell_self_intersection_pairs = 0u;
+                            cell.vehicle_containment_samples_tested = 0u;
+                            cell.vehicle_containment_inside_samples = 0u;
+                            cell.vehicle_containment_boundary_samples = 0u;
+                            cell.vehicle_containment_outside_samples = 0u;
+                            cell.vehicle_containment_maximum_depth_micrometres =
+                                0u;
+                            std::memset(
+                                cell.vehicle_containment_deepest_micrometres,
+                                0,
+                                sizeof(cell
+                                    .vehicle_containment_deepest_micrometres));
                         }
                         Settings_publishCharacterPreviewResult(
                             entry->id, source,

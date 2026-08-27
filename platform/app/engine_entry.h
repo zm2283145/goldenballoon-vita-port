@@ -171,6 +171,21 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned vehicle_surface_crossing_triangles;
     unsigned vehicle_surface_crossing_pairs;
     long long vehicle_surface_first_crossing_micrometres[3];
+    /* Closed-volume containment is separately qualified: open, non-manifold,
+     * inconsistently oriented, self-intersecting, or degenerate retained
+     * shells still retain truthful surface-crossing evidence but cannot make
+     * an inside/depth claim. Qualified results are bounded centroid samples. */
+    int vehicle_volume_qualified;
+    unsigned vehicle_shell_boundary_edges;
+    unsigned vehicle_shell_nonmanifold_edges;
+    unsigned vehicle_shell_orientation_mismatch_edges;
+    unsigned vehicle_shell_self_intersection_pairs;
+    unsigned vehicle_containment_samples_tested;
+    unsigned vehicle_containment_inside_samples;
+    unsigned vehicle_containment_boundary_samples;
+    unsigned vehicle_containment_outside_samples;
+    unsigned long long vehicle_containment_maximum_depth_micrometres;
+    long long vehicle_containment_deepest_micrometres[3];
     /* Model-alpha captures additionally bind the donor-target fit to exact PNG
      * pixels. Points 0..7 are the calibrated AABB corners (XYZ bits), point 8
      * is the anchor, and point 9 is a scaled forward endpoint. All values are
@@ -221,7 +236,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 16u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 17u
 #define MDKR_CHARACTER_PREVIEW_TRANSITION_DWELL_MILLI \
     MDKR_MODERN_CHARACTER_INSPECTION_TRANSITION_DWELL_MILLI
 #define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u
