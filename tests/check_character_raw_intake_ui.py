@@ -41,9 +41,9 @@ def isolated_environment(root: Path, model: Path, shot: Path, *,
         if not key.startswith(("MDKR", "GE007_"))
     }
     environment.update({
-        # A dropped GLB is inspected by a real background compiler job. Keep
-        # presenting long enough to observe UI-thread publication instead of
-        # relying on the former blocking call completing in frame one.
+        # A dropped GLB is inspected by a real background compiler job. The
+        # token-gated smoke contract below waits on its actual state while
+        # continuing to present and publish results on the UI thread.
         "MDKR_APP_SMOKE_FRAMES": "60" if drop else ("12" if compact else "8"),
         "MDKR_APP_SMOKE_WINDOW_SIZE": "640x480" if compact else "1280x720",
         "MDKR_APP_SMOKE_SHOT": str(shot),
@@ -62,6 +62,9 @@ def isolated_environment(root: Path, model: Path, shot: Path, *,
     if drop:
         environment["MDKR_APP_SMOKE_DROP"] = str(model)
         environment["MDKR_APP_SMOKE_DROP_FRAME"] = "1"
+        environment["MDKR_APP_SMOKE_WAIT_CHARACTER_JOBS"] = "1"
+        environment["MDKR_APP_SMOKE_WAIT_CHARACTER_JOBS_TOKEN"] = \
+            "mdkr64-character-jobs-v1"
     if compact:
         environment.update({
             "MDKR_APP_SMOKE_TOUCH_SCROLL": "1",
@@ -218,8 +221,8 @@ def main() -> int:
                 compact=False, drop=True,
             )
             # Inspection and the follow-up metadata-only recovery inventory
-            # are two non-blocking jobs. Leave enough frames for both results
-            # to publish and render without assuming local process latency.
+            # are two non-blocking jobs. The smoke wait contract observes both
+            # publications without assuming local process or frame latency.
             hostile_environment["MDKR_APP_SMOKE_FRAMES"] = "60"
             run(
                 binary, hostile,
@@ -299,8 +302,8 @@ def main() -> int:
             )
             conversion_environment.update({
                 # Conversion and the follow-on GLB inventory are two explicit
-                # background publications. Keep rendering long enough to prove
-                # the UI remains alive while both complete.
+                # background publications. The smoke wait contract keeps the
+                # UI alive and rendered until both have actually completed.
                 "MDKR_APP_SMOKE_FRAMES": "120",
                 "MDKR_APP_SMOKE_CHARACTER_CONVERSION_OUTPUT":
                     str(converted),

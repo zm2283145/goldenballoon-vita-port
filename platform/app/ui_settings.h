@@ -125,6 +125,12 @@ bool Settings_smokePresentationPaceCenter(const char *pace, int *x, int *y);
 // widget does not move underneath that pointer before the edit is committed.
 bool Settings_smokeUiScaleRect(int *minX, int *minY, int *maxX, int *maxY);
 
+// True while any Character Workshop compiler, validation, or install result
+// still needs to finish or publish on the UI thread. Shell smoke uses this
+// read-only observation to wait on actual job state instead of guessing that a
+// fixed number of unthrottled frames is long enough.
+bool Settings_smokeCharacterWorkPending();
+
 // Collect the settings the player has staged but that the running/next engine
 // has not picked up yet, as "Key=Value" strings, so the launcher can pass them
 // straight into this boot via --video-set instead of making the player relaunch

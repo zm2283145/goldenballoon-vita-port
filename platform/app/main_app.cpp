@@ -1203,6 +1203,25 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         frames = smokeMinimumFrames;
     }
     const char *shot      = std::getenv("MDKR_APP_SMOKE_SHOT");
+    const char *smokeCharacterWait =
+        std::getenv("MDKR_APP_SMOKE_WAIT_CHARACTER_JOBS");
+    const char *smokeCharacterWaitToken =
+        std::getenv("MDKR_APP_SMOKE_WAIT_CHARACTER_JOBS_TOKEN");
+    const bool anyCharacterWaitContract =
+        (smokeCharacterWait && smokeCharacterWait[0]) ||
+        (smokeCharacterWaitToken && smokeCharacterWaitToken[0]);
+    const bool waitForCharacterJobs = anyCharacterWaitContract &&
+        smokeCharacterWait &&
+        std::strcmp(smokeCharacterWait, "1") == 0 &&
+        smokeCharacterWaitToken &&
+        std::strcmp(smokeCharacterWaitToken,
+                    "mdkr64-character-jobs-v1") == 0;
+    if (anyCharacterWaitContract && !waitForCharacterJobs) {
+        std::fprintf(stderr,
+                     "[app] smoke: invalid Character Workshop wait contract\n");
+        host.shutdown();
+        return 2;
+    }
     // Drag-and-drop coverage (Q2): the picker's NSOpenPanel and path-field
     // paths run through the same RomPanel_setRom() the C++ unit tests already
     // exercise directly, but the SDL_DROPFILE handler — used by a real
@@ -1271,6 +1290,8 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         ++smokePlayActions;
         smokePlayActionRom = action.boot.rom_path ? action.boot.rom_path : "";
     };
+    int characterServiceFrames = 0;
+    bool characterJobsSettled = true;
     if (smokeDropPlayMutate && !smokeDropPlay) {
         std::fprintf(stderr,
                      "[app] smoke: final Play mutation requires final Play check\n");
@@ -1302,14 +1323,54 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         host.beginFrame();
         const LauncherAction action = launcher.draw(host);
         observeSmokePlay(action);
-        const bool ok = host.endFrame((i == frames - 1) ? shot : nullptr);
+        const bool ok = host.endFrame(
+            (i == frames - 1 && !waitForCharacterJobs) ? shot : nullptr);
         renderOk      = renderOk && ok;
-        if (i == frames - 1) captureOk = ok;
+        if (i == frames - 1 && !waitForCharacterJobs) captureOk = ok;
         /* A renderer failure is terminal. Starting another ImGui frame and
          * returning before ImGui::Render leaves dynamic texture state
          * half-transitioned and can make renderer shutdown release an
          * invalid atlas handle. Stop at the first failed presentation. */
         if (!ok) break;
+
+        /* Character authoring chains multiple real subprocess publications
+         * (for example ZIP conversion followed by GLB inspection).
+         * Unthrottled smoke frames are not a clock and can all render before
+         * either worker gets CPU. Pause scripted input while servicing the
+         * same launcher/UI-thread publication route, with a hard deadline so
+         * a broken compiler cannot hang CI. This also makes every following
+         * scripted action operate on the settled UI a player would see. */
+        if (waitForCharacterJobs) {
+            const Uint64 characterDeadline = SDL_GetTicks64() + 15000u;
+            while (Settings_smokeCharacterWorkPending() &&
+                   SDL_GetTicks64() < characterDeadline && renderOk) {
+                if (host.waitAndPump(1)) sawQuit = true;
+                host.beginFrame();
+                const LauncherAction serviceAction = launcher.draw(host);
+                observeSmokePlay(serviceAction);
+                renderOk = host.endFrame() && renderOk;
+                ++characterServiceFrames;
+            }
+            if (Settings_smokeCharacterWorkPending()) {
+                characterJobsSettled = false;
+                renderOk = false;
+            }
+            if (i == frames - 1 && renderOk) {
+                if (host.waitAndPump(1)) sawQuit = true;
+                host.beginFrame();
+                const LauncherAction settledAction = launcher.draw(host);
+                observeSmokePlay(settledAction);
+                const bool settledFrameOk = host.endFrame(shot);
+                renderOk = renderOk && settledFrameOk;
+                captureOk = settledFrameOk;
+                ++characterServiceFrames;
+                if (Settings_smokeCharacterWorkPending()) {
+                    characterJobsSettled = false;
+                    renderOk = false;
+                }
+            }
+            if (!renderOk) break;
+        }
 
         if (smokeNavigation && !smokeNavigationQueued) {
             int x = 0;
@@ -1677,6 +1738,13 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
              * activate whichever row focus had drifted to. The same-process
              * Retry arm only ever passed by winning that race. */
         }
+    }
+
+    if (waitForCharacterJobs) {
+        std::fprintf(
+            stderr,
+            "[app] smoke: Character Workshop serviceFrames=%d settled=%d\n",
+            characterServiceFrames, characterJobsSettled ? 1 : 0);
     }
 
     if (smokeTouch) {

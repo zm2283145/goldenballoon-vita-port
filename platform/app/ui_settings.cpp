@@ -20349,6 +20349,12 @@ bool Settings_takeCharacterWorkshopOpenRequest() {
     return true;
 }
 
+bool Settings_smokeCharacterWorkPending() {
+    return g_characterManagerWorker.busy() ||
+           g_characterPackageInspection.busy() ||
+           g_characterPortableInstallWorker.busy();
+}
+
 bool Settings_takeCharacterPreviewRequest(
     SettingsCharacterPreviewRequest &request) {
     if (!g_characterPreviewRequested) return false;
