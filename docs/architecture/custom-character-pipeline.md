@@ -1331,6 +1331,11 @@ fail before GPU allocation; decoded cost accounting matches actual allocations.
 - Skeleton/clip compilation, semantic state adaptation, TRS sampling,
   cross-fades, presentation endpoint retention, WebGPU GPU skinning, reviewed
   humanoid fallback poses, and vehicle contacts are implemented.
+- Exact Animation Studio review holds 0/50/100% samples or alternates two
+  distinct semantics through those same cross-fades. Result v14 reports both
+  motion sources, per-destination blend milliseconds, switches, blended ticks,
+  completions, and package-fallback ticks without entering durable performance
+  evidence.
 - Skin normals/tangents correctly and validate conservative animated bounds.
 - Expand the implemented seat/head/hand/foot socket contract to named effect
   sockets only when an actual game consumer exists.
