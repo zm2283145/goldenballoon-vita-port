@@ -27,6 +27,7 @@
 #include "online/match_live_transport.h"
 #include "online/online_track_table.h"
 #include "net/net_roster_runtime.h"
+#include "net/party_link.h"
 
 #include "app_version.h"
 #include "online/compatibility_identity.h"
@@ -329,6 +330,203 @@ bool OnlineRoom_liveInvite(IMdkrOnlineAdapter *adapter, std::string *code,
     if (code != nullptr) *code = invite.fallbackCode;
     if (inviteUrl != nullptr) *inviteUrl = invite.inviteUrl;
     return true;
+}
+
+/* ======================================================================== *
+ * P2-T1: live selection bridge wiring (platform/net/party_link)
+ *
+ * FORWARD FEED: OnlineRoom_pumpPartyLink projects the adapter's live lobby +
+ * view model into a pinned snapshot and publishes it for the native screens.
+ * REVERSE FEED: OnlineRoom_pumpPartyLinkIntent one-shot-polls the local
+ * player's in-menu intent and dispatches the SAME existing view actions the
+ * Online Room panel (ui_online_room.cpp) does. Later tasks pump both from the
+ * engine-loop service callback during MENUS; install/clear bookend the session.
+ * ======================================================================== */
+namespace {
+
+/* Mirror ui_online_room.cpp's dispatch(): expectedRevision from the live
+ * revision, a monotonic requestId, seat 0 (fenced solo local seat). */
+MdkrOnlineAdapterStep partyLinkSubmit(IMdkrOnlineAdapter *adapter,
+                                      MdkrOnlineViewAction action,
+                                      unsigned value) {
+    static uint64_t nextId = 1u;
+    MdkrOnlineAdapterCommand c;
+    c.expectedRevision = adapter->revision();
+    c.requestId = nextId++;
+    c.action = action;
+    c.seat = 0u;
+    c.value = value;
+    return adapter->submit(c);
+}
+
+/* START_RACE's value must be the resolved race track's RAW usable-vehicle mask
+ * -- exactly ui_online_room.cpp handleAction()'s START_RACE computation: the
+ * cup schedule's next round in a tournament, else the host's configured track;
+ * all-base (0x07) when no snapshot resolves a track. */
+unsigned partyLinkStartVehicleMask(IMdkrOnlineAdapter *adapter) {
+    unsigned mask = MDKR_ONLINE_PLAYER_VEHICLE_MASK;
+    MdkrOnlineLobby lobby{};
+    if (mdkr_online_live_adapter_lobby(adapter, &lobby)) {
+        const uint16_t resolved =
+            lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT
+                ? (lobby.cup_id != MDKR_ONLINE_NO_CUP
+                       ? mdkr_online_cup_track_id(lobby.cup_id, lobby.race_index)
+                       : static_cast<uint16_t>(MDKR_ONLINE_NO_VOTE))
+                : lobby.configured_track;
+        const MdkrOnlineTrackInfo *track =
+            resolved != MDKR_ONLINE_NO_VOTE ? mdkr_online_track_by_id(resolved)
+                                            : nullptr;
+        if (track != nullptr) mask = track->vehicle_mask;
+    }
+    return mask;
+}
+
+/* Reverse-feed dedupe so a per-frame intent republish never spams the reducer:
+ * dispatch a pick only when it actually changed. Reset on install/clear. */
+struct PartyLinkDispatchState {
+    uint8_t lastCharacter = 0xFFu;
+    bool characterDispatched = false;
+    bool readyDispatched = false;
+    bool backoutDispatched = false;
+    bool startDispatched = false;
+};
+PartyLinkDispatchState sPartyLinkDispatch;
+
+/* Deterministic, adapter-free scripted snapshot for step `step` of the
+ * MDKR_APP_TEST_PARTY_LINK_FAKE sequence: a 2-seat tournament room (host seat 0
+ * = local + crown, joiner seat 1), advancing selections then Ready. With no
+ * fake env set this is never called. */
+void partyLinkFakeSnapshot(unsigned step, MdkrPartyLinkSnapshot *out) {
+    std::memset(out, 0, sizeof(*out));
+    out->phase = static_cast<uint8_t>(MDKR_ONLINE_LOBBY);
+    out->mode = MDKR_ONLINE_MODE_TOURNAMENT;
+    out->configured_track = 0xFFFFu; /* tournament: cup schedule owns the track */
+    out->cup_id = 0u;                /* Dino Domain cup */
+    out->race_index = 0u;
+    out->seats[0].occupied = 1u;
+    out->seats[0].is_local = 1u;
+    out->seats[0].is_host = 1u;
+    out->seats[0].connected = 1u;
+    out->seats[1].occupied = 1u;
+    out->seats[1].connected = 1u;
+    out->seats[0].character_id = MDKR_ONLINE_NO_CHARACTER;
+    out->seats[1].character_id = MDKR_ONLINE_NO_CHARACTER;
+    out->seats[0].vehicle_id = MDKR_ONLINE_NO_VEHICLE;
+    out->seats[1].vehicle_id = MDKR_ONLINE_NO_VEHICLE;
+    if (step >= 1u) {
+        out->seats[0].character_id = 1u;
+        out->seats[0].vehicle_id = 0u;
+        out->seats[1].character_id = 2u;
+        out->seats[1].vehicle_id = 0u;
+    }
+    if (step >= 2u) {
+        out->seats[0].ready = 1u;
+        out->seats[1].ready = 1u;
+    }
+    /* generation left 0: mdkr_party_link_publish assigns a monotonic value. */
+}
+
+}  // namespace
+
+void OnlineRoom_installPartyLink(void) {
+    sPartyLinkDispatch = PartyLinkDispatchState();
+    (void)mdkr_party_link_install();
+}
+
+void OnlineRoom_clearPartyLink(void) {
+    mdkr_party_link_clear();
+    sPartyLinkDispatch = PartyLinkDispatchState();
+}
+
+void OnlineRoom_pumpPartyLink(IMdkrOnlineAdapter *adapter) {
+    if (adapter == nullptr || !mdkr_party_link_active()) return;
+    MdkrOnlineLobby lobby{};
+    /* No authoritative snapshot yet (fake adapter, or before the first room
+     * state): leave the last published snapshot in place. */
+    if (!mdkr_online_live_adapter_lobby(adapter, &lobby)) return;
+    MdkrOnlineViewModel vm{};
+    const bool haveView = adapter->view(&vm);
+    MdkrPartyLinkSnapshot snap;
+    /* local_endpoint_id 0: the mapper falls back to view->local_member_is_leader
+     * for the fenced 2-endpoint beta (no adapter accessor exposes the raw id). */
+    mdkr_party_link_snapshot_from_lobby(&snap, haveView ? &vm : nullptr, &lobby,
+                                        0u);
+    mdkr_party_link_publish(&snap);
+}
+
+void OnlineRoom_pumpPartyLinkIntent(IMdkrOnlineAdapter *adapter) {
+    if (adapter == nullptr) return;
+    MdkrPartyLinkLocalIntent intent;
+    if (!mdkr_party_link_intent_poll(&intent)) return; /* one-shot per publish */
+    PartyLinkDispatchState &st = sPartyLinkDispatch;
+    /* Character confirm -> CHOOSE_CHARACTER(value = chosen id). Hover alone is
+     * cursor motion carried by the forward feed's host_cursor, never a reducer
+     * command. Dedupe so re-confirming the same racer is a no-op. */
+    if (intent.confirmed) {
+        if (!st.characterDispatched ||
+            st.lastCharacter != intent.hover_character) {
+            (void)partyLinkSubmit(adapter,
+                                  MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER,
+                                  intent.hover_character);
+            st.characterDispatched = true;
+            st.lastCharacter = intent.hover_character;
+        }
+    }
+    /* Back out of the staged selection -> CHANGE_SELECTION; re-arm confirm. */
+    if (intent.backout) {
+        if (!st.backoutDispatched) {
+            (void)partyLinkSubmit(adapter,
+                                  MDKR_ONLINE_VIEW_ACTION_CHANGE_SELECTION, 0u);
+            st.backoutDispatched = true;
+            st.characterDispatched = false;
+        }
+    } else {
+        st.backoutDispatched = false;
+    }
+    /* Ready -> READY(1) on the rising edge only. */
+    if (intent.ready) {
+        if (!st.readyDispatched) {
+            (void)partyLinkSubmit(adapter, MDKR_ONLINE_VIEW_ACTION_READY, 1u);
+            st.readyDispatched = true;
+        }
+    } else {
+        st.readyDispatched = false;
+    }
+    /* Host pressed Start -> START_RACE(resolved raw vehicle mask), once/press. */
+    if (intent.start_requested) {
+        if (!st.startDispatched) {
+            (void)partyLinkSubmit(adapter, MDKR_ONLINE_VIEW_ACTION_START_RACE,
+                                  partyLinkStartVehicleMask(adapter));
+            st.startDispatched = true;
+        }
+    } else {
+        st.startDispatched = false;
+    }
+}
+
+void OnlineRoom_runTestPartyLinkFake(void) {
+    /* Adapter-free scripted proof of the forward feed for the P2 native-menu
+     * tests to read. Reinstall fresh, then publish the deterministic sequence;
+     * the last snapshot stays live for a reader. */
+    OnlineRoom_clearPartyLink();
+    OnlineRoom_installPartyLink();
+    const unsigned steps = 3u;
+    for (unsigned step = 0u; step < steps; ++step) {
+        MdkrPartyLinkSnapshot snap;
+        partyLinkFakeSnapshot(step, &snap);
+        mdkr_party_link_publish(&snap);
+        MdkrPartyLinkSnapshot readBack{};
+        (void)mdkr_party_link_read(&readBack);
+        std::fprintf(stderr,
+                     "[party-link-fake] step=%u gen=%u phase=%u mode=%u cup=%u "
+                     "chars=%u,%u ready=%u,%u host=%u,%u local=%u,%u\n",
+                     step, readBack.generation, readBack.phase, readBack.mode,
+                     readBack.cup_id, readBack.seats[0].character_id,
+                     readBack.seats[1].character_id, readBack.seats[0].ready,
+                     readBack.seats[1].ready, readBack.seats[0].is_host,
+                     readBack.seats[1].is_host, readBack.seats[0].is_local,
+                     readBack.seats[1].is_local);
+    }
 }
 
 /* ======================================================================== *

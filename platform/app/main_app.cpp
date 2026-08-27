@@ -2873,6 +2873,17 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                      warmupAttempts);
     }
 #if MDKR_ENABLE_ONLINE_BETA
+    /* P2-T1 live selection bridge proof: install the launcher->engine forward
+     * feed and publish a deterministic scripted snapshot sequence with NO
+     * adapter, then return. The P2 native character/track screens (later tasks)
+     * read this feed during menus; here it proves the publish path end to end
+     * and emits [party-link-fake] witnesses for a driving harness. Ordinary
+     * autoplay never sets this variable, so the seam stays inert. */
+    if (std::getenv("MDKR_APP_TEST_PARTY_LINK_FAKE") != nullptr) {
+        OnlineRoom_runTestPartyLinkFake();
+        host.shutdown();
+        return 0;
+    }
     /* Headless proof of the make-or-break wiring: stand up two REAL live adapters
      * over the in-process loopback mesh, drive them to a ready race transport,
      * then boot the VISIBLE engine on endpoint A's live transport while endpoint

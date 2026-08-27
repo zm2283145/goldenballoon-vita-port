@@ -659,6 +659,27 @@ std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
 bool OnlineRoom_liveInvite(IMdkrOnlineAdapter *adapter, std::string *code,
                            std::string *inviteUrl);
 
+/* ---- P2-T1 live selection bridge wiring (beta only) ---------------------- *
+ *
+ * FORWARD FEED: OnlineRoom_pumpPartyLink projects the adapter's live lobby +
+ * view model into a party_link snapshot and publishes it (a no-op until the
+ * link is installed and the adapter has an authoritative lobby snapshot).
+ * REVERSE FEED: OnlineRoom_pumpPartyLinkIntent one-shot-polls the local
+ * player's in-menu intent and dispatches the SAME existing view actions
+ * ui_online_room.cpp does (CHOOSE_CHARACTER / CHANGE_SELECTION / READY /
+ * START_RACE), deduped so a per-frame republish never spams the reducer.
+ * install/clear bookend a session and reset the reverse-feed dedupe. Both pumps
+ * are driven from the launcher-code-in-engine-loop service callback during
+ * MENUS by later tasks. Defined in platform/app/online_live_wiring.cpp. */
+void OnlineRoom_installPartyLink(void);
+void OnlineRoom_clearPartyLink(void);
+void OnlineRoom_pumpPartyLink(IMdkrOnlineAdapter *adapter);
+void OnlineRoom_pumpPartyLinkIntent(IMdkrOnlineAdapter *adapter);
+/* Test seam (MDKR_APP_TEST_PARTY_LINK_FAKE): install the link and publish a
+ * deterministic scripted snapshot sequence with NO adapter, for the P2 native
+ * menu tests to read through the forward feed. */
+void OnlineRoom_runTestPartyLinkFake(void);
+
 /* ---- O-T6b visible-engine race-boot handoff (beta only) ------------------ *
  *
  * The make-or-break seam: turning the headless online race into a VISIBLE 3D

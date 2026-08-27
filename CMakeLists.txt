@@ -513,6 +513,18 @@ if(MDKR_APP)
         ${CMAKE_SOURCE_DIR}/platform/host_window.c)         # window/device adoption
 endif()
 
+# Native online BETA live selection bridge (launcher->engine lobby snapshot +
+# engine->launcher local-intent channel). Engine-resident like
+# net_roster_runtime/online_race_results so BOTH the engine-side readers
+# (game/src, beta-gated, arrive in P2-T2) and the launcher-side writer/poller
+# (online_live_wiring.cpp in mdkr64_app) link ONE copy, but -- unlike those two,
+# which every build compiles -- it is gated so the release engine object never
+# carries it. In PLATFORM_SOURCES it inherits the strict warning baseline below.
+if(MDKR_ENABLE_ONLINE_BETA)
+    list(APPEND PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/net/party_link.c) # live selection bridge (beta)
+endif()
+
 # glad GL loader — desktop only (no GL in the browser build).
 if(NOT EMSCRIPTEN)
     set(GLAD_SOURCES ${CMAKE_SOURCE_DIR}/lib/glad/src/glad.c)
@@ -594,8 +606,10 @@ target_compile_definitions(${MDKR_TARGET} PRIVATE
 # lives in the game/decomp translation units that compile into ${MDKR_TARGET}.
 # It is entirely #if MDKR_ENABLE_ONLINE_BETA, so a normal (beta OFF) build never
 # sees the macro and the engine object stays byte-identical to the release build.
-# Beta-only, matching the mdkr64_app definition below; no PLATFORM_SOURCES or
-# decomp TU keys on this macro today, so turning it on activates only that seam.
+# Beta-only, matching the mdkr64_app definition below. The only PLATFORM_SOURCES
+# addition this macro makes is the beta live selection bridge (party_link.c,
+# gated above); every decomp TU that keys on the macro is entirely #if-guarded,
+# so a normal (beta OFF) build activates none of it.
 if(MDKR_ENABLE_ONLINE_BETA)
     target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_ENABLE_ONLINE_BETA=1)
 endif()
