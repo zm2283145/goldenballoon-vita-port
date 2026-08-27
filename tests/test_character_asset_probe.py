@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import math
 import struct
 import sys
 import tempfile
@@ -251,6 +252,19 @@ def rewrite_glb_document(data: bytes, update) -> bytes:
     return bytes(output)
 
 
+def rewrite_glb_binary(data: bytes, update) -> bytes:
+    document, binary = probe.parse_glb(data)
+    payload = bytearray(binary or b"")
+    update(document, payload)
+    json_chunk = json.dumps(document, separators=(",", ":")).encode("utf-8")
+    json_chunk += b" " * ((-len(json_chunk)) % 4)
+    output = bytearray(struct.pack("<4sII", b"glTF", 2, 0))
+    output += struct.pack("<II", len(json_chunk), probe.GLB_JSON_CHUNK) + json_chunk
+    output += struct.pack("<II", len(payload), probe.GLB_BIN_CHUNK) + payload
+    struct.pack_into("<I", output, 8, len(output))
+    return bytes(output)
+
+
 def make_humanoid_glb() -> bytes:
     names = (
         "mixamorig:Hips", "mixamorig:Spine", "mixamorig:Spine2",
@@ -351,6 +365,433 @@ class CharacterAssetProbeTests(unittest.TestCase):
     def test_external_resource_is_rejected(self) -> None:
         report = probe.inspect_glb_bytes(make_animated_glb(external_buffer=True), require_character=True)
         self.assertTrue(any("external" in error for error in report["errors"]))
+
+    def test_accessor_contract_rejects_hostile_layouts_without_exceptions(self) -> None:
+        base = make_animated_glb()
+
+        def mutate(path: str, update) -> None:
+            report = probe.inspect_glb_bytes(
+                rewrite_glb_document(base, update), require_character=True
+            )
+            self.assertTrue(
+                any(path in error for error in report["errors"]),
+                (path, report["errors"]),
+            )
+
+        mutate(
+            "buffers[0].byteLength exceeds",
+            lambda document: document["buffers"][0].update({
+                "byteLength": document["buffers"][0]["byteLength"] + 4,
+            }),
+        )
+        mutate(
+            "bufferViews[0] exceeds",
+            lambda document: document["bufferViews"][0].update({
+                "byteLength": document["buffers"][0]["byteLength"] + 1,
+            }),
+        )
+        mutate(
+            "accessors[0].count must be a positive integer",
+            lambda document: document["accessors"][0].update({"count": 0}),
+        )
+        mutate(
+            "accessors[0].count must be a positive integer",
+            lambda document: document["accessors"][0].update({"count": "3"}),
+        )
+        mutate(
+            "accessors[0].componentType is unsupported",
+            lambda document: document["accessors"][0].update({
+                "componentType": [5126],
+            }),
+        )
+        mutate(
+            "accessors[0].type is unsupported",
+            lambda document: document["accessors"][0].update({
+                "type": {"name": "VEC3"},
+            }),
+        )
+        mutate(
+            "accessors[0].max contains a value outside FLOAT range",
+            lambda document: document["accessors"][0].update({
+                "max": [1.0e100, 1.0, 1.0],
+            }),
+        )
+        mutate(
+            "accessors[0] is not component-size aligned",
+            lambda document: document["accessors"][0].update({"byteOffset": 2}),
+        )
+        mutate(
+            "bufferViews[0].byteStride must be a 4-byte multiple",
+            lambda document: document["bufferViews"][0].update({"byteStride": 6}),
+        )
+        mutate(
+            "accessors[0].bufferView is required",
+            lambda document: document["accessors"][0].pop("bufferView"),
+        )
+        mutate(
+            "accessors[0] uses sparse storage",
+            lambda document: document["accessors"][0].update({"sparse": {}}),
+        )
+        mutate(
+            "accessors[0] cannot normalize FLOAT",
+            lambda document: document["accessors"][0].update({"normalized": True}),
+        )
+        mutate(
+            "attributes.POSITION has a component/type/normalized combination",
+            lambda document: document["accessors"][0].update({
+                "type": "VEC2", "min": [-0.5, 0.0], "max": [0.5, 1.0],
+            }),
+        )
+        mutate(
+            "attributes.POSITION requires min and max",
+            lambda document: document["accessors"][0].pop("min"),
+        )
+        mutate(
+            "vertex attribute accessor counts do not match",
+            lambda document: document["accessors"][1].update({"count": 2}),
+        )
+        mutate(
+            ".indices must use an unnormalized unsigned SCALAR",
+            lambda document: document["accessors"][5].update({
+                "componentType": 5122,
+            }),
+        )
+        mutate(
+            "input/output accessor counts do not match",
+            lambda document: document["accessors"][8].update({"count": 1}),
+        )
+        mutate(
+            "inverseBindMatrices must be a FLOAT MAT4",
+            lambda document: document["accessors"][6].update({"type": "MAT3"}),
+        )
+        mutate(
+            "bufferView must not define byteStride or target",
+            lambda document: document["bufferViews"][9].update({"target": 34962}),
+        )
+
+        def share_vertex_view_without_stride(document: dict) -> None:
+            document["accessors"][1]["bufferView"] = 0
+
+        mutate(
+            "shared by vertex attributes but has no byteStride",
+            share_vertex_view_without_stride,
+        )
+
+        mutate(
+            "declared min/max do not match its binary values",
+            lambda document: document["accessors"][0].update({
+                "max": [2.0, 2.0, 2.0],
+            }),
+        )
+
+        def binary_case(path: str, update) -> None:
+            report = probe.inspect_glb_bytes(
+                rewrite_glb_binary(base, update), require_character=True
+            )
+            self.assertTrue(
+                any(path in error for error in report["errors"]),
+                (path, report["errors"]),
+            )
+
+        def write_accessor_component(
+            document: dict, payload: bytearray, accessor_index: int,
+            component_offset: int, fmt: str, value,
+        ) -> None:
+            accessor = document["accessors"][accessor_index]
+            view = document["bufferViews"][accessor["bufferView"]]
+            struct.pack_into(
+                fmt, payload,
+                view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
+                + component_offset,
+                value,
+            )
+
+        binary_case(
+            "attributes.POSITION contains NaN or infinity",
+            lambda document, payload: write_accessor_component(
+                document, payload, 0, 0, "<f", math.nan
+            ),
+        )
+        binary_case(
+            "attributes.NORMAL contains a zero or non-finite direction",
+            lambda document, payload: write_accessor_component(
+                document, payload, 1, 8, "<f", 0.0
+            ),
+        )
+        binary_case(
+            "attributes.WEIGHTS_0 must contain non-negative influences",
+            lambda document, payload: write_accessor_component(
+                document, payload, 4, 0, "<f", -0.5
+            ),
+        )
+        binary_case(
+            "indices contains primitive restart or an out-of-range vertex index",
+            lambda document, payload: write_accessor_component(
+                document, payload, 5, 4, "<H", 3
+            ),
+        )
+        binary_case(
+            "JOINTS_0 exceeds an instanced skin palette",
+            lambda document, payload: write_accessor_component(
+                document, payload, 3, 0, "<B", 2
+            ),
+        )
+        binary_case(
+            "input values must be finite, non-negative, and strictly increasing",
+            lambda document, payload: write_accessor_component(
+                document, payload, 7, 4, "<f", 0.0
+            ),
+        )
+        binary_case(
+            "output contains NaN or infinity",
+            lambda document, payload: write_accessor_component(
+                document, payload, 8, 0, "<f", math.inf
+            ),
+        )
+        binary_case(
+            "rotation key is not a unit quaternion",
+            lambda document, payload: write_accessor_component(
+                document, payload, 8, 12, "<f", 0.5
+            ),
+        )
+        binary_case(
+            "inverseBindMatrices contains NaN or infinity",
+            lambda document, payload: write_accessor_component(
+                document, payload, 6, 0, "<f", math.nan
+            ),
+        )
+        mutate(
+            "attributes.TANGENT tangent handedness must be -1 or 1",
+            lambda document: document["meshes"][0]["primitives"][0][
+                "attributes"
+            ].update({"TANGENT": 4}),
+        )
+
+    def test_compiler_accessor_reader_rechecks_the_storage_boundary(self) -> None:
+        def rejected(update, message: str) -> None:
+            document, binary = probe.parse_glb(make_animated_glb())
+            update(document)
+            with self.assertRaisesRegex(compiler.CompileError, message):
+                reader = compiler.AccessorReader(document, binary or b"")
+                reader.values(0)
+
+        rejected(
+            lambda document: document["accessors"][0].update({"count": 0}),
+            "invalid count",
+        )
+        rejected(
+            lambda document: document["accessors"][0].update({
+                "componentType": [5126],
+            }),
+            "unsupported component/type",
+        )
+        rejected(
+            lambda document: document["accessors"][0].pop("bufferView"),
+            "has no bufferView",
+        )
+        rejected(
+            lambda document: document["accessors"][0].update({
+                "byteOffset": 2,
+            }),
+            "not component-size aligned",
+        )
+
+    def test_scene_material_and_embedded_png_profile_fails_closed(self) -> None:
+        base = make_animated_glb()
+
+        def rejected(path: str, update) -> None:
+            model = rewrite_glb_document(base, update)
+            report = probe.inspect_glb_bytes(model, require_character=True)
+            self.assertTrue(
+                any(path in error for error in report["errors"]),
+                (path, report["errors"]),
+            )
+            with self.assertRaises(compiler.CompileError):
+                compiler.compile_character(model, make_manifest(), bytes(32))
+
+        rejected(
+            "node hierarchy contains a cycle",
+            lambda document: document["nodes"][1].update({"children": [0]}),
+        )
+        rejected(
+            "matrix contains shear",
+            lambda document: document["nodes"][2].update({
+                "matrix": [
+                    1.0, 0.0, 0.0, 0.0,
+                    0.5, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, 0.0,
+                    0.0, 0.0, 0.0, 1.0,
+                ],
+            }),
+        )
+        def overflow_world_transform(document: dict) -> None:
+            document["nodes"][0].update({
+                "children": [1, 2], "scale": [3.0e38, 3.0e38, 3.0e38],
+            })
+            document["nodes"][2].update({
+                "scale": [3.0e38, 3.0e38, 3.0e38],
+            })
+            document["scenes"][0]["nodes"] = [0]
+
+        rejected("world transform exceeds finite FLOAT range",
+                 overflow_world_transform)
+        rejected(
+            "alphaCutoff must be from 0 to 1",
+            lambda document: document["materials"][0].update({
+                "alphaCutoff": {"hostile": True},
+            }),
+        )
+        rejected(
+            "mimeType must be 'image/png'",
+            lambda document: document["images"][0].update({
+                "mimeType": ["image/png"],
+            }),
+        )
+        rejected(
+            "textures[0].extensions must be an object",
+            lambda document: document["textures"][0].update({
+                "extensions": None,
+            }),
+        )
+        rejected(
+            "unsupported required extensions: KHR_materials_specular",
+            lambda document: document.update({
+                "extensionsUsed": ["KHR_materials_specular"],
+                "extensionsRequired": ["KHR_materials_specular"],
+            }),
+        )
+
+        def corrupt_png_checksum(document: dict, payload: bytearray) -> None:
+            view = document["bufferViews"][document["images"][0]["bufferView"]]
+            payload[view["byteOffset"] + view["byteLength"] - 5] ^= 1
+
+        report = probe.inspect_glb_bytes(
+            rewrite_glb_binary(base, corrupt_png_checksum),
+            require_character=True,
+        )
+        self.assertTrue(any(
+            "PNG has a bad chunk checksum" in error
+            for error in report["errors"]
+        ), report["errors"])
+
+        def lie_about_png_height(document: dict, payload: bytearray) -> None:
+            view = document["bufferViews"][document["images"][0]["bufferView"]]
+            start = view["byteOffset"]
+            struct.pack_into(">I", payload, start + 20, 2)
+            crc = zlib.crc32(payload[start + 12:start + 29]) & 0xFFFFFFFF
+            struct.pack_into(">I", payload, start + 29, crc)
+
+        report = probe.inspect_glb_bytes(
+            rewrite_glb_binary(base, lie_about_png_height),
+            require_character=True,
+        )
+        self.assertTrue(any(
+            "pixels do not match its declared dimensions" in error
+            for error in report["errors"]
+        ), report["errors"])
+
+    def test_compiler_metadata_helpers_reject_hostile_types(self) -> None:
+        with self.assertRaises(compiler.CompileError):
+            compiler._finite({"x": 1}, "factor")
+        with self.assertRaises(compiler.CompileError):
+            compiler._finite_scalar([], "factor")
+        with self.assertRaises(compiler.CompileError):
+            compiler._source_name({"x": 1}, "fallback", "node[0]")
+        with self.assertRaises(compiler.CompileError):
+            compiler._texture_source({"extensions": None, "source": 0})
+        with self.assertRaises(compiler.CompileError):
+            compiler._item([{}], False, "node")
+
+    def test_hostile_glb_diagnostics_are_bounded(self) -> None:
+        model = rewrite_glb_document(
+            make_animated_glb(),
+            lambda document: document.update({
+                "nodes": [None] * (probe.MAX_GLTF_DIAGNOSTICS + 100),
+            }),
+        )
+        report = probe.inspect_glb_bytes(model, require_character=True)
+        self.assertEqual(probe.MAX_GLTF_DIAGNOSTICS + 1, len(report["errors"]))
+        self.assertIn("additional GLB diagnostics were suppressed",
+                      report["errors"][-1])
+
+    def test_accessor_metadata_type_fuzz_fails_as_policy_not_exception(self) -> None:
+        base = make_animated_glb()
+        cases = [
+            ("accessors", field, value)
+            for field in (
+                "componentType", "type", "count", "bufferView",
+                "byteOffset", "normalized", "min", "max",
+            )
+            for value in (None, True, [], {}, "invalid", -1)
+        ] + [
+            ("bufferViews", field, value)
+            for field in (
+                "buffer", "byteOffset", "byteLength", "byteStride", "target",
+            )
+            for value in (None, True, [], {}, "invalid", -1)
+        ] + [
+            ("buffers", field, value)
+            for field in ("byteLength", "uri")
+            for value in (None, True, [], {}, "invalid", -1)
+        ]
+        for array_name, field, value in cases:
+            def update(document: dict, *, array_name=array_name,
+                       field=field, value=value) -> None:
+                document[array_name][0][field] = value
+
+            report = probe.inspect_glb_bytes(
+                rewrite_glb_document(base, update), require_character=True
+            )
+            self.assertTrue(
+                report["errors"], (array_name, field, value)
+            )
+
+    def test_compiler_facing_metadata_fuzz_has_only_controlled_outcomes(self) -> None:
+        base = make_animated_glb()
+        fields = {
+            "nodes": (
+                "name", "children", "mesh", "skin", "matrix",
+                "translation", "rotation", "scale", "extensions",
+            ),
+            "scenes": ("nodes",),
+            "meshes": ("name", "primitives"),
+            "materials": (
+                "name", "pbrMetallicRoughness", "alphaMode",
+                "alphaCutoff", "doubleSided", "normalTexture",
+                "occlusionTexture", "emissiveTexture", "emissiveFactor",
+            ),
+            "images": ("name", "mimeType", "bufferView", "uri"),
+            "textures": ("name", "source", "sampler", "extensions"),
+            "skins": ("name", "joints", "skeleton", "inverseBindMatrices"),
+            "animations": ("name", "samplers", "channels"),
+        }
+        values = (
+            None, True, False, -1, 1.5, 1.0e307, 10 ** 120,
+            "invalid", [], {}, {"hostile": True},
+        )
+        for array_name, names in fields.items():
+            for field in names:
+                for value in values:
+                    def update(document: dict, *, array_name=array_name,
+                               field=field, value=value) -> None:
+                        document[array_name][0][field] = value
+
+                    model = rewrite_glb_document(base, update)
+                    report = probe.inspect_glb_bytes(
+                        model, require_character=True
+                    )
+                    try:
+                        compiler.compile_character(
+                            model, make_manifest(), bytes(32)
+                        )
+                    except compiler.CompileError:
+                        pass
+                    except Exception as error:  # pragma: no cover - assertion path
+                        self.fail(
+                            f"uncontrolled {type(error).__name__} for "
+                            f"{array_name}.{field}={value!r}: {error}"
+                        )
+                    self.assertIsInstance(report["errors"], list)
 
     def test_msft_lod_chain_compiles_to_distinct_primitive_levels(self) -> None:
         compiled, report = compiler.compile_character(
@@ -644,6 +1085,12 @@ class CharacterAssetProbeTests(unittest.TestCase):
             probe.json_loads_strict('{"id":"first","id":"second"}', "manifest")
         with self.assertRaisesRegex(probe.ProbeError, "non-finite number"):
             probe.json_loads_strict('{"scale":NaN}', "manifest")
+        with self.assertRaisesRegex(probe.ProbeError, "non-finite number"):
+            probe.json_loads_strict('{"scale":1e10000}', "manifest")
+        with self.assertRaisesRegex(probe.ProbeError, "oversized integer"):
+            probe.json_loads_strict(
+                '{"scale":' + ('9' * 129) + '}', "manifest"
+            )
 
     def test_manifest_requires_nfc_unicode(self) -> None:
         manifest = make_manifest()

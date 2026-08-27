@@ -134,8 +134,8 @@ SOURCE_FORWARD_ROTATIONS = {
 PATH_IDS = {"translation": 0, "rotation": 1, "scale": 2, "weights": 3}
 INTERPOLATION_IDS = {"LINEAR": 0, "STEP": 1, "CUBICSPLINE": 2}
 MIME_IDS = {"image/png": 1}
-MAX_TEXTURE_DIMENSION = 4096
-MAX_DECODED_TEXTURE_BYTES = 512 * 1024 * 1024
+MAX_TEXTURE_DIMENSION = probe.MAX_TEXTURE_DIMENSION
+MAX_DECODED_TEXTURE_BYTES = probe.MAX_DECODED_TEXTURE_BYTES
 
 # Engine-owned semantic behavior. Packages map names to clips; they do not get
 # to redefine whether a damage/landing/confirmation reaction loops forever.
@@ -191,7 +191,9 @@ class StringTable:
         self.offsets = {"": 0}
 
     def add(self, value: Any) -> int:
-        text = value if isinstance(value, str) else ""
+        if not isinstance(value, str):
+            raise CompileError("compiled strings must be text")
+        text = value
         if "\0" in text:
             raise CompileError("strings must not contain NUL bytes")
         encoded = text.encode("utf-8")
@@ -215,7 +217,10 @@ def _array(document: dict[str, Any], key: str) -> list[Any]:
 
 
 def _item(items: list[Any], index: Any, label: str) -> dict[str, Any]:
-    if not isinstance(index, int) or index < 0 or index >= len(items):
+    if (
+        not isinstance(index, int) or isinstance(index, bool)
+        or index < 0 or index >= len(items)
+    ):
         raise CompileError(f"invalid {label} index {index!r}")
     value = items[index]
     if not isinstance(value, dict):
@@ -228,11 +233,18 @@ class AccessorReader:
         self.document = document
         self.binary = binary
         buffers = _array(document, "buffers")
-        if len(buffers) != 1 or buffers[0].get("uri") is not None:
+        if (
+            len(buffers) != 1 or not isinstance(buffers[0], dict)
+            or buffers[0].get("uri") is not None
+        ):
             raise CompileError("compiler requires exactly one embedded GLB buffer")
         declared = buffers[0].get("byteLength")
-        if not isinstance(declared, int) or declared < 0 or declared > len(binary):
+        if (
+            not isinstance(declared, int) or isinstance(declared, bool)
+            or declared <= 0 or declared > len(binary)
+        ):
             raise CompileError("GLB buffer byteLength exceeds the BIN chunk")
+        self.declared_bytes = declared
 
     def values(self, index: Any, *, as_float: bool = True) -> list[tuple[Any, ...]]:
         accessor = _item(_array(self.document, "accessors"), index, "accessor")
@@ -241,33 +253,64 @@ class AccessorReader:
         component_type = accessor.get("componentType")
         value_type = accessor.get("type")
         count = accessor.get("count")
-        if component_type not in COMPONENTS or value_type not in TYPE_COMPONENTS:
+        if (
+            not isinstance(component_type, int)
+            or isinstance(component_type, bool)
+            or component_type not in COMPONENTS
+            or not isinstance(value_type, str)
+            or value_type not in TYPE_COMPONENTS
+        ):
             raise CompileError(f"accessor[{index}] has an unsupported component/type")
-        if not isinstance(count, int) or count < 0:
+        if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
             raise CompileError(f"accessor[{index}] has an invalid count")
         code, component_bytes, signed = COMPONENTS[component_type]
         components = TYPE_COMPONENTS[value_type]
         element_bytes = component_bytes * components
         view_index = accessor.get("bufferView")
         if view_index is None:
-            return [tuple(0.0 if as_float else 0 for _ in range(components)) for _ in range(count)]
+            raise CompileError(
+                f"accessor[{index}] has no bufferView; normalize it before import"
+            )
         view = _item(_array(self.document, "bufferViews"), view_index, "bufferView")
-        if view.get("buffer", 0) != 0:
+        view_buffer = view.get("buffer")
+        if (
+            not isinstance(view_buffer, int) or isinstance(view_buffer, bool)
+            or view_buffer != 0
+        ):
             raise CompileError(f"accessor[{index}] references a non-GLB buffer")
         view_offset = view.get("byteOffset", 0)
         accessor_offset = accessor.get("byteOffset", 0)
         view_length = view.get("byteLength")
         stride = view.get("byteStride", element_bytes)
-        if not all(isinstance(value, int) and value >= 0 for value in (view_offset, accessor_offset, view_length)):
+        if not all(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            for value in (view_offset, accessor_offset, view_length)
+        ) or view_length == 0:
             raise CompileError(f"accessor[{index}] has invalid byte bounds")
-        if not isinstance(stride, int) or stride < element_bytes:
+        if (
+            not isinstance(stride, int) or isinstance(stride, bool)
+            or stride < element_bytes or stride > 252
+            or stride % component_bytes != 0
+            or ("byteStride" in view and stride % 4 != 0)
+        ):
             raise CompileError(f"accessor[{index}] has an invalid byteStride")
-        if count and accessor_offset + (count - 1) * stride + element_bytes > view_length:
+        if (
+            accessor_offset % component_bytes != 0
+            or (view_offset + accessor_offset) % component_bytes != 0
+        ):
+            raise CompileError(f"accessor[{index}] is not component-size aligned")
+        if view_offset + view_length > self.declared_bytes:
+            raise CompileError(f"accessor[{index}] bufferView exceeds the declared buffer")
+        if accessor_offset + (count - 1) * stride + element_bytes > view_length:
             raise CompileError(f"accessor[{index}] exceeds its bufferView")
         base = view_offset + accessor_offset
-        if base + (count - 1) * stride + element_bytes > len(self.binary) if count else base > len(self.binary):
+        if base + (count - 1) * stride + element_bytes > self.declared_bytes:
             raise CompileError(f"accessor[{index}] exceeds the GLB BIN chunk")
-        normalized = bool(accessor.get("normalized", False))
+        normalized = accessor.get("normalized", False)
+        if not isinstance(normalized, bool) or (
+            normalized and component_type == 5126
+        ):
+            raise CompileError(f"accessor[{index}] has an invalid normalized flag")
         unpack = struct.Struct("<" + code * components)
         output: list[tuple[Any, ...]] = []
         for item_index in range(count):
@@ -292,14 +335,51 @@ class AccessorReader:
 
 
 def _finite(values: Iterable[float], label: str) -> tuple[float, ...]:
-    result = tuple(float(value) for value in values)
+    if isinstance(values, (str, bytes, dict)):
+        raise CompileError(f"{label} must be a numeric array")
+    try:
+        raw = tuple(values)
+    except TypeError as exc:
+        raise CompileError(f"{label} must be a numeric array") from exc
+    if any(
+        not isinstance(value, (int, float)) or isinstance(value, bool)
+        for value in raw
+    ):
+        raise CompileError(f"{label} must contain numbers")
+    try:
+        result = tuple(float(value) for value in raw)
+    except OverflowError as exc:
+        raise CompileError(f"{label} contains a number outside FLOAT range") from exc
     if not all(math.isfinite(value) for value in result):
         raise CompileError(f"{label} contains a non-finite value")
     return result
 
 
+def _finite_scalar(value: Any, label: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise CompileError(f"{label} must be a finite number")
+    try:
+        result = float(value)
+    except OverflowError as exc:
+        raise CompileError(f"{label} is outside FLOAT range") from exc
+    if not math.isfinite(result):
+        raise CompileError(f"{label} must be a finite number")
+    return result
+
+
+def _source_name(value: Any, fallback: str, label: str) -> str:
+    if value is None or value == "":
+        return fallback
+    if not isinstance(value, str):
+        raise CompileError(f"{label} name must be a string")
+    return value
+
+
 def _normalize3(value: Iterable[float], fallback: tuple[float, float, float]) -> tuple[float, float, float]:
-    x, y, z = _finite(value, "vector")
+    finite = _finite(value, "vector")
+    if len(finite) != 3:
+        raise CompileError("vector must contain three components")
+    x, y, z = finite
     length = math.sqrt(x * x + y * y + z * z)
     if length < 1.0e-12:
         return fallback
@@ -455,12 +535,14 @@ def _image_bytes(document: dict[str, Any], binary: bytes,
     if "uri" in image:
         raise CompileError(f"image[{image_index}] is external")
     mime = image.get("mimeType")
-    if mime not in MIME_IDS:
+    if not isinstance(mime, str) or mime not in MIME_IDS:
         raise CompileError(f"image[{image_index}] has unsupported MIME type {mime!r}")
     view = _item(_array(document, "bufferViews"), image.get("bufferView"), "bufferView")
     offset = view.get("byteOffset", 0)
     size = view.get("byteLength")
-    if not isinstance(offset, int) or not isinstance(size, int) or offset < 0 or size <= 0 or offset + size > len(binary):
+    if (not isinstance(offset, int) or isinstance(offset, bool)
+            or not isinstance(size, int) or isinstance(size, bool)
+            or offset < 0 or size <= 0 or offset + size > len(binary)):
         raise CompileError(f"image[{image_index}] exceeds the GLB BIN chunk")
     payload = binary[offset:offset + size]
     width, height = _png_dimensions(payload, image_index)
@@ -468,14 +550,17 @@ def _image_bytes(document: dict[str, Any], binary: bytes,
 
 
 def _texture_source(texture: dict[str, Any]) -> int:
-    basis = texture.get("extensions", {}).get("KHR_texture_basisu")
+    extensions = texture.get("extensions", {})
+    if not isinstance(extensions, dict):
+        raise CompileError("texture extensions must be an object")
+    basis = extensions.get("KHR_texture_basisu")
     if isinstance(basis, dict):
         raise CompileError(
             "KHR_texture_basisu is reserved for a later renderer profile; "
             "modern-skeletal-v1 requires embedded PNG images"
         )
     source = texture.get("source")
-    if not isinstance(source, int):
+    if not isinstance(source, int) or isinstance(source, bool):
         raise CompileError("texture does not name an image source")
     return source
 
@@ -483,9 +568,12 @@ def _texture_source(texture: dict[str, Any]) -> int:
 def _material_texture(info: Any) -> int:
     if info is None:
         return -1
-    if not isinstance(info, dict) or not isinstance(info.get("index"), int):
+    if (not isinstance(info, dict)
+            or not isinstance(info.get("index"), int)
+            or isinstance(info.get("index"), bool)):
         raise CompileError("material texture reference is invalid")
-    if info.get("texCoord", 0) != 0:
+    tex_coord = info.get("texCoord", 0)
+    if not isinstance(tex_coord, int) or isinstance(tex_coord, bool) or tex_coord != 0:
         raise CompileError("modern-skeletal-v1 supports TEXCOORD_0 only")
     return info["index"]
 
@@ -554,8 +642,12 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
     for parent_index, node in enumerate(nodes):
         if not isinstance(node, dict):
             raise CompileError(f"node[{parent_index}] must be an object")
-        for child in node.get("children", []):
-            if not isinstance(child, int) or child < 0 or child >= len(nodes):
+        children = node.get("children", [])
+        if not isinstance(children, list):
+            raise CompileError(f"node[{parent_index}] children must be an array")
+        for child in children:
+            if (not isinstance(child, int) or isinstance(child, bool)
+                    or child < 0 or child >= len(nodes)):
                 raise CompileError(f"node[{parent_index}] has an invalid child")
             if parents[child] != -1:
                 raise CompileError(f"node[{child}] has multiple parents")
@@ -569,6 +661,7 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             for level, lod_node in enumerate(ids, start=1):
                 if (
                     not isinstance(lod_node, int)
+                    or isinstance(lod_node, bool)
                     or lod_node < 0
                     or lod_node >= len(nodes)
                     or lod_node == parent_index
@@ -581,7 +674,7 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
     node_scales: list[tuple[float, ...]] = []
     node_names: dict[str, int] = {}
     for index, node in enumerate(nodes):
-        name = node.get("name") or f"node_{index}"
+        name = _source_name(node.get("name"), f"node_{index}", f"node[{index}]")
         if name in node_names:
             raise CompileError(f"duplicate node name {name!r}")
         node_names[name] = index
@@ -647,7 +740,7 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
                     raise CompileError("primitive index exceeds its vertex count")
                 indices_output.append(first_vertex + local_index)
             material = primitive.get("material", -1)
-            if not isinstance(material, int):
+            if not isinstance(material, int) or isinstance(material, bool):
                 raise CompileError("primitive material index is invalid")
             built.append((first_vertex, len(positions), first_index, len(local_indices), material))
         mesh_primitive_records[mesh_index] = built
@@ -657,10 +750,11 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         if "mesh" not in node:
             continue
         mesh_index = node.get("mesh")
-        if not isinstance(mesh_index, int) or mesh_index not in mesh_primitive_records:
+        if (not isinstance(mesh_index, int) or isinstance(mesh_index, bool)
+                or mesh_index not in mesh_primitive_records):
             raise CompileError(f"node[{node_index}] has an invalid mesh")
         skin = node.get("skin", -1)
-        if not isinstance(skin, int):
+        if not isinstance(skin, int) or isinstance(skin, bool):
             raise CompileError(f"node[{node_index}] has an invalid skin")
         for first_vertex, vertex_count, first_index, index_count, material in mesh_primitive_records[mesh_index]:
             primitive_records.append((first_vertex, vertex_count, first_index, index_count,
@@ -701,8 +795,11 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             texture_roles[texture_index] = role
         if material.get("alphaMode", "OPAQUE") == "MASK":
             base_texture = uses[0][0]
-            cutoff = float(material.get("alphaCutoff", 0.5))
-            if not math.isfinite(cutoff) or not 0.0 <= cutoff <= 1.0:
+            cutoff = _finite_scalar(
+                material.get("alphaCutoff", 0.5),
+                f"material[{material_index}] alphaCutoff",
+            )
+            if not 0.0 <= cutoff <= 1.0:
                 raise CompileError(f"material[{material_index}] has an invalid alphaCutoff")
             if base_texture >= 0:
                 previous = texture_cutoffs[base_texture]
@@ -729,10 +826,29 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         texture_data.extend(payload)
         sampler_index = texture.get("sampler")
         sampler = _item(samplers, sampler_index, "sampler") if sampler_index is not None else {}
+        sampler_values = {
+            "wrapS": (sampler.get("wrapS", 10497), {33071, 33648, 10497}),
+            "wrapT": (sampler.get("wrapT", 10497), {33071, 33648, 10497}),
+            "minFilter": (
+                sampler.get("minFilter", 9987),
+                {9728, 9729, 9984, 9985, 9986, 9987},
+            ),
+            "magFilter": (sampler.get("magFilter", 9729), {9728, 9729}),
+        }
+        for field, (value, choices) in sampler_values.items():
+            if (not isinstance(value, int) or isinstance(value, bool)
+                    or value not in choices):
+                raise CompileError(
+                    f"sampler for texture[{texture_index}] has invalid {field}"
+                )
         texture_records.append((
-            strings.add(texture.get("name") or f"texture_{texture_index}"), mime_id,
-            data_offset, len(payload), sampler.get("wrapS", 10497), sampler.get("wrapT", 10497),
-            sampler.get("minFilter", 9987), sampler.get("magFilter", 9729),
+            strings.add(_source_name(
+                texture.get("name"), f"texture_{texture_index}",
+                f"texture[{texture_index}]",
+            )), mime_id,
+            data_offset, len(payload), sampler_values["wrapS"][0],
+            sampler_values["wrapT"][0], sampler_values["minFilter"][0],
+            sampler_values["magFilter"][0],
             texture_roles[texture_index] or 1, width | (height << 16),
         ))
 
@@ -747,7 +863,10 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         if alpha_mode not in ("OPAQUE", "MASK", "BLEND"):
             raise CompileError("unsupported material alphaMode")
         flags = {"OPAQUE": 0, "MASK": 1, "BLEND": 2}[alpha_mode]
-        if material.get("doubleSided", False):
+        double_sided = material.get("doubleSided", False)
+        if not isinstance(double_sided, bool):
+            raise CompileError("material doubleSided must be Boolean")
+        if double_sided:
             flags |= 4
         base_color = _finite(pbr.get("baseColorFactor", (1.0, 1.0, 1.0, 1.0)), "baseColorFactor")
         emissive = _finite(material.get("emissiveFactor", (0.0, 0.0, 0.0)), "emissiveFactor")
@@ -756,18 +875,24 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         normal_info = material.get("normalTexture")
         occlusion_info = material.get("occlusionTexture")
         material_records.append((
-            strings.add(material.get("name") or f"material_{material_index}"), flags,
+            strings.add(_source_name(
+                material.get("name"), f"material_{material_index}",
+                f"material[{material_index}]",
+            )), flags,
             _material_texture(pbr.get("baseColorTexture")),
             _material_texture(pbr.get("metallicRoughnessTexture")),
             _material_texture(normal_info),
             _material_texture(occlusion_info),
             _material_texture(material.get("emissiveTexture")),
             *base_color, *emissive,
-            float(pbr.get("metallicFactor", 1.0)),
-            float(pbr.get("roughnessFactor", 1.0)),
-            float(normal_info.get("scale", 1.0)) if isinstance(normal_info, dict) else 1.0,
-            float(occlusion_info.get("strength", 1.0)) if isinstance(occlusion_info, dict) else 1.0,
-            float(material.get("alphaCutoff", 0.5)), 0,
+            _finite_scalar(pbr.get("metallicFactor", 1.0), "metallicFactor"),
+            _finite_scalar(pbr.get("roughnessFactor", 1.0), "roughnessFactor"),
+            _finite_scalar(normal_info.get("scale", 1.0), "normal scale")
+                if isinstance(normal_info, dict) else 1.0,
+            _finite_scalar(
+                occlusion_info.get("strength", 1.0), "occlusion strength"
+            ) if isinstance(occlusion_info, dict) else 1.0,
+            _finite_scalar(material.get("alphaCutoff", 0.5), "alphaCutoff"), 0,
         ))
 
     joint_records = []
@@ -788,7 +913,8 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             raise CompileError(f"skin[{skin_index}] inverse-bind count does not match joints")
         first_joint = len(joint_records)
         for joint_node, inverse in zip(joint_nodes, inverse_values):
-            if not isinstance(joint_node, int) or joint_node < 0 or joint_node >= len(nodes):
+            if (not isinstance(joint_node, int) or isinstance(joint_node, bool)
+                    or joint_node < 0 or joint_node >= len(nodes)):
                 raise CompileError(f"skin[{skin_index}] contains an invalid joint node")
             joint_node_set.add(joint_node)
             joint_scale = node_scales[joint_node]
@@ -803,9 +929,12 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
                 raise CompileError("inverse bind accessor must contain MAT4 values")
             joint_records.append((joint_node, *matrix))
         skeleton = skin.get("skeleton", joint_nodes[0])
-        if not isinstance(skeleton, int) or skeleton < 0 or skeleton >= len(nodes):
+        if (not isinstance(skeleton, int) or isinstance(skeleton, bool)
+                or skeleton < 0 or skeleton >= len(nodes)):
             raise CompileError(f"skin[{skin_index}] has an invalid skeleton root")
-        skin_records.append((strings.add(skin.get("name") or f"skin_{skin_index}"),
+        skin_records.append((strings.add(_source_name(
+                             skin.get("name"), f"skin_{skin_index}",
+                             f"skin[{skin_index}]")),
                              first_joint, len(joint_nodes), skeleton))
 
     key_records = []
@@ -820,7 +949,16 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         duration = 0.0
         animation_moves = False
         samplers_in_animation = animation.get("samplers", [])
-        for channel in animation.get("channels", []):
+        channels_in_animation = animation.get("channels", [])
+        if not isinstance(samplers_in_animation, list):
+            raise CompileError("animation samplers must be an array")
+        if not isinstance(channels_in_animation, list):
+            raise CompileError("animation channels must be an array")
+        animation_name = _source_name(
+            animation.get("name"), f"animation_{animation_index}",
+            f"animation[{animation_index}]",
+        )
+        for channel in channels_in_animation:
             if not isinstance(channel, dict):
                 raise CompileError("animation channel must be an object")
             sampler = _item(samplers_in_animation, channel.get("sampler"), "animation sampler")
@@ -832,7 +970,8 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             if not isinstance(target, dict) or target.get("path") not in PATH_IDS:
                 raise CompileError("animation channel has an unsupported target")
             target_node = target.get("node")
-            if not isinstance(target_node, int) or target_node < 0 or target_node >= len(nodes):
+            if (not isinstance(target_node, int) or isinstance(target_node, bool)
+                    or target_node < 0 or target_node >= len(nodes)):
                 raise CompileError("animation channel targets an invalid node")
             path_name = target["path"]
             if path_name == "scale" and target_node in joint_node_set:
@@ -884,10 +1023,8 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
                 motion_channels += 1
                 animation_moves = True
         if not animation_moves:
-            static_animations.append(
-                animation.get("name") or f"animation_{animation_index}"
-            )
-        animation_records.append((strings.add(animation.get("name") or f"animation_{animation_index}"),
+            static_animations.append(animation_name)
+        animation_records.append((strings.add(animation_name),
                                   duration, first_channel, len(channel_records) - first_channel))
 
     gameplay = manifest["gameplay"]

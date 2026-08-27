@@ -468,6 +468,15 @@ last known-good assembly remains available if an update fails.
 | Packaging/update/removal | Mutation-free review plus package/base-bound transactional install/update, responsive installed-versus-candidate diff, reversible runtime disable, authenticated revision restore/source export, current-compiler portable export, transactional current-source rebuild, and recoverability-aware deletion are executable. Portable publication refuses overwrite and does not mutate installed state; rebuild preserves enabled state and the last known-good cache on failure. Named full-editor snapshots are bounded, authenticated, atomically persisted, independently resumable/deletable, exact-base locked, and autosaved. A combined optimistic build publishes portrait/profile/rig as one retained revision; launcher-owned fit is separately disclosed and confirmed. A dedicated responsive launcher destination now owns a persistent library rail, seven editor tabs, named readiness rows, a deterministic best-next-action resolver, persisted package/tab selection, safe DAE/ZIP-to-GLB handoff, a multi-draft pre-package GLB authoring library, and independent bounded history for Identity, Profile, Rig, Fit/review, Performance, and Test setup; Settings retains its shortcut and assignment summary. | Add bulk draft export/import after the portable-package sharing contract is finalized |
 | Accessibility | Dedicated panel/tab/library/import/assignment controls carry spoken names, textual status, keyboard/controller navigation, and a narrow single-column fallback. Spatial placement/yaw/contact canvases expose spoken values plus adjacent navigable nudge/reset and exact numeric controls, and reflow instead of forcing a wide canvas. The exact-test matrix, baseline/destructive controls, semantic pose selector, phase scrubber, camera presets/sliders, character light, exclusive PNG request, capture tray, report export/removal actions, and all four responsive inspection actions have a rendered 200% keyboard/speech lifecycle gate. Shared cards flatten keyboard navigation so nested actions remain reachable. | Qualify remaining freeform editor gestures with human controller/screen-reader review |
 
+The secure-import baseline now preflights every GLB buffer, buffer view, and
+accessor for exact bounds, alignment, stride, type, count, and consumed binary
+facts before source height, anchoring, animation, skinning, or compiler byte
+access. Declared POSITION bounds must equal the actual float payload, preventing
+false metadata from translating an otherwise valid character through the floor;
+scene cycles, unrepresentable shear, invalid material references, and corrupt or
+dimension-lying embedded PNGs fail through the same actionable report. The
+compiler independently repeats storage and hostile-type checks.
+
 ## Delivery sequence and gates
 
 ### W0 — Workshop shell and draft model (shell/readiness baseline complete)

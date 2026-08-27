@@ -369,6 +369,26 @@ member bytes plus 1 MiB, applied to each regular member and to the whole archive
 at every nesting level. Inventory JSON reports compressed/expanded totals and
 both policy constants so rejection is diagnosable rather than a hidden limit.
 
+GLB inspection validates every buffer, buffer view, and accessor before using
+its metadata: declared-buffer/BIN bounds and padding, positive counts,
+component and 4-byte vertex alignment, effective strides, normalized/type
+contracts, tightly packed non-vertex data, and exact attribute/sampler counts.
+Sparse accessors and packed integer matrices require normalization in the DCC
+export because cache v1 does not silently reinterpret them. The probe reads the
+actual POSITION floats and refuses declared min/max that do not match, so source
+height, ground anchoring, and later vehicle fit cannot be derived from false
+metadata. It likewise rejects non-finite consumed floats, primitive-restart or
+out-of-range indices, zero directions, invalid tangent handedness, negative or
+zero-total weights, malformed animation times, mismatched cubic output, and
+invalid inverse-bind/image views. Scene hierarchy cycles, multiple parents,
+non-unit rotations, affine shear the v1 cache cannot preserve, invalid material
+or texture references, unsupported required extensions, and corrupt or
+dimension-lying embedded PNGs also fail before packaging. These are local
+profile checks; they do not replace the planned pinned Khronos Validator report
+for complete glTF conformance. Reports retain the first 256 exact GLB
+diagnostics and one suppression count, so a hostile file cannot turn error text
+itself into an allocation problem.
+
 This is not an install shortcut. A resumable first-import draft fingerprints and
 inventories the bounded GLB, then requires a stable package ID, display name,
 exact license/notice file, SPDX expression, attribution, source URL, built-in

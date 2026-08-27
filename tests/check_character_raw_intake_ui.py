@@ -20,7 +20,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "tools"))
 
-from test_character_asset_probe import make_animated_glb  # noqa: E402
+from test_character_asset_probe import (  # noqa: E402
+    make_animated_glb,
+    rewrite_glb_document,
+)
 from test_collada_to_glb import DAE  # noqa: E402
 
 
@@ -192,6 +195,38 @@ def main() -> int:
                         f"{format_name} guidance mutated the source, created "
                         "a raw draft, or published character state"
                     )
+
+            hostile = root / "hostile-glb"
+            hostile.mkdir()
+            hostile_model = hostile / "bad-accessor.glb"
+            hostile_model.write_bytes(rewrite_glb_document(
+                make_animated_glb(),
+                lambda document: document["accessors"][0].update({
+                    "count": 0,
+                }),
+            ))
+            hostile_shot = hostile / "raw-intake-hostile.bmp"
+            run(
+                binary, hostile,
+                isolated_environment(
+                    hostile, hostile_model, hostile_shot,
+                    compact=False, drop=True,
+                ),
+                (
+                    "active-panel=Character Workshop",
+                    "accessors[0].count must be a positive integer",
+                    "raw-intake resumed=1 inspected=0 mappings=0 drafts=1",
+                ),
+            )
+            check_bmp(hostile_shot, 1280, 720)
+            if (
+                list((hostile / "characters").glob("*.mdkc"))
+                or (hostile / "characters" /
+                    ".launcher-character-raw-candidate.mdkrchar").exists()
+            ):
+                raise RuntimeError(
+                    "a rejected GLB created a package candidate or cache"
+                )
 
             conversion = root / "conversion"
             conversion.mkdir()
@@ -768,7 +803,7 @@ def main() -> int:
               file=sys.stderr)
         return 1
     print("check_character_raw_intake_ui: PASS -- bounded DAE/ZIP conversion, "
-          "ZIP-bomb and invalid-SPDX refusal, "
+          "ZIP-bomb, invalid-SPDX, and hostile-GLB refusal, "
           "mutation-free FBX/OBJ/BLEND/glTF/USD/DCC export guidance, "
           "multi-draft GLB intake, "
           "same-source branching, source-bound mapping restore, exact "

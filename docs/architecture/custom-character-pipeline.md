@@ -591,6 +591,21 @@ License List, and it never interprets whether a declaration grants rights.
 
 - Run the pinned Khronos validator and reject all errors. Store its complete
   JSON report beside failed imports.
+- The local preflight applies the [glTF 2.0 accessor and alignment
+  rules](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#accessors)
+  plus the narrower cache-v1 profile: it validates all buffer/view/accessor integer types,
+  declared-buffer and BIN bounds/padding, component and vertex alignment,
+  effective stride, finite metadata, exact POSITION binary min/max, consumed
+  float finiteness, index range/restart, joint palette range, attribute counts
+  and type contracts, nonzero directions, tangent handedness, usable weights,
+  animation input/output shape and time order, inverse-bind layout, and embedded
+  PNG structure/pixel extent before compiler byte access. Scene topology, TRS,
+  shear-free matrix decomposition, material/texture/sampler references, and
+  every compiler-consumed JSON scalar are checked as part of the same profile.
+  The compiler independently repeats storage and hostile-type checks. Sparse
+  storage and packed integer matrices are explicit cache-v1 refusals rather
+  than implicit zero/default data. An extension is accepted as required only
+  when cache v1 actually implements its semantics; it is never silently ignored.
 - Require GLB 2.0 with no external buffers, images, data fetched from URLs, or
   required extensions outside an explicit allowlist.
 - Permit triangle lists only in v1; require indices, positions, normals, and UV0.
@@ -1196,9 +1211,10 @@ unfinished pieces into unbounded memory or GPU work.
 
 - Review and version the manifest schema and semantic animation/socket lists.
 - The checked-in JSON Schema, duplicate-key/non-finite JSON rejection, NFC
-  Unicode requirement, bounded SPDX expression parser, and pre-decompression
-  member/aggregate ZIP expansion gates are complete. Complete the remaining
-  GLB accessor checks.
+  Unicode requirement, bounded SPDX expression parser, pre-decompression
+  member/aggregate ZIP expansion gates, and complete cache-v1 GLB accessor
+  preflight are implemented. Pin and integrate the upstream Khronos Validator
+  as the independent complete-format oracle.
 - Pin Khronos Validator and adapter versions with hashes and notices.
 - Add several license-clean external fixtures: static, skinned/animated,
   multi-material, morph target, alpha mask, malformed and budget-exceeding.

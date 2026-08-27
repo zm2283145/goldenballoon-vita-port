@@ -42,6 +42,9 @@ MAX_JOINTS = 256
 MAX_VERTICES = 1_000_000
 MAX_TRIANGLES = 2_000_000
 MAX_MATERIALS = 256
+MAX_TEXTURE_DIMENSION = 4096
+MAX_DECODED_TEXTURE_BYTES = 512 * 1024 * 1024
+MAX_GLTF_DIAGNOSTICS = 256
 PACKAGE_SCHEMA_V1 = "mdkr-character-source-v1"
 PACKAGE_SCHEMA = "mdkr-character-source-v2"
 PACKAGE_SCHEMA_V3 = "mdkr-character-source-v3"
@@ -67,9 +70,6 @@ LICENSE_NAMES = {
     "copyright.txt",
 }
 SUPPORTED_REQUIRED_EXTENSIONS = {
-    "KHR_materials_emissive_strength",
-    "KHR_materials_specular",
-    "KHR_mesh_quantization",
     "MSFT_lod",
 }
 GAMEPLAY_DONORS = {
@@ -102,10 +102,40 @@ SEMANTIC_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 SPDX_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
 SPDX_REFERENCE_NAME_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+GLTF_COMPONENT_BYTES = {
+    5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4,
+}
+GLTF_COMPONENT_FORMAT = {
+    5120: "b", 5121: "B", 5122: "h", 5123: "H", 5125: "I", 5126: "f",
+}
+GLTF_TYPE_COMPONENTS = {
+    "SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4,
+    "MAT2": 4, "MAT3": 9, "MAT4": 16,
+}
 
 
 class ProbeError(ValueError):
     """A bounded, user-facing asset validation failure."""
+
+
+class _BoundedDiagnostics(list[str]):
+    """Keep hostile documents from turning diagnostics into an allocation bomb."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.suppressed = 0
+
+    def append(self, value: str) -> None:
+        if len(self) < MAX_GLTF_DIAGNOSTICS:
+            super().append(value)
+        else:
+            self.suppressed += 1
+
+    def finish(self) -> None:
+        if self.suppressed:
+            super().append(
+                f"{self.suppressed} additional GLB diagnostics were suppressed"
+            )
 
 
 def _spdx_reference_name(text: str) -> bool:
@@ -308,11 +338,25 @@ def json_loads_strict(data: bytes | str, label: str = "JSON") -> Any:
     def reject_constant(value: str) -> Any:
         raise ProbeError(f"{label} contains non-finite number {value}")
 
+    def bounded_integer(value: str) -> int:
+        digits = value[1:] if value.startswith("-") else value
+        if len(digits) > 128:
+            raise ProbeError(f"{label} contains an oversized integer")
+        return int(value)
+
+    def finite_float(value: str) -> float:
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ProbeError(f"{label} contains non-finite number {value}")
+        return parsed
+
     try:
         text = data.decode("utf-8") if isinstance(data, bytes) else data
         return json.loads(
             text, object_pairs_hook=object_from_pairs,
             parse_constant=reject_constant,
+            parse_int=bounded_integer,
+            parse_float=finite_float,
         )
     except UnicodeDecodeError as exc:
         raise ProbeError(f"{label} is not valid UTF-8: {exc}") from exc
@@ -426,6 +470,158 @@ def inspect_portrait_png(data: bytes) -> dict[str, int]:
             }
         offset = end
     raise ProbeError("portrait.png is missing IEND")
+
+
+def _inspect_texture_png(
+    data: bytes | memoryview, image_index: int
+) -> tuple[int, int]:
+    """Validate one embedded PNG without allocating beyond its pixel budget."""
+    label = f"images[{image_index}]"
+    source = memoryview(data)
+    if len(source) < 8 or bytes(source[:8]) != PNG_SIGNATURE:
+        raise ProbeError(f"{label} is not a PNG")
+    offset = 8
+    chunks = 0
+    saw_ihdr = False
+    saw_plte = False
+    saw_idat = False
+    ended_idat = False
+    width = height = bit_depth = colour_type = interlace = 0
+    expected_decoded = 0
+    pass_rows: list[tuple[int, int]] = []
+    decoded = bytearray()
+    decompressor: Any = None
+    valid_depths = {
+        0: {1, 2, 4, 8, 16},
+        2: {8, 16},
+        3: {1, 2, 4, 8},
+        4: {8, 16},
+        6: {8, 16},
+    }
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
+    adam7 = (
+        (0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8),
+        (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2),
+        (0, 1, 1, 2),
+    )
+    while offset < len(source):
+        if len(source) - offset < 12:
+            raise ProbeError(f"{label} has a truncated PNG chunk")
+        length = struct.unpack_from(">I", source, offset)[0]
+        kind = bytes(source[offset + 4:offset + 8])
+        end = offset + 12 + length
+        if end > len(source):
+            raise ProbeError(f"{label} PNG chunk exceeds its bufferView")
+        payload = source[offset + 8:offset + 8 + length]
+        expected_crc = struct.unpack_from(">I", source, offset + 8 + length)[0]
+        actual_crc = zlib.crc32(payload, zlib.crc32(kind)) & 0xFFFFFFFF
+        if actual_crc != expected_crc:
+            raise ProbeError(f"{label} PNG has a bad chunk checksum")
+        chunks += 1
+        if chunks > 4096:
+            raise ProbeError(f"{label} PNG has too many chunks")
+        if kind == b"IHDR":
+            if saw_ihdr or offset != 8 or length != 13:
+                raise ProbeError(f"{label} PNG has an invalid IHDR")
+            (width, height, bit_depth, colour_type, compression, filtering,
+             interlace) = struct.unpack(">IIBBBBB", payload)
+            if (
+                width == 0 or height == 0
+                or width > MAX_TEXTURE_DIMENSION
+                or height > MAX_TEXTURE_DIMENSION
+            ):
+                raise ProbeError(
+                    f"{label} PNG dimensions {width}x{height} exceed the "
+                    f"{MAX_TEXTURE_DIMENSION}x{MAX_TEXTURE_DIMENSION} profile"
+                )
+            if (
+                colour_type not in valid_depths
+                or bit_depth not in valid_depths[colour_type]
+                or compression != 0 or filtering != 0
+                or interlace not in (0, 1)
+            ):
+                raise ProbeError(f"{label} PNG has an unsupported IHDR profile")
+            passes = ((0, 0, 1, 1),) if interlace == 0 else adam7
+            for x0, y0, dx, dy in passes:
+                pass_width = (
+                    (width - x0 + dx - 1) // dx if width > x0 else 0
+                )
+                pass_height = (
+                    (height - y0 + dy - 1) // dy if height > y0 else 0
+                )
+                if pass_width == 0 or pass_height == 0:
+                    continue
+                row_bytes = (
+                    pass_width * channels[colour_type] * bit_depth + 7
+                ) // 8
+                pass_rows.append((pass_height, row_bytes))
+                expected_decoded += pass_height * (row_bytes + 1)
+            if expected_decoded > MAX_DECODED_TEXTURE_BYTES:
+                raise ProbeError(f"{label} PNG exceeds the decoded texture budget")
+            saw_ihdr = True
+        elif kind == b"PLTE":
+            if (
+                not saw_ihdr or saw_idat or saw_plte
+                or length == 0 or length > 768 or length % 3 != 0
+                or colour_type in (0, 4)
+                or (colour_type == 3 and length // 3 > (1 << bit_depth))
+            ):
+                raise ProbeError(f"{label} PNG has an invalid PLTE")
+            saw_plte = True
+        elif kind == b"acTL":
+            raise ProbeError(f"{label} animated PNG textures are unsupported")
+        elif kind == b"IDAT":
+            if not saw_ihdr or ended_idat or (colour_type == 3 and not saw_plte):
+                raise ProbeError(f"{label} PNG has invalid IDAT ordering")
+            if decompressor is None:
+                decompressor = zlib.decompressobj()
+            try:
+                remaining = expected_decoded + 1 - len(decoded)
+                if remaining <= 0:
+                    raise ProbeError(
+                        f"{label} PNG expands beyond its declared dimensions"
+                    )
+                decoded.extend(decompressor.decompress(payload, remaining))
+            except zlib.error as exc:
+                raise ProbeError(f"{label} PNG has invalid compressed pixels") from exc
+            if decompressor.unconsumed_tail or len(decoded) > expected_decoded:
+                raise ProbeError(
+                    f"{label} PNG expands beyond its declared dimensions"
+                )
+            saw_idat = True
+        elif kind == b"IEND":
+            if (
+                length != 0 or not saw_ihdr or not saw_idat
+                or end != len(source) or decompressor is None
+            ):
+                raise ProbeError(f"{label} PNG has an invalid IEND")
+            try:
+                remaining = expected_decoded + 1 - len(decoded)
+                if remaining > 0:
+                    decoded.extend(decompressor.flush(remaining))
+            except zlib.error as exc:
+                raise ProbeError(f"{label} PNG has invalid compressed pixels") from exc
+            if (
+                not decompressor.eof or decompressor.unused_data
+                or decompressor.unconsumed_tail
+                or len(decoded) != expected_decoded
+            ):
+                raise ProbeError(
+                    f"{label} PNG pixels do not match its declared dimensions"
+                )
+            decoded_offset = 0
+            for row_count, row_bytes in pass_rows:
+                for _ in range(row_count):
+                    if decoded[decoded_offset] > 4:
+                        raise ProbeError(f"{label} PNG uses an invalid row filter")
+                    decoded_offset += row_bytes + 1
+            return width, height
+        elif saw_idat:
+            ended_idat = True
+        if kind not in (b"IHDR", b"PLTE", b"IDAT", b"IEND") and not (kind[0] & 0x20):
+            raise ProbeError(f"{label} PNG has an unknown critical chunk")
+        offset = end
+    raise ProbeError(f"{label} PNG is missing IEND")
 
 
 def package_members_for_schema(schema: object, portable: bool = False) -> tuple[str, ...]:
@@ -683,7 +879,1125 @@ def _array(document: dict[str, Any], name: str) -> list[Any]:
 
 def _accessor(document: dict[str, Any], index: Any) -> dict[str, Any] | None:
     accessors = _array(document, "accessors")
-    return accessors[index] if isinstance(index, int) and 0 <= index < len(accessors) else None
+    return (
+        accessors[index]
+        if isinstance(index, int) and not isinstance(index, bool)
+        and 0 <= index < len(accessors)
+        and isinstance(accessors[index], dict)
+        else None
+    )
+
+
+def _gltf_integer(value: Any, minimum: int = 0) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+
+def _gltf_number(value: Any) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
+def _gltf_float32(value: Any) -> float | None:
+    if not _gltf_number(value):
+        return None
+    try:
+        return struct.unpack("<f", struct.pack("<f", float(value)))[0]
+    except (OverflowError, struct.error):
+        return None
+
+
+def _validate_glb_scene_and_materials(
+    document: dict[str, Any], errors: list[str]
+) -> None:
+    """Validate the JSON contracts consumed directly by cache version 1."""
+    array_names = (
+        "scenes", "nodes", "meshes", "materials", "images", "textures",
+        "samplers", "skins", "animations",
+    )
+    for name in array_names:
+        if name in document and not isinstance(document[name], list):
+            errors.append(f"glTF {name} must be an array")
+
+    scenes = _array(document, "scenes")
+    nodes = _array(document, "nodes")
+    meshes = _array(document, "meshes")
+    materials = _array(document, "materials")
+    images = _array(document, "images")
+    textures = _array(document, "textures")
+    samplers = _array(document, "samplers")
+    skins = _array(document, "skins")
+    used_extensions = document.get("extensionsUsed", [])
+    used_extension_set = (
+        set(used_extensions)
+        if isinstance(used_extensions, list)
+        and all(isinstance(value, str) for value in used_extensions)
+        else set()
+    )
+
+    def optional_name(item: dict[str, Any], path: str) -> None:
+        if "name" in item and not isinstance(item["name"], str):
+            errors.append(f"{path}.name must be a string")
+
+    def vector(
+        value: Any, length: int, path: str, *, minimum: float | None = None,
+        maximum: float | None = None,
+    ) -> bool:
+        valid = (
+            isinstance(value, list) and len(value) == length
+            and all(_gltf_float32(component) is not None for component in value)
+        )
+        if valid and minimum is not None:
+            valid = all(component >= minimum for component in value)
+        if valid and maximum is not None:
+            valid = all(component <= maximum for component in value)
+        if not valid:
+            errors.append(f"{path} must contain {length} finite profile values")
+        return valid
+
+    scene_index = document.get("scene", 0)
+    if (
+        not _gltf_integer(scene_index) or scene_index >= len(scenes)
+    ):
+        errors.append("default scene index is invalid")
+    for index, scene in enumerate(scenes):
+        prefix = f"scenes[{index}]"
+        if not isinstance(scene, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        optional_name(scene, prefix)
+        roots = scene.get("nodes", [])
+        if (
+            not isinstance(roots, list)
+            or any(not _gltf_integer(node) or node >= len(nodes) for node in roots)
+            or len(set(roots)) != len(roots)
+        ):
+            errors.append(f"{prefix}.nodes must contain unique valid node indices")
+
+    parents = [-1] * len(nodes)
+    node_names: set[str] = set()
+    lod_targets: set[int] = set()
+    for index, node in enumerate(nodes):
+        prefix = f"nodes[{index}]"
+        if not isinstance(node, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        optional_name(node, prefix)
+        name = node.get("name")
+        if isinstance(name, str) and name:
+            if name in node_names:
+                errors.append(
+                    f"{prefix}.name duplicates another node; node names must be unique"
+                )
+            node_names.add(name)
+        children = node.get("children", [])
+        if not isinstance(children, list):
+            errors.append(f"{prefix}.children must be an array")
+        else:
+            seen_children: set[int] = set()
+            for child in children:
+                if not _gltf_integer(child) or child >= len(nodes):
+                    errors.append(f"{prefix}.children contains an invalid node index")
+                    continue
+                if child in seen_children:
+                    errors.append(f"{prefix}.children contains a duplicate node")
+                    continue
+                seen_children.add(child)
+                if parents[child] != -1:
+                    errors.append(f"nodes[{child}] has multiple parents")
+                else:
+                    parents[child] = index
+        if "mesh" in node and (
+            not _gltf_integer(node["mesh"]) or node["mesh"] >= len(meshes)
+        ):
+            errors.append(f"{prefix}.mesh is invalid")
+        if "skin" in node:
+            if (
+                not _gltf_integer(node["skin"]) or node["skin"] >= len(skins)
+            ):
+                errors.append(f"{prefix}.skin is invalid")
+            if "mesh" not in node:
+                errors.append(f"{prefix}.skin requires a mesh")
+        if "weights" in node:
+            errors.append(f"{prefix}.weights requires morph targets unsupported by cache v1")
+        transform_fields = {"translation", "rotation", "scale"}
+        if "matrix" in node and transform_fields.intersection(node):
+            errors.append(f"{prefix} cannot define both matrix and TRS")
+        if "matrix" in node:
+            matrix = node["matrix"]
+            if vector(matrix, 16, f"{prefix}.matrix"):
+                floats = [float(value) for value in matrix]
+                if any(abs(floats[item] - expected) > 1.0e-6
+                       for item, expected in ((3, 0.0), (7, 0.0),
+                                              (11, 0.0), (15, 1.0))):
+                    errors.append(f"{prefix}.matrix must be affine")
+                columns = [
+                    floats[0:3], floats[4:7], floats[8:11],
+                ]
+                lengths = [
+                    math.sqrt(sum(component * component for component in column))
+                    for column in columns
+                ]
+                if min(lengths) < 1.0e-12:
+                    errors.append(f"{prefix}.matrix has a singular scale")
+                elif any(
+                    abs(sum(
+                        columns[left][axis] * columns[right][axis]
+                        for axis in range(3)
+                    ) / (lengths[left] * lengths[right])) > 1.0e-5
+                    for left, right in ((0, 1), (0, 2), (1, 2))
+                ):
+                    errors.append(
+                        f"{prefix}.matrix contains shear unsupported by cache v1"
+                    )
+        else:
+            if "translation" in node:
+                vector(node["translation"], 3, f"{prefix}.translation")
+            if "scale" in node:
+                if vector(node["scale"], 3, f"{prefix}.scale") and any(
+                    abs(float(component)) < 1.0e-12
+                    for component in node["scale"]
+                ):
+                    errors.append(f"{prefix}.scale must be non-singular")
+            if "rotation" in node and vector(
+                node["rotation"], 4, f"{prefix}.rotation"
+            ):
+                length_squared = sum(
+                    float(component) * float(component)
+                    for component in node["rotation"]
+                )
+                if abs(length_squared - 1.0) > 2.0e-5:
+                    errors.append(f"{prefix}.rotation must be a unit quaternion")
+        extensions = node.get("extensions", {})
+        if not isinstance(extensions, dict):
+            errors.append(f"{prefix}.extensions must be an object")
+        elif "MSFT_lod" in extensions:
+            lod = extensions["MSFT_lod"]
+            ids = lod.get("ids") if isinstance(lod, dict) else None
+            if (
+                not isinstance(ids, list) or not 1 <= len(ids) <= 3
+                or any(not _gltf_integer(value) or value >= len(nodes)
+                       or value == index for value in ids)
+                or len(set(ids)) != len(ids)
+            ):
+                errors.append(f"{prefix}.extensions.MSFT_lod is invalid")
+            elif any(value in lod_targets for value in ids):
+                errors.append(
+                    f"{prefix}.extensions.MSFT_lod reuses a LOD target"
+                )
+            else:
+                lod_targets.update(ids)
+            if "MSFT_lod" not in used_extension_set:
+                errors.append(f"{prefix} uses MSFT_lod without extensionsUsed")
+
+    cycle_reported = False
+    for start in range(len(nodes)):
+        current = start
+        visited: set[int] = set()
+        while current >= 0:
+            if current in visited:
+                if not cycle_reported:
+                    errors.append("node hierarchy contains a cycle")
+                    cycle_reported = True
+                break
+            visited.add(current)
+            current = parents[current]
+    if _gltf_integer(scene_index) and scene_index < len(scenes):
+        scene = scenes[scene_index]
+        roots = scene.get("nodes", []) if isinstance(scene, dict) else []
+        if isinstance(roots, list):
+            for root in roots:
+                if _gltf_integer(root) and root < len(parents) and parents[root] >= 0:
+                    errors.append(
+                        f"default scene root nodes[{root}] is also a child node"
+                    )
+
+    for mesh_index, mesh in enumerate(meshes):
+        if not isinstance(mesh, dict):
+            continue
+        optional_name(mesh, f"meshes[{mesh_index}]")
+        primitives = mesh.get("primitives", [])
+        if not isinstance(primitives, list):
+            continue
+        for primitive_index, primitive in enumerate(primitives):
+            if not isinstance(primitive, dict):
+                continue
+            prefix = f"meshes[{mesh_index}].primitives[{primitive_index}]"
+            if "material" in primitive and (
+                not _gltf_integer(primitive["material"])
+                or primitive["material"] >= len(materials)
+            ):
+                errors.append(f"{prefix}.material is invalid")
+
+    def texture_info(info: Any, path: str, *, scalar: str | None = None) -> None:
+        if not isinstance(info, dict):
+            errors.append(f"{path} must be an object")
+            return
+        reference = info.get("index")
+        if not _gltf_integer(reference) or reference >= len(textures):
+            errors.append(f"{path}.index is invalid")
+        if "texCoord" in info and info["texCoord"] != 0:
+            errors.append(f"{path}.texCoord must be 0 for modern-skeletal-v1")
+        elif "texCoord" in info and not _gltf_integer(info["texCoord"]):
+            errors.append(f"{path}.texCoord must be 0 for modern-skeletal-v1")
+        if scalar is not None and scalar in info and _gltf_float32(info[scalar]) is None:
+            errors.append(f"{path}.{scalar} must be finite")
+
+    for index, material in enumerate(materials):
+        prefix = f"materials[{index}]"
+        if not isinstance(material, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        optional_name(material, prefix)
+        pbr = material.get("pbrMetallicRoughness", {})
+        if not isinstance(pbr, dict):
+            errors.append(f"{prefix}.pbrMetallicRoughness must be an object")
+            pbr = {}
+        if "baseColorFactor" in pbr:
+            vector(pbr["baseColorFactor"], 4, f"{prefix}.pbrMetallicRoughness.baseColorFactor", minimum=0.0, maximum=1.0)
+        for field in ("metallicFactor", "roughnessFactor"):
+            if field in pbr and (
+                _gltf_float32(pbr[field]) is None or not 0.0 <= pbr[field] <= 1.0
+            ):
+                errors.append(f"{prefix}.pbrMetallicRoughness.{field} must be from 0 to 1")
+        for field in ("baseColorTexture", "metallicRoughnessTexture"):
+            if field in pbr:
+                texture_info(pbr[field], f"{prefix}.pbrMetallicRoughness.{field}")
+        if "emissiveFactor" in material:
+            vector(material["emissiveFactor"], 3, f"{prefix}.emissiveFactor", minimum=0.0)
+        if "alphaMode" in material and material["alphaMode"] not in (
+            "OPAQUE", "MASK", "BLEND",
+        ):
+            errors.append(f"{prefix}.alphaMode is unsupported")
+        if "alphaCutoff" in material and (
+            _gltf_float32(material["alphaCutoff"]) is None
+            or not 0.0 <= material["alphaCutoff"] <= 1.0
+        ):
+            errors.append(f"{prefix}.alphaCutoff must be from 0 to 1")
+        if "doubleSided" in material and not isinstance(material["doubleSided"], bool):
+            errors.append(f"{prefix}.doubleSided must be Boolean")
+        for field, scalar in (
+            ("normalTexture", "scale"),
+            ("occlusionTexture", "strength"),
+            ("emissiveTexture", None),
+        ):
+            if field in material:
+                texture_info(material[field], f"{prefix}.{field}", scalar=scalar)
+        occlusion = material.get("occlusionTexture")
+        if (
+            isinstance(occlusion, dict) and "strength" in occlusion
+            and _gltf_float32(occlusion["strength"]) is not None
+            and not 0.0 <= occlusion["strength"] <= 1.0
+        ):
+            errors.append(f"{prefix}.occlusionTexture.strength must be from 0 to 1")
+
+    for index, image in enumerate(images):
+        if isinstance(image, dict):
+            optional_name(image, f"images[{index}]")
+    for index, texture in enumerate(textures):
+        prefix = f"textures[{index}]"
+        if not isinstance(texture, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        optional_name(texture, prefix)
+        source = texture.get("source")
+        if not _gltf_integer(source) or source >= len(images):
+            errors.append(f"{prefix}.source is invalid")
+        if "sampler" in texture and (
+            not _gltf_integer(texture["sampler"])
+            or texture["sampler"] >= len(samplers)
+        ):
+            errors.append(f"{prefix}.sampler is invalid")
+        if "extensions" in texture and not isinstance(texture["extensions"], dict):
+            errors.append(f"{prefix}.extensions must be an object")
+    for index, sampler in enumerate(samplers):
+        prefix = f"samplers[{index}]"
+        if not isinstance(sampler, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        optional_name(sampler, prefix)
+        allowed = {
+            "magFilter": {9728, 9729},
+            "minFilter": {9728, 9729, 9984, 9985, 9986, 9987},
+            "wrapS": {33071, 33648, 10497},
+            "wrapT": {33071, 33648, 10497},
+        }
+        for field, choices in allowed.items():
+            if field in sampler and (
+                not _gltf_integer(sampler[field]) or sampler[field] not in choices
+            ):
+                errors.append(f"{prefix}.{field} is unsupported")
+    for index, skin in enumerate(skins):
+        if not isinstance(skin, dict):
+            continue
+        optional_name(skin, f"skins[{index}]")
+        if "skeleton" in skin and (
+            not _gltf_integer(skin["skeleton"]) or skin["skeleton"] >= len(nodes)
+        ):
+            errors.append(f"skins[{index}].skeleton is invalid")
+    animation_names: set[str] = set()
+    for index, animation in enumerate(_array(document, "animations")):
+        if isinstance(animation, dict):
+            optional_name(animation, f"animations[{index}]")
+            name = animation.get("name") or f"animation_{index}"
+            if isinstance(name, str):
+                if name in animation_names:
+                    errors.append(
+                        f"animations[{index}].name duplicates another animation; "
+                        "animation names must be unique"
+                    )
+                animation_names.add(name)
+
+
+def _validate_glb_storage(
+    document: dict[str, Any], bin_chunk: bytes | None, errors: list[str]
+) -> list[dict[str, Any] | None]:
+    """Validate every buffer view/accessor before inventory indexes metadata."""
+    for name in ("buffers", "bufferViews", "accessors"):
+        if name in document and not isinstance(document[name], list):
+            errors.append(f"glTF {name} must be an array")
+    buffers = _array(document, "buffers")
+    views = _array(document, "bufferViews")
+    accessors = _array(document, "accessors")
+    declared_buffer_bytes: int | None = None
+    if len(buffers) != 1:
+        errors.append("source GLB must declare exactly one embedded buffer")
+    elif not isinstance(buffers[0], dict):
+        errors.append("buffers[0] must be an object")
+    else:
+        declared = buffers[0].get("byteLength")
+        if not _gltf_integer(declared, 1):
+            errors.append("buffers[0].byteLength must be a positive integer")
+        elif bin_chunk is None:
+            errors.append("source GLB declares a buffer but has no BIN chunk")
+        elif declared > len(bin_chunk):
+            errors.append("buffers[0].byteLength exceeds the GLB BIN chunk")
+        elif len(bin_chunk) - declared > 3:
+            errors.append("GLB BIN chunk has more than three padding bytes")
+        else:
+            declared_buffer_bytes = declared
+
+    valid_views: list[dict[str, Any] | None] = [None] * len(views)
+    for index, view in enumerate(views):
+        prefix = f"bufferViews[{index}]"
+        if not isinstance(view, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        buffer_index = view.get("buffer")
+        offset = view.get("byteOffset", 0)
+        length = view.get("byteLength")
+        stride = view.get("byteStride")
+        target = view.get("target")
+        valid = True
+        if not _gltf_integer(buffer_index) or buffer_index >= len(buffers):
+            errors.append(f"{prefix}.buffer is invalid")
+            valid = False
+        if not _gltf_integer(offset):
+            errors.append(f"{prefix}.byteOffset must be a non-negative integer")
+            valid = False
+        if not _gltf_integer(length, 1):
+            errors.append(f"{prefix}.byteLength must be a positive integer")
+            valid = False
+        if "byteStride" in view and (
+            not _gltf_integer(stride, 4) or stride > 252 or stride % 4 != 0
+        ):
+            errors.append(
+                f"{prefix}.byteStride must be a 4-byte multiple from 4 to 252"
+            )
+            valid = False
+        if "target" in view and target not in (34962, 34963):
+            errors.append(f"{prefix}.target is unsupported")
+            valid = False
+        if (
+            valid
+            and declared_buffer_bytes is not None
+            and offset + length > declared_buffer_bytes
+        ):
+            errors.append(f"{prefix} exceeds buffers[0].byteLength")
+            valid = False
+        if valid and buffer_index != 0:
+            errors.append(f"{prefix} references a non-GLB buffer")
+            valid = False
+        if valid:
+            valid_views[index] = {
+                "offset": offset,
+                "length": length,
+                "stride": stride,
+                "target": target,
+            }
+
+    descriptors: list[dict[str, Any] | None] = [None] * len(accessors)
+    for index, accessor in enumerate(accessors):
+        prefix = f"accessors[{index}]"
+        if not isinstance(accessor, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        component_type = accessor.get("componentType")
+        value_type = accessor.get("type")
+        count = accessor.get("count")
+        view_index = accessor.get("bufferView")
+        accessor_offset = accessor.get("byteOffset", 0)
+        normalized = accessor.get("normalized", False)
+        valid = True
+        if (
+            not _gltf_integer(component_type)
+            or component_type not in GLTF_COMPONENT_BYTES
+        ):
+            errors.append(f"{prefix}.componentType is unsupported")
+            valid = False
+        if not isinstance(value_type, str) or value_type not in GLTF_TYPE_COMPONENTS:
+            errors.append(f"{prefix}.type is unsupported")
+            valid = False
+        if not _gltf_integer(count, 1):
+            errors.append(f"{prefix}.count must be a positive integer")
+            valid = False
+        if not _gltf_integer(accessor_offset):
+            errors.append(f"{prefix}.byteOffset must be a non-negative integer")
+            valid = False
+        if not isinstance(normalized, bool):
+            errors.append(f"{prefix}.normalized must be Boolean")
+            valid = False
+        if "sparse" in accessor:
+            errors.append(
+                f"{prefix} uses sparse storage; normalize it before import"
+            )
+            valid = False
+        if not _gltf_integer(view_index) or view_index >= len(views):
+            errors.append(
+                f"{prefix}.bufferView is required and must be valid for "
+                "modern-skeletal-v1"
+            )
+            valid = False
+        elif valid_views[view_index] is None:
+            valid = False
+        if (
+            component_type == 5126 and normalized is True
+        ):
+            errors.append(f"{prefix} cannot normalize FLOAT components")
+            valid = False
+        if (
+            isinstance(value_type, str)
+            and value_type.startswith("MAT")
+            and component_type != 5126
+        ):
+            errors.append(
+                f"{prefix} uses a packed integer matrix unsupported by "
+                "modern-skeletal-v1"
+            )
+            valid = False
+        for bound_name in ("min", "max"):
+            if bound_name not in accessor:
+                continue
+            bound = accessor[bound_name]
+            components = (
+                GLTF_TYPE_COMPONENTS.get(value_type)
+                if isinstance(value_type, str) else None
+            )
+            if (
+                not isinstance(bound, list)
+                or components is None
+                or len(bound) != components
+                or not all(_gltf_number(value) for value in bound)
+            ):
+                errors.append(
+                    f"{prefix}.{bound_name} must contain one finite number "
+                    "per component"
+                )
+                valid = False
+            elif component_type == 5126 and any(
+                _gltf_float32(value) is None for value in bound
+            ):
+                errors.append(
+                    f"{prefix}.{bound_name} contains a value outside FLOAT range"
+                )
+                valid = False
+        minimum = accessor.get("min")
+        maximum = accessor.get("max")
+        if (
+            isinstance(minimum, list)
+            and isinstance(maximum, list)
+            and len(minimum) == len(maximum)
+            and all(_gltf_number(value) for value in minimum + maximum)
+            and any(low > high for low, high in zip(minimum, maximum))
+        ):
+            errors.append(f"{prefix}.min exceeds max")
+            valid = False
+        if not valid:
+            continue
+        assert isinstance(component_type, int)
+        assert isinstance(value_type, str)
+        assert isinstance(count, int)
+        assert isinstance(view_index, int)
+        assert isinstance(accessor_offset, int)
+        view = valid_views[view_index]
+        assert view is not None
+        component_bytes = GLTF_COMPONENT_BYTES[component_type]
+        element_bytes = component_bytes * GLTF_TYPE_COMPONENTS[value_type]
+        stride = view["stride"] if view["stride"] is not None else element_bytes
+        absolute_offset = view["offset"] + accessor_offset
+        if accessor_offset % component_bytes != 0 or absolute_offset % component_bytes != 0:
+            errors.append(f"{prefix} is not component-size aligned")
+            continue
+        if stride < element_bytes or stride % component_bytes != 0:
+            errors.append(f"{prefix} has an invalid effective byte stride")
+            continue
+        end = accessor_offset + stride * (count - 1) + element_bytes
+        if end > view["length"]:
+            errors.append(f"{prefix} exceeds its bufferView")
+            continue
+        if (
+            declared_buffer_bytes is not None
+            and absolute_offset + stride * (count - 1) + element_bytes
+                > declared_buffer_bytes
+        ):
+            errors.append(f"{prefix} exceeds buffers[0].byteLength")
+            continue
+        descriptors[index] = {
+            "componentType": component_type,
+            "type": value_type,
+            "count": count,
+            "normalized": normalized,
+            "view": view_index,
+            "offset": accessor_offset,
+            "absoluteOffset": absolute_offset,
+            "elementBytes": element_bytes,
+            "stride": stride,
+        }
+    return descriptors
+
+
+def _validate_glb_accessor_usage(
+    document: dict[str, Any], descriptors: list[dict[str, Any] | None],
+    bin_chunk: bytes | None, errors: list[str]
+) -> None:
+    accessors = _array(document, "accessors")
+    views = _array(document, "bufferViews")
+    binary = bin_chunk or b""
+    finite_accessors: set[int] = set()
+    position_bounds: dict[int, tuple[list[float], list[float]] | None] = {}
+    animation_inputs: set[int] = set()
+    joint_maxima: dict[int, int] = {}
+    rotation_outputs: set[tuple[int, str]] = set()
+    direction_accessors: set[tuple[int, str]] = set()
+    weight_accessors: set[int] = set()
+
+    def values(reference: int, item: dict[str, Any]):
+        component_count = GLTF_TYPE_COMPONENTS[item["type"]]
+        unpack = struct.Struct(
+            "<" + GLTF_COMPONENT_FORMAT[item["componentType"]] * component_count
+        )
+        for item_index in range(item["count"]):
+            yield unpack.unpack_from(
+                binary, item["absoluteOffset"] + item_index * item["stride"]
+            )
+
+    def require_finite(reference: int, item: dict[str, Any], path: str) -> None:
+        if item["componentType"] != 5126 or reference in finite_accessors:
+            return
+        finite_accessors.add(reference)
+        if any(
+            not math.isfinite(component)
+            for value in values(reference, item)
+            for component in value
+        ):
+            errors.append(f"{path} contains NaN or infinity")
+
+    def require_position_bounds(
+        reference: int, item: dict[str, Any], path: str
+    ) -> None:
+        if reference in position_bounds:
+            return
+        raw = raw_accessor(reference)
+        if raw is None or "min" not in raw or "max" not in raw:
+            position_bounds[reference] = None
+            return
+        minimum = [math.inf, math.inf, math.inf]
+        maximum = [-math.inf, -math.inf, -math.inf]
+        for value in values(reference, item):
+            for component in range(3):
+                minimum[component] = min(minimum[component], value[component])
+                maximum[component] = max(maximum[component], value[component])
+        declared_minimum = raw["min"]
+        declared_maximum = raw["max"]
+        rounded_minimum = [_gltf_float32(value) for value in declared_minimum]
+        rounded_maximum = [_gltf_float32(value) for value in declared_maximum]
+        if minimum != rounded_minimum or maximum != rounded_maximum:
+            errors.append(
+                f"{path} declared min/max do not match its binary values"
+            )
+            position_bounds[reference] = None
+            return
+        position_bounds[reference] = (minimum, maximum)
+
+    def require_animation_input(
+        reference: int, item: dict[str, Any], path: str
+    ) -> None:
+        if reference in animation_inputs:
+            return
+        animation_inputs.add(reference)
+        raw = raw_accessor(reference)
+        previous = -math.inf
+        minimum = math.inf
+        maximum = -math.inf
+        for value in values(reference, item):
+            time = value[0]
+            if not math.isfinite(time) or time < 0.0 or time <= previous:
+                errors.append(
+                    f"{path} values must be finite, non-negative, and strictly increasing"
+                )
+                return
+            previous = time
+            minimum = min(minimum, time)
+            maximum = max(maximum, time)
+        if raw is not None and "min" in raw and "max" in raw:
+            declared_minimum = _gltf_float32(raw["min"][0])
+            declared_maximum = _gltf_float32(raw["max"][0])
+            if minimum != declared_minimum or maximum != declared_maximum:
+                errors.append(
+                    f"{path} declared min/max do not match its binary values"
+                )
+
+    def require_direction_vectors(
+        reference: int, item: dict[str, Any], path: str, *, tangent: bool
+    ) -> None:
+        key = (reference, "tangent" if tangent else "normal")
+        if key in direction_accessors:
+            return
+        direction_accessors.add(key)
+        for value in values(reference, item):
+            length_squared = sum(component * component for component in value[:3])
+            if not math.isfinite(length_squared) or length_squared < 1.0e-12:
+                errors.append(f"{path} contains a zero or non-finite direction")
+                return
+            if tangent and abs(abs(value[3]) - 1.0) > 1.0e-6:
+                errors.append(f"{path} tangent handedness must be -1 or 1")
+                return
+
+    def require_positive_weights(
+        reference: int, item: dict[str, Any], path: str
+    ) -> None:
+        if reference in weight_accessors:
+            return
+        weight_accessors.add(reference)
+        divisor = {
+            5121: 255.0,
+            5123: 65535.0,
+            5126: 1.0,
+        }[item["componentType"]]
+        for value in values(reference, item):
+            decoded = [component / divisor for component in value]
+            if any(component < 0.0 for component in decoded) or sum(decoded) < 1.0e-12:
+                errors.append(
+                    f"{path} must contain non-negative influences with positive total weight"
+                )
+                return
+
+    def descriptor(reference: Any, path: str) -> dict[str, Any] | None:
+        if not _gltf_integer(reference) or reference >= len(descriptors):
+            errors.append(f"{path} is not a valid accessor index")
+            return None
+        result = descriptors[reference]
+        if result is None:
+            errors.append(f"{path} references an invalid accessor")
+        return result
+
+    def raw_accessor(reference: Any) -> dict[str, Any] | None:
+        if not _gltf_integer(reference) or reference >= len(accessors):
+            return None
+        value = accessors[reference]
+        return value if isinstance(value, dict) else None
+
+    vertex_view_accessors: dict[int, set[int]] = {}
+    nodes = _array(document, "nodes")
+    skins = _array(document, "skins")
+    skin_joint_counts = [
+        len(skin.get("joints", []))
+        if isinstance(skin, dict) and isinstance(skin.get("joints"), list)
+        else 0
+        for skin in skins
+    ]
+    mesh_skin_counts: dict[int, set[int | None]] = {}
+    for node in nodes:
+        if not isinstance(node, dict) or not _gltf_integer(node.get("mesh")):
+            continue
+        mesh_index = node["mesh"]
+        skin_index = node.get("skin")
+        skin_count = (
+            skin_joint_counts[skin_index]
+            if _gltf_integer(skin_index) and skin_index < len(skin_joint_counts)
+            and skin_joint_counts[skin_index] > 0
+            else None
+        )
+        mesh_skin_counts.setdefault(mesh_index, set()).add(skin_count)
+    attribute_contracts: dict[str, set[tuple[int, str, bool]]] = {
+        "POSITION": {(5126, "VEC3", False)},
+        "NORMAL": {(5126, "VEC3", False)},
+        "TANGENT": {(5126, "VEC4", False)},
+        "TEXCOORD_0": {
+            (5126, "VEC2", False),
+            (5121, "VEC2", True),
+            (5123, "VEC2", True),
+        },
+        "JOINTS_0": {
+            (5121, "VEC4", False),
+            (5123, "VEC4", False),
+        },
+        "WEIGHTS_0": {
+            (5126, "VEC4", False),
+            (5121, "VEC4", True),
+            (5123, "VEC4", True),
+        },
+    }
+    for mesh_index, mesh in enumerate(_array(document, "meshes")):
+        if not isinstance(mesh, dict):
+            continue
+        primitives = mesh.get("primitives", [])
+        if not isinstance(primitives, list) or not primitives:
+            errors.append(f"meshes[{mesh_index}].primitives must be a non-empty array")
+            continue
+        for primitive_index, primitive in enumerate(primitives):
+            prefix = f"meshes[{mesh_index}].primitives[{primitive_index}]"
+            if not isinstance(primitive, dict):
+                errors.append(f"{prefix} must be an object")
+                continue
+            index_descriptor = descriptor(primitive.get("indices"), f"{prefix}.indices")
+            if index_descriptor is not None:
+                if (
+                    index_descriptor["type"] != "SCALAR"
+                    or index_descriptor["componentType"] not in (5121, 5123, 5125)
+                    or index_descriptor["normalized"]
+                ):
+                    errors.append(
+                        f"{prefix}.indices must use an unnormalized unsigned "
+                        "SCALAR accessor"
+                    )
+                index_view = views[index_descriptor["view"]]
+                if isinstance(index_view, dict):
+                    if "byteStride" in index_view:
+                        errors.append(f"{prefix}.indices must be tightly packed")
+                    if index_view.get("target") not in (None, 34963):
+                        errors.append(f"{prefix}.indices has the wrong bufferView target")
+            attributes = primitive.get("attributes")
+            if not isinstance(attributes, dict):
+                continue
+            expected_count: int | None = None
+            joints_reference: int | None = None
+            joints_descriptor: dict[str, Any] | None = None
+            for semantic, reference in attributes.items():
+                path = f"{prefix}.attributes.{semantic}"
+                attribute = descriptor(reference, path)
+                if attribute is None:
+                    continue
+                if expected_count is None:
+                    expected_count = attribute["count"]
+                elif attribute["count"] != expected_count:
+                    errors.append(
+                        f"{prefix} vertex attribute accessor counts do not match"
+                    )
+                if attribute["offset"] % 4 != 0 or attribute["stride"] % 4 != 0:
+                    errors.append(f"{path} is not 4-byte vertex aligned")
+                vertex_view_accessors.setdefault(
+                    attribute["view"], set()
+                ).add(reference)
+                view = views[attribute["view"]]
+                if isinstance(view, dict) and view.get("target") not in (None, 34962):
+                    errors.append(f"{path} has the wrong bufferView target")
+                contract = attribute_contracts.get(semantic)
+                actual = (
+                    attribute["componentType"], attribute["type"],
+                    attribute["normalized"],
+                )
+                if contract is not None and actual not in contract:
+                    errors.append(
+                        f"{path} has a component/type/normalized combination "
+                        "unsupported by modern-skeletal-v1"
+                    )
+                elif contract is not None and _gltf_integer(reference):
+                    require_finite(reference, attribute, path)
+                    if semantic == "POSITION":
+                        require_position_bounds(reference, attribute, path)
+                    elif semantic == "NORMAL":
+                        require_direction_vectors(
+                            reference, attribute, path, tangent=False
+                        )
+                    elif semantic == "TANGENT":
+                        require_direction_vectors(
+                            reference, attribute, path, tangent=True
+                        )
+                    elif semantic == "JOINTS_0":
+                        joints_reference = reference
+                        joints_descriptor = attribute
+                    elif semantic == "WEIGHTS_0":
+                        require_positive_weights(reference, attribute, path)
+            position_reference = attributes.get("POSITION")
+            position = raw_accessor(position_reference)
+            if position is not None and (
+                "min" not in position or "max" not in position
+            ):
+                errors.append(f"{prefix}.attributes.POSITION requires min and max")
+            if primitive.get("targets"):
+                errors.append(
+                    f"{prefix} uses morph targets; cache v1 requires a "
+                    "non-morphed export"
+                )
+            instance_skin_counts = mesh_skin_counts.get(mesh_index, set())
+            if joints_reference is not None and joints_descriptor is not None:
+                if joints_reference not in joint_maxima:
+                    joint_maxima[joints_reference] = max(
+                        component
+                        for value in values(joints_reference, joints_descriptor)
+                        for component in value
+                    )
+                maximum_joint = joint_maxima[joints_reference]
+                if not instance_skin_counts or None in instance_skin_counts:
+                    errors.append(
+                        f"{prefix} has JOINTS_0 but is instantiated without a valid skin"
+                    )
+                for joint_count in instance_skin_counts:
+                    if joint_count is not None and maximum_joint >= joint_count:
+                        errors.append(
+                            f"{prefix}.attributes.JOINTS_0 exceeds an "
+                            "instanced skin palette"
+                        )
+                        break
+            elif any(
+                joint_count is not None for joint_count in instance_skin_counts
+            ):
+                errors.append(
+                    f"{prefix} is instantiated with a skin but has no valid JOINTS_0"
+                )
+            if (
+                index_descriptor is not None
+                and expected_count is not None
+                and _gltf_integer(primitive.get("indices"))
+                and index_descriptor["type"] == "SCALAR"
+                and index_descriptor["componentType"] in (5121, 5123, 5125)
+            ):
+                restart = (1 << (
+                    GLTF_COMPONENT_BYTES[index_descriptor["componentType"]] * 8
+                )) - 1
+                invalid_index = False
+                for value in values(primitive["indices"], index_descriptor):
+                    if value[0] == restart or value[0] >= expected_count:
+                        invalid_index = True
+                        break
+                if invalid_index:
+                    errors.append(
+                        f"{prefix}.indices contains primitive restart or an "
+                        "out-of-range vertex index"
+                    )
+    for view_index, references in vertex_view_accessors.items():
+        view = views[view_index]
+        if (
+            len(references) > 1
+            and isinstance(view, dict)
+            and "byteStride" not in view
+        ):
+            errors.append(
+                f"bufferViews[{view_index}] is shared by vertex attributes "
+                "but has no byteStride"
+            )
+
+    for image_index, image in enumerate(_array(document, "images")):
+        if not isinstance(image, dict):
+            errors.append(f"images[{image_index}] must be an object")
+            continue
+        if "uri" in image:
+            continue
+        view_index = image.get("bufferView")
+        if not _gltf_integer(view_index) or view_index >= len(views):
+            errors.append(f"images[{image_index}].bufferView is invalid")
+            continue
+        view = views[view_index]
+        if not isinstance(view, dict):
+            continue
+        if "byteStride" in view or "target" in view:
+            errors.append(
+                f"images[{image_index}] bufferView must not define byteStride "
+                "or target"
+            )
+        if image.get("mimeType") != "image/png":
+            errors.append(
+                f"images[{image_index}].mimeType must be 'image/png' for "
+                "modern-skeletal-v1"
+            )
+            continue
+        offset = view.get("byteOffset", 0)
+        length = view.get("byteLength")
+        if (
+            _gltf_integer(offset) and _gltf_integer(length, 1)
+            and offset + length <= len(binary)
+        ):
+            try:
+                _inspect_texture_png(
+                    memoryview(binary)[offset:offset + length], image_index
+                )
+            except ProbeError as exc:
+                errors.append(str(exc))
+
+    for skin_index, skin in enumerate(skins):
+        if not isinstance(skin, dict):
+            errors.append(f"skins[{skin_index}] must be an object")
+            continue
+        joints = skin.get("joints")
+        if (
+            not isinstance(joints, list) or not joints
+            or any(not _gltf_integer(joint) or joint >= len(nodes) for joint in joints)
+            or len(set(joints)) != len(joints)
+        ):
+            errors.append(f"skins[{skin_index}].joints must be unique valid nodes")
+            continue
+        if "inverseBindMatrices" in skin:
+            inverse = descriptor(
+                skin.get("inverseBindMatrices"),
+                f"skins[{skin_index}].inverseBindMatrices",
+            )
+            if inverse is not None:
+                if (
+                    inverse["componentType"] != 5126
+                    or inverse["type"] != "MAT4"
+                    or inverse["normalized"]
+                    or inverse["count"] != len(joints)
+                ):
+                    errors.append(
+                        f"skins[{skin_index}].inverseBindMatrices must be a "
+                        "FLOAT MAT4 accessor matching the joint count"
+                    )
+                view = views[inverse["view"]]
+                if isinstance(view, dict) and "byteStride" in view:
+                    errors.append(
+                        f"skins[{skin_index}].inverseBindMatrices must be tightly packed"
+                    )
+                if _gltf_integer(skin.get("inverseBindMatrices")):
+                    require_finite(
+                        skin["inverseBindMatrices"], inverse,
+                        f"skins[{skin_index}].inverseBindMatrices",
+                    )
+
+    for animation_index, animation in enumerate(_array(document, "animations")):
+        if not isinstance(animation, dict):
+            errors.append(f"animations[{animation_index}] must be an object")
+            continue
+        samplers = animation.get("samplers")
+        channels = animation.get("channels")
+        if not isinstance(samplers, list) or not samplers:
+            errors.append(f"animations[{animation_index}].samplers must be non-empty")
+            continue
+        if not isinstance(channels, list) or not channels:
+            errors.append(f"animations[{animation_index}].channels must be non-empty")
+            continue
+        validated_samplers: list[tuple[dict[str, Any], dict[str, Any], str] | None] = []
+        for sampler_index, sampler in enumerate(samplers):
+            prefix = f"animations[{animation_index}].samplers[{sampler_index}]"
+            if not isinstance(sampler, dict):
+                errors.append(f"{prefix} must be an object")
+                validated_samplers.append(None)
+                continue
+            input_descriptor = descriptor(sampler.get("input"), f"{prefix}.input")
+            output_descriptor = descriptor(sampler.get("output"), f"{prefix}.output")
+            interpolation = sampler.get("interpolation", "LINEAR")
+            if interpolation not in ("LINEAR", "STEP", "CUBICSPLINE"):
+                errors.append(f"{prefix}.interpolation is unsupported")
+            if input_descriptor is not None:
+                if (
+                    input_descriptor["componentType"] != 5126
+                    or input_descriptor["type"] != "SCALAR"
+                    or input_descriptor["normalized"]
+                ):
+                    errors.append(f"{prefix}.input must be an unnormalized FLOAT SCALAR")
+                raw_input = raw_accessor(sampler.get("input"))
+                if raw_input is not None and (
+                    "min" not in raw_input or "max" not in raw_input
+                ):
+                    errors.append(f"{prefix}.input requires min and max")
+                if _gltf_integer(sampler.get("input")):
+                    require_animation_input(
+                        sampler["input"], input_descriptor, f"{prefix}.input"
+                    )
+                view = views[input_descriptor["view"]]
+                if isinstance(view, dict) and "byteStride" in view:
+                    errors.append(f"{prefix}.input must be tightly packed")
+            if output_descriptor is not None:
+                if output_descriptor["componentType"] != 5126 or output_descriptor["normalized"]:
+                    errors.append(f"{prefix}.output must use unnormalized FLOAT components")
+                elif _gltf_integer(sampler.get("output")):
+                    require_finite(
+                        sampler["output"], output_descriptor, f"{prefix}.output"
+                    )
+                view = views[output_descriptor["view"]]
+                if isinstance(view, dict) and "byteStride" in view:
+                    errors.append(f"{prefix}.output must be tightly packed")
+            validated_samplers.append(
+                (input_descriptor, output_descriptor, interpolation)
+                if input_descriptor is not None and output_descriptor is not None
+                else None
+            )
+        seen_targets: set[tuple[int, str]] = set()
+        for channel_index, channel in enumerate(channels):
+            prefix = f"animations[{animation_index}].channels[{channel_index}]"
+            if not isinstance(channel, dict):
+                errors.append(f"{prefix} must be an object")
+                continue
+            sampler_index = channel.get("sampler")
+            target = channel.get("target")
+            if (
+                not _gltf_integer(sampler_index)
+                or sampler_index >= len(validated_samplers)
+                or validated_samplers[sampler_index] is None
+            ):
+                errors.append(f"{prefix}.sampler is invalid")
+                continue
+            if not isinstance(target, dict):
+                errors.append(f"{prefix}.target must be an object")
+                continue
+            node = target.get("node")
+            path = target.get("path")
+            if not _gltf_integer(node) or node >= len(nodes):
+                errors.append(f"{prefix}.target.node is invalid")
+                continue
+            if path not in ("translation", "rotation", "scale"):
+                errors.append(
+                    f"{prefix}.target.path is unsupported by modern-skeletal-v1"
+                )
+                continue
+            if (node, path) in seen_targets:
+                errors.append(f"{prefix} duplicates an animation target")
+            seen_targets.add((node, path))
+            input_descriptor, output_descriptor, interpolation = (
+                validated_samplers[sampler_index]
+            )
+            expected_type = "VEC4" if path == "rotation" else "VEC3"
+            if output_descriptor["type"] != expected_type:
+                errors.append(
+                    f"{prefix} output accessor must use {expected_type} for {path}"
+                )
+            multiplier = 3 if interpolation == "CUBICSPLINE" else 1
+            if output_descriptor["count"] != input_descriptor["count"] * multiplier:
+                errors.append(f"{prefix} input/output accessor counts do not match")
+            output_reference = samplers[sampler_index].get("output")
+            if (
+                path == "rotation" and _gltf_integer(output_reference)
+                and output_descriptor["type"] == "VEC4"
+                and (output_reference, interpolation) not in rotation_outputs
+            ):
+                rotation_outputs.add((output_reference, interpolation))
+                for value_index, value in enumerate(
+                    values(output_reference, output_descriptor)
+                ):
+                    if interpolation == "CUBICSPLINE" and value_index % 3 != 1:
+                        continue
+                    length_squared = sum(component * component for component in value)
+                    if (
+                        not math.isfinite(length_squared)
+                        or abs(length_squared - 1.0) > 2.0e-5
+                    ):
+                        errors.append(
+                            f"{prefix} rotation key is not a unit quaternion"
+                        )
+                        break
 
 
 def _matrix_multiply(left: list[float], right: list[float]) -> list[float]:
@@ -696,8 +2010,7 @@ def _node_matrix(node: dict[str, Any]) -> list[float]:
     if "matrix" in node:
         values = node["matrix"]
         if (not isinstance(values, list) or len(values) != 16 or
-                not all(isinstance(value, (int, float)) and math.isfinite(value)
-                        for value in values)):
+                not all(_gltf_number(value) for value in values)):
             raise ProbeError("node matrix must contain 16 finite numbers")
         return [float(value) for value in values]
     translation = node.get("translation", [0.0, 0.0, 0.0])
@@ -705,7 +2018,7 @@ def _node_matrix(node: dict[str, Any]) -> list[float]:
     scale = node.get("scale", [1.0, 1.0, 1.0])
     if (not all(isinstance(value, list) for value in (translation, rotation, scale)) or
             len(translation) != 3 or len(rotation) != 4 or len(scale) != 3 or
-            not all(isinstance(component, (int, float)) and math.isfinite(component)
+            not all(_gltf_number(component)
                     for value in (translation, rotation, scale) for component in value)):
         raise ProbeError("node TRS is malformed or non-finite")
     x, y, z, w = (float(value) for value in rotation)
@@ -764,6 +2077,11 @@ def _world_bounds(document: dict[str, Any],
         except ProbeError as exc:
             errors.append(f"nodes[{index}]: {exc}")
             return
+        if any(_gltf_float32(component) is None for component in world):
+            errors.append(
+                f"nodes[{index}] world transform exceeds finite FLOAT range"
+            )
+            return
         mesh_index = node.get("mesh")
         if isinstance(mesh_index, int) and 0 <= mesh_index < len(mesh_bounds):
             bounds = mesh_bounds[mesh_index]
@@ -777,6 +2095,14 @@ def _world_bounds(document: dict[str, Any],
                                 world[1] * x + world[5] * y + world[9] * z + world[13],
                                 world[2] * x + world[6] * y + world[10] * z + world[14],
                             ]
+                            if any(
+                                _gltf_float32(component) is None
+                                for component in point
+                            ):
+                                errors.append(
+                                    f"nodes[{index}] world bounds exceed finite FLOAT range"
+                                )
+                                return
                             if output_min is None:
                                 output_min, output_max = list(point), list(point)
                             else:
@@ -797,9 +2123,10 @@ def _world_bounds(document: dict[str, Any],
 
 def inspect_glb_bytes(data: bytes, require_character: bool = False) -> dict[str, Any]:
     document, bin_chunk = parse_glb(data)
-    errors: list[str] = []
+    errors = _BoundedDiagnostics()
     warnings: list[str] = []
-    if document.get("asset", {}).get("version") != "2.0":
+    asset = document.get("asset")
+    if not isinstance(asset, dict) or asset.get("version") != "2.0":
         errors.append("asset.version must be exactly '2.0'")
 
     buffers = _array(document, "buffers")
@@ -810,7 +2137,31 @@ def inspect_glb_bytes(data: bytes, require_character: bool = False) -> dict[str,
         if isinstance(image, dict) and "uri" in image:
             errors.append(f"images[{index}] is external; source GLB must be self-contained")
 
-    required_extensions = set(document.get("extensionsRequired", []))
+    accessor_descriptors = _validate_glb_storage(document, bin_chunk, errors)
+    _validate_glb_accessor_usage(
+        document, accessor_descriptors, bin_chunk, errors
+    )
+    _validate_glb_scene_and_materials(document, errors)
+
+    required_extension_list = document.get("extensionsRequired", [])
+    if not isinstance(required_extension_list, list) or not all(
+        isinstance(extension, str) for extension in required_extension_list
+    ):
+        errors.append("extensionsRequired must be an array of strings")
+        required_extension_list = []
+    elif len(set(required_extension_list)) != len(required_extension_list):
+        errors.append("extensionsRequired contains duplicates")
+    used_extension_list = document.get("extensionsUsed", [])
+    if not isinstance(used_extension_list, list) or not all(
+        isinstance(extension, str) for extension in used_extension_list
+    ):
+        errors.append("extensionsUsed must be an array of strings")
+        used_extension_list = []
+    elif len(set(used_extension_list)) != len(used_extension_list):
+        errors.append("extensionsUsed contains duplicates")
+    required_extensions = set(required_extension_list)
+    if not required_extensions.issubset(set(used_extension_list)):
+        errors.append("extensionsRequired must be a subset of extensionsUsed")
     unknown_required = sorted(required_extensions - SUPPORTED_REQUIRED_EXTENSIONS)
     if unknown_required:
         errors.append("unsupported required extensions: " + ", ".join(unknown_required))
@@ -830,8 +2181,13 @@ def inspect_glb_bytes(data: bytes, require_character: bool = False) -> dict[str,
         if not isinstance(mesh, dict):
             errors.append(f"meshes[{mesh_index}] must be an object")
             continue
-        for primitive_index, primitive in enumerate(mesh.get("primitives", [])):
+        primitives = mesh.get("primitives", [])
+        if not isinstance(primitives, list):
+            continue
+        for primitive_index, primitive in enumerate(primitives):
             prefix = f"meshes[{mesh_index}].primitives[{primitive_index}]"
+            if not isinstance(primitive, dict):
+                continue
             primitive_count += 1
             if primitive.get("mode", 4) != 4:
                 errors.append(f"{prefix} must use TRIANGLES mode")
@@ -839,7 +2195,10 @@ def inspect_glb_bytes(data: bytes, require_character: bool = False) -> dict[str,
                 errors.append(f"{prefix} must be indexed")
             index_accessor = _accessor(document, primitive.get("indices"))
             if index_accessor is not None:
-                index_count = int(index_accessor.get("count", 0))
+                raw_index_count = index_accessor.get("count")
+                index_count = (
+                    raw_index_count if _gltf_integer(raw_index_count) else 0
+                )
                 if index_count % 3:
                     errors.append(f"{prefix} index count is not divisible by three")
                 triangle_count += index_count // 3
@@ -860,12 +2219,14 @@ def inspect_glb_bytes(data: bytes, require_character: bool = False) -> dict[str,
                 errors.append(f"{prefix} exceeds the v1 four-influence skinning contract")
             position = _accessor(document, attributes.get("POSITION"))
             if position is not None:
-                vertex_count += int(position.get("count", 0))
+                raw_position_count = position.get("count")
+                vertex_count += (
+                    raw_position_count if _gltf_integer(raw_position_count) else 0
+                )
                 pmin, pmax = position.get("min"), position.get("max")
                 if (isinstance(pmin, list) and isinstance(pmax, list) and
                         len(pmin) == len(pmax) == 3 and
-                        all(isinstance(value, (int, float)) and math.isfinite(value)
-                            for value in pmin + pmax)):
+                        all(_gltf_number(value) for value in pmin + pmax)):
                     if mesh_min is None:
                         mesh_min, mesh_max = list(pmin), list(pmax)
                     else:
@@ -885,20 +2246,35 @@ def inspect_glb_bytes(data: bytes, require_character: bool = False) -> dict[str,
     world_bbox_min, world_bbox_max = _world_bounds(document, mesh_bounds, errors)
 
     skins = _array(document, "skins")
-    max_joints = max((len(skin.get("joints", [])) for skin in skins if isinstance(skin, dict)), default=0)
+    max_joints = max((
+        len(skin.get("joints", []))
+        for skin in skins
+        if isinstance(skin, dict) and isinstance(skin.get("joints", []), list)
+    ), default=0)
     animations: list[dict[str, Any]] = []
     for index, animation in enumerate(_array(document, "animations")):
         if not isinstance(animation, dict):
             continue
         duration = 0.0
-        for sampler in animation.get("samplers", []):
+        samplers = animation.get("samplers", [])
+        if not isinstance(samplers, list):
+            samplers = []
+        for sampler in samplers:
             accessor = _accessor(document, sampler.get("input") if isinstance(sampler, dict) else None)
-            if accessor and isinstance(accessor.get("max"), list) and accessor["max"]:
+            if (
+                accessor and isinstance(accessor.get("max"), list)
+                and accessor["max"] and _gltf_number(accessor["max"][0])
+            ):
                 duration = max(duration, float(accessor["max"][0]))
+        channels = animation.get("channels", [])
+        source_name = animation.get("name")
         animations.append({
             "index": index,
-            "name": animation.get("name") or f"animation_{index}",
-            "channels": len(animation.get("channels", [])),
+            "name": (
+                source_name if isinstance(source_name, str) and source_name
+                else f"animation_{index}"
+            ),
+            "channels": len(channels) if isinstance(channels, list) else 0,
             "duration_seconds": duration,
         })
 
@@ -924,15 +2300,25 @@ def inspect_glb_bytes(data: bytes, require_character: bool = False) -> dict[str,
             errors.append("character package requires at least one named animation")
         elif not any(animation["duration_seconds"] > 0.0 for animation in animations):
             errors.append("character package has no animation with positive duration")
+        if world_bbox_min is None or world_bbox_max is None:
+            errors.append("character package requires finite scene-world bounds")
+        else:
+            height = world_bbox_max[1] - world_bbox_min[1]
+            if not math.isfinite(height) or height <= 1.0e-6:
+                errors.append(
+                    "character scene-world height is too small to calibrate"
+                )
+
+    errors.finish()
 
     return {
         "format": "glb-2.0",
         "sha256": _sha256(data),
         "bytes": len(data),
         "self_contained": not any("external" in error for error in errors),
-        "generator": document.get("asset", {}).get("generator"),
-        "extensions_used": document.get("extensionsUsed", []),
-        "extensions_required": document.get("extensionsRequired", []),
+        "generator": asset.get("generator") if isinstance(asset, dict) else None,
+        "extensions_used": used_extension_list,
+        "extensions_required": required_extension_list,
         "scene_count": len(_array(document, "scenes")),
         "mesh_count": len(_array(document, "meshes")),
         "primitive_count": primitive_count,

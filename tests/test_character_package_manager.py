@@ -326,7 +326,8 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 original, remove_position_bounds
             ))
             with self.assertRaisesRegex(
-                    manager.ManagerError, "no finite scene-world bounds"):
+                    manager.ManagerError,
+                    "attributes.POSITION requires min and max"):
                 manager.inspect_raw_glb(unbounded)
 
     def test_candidate_inspection_is_exact_and_mutation_free(self) -> None:
