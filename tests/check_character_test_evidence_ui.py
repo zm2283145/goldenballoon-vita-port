@@ -361,7 +361,7 @@ def main() -> int:
                     "action=publish-qualified applied=1 records=1 baselines=0",
                     "character-test-evidence saved=1",
                     "character-test-matrix package=" + PACKAGE_ID,
-                    "current=1 required=16 selected=2:4 state=Qualified "
+                    "current=1 required=16 selected=2:4 state=On target "
                     "latest=1 baseline=0",
                     "character-contact-proof context=2 mask=f views=3 "
                     "coordinate-space=donor-target "
@@ -419,7 +419,7 @@ def main() -> int:
                 characters,
                 (
                     "action=pin-car-4p applied=1 records=2 baselines=1",
-                    "state=Qualified latest=1 baseline=1 comparable=1",
+                    "state=On target latest=1 baseline=1 comparable=1",
                     "comparable=1 fit=1 "
                     "fitAnchorUm=10000,20000,-30000 "
                     "fitBoundsYUm=-600000,900000 "
@@ -441,8 +441,8 @@ def main() -> int:
                 root,
                 characters,
                 (
-                    "state=Qualified latest=1 baseline=1 comparable=1",
-                    "text=Car, 4 players, Qualified",
+                    "state=On target latest=1 baseline=1 comparable=1",
+                    "text=Car, 4 players, On target",
                     "text=Saved GPU timestamp status, Exact timestamp samples captured.",
                     "text=Saved scene-pass GPU timestamps, 3.000 ms median · 4.000 ms p95 · 176 samples.",
                     "text=Saved character-draw GPU timestamps, 0.200 ms median · 0.300 ms p95 · 176 samples.",
@@ -493,7 +493,7 @@ def main() -> int:
                 (
                     "action=clear-car-4p-baseline applied=1 "
                     "records=1 baselines=0",
-                    "state=Qualified latest=1 baseline=0 comparable=0",
+                    "state=On target latest=1 baseline=0 comparable=0",
                 ),
                 action="clear-car-4p-baseline",
             )

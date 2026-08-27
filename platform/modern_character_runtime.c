@@ -22,6 +22,8 @@
 #define MODERN_RUNTIME_POOLS \
     (MODERN_RUNTIME_ACTIVE_POOLS * 2)
 #define MODERN_RUNTIME_MAX_BONES 256u
+#define MODERN_RUNTIME_PLAYABLE_LIST_MAX \
+    (MDKR_MODERN_CHARACTER_MAX * (MDKR_MODERN_CHARACTER_ID_MAX + 1u))
 
 typedef struct MdkrModernRuntimePool {
     int registry_index;
@@ -74,6 +76,24 @@ static uint64_t s_inspection_pose_ticks;
 static uint64_t s_inspection_pose_fallback_ticks;
 static char s_inspection_semantic[32];
 static float s_inspection_phase;
+static int s_playable_filter_active;
+static char s_playable_list[MODERN_RUNTIME_PLAYABLE_LIST_MAX];
+
+static int playable_list_contains(const char *list, const char *id) {
+    const char *begin;
+    size_t id_length;
+    if (list == NULL || id == NULL || id[0] == '\0') return 0;
+    id_length = strlen(id);
+    begin = list;
+    while (*begin != '\0') {
+        const char *end = strchr(begin, ',');
+        size_t length = end != NULL ? (size_t)(end - begin) : strlen(begin);
+        if (length == id_length && memcmp(begin, id, length) == 0) return 1;
+        if (end == NULL) break;
+        begin = end + 1;
+    }
+    return 0;
+}
 
 static void set_error(char *error, size_t size, const char *message) {
     if (error != NULL && size != 0u) {
@@ -726,6 +746,11 @@ static int pending_player_prepare(int player, int registry_index,
                   "character catalog selection is unavailable");
         return 0;
     }
+    if (!mdkr_modern_character_catalog_playable(registry_index)) {
+        set_error(error, error_size,
+                  "character has not passed the current Workshop playability gates");
+        return 0;
+    }
     pool = pool_acquire(registry_index, error, error_size);
     if (pool < 0) return 0;
     pending->pool = pool;
@@ -773,6 +798,7 @@ int mdkr_modern_characters_init(const char *directory) {
     int index;
     char error[256];
     const char *base;
+    const char *playable;
     mdkr_modern_characters_shutdown();
     s_replacement_draws = 0u;
     s_replacement_primitives = 0u;
@@ -791,6 +817,13 @@ int mdkr_modern_characters_init(const char *directory) {
     }
     if (mdkr_modern_character_registry_init(&s_registry, directory) != 0) return 0;
     s_initialized = 1;
+    playable = getenv("MDKR_CUSTOM_CHARACTER_PLAYABLE");
+    s_playable_filter_active = playable != NULL;
+    s_playable_list[0] = '\0';
+    if (playable != NULL &&
+        strlen(playable) < sizeof(s_playable_list)) {
+        memcpy(s_playable_list, playable, strlen(playable) + 1u);
+    }
     base = getenv("MDKR_CUSTOM_CHARACTER");
     for (index = 0; index < MDKR_MODERN_CHARACTER_PLAYERS; index++) {
         char name[40];
@@ -834,6 +867,8 @@ void mdkr_modern_characters_shutdown(void) {
     }
     mdkr_modern_character_registry_shutdown(&s_registry);
     mdkr_modern_character_clear_inspection_pose();
+    s_playable_filter_active = 0;
+    s_playable_list[0] = '\0';
     s_initialized = 0;
 }
 
@@ -870,6 +905,15 @@ const MdkrModernCharacterRegistry *mdkr_modern_characters_registry(void) {
 int mdkr_modern_character_catalog_count(void) {
     return s_initialized ? mdkr_modern_character_registry_count(&s_registry)
                          : 0;
+}
+
+int mdkr_modern_character_catalog_playable(int index) {
+    const MdkrModernCharacterEntry *entry;
+    if (!s_initialized) return 0;
+    entry = mdkr_modern_character_registry_entry(&s_registry, index);
+    if (entry == NULL) return 0;
+    return !s_playable_filter_active ||
+           playable_list_contains(s_playable_list, entry->id);
 }
 
 int mdkr_modern_character_catalog_entry(

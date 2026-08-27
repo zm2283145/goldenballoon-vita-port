@@ -28,6 +28,21 @@ enum class Kind : uint32_t {
     Baseline = 1u,
 };
 
+// Evidence quality and performance policy are intentionally separate. A
+// complete real-device sample can be trustworthy evidence while still
+// missing the playability target; callers must never translate "measured"
+// into "passed".
+enum class PerformanceResult : uint8_t {
+    Unqualified = 0u,
+    OverBudget,
+    TargetMet,
+};
+
+struct PerformanceTarget {
+    uint64_t p95IntervalUs = 18334u;
+    uint64_t p99IntervalUs = 25000u;
+};
+
 // One exact engine result. Source and fit fingerprints decide whether the
 // evidence still describes the selected character; presentation/device fields
 // decide whether a pinned baseline and a later run are honestly comparable.
@@ -117,6 +132,9 @@ Evidence *find(Inventory &inventory, const std::string &packageId,
                uint32_t context, uint32_t players, Kind kind);
 
 bool qualified(const Evidence &evidence);
+PerformanceTarget performanceTarget(uint32_t players);
+PerformanceResult performanceResult(const Evidence &evidence);
+bool performanceTargetMet(const Evidence &evidence);
 bool comparable(const Evidence &latest, const Evidence &baseline);
 
 } // namespace CharacterTestEvidenceStore

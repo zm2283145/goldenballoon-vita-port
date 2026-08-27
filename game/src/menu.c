@@ -1201,7 +1201,8 @@ static void charselect_custom_init(void) {
     mdkr_custom_roster_reset(&sCustomCharacterRoster);
     catalogCount = mdkr_modern_character_catalog_count();
     for (i = 0; i < catalogCount; i++) {
-        if (mdkr_modern_character_catalog_entry(i, &view)) {
+        if (mdkr_modern_character_catalog_playable(i) &&
+            mdkr_modern_character_catalog_entry(i, &view)) {
             (void)mdkr_custom_roster_add(&sCustomCharacterRoster, i, &view);
         }
     }

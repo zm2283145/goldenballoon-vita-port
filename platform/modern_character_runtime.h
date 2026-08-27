@@ -127,6 +127,11 @@ const MdkrModernCharacterRegistry *mdkr_modern_characters_registry(void);
 int mdkr_modern_character_catalog_count(void);
 int mdkr_modern_character_catalog_entry(
     int index, MdkrModernCharacterCatalogView *out);
+/* The launcher publishes a source-bound playability allow-list. When that
+ * contract is present, catalog browsing and every assignment path reject
+ * incomplete Workshop packages. A missing contract preserves explicit CLI
+ * and standalone diagnostic workflows. */
+int mdkr_modern_character_catalog_playable(int index);
 int mdkr_modern_character_assign_player_index(
     int player, int catalog_index, char *error, size_t error_size);
 int mdkr_modern_character_assign_player(int player, const char *package_id,

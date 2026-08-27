@@ -8589,7 +8589,58 @@ const char *characterTestEvidenceState(
     if (evidence->adapter.empty()) return "Device unknown";
     if (!evidence->realtime) return "Synthetic";
     if (evidence->intervalSamples < 60u) return "Short";
-    return "Qualified";
+    switch (CharacterTestEvidenceStore::performanceResult(*evidence)) {
+        case CharacterTestEvidenceStore::PerformanceResult::TargetMet:
+            return "On target";
+        case CharacterTestEvidenceStore::PerformanceResult::OverBudget:
+            return "Over target";
+        case CharacterTestEvidenceStore::PerformanceResult::Unqualified:
+            return "Timing missing";
+    }
+    return "Timing missing";
+}
+
+CharacterWorkshopPerformanceState characterPerformanceEvidenceState(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterTuningEdit &tuning) {
+    if (entry == nullptr) {
+        return CharacterWorkshopPerformanceState::NotMeasured;
+    }
+    loadCharacterTestEvidence();
+    const std::string presentationSignature =
+        characterTestPresentationSignature();
+    if (!g_characterTestEvidenceWritable || presentationSignature.empty()) {
+        return CharacterWorkshopPerformanceState::NotMeasured;
+    }
+    const uint32_t supported = entry->vehicle_mask & tuning.vehicleMask;
+    bool overTarget = false;
+    for (uint32_t context = 0u;
+         context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+        if (context != MDKR_CHARACTER_CONTEXT_SELECT &&
+            (supported & (1u << (context - 1u))) == 0u) {
+            continue;
+        }
+        for (uint32_t players = 1u; players <= 4u; ++players) {
+            const auto *evidence = CharacterTestEvidenceStore::find(
+                g_characterTestEvidence, entry->id, context + 1u, players,
+                CharacterTestEvidenceStore::Kind::Latest);
+            if (evidence == nullptr ||
+                !characterTestEvidenceCurrent(
+                    entry, tuning, *evidence, presentationSignature)) {
+                return CharacterWorkshopPerformanceState::NotMeasured;
+            }
+            const auto result =
+                CharacterTestEvidenceStore::performanceResult(*evidence);
+            if (result ==
+                CharacterTestEvidenceStore::PerformanceResult::Unqualified) {
+                return CharacterWorkshopPerformanceState::NotMeasured;
+            }
+            overTarget |= result ==
+                CharacterTestEvidenceStore::PerformanceResult::OverBudget;
+        }
+    }
+    return overTarget ? CharacterWorkshopPerformanceState::OverTarget
+                      : CharacterWorkshopPerformanceState::TargetMet;
 }
 
 bool pinCharacterTestBaseline(
@@ -8986,7 +9037,8 @@ void drawCharacterTestEvidenceMatrix(
     uint64_t newestTime = 0u;
     unsigned newestCell = selectedCell;
     unsigned applicableCells = 0u;
-    unsigned qualifiedCells = 0u;
+    unsigned measuredCells = 0u;
+    unsigned targetCells = 0u;
     if (ImGui::BeginTable(
             "##character-test-evidence-matrix", 5,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
@@ -9022,7 +9074,11 @@ void drawCharacterTestEvidenceMatrix(
                             entry, tuning, *evidence,
                             presentationSignature) &&
                         CharacterTestEvidenceStore::qualified(*evidence)) {
-                        ++qualifiedCells;
+                        ++measuredCells;
+                        if (CharacterTestEvidenceStore::performanceTargetMet(
+                                *evidence)) {
+                            ++targetCells;
+                        }
                     }
                     if (evidence != nullptr &&
                         (!haveSelected || evidence->capturedUnix > newestTime)) {
@@ -9065,10 +9121,12 @@ void drawCharacterTestEvidenceMatrix(
         selectedCell = newestCell;
     }
     ImGui::TextColored(
-        qualifiedCells == applicableCells && applicableCells != 0u
+        targetCells == applicableCells && applicableCells != 0u
             ? AppTheme::good() : AppTheme::accent(),
-        "Current qualified matrix: %u of %u enabled context/layout cells",
-        qualifiedCells, applicableCells);
+        "Performance matrix: %u of %u on target · %u measured",
+        targetCells, applicableCells, measuredCells);
+    ui::TextSubtleWrapped(
+        "Playability target: p95 at or below 18.334 ms and p99 at or below 25.000 ms on every enabled context and 1–4 player layout. Measured over-budget results stay visible and do not become passes.");
 
     const uint32_t selectedContext = selectedCell / 4u + 1u;
     const uint32_t selectedPlayers = selectedCell % 4u + 1u;
@@ -9085,7 +9143,7 @@ void drawCharacterTestEvidenceMatrix(
         std::fprintf(
             stderr,
             "[app-ui] character-test-matrix package=%s current=%u required=%u selected=%u:%u state=%s latest=%d baseline=%d comparable=%d fit=%d fitAnchorUm=%lld,%lld,%lld fitBoundsYUm=%lld,%lld fitForwardMilli=%d,%d,%d gpuStatus=%u gpuScopes=%x sceneGpuSamples=%llu sceneGpuP50Ns=%llu characterGpuSamples=%llu characterGpuP50Ns=%llu\n",
-            entry->id, qualifiedCells, applicableCells, selectedContext,
+            entry->id, targetCells, applicableCells, selectedContext,
             selectedPlayers,
             characterTestEvidenceState(
                 entry, tuning, latest, presentationSignature),
@@ -13780,14 +13838,15 @@ CharacterWorkshopReadiness characterWorkshopReadiness(
     facts.rigReviewed            = !humanoidRig || rigReviewed;
     facts.motionReady            = motionReady;
     facts.donorQualified         = qualified;
-    facts.performanceMeasured    = entry != nullptr &&
-                                   entry->stats.lod_levels != 0u &&
-                                   (entry->stats.textures == 0u ||
-                                    entry->stats.decoded_texture_bytes != 0u);
+    facts.performanceAssemblyReady = entry != nullptr &&
+                                     entry->stats.lod_levels != 0u &&
+                                     (entry->stats.textures == 0u ||
+                                      entry->stats.decoded_texture_bytes != 0u);
     facts.enabled                = entry != nullptr && entry->enabled != 0u;
     if (entry != nullptr) {
         const CharacterTuningEdit &tuning =
             loadCharacterTuning(0, entry->id);
+        facts.performance = characterPerformanceEvidenceState(entry, tuning);
         facts.supportedVehicleMask = entry->vehicle_mask & tuning.vehicleMask;
         for (unsigned context = 0u;
              context < MDKR_CHARACTER_CONTEXT_COUNT;
@@ -13944,16 +14003,29 @@ void drawCharacterReadiness(
                     break;
                 }
                 case CharacterWorkshopReadinessId::Performance:
+                {
+                    const CharacterTuningEdit &tuning =
+                        loadCharacterTuning(0, entry->id);
+                    const auto performance =
+                        characterPerformanceEvidenceState(entry, tuning);
+                    const char *measurement =
+                        performance == CharacterWorkshopPerformanceState::TargetMet
+                            ? "complete matrix meets target"
+                        : performance == CharacterWorkshopPerformanceState::OverTarget
+                            ? "complete matrix exceeds target"
+                            : "real-device matrix incomplete";
                     ImGui::TextWrapped(
-                        "%s · %u authored LOD%s · %s texture accounting",
+                        "%s · %u authored LOD%s · %s texture accounting · %s",
                         characterPerformanceTier(entry),
                         entry->stats.lod_levels,
                         entry->stats.lod_levels == 1u ? "" : "s",
                         entry->stats.textures == 0u ||
                                 entry->stats.decoded_texture_bytes != 0u
                             ? "exact"
-                            : "legacy");
+                            : "legacy",
+                        measurement);
                     break;
+                }
                 case CharacterWorkshopReadinessId::Count:
                     break;
             }
@@ -15904,6 +15976,36 @@ bool drawCharacterAssignments() {
     ImGui::SeparatorText("Use in game");
     ui::TextSubtleWrapped(
         "Assignments are separate from editing. A character's saved fit follows the package, regardless of which local player uses it.");
+    bool attestationChanged = false;
+    for (int index = 0; index < characterCount; ++index) {
+        const MdkrModernCharacterEntry *entry =
+            mdkr_modern_character_registry_entry(&g_characterRegistry, index);
+        if (entry == nullptr) continue;
+        static constexpr char digits[] = "0123456789abcdef";
+        std::string digest(sizeof(entry->source_sha256) * 2u, '0');
+        for (size_t byte = 0u; byte < sizeof(entry->source_sha256); ++byte) {
+            digest[byte * 2u] = digits[entry->source_sha256[byte] >> 4u];
+            digest[byte * 2u + 1u] =
+                digits[entry->source_sha256[byte] & 0xFu];
+        }
+        const CharacterWorkshopReadiness readiness =
+            characterWorkshopReadinessForEntry(entry);
+        const std::string key = "custom_character_profile_" +
+            std::string(entry->id) + "_playable_source_sha256";
+        const std::string expected = readiness.readyToPlay ? digest : "";
+        if (AppConfig::get(key) != expected) {
+            AppConfig::set(key, expected);
+            attestationChanged = true;
+        }
+    }
+    if (attestationChanged) {
+        const AppConfig::PersistResult persisted = AppConfig::save();
+        if (!AppConfig::persistResultApplied(persisted)) {
+            setStatus(
+                "Playability state changed for this session but could not be saved for the next launch.",
+                AppTheme::bad());
+        }
+    }
     for (int player = 0; player < 4; ++player) {
         ImGui::PushID(player);
         const std::string key =
@@ -15915,8 +16017,10 @@ bool drawCharacterAssignments() {
         const MdkrModernCharacterEntry *selectedEntry =
             mdkr_modern_character_registry_entry(&g_characterRegistry,
                                                  selectedIndex);
+        const CharacterWorkshopReadiness selectedReadiness =
+            characterWorkshopReadinessForEntry(selectedEntry);
         const bool selectedAvailable =
-            selectedEntry != nullptr && selectedEntry->enabled != 0u;
+            selectedEntry != nullptr && selectedReadiness.readyToPlay;
         const std::string preview = selectedAvailable
                                         ? selectedEntry->display_name
                                     : selectedEntry != nullptr
@@ -15962,10 +16066,15 @@ bool drawCharacterAssignments() {
                 if (entry == nullptr) continue;
                 const bool        qualified  = mdkr_modern_donor_qualified(
                                                    static_cast<int>(entry->donor)) != 0;
+                const CharacterWorkshopReadiness readiness =
+                    characterWorkshopReadinessForEntry(entry);
                 const std::string item       = std::string(entry->display_name) +
                                                (entry->enabled != 0u ? "" : " (disabled)") +
-                                               (qualified ? "" : " (donor not qualified)");
-                const bool        assignable = qualified && entry->enabled != 0u;
+                                               (qualified ? "" : " (donor not qualified)") +
+                                               (readiness.readyToPlay
+                                                    ? ""
+                                                    : " (Workshop incomplete)");
+                const bool assignable = readiness.readyToPlay;
                 if (!assignable) ImGui::BeginDisabled();
                 if (ImGui::Selectable(item.c_str(), selected == entry->id)) {
                     const AppConfig::PersistResult result =
@@ -15987,15 +16096,18 @@ bool drawCharacterAssignments() {
                 ui::SpeakFocusedItem(
                     entry->narration_name,
                     spokenState.c_str(),
-                    "Assign this local character presentation to the player.");
+                    assignable
+                        ? "Assign this qualified local character presentation to the player."
+                        : readiness.nextActionLabel);
                 if (!assignable) ImGui::EndDisabled();
             }
             ImGui::EndCombo();
         }
-        if (selectedEntry != nullptr && selectedEntry->enabled == 0u) {
+        if (selectedEntry != nullptr && !selectedAvailable) {
             ImGui::TextDisabled(
-                "Assignment retained; the built-in racer is used until %s is enabled.",
-                selectedEntry->display_name);
+                "Assignment retained; the built-in racer is used until %s is playable. Next: %s.",
+                selectedEntry->display_name,
+                selectedReadiness.nextActionLabel);
         }
         ImGui::PopID();
     }

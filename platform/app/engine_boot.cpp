@@ -33,6 +33,18 @@ constexpr size_t kCharacterTuningCount = 74;
 std::array<std::array<std::string, kCharacterTuningCount>, 4>
     s_launcherCharacterTuningEnvironment;
 std::map<std::string, std::string> s_launcherPackageTuningEnvironment;
+std::string s_launcherPlayableEnvironment;
+
+std::string characterSourceDigestHex(
+    const MdkrModernCharacterEntry &entry) {
+    static constexpr char digits[] = "0123456789abcdef";
+    std::string hex(sizeof(entry.source_sha256) * 2u, '0');
+    for (size_t index = 0u; index < sizeof(entry.source_sha256); ++index) {
+        hex[index * 2u] = digits[entry.source_sha256[index] >> 4u];
+        hex[index * 2u + 1u] = digits[entry.source_sha256[index] & 0xFu];
+    }
+    return hex;
+}
 
 const char *characterPreviewContextName(MdkrCharacterPreviewContext context) {
     switch (context) {
@@ -300,19 +312,34 @@ std::string legacyCharacterTuning(
     return mapping.fallback;
 }
 
-void handoffCharacterPackageTuning() {
+void handoffCharacterPackageTuning(const MdkrBootConfig *cfg) {
     char directory[MDKR_MODERN_CHARACTER_PATH_MAX];
     MdkrModernCharacterRegistry registry{};
     std::string existing;
     if (!mdkr_user_characters_directory(directory, sizeof(directory)) ||
         mdkr_modern_character_registry_init(&registry, directory) != 0) {
+        AppRestart_setEnv("MDKR_CUSTOM_CHARACTER_PLAYABLE", "");
+        s_launcherPlayableEnvironment.clear();
         return;
     }
+    std::string playable;
     for (int index = 0;
          index < mdkr_modern_character_registry_count(&registry); ++index) {
         const MdkrModernCharacterEntry *entry =
             mdkr_modern_character_registry_entry(&registry, index);
         if (entry == nullptr) continue;
+        const std::string attestationKey =
+            "custom_character_profile_" + std::string(entry->id) +
+            "_playable_source_sha256";
+        const bool exactPreview = cfg != nullptr &&
+            cfg->character_preview_context != MDKR_CHARACTER_PREVIEW_NONE &&
+            cfg->character_preview_package != nullptr &&
+            std::strcmp(cfg->character_preview_package, entry->id) == 0;
+        if (exactPreview ||
+            AppConfig::get(attestationKey) == characterSourceDigestHex(*entry)) {
+            if (!playable.empty()) playable.push_back(',');
+            playable += entry->id;
+        }
         const std::string environmentPrefix =
             "MDKR_CUSTOM_CHARACTER_PROFILE_" + std::string(entry->id);
         const std::string preferencePrefix =
@@ -339,6 +366,12 @@ void handoffCharacterPackageTuning() {
         }
     }
     mdkr_modern_character_registry_shutdown(&registry);
+    const bool hasExisting =
+        AppRestart_getEnv("MDKR_CUSTOM_CHARACTER_PLAYABLE", existing);
+    if (!hasExisting || existing == s_launcherPlayableEnvironment) {
+        AppRestart_setEnv("MDKR_CUSTOM_CHARACTER_PLAYABLE", playable.c_str());
+        s_launcherPlayableEnvironment = playable;
+    }
 }
 
 }  // namespace
@@ -494,7 +527,7 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
      * launcher preferences, then hand them to the engine through the same
      * diagnostic override the CLI supports. An explicit caller environment
      * remains higher priority. */
-    handoffCharacterPackageTuning();
+    handoffCharacterPackageTuning(cfg);
     for (int player = 0; player < 4; ++player) {
         const std::string variable =
             "MDKR_CUSTOM_CHARACTER_P" + std::to_string(player + 1);

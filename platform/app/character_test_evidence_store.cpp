@@ -544,6 +544,32 @@ bool qualified(const Evidence &evidence) {
            evidence.renderWidth != 0u && evidence.renderHeight != 0u;
 }
 
+PerformanceTarget performanceTarget(uint32_t players) {
+    // Every supported local layout targets a 60 Hz presentation. The p95
+    // allowance covers one millisecond of ordinary scheduling variance; the
+    // p99 ceiling catches sustained hitches without pretending that a single
+    // platform maximum is meaningful across all devices.
+    (void)players;
+    return {18334u, 25000u};
+}
+
+PerformanceResult performanceResult(const Evidence &evidence) {
+    if (!qualified(evidence) || evidence.players < 1u ||
+        evidence.players > 4u || evidence.intervalP95Us == 0u ||
+        evidence.intervalP99Us == 0u) {
+        return PerformanceResult::Unqualified;
+    }
+    const PerformanceTarget target = performanceTarget(evidence.players);
+    return evidence.intervalP95Us <= target.p95IntervalUs &&
+                   evidence.intervalP99Us <= target.p99IntervalUs
+               ? PerformanceResult::TargetMet
+               : PerformanceResult::OverBudget;
+}
+
+bool performanceTargetMet(const Evidence &evidence) {
+    return performanceResult(evidence) == PerformanceResult::TargetMet;
+}
+
 bool comparable(const Evidence &latest, const Evidence &baseline) {
     return qualified(latest) && qualified(baseline) &&
            latest.kind == Kind::Latest && baseline.kind == Kind::Baseline &&

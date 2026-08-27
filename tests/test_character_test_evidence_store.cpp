@@ -304,6 +304,20 @@ int main() {
     baseline.capturedUnix--;
     baseline.sourceSha256.assign(64u, 'd');
     baseline.fitSha256.assign(64u, 'e');
+    expect(performanceTarget(1u).p95IntervalUs == 18334u &&
+               performanceTarget(4u).p99IntervalUs == 25000u &&
+               performanceTargetMet(car),
+           "qualified real-device evidence passes only inside the explicit frame target");
+    Evidence slow = car;
+    slow.intervalP95Us = 19000u;
+    expect(qualified(slow) &&
+               performanceResult(slow) == PerformanceResult::OverBudget &&
+               !performanceTargetMet(slow),
+           "trustworthy evidence remains distinct from an over-budget result");
+    Evidence shortSample = car;
+    shortSample.intervalSamples = 59u;
+    expect(performanceResult(shortSample) == PerformanceResult::Unqualified,
+           "an incomplete sample cannot claim either pass or failure");
     expect(upsert(inventory, car, error) &&
                upsert(inventory, select, error) &&
                upsert(inventory, baseline, error) &&

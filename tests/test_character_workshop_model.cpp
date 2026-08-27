@@ -17,7 +17,8 @@ CharacterWorkshopFacts completeFacts() {
     facts.rigReviewed            = true;
     facts.motionReady            = true;
     facts.donorQualified         = true;
-    facts.performanceMeasured    = true;
+    facts.performanceAssemblyReady = true;
+    facts.performance = CharacterWorkshopPerformanceState::TargetMet;
     facts.enabled                = true;
     facts.supportedVehicleMask   = 7u;
     facts.reviewedContextMask    = 0xFu;
@@ -52,7 +53,7 @@ void testReadinessOrdering() {
     facts.motionReady            = false;
     facts.donorQualified         = false;
     facts.reviewedContextMask    = 0u;
-    facts.performanceMeasured    = false;
+    facts.performance = CharacterWorkshopPerformanceState::NotMeasured;
     facts.enabled                = false;
     auto readiness               = CharacterWorkshop_evaluate(facts);
     assert(readiness.readyToPreview);
@@ -83,30 +84,47 @@ void testReadinessOrdering() {
 
     facts.reviewedContextMask = 0xFu;
     readiness                 = CharacterWorkshop_evaluate(facts);
+    assert(readiness.nextActionTab == CharacterWorkshopTab::Test);
+    assert(std::strcmp(readiness.nextActionLabel,
+                       "Run the performance matrix") == 0);
+
+    facts.performance = CharacterWorkshopPerformanceState::OverTarget;
+    readiness         = CharacterWorkshop_evaluate(facts);
+    assert(readiness.nextActionTab == CharacterWorkshopTab::Performance);
+    assert(!readiness.readyToPlay);
+
+    facts.performance = CharacterWorkshopPerformanceState::TargetMet;
+    readiness         = CharacterWorkshop_evaluate(facts);
     assert(readiness.nextActionTab == CharacterWorkshopTab::Package);
+    assert(!readiness.readyToPlay);
 
     facts.enabled = true;
     readiness     = CharacterWorkshop_evaluate(facts);
     assert(readiness.readyToPlay);
-    assert(readiness.nextActionTab == CharacterWorkshopTab::Performance);
-
-    facts.performanceMeasured = true;
-    readiness                 = CharacterWorkshop_evaluate(facts);
-    assert(readiness.readyToPlay);
     assert(readiness.nextActionTab == CharacterWorkshopTab::Test);
 }
 
-void testVehicleReviewMaskAndOptionalPerformance() {
+void testVehicleReviewMaskAndRequiredPerformance() {
     CharacterWorkshopFacts facts = completeFacts();
     facts.supportedVehicleMask   = 1u; // select + car only
     facts.reviewedContextMask    = 0x3u;
-    facts.performanceMeasured    = false;
+    facts.performance = CharacterWorkshopPerformanceState::NotMeasured;
     const auto readiness         = CharacterWorkshop_evaluate(facts);
-    assert(readiness.readyToPlay);
+    assert(!readiness.readyToPlay);
     assert(row(readiness, CharacterWorkshopReadinessId::VehicleFit).status ==
            CharacterWorkshopReadinessStatus::Ready);
     assert(row(readiness, CharacterWorkshopReadinessId::Performance).status ==
            CharacterWorkshopReadinessStatus::Review);
+
+    facts.performance = CharacterWorkshopPerformanceState::OverTarget;
+    const auto overTarget = CharacterWorkshop_evaluate(facts);
+    assert(!overTarget.readyToPlay);
+    assert(std::strcmp(overTarget.nextActionLabel,
+                       "Tune performance to target") == 0);
+
+    facts.performance = CharacterWorkshopPerformanceState::TargetMet;
+    const auto targetMet = CharacterWorkshop_evaluate(facts);
+    assert(targetMet.readyToPlay);
 
     facts.reviewedContextMask = 0x1u;
     const auto missingCar     = CharacterWorkshop_evaluate(facts);
@@ -217,7 +235,7 @@ void testRuntimeEquivalentLodSelection() {
 int main() {
     testEmptyCharacter();
     testReadinessOrdering();
-    testVehicleReviewMaskAndOptionalPerformance();
+    testVehicleReviewMaskAndRequiredPerformance();
     testAuthoredMotionDoesNotRequireOptionalRig();
     testTabStorageRoundTrip();
     testPerformanceTargets();

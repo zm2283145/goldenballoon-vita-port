@@ -40,6 +40,12 @@ enum class CharacterWorkshopReadinessStatus : uint8_t {
     Unavailable,
 };
 
+enum class CharacterWorkshopPerformanceState : uint8_t {
+    NotMeasured = 0,
+    OverTarget,
+    TargetMet,
+};
+
 struct CharacterWorkshopFacts {
     bool     geometryAvailable      = false;
     bool     identityReady          = false;
@@ -50,7 +56,9 @@ struct CharacterWorkshopFacts {
     bool     rigReviewed            = false;
     bool     motionReady            = false;
     bool     donorQualified         = false;
-    bool     performanceMeasured    = false;
+    bool     performanceAssemblyReady = false;
+    CharacterWorkshopPerformanceState performance =
+        CharacterWorkshopPerformanceState::NotMeasured;
     bool     enabled                = false;
 
     // Bit zero is character select. Bits one through three are car,

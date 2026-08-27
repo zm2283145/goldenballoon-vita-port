@@ -69,13 +69,25 @@ CharacterWorkshopReadiness CharacterWorkshop_evaluate(
     }
     setRow(result, CharacterWorkshopReadinessId::VehicleFit, vehicleFit, CharacterWorkshopTab::Vehicles);
 
-    setRow(result, CharacterWorkshopReadinessId::Performance, facts.performanceMeasured ? CharacterWorkshopReadinessStatus::Ready : CharacterWorkshopReadinessStatus::Review, CharacterWorkshopTab::Performance);
+    CharacterWorkshopReadinessStatus performance =
+        CharacterWorkshopReadinessStatus::Ready;
+    if (!facts.performanceAssemblyReady) {
+        performance = CharacterWorkshopReadinessStatus::Missing;
+    } else if (facts.performance !=
+               CharacterWorkshopPerformanceState::TargetMet) {
+        performance = CharacterWorkshopReadinessStatus::Review;
+    }
+    setRow(result, CharacterWorkshopReadinessId::Performance, performance,
+           CharacterWorkshopTab::Performance);
 
     result.readyToPreview = facts.geometryAvailable;
     result.readyToPlay    = facts.geometryAvailable && facts.identityReady &&
                             facts.normalized && facts.anchorsReady &&
                             facts.attachmentSocketsReady && facts.motionReady &&
-                            facts.donorQualified && vehicleFit == CharacterWorkshopReadinessStatus::Ready && facts.enabled;
+                            facts.donorQualified &&
+                            vehicleFit == CharacterWorkshopReadinessStatus::Ready &&
+                            performance == CharacterWorkshopReadinessStatus::Ready &&
+                            facts.enabled;
 
     if (!facts.identityReady) {
         result.nextActionTab   = CharacterWorkshopTab::Identity;
@@ -94,12 +106,20 @@ CharacterWorkshopReadiness CharacterWorkshop_evaluate(
     } else if (vehicleFit != CharacterWorkshopReadinessStatus::Ready) {
         result.nextActionTab   = CharacterWorkshopTab::Vehicles;
         result.nextActionLabel = "Review every supported context";
+    } else if (!facts.performanceAssemblyReady) {
+        result.nextActionTab   = CharacterWorkshopTab::Performance;
+        result.nextActionLabel = "Complete performance assembly";
+    } else if (facts.performance ==
+               CharacterWorkshopPerformanceState::NotMeasured) {
+        result.nextActionTab   = CharacterWorkshopTab::Test;
+        result.nextActionLabel = "Run the performance matrix";
+    } else if (facts.performance ==
+               CharacterWorkshopPerformanceState::OverTarget) {
+        result.nextActionTab   = CharacterWorkshopTab::Performance;
+        result.nextActionLabel = "Tune performance to target";
     } else if (!facts.enabled) {
         result.nextActionTab   = CharacterWorkshopTab::Package;
         result.nextActionLabel = "Enable validated character";
-    } else if (!facts.performanceMeasured) {
-        result.nextActionTab   = CharacterWorkshopTab::Performance;
-        result.nextActionLabel = "Review performance assembly";
     } else {
         result.nextActionTab   = CharacterWorkshopTab::Test;
         result.nextActionLabel = "Run an exact-context test";
