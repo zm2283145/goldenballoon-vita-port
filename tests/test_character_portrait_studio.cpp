@@ -158,6 +158,45 @@ int main() {
     const Recipe invalidPreset = presetRecipe(invalid, StylePreset::Clean64);
     assert(sameRecipe(invalidPreset, invalid));
 
+    Canvas proofSource{};
+    setPixel(proofSource, 1, 1, 210u, 40u, 90u, 128u);
+    setPixel(proofSource, 2, 1, 250u, 20u, 10u, 255u);
+    const Canvas proofBefore = proofSource;
+    const std::array<uint8_t, 3> darkBackground = {10u, 20u, 30u};
+    const Canvas standardProof = readabilityProof(
+        proofSource, darkBackground, ReadabilitySimulation::Standard);
+    assert(proofSource == proofBefore &&
+           pixel(standardProof, 0, 0)[0] == 10u &&
+           pixel(standardProof, 0, 0)[1] == 20u &&
+           pixel(standardProof, 0, 0)[2] == 30u &&
+           pixel(standardProof, 0, 0)[3] == 255u &&
+           pixel(standardProof, 1, 1)[0] == 110u &&
+           pixel(standardProof, 1, 1)[1] == 30u &&
+           pixel(standardProof, 1, 1)[2] == 60u &&
+           pixel(standardProof, 1, 1)[3] == 255u);
+    const Canvas invalidProof = readabilityProof(
+        proofSource, darkBackground,
+        static_cast<ReadabilitySimulation>(UINT32_MAX));
+    assert(invalidProof == standardProof);
+    const Canvas grayscaleProof = readabilityProof(
+        proofSource, darkBackground, ReadabilitySimulation::Grayscale);
+    assert(pixel(grayscaleProof, 2, 1)[0] ==
+               pixel(grayscaleProof, 2, 1)[1] &&
+           pixel(grayscaleProof, 2, 1)[1] ==
+               pixel(grayscaleProof, 2, 1)[2]);
+    const Canvas protanopiaProof = readabilityProof(
+        proofSource, darkBackground, ReadabilitySimulation::Protanopia);
+    const Canvas deuteranopiaProof = readabilityProof(
+        proofSource, darkBackground, ReadabilitySimulation::Deuteranopia);
+    const Canvas tritanopiaProof = readabilityProof(
+        proofSource, darkBackground, ReadabilitySimulation::Tritanopia);
+    assert(protanopiaProof != standardProof &&
+           deuteranopiaProof != standardProof &&
+           tritanopiaProof != standardProof &&
+           pixel(protanopiaProof, 2, 1)[3] == 255u &&
+           pixel(deuteranopiaProof, 2, 1)[3] == 255u &&
+           pixel(tritanopiaProof, 2, 1)[3] == 255u);
+
     Canvas gradient{};
     for (int y = 8; y < 32; ++y) {
         for (int x = 8; x < 32; ++x) {

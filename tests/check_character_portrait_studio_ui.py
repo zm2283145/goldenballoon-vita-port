@@ -174,7 +174,9 @@ def main() -> int:
                 ("active-panel=Character Workshop",
                  "compact-layout dense=1 contained=1 ",
                  "character-portrait-variants package=" + PACKAGE_ID +
-                 " count=6 source=canvas columns=1 scale=2.00"),
+                 " count=6 source=canvas columns=1 scale=2.00",
+                 "character-portrait-readability package=" + PACKAGE_ID +
+                 " views=7 columns=1 scale=2.00"),
             )
             check_bmp(compact_shot, 640, 480)
 
@@ -189,6 +191,8 @@ def main() -> int:
                 ("character-portrait-style package=" + PACKAGE_ID,
                  "character-portrait-variants package=" + PACKAGE_ID +
                  " count=6 source=canvas",
+                 "character-portrait-readability package=" + PACKAGE_ID +
+                 " views=7",
                  "character-portrait-source-action package=" + PACKAGE_ID +
                  " loaded=1 applied=0",
                  "character-portrait-source package=" + PACKAGE_ID,
@@ -219,6 +223,13 @@ def main() -> int:
                  "text=Use Crisp 32",
                  "text=Use Dithered 32",
                  "text=Use Soft 64",
+                 "text=Native transparent card portrait preview",
+                 "text=Dark HUD stress portrait preview",
+                 "text=Light results stress portrait preview",
+                 "text=Grayscale stress portrait preview",
+                 "text=Protanopia stress portrait preview",
+                 "text=Deuteranopia stress portrait preview",
+                 "text=Tritanopia stress portrait preview",
                  "text=Apply styled result to pixel canvas",
                  "text=Selection x, y, width, height",
                  "text=Replace matching colours with paint colour"),

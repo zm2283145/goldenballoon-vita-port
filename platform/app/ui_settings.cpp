@@ -1985,6 +1985,7 @@ struct CharacterIdentityEdit {
 std::map<std::string, CharacterIdentityEdit> g_characterIdentityEdits;
 std::set<std::string> g_characterPortraitStyleTraceKeys;
 std::set<std::string> g_characterPortraitVariantTraceKeys;
+std::set<std::string> g_characterPortraitProofTraceKeys;
 std::set<std::string> g_characterPortraitSourceTraceKeys;
 std::set<std::string> g_characterPortraitSourceSmokePackages;
 
@@ -8194,15 +8195,19 @@ void portraitFill(CharacterIdentityEdit &edit, int startX, int startY) {
 
 void drawPortraitStudioCanvas(
     const CharacterPortraitStudio::Canvas &canvas, const char *label,
-    float maximumExtent = 176.0f) {
+    float maximumExtent = 176.0f, float minimumPixelSize = 2.0f) {
     constexpr int size = CharacterPortraitStudio::kSize;
     ImGui::PushID(label);
     ImGui::BeginGroup();
     const float available = std::max(80.0f, ImGui::GetContentRegionAvail().x);
     const float pixelSize = std::clamp(
-        std::floor(std::min(available, maximumExtent) / size), 2.0f, 5.0f);
+        std::floor(std::min(available, maximumExtent) / size),
+        minimumPixelSize, 5.0f);
     const float extent = pixelSize * size;
     const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::Selectable("##canvas", false, ImGuiSelectableFlags_None,
+                      ImVec2(extent, extent));
+    const bool focused = ImGui::IsItemFocused();
     ImDrawList *draw = ImGui::GetWindowDrawList();
     for (int y = 0; y < size; ++y) {
         for (int x = 0; x < size; ++x) {
@@ -8236,9 +8241,11 @@ void drawPortraitStudioCanvas(
             x = end;
         }
     }
-    draw->AddRect(origin, ImVec2(origin.x + extent, origin.y + extent),
-                  IM_COL32(255, 255, 255, 140));
-    ImGui::InvisibleButton("canvas", ImVec2(extent, extent));
+    draw->AddRect(
+        origin, ImVec2(origin.x + extent, origin.y + extent),
+        focused ? ImGui::GetColorU32(AppTheme::focusRing())
+                : IM_COL32(255, 255, 255, 140),
+        0.0f, 0, focused ? 3.0f : 1.0f);
     const std::string spokenLabel = std::string(label) + " portrait preview";
     ui::SpeakFocusedItem(
         spokenLabel.c_str(), "exact forty by forty pixels",
@@ -9192,6 +9199,68 @@ void drawPortraitQualityReport(
         "Automatic checks cannot recognize a face or judge artistic likeness. Review the native-size result yourself before approving identity.");
 }
 
+void drawPortraitReadabilityProof(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterPortraitStudio::Canvas &canvas) {
+    using CharacterPortraitStudio::ReadabilitySimulation;
+    struct Proof {
+        const char *name;
+        const char *description;
+        std::array<uint8_t, 3> background;
+        ReadabilitySimulation simulation;
+    };
+    static constexpr std::array<Proof, 6> proofs = {{
+        {"Dark HUD stress", "Dark neutral backdrop · standard colour",
+         {22u, 28u, 40u}, ReadabilitySimulation::Standard},
+        {"Light results stress", "Light warm backdrop · standard colour",
+         {228u, 218u, 184u}, ReadabilitySimulation::Standard},
+        {"Grayscale stress", "Hue removed · dark neutral backdrop",
+         {22u, 28u, 40u}, ReadabilitySimulation::Grayscale},
+        {"Protanopia stress", "Approximate red-cone absence screening view",
+         {22u, 28u, 40u}, ReadabilitySimulation::Protanopia},
+        {"Deuteranopia stress", "Approximate green-cone absence screening view",
+         {22u, 28u, 40u}, ReadabilitySimulation::Deuteranopia},
+        {"Tritanopia stress", "Approximate blue-cone absence screening view",
+         {22u, 28u, 40u}, ReadabilitySimulation::Tritanopia},
+    }};
+    ImGui::SeparatorText("Game-surface readability proof");
+    ui::TextSubtleWrapped(
+        "Every player-owned game surface consumes this same exact 40 × 40 card with point sampling. These project-owned stress views expose scale, transparency, light/dark contrast, and dependence on hue; they are authoring aids, not clinical simulations or screenshots of a particular scene. Test remains the authority for exact installed HUD, results, rankings, roster, minimap, and arena-flag presentation.");
+    const float available = ImGui::GetContentRegionAvail().x;
+    const float scale = AppTheme::uiScale();
+    const int columns = available >= 720.0f * scale ? 3
+        : available >= 460.0f * scale ? 2 : 1;
+    if (ImGui::BeginTable(
+            "##portrait-readability-proof", columns,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_PadOuterX |
+                ImGuiTableFlags_SizingStretchSame)) {
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted("Native transparent card");
+        drawPortraitStudioCanvas(
+            canvas, "Native transparent card", 40.0f, 1.0f);
+        ImGui::TextWrapped(
+            "1× logical size · checkerboard shows retained alpha");
+        for (const Proof &proof : proofs) {
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(proof.name);
+            const CharacterPortraitStudio::Canvas rendered =
+                CharacterPortraitStudio::readabilityProof(
+                    canvas, proof.background, proof.simulation);
+            drawPortraitStudioCanvas(rendered, proof.name, 120.0f);
+            ImGui::TextWrapped("%s", proof.description);
+        }
+        ImGui::EndTable();
+    }
+    if (entry != nullptr && std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
+        g_characterPortraitProofTraceKeys.insert(entry->id).second) {
+        std::fprintf(
+            stderr,
+            "[app-ui] character-portrait-readability package=%s views=%zu columns=%d scale=%.2f source=styled-draft simulation=screening-only\n",
+            entry->id, proofs.size() + 1u, columns,
+            static_cast<double>(scale));
+    }
+}
+
 struct PortraitStylePresetUi {
     CharacterPortraitStudio::StylePreset preset;
     const char *name;
@@ -9476,6 +9545,7 @@ bool drawPortraitStyleLab(const MdkrModernCharacterEntry *entry,
         CharacterPortraitStudio::analyse(edit.stylePreview);
     drawPortraitQualityReport(
         currentAnalysis, edit.styleRecipe.paletteColors);
+    drawPortraitReadabilityProof(entry, edit.stylePreview);
     const bool canApply =
         !currentAnalysis.empty && edit.stylePreview != edit.canvas;
     if (!canApply) ImGui::BeginDisabled();

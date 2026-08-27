@@ -542,12 +542,13 @@ Later schema versions should add, without changing the principles above:
 - expanded project-owned reference clips, per-context author target offsets,
   and richer joint/pole constraints over the bounded contact solver;
 - optional material variants and eye/mouth morph mappings;
-- richer background/frame presets, contact overlays, and icon derivatives
+- richer background/frame presets and icon derivatives
   beyond the implemented imported/exact-renderer
   portrait, transparent model-only render product, six-treatment comparison
-  sheet, exact 40x40 pixel editor, non-destructive freeform subject mask,
-  rectangular move/copy and deterministic framing, resampling, palette,
-  dithering, outline and cleanup recipe;
+  sheet, native/background/colour-vision readability proof, exact 40x40 pixel
+  editor, non-destructive freeform subject mask, rectangular move/copy and
+  deterministic framing, resampling, palette, dithering, outline and cleanup
+  recipe;
 - feature requirements such as morph targets or alpha blending.
 
 The schema is declarative. JavaScript, Lua, native libraries, Blender Python,
@@ -1239,8 +1240,9 @@ GPU limits are exceeded.
 - Validated package portraits, exact and selection-based pixel editing,
   deterministic style recipes, identity revisions, game-surface fallbacks,
   composed gameplay capture, and transparent model-only renderer capture are
-  complete, including non-destructive target-space subject masking; derivative
-  background/frame presets and contact overlays remain.
+  complete, including non-destructive target-space subject masking and a
+  seven-view authoring readability proof; derivative background/frame presets
+  remain.
 - Add local ordering policy and online digest/fallback diagnostics.
 - Publish an SDK containing schemas, the generated animated fixture, validator,
   packer, semantic state reference, and examples that contain no Nintendo asset.

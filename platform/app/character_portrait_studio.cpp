@@ -318,6 +318,20 @@ uint8_t luminance(const uint8_t *rgba) {
                                  19u * rgba[2] + 128u) >> 8u);
 }
 
+void applyVisionMatrix(uint8_t *rgba, const int32_t matrix[9]) {
+    const int32_t red = rgba[0];
+    const int32_t green = rgba[1];
+    const int32_t blue = rgba[2];
+    for (int row = 0; row < 3; ++row) {
+        const int64_t value =
+            static_cast<int64_t>(matrix[row * 3]) * red +
+            static_cast<int64_t>(matrix[row * 3 + 1]) * green +
+            static_cast<int64_t>(matrix[row * 3 + 2]) * blue;
+        rgba[row] = static_cast<uint8_t>(std::clamp<int64_t>(
+            (value + 50000) / 100000, 0, 255));
+    }
+}
+
 }  // namespace
 
 namespace CharacterPortraitStudio {
@@ -474,6 +488,63 @@ Analysis analyse(const Canvas &canvas, uint8_t visibleAlpha) {
     result.luminanceRange = maximumLuminance - minimumLuminance;
     result.lowOccupancy = result.canvasOccupancy < 0.18f;
     result.lowContrast = result.luminanceRange < 48u;
+    return result;
+}
+
+Canvas readabilityProof(
+    const Canvas &source, const std::array<uint8_t, 3> &background,
+    ReadabilitySimulation simulation) {
+    Canvas result{};
+    static constexpr int32_t protanopia[9] = {
+         15229, 105258, -20487,
+         11450,  78628,   9922,
+          -388,  -4812, 105200,
+    };
+    static constexpr int32_t deuteranopia[9] = {
+         36732,  86065, -22797,
+         28009,  67250,   4741,
+         -1182,   4294,  96888,
+    };
+    static constexpr int32_t tritanopia[9] = {
+        125553,  -7675, -17878,
+         -7841,  93081,  14760,
+           473,  69137,  30390,
+    };
+    const bool known = simulation >= ReadabilitySimulation::Standard &&
+        simulation <= ReadabilitySimulation::Tritanopia;
+    if (!known) simulation = ReadabilitySimulation::Standard;
+    for (size_t offset = 0u; offset < source.size(); offset += 4u) {
+        const uint32_t alpha = source[offset + 3u];
+        for (size_t component = 0u; component < 3u; ++component) {
+            result[offset + component] = static_cast<uint8_t>(
+                (static_cast<uint32_t>(source[offset + component]) * alpha +
+                 static_cast<uint32_t>(background[component]) *
+                     (255u - alpha) +
+                 127u) /
+                255u);
+        }
+        result[offset + 3u] = 255u;
+        uint8_t *pixel = result.data() + offset;
+        switch (simulation) {
+            case ReadabilitySimulation::Grayscale: {
+                const uint8_t gray = luminance(pixel);
+                pixel[0] = pixel[1] = pixel[2] = gray;
+                break;
+            }
+            case ReadabilitySimulation::Protanopia:
+                applyVisionMatrix(pixel, protanopia);
+                break;
+            case ReadabilitySimulation::Deuteranopia:
+                applyVisionMatrix(pixel, deuteranopia);
+                break;
+            case ReadabilitySimulation::Tritanopia:
+                applyVisionMatrix(pixel, tritanopia);
+                break;
+            case ReadabilitySimulation::Standard:
+            default:
+                break;
+        }
+    }
     return result;
 }
 

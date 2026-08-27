@@ -27,6 +27,14 @@ enum class StylePreset : uint32_t {
     Count = 6u,
 };
 
+enum class ReadabilitySimulation : uint32_t {
+    Standard = 0u,
+    Grayscale = 1u,
+    Protanopia = 2u,
+    Deuteranopia = 3u,
+    Tritanopia = 4u,
+};
+
 constexpr size_t kStylePresetCount =
     static_cast<size_t>(StylePreset::Count);
 
@@ -73,6 +81,15 @@ bool validRecipe(const Recipe &recipe);
 Recipe presetRecipe(const Recipe &base, StylePreset preset);
 Canvas applyRecipe(const Canvas &source, const Recipe &recipe);
 Analysis analyse(const Canvas &canvas, uint8_t visibleAlpha = 16u);
+
+/* Produce one opaque, deterministic authoring stress view. The straight-RGBA
+ * portrait is composited over the supplied background before the selected
+ * colour-vision transform. These views help authors spot dependence on hue;
+ * they are deliberately not presented as clinical simulations or screenshots
+ * of a particular game scene. Unknown simulations return the standard view. */
+Canvas readabilityProof(
+    const Canvas &source, const std::array<uint8_t, 3> &background,
+    ReadabilitySimulation simulation);
 
 bool moveSelection(Canvas &canvas, Selection selection, int deltaX,
                    int deltaY, bool copy);

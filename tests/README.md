@@ -4928,8 +4928,9 @@ requires strict source loading, digest/dimension disclosure, square crop,
 premultiplied-area or crisp reduction, edge-connected matte removal, background
 frames, a non-destructive target-space subject mask with pointer and numeric
 coordinate routes, bounded framing/mask undo/redo, deterministic styling,
-quality-report,
-six exact-output clean/classic/bold/crisp/dithered/soft comparison variants,
+quality reporting, and an exact-byte-derived native/light/dark/grayscale/
+protanopia/deuteranopia/tritanopia readability proof, plus six exact-output
+clean/classic/bold/crisp/dithered/soft comparison variants and
 selection and palette-replacement surfaces to render at 200% UI scale in the
 compact launcher. Each variant preserves framing and cleanup, changes only the
 draft style recipe, and remains installed-byte-pure. A keyboard-only
@@ -4937,9 +4938,9 @@ speech walk must announce the consequential controls, and both arms must leave
 installed source/cache bytes unchanged. Pure `character_portrait_studio` and
 `character_draft_snapshot` tests prove CRC and APNG refusal, mutation-free decode
 failure, image operations, bounded provenance recipes, deterministic output,
-analysis, preset invariants, selection semantics, v1-v6 migration, and v7
-source-record/mask round trips
-independently of rendering. The shared
+analysis, opaque background compositing and deterministic screening transforms,
+preset invariants, selection semantics, v1-v6 migration, and v7
+source-record/mask round trips independently of rendering. The shared
 `character_edit_history` and rendered history gates retain the existing
 source-bound, byte-capped undo/redo contract around those draft fields.
 
