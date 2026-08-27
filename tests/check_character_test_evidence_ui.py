@@ -324,6 +324,39 @@ def main() -> int:
                 root,
                 characters,
                 (
+                    "character-fit-reference package=" + PACKAGE_ID
+                    + " context=2 source-fit-context=current plane=-1 "
+                    "planeMatch=0 product=model-alpha "
+                    "camera=oblique inspection camera",
+                    "character-fit-overlay-focus applied=1 context=2 views=3",
+                ),
+                action="publish-inspection-capture",
+                inspection_capture=root / "source" / "portrait.png",
+                focus_fit_overlay=True,
+            )
+
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "character-test-evidence-action "
+                    "action=publish-inspection-capture-stale-fit "
+                    "applied=1 records=0 baselines=0",
+                    "character-fit-reference package=" + PACKAGE_ID
+                    + " context=2 source-fit-context=current plane=-1 "
+                    "match=none sessionCaptures=1 bounded=1",
+                ),
+                action="publish-inspection-capture-stale-fit",
+                inspection_capture=root / "source" / "portrait.png",
+                focus_fit_overlay=True,
+            )
+
+            run(
+                binary,
+                root,
+                characters,
+                (
                     "character-test-evidence-action "
                     "action=publish-qualified applied=1 records=1 baselines=0",
                     "character-test-evidence saved=1",
@@ -663,7 +696,7 @@ def main() -> int:
         return 1
     print(
         "check_character_test_evidence_ui: PASS -- durable source/fit/device-"
-        "bound 4x4 matrix with focusable three-view bounds/anchor/facing overlays, signed renderer-fit and hand/foot contact diagnostics, same-"
+        "bound 4x4 matrix with focusable three-view bounds/anchor/facing overlays, digest-bound current renderer references with stale-fit refusal, signed renderer-fit and hand/foot contact diagnostics, same-"
         "environment wall/scene/character GPU baseline lifecycle, corruption "
         "and invalid-fit/contact/GPU refusal, pose-inspection exclusion, keyboard speech, "
         "200% rendering, and package-byte purity"

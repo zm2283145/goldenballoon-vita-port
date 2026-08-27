@@ -2109,6 +2109,7 @@ std::map<std::string,
          std::map<std::string, CharacterCaptureThumbnailCache>>
     g_characterCaptureThumbnails;
 std::set<std::string> g_characterCaptureThumbnailTraceKeys;
+std::set<std::string> g_characterFitReferenceTraceKeys;
 SettingsCharacterPreviewRequest g_characterPreviewRequest;
 bool g_characterPreviewRequested = false;
 CharacterTestEvidenceStore::Inventory g_characterTestEvidence;
@@ -5114,6 +5115,10 @@ MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
     const CharacterTestEvidenceStore::Evidence &evidence);
 void drawCharacterFitDiagnostics(
     const MdkrCharacterPreviewResult &result, bool compact);
+void drawCharacterFitReference(
+    const MdkrModernCharacterEntry *entry, const std::string &sourceSha256,
+    const std::string &fitSha256, MdkrCharacterPreviewContext context,
+    int selectedView, bool compact);
 
 bool characterTestEvidenceMatchesTuning(
     const MdkrModernCharacterEntry *entry,
@@ -6396,6 +6401,10 @@ bool drawCharacterTuningEditor(int player,
                     drawCharacterFitOverlay(
                         result->second.result,
                         g_characterFitSpatialViews[overlayKey], true);
+                    drawCharacterFitReference(
+                        entry, result->second.sourceSha256,
+                        result->second.fitSha256, previewContext,
+                        g_characterFitSpatialViews[overlayKey], true);
                 } else {
                     ImGui::TextColored(
                         AppTheme::bad(),
@@ -6410,6 +6419,10 @@ bool drawCharacterTuningEditor(int player,
                 drawCharacterFitOverlay(
                     durablePreview, g_characterFitSpatialViews[overlayKey],
                     true);
+                drawCharacterFitReference(
+                    entry, durableResult->sourceSha256,
+                    durableResult->fitSha256, previewContext,
+                    g_characterFitSpatialViews[overlayKey], true);
                 if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
                     const std::string traceKey = std::string(entry->id) + ":" +
                         std::to_string(static_cast<unsigned>(previewContext));
@@ -7476,6 +7489,15 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
                 characterPreviewResultContext(result.context), result.players,
                 result.players == 1 ? "player" : "players");
     drawCharacterFitDiagnostics(result, false);
+    const CharacterTuningEdit &currentTuning =
+        loadCharacterTuning(0, entry->id);
+    drawCharacterFitReference(
+        entry, characterDigestHex(entry->source_sha256),
+        characterTestTuningSignature(
+            entry, currentTuning,
+            static_cast<unsigned>(result.context -
+                                  MDKR_CHARACTER_PREVIEW_SELECT)),
+        result.context, -1, false);
     drawCharacterContactDiagnostics(result);
     if (result.pose != MDKR_CHARACTER_PREVIEW_POSE_LIVE) {
         const CharacterInspectionPose *pose =
@@ -8013,6 +8035,173 @@ void drawCharacterCaptureThumbnail(
     }
 }
 
+const char *characterFitReferenceCameraRelation(
+    const CharacterVisualReport::Capture &capture,
+    MdkrCharacterPreviewContext context) {
+    if (context == MDKR_CHARACTER_PREVIEW_SELECT) {
+        return "authored character-select camera";
+    }
+    if ((capture.viewYawDegrees == 180 ||
+         capture.viewYawDegrees == -180) &&
+        capture.viewPitchDegrees == 0) {
+        return "front camera";
+    }
+    if ((capture.viewYawDegrees == 90 ||
+         capture.viewYawDegrees == -90) &&
+        capture.viewPitchDegrees == 0) {
+        return "side camera";
+    }
+    if (capture.viewYawDegrees == 0 && capture.viewPitchDegrees == 0) {
+        return "gameplay camera";
+    }
+    return "oblique inspection camera";
+}
+
+bool characterFitReferenceMatchesPlane(
+    const CharacterVisualReport::Capture &capture,
+    MdkrCharacterPreviewContext context, int selectedView) {
+    if (context == MDKR_CHARACTER_PREVIEW_SELECT) return false;
+    if (selectedView == 0) {
+        return (capture.viewYawDegrees == 180 ||
+                capture.viewYawDegrees == -180) &&
+               capture.viewPitchDegrees == 0;
+    }
+    if (selectedView == 1) {
+        return (capture.viewYawDegrees == 90 ||
+                capture.viewYawDegrees == -90) &&
+               capture.viewPitchDegrees == 0;
+    }
+    // The current exact inspection camera contract caps pitch at 45°.
+    // Never call an oblique image a top-plane match.
+    return false;
+}
+
+void drawCharacterFitReference(
+    const MdkrModernCharacterEntry *entry, const std::string &sourceSha256,
+    const std::string &fitSha256, MdkrCharacterPreviewContext context,
+    int selectedView, bool compact) {
+    if (entry == nullptr || !characterDigestTextValid(sourceSha256) ||
+        !characterDigestTextValid(fitSha256) ||
+        context < MDKR_CHARACTER_PREVIEW_SELECT ||
+        context > MDKR_CHARACTER_PREVIEW_PLANE) {
+        return;
+    }
+    const auto captures = g_characterVisualCaptures.find(entry->id);
+    const CharacterVisualReport::Capture *best = nullptr;
+    int bestScore = -1;
+    if (captures != g_characterVisualCaptures.end()) {
+        for (auto candidate = captures->second.rbegin();
+             candidate != captures->second.rend(); ++candidate) {
+            if (candidate->sourceSha256 != sourceSha256 ||
+                candidate->fitSha256 != fitSha256 ||
+                candidate->context != characterPreviewResultContext(context)) {
+                continue;
+            }
+            const bool planeMatch = selectedView >= 0 &&
+                characterFitReferenceMatchesPlane(
+                    *candidate, context, selectedView);
+            // Reverse traversal makes equal-quality selection newest-first.
+            // Product choice is authored and visible; do not silently prefer
+            // an older transparent capture over a newer composed proof.
+            const int score = planeMatch ? 100 : 0;
+            if (score > bestScore) {
+                best = &*candidate;
+                bestScore = score;
+            }
+        }
+    }
+
+    ImGui::SeparatorText("Exact renderer reference");
+    if (best == nullptr) {
+        const std::string traceKey = std::string(entry->id) + "\nnone\n" +
+            sourceSha256 + "\n" + fitSha256 + "\n" +
+            std::to_string(static_cast<unsigned>(context)) + "\n" +
+            std::to_string(selectedView);
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
+            g_characterFitReferenceTraceKeys.insert(traceKey).second) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-fit-reference package=%s context=%u source-fit-context=current plane=%d match=none sessionCaptures=%zu bounded=1\n",
+                entry->id, static_cast<unsigned>(context), selectedView,
+                captures != g_characterVisualCaptures.end()
+                    ? captures->second.size() : 0u);
+        }
+        ui::TextSubtleWrapped(
+            selectedView >= 0
+                ? "No source-, fit-, and vehicle-matching renderer capture is available for this plane yet. In Test, choose a model-only capture and the corresponding front or side camera; the top plot remains coordinate-only until the engine publishes a true top camera and projection witness."
+                : "No source-, fit-, and vehicle-matching renderer capture is available in this Workshop session. Create a stabilized model-only or gameplay capture in Test to place actual renderer pixels beside these measurements.");
+        const bool planePreset = context != MDKR_CHARACTER_PREVIEW_SELECT &&
+            (selectedView == 0 || selectedView == 1);
+        const char *prepareLabel = planePreset
+            ? selectedView == 0
+                ? "Prepare front reference capture"
+                : "Prepare side reference capture"
+            : "Open renderer capture setup";
+        if (ImGui::Button(prepareLabel)) {
+            CharacterCaptureEdit &capture = g_characterCaptureEdits[entry->id];
+            capture.enabled = true;
+            capture.kind = MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA;
+            if (planePreset) {
+                g_characterTestViewYawDegrees[entry->id] =
+                    selectedView == 0 ? 180 : 90;
+                g_characterTestViewPitchDegrees[entry->id] = 0;
+            }
+            persistCharacterWorkshopTab(CharacterWorkshopTab::Test, true);
+            setStatus(
+                planePreset
+                    ? "Matching model-only camera prepared in Test. Choose a new PNG filename, then inspect this vehicle; no package setting changed."
+                    : "Model-only capture setup opened in Test. Choose a context, camera, and new PNG filename; no package setting changed.",
+                AppTheme::good());
+        }
+        ui::SpeakFocusedItem(
+            prepareLabel, nullptr,
+            planePreset
+                ? "Opens Test with model-only capture enabled and the matching front or side camera. Choose a new PNG path and start the same vehicle inspection; fit settings are unchanged."
+                : "Opens Test with model-only capture enabled. Choose a context, supported camera, and new PNG path; fit settings are unchanged.");
+        return;
+    }
+
+    const bool planeMatch = selectedView >= 0 &&
+        characterFitReferenceMatchesPlane(*best, context, selectedView);
+    const char *product = best->renderProduct ==
+            CharacterVisualReport::RenderProduct::ModelAlpha
+        ? "model-only transparent" : "composed gameplay";
+    const char *camera = characterFitReferenceCameraRelation(*best, context);
+    ImGui::PushID("character-fit-reference");
+    ImGui::PushID(best->pngSha256.c_str());
+    ImGui::Text("%s · %s", product, camera);
+    ui::TextSubtleWrapped(
+        planeMatch
+            ? "This digest-bound capture matches the current source, fit, vehicle, and selected camera plane. It is a perspective renderer reference beside the orthographic donor-target plot; it is not stretched or falsely registered to the plot."
+            : "This digest-bound capture matches the current source, fit, and vehicle. Its camera does not match the selected orthographic plane, so it remains a clearly labelled visual reference rather than an alignment claim.");
+    drawCharacterCaptureThumbnail(entry, *best);
+    if (!compact) {
+        ImGui::TextDisabled(
+            "Pose %s at %.3f · light %s · %d° yaw / %d° pitch · SHA-256 %.12s…",
+            best->pose.c_str(), best->phaseMilli / 1000.0,
+            best->lighting.c_str(), best->viewYawDegrees,
+            best->viewPitchDegrees, best->pngSha256.c_str());
+    }
+    const std::string traceKey = std::string(entry->id) + "\n" +
+        sourceSha256 + "\n" + fitSha256 + "\n" +
+        std::to_string(static_cast<unsigned>(context)) + "\n" +
+        std::to_string(selectedView) + "\n" + best->pngSha256;
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
+        g_characterFitReferenceTraceKeys.insert(traceKey).second) {
+        std::fprintf(
+            stderr,
+            "[app-ui] character-fit-reference package=%s context=%u source-fit-context=current plane=%d planeMatch=%d product=%s camera=%s digest=%.12s bounded=1\n",
+            entry->id, static_cast<unsigned>(context), selectedView,
+            planeMatch ? 1 : 0,
+            best->renderProduct ==
+                    CharacterVisualReport::RenderProduct::ModelAlpha
+                ? "model-alpha" : "scene",
+            camera, best->pngSha256.c_str());
+    }
+    ImGui::PopID();
+    ImGui::PopID();
+}
+
 void drawCharacterVisualCaptureTray(
     const MdkrModernCharacterEntry *entry,
     CharacterCaptureEdit &edit) {
@@ -8260,6 +8449,9 @@ void drawCharacterTestEvidenceMatrix(
             std::strcmp(
                 smokeAction, "publish-inspection-capture") == 0 ||
             std::strcmp(
+                smokeAction,
+                "publish-inspection-capture-stale-fit") == 0 ||
+            std::strcmp(
                 smokeAction, "publish-inspection-fallback") == 0 ||
             std::strcmp(smokeAction, "publish-mixed-mode") == 0 ||
             std::strcmp(smokeAction, "publish-invalid-fit") == 0 ||
@@ -8363,9 +8555,16 @@ void drawCharacterTestEvidenceMatrix(
                 std::strcmp(
                     smokeAction, "publish-inspection-capture") == 0 ||
                 std::strcmp(
+                    smokeAction,
+                    "publish-inspection-capture-stale-fit") == 0 ||
+                std::strcmp(
                     smokeAction, "publish-inspection-fallback") == 0;
-            const bool inspectionCapture = std::strcmp(
-                smokeAction, "publish-inspection-capture") == 0;
+            const bool staleInspectionCapture = std::strcmp(
+                smokeAction,
+                "publish-inspection-capture-stale-fit") == 0;
+            const bool inspectionCapture =
+                std::strcmp(smokeAction, "publish-inspection-capture") == 0 ||
+                staleInspectionCapture;
             const bool inspectionFallback = std::strcmp(
                 smokeAction, "publish-inspection-fallback") == 0;
             const bool mixedMode = std::strcmp(
@@ -8431,7 +8630,8 @@ void drawCharacterTestEvidenceMatrix(
             const std::string source =
                 characterDigestHex(entry->source_sha256);
             const bool staleFit = std::strcmp(
-                smokeAction, "publish-stale-fit-session") == 0;
+                smokeAction, "publish-stale-fit-session") == 0 ||
+                staleInspectionCapture;
             const bool staleLod = std::strcmp(
                 smokeAction, "publish-stale-lod-session") == 0;
             const std::string fit = staleFit
@@ -8478,7 +8678,8 @@ void drawCharacterTestEvidenceMatrix(
                     latest == nullptr &&
                     session->second.result.pose ==
                         MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER &&
-                    (inspectionFallback ? !sessionMatches : sessionMatches) &&
+                    ((inspectionFallback || staleInspectionCapture)
+                         ? !sessionMatches : sessionMatches) &&
                     (!inspectionCapture ||
                      (!capturePath.empty() &&
                       g_characterVisualCaptures[entry->id].size() == 1u));
