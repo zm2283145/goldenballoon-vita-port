@@ -1139,14 +1139,27 @@ character material to form a large contiguous component inside the central safe
 frame, and proves the RGBA product has a nonempty bounded subject, a genuinely
 transparent background, and no hidden matte color in zero-alpha pixels. It also
 proves an existing capture stays byte-identical.
+Every valid arm also requires result-v18's asynchronous 8 x 8 opaque-depth
+witness: one exact replay records isolated occupied regions and a second replay
+uses equality against the completed scene depth. Portable WebGPU occlusion
+queries are treated only as booleans. Exact masks and popcounts are retained;
+alpha-tested fragments use the real cutoff, blended materials are explicitly
+unqualified, and a completed all-zero query is actionable “not rendered”
+evidence rather than an unavailable result. The output-sized private depth
+surface is released immediately after submission and the readback never blocks.
+The linked-ROM gate includes an all-BLEND package, a two-primitive OPAQUE plus
+MASK package, and the completed-zero contact fixture, so the material branches,
+multi-draw replay, and failing-zero semantics execute in the real game route.
+Fit approval consumes this result only after an explicit composed-scene
+acknowledgement; qualified zero-fragment opaque/masked evidence blocks approval.
 This qualifies the direct game route, visual inspection controls, capture seam,
-stress seam, and optional exact GPU timestamp seam. Embedded offscreen preview,
-representative scene variants, and a maintained device-profile/headroom corpus
-remain open.
+stress seam, coarse opaque-depth seam, and optional exact GPU timestamp seam.
+Embedded offscreen preview, donor-reference attribution, representative scene
+variants, and a maintained device-profile/headroom corpus remain open.
 
 Launcher-owned previews also arm the existing bounded presentation census. The
 game discards a 120-authored-tick warm-up, resets only the observational timing
-window, and freezes a structured version-13 result when the F1 overlay opens (or
+window, and freezes a structured version-18 result when the F1 overlay opens (or
 at engine shutdown). The surviving launcher publishes that result back to the
 same package inspector: displayed interval sample count, median/p95/p99/mean/max,
 authored tick-wall sample/mean, and warmed replacement/part/donor-suppression
@@ -1156,11 +1169,12 @@ selected backend/adapter/driver, exact optional GPU timestamp distributions and
 scope/exclusion state, and physical
 output versus scene-render dimensions, held-pose/fallback ticks, camera/light
 application counters, and requested/armed/written capture state, typed render
-product, stable-frame count, and byte count. Fewer than 60 intervals
+product, stable-frame count, byte count, and exact opaque-depth region masks.
+Fewer than 60 intervals
 and synthetic pacing are explicitly diagnostic-only. Visual-inspection results
 remain session-only and cannot contaminate durable timing evidence.
 
-The launcher collects only version-13 captures armed after at least 12 eligible
+The launcher collects only version-18 captures armed after at least 12 eligible
 frames in bounded session metadata and can export a self-contained HTML
 qualification report. Publication validates the complete typed PNG and binds
 its SHA-256 immediately. A model-only result also requires the renderer's exact
@@ -1203,11 +1217,12 @@ visible and never count as current, while an LOD-only change does not revoke the
 separate vehicle-fit review. Baseline pinning, exact-cell deletion, package
 deletion, restart recovery, an actual LOD-policy stale transition, and
 malformed-inventory preservation are covered by a rendered ROM-free lifecycle
-gate. Evidence schema v4 retains the signed target-frame bounds, ground/seat
+gate. Evidence schema v8 retains the signed target-frame bounds, ground/seat
 anchor, normalized facing direction, and four exact post-solve
 root/bend/target/end/error contact witnesses from the successful replacement
-draw, so Fit and Performance retain the same renderer measurement after
-restart. The v13 result contract requires either all four self-consistent
+draw, retained-vehicle topology and containment facts, and the opaque-depth
+grid, so Fit and Performance retain the same renderer measurement after
+restart. The v18 result contract requires either all four self-consistent
 witnesses or none; a vehicle result with nonzero automatic solve count cannot
 omit or partially publish them. It also carries a versioned GPU timing contract:
 the initial gameplay color/depth pass is timestamped when the device supports
@@ -1217,11 +1232,11 @@ readback ring never waits in the frame path. Four 4,096-query character sets
 cover the full accepted 512 primitives × four local packages × four viewports;
 each resolve begins at a WebGPU-required 256-byte boundary. Pending, ring-full, invalid,
 unsupported, device-lost, and error states remain explicit, and no wall-cadence
-estimate is substituted. All optional query and readback resources are
+estimate is substituted. All optional timestamp query and readback resources are
 preallocated during renderer initialization inside portable validation and
 out-of-memory error scopes, so allocation failure cannot become a fatal
 uncaptured device error or introduce a wait in gameplay. Authenticated
-v1/v2/v3 inventories load older fields with explicit unavailable states and
+v1 through v7 inventories load older fields with explicit unavailable states and
 migrate in place on the next
 successful write; the established
 filename remains unchanged so old evidence is never orphaned. Same-environment
@@ -1332,7 +1347,7 @@ fail before GPU allocation; decoded cost accounting matches actual allocations.
   cross-fades, presentation endpoint retention, WebGPU GPU skinning, reviewed
   humanoid fallback poses, and vehicle contacts are implemented.
 - Exact Animation Studio review holds 0/50/100% samples or alternates two
-  distinct semantics through those same cross-fades. Result v14 reports both
+  distinct semantics through those same cross-fades. The current result-v18 contract reports both
   motion sources, per-destination blend milliseconds, switches, blended ticks,
   completions, and package-fallback ticks without entering durable performance
   evidence.

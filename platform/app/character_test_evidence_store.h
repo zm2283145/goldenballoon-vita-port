@@ -71,7 +71,7 @@ struct Evidence {
     uint64_t    tickwallSamples             = 0u;
     uint64_t    tickwallMeanNs              = 0u;
     /* Version zero means the authenticated v1-v3 record predates GPU timing.
-     * Current v7/result-v17 records carry a structurally validated snapshot. */
+     * Current v8/result-v18 records carry a structurally validated snapshot. */
     MdkrModernCharacterGpuTimingMetrics gpuTiming{};
     uint64_t    replacementDraws            = 0u;
     uint64_t    replacementPrimitives       = 0u;
@@ -122,6 +122,22 @@ struct Evidence {
     uint32_t    vehicleContainmentOutsideSamples = 0u;
     uint64_t    vehicleContainmentMaximumDepthMicrometres = 0u;
     int64_t     vehicleContainmentDeepestMicrometres[3] = {};
+    bool        opaqueVisibilityValid = false;
+    bool        opaqueVisibilityQualified = false;
+    uint32_t    opaqueVisibilityWidth = 0u;
+    uint32_t    opaqueVisibilityHeight = 0u;
+    int32_t     opaqueVisibilityViewport[4] = {};
+    int32_t     opaqueVisibilityScissor[4] = {};
+    uint32_t    opaqueVisibilityPrimitiveDraws = 0u;
+    uint32_t    opaqueVisibilityOpaqueDraws = 0u;
+    uint32_t    opaqueVisibilityMaskedDraws = 0u;
+    uint32_t    opaqueVisibilityTransparentDraws = 0u;
+    uint32_t    opaqueVisibilityGridColumns = 0u;
+    uint32_t    opaqueVisibilityGridRows = 0u;
+    uint32_t    opaqueVisibilityIsolatedTiles = 0u;
+    uint32_t    opaqueVisibilitySceneTiles = 0u;
+    uint64_t    opaqueVisibilityIsolatedTileMask = 0u;
+    uint64_t    opaqueVisibilitySceneTileMask = 0u;
     std::string backend;
     std::string adapter;
     std::string driver;

@@ -843,6 +843,26 @@ CharacterWorkshopFitAssessment CharacterWorkshop_assessFit(
     return result;
 }
 
+CharacterWorkshopFitReviewDecision CharacterWorkshop_reviewFit(
+    const CharacterWorkshopFitReviewFacts &facts) {
+    CharacterWorkshopFitReviewDecision result;
+    result.visibilityBlocksReview = facts.exactContract &&
+        facts.opaqueVisibilityQualified &&
+        facts.isolatedVisibleTiles == 0u;
+    const bool visibilityWarning = facts.exactContract &&
+        !result.visibilityBlocksReview &&
+        (!facts.opaqueVisibilityQualified ||
+         static_cast<uint64_t>(facts.sceneVisibleTiles) * 100u <
+             static_cast<uint64_t>(facts.isolatedVisibleTiles) * 60u);
+    result.warnings = facts.advisoryFitWarning || facts.cameraWarning ||
+        facts.surfaceWarning || visibilityWarning;
+    result.ready = facts.exactContract &&
+        !result.visibilityBlocksReview && facts.sceneReviewed &&
+        (!facts.contactExceptionRequired ||
+         facts.contactExceptionApproved);
+    return result;
+}
+
 bool CharacterWorkshop_facingCorrectionDegrees(
     uint32_t sourceForward, float &outputDegrees) {
     static constexpr float kCorrections[] = {

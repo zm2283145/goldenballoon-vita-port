@@ -349,6 +349,48 @@ void testExactFitSuggestions() {
     assert(!CharacterWorkshop_assessFit(invalid).valid);
 }
 
+void testExactFitReviewGate() {
+    CharacterWorkshopFitReviewFacts facts;
+    auto decision = CharacterWorkshop_reviewFit(facts);
+    assert(!decision.ready && !decision.visibilityBlocksReview);
+
+    facts.exactContract = true;
+    facts.opaqueVisibilityQualified = true;
+    decision = CharacterWorkshop_reviewFit(facts);
+    assert(decision.visibilityBlocksReview && !decision.ready);
+
+    facts.opaqueVisibilityQualified = false;
+    facts.sceneReviewed = true;
+    decision = CharacterWorkshop_reviewFit(facts);
+    assert(!decision.visibilityBlocksReview && decision.warnings &&
+           decision.ready);
+
+    facts.opaqueVisibilityQualified = true;
+    facts.isolatedVisibleTiles = 10u;
+    facts.sceneVisibleTiles = 2u;
+    decision = CharacterWorkshop_reviewFit(facts);
+    assert(decision.warnings && decision.ready);
+    facts.sceneVisibleTiles = 6u;
+    decision = CharacterWorkshop_reviewFit(facts);
+    assert(!decision.warnings && decision.ready);
+
+    facts.contactExceptionRequired = true;
+    decision = CharacterWorkshop_reviewFit(facts);
+    assert(!decision.ready);
+    facts.contactExceptionApproved = true;
+    decision = CharacterWorkshop_reviewFit(facts);
+    assert(decision.ready);
+
+    facts.advisoryFitWarning = true;
+    assert(CharacterWorkshop_reviewFit(facts).warnings);
+    facts.advisoryFitWarning = false;
+    facts.cameraWarning = true;
+    assert(CharacterWorkshop_reviewFit(facts).warnings);
+    facts.cameraWarning = false;
+    facts.surfaceWarning = true;
+    assert(CharacterWorkshop_reviewFit(facts).warnings);
+}
+
 void testSourceTransformDiagnosis() {
     float correction = 321.0f;
     assert(CharacterWorkshop_facingCorrectionDegrees(0u, correction) &&
@@ -549,6 +591,7 @@ int main() {
     testRuntimeEquivalentLodSelection();
     testRuntimeLodHysteresis();
     testExactFitSuggestions();
+    testExactFitReviewGate();
     testSourceTransformDiagnosis();
     testStructuralRigInference();
     return 0;

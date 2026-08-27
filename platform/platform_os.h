@@ -18,6 +18,7 @@
 #include <stddef.h>
 #include "mdkr_trace.h"
 #include "modern_character_capture_projection.h"
+#include "modern_character_visibility.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -372,6 +373,19 @@ int platform_modern_character_capture_pending(void);
  * and quantized before any durable evidence is published. */
 int platform_modern_character_capture_projection(
     MdkrModernCharacterCaptureProjection *projection);
+/* One-shot, nonblocking WebGPU opaque-depth witness. The renderer claims a
+ * request before encoding, then publishes only after asynchronous query
+ * readback. Transparent materials publish structurally valid but explicitly
+ * unqualified evidence so the UI can direct the author to visual review. */
+int platform_modern_character_visibility_request_once(void);
+int platform_modern_character_visibility_requested(void);
+int platform_modern_character_visibility_pending(void);
+int platform_modern_character_visibility_begin(void);
+void platform_modern_character_visibility_publish(
+    const MdkrModernCharacterVisibilityDiagnostics *diagnostics);
+void platform_modern_character_visibility_fail(void);
+int platform_modern_character_visibility_diagnostics(
+    MdkrModernCharacterVisibilityDiagnostics *diagnostics);
 
 /* ===== Content packs (platform_sdl_min.c) =============================== *
  * Host-side ownership of the pack registry (platform/mod_registry.h) and the

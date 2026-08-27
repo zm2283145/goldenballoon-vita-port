@@ -186,6 +186,26 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned vehicle_containment_outside_samples;
     unsigned long long vehicle_containment_maximum_depth_micrometres;
     long long vehicle_containment_deepest_micrometres[3];
+    /* Exact final opaque-depth witness from asynchronous WebGPU occlusion
+     * queries. A structurally valid but unqualified result names transparent
+     * draws and carries no region ratio. Boolean tile masks deliberately do
+     * not claim portable per-pixel sample counts. */
+    int opaque_visibility_valid;
+    int opaque_visibility_qualified;
+    unsigned opaque_visibility_width;
+    unsigned opaque_visibility_height;
+    int opaque_visibility_viewport[4];
+    int opaque_visibility_scissor[4];
+    unsigned opaque_visibility_primitive_draws;
+    unsigned opaque_visibility_opaque_draws;
+    unsigned opaque_visibility_masked_draws;
+    unsigned opaque_visibility_transparent_draws;
+    unsigned opaque_visibility_grid_columns;
+    unsigned opaque_visibility_grid_rows;
+    unsigned opaque_visibility_isolated_tiles;
+    unsigned opaque_visibility_scene_tiles;
+    unsigned long long opaque_visibility_isolated_tile_mask;
+    unsigned long long opaque_visibility_scene_tile_mask;
     /* Model-alpha captures additionally bind the donor-target fit to exact PNG
      * pixels. Points 0..7 are the calibrated AABB corners (XYZ bits), point 8
      * is the anchor, and point 9 is a scaled forward endpoint. All values are
@@ -236,7 +256,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 17u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 18u
 #define MDKR_CHARACTER_PREVIEW_TRANSITION_DWELL_MILLI \
     MDKR_MODERN_CHARACTER_INSPECTION_TRANSITION_DWELL_MILLI
 #define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u

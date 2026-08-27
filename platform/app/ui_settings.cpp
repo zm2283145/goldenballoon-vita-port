@@ -2404,6 +2404,7 @@ struct CharacterDraftReviewState {
 };
 std::map<std::string, CharacterDraftReviewState> g_characterDraftReviews;
 std::map<std::string, uint32_t> g_characterPendingContactExceptions;
+std::map<std::string, uint32_t> g_characterPendingSceneReviews;
 std::map<std::string, bool> g_characterPendingPerformanceExceptions;
 std::map<std::string, bool> g_characterPendingDraftFit;
 std::string g_characterPendingDraftRemoval;
@@ -2642,7 +2643,9 @@ std::string characterFitReviewSignature(
     const CharacterTuningEdit &edit,
     unsigned context) {
     if (entry == nullptr || context >= MDKR_CHARACTER_CONTEXT_COUNT) return {};
-    std::string canonical = "mdkr-character-fit-review-v1\n";
+    /* v2 binds approval to the exact-scene acknowledgement contract. Old
+     * approvals predate the opaque-depth witness and must be reviewed once. */
+    std::string canonical = "mdkr-character-fit-review-v2\n";
     canonical.append(reinterpret_cast<const char *>(entry->source_sha256),
                      sizeof(entry->source_sha256));
     canonical += "\n" + std::to_string(entry->donor) + "\n";
@@ -4664,6 +4667,7 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterActiveDrafts.erase(id);
     g_characterDraftReviews.erase(id);
     g_characterPendingContactExceptions.erase(id);
+    g_characterPendingSceneReviews.erase(id);
     g_characterPendingPerformanceExceptions.erase(id);
     g_characterPendingDraftFit.erase(id);
     if (g_characterDraftNameOwner == id) {
@@ -6430,6 +6434,8 @@ bool characterPreviewCameraProjectionValid(
     const MdkrCharacterPreviewResult &result);
 bool characterPreviewVehicleSurfaceValid(
     const MdkrCharacterPreviewResult &result);
+bool characterPreviewOpaqueVisibilityValid(
+    const MdkrCharacterPreviewResult &result);
 bool characterPreviewContactDiagnosticsValid(
     const MdkrCharacterPreviewResult &result);
 MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
@@ -6476,6 +6482,7 @@ bool characterPreviewSessionMatchesTuning(
            characterPreviewFitDiagnosticsValid(session.result) &&
            characterPreviewCameraProjectionValid(session.result) &&
            characterPreviewVehicleSurfaceValid(session.result) &&
+           characterPreviewOpaqueVisibilityValid(session.result) &&
            characterPreviewProjectionValid(session.result) &&
            characterPreviewContactDiagnosticsValid(session.result) &&
            (session.result.capture_requested
@@ -7579,11 +7586,39 @@ void drawCharacterFitQualityBands(
             : assessment.vehicleContext
                 ? "Vehicle-body contact / intersection · Exact evidence unavailable"
                 : "Vehicle-body contact / intersection · Not applicable");
+    const bool exactOpaqueVisibility =
+        characterPreviewOpaqueVisibilityValid(result) &&
+        result.opaque_visibility_valid;
+    if (exactOpaqueVisibility && result.opaque_visibility_qualified &&
+        result.opaque_visibility_isolated_tiles != 0u) {
+        const double visiblePercent = 100.0 * static_cast<double>(
+            result.opaque_visibility_scene_tiles) /
+            result.opaque_visibility_isolated_tiles;
+        ImGui::TextColored(
+            visiblePercent < 25.0 ? AppTheme::bad()
+                : visiblePercent < 60.0 ? AppTheme::accent()
+                                        : AppTheme::good(),
+            "Opaque-depth visibility · %.1f%% of occupied regions visible",
+            visiblePercent);
+    } else if (exactOpaqueVisibility &&
+               result.opaque_visibility_qualified) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "Opaque-depth visibility · No character regions rendered");
+    } else if (exactOpaqueVisibility) {
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "Opaque-depth visibility · Blended materials need visual review");
+    } else {
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "Opaque-depth visibility · Exact evidence unavailable");
+    }
     ImGui::TextColored(
         AppTheme::accent(),
-        "Opaque-depth visibility, attachments, and motion clearance · Visual review required");
+        "Named attachments and motion clearance · Representative visual review required");
     ui::TextSubtleWrapped(
-        "Green means the measured starting range is ordinary, amber asks for judgement, and red identifies a likely placement defect. These advisory bands never reject unusual anatomy. Camera framing, retained-body surface crossings, and—when the shell qualifies—bounded closed-volume containment are exact; the composed scene and representative poses remain authoritative for opaque-depth visibility, attachments, costume silhouette, unsampled geometry, and motion clearance.");
+        "Green means the measured starting range is ordinary, amber asks for judgement, and red identifies a likely placement defect. These advisory bands never reject unusual anatomy. Camera framing, retained-body surface crossings, qualified closed-volume containment, and the final opaque-depth region witness are exact within their stated bounds. The composed scene and representative poses remain authoritative for transparent materials, identifying which attached part hides the character, costume silhouette, unsampled geometry, and motion clearance.");
 }
 
 bool drawCharacterOffsetSuggestion(
@@ -8265,6 +8300,60 @@ bool drawCharacterTuningEditor(int player,
                         "Last exact test: no procedural contacts (authored clip or solver locked)");
                 }
             }
+            const bool exactReviewContract = fitEvidence.current &&
+                fitEvidence.result.version ==
+                    MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
+                fitEvidence.result.started &&
+                fitEvidence.result.warmup_complete &&
+                fitEvidence.result.replacement_draws != 0u &&
+                fitEvidence.result.fit_diagnostics_valid != 0 &&
+                fitEvidence.result.camera_projection_valid != 0 &&
+                fitEvidence.result.opaque_visibility_valid != 0 &&
+                (context == MDKR_CHARACTER_CONTEXT_SELECT ||
+                 fitEvidence.result.vehicle_surface_valid != 0) &&
+                characterPreviewFitDiagnosticsValid(fitEvidence.result) &&
+                characterPreviewCameraProjectionValid(fitEvidence.result) &&
+                characterPreviewVehicleSurfaceValid(fitEvidence.result) &&
+                characterPreviewOpaqueVisibilityValid(fitEvidence.result) &&
+                characterPreviewContactDiagnosticsValid(fitEvidence.result);
+            CharacterWorkshopFitAssessment reviewAssessment;
+            if (exactReviewContract) {
+                reviewAssessment = CharacterWorkshop_assessFit(
+                    characterWorkshopFitMeasurement(
+                        fitEvidence.result,
+                        context != MDKR_CHARACTER_CONTEXT_SELECT));
+            }
+            const bool advisoryFitWarning = exactReviewContract &&
+                (reviewAssessment.datum !=
+                     CharacterWorkshopQualitySeverity::Nominal ||
+                 reviewAssessment.facing !=
+                     CharacterWorkshopQualitySeverity::Nominal ||
+                 reviewAssessment.proportions !=
+                     CharacterWorkshopQualitySeverity::Nominal);
+            const bool cameraWarning = exactReviewContract &&
+                fitEvidence.result.camera_bounds_clip_flags != 0u;
+            const bool surfaceWarning = exactReviewContract &&
+                context != MDKR_CHARACTER_CONTEXT_SELECT &&
+                (fitEvidence.result.vehicle_surface_crossing_pairs != 0u ||
+                 fitEvidence.result.vehicle_volume_qualified == 0 ||
+                 fitEvidence.result
+                         .vehicle_containment_inside_samples != 0u);
+            CharacterWorkshopFitReviewFacts reviewFacts;
+            reviewFacts.exactContract = exactReviewContract;
+            reviewFacts.opaqueVisibilityQualified =
+                fitEvidence.result.opaque_visibility_qualified != 0;
+            reviewFacts.isolatedVisibleTiles =
+                fitEvidence.result.opaque_visibility_isolated_tiles;
+            reviewFacts.sceneVisibleTiles =
+                fitEvidence.result.opaque_visibility_scene_tiles;
+            reviewFacts.advisoryFitWarning = advisoryFitWarning;
+            reviewFacts.cameraWarning = cameraWarning;
+            reviewFacts.surfaceWarning = surfaceWarning;
+            CharacterWorkshopFitReviewDecision reviewDecision =
+                CharacterWorkshop_reviewFit(reviewFacts);
+            const bool visibilityBlocksReview =
+                reviewDecision.visibilityBlocksReview;
+            const bool reviewWarnings = reviewDecision.warnings;
             ImGui::SeparatorText("5. Review this context");
             const bool fitReviewed = characterFitReviewed(
                 entry, edit, context);
@@ -8274,13 +8363,17 @@ bool drawCharacterTuningEditor(int player,
                 fitReviewed ? AppTheme::good() : AppTheme::accent(),
                 fitReviewed
                     ? recordedContactException
-                        ? "Fit reviewed with an explicit contact exception for this exact source and tuning"
-                        : "Fit reviewed for this exact source and tuning"
+                        ? reviewWarnings
+                            ? "Fit reviewed with explicit contact and exact-scene warning acknowledgements"
+                            : "Fit reviewed with an explicit contact exception for this exact source and tuning"
+                        : reviewWarnings
+                            ? "Fit reviewed after explicit exact-scene warning acknowledgement"
+                            : "Fit reviewed for this exact source and tuning"
                     : "Fit review required for current source or tuning");
             if (!fitReviewed) {
                 uint32_t &pendingExceptions =
                     g_characterPendingContactExceptions[entry->id];
-                if (!fitEvidence.current || !contactQualityMeasured ||
+                if (!exactReviewContract || !contactQualityMeasured ||
                     contactsWithinGuide) {
                     pendingExceptions &= ~(1u << context);
                 }
@@ -8306,8 +8399,53 @@ bool drawCharacterTuningEditor(int player,
                         approveException ? "Checked" : "Not checked",
                         "Records an explicit source-and-fit-bound exception when this context is marked reviewed. It does not change contact targets or claim the numeric guide was met.");
                 }
-                const bool reviewReady = fitEvidence.current &&
-                    (!exceptionRequired || approveException);
+                uint32_t &pendingSceneReviews =
+                    g_characterPendingSceneReviews[entry->id];
+                if (!exactReviewContract || visibilityBlocksReview) {
+                    pendingSceneReviews &= ~(1u << context);
+                }
+                bool sceneReviewed =
+                    (pendingSceneReviews & (1u << context)) != 0u;
+                if (!exactReviewContract) {
+                    ImGui::TextColored(
+                        AppTheme::bad(),
+                        "A complete warmed renderer fit and visibility witness is required before review.");
+                    ui::TextSubtleWrapped(
+                        "Run this exact context again. Approval stays unavailable when fit, camera, vehicle-surface, contact, or opaque-depth evidence is incomplete or invalid.");
+                } else if (visibilityBlocksReview) {
+                    ImGui::TextColored(
+                        AppTheme::bad(),
+                        "The isolated replay rendered no opaque or alpha-tested character regions.");
+                    ui::TextSubtleWrapped(
+                        "This is a concrete invisible-character failure, so fit approval is blocked. Correct camera placement, facing, culling, or alpha masking and rerun the context. Transparency-only characters remain reviewable through the visual acknowledgement path.");
+                } else {
+                    if (reviewWarnings) {
+                        ImGui::TextColored(
+                            AppTheme::accent(),
+                            "One or more measured bands need judgement; the highlighted diagnostics above remain advisory for unusual anatomy and intentional styling.");
+                    }
+                    const char *sceneReviewLabel = reviewWarnings
+                        ? "I inspected the exact composed scene and accept the highlighted fit, clipping, or visibility warnings"
+                        : "I inspected the exact composed scene for placement, silhouette, and vehicle occlusion";
+                    if (ImGui::Checkbox(sceneReviewLabel, &sceneReviewed)) {
+                        if (sceneReviewed) {
+                            pendingSceneReviews |= 1u << context;
+                        } else {
+                            pendingSceneReviews &= ~(1u << context);
+                        }
+                    }
+                    ui::SpeakFocusedItem(
+                        "Exact composed-scene review",
+                        sceneReviewed ? "Checked" : "Not checked",
+                        reviewWarnings
+                            ? "Confirms visual inspection of this exact current frame and explicit acceptance of its highlighted advisory warnings. It does not waive a fully invisible opaque character."
+                            : "Confirms visual inspection of this exact current frame, including silhouette and occlusion that numeric fit bounds cannot prove.");
+                }
+                reviewFacts.sceneReviewed = sceneReviewed;
+                reviewFacts.contactExceptionRequired = exceptionRequired;
+                reviewFacts.contactExceptionApproved = approveException;
+                reviewDecision = CharacterWorkshop_reviewFit(reviewFacts);
+                const bool reviewReady = reviewDecision.ready;
                 if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
                     const std::string traceKey = std::string(entry->id) + ":" +
                         std::to_string(context) + ":" +
@@ -8317,13 +8455,17 @@ bool drawCharacterTuningEditor(int player,
                     if (tracedContactReviewStates.insert(traceKey).second) {
                         std::fprintf(
                             stderr,
-                            "[app-ui] character-contact-review package=%s context=%u measured=%d guide-met=%d exception-required=%d exception-approved=%d review-ready=%d\n",
+                            "[app-ui] character-contact-review package=%s context=%u measured=%d guide-met=%d exception-required=%d exception-approved=%d review-ready=%d exact-contract=%d visibility-block=%d scene-reviewed=%d warnings=%d\n",
                             entry->id, context,
                             contactQualityMeasured ? 1 : 0,
                             contactsWithinGuide ? 1 : 0,
                             exceptionRequired ? 1 : 0,
                             approveException ? 1 : 0,
-                            reviewReady ? 1 : 0);
+                            reviewReady ? 1 : 0,
+                            exactReviewContract ? 1 : 0,
+                            visibilityBlocksReview ? 1 : 0,
+                            sceneReviewed ? 1 : 0,
+                            reviewWarnings ? 1 : 0);
                     }
                 }
                 if (!reviewReady) ImGui::BeginDisabled();
@@ -8334,17 +8476,24 @@ bool drawCharacterTuningEditor(int player,
                     const bool persisted = persistCharacterFitReview(
                         entry, edit, context, exceptionRequired);
                     changed |= persisted;
-                    if (persisted) pendingExceptions &= ~(1u << context);
+                    if (persisted) {
+                        pendingExceptions &= ~(1u << context);
+                        pendingSceneReviews &= ~(1u << context);
+                    }
                 }
                 if (!reviewReady) ImGui::EndDisabled();
                 ui::SpeakFocusedItem(
                     reviewLabel.c_str(),
-                    !fitEvidence.current
-                        ? "Run and complete the matching exact renderer test first."
+                    !exactReviewContract
+                        ? "Run and complete the matching exact renderer fit and visibility test first."
+                        : visibilityBlocksReview
+                            ? "Correct the invisible-character failure and rerun this exact context first."
+                        : !sceneReviewed
+                            ? "Inspect and acknowledge the exact composed scene first."
                         : exceptionRequired && !approveException
                             ? "Inspect and explicitly approve the over-limit contact exception first."
                             : nullptr,
-                    "Saves review only for the current package source and fit values, including whether an over-limit contact exception was explicitly approved.");
+                    "Saves review only for the current package source and fit values after exact composed-scene inspection, including whether an over-limit contact exception was explicitly approved.");
             } else {
                 const std::string reopenLabel = std::string("Reopen ") +
                     contextNames[context] + " fit review";
@@ -9083,6 +9232,36 @@ CharacterTestEvidenceStore::Evidence characterTestEvidenceFromResult(
         evidence.vehicleContainmentDeepestMicrometres[axis] =
             result.vehicle_containment_deepest_micrometres[axis];
     }
+    evidence.opaqueVisibilityValid = result.opaque_visibility_valid != 0;
+    evidence.opaqueVisibilityQualified =
+        result.opaque_visibility_qualified != 0;
+    evidence.opaqueVisibilityWidth = result.opaque_visibility_width;
+    evidence.opaqueVisibilityHeight = result.opaque_visibility_height;
+    for (unsigned component = 0u; component < 4u; ++component) {
+        evidence.opaqueVisibilityViewport[component] =
+            result.opaque_visibility_viewport[component];
+        evidence.opaqueVisibilityScissor[component] =
+            result.opaque_visibility_scissor[component];
+    }
+    evidence.opaqueVisibilityPrimitiveDraws =
+        result.opaque_visibility_primitive_draws;
+    evidence.opaqueVisibilityOpaqueDraws =
+        result.opaque_visibility_opaque_draws;
+    evidence.opaqueVisibilityMaskedDraws =
+        result.opaque_visibility_masked_draws;
+    evidence.opaqueVisibilityTransparentDraws =
+        result.opaque_visibility_transparent_draws;
+    evidence.opaqueVisibilityGridColumns =
+        result.opaque_visibility_grid_columns;
+    evidence.opaqueVisibilityGridRows = result.opaque_visibility_grid_rows;
+    evidence.opaqueVisibilityIsolatedTiles =
+        result.opaque_visibility_isolated_tiles;
+    evidence.opaqueVisibilitySceneTiles =
+        result.opaque_visibility_scene_tiles;
+    evidence.opaqueVisibilityIsolatedTileMask =
+        result.opaque_visibility_isolated_tile_mask;
+    evidence.opaqueVisibilitySceneTileMask =
+        result.opaque_visibility_scene_tile_mask;
     evidence.backend = boundedCharacterPreviewText(
         result.renderer_backend, sizeof(result.renderer_backend));
     evidence.adapter = boundedCharacterPreviewText(
@@ -9200,6 +9379,37 @@ MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
         result.vehicle_containment_deepest_micrometres[axis] =
             evidence.vehicleContainmentDeepestMicrometres[axis];
     }
+    result.opaque_visibility_valid =
+        evidence.opaqueVisibilityValid ? 1 : 0;
+    result.opaque_visibility_qualified =
+        evidence.opaqueVisibilityQualified ? 1 : 0;
+    result.opaque_visibility_width = evidence.opaqueVisibilityWidth;
+    result.opaque_visibility_height = evidence.opaqueVisibilityHeight;
+    for (unsigned component = 0u; component < 4u; ++component) {
+        result.opaque_visibility_viewport[component] =
+            evidence.opaqueVisibilityViewport[component];
+        result.opaque_visibility_scissor[component] =
+            evidence.opaqueVisibilityScissor[component];
+    }
+    result.opaque_visibility_primitive_draws =
+        evidence.opaqueVisibilityPrimitiveDraws;
+    result.opaque_visibility_opaque_draws =
+        evidence.opaqueVisibilityOpaqueDraws;
+    result.opaque_visibility_masked_draws =
+        evidence.opaqueVisibilityMaskedDraws;
+    result.opaque_visibility_transparent_draws =
+        evidence.opaqueVisibilityTransparentDraws;
+    result.opaque_visibility_grid_columns =
+        evidence.opaqueVisibilityGridColumns;
+    result.opaque_visibility_grid_rows = evidence.opaqueVisibilityGridRows;
+    result.opaque_visibility_isolated_tiles =
+        evidence.opaqueVisibilityIsolatedTiles;
+    result.opaque_visibility_scene_tiles =
+        evidence.opaqueVisibilitySceneTiles;
+    result.opaque_visibility_isolated_tile_mask =
+        evidence.opaqueVisibilityIsolatedTileMask;
+    result.opaque_visibility_scene_tile_mask =
+        evidence.opaqueVisibilitySceneTileMask;
     result.output_width = evidence.outputWidth;
     result.output_height = evidence.outputHeight;
     result.render_width = evidence.renderWidth;
@@ -9602,6 +9812,100 @@ bool characterPreviewVehicleSurfaceValid(
         }
     }
     return true;
+}
+
+bool characterPreviewOpaqueVisibilityValid(
+    const MdkrCharacterPreviewResult &result) {
+    const auto bitCount = [](unsigned long long mask) {
+        unsigned count = 0u;
+        while (mask != 0u) {
+            count += static_cast<unsigned>(mask & 1u);
+            mask >>= 1u;
+        }
+        return count;
+    };
+    if ((result.opaque_visibility_valid != 0 &&
+         result.opaque_visibility_valid != 1) ||
+        (result.opaque_visibility_qualified != 0 &&
+         result.opaque_visibility_qualified != 1)) return false;
+    const auto allZero = [&result]() {
+        if (result.opaque_visibility_qualified != 0 ||
+            result.opaque_visibility_width != 0u ||
+            result.opaque_visibility_height != 0u ||
+            result.opaque_visibility_primitive_draws != 0u ||
+            result.opaque_visibility_opaque_draws != 0u ||
+            result.opaque_visibility_masked_draws != 0u ||
+            result.opaque_visibility_transparent_draws != 0u ||
+            result.opaque_visibility_grid_columns != 0u ||
+            result.opaque_visibility_grid_rows != 0u ||
+            result.opaque_visibility_isolated_tiles != 0u ||
+            result.opaque_visibility_scene_tiles != 0u ||
+            result.opaque_visibility_isolated_tile_mask != 0u ||
+            result.opaque_visibility_scene_tile_mask != 0u) return false;
+        for (unsigned component = 0u; component < 4u; ++component) {
+            if (result.opaque_visibility_viewport[component] != 0 ||
+                result.opaque_visibility_scissor[component] != 0) return false;
+        }
+        return true;
+    };
+    if (!result.opaque_visibility_valid) {
+        return allZero() &&
+            !(result.version >= 18u && result.warmup_complete &&
+              result.replacement_draws != 0u);
+    }
+    if (result.opaque_visibility_width == 0u ||
+        result.opaque_visibility_height == 0u ||
+        result.opaque_visibility_width > 16384u ||
+        result.opaque_visibility_height > 16384u ||
+        result.opaque_visibility_primitive_draws == 0u ||
+        static_cast<unsigned long long>(
+            result.opaque_visibility_opaque_draws) +
+                result.opaque_visibility_masked_draws +
+                result.opaque_visibility_transparent_draws !=
+            result.opaque_visibility_primitive_draws ||
+        result.opaque_visibility_grid_columns != 8u ||
+        result.opaque_visibility_grid_rows != 8u ||
+        result.opaque_visibility_isolated_tiles > 64u ||
+        result.opaque_visibility_scene_tiles >
+            result.opaque_visibility_isolated_tiles ||
+        bitCount(result.opaque_visibility_isolated_tile_mask) !=
+            result.opaque_visibility_isolated_tiles ||
+        bitCount(result.opaque_visibility_scene_tile_mask) !=
+            result.opaque_visibility_scene_tiles ||
+        (result.opaque_visibility_scene_tile_mask &
+         ~result.opaque_visibility_isolated_tile_mask) != 0u) return false;
+    for (unsigned component = 0u; component < 4u; ++component) {
+        const int limit = (component & 1u)
+            ? static_cast<int>(result.opaque_visibility_height)
+            : static_cast<int>(result.opaque_visibility_width);
+        if (result.opaque_visibility_viewport[component] < 0 ||
+            result.opaque_visibility_scissor[component] < 0 ||
+            result.opaque_visibility_viewport[component] > limit ||
+            result.opaque_visibility_scissor[component] > limit) return false;
+    }
+    if (result.opaque_visibility_viewport[2] == 0 ||
+        result.opaque_visibility_viewport[3] == 0 ||
+        result.opaque_visibility_scissor[2] == 0 ||
+        result.opaque_visibility_scissor[3] == 0 ||
+        static_cast<long long>(result.opaque_visibility_viewport[0]) +
+                result.opaque_visibility_viewport[2] >
+            result.opaque_visibility_width ||
+        static_cast<long long>(result.opaque_visibility_viewport[1]) +
+                result.opaque_visibility_viewport[3] >
+            result.opaque_visibility_height ||
+        static_cast<long long>(result.opaque_visibility_scissor[0]) +
+                result.opaque_visibility_scissor[2] >
+            result.opaque_visibility_width ||
+        static_cast<long long>(result.opaque_visibility_scissor[1]) +
+                result.opaque_visibility_scissor[3] >
+            result.opaque_visibility_height) return false;
+    return result.opaque_visibility_qualified
+        ? result.opaque_visibility_transparent_draws == 0u
+        : result.opaque_visibility_transparent_draws != 0u &&
+              result.opaque_visibility_isolated_tiles == 0u &&
+              result.opaque_visibility_scene_tiles == 0u &&
+              result.opaque_visibility_isolated_tile_mask == 0u &&
+              result.opaque_visibility_scene_tile_mask == 0u;
 }
 
 bool characterPreviewProjectionValid(
@@ -10072,6 +10376,116 @@ void drawCharacterVehicleSurfaceDiagnostics(
     }
 }
 
+void drawCharacterOpaqueVisibilityDiagnostics(
+    const MdkrCharacterPreviewResult &result, bool compact) {
+    if (!characterPreviewOpaqueVisibilityValid(result) ||
+        !result.opaque_visibility_valid) {
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "Opaque-depth visibility · Exact evidence unavailable");
+        if (!compact) {
+            ui::TextSubtleWrapped(
+                "Rerun the exact context. The Workshop does not infer visibility from projected bounds or a screenshot when the asynchronous depth witness is unavailable.");
+        }
+        return;
+    }
+    if (!result.opaque_visibility_qualified) {
+        ImGui::TextColored(
+            AppTheme::accent(),
+            "Opaque-depth visibility · Transparent materials require visual review");
+        ImGui::Text(
+            "%u transparent %s across %u character draws",
+            result.opaque_visibility_transparent_draws,
+            result.opaque_visibility_transparent_draws == 1u
+                ? "draw" : "draws",
+            result.opaque_visibility_primitive_draws);
+        if (!compact) {
+            ui::TextSubtleWrapped(
+                "Alpha blending has no single opaque-depth coverage meaning. Masked cutouts are measured after their real alpha discard, but blended hair, fabric, glow, or glass stays an explicit composed-scene review item.");
+        }
+        return;
+    }
+    if (result.opaque_visibility_isolated_tiles == 0u) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "Opaque-depth visibility · No character regions rendered");
+        ImGui::Text(
+            "Visible grid regions: scene 0 / isolated 0 of 64 · %u opaque + %u masked draws",
+            result.opaque_visibility_opaque_draws,
+            result.opaque_visibility_masked_draws);
+        if (!compact) {
+            ui::TextSubtleWrapped(
+                "The exact isolated replay produced no opaque or alpha-tested fragments. The character may be outside the camera, fully clipped, facing away with one-sided geometry, or completely rejected by its alpha mask. This is a valid failing visual result, not missing evidence; use the camera and facing overlays before changing offsets blindly.");
+        }
+        return;
+    }
+    const double visiblePercent =
+        100.0 * static_cast<double>(
+            result.opaque_visibility_scene_tiles) /
+        static_cast<double>(result.opaque_visibility_isolated_tiles);
+    const ImVec4 colour = visiblePercent < 25.0
+        ? AppTheme::bad()
+        : visiblePercent < 60.0 ? AppTheme::accent() : AppTheme::good();
+    ImGui::TextColored(
+        colour,
+        "Opaque-depth visibility · %.1f%% of occupied screen regions visible",
+        visiblePercent);
+    ImGui::Text(
+        "Visible grid regions: scene %u / isolated %u of 64 · %u opaque + %u masked draws",
+        result.opaque_visibility_scene_tiles,
+        result.opaque_visibility_isolated_tiles,
+        result.opaque_visibility_opaque_draws,
+        result.opaque_visibility_masked_draws);
+    const float gridExtent = std::min(
+        12.0f * ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x);
+    const float cell = std::max(8.0f, gridExtent / 8.0f);
+    const ImVec2 gridOrigin = ImGui::GetCursorScreenPos();
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    for (unsigned tile = 0u; tile < 64u; ++tile) {
+        const unsigned column = tile % 8u;
+        const unsigned row = tile / 8u;
+        const unsigned long long bit = 1ull << tile;
+        const bool occupied =
+            (result.opaque_visibility_isolated_tile_mask & bit) != 0u;
+        const bool visible =
+            (result.opaque_visibility_scene_tile_mask & bit) != 0u;
+        const ImVec2 minimum(
+            gridOrigin.x + column * cell,
+            gridOrigin.y + row * cell);
+        const ImVec2 maximum(minimum.x + cell, minimum.y + cell);
+        draw->AddRectFilled(
+            minimum, maximum,
+            visible ? ImGui::ColorConvertFloat4ToU32(AppTheme::good())
+                : occupied
+                    ? ImGui::ColorConvertFloat4ToU32(AppTheme::accent())
+                    : IM_COL32(54, 59, 68, 255));
+        draw->AddRect(minimum, maximum, IM_COL32(24, 28, 34, 255));
+        const float inset = std::max(2.0f, cell * 0.27f);
+        if (visible) {
+            draw->AddCircleFilled(
+                ImVec2((minimum.x + maximum.x) * 0.5f,
+                       (minimum.y + maximum.y) * 0.5f),
+                std::max(1.5f, cell * 0.12f), IM_COL32(20, 35, 27, 255));
+        } else if (occupied) {
+            draw->AddLine(
+                ImVec2(minimum.x + inset, minimum.y + inset),
+                ImVec2(maximum.x - inset, maximum.y - inset),
+                IM_COL32(45, 31, 16, 255), 2.0f);
+            draw->AddLine(
+                ImVec2(maximum.x - inset, minimum.y + inset),
+                ImVec2(minimum.x + inset, maximum.y - inset),
+                IM_COL32(45, 31, 16, 255), 2.0f);
+        }
+    }
+    ImGui::Dummy(ImVec2(cell * 8.0f, cell * 8.0f));
+    ImGui::TextDisabled(
+        "Grid key: dot visible · X hidden by final depth · blank unoccupied");
+    if (!compact) {
+        ui::TextSubtleWrapped(
+            "The renderer divides the exact output into an 8 x 8 grid, records which regions contain any isolated character fragment, then replays that same pose against the completed gameplay depth buffer. The ratio detects broad hiding by the vehicle, world, and other opaque depth writers without pretending WebGPU's portable boolean queries are pixel counters. It is advisory: a tiny visible fragment marks its region visible, intentional cockpit occlusion can be correct, and transparent occlusion is excluded.");
+    }
+}
+
 void drawCharacterFitDiagnostics(
     const MdkrCharacterPreviewResult &result, bool compact) {
     if (!result.fit_diagnostics_valid) {
@@ -10135,6 +10549,7 @@ void drawCharacterFitDiagnostics(
         facingDegrees);
     drawCharacterCameraFramingDiagnostics(result, compact);
     drawCharacterVehicleSurfaceDiagnostics(result, compact);
+    drawCharacterOpaqueVisibilityDiagnostics(result, compact);
     if (!compact) {
         const double width =
             (result.fit_bounds_max_micrometres[0] -
@@ -10241,6 +10656,15 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         ImGui::TextColored(
             AppTheme::bad(),
             "The engine returned invalid vehicle-body surface evidence.");
+        ui::TextSubtleWrapped(
+            "No fit conclusion or performance evidence was saved. Run the exact context again.");
+        ui::CardEnd();
+        return;
+    }
+    if (!characterPreviewOpaqueVisibilityValid(result)) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "The engine returned invalid opaque-depth visibility evidence.");
         ui::TextSubtleWrapped(
             "No fit conclusion or performance evidence was saved. Run the exact context again.");
         ui::CardEnd();
@@ -11803,6 +12227,7 @@ void drawCharacterTestEvidenceMatrix(
         if (std::strcmp(smokeAction, "publish-qualified") == 0 ||
             std::strcmp(smokeAction, "publish-overbudget-matrix") == 0 ||
             std::strcmp(smokeAction, "publish-overlimit-contact") == 0 ||
+            std::strcmp(smokeAction, "publish-zero-visibility") == 0 ||
             std::strcmp(smokeAction, "publish-inspection") == 0 ||
             std::strcmp(smokeAction, "publish-transition") == 0 ||
             std::strcmp(
@@ -11946,6 +12371,29 @@ void drawCharacterTestEvidenceMatrix(
             result.vehicle_volume_qualified = 1;
             result.vehicle_containment_samples_tested = 3u;
             result.vehicle_containment_outside_samples = 3u;
+            result.opaque_visibility_valid = 1;
+            result.opaque_visibility_qualified = 1;
+            result.opaque_visibility_width = 2560u;
+            result.opaque_visibility_height = 1920u;
+            result.opaque_visibility_viewport[2] = 2560;
+            result.opaque_visibility_viewport[3] = 1920;
+            result.opaque_visibility_scissor[2] = 2560;
+            result.opaque_visibility_scissor[3] = 1920;
+            result.opaque_visibility_primitive_draws = 2u;
+            result.opaque_visibility_opaque_draws = 2u;
+            result.opaque_visibility_grid_columns = 8u;
+            result.opaque_visibility_grid_rows = 8u;
+            result.opaque_visibility_isolated_tiles = 10u;
+            result.opaque_visibility_scene_tiles = 7u;
+            result.opaque_visibility_isolated_tile_mask = 0x3ffu;
+            result.opaque_visibility_scene_tile_mask = 0x7fu;
+            if (std::strcmp(
+                    smokeAction, "publish-zero-visibility") == 0) {
+                result.opaque_visibility_isolated_tiles = 0u;
+                result.opaque_visibility_scene_tiles = 0u;
+                result.opaque_visibility_isolated_tile_mask = 0u;
+                result.opaque_visibility_scene_tile_mask = 0u;
+            }
             std::snprintf(result.renderer_backend,
                           sizeof(result.renderer_backend), "%s",
                           "webgpu-test");
@@ -15623,7 +16071,7 @@ bool captureCharacterHistoryPayload(
         }
     } else if (tool == CharacterHistoryTool::Fit) {
         const CharacterTuningEdit &edit = loadCharacterTuning(0, entry->id);
-        payload = "mdkr-fit-history-v3\n";
+        payload = "mdkr-fit-history-v4\n";
         appendCharacterHistoryValue(payload, edit.scale);
         for (float value : edit.offset) {
             appendCharacterHistoryValue(payload, value);
@@ -16029,7 +16477,9 @@ bool applyCharacterHistoryPayload(
         }
         g_characterRigEdits[entry->id] = std::move(replacement);
     } else if (tool == CharacterHistoryTool::Fit) {
-        const bool hasContactExceptions =
+        const bool hasSceneReviewContract =
+            consumeHeader("mdkr-fit-history-v4\n");
+        const bool hasContactExceptions = hasSceneReviewContract ||
             consumeHeader("mdkr-fit-history-v3\n");
         const bool current = hasContactExceptions ||
             consumeHeader("mdkr-fit-history-v2\n");
@@ -16083,6 +16533,10 @@ bool applyCharacterHistoryPayload(
             offset != payload.size()) {
             error = "Fit history review state is malformed.";
             return false;
+        }
+        if (!hasSceneReviewContract) {
+            reviewed = 0u;
+            contactExceptions = 0u;
         }
         const auto inRange = [](float value, float minimum, float maximum) {
             return std::isfinite(value) && value >= minimum &&
@@ -21114,6 +21568,16 @@ void Settings_publishCharacterPreviewResult(
     bool interactiveStudio,
     const MdkrCharacterPreviewResult &result) {
     if (packageId.empty()) return;
+    if (result.pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+        result.context >= MDKR_CHARACTER_PREVIEW_SELECT &&
+        result.context <= MDKR_CHARACTER_PREVIEW_PLANE) {
+        /* A new live result supersedes the frame the author inspected. Keep
+         * contact-exception intent, but require the composed scene itself to
+         * be acknowledged again before fit approval. */
+        g_characterPendingSceneReviews[packageId] &=
+            ~(1u << static_cast<unsigned>(
+                result.context - MDKR_CHARACTER_PREVIEW_SELECT));
+    }
     g_characterPreviewResults[packageId] = CharacterPreviewSessionResult{
         result, sourceSha256, fitSha256, presentationSha256, capturePng,
         launcherOwnedCapture,
@@ -21125,6 +21589,7 @@ void Settings_publishCharacterPreviewResult(
             !characterPreviewFitDiagnosticsValid(result) ||
             !characterPreviewCameraProjectionValid(result) ||
             !characterPreviewVehicleSurfaceValid(result) ||
+            !characterPreviewOpaqueVisibilityValid(result) ||
             !characterPreviewContactDiagnosticsValid(result)) {
             g_characterPreviewResults.erase(packageId);
             setStatus(
@@ -21151,6 +21616,7 @@ void Settings_publishCharacterPreviewResult(
                 characterPreviewFitDiagnosticsValid(result) &&
                 characterPreviewCameraProjectionValid(result) &&
                 characterPreviewVehicleSurfaceValid(result) &&
+                characterPreviewOpaqueVisibilityValid(result) &&
                 characterPreviewProjectionValid(result) &&
                 mdkr_modern_character_gpu_timing_metrics_valid(
                     &result.gpu_timing) != 0 &&
@@ -21368,6 +21834,7 @@ void Settings_publishCharacterPreviewResult(
         !result.started || !characterPreviewFitDiagnosticsValid(result) ||
         !characterPreviewCameraProjectionValid(result) ||
         !characterPreviewVehicleSurfaceValid(result) ||
+        !characterPreviewOpaqueVisibilityValid(result) ||
         !characterPreviewProjectionValid(result) ||
         !characterPreviewContactDiagnosticsValid(result)) {
         if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {

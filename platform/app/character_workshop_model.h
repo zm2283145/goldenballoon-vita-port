@@ -167,6 +167,29 @@ struct CharacterWorkshopFitAssessment {
     float depthToHeight = 0.0f;
 };
 
+/* Value-only approval policy for one exact fit context. Renderer/UI code owns
+ * contract validation and reduces it to these facts; this policy keeps the
+ * author-agency exception path distinct from a concrete invisible-character
+ * failure and is directly regression tested. */
+struct CharacterWorkshopFitReviewFacts {
+    bool exactContract = false;
+    bool opaqueVisibilityQualified = false;
+    uint32_t isolatedVisibleTiles = 0u;
+    uint32_t sceneVisibleTiles = 0u;
+    bool advisoryFitWarning = false;
+    bool cameraWarning = false;
+    bool surfaceWarning = false;
+    bool sceneReviewed = false;
+    bool contactExceptionRequired = false;
+    bool contactExceptionApproved = false;
+};
+
+struct CharacterWorkshopFitReviewDecision {
+    bool visibilityBlocksReview = false;
+    bool warnings = false;
+    bool ready = false;
+};
+
 enum class CharacterWorkshopTransformSeverity : uint8_t {
     Nominal = 0,
     Review,
@@ -275,6 +298,8 @@ CharacterWorkshopFitSuggestion CharacterWorkshop_suggestFit(
     const CharacterWorkshopFitMeasurement &measurement);
 CharacterWorkshopFitAssessment CharacterWorkshop_assessFit(
     const CharacterWorkshopFitMeasurement &measurement);
+CharacterWorkshopFitReviewDecision CharacterWorkshop_reviewFit(
+    const CharacterWorkshopFitReviewFacts &facts);
 /* Matches the compiler's +Z/-Z/+X/-X source-forward convention. Output is
  * unchanged for an invalid candidate. */
 bool CharacterWorkshop_facingCorrectionDegrees(

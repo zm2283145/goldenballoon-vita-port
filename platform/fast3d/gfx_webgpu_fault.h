@@ -138,7 +138,13 @@ extern "C" {
     X(SKINNED_VIEW,               "skinned.view") \
     X(SKINNED_UNIFORM,            "skinned.uniform") \
     X(SKINNED_SAMPLER,            "skinned.sampler") \
-    X(SKINNED_BIND_GROUP,         "skinned.bind-group")
+    X(SKINNED_BIND_GROUP,         "skinned.bind-group") \
+    X(SKINNED_VISIBILITY_QUERY,   "skinned.visibility-query") \
+    X(SKINNED_VISIBILITY_RESOLVE, "skinned.visibility-resolve") \
+    X(SKINNED_VISIBILITY_READBACK,"skinned.visibility-readback") \
+    X(SKINNED_VISIBILITY_TEXTURE, "skinned.visibility-texture") \
+    X(SKINNED_VISIBILITY_VIEW,    "skinned.visibility-view") \
+    X(SKINNED_VISIBILITY_PASS,    "skinned.visibility-pass")
 
 enum GfxWebgpuFaultPoint {
 #define GFX_WEBGPU_FAULT_ENUM(symbol, name) GFX_WEBGPU_FAULT_##symbol,

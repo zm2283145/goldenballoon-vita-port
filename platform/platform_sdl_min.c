@@ -1341,6 +1341,9 @@ static char s_frameCapturePath[1024];
 static MdkrModernCharacterCaptureProjection
     s_modernCharacterCaptureProjection;
 static int s_modernCharacterCaptureProjectionValid;
+static MdkrModernCharacterVisibilityStatus s_modernCharacterVisibilityStatus;
+static MdkrModernCharacterVisibilityDiagnostics
+    s_modernCharacterVisibilityDiagnostics;
 void platform_frame_dump_drain(void); /* defined with the writer below */
 /* F9 capture toggle: every-present dumps + per-frame [CAPTURE*] rows for as
  * long as the player holds the defect on screen. See the keydown handler. */
@@ -1819,6 +1822,140 @@ int platform_modern_character_capture_projection(
         return 0;
     }
     *projection = s_modernCharacterCaptureProjection;
+    return 1;
+}
+
+int platform_modern_character_visibility_request_once(void) {
+    if (s_modernCharacterVisibilityStatus ==
+            MDKR_MODERN_CHARACTER_VISIBILITY_REQUESTED ||
+        s_modernCharacterVisibilityStatus ==
+            MDKR_MODERN_CHARACTER_VISIBILITY_IN_FLIGHT) return 0;
+    memset(&s_modernCharacterVisibilityDiagnostics, 0,
+           sizeof(s_modernCharacterVisibilityDiagnostics));
+    s_modernCharacterVisibilityStatus =
+        MDKR_MODERN_CHARACTER_VISIBILITY_REQUESTED;
+    return 1;
+}
+
+int platform_modern_character_visibility_requested(void) {
+    return s_modernCharacterVisibilityStatus ==
+        MDKR_MODERN_CHARACTER_VISIBILITY_REQUESTED;
+}
+
+int platform_modern_character_visibility_pending(void) {
+    return s_modernCharacterVisibilityStatus ==
+            MDKR_MODERN_CHARACTER_VISIBILITY_REQUESTED ||
+        s_modernCharacterVisibilityStatus ==
+            MDKR_MODERN_CHARACTER_VISIBILITY_IN_FLIGHT;
+}
+
+int platform_modern_character_visibility_begin(void) {
+    if (!platform_modern_character_visibility_requested()) return 0;
+    s_modernCharacterVisibilityStatus =
+        MDKR_MODERN_CHARACTER_VISIBILITY_IN_FLIGHT;
+    return 1;
+}
+
+static uint32_t modern_character_visibility_bit_count(uint64_t mask) {
+    uint32_t count = 0u;
+    while (mask != 0u) {
+        count += (uint32_t)(mask & 1u);
+        mask >>= 1u;
+    }
+    return count;
+}
+
+void platform_modern_character_visibility_publish(
+    const MdkrModernCharacterVisibilityDiagnostics *diagnostics) {
+    uint64_t classifiedDraws = diagnostics != NULL
+        ? (uint64_t)diagnostics->opaque_draws +
+              diagnostics->masked_draws + diagnostics->transparent_draws
+        : 0u;
+    int rectsValid = diagnostics != NULL &&
+        diagnostics->output_width != 0u &&
+        diagnostics->output_height != 0u &&
+        diagnostics->output_width <= 16384u &&
+        diagnostics->output_height <= 16384u;
+    if (rectsValid) {
+        uint32_t component;
+        for (component = 0u; component < 4u; ++component) {
+            const int64_t limit = (component & 1u)
+                ? diagnostics->output_height : diagnostics->output_width;
+            if (diagnostics->viewport[component] < 0 ||
+                diagnostics->scissor[component] < 0 ||
+                diagnostics->viewport[component] > limit ||
+                diagnostics->scissor[component] > limit) {
+                rectsValid = 0;
+            }
+        }
+        rectsValid = rectsValid &&
+            diagnostics->viewport[2] != 0 &&
+            diagnostics->viewport[3] != 0 &&
+            diagnostics->scissor[2] != 0 &&
+            diagnostics->scissor[3] != 0 &&
+            (int64_t)diagnostics->viewport[0] +
+                    diagnostics->viewport[2] <= diagnostics->output_width &&
+            (int64_t)diagnostics->viewport[1] +
+                    diagnostics->viewport[3] <= diagnostics->output_height &&
+            (int64_t)diagnostics->scissor[0] +
+                    diagnostics->scissor[2] <= diagnostics->output_width &&
+            (int64_t)diagnostics->scissor[1] +
+                    diagnostics->scissor[3] <= diagnostics->output_height;
+    }
+    if (s_modernCharacterVisibilityStatus !=
+            MDKR_MODERN_CHARACTER_VISIBILITY_IN_FLIGHT ||
+        diagnostics == NULL ||
+        diagnostics->version !=
+            MDKR_MODERN_CHARACTER_VISIBILITY_VERSION ||
+        diagnostics->valid != 1u ||
+        diagnostics->qualified > 1u ||
+        !rectsValid || diagnostics->primitive_draws == 0u ||
+        classifiedDraws != diagnostics->primitive_draws ||
+        diagnostics->grid_columns != 8u || diagnostics->grid_rows != 8u ||
+        diagnostics->isolated_visible_tiles > 64u ||
+        diagnostics->scene_visible_tiles >
+            diagnostics->isolated_visible_tiles ||
+        modern_character_visibility_bit_count(
+            diagnostics->isolated_tile_mask) !=
+                diagnostics->isolated_visible_tiles ||
+        modern_character_visibility_bit_count(
+            diagnostics->scene_tile_mask) !=
+                diagnostics->scene_visible_tiles ||
+        (diagnostics->scene_tile_mask &
+         ~diagnostics->isolated_tile_mask) != 0u ||
+        (diagnostics->qualified
+             ? diagnostics->transparent_draws != 0u
+             : diagnostics->transparent_draws == 0u ||
+                   diagnostics->isolated_visible_tiles != 0u ||
+                   diagnostics->scene_visible_tiles != 0u ||
+                   diagnostics->isolated_tile_mask != 0u ||
+                   diagnostics->scene_tile_mask != 0u)) {
+        platform_modern_character_visibility_fail();
+        return;
+    }
+    s_modernCharacterVisibilityDiagnostics = *diagnostics;
+    s_modernCharacterVisibilityStatus =
+        MDKR_MODERN_CHARACTER_VISIBILITY_AVAILABLE;
+}
+
+void platform_modern_character_visibility_fail(void) {
+    if (s_modernCharacterVisibilityStatus ==
+            MDKR_MODERN_CHARACTER_VISIBILITY_IN_FLIGHT ||
+        s_modernCharacterVisibilityStatus ==
+            MDKR_MODERN_CHARACTER_VISIBILITY_REQUESTED) {
+        memset(&s_modernCharacterVisibilityDiagnostics, 0,
+               sizeof(s_modernCharacterVisibilityDiagnostics));
+        s_modernCharacterVisibilityStatus =
+            MDKR_MODERN_CHARACTER_VISIBILITY_UNAVAILABLE;
+    }
+}
+
+int platform_modern_character_visibility_diagnostics(
+    MdkrModernCharacterVisibilityDiagnostics *diagnostics) {
+    if (diagnostics == NULL ||
+        s_modernCharacterVisibilityStatus !=
+            MDKR_MODERN_CHARACTER_VISIBILITY_AVAILABLE) return 0;
+    *diagnostics = s_modernCharacterVisibilityDiagnostics;
     return 1;
 }
 
@@ -6433,6 +6570,10 @@ int platform_engine_session_begin(void) {
     memset(&s_modernCharacterCaptureProjection, 0,
            sizeof(s_modernCharacterCaptureProjection));
     s_modernCharacterCaptureProjectionValid = 0;
+    s_modernCharacterVisibilityStatus =
+        MDKR_MODERN_CHARACTER_VISIBILITY_IDLE;
+    memset(&s_modernCharacterVisibilityDiagnostics, 0,
+           sizeof(s_modernCharacterVisibilityDiagnostics));
 
     /* Settings can scan packs while the shell is home. Retire that view before
      * the engine binds a fresh store using this epoch's resolved settings. */

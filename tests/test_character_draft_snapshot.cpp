@@ -114,6 +114,7 @@ int main() {
                    MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT &&
                parsed.reviewedContexts == 3u &&
                parsed.contactExceptionContexts == 2u &&
+               parsed.fitSceneReviewContractPresent &&
                parsed.scale == 1.25f &&
                parsed.offset[1] == -12.5f &&
                parsed.contexts[1].contacts[0][0] == -0.25f &&
@@ -170,8 +171,20 @@ int main() {
     constexpr size_t rigReviewTasksTailBytes = 4u;
     constexpr size_t contactExceptionTailBytes = 4u;
     constexpr size_t transitionInspectionTailBytes = 12u;
+    constexpr size_t fitSceneReviewTailBytes = 4u;
+    std::string versionTwelve = encoded.substr(
+        0u, encoded.size() - fitSceneReviewTailBytes);
+    writeU32(versionTwelve, 4u, 12u);
+    writeU32(versionTwelve, 8u,
+             static_cast<uint32_t>(versionTwelve.size()));
+    expect(decode(versionTwelve, parsed, error) &&
+               parsed.testTransition && parsed.reviewedContexts == 0u &&
+               parsed.contactExceptionContexts == 0u &&
+               !parsed.fitSceneReviewContractPresent,
+           "version-twelve drafts reopen fit reviews for exact-scene acknowledgement");
     std::string versionEleven = encoded.substr(
-        0u, encoded.size() - transitionInspectionTailBytes);
+        0u, encoded.size() - fitSceneReviewTailBytes -
+            transitionInspectionTailBytes);
     writeU32(versionEleven, 4u, 11u);
     writeU32(versionEleven, 8u,
              static_cast<uint32_t>(versionEleven.size()));
@@ -181,7 +194,8 @@ int main() {
                parsed.testTransitionFromPhaseMilli == 500u,
            "version-eleven drafts migrate with a safe held-sample default");
     std::string versionTen = encoded.substr(
-        0u, encoded.size() - transitionInspectionTailBytes -
+        0u, encoded.size() - fitSceneReviewTailBytes -
+            transitionInspectionTailBytes -
             contactExceptionTailBytes);
     writeU32(versionTen, 4u, 10u);
     writeU32(versionTen, 8u,
@@ -191,7 +205,8 @@ int main() {
                parsed.contactExceptionContexts == 0u,
            "version-ten drafts migrate without inventing contact exceptions");
     std::string versionNine = encoded.substr(
-        0u, encoded.size() - transitionInspectionTailBytes -
+        0u, encoded.size() - fitSceneReviewTailBytes -
+            transitionInspectionTailBytes -
             contactExceptionTailBytes -
             rigReviewTasksTailBytes);
     writeU32(versionNine, 4u, 9u);
@@ -203,7 +218,8 @@ int main() {
                parsed.rigReviewTaskMask == 0x1Fu,
            "version-nine reviewed drafts migrate with all anatomy checks complete");
     std::string versionEight = encoded.substr(
-        0u, encoded.size() - transitionInspectionTailBytes -
+        0u, encoded.size() - fitSceneReviewTailBytes -
+            transitionInspectionTailBytes -
             animationIntentTailBytes -
             rigReviewTasksTailBytes - contactExceptionTailBytes);
     writeU32(versionEight, 4u, 8u);
@@ -216,7 +232,8 @@ int main() {
                parsed.testViewPitchDegrees == source.testViewPitchDegrees,
            "version-eight drafts migrate with active animation mappings");
     std::string versionSeven = encoded.substr(
-        0u, encoded.size() - transitionInspectionTailBytes -
+        0u, encoded.size() - fitSceneReviewTailBytes -
+            transitionInspectionTailBytes -
             animationIntentTailBytes -
             rigReviewTasksTailBytes - contactExceptionTailBytes);
     writeU32(versionSeven, 4u, 7u);
@@ -335,6 +352,7 @@ int main() {
              badMaskEnabled.size() - animationIntentTailBytes -
                  rigReviewTasksTailBytes - contactExceptionTailBytes -
                  transitionInspectionTailBytes -
+                 fitSceneReviewTailBytes -
                  subjectMaskTailBytes,
              2u);
     expect(!decode(badMaskEnabled, parsed, error),

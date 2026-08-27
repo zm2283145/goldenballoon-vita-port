@@ -5039,11 +5039,21 @@ aspect-fits that selected viewport into the full output without distortion, and
 publishes bounded fixed-point projections for eight calibrated bounds corners,
 the fitted anchor, and the forward endpoint. The gate installs a second
 reviewed-humanoid package and drives a real car arm through automatic contact
-solving. Result v13 must publish all four bounded
+solving. The current result-v18 contract must publish all four bounded
 contact witnesses; the gate independently recomputes the left-hand
 target-to-endpoint distance from quantized coordinates and rejects partial,
 detached, or fabricated select-context evidence. Authored-clips-only arms must
 publish an explicit zero mask when no automatic solve owns the pose.
+
+Every valid arm must additionally publish a completed asynchronous opaque-depth
+witness. The renderer replays player 0's exact current primitive set into an
+isolated depth target and against the final scene depth over the same 8 x 8
+screen grid. The gate verifies exact boolean masks, popcounts, scene-subset
+semantics, and material draw classification without claiming pixel precision.
+A successful all-zero query remains valid failing visual evidence: it
+distinguishes a fully clipped, back-facing, or alpha-rejected subject from an
+unavailable GPU readback. Alpha-blended materials are structurally valid but
+unqualified because they do not have one portable opaque-depth meaning.
 
 Every arm must also publish the versioned GPU timing contract. One arm
 force-disables it and must remain explicitly unsupported with no values. A

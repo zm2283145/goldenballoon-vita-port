@@ -263,19 +263,21 @@ in the package review and durable evidence.
 - Continue the existing per-context sequence to
   propose root translation/yaw/scale, preview exact gameplay, then propose four
   contact offsets per vehicle.
-- **Partially implemented:** the fit review card now shows exact calibrated
-  camera occupancy, head/torso points, seat-to-hips displacement, floor/seat
-  datum, and hand/foot reach. Add a qualified kart/body shell-intersection
-  witness rather than treating screen overlap as penetration.
+- **Implemented for the current pose:** the fit review card shows exact
+  calibrated camera occupancy, head/torso points, seat-to-hips displacement,
+  floor/seat datum, hand/foot reach, retained-body surface intersections,
+  topology-qualified bounded containment, and an isolated-versus-final-depth
+  visibility grid. It does not mislabel 2D overlap as penetration or claim one
+  pose covers motion.
 - Use the existing root/bend/target/end witnesses to offer bounded least-squares
   offset suggestions. Never change package/tuning state until the author accepts
   each context.
 - **Partially implemented:** hand residual <=25 mm and foot residual <=40 mm
   are visible exact-evidence guides. An over-limit review now requires an
   explicit source-and-fit-bound exception, participates in Fit undo/redo,
-  survives named-draft v12 resume, and rolls back if persistence fails.
-  Penetration and frame-to-frame oscillation still require renderer-derived
-  witnesses before they can be qualified honestly.
+  survives named-draft v13 resume, and rolls back if persistence fails.
+  Named attached-part attribution and frame-to-frame oscillation still require
+  renderer-derived witnesses before they can be qualified honestly.
 - Test car, hovercraft, and plane across representative start, steer, airborne,
   and finish states rather than one parked frame.
 
@@ -398,18 +400,23 @@ after M1 stabilizes the transform contract. M7 follows the format decisions made
 by M6. M8 begins with M0 and remains a release gate throughout.
 
 The forward-axis thumbnail studio, structural/symmetry rig proposal, derived
-rest/bend bases, 72%-occupancy isolated capture, portrait handoff, and fresh
-five-context/performance fixture qualification are complete. The immediate
-remaining order is therefore:
+rest/bend bases, 72%-occupancy isolated capture, portrait handoff, exact
+retained-body surface intersection, topology-qualified bounded containment,
+final opaque-depth visibility witness, and fresh five-context/performance
+fixture qualification are complete. Fit approval now requires a current warmed
+exact contract plus explicit composed-scene inspection; a completed zero-fragment
+opaque/masked replay blocks approval, while unusual anatomy, intentional
+occlusion, transparent materials, and contact exceptions retain an explicit
+author-acknowledgement path. The immediate remaining order is therefore:
 
-1. qualify richer reference clips and add optional deterministic secondary
-   hair/tail motion after the exact held-phase and transition-review contract;
-2. add qualified vehicle/body intersection, penetration, and oscillation
-   witnesses on top of the completed scene-camera/anatomy/seat evidence; use
-   controlled perturbation/re-rendering for contact suggestions rather than
-   applying coordinate-incorrect endpoint deltas;
-3. exercise start, steer, airborne, land, and finish variants per vehicle and
-   generate a first portrait suggestion during intake;
+1. aggregate surface, containment, contact, framing, and visibility evidence
+   across start, steer, airborne, land, and finish samples per vehicle, and
+   attribute separately drawn donor attachments where stable identities exist;
+2. add a donor-reference silhouette/occlusion comparison and a real linked-ROM
+   unusual-proportion fixture, then qualify richer reference clips, joint limits,
+   and optional deterministic secondary hair/tail motion;
+3. generate a first portrait suggestion during intake while keeping the exact
+   40 x 40 approval/editor path authoritative;
 4. execute the M6 renderer tail (shadows, transparent ordering, compressed
    textures, projected LOD, optional simplification, and material expansion);
 5. complete packaged cross-platform/offline/adapter/online contracts; and

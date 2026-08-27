@@ -203,6 +203,7 @@ _Static_assert(
 static u64 sWorkshopPreviewWarmupTicks;
 static s32 sWorkshopPreviewMeasurementStarted;
 static s32 sWorkshopPreviewMeasurementFinished;
+static u32 sWorkshopPreviewVisibilityAttempts;
 static MdkrCharacterPreviewResult sWorkshopPreviewDiagnosticResult;
 static MdkrModernCharacterRuntimeMetrics sWorkshopPreviewCharacterBaseline;
 static MdkrWorkshopPreviewVisualMetrics sWorkshopPreviewVisualBaseline;
@@ -505,6 +506,97 @@ static s32 workshop_preview_publish_vehicle_surface_diagnostics(
     return TRUE;
 }
 
+static s32 workshop_preview_publish_opaque_visibility(
+    MdkrCharacterPreviewResult *result) {
+    MdkrModernCharacterVisibilityDiagnostics diagnostics;
+    u32 component;
+    u32 isolatedTileCount = 0u;
+    u32 sceneTileCount = 0u;
+    u64 classifiedDraws;
+    u64 mask;
+    if (result == NULL ||
+        !platform_modern_character_visibility_diagnostics(&diagnostics) ||
+        diagnostics.version != MDKR_MODERN_CHARACTER_VISIBILITY_VERSION ||
+        diagnostics.valid != 1u || diagnostics.qualified > 1u ||
+        diagnostics.output_width == 0u ||
+        diagnostics.output_height == 0u ||
+        diagnostics.output_width > 16384u ||
+        diagnostics.output_height > 16384u ||
+        diagnostics.primitive_draws == 0u) return FALSE;
+    classifiedDraws = (u64)diagnostics.opaque_draws +
+        diagnostics.masked_draws + diagnostics.transparent_draws;
+    mask = diagnostics.isolated_tile_mask;
+    while (mask != 0u) {
+        isolatedTileCount += (u32)(mask & 1u);
+        mask >>= 1u;
+    }
+    mask = diagnostics.scene_tile_mask;
+    while (mask != 0u) {
+        sceneTileCount += (u32)(mask & 1u);
+        mask >>= 1u;
+    }
+    if (classifiedDraws != diagnostics.primitive_draws ||
+        diagnostics.grid_columns != 8u || diagnostics.grid_rows != 8u ||
+        diagnostics.isolated_visible_tiles > 64u ||
+        diagnostics.scene_visible_tiles >
+            diagnostics.isolated_visible_tiles ||
+        isolatedTileCount != diagnostics.isolated_visible_tiles ||
+        sceneTileCount != diagnostics.scene_visible_tiles ||
+        (diagnostics.scene_tile_mask &
+         ~diagnostics.isolated_tile_mask) != 0u ||
+        (diagnostics.qualified
+             ? diagnostics.transparent_draws != 0u
+             : diagnostics.transparent_draws == 0u ||
+                   diagnostics.isolated_visible_tiles != 0u ||
+                   diagnostics.scene_visible_tiles != 0u ||
+                   diagnostics.isolated_tile_mask != 0u ||
+                   diagnostics.scene_tile_mask != 0u)) {
+        return FALSE;
+    }
+    for (component = 0u; component < 4u; ++component) {
+        const s32 limit = (component & 1u)
+            ? (s32)diagnostics.output_height
+            : (s32)diagnostics.output_width;
+        if (diagnostics.viewport[component] < 0 ||
+            diagnostics.scissor[component] < 0 ||
+            diagnostics.viewport[component] > limit ||
+            diagnostics.scissor[component] > limit) return FALSE;
+        result->opaque_visibility_viewport[component] =
+            diagnostics.viewport[component];
+        result->opaque_visibility_scissor[component] =
+            diagnostics.scissor[component];
+    }
+    if (diagnostics.viewport[2] == 0 || diagnostics.viewport[3] == 0 ||
+        diagnostics.scissor[2] == 0 || diagnostics.scissor[3] == 0 ||
+        diagnostics.viewport[0] + diagnostics.viewport[2] >
+            (s32)diagnostics.output_width ||
+        diagnostics.viewport[1] + diagnostics.viewport[3] >
+            (s32)diagnostics.output_height ||
+        diagnostics.scissor[0] + diagnostics.scissor[2] >
+            (s32)diagnostics.output_width ||
+        diagnostics.scissor[1] + diagnostics.scissor[3] >
+            (s32)diagnostics.output_height) return FALSE;
+    result->opaque_visibility_valid = TRUE;
+    result->opaque_visibility_qualified = diagnostics.qualified != 0u;
+    result->opaque_visibility_width = diagnostics.output_width;
+    result->opaque_visibility_height = diagnostics.output_height;
+    result->opaque_visibility_primitive_draws =
+        diagnostics.primitive_draws;
+    result->opaque_visibility_opaque_draws = diagnostics.opaque_draws;
+    result->opaque_visibility_masked_draws = diagnostics.masked_draws;
+    result->opaque_visibility_transparent_draws =
+        diagnostics.transparent_draws;
+    result->opaque_visibility_grid_columns = diagnostics.grid_columns;
+    result->opaque_visibility_grid_rows = diagnostics.grid_rows;
+    result->opaque_visibility_isolated_tiles =
+        diagnostics.isolated_visible_tiles;
+    result->opaque_visibility_scene_tiles = diagnostics.scene_visible_tiles;
+    result->opaque_visibility_isolated_tile_mask =
+        diagnostics.isolated_tile_mask;
+    result->opaque_visibility_scene_tile_mask = diagnostics.scene_tile_mask;
+    return TRUE;
+}
+
 static void workshop_preview_measurement_finish(void) {
     MdkrPresentPerfSnapshot present;
     MdkrModernCharacterRuntimeMetrics character;
@@ -636,6 +728,7 @@ static void workshop_preview_measurement_finish(void) {
             (void)workshop_preview_publish_contact_diagnostics(result);
             (void)workshop_preview_publish_vehicle_surface_diagnostics(
                 result);
+            (void)workshop_preview_publish_opaque_visibility(result);
         }
         mdkr_workshop_preview_visual_metrics(&visual);
         result->camera_override_ticks = visual.camera_override_ticks >=
@@ -666,6 +759,9 @@ static void workshop_preview_measurement_finish(void) {
         "crossingUm=%lld,%lld,%lld "
         "volume=%d topology=%u,%u,%u,%u containment=%u,%u,%u,%u "
         "containmentDepthUm=%llu containmentPointUm=%lld,%lld,%lld "
+        "visibility=%d/%d visibilitySize=%ux%u "
+        "visibilityDraws=%u,%u,%u,%u visibilityGrid=%ux%u "
+        "visibilityTiles=%u/%u visibilityMask=%016llx/%016llx "
         "pose=%d phase=%u "
         "transitionFrom=%d transitionPhase=%u transition=%llu/%llu/%llu "
         "transitionBlend=%u,%u transitionSource=%d,%d "
@@ -755,6 +851,20 @@ static void workshop_preview_measurement_finish(void) {
         result->vehicle_containment_deepest_micrometres[0],
         result->vehicle_containment_deepest_micrometres[1],
         result->vehicle_containment_deepest_micrometres[2],
+        result->opaque_visibility_valid,
+        result->opaque_visibility_qualified,
+        result->opaque_visibility_width,
+        result->opaque_visibility_height,
+        result->opaque_visibility_primitive_draws,
+        result->opaque_visibility_opaque_draws,
+        result->opaque_visibility_masked_draws,
+        result->opaque_visibility_transparent_draws,
+        result->opaque_visibility_grid_columns,
+        result->opaque_visibility_grid_rows,
+        result->opaque_visibility_scene_tiles,
+        result->opaque_visibility_isolated_tiles,
+        result->opaque_visibility_scene_tile_mask,
+        result->opaque_visibility_isolated_tile_mask,
         (int)result->pose, result->pose_phase_milli,
         (int)result->transition_from_pose,
         result->transition_from_phase_milli,
@@ -917,7 +1027,28 @@ static void workshop_preview_measurement_service(s32 overlayPaused) {
                     0, context);
             }
         }
-        if (sWorkshopPreviewWarmupTicks >= WORKSHOP_PREVIEW_WARMUP_TICKS) {
+        if (sWorkshopPreviewWarmupTicks <=
+                WORKSHOP_PREVIEW_WARMUP_TICKS - 20u) {
+            MdkrModernCharacterVisibilityDiagnostics diagnostics;
+            MdkrModernCharacterRuntimeMetrics character;
+            mdkr_modern_character_runtime_metrics(&character);
+            if (character.replacement_draws != 0u &&
+                !platform_modern_character_visibility_diagnostics(
+                    &diagnostics) &&
+                !platform_modern_character_visibility_pending() &&
+                sWorkshopPreviewVisibilityAttempts < 3u &&
+                platform_modern_character_visibility_request_once()) {
+                sWorkshopPreviewVisibilityAttempts++;
+            }
+        }
+        /* Map completion is queue-ordered after the diagnostic replay. Do not
+         * begin the clean timing interval while that work is still in flight:
+         * on a slow/high-poly device the nominal 20-tick request margin is a
+         * convenience, not a proof that the GPU has drained. The launcher's
+         * bounded stalled-session recovery remains the escape hatch for a
+         * lost callback or device hang. */
+        if (sWorkshopPreviewWarmupTicks >= WORKSHOP_PREVIEW_WARMUP_TICKS &&
+            !platform_modern_character_visibility_pending()) {
             present_perf_measurement_reset();
             mdkr_modern_character_contact_metrics_reset();
             gfx_begin_modern_character_gpu_timing();
@@ -993,6 +1124,7 @@ void thread3_main(UNUSED void *unused) {
     sWorkshopPreviewWarmupTicks = 0u;
     sWorkshopPreviewMeasurementStarted = FALSE;
     sWorkshopPreviewMeasurementFinished = FALSE;
+    sWorkshopPreviewVisibilityAttempts = 0u;
     bzero(&sWorkshopPreviewCharacterBaseline,
           sizeof(sWorkshopPreviewCharacterBaseline));
     bzero(&sWorkshopPreviewVisualBaseline,

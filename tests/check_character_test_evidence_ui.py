@@ -85,13 +85,13 @@ def evidence_rows(root: Path) -> list[list[str]]:
     header = lines[0].split("\t")
     if (
         len(header) != 3
-        or header[0] != "mdkr-character-test-evidence-v7"
+        or header[0] != "mdkr-character-test-evidence-v8"
         or int(header[1]) != len(lines) - 1
         or len(header[2]) != 64
     ):
         raise RuntimeError("test evidence inventory header is malformed")
     rows = [line.split("\t") for line in lines[1:]]
-    if any(len(row) != 187 for row in rows):
+    if any(len(row) != 209 for row in rows):
         raise RuntimeError("test evidence inventory row is malformed")
     return rows
 
@@ -402,7 +402,7 @@ def main() -> int:
                 or rows[0][0] != "0"
                 or rows[0][1] != PACKAGE_ID
                 or (rows[0][7], rows[0][8]) != ("2", "4")
-                or rows[0][9] != "17"
+                or rows[0][9] != "18"
                 or bytes.fromhex(rows[0][29]).decode("utf-8")
                 != "webgpu-test"
                 or bytes.fromhex(rows[0][30]).decode("utf-8")
@@ -451,6 +451,14 @@ def main() -> int:
                 != (1, 200, 200, 500, 500, 0, 0, 0, 0, 0)
                 or tuple(map(int, rows[0][173:186]))
                 != (1, 0, 0, 0, 0, 3, 0, 0, 3, 0, 0, 0, 0)
+                or tuple(map(int, rows[0][186:208]))
+                != (
+                    1, 1, 2560, 1920,
+                    0, 0, 2560, 1920,
+                    0, 0, 2560, 1920,
+                    2, 2, 0, 0,
+                    8, 8, 10, 7, 1023, 127,
+                )
             ):
                 raise RuntimeError(
                     "qualified exact result did not persist exact device, fit, anatomy, camera, and vehicle-surface fields"
@@ -479,7 +487,33 @@ def main() -> int:
                     "character-contact-review package=" + PACKAGE_ID
                     + " context=1 measured=1 guide-met=0 "
                     "exception-required=1 exception-approved=0 "
-                    "review-ready=0",
+                    "review-ready=0 exact-contract=1 visibility-block=0 "
+                    "scene-reviewed=0 warnings=1",
+                ),
+                focus_contact_review=True,
+                tab="vehicles",
+            )
+
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "character-test-evidence-action "
+                    "action=publish-zero-visibility applied=1",
+                ),
+                action="publish-zero-visibility",
+            )
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "character-contact-review package=" + PACKAGE_ID
+                    + " context=1 measured=1 guide-met=1 "
+                    "exception-required=0 exception-approved=0 "
+                    "review-ready=0 exact-contract=1 visibility-block=1 "
+                    "scene-reviewed=0 warnings=1",
                 ),
                 focus_contact_review=True,
                 tab="vehicles",

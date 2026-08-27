@@ -29,11 +29,14 @@ from test_character_asset_probe import (  # noqa: E402
     make_humanoid_glb,
     make_portrait_png,
     make_v4_manifest,
+    rewrite_glb_document,
 )
 
 
 PACKAGE_ID = "org.mdkr.context-proof"
 CONTACT_PACKAGE_ID = "org.mdkr.contact-proof"
+TRANSPARENT_PACKAGE_ID = "org.mdkr.transparent-proof"
+MASKED_PACKAGE_ID = "org.mdkr.masked-proof"
 FRAMES = 180
 PRODUCT_CAPTURE_FRAMES = 360
 
@@ -312,6 +315,12 @@ def main() -> int:
     contact_model = source / "contact-model.glb"
     contact_manifest_path = source / "contact-manifest.json"
     contact_package = source / "contact-proof.mdkrchar"
+    transparent_model = source / "transparent-model.glb"
+    transparent_manifest_path = source / "transparent-manifest.json"
+    transparent_package = source / "transparent-proof.mdkrchar"
+    masked_model = source / "masked-model.glb"
+    masked_manifest_path = source / "masked-manifest.json"
+    masked_package = source / "masked-proof.mdkrchar"
     portrait_bytes = portrait.read_bytes()
     contact_model.write_bytes(make_humanoid_glb())
     contact_manifest = make_v4_manifest(portrait_bytes, humanoid=True)
@@ -327,6 +336,48 @@ def main() -> int:
     }
     contact_manifest_path.write_text(
         json.dumps(contact_manifest, indent=2) + "\n", encoding="utf-8")
+
+    def transparent_material(document: dict[str, object]) -> None:
+        material = document["materials"][0]  # type: ignore[index]
+        material["alphaMode"] = "BLEND"  # type: ignore[index]
+        pbr = material["pbrMetallicRoughness"]  # type: ignore[index]
+        pbr["baseColorFactor"][3] = 0.5  # type: ignore[index]
+
+    transparent_model.write_bytes(rewrite_glb_document(
+        make_animated_glb(volumetric=True), transparent_material))
+    transparent_manifest, _ = wizard.build_manifest(
+        transparent_model, TRANSPARENT_PACKAGE_ID, "Transparent Proof",
+        "CC0-1.0", "Generated MDKR transparent fixture",
+        "https://example.invalid/transparent-proof", "bumper",
+        ["car", "hovercraft", "plane"], portrait=portrait,
+        minimap_rgb=[90, 210, 140],
+    )
+    transparent_manifest_path.write_text(
+        json.dumps(transparent_manifest, indent=2) + "\n", encoding="utf-8")
+
+    def mixed_masked_material(document: dict[str, object]) -> None:
+        materials = document["materials"]  # type: ignore[index]
+        masked = json.loads(json.dumps(materials[0]))
+        masked["name"] = "alpha-tested-detail"
+        masked["alphaMode"] = "MASK"
+        masked["alphaCutoff"] = 0.5
+        materials.append(masked)
+        primitives = document["meshes"][0]["primitives"]  # type: ignore[index]
+        detail = json.loads(json.dumps(primitives[0]))
+        detail["material"] = 1
+        primitives.append(detail)
+
+    masked_model.write_bytes(rewrite_glb_document(
+        make_animated_glb(volumetric=True), mixed_masked_material))
+    masked_manifest, _ = wizard.build_manifest(
+        masked_model, MASKED_PACKAGE_ID, "Masked Multi-primitive Proof",
+        "CC0-1.0", "Generated MDKR alpha-test fixture",
+        "https://example.invalid/masked-proof", "bumper",
+        ["car", "hovercraft", "plane"], portrait=portrait,
+        minimap_rgb=[90, 210, 140],
+    )
+    masked_manifest_path.write_text(
+        json.dumps(masked_manifest, indent=2) + "\n", encoding="utf-8")
 
     failures: list[str] = []
     output = ""
@@ -349,6 +400,26 @@ def main() -> int:
     output += packed_contact.stdout or ""
     if packed_contact.returncode != 0:
         failures.append("contact witness package generation failed")
+    packed_transparent = run([
+        sys.executable, str(ROOT / "tools" / "character_asset_probe.py"),
+        "pack", "--model", str(transparent_model),
+        "--manifest", str(transparent_manifest_path),
+        "--license", str(license_path), "--portrait", str(portrait),
+        "--output", str(transparent_package),
+    ])
+    output += packed_transparent.stdout or ""
+    if packed_transparent.returncode != 0:
+        failures.append("transparent witness package generation failed")
+    packed_masked = run([
+        sys.executable, str(ROOT / "tools" / "character_asset_probe.py"),
+        "pack", "--model", str(masked_model),
+        "--manifest", str(masked_manifest_path),
+        "--license", str(license_path), "--portrait", str(portrait),
+        "--output", str(masked_package),
+    ])
+    output += packed_masked.stdout or ""
+    if packed_masked.returncode != 0:
+        failures.append("masked multi-primitive package generation failed")
     if not failures:
         installed = run([
             sys.executable,
@@ -366,6 +437,20 @@ def main() -> int:
         output += installed_contact.stdout or ""
         if installed_contact.returncode != 0:
             failures.append("temporary contact catalog install failed")
+        for fixture_label, fixture_package in (
+            ("transparent", transparent_package),
+            ("masked multi-primitive", masked_package),
+        ):
+            installed_fixture = run([
+                sys.executable,
+                str(ROOT / "tests" / "run_character_manager_fixture.py"),
+                "--directory", str(characters), "install",
+                str(fixture_package),
+            ])
+            output += installed_fixture.stdout or ""
+            if installed_fixture.returncode != 0:
+                failures.append(
+                    f"temporary {fixture_label} catalog install failed")
 
     arms = [
         ("select", 1, True, None, None, False, None, None, None, None),
@@ -394,6 +479,14 @@ def main() -> int:
         "car", 1, False, None, None, False,
         None, None, None, None, CONTACT_PACKAGE_ID,
     ))
+    arms.append((
+        "car", 1, False, None, None, False,
+        None, None, None, None, TRANSPARENT_PACKAGE_ID,
+    ))
+    arms.append((
+        "car", 1, False, None, None, False,
+        None, None, None, None, MASKED_PACKAGE_ID,
+    ))
     arm_draws: dict[str, int] = {}
     subject_capture_draws: dict[str, int] = {}
     captures: dict[str, Path] = {}
@@ -413,6 +506,10 @@ def main() -> int:
                 label += "-underside"
             if package_id == CONTACT_PACKAGE_ID:
                 label += "-contact-witness"
+            elif package_id == TRANSPARENT_PACKAGE_ID:
+                label += "-transparent-witness"
+            elif package_id == MASKED_PACKAGE_ID:
+                label += "-masked-multiprimitive-witness"
             force_gpu_timing_disabled = (
                 context == "select" and players == 1 and pose is None
             )
@@ -917,6 +1014,82 @@ def main() -> int:
                     failures.append(
                         f"{label} retained samples for an unqualified volume"
                     )
+            visibility_match = re.search(
+                r"visibility=(\d+)/(\d+) visibilitySize=(\d+)x(\d+) "
+                r"visibilityDraws=(\d+),(\d+),(\d+),(\d+) "
+                r"visibilityGrid=(\d+)x(\d+) "
+                r"visibilityTiles=(\d+)/(\d+) "
+                r"visibilityMask=([0-9a-f]{16})/([0-9a-f]{16})",
+                arm_output,
+            )
+            if visibility_match is None:
+                failures.append(
+                    f"{label} emitted no exact opaque-depth visibility witness"
+                )
+            else:
+                values = [
+                    int(value, 16) if index >= 12 else int(value)
+                    for index, value in enumerate(visibility_match.groups())
+                ]
+                (visibility_valid, visibility_qualified,
+                 visibility_width, visibility_height,
+                 visibility_draws, opaque_draws, masked_draws,
+                 transparent_draws, grid_columns, grid_rows,
+                 scene_tiles, isolated_tiles,
+                 scene_mask, isolated_mask) = values
+                common_visibility_valid = (
+                    visibility_valid == 1
+                    and visibility_width > 0
+                    and visibility_height > 0
+                    and visibility_draws > 0
+                    and opaque_draws + masked_draws + transparent_draws
+                    == visibility_draws
+                    and (grid_columns, grid_rows) == (8, 8)
+                    and scene_tiles <= isolated_tiles <= 64
+                    and scene_mask.bit_count() == scene_tiles
+                    and isolated_mask.bit_count() == isolated_tiles
+                    and scene_mask & ~isolated_mask == 0
+                )
+                qualified_visibility_valid = (
+                    visibility_qualified == 1
+                    and transparent_draws == 0
+                )
+                transparent_visibility_valid = (
+                    visibility_qualified == 0
+                    and transparent_draws > 0
+                    and isolated_tiles == 0
+                    and scene_tiles == 0
+                    and isolated_mask == 0
+                    and scene_mask == 0
+                )
+                if not common_visibility_valid or not (
+                        qualified_visibility_valid or
+                        transparent_visibility_valid):
+                    failures.append(
+                        f"{label} returned inconsistent opaque-depth "
+                        f"visibility evidence valid={visibility_valid}/"
+                        f"{visibility_qualified} size="
+                        f"{visibility_width}x{visibility_height} draws="
+                        f"{visibility_draws, opaque_draws, masked_draws, transparent_draws} "
+                        f"grid={grid_columns}x{grid_rows} tiles="
+                        f"{scene_tiles, isolated_tiles} masks="
+                        f"{scene_mask:016x}/{isolated_mask:016x}"
+                    )
+                if package_id == TRANSPARENT_PACKAGE_ID and not (
+                        transparent_visibility_valid and
+                        transparent_draws == visibility_draws):
+                    failures.append(
+                        f"{label} did not preserve blended transparency as "
+                        "explicitly unqualified visibility evidence"
+                    )
+                if package_id == MASKED_PACKAGE_ID and not (
+                        qualified_visibility_valid and opaque_draws > 0 and
+                        masked_draws > 0 and transparent_draws == 0 and
+                        visibility_draws >= 2):
+                    failures.append(
+                        f"{label} did not replay the complete mixed opaque/"
+                        "alpha-tested primitive set"
+                    )
             environment_match = re.search(
                 r"character_workshop_result: .* backend=(webgpu-[^ ]+) "
                 r"adapter=(.*?) driver=(.*?) vendor=([0-9a-f]{8}) "
@@ -1306,7 +1479,8 @@ def main() -> int:
         "measurements, exclusive stabilized "
         "RGB gameplay and transparent RGBA model-only PNG capture, "
         "exact four-contact post-solve witnesses and qualified retained-vehicle "
-        "surface intersection samples, one-to-four-player WebGPU "
+        "surface intersection samples, exact isolated-versus-scene "
+        "opaque-depth region evidence, one-to-four-player WebGPU "
         "stress, exact nonblocking scene/character GPU timestamp contracts "
         "with honest capability fallback, and fail-closed invalid requests"
     )
