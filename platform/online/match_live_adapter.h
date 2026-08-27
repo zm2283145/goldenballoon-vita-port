@@ -741,6 +741,19 @@ IMdkrOnlineAdapter *OnlineRoom_testLoopbackPeer(
     MdkrOnlineTestLoopbackRace *race);
 void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race);
 
+/* PD-T6h2a: LOBBY-START loopback room (MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START).
+ * Same two loopback adapters as OnlineRoom_makeTestLoopbackRace but STOPPED at
+ * SELECTING -- no selection, NO descriptor, NO roster -- so the visible engine
+ * boots DESCRIPTOR-LESS and its native CHARSELECT/TRACKSELECT own race 1. Returns
+ * nullptr on failure (*error set). Defined in online_live_wiring.cpp. */
+MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLobbyStartRoom(std::string *error);
+/* Reset the joiner-driver dedupe (call once before the engine boots). */
+void OnlineRoom_lobbyStartResetJoiner(void);
+/* Drive the JOINER (peer) endpoint toward ready each frame so the host's native
+ * START can leave LOBBY. `character` must differ from the host's native pick. */
+void OnlineRoom_lobbyStartServiceJoiner(IMdkrOnlineAdapter *joiner,
+                                        unsigned character);
+
 /* PD-T6h1: FRAME-STEPPED per-round re-cycle for a RESIDENT LIVE session.
  *
  * Replaces the T6ac blocking OnlineRoom_residentAdvanceRound: instead of driving

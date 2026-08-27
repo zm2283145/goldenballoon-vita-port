@@ -511,9 +511,42 @@ static void trackselect_input_live(TsInput *in) {
     in->modeEdge = (pressed & Z_TRIG) ? 1u : 0u;
 }
 
+/* PD-T6h2a: minimal scripted input for the headless LOBBY-START lane (env
+ * MDKR_TEST_ONLINE_LOBBY_START). Unlike the co-designed SINGLE_HOST scenario
+ * (which walks specific tracks against the self-contained reducer), this drives a
+ * REAL launcher adapter, so it stays trivial + convergence-robust: lock the
+ * DEFAULT cursor's track (index 0 == Ancient Lake, id 5, mask 0x07 -- legal for
+ * the Car charselect defaults to, so the auto-narrow never flips the vehicle) then
+ * request START. Both latch and are republished every frame, so an ASYNC reducer
+ * converges regardless of the exact tick timing. */
+static s8 sTsLobbyStartInput = -1; /* -1 unresolved, 0 off, 1 on */
+static u8 trackselect_lobby_input_active(void) {
+    if (sTsLobbyStartInput < 0) {
+        sTsLobbyStartInput =
+            (getenv("MDKR_TEST_ONLINE_LOBBY_START") != NULL) ? 1 : 0;
+    }
+    return (u8) (sTsLobbyStartInput > 0 ? 1 : 0);
+}
+
+static void trackselect_input_lobby_start(TsInput *in) {
+    memset(in, 0, sizeof(*in));
+    switch (sTs.ticks) {
+    case 2u:
+        in->aEdge = 1u; /* lock track index 0 -> id 5 (SET_CONFIG_TRACK) */
+        break;
+    case 8u:
+        in->startEdge = 1u; /* host start; startReq latches + re-fires each frame */
+        break;
+    default:
+        break;
+    }
+}
+
 static void trackselect_gather_input(TsInput *in) {
     if (mdkr_online_trackselect_test_active()) {
         trackselect_input_scripted(in);
+    } else if (trackselect_lobby_input_active()) {
+        trackselect_input_lobby_start(in);
     } else {
         trackselect_input_live(in);
     }

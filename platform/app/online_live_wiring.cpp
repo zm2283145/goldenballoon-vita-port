@@ -1387,6 +1387,172 @@ MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLoopbackRace(std::string *error) 
     return race.release();
 }
 
+/* ======================================================================== *
+ * PD-T6h2a: LOBBY-START loopback room (MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START)
+ *
+ * Stands up the SAME two real loopback adapters as OnlineRoom_makeTestLoopbackRace
+ * but STOPS at SELECTING -- both endpoints in the LOBBY phase, member_count 2, NO
+ * character/track selected, NO descriptor built, NO roster installed. The visible
+ * (host) engine then boots DESCRIPTOR-LESS: its native CHARSELECT/TRACKSELECT
+ * front and drive the host's real selection/ready/START through the reverse feed,
+ * building the descriptor live -- the proof that NATIVE owns race 1. The joiner is
+ * driven toward ready by OnlineRoom_lobbyStartServiceJoiner each frame.
+ * ======================================================================== */
+MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLobbyStartRoom(std::string *error) {
+    auto set_err = [&](const char *m) {
+        if (error != nullptr) *error = m;
+    };
+    /* No descriptor / roster is built here: clear any stale process-global roster
+     * so the engine's mode_intro takes the DESCRIPTOR-LESS fork (party_link active,
+     * no launch descriptor) rather than the descriptor-first fork. */
+    mdkr_net_roster_runtime_clear();
+
+    auto race = std::make_unique<MdkrOnlineTestLoopbackRace>();
+    race->joinerVisible =
+        std::getenv("MDKR_APP_TEST_ONLINE_LIVE_JOINER") != nullptr;
+    race->a = mdkr_online_live_adapter_create(
+        loopbackOptions(&race->transportA, &race->backendA,
+                        MDKR_ONLINE_JOURNEY_CREATE));
+    race->b = mdkr_online_live_adapter_create(
+        loopbackOptions(&race->transportB, &race->backendB,
+                        MDKR_ONLINE_JOURNEY_JOIN));
+    if (!race->a || !race->b) {
+        set_err("live adapter construction failed");
+        return nullptr;
+    }
+    IMdkrOnlineAdapter *A = race->a.get();
+    IMdkrOnlineAdapter *B = race->b.get();
+    std::vector<IMdkrOnlineAdapter *> both{A, B};
+
+    A->submit(loopbackCmd(A, MDKR_ONLINE_VIEW_ACTION_CREATE_ROOM));
+    if (!loopbackPumpUntil({A}, [&]() {
+            return loopbackView(A).kind == MDKR_ONLINE_VIEW_ROOM;
+        }, 5000u)) {
+        set_err("create room did not reach ROOM");
+        return nullptr;
+    }
+    B->submit(loopbackCmd(B, MDKR_ONLINE_VIEW_ACTION_JOIN_ROOM));
+    if (!loopbackPumpUntil(both, [&]() {
+            return loopbackView(A).member_count == 2u &&
+                   loopbackView(B).member_count == 2u;
+        }, 5000u)) {
+        set_err("join did not reach two members");
+        return nullptr;
+    }
+    A->submit(loopbackCmd(A, MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP));
+    B->submit(loopbackCmd(B, MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP));
+    race->hub.welcome(race->backendA.began);
+    race->hub.welcome(race->backendB.began);
+    if (!loopbackPumpUntil(both, [&]() {
+            return loopbackView(A).verification_phrase[0] != '\0' &&
+                   loopbackView(B).verification_phrase[0] != '\0';
+        }, 30000u)) {
+        set_err("mesh preflight did not surface the verification phrase");
+        return nullptr;
+    }
+    A->submit(loopbackCmd(A, MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE));
+    B->submit(loopbackCmd(B, MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE));
+    if (!loopbackPumpUntil(both, [&]() {
+            return loopbackView(A).kind == MDKR_ONLINE_VIEW_SELECTING &&
+                   loopbackView(B).kind == MDKR_ONLINE_VIEW_SELECTING;
+        }, 5000u)) {
+        set_err("confirm phrase did not reach SELECTING");
+        return nullptr;
+    }
+    /* Configure a fixed single-race track (Ancient Lake, id 5, mask 0x07 -- legal
+     * for Car) so the SELECTING view offers READY directly instead of a track VOTE.
+     * A single-race UNCONFIGURED room gates each seat's READY behind a vote (the
+     * production picker's VOTE step), which the native CHARSELECT never casts (it
+     * confirms+readies, then TRACKSELECT owns the track). The host's native
+     * TRACKSELECT still SET_CONFIG_TRACKs + STARTs this same track over the reverse
+     * feed (a converged no-op on the id, then the real START) -- so the booted race
+     * is genuinely the host-selected track. This is a SESSION CONFIG, not a
+     * descriptor/roster, so the descriptor-less boot property is preserved. */
+    if (!mdkr_online_live_adapter_set_config_track(A, 5u)) {
+        set_err("leader session-config submit refused (track)");
+        return nullptr;
+    }
+    if (!loopbackPumpUntil(both, [&]() {
+            MdkrOnlineLobby la{}, lb{};
+            return mdkr_online_live_adapter_lobby(A, &la) &&
+                   mdkr_online_live_adapter_lobby(B, &lb) &&
+                   la.configured_track == 5u && lb.configured_track == 5u;
+        }, 5000u)) {
+        set_err("configured track did not reach both lobby snapshots");
+        return nullptr;
+    }
+    /* STOP here: track configured, but NO selection, NO descriptor, NO roster. The
+     * native screens (visible engine) + OnlineRoom_lobbyStartServiceJoiner drive
+     * the rest once the engine is booted. */
+    if (mdkr_net_roster_runtime_active()) {
+        set_err("roster unexpectedly installed at lobby-start (expected none)");
+        return nullptr;
+    }
+    std::fprintf(stderr,
+                 "[online-lobby-start] loopback room at SELECTING (2 seats, LOBBY, "
+                 "no descriptor) -- native screens own race 1\n");
+    return race.release();
+}
+
+namespace {
+/* Dedupe for OnlineRoom_lobbyStartServiceJoiner: the last view primary action it
+ * submitted, so each distinct step is sent once (and re-sent when a host config
+ * change reverts the joiner to un-ready). One lobby-start session per process. */
+int sLobbyStartJoinerLastAction = -1;
+}  // namespace
+
+void OnlineRoom_lobbyStartResetJoiner(void) { sLobbyStartJoinerLastAction = -1; }
+
+/* Drive the JOINER (peer) endpoint toward ready every frame so the host's native
+ * START can leave LOBBY (BEGIN_LOADING requires all-ready). Reuses the primary-
+ * action-driven pattern OnlineRoom_residentAdvanceStep uses: submit whatever the
+ * joiner's view offers next (character -> vehicle -> vote -> ready), each distinct
+ * action once. `character` MUST differ from the host's native pick (Pipsy, id 2)
+ * so the reducer never rejects it as a selection conflict. The host's TRACKSELECT
+ * later SET_CONFIG_TRACKs a fixed single-race track, so the joiner's vote is a
+ * harmless no-op the reducer overrides with configured_track. */
+void OnlineRoom_lobbyStartServiceJoiner(IMdkrOnlineAdapter *joiner,
+                                        unsigned character) {
+    if (joiner == nullptr) return;
+    const MdkrOnlineViewModel vm = loopbackView(joiner);
+    const int action = static_cast<int>(vm.primary.action);
+    if (action == sLobbyStartJoinerLastAction) return; /* already sent for this state */
+    bool sent = false;
+    switch (vm.primary.action) {
+    case MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER:
+        sent = joiner
+                   ->submit(loopbackCmd(joiner,
+                                        MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER,
+                                        0u, character))
+                   .accepted;
+        break;
+    case MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE:
+        sent = joiner
+                   ->submit(loopbackCmd(
+                       joiner, MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE, 0u, 0u))
+                   .accepted;
+        break;
+    case MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK:
+        sent = joiner
+                   ->submit(loopbackCmd(
+                       joiner, MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK, 0u, 5u))
+                   .accepted;
+        break;
+    case MDKR_ONLINE_VIEW_ACTION_READY:
+        sent = joiner
+                   ->submit(loopbackCmd(joiner, MDKR_ONLINE_VIEW_ACTION_READY, 0u,
+                                        1u))
+                   .accepted;
+        break;
+    default:
+        /* CHANGE_SELECTION (already ready) / START_RACE (host only) / none: latch
+         * so we do not churn until the offered action changes. */
+        sLobbyStartJoinerLastAction = action;
+        return;
+    }
+    if (sent) sLobbyStartJoinerLastAction = action;
+}
+
 IMdkrOnlineAdapter *OnlineRoom_testLoopbackVisible(
     MdkrOnlineTestLoopbackRace *race) {
     if (race == nullptr) return nullptr;

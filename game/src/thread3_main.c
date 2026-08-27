@@ -65,6 +65,10 @@
  * (beta OFF) build never sees this include and the file it names is not compiled
  * (game/src/online/ is not globbed and is CMake-gated on the beta macro). */
 #include "online/online_session.h"
+/* PD-T6h2a: mdkr_party_link_active() for the descriptor-less lobby-start fork
+ * below. Dependency-free header; the TU (party_link.c) is beta-only, so the OFF
+ * build never sees this include and thread3_main.o stays byte-identical. */
+#include "net/party_link.h"
 #endif
 #include "platform_os.h"
 #include "app_overlay_hooks.h"
@@ -2199,6 +2203,21 @@ void mode_intro(void) {
                  * the descriptor, waits in LOBBY_WAIT, then hands off to the same
                  * race boot. Offline is provably unimpacted. */
                 mdkr_online_session_begin(launch);
+                return;
+            }
+            /* PD-T6h2a DESCRIPTOR-LESS lobby-start fork (SECOND condition; the
+             * descriptor-first condition above stays FIRST + unchanged). When the
+             * party_link bridge is installed but no descriptor/roster is present
+             * yet, the launcher wants the NATIVE online screens to own race 1: the
+             * session begins descriptor-less, fronts CHARSELECT -> TRACKSELECT,
+             * and the race-1 readiness gate holds the boot until the real
+             * descriptor + roster + match-input land. mdkr_party_link_active() is
+             * false for every non-lobby-start path (the bridge is installed only
+             * by a resident/lobby-start boot before the engine runs, and a
+             * resident boot ALSO installs a descriptor -> takes the first fork),
+             * so no existing lane reaches here. */
+            if (mdkr_party_link_active()) {
+                mdkr_online_session_begin(NULL);
                 return;
             }
         }

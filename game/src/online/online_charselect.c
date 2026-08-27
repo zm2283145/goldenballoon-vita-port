@@ -301,8 +301,25 @@ static void charselect_input_live(CsInput *in) {
     in->bEdge = (pressed & B_BUTTON) ? 1u : 0u;
 }
 
+/* PD-T6h2a: the headless LOBBY-START lane (env MDKR_TEST_ONLINE_LOBBY_START)
+ * drives the native screens with scripted INPUT while the REAL launcher owns the
+ * party_link forward feed (unlike MDKR_TEST_ONLINE_CHARSELECT, which ALSO installs
+ * a self-contained scripted feed + minimal reducer). So this enables the scripted
+ * cursor/confirm/ready ONLY -- it never touches the feed seams below, whose gating
+ * (MDKR_TEST_ONLINE_CHARSELECT) is unchanged, so the two-endpoint loopback's real
+ * reverse feed reaches the real adapter. Inert (unresolved -> off) in every run
+ * that does not set the env, so the existing charselect/trackselect lanes are
+ * behaviour-unchanged. Resolved once. */
+static s8 sLobbyStartInput = -1; /* -1 unresolved, 0 off, 1 on */
+static u8 charselect_lobby_input_active(void) {
+    if (sLobbyStartInput < 0) {
+        sLobbyStartInput = (getenv("MDKR_TEST_ONLINE_LOBBY_START") != NULL) ? 1 : 0;
+    }
+    return (u8) (sLobbyStartInput > 0 ? 1 : 0);
+}
+
 static void charselect_gather_input(CsInput *in) {
-    if (mdkr_online_charselect_test_active()) {
+    if (mdkr_online_charselect_test_active() || charselect_lobby_input_active()) {
         charselect_input_scripted(in);
     } else {
         charselect_input_live(in);

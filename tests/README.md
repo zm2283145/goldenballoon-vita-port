@@ -1537,6 +1537,29 @@ host-start (`[online-charselect] advance`), the assets were freed
 offline menu (`gGameMode=2 gCurrentMenuId=0`), which still converges byte-for-byte
 through the `ENGINE-ONLINE-LIVE` witness. Default `--build build-beta`.
 
+`check_online_lobby_start.py` (standalone lane, not run-checks registered) is the
+PD-T6h2a KEYSTONE gate: it proves the NATIVE online screens own RACE 1. Where the
+charselect/trackselect/session-boot lanes boot the engine race-READY (the
+descriptor already built), this stands up the two loopback adapters STOPPED at
+`SELECTING` (no descriptor, `party_link` installed) via
+`OnlineRoom_makeTestLobbyStartRoom` and boots the visible (host) engine
+DESCRIPTOR-LESS (`MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START=1`). The engine's native
+CHARSELECT/TRACKSELECT scripted input (`MDKR_TEST_ONLINE_LOBBY_START=1` -- input
+only; it does NOT install the self-contained charselect/trackselect feed seams)
+drives the host's selection/ready/`SET_CONFIG_TRACK`/START through the REAL reverse
+feed into the adapter, building the descriptor live at `BEGIN_LOADING`. The gate
+asserts: the session BEGAN descriptor-less (`[online-session] begin: lobby-start`)
+and the descriptor-FIRST begin did NOT fire; CHARSELECT then TRACKSELECT fronted;
+the race-1 readiness gate DEFERRED the boot (`race-1 boot deferred ... -> LOBBY_WAIT
+re-wait`) until the launcher built + armed the descriptor
+(`[online-lobby-start] race-1 armed`); then race 1 booted EXACTLY ONCE and ONLY
+THEN (`phase=RACE ... [race=1]`) on the host-selected track 5 (`[online-boot]
+direct race: track=5`, honored, no divergence, no admission reject), with
+`gGameMode=2 gCurrentMenuId=0` throughout and the engine entering the online
+rollback race (`loadedTrack=5`). This is the descriptor-less-begin + race-1
+readiness-gate proof (never a NULL/stale descriptor deref). Default
+`--build build-beta`.
+
 `check_online_tournament.py` (standalone lane, not run-checks registered)
 drives a FULL 4-race Dino Domain cup (mode
 tournament, cup 0: tracks 5, 3, 29, 7) through ONE loopback room

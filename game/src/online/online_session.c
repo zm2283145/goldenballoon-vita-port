@@ -98,6 +98,23 @@ typedef struct MdkrOnlineSessionState {
      * tick of each round and every time `ready` changes. 0xFF == not yet logged
      * this round (reset in online_session_boot_race). */
     u8 liveReWaitLastReady;
+    /* PD-T6h2a: the session BEGAN without a launch descriptor (the party_link
+     * lobby-start path -- the native online screens own race 1). Every new
+     * behaviour (the descriptor-less begin witness, the race-1 readiness gate in
+     * online_session_boot_race, the descriptor-less LOBBY_WAIT re-wait, and the
+     * feed-derived isFinal) is gated on this latch, so a descriptor-first begin
+     * (every existing lane + real play today) is byte-behaviour-unchanged. */
+    u8 beganWithoutDescriptor;
+    /* PD-T6h2a: set once the descriptor-less room has committed to loading (a
+     * boot was requested while the real descriptor was not yet live -- the native
+     * ADVANCE / LOBBY_WAIT phase-left-LOBBY fires frames before the launcher
+     * builds it). While set, LOBBY_WAIT routes through the descriptor-less re-wait
+     * (below) instead of re-fronting CHARSELECT, and boots once the descriptor +
+     * roster + match-input are ready. Cleared implicitly at the (single) boot. */
+    u8 desclessBootPending;
+    /* PD-T6h2a: throttle the descriptor-less re-wait witness (mirrors
+     * liveReWaitLastReady). 0xFF == not yet logged. */
+    u8 desclessReWaitLastReady;
 } MdkrOnlineSessionState;
 
 /* Session-owned state -- deliberately NOT any offline global. */
@@ -255,6 +272,45 @@ static void online_session_resident_resolve(void) {
     }
 }
 
+/* PD-T6h2a race-1 READINESS GATE (recon risk 2). For a descriptor-less
+ * (lobby-start) session the boot must NOT fire until the launcher has built +
+ * installed the REAL launch descriptor and armed the match-input source on that
+ * epoch -- otherwise online_session_boot_race would deref a NULL/stale launch
+ * (online_session.c:277). This is the live resident re-wait predicate (:504-507
+ * below) GENERALIZED to race 1: bootedEpoch is 0 for the first boot, so any real
+ * (nonzero) epoch satisfies the freshness check. It is used ONLY under the
+ * beganWithoutDescriptor latch, so the !haveSnap direct-boot branch and the
+ * seam-armed CHARSELECT hand-off are untouched. */
+static bool online_session_descless_boot_ready(void) {
+    const MdkrMatchLaunchDescriptorV1 *launch =
+        mdkr_net_roster_runtime_launch_descriptor();
+    return launch != NULL && mdkr_net_roster_runtime_active() &&
+           launch->manifest.match_epoch != sOnlineSession.bootedEpoch &&
+           mdkr_match_input_runtime_active() &&
+           mdkr_match_input_runtime_epoch() == launch->manifest.match_epoch;
+}
+
+/* PD-T6h2a (M2) FEED-DERIVED finality. A descriptor-less (interactive) session
+ * has no MDKR_APP_TEST_ONLINE_LIVE_RESIDENT env to size the run, so finality is
+ * read from the SAME party_link forward feed the screens render: a tournament is
+ * final on its last cup round (race_index >= CUP_ROUNDS-1 -- mirrors the
+ * launcher's lobby_view_model.c:713 predicate and ui_online_room.cpp:2149); a
+ * single race NEVER auto-finals (the host advances via REMATCH / leaves). The
+ * env path stays FIRST in the RESULTS enter below, so the two resident lanes are
+ * byte-behaviour-unchanged; this applies only when beganWithoutDescriptor. */
+#define MDKR_ONLINE_SESSION_CUP_ROUNDS 4u /* == MDKR_ONLINE_CUP_ROUNDS (lobby_core.h) */
+static u8 online_session_feed_isfinal(void) {
+    MdkrPartyLinkSnapshot snap;
+    if (mdkr_party_link_read(&snap) &&
+        snap.mode == (uint8_t) MDKR_PARTY_LINK_MODE_TOURNAMENT &&
+        snap.cup_id != MDKR_PARTY_LINK_CUP_UNSET) {
+        return (snap.race_index >= (u8) (MDKR_ONLINE_SESSION_CUP_ROUNDS - 1u))
+                   ? 1u
+                   : 0u;
+    }
+    return 0u;
+}
+
 static void online_session_boot_race(void) {
     u16 intended;
     s32 manifestTrack;
@@ -273,6 +329,37 @@ static void online_session_boot_race(void) {
             sOnlineSession.launch = launch;
         }
     }
+
+    /* PD-T6h2a RACE-1 READINESS GATE. When the session began descriptor-less, the
+     * native CHARSELECT/TRACKSELECT ADVANCE (and LOBBY_WAIT's phase-left-LOBBY)
+     * fire the instant the host START drives the room out of LOBBY -- several
+     * frames-to-seconds before the launcher builds the descriptor, installs the
+     * roster and arms the match-input source. Booting now would deref a NULL/stale
+     * launch (:277). Instead: mark the room as committed to loading and re-enter
+     * LOBBY_WAIT, whose descriptor-less re-wait boots exactly once the real
+     * descriptor + match-input are live. This branch is inert for a descriptor-
+     * first begin (beganWithoutDescriptor == 0), so every existing lane -- and the
+     * !haveSnap direct-boot branch that reaches here -- is unchanged. */
+    if (sOnlineSession.beganWithoutDescriptor &&
+        !online_session_descless_boot_ready()) {
+        if (!sOnlineSession.desclessBootPending) {
+            sOnlineSession.desclessBootPending = 1u;
+            fprintf(stderr,
+                    "[online-session] race-1 boot deferred: descriptor not ready "
+                    "yet (lobby-start gate) -> LOBBY_WAIT re-wait\n");
+        }
+        sOnlineSession.phase = MDKR_ONLINE_SESSION_LOBBY_WAIT;
+        return;
+    }
+    /* PD-T6h2a defensive NULL guard: never deref a NULL launch. Unreachable for a
+     * descriptor-first begin (mode_intro validated non-NULL) and the gate above
+     * guarantees non-NULL for the descriptor-less path, but the brief requires
+     * every launch-> deref be guarded. */
+    if (sOnlineSession.launch == NULL) {
+        sOnlineSession.phase = MDKR_ONLINE_SESSION_LOBBY_WAIT;
+        return;
+    }
+
     intended = sOnlineSession.intendedTrack;
     manifestTrack = (s32) sOnlineSession.launch->manifest.track_id;
     sOnlineSession.bootedEpoch = sOnlineSession.launch->manifest.match_epoch;
@@ -334,10 +421,26 @@ void mdkr_online_session_begin(const MdkrMatchLaunchDescriptorV1 *launch) {
     sOnlineSession.intendedTrack = MDKR_ONLINE_SESSION_TRACK_NONE;
     sOnlineSession.lastModeSeen = 0xFFu; /* M1: no forward-feed mode observed yet */
     sOnlineSession.liveReWaitLastReady = 0xFFu; /* M4: re-wait witness unthrottled */
+    sOnlineSession.desclessReWaitLastReady = 0xFFu; /* PD-T6h2a: ditto */
     sOnlineSession.active = 1;
     /* Enter the SEPARATED mode. Offline code never produces this value, so the
      * offline menu state machine is never entered on this route. */
     gGameMode = GAMEMODE_ONLINE_SESSION;
+    if (launch == NULL) {
+        /* PD-T6h2a DESCRIPTOR-LESS begin (the party_link lobby-start path): no
+         * launch descriptor exists yet -- the native online screens front
+         * CHARSELECT -> TRACKSELECT and the host START builds it. The race-1
+         * readiness gate (online_session_boot_race) holds the boot until the real
+         * descriptor + roster + match-input are live, so the NULL launch stashed
+         * here is never dereferenced. */
+        sOnlineSession.beganWithoutDescriptor = 1u;
+        fprintf(stderr,
+                "[online-session] begin: lobby-start (no descriptor) "
+                "(gGameMode=%d phase=LOBBY_WAIT); offline menu state machine "
+                "bypassed\n",
+                gGameMode);
+        return;
+    }
     fprintf(stderr,
             "[online-session] begin: separated boot path entered "
             "(gGameMode=%d phase=LOBBY_WAIT); offline menu state machine "
@@ -488,6 +591,45 @@ void mdkr_online_session_tick(s32 updateRate) {
         bool haveSnap;
         bool readyToBoot = false;
         bool toCharselect = false;
+
+        /* PD-T6h2a DESCRIPTOR-LESS race-1 re-wait. The native CHARSELECT/
+         * TRACKSELECT fronted and the host START drove the room out of LOBBY, so
+         * boot_race requested a boot the readiness gate refused (descriptor not
+         * live yet) -- it set desclessBootPending and parked us here. Boot race 1
+         * ONLY once the launcher's real descriptor + roster + match-input are live
+         * on a fresh epoch (bootedEpoch == 0), mirroring the resident re-wait
+         * below. Because it is gated on desclessBootPending it NEVER preempts the
+         * initial LOBBY_WAIT -> CHARSELECT hand-off (which runs while pending == 0
+         * -- see the !haveSnap / snapPhase logic further down). Disjoint from the
+         * resident re-wait (raceCount > 0) and inert without the latch. */
+        if (sOnlineSession.beganWithoutDescriptor &&
+            sOnlineSession.desclessBootPending &&
+            sOnlineSession.raceCount == 0u) {
+            const MdkrMatchLaunchDescriptorV1 *launch =
+                mdkr_net_roster_runtime_launch_descriptor();
+            bool ready = online_session_descless_boot_ready();
+            {
+                MdkrPartyLinkSnapshot rsnap;
+                if (mdkr_party_link_read(&rsnap)) {
+                    online_session_stash_intended(&rsnap);
+                }
+            }
+            if (sOnlineSession.desclessReWaitLastReady != (u8) ready) {
+                fprintf(stderr,
+                        "[online-session] phase=LOBBY_WAIT (lobby-start re-wait) "
+                        "tick=%u epoch=%u bootedEpoch=%u ready=%d\n",
+                        sOnlineSession.lobbyWaitTicks,
+                        (unsigned) (launch != NULL ? launch->manifest.match_epoch
+                                                   : 0u),
+                        (unsigned) sOnlineSession.bootedEpoch, (int) ready);
+                sOnlineSession.desclessReWaitLastReady = (u8) ready;
+            }
+            sOnlineSession.lobbyWaitTicks++;
+            if (ready) {
+                online_session_boot_race();
+            }
+            break;
+        }
 
         /* PD-T6ac LIVE residency re-wait: after a RESULTS advance we re-entered
          * LOBBY_WAIT and the launcher is re-cycling the room (REMATCH -> re-Ready
@@ -700,9 +842,15 @@ void mdkr_online_session_tick(s32 updateRate) {
             {
                 /* isFinal: no further race will boot (the ADVANCE off this
                  * screen would be the (N+1)th boot). The final STANDINGS holds
-                 * on screen and the autoplay tick budget ends the process. */
-                u8 isFinal = (sOnlineSession.raceCount >= sResidentRaces) ? 1u
-                                                                          : 0u;
+                 * on screen and the autoplay tick budget ends the process.
+                 * PD-T6h2a (M2): a descriptor-less (interactive) session has no
+                 * resident env, so size finality from the FEED; the ENV path
+                 * stays FIRST so the two resident lanes are byte-unchanged. */
+                u8 isFinal = sOnlineSession.beganWithoutDescriptor
+                                 ? online_session_feed_isfinal()
+                                 : ((sOnlineSession.raceCount >= sResidentRaces)
+                                        ? 1u
+                                        : 0u);
                 u8 raceIndex = (sOnlineSession.raceCount > 0u)
                                    ? (u8) (sOnlineSession.raceCount - 1u)
                                    : 0u;

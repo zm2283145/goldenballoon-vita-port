@@ -1125,6 +1125,24 @@ struct LiveResidentState {
 LiveResidentState *g_liveResident = nullptr;
 static void liveResidentServiceStep(void);
 
+/* PD-T6h2a LOBBY-START coordinator (set only by the lobby-start lane; null for
+ * every existing lane). Serviced from liveOverlayService each engine frame while
+ * the DESCRIPTOR-LESS session fronts its native CHARSELECT/TRACKSELECT: it pumps
+ * BOTH party_link feeds for the visible (host) endpoint so the native screens'
+ * selection/ready/START intents drive the REAL adapter, drives the joiner (peer)
+ * toward ready, and -- once the host's START has built the descriptor + installed
+ * the roster + stood up the race transport -- installs the match-input source so
+ * the engine's race-1 readiness gate passes and race 1 boots. */
+struct LiveLobbyStartState {
+    IMdkrOnlineAdapter *visible = nullptr; /* host (A) -- the native screens */
+    IMdkrOnlineAdapter *peer = nullptr;    /* joiner (B) -- driven toward ready */
+    LiveMatchInputContext *ctx = nullptr;
+    unsigned joinerCharacter = 1u; /* host native picks Pipsy(2); joiner != 2 */
+    enum class Phase { Lobby, Racing, Done } phase = Phase::Lobby;
+};
+LiveLobbyStartState *g_liveLobbyStart = nullptr;
+static void liveLobbyStartServiceStep(void);
+
 extern "C" {
 static void liveOverlayService(void) {
     LiveMatchInputContext *ctx = g_liveMatchInput;
@@ -1132,6 +1150,7 @@ static void liveOverlayService(void) {
     if (ctx->visible != nullptr) ctx->visible->service();
     if (ctx->peer != nullptr) ctx->peer->service();
     if (g_liveResident != nullptr) liveResidentServiceStep();
+    if (g_liveLobbyStart != nullptr) liveLobbyStartServiceStep();
 }
 static int liveOverlayProcessEvent(const void * /*sdl_event*/) { return 0; }
 static int liveOverlayWantsInput(void) { return 0; }
@@ -1797,6 +1816,151 @@ static void liveResidentServiceStep(void) {
         return;
     }
     /* Phase::Done -- nothing more; the tick budget ends the process. */
+}
+
+/* PD-T6h2a LOBBY-START per-frame coordinator (see LiveLobbyStartState). Runs from
+ * liveOverlayService every engine frame while g_liveLobbyStart is set. */
+static void liveLobbyStartServiceStep(void) {
+    LiveLobbyStartState *ls = g_liveLobbyStart;
+    if (ls == nullptr || ls->visible == nullptr) return;
+
+    /* Pump BOTH party_link feeds for the VISIBLE (host) endpoint: the forward feed
+     * (reducer lobby -> snapshot) the native CHARSELECT/TRACKSELECT render, and the
+     * reverse feed (native intents -> reducer commands) the host's selection /
+     * ready / SET_CONFIG_TRACK / START ride. This is the SAME wiring the resident
+     * loop uses -- here it fronts race 1. */
+    OnlineRoom_pumpPartyLink(ls->visible);
+    OnlineRoom_pumpPartyLinkIntent(ls->visible);
+
+    /* Drive the joiner (peer) toward ready so the host's START can leave LOBBY
+     * (BEGIN_LOADING needs all-ready). The host's native pick is Pipsy(2), so the
+     * joiner takes a different racer. */
+    OnlineRoom_lobbyStartServiceJoiner(ls->peer, ls->joinerCharacter);
+
+    if (ls->phase != LiveLobbyStartState::Phase::Lobby) return;
+
+    /* Race-1 ARM. The host's START drove BEGIN_LOADING; the adapters built the
+     * descriptor, installed the process-global roster and stood up the race
+     * transport. The instant the visible endpoint's race is ready on a real epoch,
+     * install the match-input source with that epoch (the generalization of the
+     * resident advance's ADVANCED arm to round 1). The engine's descriptor-less
+     * readiness gate (online_session_boot_race) then passes and race 1 boots --
+     * NEVER before this, so the NULL/stale descriptor is never dereferenced. */
+    MdkrOnlineLiveRaceInfo info{};
+    if (!(mdkr_net_roster_runtime_active() &&
+          mdkr_online_live_adapter_race_info(ls->visible, &info) && info.ready &&
+          info.matchEpoch != 0u)) {
+        return; /* still selecting / loading -- keep pumping */
+    }
+    /* Consume any pending engine-race-boot publish so it does not leak into a
+     * later poll; this coordinator arms the boot itself off the race-ready state. */
+    (void)OnlineRoom_pollEngineRaceBoot();
+
+    const std::uint64_t ownerToken =
+        UINT64_C(0x4f4e4c49564500) ^ static_cast<std::uint64_t>(info.matchEpoch);
+    OnlineRoom_setRosterOwner(ownerToken);
+
+    ls->ctx->epoch = info.matchEpoch;
+    ls->ctx->activeMask = info.activeSlotMask;
+    ls->ctx->racedTicks = 0u;
+    ls->ctx->drainCalls = 0u;
+    ls->ctx->advanceFailed = false;
+    ls->ctx->endReason = LiveRaceEndReason::Completed;
+    const MdkrMatchInputSource source = {
+        MDKR_MATCH_INPUT_SOURCE_VERSION, info.matchEpoch, ls->ctx,
+        liveDrainMatchInput,   liveInputsForTick,
+        liveTakeDirtyMatchInput, liveAiMaskMatchInput,
+    };
+    if (!mdkr_match_input_runtime_install(&source)) {
+        std::fprintf(stderr,
+                     "[online-lobby-start] match-input install refused -- "
+                     "ending lobby-start\n");
+        ls->phase = LiveLobbyStartState::Phase::Done;
+        return;
+    }
+    std::fprintf(stderr,
+                 "[online-lobby-start] race-1 armed: epoch=%u active=0x%02x "
+                 "(descriptor built + roster installed + match-input installed; "
+                 "session LOBBY_WAIT re-wait will boot it)\n",
+                 static_cast<unsigned>(info.matchEpoch),
+                 static_cast<unsigned>(info.activeSlotMask));
+    ls->phase = LiveLobbyStartState::Phase::Racing;
+}
+
+/* PD-T6h2a: boot the VISIBLE engine DESCRIPTOR-LESS on a lobby-start loopback
+ * room. Unlike runOnlineLiveEngineSession this skips the roster/race-info gates
+ * (there is no descriptor at boot), installs party_link + primes the forward feed
+ * BEFORE the boot (so LOBBY_WAIT fronts native CHARSELECT, not the !haveSnap
+ * direct boot), arms the lobby-start coordinator (which installs the match-input
+ * source once the host's START has built race 1), and passes peer!=nullptr so the
+ * eventual race reuses the two-adapter loopback drain/cross-pump. */
+int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config,
+                                     MdkrOnlineTestLoopbackRace *race) {
+    IMdkrOnlineAdapter *visible = OnlineRoom_testLoopbackVisible(race);
+    IMdkrOnlineAdapter *peer = OnlineRoom_testLoopbackPeer(race);
+    if (visible == nullptr || peer == nullptr) return 2;
+
+    /* Loopback drives the eventual race from the deterministic synthetic fixture
+     * (same as the LIVE lane), converging byte-for-byte across both endpoints. */
+    mdkr_online_live_adapter_race_set_synthetic_input(visible, true);
+    mdkr_online_live_adapter_race_set_synthetic_input(peer, true);
+
+    /* Match-input CONTEXT only (epoch 0, NO runtime install yet): the source is
+     * installed by the coordinator once race 1 is ready. Setting g_liveMatchInput
+     * makes liveOverlayService's early-out pass so the pumps + coordinator run
+     * every engine frame from the very first LOBBY_WAIT tick. */
+    LiveMatchInputContext context;
+    context.visible = visible;
+    context.peer = peer;
+    context.epoch = 0u;
+    context.activeMask = 0u;
+    g_liveMatchInput = &context;
+
+    /* Install party_link + PRIME the forward feed BEFORE the engine boots, so
+     * LOBBY_WAIT's first read is a LOBBY snapshot with the local seat -> the native
+     * CHARSELECT fronts (never the !haveSnap direct-boot branch). */
+    OnlineRoom_installPartyLink();
+    visible->service();
+    OnlineRoom_pumpPartyLink(visible);
+    OnlineRoom_lobbyStartResetJoiner();
+
+    LiveLobbyStartState lobbyState;
+    lobbyState.visible = visible;
+    lobbyState.peer = peer;
+    lobbyState.ctx = &context;
+    lobbyState.joinerCharacter = 1u; /* host native picks Pipsy(2); joiner != 2 */
+    lobbyState.phase = LiveLobbyStartState::Phase::Lobby;
+    g_liveLobbyStart = &lobbyState;
+
+    std::fprintf(stderr,
+                 "[online-lobby-start] residency armed: party_link installed, no "
+                 "descriptor -- native online screens own race 1\n");
+
+    static const AppOverlayHooks lobbyHooks = {
+        liveOverlayProcessEvent, liveOverlayService, liveOverlayWantsInput,
+        liveOverlayWantsPause, liveOverlayWantsRender, liveOverlayRender,
+    };
+    platformSetOverlayHooks(&lobbyHooks);
+    platformSetHostWindow(host.window(), host.glContext());
+    if (host.usingWebGpu()) {
+        platformSetHostWebGpu(host.wgpuInstance(), host.wgpuAdapter(),
+                              host.wgpuDevice(), host.wgpuQueue(),
+                              host.wgpuSurface(), host.wgpuFormat());
+        platformSetHostWebGpuRecovery(recoverAppHostWebGpu, &host);
+    }
+
+    const int result = mdkr64_engine_boot(&config);
+
+    platformSetOverlayHooks(nullptr);
+    platformSetHostWebGpuRecovery(nullptr, nullptr);
+    platformSetHostWebGpu(nullptr, nullptr, nullptr, nullptr, nullptr, 0);
+    platformSetHostWindow(nullptr, nullptr);
+    g_liveMatchInput = nullptr;
+    g_liveLobbyStart = nullptr;
+    if (mdkr_match_input_runtime_active()) mdkr_match_input_runtime_clear();
+    OnlineRoom_clearPartyLink();
+    mdkr_net_roster_runtime_clear();
+    return result;
 }
 #endif /* MDKR_ENABLE_ONLINE_BETA */
 
@@ -3162,6 +3326,35 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
      * MDKR_APP_AUTOPLAY_INPUT_SCRIPT navigate the engine to the agreed track;
      * MDKR_APP_AUTOPLAY_TICKS bounds the run). Ordinary autoplay never sets this
      * variable, so the loopback harness stays inert. */
+    /* PD-T6h2a KEYSTONE PROOF: the LOBBY-START loopback lane. Stand up the two
+     * loopback adapters but STOP at SELECTING (no descriptor), install party_link,
+     * and boot the visible (host) engine DESCRIPTOR-LESS so its native CHARSELECT
+     * -> TRACKSELECT own race 1: the host's scripted selection/ready/track/START
+     * ride the real reverse feed into the adapter, BEGIN_LOADING builds the
+     * descriptor live, and the engine's race-1 readiness gate boots exactly once
+     * the descriptor + roster + match-input are ready (never a NULL deref). This
+     * is the headless proof that NATIVE owns race 1. Ordinary autoplay never sets
+     * this, so it stays inert; every other lane is byte-behavior-unchanged. */
+    if (const char *lobbyStartEnv =
+            std::getenv("MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START");
+        lobbyStartEnv != nullptr &&
+        std::strtoul(lobbyStartEnv, nullptr, 10) > 0ul) {
+        std::string liveErr;
+        MdkrOnlineTestLoopbackRace *race =
+            OnlineRoom_makeTestLobbyStartRoom(&liveErr);
+        if (race == nullptr) {
+            std::fprintf(stderr,
+                         "[online-lobby-start] loopback room setup failed: %s\n",
+                         liveErr.c_str());
+            host.shutdown();
+            return 2;
+        }
+        const int liveResult =
+            runOnlineLobbyStartEngineSession(host, config, race);
+        OnlineRoom_destroyTestLoopbackRace(race);
+        host.shutdown();
+        return liveResult;
+    }
     /* PD-T6ac KEYSTONE PROOF: the LIVE-loopback RESIDENT lane. Stand up the SAME
      * two-real-adapter loopback race the MDKR_APP_TEST_ONLINE_LIVE lane below
      * uses, but make the engine session RESIDENT: ONE mdkr64_engine_boot spans
