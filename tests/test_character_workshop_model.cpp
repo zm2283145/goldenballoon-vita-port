@@ -1,4 +1,5 @@
 #include "character_workshop_model.h"
+#include "modern_character_lod.h"
 
 #include <cassert>
 #include <cmath>
@@ -230,6 +231,27 @@ void testRuntimeEquivalentLodSelection() {
     assert(CharacterWorkshop_lodBands(0.0f, 0.0f, 0xFu, nullptr) == 0u);
 }
 
+void testRuntimeLodHysteresis() {
+    assert(mdkr_modern_character_select_lod_hysteretic(
+               650.0f, 0.0f, 0.0f, 0xFu, 0u, 1) == 0u);
+    assert(mdkr_modern_character_select_lod_hysteretic(
+               706.0f, 0.0f, 0.0f, 0xFu, 0u, 1) == 0u);
+    assert(mdkr_modern_character_select_lod_hysteretic(
+               707.0f, 0.0f, 0.0f, 0xFu, 0u, 1) == 1u);
+    assert(mdkr_modern_character_select_lod_hysteretic(
+               649.0f, 0.0f, 0.0f, 0xFu, 1u, 1) == 1u);
+    assert(mdkr_modern_character_select_lod_hysteretic(
+               601.0f, 0.0f, 0.0f, 0xFu, 1u, 1) == 0u);
+    assert(mdkr_modern_character_select_lod_hysteretic(
+               2400.0f, 0.0f, 0.0f, 0xBu, 1u, 1) == 1u);
+    assert(mdkr_modern_character_select_lod_hysteretic(
+               2610.0f, 0.0f, 0.0f, 0xBu, 1u, 1) == 3u);
+    assert(mdkr_modern_character_select_lod_hysteretic(
+               650.0f, 0.0f, 0.0f, 0xFu, 9u, 1) == 1u);
+    assert(mdkr_modern_character_select_lod_hysteretic(
+               650.0f, 0.0f, 0.0f, 0xFu, 0u, 0) == 1u);
+}
+
 } // namespace
 
 int main() {
@@ -240,5 +262,6 @@ int main() {
     testTabStorageRoundTrip();
     testPerformanceTargets();
     testRuntimeEquivalentLodSelection();
+    testRuntimeLodHysteresis();
     return 0;
 }

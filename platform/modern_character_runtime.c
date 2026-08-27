@@ -52,6 +52,9 @@ typedef struct MdkrModernRuntimePlayer {
     MdkrModernCharacterContactDiagnostics
         contact_diagnostics[MDKR_CHARACTER_CONTEXT_COUNT];
     uint32_t contact_diagnostics_valid_mask;
+    uint32_t selected_lod[MDKR_CHARACTER_CONTEXT_COUNT]
+                         [MDKR_MODERN_CHARACTER_VIEWS];
+    uint32_t selected_lod_valid_mask;
 } MdkrModernRuntimePlayer;
 
 typedef struct MdkrModernPendingPlayer {
@@ -1168,6 +1171,7 @@ int mdkr_modern_character_set_tuning(int player,
     s_players[player].focus_valid_mask = 0u;
     s_players[player].fit_diagnostics_valid_mask = 0u;
     s_players[player].contact_diagnostics_valid_mask = 0u;
+    s_players[player].selected_lod_valid_mask = 0u;
     return 1;
 }
 
@@ -1375,9 +1379,20 @@ int mdkr_modern_character_emit(int player, int view,
             authored_lod_mask |= 1u << lod;
         }
     }
-    selected_lod = mdkr_modern_character_select_lod(
-        view_distance, pool->definition.lod_bias, slot->tuning.lod_bias,
-        authored_lod_mask);
+    {
+        const uint32_t lod_state =
+            (uint32_t)context * MDKR_MODERN_CHARACTER_VIEWS +
+            (uint32_t)view;
+        const uint32_t lod_state_bit = 1u << lod_state;
+        selected_lod = mdkr_modern_character_select_lod_hysteretic(
+            view_distance, pool->definition.lod_bias, slot->tuning.lod_bias,
+            authored_lod_mask, slot->selected_lod[context][view],
+            (slot->selected_lod_valid_mask & lod_state_bit) != 0u);
+        if (selected_lod != UINT32_MAX) {
+            slot->selected_lod[context][view] = selected_lod;
+            slot->selected_lod_valid_mask |= lod_state_bit;
+        }
+    }
     if (selected_lod == UINT32_MAX) {
         set_error(error, error_size,
                   "character LOD policy or authored levels are invalid");

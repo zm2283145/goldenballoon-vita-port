@@ -49,6 +49,40 @@ static inline uint32_t mdkr_modern_character_select_lod(
         ? selected : UINT32_MAX;
 }
 
+/* Runtime-only stabilization around authored distance bands. The Workshop's
+ * structural scrubber deliberately keeps using the exact stateless selector,
+ * while a live camera must cross an eight-percent guard band before changing
+ * an already visible level. This prevents camera vibration and split-screen
+ * interpolation from producing one-frame LOD chatter. */
+static inline uint32_t mdkr_modern_character_select_lod_hysteretic(
+    float view_distance, float source_lod_bias, float local_lod_bias,
+    uint32_t authored_lod_mask, uint32_t previous_lod,
+    int previous_valid) {
+    const uint32_t selected = mdkr_modern_character_select_lod(
+        view_distance, source_lod_bias, local_lod_bias, authored_lod_mask);
+    uint32_t guarded;
+    if (selected == UINT32_MAX || !previous_valid ||
+        previous_lod >= MDKR_MODERN_CHARACTER_LOD_LEVELS ||
+        (authored_lod_mask & (1u << previous_lod)) == 0u ||
+        selected == previous_lod) return selected;
+    if (selected > previous_lod) {
+        guarded = mdkr_modern_character_select_lod(
+            view_distance * 0.92f, source_lod_bias, local_lod_bias,
+            authored_lod_mask);
+        if (guarded != UINT32_MAX && guarded <= previous_lod) {
+            return previous_lod;
+        }
+    } else {
+        guarded = mdkr_modern_character_select_lod(
+            view_distance * 1.08f, source_lod_bias, local_lod_bias,
+            authored_lod_mask);
+        if (guarded != UINT32_MAX && guarded >= previous_lod) {
+            return previous_lod;
+        }
+    }
+    return selected;
+}
+
 #ifdef __cplusplus
 }
 #endif

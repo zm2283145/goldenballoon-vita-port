@@ -1233,7 +1233,7 @@ legacy-engine representation blockers:
 | Materials | Core PBR-like factors/maps plus DKR fog/sun/ambient; OPAQUE/MASK/BLEND | IBL, calibrated tone mapping, shadow receive/cast, transparent ordering, then optional hair/clearcoat/subsurface profiles |
 | Animation | TRS tracks, LINEAR/STEP/CUBICSPLINE, cross-fade, semantic clips, immutable previous/current replay interpolation | Real authored clips, local-TRS/quaternion presentation interpolation, additive masks, root-motion policy and possibly morph/facial animation |
 | Morphs | Rejected | Cache v2 storage, bounded weight tracks and shader path |
-| LOD | Authored `MSFT_lod`, per-viewport distance bands, exact merged-band scrubber, sparse fallback and structural transition warnings | Projected-size thresholds, hysteresis, optional offline simplification and GPU-timed 4P targets |
+| LOD | Authored `MSFT_lod`, per-player/context/viewport distance bands with runtime hysteresis, exact merged-band scrubber, sparse fallback and structural transition warnings | Projected-size thresholds and optional offline simplification; GPU-timed 4P targets are required by the playability gate |
 | Backends | WebGPU; retail fallback on OpenGL | Implement GL parity or formally ship the modern profile as WebGPU-only |
 
 The closest thing to a firm blocker is not polygon count. It is finishing the
@@ -1318,7 +1318,9 @@ pipeline explosion or transparent ordering regression.
 
 - Compile authored LODs first; optionally generate lower LODs with recorded
   simplification error.
-- Choose LOD by projected size per viewport with hysteresis.
+- The current per-viewport distance selector has an 8% stateful hysteresis
+  guard; replace its distance thresholds with projected-size thresholds while
+  preserving that no-chatter contract.
 - Add bone/primitive/material batching metrics and GPU timing.
 - Exercise ten visible racers across four viewports and character select at the
   low-end WebGPU device tier.
