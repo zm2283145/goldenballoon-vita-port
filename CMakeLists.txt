@@ -286,6 +286,18 @@ file(GLOB GAME_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_SOURCE_DIR}/game/src/hasm/*.c
     ${CMAKE_SOURCE_DIR}/game/src/hasm_native/*.c)
 
+# Separated online BETA boot path (game/src/online/). Deliberately NOT part of
+# the game/src/*.c glob above (that glob is non-recursive), and added ONLY inside
+# this beta gate -- exactly like party_link.c below -- so a normal (beta OFF)
+# build never compiles a byte of it and the release engine object is untouched.
+# It joins GAME_SOURCES (not PLATFORM_SOURCES) because it is engine/game code
+# that includes the decomp game headers, so it inherits the same warning regime
+# every other game/src TU does. Every TU here is itself #if MDKR_ENABLE_ONLINE_BETA.
+if(MDKR_ENABLE_ONLINE_BETA)
+    list(APPEND GAME_SOURCES
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_session.c) # separated online session
+endif()
+
 # Native platform layer (this project's own M1 code). Listed explicitly rather
 # than globbed, so a vendored mgb64 TU dropped into platform/ is not dragged into
 # the build until the milestone that actually wires it up.

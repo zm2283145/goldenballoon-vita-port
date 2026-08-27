@@ -60,6 +60,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "net/net_roster_runtime.h"
+#if MDKR_ENABLE_ONLINE_BETA
+/* SEPARATED-BOOT-PATH: the online session mode + fork entry. Beta-only; a normal
+ * (beta OFF) build never sees this include and the file it names is not compiled
+ * (game/src/online/ is not globbed and is CMake-gated on the beta macro). */
+#include "online/online_session.h"
+#endif
 #include "platform_os.h"
 #include "app_overlay_hooks.h"
 #include "waves.h"
@@ -469,6 +475,15 @@ void main_game_loop(void) {
         case GAMEMODE_INGAME: // In game (Controlling a character)
             mode_game(logicUpdateRate);
             break;
+#if MDKR_ENABLE_ONLINE_BETA
+        // Separated online boot path (beta). GAMEMODE_ONLINE_SESSION aliases the
+        // dead offline slot GAMEMODE_UNUSED_2, which offline code never produces,
+        // so this case is unreachable in a normal (beta OFF) build and compiles
+        // out entirely there.
+        case GAMEMODE_ONLINE_SESSION:
+            mdkr_online_session_tick(logicUpdateRate);
+            break;
+#endif
         case GAMEMODE_LOCKUP: // EPC (lockup display)
             mode_lockup(logicUpdateRate);
             break;
@@ -2173,7 +2188,11 @@ void set_frame_blackout_timer(void) {
  * level_load) does the rest. gGameCurrentCutscene stays CUTSCENE_NONE (0) so
  * the launch-descriptor seam in level_load() applies the manifest track/vehicle.
  */
-static void mdkr_online_boot_direct_race(
+/* Un-static (still entirely #if MDKR_ENABLE_ONLINE_BETA): the separated online
+ * session (game/src/online/online_session.c) calls this to reuse the game's own
+ * race boot rather than duplicating the race-setup logic. Prototype lives in
+ * online/online_session.h. */
+void mdkr_online_boot_direct_race(
     const MdkrMatchLaunchDescriptorV1 *launch) {
     s32 canonicalPlayers = (s32) mdkr_net_roster_runtime_canonical_player_count(2u);
     s32 trackId = (s32) launch->manifest.track_id;
@@ -2237,7 +2256,12 @@ void mode_intro(void) {
             const MdkrMatchLaunchDescriptorV1 *launch =
                 mdkr_net_roster_runtime_launch_descriptor();
             if (launch != NULL && mdkr_net_roster_runtime_active()) {
-                mdkr_online_boot_direct_race(launch);
+                /* SEPARATED-BOOT-PATH: fork into the online session mode instead
+                 * of booting the race here. The session (a fully separate boot
+                 * path that never runs the offline menu state machine) stashes
+                 * the descriptor, waits in LOBBY_WAIT, then hands off to the same
+                 * race boot. Offline is provably unimpacted. */
+                mdkr_online_session_begin(launch);
                 return;
             }
         }

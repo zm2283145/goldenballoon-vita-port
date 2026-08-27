@@ -1493,6 +1493,26 @@ legality (descriptor validation and BEGIN_LOADING both check the chosen
 vehicle bit against the mask) must hold end-to-end for the boot to happen at
 all.
 
+`check_online_session_boot.py` (standalone lane, not run-checks registered) is
+the PD-T1 gate for the SEPARATED online boot path (Strategy D). Where the direct
+lane proves the race is reached with no menu-nav script, this proves it is now
+reached THROUGH a separate `GAMEMODE_ONLINE_SESSION` that holds its own state
+and never runs the offline `GAMEMODE_MENU` / `gCurrentMenuId` path. It stands up
+the same in-process live loopback session (real libdatachannel DTLS, roster +
+launch descriptor installed from the vote) and boots the engine with NO input
+script, but also sets `MDKR_TEST_ONLINE_SESSION_SCRIPT=<hold>` -- an engine-side
+seam (`game/src/online/online_session.c`, beta + env gated, inert otherwise)
+that installs the REAL `party_link` forward feed and publishes a scripted
+snapshot each `LOBBY_WAIT` tick: `MDKR_ONLINE_LOBBY` for `<hold>` ticks then
+`MDKR_ONLINE_LOADING`. The gate asserts the session mode was entered
+(`[online-session] begin`), that it genuinely idled in `LOBBY_WAIT` reading the
+scripted snapshot (`>= hold` ticks with `haveSnap=1 snapPhase=1`), that it then
+handed off to the race (`[online-session] phase=RACE`) with `gGameMode=2`
+(`GAMEMODE_ONLINE_SESSION`) and `gCurrentMenuId=0` (the offline `MENU_BOOT` was
+never loaded), and that the race still boots and converges byte-for-byte through
+the same `ENGINE-ONLINE-LIVE` witness the direct lane checks. Default
+`--build build-beta` (the beta engine carries the seam).
+
 `check_online_tournament.py` (standalone lane, not run-checks registered)
 drives a FULL 4-race Dino Domain cup (mode
 tournament, cup 0: tracks 5, 3, 29, 7) through ONE loopback room
