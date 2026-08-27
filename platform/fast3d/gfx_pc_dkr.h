@@ -25,6 +25,7 @@
 #define _LANGUAGE_C
 #endif
 #include <PR/gbi.h> /* Gfx, Mtx */
+#include "modern_character_capture_projection.h"
 #include "modern_character_gpu_timing.h"
 #include "gfx_font_registry.h"
 #include "gfx_shadow_frame.h" /* GfxShadowReplayViewProjection */
@@ -116,6 +117,8 @@ bool gfx_get_capture_dimensions(uint32_t *width, uint32_t *height);
  * image is exact output-sized, bottom-left-origin, straight RGBA. */
 bool gfx_get_modern_character_capture_dimensions(uint32_t *width,
                                                   uint32_t *height);
+bool gfx_get_modern_character_capture_projection(
+    MdkrModernCharacterCaptureProjection *projection);
 int gfx_read_modern_character_capture_rgba(int width, int height,
                                             uint8_t *rgba_out);
 void gfx_begin_modern_character_gpu_timing(void);

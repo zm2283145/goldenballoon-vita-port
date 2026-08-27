@@ -54,7 +54,13 @@ uint32_t gfx_modern_character_register_draw(
             "runtime primitive is in range");
     require(draw->bone_count <= 256u,
             "runtime obeys the GPU palette bound");
+    require(draw->player < MDKR_MODERN_CHARACTER_PLAYERS,
+            "runtime draw retains a bounded player owner");
+    require(draw->view < MDKR_MODERN_CHARACTER_VIEWS,
+            "runtime draw retains a bounded gameplay or cutscene view owner");
     for (component = 0u; component < 16u; component++) {
+        require(isfinite(draw->target_frame_matrix[component]),
+                "runtime target frame is finite");
         require(isfinite(draw->model_matrix[component]),
                 "runtime model transform is finite");
         require(isfinite(draw->normal_matrix[component]),
@@ -1261,12 +1267,12 @@ int main(int argc, char **argv) {
                 0, 0, MDKR_WORKSHOP_PREVIEW_LIGHTING_BRIGHT,
                 error, sizeof(error)),
             "exact renderer accepts a bounded character-light preset");
-    require(mdkr_modern_character_emit(0, MDKR_CHARACTER_CONTEXT_SELECT,
+    require(mdkr_modern_character_emit(0, 0, MDKR_CHARACTER_CONTEXT_SELECT,
                                        NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)),
             error);
     select_model_y = last_model_matrix[13];
-    require(mdkr_modern_character_emit(0, MDKR_CHARACTER_CONTEXT_CAR,
+    require(mdkr_modern_character_emit(0, 0, MDKR_CHARACTER_CONTEXT_CAR,
                                        NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)),
             error);
@@ -1362,11 +1368,22 @@ int main(int argc, char **argv) {
                         error, sizeof(error)),
                 "each local player owns an independent semantic pose");
     }
-    require(mdkr_modern_character_emit(3, MDKR_CHARACTER_CONTEXT_CAR,
+    require(mdkr_modern_character_emit(3, 3, MDKR_CHARACTER_CONTEXT_CAR,
                                        NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)) &&
                 command_cursor == commands + 3 && registered_draws == 3u,
             "four-player assignment reuses GPU ownership and emits independently");
+    require(mdkr_modern_character_emit(3, 7, MDKR_CHARACTER_CONTEXT_CAR,
+                                       NULL, 0.0f, &command_cursor,
+                                       error, sizeof(error)) &&
+                command_cursor == commands + 4 && registered_draws == 4u,
+            "cutscene camera ownership remains a valid ordinary draw");
+    require(!mdkr_modern_character_emit(
+                3, MDKR_MODERN_CHARACTER_VIEWS,
+                MDKR_CHARACTER_CONTEXT_CAR, NULL, 0.0f, &command_cursor,
+                error, sizeof(error)) &&
+                command_cursor == commands + 4 && registered_draws == 4u,
+            "out-of-range camera ownership fails before draw publication");
     require(mdkr_modern_character_get_tuning(0, &tuning) &&
                 mdkr_modern_character_set_tuning(
                     0, &tuning, error, sizeof(error)) &&

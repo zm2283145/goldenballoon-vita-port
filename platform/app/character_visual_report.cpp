@@ -224,7 +224,96 @@ std::string base64(const std::vector<unsigned char> &bytes) {
 
 bool captureMetadataValid(const CharacterVisualReport::Capture &capture,
                           bool requirePngDigest) {
-    return textValid(capture.pngPath, 4095u, true) &&
+    const auto rectValid = [&capture](const std::array<int32_t, 4> &rect) {
+        return rect[0] >= 0 && rect[1] >= 0 && rect[2] > 0 && rect[3] > 0 &&
+            static_cast<int64_t>(rect[0]) + rect[2] <= capture.width &&
+            static_cast<int64_t>(rect[1]) + rect[3] <= capture.height;
+    };
+    const auto &projection = capture.fitProjection;
+    bool projectionValid = false;
+    if (projection.valid) {
+        projectionValid =
+            capture.renderProduct ==
+                CharacterVisualReport::RenderProduct::ModelAlpha &&
+            projection.width == capture.width &&
+            projection.height == capture.height &&
+            projection.primitiveDraws >= 1u &&
+            projection.primitiveDraws <= 4096u &&
+            rectValid(projection.viewport) && rectValid(projection.scissor) &&
+            std::all_of(
+                projection.clipFlags.begin(), projection.clipFlags.end(),
+                [](uint32_t flags) { return (flags & ~0x7fu) == 0u; });
+        if (projectionValid) {
+            const int64_t viewportLeft =
+                static_cast<int64_t>(projection.viewport[0]) * 1000;
+            const int64_t viewportTop =
+                static_cast<int64_t>(projection.viewport[1]) * 1000;
+            const int64_t viewportRight = static_cast<int64_t>(
+                projection.viewport[0] + projection.viewport[2]) * 1000;
+            const int64_t viewportBottom = static_cast<int64_t>(
+                projection.viewport[1] + projection.viewport[3]) * 1000;
+            const int64_t scissorLeft =
+                static_cast<int64_t>(projection.scissor[0]) * 1000;
+            const int64_t scissorTop =
+                static_cast<int64_t>(projection.scissor[1]) * 1000;
+            const int64_t scissorRight = static_cast<int64_t>(
+                projection.scissor[0] + projection.scissor[2]) * 1000;
+            const int64_t scissorBottom = static_cast<int64_t>(
+                projection.scissor[1] + projection.scissor[3]) * 1000;
+            constexpr int64_t kTolerance = 1;
+            for (size_t point = 0u;
+                 point < CharacterVisualReport::kFitProjectionPoints;
+                 ++point) {
+                const int64_t x = projection.pixelMilli[point][0];
+                const int64_t y = projection.pixelMilli[point][1];
+                const int32_t depth = projection.depthMillionths[point];
+                const uint32_t flags = projection.clipFlags[point];
+                const bool outsideScissor =
+                    x < scissorLeft - kTolerance ||
+                    x > scissorRight + kTolerance ||
+                    y < scissorTop - kTolerance ||
+                    y > scissorBottom + kTolerance;
+                if ((x < viewportLeft - kTolerance) !=
+                        ((flags & 0x01u) != 0u) ||
+                    (x > viewportRight + kTolerance) !=
+                        ((flags & 0x02u) != 0u) ||
+                    (y < viewportTop - kTolerance) !=
+                        ((flags & 0x04u) != 0u) ||
+                    (y > viewportBottom + kTolerance) !=
+                        ((flags & 0x08u) != 0u) ||
+                    (depth < 0) != ((flags & 0x10u) != 0u) ||
+                    (depth > 1000000) != ((flags & 0x20u) != 0u) ||
+                    outsideScissor != ((flags & 0x40u) != 0u)) {
+                    projectionValid = false;
+                    break;
+                }
+            }
+        }
+    } else {
+        projectionValid = projection.width == 0u && projection.height == 0u &&
+            projection.primitiveDraws == 0u &&
+            std::all_of(projection.viewport.begin(), projection.viewport.end(),
+                        [](int32_t value) { return value == 0; }) &&
+            std::all_of(projection.scissor.begin(), projection.scissor.end(),
+                        [](int32_t value) { return value == 0; }) &&
+            std::all_of(
+                projection.pixelMilli.begin(), projection.pixelMilli.end(),
+                [](const std::array<int32_t, 2> &point) {
+                    return point[0] == 0 && point[1] == 0;
+                }) &&
+            std::all_of(
+                projection.depthMillionths.begin(),
+                projection.depthMillionths.end(),
+                [](int32_t value) { return value == 0; }) &&
+            std::all_of(
+                projection.clipFlags.begin(), projection.clipFlags.end(),
+                [](uint32_t value) { return value == 0u; });
+    }
+    if (capture.renderProduct ==
+            CharacterVisualReport::RenderProduct::ModelAlpha &&
+        !projection.valid) projectionValid = false;
+    return projectionValid &&
+           textValid(capture.pngPath, 4095u, true) &&
            (requirePngDigest ? digestValid(capture.pngSha256)
                              : capture.pngSha256.empty()) &&
            digestValid(capture.sourceSha256) &&
@@ -320,7 +409,7 @@ bool exportHtml(const std::string &outputPath,
     html += "main{max-width:1600px;margin:auto;padding:24px}h1{margin:.2em 0}.sub{color:#aeb9c7;word-break:break-all}";
     html += ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;margin-top:24px}";
     html += "figure{margin:0;background:#1d2530;border:1px solid #344252;border-radius:12px;overflow:hidden}";
-    html += "img{display:block;width:100%;height:auto;background-color:#161b22;background-image:linear-gradient(45deg,#303844 25%,transparent 25%),linear-gradient(-45deg,#303844 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#303844 75%),linear-gradient(-45deg,transparent 75%,#303844 75%);background-size:24px 24px;background-position:0 0,0 12px,12px -12px,-12px 0}figcaption{padding:14px;line-height:1.45}";
+    html += ".shot{position:relative}.shot img{display:block;width:100%;height:auto;background-color:#161b22;background-image:linear-gradient(45deg,#303844 25%,transparent 25%),linear-gradient(-45deg,#303844 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#303844 75%),linear-gradient(-45deg,transparent 75%,#303844 75%);background-size:24px 24px;background-position:0 0,0 12px,12px -12px,-12px 0}.shot svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.bounds{stroke:#ffd166;stroke-width:2;fill:none;vector-effect:non-scaling-stroke}.anchor{fill:#ff6bd6;stroke:#181d25;stroke-width:1;vector-effect:non-scaling-stroke}.forward{stroke:#5cc8ff;stroke-width:3;vector-effect:non-scaling-stroke}figcaption{padding:14px;line-height:1.45}";
     html += ".ok{color:#8ee6a8}.warn{color:#ffd37a}code{font-size:.8em;word-break:break-all}";
     html += "@media print{body{background:white;color:black}figure{break-inside:avoid;border-color:#aaa}.sub{color:#444}}</style></head><body>";
     html += "<main><h1>" + htmlEscape(displayName) + "</h1>";
@@ -328,9 +417,39 @@ bool exportHtml(const std::string &outputPath,
         " · self-contained exact-renderer contact sheet · no model or ROM bytes</div><div class=\"grid\">";
     for (const Loaded &item : loaded) {
         const Capture &capture = *item.capture;
-        html += "<figure><img alt=\"" + htmlEscape(
+        html += "<figure><div class=\"shot\"><img alt=\"" + htmlEscape(
             capture.context + ", " + capture.pose) +
             "\" src=\"data:image/png;base64," + base64(item.png) + "\">";
+        if (capture.fitProjection.valid) {
+            static constexpr unsigned edges[][2] = {
+                {0, 1}, {2, 3}, {4, 5}, {6, 7},
+                {0, 2}, {1, 3}, {4, 6}, {5, 7},
+                {0, 4}, {1, 5}, {2, 6}, {3, 7},
+            };
+            html += "<svg role=\"img\" aria-label=\"Registered calibrated bounds, anchor, and forward direction\" viewBox=\"0 0 " +
+                std::to_string(capture.width * 1000) + " " +
+                std::to_string(capture.height * 1000) + "\">";
+            for (const auto &edge : edges) {
+                const auto &a = capture.fitProjection.pixelMilli[edge[0]];
+                const auto &b = capture.fitProjection.pixelMilli[edge[1]];
+                html += "<line class=\"bounds\" x1=\"" +
+                    std::to_string(a[0]) + "\" y1=\"" +
+                    std::to_string(a[1]) + "\" x2=\"" +
+                    std::to_string(b[0]) + "\" y2=\"" +
+                    std::to_string(b[1]) + "\"/>";
+            }
+            const auto &anchor = capture.fitProjection.pixelMilli[8];
+            const auto &forward = capture.fitProjection.pixelMilli[9];
+            html += "<line class=\"forward\" x1=\"" +
+                std::to_string(anchor[0]) + "\" y1=\"" +
+                std::to_string(anchor[1]) + "\" x2=\"" +
+                std::to_string(forward[0]) + "\" y2=\"" +
+                std::to_string(forward[1]) + "\"/>";
+            html += "<circle class=\"anchor\" cx=\"" +
+                std::to_string(anchor[0]) + "\" cy=\"" +
+                std::to_string(anchor[1]) + "\" r=\"5000\"/></svg>";
+        }
+        html += "</div>";
         html += "<figcaption><strong>" + htmlEscape(capture.context) +
             " · " + htmlEscape(capture.pose) + "</strong><br>";
         html += htmlEscape(renderProductName(capture.renderProduct)) +
@@ -347,7 +466,7 @@ bool exportHtml(const std::string &outputPath,
         html += "<br><code>PNG SHA-256 " + item.sha + "</code></figcaption></figure>";
     }
     html += "</div><script id=\"mdkr-character-visual-report\" type=\"application/json\">{";
-    html += "\"version\":2,\"packageId\":\"" + jsonEscape(packageId) +
+    html += "\"version\":3,\"packageId\":\"" + jsonEscape(packageId) +
         "\",\"displayName\":\"" + jsonEscape(displayName) +
         "\",\"captures\":[";
     for (size_t index = 0u; index < loaded.size(); ++index) {
@@ -372,7 +491,35 @@ bool exportHtml(const std::string &outputPath,
             std::string(capture.exactPose ? "true" : "false") +
             ",\"sourceSha256\":\"" + capture.sourceSha256 +
             "\",\"fitSha256\":\"" + capture.fitSha256 +
-            "\",\"pngSha256\":\"" + capture.pngSha256 + "\"}";
+            "\",\"pngSha256\":\"" + capture.pngSha256 + "\"";
+        if (capture.fitProjection.valid) {
+            const auto &projection = capture.fitProjection;
+            html += ",\"fitProjection\":{\"width\":" +
+                std::to_string(projection.width) + ",\"height\":" +
+                std::to_string(projection.height) +
+                ",\"primitiveDraws\":" +
+                std::to_string(projection.primitiveDraws) +
+                ",\"viewport\":[";
+            for (size_t component = 0u; component < 4u; ++component) {
+                if (component != 0u) html += ',';
+                html += std::to_string(projection.viewport[component]);
+            }
+            html += "],\"scissor\":[";
+            for (size_t component = 0u; component < 4u; ++component) {
+                if (component != 0u) html += ',';
+                html += std::to_string(projection.scissor[component]);
+            }
+            html += "],\"points\":[";
+            for (size_t point = 0u; point < kFitProjectionPoints; ++point) {
+                if (point != 0u) html += ',';
+                html += "[" + std::to_string(projection.pixelMilli[point][0]) +
+                    "," + std::to_string(projection.pixelMilli[point][1]) +
+                    "," + std::to_string(projection.depthMillionths[point]) +
+                    "," + std::to_string(projection.clipFlags[point]) + "]";
+            }
+            html += "]}";
+        }
+        html += '}';
     }
     html += "]}</script></main></body></html>\n";
 

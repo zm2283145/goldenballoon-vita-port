@@ -1107,7 +1107,7 @@ remain open.
 
 Launcher-owned previews also arm the existing bounded presentation census. The
 game discards a 120-authored-tick warm-up, resets only the observational timing
-window, and freezes a structured version-11 result when the F1 overlay opens (or
+window, and freezes a structured version-12 result when the F1 overlay opens (or
 at engine shutdown). The surviving launcher publishes that result back to the
 same package inspector: displayed interval sample count, median/p95/p99/mean/max,
 authored tick-wall sample/mean, and warmed replacement/part/donor-suppression
@@ -1121,17 +1121,28 @@ product, stable-frame count, and byte count. Fewer than 60 intervals
 and synthetic pacing are explicitly diagnostic-only. Visual-inspection results
 remain session-only and cannot contaminate durable timing evidence.
 
-The launcher collects only version-11 captures armed after at least 12 eligible
+The launcher collects only version-12 captures armed after at least 12 eligible
 frames in bounded session metadata and can export a self-contained HTML
 qualification report. Publication validates the complete typed PNG and binds
-its SHA-256 immediately. The tray lazily decodes at most a 96-pixel bounded
+its SHA-256 immediately. A model-only result also requires the renderer's exact
+subject-player and authored-viewport capture witness. The backend composes the
+accepted camera/object matrix with the target frame, proves that every replayed
+subject primitive shares that projection and viewport, and aspect-fits the
+selected split-screen viewport into the output without distortion. Engine
+publication projects eight calibrated bounds corners, the fitted anchor, and a
+forward endpoint into bounded integer millipixels and WebGPU depth millionths;
+raw matrices remain session-only. The tray lazily decodes at most a 96-pixel bounded
 thumbnail per visible digest, presents transparent products over a checkerboard,
 and never retains full-resolution pixels. Report export and Portrait Studio
 handoff reread the external file and refuse any later byte replacement; the
 handoff carries the bound digest through its own decode so a path swap cannot
-cross that boundary. Report schema v2 records `scene` or `model-alpha` for
+cross that boundary. Report schema v3 records `scene` or `model-alpha` for
 every item, displays transparency over a checkerboard, and refuses RGB/RGBA
-files that contradict the recorded product. The launcher and exporter share strict bounded PNG
+files that contradict the recorded product. It additionally records the fixed
+projection witness and draws registered bounds, anchor, and forward direction
+over the embedded PNG using an integer SVG coordinate space. It refuses absent
+or contradictory projection data for model-only captures and refuses projection
+data on composed scenes. The launcher and exporter share strict bounded PNG
 validation for chunk ordering, names, CRCs, canonical IHDR dimensions, palette
 requirements, nonempty image data, and terminal IEND; the exporter also checks canonical source/fit digests,
 metadata bounds, capture-time identity, total byte budget and destination suffix; it escapes HTML and
@@ -1157,7 +1168,7 @@ gate. Evidence schema v4 retains the signed target-frame bounds, ground/seat
 anchor, normalized facing direction, and four exact post-solve
 root/bend/target/end/error contact witnesses from the successful replacement
 draw, so Fit and Performance retain the same renderer measurement after
-restart. The v11 result contract requires either all four self-consistent
+restart. The v12 result contract requires either all four self-consistent
 witnesses or none; a vehicle result with nonzero automatic solve count cannot
 omit or partially publish them. It also carries a versioned GPU timing contract:
 the initial gameplay color/depth pass is timestamped when the device supports

@@ -41,6 +41,7 @@
 #include "fs_utf8.h"
 #include "gpu_diagnostics.h"
 #include "modern_character_limits.h"
+#include "modern_character_capture_projection.h"
 #include "present_sched.h"
 #include "viewport_route_cache.h"
 
@@ -551,6 +552,9 @@ struct WgpuSkinnedCaptureDraw {
     int scissor[4];
     uint32_t source_width;
     uint32_t source_height;
+    uint32_t player;
+    uint32_t view;
+    float target_to_clip[16];
 };
 static struct WgpuSkinnedCaptureDraw
     s_skinned_capture_draws[WGPU_SKINNED_CAPTURE_MAX_DRAWS];
@@ -563,6 +567,8 @@ static WGPUTextureView s_skinned_capture_depth_view = NULL;
 static uint32_t s_skinned_capture_width = 0u;
 static uint32_t s_skinned_capture_height = 0u;
 static bool s_skinned_capture_ready = false;
+static MdkrModernCharacterCaptureProjection
+    s_skinned_capture_projection;
 static bool wgpu_render_skinned_capture(void);
 static void wgpu_release_skinned_capture_target(void);
 
@@ -2747,6 +2753,8 @@ static bool wgpu_start_frame(void) {
     s_skinned_ubo_used = 0; /* fresh immutable skin/material slots per draw */
     s_skinned_capture_draw_count = 0u;
     s_skinned_capture_overflow = false;
+    memset(&s_skinned_capture_projection, 0,
+           sizeof(s_skinned_capture_projection));
     if (platform_modern_character_capture_pending()) {
         s_skinned_capture_ready = false;
     }
@@ -9930,7 +9938,7 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
     wgpuRenderPassEncoderDrawIndexed(s_pass, primitive->index_count, 1u,
                                      primitive->first_index, 0, 0u);
     wgpu_character_gpu_timing_draw_end(timing_query);
-    if (capture_requested) {
+    if (capture_requested && draw->player == 0u && draw->view == 0u) {
         if (s_skinned_capture_draw_count >=
                 WGPU_SKINNED_CAPTURE_MAX_DRAWS) {
             s_skinned_capture_overflow = true;
@@ -9954,6 +9962,13 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
                 s_sc_set ? s_sc_h : (int)target_height;
             capture->source_width = target_width;
             capture->source_height = target_height;
+            capture->player = draw->player;
+            capture->view = draw->view;
+            if (!mdkr_modern_character_capture_projection_compose(
+                    &mvp[0][0], draw->target_frame_matrix,
+                    capture->target_to_clip)) {
+                s_skinned_capture_overflow = true;
+            }
         }
     }
     s_skinned_draws++;
@@ -9980,6 +9995,8 @@ static void wgpu_release_skinned_capture_target(void) {
     s_skinned_capture_width = 0u;
     s_skinned_capture_height = 0u;
     s_skinned_capture_ready = false;
+    memset(&s_skinned_capture_projection, 0,
+           sizeof(s_skinned_capture_projection));
 }
 
 static bool wgpu_ensure_skinned_capture_target(
@@ -10047,19 +10064,11 @@ static bool wgpu_ensure_skinned_capture_target(
     return true;
 }
 
-static int wgpu_capture_scale_coordinate(
-    int64_t value, uint32_t source, uint32_t destination) {
-    if (source == 0u) return 0;
-    int64_t scaled =
-        value * (int64_t)destination / (int64_t)source;
-    if (scaled < INT32_MIN) return INT32_MIN;
-    if (scaled > INT32_MAX) return INT32_MAX;
-    return (int)scaled;
-}
-
 static bool wgpu_render_skinned_capture(void) {
     uint32_t rendered = 0u;
     s_skinned_capture_ready = false;
+    memset(&s_skinned_capture_projection, 0,
+           sizeof(s_skinned_capture_projection));
     if (!platform_modern_character_capture_pending()) return true;
     if (s_encoder == NULL || s_skinned_capture_overflow ||
         s_skinned_capture_draw_count == 0u || s_resolve_w == 0u ||
@@ -10099,6 +10108,8 @@ static bool wgpu_render_skinned_capture(void) {
             &s_skinned_capture_draws[index];
         const struct GfxModernSkinnedAsset *asset = command->asset;
         if (asset == NULL || command->primitive >= asset->primitive_count ||
+            command->player != 0u ||
+            command->view != 0u ||
             command->source_width == 0u || command->source_height == 0u ||
             command->viewport[2] <= 0 || command->viewport[3] <= 0 ||
             command->scissor[2] <= 0 || command->scissor[3] <= 0) {
@@ -10127,48 +10138,129 @@ static bool wgpu_render_skinned_capture(void) {
             complete = false;
             break;
         }
-        int viewport_x = wgpu_capture_scale_coordinate(
-            command->viewport[0], command->source_width,
-            s_skinned_capture_width);
-        int viewport_right = wgpu_capture_scale_coordinate(
-            (int64_t)command->viewport[0] + command->viewport[2],
-            command->source_width, s_skinned_capture_width);
-        int viewport_bottom = wgpu_capture_scale_coordinate(
-            command->viewport[1], command->source_height,
-            s_skinned_capture_height);
-        int viewport_top = wgpu_capture_scale_coordinate(
-            (int64_t)command->viewport[1] + command->viewport[3],
-            command->source_height, s_skinned_capture_height);
-        int viewport_y =
-            (int)s_skinned_capture_height - viewport_top;
-        int viewport_width = viewport_right - viewport_x;
-        int viewport_height = viewport_top - viewport_bottom;
+        /* A model-only capture is about one inspected subject, even when the
+         * performance arm renders split screen. Crop-normalize player 0's exact
+         * viewport into the output while preserving its aspect ratio; the MVP
+         * remains untouched and the projection witness records this destination
+         * viewport, so pixels and diagnostics share one honest transform. */
+        int source_viewport_x = command->viewport[0];
+        int source_viewport_y = (int)command->source_height -
+            (command->viewport[1] + command->viewport[3]);
+        int source_viewport_width = command->viewport[2];
+        int source_viewport_height = command->viewport[3];
         wgpu_clamp_rect(
-            &viewport_x, &viewport_y, &viewport_width, &viewport_height,
-            (int)s_skinned_capture_width,
-            (int)s_skinned_capture_height);
-        int scissor_x = wgpu_capture_scale_coordinate(
-            command->scissor[0], command->source_width,
-            s_skinned_capture_width);
-        int scissor_right = wgpu_capture_scale_coordinate(
-            (int64_t)command->scissor[0] + command->scissor[2],
-            command->source_width, s_skinned_capture_width);
-        int scissor_bottom = wgpu_capture_scale_coordinate(
-            command->scissor[1], command->source_height,
-            s_skinned_capture_height);
-        int scissor_top = wgpu_capture_scale_coordinate(
-            (int64_t)command->scissor[1] + command->scissor[3],
-            command->source_height, s_skinned_capture_height);
-        int scissor_y = (int)s_skinned_capture_height - scissor_top;
+            &source_viewport_x, &source_viewport_y,
+            &source_viewport_width, &source_viewport_height,
+            (int)command->source_width, (int)command->source_height);
+        int source_scissor_x = command->scissor[0];
+        int source_scissor_y = (int)command->source_height -
+            (command->scissor[1] + command->scissor[3]);
+        int source_scissor_width = command->scissor[2];
+        int source_scissor_height = command->scissor[3];
+        wgpu_clamp_rect(
+            &source_scissor_x, &source_scissor_y,
+            &source_scissor_width, &source_scissor_height,
+            (int)command->source_width, (int)command->source_height);
+        if (source_viewport_width <= 0 || source_viewport_height <= 0 ||
+            source_scissor_width <= 0 || source_scissor_height <= 0) {
+            continue;
+        }
+        int viewport_width;
+        int viewport_height;
+        if ((uint64_t)s_skinned_capture_width *
+                (uint64_t)source_viewport_height <=
+            (uint64_t)s_skinned_capture_height *
+                (uint64_t)source_viewport_width) {
+            viewport_width = (int)s_skinned_capture_width;
+            viewport_height = (int)(
+                (uint64_t)source_viewport_height *
+                s_skinned_capture_width /
+                (uint32_t)source_viewport_width);
+        } else {
+            viewport_height = (int)s_skinned_capture_height;
+            viewport_width = (int)(
+                (uint64_t)source_viewport_width *
+                s_skinned_capture_height /
+                (uint32_t)source_viewport_height);
+        }
+        if (viewport_width <= 0 || viewport_height <= 0) continue;
+        int viewport_x =
+            ((int)s_skinned_capture_width - viewport_width) / 2;
+        int viewport_y =
+            ((int)s_skinned_capture_height - viewport_height) / 2;
+        const int source_intersection_left =
+            source_scissor_x > source_viewport_x
+                ? source_scissor_x : source_viewport_x;
+        const int source_intersection_top =
+            source_scissor_y > source_viewport_y
+                ? source_scissor_y : source_viewport_y;
+        const int source_intersection_right =
+            source_scissor_x + source_scissor_width <
+                    source_viewport_x + source_viewport_width
+                ? source_scissor_x + source_scissor_width
+                : source_viewport_x + source_viewport_width;
+        const int source_intersection_bottom =
+            source_scissor_y + source_scissor_height <
+                    source_viewport_y + source_viewport_height
+                ? source_scissor_y + source_scissor_height
+                : source_viewport_y + source_viewport_height;
+        if (source_intersection_left >= source_intersection_right ||
+            source_intersection_top >= source_intersection_bottom) continue;
+        int scissor_x = viewport_x + (int)(
+            (int64_t)(source_intersection_left - source_viewport_x) *
+            viewport_width / source_viewport_width);
+        int scissor_y = viewport_y + (int)(
+            (int64_t)(source_intersection_top - source_viewport_y) *
+            viewport_height / source_viewport_height);
+        int scissor_right = viewport_x + (int)(
+            ((int64_t)(source_intersection_right - source_viewport_x) *
+                 viewport_width + source_viewport_width - 1) /
+            source_viewport_width);
+        int scissor_bottom = viewport_y + (int)(
+            ((int64_t)(source_intersection_bottom - source_viewport_y) *
+                 viewport_height + source_viewport_height - 1) /
+            source_viewport_height);
         int scissor_width = scissor_right - scissor_x;
-        int scissor_height = scissor_top - scissor_bottom;
+        int scissor_height = scissor_bottom - scissor_y;
         wgpu_clamp_rect(
             &scissor_x, &scissor_y, &scissor_width, &scissor_height,
             (int)s_skinned_capture_width,
             (int)s_skinned_capture_height);
-        if (viewport_width <= 0 || viewport_height <= 0 ||
-            scissor_width <= 0 || scissor_height <= 0) {
-            continue;
+        if (scissor_width <= 0 || scissor_height <= 0) continue;
+        if (rendered == 0u) {
+            s_skinned_capture_projection.version =
+                MDKR_MODERN_CHARACTER_CAPTURE_PROJECTION_VERSION;
+            s_skinned_capture_projection.valid = 1u;
+            s_skinned_capture_projection.subject_player = command->player;
+            s_skinned_capture_projection.output_width =
+                s_skinned_capture_width;
+            s_skinned_capture_projection.output_height =
+                s_skinned_capture_height;
+            s_skinned_capture_projection.viewport[0] = viewport_x;
+            s_skinned_capture_projection.viewport[1] = viewport_y;
+            s_skinned_capture_projection.viewport[2] = viewport_width;
+            s_skinned_capture_projection.viewport[3] = viewport_height;
+            s_skinned_capture_projection.scissor[0] = scissor_x;
+            s_skinned_capture_projection.scissor[1] = scissor_y;
+            s_skinned_capture_projection.scissor[2] = scissor_width;
+            s_skinned_capture_projection.scissor[3] = scissor_height;
+            memcpy(s_skinned_capture_projection.target_to_clip,
+                   command->target_to_clip,
+                   sizeof(s_skinned_capture_projection.target_to_clip));
+        } else if (memcmp(
+                       s_skinned_capture_projection.target_to_clip,
+                       command->target_to_clip,
+                       sizeof(command->target_to_clip)) != 0 ||
+                   s_skinned_capture_projection.viewport[0] != viewport_x ||
+                   s_skinned_capture_projection.viewport[1] != viewport_y ||
+                   s_skinned_capture_projection.viewport[2] != viewport_width ||
+                   s_skinned_capture_projection.viewport[3] != viewport_height ||
+                   s_skinned_capture_projection.scissor[0] != scissor_x ||
+                   s_skinned_capture_projection.scissor[1] != scissor_y ||
+                   s_skinned_capture_projection.scissor[2] != scissor_width ||
+                   s_skinned_capture_projection.scissor[3] != scissor_height) {
+            complete = false;
+            break;
         }
         wgpuRenderPassEncoderSetViewport(
             pass, (float)viewport_x, (float)viewport_y,
@@ -10193,12 +10285,32 @@ static bool wgpu_render_skinned_capture(void) {
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
     s_skinned_capture_ready = complete && rendered != 0u;
+    s_skinned_capture_projection.primitive_draws = rendered;
+    if (!s_skinned_capture_ready ||
+        !mdkr_modern_character_capture_projection_valid(
+            &s_skinned_capture_projection)) {
+        s_skinned_capture_ready = false;
+        memset(&s_skinned_capture_projection, 0,
+               sizeof(s_skinned_capture_projection));
+    }
     fprintf(stderr,
-            "[WGPU-CHARACTER-CAPTURE] ready=%d draws=%u/%u target=%ux%u readback=straight-rgba\n",
+            "[WGPU-CHARACTER-CAPTURE] ready=%d subject=0 draws=%u/%u target=%ux%u projection=%s readback=straight-rgba\n",
             s_skinned_capture_ready ? 1 : 0, rendered,
             s_skinned_capture_draw_count,
-            s_skinned_capture_width, s_skinned_capture_height);
+            s_skinned_capture_width, s_skinned_capture_height,
+            s_skinned_capture_ready ? "target-to-clip" : "none");
     return s_skinned_capture_ready;
+}
+
+static bool wgpu_get_modern_character_capture_projection(
+    MdkrModernCharacterCaptureProjection *projection) {
+    if (projection == NULL || !s_skinned_capture_ready ||
+        !mdkr_modern_character_capture_projection_valid(
+            &s_skinned_capture_projection)) {
+        return false;
+    }
+    *projection = s_skinned_capture_projection;
+    return true;
 }
 
 static bool wgpu_get_modern_character_capture_dimensions(
@@ -11078,6 +11190,8 @@ struct GfxRenderingAPI gfx_webgpu_api = {
     .read_framebuffer_rgb = wgpu_read_framebuffer_rgb,
     .get_modern_character_capture_dimensions =
         wgpu_get_modern_character_capture_dimensions,
+    .get_modern_character_capture_projection =
+        wgpu_get_modern_character_capture_projection,
     .read_modern_character_capture_rgba =
         wgpu_read_modern_character_capture_rgba,
     .begin_modern_character_gpu_timing =

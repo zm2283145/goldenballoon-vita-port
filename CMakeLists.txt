@@ -311,6 +311,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/modern_character_text.c # shared bounded UTF-8 to retail-font identity projection
     ${CMAKE_SOURCE_DIR}/platform/modern_character_runtime.c # assignments, animation instances, retained draw commands
     ${CMAKE_SOURCE_DIR}/platform/modern_character_gpu_timing.c # bounded exact Workshop GPU timestamp distributions
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_capture_projection.c # subject-scoped exact capture-space fit witness
     ${CMAKE_SOURCE_DIR}/platform/workshop_preview_runtime.c # presentation-only exact inspection view/light state
     ${CMAKE_SOURCE_DIR}/platform/modern_character_donor.c # fail-visible retail driver/vehicle separation
     ${CMAKE_SOURCE_DIR}/platform/modern_character_gameplay_profile.c # exact bounded ROM donor summaries

@@ -5105,6 +5105,7 @@ struct GfxRenderingAPI gfx_opengl_api = {
     .draw_triangles = gfx_opengl_draw_triangles,
     .read_framebuffer_rgb = gfx_opengl_read_framebuffer_rgb,
     .get_modern_character_capture_dimensions = NULL,
+    .get_modern_character_capture_projection = NULL,
     .read_modern_character_capture_rgba = NULL,
     .init = gfx_opengl_init,
     .on_resize = gfx_opengl_on_resize,

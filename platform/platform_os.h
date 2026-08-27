@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "mdkr_trace.h"
+#include "modern_character_capture_projection.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -366,6 +367,11 @@ int platform_modern_character_capture_request_once(
     const char *png_path, char *error, size_t error_size);
 int platform_frame_capture_pending(void);
 int platform_modern_character_capture_pending(void);
+/* Exact capture-space witness retained across renderer teardown for the
+ * launcher-owned preview result. Session-only floats are consumed immediately
+ * and quantized before any durable evidence is published. */
+int platform_modern_character_capture_projection(
+    MdkrModernCharacterCaptureProjection *projection);
 
 /* ===== Content packs (platform_sdl_min.c) =============================== *
  * Host-side ownership of the pack registry (platform/mod_registry.h) and the

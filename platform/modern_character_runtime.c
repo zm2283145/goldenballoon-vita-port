@@ -1256,7 +1256,8 @@ int mdkr_modern_character_tick_phase(int player, const char *semantic,
         &slot->pose, seconds, normalized_phase, error, error_size);
 }
 
-int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
+int mdkr_modern_character_emit(int player, int view,
+                               MdkrModernCharacterContext context,
                                const float target_frame[16],
                                float view_distance, Gfx **display_list,
                                char *error, size_t error_size) {
@@ -1296,6 +1297,7 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
     const MdkrWorkshopPreviewLighting inspection_lighting =
         mdkr_workshop_preview_lighting();
     if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        view < 0 || view >= MDKR_MODERN_CHARACTER_VIEWS ||
         display_list == NULL || *display_list == NULL ||
         (slot = &s_players[player])->pool < 0 ||
         context < MDKR_CHARACTER_CONTEXT_SELECT ||
@@ -1520,6 +1522,10 @@ int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
         }
         draw.asset = &pool->render.gpu;
         draw.primitive = primitive_index;
+        draw.player = (uint32_t)player;
+        draw.view = (uint32_t)view;
+        memcpy(draw.target_frame_matrix, target_context,
+               sizeof(draw.target_frame_matrix));
         matrix_multiply(anchored_transform, node_world, draw.model_matrix);
         matrix_multiply(previous_anchored_transform, previous_node_world,
                         draw.previous_model_matrix);

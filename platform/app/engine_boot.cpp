@@ -11,9 +11,11 @@
 #include "character_png_validation.h"
 #include "fs_utf8.h"
 #include "modern_character_registry.h"
+#include "platform_os.h"
 #include "user_paths.h"
 #include "video_config.h"   // MdkrVideoMode, mdkr_video_schema
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <array>
@@ -22,6 +24,9 @@
 #include <vector>
 
 namespace {
+
+static_assert(sizeof(int) == sizeof(int32_t),
+              "preview projection ABI requires 32-bit int");
 
 std::array<std::string, 4> s_launcherCharacterEnvironment;
 constexpr size_t kCharacterTuningCount = 74;
@@ -117,6 +122,75 @@ bool characterPreviewPng(const char *path, unsigned expectedWidth,
             payload.data(), payload.size(), expectedWidth, expectedHeight,
             info, error) || info.colourType != expectedColourType) return false;
     bytes = payload.size();
+    return true;
+}
+
+bool characterPreviewProjection(MdkrCharacterPreviewResult &result) {
+    MdkrModernCharacterCaptureProjection projection{};
+    if (!result.fit_diagnostics_valid ||
+        !platform_modern_character_capture_projection(&projection) ||
+        projection.subject_player != 0u ||
+        projection.output_width != result.output_width ||
+        projection.output_height != result.output_height) {
+        return false;
+    }
+    int pixels[MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS][2]{};
+    int depths[MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS]{};
+    unsigned flags[MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS]{};
+    float points[MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS][3]{};
+    float maximumExtent = 0.0f;
+    for (unsigned corner = 0u;
+         corner < MDKR_CHARACTER_PREVIEW_PROJECTION_BOUNDS_POINTS; ++corner) {
+        for (unsigned axis = 0u; axis < 3u; ++axis) {
+            const long long value = (corner & (1u << axis)) != 0u
+                ? result.fit_bounds_max_micrometres[axis]
+                : result.fit_bounds_min_micrometres[axis];
+            points[corner][axis] = static_cast<float>(value / 1000000.0);
+        }
+    }
+    for (unsigned axis = 0u; axis < 3u; ++axis) {
+        points[MDKR_CHARACTER_PREVIEW_PROJECTION_ANCHOR_POINT][axis] =
+            static_cast<float>(
+                result.fit_anchor_micrometres[axis] / 1000000.0);
+        const float extent = static_cast<float>(
+            (result.fit_bounds_max_micrometres[axis] -
+             result.fit_bounds_min_micrometres[axis]) / 1000000.0);
+        maximumExtent = std::max(maximumExtent, extent);
+    }
+    if (!(maximumExtent > 0.0f)) return false;
+    constexpr float kForwardWitnessScale = 0.3f;
+    for (unsigned axis = 0u; axis < 3u; ++axis) {
+        points[MDKR_CHARACTER_PREVIEW_PROJECTION_FORWARD_POINT][axis] =
+            points[MDKR_CHARACTER_PREVIEW_PROJECTION_ANCHOR_POINT][axis] +
+            static_cast<float>(result.fit_forward_milli[axis]) / 1000.0f *
+                maximumExtent * kForwardWitnessScale;
+    }
+    for (unsigned point = 0u;
+         point < MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS; ++point) {
+        int32_t pixel[2]{};
+        int32_t depth = 0;
+        uint32_t clipFlags = 0u;
+        if (!mdkr_modern_character_capture_project_point(
+                &projection, points[point], pixel, &depth, &clipFlags)) {
+            return false;
+        }
+        pixels[point][0] = pixel[0];
+        pixels[point][1] = pixel[1];
+        depths[point] = depth;
+        flags[point] = clipFlags;
+    }
+    result.fit_projection_width = projection.output_width;
+    result.fit_projection_height = projection.output_height;
+    result.fit_projection_primitive_draws = projection.primitive_draws;
+    std::memcpy(result.fit_projection_viewport, projection.viewport,
+                sizeof(result.fit_projection_viewport));
+    std::memcpy(result.fit_projection_scissor, projection.scissor,
+                sizeof(result.fit_projection_scissor));
+    std::memcpy(result.fit_projection_pixel_milli, pixels, sizeof(pixels));
+    std::memcpy(result.fit_projection_depth_millionths, depths,
+                sizeof(depths));
+    std::memcpy(result.fit_projection_clip_flags, flags, sizeof(flags));
+    result.fit_projection_valid = 1;
     return true;
 }
 
@@ -575,7 +649,7 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
         cfg->character_preview_capture_png != nullptr &&
         cfg->character_preview_capture_png[0] != '\0') {
         unsigned long long bytes = 0u;
-        cfg->character_preview_result->capture_written =
+        const bool pngWritten =
             cfg->character_preview_result->capture_armed &&
             characterPreviewPng(
                 cfg->character_preview_capture_png,
@@ -584,12 +658,19 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
                 cfg->character_preview_result->capture_kind ==
                         MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA
                     ? 6u : 2u,
-                bytes) ? 1 : 0;
+                bytes);
+        const bool projectionWritten =
+            cfg->character_preview_result->capture_kind !=
+                MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA ||
+            (pngWritten && characterPreviewProjection(
+                *cfg->character_preview_result));
+        cfg->character_preview_result->capture_written =
+            pngWritten && projectionWritten ? 1 : 0;
         cfg->character_preview_result->capture_png_bytes =
             cfg->character_preview_result->capture_written ? bytes : 0u;
         std::fprintf(
             stderr,
-            "[app] character preview capture: requested=1 kind=%s armed=%d stableFrames=%llu written=%d bytes=%llu output=%ux%u path=%s\n",
+            "[app] character preview capture: requested=1 kind=%s armed=%d stableFrames=%llu written=%d bytes=%llu output=%ux%u projection=%d projectionPrimitives=%u viewport=%d,%d,%d,%d path=%s\n",
             characterPreviewCaptureKindName(
                 cfg->character_preview_result->capture_kind),
             cfg->character_preview_result->capture_armed,
@@ -598,6 +679,12 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             cfg->character_preview_result->capture_png_bytes,
             cfg->character_preview_result->output_width,
             cfg->character_preview_result->output_height,
+            cfg->character_preview_result->fit_projection_valid,
+            cfg->character_preview_result->fit_projection_primitive_draws,
+            cfg->character_preview_result->fit_projection_viewport[0],
+            cfg->character_preview_result->fit_projection_viewport[1],
+            cfg->character_preview_result->fit_projection_viewport[2],
+            cfg->character_preview_result->fit_projection_viewport[3],
             cfg->character_preview_capture_png);
     }
     g_mdkrCharacterPreviewResult = nullptr;

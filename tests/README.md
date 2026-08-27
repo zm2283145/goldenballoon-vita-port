@@ -5024,8 +5024,13 @@ arm must also publish a normalized target-frame forward direction, an ordered
 calibrated vertical volume, and a ground/seat anchor at automatic zero from the
 actual replacement transform. The select volume may not penetrate the roster
 floor beyond the five-millimetre numerical tolerance.
-The gate installs a second reviewed-humanoid package and drives a real car arm
-through automatic contact solving. Result v11 must publish all four bounded
+The one-player and four-player model captures must replay the same complete
+player-0/view-0 primitive set. Each retains one exact target-to-clip witness,
+aspect-fits that selected viewport into the full output without distortion, and
+publishes bounded fixed-point projections for eight calibrated bounds corners,
+the fitted anchor, and the forward endpoint. The gate installs a second
+reviewed-humanoid package and drives a real car arm through automatic contact
+solving. Result v12 must publish all four bounded
 contact witnesses; the gate independently recomputes the left-hand
 target-to-endpoint distance from quantized coordinates and rejects partial,
 detached, or fabricated select-context evidence. Authored-clips-only arms must
@@ -5094,8 +5099,9 @@ exclusive export, and list-clear controls to remain reachable at 200% scale.
 The pure `character_visual_report` test independently proves embedded PNG/JSON
 output, capture-time digest binding, same-size/same-product file-replacement
 refusal, rebinding refusal, HTML/script escaping, source-path privacy, PNG
-completeness/dimension/product checks, schema-v2 scene/model-alpha metadata,
-checkerboard transparency presentation, and overwrite refusal;
+completeness/dimension/product checks, schema-v3 scene/model-alpha and fixed
+projection metadata, integer-space registered SVG overlay, checkerboard
+transparency presentation, and overwrite refusal;
 `workshop_preview_runtime`
 proves visual bounds, failure-without-mutation, and measurement epochs.
 The pure `character_test_evidence_store` unit separately covers canonical parsing,

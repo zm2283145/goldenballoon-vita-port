@@ -1337,6 +1337,9 @@ static int s_dumpEvery = 1;
 static int s_frameCapturePending;
 static int s_frameCaptureModernCharacter;
 static char s_frameCapturePath[1024];
+static MdkrModernCharacterCaptureProjection
+    s_modernCharacterCaptureProjection;
+static int s_modernCharacterCaptureProjectionValid;
 void platform_frame_dump_drain(void); /* defined with the writer below */
 /* F9 capture toggle: every-present dumps + per-frame [CAPTURE*] rows for as
  * long as the player holds the defect on screen. See the keydown handler. */
@@ -1646,6 +1649,14 @@ static void platform_dump_frame(void) {
     int w = (int)capture_width;
     int h = (int)capture_height;
     const int components = modern_character ? 4 : 3;
+    MdkrModernCharacterCaptureProjection captureProjection;
+    memset(&captureProjection, 0, sizeof(captureProjection));
+    if (modern_character &&
+        (!gfx_get_modern_character_capture_projection(&captureProjection) ||
+         captureProjection.output_width != capture_width ||
+         captureProjection.output_height != capture_height)) {
+        return;
+    }
     if (w <= 0 || h <= 0 ||
         (size_t)w > SIZE_MAX / (size_t)components ||
         (size_t)w * (size_t)components > SIZE_MAX / (size_t)h ||
@@ -1709,6 +1720,10 @@ static void platform_dump_frame(void) {
          * present thread (counted, reported at CAPTURE-STOP/drain). */
         free(pix);
     } else if (oneShot) {
+        if (modern_character) {
+            s_modernCharacterCaptureProjection = captureProjection;
+            s_modernCharacterCaptureProjectionValid = 1;
+        }
         s_frameCapturePending = 0;
         s_frameCaptureModernCharacter = 0;
         s_frameCapturePath[0] = '\0';
@@ -1773,8 +1788,14 @@ int platform_frame_capture_request_once(const char *png_path,
 
 int platform_modern_character_capture_request_once(
     const char *png_path, char *error, size_t error_size) {
-    return platform_frame_capture_request(
+    const int requested = platform_frame_capture_request(
         png_path, 1, error, error_size);
+    if (requested) {
+        memset(&s_modernCharacterCaptureProjection, 0,
+               sizeof(s_modernCharacterCaptureProjection));
+        s_modernCharacterCaptureProjectionValid = 0;
+    }
+    return requested;
 }
 
 int platform_frame_capture_pending(void) {
@@ -1783,6 +1804,17 @@ int platform_frame_capture_pending(void) {
 
 int platform_modern_character_capture_pending(void) {
     return s_frameCapturePending && s_frameCaptureModernCharacter;
+}
+
+int platform_modern_character_capture_projection(
+    MdkrModernCharacterCaptureProjection *projection) {
+    if (projection == NULL || !s_modernCharacterCaptureProjectionValid ||
+        !mdkr_modern_character_capture_projection_valid(
+            &s_modernCharacterCaptureProjection)) {
+        return 0;
+    }
+    *projection = s_modernCharacterCaptureProjection;
+    return 1;
 }
 
 /* ---- Content packs (see platform_os.h) ---------------------------------- *
@@ -6385,6 +6417,9 @@ int platform_engine_session_begin(void) {
     s_frameCapturePending = 0;
     s_frameCaptureModernCharacter = 0;
     s_frameCapturePath[0] = '\0';
+    memset(&s_modernCharacterCaptureProjection, 0,
+           sizeof(s_modernCharacterCaptureProjection));
+    s_modernCharacterCaptureProjectionValid = 0;
 
     /* Settings can scan packs while the shell is home. Retire that view before
      * the engine binds a fresh store using this epoch's resolved settings. */

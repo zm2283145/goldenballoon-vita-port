@@ -395,6 +395,18 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform)
     add_test(NAME modern_character_gpu_timing
         COMMAND mdkr_modern_character_gpu_timing_test)
+    add_executable(mdkr_modern_character_capture_projection_test
+        ${CMAKE_SOURCE_DIR}/tests/test_modern_character_capture_projection.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_capture_projection.c)
+    target_include_directories(
+        mdkr_modern_character_capture_projection_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(
+            mdkr_modern_character_capture_projection_test PRIVATE m)
+    endif()
+    add_test(NAME modern_character_capture_projection
+        COMMAND mdkr_modern_character_capture_projection_test)
     add_executable(mdkr_character_portrait_studio_test
         ${CMAKE_SOURCE_DIR}/tests/test_character_portrait_studio.cpp
         ${CMAKE_SOURCE_DIR}/platform/app/character_png_validation.cpp

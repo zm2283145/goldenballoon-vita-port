@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "modern_character_capture_projection.h"
 #include "modern_character_gpu_timing.h"
 
 struct ShaderProgram;
@@ -114,6 +115,12 @@ struct GfxModernSkinnedAsset {
 struct GfxModernSkinnedDraw {
     const struct GfxModernSkinnedAsset *asset;
     uint32_t primitive;
+    /* Local-player ownership and the donor-target frame are retained with each
+     * command so an isolated Workshop capture can select one subject and
+     * compose exact target coordinates with the camera MVP. */
+    uint32_t player;
+    uint32_t view;
+    float target_frame_matrix[16];
     /* Primitive-local glTF node transform, including the package's authored
      * presentation transform. Column-major, applied after skinning and before
      * the display-list object's MVP. */
@@ -156,6 +163,8 @@ struct GfxRenderingAPI {
      * returns bottom-left-origin straight RGBA. */
     bool (*get_modern_character_capture_dimensions)(uint32_t *width,
                                                      uint32_t *height);
+    bool (*get_modern_character_capture_projection)(
+        MdkrModernCharacterCaptureProjection *projection);
     bool (*read_modern_character_capture_rgba)(int width, int height,
                                                 uint8_t *rgba_out);
     /* Optional exact GPU timestamp evidence for the Workshop. begin() resets

@@ -93,6 +93,7 @@
 #include "gfx_uniforms.h"
 #include "gfx_pc_dkr.h"
 #include "modern_character_render.h"
+#include "modern_character_limits.h"
 #ifdef MDKR_WEBGPU_BACKEND
 #include "gfx_webgpu.h"
 #endif
@@ -147,13 +148,19 @@ uint32_t gfx_modern_character_register_draw(
     const struct GfxModernSkinnedDraw *draw) {
     DkrModernDrawEntry *entry;
     uint32_t token;
+    uint32_t component;
     if (!gfx_modern_character_supported() || draw == NULL || draw->asset == NULL ||
         draw->primitive >= draw->asset->primitive_count ||
+        draw->player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        draw->view >= MDKR_MODERN_CHARACTER_VIEWS ||
         draw->bone_count > DKR_MODERN_MAX_BONES ||
         (draw->bone_count != 0u &&
          (draw->bone_matrices == NULL ||
           draw->previous_bone_matrices == NULL))) {
         return 0u;
+    }
+    for (component = 0u; component < 16u; ++component) {
+        if (!isfinite(draw->target_frame_matrix[component])) return 0u;
     }
     token = dkr_modern_draw_serial++;
     if (token == 0u) token = dkr_modern_draw_serial++;
@@ -8151,6 +8158,15 @@ bool gfx_get_modern_character_capture_dimensions(uint32_t *width,
         return false;
     }
     return gfx_rapi->get_modern_character_capture_dimensions(width, height);
+}
+
+bool gfx_get_modern_character_capture_projection(
+    MdkrModernCharacterCaptureProjection *projection) {
+    if (projection == NULL || gfx_rapi == NULL ||
+        gfx_rapi->get_modern_character_capture_projection == NULL) {
+        return false;
+    }
+    return gfx_rapi->get_modern_character_capture_projection(projection);
 }
 
 void gfx_begin_modern_character_gpu_timing(void) {

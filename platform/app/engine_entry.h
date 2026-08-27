@@ -65,6 +65,10 @@ typedef enum {
 } MdkrCharacterPreviewCaptureKind;
 
 #define MDKR_CHARACTER_PREVIEW_CONTACTS 4u
+#define MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS 10u
+#define MDKR_CHARACTER_PREVIEW_PROJECTION_BOUNDS_POINTS 8u
+#define MDKR_CHARACTER_PREVIEW_PROJECTION_ANCHOR_POINT 8u
+#define MDKR_CHARACTER_PREVIEW_PROJECTION_FORWARD_POINT 9u
 
 // Measured evidence returned by an exact Character Workshop session. Interval
 // values describe displayed wall cadence after a 120-authored-tick warm-up.
@@ -115,6 +119,22 @@ typedef struct MdkrCharacterPreviewResult {
     long long fit_bounds_max_micrometres[3];
     long long fit_anchor_micrometres[3];
     int fit_forward_milli[3];
+    /* Model-alpha captures additionally bind the donor-target fit to exact PNG
+     * pixels. Points 0..7 are the calibrated AABB corners (XYZ bits), point 8
+     * is the anchor, and point 9 is a scaled forward endpoint. All values are
+     * fixed point so no host float becomes durable app evidence. */
+    int fit_projection_valid;
+    unsigned fit_projection_width;
+    unsigned fit_projection_height;
+    int fit_projection_viewport[4];
+    int fit_projection_scissor[4];
+    unsigned fit_projection_primitive_draws;
+    int fit_projection_pixel_milli
+        [MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS][2];
+    int fit_projection_depth_millionths
+        [MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS];
+    unsigned fit_projection_clip_flags
+        [MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS];
     unsigned long long inspection_pose_ticks;
     unsigned long long inspection_pose_fallback_ticks;
     int view_yaw_degrees;
@@ -142,7 +162,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 11u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 12u
 #define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u
 
 // Owned by the C engine entry module and non-NULL only during a launcher-owned

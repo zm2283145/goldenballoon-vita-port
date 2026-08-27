@@ -1,6 +1,7 @@
 #ifndef MDKR_APP_CHARACTER_VISUAL_REPORT_H
 #define MDKR_APP_CHARACTER_VISUAL_REPORT_H
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -15,6 +16,20 @@ constexpr size_t kMaximumCaptures = 1024u;
 enum class RenderProduct : uint8_t {
     Scene = 0,
     ModelAlpha,
+};
+
+constexpr size_t kFitProjectionPoints = 10u;
+
+struct FitProjection {
+    bool valid = false;
+    uint32_t width = 0u;
+    uint32_t height = 0u;
+    uint32_t primitiveDraws = 0u;
+    std::array<int32_t, 4> viewport{};
+    std::array<int32_t, 4> scissor{};
+    std::array<std::array<int32_t, 2>, kFitProjectionPoints> pixelMilli{};
+    std::array<int32_t, kFitProjectionPoints> depthMillionths{};
+    std::array<uint32_t, kFitProjectionPoints> clipFlags{};
 };
 
 struct Capture {
@@ -34,6 +49,7 @@ struct Capture {
     uint32_t height = 0u;
     uint64_t stableFrames = 0u;
     bool exactPose = false;
+    FitProjection fitProjection;
 };
 
 /* Validate an unbound exact typed PNG at capture-publication time and bind its

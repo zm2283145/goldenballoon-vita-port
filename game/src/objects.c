@@ -6335,7 +6335,8 @@ void render_3d_model(Object *obj) {
                         goto modern_select_done;
                     }
                     if (mdkr_modern_character_emit(
-                            player, MDKR_CHARACTER_CONTEXT_SELECT,
+                            player, get_current_viewport(),
+                            MDKR_CHARACTER_CONTEXT_SELECT,
                             targetFrame,
                             obj->distanceToCamera,
                             &gObjectCurrDisplayList,
@@ -6402,7 +6403,7 @@ modern_select_done:;
                     goto modern_racer_done;
                 }
                 if (mdkr_modern_character_emit(
-                        player,
+                        player, get_current_viewport(),
                         context, targetFrame,
                         gSceneDrawDistanceValid ? gSceneDrawDistance
                                                 : obj->distanceToCamera,

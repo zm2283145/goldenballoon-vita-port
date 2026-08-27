@@ -5109,6 +5109,8 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry) {
 
 bool characterPreviewFitDiagnosticsValid(
     const MdkrCharacterPreviewResult &result);
+bool characterPreviewProjectionValid(
+    const MdkrCharacterPreviewResult &result);
 bool characterPreviewContactDiagnosticsValid(
     const MdkrCharacterPreviewResult &result);
 MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
@@ -5150,6 +5152,7 @@ bool characterPreviewSessionMatchesTuning(
            mdkr_modern_character_gpu_timing_metrics_valid(
                &session.result.gpu_timing) != 0 &&
            characterPreviewFitDiagnosticsValid(session.result) &&
+           characterPreviewProjectionValid(session.result) &&
            characterPreviewContactDiagnosticsValid(session.result) &&
            (session.result.capture_requested
                 ? session.result.capture_kind >=
@@ -7271,6 +7274,111 @@ bool characterPreviewFitDiagnosticsValid(
            forwardLengthSquared <= 1005000LL;
 }
 
+bool characterPreviewProjectionValid(
+    const MdkrCharacterPreviewResult &result) {
+    if (result.fit_projection_valid != 0 &&
+        result.fit_projection_valid != 1) return false;
+    const auto allProjectionValuesZero = [&result]() {
+        if (result.fit_projection_width != 0u ||
+            result.fit_projection_height != 0u ||
+            result.fit_projection_primitive_draws != 0u) return false;
+        for (unsigned component = 0u; component < 4u; ++component) {
+            if (result.fit_projection_viewport[component] != 0 ||
+                result.fit_projection_scissor[component] != 0) return false;
+        }
+        for (unsigned point = 0u;
+             point < MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS; ++point) {
+            if (result.fit_projection_pixel_milli[point][0] != 0 ||
+                result.fit_projection_pixel_milli[point][1] != 0 ||
+                result.fit_projection_depth_millionths[point] != 0 ||
+                result.fit_projection_clip_flags[point] != 0u) return false;
+        }
+        return true;
+    };
+    if (!result.fit_projection_valid) return allProjectionValuesZero();
+    if (!result.fit_diagnostics_valid || !result.capture_requested ||
+        !result.capture_armed || !result.capture_written ||
+        result.capture_kind != MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA ||
+        result.fit_projection_width != result.output_width ||
+        result.fit_projection_height != result.output_height ||
+        result.fit_projection_width == 0u ||
+        result.fit_projection_height == 0u ||
+        result.fit_projection_width > 16384u ||
+        result.fit_projection_height > 16384u ||
+        result.fit_projection_primitive_draws == 0u ||
+        result.fit_projection_primitive_draws > 4096u) return false;
+    const auto rectValid = [&result](const int rect[4]) {
+        return rect[0] >= 0 && rect[1] >= 0 && rect[2] > 0 && rect[3] > 0 &&
+            static_cast<long long>(rect[0]) + rect[2] <=
+                result.fit_projection_width &&
+            static_cast<long long>(rect[1]) + rect[3] <=
+                result.fit_projection_height;
+    };
+    if (!rectValid(result.fit_projection_viewport) ||
+        !rectValid(result.fit_projection_scissor)) return false;
+    constexpr unsigned kKnownClipFlags =
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_LEFT |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_RIGHT |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_TOP |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_BOTTOM |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_NEAR |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_FAR |
+        MDKR_MODERN_CHARACTER_PROJECTION_CLIP_SCISSOR;
+    const long long viewportLeft =
+        static_cast<long long>(result.fit_projection_viewport[0]) * 1000;
+    const long long viewportTop =
+        static_cast<long long>(result.fit_projection_viewport[1]) * 1000;
+    const long long viewportRight = static_cast<long long>(
+        result.fit_projection_viewport[0] +
+        result.fit_projection_viewport[2]) * 1000;
+    const long long viewportBottom = static_cast<long long>(
+        result.fit_projection_viewport[1] +
+        result.fit_projection_viewport[3]) * 1000;
+    const long long scissorLeft =
+        static_cast<long long>(result.fit_projection_scissor[0]) * 1000;
+    const long long scissorTop =
+        static_cast<long long>(result.fit_projection_scissor[1]) * 1000;
+    const long long scissorRight = static_cast<long long>(
+        result.fit_projection_scissor[0] +
+        result.fit_projection_scissor[2]) * 1000;
+    const long long scissorBottom = static_cast<long long>(
+        result.fit_projection_scissor[1] +
+        result.fit_projection_scissor[3]) * 1000;
+    constexpr long long kRoundingTolerance = 1;
+    for (unsigned point = 0u;
+         point < MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS; ++point) {
+        const long long x = result.fit_projection_pixel_milli[point][0];
+        const long long y = result.fit_projection_pixel_milli[point][1];
+        const int depth = result.fit_projection_depth_millionths[point];
+        const unsigned flags = result.fit_projection_clip_flags[point];
+        if ((flags & ~kKnownClipFlags) != 0u ||
+            ((x < viewportLeft - kRoundingTolerance) !=
+             ((flags & MDKR_MODERN_CHARACTER_PROJECTION_CLIP_LEFT) != 0u)) ||
+            ((x > viewportRight + kRoundingTolerance) !=
+             ((flags & MDKR_MODERN_CHARACTER_PROJECTION_CLIP_RIGHT) != 0u)) ||
+            ((y < viewportTop - kRoundingTolerance) !=
+             ((flags & MDKR_MODERN_CHARACTER_PROJECTION_CLIP_TOP) != 0u)) ||
+            ((y > viewportBottom + kRoundingTolerance) !=
+             ((flags & MDKR_MODERN_CHARACTER_PROJECTION_CLIP_BOTTOM) != 0u)) ||
+            ((depth < 0) !=
+             ((flags & MDKR_MODERN_CHARACTER_PROJECTION_CLIP_NEAR) != 0u)) ||
+            ((depth > 1000000) !=
+             ((flags & MDKR_MODERN_CHARACTER_PROJECTION_CLIP_FAR) != 0u))) {
+            return false;
+        }
+        const bool outsideScissor =
+            x < scissorLeft - kRoundingTolerance ||
+            x > scissorRight + kRoundingTolerance ||
+            y < scissorTop - kRoundingTolerance ||
+            y > scissorBottom + kRoundingTolerance;
+        if (outsideScissor !=
+            ((flags & MDKR_MODERN_CHARACTER_PROJECTION_CLIP_SCISSOR) != 0u)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool characterPreviewContactDiagnosticsValid(
     const MdkrCharacterPreviewResult &result) {
     constexpr unsigned kAllContacts =
@@ -7463,6 +7571,15 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
             "The engine returned an invalid renderer fit measurement.");
         ui::TextSubtleWrapped(
             "No fit conclusion or performance evidence was saved.");
+        ui::CardEnd();
+        return;
+    }
+    if (!characterPreviewProjectionValid(result)) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "The engine returned invalid capture-space fit evidence.");
+        ui::TextSubtleWrapped(
+            "The image remains a local file, but it cannot be registered or added to a qualification report.");
         ui::CardEnd();
         return;
     }
@@ -7963,9 +8080,11 @@ void drawCharacterCaptureThumbnail(
     char spokenState[160];
     std::snprintf(
         spokenState, sizeof(spokenState),
-        "%s image, %u by %u pixels, exact digest %.8s",
+        "%s image, %u by %u pixels, exact digest %.8s%s",
         product, capture.width, capture.height,
-        capture.pngSha256.c_str());
+        capture.pngSha256.c_str(),
+        capture.fitProjection.valid
+            ? ", with registered bounds, anchor, and forward overlay" : "");
     ui::SpeakFocusedItem(
         "Captured renderer preview", spokenState,
         "A bounded thumbnail of the exact digest-bound PNG. The actions below use the full-resolution file.");
@@ -8013,6 +8132,62 @@ void drawCharacterCaptureThumbnail(
                 IM_COL32(pixel[0], pixel[1], pixel[2], pixel[3]));
         }
     }
+    if (capture.fitProjection.valid) {
+        static constexpr unsigned edges[][2] = {
+            {0, 1}, {2, 3}, {4, 5}, {6, 7},
+            {0, 2}, {1, 3}, {4, 6}, {5, 7},
+            {0, 4}, {1, 5}, {2, 6}, {3, 7},
+        };
+        const auto screenPoint = [&capture, &origin, &extent](unsigned point) {
+            return ImVec2(
+                origin.x + static_cast<float>(
+                    capture.fitProjection.pixelMilli[point][0] / 1000.0 /
+                    capture.width * extent.x),
+                origin.y + static_cast<float>(
+                    capture.fitProjection.pixelMilli[point][1] / 1000.0 /
+                    capture.height * extent.y));
+        };
+        const ImVec2 imageEnd(origin.x + extent.x, origin.y + extent.y);
+        draw->PushClipRect(origin, imageEnd, true);
+        for (const auto &edge : edges) {
+            draw->AddLine(screenPoint(edge[0]), screenPoint(edge[1]),
+                          IM_COL32(255, 209, 102, 235), 2.0f);
+        }
+        const ImVec2 anchor = screenPoint(
+            MDKR_CHARACTER_PREVIEW_PROJECTION_ANCHOR_POINT);
+        const ImVec2 forward = screenPoint(
+            MDKR_CHARACTER_PREVIEW_PROJECTION_FORWARD_POINT);
+        draw->AddLine(anchor, forward, IM_COL32(92, 200, 255, 255), 3.0f);
+        const ImVec2 direction(forward.x - anchor.x, forward.y - anchor.y);
+        const float directionLength = std::sqrt(
+            direction.x * direction.x + direction.y * direction.y);
+        if (directionLength > 1.0f) {
+            const ImVec2 unit(direction.x / directionLength,
+                              direction.y / directionLength);
+            const ImVec2 perpendicular(-unit.y, unit.x);
+            constexpr float kArrowLength = 10.0f;
+            constexpr float kArrowWidth = 5.0f;
+            draw->AddTriangleFilled(
+                forward,
+                ImVec2(forward.x - unit.x * kArrowLength +
+                           perpendicular.x * kArrowWidth,
+                       forward.y - unit.y * kArrowLength +
+                           perpendicular.y * kArrowWidth),
+                ImVec2(forward.x - unit.x * kArrowLength -
+                           perpendicular.x * kArrowWidth,
+                       forward.y - unit.y * kArrowLength -
+                           perpendicular.y * kArrowWidth),
+                IM_COL32(92, 200, 255, 255));
+        }
+        constexpr float kAnchorRadius = 5.0f;
+        draw->AddQuadFilled(
+            ImVec2(anchor.x, anchor.y - kAnchorRadius),
+            ImVec2(anchor.x + kAnchorRadius, anchor.y),
+            ImVec2(anchor.x, anchor.y + kAnchorRadius),
+            ImVec2(anchor.x - kAnchorRadius, anchor.y),
+            IM_COL32(255, 107, 214, 255));
+        draw->PopClipRect();
+    }
     draw->AddRect(
         origin, ImVec2(origin.x + extent.x, origin.y + extent.y),
         IM_COL32(255, 255, 255, 110));
@@ -8028,10 +8203,12 @@ void drawCharacterCaptureThumbnail(
         g_characterCaptureThumbnailTraceKeys.insert(traceKey).second) {
         std::fprintf(
             stderr,
-            "[app-ui] character-capture-thumbnail package=%s product=%s source=%ux%u preview=%ux%u digest=%.12s bounded=1 cached=1\n",
+            "[app-ui] character-capture-thumbnail package=%s product=%s source=%ux%u preview=%ux%u digest=%.12s bounded=1 cached=1 projection=%s primitives=%u\n",
             entry->id, transparent ? "model-alpha" : "scene",
             capture.width, capture.height, thumbnail.width,
-            thumbnail.height, capture.pngSha256.c_str());
+            thumbnail.height, capture.pngSha256.c_str(),
+            capture.fitProjection.valid ? "registered" : "none",
+            capture.fitProjection.primitiveDraws);
     }
 }
 
@@ -8171,9 +8348,11 @@ void drawCharacterFitReference(
     ImGui::PushID(best->pngSha256.c_str());
     ImGui::Text("%s · %s", product, camera);
     ui::TextSubtleWrapped(
-        planeMatch
-            ? "This digest-bound capture matches the current source, fit, vehicle, and selected camera plane. It is a perspective renderer reference beside the orthographic donor-target plot; it is not stretched or falsely registered to the plot."
-            : "This digest-bound capture matches the current source, fit, and vehicle. Its camera does not match the selected orthographic plane, so it remains a clearly labelled visual reference rather than an alignment claim.");
+        best->fitProjection.valid
+            ? "This digest-bound model capture matches the current source, fit, and vehicle. Its yellow wireframe is the calibrated donor-target volume projected through the exact retained game camera; the magenta diamond is the anchor and the blue arrow is rendered forward. The separate editor plot remains orthographic."
+            : planeMatch
+                ? "This digest-bound composed capture matches the current source, fit, vehicle, and selected camera plane. It remains a perspective renderer reference beside the orthographic donor-target plot; it is not stretched or falsely registered to the plot."
+                : "This digest-bound composed capture matches the current source, fit, and vehicle. Its camera does not match the selected orthographic plane, so it remains a clearly labelled visual reference rather than an alignment claim.");
     drawCharacterCaptureThumbnail(entry, *best);
     if (!compact) {
         ImGui::TextDisabled(
@@ -8614,6 +8793,36 @@ void drawCharacterTestEvidenceMatrix(
                     result.capture_png_bytes = 123u;
                     result.output_width = 40u;
                     result.output_height = 40u;
+                    result.fit_projection_valid = 1;
+                    result.fit_projection_width = 40u;
+                    result.fit_projection_height = 40u;
+                    result.fit_projection_primitive_draws = 2u;
+                    result.fit_projection_viewport[2] = 40;
+                    result.fit_projection_viewport[3] = 40;
+                    result.fit_projection_scissor[2] = 40;
+                    result.fit_projection_scissor[3] = 40;
+                    for (unsigned point = 0u;
+                         point < MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS;
+                         ++point) {
+                        result.fit_projection_pixel_milli[point][0] =
+                            (point & 1u) != 0u ? 30000 : 10000;
+                        result.fit_projection_pixel_milli[point][1] =
+                            (point & 2u) != 0u ? 30000 : 10000;
+                        result.fit_projection_depth_millionths[point] =
+                            (point & 4u) != 0u ? 600000 : 400000;
+                    }
+                    result.fit_projection_pixel_milli
+                        [MDKR_CHARACTER_PREVIEW_PROJECTION_ANCHOR_POINT][0] =
+                            20000;
+                    result.fit_projection_pixel_milli
+                        [MDKR_CHARACTER_PREVIEW_PROJECTION_ANCHOR_POINT][1] =
+                            20000;
+                    result.fit_projection_pixel_milli
+                        [MDKR_CHARACTER_PREVIEW_PROJECTION_FORWARD_POINT][0] =
+                            28000;
+                    result.fit_projection_pixel_milli
+                        [MDKR_CHARACTER_PREVIEW_PROJECTION_FORWARD_POINT][1] =
+                            20000;
                     const char *smokeReportPath = std::getenv(
                         "MDKR_APP_SMOKE_CHARACTER_VISUAL_REPORT");
                     if (smokeReportPath != nullptr) {
@@ -16143,6 +16352,7 @@ void Settings_publishCharacterPreviewResult(
                 result.version == MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
                 result.started && result.warmup_complete &&
                 characterPreviewFitDiagnosticsValid(result) &&
+                characterPreviewProjectionValid(result) &&
                 mdkr_modern_character_gpu_timing_metrics_valid(
                     &result.gpu_timing) != 0 &&
                 characterPreviewContactDiagnosticsValid(result) &&
@@ -16214,6 +16424,38 @@ void Settings_publishCharacterPreviewResult(
                 capture.stableFrames = result.capture_stable_frames;
                 capture.exactPose = result.inspection_pose_ticks != 0u &&
                     result.inspection_pose_fallback_ticks == 0u;
+                if (result.fit_projection_valid) {
+                    static_assert(
+                        CharacterVisualReport::kFitProjectionPoints ==
+                            MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS,
+                        "capture report and engine projection point counts must match");
+                    capture.fitProjection.valid = true;
+                    capture.fitProjection.width =
+                        result.fit_projection_width;
+                    capture.fitProjection.height =
+                        result.fit_projection_height;
+                    capture.fitProjection.primitiveDraws =
+                        result.fit_projection_primitive_draws;
+                    for (unsigned component = 0u; component < 4u;
+                         ++component) {
+                        capture.fitProjection.viewport[component] =
+                            result.fit_projection_viewport[component];
+                        capture.fitProjection.scissor[component] =
+                            result.fit_projection_scissor[component];
+                    }
+                    for (unsigned point = 0u;
+                         point < MDKR_CHARACTER_PREVIEW_PROJECTION_POINTS;
+                         ++point) {
+                        capture.fitProjection.pixelMilli[point][0] =
+                            result.fit_projection_pixel_milli[point][0];
+                        capture.fitProjection.pixelMilli[point][1] =
+                            result.fit_projection_pixel_milli[point][1];
+                        capture.fitProjection.depthMillionths[point] =
+                            result.fit_projection_depth_millionths[point];
+                        capture.fitProjection.clipFlags[point] =
+                            result.fit_projection_clip_flags[point];
+                    }
+                }
                 std::string captureError;
                 if (CharacterVisualReport::bindPng(
                         capture, captureError)) {
@@ -16274,6 +16516,7 @@ void Settings_publishCharacterPreviewResult(
     }
     if (result.version != MDKR_CHARACTER_PREVIEW_RESULT_VERSION ||
         !result.started || !characterPreviewFitDiagnosticsValid(result) ||
+        !characterPreviewProjectionValid(result) ||
         !characterPreviewContactDiagnosticsValid(result)) {
         if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
             std::fprintf(

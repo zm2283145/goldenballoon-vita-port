@@ -130,6 +130,17 @@ int main() {
     Capture alphaCapture = capture;
     alphaCapture.pngPath = rgbaPath;
     alphaCapture.renderProduct = RenderProduct::ModelAlpha;
+    alphaCapture.fitProjection.valid = true;
+    alphaCapture.fitProjection.width = 1u;
+    alphaCapture.fitProjection.height = 1u;
+    alphaCapture.fitProjection.primitiveDraws = 2u;
+    alphaCapture.fitProjection.viewport = {0, 0, 1, 1};
+    alphaCapture.fitProjection.scissor = {0, 0, 1, 1};
+    for (size_t point = 0u; point < kFitProjectionPoints; ++point) {
+        alphaCapture.fitProjection.pixelMilli[point] = {500, 500};
+        alphaCapture.fitProjection.depthMillionths[point] = 500000;
+    }
+    alphaCapture.fitProjection.pixelMilli[9] = {750, 500};
     std::string error;
     expect(bindPng(capture, error) && bindPng(alphaCapture, error),
            "capture publication binds each exact typed PNG digest");
@@ -140,6 +151,14 @@ int main() {
     expect(validateBoundPng(capture, error) &&
                validateBoundPng(alphaCapture, error),
            "unchanged bound capture files remain eligible for downstream use");
+    Capture missingProjection = alphaCapture;
+    missingProjection.fitProjection = FitProjection{};
+    expect(!validateBoundPng(missingProjection, error),
+           "model-alpha captures require a registered fit projection");
+    Capture inconsistentProjection = alphaCapture;
+    inconsistentProjection.fitProjection.clipFlags[0] = 1u;
+    expect(!validateBoundPng(inconsistentProjection, error),
+           "projection coordinates and clip flags cannot contradict each other");
     Capture alreadyBound = capture;
     expect(!bindPng(alreadyBound, error) &&
                alreadyBound.pngSha256 == capture.pngSha256,
@@ -167,7 +186,7 @@ int main() {
                    std::string::npos &&
                report.find("</script><script>alert") == std::string::npos,
            "display metadata is safe in both HTML and embedded JSON contexts");
-    expect(report.find("\"version\":2") != std::string::npos &&
+    expect(report.find("\"version\":3") != std::string::npos &&
                report.find("\"renderProduct\":\"scene\"") !=
                    std::string::npos &&
                report.find("\"renderProduct\":\"model-alpha\"") !=
@@ -177,8 +196,13 @@ int main() {
                report.find("\"pngSha256\":\"" + capture.pngSha256 +
                            "\"") != std::string::npos &&
                report.find("\"stableFrames\":12") != std::string::npos &&
-               report.find("\"exactPose\":true") != std::string::npos,
-           "portable report includes machine-readable qualification identity");
+               report.find("\"exactPose\":true") != std::string::npos &&
+               report.find("\"fitProjection\":{") != std::string::npos &&
+               report.find("Registered calibrated bounds") !=
+                   std::string::npos &&
+               report.find("viewBox=\"0 0 1000 1000\"") !=
+                   std::string::npos,
+           "portable report includes registered machine-readable fit identity");
     expect(report.find(pngPath) == std::string::npos &&
                report.find("pngPath") == std::string::npos,
            "report does not disclose original capture paths");

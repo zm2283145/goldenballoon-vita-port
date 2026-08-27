@@ -358,6 +358,8 @@ def main() -> int:
          180, 15, "bright", "scene"),
         ("car", 1, False, "select.idle", "500", False,
          180, 15, "bright", "model-alpha"),
+        ("car", 4, False, "select.idle", "500", False,
+         180, 15, "bright", "model-alpha"),
     ]
     arms = [arm + (PACKAGE_ID,) for arm in arms]
     arms.append((
@@ -365,6 +367,7 @@ def main() -> int:
         None, None, None, None, CONTACT_PACKAGE_ID,
     ))
     arm_draws: dict[str, int] = {}
+    subject_capture_draws: dict[str, int] = {}
     captures: dict[str, Path] = {}
     reported_dimensions: dict[str, tuple[int, int, int, int]] = {}
     comparison_environment: tuple[str, str, str, str, str] | None = None
@@ -761,6 +764,37 @@ def main() -> int:
                     failures.append(
                         f"{label} did not prove isolated renderer capture"
                     )
+                if capture_kind == "model-alpha":
+                    capture_match = re.search(
+                        r"\[WGPU-CHARACTER-CAPTURE\] ready=1 subject=0 "
+                        r"draws=(\d+)/(\d+) target=\d+x\d+ "
+                        r"projection=target-to-clip",
+                        arm_output,
+                    )
+                    if capture_match is None:
+                        failures.append(
+                            f"{label} did not publish a subject-scoped projection"
+                        )
+                    else:
+                        rendered, recorded = map(int, capture_match.groups())
+                        if rendered == 0 or rendered != recorded:
+                            failures.append(
+                                f"{label} replayed an incomplete subject capture"
+                            )
+                        subject_capture_draws[label] = rendered
+
+    one_player_subject = subject_capture_draws.get(
+        "car-1p-pose-model-alpha-capture"
+    )
+    four_player_subject = subject_capture_draws.get(
+        "car-4p-pose-model-alpha-capture"
+    )
+    if (one_player_subject is None or four_player_subject is None or
+            one_player_subject != four_player_subject):
+        failures.append(
+            "model-alpha replay was not invariant between one- and four-player "
+            f"sessions ({one_player_subject!r} vs {four_player_subject!r})"
+        )
 
     rejection_arms = [
         ("invalid-context", "boat", "1", True, None, None, None,

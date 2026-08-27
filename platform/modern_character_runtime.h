@@ -187,7 +187,8 @@ void mdkr_modern_character_clear_inspection_pose(void);
 
 /* Emit at the current object matrix in the authored display list. Returns one
  * only when the complete selected LOD was registered and emitted. */
-int mdkr_modern_character_emit(int player, MdkrModernCharacterContext context,
+int mdkr_modern_character_emit(int player, int view,
+                               MdkrModernCharacterContext context,
                                const float target_frame[16],
                                float view_distance, Gfx **display_list,
                                char *error, size_t error_size);
