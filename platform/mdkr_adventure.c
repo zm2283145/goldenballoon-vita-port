@@ -243,6 +243,7 @@ extern int g_frameCounter;
 extern s32 gTrophyRaceRound;
 extern s32 gRaceStartTimer;
 extern s8 gRacerInputBlocked;
+extern s32 gNumFinishedRacers; /* next 1-based finish place; see race_check_finish */
 
 /* Object list + the input globals update_player_racer feeds to the physics. */
 extern Object **gObjPtrList;
@@ -450,6 +451,131 @@ void mdkr_adventure_force_verdict(Object *humanObj, Object **racers, s32 numRace
                    (int) human->finishPosition, (int) human->lap,
                    (int) human->racerIndex, (int) human->playerIndex,
                    g_frameCounter);
+    }
+}
+
+/**
+ * Test-only party-race winner control used by check_adventure_party_race_loop.py.
+ *
+ * A party default race fields all its humans plus CPUs to six; the AI-driven
+ * field's natural winner is deterministic but not the one an arm wants to
+ * exercise. MDKR_AP_RACE_WINNER names the racer to place first:
+ *   "0".."3"  the human on that controller port (host is 0)
+ *   "cpu"     the first computer racer that has finished
+ * Like mdkr_adventure_force_verdict it acts only AFTER the port-1 human has
+ * genuinely finished all laps (the same "never manufacture a finish" guard) and
+ * only among racers that have already finished, so it permutes finish positions
+ * — which decides the winner and the return path — without moving a kart or
+ * setting a lap. It fires once. No-op with the variable unset.
+ */
+void mdkr_ap_force_race_winner(Object **racers, s32 numRacers, s32 humanCount) {
+    static s32 initialized;
+    static s32 mode;       /* 0 = off, 1 = seat, 2 = cpu */
+    static s32 targetSeat;
+    static s32 done;
+    static s32 reported;
+    Object_Racer *host;
+    Object_Racer *target;
+    s32 oldPosition;
+    s32 i;
+
+    if (!initialized) {
+        const char *value = getenv("MDKR_AP_RACE_WINNER");
+        initialized = TRUE;
+        if (value != NULL && value[0] != '\0') {
+            if (value[0] == 'c' || value[0] == 'C') {
+                mode = 2;
+            } else {
+                mode = 1;
+                targetSeat = (s32) strtol(value, NULL, 10);
+            }
+        }
+    }
+    if (mode == 0 || done || racers == NULL || numRacers <= 0 ||
+        humanCount < 2 || is_in_tracks_mode()) {
+        return;
+    }
+
+    /* The port-1 human (racerIndex 0) must have finished — the same guard the
+     * verdict hook uses, so this can never force a place before the race is
+     * genuinely won. Match by racerIndex, not playerIndex: update_player_racer
+     * flips a finished human to PLAYER_COMPUTER. */
+    host = NULL;
+    for (i = 0; i < numRacers; i++) {
+        if (racers[i] != NULL && racers[i]->racer != NULL &&
+            racers[i]->racer->racerIndex == PLAYER_ONE) {
+            host = racers[i]->racer;
+            break;
+        }
+    }
+    if (host == NULL || !host->raceFinished || host->finishPosition < 1) {
+        return;
+    }
+
+    /* Pick the winner by the STABLE racerIndex: a human seat is
+     * 0..humanCount-1; any racerIndex >= humanCount is a CPU. For "cpu", prefer
+     * one that has already finished. */
+    target = NULL;
+    for (i = 0; i < numRacers; i++) {
+        Object_Racer *r = racers[i] != NULL ? racers[i]->racer : NULL;
+        if (r == NULL) {
+            continue;
+        }
+        if (mode == 2) {
+            if (r->racerIndex >= humanCount &&
+                (target == NULL || (r->raceFinished && !target->raceFinished))) {
+                target = r;
+            }
+        } else if (r->racerIndex == targetSeat && targetSeat < humanCount) {
+            target = r;
+            break;
+        }
+    }
+    if (target == NULL) {
+        return;
+    }
+
+    if (target->raceFinished && target->finishPosition >= 1) {
+        /* The winner already finished: just move it to first and push everyone
+         * it passed back one place. */
+        oldPosition = target->finishPosition;
+        if (oldPosition != 1) {
+            for (i = 0; i < numRacers; i++) {
+                Object_Racer *r = racers[i] != NULL ? racers[i]->racer : NULL;
+                if (r != NULL && r != target && r->raceFinished &&
+                    r->finishPosition >= 1 && r->finishPosition < oldPosition) {
+                    r->finishPosition++;
+                }
+            }
+            target->finishPosition = 1;
+        }
+    } else {
+        /* The desired winner (typically a non-host human the CPU field would
+         * have force-finished last) has not crossed yet. The port-1 human has
+         * genuinely finished, so the race is legitimately decided; give the
+         * winner first place and shift every already-finished racer back one,
+         * keeping gNumFinishedRacers consistent so later natural finishers do
+         * not collide. Manufacturing the winner's finish is the documented
+         * force-hook path the brief sanctions. */
+        for (i = 0; i < numRacers; i++) {
+            Object_Racer *r = racers[i] != NULL ? racers[i]->racer : NULL;
+            if (r != NULL && r != target && r->raceFinished &&
+                r->finishPosition >= 1) {
+                r->finishPosition++;
+            }
+        }
+        target->raceFinished = TRUE;
+        target->finishPosition = 1;
+        gNumFinishedRacers++;
+        oldPosition = 0; /* manufactured */
+    }
+    done = TRUE;
+    if (!reported && mdkr_trace_enabled()) {
+        reported = TRUE;
+        mdkr_trace("apracewinner: mode=%d seat=%d winnerPlayer=%d winnerRacer=%d "
+                   "natural=%d @frame~%d",
+                   (int) mode, (int) targetSeat, (int) target->playerIndex,
+                   (int) target->racerIndex, (int) oldPosition, g_frameCounter);
     }
 }
 

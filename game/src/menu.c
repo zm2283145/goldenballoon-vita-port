@@ -13559,6 +13559,20 @@ s32 menu_postrace(Gfx **dList, Mtx **matrices, Vertex **vertices, s32 updateRate
     }
     switch (gMenuStage) {
         case POSTRACE_STAGE_BEGIN:
+#ifdef NATIVE_PORT
+            /* Closed-loop fixtures drive the options with MDKR_TEST_POSTRACE_OPTION
+             * (handled in the OPTIONS case below), but that banner-clearing A press
+             * still had to be a scripted tap at a hardcoded frame. A party race
+             * whose finish frame is not known ahead of time cannot place that tap,
+             * so let the same env var clear the finish banner too -- inert unless
+             * set, this stage only. */
+            {
+                extern char *getenv(const char *);
+                if (getenv("MDKR_TEST_POSTRACE_OPTION") != NULL) {
+                    buttonsPressed |= A_BUTTON;
+                }
+            }
+#endif
             if (buttonsPressed & (A_BUTTON | START_BUTTON)) {
                 gMenuStage = POSTRACE_STAGE_SHRINK_VIEWPORT;
                 gPostRaceTimer = 0;

@@ -25,6 +25,7 @@
 /* AP-08 hub roster/formation adapters. Headers and every call to them live
  * behind NATIVE_PORT && !MDKR_ADVENTURE_PARTY_OMIT so the OMIT build and the
  * matching N64 path compile the feature out entirely (Task 6 precedent). */
+#include "adventure_party/adventure_party_policy.h"
 #include "adventure_party/adventure_party_runtime.h"
 #include "adventure_party/adventure_party_spawn.h"
 #include "adventure_party/adventure_party_state.h"
@@ -2727,6 +2728,99 @@ static s32 adventure_party_hub_formation(u8 raceType, s32 *spawnX, s32 *spawnY,
     }
     return count;
 }
+
+/*
+ * AP-12 / R16 arrival adapter. When a level finishes loading, advance the party
+ * session to match the level just entered. This is the arrival half of Task 8's
+ * door transition: the departure latched a winner in obj_loop_exit and
+ * racer_enter_door ran the one func_8006D968 load; here the destination bumps
+ * the generation (the ONE enter_level site), which clears the departing lobby's
+ * latched door so the next door can latch again. Keyed off the state being left
+ * and the kind of level that loaded:
+ *
+ *   ACTIVE_LOBBY + a lobby (latch set)  -> LOBBY_TRANSITION      (lobby->lobby, R16)
+ *   ACTIVE_LOBBY + a default race       -> RACE_START            (lobby->race)
+ *   ACTIVE_RACE  + a lobby              -> RACE_RESULT_COMMITTED  (race->lobby: finish/return/quit-to-lobby)
+ *
+ * The first lobby entry after RESUME_SAVE has no latch set (no door was
+ * pressed), so it is NOT a lobby->lobby hop; a default-race retry
+ * (ACTIVE_RACE + default race) applies nothing and stays in the race. Challenge
+ * and boss loads apply nothing (their party envelope is a later task); a
+ * challenge that returns to a lobby still clears its stale door latch through
+ * the LOBBY_TRANSITION arm, which is what keeps subsequent doors working.
+ *
+ * winner_seat is left NO_SEAT: it is informational to the state module (it never
+ * remaps a seat), and the exact team-condition winner AP-13 will record is out
+ * of this task's scope. The retail finish code's interim save writes are
+ * untouched here and documented for AP-13.
+ */
+static void adventure_party_apply_arrival(u8 raceType) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    AdventurePartyEvent ev;
+
+    if (!adventure_party_runtime_is_active() || session == NULL) {
+        return;
+    }
+    memset(&ev, 0, sizeof ev);
+    ev.winner_seat = ADVENTURE_PARTY_NO_SEAT;
+    if (raceType == RACETYPE_HUBWORLD) {
+        if (session->state == ADVENTURE_PARTY_STATE_ACTIVE_RACE) {
+            ev.kind = ADVENTURE_PARTY_EVENT_RACE_RESULT_COMMITTED;
+        } else if (session->state == ADVENTURE_PARTY_STATE_ACTIVE_LOBBY &&
+                   session->transition_latch.latched) {
+            ev.kind = ADVENTURE_PARTY_EVENT_LOBBY_TRANSITION;
+        } else {
+            return; /* first lobby after RESUME_SAVE, or nothing pending */
+        }
+    } else if (raceType == RACETYPE_DEFAULT) {
+        if (session->state != ADVENTURE_PARTY_STATE_ACTIVE_LOBBY) {
+            return; /* retry: already ACTIVE_RACE, stay in the race */
+        }
+        ev.kind = ADVENTURE_PARTY_EVENT_RACE_START;
+    } else {
+        return; /* challenge / boss / other: not this task's envelope */
+    }
+    if (adventure_party_session_apply(session, &ev) == ADVENTURE_PARTY_OK) {
+        adventure_party_trace_emit_session(session);
+    }
+}
+
+/*
+ * AP-12 default-race field. Resolve the six-racer field for a party DEFAULT race
+ * from the pure capability table (consume the row; never hardcode six). Returns
+ * the human count to spawn (2..4) and fills *humans / *total / *viewports, or 0
+ * when this is not a party default race — challenge/boss/lobby/cutscene, no
+ * session, the session is not ACTIVE_RACE (the arrival adapter above must have
+ * accepted RACE_START first), or the capability failed closed. */
+static s32 adventure_party_race_field(u8 raceType, s32 *humans, s32 *total,
+                                      s32 *viewports) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    AdventurePartyActivityDescriptor desc;
+    AdventurePartyCapability cap;
+    s32 count;
+
+    if (raceType != RACETYPE_DEFAULT) {
+        return 0;
+    }
+    if (session == NULL ||
+        session->state != ADVENTURE_PARTY_STATE_ACTIVE_RACE) {
+        return 0;
+    }
+    count = adventure_party_participant_count(session);
+    desc.race_kind = ADVENTURE_PARTY_RACE_KIND_DEFAULT;
+    desc.course_class = ADVENTURE_PARTY_COURSE_TRACK;
+    cap = adventure_party_classify_activity(&desc, count);
+    if (!cap.policy_active || cap.fail_closed ||
+        cap.presentation != ADVENTURE_PARTY_PRESENT_SPLIT ||
+        cap.human_count < ADVENTURE_PARTY_MIN_PARTICIPANTS ||
+        cap.total_racer_count < cap.human_count) {
+        return 0;
+    }
+    *humans = cap.human_count;
+    *total = cap.total_racer_count;
+    *viewports = cap.viewport_count;
+    return cap.human_count;
+}
 #endif
 
 /**
@@ -2771,6 +2865,10 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
      * setup point is known and BEFORE numPlayers/viewports are committed, so a
      * fail-closed formation never yields a partial roster. */
     s32 apPartySeats = 0;
+    /* AP-12: 0 = not a party default race; 2..4 = that many humans race with
+     * CPUs filling to the capability's six-racer total. Decided after the retail
+     * count branches so it replaces the 1P-adventure default field. */
+    s32 apRaceSeats = 0;
 #endif
 
 #ifdef NATIVE_PORT
@@ -2789,6 +2887,13 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
     if (raceType == RACETYPE_CUTSCENE_1 || raceType == RACETYPE_CUTSCENE_2) {
         return;
     }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-12 / R16: advance the party session to the level that just loaded
+     * (lobby<->lobby, lobby->race, race->lobby) before anything reads its state.
+     * The AP-08 hub formation below and the race field adapter both gate on the
+     * post-arrival state, so this must run first. */
+    adventure_party_apply_arrival(raceType);
+#endif
     if (raceType == RACETYPE_BOSS || raceType & RACETYPE_CHALLENGE) {
         gIsTimeTrial = FALSE;
         gTimeTrialEnabled = FALSE;
@@ -2939,6 +3044,41 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
                    (int) D_8011ADC5, (int) levelHeader->vehicle);
     }
 #endif
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-12 adapters 1 (racer count) + 4 (viewport): a party DEFAULT race fields
+     * ALL its humans plus CPUs to the capability's SIX-racer total. Overridden
+     * HERE, after the retail count branches above, so the party field replaces
+     * the 1P-adventure default (gNumRacers) WITHOUT engaging
+     * get_multiplayer_racer_count or gTwoActivePlayersInAdventure — a party is
+     * not a retail 2P adventure (AP-01). numPlayers = the human count, gNumRacers
+     * = the six-racer total, so the CPU-fill loop below spawns racer indices
+     * humans..total-1 as computer players through the existing race spawn policy,
+     * exactly as a Tracks-mode N-player race fills its field. set_scene_viewport_num
+     * installs the N-way race split (init_track's cam_set_layout reads it). */
+    {
+        s32 apRaceHumans = 0;
+        s32 apRaceTotal = 0;
+        s32 apRaceViewports = 0;
+        apRaceSeats = adventure_party_race_field(raceType, &apRaceHumans,
+                                                 &apRaceTotal, &apRaceViewports);
+        if (apRaceSeats >= ADVENTURE_PARTY_MIN_PARTICIPANTS) {
+            numPlayers = apRaceHumans;
+            gNumRacers = apRaceTotal;
+            set_scene_viewport_num(apRaceViewports - 1);
+            /* Adapter diagnostic (ad-hoc, like demo_vehicle/bosswarp — NOT part
+             * of the aparty_ AP-05 schema): the committed six-racer party field,
+             * so the race-loop gate can assert humans=N, cpus=6-N, total=6 from
+             * the running binary. gNumRacers/numPlayers are final here (no later
+             * branch rewrites them before the spawn loop). */
+            if (mdkr_trace_enabled()) {
+                mdkr_trace("racefield: level=%d humans=%d cpus=%d total=%d viewports=%d",
+                           (int) settings->courseId, (int) numPlayers,
+                           (int) (gNumRacers - numPlayers), (int) gNumRacers,
+                           (int) apRaceViewports);
+            }
+        }
+    }
+#endif
 
     /* The whole array, not just [0, gNumRacers): the reads below are indexed by
      * settings->racers[i].starting_position, and GCC (-O3, mingw-w64) cannot
@@ -3022,13 +3162,16 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
                     vehicle = get_player_selected_vehicle(PLAYER_ONE);
                 } else if (numPlayers >= 2
 #if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
-                           /* AP-08 adapter 3 (vehicle): a party lobby fields ONE
-                            * shared vehicle type — the lobby vehicle player one
-                            * gets (the authored setup-point vehicle, already in
-                            * `vehicle`). Skip the per-seat selection so every
-                            * seat keeps it, and never route through the 2P branch
-                            * above (a party is not a retail 2P adventure). */
+                           /* AP-08/AP-12 adapter 3 (vehicle): a party lobby OR a
+                            * party default race fields the authored vehicle, not
+                            * the per-seat menu selection — the lobby's shared
+                            * setup-point vehicle, or (AP-12) the course vehicle
+                            * exactly as retail 1P gets it. Skip the per-seat
+                            * selection so every seat keeps `vehicle`, and never
+                            * route through the 2P branch above (a party is not a
+                            * retail 2P adventure). */
                            && apPartySeats < ADVENTURE_PARTY_MIN_PARTICIPANTS
+                           && apRaceSeats < ADVENTURE_PARTY_MIN_PARTICIPANTS
 #endif
                           ) {
                     vehicle = get_player_selected_vehicle(racerEntry->playerIndex);
@@ -3181,6 +3324,21 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
             adventure_party_trace_emit_roster(&apSession->roster);
             adventure_party_trace_emit_layout(apPartySeats, apPartySeats - 1);
             for (apSeat = 0; apSeat < apPartySeats; apSeat++) {
+                adventure_party_trace_emit_binding((uint8_t) apSeat, (uint8_t) apSeat);
+            }
+        }
+    }
+    /* AP-12 adapter (trace): a party DEFAULT race published its roster too — N
+     * humans in gRacers/gRacersByPort (indices 0..N-1), CPUs beyond, N viewports.
+     * Same read-only roster/layout/binding facts as the hub, so the race-loop
+     * gate can prove the whole party entered the race with per-seat binding. */
+    if (apRaceSeats >= ADVENTURE_PARTY_MIN_PARTICIPANTS) {
+        AdventurePartySession *apSession = adventure_party_runtime_session();
+        if (apSession != NULL) {
+            s32 apSeat;
+            adventure_party_trace_emit_roster(&apSession->roster);
+            adventure_party_trace_emit_layout(apRaceSeats, apRaceSeats - 1);
+            for (apSeat = 0; apSeat < apRaceSeats; apSeat++) {
                 adventure_party_trace_emit_binding((uint8_t) apSeat, (uint8_t) apSeat);
             }
         }
@@ -10354,6 +10512,25 @@ void race_check_finish(s32 updateRate) {
         gRacersByPort[PLAYER_ONE] != NULL) {
         mdkr_adventure_force_verdict(
             gRacersByPort[PLAYER_ONE], *gRacers, gNumRacers);
+    }
+    /*
+     * AP-12 test hook: force the party-race winner (host / non-host human / CPU)
+     * so the race-loop gate can drive each through the same return machinery.
+     * Same placement rationale as the verdict hook above; a constant-time no-op
+     * with no MDKR_AP_RACE_WINNER set. See platform/mdkr_adventure.c.
+     */
+    if (gNumRacers > 0 && gRacers != NULL) {
+        s32 apRaceHumanCount = 0;
+#if !defined(MDKR_ADVENTURE_PARTY_OMIT)
+        {
+            AdventurePartySession *apWinS = adventure_party_runtime_session();
+            if (apWinS != NULL &&
+                apWinS->state == ADVENTURE_PARTY_STATE_ACTIVE_RACE) {
+                apRaceHumanCount = adventure_party_participant_count(apWinS);
+            }
+        }
+#endif
+        mdkr_ap_force_race_winner(*gRacers, gNumRacers, apRaceHumanCount);
     }
 
     /*
