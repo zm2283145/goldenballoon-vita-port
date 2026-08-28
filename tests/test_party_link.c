@@ -793,5 +793,16 @@ int main(void) {
     test_dispatch_zeroed_intent_contract();
     fprintf(stderr, "party_link: %d checks, %d failures\n", g_checks,
             g_failures);
+    /* tests M7: a min-checks floor so a silently-dropped or early-returned test
+     * function (which would zero out its CHECKs) cannot pass the suite with fewer
+     * assertions. The full suite runs ~220 checks; 150 leaves headroom for small
+     * edits while still catching a whole test function going missing. */
+    if (g_checks < 150) {
+        fprintf(stderr,
+                "party_link: FAIL -- only %d checks ran (expected >= 150); a test "
+                "function was dropped or early-returned\n",
+                g_checks);
+        return 1;
+    }
     return g_failures == 0 ? 0 : 1;
 }

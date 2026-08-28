@@ -57,6 +57,17 @@ ROOT = Path(__file__).resolve().parent.parent
 # authored racing. Keep 3000 for a long convergence window.
 TICKS = 3000
 
+# The GOLDEN canonical race hash for the default (vote-track-5) direct-boot flow --
+# the load-bearing "the online boot reaches the SAME deterministic race sim as
+# offline" invariant. Convergence only asserts hash_visible == hash_peer (the two
+# endpoints in ONE run agree with EACH OTHER), so a determinism drift that stayed
+# peer-consistent (RNG seed / roster order / physics tick) would keep every lane
+# green while the hash silently became a DIFFERENT value (tests I-1). Pinning the
+# literal here closes that overclaim: the observed hash must EQUAL this golden.
+# A LEGITIMATE ROM/toolchain change is a one-line update here, never a silent green.
+# Skipped when --track/--mask change the sim (a different track is a different hash).
+GOLDEN_RACE_HASH = "7da2ea6757bf1eba"
+
 ENGINE_LIVE_RE = re.compile(
     r"^\[ENGINE-ONLINE-LIVE\] result=(-?\d+) racedTicks=(\d+) drainCalls=(\d+) "
     r"advanceFailed=(\d+) inputEnvelopes=(\d+) transportAccepted=(\d+) "
@@ -112,6 +123,11 @@ def main() -> int:
         "--mask", type=lambda text: int(text, 0), default=None,
         help="assert the wiring froze exactly this START_RACE vehicle mask"
              " (requires --track)")
+    parser.add_argument(
+        "--expect-hash", default=GOLDEN_RACE_HASH,
+        help="assert the converged race hash EQUALS this golden literal (default "
+             f"{GOLDEN_RACE_HASH}); pass '' to skip. Auto-skipped when --track/"
+             "--mask change the sim. Update on a legit ROM/toolchain change.")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
     if args.mask is not None and args.track is None:
@@ -258,6 +274,19 @@ def main() -> int:
             f"foldPeer={fold_peer} hashVisible={hash_visible} "
             f"hashPeer={hash_peer})", output)
 
+    # tests I-1: pin the GOLDEN literal on the unaltered default sim. Peer==peer
+    # above proves the two endpoints agree; this proves they agree on the SAME
+    # canonical value offline reaches, so a peer-consistent determinism drift is
+    # no longer invisible. A --track/--mask run changes the sim, so skip it there.
+    if args.track is None and args.mask is None and args.expect_hash:
+        if hash_visible != args.expect_hash:
+            return fail(
+                f"the converged race hash {hash_visible} != the GOLDEN "
+                f"{args.expect_hash} -- the online boot no longer reaches the "
+                f"canonical deterministic race sim (a determinism drift, or a "
+                f"legit ROM/toolchain change that needs GOLDEN_RACE_HASH bumped)",
+                output)
+
     direct_track, direct_players = direct[0]
     narrow = ""
     if args.track is not None:
@@ -271,8 +300,10 @@ def main() -> int:
         f"off the LIVE transport -- racedTicks={raced} drainCalls={drains} "
         f"inputEnvelopes={envelopes} transportAccepted={accepted} "
         f"transportDrained={drained} corrected={corrected} "
-        f"convergedTicks={fold_visible} hash={hash_visible} "
-        "engineExit=clean noStall=1" + narrow
+        f"convergedTicks={fold_visible} hash={hash_visible}"
+        + ("==GOLDEN" if (args.track is None and args.mask is None and
+                          args.expect_hash) else "")
+        + " engineExit=clean noStall=1" + narrow
     )
     return 0
 
