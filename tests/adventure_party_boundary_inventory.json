@@ -1,0 +1,1117 @@
+{
+  "_description": "AP-01 boundary inventory: every retail Adventure player-count / lead-swap branch in game/src that check_adventure_party_boundaries.py scans for. Each entry is one unique comment-stripped, whitespace-normalized source line (keyed by file+line, counted), so it is stable against line-number drift. The scanner regenerates this set from source and fails closed on any occurrence not listed here (a NEW unclassified branch) or any listed entry whose count no longer matches (a stale entry a later ticket must reclassify or remove).",
+  "_scanned_symbols": [
+    "is_in_two_player_adventure",
+    "race_is_adventure_2P",
+    "swap_lead_player",
+    "input_swap_id",
+    "gIsInTwoPlayerAdventure",
+    "gTwoPlayerAdvRace",
+    "exact player-count comparison of gNumberOfActivePlayers or gNumActivePlayers against an integer literal (==,!=,>=,<=,>,<)"
+  ],
+  "_treatments": {
+    "bypass": "Retail lead-swap mechanism Adventure Party bypasses rather than generalizes.",
+    "adapter-seam": "Site where a later AP ticket adds a #ifdef NATIVE_PORT party adapter; the core invariant (party never sets the retail 2P globals) is enforced here.",
+    "inert-by-globals": "Retail two-player-adventure branch that is mechanically unreachable in a party session because Adventure Party never sets gIsInTwoPlayerAdventure / gTwoPlayerAdvRace / CHEAT_TWO_PLAYER_ADVENTURE; needs no edit to stay safe.",
+    "unrelated": "Retail menu/load/track-select/results/HUD player-count protocol that Adventure Party does not repurpose; it uses adventure_party_participant_count() and the shared multi-viewport render path instead."
+  },
+  "_scope_notes": [
+    "Assignments to gNumberOfActivePlayers (e.g. the collapse-to-1 at the retail 2P file-entry) and plain getters (return gNumberOfActivePlayers) are not exact-count comparisons and are intentionally out of the scanner's rule scope.",
+    "gTwoActivePlayersInAdventure (game/src/objects.c) is a sibling retail flag with the same purpose as gTwoPlayerAdvRace but is not named in the AP-01 scanner rules and is therefore not tracked here."
+  ],
+  "entries": [
+    {
+      "file": "game/src/game.c",
+      "line": "gTwoPlayerAdvRace = FALSE;",
+      "count": 1,
+      "kinds": [
+        "gTwoPlayerAdvRace"
+      ],
+      "classification": "flag-access",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P flag read/guarded write; dead in a party session."
+    },
+    {
+      "file": "game/src/game.c",
+      "line": "gTwoPlayerAdvRace = TRUE;",
+      "count": 1,
+      "kinds": [
+        "gTwoPlayerAdvRace"
+      ],
+      "classification": "flag-access",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P flag read/guarded write; dead in a party session."
+    },
+    {
+      "file": "game/src/game.c",
+      "line": "is_in_two_player_adventure()) {",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/game.c",
+      "line": "return gTwoPlayerAdvRace;",
+      "count": 1,
+      "kinds": [
+        "gTwoPlayerAdvRace"
+      ],
+      "classification": "flag-access",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P flag read/guarded write; dead in a party session."
+    },
+    {
+      "file": "game/src/game.c",
+      "line": "s8 race_is_adventure_2P(void) {",
+      "count": 1,
+      "kinds": [
+        "race_is_adventure_2P"
+      ],
+      "classification": "adventure-2p-query-definition",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P query; returns false throughout a party session."
+    },
+    {
+      "file": "game/src/game.c",
+      "line": "u8 gTwoPlayerAdvRace = FALSE;",
+      "count": 1,
+      "kinds": [
+        "gTwoPlayerAdvRace"
+      ],
+      "classification": "flag-definition",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P store; a party session leaves it at its retail default."
+    },
+    {
+      "file": "game/src/game.h",
+      "line": "s8 race_is_adventure_2P(void);",
+      "count": 1,
+      "kinds": [
+        "race_is_adventure_2P"
+      ],
+      "classification": "adventure-2p-query-definition",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P query; returns false throughout a party session."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "(is_in_two_player_adventure() == FALSE || is_postrace_viewport_active() == FALSE)) {",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "activePlayers = gNumActivePlayers != 3 ? gNumActivePlayers : 4;",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "gNumActivePlayers != 1 || racer->raceFinished == FALSE;",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "if (!(level_type() & RACETYPE_CHALLENGE_BATTLE) && is_in_two_player_adventure() == FALSE) {",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "if (gNumActivePlayers != 1 || racer->raceFinished == FALSE) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "if (gNumActivePlayers != 1) {",
+      "count": 2,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "if (gNumActivePlayers != 2) {",
+      "count": 2,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "if (gNumActivePlayers != 3) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "if (gNumActivePlayers < 3 || (gNumActivePlayers == 3 && racer->playerIndex == PLAYER_COMPUTER)) {",
+      "count": 3,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "if (gNumActivePlayers < 3 || racer->playerIndex == curRacer->playerIndex) {",
+      "count": 2,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "if (gNumActivePlayers == 1 || is_in_two_player_adventure()) {",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure",
+        "player-count-comparison"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "if (gNumActivePlayers == 1) {",
+      "count": 5,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "if (gNumActivePlayers == 2 && gHudToggleSettings[gHUDNumPlayers] == 0) {",
+      "count": 3,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "if (gNumActivePlayers == 2 && racer->bananas < 10) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "if (gNumActivePlayers == 2) {",
+      "count": 2,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "if (gNumActivePlayers == 3) {",
+      "count": 3,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "if (gNumActivePlayers >= 2 &&",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "if (is_in_two_player_adventure() && is_postrace_viewport_active() && gAdventurePlayerFinish == FALSE) {",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "if (is_in_two_player_adventure()) {",
+      "count": 2,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "} else if (gNumActivePlayers == 1) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "} else if (gNumActivePlayers == 2) {",
+      "count": 3,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/game_ui.c",
+      "line": "} else if (gNumActivePlayers == 3) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "hud-viewport-layout-count",
+      "treatment": "unrelated",
+      "note": "Retail multi-viewport HUD/camera layout keyed on gNumActivePlayers; party reuses the shared render path unchanged."
+    },
+    {
+      "file": "game/src/joypad.c",
+      "line": "void input_swap_id(void) {",
+      "count": 1,
+      "kinds": [
+        "input_swap_id"
+      ],
+      "classification": "lead-swap-mechanism-definition",
+      "treatment": "bypass",
+      "note": "Retail lead-swap mechanism. Party bypasses, never generalizes it."
+    },
+    {
+      "file": "game/src/joypad.h",
+      "line": "void input_swap_id(void);",
+      "count": 1,
+      "kinds": [
+        "input_swap_id"
+      ],
+      "classification": "lead-swap-mechanism-definition",
+      "treatment": "bypass",
+      "note": "Retail lead-swap mechanism. Party bypasses, never generalizes it."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "(gNumberOfActivePlayers == 2 && !(gActiveMagicCodes & CHEAT_TWO_PLAYER_ADVENTURE))) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "adventure-admission-gate",
+      "treatment": "adapter-seam",
+      "note": "Retail JOINTVENTURE admission gate. AP-06 owns 2-4 player party admission through a #ifdef NATIVE_PORT adapter here."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "(gNumberOfActivePlayers > 1 && !(gActiveMagicCodes & CHEAT_TWO_PLAYER_ADVENTURE)) ||",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "adventure-admission-gate",
+      "treatment": "adapter-seam",
+      "note": "Retail JOINTVENTURE admission gate. AP-06 owns 2-4 player party admission through a #ifdef NATIVE_PORT adapter here."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "(gNumberOfActivePlayers > 1 && gPlayerSelectConfirm[k] == 0)) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "(gNumberOfActivePlayers > 2)",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": ": ((gNumberOfActivePlayers == 2 ||",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "for (temp2 = 0; temp2 < gNumberOfActivePlayers; temp2++) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "gIsInTwoPlayerAdventure = (gNumberOfActivePlayers == 2);",
+      "count": 1,
+      "kinds": [
+        "gIsInTwoPlayerAdventure",
+        "player-count-comparison"
+      ],
+      "classification": "adventure-admission-record",
+      "treatment": "adapter-seam",
+      "note": "Retail 2P admission record. AP-06 must guard this so a party session never sets gIsInTwoPlayerAdventure (the core invariant)."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (!is_in_two_player_adventure()) {",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if ((gNumberOfActivePlayers == 1 && k == gMenuStage) ||",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if ((gNumberOfActivePlayers > 1 || gMenuStage == TRACKMENU_OPT_1) && !sp74) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gIsInTracksMode == TRUE && gNumberOfActivePlayers == 1) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gIsInTwoPlayerAdventure && !gIsInTracksMode) {",
+      "count": 1,
+      "kinds": [
+        "gIsInTwoPlayerAdventure"
+      ],
+      "classification": "flag-access",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P flag read/guarded write; dead in a party session."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gIsInTwoPlayerAdventure) {",
+      "count": 1,
+      "kinds": [
+        "gIsInTwoPlayerAdventure"
+      ],
+      "classification": "flag-access",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P flag read/guarded write; dead in a party session."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gMenuStage == 2 && gNumberOfActivePlayers == 2 && gTrackSelectCursorX < 4) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers < 3 && ((gMenuStage == POSTRACE_ENTER && gResultsPlayers[i]) ||",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers <= 0) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers <= 2 && !sp74) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers == 1 && !gPlayerHasSeenCautionMenu) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers == 1 && !is_in_two_player_adventure()) {",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure",
+        "player-count-comparison"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers == 1 && gMenuStage > TRACKMENU_MIRROR &&",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers == 1 && gTrophyRaceWorldId == 0) {",
+      "count": 2,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers == 1) {",
+      "count": 4,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers == 2 && !sp74) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers == 2 && gTrackSelectCursorX < 4 && gMenuStage > TRACKMENU_CHOOSE) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers == 2) {",
+      "count": 4,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers == 4) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers > 0) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers > 2 ||",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "adventure-admission-gate",
+      "treatment": "adapter-seam",
+      "note": "Retail JOINTVENTURE admission gate. AP-06 owns 2-4 player party admission through a #ifdef NATIVE_PORT adapter here."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers > 2) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers >= 2 || gTrackSelectCursorX >= 4) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers >= 2) {",
+      "count": 3,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfActivePlayers >= 3 ||",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "adventure-admission-gate",
+      "treatment": "adapter-seam",
+      "note": "Retail JOINTVENTURE admission gate. AP-06 owns 2-4 player party admission through a #ifdef NATIVE_PORT adapter here."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (gNumberOfReadyPlayers == gNumberOfActivePlayers && gNumberOfActivePlayers > 0) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (get_game_mode() == GAMEMODE_INGAME && gNumberOfActivePlayers == 1) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "if (is_in_two_player_adventure()) {",
+      "count": 6,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "is_in_two_player_adventure())",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "return gIsInTwoPlayerAdventure;",
+      "count": 1,
+      "kinds": [
+        "gIsInTwoPlayerAdventure"
+      ],
+      "classification": "flag-access",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P flag read/guarded write; dead in a party session."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "s32 gIsInTwoPlayerAdventure = 0;",
+      "count": 1,
+      "kinds": [
+        "gIsInTwoPlayerAdventure"
+      ],
+      "classification": "flag-definition",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P store; a party session leaves it at its retail default."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "s32 is_in_two_player_adventure(void) {",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-query-definition",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P query; returns false throughout a party session."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "} else if ((gNumberOfActivePlayers == 2) || (is_in_two_player_adventure())) {",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure",
+        "player-count-comparison"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "} else if (gNumberOfActivePlayers == 1) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "} else if (gNumberOfActivePlayers == 2) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.c",
+      "line": "} else if (gNumberOfActivePlayers >= 2) {",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "retail-menu-load-count",
+      "treatment": "unrelated",
+      "note": "Retail menu/track-select/results player-count protocol on gNumberOfActivePlayers; party uses adventure_party_participant_count() instead and does not repurpose this global."
+    },
+    {
+      "file": "game/src/menu.h",
+      "line": "s32 is_in_two_player_adventure(void);",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-query-definition",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P query; returns false throughout a party session."
+    },
+    {
+      "file": "game/src/object_functions.c",
+      "line": "twoPlayerAdv = race_is_adventure_2P();",
+      "count": 1,
+      "kinds": [
+        "race_is_adventure_2P"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/objects.c",
+      "line": "(is_in_two_player_adventure() && racer[1]->finishPosition == 1)) &&",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/objects.c",
+      "line": "if (!race_is_adventure_2P()) {",
+      "count": 1,
+      "kinds": [
+        "race_is_adventure_2P"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/objects.c",
+      "line": "if ((settings->gNumRacers == 1 || is_in_two_player_adventure()) &&",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/objects.c",
+      "line": "if (gSwapLeadPlayer && is_in_two_player_adventure()) {",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/objects.c",
+      "line": "if (is_in_two_player_adventure() &&",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/objects.c",
+      "line": "if (is_in_two_player_adventure() && numHumanRacersFinished > 0 && get_trophy_race_world_id() == 0 &&",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/objects.c",
+      "line": "if (is_in_two_player_adventure() && settings->racers[PLAYER_TWO].starting_position <",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/objects.c",
+      "line": "if (is_in_two_player_adventure()) {",
+      "count": 3,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/objects.c",
+      "line": "if (race_is_adventure_2P()) {",
+      "count": 2,
+      "kinds": [
+        "race_is_adventure_2P"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/objects.c",
+      "line": "if (racerEntry->playerIndex == 4 || race_is_adventure_2P()) {",
+      "count": 1,
+      "kinds": [
+        "race_is_adventure_2P"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/objects.c",
+      "line": "swap_lead_player();",
+      "count": 4,
+      "kinds": [
+        "swap_lead_player"
+      ],
+      "classification": "lead-swap-call",
+      "treatment": "inert-by-globals",
+      "note": "Guarded by is_in_two_player_adventure()/gTwoPlayerAdvRace; dead in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/thread3_main.c",
+      "line": "if (func_80023568() != 0 && is_in_two_player_adventure()) {",
+      "count": 2,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/thread3_main.c",
+      "line": "if (gPlayableMapId == -10 && is_in_two_player_adventure()) {",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/thread3_main.c",
+      "line": "if (gPlayableMapId == SPECIAL_MAP_ID_UNK_NEG10 && is_in_two_player_adventure()) {",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/thread3_main.c",
+      "line": "input_swap_id();",
+      "count": 1,
+      "kinds": [
+        "input_swap_id"
+      ],
+      "classification": "lead-swap-mechanism-call",
+      "treatment": "bypass",
+      "note": "Reached only through swap_lead_player(), which party bypasses."
+    },
+    {
+      "file": "game/src/thread3_main.c",
+      "line": "swap_lead_player();",
+      "count": 4,
+      "kinds": [
+        "swap_lead_player"
+      ],
+      "classification": "lead-swap-call",
+      "treatment": "inert-by-globals",
+      "note": "Guarded by is_in_two_player_adventure()/gTwoPlayerAdvRace; dead in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/thread3_main.c",
+      "line": "void swap_lead_player(void) {",
+      "count": 1,
+      "kinds": [
+        "swap_lead_player"
+      ],
+      "classification": "lead-swap-mechanism-definition",
+      "treatment": "bypass",
+      "note": "Retail lead-swap mechanism. Party bypasses, never generalizes it."
+    },
+    {
+      "file": "game/src/thread3_main.c",
+      "line": "} else if (is_in_two_player_adventure()) {",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/thread3_main.h",
+      "line": "void swap_lead_player(void);",
+      "count": 1,
+      "kinds": [
+        "swap_lead_player"
+      ],
+      "classification": "lead-swap-mechanism-definition",
+      "treatment": "bypass",
+      "note": "Retail lead-swap mechanism. Party bypasses, never generalizes it."
+    },
+    {
+      "file": "game/src/tracks.c",
+      "line": "if (is_in_two_player_adventure() &&",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/vehicle_tricky.c",
+      "line": "if (check_fadeout_transition() == 0 && is_in_two_player_adventure()) {",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/vehicle_tricky.c",
+      "line": "if (is_in_two_player_adventure()) {",
+      "count": 1,
+      "kinds": [
+        "is_in_two_player_adventure"
+      ],
+      "classification": "adventure-2p-branch",
+      "treatment": "inert-by-globals",
+      "note": "Retail 2P-adventure branch; unreachable in a party session because party never sets the 2P globals."
+    },
+    {
+      "file": "game/src/vehicle_tricky.c",
+      "line": "swap_lead_player();",
+      "count": 2,
+      "kinds": [
+        "swap_lead_player"
+      ],
+      "classification": "lead-swap-call",
+      "treatment": "inert-by-globals",
+      "note": "Guarded by is_in_two_player_adventure()/gTwoPlayerAdvRace; dead in a party session because party never sets the 2P globals."
+    }
+  ]
+}

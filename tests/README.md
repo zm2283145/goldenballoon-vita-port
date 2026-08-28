@@ -5632,6 +5632,45 @@ about most. `mdkr_boss_cadence_clamp` (`game/src/racer.c`) and
 ordinary arithmetic uses of `updateRate` as a scale factor are unaffected.
 Positive control: a seeded `updateRate == 2` mode test must be rejected.
 
+### Adventure Party boundaries — `tests/check_adventure_party_boundaries.py`
+
+```bash
+python3 tests/check_adventure_party_boundaries.py
+python3 tests/check_adventure_party_boundaries.py --self-test
+```
+
+The AP-01 static source-boundary gate for Adventure Party (see
+`docs/architecture/adventure-party.md`). Its central invariant is that a party
+session never sets the retail two-player-adventure globals, so every retail
+exact-two / lead-swap branch stays inert without an edit. The gate:
+
+1. Requires every use of `is_in_two_player_adventure`, `race_is_adventure_2P`,
+   `swap_lead_player`, `input_swap_id`, `gIsInTwoPlayerAdventure`,
+   `gTwoPlayerAdvRace`, or an exact player-count comparison of
+   `gNumberOfActivePlayers` / `gNumActivePlayers` against an integer literal
+   under `game/src` to be declared, with a classification and a treatment
+   (`bypass` / `adapter-seam` / `inert-by-globals` / `unrelated`), in
+   `tests/adventure_party_boundary_inventory.json`. A new undeclared branch
+   fails closed; a stale entry a later ticket removed also fails. Entries are
+   keyed by file plus the comment-stripped, whitespace-normalized source line
+   (counted), so they survive line-number drift.
+2. Rejects any write to `gIsInTwoPlayerAdventure` / `gTwoPlayerAdvRace` or set
+   of `CHEAT_TWO_PLAYER_ADVENTURE` from adventure-party code (`platform/
+   adventure_party/**` or a `#ifdef NATIVE_PORT` adapter region naming an
+   `adventure_party` identifier nearby).
+3. Rejects `mdkr_authoritative_player_count` referenced from
+   `platform/adventure_party/**` (the online-authority boundary).
+4. Rejects a new ambiguous `g...Party...Count` global under `game/src` or
+   `platform/`.
+5. Rejects `adventure_party` identifiers inside the test-hook file
+   `platform/mdkr_adventure.c`/`.h` or Phone Party infrastructure
+   `platform/party/**`.
+
+ROM-free, no build. `platform/adventure_party/` does not exist yet; a missing
+directory contributes no violations. `--self-test` feeds every rule a synthetic
+in-memory violation (never touching the repo on disk) and asserts the rule
+fires while a matching clean control stays silent.
+
 ### Harness isolation — `tests/check_harness_isolation.py`
 
 ```bash

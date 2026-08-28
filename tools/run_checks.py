@@ -635,6 +635,12 @@ CHECKS = (
     Check("cadence_gating", "check_cadence_gating.py", "source",
           "no updateRate ==/!= 1/2 mode test outside "
           "platform_sim_cadence_is_enhanced()"),
+    Check("adventure_party_boundaries", "check_adventure_party_boundaries.py",
+          "source",
+          "AP-01 boundary gate: every Adventure count/lead branch declared in "
+          "the inventory, no party-path 2P-global write, online-authority leak, "
+          "ambiguous party-count global, or adventure_party vocabulary leak into "
+          "the test hook / Phone Party infrastructure"),
     Check("camera_track_occlusion_cache", "check_camera_track_occlusion_cache.py", "source",
           "native static visual-triangle camera cache lifecycle and provenance"),
     Check("camera_object_occlusion_cache", "check_camera_object_occlusion_cache.py", "source",
