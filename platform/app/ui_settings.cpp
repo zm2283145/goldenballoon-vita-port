@@ -2761,12 +2761,11 @@ std::string characterFitReviewSignature(
     const CharacterTuningEdit &edit,
     unsigned context) {
     if (entry == nullptr || context >= MDKR_CHARACTER_CONTEXT_COUNT) return {};
-    /* v5 binds every vehicle approval to all three qualified course families
-     * as well as the complete semantic battery. Select retains its single
-     * authored room but shares the version so no older approval silently
-     * inherits the broader meaning. */
+    /* v6 additionally binds vehicle approval to the settled per-limb contact
+     * residual-stability witness. Select shares the version so no active,
+     * draft, or history approval silently inherits the stronger meaning. */
     std::string canonical =
-        "mdkr-character-fit-review-v5-scene-battery\n";
+        "mdkr-character-fit-review-v6-contact-stability\n";
     canonical.append(reinterpret_cast<const char *>(entry->source_sha256),
                      sizeof(entry->source_sha256));
     canonical += "\n" + std::to_string(entry->donor) + "\n";
@@ -6711,6 +6710,8 @@ bool characterPreviewOpaqueVisibilityValid(
     const MdkrCharacterPreviewResult &result);
 bool characterPreviewContactDiagnosticsValid(
     const MdkrCharacterPreviewResult &result);
+bool characterMotionReviewContactStabilityValid(
+    const MdkrCharacterMotionReviewResult &review);
 MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
     const CharacterTestEvidenceStore::Evidence &evidence);
 void drawCharacterFitDiagnostics(
@@ -6767,6 +6768,7 @@ const CharacterMotionReviewSessionResult *currentCharacterMotionReview(
             value.result.completed_mask ==
                 MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_MASK(expectedCount) &&
             value.result.failed_sample == 0u &&
+            characterMotionReviewContactStabilityValid(value.result) &&
             value.sourceSha256 == characterDigestHex(entry->source_sha256) &&
             !fit.empty() && value.fitSha256 == fit &&
             !presentation.empty() &&
@@ -7985,6 +7987,7 @@ bool characterPreviewAttachmentVisibilityNeedsReview(
 
 void drawCharacterMotionReviewSummary(
     const CharacterMotionReviewSessionResult &session, bool compact) {
+    constexpr unsigned long long kContactStabilityGuideMicrometres = 2000u;
     unsigned sampleCount = 0u;
     const CharacterMotionReviewDefinition *definitions =
         characterMotionReviewDefinitions(
@@ -8002,11 +8005,14 @@ void drawCharacterMotionReviewSummary(
     unsigned worstInside = 0u;
     unsigned long long worstContainment = 0u;
     unsigned long long worstContactError = 0u;
+    unsigned long long worstContactStep = 0u;
     double worstVisibilityRatio = 2.0;
     bool haveQualifiedVisibility = false;
     bool haveUnqualifiedVisibility = false;
     bool haveUnqualifiedVolume = false;
     bool haveContactWitness = false;
+    bool haveContactStability = false;
+    unsigned worstContactStepSample = 0u;
     bool haveNamedAttachments = false;
     unsigned unqualifiedVisibility = 0u;
     unsigned unqualifiedVolume = 0u;
@@ -8076,12 +8082,28 @@ void drawCharacterMotionReviewSummary(
             worstContactError = sample.contact_error_max_micrometres;
             worstContact = index;
         }
+        for (unsigned contact = 0u;
+             vehicle && contact < MDKR_CHARACTER_PREVIEW_CONTACTS;
+             ++contact) {
+            if ((session.result.contact_stability_mask[index] &
+                 (1u << contact)) == 0u) continue;
+            haveContactStability = true;
+            const unsigned long long step =
+                session.result.contact_stability_max_step_micrometres
+                    [index][contact];
+            if (step > worstContactStep) {
+                worstContactStep = step;
+                worstContactStepSample = index;
+            }
+        }
     }
     const bool reviewClean =
         worstCameraBits == 0u && worstCrossings == 0u && worstInside == 0u &&
         !haveUnqualifiedVolume && !haveUnqualifiedVisibility &&
         haveQualifiedVisibility && worstVisibilityRatio >= 0.6 &&
-        attachmentReviewStates == 0u;
+        attachmentReviewStates == 0u &&
+        (!haveContactStability ||
+         worstContactStep <= kContactStabilityGuideMicrometres);
     ImGui::TextColored(
         reviewClean ? AppTheme::good() : AppTheme::accent(),
         "%s · %u of %u exact states measured",
@@ -8181,6 +8203,18 @@ void drawCharacterMotionReviewSummary(
                 } else {
                     ImGui::Text("%.1f mm max",
                                 sample.contact_error_max_micrometres / 1000.0);
+                    unsigned long long maximumStep = 0u;
+                    for (unsigned contact = 0u;
+                         contact < MDKR_CHARACTER_PREVIEW_CONTACTS;
+                         ++contact) {
+                        maximumStep = std::max(
+                            maximumStep,
+                            session.result
+                                .contact_stability_max_step_micrometres
+                                    [index][contact]);
+                    }
+                    ImGui::TextDisabled(
+                        "%.2f mm drift", maximumStep / 1000.0);
                 }
             }
         }
@@ -8191,7 +8225,7 @@ void drawCharacterMotionReviewSummary(
     char bodySummary[128];
     char visibilitySummary[128];
     char attachmentSummary[128];
-    char contactSummary[128];
+    char contactSummary[192];
     if (worstCameraBits == 0u) {
         std::snprintf(framingSummary, sizeof(framingSummary),
                       "framing clear in all states");
@@ -8252,10 +8286,20 @@ void drawCharacterMotionReviewSummary(
         std::snprintf(contactSummary, sizeof(contactSummary),
                       "contacts not applicable");
     } else if (haveContactWitness) {
-        std::snprintf(contactSummary, sizeof(contactSummary),
-                      "contacts %.1f mm (%s)",
-                      worstContactError / 1000.0,
-                      definitions[worstContact].label);
+        if (haveContactStability) {
+            std::snprintf(
+                contactSummary, sizeof(contactSummary),
+                "contacts %.1f mm (%s), residual drift %.2f mm (%s)",
+                worstContactError / 1000.0,
+                definitions[worstContact].label,
+                worstContactStep / 1000.0,
+                definitions[worstContactStepSample].label);
+        } else {
+            std::snprintf(contactSummary, sizeof(contactSummary),
+                          "contacts %.1f mm (%s), stability unavailable",
+                          worstContactError / 1000.0,
+                          definitions[worstContact].label);
+        }
     } else {
         std::snprintf(contactSummary, sizeof(contactSummary),
                       "contacts not procedurally solved");
@@ -8265,7 +8309,7 @@ void drawCharacterMotionReviewSummary(
         bodySummary, visibilitySummary, attachmentSummary, contactSummary);
     ui::TextSubtleWrapped(
         vehicle
-            ? "Every race semantic is a fresh renderer witness after the authored pose settled and remained visible for at least 60 complete character draws. Run it again whenever you need another look. Warnings remain reviewable for unusual anatomy, transparent materials, and intentional costume overlap; an opaque state with no visible regions still blocks approval."
+            ? "Every race semantic is a fresh renderer witness after the authored pose settled and remained visible for at least 60 complete character draws. Contact residual drift is the largest consecutive change in endpoint-minus-target during that held window, not ordinary model movement; 2 mm or less is the starting guide. Run it again whenever you need another look. Warnings remain reviewable for unusual anatomy, transparent materials, and intentional costume overlap; an opaque state with no visible regions still blocks approval."
             : "Idle, hover, and confirm are fresh renderer witnesses after each authored pose settled and remained visible for at least 60 complete character draws. This catches a select-only bind pose, clipping, or disappearance before approval; an opaque state with no visible regions still blocks approval.");
 }
 
@@ -8334,6 +8378,17 @@ void publishCharacterMotionReviewSmokeFixture(
         sample.capture_stable_frames = 0u;
         sample.capture_png_bytes = 0u;
         sample.capture_kind = MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+        if (context != MDKR_CHARACTER_PREVIEW_SELECT &&
+            sample.contact_solves != 0u) {
+            review.contact_stability_mask[index] =
+                (1u << MDKR_CHARACTER_PREVIEW_CONTACTS) - 1u;
+            for (unsigned contact = 0u;
+                 contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
+                review.contact_stability_observations[index][contact] = 59u;
+                review.contact_stability_max_step_micrometres[index][contact] =
+                    250u * (contact + 1u);
+            }
+        }
         if (context == MDKR_CHARACTER_PREVIEW_SELECT) {
             sample.contact_solves = 0u;
             sample.contact_error_mean_micrometres = 0u;
@@ -8420,6 +8475,19 @@ void publishCharacterMotionReviewSmokeFixture(
     if (context == MDKR_CHARACTER_PREVIEW_SELECT) {
         malformed = review;
         malformed.samples[0].contact_solves = 1u;
+        Settings_publishCharacterPreviewResult(
+            entry->id, characterDigestHex(entry->source_sha256),
+            characterTestTuningSignature(
+                entry, edit, static_cast<unsigned>(context - 1)),
+            characterTestPresentationSignature(), std::string(), disposition,
+            publicationBase, &malformed);
+        if (currentCharacterMotionReview(entry, edit, context, scene) != nullptr) {
+            return;
+        }
+    } else {
+        malformed = review;
+        malformed.contact_stability_observations[0][0] =
+            MDKR_CHARACTER_CONTACT_STABILITY_MINIMUM_OBSERVATIONS - 1u;
         Settings_publishCharacterPreviewResult(
             entry->id, characterDigestHex(entry->source_sha256),
             characterTestTuningSignature(
@@ -9581,6 +9649,11 @@ bool drawCharacterTuningEditor(int player,
             }
             bool contactQualityMeasured = false;
             bool contactsWithinGuide = true;
+            bool contactStabilityMeasured = false;
+            bool contactsStable = true;
+            uint64_t contactStabilityMaximum = 0u;
+            uint64_t contactStabilityObservations = 0u;
+            constexpr uint64_t kContactStabilityGuideMicrometres = 2000u;
             if (fitEvidence.current &&
                 context != MDKR_CHARACTER_CONTEXT_SELECT) {
                 uint64_t contactSolves = 0u;
@@ -9613,8 +9686,35 @@ bool drawCharacterTuningEditor(int player,
                                     }
                                 }
                             }
+                            for (unsigned contact = 0u;
+                                 contact < MDKR_CHARACTER_PREVIEW_CONTACTS;
+                                 ++contact) {
+                                if ((sceneReview->result
+                                         .contact_stability_mask[sampleIndex] &
+                                     (1u << contact)) == 0u) continue;
+                                contactStabilityMeasured = true;
+                                const uint64_t observations =
+                                    sceneReview->result
+                                        .contact_stability_observations
+                                            [sampleIndex][contact];
+                                contactStabilityObservations =
+                                    observations >
+                                            UINT64_MAX -
+                                                contactStabilityObservations
+                                        ? UINT64_MAX
+                                        : contactStabilityObservations +
+                                              observations;
+                                contactStabilityMaximum = std::max(
+                                    contactStabilityMaximum,
+                                    sceneReview->result
+                                        .contact_stability_max_step_micrometres
+                                            [sampleIndex][contact]);
+                            }
                         }
                     }
+                    contactsStable = !contactStabilityMeasured ||
+                        contactStabilityMaximum <=
+                            kContactStabilityGuideMicrometres;
                 } else {
                     contactSolves = fitEvidence.result.contact_solves;
                     contactMaximum =
@@ -9648,6 +9748,24 @@ bool drawCharacterTuningEditor(int player,
                         completeSceneReview
                             ? "Complete motion review: no procedural contacts (authored clip or solver locked)"
                             : "Last exact test: no procedural contacts (authored clip or solver locked)");
+                }
+                if (contactStabilityMeasured) {
+                    ImGui::Text(
+                        "Residual stability: %.2f mm maximum frame-to-frame change across %llu comparisons",
+                        contactStabilityMaximum / 1000.0,
+                        static_cast<unsigned long long>(
+                            contactStabilityObservations));
+                    ImGui::TextColored(
+                        contactsStable ? AppTheme::good()
+                                       : AppTheme::accent(),
+                        contactsStable
+                            ? "Contact stability guide met: residual drift <= 2 mm"
+                            : "Contact stability needs review: residual drift exceeds 2 mm");
+                    ui::TextSubtleWrapped(
+                        "Residual drift measures consecutive changes in endpoint-minus-target while each reviewed pose is held. It does not count ordinary character or vehicle movement.");
+                } else if (contactQualityMeasured) {
+                    ImGui::TextDisabled(
+                        "Run the complete motion review to measure contact stability across settled frames.");
                 }
             }
             const bool representativeMotionReady =
@@ -9791,20 +9909,22 @@ bool drawCharacterTuningEditor(int player,
             if (!fitReviewed) {
                 uint32_t &pendingExceptions =
                     g_characterPendingContactExceptions[entry->id];
-                if (!exactReviewContract || !contactQualityMeasured ||
-                    contactsWithinGuide) {
+                const bool contactExceptionRequired =
+                    (contactQualityMeasured && !contactsWithinGuide) ||
+                    (contactStabilityMeasured && !contactsStable);
+                if (!exactReviewContract || !contactExceptionRequired) {
                     pendingExceptions &= ~(1u << context);
                 }
                 bool approveException =
                     (pendingExceptions & (1u << context)) != 0u;
                 const bool exceptionRequired = fitEvidence.current &&
-                    contactQualityMeasured && !contactsWithinGuide;
+                    contactExceptionRequired;
                 if (exceptionRequired) {
                     ImGui::TextColored(
                         AppTheme::accent(),
-                        "The measured hand/foot guide is not met. Tune and rerun, or explicitly approve this unusual-anatomy/contact exception.");
+                        "The measured contact residual or stability guide is not met. Tune and rerun, or explicitly approve this unusual-anatomy/contact exception.");
                     if (ImGui::Checkbox(
-                            "I inspected the exact scene and approve this contact exception",
+                            "I inspected the exact scenes and approve this contact-quality exception",
                             &approveException)) {
                         if (approveException) {
                             pendingExceptions |= 1u << context;
@@ -9881,10 +10001,14 @@ bool drawCharacterTuningEditor(int player,
                     if (tracedContactReviewStates.insert(traceKey).second) {
                         std::fprintf(
                             stderr,
-                            "[app-ui] character-contact-review package=%s context=%u measured=%d guide-met=%d exception-required=%d exception-approved=%d review-ready=%d exact-contract=%d visibility-block=%d scene-reviewed=%d warnings=%d\n",
+                            "[app-ui] character-contact-review package=%s context=%u measured=%d guide-met=%d stability-measured=%d stability-guide-met=%d stability-max-um=%llu exception-required=%d exception-approved=%d review-ready=%d exact-contract=%d visibility-block=%d scene-reviewed=%d warnings=%d\n",
                             entry->id, context,
                             contactQualityMeasured ? 1 : 0,
                             contactsWithinGuide ? 1 : 0,
+                            contactStabilityMeasured ? 1 : 0,
+                            contactsStable ? 1 : 0,
+                            static_cast<unsigned long long>(
+                                contactStabilityMaximum),
                             exceptionRequired ? 1 : 0,
                             approveException ? 1 : 0,
                             reviewReady ? 1 : 0,
@@ -9917,9 +10041,9 @@ bool drawCharacterTuningEditor(int player,
                         : !sceneReviewed
                             ? "Inspect and acknowledge the exact composed scene first."
                         : exceptionRequired && !approveException
-                            ? "Inspect and explicitly approve the over-limit contact exception first."
+                            ? "Inspect and explicitly approve the over-limit contact-quality exception first."
                             : nullptr,
-                    "Saves review only for the current package source and fit values after exact composed-scene inspection, including whether an over-limit contact exception was explicitly approved.");
+                    "Saves review only for the current package source and fit values after exact composed-scene inspection, including whether an over-limit contact residual or stability exception was explicitly approved.");
             } else {
                 const std::string reopenLabel = std::string("Reopen ") +
                     contextNames[context] + " fit review";
@@ -11713,6 +11837,46 @@ bool characterPreviewContactDiagnosticsValid(
     return result.contact_solves == 0u ||
            latestMaximum <= result.contact_error_max_micrometres ||
            latestMaximum - result.contact_error_max_micrometres <= 3u;
+}
+
+bool characterMotionReviewContactStabilityValid(
+    const MdkrCharacterMotionReviewResult &review) {
+    constexpr unsigned kAllContacts =
+        (1u << MDKR_CHARACTER_PREVIEW_CONTACTS) - 1u;
+    constexpr unsigned long long kMaximumMicrometres = 1000000000ULL;
+    if (review.sample_count >
+        MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT) return false;
+    const bool vehicle =
+        review.context != MDKR_CHARACTER_PREVIEW_SELECT;
+    for (unsigned sampleIndex = 0u;
+         sampleIndex < MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT;
+         ++sampleIndex) {
+        const bool used = sampleIndex < review.sample_count;
+        const MdkrCharacterPreviewResult &sample =
+            review.samples[sampleIndex];
+        const bool solved = used && vehicle && sample.contact_solves != 0u;
+        const unsigned mask = review.contact_stability_mask[sampleIndex];
+        if ((mask & ~kAllContacts) != 0u || (solved && mask != kAllContacts) ||
+            (!solved && mask != 0u)) return false;
+        for (unsigned contact = 0u;
+             contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
+            const unsigned long long observations =
+                review.contact_stability_observations
+                    [sampleIndex][contact];
+            const unsigned long long maximum =
+                review.contact_stability_max_step_micrometres
+                    [sampleIndex][contact];
+            if (!solved) {
+                if (observations != 0u || maximum != 0u) return false;
+                continue;
+            }
+            if (observations <
+                    MDKR_CHARACTER_CONTACT_STABILITY_MINIMUM_OBSERVATIONS ||
+                observations >= sample.contact_solves ||
+                maximum > kMaximumMicrometres) return false;
+        }
+    }
+    return true;
 }
 
 void drawCharacterCameraFramingDiagnostics(
@@ -18284,7 +18448,7 @@ bool captureCharacterHistoryPayload(
         }
     } else if (tool == CharacterHistoryTool::Fit) {
         const CharacterTuningEdit &edit = loadCharacterTuning(0, entry->id);
-        payload = "mdkr-fit-history-v7\n";
+        payload = "mdkr-fit-history-v8\n";
         appendCharacterHistoryValue(payload, edit.scale);
         for (float value : edit.offset) {
             appendCharacterHistoryValue(payload, value);
@@ -18690,7 +18854,10 @@ bool applyCharacterHistoryPayload(
         }
         g_characterRigEdits[entry->id] = std::move(replacement);
     } else if (tool == CharacterHistoryTool::Fit) {
+        const bool hasContactStabilityContract =
+            consumeHeader("mdkr-fit-history-v8\n");
         const bool hasMultiSceneReviewContract =
+            hasContactStabilityContract ||
             consumeHeader("mdkr-fit-history-v7\n");
         const bool hasSemanticReviewContract = hasMultiSceneReviewContract ||
             consumeHeader("mdkr-fit-history-v6\n");
@@ -18754,7 +18921,8 @@ bool applyCharacterHistoryPayload(
             return false;
         }
         if (!hasSceneReviewContract || !hasSemanticReviewContract ||
-            !hasMultiSceneReviewContract) {
+            !hasMultiSceneReviewContract ||
+            !hasContactStabilityContract) {
             reviewed = 0u;
             contactExceptions = 0u;
         }
@@ -23826,6 +23994,9 @@ void Settings_publishCharacterPreviewResult(
             characterDigestTextValid(presentationSha256) &&
             capturePng.empty() && !launcherOwnedCapture &&
             !portraitSourceHandoff && !interactiveStudio;
+        if (valid) {
+            valid = characterMotionReviewContactStabilityValid(*motionReview);
+        }
         if (valid) {
             for (unsigned index = 0u; index < expectedCount; ++index) {
                 const MdkrCharacterPreviewResult &sample =

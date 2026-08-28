@@ -12,6 +12,7 @@ namespace {
 constexpr uint32_t kFitSceneReviewVersion = 13u;
 constexpr uint32_t kFitSemanticReviewVersion = 15u;
 constexpr uint32_t kFitMultiSceneReviewVersion = 16u;
+constexpr uint32_t kFitContactStabilityVersion = 17u;
 constexpr uint32_t kFitMotionReviewVersion = 14u;
 constexpr uint32_t kTransitionInspectionVersion = 12u;
 constexpr uint32_t kContactExceptionsVersion = 11u;
@@ -19,7 +20,7 @@ constexpr uint32_t kRigReviewTasksVersion = 10u;
 constexpr uint32_t kAnimationIntentVersion = 9u;
 constexpr uint32_t kTopInspectionVersion = 8u;
 constexpr uint32_t kPortraitSubjectMaskVersion = 7u;
-constexpr uint32_t kVersion = kFitMultiSceneReviewVersion;
+constexpr uint32_t kVersion = kFitContactStabilityVersion;
 constexpr uint32_t kPortraitSourceVersion = 6u;
 constexpr uint32_t kVisualInspectionVersion = 5u;
 constexpr uint32_t kPoseInspectionVersion = 4u;
@@ -461,6 +462,7 @@ bool decode(const std::string &payload, Snapshot &snapshot,
         payload.compare(0u, 4u, "MDWD") != 0 ||
         !readU32(payload, offset, version) ||
         (version != kVersion &&
+         version != kFitMultiSceneReviewVersion &&
          version != kFitSemanticReviewVersion &&
          version != kFitMotionReviewVersion &&
          version != kFitSceneReviewVersion &&
@@ -721,6 +723,14 @@ bool decode(const std::string &payload, Snapshot &snapshot,
     } else {
         /* v15 proved every semantic in one fixed course per vehicle. It cannot
          * inherit v16's open/dense/alternate course battery. */
+        parsed.reviewedContexts = 0u;
+        parsed.contactExceptionContexts = 0u;
+    }
+    if (version >= kFitContactStabilityVersion) {
+        parsed.fitContactStabilityContractPresent = true;
+    } else {
+        /* v16 proves every semantic on all qualified course families, but it
+         * has no settled frame-to-frame contact residual witness. */
         parsed.reviewedContexts = 0u;
         parsed.contactExceptionContexts = 0u;
     }

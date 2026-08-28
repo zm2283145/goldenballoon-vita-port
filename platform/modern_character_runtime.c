@@ -52,6 +52,9 @@ typedef struct MdkrModernRuntimePlayer {
     MdkrModernCharacterContactDiagnostics
         contact_diagnostics[MDKR_CHARACTER_CONTEXT_COUNT];
     uint32_t contact_diagnostics_valid_mask;
+    float contact_residual_previous[MDKR_CHARACTER_CONTEXT_COUNT]
+        [MDKR_MODERN_CHARACTER_CONTACTS][3];
+    uint32_t contact_residual_previous_valid_mask;
     MdkrModernSurfaceIntersectionDiagnostics
         surface_diagnostics[MDKR_CHARACTER_CONTEXT_COUNT];
     uint32_t surface_diagnostics_valid_mask;
@@ -84,6 +87,10 @@ static uint64_t s_hidden_donor_batches;
 static uint64_t s_contact_solves;
 static uint64_t s_contact_error_micrometres_sum;
 static uint64_t s_contact_error_micrometres_max;
+static uint64_t s_contact_residual_step_observations
+    [MDKR_MODERN_CHARACTER_CONTACTS];
+static uint64_t s_contact_residual_step_max_micrometres
+    [MDKR_MODERN_CHARACTER_CONTACTS];
 static uint64_t s_identity_revision;
 static uint64_t s_inspection_pose_ticks;
 static uint64_t s_inspection_pose_fallback_ticks;
@@ -947,6 +954,10 @@ int mdkr_modern_characters_init(const char *directory) {
     s_contact_solves = 0u;
     s_contact_error_micrometres_sum = 0u;
     s_contact_error_micrometres_max = 0u;
+    memset(s_contact_residual_step_observations, 0,
+           sizeof(s_contact_residual_step_observations));
+    memset(s_contact_residual_step_max_micrometres, 0,
+           sizeof(s_contact_residual_step_max_micrometres));
     s_inspection_pose_ticks = 0u;
     s_inspection_pose_fallback_ticks = 0u;
     s_inspection_transition_switches = 0u;
@@ -961,6 +972,7 @@ int mdkr_modern_characters_init(const char *directory) {
     }
     for (index = 0; index < MDKR_MODERN_CHARACTER_PLAYERS; index++) {
         s_players[index].pool = -1;
+        s_players[index].contact_residual_previous_valid_mask = 0u;
         mdkr_modern_character_tuning_defaults(&s_players[index].tuning);
     }
     {
@@ -1048,6 +1060,12 @@ void mdkr_modern_character_runtime_metrics(
         s_contact_error_micrometres_sum;
     out->contact_error_micrometres_max =
         s_contact_error_micrometres_max;
+    memcpy(out->contact_residual_step_observations,
+           s_contact_residual_step_observations,
+           sizeof(out->contact_residual_step_observations));
+    memcpy(out->contact_residual_step_max_micrometres,
+           s_contact_residual_step_max_micrometres,
+           sizeof(out->contact_residual_step_max_micrometres));
     out->inspection_pose_ticks = s_inspection_pose_ticks;
     out->inspection_pose_fallback_ticks =
         s_inspection_pose_fallback_ticks;
@@ -1071,6 +1089,16 @@ void mdkr_modern_character_contact_metrics_reset(void) {
     s_contact_solves = 0u;
     s_contact_error_micrometres_sum = 0u;
     s_contact_error_micrometres_max = 0u;
+    memset(s_contact_residual_step_observations, 0,
+           sizeof(s_contact_residual_step_observations));
+    memset(s_contact_residual_step_max_micrometres, 0,
+           sizeof(s_contact_residual_step_max_micrometres));
+    {
+        int player;
+        for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; ++player) {
+            s_players[player].contact_residual_previous_valid_mask = 0u;
+        }
+    }
 }
 
 void mdkr_modern_character_note_hidden_donor_batch(void) {
@@ -1352,6 +1380,7 @@ int mdkr_modern_character_set_tuning(int player,
     s_players[player].focus_valid_mask = 0u;
     s_players[player].fit_diagnostics_valid_mask = 0u;
     s_players[player].contact_diagnostics_valid_mask = 0u;
+    s_players[player].contact_residual_previous_valid_mask = 0u;
     s_players[player].surface_diagnostics_valid_mask = 0u;
     s_players[player].surface_diagnostics_requested_mask = 0u;
     s_players[player].selected_lod_valid_mask = 0u;
@@ -1835,6 +1864,9 @@ int mdkr_modern_character_emit(int player, int view,
     int contact_diagnostics_ready = 0;
     int contact_solved = 0;
     uint64_t contact_error_micrometres = 0u;
+    uint64_t contact_residual_step_micrometres
+        [MDKR_MODERN_CHARACTER_CONTACTS] = {0u};
+    int contact_residual_step_ready = 0;
     uint32_t primitive_index;
     uint32_t selected_lod;
     uint32_t authored_lod_mask = 0u;
@@ -2060,6 +2092,39 @@ int mdkr_modern_character_emit(int player, int view,
                 }
                 contact_error_micrometres =
                     (uint64_t)(micrometres + 0.5);
+                if ((slot->contact_residual_previous_valid_mask &
+                     (1u << (unsigned)context)) != 0u) {
+                    for (contact = 0u;
+                         contact < MDKR_MODERN_CHARACTER_CONTACTS;
+                         ++contact) {
+                        double squared = 0.0;
+                        unsigned axis;
+                        for (axis = 0u; axis < 3u; ++axis) {
+                            const double residual =
+                                (double)contact_diagnostics.end[contact][axis] -
+                                contact_diagnostics.target[contact][axis];
+                            const double delta = residual -
+                                slot->contact_residual_previous[context]
+                                    [contact][axis];
+                            squared += delta * delta;
+                        }
+                        {
+                            const double stepMicrometres =
+                                sqrt(squared) * 1000000.0;
+                            if (!isfinite(stepMicrometres) ||
+                                stepMicrometres < 0.0 ||
+                                stepMicrometres > (double)UINT64_MAX) {
+                                set_error(
+                                    error, error_size,
+                                    "vehicle contact stability metric is outside its safe range");
+                                return 0;
+                            }
+                            contact_residual_step_micrometres[contact] =
+                                (uint64_t)(stepMicrometres + 0.5);
+                        }
+                    }
+                    contact_residual_step_ready = 1;
+                }
             }
         }
     }
@@ -2211,6 +2276,7 @@ int mdkr_modern_character_emit(int player, int view,
         s_replacement_primitives += emitted;
     }
     if (contact_solved && !reference_only) {
+        unsigned contact;
         s_contact_solves++;
         if (UINT64_MAX - s_contact_error_micrometres_sum <
             contact_error_micrometres) {
@@ -2222,6 +2288,28 @@ int mdkr_modern_character_emit(int player, int view,
             s_contact_error_micrometres_max) {
             s_contact_error_micrometres_max = contact_error_micrometres;
         }
+        for (contact = 0u; contact < MDKR_MODERN_CHARACTER_CONTACTS;
+             ++contact) {
+            unsigned axis;
+            if (contact_residual_step_ready) {
+                if (s_contact_residual_step_observations[contact] !=
+                    UINT64_MAX) {
+                    s_contact_residual_step_observations[contact]++;
+                }
+                if (contact_residual_step_micrometres[contact] >
+                    s_contact_residual_step_max_micrometres[contact]) {
+                    s_contact_residual_step_max_micrometres[contact] =
+                        contact_residual_step_micrometres[contact];
+                }
+            }
+            for (axis = 0u; axis < 3u; ++axis) {
+                slot->contact_residual_previous[context][contact][axis] =
+                    contact_diagnostics.end[contact][axis] -
+                    contact_diagnostics.target[contact][axis];
+            }
+        }
+        slot->contact_residual_previous_valid_mask |=
+            1u << (unsigned)context;
     }
     set_error(error, error_size, "");
     return 1;

@@ -1473,8 +1473,37 @@ int main(int argc, char **argv) {
     require(runtime_metrics.replacement_draws == 2u &&
                 runtime_metrics.contact_solves == 0u &&
                 runtime_metrics.contact_error_micrometres_sum == 0u &&
-                runtime_metrics.contact_error_micrometres_max == 0u,
+                runtime_metrics.contact_error_micrometres_max == 0u &&
+                runtime_metrics.contact_residual_step_observations[0] == 0u &&
+                runtime_metrics.contact_residual_step_max_micrometres[0] == 0u,
             "preview warm-up reset affects contact observations only");
+    require(mdkr_modern_character_set_inspection_pose(
+                "race.steer", 0.5f, error, sizeof(error)) &&
+                mdkr_modern_character_tick_phase(
+                    0, "race.steer", 0.5f, 1.0f, error, sizeof(error)),
+            "held contact-stability test enters an exact semantic pose");
+    mdkr_modern_character_contact_metrics_reset();
+    require(mdkr_modern_character_emit(
+                0, 0, MDKR_CHARACTER_CONTEXT_CAR, NULL, NULL, 0.0f,
+                &command_cursor, error, sizeof(error)) &&
+                mdkr_modern_character_tick_phase(
+                    0, "race.steer", 0.5f, 1.0f, error, sizeof(error)) &&
+                mdkr_modern_character_emit(
+                    0, 0, MDKR_CHARACTER_CONTEXT_CAR, NULL, NULL, 0.0f,
+                    &command_cursor, error, sizeof(error)),
+            "two successful held-pose solves publish a temporal witness");
+    mdkr_modern_character_runtime_metrics(&runtime_metrics);
+    require(runtime_metrics.contact_solves == 2u,
+            "held contact-stability window counts both successful solves");
+    for (player = 0; player < MDKR_MODERN_CHARACTER_CONTACTS; ++player) {
+        require(runtime_metrics.contact_residual_step_observations[player] ==
+                    1u &&
+                    runtime_metrics
+                            .contact_residual_step_max_micrometres[player] <
+                        250000u,
+                "held contact stability reports one bounded residual-vector step per limb");
+    }
+    mdkr_modern_character_clear_inspection_pose();
     for (player = 1; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
         require(mdkr_modern_character_assign_player(
                     player, "org.example.pipeline-proof",
@@ -1494,18 +1523,18 @@ int main(int argc, char **argv) {
     require(mdkr_modern_character_emit(3, 3, MDKR_CHARACTER_CONTEXT_CAR,
                                        NULL, NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)) &&
-                command_cursor == commands + 3 && registered_draws == 3u,
+                command_cursor == commands + 5 && registered_draws == 5u,
             "four-player assignment reuses GPU ownership and emits independently");
     require(mdkr_modern_character_emit(3, 7, MDKR_CHARACTER_CONTEXT_CAR,
                                        NULL, NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)) &&
-                command_cursor == commands + 4 && registered_draws == 4u,
+                command_cursor == commands + 6 && registered_draws == 6u,
             "cutscene camera ownership remains a valid ordinary draw");
     require(!mdkr_modern_character_emit(
                 3, MDKR_MODERN_CHARACTER_VIEWS,
                 MDKR_CHARACTER_CONTEXT_CAR, NULL, NULL, 0.0f, &command_cursor,
                 error, sizeof(error)) &&
-                command_cursor == commands + 4 && registered_draws == 4u,
+                command_cursor == commands + 6 && registered_draws == 6u,
             "out-of-range camera ownership fails before draw publication");
     shell_triangle = (MdkrModernSurfaceTriangle){{
         {900.0f, 900.0f, 900.0f},
@@ -1523,7 +1552,7 @@ int main(int argc, char **argv) {
                 mdkr_modern_character_emit(
                     3, 3, MDKR_CHARACTER_CONTEXT_CAR, NULL, &vehicle_shell,
                     0.0f, &command_cursor, error, sizeof(error)) &&
-                command_cursor == commands + 5 && registered_draws == 5u &&
+                command_cursor == commands + 7 && registered_draws == 7u &&
                 !mdkr_modern_character_surface_diagnostics_requested(
                     3, MDKR_CHARACTER_CONTEXT_CAR) &&
                 mdkr_modern_character_player_surface_diagnostics(

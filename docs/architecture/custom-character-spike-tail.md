@@ -290,13 +290,18 @@ in the package review and durable evidence.
   sample counts, refuses the one-click proposal outside the +/-1 m safety
   envelope, changes nothing before acceptance, records one reversible Fit edit,
   and requires exact retesting afterward.
-- **Partially implemented:** hand residual <=25 mm and foot residual <=40 mm
+- **Implemented for the qualified settled windows:** hand residual <=25 mm and foot residual <=40 mm
   are visible exact-evidence guides. An over-limit review now requires an
   explicit source-and-fit-bound exception, participates in Fit undo/redo,
-  survives named-draft v13 resume, and rolls back if persistence fails.
+  survives named-draft resume, and rolls back if persistence fails. Every
+  procedurally solved state also records at least eight consecutive changes in
+  endpoint-minus-target after settling, reports the maximum residual drift per
+  limb, and uses a disclosed 2 mm starting guide. This deliberately excludes
+  ordinary whole-pose or vehicle motion. Older approvals reopen once under the
+  stronger witness, while unusual anatomy retains the same explicit exception
+  path.
   Named retained-body, vehicle-part, and held-object attribution is now an exact
-  sampled-pose renderer witness. Frame-to-frame contact oscillation still needs
-  its own bounded renderer-derived witness before it can be qualified honestly.
+  sampled-pose renderer witness.
 - **Implemented:** test car, hovercraft, and plane across all eleven race
   samples on three qualified courses rather than one favourable parked frame.
   The UI
@@ -445,7 +450,7 @@ the durable approval remains source/fit/LOD/presentation and contract bound.
 The immediate remaining order is therefore:
 
 1. add weather/vehicle-condition variants beyond the three qualified Workshop
-   course families and a bounded frame-to-frame contact-oscillation witness;
+   course families;
 2. add a real linked-ROM unusual-proportion fixture, then qualify richer
    reference clips, joint limits, and optional deterministic secondary
    hair/tail motion; the comparison overlay already requires exact source,

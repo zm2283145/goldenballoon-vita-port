@@ -117,6 +117,7 @@ int main() {
                parsed.fitSceneReviewContractPresent &&
                parsed.fitSemanticReviewContractPresent &&
                parsed.fitMultiSceneReviewContractPresent &&
+               parsed.fitContactStabilityContractPresent &&
                parsed.scale == 1.25f &&
                parsed.offset[1] == -12.5f &&
                parsed.contexts[1].contacts[0][0] == -0.25f &&
@@ -174,13 +175,22 @@ int main() {
     constexpr size_t contactExceptionTailBytes = 4u;
     constexpr size_t transitionInspectionTailBytes = 12u;
     constexpr size_t fitSceneReviewTailBytes = 4u;
+    std::string versionSixteen = encoded;
+    writeU32(versionSixteen, 4u, 16u);
+    expect(decode(versionSixteen, parsed, error) &&
+               parsed.reviewedContexts == 0u &&
+               parsed.contactExceptionContexts == 0u &&
+               parsed.fitMultiSceneReviewContractPresent &&
+               !parsed.fitContactStabilityContractPresent,
+           "version-sixteen drafts reopen every approval for settled contact stability");
     std::string versionFifteen = encoded;
     writeU32(versionFifteen, 4u, 15u);
     expect(decode(versionFifteen, parsed, error) &&
                parsed.reviewedContexts == 0u &&
                parsed.contactExceptionContexts == 0u &&
                parsed.fitSemanticReviewContractPresent &&
-               !parsed.fitMultiSceneReviewContractPresent,
+               !parsed.fitMultiSceneReviewContractPresent &&
+               !parsed.fitContactStabilityContractPresent,
            "version-fifteen drafts reopen every approval for the multi-scene battery");
     std::string versionFourteen = encoded;
     writeU32(versionFourteen, 4u, 14u);

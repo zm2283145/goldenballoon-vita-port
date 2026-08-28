@@ -1769,7 +1769,10 @@ def main() -> int:
             r"draws=(\d+) source=([1-3]) fallback=(\d+) "
             r"cameraFlags=([0-9a-f]+) crossings=(\d+) inside=(\d+) "
             r"visibility=(\d+)/(\d+) contactSolves=(\d+) "
-            r"contactMask=([0-9a-f]+) contactMaxUm=(\d+)",
+            r"contactMask=([0-9a-f]+) contactMaxUm=(\d+) "
+            r"contactStabilityMask=([0-9a-f]+) "
+            r"contactSteps=(\d+),(\d+),(\d+),(\d+) "
+            r"contactStepMaxUm=(\d+),(\d+),(\d+),(\d+)",
             motion_output,
         )
         expected_motion = [
@@ -1797,14 +1800,21 @@ def main() -> int:
         for row in samples:
             (_, _, _, draws, _, fallback, camera_flags, crossings,
              inside, scene_tiles, isolated_tiles, contact_solves, contact_mask,
-             contact_max) = (
-                int(value, 16) if index in (6, 12) else int(value)
+             contact_max, stability_mask, *stability_values) = (
+                int(value, 16) if index in (6, 12, 14) else int(value)
                 for index, value in enumerate(row)
             )
+            stability_observations = stability_values[:4]
+            stability_maxima = stability_values[4:]
             if (draws < 60 or fallback > draws or camera_flags & ~0x7F or
                     crossings < 0 or inside < 0 or scene_tiles < 0 or
                     scene_tiles > isolated_tiles or contact_solves == 0 or
-                    contact_mask != 0xF or contact_max < 0):
+                    contact_mask != 0xF or contact_max < 0 or
+                    stability_mask != 0xF or
+                    any(value < 8 or value >= contact_solves
+                        for value in stability_observations) or
+                    any(value < 0 or value > 1_000_000_000
+                        for value in stability_maxima)):
                 failures.append(
                     "representative motion returned an inconsistent sample: "
                     f"{row!r}"
@@ -1848,7 +1858,10 @@ def main() -> int:
                 r"phase=(\d+) draws=(\d+) source=([1-3]) fallback=(\d+) "
                 r"cameraFlags=([0-9a-f]+) crossings=(\d+) inside=(\d+) "
                 r"visibility=(\d+)/(\d+) contactSolves=(\d+) "
-                r"contactMask=([0-9a-f]+) contactMaxUm=(\d+)",
+                r"contactMask=([0-9a-f]+) contactMaxUm=(\d+) "
+                r"contactStabilityMask=([0-9a-f]+) "
+                r"contactSteps=(\d+),(\d+),(\d+),(\d+) "
+                r"contactStepMaxUm=(\d+),(\d+),(\d+),(\d+)",
                 scene_output,
             )
             observed_scene_motion = [
@@ -1879,8 +1892,14 @@ def main() -> int:
                 fallback = int(row[5])
                 scene_tiles = int(row[9])
                 isolated_tiles = int(row[10])
+                contact_solves = int(row[11])
+                stability_mask = int(row[14], 16)
+                stability_observations = [int(value) for value in row[15:19]]
                 if (draws < 60 or fallback > draws or
-                        scene_tiles > isolated_tiles):
+                        scene_tiles > isolated_tiles or
+                        stability_mask != 0xF or
+                        any(value < 8 or value >= contact_solves
+                            for value in stability_observations)):
                     failures.append(
                         f"{scene_name} scene returned inconsistent evidence: "
                         f"{row!r}"
@@ -1988,7 +2007,10 @@ def main() -> int:
             r"draws=(\d+) source=([1-3]) fallback=(\d+) "
             r"cameraFlags=([0-9a-f]+) crossings=(\d+) inside=(\d+) "
             r"visibility=(\d+)/(\d+) contactSolves=(\d+) "
-            r"contactMask=([0-9a-f]+) contactMaxUm=(\d+)",
+            r"contactMask=([0-9a-f]+) contactMaxUm=(\d+) "
+            r"contactStabilityMask=([0-9a-f]+) "
+            r"contactSteps=(\d+),(\d+),(\d+),(\d+) "
+            r"contactStepMaxUm=(\d+),(\d+),(\d+),(\d+)",
             select_motion_output,
         )
         observed_select_motion = [
@@ -2007,14 +2029,17 @@ def main() -> int:
         for row in select_samples:
             (_, _, _, draws, _, fallback, camera_flags, crossings,
              inside, scene_tiles, isolated_tiles, contact_solves,
-             contact_mask, contact_max) = (
-                int(value, 16) if index in (6, 12) else int(value)
+             contact_mask, contact_max, stability_mask,
+             *stability_values) = (
+                int(value, 16) if index in (6, 12, 14) else int(value)
                 for index, value in enumerate(row)
             )
             if (draws < 60 or fallback > draws or camera_flags & ~0x7F or
                     crossings != 0 or inside != 0 or scene_tiles < 0 or
                     scene_tiles > isolated_tiles or contact_solves != 0 or
-                    contact_mask != 0 or contact_max != 0):
+                    contact_mask != 0 or contact_max != 0 or
+                    stability_mask != 0 or
+                    any(stability_values)):
                 failures.append(
                     "select semantic motion returned an inconsistent sample: "
                     f"{row!r}"
@@ -2158,7 +2183,8 @@ def main() -> int:
         "witness and zero replacement draws plus a pixel-grid and fitted-camera "
         "matching custom half, "
         "exact four-contact post-solve witnesses and qualified retained-vehicle "
-        "surface intersection samples, bounded one-session three-state select "
+        "surface intersection samples plus settled per-limb residual-drift "
+        "witnesses, bounded one-session three-state select "
         "and three-course complete eleven-sample race semantic batteries, "
         "exact isolated-versus-scene opaque-depth regions plus game-tagged "
         "vehicle-body/part/held-object presence, qualification, and overlap "

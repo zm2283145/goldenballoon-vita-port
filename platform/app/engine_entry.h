@@ -339,9 +339,21 @@ typedef struct MdkrCharacterMotionReviewResult {
     unsigned failed_sample;
     MdkrCharacterPreviewResult
         samples[MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT];
+    /* Per held state, the maximum change in endpoint-minus-target between
+     * consecutive successful solved draws. This isolates solver/contact
+     * instability from legitimate whole-pose or vehicle motion. */
+    unsigned contact_stability_mask
+        [MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT];
+    unsigned long long contact_stability_observations
+        [MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT]
+        [MDKR_CHARACTER_PREVIEW_CONTACTS];
+    unsigned long long contact_stability_max_step_micrometres
+        [MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT]
+        [MDKR_CHARACTER_PREVIEW_CONTACTS];
 } MdkrCharacterMotionReviewResult;
 
-#define MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION 3u
+#define MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION 4u
+#define MDKR_CHARACTER_CONTACT_STABILITY_MINIMUM_OBSERVATIONS 8u
 #define MDKR_CHARACTER_MOTION_REVIEW_ALL_SAMPLES \
     MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_MASK( \
         MDKR_CHARACTER_MOTION_REVIEW_VEHICLE_SAMPLE_COUNT)

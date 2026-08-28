@@ -42,6 +42,10 @@ typedef struct MdkrModernCharacterRuntimeMetrics {
     uint64_t contact_solves;
     uint64_t contact_error_micrometres_sum;
     uint64_t contact_error_micrometres_max;
+    uint64_t contact_residual_step_observations
+        [MDKR_MODERN_CHARACTER_CONTACTS];
+    uint64_t contact_residual_step_max_micrometres
+        [MDKR_MODERN_CHARACTER_CONTACTS];
     uint64_t inspection_pose_ticks;
     uint64_t inspection_pose_fallback_ticks;
     uint64_t inspection_transition_switches;

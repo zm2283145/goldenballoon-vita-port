@@ -791,6 +791,19 @@ static s32 workshop_motion_review_publish_sample(void) {
         ? metrics.contact_solves -
               sWorkshopMotionReviewPoseBaseline.contact_solves
         : 0u;
+    for (contact = 0u; contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
+        review->contact_stability_observations
+            [sWorkshopMotionReviewSample][contact] =
+                metrics.contact_residual_step_observations[contact];
+        review->contact_stability_max_step_micrometres
+            [sWorkshopMotionReviewSample][contact] =
+                metrics.contact_residual_step_max_micrometres[contact];
+        if (metrics.contact_residual_step_observations[contact] >=
+            MDKR_CHARACTER_CONTACT_STABILITY_MINIMUM_OBSERVATIONS) {
+            review->contact_stability_mask[sWorkshopMotionReviewSample] |=
+                1u << contact;
+        }
+    }
     sample->inspection_pose_ticks = metrics.inspection_pose_ticks >=
             sWorkshopMotionReviewPoseBaseline.inspection_pose_ticks
         ? metrics.inspection_pose_ticks -
@@ -817,6 +830,10 @@ static s32 workshop_motion_review_publish_sample(void) {
     if (review->context != MDKR_CHARACTER_PREVIEW_SELECT &&
         !workshop_preview_publish_contact_diagnostics(sample) &&
         sample->contact_solves != 0u) return FALSE;
+    if (review->context != MDKR_CHARACTER_PREVIEW_SELECT &&
+        sample->contact_solves != 0u &&
+        review->contact_stability_mask[sWorkshopMotionReviewSample] !=
+            ((1u << MDKR_CHARACTER_PREVIEW_CONTACTS) - 1u)) return FALSE;
     for (contact = 0u; contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
         if (sample->contact_witness_error_micrometres[contact] >
             sample->contact_error_max_micrometres) {
@@ -826,7 +843,7 @@ static s32 workshop_motion_review_publish_sample(void) {
     }
     review->completed_mask |= 1u << sWorkshopMotionReviewSample;
     MDKR_TRACE(
-        "character_motion_review: sample=%u pose=%d phase=%u draws=%llu source=%d fallback=%llu cameraFlags=%x crossings=%u inside=%u visibility=%u/%u contactSolves=%llu contactMask=%x contactMaxUm=%llu",
+        "character_motion_review: sample=%u pose=%d phase=%u draws=%llu source=%d fallback=%llu cameraFlags=%x crossings=%u inside=%u visibility=%u/%u contactSolves=%llu contactMask=%x contactMaxUm=%llu contactStabilityMask=%x contactSteps=%llu,%llu,%llu,%llu contactStepMaxUm=%llu,%llu,%llu,%llu",
         sWorkshopMotionReviewSample, (int)sample->pose,
         sample->pose_phase_milli, sample->replacement_draws,
         (int)sample->transition_from_motion_source,
@@ -838,7 +855,24 @@ static s32 workshop_motion_review_publish_sample(void) {
         sample->opaque_visibility_isolated_tiles,
         sample->contact_solves,
         sample->contact_witness_mask,
-        sample->contact_error_max_micrometres);
+        sample->contact_error_max_micrometres,
+        review->contact_stability_mask[sWorkshopMotionReviewSample],
+        review->contact_stability_observations
+            [sWorkshopMotionReviewSample][0],
+        review->contact_stability_observations
+            [sWorkshopMotionReviewSample][1],
+        review->contact_stability_observations
+            [sWorkshopMotionReviewSample][2],
+        review->contact_stability_observations
+            [sWorkshopMotionReviewSample][3],
+        review->contact_stability_max_step_micrometres
+            [sWorkshopMotionReviewSample][0],
+        review->contact_stability_max_step_micrometres
+            [sWorkshopMotionReviewSample][1],
+        review->contact_stability_max_step_micrometres
+            [sWorkshopMotionReviewSample][2],
+        review->contact_stability_max_step_micrometres
+            [sWorkshopMotionReviewSample][3]);
     sWorkshopMotionReviewSample++;
     if (sWorkshopMotionReviewSample == review->sample_count) {
         review->completed = TRUE;
@@ -884,9 +918,11 @@ static void workshop_motion_review_service(void) {
             if (!mdkr_modern_character_inspection_pose_settled(0)) return;
             /* Exclude every transition draw from both the stable-frame gate and
              * the published per-state counters. */
-            sWorkshopMotionReviewPoseBaseline = metrics;
+            mdkr_modern_character_contact_metrics_reset();
+            mdkr_modern_character_runtime_metrics(
+                &sWorkshopMotionReviewPoseBaseline);
             sWorkshopMotionReviewReplacementBaseline =
-                metrics.replacement_draws;
+                sWorkshopMotionReviewPoseBaseline.replacement_draws;
             sWorkshopMotionReviewPoseSettled = TRUE;
             MDKR_TRACE(
                 "character_motion_review: settled sample=%u",

@@ -591,6 +591,8 @@ def main() -> int:
                     "within-limits=1",
                     "character-contact-review package=" + PACKAGE_ID
                     + " context=1 measured=1 guide-met=0 "
+                    "stability-measured=1 stability-guide-met=1 "
+                    "stability-max-um=1000 "
                     "exception-required=1 exception-approved=0 "
                     "review-ready=0 exact-contract=1 visibility-block=0 "
                     "scene-reviewed=0 warnings=1",
@@ -625,6 +627,8 @@ def main() -> int:
                     "character-motion-review accepted=0 package=" + PACKAGE_ID,
                     "character-contact-review package=" + PACKAGE_ID
                     + " context=1 measured=1 guide-met=1 "
+                    "stability-measured=1 stability-guide-met=1 "
+                    "stability-max-um=1000 "
                     "exception-required=0 exception-approved=0 "
                     "review-ready=0 exact-contract=1 visibility-block=1 "
                     "scene-reviewed=0 warnings=1",

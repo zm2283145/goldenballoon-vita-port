@@ -69,6 +69,10 @@ struct Snapshot {
     /* Decode-only migration witness. v16 vehicle approvals include all three
      * qualified course families; every older approval reopens once. */
     bool fitMultiSceneReviewContractPresent = false;
+    /* Decode-only migration witness. v17 vehicle approvals include settled
+     * frame-to-frame contact-residual stability; every older approval reopens
+     * once. */
+    bool fitContactStabilityContractPresent = false;
 
     float scale = 1.0f;
     float offset[3] = {};

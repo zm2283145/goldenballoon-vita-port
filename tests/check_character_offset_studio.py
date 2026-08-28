@@ -32,6 +32,7 @@ def main() -> int:
     boot = source("platform/app/engine_boot.cpp")
     bridge = source("platform/modern_character_studio_bridge.h")
     draft_snapshot = source("platform/app/character_draft_snapshot.cpp")
+    draft_header = source("platform/app/character_draft_snapshot.h")
     runtime_h = source("platform/modern_character_runtime.h")
     runtime = source("platform/modern_character_runtime.c")
     entry = source("platform/app/engine_entry.h")
@@ -145,17 +146,23 @@ def main() -> int:
             "slot->inspection_generation == s_inspection_generation" in runtime,
             "representative review lacks an engine-owned exact-pose settling witness")
     require("representativeMotionReady" in settings and
-            "mdkr-character-fit-review-v5-scene-battery" in settings and
+            "mdkr-character-fit-review-v6-contact-stability" in settings and
             "all 33 exact race-and-scene samples" in settings and
             "idle, hover, and confirm" in settings and
             "currentCharacterMotionReview" in settings and
             "value.fitSha256 == fit" in settings and
             "value.presentationSha256 == presentation" in settings,
-            "vehicle approval can bypass current representative renderer evidence")
-    require("mdkr-fit-history-v7" in settings and
-            "kFitMultiSceneReviewVersion = 16u" in draft_snapshot and
+            "vehicle approval can bypass current representative renderer evidence or retain a pre-stability active approval")
+    require("mdkr-fit-history-v8" in settings and
+            "kFitContactStabilityVersion = 17u" in draft_snapshot and
+            "fitContactStabilityContractPresent" in draft_header and
             "parsed.reviewedContexts = 0u" in draft_snapshot,
-            "legacy fixed-scene approvals can inherit the multi-scene review meaning")
+            "older approvals can inherit the settled contact-stability meaning")
+    require("characterMotionReviewContactStabilityValid" in settings and
+            "Residual stability:" in settings and
+            "contactStabilityMeasured" in settings and
+            "contact-quality exception" in settings,
+            "settled contact instability can disappear between exact evidence, guidance, and approval")
     require("characterPreviewCameraReviewFlags" in settings and
             "camera_landmark_clip_flags" in settings and
             "Gameplay-camera framing · Exact clipping measured" in settings and

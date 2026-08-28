@@ -1204,9 +1204,12 @@ product, stable-frame count, byte count, and exact opaque-depth region masks.
 Fewer than 60 intervals
 and synthetic pacing are explicitly diagnostic-only. Visual-inspection results
 remain session-only and cannot contaminate durable timing evidence.
-Offset Studio also has a separate version-3 scene-review result containing
+Offset Studio also has a separate version-4 scene-review result containing
 three complete v21 select samples or eleven complete v21 vehicle samples bound
-to one of three qualified course families. A single resumable launcher action
+to one of three qualified course families. Procedurally solved vehicle states
+also carry a per-limb count and maximum consecutive change in endpoint-minus-
+target after settling, isolating contact drift from ordinary model movement. A
+single resumable launcher action
 keeps select in its authored room and runs every vehicle on an open baseline,
 dense scenery, and an alternate environment. The strict one-player exact routes
 cover select idle/hover/confirm and the complete race library: both steer
