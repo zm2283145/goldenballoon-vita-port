@@ -235,7 +235,8 @@ def resolve_installation(validator: Path | None = None,
         if not executable.is_absolute():
             raise ValidatorError("MDKR_GLTF_VALIDATOR must be an absolute path")
     elif getattr(sys, "frozen", False):
-        executable = Path(sys.executable).resolve().parent / "validators" / (
+        tool_directory = Path(sys.executable).resolve().parent
+        executable = tool_directory / "validators" / (
             "gltf_validator.exe" if os.name == "nt" else "gltf_validator"
         )
     else:
@@ -243,7 +244,22 @@ def resolve_installation(validator: Path | None = None,
             "the source importer requires MDKR_GLTF_VALIDATOR to name the "
             "absolute pinned validator executable"
         )
-    return executable, executable.with_name(executable.name + ".manifest.json")
+    adjacent_manifest = executable.with_name(executable.name + ".manifest.json")
+    if sys.platform == "darwin" and not adjacent_manifest.is_file():
+        # Apple bundle sealing treats every payload below Contents/MacOS as
+        # nested code. Keep the signed executable there, but place its JSON
+        # attestation in the canonical resource area. Standalone frozen tools
+        # and the Windows/Linux packages retain the adjacent-manifest layout.
+        contents_directory = tool_directory.parent.parent
+        resource_manifest = (
+            contents_directory
+            / "Resources"
+            / "ThirdParty"
+            / "GltfValidator-MANIFEST.json"
+        )
+        if resource_manifest.is_file():
+            return executable, resource_manifest
+    return executable, adjacent_manifest
 
 
 def _read_bounded(stream: BinaryIO, limit: int, destination: list[bytes],

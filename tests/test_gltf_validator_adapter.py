@@ -146,6 +146,36 @@ class GltfValidatorAdapterTests(unittest.TestCase):
                 with self.assertRaisesRegex(adapter.ValidatorError, "requires"):
                     adapter.resolve_installation()
 
+    def test_frozen_macos_resolver_uses_sealed_resource_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            contents = Path(raw) / "GoldenBalloon.app" / "Contents"
+            importer = contents / "MacOS" / "tools" / "character_importer"
+            manifest = (
+                contents
+                / "Resources"
+                / "ThirdParty"
+                / "GltfValidator-MANIFEST.json"
+            )
+            importer.parent.mkdir(parents=True)
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}", encoding="utf-8")
+            with mock.patch.dict(os.environ, {}, clear=True):
+                with mock.patch.object(sys, "frozen", True, create=True):
+                    with mock.patch.object(sys, "executable", str(importer)):
+                        with mock.patch.object(sys, "platform", "darwin"):
+                            executable, resolved_manifest = adapter.resolve_installation()
+            self.assertEqual(
+                (
+                    contents
+                    / "MacOS"
+                    / "tools"
+                    / "validators"
+                    / "gltf_validator"
+                ).resolve(),
+                executable,
+            )
+            self.assertEqual(manifest.resolve(), resolved_manifest)
+
     def test_validation_uses_private_canonical_model_and_preserves_report(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             temporary = Path(raw)

@@ -536,8 +536,7 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
             "Contents/MacOS/${EXECUTABLE_NAME}"|\
             Contents/MacOS/tools/character_importer|\
             Contents/MacOS/tools/mdkr-character-lod|\
-            Contents/MacOS/tools/validators/gltf_validator|\
-            Contents/MacOS/tools/validators/gltf_validator.manifest.json) ;;
+            Contents/MacOS/tools/validators/gltf_validator) ;;
             *)
                 fail "Unexpected executable-area payload: ${MACOS_FILE#"${APP_BUNDLE}"/}"
                 RESOURCE_FAIL=1
@@ -619,10 +618,12 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
                     # terms. verify_unsigned_release.sh binds manifest to code;
                     # check_third_party_notices.py pins both license byte sets.
                     ;;
+                Contents/Resources/ThirdParty/GltfValidator-MANIFEST.json|\
                 Contents/Resources/ThirdParty/GltfValidator-LICENSE.txt|\
                 Contents/Resources/ThirdParty/GltfValidator-NOTICES.txt)
-                    # Exact Khronos Validator and Dart/dependency terms. The
-                    # unsigned-release verifier pins both byte sets.
+                    # Exact Khronos Validator attestation plus Dart/dependency
+                    # terms. The unsigned-release verifier binds the manifest
+                    # to signed code and pins both notice byte sets.
                     ;;
                 Contents/Resources/dist/web/controller/*.html|\
                 Contents/Resources/dist/web/controller/*.css|\

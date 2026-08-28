@@ -102,7 +102,7 @@ python3 "${PROJECT_ROOT}/tools/verify_character_importer.py" \
     --allow-signed || die "Signed Character Workshop importer attestation failed"
 
 GLTF_VALIDATOR="${APP_PATH}/Contents/MacOS/tools/validators/gltf_validator"
-GLTF_VALIDATOR_MANIFEST="${APP_PATH}/Contents/MacOS/tools/validators/gltf_validator.manifest.json"
+GLTF_VALIDATOR_MANIFEST="${APP_PATH}/Contents/Resources/ThirdParty/GltfValidator-MANIFEST.json"
 [[ -f "${GLTF_VALIDATOR}" && -x "${GLTF_VALIDATOR}" ]] ||
     die "Khronos glTF Validator is missing or not executable"
 [[ -f "${GLTF_VALIDATOR_MANIFEST}" ]] ||

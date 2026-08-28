@@ -635,7 +635,7 @@ if [[ -n "${CHARACTER_IMPORTER}" ]]; then
         die "Failed to copy the Character Workshop PyInstaller terms."
     GLTF_VALIDATOR_DIR="${CHARACTER_TOOL_DIR}/validators"
     GLTF_VALIDATOR_BUNDLED="${GLTF_VALIDATOR_DIR}/gltf_validator"
-    GLTF_VALIDATOR_MANIFEST_DEST="${GLTF_VALIDATOR_DIR}/gltf_validator.manifest.json"
+    GLTF_VALIDATOR_MANIFEST_DEST="${CHARACTER_NOTICE_DIR}/GltfValidator-MANIFEST.json"
     mkdir -p "${GLTF_VALIDATOR_DIR}"
     ditto "${GLTF_VALIDATOR}" "${GLTF_VALIDATOR_BUNDLED}" ||
         die "Failed to copy the Khronos glTF Validator."
