@@ -208,6 +208,8 @@ def run(
     visual_report: Path | None = None,
     focus_fit_overlay: bool = False,
     focus_contact_review: bool = False,
+    animation_studio_mode: str | None = None,
+    input_mode: str = "keyboard",
     tab: str = "test",
 ) -> str:
     prefs = root / "prefs"
@@ -275,6 +277,15 @@ def run(
         environment[
             "MDKR_APP_SMOKE_CHARACTER_CONTACT_REVIEW_FOCUS"
         ] = "mdkr64-character-contact-review-v1"
+    if animation_studio_mode is not None:
+        environment.update(
+            {
+                "MDKR_APP_SMOKE_CHARACTER_ANIMATION_STUDIO_MODE":
+                    animation_studio_mode,
+                "MDKR_APP_SMOKE_CHARACTER_ANIMATION_STUDIO_TOKEN":
+                    "mdkr64-character-animation-studio-v1",
+            }
+        )
     if inspection_capture is not None:
         environment["MDKR_APP_SMOKE_CHARACTER_INSPECTION_CAPTURE"] = str(
             inspection_capture
@@ -298,7 +309,7 @@ def run(
         environment.update(
             {
                 "MDKR_APP_SMOKE_A11Y_WALK": "1",
-                "MDKR_APP_SMOKE_INPUT": "keyboard",
+                "MDKR_APP_SMOKE_INPUT": input_mode,
                 "MDKR_APP_SMOKE_INPUT_TOKEN": "mdkr64-app-ui-input-v1",
                 "MDKR_A11Y_TRACE": "1",
             }
@@ -371,6 +382,40 @@ def main() -> int:
                 ),
                 tab="vehicles",
             )
+
+            transition_output = run(
+                binary,
+                root,
+                characters,
+                (
+                    "character-animation-studio-smoke package=" + PACKAGE_ID
+                    + " mode=transition applied=1",
+                    "text=A source semantic",
+                    "text=A source phase",
+                    "text=B destination semantic",
+                    "text=B destination phase",
+                    "[app-a11y-walk] primary phase complete input=gamepad",
+                    "[SPEAK] cat=focus pri=normal text=Test layout, 1 player",
+                    "[SPEAK] cat=focus pri=normal text=Held sample, Not selected",
+                    "[SPEAK] cat=focus pri=normal text=A to B transition, Selected",
+                    "[SPEAK] cat=focus pri=normal text=A source semantic, Select idle",
+                    "[SPEAK] cat=focus pri=normal text=A source phase, 25.0 percent",
+                    "[SPEAK] cat=focus pri=normal text=B destination semantic, Race finish win",
+                    "[SPEAK] cat=focus pri=normal text=B destination phase, 75.0 percent",
+                    "[SPEAK] cat=focus pri=normal text=Vehicle camera yaw, 0 degrees",
+                    "[SPEAK] cat=focus pri=normal text=Vehicle camera pitch, 0 degrees",
+                    "[SPEAK] cat=focus pri=normal text=Character lighting, Neutral",
+                    "[SPEAK] cat=focus pri=normal text=Inspect car. Opens the exact game scene and repeatedly cross-fades A and B",
+                ),
+                compact=True,
+                accessible=True,
+                animation_studio_mode="transition",
+                input_mode="gamepad",
+            )
+            if "[SPEAK] cat=focus pri=normal text=Save stabilized PNG" in transition_output:
+                raise RuntimeError(
+                    "disabled transition-capture controls entered the gamepad focus graph"
+                )
 
             run(
                 binary,
@@ -693,6 +738,10 @@ def main() -> int:
                     "text=Clear pinned baseline",
                     "text=Semantic pose",
                     "text=Normalized phase",
+                    "[SPEAK] cat=focus pri=normal text=Held sample, Selected",
+                    "[SPEAK] cat=focus pri=normal text=A to B transition, Not selected",
+                    "[SPEAK] cat=focus pri=normal text=Semantic pose, Race steer",
+                    "[SPEAK] cat=focus pri=normal text=Normalized phase, 50.0 percent",
                     "text=Vehicle camera yaw",
                     "text=Vehicle camera pitch",
                     "text=Gameplay view",
@@ -1039,8 +1088,8 @@ def main() -> int:
         "check_character_test_evidence_ui: PASS -- durable source/fit/device-"
         "bound 4x4 matrix with focusable three-view bounds/anchor/facing overlays, digest-bound current renderer references with stale-fit refusal, rendered and spoken registered donor/custom blending, signed renderer-fit and hand/foot contact diagnostics, same-"
         "environment wall/scene/character GPU baseline lifecycle, corruption "
-        "and invalid-fit/camera/contact/GPU refusal, pose-inspection exclusion, keyboard speech, "
-        "200% rendering, and package-byte purity"
+        "and invalid-fit/camera/contact/GPU refusal, pose-inspection exclusion, keyboard and gamepad speech, "
+        "responsive 200% rendering, and package-byte purity"
     )
     return 0
 

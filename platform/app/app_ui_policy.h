@@ -98,7 +98,7 @@ enum class AppUiSmokeInputMode { Disabled, Keyboard, Gamepad, Invalid };
 // inherited variable can never attach a virtual controller to normal gameplay.
 //
 // `selection` is the scripted Frame limit value, `pace` the scripted
-// Presentation pace choice, `walk` the accessibility keyboard walk, and
+// Presentation pace choice, `walk` the accessibility input walk, and
 // `onlineAction` a token-gated Online Room action id.
 // EXACTLY ONE must be present: they are scripts for different
 // jobs, and a run claiming two would be driving neither deterministically.
@@ -111,8 +111,8 @@ AppUiSmokeInputMode AppUi_smokeInputMode();
 // True while the scripted accessibility walk is armed. The walk needs two
 // things ordinary use does not -- every settings section already expanded, and
 // nav able to cross from the launcher shell into its scrolling panel child --
-// because a collapsed section draws no rows and Tab does not leave a window's
-// focus scope. Both are test scaffolding for reaching the controls, not a
+// because a collapsed section draws no rows and navigation does not leave a
+// window's focus scope. Both are test scaffolding for reaching the controls, not a
 // change to what any control says: the announcements themselves are the
 // ordinary production ones.
 bool AppUi_a11yWalkArmed();

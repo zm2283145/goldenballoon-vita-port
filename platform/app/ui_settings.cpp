@@ -16056,25 +16056,63 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
             viewYaw, viewPitch,
             inspectionLighting);
     }
+    const char *animationStudioMode = std::getenv(
+        "MDKR_APP_SMOKE_CHARACTER_ANIMATION_STUDIO_MODE");
+    const char *animationStudioToken = std::getenv(
+        "MDKR_APP_SMOKE_CHARACTER_ANIMATION_STUDIO_TOKEN");
+    static std::set<std::string> animationStudioSmokePackages;
+    if (animationStudioMode != nullptr && animationStudioToken != nullptr &&
+        std::strcmp(
+            animationStudioToken,
+            "mdkr64-character-animation-studio-v1") == 0 &&
+        animationStudioSmokePackages.insert(entry->id).second) {
+        const bool transitionMode =
+            std::strcmp(animationStudioMode, "transition") == 0;
+        const bool heldMode = std::strcmp(animationStudioMode, "held") == 0;
+        if (transitionMode) {
+            transition = true;
+            transitionFromPose = MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE;
+            transitionFromPhase = 250;
+            inspectionPose = MDKR_CHARACTER_PREVIEW_POSE_RACE_FINISH_WIN;
+            inspectionPhase = 750;
+        } else if (heldMode) {
+            transition = false;
+        }
+        std::fprintf(
+            stderr,
+            "[app-ui] character-animation-studio-smoke package=%s mode=%s applied=%d\n",
+            entry->id, animationStudioMode,
+            transitionMode || heldMode ? 1 : 0);
+    }
     CharacterHistoryFrame history = beginCharacterHistory(
         entry, CharacterHistoryTool::Test);
     ui::TextSubtleWrapped(
         "Launch this package directly into the real game renderer with its saved fit. The test is temporary: it does not replace Player assignments or skip the final ROM integrity check. For a useful timing sample, stay at least three seconds beyond the 120-tick warm-up; opening F1 freezes the sample before you navigate back.");
     drawCharacterTestEvidenceMatrix(entry, tuning);
     drawCharacterPreviewResult(entry);
-    ImGui::TextUnformatted("Test layout");
-    for (int option : {1, 2, 3, 4}) {
-        if (option != 1) ImGui::SameLine();
-        const std::string label = std::to_string(option) +
-            (option == 1 ? " player##character-test-" :
-                           " players##character-test-") +
-            std::to_string(option);
-        (void)ImGui::RadioButton(label.c_str(), &players, option);
-    }
     const float testActionWidth = ImGui::GetContentRegionAvail().x;
     const int testActionColumns =
         testActionWidth >= ui::kPairMinWidth() * 4.0f ? 4
         : testActionWidth >= ui::kPairMinWidth() * 2.0f ? 2 : 1;
+    ImGui::TextUnformatted("Test layout");
+    if (ImGui::BeginTable(
+            "##character-test-layout", testActionColumns,
+            ImGuiTableFlags_SizingStretchSame)) {
+        for (int option : {1, 2, 3, 4}) {
+            ImGui::TableNextColumn();
+            const std::string label = std::to_string(option) +
+                (option == 1 ? " player##character-test-" :
+                               " players##character-test-") +
+                std::to_string(option);
+            (void)ImGui::RadioButton(label.c_str(), &players, option);
+            const std::string spokenValue = std::to_string(option) +
+                (option == 1 ? " player" : " players");
+            ui::SpeakFocusedItem(
+                "Test layout", spokenValue.c_str(),
+                "Chooses the real one-to-four-player camera and workload for the next exact test or animation inspection.");
+        }
+        ImGui::EndTable();
+    }
     const bool carQualified = (tuning.vehicleMask & 1u) != 0u;
     const bool hoverQualified = (tuning.vehicleMask & 2u) != 0u;
     const bool planeQualified = (tuning.vehicleMask & 4u) != 0u;
@@ -16129,15 +16167,26 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
     ui::TextSubtleWrapped(
         "Review an exact held sample or watch the real pose player cross-fade between two engine states. Use held start/middle/end samples for grounding and deformation; use transition review for pops, fallback changes, and blend timing. Missing states on a reviewed humanoid use distinct engine gestures for all 13 select and race actions, but proportions and joint axes still require visual review here. Authored clips always win. These sessions never replace performance evidence or pinned baselines.");
     int inspectionMode = transition ? 1 : 0;
-    (void)ImGui::RadioButton("Held sample", &inspectionMode, 0);
-    ImGui::SameLine();
-    (void)ImGui::RadioButton("A ↔ B transition", &inspectionMode, 1);
+    const int inspectionModeColumns =
+        ImGui::GetContentRegionAvail().x >= ui::kPairMinWidth() * 2.0f
+            ? 2 : 1;
+    if (ImGui::BeginTable(
+            "##character-animation-review-mode", inspectionModeColumns,
+            ImGuiTableFlags_SizingStretchSame)) {
+        ImGui::TableNextColumn();
+        (void)ImGui::RadioButton("Held sample", &inspectionMode, 0);
+        ui::SpeakFocusedItem(
+            "Held sample", inspectionMode == 0 ? "Selected" : "Not selected",
+            "Holds one normalized phase in the exact runtime.");
+        ImGui::TableNextColumn();
+        (void)ImGui::RadioButton("A ↔ B transition", &inspectionMode, 1);
+        ui::SpeakFocusedItem(
+            "A to B transition",
+            inspectionMode == 1 ? "Selected" : "Not selected",
+            "Alternates once per second and uses each destination semantic's authored blend duration in the exact runtime.");
+        ImGui::EndTable();
+    }
     transition = inspectionMode == 1;
-    ui::SpeakFocusedItem(
-        "Animation review mode", transition ? "A to B transition" : "Held sample",
-        transition
-            ? "Alternates once per second and uses each destination semantic's authored blend duration in the exact runtime."
-            : "Holds one normalized phase in the exact runtime.");
     const auto selectedPose = std::find_if(
         std::begin(kCharacterInspectionPoses),
         std::end(kCharacterInspectionPoses),
@@ -16170,13 +16219,16 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
             ImGui::EndCombo();
         }
         ui::SpeakFocusedItem(
-            "A source semantic", from.semantic,
+            "A source semantic", from.label,
             "Chooses the state held before the exact runtime changes to the B destination.");
         (void)ImGui::SliderInt(
             "A source phase", &transitionFromPhase, 0, 1000,
             "%d / 1000", ImGuiSliderFlags_AlwaysClamp);
+        char sourcePhaseValue[32];
+        std::snprintf(sourcePhaseValue, sizeof(sourcePhaseValue),
+                      "%.1f percent", transitionFromPhase / 10.0);
         ui::SpeakFocusedItem(
-            "A source phase", nullptr,
+            "A source phase", sourcePhaseValue,
             "Chooses the exact normalized source sample before each transition.");
     }
     if (ImGui::BeginCombo(
@@ -16199,7 +16251,7 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         ImGui::EndCombo();
     }
     ui::SpeakFocusedItem(
-        transition ? "B destination semantic" : "Semantic pose", nullptr,
+        transition ? "B destination semantic" : "Semantic pose", pose.label,
         transition
             ? "Chooses the destination engine state for exact transition review."
             : "Chooses the authored clip or reviewed humanoid reference motion to hold in the exact renderer.");
@@ -16207,8 +16259,12 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         transition ? "B destination phase" : "Normalized phase",
         &inspectionPhase, 0, 1000,
         "%d / 1000", ImGuiSliderFlags_AlwaysClamp);
+    char inspectionPhaseValue[32];
+    std::snprintf(inspectionPhaseValue, sizeof(inspectionPhaseValue),
+                  "%.1f percent", inspectionPhase / 10.0);
     ui::SpeakFocusedItem(
-        transition ? "B destination phase" : "Normalized phase", nullptr,
+        transition ? "B destination phase" : "Normalized phase",
+        inspectionPhaseValue,
         "Scrubs from the beginning to the end of the selected semantic without changing animation speed.");
     if (!transition && ImGui::BeginTable(
             "##character-held-phase-presets", 3,
@@ -16240,16 +16296,21 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
     (void)ImGui::SliderInt(
         "Vehicle camera yaw", &viewYaw, -180, 180, "%d degrees",
         ImGuiSliderFlags_AlwaysClamp);
+    char viewYawValue[32];
+    std::snprintf(viewYawValue, sizeof(viewYawValue), "%d degrees", viewYaw);
     ui::SpeakFocusedItem(
-        "Vehicle camera yaw", nullptr,
+        "Vehicle camera yaw", viewYawValue,
         "Sets a repeatable racer-relative inspection angle. Zero with zero pitch uses the ordinary gameplay camera; saved fit is unchanged.");
     (void)ImGui::SliderInt(
         "Vehicle camera pitch", &viewPitch,
         MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES,
         MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES, "%d degrees",
         ImGuiSliderFlags_AlwaysClamp);
+    char viewPitchValue[32];
+    std::snprintf(viewPitchValue, sizeof(viewPitchValue), "%d degrees",
+                  viewPitch);
     ui::SpeakFocusedItem(
-        "Vehicle camera pitch", nullptr,
+        "Vehicle camera pitch", viewPitchValue,
         "Moves the exact vehicle camera above or below its ordinary view. Positive ninety is a defined top view and negative ninety is a defined underside view; saved fit is unchanged.");
     if (ImGui::BeginTable(
             "##character-view-presets",
@@ -16289,8 +16350,8 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         ImGui::EndCombo();
     }
     ui::SpeakFocusedItem(
-        "Character lighting", selectedLighting.help,
-        "Chooses a deterministic light applied only to the custom character in the exact renderer.");
+        "Character lighting", selectedLighting.label,
+        selectedLighting.help);
 
     ImGui::SeparatorText("One-shot capture");
     if (transition) {
@@ -16302,8 +16363,11 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         "Save stabilized PNG during next inspection", &capture.enabled);
     ui::SpeakFocusedItem(
         "Save stabilized PNG during next inspection",
-        capture.enabled && capture.pngPath[0] == '\0'
-            ? "Choose a new PNG filename before starting." : nullptr,
+        capture.enabled
+            ? capture.pngPath[0] == '\0'
+                ? "On; filename required"
+                : "On"
+            : "Off",
         "Creates exactly one PNG after 120 warm-up ticks and 12 consecutive fully rendered character/view/light frames; it never overwrites an existing file.");
     if (capture.enabled) {
         ui::TextSubtleWrapped(
@@ -16322,7 +16386,9 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
                     "Gameplay frame", &captureKind,
                     MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE);
                 ui::SpeakFocusedItem(
-                    "Gameplay frame", nullptr,
+                    "Gameplay frame",
+                    captureKind == MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE
+                        ? "Selected" : "Not selected",
                     "Saves the composed world, vehicle, character, and game interface exactly as displayed.");
                 ui::TextSubtleWrapped(
                     "World + vehicle + character + HUD. Best for fit and in-game presentation review.");
@@ -16335,7 +16401,9 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
                     "Model only", &captureKind,
                     MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA);
                 ui::SpeakFocusedItem(
-                    "Model only · transparent", nullptr,
+                    "Model only · transparent",
+                    captureKind == MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA
+                        ? "Selected" : "Not selected",
                     "Saves only the custom character against true transparency, excluding the donor, vehicle, world, and game interface.");
                 ui::TextSubtleWrapped(
                     "Custom character + transparent background. Best for portraits and external layout work.");
@@ -16356,7 +16424,8 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
         "/path/to/character-inspection.png",
         capture.pngPath, sizeof(capture.pngPath));
     ui::SpeakFocusedItem(
-        "Capture PNG path", nullptr,
+        "Capture PNG path",
+        capture.pngPath[0] != '\0' ? capture.pngPath : "No filename selected",
         "Names a new local PNG; an existing file is always preserved.");
     if (filedialog::isAvailable()) {
         ImGui::SameLine();

@@ -546,5 +546,7 @@ The immediate remaining order is therefore:
    the data-only adapter contract, recipient compatibility/diff review,
    exact-base draft transfer, and the frozen and packaged importer lifecycle are automated
    on all three release operating systems; and
-5. run the observed human, controller/screen-reader, perceptual, and maintained
-   multi-device qualification matrix in M8.
+5. run the observed human controller/screen-reader, perceptual, and maintained
+   multi-device qualification matrix in M8; automated 200% keyboard held-mode
+   and virtual-controller transition-mode traversal of Animation Studio is
+   complete, but it is not a substitute for observed assistive-technology use.

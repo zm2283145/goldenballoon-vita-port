@@ -765,7 +765,7 @@ CHECKS = (
           "check_character_test_evidence_ui.py", "native",
           "ROM-free durable 4x4 exact-test matrix, qualified baseline lifecycle, "
           "device/source/fit/LOD binding, corruption refusal, 200% layout, and "
-          "keyboard speech"),
+          "keyboard plus virtual-controller speech traversal"),
     Check("custom_character_workshop_preview",
           "check_custom_character_workshop_preview.py", "native",
           "script-free exact select/car/hovercraft/plane launches, semantic "

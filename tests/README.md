@@ -5165,8 +5165,14 @@ physical-dimension fields on disk, and checks the v3 signed target-frame bounds,
 ground/seat anchor, normalized facing, and four hand/foot chain witnesses from
 that replacement draw. It
 restarts the launcher, requires the same fit diagnosis to remain available, and
-pins the result as an explicit comparison baseline. A 200% compact keyboard-only speech walk must
-announce the qualified cell and both baseline controls.
+pins the result as an explicit comparison baseline. A 200% compact keyboard
+speech walk must announce the qualified cell and both baseline controls. A
+separate 200% virtual-controller D-pad walk renders transition mode and must
+reach all four responsive player-layout choices, both review-mode choices, both
+named semantic endpoints and numeric phases, camera values, character light,
+and every enabled inspection action through SDL and the production ImGui input
+backend. Capture controls must stay outside that focus graph while transition
+review disables deterministic stills.
 
 The second half clears only that baseline while preserving latest evidence,
 then clears the package's complete local evidence inventory. Finally it corrupts

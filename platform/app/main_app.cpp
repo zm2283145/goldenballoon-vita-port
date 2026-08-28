@@ -1056,13 +1056,13 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         std::getenv("MDKR_APP_SMOKE_SELECT_PRESENTATION_PACE");
     bool smokePaceClickQueued = false;
     /*
-     * The scripted accessibility walk: hold Tab down through the launcher and
-     * let the shared row helper announce whatever the keyboard lands on.
+     * The scripted accessibility walk uses Tab/arrow navigation for keyboard
+     * runs and the virtual controller's D-pad for gamepad runs, then lets the
+     * shared row helper announce whichever production widget receives focus.
      *
-     * It drives the SAME synthetic-keyboard route as the Frame limit script --
-     * SDL event -> ImGui backend -> the production widget -- because a walk
-     * that called the panel's draw functions directly would prove the rows can
-     * speak, not that a player pressing Tab ever reaches them.
+     * Both routes enter through SDL -> ImGui -> the production widget. Calling
+     * panel draw functions directly would prove only that rows can speak, not
+     * that a player's input can reach them.
      */
     const bool smokeA11yWalk = AppUi_a11yWalkArmed();
     const char *smokeUiScale =
@@ -1651,27 +1651,61 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
 
         if (smokeA11yWalk) {
             /*
-             * Two phases, not one interleaved stream. Tab is a linear walk of
-             * the panel and is what carries the coverage claim, so it gets a
-             * clean run at it; mixing arrow presses into that walk made the
-             * sequence periodic and left the same nine rows unvisited on every
-             * lap. The arrow keys are the other way a player moves, and a row
-             * that answers only to Tab is still a row somebody cannot reach, so
-             * the remainder of the run drives Down and Up over the same panel.
-             * The boundary is printed because it is what lets the gate insist
-             * the arrow phase spoke too, rather than counting the Tab phase's
-             * utterances twice.
+             * Two phases, not one interleaved stream. Keyboard gets a clean
+             * linear Tab pass before arrow navigation. Gamepad gets a forward
+             * right/down spatial sweep before its reverse left/up sample. The
+             * boundary lets each gate distinguish its primary coverage from
+             * the shorter directional-reversal phase.
              */
             const int tabFrames = frames - frames / 4;
             if (i < tabFrames) {
-                host.queueKeyPressForSmoke(SDLK_TAB);
+                if (smokeUsesGamepad) {
+                    // Sweep across each responsive row before advancing. A
+                    // D-pad-only vertical walk can skip every second radio
+                    // button and all but the first cell of a grid even though
+                    // those controls are reachable by a real controller.
+                    const SDL_GameControllerButton direction =
+                        i % 4 == 3
+                            ? SDL_CONTROLLER_BUTTON_DPAD_DOWN
+                            : SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
+                    renderOk = host.queueGamepadPressForSmoke(
+                                   direction) &&
+                        renderOk;
+                } else {
+                    host.queueKeyPressForSmoke(SDLK_TAB);
+                }
             } else {
                 if (i == tabFrames) {
-                    std::printf("[app-a11y-walk] tab phase complete frame=%d\n", i);
+                    if (smokeUsesGamepad) {
+                        std::printf(
+                            "[app-a11y-walk] primary phase complete input=gamepad frame=%d\n",
+                            i);
+                    } else {
+                        std::printf(
+                            "[app-a11y-walk] tab phase complete frame=%d\n", i);
+                    }
                     std::fflush(stdout);
                 }
-                host.queueKeyPressForSmoke(
-                    ((i - tabFrames) % 8) < 6 ? SDLK_DOWN : SDLK_UP);
+                const bool forward = ((i - tabFrames) % 8) < 6;
+                if (smokeUsesGamepad) {
+                    const bool vertical = (i - tabFrames) % 4 == 3;
+                    SDL_GameControllerButton direction;
+                    if (vertical) {
+                        direction = forward
+                            ? SDL_CONTROLLER_BUTTON_DPAD_DOWN
+                            : SDL_CONTROLLER_BUTTON_DPAD_UP;
+                    } else {
+                        direction = forward
+                            ? SDL_CONTROLLER_BUTTON_DPAD_RIGHT
+                            : SDL_CONTROLLER_BUTTON_DPAD_LEFT;
+                    }
+                    renderOk = host.queueGamepadPressForSmoke(
+                                   direction) &&
+                        renderOk;
+                } else {
+                    host.queueKeyPressForSmoke(
+                        forward ? SDLK_DOWN : SDLK_UP);
+                }
             }
         }
 
