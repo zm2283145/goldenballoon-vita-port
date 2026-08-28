@@ -20,6 +20,7 @@ from test_character_asset_probe import make_animated_glb  # noqa: E402
 
 
 MAX_OUTPUT_BYTES = 64 * 1024
+IMPORTER_COMMAND_TIMEOUT_SECONDS = 120
 INDEX_NAME = ".launcher-character-glb-intake.tsv"
 RESULT_NAME = ".launcher-character-result.json"
 
@@ -79,7 +80,13 @@ def _invoke(command_prefix: list[str], character_dir: Path,
         completed = subprocess.run(
             command, cwd=temporary, check=False, env=_offline_environment(),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, timeout=30,
+            stderr=subprocess.PIPE,
+            # Every user transaction cold-launches the sealed executable.
+            # Signature assessment, endpoint security, and archive publication
+            # can all dominate the tiny fixture on a freshly built app. Keep
+            # the lifecycle gate aligned with the release verifier's bounded
+            # first-launch allowance instead of failing healthy slow hosts.
+            timeout=IMPORTER_COMMAND_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SmokeError(f"could not execute character importer: {exc}") from exc
