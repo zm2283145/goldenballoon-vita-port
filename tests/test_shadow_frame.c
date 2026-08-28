@@ -172,6 +172,7 @@ int main(void) {
         frame->views[0].bounds_min[2] == -6.0f &&
         frame->views[0].bounds_max[1] == 7.0f,
         "world bounds cover every captured vertex");
+
     expect(
         frame->static_ranges[0].vertex_count == 3 &&
         frame->static_ranges[0].view_index == UINT8_MAX &&
@@ -532,6 +533,48 @@ int main(void) {
                "replay reachability: restored registry releases cleanly");
         gfx_shadow_matrix_registry_reset();
     }
+
+    /* A GPU-owned caster contributes to cascade fitting without duplicating
+     * its geometry into either CPU replay stream. Keep this after the legacy
+     * telemetry census above so its independent ownership remains explicit. */
+    gfx_shadow_capture_begin();
+    view_a = gfx_shadow_capture_view(viewport_a, view_projection);
+    {
+        const float external_bounds[6] = {
+            -11.0f, -12.0f, -13.0f,
+             14.0f,  15.0f,  16.0f,
+        };
+        expect(gfx_shadow_capture_caster_bounds(
+                   view_a, external_bounds, 2u),
+               "external GPU caster bounds are admitted");
+    }
+    gfx_shadow_capture_commit();
+    frame = gfx_shadow_frame_previous();
+    expect(frame->valid && frame->vertex_count == 0u &&
+               frame->external_caster_count == 1u &&
+               frame->views[0].bounds_min[0] == -11.0f &&
+               frame->views[0].bounds_max[2] == 16.0f,
+           "external bounds affect planning but not CPU replay geometry");
+    gfx_world_fx_get_stats(&stats);
+    expect(stats.external_caster_bounds == 1u,
+           "external caster admissions are observable");
+
+    gfx_shadow_capture_begin();
+    view_a = gfx_shadow_capture_view(viewport_a, view_projection);
+    {
+        const float invalid_bounds[3] = {NAN, 0.0f, 0.0f};
+        expect(!gfx_shadow_capture_caster_bounds(
+                   view_a, invalid_bounds, 1u),
+               "non-finite external caster bounds fail closed");
+    }
+    gfx_shadow_capture_suppress(true);
+    expect(!gfx_shadow_capture_caster_bounds(view_a, positions, 3u),
+           "presentation replay cannot duplicate external caster bounds");
+    gfx_shadow_capture_suppress(false);
+    gfx_shadow_capture_commit();
+    gfx_world_fx_get_stats(&stats);
+    expect(stats.external_caster_rejections == 1u,
+           "invalid external bounds have a distinct rejection census");
 
     gfx_shadow_frame_shutdown();
     gfx_world_fx_get_stats(&stats);

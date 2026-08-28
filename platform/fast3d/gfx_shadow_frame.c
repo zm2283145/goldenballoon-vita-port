@@ -1511,6 +1511,47 @@ static void observe_triangle_bounds(
     }
 }
 
+bool gfx_shadow_capture_caster_bounds(
+    int view_index, const float *positions, size_t point_count) {
+    GfxShadowFrame *write = &s_frames[s_write_index];
+    GfxShadowView *view;
+    size_t value_count;
+
+    if (s_capture_suppressed || !s_capture_active || write->failed ||
+        positions == NULL || point_count == 0 || point_count > 8u ||
+        view_index < 0 || view_index >= (int)write->view_count ||
+        !write->views[view_index].valid) {
+        return false;
+    }
+    value_count = point_count * 3u; /* point_count is bounded to eight above */
+    if (!finite_values(positions, value_count)) {
+        s_stats.external_caster_rejections++;
+        return false;
+    }
+    for (size_t index = 0; index < value_count; ++index) {
+        if (positions[index] > GFX_SHADOW_WORLD_LIMIT ||
+            positions[index] < -GFX_SHADOW_WORLD_LIMIT) {
+            s_stats.external_caster_rejections++;
+            return false;
+        }
+    }
+    view = &write->views[view_index];
+    for (size_t point = 0; point < point_count; ++point) {
+        for (size_t axis = 0; axis < 3u; ++axis) {
+            const float value = positions[point * 3u + axis];
+            if (value < view->bounds_min[axis]) {
+                view->bounds_min[axis] = value;
+            }
+            if (value > view->bounds_max[axis]) {
+                view->bounds_max[axis] = value;
+            }
+        }
+    }
+    s_stats.external_caster_bounds++;
+    write->external_caster_count++;
+    return true;
+}
+
 bool gfx_shadow_capture_triangle(
     int view_index,
     const void *source_key,
@@ -1713,7 +1754,8 @@ void gfx_shadow_capture_commit(void) {
         ((write->static_vertex_count >= 3 &&
           write->static_range_count > 0) ||
          (write->vertex_count >= 3 &&
-          write->range_count > 0));
+          write->range_count > 0) ||
+         write->external_caster_count > 0);
     if (write->failed) {
         s_stats.frames_failed++;
         /*

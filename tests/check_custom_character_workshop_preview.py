@@ -160,6 +160,33 @@ def require_fixture_composition(
     visited = bytearray(width * height)
     largest_area = 0
     largest_bounds = (0, 0, 0, 0)
+    usable_component_found = False
+
+    def component_is_usable(
+            area: int, bounds: tuple[int, int, int, int]) -> bool:
+        min_x, min_y, max_x, max_y = bounds
+        component_width = max_x - min_x + 1
+        component_height = max_y - min_y + 1
+        component_box_area = component_width * component_height
+        centre_x = (min_x + max_x) / 2.0
+        centre_y = (min_y + max_y) / 2.0
+        return not (
+            area < max(512, component_box_area // 5)
+            or max_x - min_x < width * 3 // 100
+            or max_y - min_y < height * 3 // 100
+            or (require_central and (
+                min_x < width * 15 // 100
+                or max_x > width * 85 // 100
+                or min_y < height * 15 // 100
+                or max_y > height * 80 // 100
+                or abs(centre_x - width / 2.0) > width * 15 // 100
+                # A chase camera deliberately composes its player below the
+                # geometric centre; keep enough vertical room for that normal
+                # gameplay framing without admitting the HUD or frame edge.
+                or abs(centre_y - height / 2.0) > height * 22 // 100
+            ))
+        )
+
     for seed, present in enumerate(mask):
         if not present or visited[seed]:
             continue
@@ -187,25 +214,12 @@ def require_fixture_composition(
         if area > largest_area:
             largest_area = area
             largest_bounds = (min_x, min_y, max_x, max_y)
-    min_x, min_y, max_x, max_y = largest_bounds
-    component_width = max_x - min_x + 1
-    component_height = max_y - min_y + 1
-    component_box_area = component_width * component_height
-    centre_x = (min_x + max_x) / 2.0
-    centre_y = (min_y + max_y) / 2.0
-    # Judge material occupancy relative to its own bounded component. A top
-    # view legitimately presents less coloured surface than a front view, and
-    # tying this threshold to the full 4K render target rejected a clearly
-    # visible, centered subject. Independent minimum dimensions below still
-    # prevent a tiny speck from satisfying the gate.
-    if (largest_area < max(512, component_box_area // 5) or
-            max_x - min_x < width * 3 // 100 or
-            max_y - min_y < height * 3 // 100 or
-            (require_central and (
-                min_x < width * 15 // 100 or max_x > width * 85 // 100 or
-                min_y < height * 15 // 100 or max_y > height * 80 // 100 or
-                abs(centre_x - width / 2.0) > width * 15 // 100 or
-                abs(centre_y - height / 2.0) > height * 15 // 100))):
+        # Do not let a larger course surface hide a valid fixture component.
+        # Material occupancy is judged against each component's own box; the
+        # independent size and placement limits still reject specks and HUD.
+        if component_is_usable(area, (min_x, min_y, max_x, max_y)):
+            usable_component_found = True
+    if not usable_component_found:
         raise ValueError(
             "generated character is absent, clipped, or outside the central "
             f"inspection frame (area={largest_area}, bounds={largest_bounds})"
@@ -1316,6 +1330,102 @@ def main() -> int:
                                 f"{label} replayed an incomplete subject capture"
                             )
                         subject_capture_draws[label] = rendered
+
+    if not failures:
+        shadow_dir = evidence / "car-1p-masked-world-shadow"
+        shadow_dir.mkdir(parents=True, exist_ok=True)
+        shadow_capture = shadow_dir / "stabilized.png"
+        shadow_env = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith(("MDKR", "GE007_"))
+        }
+        shadow_env.update(
+            LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
+            MDKR_PRESENT_PERF="1", MDKR_RENDERER="webgpu",
+            MDKR_RENDER_SCALE="1", MDKR_VIDEO_CONFIG_PATH=os.devnull,
+            MDKR_REMASTER_FX="1", MDKR_WORLD_SHADOW="full",
+            MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
+            MDKR_CHARACTER_WORKSHOP_PREVIEW="car",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS="1",
+            MDKR_CUSTOM_CHARACTER_P1=MASKED_PACKAGE_ID,
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE="race.steer",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE="500",
+            MDKR_CHARACTER_WORKSHOP_CAPTURE_PNG=str(shadow_capture),
+            MDKR_CHARACTER_WORKSHOP_CAPTURE_KIND="scene",
+            MDKR64_HIDDEN="1",
+        )
+        process = run([
+            str(binary), "--headless-frames", str(FRAMES), "--rom",
+            str(rom), "--window-size", "1280x960", "--restored",
+        ], env=shadow_env)
+        shadow_output = process.stdout or ""
+        output += "\n===== car-1p-masked-world-shadow =====\n" + shadow_output
+        renderer_match = re.search(
+            r"\[WGPU-MODERN-CHARACTER\] assetUploads=(\d+) draws=(\d+) "
+            r"triangles=(\d+) refusedDraws=(\d+) shadowCaptured=(\d+) "
+            r"shadowDrawn=(\d+) shadowReceived=(\d+) "
+            r"shadowReceiveFallbacks=(\d+) shadowDropped=(\d+) "
+            r"shadowOverflows=(\d+)",
+            shadow_output,
+        )
+        world_match = re.search(
+            r"\[WORLD-SHADOW\] backend=webgpu attempted=(\d+) "
+            r"complete=(\d+) fallback=(\d+) resourceFailures=(\d+) "
+            r"latched=(\d+)",
+            shadow_output,
+        )
+        if process.returncode != 0 or renderer_match is None:
+            failures.append(
+                "masked world-shadow arm emitted no renderer accounting"
+            )
+        else:
+            (uploads, draws, triangles, refused, captured, shadow_draws,
+             received, receive_fallbacks, dropped, overflows) = map(
+                int, renderer_match.groups()
+            )
+            if (uploads != 1 or draws == 0 or triangles == 0 or
+                    refused != 0 or captured == 0 or shadow_draws == 0 or
+                    received == 0 or dropped != 0 or overflows != 0):
+                failures.append(
+                    "masked world-shadow arm did not cast and receive a "
+                    "complete bounded shadow"
+                )
+            if receive_fallbacks > captured:
+                failures.append(
+                    "masked world-shadow receiver fallback exceeded its "
+                    "bounded one-frame warm-up"
+                )
+        if world_match is None:
+            failures.append("masked world-shadow arm emitted no map census")
+        else:
+            attempted, complete, _fallback, resource_failures, latched = map(
+                int, world_match.groups()
+            )
+            if (attempted == 0 or complete == 0 or resource_failures != 0 or
+                    latched != 0):
+                failures.append(
+                    "masked world-shadow arm did not complete healthy maps"
+                )
+        if "capture=1/1/0 kind=0" not in shadow_output:
+            failures.append(
+                "masked world-shadow arm did not save its stable scene"
+            )
+        try:
+            shadow_width, shadow_height, shadow_pixels = read_png_rgb(
+                shadow_capture
+            )
+            require_fixture_composition(
+                shadow_width, shadow_height, shadow_pixels
+            )
+        except (OSError, ValueError) as error:
+            failures.append(
+                f"masked world-shadow arm produced no usable image: {error}"
+            )
+        for marker in ("[FATAL]", "AddressSanitizer", "runtime error:"):
+            if marker in shadow_output:
+                failures.append(
+                    f"masked world-shadow arm reported {marker}"
+                )
 
     if not failures:
         transition_dir = evidence / "car-1p-transition"

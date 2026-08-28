@@ -212,6 +212,7 @@ typedef struct GfxShadowFrame {
     GfxShadowRange *ranges;
     size_t range_count;
     size_t range_capacity;
+    size_t external_caster_count;
     GfxShadowView views[GFX_SHADOW_MAX_VIEWS];
     size_t view_count;
 } GfxShadowFrame;
@@ -313,6 +314,11 @@ typedef struct GfxWorldFxStats {
     uint64_t triangles_captured;
     uint64_t opaque_triangles;
     uint64_t masked_triangles;
+    /* Non-triangle GPU casters (for example modern skinned characters) fold
+     * their already-calibrated world bounds into the same cascade planner.
+     * They deliberately do not enter the CPU triangle replay buffers. */
+    uint64_t external_caster_bounds;
+    uint64_t external_caster_rejections;
     uint64_t static_cache_hits;
     uint64_t static_cache_misses;
     uint64_t matrix_registrations;
@@ -320,7 +326,9 @@ typedef struct GfxWorldFxStats {
     uint64_t matrix_lookup_misses;
     uint64_t allocation_failures;
     /* Finite but not world-plausible vertices (|coord| beyond the stage
-     * limit): rejected before they can poison the stage caster AABB. */
+     * limit): rejected before they can poison the stage caster AABB. This
+     * counter is for captured CPU triangles; external GPU bounds have their
+     * own rejection census above. */
     uint64_t implausible_triangles;
     /* Triangle batches dropped by the DL-build-time caster exclusion seam. */
     uint64_t excluded_triangles;
@@ -482,6 +490,11 @@ bool gfx_shadow_capture_triangle(
     const float positions[9],
     const float uv[6],
     const GfxShadowMaterial *material);
+/* Extend one captured view's caster AABB with a bounded set of world-space
+ * points without adding CPU replay geometry. Fails closed on replay capture,
+ * invalid views, non-finite coordinates, or implausible world positions. */
+bool gfx_shadow_capture_caster_bounds(
+    int view_index, const float *positions, size_t point_count);
 void gfx_shadow_capture_commit(void);
 const GfxShadowFrame *gfx_shadow_frame_previous(void);
 int gfx_shadow_previous_view_index(const float viewport[4]);

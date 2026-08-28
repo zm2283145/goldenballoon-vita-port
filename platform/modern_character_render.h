@@ -48,6 +48,14 @@ int mdkr_modern_render_primitive_sort_center(
     const MdkrModernRenderAsset *render, uint32_t primitive,
     const float *bone_matrices, size_t bone_count, float output[3]);
 
+/* Transform a calibrated target-local AABB through the donor target frame and
+ * donor-object world binding. Produces all eight world-space corners for the
+ * shared cascade planner without walking or skinning mesh vertices. */
+int mdkr_modern_render_shadow_bounds(
+    const float world[16], const float target_frame[16],
+    const float bounds_min[3], const float bounds_max[3],
+    float output[8u * 3u]);
+
 /* Resolve one immutable retained draw at an exact presentation alpha. The
  * caller supplies bounded palette scratch; endpoints remain bit-exact. */
 int mdkr_modern_render_resolve_draw(

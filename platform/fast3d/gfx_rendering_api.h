@@ -139,6 +139,16 @@ struct GfxModernSkinnedDraw {
     uint32_t capture_bounds_valid;
     float capture_bounds_min[3];
     float capture_bounds_max[3];
+    /* HLE-owned immutable shadow binding for this authored draw. The matrix
+     * maps donor-object coordinates to world space (column-major), allowing
+     * every visible material to receive while shadow_cast_valid separately
+     * admits only qualified opaque/masked primitives as casters. */
+    uint32_t shadow_binding_valid;
+    uint32_t shadow_cast_valid;
+    /* Current authored caster-frame view. Receiving deliberately uses the
+     * backend's separately resolved previous-frame view. */
+    uint32_t shadow_cast_view;
+    float shadow_world_matrix[16];
     /* Primitive-local glTF node transform, including the package's authored
      * presentation transform. Column-major, applied after skinning and before
      * the display-list object's MVP. */

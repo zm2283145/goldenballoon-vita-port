@@ -36,6 +36,37 @@ static void require(int condition, const char *message) {
     }
 }
 
+static void test_shadow_bounds(void) {
+    float world[16] = {0};
+    float target[16] = {0};
+    const float minimum[3] = {0.0f, 0.0f, 0.0f};
+    const float maximum[3] = {1.0f, 2.0f, 3.0f};
+    float output[8u * 3u] = {0};
+    world[0] = world[5] = world[10] = world[15] = 1.0f;
+    target[0] = target[5] = target[10] = target[15] = 1.0f;
+    world[12] = 10.0f;
+    world[13] = 20.0f;
+    world[14] = 30.0f;
+    target[12] = 1.0f;
+    target[13] = 2.0f;
+    target[14] = 3.0f;
+    require(mdkr_modern_render_shadow_bounds(
+                world, target, minimum, maximum, output) &&
+                output[0] == 11.0f && output[1] == 22.0f &&
+                output[2] == 33.0f && output[21] == 12.0f &&
+                output[22] == 24.0f && output[23] == 36.0f,
+            "shadow bounds compose target and donor-world transforms exactly");
+    target[15] = 0.0f;
+    require(!mdkr_modern_render_shadow_bounds(
+                world, target, minimum, maximum, output),
+            "shadow bounds reject a zero homogeneous divisor");
+    target[15] = 1.0f;
+    world[0] = NAN;
+    require(!mdkr_modern_render_shadow_bounds(
+                world, target, minimum, maximum, output),
+            "shadow bounds reject non-finite matrix ownership");
+}
+
 static uint64_t pose_world_signature(const MdkrModernPose *pose) {
     const unsigned char *bytes;
     size_t size;
@@ -278,6 +309,7 @@ int main(int argc, char **argv) {
     Gfx *command_cursor = commands;
     char import_lock[4096];
     char prefix_witness[4096];
+    test_shadow_bounds();
     char deletion_failure_witness[4096];
     char transaction_cache[TRANSACTION_FIXTURES][4096];
     char transaction_source[4096];

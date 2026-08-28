@@ -1433,10 +1433,12 @@ Gate: generated two-joint fixture and a license-clean production-scale rig pass
 clip switching, rollback correction, uncapped interpolation, split-screen,
 pause, replay, character select, and device recovery with no CPU vertex stream.
 
-### P4 - Material and shadow profile (core inputs complete; shadows pending)
+### P4 - Material and shadow profile (core inputs and world shadows complete)
 
-- Implement the constrained core glTF PBR inputs, correct color spaces, complete
-  mips, alpha mask, sun/ambient response, fog, shadow receive and shadow cast.
+- The constrained core glTF PBR inputs, correct color spaces, complete mips,
+  alpha mask, sun/ambient response, fog, fitted skinned shadow casting for
+  OPAQUE/MASK, and cascaded receiving for every visible material are
+  implemented on the qualified WebGPU path. BLEND is receive-only by design.
 - Add tangent repair diagnostics and material fallbacks.
 - Calibrate a stylized response that belongs in DKR rather than copying a
   cinematic renderer blindly.

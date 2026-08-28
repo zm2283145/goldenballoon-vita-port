@@ -358,11 +358,19 @@ Acceptance: the example produces a centered isolated capture, a recognizable
 40x40 portrait, and matching select/HUD/results/minimap identity without an
 external image editor.
 
-### M6 — High-fidelity renderer tail (extra large, parallelizable after M1)
+### M6 — High-fidelity renderer tail
 
-1. **Custom shadow integration:** replay accepted modern primitives into the
-   world shadow maps and receive cascaded shadows under the same material/skin
-   transforms. Add missing-resource failover and one-to-four-player cost gates.
+1. **Custom shadow integration (implemented):** accepted OPAQUE and MASK modern
+   primitives replay into the world shadow maps from an immutable two-bank
+   model/bone/material snapshot; MASK casters perform the same base-alpha
+   discard as the scene. All visible modern materials receive the per-view
+   cascades through the exact donor-object world binding. BLEND deliberately
+   remains receive-only rather than casting an opaque silhouette. Calibrated
+   eight-corner bounds enter the shared planner without CPU skinning or mesh
+   duplication; missing resources, stale assets, invalid bounds, and command
+   overflow fail to the existing world/decal path without partial modern
+   caster publication. Normal frames replay the previous authored bank while
+   presentation interpolation reuses the current frozen bank.
 2. **Transparent ordering (primitive assembly implemented):** OPAQUE/MASK
    primitives remain authored-first and BLEND primitives stably sort per view
    from live posed-centroid depth. Missing camera evidence retains the complete
@@ -470,9 +478,10 @@ The immediate remaining order is therefore:
    already requires exact source, fit, presentation, scene, held motion source,
    camera, viewport/scissor, and output-grid registration rather than inferring
    alignment;
-3. execute the remaining M6 renderer tail (shadows, within-primitive/global
-   transparency qualification, compressed textures, optional simplification,
-   and material expansion);
+3. execute the remaining optional M6 renderer tail (within-primitive/global
+   transparency qualification, compressed textures, recorded simplification,
+   and expanded material profiles); custom world-shadow casting/receiving,
+   per-view primitive ordering, and projected LOD are complete;
 4. complete packaged cross-platform/offline/adapter/online contracts; and
 5. run the observed human, controller/screen-reader, perceptual, and maintained
    multi-device qualification matrix in M8.

@@ -698,8 +698,10 @@ stories. Each has an owner in the audit above and must retain its stated gate:
 6. Any future character-indexed game surface must still declare package,
    donor, or scene ownership; the current audited surfaces are complete, not a
    license to infer ownership for new code.
-7. The high-fidelity renderer tail remains explicit: modern characters do not
-   yet enter world shadow maps. Cross-primitive BLEND ordering is now stable,
+7. The high-fidelity renderer tail is explicit: OPAQUE and MASK modern
+   primitives cast fitted, skinned world shadows and all visible modern
+   materials receive the per-view cascades in Remastered mode. BLEND remains
+   intentionally receive-only. Cross-primitive BLEND ordering is stable,
    per-view, live-pose aware, and fail-visible; intersecting/self-overlapping
    transparent triangles inside one primitive and transparency ordering against
    independent vehicle/world render queues still require visual review.

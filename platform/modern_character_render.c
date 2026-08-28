@@ -2,6 +2,7 @@
 
 #include "fast3d/gfx_mipgen.h"
 
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +31,61 @@ static uint64_t digest_id(const uint8_t digest[32]) {
     unsigned index;
     for (index = 0u; index < 8u; index++) value |= (uint64_t)digest[index] << (index * 8u);
     return value != 0u ? value : 1u;
+}
+
+int mdkr_modern_render_shadow_bounds(
+    const float world[16], const float target_frame[16],
+    const float bounds_min[3], const float bounds_max[3],
+    float output[8u * 3u]) {
+    unsigned component;
+    unsigned axis;
+    unsigned corner;
+    if (world == NULL || target_frame == NULL || bounds_min == NULL ||
+        bounds_max == NULL || output == NULL) return 0;
+    for (component = 0u; component < 16u; ++component) {
+        if (!isfinite(world[component]) ||
+            !isfinite(target_frame[component])) return 0;
+    }
+    for (axis = 0u; axis < 3u; ++axis) {
+        if (!isfinite(bounds_min[axis]) ||
+            !isfinite(bounds_max[axis]) ||
+            bounds_min[axis] > bounds_max[axis]) return 0;
+    }
+    for (corner = 0u; corner < 8u; ++corner) {
+        double target[4];
+        double donor[4];
+        double transformed[4];
+        unsigned row;
+        for (axis = 0u; axis < 3u; ++axis) {
+            target[axis] = (corner & (1u << axis)) != 0u
+                ? bounds_max[axis] : bounds_min[axis];
+        }
+        target[3] = 1.0;
+        for (row = 0u; row < 4u; ++row) {
+            donor[row] =
+                (double)target_frame[row] * target[0] +
+                (double)target_frame[4u + row] * target[1] +
+                (double)target_frame[8u + row] * target[2] +
+                (double)target_frame[12u + row];
+        }
+        for (row = 0u; row < 4u; ++row) {
+            transformed[row] =
+                (double)world[row] * donor[0] +
+                (double)world[4u + row] * donor[1] +
+                (double)world[8u + row] * donor[2] +
+                (double)world[12u + row] * donor[3];
+            if (!isfinite(transformed[row])) return 0;
+        }
+        if (fabs(transformed[3]) < 1.0e-9) return 0;
+        for (axis = 0u; axis < 3u; ++axis) {
+            const double value = transformed[axis] / transformed[3];
+            if (!isfinite(value) || value < -FLT_MAX || value > FLT_MAX) {
+                return 0;
+            }
+            output[corner * 3u + axis] = (float)value;
+        }
+    }
+    return 1;
 }
 
 static float exact_lerp(float previous, float current,

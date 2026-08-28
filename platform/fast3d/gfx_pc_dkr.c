@@ -172,6 +172,14 @@ uint32_t gfx_modern_character_register_draw(
                     draw->capture_bounds_max[component]) return 0u;
         }
     }
+    /* Caster ownership is assigned only by the HLE walk after resolving the
+     * exact matrix/view binding; callers cannot smuggle one through the ring. */
+    if (draw->shadow_binding_valid != 0u ||
+        draw->shadow_cast_valid != 0u ||
+        draw->shadow_cast_view != 0u) return 0u;
+    for (component = 0u; component < 16u; ++component) {
+        if (draw->shadow_world_matrix[component] != 0.0f) return 0u;
+    }
     token = dkr_modern_draw_serial++;
     if (token == 0u) token = dkr_modern_draw_serial++;
     entry = &dkr_modern_draw_ring[token % DKR_MODERN_DRAW_RING];
@@ -3479,6 +3487,69 @@ static void dkr_draw_modern_character(uint32_t token) {
          * lerp) is not a safe normal transform. Hold the authored endpoint
          * rather than publish NaNs to the GPU. */
         resolved = entry->draw;
+    }
+    resolved.shadow_binding_valid = 0u;
+    resolved.shadow_cast_valid = 0u;
+    resolved.shadow_cast_view = 0u;
+    memset(resolved.shadow_world_matrix, 0,
+           sizeof(resolved.shadow_world_matrix));
+
+    /* Modern geometry stays GPU-owned. The HLE walk contributes its exact
+     * donor-object -> world binding for receivers and, for opaque/masked
+     * materials, transforms eight calibrated corners into the shared cascade
+     * fit. Presentation replay resolves the already-published view instead of
+     * capturing it twice. */
+    if (!resolved.reference_only &&
+        (gfx_world_fx_trace_enabled() ||
+         (g_pcRemasterFX && g_pcSunShadow)) &&
+        rsp.draw_space == G_MTX_DKR_SPACE_WORLD && !rsp.billboard &&
+        rsp.shadow_matrix_valid[rsp.active_slot] &&
+        resolved.asset != NULL &&
+        resolved.primitive < resolved.asset->primitive_count) {
+        const struct GfxModernPrimitive *primitive =
+            &resolved.asset->primitives[resolved.primitive];
+        float shadow_world_matrix[16];
+        float viewport[4] = {
+            rdp.view.logical_viewport.x,
+            rdp.view.logical_viewport.y,
+            rdp.view.logical_viewport.width,
+            rdp.view.logical_viewport.height,
+        };
+        /* Snapshot the typed 4x4 source into the flat matrix contract. Besides
+         * making replay ownership explicit, this avoids GCC treating `world[0]`
+         * as only one four-float row at the helper boundary. */
+        memcpy(shadow_world_matrix,
+               rsp.shadow_matrix[rsp.active_slot].world,
+               sizeof(shadow_world_matrix));
+        int view_index = gfx_shadow_capture_view(
+            viewport,
+            rsp.shadow_matrix[rsp.active_slot].view_projection);
+        if (view_index < 0 && dkr_replay_pass) {
+            view_index = gfx_shadow_previous_view_index(viewport);
+        }
+        if (view_index >= 0 && view_index < GFX_SHADOW_MAX_VIEWS) {
+            resolved.shadow_binding_valid = 1u;
+            resolved.shadow_cast_view = (uint32_t)view_index;
+            memcpy(resolved.shadow_world_matrix,
+                   shadow_world_matrix,
+                   sizeof(resolved.shadow_world_matrix));
+        }
+        if (resolved.shadow_binding_valid == 1u &&
+            resolved.capture_bounds_valid == 1u &&
+            primitive->material < resolved.asset->material_count &&
+            (resolved.asset->materials[primitive->material].flags & 3u) <= 1u) {
+            float world_bounds[8u * 3u];
+            if (mdkr_modern_render_shadow_bounds(
+                    shadow_world_matrix,
+                    resolved.target_frame_matrix,
+                    resolved.capture_bounds_min,
+                    resolved.capture_bounds_max,
+                    world_bounds) &&
+                gfx_shadow_capture_caster_bounds(
+                    view_index, world_bounds, 8u)) {
+                resolved.shadow_cast_valid = 1u;
+            }
+        }
     }
     (void)dkr_setup_draw_state(false);
     gfx_flush();
