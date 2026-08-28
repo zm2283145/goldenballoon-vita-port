@@ -26,6 +26,9 @@ from test_character_asset_probe import (  # noqa: E402
 )
 from test_collada_to_glb import DAE  # noqa: E402
 import character_package_manager as manager  # noqa: E402
+from character_validation_fixture import (  # noqa: E402
+    accepted_character_validation,
+)
 
 
 def isolated_environment(root: Path, model: Path, shot: Path, *,
@@ -105,6 +108,18 @@ def check_bmp(path: Path, logical_width: int, logical_height: int) -> None:
         )
 
 
+def preserve_capture(source: Path, evidence_dir: Path | None,
+                     name: str) -> None:
+    if evidence_dir is None:
+        return
+    destination = evidence_dir / name
+    if destination.exists() or destination.is_symlink():
+        raise RuntimeError(f"evidence capture already exists: {destination}")
+    payload = source.read_bytes()
+    with destination.open("xb") as output:
+        output.write(payload)
+
+
 def raw_inventory(root: Path) -> tuple[str, list[list[str]]]:
     path = root / "saves" / "character_raw_drafts-v1.tsv"
     lines = path.read_text(encoding="ascii").splitlines()
@@ -130,9 +145,26 @@ def main() -> int:
     parser.add_argument("--build", type=Path, default=Path(DEFAULT_BUILD_DIR))
     parser.add_argument("--rom", type=Path,
                         help="accepted for run_checks.py compatibility")
+    parser.add_argument(
+        "--evidence-dir", type=Path,
+        help="create this new directory and retain recipient-review BMPs",
+    )
     args = parser.parse_args()
     binary = Path(resolve_binary(args.build)).resolve()
     try:
+        evidence_dir = args.evidence_dir
+        if evidence_dir is not None:
+            evidence_dir = evidence_dir.absolute()
+            if (
+                evidence_dir.exists() or evidence_dir.is_symlink()
+                or evidence_dir.parent.is_symlink()
+                or not evidence_dir.parent.is_dir()
+            ):
+                raise RuntimeError(
+                    "evidence directory must be a new path inside an existing "
+                    "real directory"
+                )
+            evidence_dir.mkdir()
         with tempfile.TemporaryDirectory(
                 prefix="mdkr-raw-intake-ui-") as temporary:
             root = Path(temporary)
@@ -772,6 +804,172 @@ def main() -> int:
                     "invalid SPDX expression produced a review candidate"
                 )
 
+            recipient = root / "recipient-review"
+            recipient.mkdir()
+            recipient_prefs = recipient / "prefs"
+            recipient_prefs.mkdir()
+            recipient_license = recipient / "LICENSE.txt"
+            recipient_license.write_text(
+                "CC0 1.0 Universal recipient fixture\n", encoding="utf-8"
+            )
+            recipient_source_before = {
+                model: hashlib.sha256(model.read_bytes()).hexdigest(),
+                recipient_license: hashlib.sha256(
+                    recipient_license.read_bytes()
+                ).hexdigest(),
+            }
+            (recipient_prefs / "mdkr64_app.ini").write_text(
+                f"character_raw_intake_model={model}\n"
+                f"character_raw_intake_license={recipient_license}\n"
+                "character_raw_intake_id=org.example.recipient-review\n"
+                "character_raw_intake_display_name=Recipient Review Proof\n"
+                "character_raw_intake_spdx=CC0-1.0\n"
+                "character_raw_intake_attribution=Generated recipient fixture\n"
+                "character_raw_intake_source_url=https://example.invalid/recipient-review\n"
+                "character_raw_intake_donor=9\n"
+                "character_raw_intake_vehicles=7\n"
+                "character_raw_intake_forward=0\n"
+                "character_raw_intake_height=1.25\n"
+                f"character_raw_intake_mapping_sha256={source_before[model]}\n"
+                "character_raw_intake_fallback=idle\n"
+                "character_raw_intake_seat=root\n"
+                "character_raw_intake_head=head\n",
+                encoding="utf-8",
+            )
+            recipient_shot = recipient / "recipient-review.bmp"
+            recipient_environment = isolated_environment(
+                recipient, model, recipient_shot,
+                compact=False, drop=True,
+            )
+            recipient_environment.update({
+                "MDKR_APP_SMOKE_FRAMES": "180",
+                "MDKR_APP_SMOKE_RAW_DRAFT_ACTION": "build-review-only",
+                "MDKR_APP_SMOKE_RAW_DRAFT_ACTION_TOKEN":
+                    "mdkr64-app-raw-draft-v1",
+            })
+            run(
+                binary, recipient, recipient_environment,
+                (
+                    "raw-draft-action action=build-review-only applied=1",
+                    "character-recipient-review compatibility=1 mode=source "
+                    "relationship=new rig_ready=1 performance=Excellent "
+                    "lods=1 webgpu_required=1 rights_confirmed=0",
+                ),
+            )
+            check_bmp(recipient_shot, 1280, 720)
+            preserve_capture(
+                recipient_shot, evidence_dir, "source-recipient-review.bmp"
+            )
+            if (
+                not (recipient / "characters" /
+                     ".launcher-character-raw-candidate.mdkrchar").is_file()
+                or list((recipient / "characters").glob("*.mdkc"))
+            ):
+                raise RuntimeError(
+                    "recipient review installed bytes before rights "
+                    "confirmation or lost its mutation-free candidate"
+                )
+            _, recipient_rows = raw_inventory(recipient)
+            if len(recipient_rows) != 1:
+                raise RuntimeError(
+                    "recipient review did not preserve its resumable raw draft"
+                )
+            for source, digest in recipient_source_before.items():
+                if hashlib.sha256(source.read_bytes()).hexdigest() != digest:
+                    raise RuntimeError(
+                        f"recipient review changed external source {source}"
+                    )
+
+            source_candidate = (
+                recipient / "characters" /
+                ".launcher-character-raw-candidate.mdkrchar"
+            )
+            portable_package = root / "received-portable.mdkrchar"
+            with accepted_character_validation(manager):
+                manager.prepare(source_candidate, portable_package)
+            portable_before = hashlib.sha256(
+                portable_package.read_bytes()
+            ).hexdigest()
+            portable_recipient = root / "portable-recipient-review"
+            portable_recipient.mkdir()
+            (portable_recipient / "video.ini").write_text(
+                "[Accessibility]\nSpeech=1\n", encoding="utf-8"
+            )
+            portable_shot = portable_recipient / "portable-review.bmp"
+            portable_environment = isolated_environment(
+                portable_recipient, portable_package, portable_shot,
+                compact=False, drop=True,
+            )
+            portable_environment.update({
+                "MDKR_APP_SMOKE_FRAMES": "320",
+                "MDKR_APP_SMOKE_A11Y_WALK": "1",
+                "MDKR_APP_SMOKE_INPUT": "keyboard",
+                "MDKR_APP_SMOKE_INPUT_TOKEN": "mdkr64-app-ui-input-v1",
+                "MDKR_A11Y_TRACE": "1",
+            })
+            run(
+                binary, portable_recipient, portable_environment,
+                (
+                    "character-recipient-review compatibility=1 "
+                    "mode=portable relationship=new rig_ready=1 "
+                    "performance=Excellent lods=1 webgpu_required=1 "
+                    "rights_confirmed=0",
+                    "text=Local-use rights confirmation. Package "
+                    "compatibility passed. This is a received portable package",
+                ),
+            )
+            check_bmp(portable_shot, 1280, 720)
+            preserve_capture(
+                portable_shot, evidence_dir,
+                "portable-recipient-review.bmp",
+            )
+            if (
+                hashlib.sha256(portable_package.read_bytes()).hexdigest()
+                    != portable_before
+                or any((portable_recipient / "characters").iterdir())
+                or (portable_recipient / "saves" /
+                    "character_raw_drafts-v1.tsv").exists()
+            ):
+                raise RuntimeError(
+                    "portable recipient review mutated the package or "
+                    "published authoring/install state before confirmation"
+                )
+
+            compact_recipient = root / "portable-recipient-compact"
+            compact_recipient.mkdir()
+            compact_shot = compact_recipient / "portable-review-compact.bmp"
+            compact_environment = isolated_environment(
+                compact_recipient, portable_package, compact_shot,
+                compact=True, drop=True,
+            )
+            (compact_recipient / "prefs" / "mdkr64_app.ini").write_text(
+                "ui_scale=2.00\n", encoding="utf-8"
+            )
+            compact_environment["MDKR_APP_SMOKE_FRAMES"] = "120"
+            run(
+                binary, compact_recipient, compact_environment,
+                (
+                    "character-recipient-review compatibility=1 "
+                    "mode=portable relationship=new rig_ready=1 "
+                    "performance=Excellent lods=1 webgpu_required=1 "
+                    "rights_confirmed=0",
+                    "compact-layout dense=1 contained=1 overlap=0 ",
+                ),
+            )
+            check_bmp(compact_shot, 640, 480)
+            preserve_capture(
+                compact_shot, evidence_dir,
+                "portable-recipient-review-compact.bmp",
+            )
+            if (
+                hashlib.sha256(portable_package.read_bytes()).hexdigest()
+                    != portable_before
+                or any((compact_recipient / "characters").iterdir())
+            ):
+                raise RuntimeError(
+                    "compact recipient review mutated package or install state"
+                )
+
             install = root / "install"
             install.mkdir()
             install_prefs = install / "prefs"
@@ -903,6 +1101,7 @@ def main() -> int:
     print("check_character_raw_intake_ui: PASS -- bounded DAE/ZIP conversion, "
           "ZIP-bomb, invalid-SPDX, and hostile-GLB refusal, "
           "actionable missing-importer recovery, "
+          "recipient compatibility/readiness review, "
           "mutation-free FBX/OBJ/BLEND/glTF/USD/DCC export guidance, "
           "multi-draft GLB intake, "
           "same-source branching, source-bound mapping restore, exact "

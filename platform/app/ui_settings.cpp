@@ -21593,6 +21593,59 @@ bool drawCharacterCandidateReview(bool compact) {
     ImGui::PopFont();
     ui::TextSubtleWrapped(
         "This package controls local appearance, portrait, animation, fit, and presentation. The selected built-in donor continues to own handling, weight, acceleration, voice, and game authority.");
+    const bool rigReady = next.rigMode != 2u || next.rigReviewed;
+    const char *performanceTier = candidatePerformanceTier(next);
+    const char *installRelationship = sameSource
+        ? "Exact compiled source already active"
+        : review.installed
+        ? "Reviewed update to the installed identity"
+        : "New local character";
+    if (ui::CardBegin(
+            "##character-recipient-readiness",
+            rigReady ? AppTheme::good() : AppTheme::accent(), 0.0f)) {
+        ImGui::PushFont(AppTheme::fonts().section);
+        ImGui::TextUnformatted("Package compatibility passed");
+        ImGui::PopFont();
+        ui::TextSubtleWrapped(
+            review.portable
+                ? "This receiving build authenticated the package source and verified that its embedded runtime cache is loadable. Compatibility does not grant content rights or replace in-game fit and device review."
+                : "This receiving build validated the package source and compiled it with the receiving importer. Compatibility does not grant content rights or replace in-game fit and device review.");
+        ImGui::TextWrapped("Install: %s", installRelationship);
+        ImGui::TextWrapped(
+            "Gameplay: %s remains authoritative for physics, audio, records, ghosts, and networking",
+            donorName(next.donor));
+        ImGui::TextWrapped(
+            "Rendering: WebGPU custom appearance; OpenGL safely keeps the built-in donor");
+        ImGui::TextWrapped(
+            "Motion: %s",
+            rigReady
+                ? next.rigMode == 2u
+                    ? "reviewed humanoid mapping"
+                    : next.rigMode == 1u
+                    ? "authored clips"
+                    : "package fallback animation"
+                : "compatible package, but humanoid review is still required before normal play");
+        ImGui::TextWrapped(
+            "Import estimate: %s · %u LOD level%s · not a measured device result",
+            performanceTier, next.lodLevels,
+            next.lodLevels == 1u ? "" : "s");
+        ui::TextSubtleWrapped(
+            "After installation, run the exact select and vehicle scenes plus the 1–4 player performance matrix on this device before approval.");
+    }
+    ui::CardEnd();
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static std::string tracedPackage;
+        if (tracedPackage != next.packageSha256) {
+            tracedPackage = next.packageSha256;
+            std::fprintf(
+                stderr,
+                "[app-ui] character-recipient-review compatibility=1 mode=%s relationship=%s rig_ready=%d performance=%s lods=%u webgpu_required=1 rights_confirmed=%d\n",
+                review.portable ? "portable" : "source",
+                sameSource ? "same-source" : review.installed ? "update" : "new",
+                rigReady ? 1 : 0, performanceTier, next.lodLevels,
+                review.rightsConfirmed ? 1 : 0);
+        }
+    }
     if (review.installed && !review.installedEnabled) {
         ImGui::TextDisabled(
             "This package is disabled. Installing the update will preserve that state.");
@@ -21671,13 +21724,27 @@ bool drawCharacterCandidateReview(bool compact) {
         ImGui::TextDisabled(
             "This exact compiled source is already active. Installing will retain the reviewed package file as a revision and refresh the same runtime cache.");
     }
+    const std::string compatibilityHelp =
+        std::string("Package compatibility passed. This is ") +
+        (review.portable ? "a received portable package and "
+                         : "a locally compiled source package and ") +
+        (sameSource ? "its exact compiled source is already active. "
+                    : review.installed ? "it updates the installed identity. "
+                                       : "it creates a new local character. ") +
+        (rigReady
+             ? "Its motion contract is ready for post-install scene review. "
+             : "Its humanoid mapping still requires author review before normal play. ") +
+        "The " + performanceTier +
+        " performance label is an import estimate, not a measurement on this device. ";
     (void)ImGui::Checkbox(
         "I confirm I have the right to use this package locally",
         &g_characterImportCandidate.rightsConfirmed);
+    const std::string rightsHelp = compatibilityHelp +
+        "Rights confirmation is required before install. The package includes license text, but the importer cannot verify copyright, trademark, attribution, or redistribution rights and never uploads this content.";
     ui::SpeakFocusedItem(
         "Local-use rights confirmation",
         nullptr,
-        "Required before install. The package includes license text, but the importer cannot verify copyright, trademark, attribution, or redistribution rights and never uploads this content.");
+        rightsHelp.c_str());
     ui::TextSubtleWrapped(
         "The package includes cryptographically bound license text, but the importer cannot verify copyright, trademark, attribution, or redistribution rights. Installation is local and never uploads the package.");
     if (!g_characterImportCandidate.rightsConfirmed) ImGui::BeginDisabled();
@@ -21714,10 +21781,12 @@ bool drawCharacterCandidateReview(bool compact) {
         return started;
     }
     if (!g_characterImportCandidate.rightsConfirmed) ImGui::EndDisabled();
+    const std::string installHelp = compatibilityHelp +
+        "Commits only the exact package bytes and installed base shown in this review. Gameplay authority remains with the named built-in donor.";
     ui::SpeakFocusedItem(
         installLabel,
         nullptr,
-        "Commits only the exact package bytes and installed base shown in this review. Gameplay authority remains with the named built-in donor.");
+        installHelp.c_str());
     ImGui::SameLine();
     const bool disposableCandidate =
         g_characterImportCandidate.disposableRawCandidate;
@@ -21801,7 +21870,8 @@ void drawCharacterRawIntakeEditor(bool rail) {
     if (!g_characterRawDraftSmokeActionApplied && smokeAction != nullptr &&
         smokeToken != nullptr &&
         std::strcmp(smokeToken, "mdkr64-app-raw-draft-v1") == 0 &&
-        std::strcmp(smokeAction, "build-reviewed-install") != 0) {
+        std::strcmp(smokeAction, "build-reviewed-install") != 0 &&
+        std::strcmp(smokeAction, "build-review-only") != 0) {
         g_characterRawDraftSmokeActionApplied = true;
         bool applied = false;
         if (std::strncmp(smokeAction, "select-sha:", 11u) == 0) {
@@ -22274,7 +22344,8 @@ void drawCharacterRawIntakeEditor(bool rail) {
     const bool smokeBuildActionRequested =
         !g_characterRawDraftSmokeActionApplied &&
         smokeAction != nullptr && smokeToken != nullptr &&
-        std::strcmp(smokeAction, "build-reviewed-install") == 0 &&
+        (std::strcmp(smokeAction, "build-reviewed-install") == 0 ||
+         std::strcmp(smokeAction, "build-review-only") == 0) &&
         std::strcmp(smokeToken, "mdkr64-app-raw-draft-v1") == 0;
     if (smokeBuildActionRequested && transformReview.valid &&
         !currentTransformSignature.empty() && !transformAccepted) {
@@ -22307,7 +22378,8 @@ void drawCharacterRawIntakeEditor(bool rail) {
             ? smokeAction : "";
         const bool queued = buildCharacterRawGlbCandidate(
             [smokeBuildRequested, smokeBuildAction](bool built) {
-                if (built && smokeBuildRequested) {
+                if (built && smokeBuildRequested &&
+                    smokeBuildAction == "build-reviewed-install") {
                     g_characterRawDraftSmokeInstallFrames = 2;
                 }
                 setStatus(

@@ -413,8 +413,9 @@ LOD transitions; unsupported optional features degrade visibly and safely.
 - Ship the frozen importer and pinned validator in every supported native app;
   qualify clean install, upgrade, missing-tool repair, and offline behavior on
   macOS, Windows, and Linux.
-- Finalize portable-package rights/provenance review, recipient diff, compiler
-  compatibility, non-overwrite export, and bulk named-draft import/export.
+- Maintain portable-package rights/provenance review, recipient diff, receiving-
+  build compatibility, and non-overwrite export; add bulk named-draft
+  import/export only with its own bounded sharing contract.
 - Add a documented extension point for third-party source adapters that must
   output canonical self-contained GLB plus provenance. Do not load arbitrary
   importer code in the game process.
@@ -439,6 +440,15 @@ untrusted importer with actionable repair guidance and a preserved resumable
 draft. Signed/notarized clean-machine launch, in-place application upgrade, and
 physical offline/device observation remain release qualification rather than
 unimplemented pipeline behavior.
+
+Recipient review now leads with a bounded at-a-glance card after the receiving
+build has either authenticated the embedded portable cache or compiled the
+source itself. It separates package compatibility from post-install play
+readiness, discloses new/update/same-source relationship, donor authority,
+WebGPU/OpenGL behavior, rig-review status, LOD count, and the explicitly
+unmeasured import estimate before the exhaustive installed-versus-candidate
+diff. The same decision evidence is spoken from the focusable rights control
+before consent; no package bytes install during review.
 
 ### M8 — Human and device qualification (ongoing release gate)
 
@@ -494,8 +504,9 @@ The immediate remaining order is therefore:
    transparency qualification, compressed textures, recorded simplification,
    and expanded material profiles); custom world-shadow casting/receiving,
    per-view primitive ordering, and projected LOD are complete;
-4. complete signed clean-machine/upgrade observation plus adapter/recipient/
-   online contracts; the frozen and packaged importer lifecycle is automated
+4. complete signed clean-machine/upgrade observation plus adapter/bulk-draft/
+   online contracts; recipient compatibility/diff review and the frozen and
+   packaged importer lifecycle are automated
    on all three release operating systems; and
 5. run the observed human, controller/screen-reader, perceptual, and maintained
    multi-device qualification matrix in M8.
