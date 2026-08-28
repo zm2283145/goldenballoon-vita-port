@@ -262,6 +262,17 @@ void ensureInitialized() {
     const MdkrOnlineCompatibilityV1 compatibility = fakeCompatibility();
     std::unique_ptr<IMdkrOnlineAdapter> adapter = makeAdapter(compatibility);
     if (!adapter) return;
+    /* ADAPTER-LIFETIME INVARIANT (design C-1, mirrors ~LiveAdapter in
+     * match_live_adapter.cpp): a LIVE adapter is destroyed ONLY via
+     * teardownAdapterAsync, which retracts BOTH engine registries (race-boot +
+     * room-ready) on the launcher thread BEFORE the detached destruction -- so a
+     * published handoff can never outlive its adapter. This assignment is SAFE
+     * because it cannot destroy a live adapter inline: the initialized-guard above
+     * returns early once a session is up, and the only adapter this builds is the
+     * FAKE (fakeEnabled() gate) -- g_online.adapter is null here. Do NOT reset /
+     * reassign g_online.adapter while it holds a live adapter without routing
+     * through teardownAdapterAsync, or a registry pointer will dangle (a UAF that
+     * would pass every existing gate). */
     g_online.adapter = std::move(adapter);
     g_online.initialized = true;
 }
@@ -849,6 +860,15 @@ bool buildBetaLiveAdapter(const LauncherState &state, MdkrOnlineJourney journey,
         g_online.betaBuildFailed = true;
         return false;
     }
+    /* ADAPTER-LIFETIME INVARIANT (design C-1, mirrors ~LiveAdapter in
+     * match_live_adapter.cpp): a LIVE adapter is destroyed ONLY via
+     * teardownAdapterAsync, which retracts BOTH engine registries (race-boot +
+     * room-ready) on the launcher thread BEFORE the detached destruction. This
+     * assignment is SAFE because it runs only from the create/join chooser with no
+     * active session, so g_online.adapter is null and nothing is destroyed inline
+     * (a live handoff and this chooser are mutually-exclusive UI states). Do NOT
+     * reset / reassign g_online.adapter while it holds a live adapter without
+     * routing through teardownAdapterAsync, or a registry pointer will dangle. */
     g_online.adapter = std::move(adapter);
     /* PD-T6h2c: a fresh adapter/session -- re-arm the one-shot room-ready latch so
      * the next tournament SELECTING transition can publish this adapter for the
