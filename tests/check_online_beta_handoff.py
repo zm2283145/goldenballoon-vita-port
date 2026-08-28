@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Prove the beta Online Room retires its per-race SELECTING widgets (T3).
+"""Prove the beta Online Room retires its per-race SELECTING + RESULTS widgets
+(T3 + T6).
 
 After pairing, the native game owns character + vehicle + track/cup/mode select
-for EVERY online mode (T1 vehicle-select + T2 single-race-native both landed), so
-the launcher's SELECTING body must be pairing-only + a clean hand-off card -- never
-a character grid / vehicle chips / track picker / Ready-Start. The tournament
-hand-off card was previously the ONLY mode taken over natively; T2 routed single
-race through the identical descriptor-less path, so drawBetaSelectingBody's
-hand-off is now UNIVERSAL.
+(T1 vehicle-select + T2 single-race-native) AND, after a race, results + standings +
+the champion ceremony + the MORE-RACES replay chooser (T4) for EVERY online mode. So
+the launcher must be pairing-only + a clean hand-off card on BOTH surfaces -- never a
+character grid / vehicle chips / track picker / Ready-Start (SELECTING), and never a
+placements/standings body or a Next-Race / Race-Again / New-Tournament / Change-Track
+replay prompt (RESULTS). The tournament hand-off card was once the only mode taken
+over natively; T2 routed single race through the identical descriptor-less path, so
+both hand-offs are now UNIVERSAL.
 
 This gate drives the beta render seam (MDKR_APP_ONLINE_BETA_FAKE +
-MDKR_APP_ONLINE_BETA_STAGE) headlessly through the REAL drawBeta* widgets and
-reads the per-render [online-beta-selecting] witness. The invariants:
+MDKR_APP_ONLINE_BETA_STAGE) headlessly through the REAL drawBeta* widgets and reads
+the per-render [online-beta-selecting] / [online-beta-results] witnesses. The
+invariants:
 
     room-single           -> the native takeover IS engaged -> render=handoff
     room-tournament       -> the native takeover IS engaged -> render=handoff
@@ -19,11 +23,17 @@ reads the per-render [online-beta-selecting] witness. The invariants:
                              -> render=full-select (the ImGui recovery grid IS
                              reachable, R7: recovery is never worse than BASE)
     room-tournament-fallback -> same, for tournament
+    results               -> native takeover engaged -> render=handoff (single)
+    finished              -> native takeover engaged -> render=handoff (tournament
+                             final: champion decided)
+    results-fallback      -> LEFT/ERROR return -> render=full-results (the ImGui
+                             results/standings/replay body IS reachable, R7)
+    finished-fallback     -> same, for the tournament-final champion body
 
 It also captures each stage to a BMP and proves (a) every stage renders a
 non-flat readable frame and (b) each hand-off capture is byte-DIFFERENT from its
-same-mode fallback capture -- i.e. the editable grid was actually removed, not
-merely the witness string.
+same-mode fallback capture -- i.e. the editable grid / standings-replay body was
+actually removed, not merely the witness string.
 
 The seam requires the beta build (MDKR_ENABLE_ONLINE_BETA); it needs no ROM and
 boots no engine, so --rom is accepted (for the shared online-lane contract) and
@@ -44,23 +54,42 @@ from pathlib import Path
 from harness_utils import resolve_binary
 
 
-WITNESS_RE = re.compile(
-    r"\[online-beta-selecting\] stage=(?P<stage>[a-z0-9-]+) "
-    r"mode=(?P<mode>single|tournament) render=(?P<render>handoff|full-select|none)"
-)
-
-# stage -> (expected mode, expected render).
-CASES = {
-    "room-single": ("single", "handoff"),
-    "room-tournament": ("tournament", "handoff"),
-    "room-single-fallback": ("single", "full-select"),
-    "room-tournament-fallback": ("tournament", "full-select"),
+# One witness per retired surface. SELECTING (T3) and RESULTS (T6) each emit their
+# own [online-beta-*] line from the render seam; the stage's `kind` selects which.
+WITNESS_RE = {
+    "selecting": re.compile(
+        r"\[online-beta-selecting\] stage=(?P<stage>[a-z0-9-]+) "
+        r"mode=(?P<mode>single|tournament) "
+        r"render=(?P<render>handoff|full-select|none)"
+    ),
+    "results": re.compile(
+        r"\[online-beta-results\] stage=(?P<stage>[a-z0-9-]+) "
+        r"mode=(?P<mode>single|tournament) "
+        r"render=(?P<render>handoff|full-results|none)"
+    ),
 }
-# Each hand-off stage paired with its same-mode fallback; the captures must
-# differ (the grid is really gone in the hand-off, present in the fallback).
+
+# stage -> (expected mode, expected render, witness kind).
+CASES = {
+    # SELECTING body (T3).
+    "room-single": ("single", "handoff", "selecting"),
+    "room-tournament": ("tournament", "handoff", "selecting"),
+    "room-single-fallback": ("single", "full-select", "selecting"),
+    "room-tournament-fallback": ("tournament", "full-select", "selecting"),
+    # RESULTS body (T6).
+    "results": ("single", "handoff", "results"),
+    "finished": ("tournament", "handoff", "results"),
+    "results-fallback": ("single", "full-results", "results"),
+    "finished-fallback": ("tournament", "full-results", "results"),
+}
+# Each hand-off stage paired with its same-mode fallback; the captures must differ
+# (the editable grid / standings-replay body is really gone in the hand-off, present
+# in the fallback).
 DISTINCT_PAIRS = (
     ("room-single", "room-single-fallback"),
     ("room-tournament", "room-tournament-fallback"),
+    ("results", "results-fallback"),
+    ("finished", "finished-fallback"),
 )
 
 
@@ -109,7 +138,8 @@ def inspect_bmp(path: Path) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def render_stage(binary: str, root: Path, stage: str, timeout: int) -> tuple[str, str, str]:
+def render_stage(binary: str, root: Path, stage: str, kind: str,
+                 timeout: int) -> tuple[str, str, str]:
     case_root = root / stage
     prefs = case_root / "prefs"
     saves = case_root / "saves"
@@ -138,10 +168,11 @@ def render_stage(binary: str, root: Path, stage: str, timeout: int) -> tuple[str
         raise HandoffError(
             f"{stage}: process exited {completed.returncode}\n"
             f"{completed.stdout[-4000:]}")
-    witnesses = [m.groupdict() for m in WITNESS_RE.finditer(completed.stdout)]
+    witness_re = WITNESS_RE[kind]
+    witnesses = [m.groupdict() for m in witness_re.finditer(completed.stdout)]
     if not witnesses:
         raise HandoffError(
-            f"{stage}: no [online-beta-selecting] witness emitted\n"
+            f"{stage}: no [online-beta-{kind}] witness emitted\n"
             f"{completed.stdout[-4000:]}")
     # Every rendered frame must agree (the body is deterministic per stage).
     modes = {w["mode"] for w in witnesses}
@@ -170,9 +201,9 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="mdkr-beta-handoff-") as tmp:
             root = Path(tmp)
             digests: dict[str, str] = {}
-            for stage, (want_mode, want_render) in CASES.items():
+            for stage, (want_mode, want_render, kind) in CASES.items():
                 mode, render, digest = render_stage(
-                    binary, root, stage, args.timeout)
+                    binary, root, stage, kind, args.timeout)
                 if mode != want_mode or render != want_render:
                     raise HandoffError(
                         f"{stage}: rendered mode={mode} render={render}, "
@@ -191,8 +222,9 @@ def main() -> int:
         return 1
     print(
         "PASS online beta handoff: "
-        f"handoff-modes=2 (single+tournament) fallback-modes=2 "
-        f"grid-retired=1 recovery-reachable=1")
+        "selecting-handoff=2 results-handoff=2 (single+tournament each) "
+        "fallbacks=4 grid-retired=1 standings-replay-retired=1 "
+        "recovery-reachable=1")
     return 0
 
 
