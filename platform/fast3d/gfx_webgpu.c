@@ -611,6 +611,13 @@ static WGPUBuffer s_skinned_visibility_readback;
 static bool s_skinned_visibility_mapping;
 static bool s_skinned_visibility_encoded;
 static uint64_t s_skinned_visibility_generation = 1u;
+enum WgpuSkinnedVisibilityPrepareState {
+    WGPU_SKINNED_VISIBILITY_PREPARE_IDLE = 0,
+    WGPU_SKINNED_VISIBILITY_PREPARE_PENDING,
+    WGPU_SKINNED_VISIBILITY_PREPARE_READY,
+};
+static enum WgpuSkinnedVisibilityPrepareState
+    s_skinned_visibility_prepare_state;
 struct WgpuSkinnedVisibilityMapping {
     WGPUBuffer buffer;
     uint64_t generation;
@@ -9809,8 +9816,14 @@ static WGPURenderPipeline wgpu_skinned_pipeline_for(
     descriptor.multisample.count = 1u;
     descriptor.multisample.mask = 0xFFFFFFFFu;
     descriptor.fragment = &fragment;
-    pipelines[key] = WGPU_FAULT_CREATE(
-        SKINNED_PIPELINE, wgpuDeviceCreateRenderPipeline(s_device, &descriptor));
+    enum GfxWebgpuFaultPoint fault_point =
+        mode == WGPU_SKINNED_PIPELINE_VISIBILITY_SEED
+            ? GFX_WEBGPU_FAULT_SKINNED_VISIBILITY_SEED_PIPELINE
+        : mode == WGPU_SKINNED_PIPELINE_VISIBILITY_EQUAL
+            ? GFX_WEBGPU_FAULT_SKINNED_VISIBILITY_EQUAL_PIPELINE
+            : GFX_WEBGPU_FAULT_SKINNED_PIPELINE;
+    pipelines[key] = gfx_webgpu_fault_hit(fault_point)
+        ? NULL : wgpuDeviceCreateRenderPipeline(s_device, &descriptor);
     return pipelines[key];
 }
 
@@ -10294,16 +10307,182 @@ static void wgpu_release_skinned_visibility_target(void) {
     s_skinned_visibility_height = 0u;
 }
 
-static bool wgpu_skinned_visibility_resources(
+static void wgpu_release_skinned_visibility_pipelines(void) {
+    for (uint32_t index = 0u; index < 6u; ++index) {
+        if (s_skinned_visibility_seed_pipe[index] != NULL) {
+            wgpuRenderPipelineRelease(
+                s_skinned_visibility_seed_pipe[index]);
+        }
+        if (s_skinned_visibility_equal_pipe[index] != NULL) {
+            wgpuRenderPipelineRelease(
+                s_skinned_visibility_equal_pipe[index]);
+        }
+        s_skinned_visibility_seed_pipe[index] = NULL;
+        s_skinned_visibility_equal_pipe[index] = NULL;
+    }
+}
+
+static void wgpu_release_skinned_visibility_resources(void) {
+    wgpu_release_skinned_visibility_target();
+    wgpu_release_skinned_visibility_pipelines();
+    if (s_skinned_visibility_query_set != NULL) {
+        wgpuQuerySetRelease(s_skinned_visibility_query_set);
+    }
+    if (s_skinned_visibility_resolve != NULL) {
+        wgpuBufferRelease(s_skinned_visibility_resolve);
+    }
+    if (s_skinned_visibility_readback != NULL) {
+        wgpuBufferRelease(s_skinned_visibility_readback);
+    }
+    s_skinned_visibility_query_set = NULL;
+    s_skinned_visibility_resolve = NULL;
+    s_skinned_visibility_readback = NULL;
+}
+
+static bool wgpu_skinned_visibility_resources_ready(
     uint32_t width, uint32_t height) {
-    if (width == 0u || height == 0u || s_device == NULL) return false;
-    if (s_skinned_visibility_query_set == NULL) {
+    if (width == 0u || height == 0u ||
+        s_skinned_visibility_query_set == NULL ||
+        s_skinned_visibility_resolve == NULL ||
+        s_skinned_visibility_readback == NULL ||
+        s_skinned_visibility_depth_tex == NULL ||
+        s_skinned_visibility_depth_view == NULL ||
+        s_skinned_visibility_width != width ||
+        s_skinned_visibility_height != height) return false;
+    for (uint32_t index = 0u;
+         index < s_skinned_visibility_draw_count; ++index) {
+        const struct WgpuSkinnedVisibilityDraw *command =
+            &s_skinned_visibility_draws[index];
+        if (command->asset == NULL ||
+            command->primitive >= command->asset->primitive_count) {
+            return false;
+        }
+        const struct GfxModernPrimitive *primitive =
+            &command->asset->primitives[command->primitive];
+        if (primitive->material >= command->asset->material_count) {
+            return false;
+        }
+        const uint32_t flags =
+            command->asset->materials[primitive->material].flags;
+        const uint32_t key = (flags & 3u) * 2u +
+            (((flags & 4u) != 0u) ? 1u : 0u);
+        if (key >= 6u || s_skinned_visibility_seed_pipe[key] == NULL ||
+            s_skinned_visibility_equal_pipe[key] == NULL) return false;
+    }
+    return true;
+}
+
+struct WgpuSkinnedVisibilityPreparation {
+    uint64_t generation;
+    uint32_t width;
+    uint32_t height;
+    uint32_t callbacks_remaining;
+    bool creation_ok;
+    bool scopes_ok;
+};
+
+static void wgpu_skinned_visibility_prepare_scope_callback(
+    WGPUPopErrorScopeStatus status, WGPUErrorType type,
+    WGPUStringView message, void *userdata1, void *userdata2) {
+    (void)userdata2;
+    struct WgpuSkinnedVisibilityPreparation *preparation =
+        (struct WgpuSkinnedVisibilityPreparation *)userdata1;
+    if (preparation == NULL || preparation->callbacks_remaining == 0u) {
+        return;
+    }
+    const bool scope_ok =
+        status == WGPUPopErrorScopeStatus_Success &&
+        type == WGPUErrorType_NoError;
+    if (!scope_ok) {
+        preparation->scopes_ok = false;
+        fprintf(stderr,
+                "[WGPU-CHARACTER-VISIBILITY] prepare-scope=0 "
+                "status=%d type=%d: %.*s\n",
+                (int)status, (int)type, (int)message.length,
+                message.data != NULL ? message.data : "");
+    }
+    --preparation->callbacks_remaining;
+    if (preparation->callbacks_remaining != 0u) return;
+
+    const bool current = preparation->generation ==
+        s_skinned_visibility_generation;
+    const bool ready = current && preparation->creation_ok &&
+        preparation->scopes_ok &&
+        wgpu_skinned_visibility_resources_ready(
+            preparation->width, preparation->height);
+    if (current && ready) {
+        s_skinned_visibility_prepare_state =
+            WGPU_SKINNED_VISIBILITY_PREPARE_READY;
+        fprintf(stderr,
+                "[WGPU-CHARACTER-VISIBILITY] prepare=1 size=%ux%u\n",
+                preparation->width, preparation->height);
+    } else if (current) {
+        fprintf(stderr,
+                "[WGPU-CHARACTER-VISIBILITY] prepare=0 size=%ux%u\n",
+                preparation->width, preparation->height);
+        wgpu_release_skinned_visibility_resources();
+        s_skinned_visibility_prepare_state =
+            WGPU_SKINNED_VISIBILITY_PREPARE_IDLE;
+        platform_modern_character_visibility_fail();
+    }
+    free(preparation);
+}
+
+/* Start an optional allocation transaction and return immediately. Both
+ * scopes are popped asynchronously; no handle is encoded until both callbacks
+ * prove that validation and OOM stayed contained. */
+static bool wgpu_skinned_visibility_prepare(
+    uint32_t width, uint32_t height) {
+    if (wgpu_skinned_visibility_resources_ready(width, height)) {
+        s_skinned_visibility_prepare_state =
+            WGPU_SKINNED_VISIBILITY_PREPARE_READY;
+        return true;
+    }
+    if (s_skinned_visibility_prepare_state ==
+            WGPU_SKINNED_VISIBILITY_PREPARE_PENDING) return false;
+    if (width == 0u || height == 0u || s_device == NULL) {
+        platform_modern_character_visibility_fail();
+        return false;
+    }
+    struct WgpuSkinnedVisibilityPreparation *preparation =
+        (struct WgpuSkinnedVisibilityPreparation *)calloc(
+            1u, sizeof(*preparation));
+    if (preparation == NULL) {
+        platform_modern_character_visibility_fail();
+        return false;
+    }
+    preparation->generation = s_skinned_visibility_generation;
+    preparation->width = width;
+    preparation->height = height;
+    preparation->callbacks_remaining = 2u;
+    preparation->creation_ok = true;
+    preparation->scopes_ok = true;
+    s_skinned_visibility_prepare_state =
+        WGPU_SKINNED_VISIBILITY_PREPARE_PENDING;
+    wgpuDevicePushErrorScope(s_device, WGPUErrorFilter_OutOfMemory);
+    wgpuDevicePushErrorScope(s_device, WGPUErrorFilter_Validation);
+
+    if (s_skinned_visibility_query_set == NULL ||
+        s_skinned_visibility_resolve == NULL ||
+        s_skinned_visibility_readback == NULL) {
         WGPUQuerySetDescriptor query = WGPU_QUERY_SET_DESCRIPTOR_INIT;
         WGPUBufferDescriptor resolve = {0};
         WGPUBufferDescriptor readback = {0};
         WGPUQuerySet new_query_set = NULL;
         WGPUBuffer new_resolve = NULL;
         WGPUBuffer new_readback = NULL;
+        if (s_skinned_visibility_query_set != NULL) {
+            wgpuQuerySetRelease(s_skinned_visibility_query_set);
+            s_skinned_visibility_query_set = NULL;
+        }
+        if (s_skinned_visibility_resolve != NULL) {
+            wgpuBufferRelease(s_skinned_visibility_resolve);
+            s_skinned_visibility_resolve = NULL;
+        }
+        if (s_skinned_visibility_readback != NULL) {
+            wgpuBufferRelease(s_skinned_visibility_readback);
+            s_skinned_visibility_readback = NULL;
+        }
         query.label = wgpu_sv("workshop-character-visibility");
         query.type = WGPUQueryType_Occlusion;
         query.count = WGPU_SKINNED_VISIBILITY_QUERIES;
@@ -10328,41 +10507,80 @@ static bool wgpu_skinned_visibility_resources(
             if (new_readback != NULL) wgpuBufferRelease(new_readback);
             if (new_resolve != NULL) wgpuBufferRelease(new_resolve);
             if (new_query_set != NULL) wgpuQuerySetRelease(new_query_set);
-            return false;
+            preparation->creation_ok = false;
+        } else {
+            s_skinned_visibility_query_set = new_query_set;
+            s_skinned_visibility_resolve = new_resolve;
+            s_skinned_visibility_readback = new_readback;
         }
-        s_skinned_visibility_query_set = new_query_set;
-        s_skinned_visibility_resolve = new_resolve;
-        s_skinned_visibility_readback = new_readback;
     }
-    if (s_skinned_visibility_depth_view != NULL &&
-        s_skinned_visibility_width == width &&
-        s_skinned_visibility_height == height) return true;
-    wgpu_release_skinned_visibility_target();
-    WGPUTextureDescriptor descriptor = {0};
-    WGPUExtent3D extent = {width, height, 1u};
-    descriptor.label = wgpu_sv("workshop-character-isolated-depth");
-    descriptor.size = extent;
-    descriptor.mipLevelCount = 1u;
-    descriptor.sampleCount = 1u;
-    descriptor.dimension = WGPUTextureDimension_2D;
-    descriptor.format = WGPU_DEPTH_FORMAT;
-    descriptor.usage = WGPUTextureUsage_RenderAttachment;
-    s_skinned_visibility_depth_tex = WGPU_FAULT_CREATE(
-        SKINNED_VISIBILITY_TEXTURE,
-        wgpuDeviceCreateTexture(s_device, &descriptor));
-    if (s_skinned_visibility_depth_tex != NULL) {
-        s_skinned_visibility_depth_view = WGPU_FAULT_CREATE(
-            SKINNED_VISIBILITY_VIEW,
-            wgpuTextureCreateView(
-                s_skinned_visibility_depth_tex, NULL));
-    }
-    if (s_skinned_visibility_depth_view == NULL) {
+    if (s_skinned_visibility_depth_view == NULL ||
+        s_skinned_visibility_width != width ||
+        s_skinned_visibility_height != height) {
         wgpu_release_skinned_visibility_target();
-        return false;
+        WGPUTextureDescriptor descriptor = {0};
+        WGPUExtent3D extent = {width, height, 1u};
+        descriptor.label = wgpu_sv("workshop-character-isolated-depth");
+        descriptor.size = extent;
+        descriptor.mipLevelCount = 1u;
+        descriptor.sampleCount = 1u;
+        descriptor.dimension = WGPUTextureDimension_2D;
+        descriptor.format = WGPU_DEPTH_FORMAT;
+        descriptor.usage = WGPUTextureUsage_RenderAttachment;
+        s_skinned_visibility_depth_tex = WGPU_FAULT_CREATE(
+            SKINNED_VISIBILITY_TEXTURE,
+            wgpuDeviceCreateTexture(s_device, &descriptor));
+        if (s_skinned_visibility_depth_tex != NULL) {
+            s_skinned_visibility_depth_view = WGPU_FAULT_CREATE(
+                SKINNED_VISIBILITY_VIEW,
+                wgpuTextureCreateView(
+                    s_skinned_visibility_depth_tex, NULL));
+        }
+        if (s_skinned_visibility_depth_view == NULL) {
+            preparation->creation_ok = false;
+            wgpu_release_skinned_visibility_target();
+        } else {
+            s_skinned_visibility_width = width;
+            s_skinned_visibility_height = height;
+        }
     }
-    s_skinned_visibility_width = width;
-    s_skinned_visibility_height = height;
-    return true;
+    for (uint32_t index = 0u;
+         index < s_skinned_visibility_draw_count; ++index) {
+        const struct WgpuSkinnedVisibilityDraw *command =
+            &s_skinned_visibility_draws[index];
+        if (command->asset == NULL ||
+            command->primitive >= command->asset->primitive_count) {
+            preparation->creation_ok = false;
+            continue;
+        }
+        const struct GfxModernPrimitive *primitive =
+            &command->asset->primitives[command->primitive];
+        if (primitive->material >= command->asset->material_count) {
+            preparation->creation_ok = false;
+            continue;
+        }
+        const uint32_t material_flags =
+            command->asset->materials[primitive->material].flags;
+        if (wgpu_skinned_pipeline_for(
+                material_flags,
+                WGPU_SKINNED_PIPELINE_VISIBILITY_SEED) == NULL ||
+            wgpu_skinned_pipeline_for(
+                material_flags,
+                WGPU_SKINNED_PIPELINE_VISIBILITY_EQUAL) == NULL) {
+            preparation->creation_ok = false;
+        }
+    }
+
+    for (uint32_t index = 0u; index < 2u; ++index) {
+        WGPUPopErrorScopeCallbackInfo callback =
+            WGPU_POP_ERROR_SCOPE_CALLBACK_INFO_INIT;
+        callback.mode = WGPUCallbackMode_AllowProcessEvents;
+        callback.callback =
+            wgpu_skinned_visibility_prepare_scope_callback;
+        callback.userdata1 = preparation;
+        (void)wgpuDevicePopErrorScope(s_device, callback);
+    }
+    return false;
 }
 
 static bool wgpu_skinned_visibility_draw_pass(
@@ -10484,6 +10702,8 @@ static bool wgpu_skinned_visibility_draw_pass(
 
 static void wgpu_render_skinned_visibility(void) {
     if (!platform_modern_character_visibility_requested()) return;
+    if (s_skinned_visibility_prepare_state ==
+            WGPU_SKINNED_VISIBILITY_PREPARE_PENDING) return;
     if (s_encoder == NULL || s_scene_view == NULL || s_depth_view == NULL ||
         s_skinned_visibility_overflow ||
         s_skinned_visibility_draw_count == 0u ||
@@ -10511,7 +10731,6 @@ static void wgpu_render_skinned_visibility(void) {
             return;
         }
     }
-    if (!platform_modern_character_visibility_begin()) return;
     memset(&s_skinned_visibility_pending, 0,
            sizeof(s_skinned_visibility_pending));
     s_skinned_visibility_pending.version =
@@ -10554,14 +10773,14 @@ static void wgpu_render_skinned_visibility(void) {
         &s_skinned_visibility_pending.scissor[3],
         (int)first->width, (int)first->height);
     if (s_skinned_visibility_transparent_draws != 0u) {
+        if (!platform_modern_character_visibility_begin()) return;
         platform_modern_character_visibility_publish(
             &s_skinned_visibility_pending);
         return;
     }
-    if (!wgpu_skinned_visibility_resources(first->width, first->height)) {
-        platform_modern_character_visibility_fail();
-        return;
-    }
+    if (!wgpu_skinned_visibility_prepare(
+            first->width, first->height)) return;
+    if (!platform_modern_character_visibility_begin()) return;
     s_skinned_visibility_pending.qualified = 1u;
     if (!wgpu_skinned_visibility_draw_pass(
             s_skinned_visibility_depth_view, WGPULoadOp_Clear,
@@ -10658,6 +10877,8 @@ static void wgpu_skinned_visibility_submitted(bool submitted) {
     s_skinned_visibility_encoded = false;
     if (!submitted || s_skinned_visibility_readback == NULL) {
         wgpu_release_skinned_visibility_target();
+        s_skinned_visibility_prepare_state =
+            WGPU_SKINNED_VISIBILITY_PREPARE_IDLE;
         platform_modern_character_visibility_fail();
         return;
     }
@@ -10665,6 +10886,8 @@ static void wgpu_skinned_visibility_submitted(bool submitted) {
         1u, sizeof(*mapping));
     if (mapping == NULL) {
         wgpu_release_skinned_visibility_target();
+        s_skinned_visibility_prepare_state =
+            WGPU_SKINNED_VISIBILITY_PREPARE_IDLE;
         platform_modern_character_visibility_fail();
         return;
     }
@@ -10684,26 +10907,18 @@ static void wgpu_skinned_visibility_submitted(bool submitted) {
      * Drop the backend's handle immediately so a one-shot Workshop diagnostic
      * does not pin a second output-sized depth surface for the session. */
     wgpu_release_skinned_visibility_target();
+    s_skinned_visibility_prepare_state =
+        WGPU_SKINNED_VISIBILITY_PREPARE_IDLE;
 }
 
 static void wgpu_release_skinned_visibility(void) {
     ++s_skinned_visibility_generation;
     platform_modern_character_visibility_fail();
-    wgpu_release_skinned_visibility_target();
-    if (s_skinned_visibility_query_set != NULL) {
-        wgpuQuerySetRelease(s_skinned_visibility_query_set);
-    }
-    if (s_skinned_visibility_resolve != NULL) {
-        wgpuBufferRelease(s_skinned_visibility_resolve);
-    }
-    if (s_skinned_visibility_readback != NULL) {
-        wgpuBufferRelease(s_skinned_visibility_readback);
-    }
-    s_skinned_visibility_query_set = NULL;
-    s_skinned_visibility_resolve = NULL;
-    s_skinned_visibility_readback = NULL;
+    wgpu_release_skinned_visibility_resources();
     s_skinned_visibility_mapping = false;
     s_skinned_visibility_encoded = false;
+    s_skinned_visibility_prepare_state =
+        WGPU_SKINNED_VISIBILITY_PREPARE_IDLE;
 }
 
 static void wgpu_release_skinned_capture_target(void) {
@@ -11383,12 +11598,6 @@ static void wgpu_release_device_objects(void) {
         if (s_skinned_pipe[i] != NULL) wgpuRenderPipelineRelease(s_skinned_pipe[i]);
         if (s_skinned_capture_pipe[i] != NULL) {
             wgpuRenderPipelineRelease(s_skinned_capture_pipe[i]);
-        }
-        if (s_skinned_visibility_seed_pipe[i] != NULL) {
-            wgpuRenderPipelineRelease(s_skinned_visibility_seed_pipe[i]);
-        }
-        if (s_skinned_visibility_equal_pipe[i] != NULL) {
-            wgpuRenderPipelineRelease(s_skinned_visibility_equal_pipe[i]);
         }
     }
     wgpu_release_skinned_capture_target();

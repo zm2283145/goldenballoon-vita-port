@@ -1147,6 +1147,15 @@ alpha-tested fragments use the real cutoff, blended materials are explicitly
 unqualified, and a completed all-zero query is actionable “not rendered”
 evidence rather than an unavailable result. The output-sized private depth
 surface is released immediately after submission and the readback never blocks.
+The optional query set, resolve/readback buffers, isolated depth target, and
+material-specific seed/equality pipelines are prepared as one asynchronous
+validation-plus-out-of-memory error-scope transaction. No diagnostic handle is
+encoded until both scopes complete. A failed transaction releases every partial
+resource, leaves the ordinary character/game frame intact, and permits the
+Workshop's bounded three-attempt retry policy. The linked-ROM gate injects both
+a one-shot depth-allocation failure that must recover and an every-attempt
+pipeline failure that must exhaust cleanly with explicit unavailable evidence;
+neither may escalate to renderer-fatal state.
 The linked-ROM gate includes an all-BLEND package, a two-primitive OPAQUE plus
 MASK package, and the completed-zero contact fixture, so the material branches,
 multi-draw replay, and failing-zero semantics execute in the real game route.

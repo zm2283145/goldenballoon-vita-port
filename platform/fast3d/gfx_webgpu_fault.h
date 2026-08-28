@@ -144,6 +144,10 @@ extern "C" {
     X(SKINNED_VISIBILITY_READBACK,"skinned.visibility-readback") \
     X(SKINNED_VISIBILITY_TEXTURE, "skinned.visibility-texture") \
     X(SKINNED_VISIBILITY_VIEW,    "skinned.visibility-view") \
+    X(SKINNED_VISIBILITY_SEED_PIPELINE, \
+      "skinned.visibility-seed-pipeline") \
+    X(SKINNED_VISIBILITY_EQUAL_PIPELINE, \
+      "skinned.visibility-equal-pipeline") \
     X(SKINNED_VISIBILITY_PASS,    "skinned.visibility-pass")
 
 enum GfxWebgpuFaultPoint {

@@ -5054,6 +5054,14 @@ A successful all-zero query remains valid failing visual evidence: it
 distinguishes a fully clipped, back-facing, or alpha-rejected subject from an
 unavailable GPU readback. Alpha-blended materials are structurally valid but
 unqualified because they do not have one portable opaque-depth meaning.
+Two fault-injection arms own the optional-allocation boundary. A one-shot
+isolated-depth failure must be released, retried, and end with qualified exact
+visibility. A persistent diagnostic-pipeline failure must make exactly the
+Workshop's three bounded attempts, publish explicit unavailable visibility, and
+still complete the playable session without a device or renderer fatal error.
+The renderer creates those query, buffer, texture/view, and diagnostic-pipeline
+resources inside asynchronous validation and out-of-memory scopes and encodes
+the replay only after both callbacks succeed.
 
 Every arm must also publish the versioned GPU timing contract. One arm
 force-disables it and must remain explicitly unsupported with no values. A

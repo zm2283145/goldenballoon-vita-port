@@ -1250,6 +1250,74 @@ def main() -> int:
                     "transition did not expose its expected package-fallback leg"
                 )
 
+    visibility_fault_arms = [
+        ("visibility-allocation-retry", "skinned.visibility-texture", True),
+        ("visibility-allocation-exhausted",
+         "skinned.visibility-seed-pipeline@all", False),
+    ]
+    if not failures:
+        for label, fault, expect_recovery in visibility_fault_arms:
+            fault_env = {
+                key: value for key, value in os.environ.items()
+                if not key.startswith(("MDKR", "GE007_"))
+            }
+            fault_env.update(
+                LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
+                MDKR_PRESENT_PERF="1", MDKR_RENDERER="webgpu",
+                MDKR_RENDER_SCALE="1", MDKR_VIDEO_CONFIG_PATH=os.devnull,
+                MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
+                MDKR_CHARACTER_WORKSHOP_PREVIEW="car",
+                MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS="1",
+                MDKR_CUSTOM_CHARACTER_P1=PACKAGE_ID,
+                MDKR_WEBGPU_FAULT=fault,
+                MDKR64_HIDDEN="1",
+            )
+            process = run([
+                str(binary), "--headless-frames", str(FRAMES), "--rom",
+                str(rom), "--window-size", "1280x960", "--restored",
+            ], env=fault_env)
+            arm_output = process.stdout or ""
+            output += f"\n===== {label} =====\n{arm_output}"
+            prepare_failures = arm_output.count(
+                "[WGPU-CHARACTER-VISIBILITY] prepare=0"
+            )
+            fatal_output = arm_output.lower()
+            if process.returncode != 0:
+                failures.append(
+                    f"{label} exited with {process.returncode}"
+                )
+            if any(marker in fatal_output for marker in (
+                    "[fatal]", "device error", "renderer fatal",
+                    "addresssanitizer", "runtime error:")):
+                failures.append(
+                    f"{label} escalated an optional diagnostic failure"
+                )
+            if expect_recovery:
+                if (
+                    prepare_failures != 1
+                    or "[WGPU-CHARACTER-VISIBILITY] prepare=1" not in arm_output
+                    or "[WGPU-CHARACTER-VISIBILITY] ready=1" not in arm_output
+                    or not re.search(
+                        r"character_workshop_result: warmup=1 .*"
+                        r"visibility=1/1 ", arm_output
+                    )
+                ):
+                    failures.append(
+                        f"{label} did not retry and publish exact visibility"
+                    )
+            elif (
+                prepare_failures != 3
+                or "[WGPU-CHARACTER-VISIBILITY] prepare=1" in arm_output
+                or "[WGPU-CHARACTER-VISIBILITY] ready=1" in arm_output
+                or not re.search(
+                    r"character_workshop_result: warmup=1 .*"
+                    r"visibility=0/0 ", arm_output
+                )
+            ):
+                failures.append(
+                    f"{label} did not bound retries and preserve gameplay"
+                )
+
     one_player_subject = subject_capture_draws.get(
         "car-1p-pose-model-alpha-capture"
     )
@@ -1480,7 +1548,8 @@ def main() -> int:
         "RGB gameplay and transparent RGBA model-only PNG capture, "
         "exact four-contact post-solve witnesses and qualified retained-vehicle "
         "surface intersection samples, exact isolated-versus-scene "
-        "opaque-depth region evidence, one-to-four-player WebGPU "
+        "opaque-depth region evidence with recoverable, bounded optional-GPU "
+        "allocation failure, one-to-four-player WebGPU "
         "stress, exact nonblocking scene/character GPU timestamp contracts "
         "with honest capability fallback, and fail-closed invalid requests"
     )
