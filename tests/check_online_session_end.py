@@ -51,7 +51,8 @@ SESSION_END_RE = re.compile(
 FINISHED_ENGINE_RE = re.compile(
     r"^\[online-session\] FINISHED: final standings", re.MULTILINE)
 JOINER_FOLLOW_RE = re.compile(
-    r"^\[online-results\] finish: joiner follows host out of RESULTS -> LEAVE",
+    r"^\[online-results\] finish: joiner terminal advance \((?:feed-departed|press|"
+    r"self-advance)\) -> LEAVE",
     re.MULTILINE)
 HOST_FINISH_RE = re.compile(
     r"^\[online-results\] finish: host A -> LEAVE", re.MULTILINE)

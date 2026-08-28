@@ -59,6 +59,8 @@
 #include "PR/os_cont.h" /* A_BUTTON / START_BUTTON */
 #include "net/party_link.h"
 #include "online/online_standings.h" /* the shared champion sort (DRY with results) */
+#include "online/online_portraits.h" /* screens I-3: the shared portrait/name/asset
+                                        tables (DRY with charselect/results) */
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -66,15 +68,11 @@
 #include <string.h>
 
 /* Screen space (mirrored, like online_results.c). */
-#define CER_SCREEN_W 320
-#define CER_SCREEN_H 240
 #define CER_SCREEN_W_HALF 160
 
 /* ---- Local mirrors of the launcher lobby's id space (no launcher headers) --- */
 #define CER_CHAR_COUNT 10u        /* MDKR_ONLINE_CHARACTER_COUNT */
-#define CER_NO_CHARACTER 0xFFu    /* MDKR_ONLINE_NO_CHARACTER */
 #define CER_LOCAL_PAD 0           /* PLAYER_ONE */
-#define CER_SLOTS 4u              /* seats */
 
 /* The bounded celebration hold: a fixed FRAME budget (updateRate accumulates in
  * 60ths of a second, so seconds*60 -- the RES_STANDINGS_UNITS vocabulary). ~6s is
@@ -97,25 +95,9 @@
 #define CER_SFX_CELEBRATE SOUND_CROWD   /* a crowd cheer for the champion (on enter) */
 #define CER_SFX_ADVANCE SOUND_SELECT3   /* the skip/advance blip */
 
-/* Online character id -> gRacerPortraits index + canonical names (identical
- * mapping to online_results.c / online_charselect.c -- the single truth). */
-static const u8 sOnlineToPortrait[CER_CHAR_COUNT] = {
-    1u, 9u, 8u, 6u, 5u, 3u, 4u, 0u, 2u, 7u,
-};
-static const char *const sOnlineNames[CER_CHAR_COUNT] = {
-    "DIDDY", "TIMBER", "PIPSY", "TIPTUP", "CONKER",
-    "BUMPER", "BANJO", "KRUNCH", "DRUMSTICK", "T.T.",
-};
-
-/* The portrait-ONLY texture group (the same list charselect/results load). */
-static s16 sPortraitAssetIds[] = {
-    TEXTURE_ICON_PORTRAIT_KRUNCH, TEXTURE_ICON_PORTRAIT_DIDDY,
-    TEXTURE_ICON_PORTRAIT_DRUMSTICK, TEXTURE_ICON_PORTRAIT_BUMPER,
-    TEXTURE_ICON_PORTRAIT_BANJO, TEXTURE_ICON_PORTRAIT_CONKER,
-    TEXTURE_ICON_PORTRAIT_TIPTUP, TEXTURE_ICON_PORTRAIT_TT,
-    TEXTURE_ICON_PORTRAIT_PIPSY, TEXTURE_ICON_PORTRAIT_TIMBER,
-    -1,
-};
+/* Online id -> portrait / name / asset-id tables: screens I-3 DRY lift into the
+ * shared online_portraits.h (byte-identical across charselect/results/ceremony;
+ * sOnlineToPortrait[], sOnlineNames[], sPortraitAssetIds[] now live there). */
 
 /* The engine's live 2D display list + the decoded portraits + place labels
  * (declared here, not exposed by menu.h -- exactly how online_results.c reaches

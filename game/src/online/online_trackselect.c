@@ -77,7 +77,6 @@
 
 /* Screen space (mirrored, like online_charselect.c). */
 #define TS_SCREEN_W 320
-#define TS_SCREEN_H 240
 #define TS_SCREEN_W_HALF 160
 
 /* The engine's live 2D display list + menu asset table. Declared here (no shared

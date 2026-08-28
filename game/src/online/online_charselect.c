@@ -70,6 +70,8 @@
 #include "PR/os_cont.h" /* A_BUTTON / B_BUTTON / *_JPAD / START_BUTTON */
 #include "net/party_link.h"
 #include "online/online_trackselect.h" /* PD-T3: defer self-start to TRACKSELECT */
+#include "online/online_portraits.h" /* screens I-3: the shared portrait/name/asset
+                                        tables (DRY with results/ceremony) */
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -79,7 +81,6 @@
 /* Screen space (SCREEN_WIDTH/HEIGHT live in camera.h/video.h; mirrored here so
  * this TU does not pull those in just for two constants). */
 #define CS_SCREEN_W 320
-#define CS_SCREEN_H 240
 #define CS_SCREEN_W_HALF 160
 
 /* The engine's live 2D display list for the current frame. Set up by
@@ -138,28 +139,14 @@ extern DrawTexture *gRacerPortraits[10];
  *     8 Pipsy 9 Timber
  *
  * The screen is laid out in ONLINE id order (grid cell index == online char id
- * == what we publish as hover_character and what the reducer validates), so this
- * table maps that id to the portrait slot to blit. The headless lane emits the
- * resolved slot (witness `portrait=`) and asserts the mapping, so a swapped entry
- * is caught. */
-static const u8 sOnlineToPortrait[CS_CHAR_COUNT] = {
-    1u, /* 0 Diddy     -> gRacerPortraits[1] */
-    9u, /* 1 Timber    -> [9] */
-    8u, /* 2 Pipsy     -> [8] */
-    6u, /* 3 Tiptup    -> [6] */
-    5u, /* 4 Conker    -> [5] */
-    3u, /* 5 Bumper    -> [3] */
-    4u, /* 6 Banjo     -> [4] */
-    0u, /* 7 Krunch    -> [0] */
-    2u, /* 8 Drumstick -> [2] */
-    7u, /* 9 T.T.      -> [7] */
-};
-
-/* Short display names, in online id order (matches the launcher's kCharacters). */
-static const char *const sOnlineNames[CS_CHAR_COUNT] = {
-    "DIDDY", "TIMBER", "PIPSY", "TIPTUP", "CONKER",
-    "BUMPER", "BANJO", "KRUNCH", "DRUMSTICK", "T.T.",
-};
+ * == what we publish as hover_character and what the reducer validates), so the
+ * sOnlineToPortrait[] table maps that id to the portrait slot to blit. The
+ * headless lane emits the resolved slot (witness `portrait=`) and asserts the
+ * mapping, so a swapped entry is caught.
+ *
+ * screens I-3: that table + sOnlineNames[] + sPortraitAssetIds[] are the DRY lift
+ * into the shared online_portraits.h (byte-identical across charselect / results /
+ * ceremony -- the single truth, now actually single). */
 
 /* ---- Session-owned screen state (never an offline global) ------------------ */
 typedef struct MdkrOnlineCharselectState {
@@ -187,20 +174,6 @@ static u8 sLastConfirmedChar;
  * clean second entry. */
 static u32 sWitnessKey = 0xFFFFFFFFu;
 static s32 sWitnessRemoteSeat = -2;
-
-/* The exact portrait texture ids (TEXTURE_ICON_PORTRAIT_KRUNCH .. _TIMBER, all
- * ASSET_MASK_TEXTURE assets) plus the -1 terminator menu_assetgroup_load stops
- * on. A portrait-only list: menu_asset_load routes every entry to load_texture,
- * so this loads the ten faces and spawns NO menu objects (unlike the results
- * screen's mixed group). menu_racer_portraits() then binds them. */
-static s16 sPortraitAssetIds[] = {
-    TEXTURE_ICON_PORTRAIT_KRUNCH, TEXTURE_ICON_PORTRAIT_DIDDY,
-    TEXTURE_ICON_PORTRAIT_DRUMSTICK, TEXTURE_ICON_PORTRAIT_BUMPER,
-    TEXTURE_ICON_PORTRAIT_BANJO, TEXTURE_ICON_PORTRAIT_CONKER,
-    TEXTURE_ICON_PORTRAIT_TIPTUP, TEXTURE_ICON_PORTRAIT_TT,
-    TEXTURE_ICON_PORTRAIT_PIPSY, TEXTURE_ICON_PORTRAIT_TIMBER,
-    -1,
-};
 
 /* Resolved (display-only) view of the remote seat, with a bounded, NUL-forced
  * name copy -- seat->name is untrusted (T6 makes it remote-controlled). */
@@ -380,9 +353,13 @@ static void charselect_apply_input(const CsInput *in, u8 remoteChar) {
                 sound_play(CS_SFX_CONFIRM, NULL);
             }
         } else if (in->bEdge) {
-            /* Leave-to-launcher PLUMBING only (kept for PD-T6); it is NOT wired
-             * yet, so the browse help never advertises B. Edge-handled in the
-             * tick (cleared after one return) so it can never wedge the session. */
+            /* Browse-B = leave-to-room. WIRED (PD-T6d): on the descriptor-less
+             * (lobby-start) human path online_session honors this as a LEFT return
+             * to the Online Room; on the descriptor-first / scripted lanes it is
+             * the warn-once STAY stub. Edge-handled in the tick (cleared after one
+             * return) so it can never wedge the session. The browse footer
+             * advertises "B: LEAVE" (screens I-2) so the destructive input is
+             * visible on the first screen of the flow. */
             sCs.leave = 1u;
         }
         return;
@@ -617,7 +594,9 @@ static void charselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     }
 
     /* Context help / transient TAKEN flash (object-complete copy, F5). Browse
-     * never advertises B (leave-to-launcher is not wired). */
+     * advertises "B: LEAVE" (screens I-2): browse-B is a WIRED leave-to-room on
+     * the descriptor-less human path, so the destructive input is made visible on
+     * the first screen of the flow rather than a silent ejection. */
     if (sCs.ticks < sCs.takenFlashEnd) {
         char msg[32];
         (void) snprintf(msg, sizeof(msg), "TAKEN BY %.7s", rname);
@@ -625,7 +604,8 @@ static void charselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                                 ALIGN_MIDDLE_CENTER, 255, 80, 80);
     } else if (!sCs.confirmed) {
         charselect_draw_text_at(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
-                                "A: SELECT", ALIGN_MIDDLE_CENTER, 255, 255, 255);
+                                "A: SELECT   B: LEAVE", ALIGN_MIDDLE_CENTER,
+                                255, 255, 255);
     } else if (!sCs.ready) {
         charselect_draw_text_at(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
                                 "A: READY   B: CHANGE PICK", ALIGN_MIDDLE_CENTER,

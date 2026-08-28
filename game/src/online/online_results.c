@@ -58,6 +58,8 @@
                                         DRY with online_ceremony.c so the champion
                                         the CEREMONY crowns is byte-for-byte the
                                         seat this screen ranks #1. */
+#include "online/online_portraits.h" /* screens I-3: the ONE portrait/name/asset-id
+                                        set, shared DRY across the three screens. */
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -65,8 +67,6 @@
 #include <string.h>
 
 /* Screen space (mirrored, like online_charselect.c). */
-#define RES_SCREEN_W 320
-#define RES_SCREEN_H 240
 #define RES_SCREEN_W_HALF 160
 
 /* The engine's live 2D display list + the decoded portraits (declared here, not
@@ -81,7 +81,6 @@ extern char *gRacePlacementsArray[8];
 /* ---- Local mirrors of the launcher lobby's id space (no launcher headers) --- */
 #define RES_CHAR_COUNT 10u        /* MDKR_ONLINE_CHARACTER_COUNT */
 #define RES_NO_CHARACTER 0xFFu    /* MDKR_ONLINE_NO_CHARACTER */
-#define RES_NO_VEHICLE 0xFFu      /* MDKR_ONLINE_NO_VEHICLE */
 #define RES_MODE_SINGLE 0u        /* MDKR_ONLINE_MODE_SINGLE_RACE */
 #define RES_MODE_TOURNAMENT 1u    /* MDKR_ONLINE_MODE_TOURNAMENT */
 #define RES_LOCAL_PAD 0           /* PLAYER_ONE */
@@ -106,6 +105,18 @@ extern char *gRacePlacementsArray[8];
 #define RES_RESULTS_UNITS 900u   /* 15s */
 #define RES_STANDINGS_UNITS 600u /* 10s */
 
+/* Exit-gate C1: the FINAL-standings JOINER terminal self-advance backstop. The
+ * HOST holds interactively on "A: FINISH", but a non-host joiner's forward feed
+ * PARKS in RESULTS after the host finishes (the reducer never leaves RESULTS on a
+ * final race -- no REMATCH, no CLOSE), so the joiner's old "wait for the phase to
+ * leave RESULTS" exit could never fire in real play and it hung forever on the
+ * last screen of every tournament. The joiner now gets a bound INDEPENDENT of the
+ * host: a local A/B press advances immediately, and absent any input this generous
+ * dwell (the same 10s sensibility as the standings countdown -- long enough for a
+ * human to read the final table) self-advances -> LEAVE -> the joiner's OWN
+ * per-endpoint CEREMONY -> FINISHED. The host is never auto-bounded here. */
+#define RES_JOINER_TERMINAL_UNITS RES_STANDINGS_UNITS /* 10s */
+
 /* Menu SFX (the real DKR enums; same reuse as CHARSELECT). */
 #define RES_SFX_ADVANCE SOUND_SELECT3
 #define RES_SFX_TICK SOUND_MENU_PICK2
@@ -119,26 +130,9 @@ extern char *gRacePlacementsArray[8];
  * the read-only weight mirror). */
 static const u16 sTrophyPoints[8] = {9u, 7u, 5u, 3u, 1u, 0u, 0u, 0u};
 
-/* Online character id -> gRacerPortraits index (identical mapping + names to
- * online_charselect.c -- the single source of the three-orderings truth). */
-static const u8 sOnlineToPortrait[RES_CHAR_COUNT] = {
-    1u, 9u, 8u, 6u, 5u, 3u, 4u, 0u, 2u, 7u,
-};
-static const char *const sOnlineNames[RES_CHAR_COUNT] = {
-    "DIDDY", "TIMBER", "PIPSY", "TIPTUP", "CONKER",
-    "BUMPER", "BANJO", "KRUNCH", "DRUMSTICK", "T.T.",
-};
-
-/* The portrait-ONLY texture group (KRUNCH..TIMBER), the same list charselect
- * loads: menu_asset_load routes each to load_texture, so no menu OBJECTS spawn. */
-static s16 sPortraitAssetIds[] = {
-    TEXTURE_ICON_PORTRAIT_KRUNCH, TEXTURE_ICON_PORTRAIT_DIDDY,
-    TEXTURE_ICON_PORTRAIT_DRUMSTICK, TEXTURE_ICON_PORTRAIT_BUMPER,
-    TEXTURE_ICON_PORTRAIT_BANJO, TEXTURE_ICON_PORTRAIT_CONKER,
-    TEXTURE_ICON_PORTRAIT_TIPTUP, TEXTURE_ICON_PORTRAIT_TT,
-    TEXTURE_ICON_PORTRAIT_PIPSY, TEXTURE_ICON_PORTRAIT_TIMBER,
-    -1,
-};
+/* Online id -> portrait / name / asset-id tables: screens I-3 DRY lift into the
+ * shared online_portraits.h (byte-identical across charselect/results/ceremony;
+ * sOnlineToPortrait[], sOnlineNames[], sPortraitAssetIds[] now live there). */
 
 /* ---- Session-owned screen state (never an offline global) ------------------ */
 typedef struct MdkrOnlineResultsState {
@@ -174,9 +168,9 @@ static void results_test_capture(void);
 static void results_test_pump(void);
 static void results_test_reduce(void);
 static u8 results_host_press_active(void);
-static u8 results_host_press_both(void);
 static u8 results_joiner_finish_seam(void);          /* PD-T6d test seam */
 static u8 results_joiner_finish_departed(u32 stageTicks);
+static u8 results_joiner_terminal_seam(void);        /* exit-gate C1 no-seam proof */
 
 /* ======================================================================== *
  * Small helpers
@@ -262,8 +256,8 @@ static void results_text(s32 x, s32 y, s32 fontId, char *text,
 /* The "this screen is over, what does a button do now" footer, shared by the
  * single-race RESULTS terminal (F4, "RACE COMPLETE") and the tournament STANDINGS
  * terminal (F6, "CUP COMPLETE"): a pulsed label + an explicit host affordance
- * ("A: FINISH", wired to the LEAVE return) / the joiner's live waiting line. No
- * countdown and no dead button. */
+ * ("A: FINISH", wired to the LEAVE return) / the joiner's own self-advance
+ * countdown to the champion celebration (exit-gate C1). No dead button. */
 static void results_render_complete(const MdkrPartyLinkSnapshot *snap,
                                     bool haveSnap, const char *label) {
     s32 tri = results_pulse();
@@ -276,12 +270,18 @@ static void results_render_complete(const MdkrPartyLinkSnapshot *snap,
         results_text(RES_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, "A: FINISH",
                      ALIGN_MIDDLE_CENTER, 255, 255, 255);
     } else {
-        char host[16];
+        /* Exit-gate C1: the JOINER self-advances off this terminal (its feed parks
+         * in RESULTS, so it must not wait on the host). Show its own visible
+         * countdown to the champion celebration -- never the old "WAITING FOR
+         * HOST..." (misleading now, and the host may already be gone). A/B advances
+         * immediately (P2-c: the navigation input is advertised). */
+        u32 secs = results_seconds_left(RES_JOINER_TERMINAL_UNITS);
         s32 c = 130 + tri * 5;
-        results_host_name(snap, haveSnap, host, sizeof(host));
-        (void) snprintf(line, sizeof(line), "WAITING FOR %.12s...", host);
+        (void) snprintf(line, sizeof(line), "CONTINUE IN %us  (A)", secs);
         results_text(RES_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, line,
                      ALIGN_MIDDLE_CENTER, c, c, c);
+        (void) snap;
+        (void) haveSnap;
     }
 }
 
@@ -297,8 +297,13 @@ static void results_render_countdown(const MdkrPartyLinkSnapshot *snap,
     results_text(RES_SCREEN_W_HALF, 208, ASSET_FONTS_SMALLFONT, line,
                  ALIGN_MIDDLE_CENTER, 200, 200, 255);
     if (sRes.host) {
-        results_text(RES_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
-                     (char *) hostVerb, ALIGN_MIDDLE_CENTER, 255, 255, 255);
+        /* Screens I-2: advertise the (previously silent) non-final back-out. B on a
+         * non-final results/standings is a mid-tournament LEAVE-to-room, so surface
+         * it beside the host's advance affordance. */
+        char hv[40];
+        (void) snprintf(hv, sizeof(hv), "%s   B: LEAVE", hostVerb);
+        results_text(RES_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, hv,
+                     ALIGN_MIDDLE_CENTER, 255, 255, 255);
     } else {
         char host[16];
         s32 c = 130 + tri * 5;
@@ -633,7 +638,7 @@ static void results_input_scripted(ResInput *in) {
     }
     if (sRes.stage == RES_STAGE_RESULTS) {
         in->advanceEdge = 1u; /* RESULTS -> STANDINGS (host press) */
-    } else if (results_host_press_both()) {
+    } else if (results_host_press_active()) {
         /* PD-T6ac live-resident lane: also press the STANDINGS stage so the host
          * advance (-> REMATCH) fires promptly rather than after the full ~10s
          * countdown, keeping the headless resident lane fast. The scripted soak
@@ -749,32 +754,51 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
     autoFire = (sRes.stageTicks >= limit) ? 1u : 0u;
 
     if (terminal) {
-        /* F4/F6 hold: no ADVANCE. The host's A is "A: FINISH" -> LEAVE, which the
-         * session maps to FINISHED via resultsIsFinal (PD-T6d handshake). The test
-         * seam suppresses this so the JOINER path below can be exercised on a rig
-         * where the visible endpoint drove the rounds as host. */
-        if (sRes.host && manualEdge && !results_joiner_finish_seam()) {
+        /* HOST: the interactive hold. "A: FINISH" -> LEAVE, which the session maps
+         * to FINISHED via resultsIsFinal (PD-T6d handshake -> CEREMONY -> FINISHED).
+         * The host is NEVER auto-bounded here (its hold is legitimate + interactive
+         * -- do NOT give the host a countdown). The test seam suppresses this so the
+         * JOINER path below can be exercised on a rig where the visible endpoint
+         * drove the rounds as host. */
+        if (sRes.host && manualEdge && !results_joiner_finish_seam() &&
+            !results_joiner_terminal_seam()) {
             fprintf(stderr, "[online-results] finish: host A -> LEAVE\n");
             return MDKR_ONLINE_RESULTS_LEAVE;
         }
-        /* PD-T6d IMPORTANT-1: a NON-HOST (joiner) FOLLOWS the host out of the final
-         * standings. Without this, once the host "A: FINISH"es and returns, the
-         * joiner PARKS on the terminal screen forever (this branch used to return
-         * STAY before the bottom sRes.leave check -- the critical 2-human gap).
-         * Fire ONLY once the authoritative snapshot phase has LEFT RESULTS (the
-         * host/reducer departed) -- never on the joiner's own countdown -- so it
-         * cannot pre-empt the host. The session maps this LEAVE to FINISHED
-         * (resultsIsFinal), a non-host FINISHED return (exit 0). The test seam
-         * forces the joiner + host-departed inputs after a render grace so this
-         * path is provable end-to-end (a real transport host-departure cannot be
-         * cheaply staged on the loopback rig; reuses the remote-vacate technique). */
-        if ((!sRes.host || results_joiner_finish_seam()) &&
-            ((haveSnap && snap.phase != (uint8_t) RES_PHASE_RESULTS) ||
-             results_joiner_finish_departed(sRes.stageTicks))) {
-            fprintf(stderr,
-                    "[online-results] finish: joiner follows host out of RESULTS "
-                    "-> LEAVE\n");
-            return MDKR_ONLINE_RESULTS_LEAVE;
+        /* JOINER (exit-gate C1): a bound INDEPENDENT of the host. The joiner's feed
+         * PARKS in RESULTS after the host finishes (the phase never leaves RESULTS),
+         * so the old "wait for the phase to depart RESULTS" exit could never fire in
+         * real play -- the joiner hung forever. It now LEAVEs on ANY of:
+         *   - a local A/START or B press (honored immediately -- the terminal no
+         *     longer swallows the joiner's input before the leave check), OR
+         *   - the generous self-advance dwell elapsing (advances with NO input), OR
+         *   - the authoritative phase actually leaving RESULTS / the departed test
+         *     seam (kept for symmetry + the pre-existing seam scenario).
+         * All route to LEAVE -> CEREMONY -> FINISHED (the joiner's own per-endpoint
+         * celebration, already no-hang). This never pre-empts the host: the host
+         * runs the sRes.host branch above and holds until it presses A. */
+        if (!sRes.host || results_joiner_finish_seam() ||
+            results_joiner_terminal_seam()) {
+            u8 joinerPress = ((in.advanceEdge || in.bEdge) &&
+                              sRes.stageTicks >= RES_INPUT_GRACE)
+                                 ? 1u
+                                 : 0u;
+            u8 joinerDwell =
+                (sRes.stageTicks >= RES_JOINER_TERMINAL_UNITS) ? 1u : 0u;
+            u8 feedDeparted =
+                ((haveSnap && snap.phase != (uint8_t) RES_PHASE_RESULTS) ||
+                 results_joiner_finish_departed(sRes.stageTicks))
+                    ? 1u
+                    : 0u;
+            if (joinerPress || joinerDwell || feedDeparted) {
+                fprintf(stderr,
+                        "[online-results] finish: joiner terminal advance (%s) -> "
+                        "LEAVE\n",
+                        joinerPress ? "press"
+                                    : (feedDeparted ? "feed-departed"
+                                                    : "self-advance"));
+                return MDKR_ONLINE_RESULTS_LEAVE;
+            }
         }
         return MDKR_ONLINE_RESULTS_STAY;
     }
@@ -996,9 +1020,6 @@ static u8 results_host_press_active(void) {
     }
     return (u8) (sHostPressActive > 0 ? 1 : 0);
 }
-static u8 results_host_press_both(void) {
-    return results_host_press_active();
-}
 
 /* PD-T6d IMPORTANT-1 proof seam (env MDKR_TEST_ONLINE_RESULTS_JOINER_FINISH): at
  * the FINAL standings only, act as a JOINER whose host has departed RESULTS so the
@@ -1019,6 +1040,27 @@ static u8 results_joiner_finish_seam(void) {
 static u8 results_joiner_finish_departed(u32 stageTicks) {
     return (u8) ((results_joiner_finish_seam() && stageTicks >= RES_INPUT_GRACE)
                      ? 1 : 0);
+}
+
+/* Exit-gate C1 NO-SEAM proof seam (env MDKR_TEST_ONLINE_RESULTS_JOINER_TERMINAL):
+ * at the FINAL standings ONLY, route the terminal into the JOINER branch (suppress
+ * the host "A: FINISH"), WITHOUT forcing results_joiner_finish_departed -- so the
+ * forward feed genuinely stays in RESULTS (the loopback reducer parks there on the
+ * final race, no REMATCH/CLOSE) and the joiner leaves via the REAL production
+ * paths only: the self-advance DWELL, or an honored A/B press. This is the seam
+ * that proves the C1 fix without the old MDKR_TEST_ONLINE_RESULTS_JOINER_FINISH
+ * departure that MASKED the bug. It only flips the terminal ROLE (the visible
+ * loopback endpoint is the host, so a real 2-process joiner cannot be cheaply
+ * staged); the self-advance/press DECISION, the FINISHED mapping via CEREMONY and
+ * the launcher read all run genuinely. Inert unless the env is set; confined to
+ * the terminal branch, so rounds 1..N-1 advance normally (as host). */
+static s8 sJoinerTerminalActive = -1;
+static u8 results_joiner_terminal_seam(void) {
+    if (sJoinerTerminalActive < 0) {
+        const char *e = getenv("MDKR_TEST_ONLINE_RESULTS_JOINER_TERMINAL");
+        sJoinerTerminalActive = (e != NULL && e[0] != '\0') ? 1 : 0;
+    }
+    return (u8) (sJoinerTerminalActive > 0 ? 1 : 0);
 }
 
 u8 mdkr_online_results_test_active(void) {

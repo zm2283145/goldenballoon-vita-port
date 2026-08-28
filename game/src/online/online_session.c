@@ -58,6 +58,7 @@ extern s32 gCurrentMenuId;
  * launcher lobby headers in (party_link.h is deliberately dependency-free). */
 #define MDKR_ONLINE_SESSION_LOBBY_PHASE 1u   /* MDKR_ONLINE_LOBBY */
 #define MDKR_ONLINE_SESSION_LOADING_PHASE 2u /* MDKR_ONLINE_LOADING */
+#define MDKR_ONLINE_SESSION_RESULTS_PHASE 4u /* MDKR_ONLINE_RESULTS */
 
 /* "No track resolved yet" sentinel for intendedTrack below -- matches the
  * forward-feed / lobby "none" width (configured_track 0xFFFF). */
@@ -717,16 +718,24 @@ static bool online_session_snapshot_has_remote_seat(
     return false;
 }
 
-/* PD-T6d (Minor-3) pre-START remote-vacated detector. While a DESCRIPTOR-LESS
- * session waits on the native CHARSELECT/TRACKSELECT screens, a remote seat that
- * VACATES (the peer left / the room dissolved) means the race can never start --
- * parking would be indefinite (only app-quit exits pre-START). Read the forward
- * feed: if a LOBBY-phase room still seats the LOCAL player but NO remote seat is
- * occupied, DEBOUNCE it (a one-frame transient must never trip), and on a
- * sustained absence note LEFT + platform_request_exit(0) so the launcher returns
- * cleanly to the room. Gated on beganWithoutDescriptor, so a descriptor-first lane
- * (whose remote stays seated through selection) never trips. Returns true (exit
- * requested) on a trip. */
+/* PD-T6d (Minor-3) remote-vacated detector. While a DESCRIPTOR-LESS session waits
+ * on a native screen, a remote seat that VACATES (the peer left / the room
+ * dissolved) means the round can never proceed -- parking would be indefinite
+ * (only app-quit exits otherwise). Read the forward feed: if a room that is still
+ * in an ACTIVE lobby-side phase (LOBBY, pre-START, or RESULTS, the post-race hold)
+ * still seats the LOCAL player but NO remote seat is occupied, DEBOUNCE it (a
+ * one-frame transient must never trip), and on a sustained absence note LEFT +
+ * platform_request_exit(0) so the launcher returns cleanly to the room. Gated on
+ * beganWithoutDescriptor, so a descriptor-first lane (whose remote stays seated
+ * through selection) never trips. Returns true (exit requested) on a trip.
+ *
+ * Exit-gate C1: extended to accept the RESULTS phase too, so the four native
+ * screens are symmetric (CHARSELECT/TRACKSELECT/CEREMONY already catch a remote
+ * departure; RESULTS was the lone screen with no graceful vacate exit). In the
+ * NORMAL tournament end the host parks in RESULTS with its seat OCCUPIED and keeps
+ * pumping, so this stays inert there and the joiner's INDEPENDENT terminal
+ * self-advance (online_results.c) drives it to CEREMONY -> FINISHED; only a
+ * genuine sustained host/remote departure during RESULTS trips this -> LEFT. */
 #define MDKR_ONLINE_SESSION_REMOTE_VACATE_DEBOUNCE 45u
 static bool online_session_detect_remote_vacated(const char *where) {
     MdkrPartyLinkSnapshot snap;
@@ -734,7 +743,8 @@ static bool online_session_detect_remote_vacated(const char *where) {
         return false;
     }
     if (!mdkr_party_link_read(&snap) ||
-        snap.phase != (uint8_t) MDKR_ONLINE_SESSION_LOBBY_PHASE ||
+        (snap.phase != (uint8_t) MDKR_ONLINE_SESSION_LOBBY_PHASE &&
+         snap.phase != (uint8_t) MDKR_ONLINE_SESSION_RESULTS_PHASE) ||
         !online_session_snapshot_has_local_seat(&snap)) {
         sOnlineSession.remoteAbsentTicks = 0u;
         return false;
@@ -1190,6 +1200,15 @@ void mdkr_online_session_tick(s32 updateRate) {
          * placements); the screen renders placements from the poll + the cup
          * points from the party_link snapshot. */
         MdkrOnlineResultsResult r;
+        /* Exit-gate C1: RESULTS remote-vacate detector (mirrors charselect :1069 /
+         * trackselect :1147), so a genuine host/remote departure or a stale feed
+         * DURING results is caught gracefully (debounced, notes LEFT + exits)
+         * instead of parking. Inert in the normal end (host parked in RESULTS with
+         * its seat occupied) -- the joiner's terminal self-advance handles that. */
+        if (online_session_detect_remote_vacated("results")) {
+            mdkr_online_results_exit();
+            break;
+        }
         if (sOnlineSession.resultsPending) {
             online_session_resident_resolve();
             /* PD-T6ac LIVE residency: FREE the just-finished race level NOW, on
@@ -1253,6 +1272,14 @@ void mdkr_online_session_tick(s32 updateRate) {
             break;
         }
         if (r == MDKR_ONLINE_RESULTS_ADVANCE) {
+            /* Screens M-5 (exit-symmetry): free the RESULTS screen on the ADVANCE
+             * return ITSELF, unconditionally -- every other screen exits on its
+             * non-STAY return, and this was the one _exit call gated on a second
+             * predicate (shouldAdvance). Idempotent (sRes.assets latch), so a
+             * later re-exit is harmless; closes the (currently unreachable)
+             * ADVANCE-while-!shouldAdvance busy-return that would re-tick a loaded
+             * screen forever. */
+            mdkr_online_results_exit();
             /* PD-T6h2b (Minor-1): the RESULTS->next-race decision. A DESCRIPTOR-LESS
              * (lobby-start) session has no MDKR_APP_TEST_ONLINE_LIVE_RESIDENT env
              * (sResidentRaces == 0), so `raceCount < sResidentRaces` is always false
@@ -1270,7 +1297,6 @@ void mdkr_online_session_tick(s32 updateRate) {
             if (shouldAdvance) {
                 /* Re-boot the NEXT race IN THIS SAME ENGINE PROCESS -- the
                  * load-bearing residency proof (>=2 direct boots). */
-                mdkr_online_results_exit();
                 if (!sOnlineSession.liveResident) {
                     /* Scripted soak held the level resident through RESULTS, so
                      * free it now before the next boot's load_level_game -- the
