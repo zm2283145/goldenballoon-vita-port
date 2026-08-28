@@ -54,6 +54,12 @@ STANDINGS_FINAL_RE = re.compile(
 CEREMONY_ENTER_RE = re.compile(
     r"^\[online-ceremony\] enter: champion seat=(\d+) name=(.+?) points=(\d+) "
     r"seats=(\d+)", re.MULTILINE)
+# I-1: the enter witness also carries champLocal (1 == the crowned seat is THIS
+# endpoint's own local seat). Used by the champion-on-disconnect scenario to prove
+# the surviving local loser is NOT crowned [YOU].
+CEREMONY_ENTER_LOCAL_RE = re.compile(
+    r"^\[online-ceremony\] enter: champion seat=(\d+) name=(.+?) points=(\d+) "
+    r"seats=(\d+) local=(\d+)", re.MULTILINE)
 CEREMONY_RENDER_RE = re.compile(
     r"^\[online-ceremony\] render champion=(\d+) points=(\d+) secs=(\d+) "
     r"host=(\d+) seats=(\d+)", re.MULTILINE)
@@ -337,6 +343,112 @@ def check_vacate(binary: Path, rom: Path, verbose: bool) -> int | None:
     return None
 
 
+def check_champion_on_disconnect(binary: Path, rom: Path, verbose: bool) -> int | None:
+    """(host-gone-champion, I-1) The champion CEREMONY must crown the TRUE cup
+    winner even when the winning seat has disconnected by ceremony enter -- it must
+    NOT recompute from a live snapshot that has lost that seat and mis-crown the
+    surviving loser.
+
+    Staging (a resident tournament -- a full 4-round cup): the REMOTE seat wins the
+    cup (MDKR_TEST_ONLINE_RESIDENT_REMOTE_WINS flips the resident soak's placements
+    so slot 1 finishes first every round), so the LOCAL endpoint is the LOSER. Both
+    seats are present through the FINAL standings, so the session CAPTURES the true
+    ranking (order[0] == the remote winner). Then MDKR_TEST_ONLINE_CEREMONY_REMOTE_ABSENT
+    makes the remote seat GENUINELY absent from the ceremony's live snapshot -- a
+    real host disconnect at ceremony enter, which no loopback rig can otherwise
+    stage (the P2 vacate seam left seats=2). The terminal role-flip
+    (MDKR_TEST_ONLINE_RESULTS_JOINER_TERMINAL) leaves the final standings as the
+    joiner would.
+
+    ASSERTS the ceremony crowns the CAPTURED winner: champion == the remote seat
+    (seat 1) with the winner's higher points, seats == 2 (the captured ranking, NOT
+    a degraded 1-seat live recompute), and champLocal == 0 (the local loser is NOT
+    told it won). The ceremony ends via the REAL remote-vacate path -- proof the
+    live snapshot truly lost the remote seat while the crown still came from the
+    capture. FINISHED still fires exactly once, rc 0.
+
+    PRE-FIX this FAILS: recomputing over the seat-absent live snapshot yields
+    count=1, order[0]=the surviving local seat, so the witness would read
+    champion=0 points=<loser total> seats=1 local=1 -- the wrong-winner defect."""
+    tag = "host-gone-champion"
+    try:
+        rc, output = run_engine(
+            binary, rom, ticks=35000, timeout=900, verbose=verbose,
+            extra_env={
+                "MDKR_TEST_ONLINE_RESIDENT": str(CUP_ROUNDS),  # a full 4-round cup
+                "MDKR_TEST_ONLINE_RESULTS_HOST_PRESS": "1",    # advance rounds fast
+                "MDKR_TEST_ONLINE_RESULTS_JOINER_TERMINAL": "1",
+                "MDKR_TEST_ONLINE_RESIDENT_REMOTE_WINS": "1",
+                "MDKR_TEST_ONLINE_CEREMONY_REMOTE_ABSENT": "1",
+                # NO CEREMONY_SKIP: let the genuine remote-vacate end the ceremony,
+                # which proves the live snapshot really lost the remote seat.
+            })
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[{tag}] run timed out (the ceremony parked, or a round hung "
+                    f"under the remote-wins/absent seams): {error}")
+    for marker in FORBIDDEN:
+        if marker in output:
+            return fail(f"[{tag}] observed forbidden marker {marker!r}", output)
+    if rc != 0:
+        return fail(f"[{tag}] process exited {rc} (expected clean 0)", output)
+    if not PHASE_CEREMONY_RE.search(output):
+        return fail(f"[{tag}] the session never detoured into the CEREMONY phase",
+                    output)
+    boots = DIRECT_BOOT_RE.findall(output)
+    if len(boots) != CUP_ROUNDS:
+        return fail(f"[{tag}] expected {CUP_ROUNDS} direct boots (a full cup before "
+                    f"the disconnect), saw {len(boots)}", output)
+    # FINISHED still fires exactly once. (This is the resident-soak engine path --
+    # engine-only, so there is no launcher-dispatch [online-session-end] read here;
+    # the launcher read is covered by the tournament scenarios above.)
+    finished = FINISHED_ENGINE_RE.findall(output)
+    if len(finished) != 1:
+        return fail(f"[{tag}] FINISHED must fire EXACTLY ONCE, saw {len(finished)}",
+                    output)
+    # The remote was GENUINELY absent at the ceremony: it ended via the real
+    # remote-vacate path (the mid-ceremony detector saw no remote seat), NOT the
+    # full timer. This is the proof the live snapshot lost the remote seat -- so a
+    # recompute WOULD have mis-crowned, yet the crown below is still correct.
+    if not CEREMONY_DONE_VACATE_RE.search(output):
+        return fail(f"[{tag}] the ceremony did not end via the remote-vacate path -- "
+                    f"the remote-absent seam did not make the live snapshot "
+                    f"seat-absent, so the seat-gone champion path was not exercised",
+                    output)
+    # The FINAL standings (both present) had the REMOTE seat (slot 1) as the cup
+    # leader -- the loser-local setup staged correctly.
+    standings = STANDINGS_FINAL_RE.findall(output)
+    if not standings:
+        return fail(f"[{tag}] no FINAL standings render to confirm the winner", output)
+    pts = [int(p) for p in standings[-1]]
+    if not pts[1] > pts[0]:
+        return fail(f"[{tag}] the remote seat (slot 1) is not the cup leader "
+                    f"(points {pts}) -- RESIDENT_REMOTE_WINS did not stage the "
+                    f"loser-local setup this scenario needs", output)
+    champ_points = max(pts)  # == pts[1], the departed winner's total
+    # THE CORE ASSERTION: the ceremony crowned the CAPTURED true winner, not the
+    # surviving local loser.
+    enter = CEREMONY_ENTER_LOCAL_RE.search(output)
+    if not enter:
+        return fail(f"[{tag}] no ceremony ENTER witness (with champLocal) to read "
+                    f"the crowned champion from", output)
+    seat, _name, points, seats, local = enter.groups()
+    if int(seat) != 1:
+        return fail(f"[{tag}] ceremony crowned seat={seat}, not the remote winner "
+                    f"seat 1 -- the surviving local loser was mis-crowned (the "
+                    f"pre-fix live recompute)", output)
+    if int(points) != champ_points:
+        return fail(f"[{tag}] ceremony champion points={points} != the winner total "
+                    f"{champ_points} -- it crowned the loser's own total", output)
+    if int(seats) != 2:
+        return fail(f"[{tag}] ceremony used a {seats}-seat ranking, not the CAPTURED "
+                    f"2-seat ranking -- it recomputed from the degraded 1-seat live "
+                    f"snapshot (the I-1 defect)", output)
+    if int(local) != 0:
+        return fail(f"[{tag}] champLocal={local} -- the local LOSER was crowned as "
+                    f"[YOU] (the pre-fix survivor mis-crown)", output)
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default="build-beta")
@@ -351,7 +463,8 @@ def main() -> int:
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
 
-    for scenario in (check_skip, check_auto, check_vacate):
+    for scenario in (check_skip, check_auto, check_vacate,
+                     check_champion_on_disconnect):
         result = scenario(binary, rom, args.verbose)
         if result is not None:
             return result
@@ -365,7 +478,12 @@ def main() -> int:
         "with NO skip and NO input the ceremony auto-advances on its bounded timer "
         "to the same single FINISHED (impossible-to-hang proof); (vacate) a remote "
         "vacating mid-ceremony ends it promptly into the same single FINISHED, "
-        "never a park; assets freed on every exit path.")
+        "never a park; assets freed on every exit path; (host-gone-champion, I-1) "
+        "with the WINNING remote seat genuinely absent from the ceremony's live "
+        "snapshot the ceremony crowns the CAPTURED true winner (the departed "
+        "remote/higher-points seat, seats=2, champLocal=0) -- NOT the surviving "
+        "local loser a 1-seat live recompute would mis-crown -- and still reaches "
+        "the single FINISHED via the real remote-vacate path.")
     return 0
 
 
