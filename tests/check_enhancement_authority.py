@@ -77,6 +77,15 @@ SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 FRAMES = 3500
 HASH_VERSION = "3"
 
+# Proof profiles, as the registry dumps them (platform/enhancement_registry.c).
+#
+# The row names how it is to be proven, and this gate dispatches on that name
+# rather than on a list of its own — the same anti-drift reason the probe value
+# lives in the row. A row whose profile this gate does not recognise fails: a
+# new proof route is a deliberate addition here, never a silent skip.
+PROFILE_SOLO_RACE = "solo_race"
+PROFILE_ADVENTURE_PARTY_3P = "adventure_party_3p"
+
 # Rows whose effect is not built yet.
 #
 # ONLY MEANINGFUL FOR `gameplay` ROWS. This started out listing presentation
@@ -226,10 +235,60 @@ def main() -> int:
             key = row.get("key", "?")
             authority = row.get("authority", "?")
             probe = row.get("probe", "")
+            profile = row.get("profile", "")
             if not probe:
                 failures.append(f"{key}: row declares no probe value")
                 continue
+            if not profile:
+                failures.append(
+                    f"{key}: row declares no proof profile — the [ENHTABLE] "
+                    f"dump must name one so this gate knows how to prove it")
+                continue
 
+            if profile == PROFILE_ADVENTURE_PARTY_3P:
+                # The full proof this profile ultimately needs runs an actual
+                # 2-4 player Adventure admission/race route and compares the
+                # off, on, and compiled-out arms. That route does not exist
+                # yet — it lands with the menu-admission task — so it is the
+                # NOT-YET-IMPLEMENTED part of this profile.
+                #
+                # What IS provable today, and is this row's authority evidence,
+                # is the OFF-arm compatibility invariant: flipping a dormant
+                # party-admission policy on the SOLO time-trial fixture must be
+                # a no-op. So the existing flip machinery still runs the row on
+                # the solo fixture and asserts the [SIMHASH] stream is
+                # UNCHANGED. A 3p row that instead MOVED the solo stream would
+                # be leaking into solo play, and — with no route yet to prove
+                # that intentional — is failed here.
+                base = run(binary, rom, work, f"{key}-default", [],
+                           args.verbose)
+                alt = run(binary, rom, work, f"{key}-probe",
+                          [f"{key}={probe}"], args.verbose)
+                if base == alt:
+                    print(f"  {key:32s} {authority:12s} inert on the solo "
+                          f"fixture (off-arm compatibility proven); full 2-4 "
+                          f"player route proof NOT YET IMPLEMENTED — lands "
+                          f"with the menu-admission task")
+                else:
+                    failures.append(
+                        f"{key}: proof profile adventure_party_3p requires the "
+                        f"row to be dormant in solo play, but flipping it to "
+                        f"'{probe}' moved the solo time-trial state stream. The "
+                        f"2-4 player route that would prove this change "
+                        f"intentional is not implemented yet (it lands with the "
+                        f"menu-admission task); until then a party-admission "
+                        f"policy that is not inert in a solo race is a "
+                        f"compatibility failure.")
+                continue
+
+            if profile != PROFILE_SOLO_RACE:
+                failures.append(
+                    f"{key}: unknown proof profile '{profile}' — this gate has "
+                    f"no route to prove it; add its dispatch here alongside the "
+                    f"profile in platform/enhancement_registry.c")
+                continue
+
+            # --- solo_race: the historical proof, unchanged. ---
             base = run(binary, rom, work, f"{key}-default", [], args.verbose)
             alt = run(binary, rom, work, f"{key}-probe",
                       [f"{key}={probe}"], args.verbose)

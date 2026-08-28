@@ -11,6 +11,7 @@ static const MdkrEnhancement s_enhancements[] = {
         MDKR_ENH_PRESENTATION,
         MDKR_ENH_CAT_DISPLAY,
         "1",   /* mph readout on */
+        MDKR_ENH_PROOF_SOLO_RACE,
     },
     {
         MDKR_ENH_DRAW_DISTANCE,
@@ -21,6 +22,7 @@ static const MdkrEnhancement s_enhancements[] = {
         MDKR_ENH_PRESENTATION,
         MDKR_ENH_CAT_DISPLAY,
         "400", /* the old top of the range; still valid now that it's 100..1600 */
+        MDKR_ENH_PROOF_SOLO_RACE,
     },
     {
         MDKR_ENH_LOD_BIAS,
@@ -29,6 +31,7 @@ static const MdkrEnhancement s_enhancements[] = {
         MDKR_ENH_PRESENTATION,
         MDKR_ENH_CAT_DISPLAY,
         "2",   /* hold high detail furthest out */
+        MDKR_ENH_PROOF_SOLO_RACE,
     },
     {
         MDKR_ENH_AI_DIFFICULTY,
@@ -38,6 +41,7 @@ static const MdkrEnhancement s_enhancements[] = {
         MDKR_ENH_GAMEPLAY,
         MDKR_ENH_CAT_DIFFICULTY,
         "brutal",
+        MDKR_ENH_PROOF_SOLO_RACE,
     },
 };
 
@@ -66,10 +70,19 @@ static const char *authority_name(MdkrEnhAuthority authority) {
 
 static const char *category_name(MdkrEnhCategory category) {
     switch (category) {
-    case MDKR_ENH_CAT_DISPLAY:    return "display";
-    case MDKR_ENH_CAT_DIFFICULTY: return "difficulty";
-    case MDKR_ENH_CAT_COSMETIC:   return "cosmetic";
-    default:                      return "unknown";
+    case MDKR_ENH_CAT_DISPLAY:     return "display";
+    case MDKR_ENH_CAT_DIFFICULTY:  return "difficulty";
+    case MDKR_ENH_CAT_COSMETIC:    return "cosmetic";
+    case MDKR_ENH_CAT_MULTIPLAYER: return "multiplayer";
+    default:                       return "unknown";
+    }
+}
+
+static const char *proof_profile_name(MdkrEnhProofProfile profile) {
+    switch (profile) {
+    case MDKR_ENH_PROOF_SOLO_RACE:          return "solo_race";
+    case MDKR_ENH_PROOF_ADVENTURE_PARTY_3P: return "adventure_party_3p";
+    default:                                return "unknown";
     }
 }
 
@@ -79,12 +92,14 @@ void mdkr_enhancement_dump_table(void) {
         const MdkrVideoSchema *schema = mdkr_video_schema(e->key);
         /* The schema name, not the label: the gate has to set this key through
          * the same string the ini and --video-set accept, and a player-facing
-         * label is not that string. */
-        printf("[ENHTABLE] key=%s authority=%s category=%s probe=%s\n",
+         * label is not that string. The proof profile rides along so the gate
+         * dispatches on the row's own declaration, not a copy in the test. */
+        printf("[ENHTABLE] key=%s authority=%s category=%s probe=%s profile=%s\n",
                schema != NULL ? schema->name : "?",
                authority_name(e->authority),
                category_name(e->category),
-               e->probe_value != NULL ? e->probe_value : "");
+               e->probe_value != NULL ? e->probe_value : "",
+               proof_profile_name(e->proof_profile));
     }
     fflush(stdout);
 }
