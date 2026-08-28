@@ -43,6 +43,18 @@ static const MdkrEnhancement s_enhancements[] = {
         "brutal",
         MDKR_ENH_PROOF_SOLO_RACE,
     },
+    {
+        MDKR_ENH_ADVENTURE_PARTY,
+        "Adventure Party",
+        "Lets two to four local players explore and race together in "
+        "Adventure. With it on, this setting owns Adventure admission for "
+        "those players; the JOINTVENTURE magic code does not add lead swapping "
+        "on top.",
+        MDKR_ENH_GAMEPLAY,
+        MDKR_ENH_CAT_MULTIPLAYER,
+        "1",   /* on: two-to-four-player Adventure admission */
+        MDKR_ENH_PROOF_ADVENTURE_PARTY_3P,
+    },
 };
 
 #define MDKR_ENHANCEMENT_COUNT \

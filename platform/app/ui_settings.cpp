@@ -1373,9 +1373,10 @@ struct EnhancementGroup {
     const char *label;
 };
 const EnhancementGroup kEnhancementGroups[] = {
-    {MDKR_ENH_CAT_DISPLAY,    "On screen"},
-    {MDKR_ENH_CAT_DIFFICULTY, "Difficulty"},
-    {MDKR_ENH_CAT_COSMETIC,   "Appearance"},
+    {MDKR_ENH_CAT_DISPLAY,     "On screen"},
+    {MDKR_ENH_CAT_DIFFICULTY,  "Difficulty"},
+    {MDKR_ENH_CAT_COSMETIC,    "Appearance"},
+    {MDKR_ENH_CAT_MULTIPLAYER, "Multiplayer"},
 };
 
 // Restores the enhancement keys, and only those, to their schema defaults.

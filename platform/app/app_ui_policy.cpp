@@ -210,6 +210,7 @@ AppUiSettingsSection AppUi_settingsSection(MdkrVideoKey key) {
         case MDKR_ENH_DRAW_DISTANCE:
         case MDKR_ENH_LOD_BIAS:
         case MDKR_ENH_AI_DIFFICULTY:
+        case MDKR_ENH_ADVENTURE_PARTY:
             return AppUiSettingsSection::Enhancements;
         case MDKR_CONTENT_PACKS_ENABLED:
         case MDKR_CONTENT_PACK_DISABLED:
