@@ -63,9 +63,9 @@ struct Snapshot {
     /* Decode-only migration witness. v1-v12 approvals predate exact
      * composed-scene acknowledgement and are reopened on load. */
     bool fitSceneReviewContractPresent = false;
-    /* Decode-only migration witness. v14 vehicle approvals include the
-     * representative-motion contract; older select approval remains valid. */
-    bool fitMotionReviewContractPresent = false;
+    /* Decode-only migration witness. v15 approvals include the complete
+     * select/race semantic battery; every older approval reopens once. */
+    bool fitSemanticReviewContractPresent = false;
 
     float scale = 1.0f;
     float offset[3] = {};

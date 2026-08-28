@@ -1442,7 +1442,7 @@ def main() -> int:
             MDKR64_HIDDEN="1",
         )
         process = run([
-            str(binary), "--headless-frames", "720", "--rom",
+            str(binary), "--headless-frames", "1400", "--rom",
             str(rom), "--window-size", "1280x960", "--restored",
         ], env=motion_env)
         motion_output = process.stdout or ""
@@ -1456,8 +1456,10 @@ def main() -> int:
             motion_output,
         )
         expected_motion = [
-            (0, 4, 0), (1, 4, 1000), (2, 10, 500),
-            (3, 11, 500), (4, 12, 500),
+            (0, 4, 0), (1, 4, 1000), (2, 5, 500),
+            (3, 6, 500), (4, 8, 500), (5, 7, 500),
+            (6, 9, 500), (7, 10, 500), (8, 11, 500),
+            (9, 12, 500), (10, 13, 500),
         ]
         observed_motion = [tuple(map(int, row[:3])) for row in samples]
         if process.returncode != 0:
@@ -1467,7 +1469,7 @@ def main() -> int:
         if observed_motion != expected_motion:
             failures.append(
                 "representative motion did not publish the exact fixed "
-                f"five-state sequence: {observed_motion!r}"
+                f"complete race-semantic sequence: {observed_motion!r}"
             )
         for row in samples:
             (_, _, _, draws, _, fallback, camera_flags, crossings,
@@ -1485,11 +1487,11 @@ def main() -> int:
                     f"{row!r}"
                 )
                 break
-        if ("character_motion_review: complete samples=5 mask=1f" not in
+        if ("character_motion_review: complete samples=11 mask=7ff" not in
                 motion_output or "[SDL] headless: reached" in motion_output):
             failures.append(
                 "representative motion did not return automatically after "
-                "five fresh renderer witnesses"
+                "11 fresh renderer witnesses"
             )
         invalid_motion_env = dict(motion_env)
         invalid_motion_env["MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE"] = "500"
@@ -1501,11 +1503,69 @@ def main() -> int:
         output += ("\n===== invalid-representative-motion =====\n" +
                    invalid_motion_output)
         if (process.returncode == 0 or
-                "representative motion review requires" not in
+                "semantic motion review requires" not in
                 invalid_motion_output):
             failures.append(
                 "malformed representative motion did not fail closed at the "
                 "engine boundary"
+            )
+
+        select_motion_env = dict(motion_env)
+        select_motion_env.update(
+            MDKR_CHARACTER_WORKSHOP_PREVIEW="select",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE="select.idle",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE="500",
+        )
+        process = run([
+            str(binary), "--headless-frames", "600", "--rom", str(rom),
+            "--window-size", "1280x960", "--restored",
+        ], env=select_motion_env)
+        select_motion_output = process.stdout or ""
+        output += ("\n===== select-complete-motion =====\n" +
+                   select_motion_output)
+        select_samples = re.findall(
+            r"character_motion_review: sample=(\d+) pose=(\d+) phase=(\d+) "
+            r"draws=(\d+) source=([1-3]) fallback=(\d+) "
+            r"cameraFlags=([0-9a-f]+) crossings=(\d+) inside=(\d+) "
+            r"visibility=(\d+)/(\d+) contactSolves=(\d+) "
+            r"contactMask=([0-9a-f]+) contactMaxUm=(\d+)",
+            select_motion_output,
+        )
+        observed_select_motion = [
+            tuple(map(int, row[:3])) for row in select_samples
+        ]
+        if process.returncode != 0:
+            failures.append(
+                f"select semantic motion exited with {process.returncode}"
+            )
+        if observed_select_motion != [
+                (0, 1, 500), (1, 2, 500), (2, 3, 500)]:
+            failures.append(
+                "select semantic motion did not publish idle/hover/confirm: "
+                f"{observed_select_motion!r}"
+            )
+        for row in select_samples:
+            (_, _, _, draws, _, fallback, camera_flags, crossings,
+             inside, scene_tiles, isolated_tiles, contact_solves,
+             contact_mask, contact_max) = (
+                int(value, 16) if index in (6, 12) else int(value)
+                for index, value in enumerate(row)
+            )
+            if (draws < 60 or fallback > draws or camera_flags & ~0x7F or
+                    crossings != 0 or inside != 0 or scene_tiles < 0 or
+                    scene_tiles > isolated_tiles or contact_solves != 0 or
+                    contact_mask != 0 or contact_max != 0):
+                failures.append(
+                    "select semantic motion returned an inconsistent sample: "
+                    f"{row!r}"
+                )
+                break
+        if ("character_motion_review: complete samples=3 mask=7" not in
+                select_motion_output or
+                "[SDL] headless: reached" in select_motion_output):
+            failures.append(
+                "select semantic motion did not return automatically after "
+                "three fresh renderer witnesses"
             )
 
     visual_rejection_arms = [
@@ -1634,8 +1694,8 @@ def main() -> int:
         "measurements, exclusive stabilized "
         "RGB gameplay and transparent RGBA model-only PNG capture, "
         "exact four-contact post-solve witnesses and qualified retained-vehicle "
-        "surface intersection samples, a bounded one-session start/steer/"
-        "airborne/land/finish representative-motion battery, exact isolated-versus-scene "
+        "surface intersection samples, bounded one-session three-state select "
+        "and complete eleven-sample race semantic batteries, exact isolated-versus-scene "
         "opaque-depth region evidence with recoverable, bounded optional-GPU "
         "allocation failure, one-to-four-player WebGPU "
         "stress, exact nonblocking scene/character GPU timestamp contracts "

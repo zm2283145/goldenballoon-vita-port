@@ -449,13 +449,18 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
               cfg->character_preview_studio != 1) ||
              (cfg->character_motion_review &&
               (cfg->character_preview_context <
-                   MDKR_CHARACTER_PREVIEW_CAR ||
+                   MDKR_CHARACTER_PREVIEW_SELECT ||
                cfg->character_preview_context >
                    MDKR_CHARACTER_PREVIEW_PLANE ||
                cfg->character_preview_players != 1 ||
-               cfg->character_preview_pose !=
-                   MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER ||
-               cfg->character_preview_pose_phase_milli != 0u ||
+               (cfg->character_preview_context ==
+                        MDKR_CHARACTER_PREVIEW_SELECT
+                    ? cfg->character_preview_pose !=
+                              MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE ||
+                          cfg->character_preview_pose_phase_milli != 500u
+                    : cfg->character_preview_pose !=
+                              MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER ||
+                          cfg->character_preview_pose_phase_milli != 0u) ||
                cfg->character_preview_transition_from_pose !=
                    MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
                cfg->character_preview_transition_from_phase_milli != 0u ||
@@ -791,6 +796,11 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
                 MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION;
             cfg->character_motion_review_result->context =
                 cfg->character_preview_context;
+            cfg->character_motion_review_result->sample_count =
+                cfg->character_preview_context ==
+                        MDKR_CHARACTER_PREVIEW_SELECT
+                    ? MDKR_CHARACTER_MOTION_REVIEW_SELECT_SAMPLE_COUNT
+                    : MDKR_CHARACTER_MOTION_REVIEW_VEHICLE_SAMPLE_COUNT;
             g_mdkrCharacterMotionReviewResult =
                 cfg->character_motion_review_result;
         }

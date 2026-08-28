@@ -266,36 +266,50 @@ typedef struct MdkrCharacterPreviewResult {
 // underlying bounded counters.
 extern MdkrCharacterPreviewResult *g_mdkrCharacterPreviewResult;
 
-/* A representative-motion review is deliberately a separate contract from
- * the clean live performance sample above. One exact vehicle session holds
- * five authored gameplay semantics long enough to collect a fresh fit,
- * gameplay-camera, retained-body, contact, and opaque-depth witness for each.
- * Keeping the samples separate prevents a favourable frame from hiding a
- * different pose's clipping or occlusion, without invalidating durable v18
- * timing evidence. */
+/* A semantic-motion review is deliberately a separate contract from the clean
+ * live performance sample above. One exact session holds all three select
+ * states or eleven race samples long enough to collect fresh fit,
+ * gameplay-camera, visibility, and (for vehicles) retained-body/contact
+ * witnesses. Keeping the samples separate prevents a favourable frame from
+ * hiding another state's clipping or occlusion without invalidating durable
+ * v18 timing evidence. */
 typedef enum MdkrCharacterMotionReviewSample {
     MDKR_CHARACTER_MOTION_REVIEW_START = 0,
     MDKR_CHARACTER_MOTION_REVIEW_STEER,
+    MDKR_CHARACTER_MOTION_REVIEW_REVERSE,
+    MDKR_CHARACTER_MOTION_REVIEW_BOOST,
+    MDKR_CHARACTER_MOTION_REVIEW_ITEM,
+    MDKR_CHARACTER_MOTION_REVIEW_DAMAGE,
+    MDKR_CHARACTER_MOTION_REVIEW_SPIN,
     MDKR_CHARACTER_MOTION_REVIEW_AIRBORNE,
     MDKR_CHARACTER_MOTION_REVIEW_LAND,
     MDKR_CHARACTER_MOTION_REVIEW_FINISH,
+    MDKR_CHARACTER_MOTION_REVIEW_FINISH_LOSE,
     MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT,
 } MdkrCharacterMotionReviewSample;
+
+#define MDKR_CHARACTER_MOTION_REVIEW_SELECT_SAMPLE_COUNT 3u
+#define MDKR_CHARACTER_MOTION_REVIEW_VEHICLE_SAMPLE_COUNT \
+    ((unsigned)MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT)
+#define MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_MASK(count) \
+    ((1u << (count)) - 1u)
 
 typedef struct MdkrCharacterMotionReviewResult {
     unsigned version;
     int started;
     int completed;
     MdkrCharacterPreviewContext context;
+    unsigned sample_count;
     unsigned completed_mask;
     unsigned failed_sample;
     MdkrCharacterPreviewResult
         samples[MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT];
 } MdkrCharacterMotionReviewResult;
 
-#define MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION 1u
+#define MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION 2u
 #define MDKR_CHARACTER_MOTION_REVIEW_ALL_SAMPLES \
-    ((1u << MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT) - 1u)
+    MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_MASK( \
+        MDKR_CHARACTER_MOTION_REVIEW_VEHICLE_SAMPLE_COUNT)
 
 extern MdkrCharacterMotionReviewResult *g_mdkrCharacterMotionReviewResult;
 

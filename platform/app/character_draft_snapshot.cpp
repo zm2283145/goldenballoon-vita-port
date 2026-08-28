@@ -10,6 +10,7 @@
 namespace {
 
 constexpr uint32_t kFitSceneReviewVersion = 13u;
+constexpr uint32_t kFitSemanticReviewVersion = 15u;
 constexpr uint32_t kFitMotionReviewVersion = 14u;
 constexpr uint32_t kTransitionInspectionVersion = 12u;
 constexpr uint32_t kContactExceptionsVersion = 11u;
@@ -17,7 +18,7 @@ constexpr uint32_t kRigReviewTasksVersion = 10u;
 constexpr uint32_t kAnimationIntentVersion = 9u;
 constexpr uint32_t kTopInspectionVersion = 8u;
 constexpr uint32_t kPortraitSubjectMaskVersion = 7u;
-constexpr uint32_t kVersion = kFitMotionReviewVersion;
+constexpr uint32_t kVersion = kFitSemanticReviewVersion;
 constexpr uint32_t kPortraitSourceVersion = 6u;
 constexpr uint32_t kVisualInspectionVersion = 5u;
 constexpr uint32_t kPoseInspectionVersion = 4u;
@@ -459,6 +460,7 @@ bool decode(const std::string &payload, Snapshot &snapshot,
         payload.compare(0u, 4u, "MDWD") != 0 ||
         !readU32(payload, offset, version) ||
         (version != kVersion &&
+         version != kFitMotionReviewVersion &&
          version != kFitSceneReviewVersion &&
          version != kTransitionInspectionVersion &&
          version != kContactExceptionsVersion &&
@@ -702,11 +704,15 @@ bool decode(const std::string &payload, Snapshot &snapshot,
         parsed.reviewedContexts = 0u;
         parsed.contactExceptionContexts = 0u;
     }
-    if (version >= kFitMotionReviewVersion) {
-        parsed.fitMotionReviewContractPresent = true;
+    if (version >= kFitSemanticReviewVersion) {
+        parsed.fitSemanticReviewContractPresent = true;
     } else if (parsed.fitSceneReviewContractPresent) {
-        parsed.reviewedContexts &= 1u;
-        parsed.contactExceptionContexts &= parsed.reviewedContexts;
+        /* v14 proved three vehicle contexts with a five-state subset and v13
+         * proved select with one pose. Neither can silently inherit the v15
+         * complete semantic batteries, so every fit remains editable but all
+         * approvals reopen once. */
+        parsed.reviewedContexts = 0u;
+        parsed.contactExceptionContexts = 0u;
     }
     if (offset != payload.size() ||
         !snapshotValid(parsed, error, version == kLegacyVersion)) return false;

@@ -115,7 +115,7 @@ int main() {
                parsed.reviewedContexts == 3u &&
                parsed.contactExceptionContexts == 2u &&
                parsed.fitSceneReviewContractPresent &&
-               parsed.fitMotionReviewContractPresent &&
+               parsed.fitSemanticReviewContractPresent &&
                parsed.scale == 1.25f &&
                parsed.offset[1] == -12.5f &&
                parsed.contexts[1].contacts[0][0] == -0.25f &&
@@ -173,14 +173,22 @@ int main() {
     constexpr size_t contactExceptionTailBytes = 4u;
     constexpr size_t transitionInspectionTailBytes = 12u;
     constexpr size_t fitSceneReviewTailBytes = 4u;
+    std::string versionFourteen = encoded;
+    writeU32(versionFourteen, 4u, 14u);
+    expect(decode(versionFourteen, parsed, error) &&
+               parsed.reviewedContexts == 0u &&
+               parsed.contactExceptionContexts == 0u &&
+               parsed.fitSceneReviewContractPresent &&
+               !parsed.fitSemanticReviewContractPresent,
+           "version-fourteen drafts reopen every approval for complete select and race semantic review");
     std::string versionThirteen = encoded;
     writeU32(versionThirteen, 4u, 13u);
     expect(decode(versionThirteen, parsed, error) &&
-               parsed.reviewedContexts == 1u &&
+               parsed.reviewedContexts == 0u &&
                parsed.contactExceptionContexts == 0u &&
                parsed.fitSceneReviewContractPresent &&
-               !parsed.fitMotionReviewContractPresent,
-           "version-thirteen drafts preserve select approval and reopen vehicle reviews for representative motion");
+               !parsed.fitSemanticReviewContractPresent,
+           "version-thirteen drafts reopen every approval for complete semantic review");
     std::string versionTwelve = encoded.substr(
         0u, encoded.size() - fitSceneReviewTailBytes);
     writeU32(versionTwelve, 4u, 12u);

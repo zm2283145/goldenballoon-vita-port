@@ -31,6 +31,7 @@ def main() -> int:
     main_app = source("platform/app/main_app.cpp")
     boot = source("platform/app/engine_boot.cpp")
     bridge = source("platform/modern_character_studio_bridge.h")
+    draft_snapshot = source("platform/app/character_draft_snapshot.cpp")
     runtime_h = source("platform/modern_character_runtime.h")
     runtime = source("platform/modern_character_runtime.c")
     entry = source("platform/app/engine_entry.h")
@@ -94,10 +95,10 @@ def main() -> int:
     require("PR/gbi.h" not in bridge,
             "the app-safe studio bridge regressed into renderer/display-list coupling")
 
-    require("Review representative motion" in settings and
+    require("Review all motion states" in settings and
             "representativeMotionReviewRoute" in settings and
             "MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT" in entry,
-            "vehicle fitting lost its one-action five-state review workflow")
+            "fitting lost its one-action complete semantic review workflow")
     require("character_motion_review" in launcher and
             "character_motion_review_result" in launcher and
             "g_mdkrCharacterMotionReviewResult" in game,
@@ -107,22 +108,36 @@ def main() -> int:
             "race.airborne\", 500u" in game and
             "race.land\", 500u" in game and
             "race.finish_win\", 500u" in game and
+            "race.reverse\", 500u" in game and
+            "race.boost\", 500u" in game and
+            "race.damage\", 500u" in game and
+            "race.item\", 500u" in game and
+            "race.spin\", 500u" in game and
+            "race.finish_lose\", 500u" in game and
+            "select.idle\", 500u" in game and
+            "select.hover\", 500u" in game and
+            "select.confirm\", 500u" in game and
             "WORKSHOP_MOTION_REVIEW_SETTLE_DRAWS 60u" in game,
-            "representative review no longer settles the fixed start/steer/airborne/land/finish battery")
+            "semantic review no longer settles every select and race state")
     require("mdkr_modern_character_inspection_pose_settled(0)" in game and
             "mdkr_modern_character_inspection_pose_settled" in runtime_h and
             "slot->inspection_generation == s_inspection_generation" in runtime,
             "representative review lacks an engine-owned exact-pose settling witness")
     require("representativeMotionReady" in settings and
-            "mdkr-character-fit-review-v3-motion-battery" in settings and
-            "all five exact motion states" in settings and
+            "mdkr-character-fit-review-v4-semantic-battery" in settings and
+            "all 11 exact race samples" in settings and
+            "idle, hover, and confirm" in settings and
             "currentCharacterMotionReview" in settings and
             "value.fitSha256 == fit" in settings and
             "value.presentationSha256 == presentation" in settings,
             "vehicle approval can bypass current representative renderer evidence")
+    require("mdkr-fit-history-v6" in settings and
+            "kFitSemanticReviewVersion = 15u" in draft_snapshot and
+            "parsed.reviewedContexts = 0u" in draft_snapshot,
+            "legacy single-pose/five-state approvals can inherit the complete semantic-review meaning")
 
     print("character Offset Studio contract passed: exact live scene, input isolation, "
-          "post-edit fit handoff, one-action representative motion evidence, "
+          "post-edit fit handoff, one-action complete semantic evidence, "
           "truthful approval, and bounded recovery")
     return 0
 

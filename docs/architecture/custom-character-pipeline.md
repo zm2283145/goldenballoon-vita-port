@@ -1182,13 +1182,16 @@ product, stable-frame count, byte count, and exact opaque-depth region masks.
 Fewer than 60 intervals
 and synthetic pacing are explicitly diagnostic-only. Visual-inspection results
 remain session-only and cannot contaminate durable timing evidence.
-Vehicle Offset Studio also has a separate version-1 representative-motion
-result containing five complete v18 visual samples. A strict one-player exact
-route cycles start, full steer, airborne, land, and finish; each sample requires
-the current held-pose generation to settle plus sixty subsequent replacement
-draws before fresh camera, surface/containment, visibility, and contact evidence
-is accepted. The launcher aggregates the worst state for review but never stores
-these samples as clean performance evidence.
+Offset Studio also has a separate version-2 semantic-motion result containing
+three complete v18 select samples or eleven complete v18 vehicle samples. The
+strict one-player exact routes cover select idle/hover/confirm and the complete
+race library: both steer extremes, reverse, boost, item, damage, spin, airborne,
+land, and both finishes. Each sample requires the current held-pose generation
+to settle plus sixty subsequent replacement draws before fresh camera,
+visibility, and, for vehicles, surface/containment/contact evidence is accepted.
+The launcher aggregates the most concerning state for review but never stores
+these samples as clean performance evidence. Long clean race detail is
+collapsible; any warning opens the state table by default.
 
 The launcher collects only version-18 captures armed after at least 12 eligible
 frames in bounded session metadata and can export a self-contained HTML

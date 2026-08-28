@@ -2236,6 +2236,56 @@ static_assert(std::size(kCharacterInspectionPoses) ==
                       MDKR_CHARACTER_PREVIEW_POSE_COUNT,
               "pose inspector must expose every exact-renderer semantic");
 
+struct CharacterMotionReviewDefinition {
+    MdkrCharacterPreviewPose pose;
+    unsigned phaseMilli;
+    const char *label;
+};
+
+constexpr CharacterMotionReviewDefinition kCharacterSelectMotionReview[] = {
+    {MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE, 500u, "Select idle"},
+    {MDKR_CHARACTER_PREVIEW_POSE_SELECT_HOVER, 500u, "Select hover"},
+    {MDKR_CHARACTER_PREVIEW_POSE_SELECT_CONFIRM, 500u, "Select confirm"},
+};
+
+constexpr CharacterMotionReviewDefinition kCharacterVehicleMotionReview[] = {
+    {MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER, 0u, "Race start / steer left"},
+    {MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER, 1000u, "Full steer right"},
+    {MDKR_CHARACTER_PREVIEW_POSE_RACE_REVERSE, 500u, "Reverse"},
+    {MDKR_CHARACTER_PREVIEW_POSE_RACE_BOOST, 500u, "Boost"},
+    {MDKR_CHARACTER_PREVIEW_POSE_RACE_ITEM, 500u, "Use item"},
+    {MDKR_CHARACTER_PREVIEW_POSE_RACE_DAMAGE, 500u, "Damage"},
+    {MDKR_CHARACTER_PREVIEW_POSE_RACE_SPIN, 500u, "Spin"},
+    {MDKR_CHARACTER_PREVIEW_POSE_RACE_AIRBORNE, 500u, "Airborne"},
+    {MDKR_CHARACTER_PREVIEW_POSE_RACE_LAND, 500u, "Landing"},
+    {MDKR_CHARACTER_PREVIEW_POSE_RACE_FINISH_WIN, 500u, "Finish win"},
+    {MDKR_CHARACTER_PREVIEW_POSE_RACE_FINISH_LOSE, 500u, "Finish lose"},
+};
+
+static_assert(
+    std::size(kCharacterSelectMotionReview) ==
+            MDKR_CHARACTER_MOTION_REVIEW_SELECT_SAMPLE_COUNT &&
+        std::size(kCharacterVehicleMotionReview) ==
+            MDKR_CHARACTER_MOTION_REVIEW_VEHICLE_SAMPLE_COUNT,
+    "semantic review tables must match the engine result contract");
+
+const CharacterMotionReviewDefinition *characterMotionReviewDefinitions(
+    MdkrCharacterPreviewContext context, unsigned &count) {
+    if (context == MDKR_CHARACTER_PREVIEW_SELECT) {
+        count = static_cast<unsigned>(
+            std::size(kCharacterSelectMotionReview));
+        return kCharacterSelectMotionReview;
+    }
+    if (context >= MDKR_CHARACTER_PREVIEW_CAR &&
+        context <= MDKR_CHARACTER_PREVIEW_PLANE) {
+        count = static_cast<unsigned>(
+            std::size(kCharacterVehicleMotionReview));
+        return kCharacterVehicleMotionReview;
+    }
+    count = 0u;
+    return nullptr;
+}
+
 struct CharacterInspectionLighting {
     MdkrWorkshopPreviewLighting lighting;
     const char *label;
@@ -2654,13 +2704,10 @@ std::string characterFitReviewSignature(
     const CharacterTuningEdit &edit,
     unsigned context) {
     if (entry == nullptr || context >= MDKR_CHARACTER_CONTEXT_COUNT) return {};
-    /* Vehicle v3 binds approval to the five-state representative-motion
-     * contract. Character-select keeps v2 because vehicle motion is not part
-     * of that scene and invalidating a valid select review would add ceremony
-     * without evidence. */
-    std::string canonical = context == MDKR_CHARACTER_CONTEXT_SELECT
-        ? "mdkr-character-fit-review-v2\n"
-        : "mdkr-character-fit-review-v3-motion-battery\n";
+    /* v4 binds every approval to the complete semantic battery for its exact
+     * scene: three authored select states or all eleven race samples. */
+    std::string canonical =
+        "mdkr-character-fit-review-v4-semantic-battery\n";
     canonical.append(reinterpret_cast<const char *>(entry->source_sha256),
                      sizeof(entry->source_sha256));
     canonical += "\n" + std::to_string(entry->donor) + "\n";
@@ -6511,7 +6558,7 @@ const CharacterMotionReviewSessionResult *currentCharacterMotionReview(
     const MdkrModernCharacterEntry *entry,
     const CharacterTuningEdit &tuning,
     MdkrCharacterPreviewContext context) {
-    if (entry == nullptr || context < MDKR_CHARACTER_PREVIEW_CAR ||
+    if (entry == nullptr || context < MDKR_CHARACTER_PREVIEW_SELECT ||
         context > MDKR_CHARACTER_PREVIEW_PLANE) return nullptr;
     const auto package = g_characterMotionReviewResults.find(entry->id);
     if (package == g_characterMotionReviewResults.end()) return nullptr;
@@ -6521,7 +6568,17 @@ const CharacterMotionReviewSessionResult *currentCharacterMotionReview(
     const std::string fit = characterTestTuningSignature(
         entry, tuning, static_cast<unsigned>(context - 1));
     const std::string presentation = characterTestPresentationSignature();
-    return value.sourceSha256 == characterDigestHex(entry->source_sha256) &&
+    unsigned expectedCount = 0u;
+    (void)characterMotionReviewDefinitions(context, expectedCount);
+    return value.result.version ==
+               MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION &&
+            value.result.started && value.result.completed &&
+            value.result.context == context &&
+            value.result.sample_count == expectedCount &&
+            value.result.completed_mask ==
+                MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_MASK(expectedCount) &&
+            value.result.failed_sample == 0u &&
+            value.sourceSha256 == characterDigestHex(entry->source_sha256) &&
             !fit.empty() && value.fitSha256 == fit &&
             !presentation.empty() &&
             value.presentationSha256 == presentation
@@ -7701,12 +7758,14 @@ void drawCharacterFitQualityBands(
 
 void drawCharacterMotionReviewSummary(
     const CharacterMotionReviewSessionResult &session, bool compact) {
-    static constexpr const char *labels[] = {
-        "Race start", "Full steer", "Airborne", "Landing", "Finish win",
-    };
-    static_assert(std::size(labels) ==
-                      MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT,
-                  "motion review labels must cover every exact sample");
+    unsigned sampleCount = 0u;
+    const CharacterMotionReviewDefinition *definitions =
+        characterMotionReviewDefinitions(
+            session.result.context, sampleCount);
+    if (definitions == nullptr || sampleCount == 0u ||
+        session.result.sample_count != sampleCount) return;
+    const bool vehicle =
+        session.result.context != MDKR_CHARACTER_PREVIEW_SELECT;
     unsigned worstCamera = 0u;
     unsigned worstSurface = 0u;
     unsigned worstVisibility = 0u;
@@ -7723,8 +7782,7 @@ void drawCharacterMotionReviewSummary(
     bool haveContactWitness = false;
     unsigned unqualifiedVisibility = 0u;
     unsigned unqualifiedVolume = 0u;
-    for (unsigned index = 0u;
-         index < MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT; ++index) {
+    for (unsigned index = 0u; index < sampleCount; ++index) {
         const MdkrCharacterPreviewResult &sample =
             session.result.samples[index];
         unsigned cameraBits = 0u;
@@ -7736,20 +7794,22 @@ void drawCharacterMotionReviewSummary(
             worstCameraBits = cameraBits;
             worstCamera = index;
         }
-        if (sample.vehicle_surface_crossing_pairs > worstCrossings ||
+        if (vehicle &&
+            (sample.vehicle_surface_crossing_pairs > worstCrossings ||
             (sample.vehicle_surface_crossing_pairs == worstCrossings &&
              sample.vehicle_containment_inside_samples > worstInside) ||
             (sample.vehicle_surface_crossing_pairs == worstCrossings &&
              sample.vehicle_containment_inside_samples == worstInside &&
              sample.vehicle_containment_maximum_depth_micrometres >
-                 worstContainment)) {
+                 worstContainment))) {
             worstCrossings = sample.vehicle_surface_crossing_pairs;
             worstInside = sample.vehicle_containment_inside_samples;
             worstContainment =
                 sample.vehicle_containment_maximum_depth_micrometres;
             worstSurface = index;
         }
-        if (!sample.vehicle_volume_qualified && !haveUnqualifiedVolume) {
+        if (vehicle && !sample.vehicle_volume_qualified &&
+            !haveUnqualifiedVolume) {
             haveUnqualifiedVolume = true;
             unqualifiedVolume = index;
         }
@@ -7769,37 +7829,45 @@ void drawCharacterMotionReviewSummary(
                 worstVisibility = index;
             }
         }
-        haveContactWitness |= sample.contact_witness_mask != 0u;
-        if (sample.contact_error_max_micrometres > worstContactError) {
+        haveContactWitness |= vehicle && sample.contact_witness_mask != 0u;
+        if (vehicle &&
+            sample.contact_error_max_micrometres > worstContactError) {
             worstContactError = sample.contact_error_max_micrometres;
             worstContact = index;
         }
     }
+    const bool reviewClean =
+        worstCameraBits == 0u && worstCrossings == 0u && worstInside == 0u &&
+        !haveUnqualifiedVolume && !haveUnqualifiedVisibility &&
+        haveQualifiedVisibility && worstVisibilityRatio >= 0.6;
     ImGui::TextColored(
-        (worstCameraBits == 0u && worstCrossings == 0u && worstInside == 0u &&
-         !haveUnqualifiedVolume && !haveUnqualifiedVisibility &&
-         haveQualifiedVisibility && worstVisibilityRatio >= 0.6)
-            ? AppTheme::good() : AppTheme::accent(),
-        "Representative motion · 5 of 5 exact states measured");
-    if (ImGui::BeginTable(
-            "##motion-review-states", compact ? 3 : 5,
+        reviewClean ? AppTheme::good() : AppTheme::accent(),
+        "%s · %u of %u exact states measured",
+        vehicle ? "Complete race motion" : "Complete select motion",
+        sampleCount, sampleCount);
+    const bool collapsibleDetails = sampleCount > 5u;
+    const bool showDetails = !collapsibleDetails || ImGui::TreeNodeEx(
+        "All state measurements",
+        reviewClean ? ImGuiTreeNodeFlags_None
+                    : ImGuiTreeNodeFlags_DefaultOpen);
+    if (showDetails && ImGui::BeginTable(
+            "##motion-review-states", compact || !vehicle ? 3 : 5,
             ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
                 ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("State");
         ImGui::TableSetupColumn("Framing");
         ImGui::TableSetupColumn("Visible");
-        if (!compact) {
+        if (!compact && vehicle) {
             ImGui::TableSetupColumn("Vehicle body");
             ImGui::TableSetupColumn("Contacts");
         }
         ImGui::TableHeadersRow();
-        for (unsigned index = 0u;
-             index < MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT; ++index) {
+        for (unsigned index = 0u; index < sampleCount; ++index) {
             const MdkrCharacterPreviewResult &sample =
                 session.result.samples[index];
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
-            ImGui::TextUnformatted(labels[index]);
+            ImGui::TextUnformatted(definitions[index].label);
             ImGui::TableSetColumnIndex(1);
             if (sample.camera_bounds_clip_flags == 0u) {
                 ImGui::TextColored(AppTheme::good(), "Inside frame");
@@ -7817,7 +7885,7 @@ void drawCharacterMotionReviewSummary(
                     100.0 * sample.opaque_visibility_scene_tiles /
                         sample.opaque_visibility_isolated_tiles);
             }
-            if (!compact) {
+            if (!compact && vehicle) {
                 ImGui::TableSetColumnIndex(3);
                 if (sample.vehicle_surface_crossing_pairs == 0u &&
                     sample.vehicle_containment_inside_samples == 0u &&
@@ -7845,6 +7913,7 @@ void drawCharacterMotionReviewSummary(
         }
         ImGui::EndTable();
     }
+    if (showDetails && collapsibleDetails) ImGui::TreePop();
     char framingSummary[96];
     char bodySummary[128];
     char visibilitySummary[128];
@@ -7854,15 +7923,18 @@ void drawCharacterMotionReviewSummary(
                       "framing clear in all states");
     } else {
         std::snprintf(framingSummary, sizeof(framingSummary),
-                      "framing %s", labels[worstCamera]);
+                      "framing %s", definitions[worstCamera].label);
     }
-    if (worstCrossings != 0u || worstInside != 0u) {
+    if (!vehicle) {
         std::snprintf(bodySummary, sizeof(bodySummary),
-                      "body %s", labels[worstSurface]);
+                      "vehicle body not applicable");
+    } else if (worstCrossings != 0u || worstInside != 0u) {
+        std::snprintf(bodySummary, sizeof(bodySummary),
+                      "body %s", definitions[worstSurface].label);
     } else if (haveUnqualifiedVolume) {
         std::snprintf(bodySummary, sizeof(bodySummary),
                       "body has no crossings; volume check %s",
-                      labels[unqualifiedVolume]);
+                      definitions[unqualifiedVolume].label);
     } else {
         std::snprintf(bodySummary, sizeof(bodySummary),
                       "body clear in all states");
@@ -7870,23 +7942,29 @@ void drawCharacterMotionReviewSummary(
     if (haveQualifiedVisibility && worstVisibilityRatio < 0.6) {
         std::snprintf(visibilitySummary, sizeof(visibilitySummary),
                       "visibility %.0f%% (%s)",
-                      worstVisibilityRatio * 100.0, labels[worstVisibility]);
+                      worstVisibilityRatio * 100.0,
+                      definitions[worstVisibility].label);
     } else if (haveUnqualifiedVisibility) {
         std::snprintf(visibilitySummary, sizeof(visibilitySummary),
                       "visibility visual check %s",
-                      labels[unqualifiedVisibility]);
+                      definitions[unqualifiedVisibility].label);
     } else if (haveQualifiedVisibility) {
         std::snprintf(visibilitySummary, sizeof(visibilitySummary),
                       "visibility %.0f%% minimum (%s)",
-                      worstVisibilityRatio * 100.0, labels[worstVisibility]);
+                      worstVisibilityRatio * 100.0,
+                      definitions[worstVisibility].label);
     } else {
         std::snprintf(visibilitySummary, sizeof(visibilitySummary),
                       "visibility unavailable");
     }
-    if (haveContactWitness) {
+    if (!vehicle) {
+        std::snprintf(contactSummary, sizeof(contactSummary),
+                      "contacts not applicable");
+    } else if (haveContactWitness) {
         std::snprintf(contactSummary, sizeof(contactSummary),
                       "contacts %.1f mm (%s)",
-                      worstContactError / 1000.0, labels[worstContact]);
+                      worstContactError / 1000.0,
+                      definitions[worstContact].label);
     } else {
         std::snprintf(contactSummary, sizeof(contactSummary),
                       "contacts not procedurally solved");
@@ -7895,7 +7973,9 @@ void drawCharacterMotionReviewSummary(
         "Review summary: %s · %s · %s · %s", framingSummary, bodySummary,
         visibilitySummary, contactSummary);
     ui::TextSubtleWrapped(
-        "Each row is a fresh renderer witness after the authored pose settled and remained visible for at least 60 complete character draws. Run it again whenever you need another look. Warnings remain reviewable for unusual anatomy, transparent materials, and intentional costume overlap; an opaque state with no visible regions still blocks approval.");
+        vehicle
+            ? "Every race semantic is a fresh renderer witness after the authored pose settled and remained visible for at least 60 complete character draws. Run it again whenever you need another look. Warnings remain reviewable for unusual anatomy, transparent materials, and intentional costume overlap; an opaque state with no visible regions still blocks approval."
+            : "Idle, hover, and confirm are fresh renderer witnesses after each authored pose settled and remained visible for at least 60 complete character draws. This catches a select-only bind pose, clipping, or disappearance before approval; an opaque state with no visible regions still blocks approval.");
 }
 
 /* Rendered app-lifecycle tests use this only behind their paired smoke token.
@@ -7906,34 +7986,33 @@ void publishCharacterMotionReviewSmokeFixture(
     const CharacterTuningEdit &edit,
     MdkrCharacterPreviewContext context,
     const MdkrCharacterPreviewResult &base) {
-    static constexpr MdkrCharacterPreviewPose poses[] = {
-        MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER,
-        MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER,
-        MDKR_CHARACTER_PREVIEW_POSE_RACE_AIRBORNE,
-        MDKR_CHARACTER_PREVIEW_POSE_RACE_LAND,
-        MDKR_CHARACTER_PREVIEW_POSE_RACE_FINISH_WIN,
-    };
-    static constexpr unsigned phases[] = {0u, 1000u, 500u, 500u, 500u};
+    unsigned sampleCount = 0u;
+    const CharacterMotionReviewDefinition *definitions =
+        characterMotionReviewDefinitions(context, sampleCount);
+    if (definitions == nullptr || sampleCount == 0u) return;
+    MdkrCharacterPreviewResult publicationBase = base;
+    publicationBase.context = context;
     MdkrCharacterMotionReviewResult review{};
     review.version = MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION;
     review.started = review.completed = 1;
     review.context = context;
-    review.completed_mask = MDKR_CHARACTER_MOTION_REVIEW_ALL_SAMPLES;
-    for (unsigned index = 0u;
-         index < MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT; ++index) {
+    review.sample_count = sampleCount;
+    review.completed_mask =
+        MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_MASK(sampleCount);
+    for (unsigned index = 0u; index < sampleCount; ++index) {
         MdkrCharacterPreviewResult &sample = review.samples[index];
         sample = base;
         sample.context = context;
         sample.players = 1;
-        sample.pose = poses[index];
-        sample.pose_phase_milli = phases[index];
+        sample.pose = definitions[index].pose;
+        sample.pose_phase_milli = definitions[index].phaseMilli;
         sample.transition_from_pose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
         sample.transition_from_phase_milli = 0u;
         sample.transition_from_motion_source =
             MDKR_CHARACTER_PREVIEW_MOTION_AUTHORED;
         sample.transition_to_motion_source =
             MDKR_CHARACTER_PREVIEW_MOTION_NONE;
-        sample.inspection_pose_ticks = 12u;
+        sample.inspection_pose_ticks = 60u;
         sample.inspection_pose_fallback_ticks = 0u;
         sample.view_yaw_degrees = sample.view_pitch_degrees = 0;
         sample.lighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
@@ -7944,25 +8023,107 @@ void publishCharacterMotionReviewSmokeFixture(
         sample.capture_stable_frames = 0u;
         sample.capture_png_bytes = 0u;
         sample.capture_kind = MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+        if (context == MDKR_CHARACTER_PREVIEW_SELECT) {
+            sample.contact_solves = 0u;
+            sample.contact_error_mean_micrometres = 0u;
+            sample.contact_error_max_micrometres = 0u;
+            sample.contact_witness_mask = 0u;
+            std::memset(sample.contact_chain_root_micrometres, 0,
+                        sizeof(sample.contact_chain_root_micrometres));
+            std::memset(sample.contact_bend_micrometres, 0,
+                        sizeof(sample.contact_bend_micrometres));
+            std::memset(sample.contact_target_micrometres, 0,
+                        sizeof(sample.contact_target_micrometres));
+            std::memset(sample.contact_end_micrometres, 0,
+                        sizeof(sample.contact_end_micrometres));
+            std::memset(sample.contact_witness_error_micrometres, 0,
+                        sizeof(sample.contact_witness_error_micrometres));
+            sample.vehicle_surface_valid = 0;
+            sample.vehicle_shell_triangles_submitted = 0u;
+            sample.vehicle_shell_triangles_tested = 0u;
+            sample.character_surface_triangles_submitted = 0u;
+            sample.character_surface_triangles_tested = 0u;
+            sample.vehicle_surface_crossing_triangles = 0u;
+            sample.vehicle_surface_crossing_pairs = 0u;
+            std::memset(sample.vehicle_surface_first_crossing_micrometres, 0,
+                        sizeof(sample.vehicle_surface_first_crossing_micrometres));
+            sample.vehicle_volume_qualified = 0;
+            sample.vehicle_shell_boundary_edges = 0u;
+            sample.vehicle_shell_nonmanifold_edges = 0u;
+            sample.vehicle_shell_orientation_mismatch_edges = 0u;
+            sample.vehicle_shell_self_intersection_pairs = 0u;
+            sample.vehicle_containment_samples_tested = 0u;
+            sample.vehicle_containment_inside_samples = 0u;
+            sample.vehicle_containment_boundary_samples = 0u;
+            sample.vehicle_containment_outside_samples = 0u;
+            sample.vehicle_containment_maximum_depth_micrometres = 0u;
+            std::memset(sample.vehicle_containment_deepest_micrometres, 0,
+                        sizeof(sample.vehicle_containment_deepest_micrometres));
+        }
     }
     SettingsCharacterPreviewDisposition disposition;
     disposition.representativeMotionReview = true;
     MdkrCharacterMotionReviewResult malformed = review;
-    malformed.samples[MDKR_CHARACTER_MOTION_REVIEW_FINISH].pose =
-        MDKR_CHARACTER_PREVIEW_POSE_RACE_LAND;
+    malformed.samples[sampleCount - 1u].pose =
+        definitions[0].pose;
     Settings_publishCharacterPreviewResult(
         entry->id, characterDigestHex(entry->source_sha256),
         characterTestTuningSignature(
             entry, edit, static_cast<unsigned>(context - 1)),
         characterTestPresentationSignature(), std::string(), disposition,
-        base, &malformed);
+        publicationBase, &malformed);
     if (currentCharacterMotionReview(entry, edit, context) != nullptr) return;
+    malformed = review;
+    malformed.sample_count--;
     Settings_publishCharacterPreviewResult(
         entry->id, characterDigestHex(entry->source_sha256),
         characterTestTuningSignature(
             entry, edit, static_cast<unsigned>(context - 1)),
         characterTestPresentationSignature(), std::string(), disposition,
-        base, &review);
+        publicationBase, &malformed);
+    if (currentCharacterMotionReview(entry, edit, context) != nullptr) return;
+    malformed = review;
+    malformed.samples[sampleCount - 1u].replacement_draws = 59u;
+    Settings_publishCharacterPreviewResult(
+        entry->id, characterDigestHex(entry->source_sha256),
+        characterTestTuningSignature(
+            entry, edit, static_cast<unsigned>(context - 1)),
+        characterTestPresentationSignature(), std::string(), disposition,
+        publicationBase, &malformed);
+    if (currentCharacterMotionReview(entry, edit, context) != nullptr) return;
+    if (sampleCount < MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT) {
+        malformed = review;
+        malformed.samples[sampleCount].version =
+            MDKR_CHARACTER_PREVIEW_RESULT_VERSION;
+        Settings_publishCharacterPreviewResult(
+            entry->id, characterDigestHex(entry->source_sha256),
+            characterTestTuningSignature(
+                entry, edit, static_cast<unsigned>(context - 1)),
+            characterTestPresentationSignature(), std::string(), disposition,
+            publicationBase, &malformed);
+        if (currentCharacterMotionReview(entry, edit, context) != nullptr) {
+            return;
+        }
+    }
+    if (context == MDKR_CHARACTER_PREVIEW_SELECT) {
+        malformed = review;
+        malformed.samples[0].contact_solves = 1u;
+        Settings_publishCharacterPreviewResult(
+            entry->id, characterDigestHex(entry->source_sha256),
+            characterTestTuningSignature(
+                entry, edit, static_cast<unsigned>(context - 1)),
+            characterTestPresentationSignature(), std::string(), disposition,
+            publicationBase, &malformed);
+        if (currentCharacterMotionReview(entry, edit, context) != nullptr) {
+            return;
+        }
+    }
+    Settings_publishCharacterPreviewResult(
+        entry->id, characterDigestHex(entry->source_sha256),
+        characterTestTuningSignature(
+            entry, edit, static_cast<unsigned>(context - 1)),
+        characterTestPresentationSignature(), std::string(), disposition,
+        publicationBase, &review);
 }
 
 bool drawCharacterOffsetSuggestion(
@@ -8230,6 +8391,9 @@ bool drawCharacterTuningEditor(int player,
                 entry, edit, MDKR_CHARACTER_PREVIEW_CAR);
         if (smokeEvidence.current) {
             publishCharacterMotionReviewSmokeFixture(
+                entry, edit, MDKR_CHARACTER_PREVIEW_SELECT,
+                smokeEvidence.result);
+            publishCharacterMotionReviewSmokeFixture(
                 entry, edit, MDKR_CHARACTER_PREVIEW_CAR,
                 smokeEvidence.result);
         }
@@ -8364,24 +8528,28 @@ bool drawCharacterTuningEditor(int player,
                 ImGui::TextDisabled("held midpoint · neutral gameplay light");
             }
             const CharacterMotionReviewSessionResult *motionReview =
-                context == MDKR_CHARACTER_CONTEXT_SELECT
-                    ? nullptr
-                    : currentCharacterMotionReview(
-                          entry, edit, previewContext);
-            if (context != MDKR_CHARACTER_CONTEXT_SELECT) {
-                ImGui::SeparatorText("Representative motion check");
+                currentCharacterMotionReview(entry, edit, previewContext);
+            {
+                const bool vehicleMotion =
+                    context != MDKR_CHARACTER_CONTEXT_SELECT;
+                ImGui::SeparatorText("Complete semantic motion check");
                 ui::TextSubtleWrapped(
-                    "One guided run checks race start, full steer, airborne, landing, and finish against this vehicle. The game settles and visibly holds each state for at least 60 complete character draws, then returns automatically with fresh framing, body-intersection, visibility, and contact evidence.");
+                    vehicleMotion
+                        ? "One guided run checks every race semantic against this vehicle: both steering extremes, reverse, boost, item, damage, spin, airborne, landing, and both finishes. The game settles and visibly holds all 11 samples for at least 60 complete character draws, then returns automatically with fresh framing, body-intersection, visibility, and contact evidence."
+                        : "One guided run checks select idle, hover, and confirm in the real selection room. The game settles and visibly holds all three states for at least 60 complete character draws, then returns automatically with fresh framing and visibility evidence.");
                 const char *motionLabel = motionReview != nullptr
-                    ? "Run representative motion again"
-                    : "Review representative motion";
+                    ? "Run complete motion review again"
+                    : "Review all motion states";
                 if (!exactPreviewReady) ImGui::BeginDisabled();
                 if (ImGui::Button(motionLabel, ui::kBtnSecondary()) &&
                     exactPreviewReady &&
                     persistCharacterTuning(entry->id, edit)) {
                     requestCharacterPreview(
                         entry, previewContext, 1,
-                        MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER, 0u,
+                        vehicleMotion
+                            ? MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER
+                            : MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE,
+                        vehicleMotion ? 0u : 500u,
                         0, 0, MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
                         nullptr, MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE,
                         MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u,
@@ -8391,9 +8559,13 @@ bool drawCharacterTuningEditor(int player,
                 ui::SpeakFocusedItem(
                     motionLabel,
                     exactPreviewReady
-                        ? "Ready; fixed one-player exact camera, five visibly held states, automatic return."
+                        ? vehicleMotion
+                            ? "Ready; fixed one-player exact camera, all 11 race samples visibly held, automatic return."
+                            : "Ready; fixed one-player exact camera, all three select states visibly held, automatic return."
                         : "Unavailable until a supported base ROM is linked and verified on Play.",
-                    "Runs a bounded exact-game review across five representative motion states. It does not save performance evidence or require manual game navigation.");
+                    vehicleMotion
+                        ? "Runs a bounded exact-game review across the complete race semantic library. It does not save performance evidence or require manual game navigation."
+                        : "Runs a bounded exact-game review across idle, hover, and confirm. It does not save performance evidence or require manual game navigation.");
                 const auto packageMotion =
                     g_characterMotionReviewResults.find(entry->id);
                 const bool staleMotionReview =
@@ -8410,7 +8582,9 @@ bool drawCharacterTuningEditor(int player,
                 } else if (characterFitReviewed(entry, edit, context)) {
                     ImGui::TextColored(
                         AppTheme::good(),
-                        "Five-state motion review is recorded in the current approval; rerun to refresh detailed measurements.");
+                        vehicleMotion
+                            ? "Complete 11-sample race review is recorded in the current approval; rerun to refresh detailed measurements."
+                            : "Complete three-state select review is recorded in the current approval; rerun to refresh detailed measurements.");
                 } else {
                     ImGui::TextDisabled(
                         "Not run for the current source and fit");
@@ -8677,8 +8851,11 @@ bool drawCharacterTuningEditor(int player,
                 uint64_t contactSolves = 0u;
                 uint64_t contactMaximum = 0u;
                 if (motionReview != nullptr) {
-                    for (const MdkrCharacterPreviewResult &sample :
-                         motionReview->result.samples) {
+                    for (unsigned sampleIndex = 0u;
+                         sampleIndex < motionReview->result.sample_count;
+                         ++sampleIndex) {
+                        const MdkrCharacterPreviewResult &sample =
+                            motionReview->result.samples[sampleIndex];
                         contactSolves += sample.contact_solves;
                         contactMaximum = std::max(
                             contactMaximum,
@@ -8715,7 +8892,7 @@ bool drawCharacterTuningEditor(int player,
                 if (contactQualityMeasured) {
                     ImGui::Text(
                         motionReview != nullptr
-                            ? "Representative motion: %.2f mm worst contact across %llu solves"
+                            ? "Complete motion review: %.2f mm worst contact across %llu solves"
                             : "Last exact test: %.2f mm maximum across %llu solves",
                         contactMaximum / 1000.0,
                         static_cast<unsigned long long>(contactSolves));
@@ -8728,12 +8905,11 @@ bool drawCharacterTuningEditor(int player,
                 } else {
                     ImGui::TextDisabled(
                         motionReview != nullptr
-                            ? "Representative motion: no procedural contacts (authored clip or solver locked)"
+                            ? "Complete motion review: no procedural contacts (authored clip or solver locked)"
                             : "Last exact test: no procedural contacts (authored clip or solver locked)");
                 }
             }
             const bool representativeMotionReady =
-                context == MDKR_CHARACTER_CONTEXT_SELECT ||
                 motionReview != nullptr;
             const bool exactReviewContract = fitEvidence.current &&
                 representativeMotionReady &&
@@ -8787,13 +8963,18 @@ bool drawCharacterTuningEditor(int player,
                 bool invisibleOpaqueState = false;
                 uint64_t minimumRatioNumerator = 0u;
                 uint64_t minimumRatioDenominator = 0u;
-                for (const MdkrCharacterPreviewResult &sample :
-                     motionReview->result.samples) {
+                for (unsigned sampleIndex = 0u;
+                     sampleIndex < motionReview->result.sample_count;
+                     ++sampleIndex) {
+                    const MdkrCharacterPreviewResult &sample =
+                        motionReview->result.samples[sampleIndex];
                     cameraWarning |= sample.camera_bounds_clip_flags != 0u;
-                    surfaceWarning |=
-                        sample.vehicle_surface_crossing_pairs != 0u ||
-                        sample.vehicle_volume_qualified == 0 ||
-                        sample.vehicle_containment_inside_samples != 0u;
+                    if (context != MDKR_CHARACTER_CONTEXT_SELECT) {
+                        surfaceWarning |=
+                            sample.vehicle_surface_crossing_pairs != 0u ||
+                            sample.vehicle_volume_qualified == 0 ||
+                            sample.vehicle_containment_inside_samples != 0u;
+                    }
                     if (!sample.opaque_visibility_qualified) {
                         unqualifiedVisibility = true;
                     } else if (sample.opaque_visibility_isolated_tiles == 0u) {
@@ -8891,9 +9072,10 @@ bool drawCharacterTuningEditor(int player,
                         AppTheme::bad(),
                         "A complete warmed renderer fit and visibility witness is required before review.");
                     ui::TextSubtleWrapped(
-                        !representativeMotionReady &&
-                                context != MDKR_CHARACTER_CONTEXT_SELECT
-                            ? "Run Representative motion check above. Vehicle approval requires fresh source-and-fit-bound evidence from race start, full steer, airborne, landing, and finish—not one favourable parked frame."
+                        !representativeMotionReady
+                            ? context == MDKR_CHARACTER_CONTEXT_SELECT
+                                ? "Run Complete semantic motion check above. Select approval requires fresh source-and-fit-bound evidence from idle, hover, and confirm—not one favourable static frame."
+                                : "Run Complete semantic motion check above. Vehicle approval requires fresh source-and-fit-bound evidence from every race semantic—not one favourable parked frame."
                             : "Run this exact context again. Approval stays unavailable when fit, camera, vehicle-surface, contact, or opaque-depth evidence is incomplete or invalid.");
                 } else if (visibilityBlocksReview) {
                     ImGui::TextColored(
@@ -8910,10 +9092,10 @@ bool drawCharacterTuningEditor(int player,
                     const char *sceneReviewLabel = reviewWarnings
                         ? context == MDKR_CHARACTER_CONTEXT_SELECT
                             ? "I inspected the exact composed scene and accept the highlighted fit, clipping, or visibility warnings"
-                            : "I inspected all five exact motion states and accept the highlighted fit, clipping, or visibility warnings"
+                            : "I inspected all 11 exact race samples and accept the highlighted fit, clipping, or visibility warnings"
                         : context == MDKR_CHARACTER_CONTEXT_SELECT
-                            ? "I inspected the exact composed scene for placement, silhouette, and vehicle occlusion"
-                            : "I inspected all five exact motion states for placement, silhouette, vehicle occlusion, and attachments";
+                            ? "I inspected idle, hover, and confirm for placement, silhouette, and visibility"
+                            : "I inspected all 11 exact race samples for placement, silhouette, vehicle occlusion, and attachments";
                     if (ImGui::Checkbox(sceneReviewLabel, &sceneReviewed)) {
                         if (sceneReviewed) {
                             pendingSceneReviews |= 1u << context;
@@ -9511,10 +9693,14 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
         (representativeMotionReview &&
          (interactiveStudio || launcherOwnedCapture ||
           portraitSourceHandoff || autoReturnAfterCapture || players != 1 ||
-          context < MDKR_CHARACTER_PREVIEW_CAR ||
+          context < MDKR_CHARACTER_PREVIEW_SELECT ||
           context > MDKR_CHARACTER_PREVIEW_PLANE ||
-          pose != MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER ||
-          posePhaseMilli != 0u || transition || viewYawDegrees != 0 ||
+          (context == MDKR_CHARACTER_PREVIEW_SELECT
+               ? pose != MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE ||
+                     posePhaseMilli != 500u
+               : pose != MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER ||
+                     posePhaseMilli != 0u) ||
+          transition || viewYawDegrees != 0 ||
           viewPitchDegrees != 0 ||
           lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL || capture)) ||
         (interactiveStudio &&
@@ -16692,7 +16878,7 @@ bool captureCharacterHistoryPayload(
         }
     } else if (tool == CharacterHistoryTool::Fit) {
         const CharacterTuningEdit &edit = loadCharacterTuning(0, entry->id);
-        payload = "mdkr-fit-history-v5\n";
+        payload = "mdkr-fit-history-v6\n";
         appendCharacterHistoryValue(payload, edit.scale);
         for (float value : edit.offset) {
             appendCharacterHistoryValue(payload, value);
@@ -17098,7 +17284,9 @@ bool applyCharacterHistoryPayload(
         }
         g_characterRigEdits[entry->id] = std::move(replacement);
     } else if (tool == CharacterHistoryTool::Fit) {
-        const bool hasMotionReviewContract =
+        const bool hasSemanticReviewContract =
+            consumeHeader("mdkr-fit-history-v6\n");
+        const bool hasMotionReviewContract = hasSemanticReviewContract ||
             consumeHeader("mdkr-fit-history-v5\n");
         const bool hasSceneReviewContract = hasMotionReviewContract ||
             consumeHeader("mdkr-fit-history-v4\n");
@@ -17157,15 +17345,9 @@ bool applyCharacterHistoryPayload(
             error = "Fit history review state is malformed.";
             return false;
         }
-        if (!hasSceneReviewContract) {
+        if (!hasSceneReviewContract || !hasSemanticReviewContract) {
             reviewed = 0u;
             contactExceptions = 0u;
-        } else if (!hasMotionReviewContract) {
-            /* v4 could approve a vehicle from one parked frame. Its select
-             * approval remains valid, but vehicle contexts must earn the new
-             * five-state representative-motion review. */
-            reviewed &= 1u << MDKR_CHARACTER_CONTEXT_SELECT;
-            contactExceptions &= reviewed;
         }
         const auto inRange = [](float value, float minimum, float maximum) {
             return std::isfinite(value) && value >= minimum &&
@@ -22203,30 +22385,25 @@ void Settings_publishCharacterPreviewResult(
         disposition.representativeMotionReview;
     if (packageId.empty()) return;
     if (representativeMotionReview) {
-        static constexpr MdkrCharacterPreviewPose expectedPoses[] = {
-            MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER,
-            MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER,
-            MDKR_CHARACTER_PREVIEW_POSE_RACE_AIRBORNE,
-            MDKR_CHARACTER_PREVIEW_POSE_RACE_LAND,
-            MDKR_CHARACTER_PREVIEW_POSE_RACE_FINISH_WIN,
-        };
-        static constexpr unsigned expectedPhases[] = {
-            0u, 1000u, 500u, 500u, 500u,
-        };
-        static_assert(std::size(expectedPoses) ==
-                          MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT &&
-                      std::size(expectedPhases) ==
-                          MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT,
-                      "motion review app and engine sample contracts must match");
+        unsigned expectedCount = 0u;
+        const CharacterMotionReviewDefinition *expected =
+            motionReview != nullptr
+                ? characterMotionReviewDefinitions(
+                      motionReview->context, expectedCount)
+                : nullptr;
+        const bool vehicle = motionReview != nullptr &&
+            motionReview->context != MDKR_CHARACTER_PREVIEW_SELECT;
         bool valid = motionReview != nullptr &&
+            expected != nullptr && expectedCount != 0u &&
             motionReview->version ==
                 MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION &&
             motionReview->started && motionReview->completed &&
-            motionReview->context >= MDKR_CHARACTER_PREVIEW_CAR &&
+            motionReview->context >= MDKR_CHARACTER_PREVIEW_SELECT &&
             motionReview->context <= MDKR_CHARACTER_PREVIEW_PLANE &&
             motionReview->context == result.context &&
+            motionReview->sample_count == expectedCount &&
             motionReview->completed_mask ==
-                MDKR_CHARACTER_MOTION_REVIEW_ALL_SAMPLES &&
+                MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_MASK(expectedCount) &&
             motionReview->failed_sample == 0u &&
             characterDigestTextValid(sourceSha256) &&
             characterDigestTextValid(fitSha256) &&
@@ -22234,9 +22411,7 @@ void Settings_publishCharacterPreviewResult(
             capturePng.empty() && !launcherOwnedCapture &&
             !portraitSourceHandoff && !interactiveStudio;
         if (valid) {
-            for (unsigned index = 0u;
-                 index < MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT;
-                 ++index) {
+            for (unsigned index = 0u; index < expectedCount; ++index) {
                 const MdkrCharacterPreviewResult &sample =
                     motionReview->samples[index];
                 valid = sample.version ==
@@ -22244,8 +22419,8 @@ void Settings_publishCharacterPreviewResult(
                     sample.started && sample.warmup_complete &&
                     sample.context == motionReview->context &&
                     sample.players == 1 &&
-                    sample.pose == expectedPoses[index] &&
-                    sample.pose_phase_milli == expectedPhases[index] &&
+                    sample.pose == expected[index].pose &&
+                    sample.pose_phase_milli == expected[index].phaseMilli &&
                     sample.transition_from_pose ==
                         MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
                     sample.transition_from_phase_milli == 0u &&
@@ -22258,7 +22433,7 @@ void Settings_publishCharacterPreviewResult(
                     sample.inspection_pose_ticks != 0u &&
                     sample.inspection_pose_fallback_ticks <=
                         sample.inspection_pose_ticks &&
-                    sample.replacement_draws != 0u &&
+                    sample.replacement_draws >= 60u &&
                     sample.view_yaw_degrees == 0 &&
                     sample.view_pitch_degrees == 0 &&
                     sample.lighting ==
@@ -22273,18 +22448,41 @@ void Settings_publishCharacterPreviewResult(
                     characterPreviewCameraProjectionValid(sample) &&
                     sample.camera_projection_valid &&
                     characterPreviewVehicleSurfaceValid(sample) &&
-                    sample.vehicle_surface_valid &&
+                    (vehicle ? sample.vehicle_surface_valid != 0
+                             : sample.vehicle_surface_valid == 0) &&
+                    (vehicle ||
+                     (sample.contact_solves == 0u &&
+                      sample.contact_error_mean_micrometres == 0u &&
+                      sample.contact_error_max_micrometres == 0u &&
+                      sample.contact_witness_mask == 0u)) &&
                     characterPreviewOpaqueVisibilityValid(sample) &&
                     sample.opaque_visibility_valid &&
                     characterPreviewContactDiagnosticsValid(sample);
                 if (!valid) break;
             }
         }
+        if (valid) {
+            for (unsigned index = expectedCount;
+                 index < MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT;
+                 ++index) {
+                const MdkrCharacterPreviewResult &unused =
+                    motionReview->samples[index];
+                if (unused.version != 0u || unused.started ||
+                    unused.warmup_complete || unused.replacement_draws != 0u ||
+                    unused.fit_diagnostics_valid ||
+                    unused.camera_projection_valid ||
+                    unused.vehicle_surface_valid ||
+                    unused.opaque_visibility_valid) {
+                    valid = false;
+                    break;
+                }
+            }
+        }
         if (!valid) {
             setStatus(
                 motionReview != nullptr && motionReview->failed_sample != 0u
-                    ? "Representative motion review stopped before every state produced fresh renderer evidence. No review was recorded."
-                    : "Representative motion review returned inconsistent or incomplete evidence. No review was recorded.",
+                    ? "Semantic motion review stopped before every state produced fresh renderer evidence. No review was recorded."
+                    : "Semantic motion review returned inconsistent or incomplete evidence. No review was recorded.",
                 AppTheme::bad());
             if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
                 std::fprintf(
@@ -22302,7 +22500,9 @@ void Settings_publishCharacterPreviewResult(
             *motionReview, sourceSha256, fitSha256, presentationSha256,
         };
         setStatus(
-            "Representative motion review complete. Worst-case framing, vehicle intersection, visibility, and contact evidence is ready below.",
+            vehicle
+                ? "Complete race-motion review is ready: every semantic now has current framing, vehicle-body, visibility, and contact evidence."
+                : "Complete character-select motion review is ready: idle, hover, and confirm all have current framing and visibility evidence.",
             AppTheme::good());
         if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
             std::fprintf(
@@ -22311,7 +22511,7 @@ void Settings_publishCharacterPreviewResult(
                 packageId.c_str(),
                 static_cast<unsigned>(motionReview->context),
                 static_cast<unsigned>(
-                    MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT),
+                    expectedCount),
                 fitSha256.c_str());
         }
         return;

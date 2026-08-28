@@ -229,20 +229,49 @@ typedef struct WorkshopMotionReviewDefinition {
     u32 phase_milli;
 } WorkshopMotionReviewDefinition;
 
-static const WorkshopMotionReviewDefinition sWorkshopMotionReviewDefinitions
+static const WorkshopMotionReviewDefinition sWorkshopVehicleMotionReviewDefinitions
     [MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT] = {
         {MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER, "race.steer", 0u},
         {MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER, "race.steer", 1000u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_REVERSE, "race.reverse", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_BOOST, "race.boost", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_ITEM, "race.item", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_DAMAGE, "race.damage", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_SPIN, "race.spin", 500u},
         {MDKR_CHARACTER_PREVIEW_POSE_RACE_AIRBORNE, "race.airborne", 500u},
         {MDKR_CHARACTER_PREVIEW_POSE_RACE_LAND, "race.land", 500u},
         {MDKR_CHARACTER_PREVIEW_POSE_RACE_FINISH_WIN, "race.finish_win", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_FINISH_LOSE, "race.finish_lose", 500u},
+};
+
+static const WorkshopMotionReviewDefinition sWorkshopSelectMotionReviewDefinitions
+    [MDKR_CHARACTER_MOTION_REVIEW_SELECT_SAMPLE_COUNT] = {
+        {MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE, "select.idle", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_SELECT_HOVER, "select.hover", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_SELECT_CONFIRM, "select.confirm", 500u},
 };
 
 _Static_assert(
-    sizeof(sWorkshopMotionReviewDefinitions) /
-            sizeof(sWorkshopMotionReviewDefinitions[0]) ==
+    sizeof(sWorkshopVehicleMotionReviewDefinitions) /
+            sizeof(sWorkshopVehicleMotionReviewDefinitions[0]) ==
         MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT,
-    "representative motion review definitions must cover every result slot");
+    "semantic motion review definitions must cover every result slot");
+
+static u32 workshop_motion_review_sample_count(
+    MdkrCharacterPreviewContext context) {
+    return context == MDKR_CHARACTER_PREVIEW_SELECT
+        ? MDKR_CHARACTER_MOTION_REVIEW_SELECT_SAMPLE_COUNT
+        : MDKR_CHARACTER_MOTION_REVIEW_VEHICLE_SAMPLE_COUNT;
+}
+
+static const WorkshopMotionReviewDefinition *workshop_motion_review_definition(
+    MdkrCharacterPreviewContext context, u32 sample) {
+    const u32 count = workshop_motion_review_sample_count(context);
+    if (sample >= count) return NULL;
+    return context == MDKR_CHARACTER_PREVIEW_SELECT
+        ? &sWorkshopSelectMotionReviewDefinitions[sample]
+        : &sWorkshopVehicleMotionReviewDefinitions[sample];
+}
 
 static s32 workshop_preview_quantize_micrometres(
     f32 value, long long *out) {
@@ -635,10 +664,10 @@ static void workshop_motion_review_begin_sample(void) {
     MdkrCharacterPreviewResult *sample;
     char error[192] = {0};
     if (review == NULL ||
-        sWorkshopMotionReviewSample >=
-            MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT) return;
-    definition = &sWorkshopMotionReviewDefinitions[
-        sWorkshopMotionReviewSample];
+        sWorkshopMotionReviewSample >= review->sample_count) return;
+    definition = workshop_motion_review_definition(
+        review->context, sWorkshopMotionReviewSample);
+    if (definition == NULL) return;
     sample = &review->samples[sWorkshopMotionReviewSample];
     bzero(sample, sizeof(*sample));
     sample->version = MDKR_CHARACTER_PREVIEW_RESULT_VERSION;
@@ -686,8 +715,7 @@ static s32 workshop_motion_review_publish_sample(void) {
     MdkrModernCharacterRuntimeMetrics metrics;
     u32 contact;
     if (review == NULL ||
-        sWorkshopMotionReviewSample >=
-            MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT) return FALSE;
+        sWorkshopMotionReviewSample >= review->sample_count) return FALSE;
     sample = &review->samples[sWorkshopMotionReviewSample];
     mdkr_modern_character_runtime_metrics(&metrics);
     sample->output_width = gfx_output_dimensions.width;
@@ -732,11 +760,13 @@ static s32 workshop_motion_review_publish_sample(void) {
             metrics.inspection_from_motion_source;
     if (!workshop_preview_publish_fit_diagnostics(sample) ||
         !workshop_preview_publish_camera_projection(sample) ||
-        !workshop_preview_publish_vehicle_surface_diagnostics(sample) ||
+        (review->context != MDKR_CHARACTER_PREVIEW_SELECT &&
+         !workshop_preview_publish_vehicle_surface_diagnostics(sample)) ||
         !workshop_preview_publish_opaque_visibility(sample)) {
         return FALSE;
     }
-    if (!workshop_preview_publish_contact_diagnostics(sample) &&
+    if (review->context != MDKR_CHARACTER_PREVIEW_SELECT &&
+        !workshop_preview_publish_contact_diagnostics(sample) &&
         sample->contact_solves != 0u) return FALSE;
     for (contact = 0u; contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
         if (sample->contact_witness_error_micrometres[contact] >
@@ -761,12 +791,11 @@ static s32 workshop_motion_review_publish_sample(void) {
         sample->contact_witness_mask,
         sample->contact_error_max_micrometres);
     sWorkshopMotionReviewSample++;
-    if (sWorkshopMotionReviewSample ==
-        MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT) {
+    if (sWorkshopMotionReviewSample == review->sample_count) {
         review->completed = TRUE;
         MDKR_TRACE(
             "character_motion_review: complete samples=%u mask=%x",
-            MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT,
+            review->sample_count,
             review->completed_mask);
         platform_request_exit(0);
     } else {
@@ -785,8 +814,7 @@ static void workshop_motion_review_service(void) {
     s32 surfaceReady;
     s32 visibilityReady;
     if (review == NULL || review->completed || review->failed_sample != 0u ||
-        sWorkshopMotionReviewSample >=
-            MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT) return;
+        sWorkshopMotionReviewSample >= review->sample_count) return;
     context = (MdkrModernCharacterContext)((s32)review->context -
         (s32)MDKR_CHARACTER_PREVIEW_SELECT);
     sWorkshopMotionReviewStageTicks++;
@@ -819,7 +847,8 @@ static void workshop_motion_review_service(void) {
         if (metrics.replacement_draws <
             sWorkshopMotionReviewReplacementBaseline +
                 WORKSHOP_MOTION_REVIEW_SETTLE_DRAWS) return;
-        if (!mdkr_modern_character_request_surface_diagnostics(0, context)) {
+        if (review->context != MDKR_CHARACTER_PREVIEW_SELECT &&
+            !mdkr_modern_character_request_surface_diagnostics(0, context)) {
             return;
         }
         if (!platform_modern_character_visibility_request_once()) return;
@@ -827,11 +856,12 @@ static void workshop_motion_review_service(void) {
         sWorkshopMotionReviewDiagnosticsRequested = TRUE;
         return;
     }
-    surfaceReady = mdkr_modern_character_player_surface_diagnostics(
-        0, context, &surface);
+    surfaceReady = review->context == MDKR_CHARACTER_PREVIEW_SELECT ||
+        mdkr_modern_character_player_surface_diagnostics(
+            0, context, &surface);
     visibilityReady = platform_modern_character_visibility_diagnostics(
         &visibility);
-    if (!surfaceReady &&
+    if (review->context != MDKR_CHARACTER_PREVIEW_SELECT && !surfaceReady &&
         !mdkr_modern_character_surface_diagnostics_requested(0, context) &&
         (sWorkshopMotionReviewStageTicks % 30u) == 0u) {
         (void)mdkr_modern_character_request_surface_diagnostics(0, context);
@@ -3633,15 +3663,19 @@ static s32 workshop_preview_start(void) {
         return TRUE;
     }
     if (motionReview &&
-        (vehicle < VEHICLE_CAR || vehicle > VEHICLE_PLANE || players != 1 ||
-         pose != MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER ||
-         posePhaseMilli != 0u ||
+        (players != 1 ||
+         (vehicle < 0
+              ? pose != MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE ||
+                    posePhaseMilli != 500u
+              : vehicle > VEHICLE_PLANE ||
+                    pose != MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER ||
+                    posePhaseMilli != 0u) ||
          transitionFromPose != MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
          viewYawDegrees != 0 || viewPitchDegrees != 0 ||
          lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
          sWorkshopPreviewCapturePath[0] != '\0')) {
         fprintf(stderr,
-                "[FATAL] representative motion review requires a one-player vehicle, neutral race.steer start pose, and no capture\n");
+                "[FATAL] semantic motion review requires one player, the context's neutral start pose, and no capture\n");
         platform_request_exit(EXIT_FAILURE);
         return TRUE;
     }
@@ -3693,8 +3727,12 @@ static s32 workshop_preview_start(void) {
         g_mdkrCharacterMotionReviewResult->version =
             MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION;
         g_mdkrCharacterMotionReviewResult->context =
-            (MdkrCharacterPreviewContext)(vehicle +
-                MDKR_CHARACTER_PREVIEW_CAR);
+            vehicle < 0 ? MDKR_CHARACTER_PREVIEW_SELECT
+                        : (MdkrCharacterPreviewContext)(vehicle +
+                              MDKR_CHARACTER_PREVIEW_CAR);
+        g_mdkrCharacterMotionReviewResult->sample_count =
+            workshop_motion_review_sample_count(
+                g_mdkrCharacterMotionReviewResult->context);
         g_mdkrCharacterMotionReviewResult->started = TRUE;
     }
     if (vehicle < 0) {
