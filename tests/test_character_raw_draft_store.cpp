@@ -122,7 +122,24 @@ int main() {
                    second.mappingModelSha256,
            "round trip preserves exact source-bound authoring state");
 
-    const Inventory before   = parsed;
+    const Inventory before = parsed;
+    Draft alternateAlpha = first;
+    alternateAlpha.id = "raw-alpha-variant";
+    alternateAlpha.modelPath = "/source/alpha-variant.glb";
+    alternateAlpha.updatedUnix = 10u;
+    expect(upsert(parsed, alternateAlpha, error),
+           "a second source draft may intentionally share a package id");
+    const std::vector<const Draft *> alphaMatches =
+        findAllByPackageId(parsed, first.packageId);
+    expect(alphaMatches.size() == 2u &&
+               alphaMatches[0]->id == first.id &&
+               alphaMatches[1]->id == alternateAlpha.id &&
+               findAllByPackageId(parsed, "ORG.EXAMPLE.RAW-ALPHA").empty() &&
+               findAllByPackageId(parsed, "").empty(),
+           "package-id lookup is exact, preserves inventory order, and never guesses");
+
+    parsed = before;
+
     std::string     tampered = encoded;
     const size_t    model    = tampered.find("2f736f757263652f626574612e676c62");
     expect(model != std::string::npos, "encoded model fixture is present");

@@ -1459,26 +1459,29 @@ unfinished pieces into unbounded memory or GPU work.
 Gate: identical inputs produce identical packages/reports on macOS, Linux,
 Windows, and wasm-capable tooling; hostile corpus is bounded and sanitizer-clean.
 
-### P1 - Static modern mesh vertical slice (race/select seams complete for all donors)
+### P1 - Static modern mesh vertical slice (qualified WebGPU path complete)
 
 - Retained native scene commands, immutable resources, multiple
   primitives/materials, complete mip chains, lifecycle-safe caches and WebGPU
   device recovery are implemented.
 - Race and select attach validated packages at every qualified donor seam with
   depth, fog, viewport, culling and retail fallback behavior.
-- Add OpenGL parity or formally qualify WebGPU-only fallback behavior.
+- WebGPU owns the qualified modern-character path. OpenGL deliberately retains
+  the built-in donor instead of attempting a partial custom draw; parity
+  remains a separate renderer project if it becomes a product requirement.
 
 Gate: ROM-free generated fixture plus one license-clean reference mesh renders
 in 1P and 4P, character select, resize, device recovery, and GL fallback without
 affecting authoritative hashes.
 
-### P2 - Runtime compiler and cache (baseline complete; optimization pending)
+### P2 - Runtime compiler and cache (baseline complete)
 
 - Validated GLB loading and transactional sectioned `.mdkc` cache generation
   are implemented through the bounded offline/package-manager toolchain.
-- Integrate optional deterministic meshoptimizer simplification behind a
-  bounded, recorded compilation stage. Bounded KTX2/BasisU intake,
-  transcoding, capability selection, reporting, and RGBA8 fallback are complete.
+- Optional deterministic meshoptimizer simplification is implemented as a
+  bounded, recorded, exclusive-create offline authoring stage. Bounded
+  KTX2/BasisU intake, transcoding, capability selection, reporting, and RGBA8
+  fallback are complete.
 - Content-addressed cache invalidation, diagnostic reports and teardown are
   implemented. The dedicated failed-import inventory retains metadata and a
   bounded validator report but never source bytes; its native Workshop surface
@@ -1536,16 +1539,21 @@ Gate: material reference spheres and character fixtures match bounded offline
 references on WebGPU native/browser and GL fallback; no missing mip, NaN,
 pipeline explosion or transparent ordering regression.
 
-### P5 - LOD and performance qualification (authored LODs only)
+### P5 - LOD and performance qualification (pipeline complete; device corpus pending)
 
-- Compile authored LODs first; optionally generate lower LODs with recorded
-  simplification error.
+- Compile authored LODs directly or optionally create a separate validated GLB
+  with bounded, deterministic meshoptimizer levels and recorded simplification
+  error. Source geometry and existing authored LODs are never overwritten.
 - Retain the completed calibrated projected-height selector and its 8%
   per-viewport stateful hysteresis guard; exercise the explicit legacy-distance
   fallback in camera-seam tests.
-- Add bone/primitive/material batching metrics and GPU timing.
-- Exercise ten visible racers across four viewports and character select at the
-  low-end WebGPU device tier.
+- Bone, primitive, material, palette, geometry, texture and selected-assembly
+  metrics are exposed. Exact WebGPU stress routes record post-warm-up wall
+  cadence and optional timestamp distributions without fabricating unsupported
+  scopes.
+- Ten visible racers across four viewports and character select are executable
+  stress contexts. A maintained low-end device/driver corpus remains release
+  qualification rather than a claim inferred from the development machine.
 
 Gate: no frame-budget regression outside the written target, no unbounded cache
 growth, no visible LOD oscillation, and fallback engages before allocation or
@@ -1562,7 +1570,8 @@ GPU limits are exceeded.
   complete, including non-destructive target-space subject masking and a
   seven-view authoring readability proof; derivative background/frame presets
   remain.
-- Add local ordering policy and online digest/fallback diagnostics.
+- Deterministic local sort/fallback policy is implemented. Online visual-package
+  digest negotiation remains a separate authority/product contract.
 - Publish an SDK containing schemas, the generated animated fixture, validator,
   packer, semantic state reference, and examples that contain no Nintendo asset.
 - Update modding, privacy, support, third-party, and release documentation.
@@ -1574,7 +1583,8 @@ the imported source.
 
 ## Explicit non-goals for the first release
 
-- importing `.blend`, FBX, or DAE inside the game;
+- importing `.blend` or FBX directly, or loading DAE in the game runtime (the
+  launcher may convert its documented bounded DAE subset to a new GLB);
 - arbitrary character scripts or native plugins;
 - custom gameplay physics in a visual package;
 - peer-to-peer asset transfer;

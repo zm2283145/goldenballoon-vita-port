@@ -1159,6 +1159,21 @@ def main() -> int:
                 "character_raw_intake_head=head\n",
                 encoding="utf-8",
             )
+            duplicate_environment = isolated_environment(
+                install, model, install / "raw-intake-duplicate.bmp",
+                compact=False, drop=False,
+            )
+            duplicate_environment.update({
+                "MDKR_APP_SMOKE_FRAMES": "20",
+                "MDKR_APP_SMOKE_RAW_DRAFT_ACTION": "duplicate-selected",
+                "MDKR_APP_SMOKE_RAW_DRAFT_ACTION_TOKEN":
+                    "mdkr64-app-raw-draft-v1",
+            })
+            run(
+                binary, install, duplicate_environment,
+                ("raw-draft-action action=duplicate-selected applied=1 "
+                 "drafts=2",),
+            )
             install_environment = isolated_environment(
                 install, model, install / "raw-intake-install.bmp",
                 compact=False, drop=True
@@ -1177,13 +1192,18 @@ def main() -> int:
                 binary, install, install_environment,
                 ("raw-draft-action action=build-reviewed-install applied=1",
                  "raw-reviewed-install reviewed=1 installed=1",
-                 "remaining=0"),
+                 "remaining=1"),
             )
             selected_after_install, install_rows = raw_inventory(install)
-            if selected_after_install != "-" or install_rows:
+            if (
+                len(install_rows) != 1
+                or selected_after_install != install_rows[0][0]
+                or row_text(install_rows[0], 4)
+                    != "org.example.raw-install"
+            ):
                 raise RuntimeError(
-                    "successful reviewed install did not remove its exact "
-                    "completed raw draft"
+                    "successful reviewed install did not remove only its "
+                    "exact completed raw draft"
                 )
             if not (
                 install / "characters" / "org.example.raw-install.mdkc"
@@ -1203,6 +1223,113 @@ def main() -> int:
                     raise RuntimeError(
                         f"reviewed install changed external source {source}"
                     )
+
+            installed_before_handoff = hashlib.sha256(
+                (install / "characters" /
+                 "org.example.raw-install.mdkc").read_bytes()
+            ).hexdigest()
+            (install_prefs / "mdkr64_app.ini").write_text(
+                "character_workshop_last_selected=org.example.raw-install\n"
+                "character_workshop_last_tab=performance\n"
+                "character_raw_editor_open=0\n",
+                encoding="utf-8",
+            )
+            performance_environment = isolated_environment(
+                install, model, install / "performance-source-handoff.bmp",
+                compact=False, drop=False,
+            )
+            performance_environment.update({
+                "MDKR_APP_SMOKE_FRAMES": "30",
+                "MDKR_APP_SMOKE_PERFORMANCE_SOURCE_ACTION": "open-unique",
+                "MDKR_APP_SMOKE_PERFORMANCE_SOURCE_ACTION_TOKEN":
+                    "mdkr64-app-performance-source-v1",
+            })
+            run(
+                binary, install, performance_environment,
+                (
+                    "character-performance-source-handoff "
+                    "package=org.example.raw-install matches=1 ",
+                    "applied=1 ambiguity=unique",
+                    "raw-intake resumed=1 inspected=0 mappings=0 drafts=1",
+                ),
+            )
+            selected_after_handoff, rows_after_handoff = raw_inventory(install)
+            if (
+                len(rows_after_handoff) != 1
+                or selected_after_handoff != rows_after_handoff[0][0]
+                or row_text(rows_after_handoff[0], 2) != str(model)
+                or hashlib.sha256(
+                    (install / "characters" /
+                     "org.example.raw-install.mdkc").read_bytes()
+                ).hexdigest() != installed_before_handoff
+            ):
+                raise RuntimeError(
+                    "Performance source handoff guessed, changed, or lost "
+                    "the retained source or installed character"
+                )
+            for source, digest in install_source_before.items():
+                if hashlib.sha256(source.read_bytes()).hexdigest() != digest:
+                    raise RuntimeError(
+                        "Performance source handoff changed external source "
+                        f"{source}"
+                    )
+
+            ambiguous_duplicate_environment = isolated_environment(
+                install, model, install / "performance-duplicate.bmp",
+                compact=False, drop=False,
+            )
+            ambiguous_duplicate_environment.update({
+                "MDKR_APP_SMOKE_FRAMES": "20",
+                "MDKR_APP_SMOKE_RAW_DRAFT_ACTION": "duplicate-selected",
+                "MDKR_APP_SMOKE_RAW_DRAFT_ACTION_TOKEN":
+                    "mdkr64-app-raw-draft-v1",
+            })
+            run(
+                binary, install, ambiguous_duplicate_environment,
+                ("raw-draft-action action=duplicate-selected applied=1 "
+                 "drafts=2",),
+            )
+            (install_prefs / "mdkr64_app.ini").write_text(
+                "character_workshop_last_selected=org.example.raw-install\n"
+                "character_workshop_last_tab=performance\n"
+                "character_raw_editor_open=0\n",
+                encoding="utf-8",
+            )
+            ambiguous_environment = isolated_environment(
+                install, model, install / "performance-ambiguous.bmp",
+                compact=False, drop=False,
+            )
+            ambiguous_environment.update({
+                "MDKR_APP_SMOKE_FRAMES": "20",
+                "MDKR_APP_SMOKE_PERFORMANCE_SOURCE_ACTION": "open-unique",
+                "MDKR_APP_SMOKE_PERFORMANCE_SOURCE_ACTION_TOKEN":
+                    "mdkr64-app-performance-source-v1",
+            })
+            ambiguous_log = run(
+                binary, install, ambiguous_environment,
+                (
+                    "character-performance-source-handoff "
+                    "package=org.example.raw-install matches=2 selected=- "
+                    "applied=0 ambiguity=unresolved",
+                ),
+            )
+            if "raw-intake resumed=1" in ambiguous_log:
+                raise RuntimeError(
+                    "Performance source handoff guessed between ambiguous "
+                    "raw drafts"
+                )
+            _, ambiguous_rows = raw_inventory(install)
+            if (
+                len(ambiguous_rows) != 2
+                or hashlib.sha256(
+                    (install / "characters" /
+                     "org.example.raw-install.mdkc").read_bytes()
+                ).hexdigest() != installed_before_handoff
+            ):
+                raise RuntimeError(
+                    "ambiguous Performance source handoff changed authoring "
+                    "or installed state"
+                )
 
             accessible = root / "accessible"
             accessible.mkdir()

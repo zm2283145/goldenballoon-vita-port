@@ -67,6 +67,10 @@ bool         upsert(Inventory &inventory, Draft draft, std::string &error);
 bool         erase(Inventory &inventory, const std::string &draftId);
 const Draft *find(const Inventory &inventory, const std::string &draftId);
 Draft       *find(Inventory &inventory, const std::string &draftId);
+// Returns every exact package-id match in inventory order. Callers must not
+// retain the pointers across an inventory replacement or mutation.
+std::vector<const Draft *> findAllByPackageId(
+    const Inventory &inventory, const std::string &packageId);
 
 } // namespace CharacterRawDraftStore
 

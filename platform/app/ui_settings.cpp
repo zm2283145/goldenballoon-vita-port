@@ -2212,6 +2212,8 @@ std::map<std::string, int> g_characterAssemblyPlayers;
 std::map<std::string, float> g_characterPerformanceLodGestureStarts;
 std::map<std::string, float> g_characterLodInspectionHeights;
 std::set<std::string> g_characterPerformanceTracePackages;
+std::map<std::string, std::string> g_characterPerformanceRawDraftSelections;
+bool g_characterPerformanceRawDraftSmokeActionApplied = false;
 std::map<std::string, int> g_characterTestPlayers;
 std::map<std::string, int> g_characterTestPoses;
 std::map<std::string, int> g_characterTestPosePhases;
@@ -5203,6 +5205,7 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterPerformanceLodGestureStarts.erase(id);
     g_characterLodInspectionHeights.erase(id);
     g_characterPerformanceTracePackages.erase(id);
+    g_characterPerformanceRawDraftSelections.erase(id);
     g_characterTestPlayers.erase(id);
     g_characterTestPoses.erase(id);
     g_characterTestPosePhases.erase(id);
@@ -11449,6 +11452,153 @@ const char *characterPerformanceTier(
     return "Very heavy";
 }
 
+void drawCharacterPerformanceSourceHandoff(
+    const MdkrModernCharacterEntry *entry) {
+    const bool sourceInventoryReadable = g_characterRawDraftsWritable;
+    const std::vector<const CharacterRawDraftStore::Draft *> sourceDrafts =
+        sourceInventoryReadable
+            ? CharacterRawDraftStore::findAllByPackageId(
+                  g_characterRawDrafts, entry->id)
+            : std::vector<const CharacterRawDraftStore::Draft *>{};
+    const CharacterRawDraftStore::Draft *chosenDraft = nullptr;
+    if (sourceDrafts.size() == 1u) {
+        chosenDraft = sourceDrafts.front();
+        ui::TextSubtleWrapped(
+            "Only same-ID source draft: %s · %s",
+            chosenDraft->displayName.empty()
+                ? "Unnamed raw draft"
+                : chosenDraft->displayName.c_str(),
+            chosenDraft->modelPath.c_str());
+    } else if (sourceDrafts.size() > 1u) {
+        std::string &selectedId =
+            g_characterPerformanceRawDraftSelections[entry->id];
+        const auto selected = std::find_if(
+            sourceDrafts.begin(), sourceDrafts.end(),
+            [&selectedId](const CharacterRawDraftStore::Draft *draft) {
+                return draft != nullptr && draft->id == selectedId;
+            });
+        if (selected == sourceDrafts.end()) selectedId.clear();
+        const auto chosen = std::find_if(
+            sourceDrafts.begin(), sourceDrafts.end(),
+            [&selectedId](const CharacterRawDraftStore::Draft *draft) {
+                return draft != nullptr && draft->id == selectedId;
+            });
+        chosenDraft = chosen != sourceDrafts.end() ? *chosen : nullptr;
+        const std::string preview = chosenDraft != nullptr
+            ? (chosenDraft->displayName.empty()
+                   ? chosenDraft->modelPath
+                   : chosenDraft->displayName + " — " +
+                         chosenDraft->modelPath)
+            : "Choose the exact source draft";
+        ImGui::SetNextItemWidth(-1.0f);
+        const bool sourceListOpen = ImGui::BeginCombo(
+            "Source draft for LOD copy", preview.c_str());
+        ui::SpeakFocusedItem(
+            "Source draft for LOD copy",
+            chosenDraft != nullptr ? preview.c_str() : "Not chosen",
+            "More than one retained raw draft uses this package ID. Choose the exact model source; the Workshop never guesses by recency.");
+        if (sourceListOpen) {
+            for (const CharacterRawDraftStore::Draft *draft : sourceDrafts) {
+                if (draft == nullptr) continue;
+                const std::string visible =
+                    (draft->displayName.empty() ? "Unnamed raw draft"
+                                                : draft->displayName) +
+                    " — " + draft->modelPath + " [" + draft->id + "]";
+                if (ImGui::Selectable(
+                        visible.c_str(), draft->id == selectedId)) {
+                    selectedId = draft->id;
+                    chosenDraft = draft;
+                }
+                ui::SpeakFocusedItem(
+                    draft->displayName.empty()
+                        ? draft->modelPath.c_str()
+                        : draft->displayName.c_str(),
+                    draft->id == selectedId ? "selected" : "available",
+                    draft->modelPath.c_str());
+            }
+            ImGui::EndCombo();
+        }
+        ui::TextSubtleWrapped(
+            "%zu retained drafts share this package ID. An explicit source choice is required because their package fingerprints cannot safely identify the original model draft.",
+            sourceDrafts.size());
+    }
+
+    const char *smokeAction = std::getenv(
+        "MDKR_APP_SMOKE_PERFORMANCE_SOURCE_ACTION");
+    const char *smokeToken = std::getenv(
+        "MDKR_APP_SMOKE_PERFORMANCE_SOURCE_ACTION_TOKEN");
+    const bool smokeOpen =
+        !g_characterPerformanceRawDraftSmokeActionApplied &&
+        smokeAction != nullptr && smokeToken != nullptr &&
+        std::strcmp(smokeAction, "open-unique") == 0 &&
+        std::strcmp(
+            smokeToken, "mdkr64-app-performance-source-v1") == 0;
+    if (smokeOpen) g_characterPerformanceRawDraftSmokeActionApplied = true;
+    const bool canOpen = chosenDraft != nullptr &&
+        (sourceDrafts.size() == 1u ||
+         !g_characterPerformanceRawDraftSelections[entry->id].empty());
+    if (!canOpen) ImGui::BeginDisabled();
+    const bool requestedOpen = ImGui::Button(
+        "Open chosen source draft and create LOD copy",
+        ui::kBtnFullWidth()) || smokeOpen;
+    if (requestedOpen && canOpen) {
+        const std::string chosenId = chosenDraft->id;
+        const bool opened = activateCharacterRawDraft(chosenId);
+        setStatus(
+            opened
+                ? "Same-ID raw source opened. Verify its model fingerprint, then create a separate LOD copy in Performance geometry."
+                : "The chosen raw source could not be opened; no draft or installed character changed.",
+            opened ? AppTheme::good() : AppTheme::bad());
+        if (smokeOpen || std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-performance-source-handoff package=%s matches=%zu selected=%s applied=%d ambiguity=%s\n",
+                entry->id, sourceDrafts.size(), chosenId.c_str(),
+                opened ? 1 : 0,
+                sourceDrafts.size() > 1u ? "explicit" : "unique");
+        }
+    } else if (smokeOpen) {
+        std::fprintf(
+            stderr,
+            "[app-ui] character-performance-source-handoff package=%s matches=%zu selected=- applied=0 ambiguity=%s\n",
+            entry->id, sourceDrafts.size(),
+            !sourceInventoryReadable ? "unavailable"
+            : sourceDrafts.size() > 1u ? "unresolved" : "missing");
+    }
+    ui::SpeakFocusedItem(
+        "Open chosen source draft and create LOD copy",
+        canOpen ? "ready" : !sourceInventoryReadable
+            ? "Raw draft inventory is unavailable"
+            : sourceDrafts.empty()
+            ? "No matching retained source draft"
+            : "Choose the exact source draft first",
+        "Opens only the chosen resumable raw source. The installed character and original GLB remain unchanged; LOD generation requires a new exclusive destination and a complete review.");
+    if (!canOpen) ImGui::EndDisabled();
+    if (sourceInventoryReadable && !sourceDrafts.empty()) {
+        ui::TextSubtleWrapped(
+            "Package ID is a safe routing hint, not proof that a raw GLB built the installed revision. Verify the model path and fingerprint after opening; no geometry is generated or installed by this handoff.");
+    }
+    if (!sourceInventoryReadable) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "Raw source handoff is unavailable because the local draft inventory failed validation. Repair or preserve that inventory before authoring another source; no draft was guessed or overwritten.");
+    } else if (sourceDrafts.empty()) {
+        ui::TextSubtleWrapped(
+            "No retained raw source draft has this exact package ID. Reopen the original GLB to start a separate resumable draft; the installed package cannot be reverse-converted into an authoring source.");
+        if (filedialog::isAvailable()) {
+            if (ImGui::Button(
+                    "Choose original source GLB...",
+                    ui::kBtnFullWidth())) {
+                (void)Settings_chooseCharacterSource();
+            }
+            ui::SpeakFocusedItem(
+                "Choose original source GLB",
+                nullptr,
+                "Chooses a self-contained GLB without changing the installed character or overwriting any source file.");
+        }
+    }
+}
+
 void drawCharacterPerformanceAssembly(
     const MdkrModernCharacterEntry *entry) {
     int &players = g_characterAssemblyPlayers[entry->id];
@@ -11540,7 +11690,8 @@ void drawCharacterPerformanceAssembly(
     if (!hasMultipleLods) ImGui::EndDisabled();
     if (!hasMultipleLods) {
         ui::TextSubtleWrapped(
-            "Target profiles are unavailable because this package has one LOD. Open or resume its raw source draft to create a separate recorded LOD copy, then rebuild and review it; no slider silently manufactures or replaces installed geometry.");
+            "Target profiles are unavailable because this package has one LOD. Create a separate recorded LOD copy from one of its retained source drafts, then rebuild and review it; no slider silently manufactures or replaces installed geometry.");
+        drawCharacterPerformanceSourceHandoff(entry);
     }
     if (!hasMultipleLods) ImGui::BeginDisabled();
     const float lodBiasBeforeFrame = tuning.lodBias;

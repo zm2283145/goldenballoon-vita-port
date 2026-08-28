@@ -556,4 +556,14 @@ Draft *find(Inventory &inventory, const std::string &draftId) {
     return found == inventory.drafts.end() ? nullptr : &*found;
 }
 
+std::vector<const Draft *> findAllByPackageId(
+    const Inventory &inventory, const std::string &packageId) {
+    std::vector<const Draft *> matches;
+    if (packageId.empty()) return matches;
+    for (const Draft &draft : inventory.drafts) {
+        if (draft.packageId == packageId) matches.push_back(&draft);
+    }
+    return matches;
+}
+
 } // namespace CharacterRawDraftStore

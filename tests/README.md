@@ -4923,8 +4923,11 @@ fixture proves diagnostics stop at 256 exact items plus a
 suppression count. The rendered intake drops a zero-count accessor, requires its exact
 manager diagnostic, and proves that no candidate or cache appears. The gate
 also drives reviewed installation,
-requires exact completed-draft/candidate cleanup, hashes both external GLBs and
-the license before and after the lifecycle, keyboard-walks the spoken draft
+requires exact completed-draft/candidate cleanup while preserving a sibling
+same-ID source draft, then proves the installed one-LOD Performance workspace
+opens the sole candidate without changing source or installed bytes and refuses
+to guess after a second same-ID draft is added. It hashes both external GLBs
+and the license before and after the lifecycle, keyboard-walks the spoken draft
 controls, and renders at 640x480 with 200% UI scale and touch scrolling.
 
 ```bash
