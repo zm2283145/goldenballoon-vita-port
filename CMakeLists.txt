@@ -655,8 +655,11 @@ target_compile_options(${MDKR_TARGET} PRIVATE
     # Address-domain crossings must be explicit (uintptr_t, DKR_TOK/DKR_PTR, or
     # OS_K0_TOKEN_TO_PHYSICAL). A raw narrowing conversion is a correctness
     # defect on LP64 and must never silently return to the tree.
-    -Werror=int-to-pointer-cast
-    -Werror=pointer-to-int-cast
+    # GCC diagnoses these option names as invalid in C++ mode. C++ already
+    # rejects the corresponding implicit conversions in the language; keep the
+    # explicit warning classes on the C translation units they describe.
+    $<$<COMPILE_LANGUAGE:C>:-Werror=int-to-pointer-cast>
+    $<$<COMPILE_LANGUAGE:C>:-Werror=pointer-to-int-cast>
     # Matching-era source contains many harmless legacy warnings, but these
     # classes directly predict native correctness defects and must stay live.
     -Werror=return-type
