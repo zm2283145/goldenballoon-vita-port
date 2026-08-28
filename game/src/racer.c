@@ -17,6 +17,14 @@
 #include "network_player_authority.h"
 #include "video.h"
 #include "platform_os.h"
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+/* AP-09/10 door-transition consumption authority: only the arbiter's latch
+ * winner runs racer_enter_door(). Behind NATIVE_PORT && !OMIT with a stock
+ * else, so OMIT / matching N64 compile it out. */
+#include "adventure_party/adventure_party_runtime.h"
+#include "adventure_party/adventure_party_state.h"
+#include "adventure_party/adventure_party_trace.h"
+#endif
 
 #include "asset_enums.h"
 #include "asset_loading.h"
@@ -4948,6 +4956,34 @@ void update_player_racer(Object *obj, s32 updateRate) {
         }
         tempVar = tempRacer->playerIndex;
         if (tempRacer->playerIndex != PLAYER_COMPUTER) {
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+            /* AP-09/10 door-transition consumption authority. In a party lobby
+             * exactly ONE racer -- the arbiter's settled latch winner -- may run
+             * racer_enter_door() (which owns the authored fade and the single
+             * func_8006D968 level load). A racer that briefly latched an exit but
+             * is not the winner (a same-tick displacement) drops it here and
+             * resumes normal control, so two racers can never both enter a door.
+             * The winning transition is emitted once per generation from the
+             * settled latch, naming the FINAL winner. */
+            if (tempRacer->exitObj != NULL && adventure_party_runtime_is_active()) {
+                AdventurePartySession *apS = adventure_party_runtime_session();
+                const AdventurePartyTransitionLatch *apLatch = &apS->transition_latch;
+                int apWinner = apLatch->latched &&
+                    apLatch->winner.initiating_seat == (uint8_t) tempRacer->playerIndex;
+                if (apS->state == ADVENTURE_PARTY_STATE_ACTIVE_LOBBY && !apWinner) {
+                    tempRacer->exitObj = NULL;
+                    tempRacer->transitionTimer = 0;
+                } else if (apWinner) {
+                    static uint32_t sApEmittedGen;
+                    static int sApEmittedValid;
+                    if (!sApEmittedValid || sApEmittedGen != apS->level_generation) {
+                        sApEmittedValid = 1;
+                        sApEmittedGen = apS->level_generation;
+                        adventure_party_trace_emit_transition(&apLatch->winner);
+                    }
+                }
+            }
+#endif
             if (tempRacer->exitObj == 0) {
                 if (is_race_started_by_player_two()) {
                     tempVar = 1 - tempVar;

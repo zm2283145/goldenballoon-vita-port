@@ -56,6 +56,20 @@
 #include "mdkr_challenge.h"
 #include "mdkr_trace.h"
 extern int g_frameCounter;
+#ifndef MDKR_ADVENTURE_PARTY_OMIT
+/* AP-09/10 transition arbitration + shared-collection adapters. Every call to
+ * them is behind NATIVE_PORT && !MDKR_ADVENTURE_PARTY_OMIT with an immediate
+ * stock else, so the OMIT build and the matching N64 path compile out entirely
+ * (Task 6/7 precedent). */
+#include "adventure_party/adventure_party_policy.h"
+#include "adventure_party/adventure_party_runtime.h"
+#include "adventure_party/adventure_party_state.h"
+#include "adventure_party/adventure_party_trace.h"
+extern int g_simTickCounter;
+/* Adapter vocabulary for AdventurePartyTransitionRequest.trigger_kind. Lobby
+ * warps are all BHV_EXIT objects; one kind is enough for AP-10. */
+#define AP_TRIGGER_EXIT 1u
+#endif
 #endif
 
 /************ .data ************/
@@ -2817,8 +2831,51 @@ void obj_loop_exit(Object *obj, UNUSED s32 updateRate) {
                     rotDiff = (exit->directionX * racerObj->trans.x_position) +
                               (exit->directionZ * racerObj->trans.z_position) + exit->rotationDiff;
                     if (rotDiff < 0.0f) {
-                        racer->exitObj = obj;
-                        racer->transitionTimer = -120;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                        AdventurePartySession *apSession = adventure_party_runtime_session();
+                        if (adventure_party_runtime_is_active() &&
+                            apSession->state == ADVENTURE_PARTY_STATE_ACTIVE_LOBBY) {
+                            /* Any party racer may trigger a lobby exit; the pure
+                             * reducer picks exactly one winner per level
+                             * generation (lowest tick, ties to lowest seat)
+                             * independent of object iteration order. Only the
+                             * winner latches an exit, so a losing/simultaneous
+                             * door press can never become a second whole-party
+                             * load. The winner runs the authored door animation
+                             * and func_8006D968 exactly as retail; the party
+                             * travels as one and Task 7's roster machinery
+                             * re-forms it at the destination lobby. */
+                            AdventurePartyTransitionRequest req;
+                            AdventurePartyArbitration verdict;
+                            req.level_generation = apSession->level_generation;
+                            req.simulation_tick = (uint32_t) g_simTickCounter;
+                            req.trigger_kind = AP_TRIGGER_EXIT;
+                            req.destination = obj->level_entry->exit.destinationMapId;
+                            req.entrance = obj->level_entry->exit.returnSpawnIndex;
+                            req.object_id = obj->level_entry->exit.destinationMapId;
+                            req.initiating_seat = (uint8_t) racer->playerIndex;
+                            verdict = adventure_party_arbitrate_transition(
+                                &apSession->transition_latch, &req,
+                                apSession->level_generation,
+                                apSession->roster.seat_mask);
+                            if (verdict == ADVENTURE_PARTY_ARBITRATE_LATCHED) {
+                                racer->exitObj = obj;
+                                racer->transitionTimer = -120;
+                            } else {
+                                static s32 sApExitRejectReported;
+                                if (!sApExitRejectReported) {
+                                    sApExitRejectReported = 1; /* one diagnostic at most */
+                                    adventure_party_trace_emit_interaction(
+                                        (uint8_t) racer->playerIndex,
+                                        ADVENTURE_PARTY_ACTION_TRIGGER_TRANSITION, verdict);
+                                }
+                            }
+                        } else
+#endif
+                        {
+                            racer->exitObj = obj;
+                            racer->transitionTimer = -120;
+                        }
                     }
                 }
             }
@@ -3833,7 +3890,28 @@ void obj_loop_goldenballoon(Object *obj, s32 updateRate) {
                 racerObj = interactObj->obj;
                 if ((racerObj && (racerObj->header->behaviorId == 1))) {
                     racer = racerObj->racer;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                    /* Shared hub balloon: any occupied party seat may collect
+                     * (policy COLLECT authority), not only player one. The
+                     * collected flag written below is per-course and set exactly
+                     * once, so the first toucher (the nearest racer the collision
+                     * system already resolved into interactObj->obj) wins and no
+                     * second racer can re-collect. AP-13 owns the exact-once SAVE
+                     * award; this task only lifts the P1-only gate. Off/OMIT this
+                     * is exactly the stock `playerIndex == PLAYER_ONE`. */
+                    int apMayCollect;
+                    if (adventure_party_runtime_is_active()) {
+                        apMayCollect = adventure_party_seat_may_act(
+                            racer->playerIndex,
+                            adventure_party_runtime_session()->roster.seat_mask,
+                            ADVENTURE_PARTY_ACTION_COLLECT);
+                    } else {
+                        apMayCollect = (racer->playerIndex == PLAYER_ONE);
+                    }
+                    if (apMayCollect) {
+#else
                     if (racer->playerIndex == PLAYER_ONE) {
+#endif
                         settings->balloonsPtr[settings->worldId]++;
                         if (isPirated == 1) {} // Fakematch
                         if (settings->worldId != WORLD_CENTRAL_AREA) {
@@ -3847,6 +3925,14 @@ void obj_loop_goldenballoon(Object *obj, s32 updateRate) {
                         obj->particleEmittersEnabled = OBJ_EMIT_2;
                         obj->trans.flags |= OBJ_FLAGS_INVISIBLE;
                         obj_spawn_particle(obj, updateRate);
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                        if (adventure_party_runtime_is_active()) {
+                            adventure_party_trace_emit_interaction(
+                                (uint8_t) racer->playerIndex,
+                                ADVENTURE_PARTY_ACTION_COLLECT,
+                                ADVENTURE_PARTY_ARBITRATE_LATCHED);
+                        }
+#endif
                     }
                 }
             }
