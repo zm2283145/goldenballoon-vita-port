@@ -86,6 +86,7 @@ static int event_is_legal(AdventurePartySessionState state,
         return kind == ADVENTURE_PARTY_EVENT_DIALOGUE_START ||
                kind == ADVENTURE_PARTY_EVENT_RACE_START ||
                kind == ADVENTURE_PARTY_EVENT_SOLO_START ||
+               kind == ADVENTURE_PARTY_EVENT_LOBBY_TRANSITION ||
                kind == ADVENTURE_PARTY_EVENT_QUIT;
     case ADVENTURE_PARTY_STATE_SHARED_DIALOGUE:
         return kind == ADVENTURE_PARTY_EVENT_DIALOGUE_COMPLETE;
@@ -161,6 +162,17 @@ AdventurePartyResult adventure_party_session_apply(
 
     case ADVENTURE_PARTY_EVENT_RACE_START:
         enter_level(session, ADVENTURE_PARTY_STATE_ACTIVE_RACE);
+        return ADVENTURE_PARTY_OK;
+
+    case ADVENTURE_PARTY_EVENT_LOBBY_TRANSITION:
+        /* A door from one lobby to another (R16). It is a level entry like any
+         * other, so it goes through the ONE enter_level bump — the new
+         * generation clears the departing lobby's latched door and its consumed
+         * tokens, which is exactly what lets a door in the freshly entered lobby
+         * latch again (the arbiter latch is otherwise terminal for its
+         * departing generation). The party is untouched: same state, same
+         * roster, same host. */
+        enter_level(session, ADVENTURE_PARTY_STATE_ACTIVE_LOBBY);
         return ADVENTURE_PARTY_OK;
 
     case ADVENTURE_PARTY_EVENT_RACE_RESULT_COMMITTED:

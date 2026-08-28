@@ -94,6 +94,7 @@ typedef enum AdventurePartyEventKind {
     ADVENTURE_PARTY_EVENT_RESTORE_COMMIT,        /* RESTORING_PARTY -> ACTIVE_LOBBY */
     ADVENTURE_PARTY_EVENT_QUIT,                  /* ACTIVE_LOBBY|ACTIVE_RACE -> EXITING */
     ADVENTURE_PARTY_EVENT_DESTROY,               /* EXITING -> OFF */
+    ADVENTURE_PARTY_EVENT_LOBBY_TRANSITION,      /* ACTIVE_LOBBY -> ACTIVE_LOBBY */
     ADVENTURE_PARTY_EVENT_KIND_COUNT
 } AdventurePartyEventKind;
 
@@ -210,8 +211,9 @@ void adventure_party_session_init(AdventurePartySession *session);
  * simply be dropped.
  *
  * Level generation increments on every accepted level entry: START_NEW_GAME,
- * RESUME_SAVE, SCENE_COMPLETE, RACE_START, RACE_RESULT_COMMITTED, SOLO_START
- * and RESTORE_COMMIT. The bump clears the transition latch and the consumed
+ * RESUME_SAVE, SCENE_COMPLETE, RACE_START, RACE_RESULT_COMMITTED, SOLO_START,
+ * RESTORE_COMMIT and LOBBY_TRANSITION (a lobby->lobby door). The bump clears
+ * the transition latch and the consumed
  * token list; DIALOGUE_COMPLETE clears the latch without a bump (the dialogue
  * was that generation's shared action, and it has finished).
  *

@@ -140,6 +140,7 @@ static int pair_is_legal(AdventurePartySessionState st,
         return k == ADVENTURE_PARTY_EVENT_DIALOGUE_START ||
                k == ADVENTURE_PARTY_EVENT_RACE_START ||
                k == ADVENTURE_PARTY_EVENT_SOLO_START ||
+               k == ADVENTURE_PARTY_EVENT_LOBBY_TRANSITION ||
                k == ADVENTURE_PARTY_EVENT_QUIT;
     case ADVENTURE_PARTY_STATE_SHARED_DIALOGUE:
         return k == ADVENTURE_PARTY_EVENT_DIALOGUE_COMPLETE;
@@ -452,6 +453,63 @@ static void test_latch_clears_on_bump_and_dialogue_complete(void) {
     apply(&s, ADVENTURE_PARTY_EVENT_DIALOGUE_COMPLETE, 2);
     expect(s.transition_latch.latched == 0,
            "latch: released when the dialogue completes");
+}
+
+/* R16: ACTIVE_LOBBY may re-enter ACTIVE_LOBBY (a lobby->lobby door), through the
+ * SAME single enter_level bump every other level entry uses. Two hops must give
+ * two generations, each clearing the previous generation's latch, with the party
+ * itself untouched — this is what unblocks a second door in a freshly entered
+ * lobby (the arbiter latch is otherwise terminal for its departing generation). */
+static void test_lobby_transition_two_hop(void) {
+    AdventurePartySession s, before;
+    uint32_t g0, g1;
+
+    drive(&s, ADVENTURE_PARTY_STATE_ACTIVE_LOBBY, 3);
+    g0 = s.level_generation;
+    before = s;
+
+    /* A latched door in the departing lobby generation (the first hop's cause). */
+    s.transition_latch.latched = 1;
+    s.transition_latch.winner.level_generation = s.level_generation;
+    s.transition_latch.winner.initiating_seat = 2;
+
+    /* First hop: lobby -> lobby. */
+    expect(apply(&s, ADVENTURE_PARTY_EVENT_LOBBY_TRANSITION, 3) ==
+           ADVENTURE_PARTY_OK, "lobby-hop: first hop accepted");
+    expect(s.state == ADVENTURE_PARTY_STATE_ACTIVE_LOBBY,
+           "lobby-hop: still ACTIVE_LOBBY after the hop");
+    g1 = s.level_generation;
+    expect(g1 == g0 + 1, "lobby-hop: level generation advanced by one");
+    expect(s.transition_latch.latched == 0,
+           "lobby-hop: latch cleared in the new generation");
+    expect(adventure_party_participant_count(&s) == 3,
+           "lobby-hop: party count intact across the hop");
+    expect(memcmp(&s.roster, &before.roster, sizeof s.roster) == 0,
+           "lobby-hop: roster (seats + characters) intact across the hop");
+
+    /* Second hop: a fresh latch in the new generation, then hop again — two
+     * distinct latches resolved in two distinct generations. */
+    s.transition_latch.latched = 1;
+    s.transition_latch.winner.level_generation = s.level_generation;
+    s.transition_latch.winner.initiating_seat = 0;
+    expect(apply(&s, ADVENTURE_PARTY_EVENT_LOBBY_TRANSITION, 3) ==
+           ADVENTURE_PARTY_OK, "lobby-hop: second hop accepted");
+    expect(s.level_generation == g1 + 1,
+           "lobby-hop: second hop advanced the generation again");
+    expect(s.transition_latch.latched == 0,
+           "lobby-hop: latch cleared again (two latches, two generations)");
+    expect(s.session_generation == 1,
+           "lobby-hop: session generation unchanged across the hops");
+
+    /* A lobby transition is a level entry, so it also clears consumed tokens. */
+    {
+        AdventurePartyCompletionToken t = token_for(&s, 3, 2, 0);
+        expect(adventure_party_consume_completion_token(&s, &t) ==
+               ADVENTURE_PARTY_OK, "lobby-hop: token consumable after the hop");
+        apply(&s, ADVENTURE_PARTY_EVENT_LOBBY_TRANSITION, 3);
+        expect(s.consumed_count == 0,
+               "lobby-hop: consumed-token list cleared by the hop's bump");
+    }
 }
 
 /* "Awarding twice fails." */
@@ -840,6 +898,7 @@ int main(int argc, char **argv) {
     test_every_state_event_pair();
     test_level_generation_bumps_exactly_on_level_entry();
     test_second_transition_same_generation_fails();
+    test_lobby_transition_two_hop();
     test_latch_clears_on_bump_and_dialogue_complete();
     test_awarding_twice_fails();
     test_stale_generation_commit_fails();
