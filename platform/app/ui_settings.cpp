@@ -2438,6 +2438,13 @@ MdkrTextStateFileSpec g_characterTestEvidenceFileSpec{
     "character_test_evidence-v1.tsv", nullptr, nullptr,
 };
 std::map<std::string, unsigned> g_characterTestEvidenceSelectedCell;
+struct CharacterDeviceProfileExportEdit {
+    char path[1024] = {};
+    bool deviceIdentitySharingConfirmed = false;
+};
+std::map<std::string, CharacterDeviceProfileExportEdit>
+    g_characterDeviceProfileExportEdits;
+bool g_characterDeviceProfileSmokeApplied = false;
 bool g_characterTestEvidenceSmokeActionApplied = false;
 bool g_characterTestEvidenceErrorTracePrinted = false;
 std::set<std::string> g_characterTestEvidenceTracePackages;
@@ -15924,6 +15931,76 @@ bool clearCharacterTestBaseline(
     return replaceCharacterTestEvidence(std::move(replacement));
 }
 
+bool buildCharacterDeviceProfile(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterTuningEdit &tuning,
+    const std::string &presentationSignature,
+    CharacterTestEvidenceStore::DeviceProfileWorkload &workload,
+    std::vector<CharacterTestEvidenceStore::Evidence> &records,
+    CharacterTestEvidenceStore::DeviceProfileSummary &summary,
+    std::string &error) {
+    workload = {};
+    records.clear();
+    summary = {};
+    if (entry == nullptr || presentationSignature.empty()) {
+        error = "The exact renderer presentation is unavailable.";
+        return false;
+    }
+    workload.hostPlatform = SDL_GetPlatform();
+    workload.sourceSha256 = characterDigestHex(entry->source_sha256);
+    workload.presentationSha256 = presentationSignature;
+    workload.vehicleMask = entry->vehicle_mask & tuning.vehicleMask & 0x7u;
+    workload.vertices = entry->lod_vertices[0] != 0u
+        ? entry->lod_vertices[0] : entry->stats.vertices;
+    workload.triangles = entry->lod_triangles[0] != 0u
+        ? entry->lod_triangles[0] : entry->stats.triangles;
+    workload.primitives = entry->lod_primitives[0] != 0u
+        ? entry->lod_primitives[0] : entry->stats.primitives;
+    workload.joints = entry->stats.joints;
+    workload.textures = entry->stats.textures;
+    workload.decodedTextureBytes = entry->stats.decoded_texture_bytes;
+    workload.lodCount = std::min(entry->stats.lod_levels, 4u);
+    for (uint32_t context = 0u;
+         context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+        workload.fitSha256[context] = characterTestTuningSignature(
+            entry, tuning, context);
+    }
+    for (uint32_t lod = 0u; lod < workload.lodCount; ++lod) {
+        workload.lodVertices[lod] = lod == 0u &&
+                entry->lod_vertices[lod] == 0u
+            ? workload.vertices : entry->lod_vertices[lod];
+        workload.lodTriangles[lod] = lod == 0u &&
+                entry->lod_triangles[lod] == 0u
+            ? workload.triangles : entry->lod_triangles[lod];
+        workload.lodPrimitives[lod] = lod == 0u &&
+                entry->lod_primitives[lod] == 0u
+            ? workload.primitives : entry->lod_primitives[lod];
+    }
+    for (uint32_t context = 0u;
+         context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+        if (context != MDKR_CHARACTER_CONTEXT_SELECT &&
+            (workload.vehicleMask & (1u << (context - 1u))) == 0u) {
+            continue;
+        }
+        for (uint32_t players = 1u; players <= 4u; ++players) {
+            const CharacterTestEvidenceStore::Evidence *evidence =
+                CharacterTestEvidenceStore::find(
+                    g_characterTestEvidence, entry->id, context + 1u,
+                    players, CharacterTestEvidenceStore::Kind::Latest);
+            if (evidence == nullptr ||
+                !characterTestEvidenceCurrent(
+                    entry, tuning, *evidence, presentationSignature)) {
+                error = "Run every applicable current 1P through 4P exact test before sharing a device profile.";
+                records.clear();
+                return false;
+            }
+            records.push_back(*evidence);
+        }
+    }
+    return CharacterTestEvidenceStore::summarizeDeviceProfile(
+        workload, records, summary, error);
+}
+
 void drawCharacterTestEvidenceMatrix(
     const MdkrModernCharacterEntry *entry,
     const CharacterTuningEdit &tuning) {
@@ -16795,6 +16872,150 @@ void drawCharacterTestEvidenceMatrix(
         ui::SpeakFocusedItem(
             "Reopen performance exception", nullptr,
             "Removes only the local acceptance decision. Exact evidence and package content remain unchanged.");
+    }
+
+    ImGui::SeparatorText("Share measured device profile (optional)");
+    CharacterTestEvidenceStore::DeviceProfileWorkload profileWorkload;
+    std::vector<CharacterTestEvidenceStore::Evidence> profileRecords;
+    CharacterTestEvidenceStore::DeviceProfileSummary profileSummary;
+    std::string profileReadiness;
+    const bool profileReady = buildCharacterDeviceProfile(
+        entry, tuning, presentationSignature, profileWorkload,
+        profileRecords, profileSummary, profileReadiness);
+    CharacterDeviceProfileExportEdit &profileEdit =
+        g_characterDeviceProfileExportEdits[entry->id];
+    const char *profileSmokePath = std::getenv(
+        "MDKR_APP_SMOKE_CHARACTER_DEVICE_PROFILE");
+    const char *profileSmokeToken = std::getenv(
+        "MDKR_APP_SMOKE_CHARACTER_DEVICE_PROFILE_TOKEN");
+    const bool profileSmokeExport =
+        !g_characterDeviceProfileSmokeApplied && profileReady &&
+        profileSmokePath != nullptr && profileSmokePath[0] != '\0' &&
+        profileSmokeToken != nullptr && std::strcmp(
+            profileSmokeToken,
+            "mdkr64-character-device-profile-v1") == 0;
+    if (profileSmokeExport) {
+        g_characterDeviceProfileSmokeApplied = true;
+        std::snprintf(
+            profileEdit.path, sizeof(profileEdit.path), "%s",
+            profileSmokePath);
+        profileEdit.deviceIdentitySharingConfirmed = true;
+    }
+    if (!profileReady) {
+        profileEdit.deviceIdentitySharingConfirmed = false;
+        ImGui::TextColored(AppTheme::accent(), "Not ready to share");
+        ui::TextSubtleWrapped("%s", profileReadiness.c_str());
+    } else {
+        const auto &environment = profileRecords.front();
+        ImGui::TextColored(
+            profileSummary.targetRows == profileSummary.expectedRows
+                ? AppTheme::good() : AppTheme::accent(),
+            "%u complete rows · %u on target · workload %s…",
+            profileSummary.expectedRows, profileSummary.targetRows,
+            profileSummary.workloadId.substr(0u, 12u).c_str());
+        ui::TextSubtleWrapped(
+            "This shareable JSON identifies %s · %s and its driver (%s), host platform, exact build, renderer, row-owned resolution, timing distributions, GPU timestamp availability, and model cost counts. Compare reports only when both workload ID and build match. The workload ID is pseudonymous, so someone who already has the exact workload can recognize a matching report. It omits the package ID, names, paths, portrait, model/ROM bytes, and raw source, fit, and presentation hashes. Nothing is uploaded.",
+            environment.adapter.c_str(), environment.backend.c_str(),
+            environment.driver.empty() ? "not reported"
+                                       : environment.driver.c_str());
+    }
+    if (!profileReady) ImGui::BeginDisabled();
+    (void)ImGui::Checkbox(
+        "I agree to include this GPU, driver, build, resolution, and timing evidence",
+        &profileEdit.deviceIdentitySharingConfirmed);
+    if (!profileReady) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Share device identity and timing evidence",
+        profileEdit.deviceIdentitySharingConfirmed ? "Checked" : "Not checked",
+        profileReady
+            ? "Required before export. The JSON identifies the renderer device and driver for useful corpus grouping. Its derived workload ID is pseudonymous, not anonymous; character identity, files, and raw workload fingerprints are omitted."
+            : "Unavailable until every applicable current one-through-four-player exact test is complete on one build and device.");
+    ImGui::SetNextItemWidth(
+        filedialog::isAvailable()
+            ? std::max(120.0f, ImGui::GetContentRegionAvail().x -
+                                  ui::kBtnSecondary().x - ui::kGapS)
+            : -1.0f);
+    ImGui::InputTextWithHint(
+        "##character-device-profile-path",
+        "/path/to/character-device-profile.json",
+        profileEdit.path, sizeof(profileEdit.path));
+    ui::SpeakFocusedItem(
+        "Device profile path", nullptr,
+        "Names a new JSON file. Existing files are always preserved.");
+    if (filedialog::isAvailable()) {
+        ImGui::SameLine();
+        if (ImGui::Button("Choose profile...", ui::kBtnSecondary())) {
+            std::string path;
+            if (filedialog::saveCharacterDeviceProfile(path)) {
+                std::snprintf(
+                    profileEdit.path, sizeof(profileEdit.path), "%s",
+                    path.c_str());
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Choose device profile", nullptr,
+            "Opens the operating system save panel for a new privacy-bounded JSON profile.");
+    }
+    const bool profileExportReady = profileReady &&
+        profileEdit.deviceIdentitySharingConfirmed &&
+        profileEdit.path[0] != '\0';
+    if (!profileExportReady) ImGui::BeginDisabled();
+    const bool profileExportRequested =
+        ImGui::Button("Export device profile") || profileSmokeExport;
+    if (profileExportRequested && profileExportReady) {
+        CharacterTestEvidenceStore::DeviceProfileWorkload currentWorkload;
+        std::vector<CharacterTestEvidenceStore::Evidence> currentRecords;
+        CharacterTestEvidenceStore::DeviceProfileSummary currentSummary;
+        std::string exportError;
+        const std::string destination = profileEdit.path;
+        const bool stillCurrent = buildCharacterDeviceProfile(
+            entry, tuning, characterTestPresentationSignature(),
+            currentWorkload, currentRecords, currentSummary, exportError);
+        const bool exported = stillCurrent &&
+            CharacterTestEvidenceStore::exportDeviceProfileJson(
+                destination, currentWorkload, currentRecords,
+                currentSummary, exportError);
+        if (exported) {
+            profileEdit.path[0] = '\0';
+            profileEdit.deviceIdentitySharingConfirmed = false;
+            setStatus(
+                ("Privacy-bounded device profile exported without character or ROM content: " +
+                 destination).c_str(),
+                AppTheme::good());
+        } else {
+            setStatus(
+                ("Device profile was not created: " + exportError).c_str(),
+                AppTheme::bad());
+        }
+        if (profileSmokeExport ||
+            std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-device-profile-export package=%s applied=%d rows=%u target=%u privacy=derived-workload-id device-consent=explicit destination=exclusive-create\n",
+                entry->id, exported ? 1 : 0,
+                currentSummary.expectedRows, currentSummary.targetRows);
+        }
+    }
+    if (!profileExportReady) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Export device profile",
+        profileExportReady ? nullptr
+            : !profileReady ? "Complete the current exact-test matrix first."
+            : !profileEdit.deviceIdentitySharingConfirmed
+                ? "Review and accept the device-identity disclosure first."
+                : "Choose a new JSON filename first.",
+        "Revalidates the complete matrix, then exclusively creates one bounded JSON profile. It never uploads data or replaces an existing file.");
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static std::set<std::string> tracedDeviceProfileStates;
+        const std::string traceKey = std::string(entry->id) + ":" +
+            (profileReady ? "ready" : "incomplete");
+        if (tracedDeviceProfileStates.insert(traceKey).second) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-device-profile package=%s state=%s rows=%u target=%u explicit-device-consent=1 exclusive-create=1 omitted=package-id,names,paths,portrait,model,rom,raw-digests\n",
+                entry->id, profileReady ? "ready" : "incomplete",
+                profileSummary.expectedRows, profileSummary.targetRows);
+        }
     }
     if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
         const char *state =

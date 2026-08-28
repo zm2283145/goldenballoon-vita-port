@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -159,6 +160,36 @@ struct Inventory {
     std::vector<Evidence> records;
 };
 
+// Privacy-bounded workload metadata for a shareable real-device profile.
+// The exporter hashes the exact source/fit/presentation tuple into a
+// workload-only identifier and never publishes those raw digests, the package
+// ID, player-facing names, paths, artwork, model bytes, or ROM bytes.
+struct DeviceProfileWorkload {
+    std::string hostPlatform;
+    std::string sourceSha256;
+    std::array<std::string, 4> fitSha256;
+    std::string presentationSha256;
+    uint32_t vehicleMask = 0u;
+    uint32_t vertices = 0u;
+    uint32_t triangles = 0u;
+    uint32_t primitives = 0u;
+    uint32_t joints = 0u;
+    uint32_t textures = 0u;
+    uint32_t lodCount = 0u;
+    uint64_t decodedTextureBytes = 0u;
+    std::array<uint32_t, 4> lodVertices{};
+    std::array<uint32_t, 4> lodTriangles{};
+    std::array<uint32_t, 4> lodPrimitives{};
+};
+
+struct DeviceProfileSummary {
+    std::string workloadId;
+    uint32_t expectedRows = 0u;
+    uint32_t targetRows = 0u;
+    uint64_t capturedFromUnix = 0u;
+    uint64_t capturedToUnix = 0u;
+};
+
 enum class LoadResult {
     Loaded,
     Missing,
@@ -190,6 +221,29 @@ PerformanceTarget performanceTarget(uint32_t players);
 PerformanceResult performanceResult(const Evidence &evidence);
 bool performanceTargetMet(const Evidence &evidence);
 bool comparable(const Evidence &latest, const Evidence &baseline);
+
+// Validate and summarize one complete current-device matrix. Select is always
+// required; vehicleMask bits 0..2 add car, hovercraft, and plane. Every
+// applicable context requires 1P through 4P qualified Latest evidence from
+// one exact workload, build, backend, adapter, driver, and physical device.
+// Output/render sizes remain row-owned because a user may deliberately qualify
+// different window sizes without losing that evidence.
+bool summarizeDeviceProfile(
+    const DeviceProfileWorkload &workload,
+    const std::vector<Evidence> &records,
+    DeviceProfileSummary &summary,
+    std::string &error);
+
+// Exclusively creates a bounded schema-v1 JSON report. Existing destinations
+// are never replaced; a failed write is removed. Callers must collect explicit
+// consent before invoking this because adapter/driver and PCI-style IDs are
+// deliberately present for corpus stratification.
+bool exportDeviceProfileJson(
+    const std::string &outputPath,
+    const DeviceProfileWorkload &workload,
+    const std::vector<Evidence> &records,
+    DeviceProfileSummary &summary,
+    std::string &error);
 
 } // namespace CharacterTestEvidenceStore
 

@@ -1,11 +1,13 @@
 #include "character_test_evidence_store.h"
 
+#include "fs_utf8.h"
 #include "modern_character_capture_projection.h"
 #include "sha256.h"
 
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstdio>
 #include <set>
 #include <tuple>
 #include <utility>
@@ -37,6 +39,7 @@ constexpr size_t      kMaximumRowBytes =
     (CharacterTestEvidenceStore::kMaximumDriverBytes * 2u) + 4096u;
 constexpr size_t kMaximumSerializedBytes =
     CharacterTestEvidenceStore::kMaximumRecords * kMaximumRowBytes + 256u;
+constexpr size_t kMaximumDeviceProfileBytes = 512u * 1024u;
 
 bool slugValid(const std::string &value) {
     if (value.size() < 2u || value.size() > 64u ||
@@ -57,6 +60,45 @@ bool digestValid(const std::string &digest) {
                return (byte >= '0' && byte <= '9') ||
                       (byte >= 'a' && byte <= 'f');
            });
+}
+
+std::string jsonEscape(const std::string &value) {
+    static constexpr char digits[] = "0123456789abcdef";
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (unsigned char byte : value) {
+        switch (byte) {
+            case '"': escaped += "\\\""; break;
+            case '\\': escaped += "\\\\"; break;
+            case '\b': escaped += "\\b"; break;
+            case '\f': escaped += "\\f"; break;
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            default:
+                if (byte < 0x20u) {
+                    escaped += "\\u00";
+                    escaped.push_back(digits[byte >> 4u]);
+                    escaped.push_back(digits[byte & 0x0fu]);
+                } else {
+                    escaped.push_back(static_cast<char>(byte));
+                }
+                break;
+        }
+    }
+    return escaped;
+}
+
+void appendCanonicalText(std::string &canonical, const std::string &value) {
+    canonical += std::to_string(value.size());
+    canonical.push_back(':');
+    canonical += value;
+    canonical.push_back('\n');
+}
+
+void appendCanonicalNumber(std::string &canonical, uint64_t value) {
+    canonical += std::to_string(value);
+    canonical.push_back('\n');
 }
 
 bool parseUnsigned(const std::string &text, uint64_t maximum, uint64_t &value) {
@@ -1161,6 +1203,340 @@ bool comparable(const Evidence &latest, const Evidence &baseline) {
            latest.outputHeight == baseline.outputHeight &&
            latest.renderWidth == baseline.renderWidth &&
            latest.renderHeight == baseline.renderHeight;
+}
+
+bool summarizeDeviceProfile(
+    const DeviceProfileWorkload &workload,
+    const std::vector<Evidence> &records,
+    DeviceProfileSummary &summary,
+    std::string &error) {
+    summary = {};
+    error.clear();
+    if (!printableUtf8(workload.hostPlatform, 63u, true)) {
+        error = "device profile host platform is invalid";
+        return false;
+    }
+    if ((workload.vehicleMask & ~0x7u) != 0u) {
+        error = "device profile vehicle subset is invalid";
+        return false;
+    }
+    bool fitDigestsValid = true;
+    for (size_t context = 0u; context < workload.fitSha256.size(); ++context) {
+        const bool applicable = context == 0u ||
+            (workload.vehicleMask & (1u << (context - 1u))) != 0u;
+        if (applicable && !digestValid(workload.fitSha256[context])) {
+            fitDigestsValid = false;
+        }
+    }
+    if (!digestValid(workload.sourceSha256) || !fitDigestsValid ||
+        !digestValid(workload.presentationSha256)) {
+        error = "device profile workload fingerprints are invalid";
+        return false;
+    }
+    if (workload.lodCount < 1u || workload.lodCount > 4u ||
+        workload.vertices == 0u || workload.vertices > 1000000u ||
+        workload.triangles == 0u || workload.triangles > 2000000u ||
+        workload.primitives == 0u || workload.primitives > 512u ||
+        workload.joints > 256u || workload.textures > 512u ||
+        workload.decodedTextureBytes > 512u * 1024u * 1024u) {
+        error = "device profile workload costs are outside the import contract";
+        return false;
+    }
+    for (size_t lod = 0u; lod < workload.lodVertices.size(); ++lod) {
+        const bool present = lod < workload.lodCount;
+        const bool complete = workload.lodVertices[lod] != 0u &&
+            workload.lodTriangles[lod] != 0u &&
+            workload.lodPrimitives[lod] != 0u;
+        const bool empty = workload.lodVertices[lod] == 0u &&
+            workload.lodTriangles[lod] == 0u &&
+            workload.lodPrimitives[lod] == 0u;
+        if ((present && !complete) || (!present && !empty) ||
+            workload.lodVertices[lod] > 1000000u ||
+            workload.lodTriangles[lod] > 2000000u ||
+            workload.lodPrimitives[lod] > 512u) {
+            error = "device profile authored LOD costs are inconsistent";
+            return false;
+        }
+    }
+
+    uint32_t contexts = 1u;
+    for (uint32_t bit = 1u; bit <= 4u; bit <<= 1u) {
+        if ((workload.vehicleMask & bit) != 0u) ++contexts;
+    }
+    summary.expectedRows = contexts * 4u;
+    if (records.size() != summary.expectedRows) {
+        error = "device profile requires every applicable 1P through 4P result";
+        return false;
+    }
+
+    std::vector<Evidence> ordered = records;
+    std::sort(ordered.begin(), ordered.end(), [](const Evidence &left,
+                                                 const Evidence &right) {
+        return std::tie(left.context, left.players) <
+            std::tie(right.context, right.players);
+    });
+    const Evidence &environment = ordered.front();
+    const std::string packageId = environment.packageId;
+    std::set<std::pair<uint32_t, uint32_t>> cells;
+    for (const Evidence &evidence : ordered) {
+        std::string validationError;
+        const bool contextApplicable = evidence.context == 1u ||
+            (evidence.context >= 2u && evidence.context <= 4u &&
+             (workload.vehicleMask &
+              (1u << (evidence.context - 2u))) != 0u);
+        if (!evidenceValid(evidence, validationError) ||
+            evidence.kind != Kind::Latest || !qualified(evidence) ||
+            performanceResult(evidence) == PerformanceResult::Unqualified ||
+            !contextApplicable ||
+            !cells.emplace(evidence.context, evidence.players).second) {
+            error = validationError.empty()
+                ? "device profile contains an unqualified, duplicate, or inapplicable result"
+                : validationError;
+            return false;
+        }
+        if (evidence.packageId != packageId ||
+            evidence.sourceSha256 != workload.sourceSha256 ||
+            evidence.fitSha256 !=
+                workload.fitSha256[evidence.context - 1u] ||
+            evidence.presentationSha256 != workload.presentationSha256) {
+            error = "device profile results do not describe one exact workload";
+            return false;
+        }
+        if (evidence.resultVersion != environment.resultVersion ||
+            evidence.buildVersion != environment.buildVersion ||
+            evidence.backend != environment.backend ||
+            evidence.adapter != environment.adapter ||
+            evidence.driver != environment.driver ||
+            evidence.vendorId != environment.vendorId ||
+            evidence.deviceId != environment.deviceId) {
+            error = "device profile results mix builds, renderers, or devices";
+            return false;
+        }
+        summary.targetRows += performanceTargetMet(evidence) ? 1u : 0u;
+        if (summary.capturedFromUnix == 0u ||
+            evidence.capturedUnix < summary.capturedFromUnix) {
+            summary.capturedFromUnix = evidence.capturedUnix;
+        }
+        summary.capturedToUnix = std::max(
+            summary.capturedToUnix, evidence.capturedUnix);
+    }
+    for (uint32_t context = 1u; context <= 4u; ++context) {
+        const bool applicable = context == 1u ||
+            (workload.vehicleMask & (1u << (context - 2u))) != 0u;
+        if (!applicable) continue;
+        for (uint32_t players = 1u; players <= 4u; ++players) {
+            if (cells.count({context, players}) == 0u) {
+                error = "device profile matrix has a missing context or layout";
+                return false;
+            }
+        }
+    }
+
+    std::string canonical = "mdkr-character-device-workload-v1\n";
+    appendCanonicalText(canonical, workload.sourceSha256);
+    for (size_t context = 0u; context < workload.fitSha256.size(); ++context) {
+        const bool applicable = context == 0u ||
+            (workload.vehicleMask & (1u << (context - 1u))) != 0u;
+        if (applicable) {
+            appendCanonicalText(canonical, workload.fitSha256[context]);
+        }
+    }
+    appendCanonicalText(canonical, workload.presentationSha256);
+    appendCanonicalNumber(canonical, workload.vehicleMask);
+    appendCanonicalNumber(canonical, workload.vertices);
+    appendCanonicalNumber(canonical, workload.triangles);
+    appendCanonicalNumber(canonical, workload.primitives);
+    appendCanonicalNumber(canonical, workload.joints);
+    appendCanonicalNumber(canonical, workload.textures);
+    appendCanonicalNumber(canonical, workload.decodedTextureBytes);
+    appendCanonicalNumber(canonical, workload.lodCount);
+    for (size_t lod = 0u; lod < workload.lodVertices.size(); ++lod) {
+        appendCanonicalNumber(canonical, workload.lodVertices[lod]);
+        appendCanonicalNumber(canonical, workload.lodTriangles[lod]);
+        appendCanonicalNumber(canonical, workload.lodPrimitives[lod]);
+    }
+    char workloadId[MDKR_SHA256_HEX_SIZE];
+    mdkr_sha256_hex(canonical.data(), canonical.size(), workloadId);
+    summary.workloadId = workloadId;
+    return true;
+}
+
+bool exportDeviceProfileJson(
+    const std::string &outputPath,
+    const DeviceProfileWorkload &workload,
+    const std::vector<Evidence> &records,
+    DeviceProfileSummary &summary,
+    std::string &error) {
+    if (outputPath.size() < 6u || outputPath.size() > 4095u ||
+        outputPath.compare(outputPath.size() - 5u, 5u, ".json") != 0) {
+        error = "device profile destination must use a new .json filename";
+        return false;
+    }
+    if (!summarizeDeviceProfile(workload, records, summary, error)) {
+        return false;
+    }
+    std::vector<Evidence> ordered = records;
+    std::sort(ordered.begin(), ordered.end(), [](const Evidence &left,
+                                                 const Evidence &right) {
+        return std::tie(left.context, left.players) <
+            std::tie(right.context, right.players);
+    });
+    const Evidence &environment = ordered.front();
+    const auto boolText = [](bool value) { return value ? "true" : "false"; };
+    const auto gpuStatus = [](uint32_t status) {
+        switch (status) {
+            case MDKR_MODERN_CHARACTER_GPU_TIMING_AVAILABLE: return "available";
+            case MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED: return "unsupported";
+            case MDKR_MODERN_CHARACTER_GPU_TIMING_PENDING: return "pending";
+            case MDKR_MODERN_CHARACTER_GPU_TIMING_DEVICE_LOST: return "device-lost";
+            case MDKR_MODERN_CHARACTER_GPU_TIMING_ERROR: return "error";
+            default: return "unavailable";
+        }
+    };
+    const auto appendDistribution = [](std::string &json, const char *name,
+                                       const auto &distribution) {
+        json += "\"" + std::string(name) + "\":{";
+        json += "\"samples\":" + std::to_string(distribution.samples);
+        json += ",\"percentileWindowSamples\":" +
+            std::to_string(distribution.percentile_window_samples);
+        json += ",\"p50Ns\":" + std::to_string(distribution.p50_ns);
+        json += ",\"p95Ns\":" + std::to_string(distribution.p95_ns);
+        json += ",\"p99Ns\":" + std::to_string(distribution.p99_ns);
+        json += ",\"meanNs\":" + std::to_string(distribution.mean_ns);
+        json += ",\"maxNs\":" + std::to_string(distribution.max_ns) + "}";
+    };
+    static constexpr const char *contextTokens[] = {
+        "select", "car", "hovercraft", "plane",
+    };
+
+    std::string json;
+    json.reserve(32768u);
+    json += "{\n  \"schema\":\"mdkr-character-device-profile-v1\",";
+    json += "\n  \"comparisonRule\":\"same-workload-id-and-build-only\",";
+    json += "\n  \"privacy\":{\"containsDeviceAndDriverIdentity\":true,";
+    json += "\"omitsPackageIdAndNames\":true,\"omitsPaths\":true,";
+    json += "\"omitsModelPortraitAndRomBytes\":true,";
+    json += "\"rawWorkloadDigestsPublished\":false,";
+    json += "\"derivedWorkloadIdIsPseudonymous\":true},";
+    json += "\n  \"workload\":{\"id\":\"" + summary.workloadId + "\"";
+    json += ",\"vehicleMask\":" + std::to_string(workload.vehicleMask);
+    json += ",\"vertices\":" + std::to_string(workload.vertices);
+    json += ",\"triangles\":" + std::to_string(workload.triangles);
+    json += ",\"primitives\":" + std::to_string(workload.primitives);
+    json += ",\"joints\":" + std::to_string(workload.joints);
+    json += ",\"textures\":" + std::to_string(workload.textures);
+    json += ",\"decodedTextureBytes\":" +
+        std::to_string(workload.decodedTextureBytes);
+    json += ",\"lods\":[";
+    for (size_t lod = 0u; lod < workload.lodCount; ++lod) {
+        if (lod != 0u) json.push_back(',');
+        json += "{\"level\":" + std::to_string(lod);
+        json += ",\"vertices\":" + std::to_string(workload.lodVertices[lod]);
+        json += ",\"triangles\":" + std::to_string(workload.lodTriangles[lod]);
+        json += ",\"primitives\":" +
+            std::to_string(workload.lodPrimitives[lod]) + "}";
+    }
+    json += "]},";
+    json += "\n  \"environment\":{\"build\":\"" +
+        jsonEscape(environment.buildVersion) + "\"";
+    json += ",\"hostPlatform\":\"" +
+        jsonEscape(workload.hostPlatform) + "\"";
+    json += ",\"resultVersion\":" +
+        std::to_string(environment.resultVersion);
+    json += ",\"backend\":\"" + jsonEscape(environment.backend) + "\"";
+    json += ",\"adapter\":\"" + jsonEscape(environment.adapter) + "\"";
+    json += ",\"driver\":\"" + jsonEscape(environment.driver) + "\"";
+    json += ",\"vendorId\":" + std::to_string(environment.vendorId);
+    json += ",\"deviceId\":" + std::to_string(environment.deviceId) + "},";
+    const PerformanceTarget target = performanceTarget(1u);
+    json += "\n  \"target\":{\"p95IntervalUs\":" +
+        std::to_string(target.p95IntervalUs);
+    json += ",\"p99IntervalUs\":" + std::to_string(target.p99IntervalUs) + "},";
+    json += "\n  \"summary\":{\"expectedRows\":" +
+        std::to_string(summary.expectedRows);
+    json += ",\"targetRows\":" + std::to_string(summary.targetRows);
+    json += ",\"allRowsOnTarget\":" +
+        std::string(boolText(summary.targetRows == summary.expectedRows));
+    json += ",\"capturedFromUnix\":" +
+        std::to_string(summary.capturedFromUnix);
+    json += ",\"capturedToUnix\":" +
+        std::to_string(summary.capturedToUnix) + "},";
+    json += "\n  \"rows\":[";
+    for (size_t index = 0u; index < ordered.size(); ++index) {
+        const Evidence &evidence = ordered[index];
+        if (index != 0u) json.push_back(',');
+        json += "\n    {\"context\":\"" +
+            std::string(contextTokens[evidence.context - 1u]) + "\"";
+        json += ",\"players\":" + std::to_string(evidence.players);
+        json += ",\"capturedUnix\":" + std::to_string(evidence.capturedUnix);
+        json += ",\"onTarget\":" +
+            std::string(boolText(performanceTargetMet(evidence)));
+        json += ",\"outputWidth\":" + std::to_string(evidence.outputWidth);
+        json += ",\"outputHeight\":" + std::to_string(evidence.outputHeight);
+        json += ",\"renderWidth\":" + std::to_string(evidence.renderWidth);
+        json += ",\"renderHeight\":" + std::to_string(evidence.renderHeight);
+        json += ",\"warmupTicks\":" + std::to_string(evidence.warmupTicks);
+        json += ",\"intervalSamples\":" +
+            std::to_string(evidence.intervalSamples);
+        json += ",\"displayedFrames\":" +
+            std::to_string(evidence.displayedFrames);
+        json += ",\"intervalP50Us\":" +
+            std::to_string(evidence.intervalP50Us);
+        json += ",\"intervalP95Us\":" +
+            std::to_string(evidence.intervalP95Us);
+        json += ",\"intervalP99Us\":" +
+            std::to_string(evidence.intervalP99Us);
+        json += ",\"intervalMeanUs\":" +
+            std::to_string(evidence.intervalMeanUs);
+        json += ",\"intervalMaxUs\":" +
+            std::to_string(evidence.intervalMaxUs);
+        json += ",\"tickwallSamples\":" +
+            std::to_string(evidence.tickwallSamples);
+        json += ",\"tickwallMeanNs\":" +
+            std::to_string(evidence.tickwallMeanNs);
+        json += ",\"replacementDraws\":" +
+            std::to_string(evidence.replacementDraws);
+        json += ",\"replacementPrimitives\":" +
+            std::to_string(evidence.replacementPrimitives);
+        json += ",\"gpu\":{\"status\":\"" +
+            std::string(gpuStatus(evidence.gpuTiming.status)) + "\"";
+        json += ",\"supportedScopes\":" +
+            std::to_string(evidence.gpuTiming.supported_scopes);
+        json += ",\"pendingFrames\":" +
+            std::to_string(evidence.gpuTiming.pending_frames);
+        json += ",\"ringFullFrames\":" +
+            std::to_string(evidence.gpuTiming.ring_full_frames);
+        json += ",\"invalidSamples\":" +
+            std::to_string(evidence.gpuTiming.invalid_samples) + ",";
+        appendDistribution(json, "scenePass", evidence.gpuTiming.scene_pass);
+        json.push_back(',');
+        appendDistribution(
+            json, "characterDraws", evidence.gpuTiming.character_draws);
+        json += "}}";
+    }
+    json += "\n  ]\n}\n";
+    if (json.size() > kMaximumDeviceProfileBytes) {
+        error = "device profile exceeds its 512 KiB export bound";
+        return false;
+    }
+
+    FILE *file = mdkr_fopen_utf8(outputPath.c_str(), "wbx");
+    if (file == nullptr) {
+        error = "device profile destination exists or cannot be created";
+        return false;
+    }
+    bool written = std::fwrite(json.data(), 1u, json.size(), file) ==
+        json.size();
+    if (std::fflush(file) != 0 || mdkr_file_sync(file) != 0) written = false;
+    if (std::fclose(file) != 0) written = false;
+    if (!written) {
+        (void)mdkr_remove_utf8(outputPath.c_str());
+        error = "device profile could not be written completely";
+        return false;
+    }
+    (void)mdkr_parent_directory_sync_utf8(outputPath.c_str());
+    error.clear();
+    return true;
 }
 
 bool parse(const std::string &text, Inventory &output, std::string &error) {

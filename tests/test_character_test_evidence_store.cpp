@@ -56,6 +56,20 @@ std::string finishDigest(MdkrSha256 &digest) {
     return hex;
 }
 
+std::string readTextFile(const std::string &path) {
+    std::FILE *file = std::fopen(path.c_str(), "rb");
+    if (file == nullptr) return {};
+    std::string bytes;
+    char block[4096];
+    for (;;) {
+        const size_t count = std::fread(block, 1u, sizeof(block), file);
+        bytes.append(block, count);
+        if (count != sizeof(block)) break;
+    }
+    const bool valid = std::ferror(file) == 0 && std::fclose(file) == 0;
+    return valid ? bytes : std::string{};
+}
+
 std::string digestFields(const std::vector<std::string> &fields) {
     MdkrSha256 digest;
     mdkr_sha256_init(&digest);
@@ -1060,6 +1074,140 @@ int main() {
     expect(load(storage, loaded, error) == LoadResult::IoError &&
                loaded.records.size() == inventory.records.size(),
            "read failure cannot replace the last loaded evidence inventory");
+
+    DeviceProfileWorkload workload;
+    workload.hostPlatform = "testOS";
+    workload.sourceSha256.assign(64u, 'a');
+    workload.fitSha256.fill(std::string(64u, 'b'));
+    workload.presentationSha256.assign(64u, 'c');
+    workload.vehicleMask = 0x7u;
+    workload.vertices = 2517u;
+    workload.triangles = 3489u;
+    workload.primitives = 2u;
+    workload.joints = 35u;
+    workload.textures = 4u;
+    workload.decodedTextureBytes = 1922384u;
+    workload.lodCount = 2u;
+    workload.lodVertices = {2517u, 1200u, 0u, 0u};
+    workload.lodTriangles = {3489u, 1600u, 0u, 0u};
+    workload.lodPrimitives = {2u, 2u, 0u, 0u};
+    std::vector<Evidence> profileRows;
+    for (uint32_t context = 1u; context <= 4u; ++context) {
+        for (uint32_t players = 1u; players <= 4u; ++players) {
+            Evidence row = makeEvidence(
+                "org.example.private-name", context, players);
+            row.capturedUnix += context * 10u + players;
+            profileRows.push_back(std::move(row));
+        }
+    }
+    profileRows.back().intervalP95Us = 19000u;
+    profileRows.back().intervalP99Us = 26000u;
+    profileRows.back().intervalMaxUs = 28000u;
+    DeviceProfileSummary profileSummary;
+    expect(summarizeDeviceProfile(
+               workload, profileRows, profileSummary, error) &&
+               profileSummary.expectedRows == 16u &&
+               profileSummary.targetRows == 15u &&
+               profileSummary.workloadId.size() == 64u &&
+               profileSummary.capturedFromUnix <
+                   profileSummary.capturedToUnix,
+           "one complete exact-build/device matrix becomes a pseudonymous profile summary");
+    const std::string firstWorkloadId = profileSummary.workloadId;
+    DeviceProfileWorkload changedWorkload = workload;
+    changedWorkload.lodTriangles[1]++;
+    expect(summarizeDeviceProfile(
+               changedWorkload, profileRows, profileSummary, error) &&
+               profileSummary.workloadId != firstWorkloadId,
+           "authored workload cost changes cannot collide with a prior profile identity");
+
+    const std::string profilePath = "character-device-profile-test.json";
+    (void)std::remove(profilePath.c_str());
+    const bool exported = exportDeviceProfileJson(
+        profilePath, workload, profileRows, profileSummary, error);
+    if (!exported) {
+        std::fprintf(stderr, "device profile export error: %s\n", error.c_str());
+    }
+    const std::string profileJson = readTextFile(profilePath);
+    expect(exported &&
+               profileJson.find(
+                   "\"schema\":\"mdkr-character-device-profile-v1\"") !=
+                   std::string::npos &&
+               profileJson.find(
+                   "\"comparisonRule\":\"same-workload-id-and-build-only\"") !=
+                   std::string::npos &&
+               profileJson.find("\"expectedRows\":16") !=
+                   std::string::npos &&
+               profileJson.find("\"targetRows\":15") !=
+                   std::string::npos &&
+               profileJson.find("\"hostPlatform\":\"testOS\"") !=
+                   std::string::npos &&
+               profileJson.find(
+                   "\"derivedWorkloadIdIsPseudonymous\":true") !=
+                   std::string::npos &&
+               profileJson.find("\"context\":\"plane\"") !=
+                   std::string::npos &&
+               profileJson.find("Test GPU ") != std::string::npos &&
+               profileJson.find("org.example.private-name") ==
+                   std::string::npos &&
+               profileJson.find(workload.sourceSha256) == std::string::npos &&
+               profileJson.find(workload.fitSha256[0]) == std::string::npos &&
+               profileJson.find(workload.presentationSha256) ==
+                   std::string::npos,
+           "the shareable report retains exact cost/device rows without package identity or raw workload digests");
+    const std::string firstProfileJson = profileJson;
+    expect(!exportDeviceProfileJson(
+               profilePath, workload, profileRows, profileSummary, error) &&
+               readTextFile(profilePath) == firstProfileJson,
+           "device profile export never replaces an existing destination");
+    std::vector<Evidence> partialRows = profileRows;
+    partialRows.pop_back();
+    expect(!summarizeDeviceProfile(
+               workload, partialRows, profileSummary, error),
+           "a partial matrix cannot masquerade as a corpus-ready profile");
+    std::vector<Evidence> mixedDeviceRows = profileRows;
+    mixedDeviceRows.back().driver = "different-driver";
+    expect(!summarizeDeviceProfile(
+               workload, mixedDeviceRows, profileSummary, error),
+           "a matrix assembled from different devices or drivers fails closed");
+    std::vector<Evidence> staleRows = profileRows;
+    staleRows.back().fitSha256.assign(64u, 'd');
+    expect(!summarizeDeviceProfile(
+               workload, staleRows, profileSummary, error),
+           "stale fit evidence cannot enter a device profile");
+    DeviceProfileWorkload invalidWorkload = workload;
+    invalidWorkload.decodedTextureBytes = 512u * 1024u * 1024u + 1u;
+    expect(!summarizeDeviceProfile(
+               invalidWorkload, profileRows, profileSummary, error),
+           "device profiles cannot publish costs outside the import safety contract");
+    invalidWorkload = workload;
+    invalidWorkload.lodVertices[2] = 1u;
+    expect(!summarizeDeviceProfile(
+               invalidWorkload, profileRows, profileSummary, error),
+           "absent authored LODs cannot retain partial stale cost fields");
+    invalidWorkload = workload;
+    invalidWorkload.hostPlatform = "hostile\nplatform";
+    expect(!summarizeDeviceProfile(
+               invalidWorkload, profileRows, profileSummary, error),
+           "host platform metadata cannot inject JSON structure or control text");
+    DeviceProfileWorkload selectWorkload = workload;
+    selectWorkload.vehicleMask = 0u;
+    std::vector<Evidence> selectRows(
+        profileRows.begin(), profileRows.begin() + 4);
+    expect(summarizeDeviceProfile(
+               selectWorkload, selectRows, profileSummary, error),
+           "a select-only workload requires exactly its four applicable layouts");
+    const std::string selectWorkloadId = profileSummary.workloadId;
+    selectWorkload.fitSha256[1].clear();
+    selectWorkload.fitSha256[2] = "ignored inactive fit";
+    expect(summarizeDeviceProfile(
+               selectWorkload, selectRows, profileSummary, error) &&
+               profileSummary.workloadId == selectWorkloadId,
+           "inactive vehicle fits do not change or invalidate a workload identity");
+    expect(!exportDeviceProfileJson(
+               "character-device-profile-test.txt", workload, profileRows,
+               profileSummary, error),
+           "a device profile requires an explicit JSON destination");
+    (void)std::remove(profilePath.c_str());
 
     if (failures != 0) return 1;
     std::puts("character test evidence store passed");

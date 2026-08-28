@@ -251,6 +251,28 @@ bool saveCharacterReport(std::string &out) {
     }
 }
 
+bool saveCharacterDeviceProfile(std::string &out) {
+    @autoreleasepool {
+        if (![NSThread isMainThread]) return false;
+        NSSavePanel *panel = [NSSavePanel savePanel];
+        panel.title = @"Export custom character device profile";
+        panel.message = @"Choose a new JSON filename. The profile identifies the GPU and driver, omits character identity and content, and Golden Balloon never overwrites an existing file.";
+        panel.prompt = @"Choose Filename";
+        panel.nameFieldStringValue = @"character-device-profile.json";
+        panel.canCreateDirectories = YES;
+        panel.allowedContentTypes = @[ UTTypeJSON ];
+        panel.allowsOtherFileTypes = NO;
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([panel runModal] != NSModalResponseOK) return false;
+        NSURL *url = panel.URL;
+        if (url == nil || !url.isFileURL) return false;
+        const char *path = url.fileSystemRepresentation;
+        if (path == nullptr || path[0] == '\0') return false;
+        out = path;
+        return true;
+    }
+}
+
 bool saveCharacterPackage(std::string &out) {
     @autoreleasepool {
         if (![NSThread isMainThread]) return false;

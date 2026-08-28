@@ -1271,7 +1271,8 @@ viewport/scissor, and output grid match exactly. Both products remain
 comparison-only and cannot satisfy fit, motion,
 portrait, or performance evidence. Embedded offscreen preview, bespoke boss,
 battle, or scripted-cinematic conditions beyond the five qualified course
-families, and a maintained device-profile/headroom corpus remain open.
+families, and representative physical-device/headroom collection through the
+implemented privacy-bounded schema-v1 profile exporter remain open.
 
 Launcher-owned previews also arm the existing bounded presentation census. The
 game discards a 120-authored-tick warm-up, resets only the observational timing
@@ -1389,8 +1390,15 @@ filename remains unchanged so old evidence is never orphaned. Same-environment
 baseline cards compare wall cadence, scene-pass GPU time, and—only when both
 devices expose the scope—custom-character draw GPU time independently.
 Weather and vehicle-condition variants beyond the qualified open, dense, and
-alternate-environment course battery, plus a maintained device-profile corpus,
-remain separate work.
+alternate-environment course battery, plus representative high-, mid-, and
+low-tier physical observations for the implemented device-profile corpus,
+remain separate work. The launcher already refuses partial, stale, or
+mixed-device matrices and exports exact on/over-target rows only after explicit
+GPU/driver identity consent, without package identity, paths, content bytes, or
+raw workload digests.
+
+The portable field contract and corpus rules are specified in
+[`character-device-profile-v1.md`](character-device-profile-v1.md).
 
 The private Dixie fixture completed the same chain without contributing any
 tracked bytes: DAE -> self-contained GLB -> source and portable `.mdkrchar` ->

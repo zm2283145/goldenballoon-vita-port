@@ -1570,6 +1570,7 @@ if(NOT EMSCRIPTEN)
             add_executable(mdkr_character_test_evidence_store_test
                 ${CMAKE_SOURCE_DIR}/tests/test_character_test_evidence_store.cpp
                 ${CMAKE_SOURCE_DIR}/platform/app/character_test_evidence_store.cpp
+                ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
                 ${CMAKE_SOURCE_DIR}/platform/modern_character_gpu_timing.c
                 ${CMAKE_SOURCE_DIR}/platform/sha256.c)
             target_include_directories(mdkr_character_test_evidence_store_test PRIVATE

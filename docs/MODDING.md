@@ -643,8 +643,12 @@ with exact source/fit digests, context, pose/phase, view, light, dimensions,
 and exact-versus-fallback state. The tray exports a self-contained responsive
 HTML contact sheet containing base64 PNGs and machine-readable JSON, but no
 model, package, ROM, or original capture-path bytes. Existing PNG or HTML files
-are never overwritten. Representative scene variants, an embedded renderer,
-and maintained device profiles remain product work.
+are never overwritten. Representative scene variants and an embedded renderer
+remain product work. Device-profile collection is supported through an
+optional complete-matrix JSON export with an explicit GPU/driver identity
+disclosure; representative physical-device observations still need ongoing
+project maintenance. The public format and comparison rules are documented in
+[`architecture/character-device-profile-v1.md`](architecture/character-device-profile-v1.md).
 
 All ten retail vehicle-model families now have exact revision-1 fingerprint and
 driver-batch profiles for car, hovercraft, plane, and character select. Their

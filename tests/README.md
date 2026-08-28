@@ -5227,6 +5227,13 @@ digest-bound registered donor/custom pair, opens the actual report-tray blend
 control, and requires its exact-grid accessibility trace. The pure report unit
 and linked-ROM gate separately prove refusal on witness drift and production
 renderer agreement, so this UI smoke does not manufacture renderer authority.
+The complete over-budget arm also accepts the explicit test-only sharing token,
+exports a real schema-v1 device profile through the production UI, parses all
+16 honest warning rows, and proves the output retains host/GPU/driver/build,
+resolution, cost, wall, and optional GPU timing while excluding package ID,
+display name, character directory, and every raw source/fit/presentation
+digest. Production users must separately check the visible identity disclosure;
+the exporter never uploads or overwrites a file.
 The pure `character_visual_report` test independently proves embedded PNG/JSON
 output, capture-time digest binding, same-size/same-product file-replacement
 refusal, rebinding refusal, HTML/script escaping, source-path privacy, PNG
@@ -5252,9 +5259,11 @@ both renderer halves of the launcher's registered overlay contract.
 The pure `character_test_evidence_store` unit separately covers canonical parsing,
 whole-inventory and row authentication, strict unsigned/signed numeric and UTF-8
 bounds, renderer-fit/contact-witness invariants, exact key replacement,
-authenticated v1/v2 loading and next-write v3 migration, the
+authenticated v1 through v8 loading and next-write v9 migration, the
 64-package/2048-record limits, transaction
-failures and honest baseline comparability. The durable filename intentionally
+failures, honest baseline comparability, and complete-matrix device-profile
+summary/export refusal for partial, stale, mixed-device, invalid-cost,
+wrong-suffix, and existing-destination inputs. The durable filename intentionally
 remains `character_test_evidence-v1.tsv`: its authenticated header selects the
 schema, allowing existing v1 stores to be discovered and migrated rather than
 silently orphaned.

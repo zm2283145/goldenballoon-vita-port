@@ -82,6 +82,11 @@ bool saveCharacterCapture(std::string &out);
 // not authorize the Workshop to replace it.
 bool saveCharacterReport(std::string &out);
 
+// Choose a destination for a privacy-bounded real-device qualification JSON.
+// The report writer still uses exclusive creation, and the Workshop separately
+// requires acknowledgement before publishing adapter/driver and device IDs.
+bool saveCharacterDeviceProfile(std::string &out);
+
 // Choose a destination for an exact or compiler-enriched portable package.
 // Export remains exclusive-create; the dialog does not imply redistribution
 // rights and callers must collect that confirmation separately.

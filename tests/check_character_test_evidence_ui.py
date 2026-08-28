@@ -206,6 +206,7 @@ def run(
     inspection_capture: Path | None = None,
     donor_capture: Path | None = None,
     visual_report: Path | None = None,
+    device_profile: Path | None = None,
     focus_fit_overlay: bool = False,
     focus_contact_review: bool = False,
     animation_studio_mode: str | None = None,
@@ -297,6 +298,16 @@ def run(
     if visual_report is not None:
         environment["MDKR_APP_SMOKE_CHARACTER_VISUAL_REPORT"] = str(
             visual_report
+        )
+    if device_profile is not None:
+        environment.update(
+            {
+                "MDKR_APP_SMOKE_CHARACTER_DEVICE_PROFILE": str(
+                    device_profile
+                ),
+                "MDKR_APP_SMOKE_CHARACTER_DEVICE_PROFILE_TOKEN":
+                    "mdkr64-character-device-profile-v1",
+            }
         )
     if compact and not accessible:
         environment.update(
@@ -819,11 +830,43 @@ def main() -> int:
                     + " state=over-target-review-required "
                     "exception-bound=source,fit,lod,build,presentation,"
                     "resolution,device,driver,timing target-relabeled=0",
+                    "character-device-profile package=" + PACKAGE_ID
+                    + " state=ready rows=16 target=0 "
+                    "explicit-device-consent=1 exclusive-create=1",
+                    "character-device-profile-export package=" + PACKAGE_ID
+                    + " applied=1 rows=16 target=0 "
+                    "privacy=derived-workload-id device-consent=explicit "
+                    "destination=exclusive-create",
                     "text=Accept performance exception",
                 ),
                 action="publish-overbudget-matrix",
                 accessible=True,
+                device_profile=root / "character-device-profile.json",
             )
+            profile_path = root / "character-device-profile.json"
+            profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            profile_text = profile_path.read_text(encoding="utf-8")
+            if (
+                profile.get("schema")
+                != "mdkr-character-device-profile-v1"
+                or profile.get("summary", {}).get("expectedRows") != 16
+                or profile.get("summary", {}).get("targetRows") != 0
+                or len(profile.get("rows", [])) != 16
+                or profile.get("environment", {}).get("adapter")
+                != "Rendered evidence fixture GPU"
+                or PACKAGE_ID in profile_text
+                or "Test Evidence Proof" in profile_text
+                or str(characters) in profile_text
+                or any(
+                    row[3] in profile_text or row[4] in profile_text
+                    or row[5] in profile_text
+                    for row in evidence_rows(root)
+                )
+            ):
+                raise RuntimeError(
+                    "device profile did not preserve the complete exact matrix "
+                    "within its privacy boundary"
+                )
             run(
                 binary,
                 root,
@@ -1089,7 +1132,8 @@ def main() -> int:
         "bound 4x4 matrix with focusable three-view bounds/anchor/facing overlays, digest-bound current renderer references with stale-fit refusal, rendered and spoken registered donor/custom blending, signed renderer-fit and hand/foot contact diagnostics, same-"
         "environment wall/scene/character GPU baseline lifecycle, corruption "
         "and invalid-fit/camera/contact/GPU refusal, pose-inspection exclusion, keyboard and gamepad speech, "
-        "responsive 200% rendering, and package-byte purity"
+        "responsive 200% rendering, privacy-bounded complete-matrix device "
+        "profile export, and package-byte purity"
     )
     return 0
 

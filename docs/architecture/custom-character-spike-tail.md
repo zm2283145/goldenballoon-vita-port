@@ -431,6 +431,12 @@ Current ceilings—1,000,000 vertices, 2,000,000 triangles, 256 joints, 512
 primitives, four authored LODs, 4096 texture sides, and 512 MiB decoded texture
 bytes—are safety boundaries, not recommended budgets. Quality presets should
 warn from measured device profiles rather than impose a low-poly aesthetic.
+The Workshop now revalidates a complete current 1P-4P matrix and can
+exclusively export a bounded, privacy-bounded schema-v1 device profile after
+explicit GPU/driver/build/resolution sharing consent. It retains over-target
+rows, exact model/LOD costs and GPU timestamp availability while omitting
+character identity/content, paths, and raw workload hashes; representative
+physical-device collection, not the export contract, remains the product tail.
 The current complete exact matrix now follows that rule: an over-target result
 is never relabelled as a pass, but a deliberate local exception can be recorded
 against the exact source/fit/LOD/build/presentation/resolution/device/driver/
