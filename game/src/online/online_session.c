@@ -170,6 +170,19 @@ typedef struct MdkrOnlineSessionState {
      * instant a remote reappears (or the room leaves LOBBY). On a sustained absence
      * the session notes LEFT + exits. Inert for a descriptor-first begin. */
     u16 remoteAbsentTicks;
+    /* SINGLE-RACE "Race Again" auto-start (T5). The host committed RACE AGAIN
+     * (same config) on the RESULTS chooser, so the session re-entered LOBBY_WAIT
+     * with NO native selection screen to re-Ready + host-START the next race. While
+     * set, the live re-wait auto-publishes a reverse-feed intent each tick -- keep
+     * the persisted local character/vehicle (so CHOOSE_* stay converged no-ops),
+     * re-assert READY (REMATCH cleared it), and host-START -- so the launcher's
+     * reverse pump re-cycles the room to a fresh race-ready transport with NO human
+     * input ("straight to a fresh RACE"). The CHANGE-picks options do NOT set this:
+     * their re-fronted native screen drives the re-selection instead, so the two are
+     * mutually exclusive and the auto-start never fights a live screen. Cleared once
+     * the room leaves LOBBY (loading committed) and defensively at each RESULTS
+     * enter. Meaningful only for a descriptor-less LIVE resident single race. */
+    u8 replayAutoStart;
     /* the COMPLETE final ranking captured at the final standings while BOTH
      * seats were present (via the shared mdkr_online_standings_compute), and a
      * latch that a capture happened. Re-captured every final-standings tick that
@@ -482,6 +495,39 @@ static u8 online_session_feed_isfinal(void) {
                    : 0u;
     }
     return 0u;
+}
+
+/* SINGLE-RACE "Race Again" auto-start publish (T5). Publish a reverse-feed
+ * intent, from the LOBBY_WAIT re-wait, that re-cycles the room to a fresh race
+ * with NO human input: keep the local seat's persisted character + vehicle (so
+ * the launcher planner's CHOOSE_CHARACTER / CHOOSE_VEHICLE stay CONVERGED no-ops),
+ * re-assert READY (the REMATCH clear_round dropped it), and -- for the host seat --
+ * request START. The host-only session-config fields stay at their UNSET sentinels
+ * (via intent_init) so configured_track / mode / cup PERSIST -> race N+1 is the
+ * SAME track. This is the engine half of the single-race re-cycle; the launcher's
+ * resident coordinator is OBSERVE-ONLY for a single race (it just re-arms the
+ * match-input on the fresh epoch), so this drive never collides with an auto-drive.
+ * Only the HOST reaches this LOBBY_WAIT path on RACE AGAIN (a joiner follows to
+ * CHARSELECT), but start_requested is gated on is_host anyway. */
+static void online_session_publish_replay_autostart(void) {
+    MdkrPartyLinkSnapshot snap;
+    MdkrPartyLinkLocalIntent intent;
+    unsigned i;
+    if (!mdkr_party_link_read(&snap)) {
+        return;
+    }
+    mdkr_party_link_intent_init(&intent);
+    for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
+        if (snap.seats[i].occupied && snap.seats[i].is_local) {
+            intent.hover_character = snap.seats[i].character_id;
+            intent.vehicle_id = snap.seats[i].vehicle_id;
+            intent.confirmed = 1u;
+            intent.ready = 1u;
+            intent.start_requested = snap.seats[i].is_host ? 1u : 0u;
+            break;
+        }
+    }
+    mdkr_party_link_intent_publish(&intent);
 }
 
 static void online_session_boot_race(void) {
@@ -1133,6 +1179,22 @@ void mdkr_online_session_tick(s32 updateRate) {
                             break;
                         }
                     }
+                    /* SINGLE-RACE "Race Again" auto-start (T5). No native screen
+                     * re-fronted for RACE AGAIN, so drive the re-Ready + host-START
+                     * from here: while the room is still in LOBBY, publish the
+                     * keep-selection/ready/start intent each tick (the launcher's
+                     * reverse pump lands READY then START -> BEGIN_LOADING on the
+                     * SAME configured track); once the room has LEFT LOBBY (loading
+                     * committed) stop + clear the latch so it never leaks into a
+                     * later CHANGE-picks re-cycle. Inert unless RACE AGAIN armed it. */
+                    if (sOnlineSession.replayAutoStart) {
+                        if (rsnap.phase ==
+                            (uint8_t) MDKR_ONLINE_SESSION_LOBBY_PHASE) {
+                            online_session_publish_replay_autostart();
+                        } else {
+                            sOnlineSession.replayAutoStart = 0u;
+                        }
+                    }
                 }
             }
             /* throttle to the first re-wait tick + every ready-state change,
@@ -1440,6 +1502,10 @@ void mdkr_online_session_tick(s32 updateRate) {
         }
         if (sOnlineSession.resultsPending) {
             online_session_resident_resolve();
+            /* A fresh RESULTS decision: drop any stale single-race auto-start latch
+             * (defensive -- it is normally cleared when the prior re-cycle left
+             * LOBBY) so this terminal's chooser choice, not the last one, decides. */
+            sOnlineSession.replayAutoStart = 0u;
             /* LIVE residency: FREE the just-finished race level NOW, on
              * RESULTS entry, before showing the screen. Unlike the scripted soak
              * (a transport-less autopilot race, harmless to keep loaded), a LIVE
@@ -1581,19 +1647,24 @@ void mdkr_online_session_tick(s32 updateRate) {
                         break;
                     case MDKR_ONLINE_RESULTS_CHOICE_RACE_AGAIN:
                     default:
-                        /* re-race the SAME config. T5 DEPENDENCY: the in-process
-                         * single-race re-cycle that actually re-boots is T5's job; T4
-                         * issues the REMATCH + routes here. Live residency re-waits
-                         * for the launcher re-cycle (the tournament round machinery);
-                         * the scripted soak re-boots inline off the frozen descriptor. */
+                        /* re-race the SAME config. T5: the in-process single-race
+                         * re-cycle re-enters LOBBY_WAIT and, because there is NO
+                         * native selection screen to drive the re-Ready + host-START,
+                         * arms replayAutoStart so the live re-wait auto-publishes that
+                         * intent each tick (the launcher's reverse pump re-cycles the
+                         * room to a fresh race-ready transport, its resident
+                         * coordinator observe-only re-arms the match-input, and the
+                         * re-wait boots race N+1). The scripted soak (no transport)
+                         * re-boots inline off the frozen descriptor. */
                         if (sOnlineSession.liveResident) {
                             sOnlineSession.phase = MDKR_ONLINE_SESSION_LOBBY_WAIT;
+                            sOnlineSession.replayAutoStart = 1u;
                             sOnlineSession.desclessWaitDeadlineNs = 0u;
                             online_session_descless_wallclock_arm();
                             fprintf(stderr,
                                     "[online-session] results -> re-race same config "
-                                    "(chooser: race again; LIVE re-cycle awaits "
-                                    "launcher -- T5 completes single-race)\n");
+                                    "(chooser: race again; LIVE single-race re-cycle: "
+                                    "LOBBY_WAIT auto-start armed)\n");
                         } else {
                             unload_level_game();
                             fprintf(stderr,

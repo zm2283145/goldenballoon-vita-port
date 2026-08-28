@@ -1164,6 +1164,18 @@ struct LiveResidentState {
      * re-wait wall-clock watchdog trips at "per-round re-wait" (the deterministic
      * per-round proof). None in normal runs. */
     bool wedgeSkipRearm = false;
+    /* SINGLE-RACE replay re-cycle (T5). A single race's REMATCH keeps race_index
+     * (only a tournament advances it), so the tournament "race_index advanced"
+     * re-cycle trigger never fires for a single race. When the room LEAVES RESULTS
+     * back to LOBBY for a SINGLE race, arm this OBSERVE-ONLY re-cycle instead of the
+     * auto-driving tournament advance: the ENGINE drives the re-Ready + START (a
+     * native CHANGE-picks screen, or the LOBBY_WAIT auto-start for RACE AGAIN), and
+     * the launcher only clears the stale roster/match-input and re-arms the
+     * match-input once the room reaches a FRESH race-ready transport. NOT auto-
+     * driving is what lets a CHANGE-picks native screen own the re-selection without
+     * the launcher racing it to START on the old config. */
+    bool singleObserve = false;
+    unsigned singleObserveFrames = 0u; /* observe-only re-cycle watchdog */
 };
 LiveResidentState *g_liveResident = nullptr;
 static void liveResidentServiceStep(void);
@@ -1849,6 +1861,15 @@ void reportOnlineRaceResults(
                  static_cast<int>(endReason));
 }
 
+/* Non-blocking frame budget for the SINGLE-RACE observe-only re-cycle: the max
+ * serviced frames the launcher waits for the ENGINE-driven re-cycle to reach a
+ * fresh race-ready transport before it gives up (logs + ends residency, never
+ * hangs). Each frame does O(1) work and returns. Sized like the engine session's
+ * own descriptor-less budget so the SESSION wall-clock watchdog (which also bounds
+ * the LOBBY_WAIT re-wait) trips first in the normal peer-drop case; this is a
+ * belt-and-suspenders launcher-side ceiling. */
+static const unsigned kSingleObserveFrameBudget = 3000u;
+
 /* RESIDENT LIVE per-frame coordinator (see LiveResidentState). Runs from
  * liveOverlayService every engine frame while g_liveResident is set. */
 static void liveResidentServiceStep(void) {
@@ -1917,6 +1938,35 @@ static void liveResidentServiceStep(void) {
          * Advancing phase below). */
         MdkrOnlineLobby lobby{};
         if (!mdkr_online_live_adapter_lobby(rs->visible, &lobby)) return;
+        if (lobby.mode == MDKR_ONLINE_MODE_SINGLE_RACE) {
+            /* SINGLE-RACE replay re-cycle (T5). A single race's REMATCH keeps
+             * race_index, so detect the re-cycle by the room LEAVING RESULTS back to
+             * LOBBY -- unambiguous here because we only reach Results AFTER
+             * PUBLISH_RESULTS parked the reducer in RESULTS, so an observed LOBBY is
+             * the host's rematch landing. This is OBSERVE-ONLY: the engine drives the
+             * re-Ready + START (a native CHANGE-picks screen or the LOBBY_WAIT
+             * auto-start for RACE AGAIN); the launcher only drops the stale roster +
+             * match-input so the session's boot-ready gate must see a FRESH epoch,
+             * then waits in Advancing for that fresh race-ready transport and re-arms
+             * the match-input. NOT auto-driving Ready/START is what lets a CHANGE-picks
+             * native screen own the new config without the launcher racing it. */
+            if (lobby.phase == MDKR_ONLINE_LOBBY) {
+                if (rs->remoteSim) OnlineRoom_lobbyStartResetJoiner();
+                mdkr_net_roster_runtime_clear();
+                if (mdkr_match_input_runtime_active()) {
+                    mdkr_match_input_runtime_clear();
+                }
+                rs->singleObserve = true;
+                rs->singleObserveFrames = 0u;
+                rs->phase = LiveResidentState::Phase::Advancing;
+                std::fprintf(stderr,
+                             "[online-resident-live] single-race replay: room left "
+                             "RESULTS -> LOBBY (rematch) -> observe-only re-cycle "
+                             "(engine drives selection/START; launcher re-arms "
+                             "match-input on the fresh epoch)\n");
+            }
+            return;
+        }
         if (lobby.phase == MDKR_ONLINE_LOBBY && lobby.race_index > rs->raceIndex) {
             std::fprintf(stderr,
                          "[online-resident-live] rematch observed race_index=%u "
@@ -1936,6 +1986,80 @@ static void liveResidentServiceStep(void) {
             if (rs->remoteSim) OnlineRoom_lobbyStartResetJoiner();
             rs->phase = LiveResidentState::Phase::Advancing;
         }
+        return;
+    }
+
+    if (rs->phase == LiveResidentState::Phase::Advancing && rs->singleObserve) {
+        /* SINGLE-RACE observe-only re-cycle (T5). Wait for the ENGINE-driven
+         * re-cycle to reach a FRESH race-ready transport (BEGIN_LOADING re-installed
+         * the roster + a race transport is ready on a NEW epoch), then re-install the
+         * match-input so the session's live re-wait boots race N+1. We submit NO
+         * Ready/START here -- the engine drives it -- so a CHANGE-picks native screen
+         * is never raced. The roster was cleared in Results, so `roster active` gates
+         * out the stale (just-raced) epoch until the new BEGIN_LOADING lands.
+         *
+         * Test remote-sim only: keep re-driving the stand-in remote (peer B) toward
+         * ready WHILE the room has not yet reached BEGIN_LOADING (roster inactive) --
+         * a CHANGE-picks host SET_CONFIG_TRACK re-clears the peer's ready AFTER the
+         * one-shot Results reset, so a single reset would strand it un-ready. Once the
+         * roster is back (all-ready -> START -> LOADING) we stop. Production
+         * (remoteSim == false, peer == nullptr) never does this. */
+        ++rs->singleObserveFrames;
+        if (rs->singleObserveFrames > kSingleObserveFrameBudget) {
+            std::fprintf(stderr,
+                         "[online-resident-live] single-race re-cycle TIMEOUT "
+                         "(exceeded %u-frame budget) -- ending residency\n",
+                         kSingleObserveFrameBudget);
+            rs->phase = LiveResidentState::Phase::Done;
+            return;
+        }
+        /* WEDGE (test-only): a peer drop DURING the single-race re-cycle. Once the
+         * engine-driven re-cycle has reached LOADING, the leader CANCELs loading so
+         * the room regresses LOADING -> LOBBY -- the engine's per-round re-wait
+         * mid-cancel unwind (online_session.c, singleEndpoint) must note LEFT +
+         * exit(0): a CLEAN return to the room, never a hang/abort, and the launcher
+         * reads LEFT so it does NOT re-arm (no extra boot). Reuses the tournament
+         * cancel flag; fires once. None in normal runs. */
+        if (rs->wedgeCancelRound2 &&
+            OnlineRoom_lobbyStartCancelLoading(rs->visible)) {
+            rs->wedgeCancelRound2 = false;
+            rs->phase = LiveResidentState::Phase::Done;
+            std::fprintf(stderr,
+                         "[online-resident-live] WEDGE single-race re-cycle cancel: "
+                         "leader CANCEL_LOADING mid re-cycle (engine must UNWIND -> "
+                         "clean LEFT return)\n");
+            return;
+        }
+        if (!mdkr_net_roster_runtime_active()) {
+            if (rs->remoteSim) OnlineRoom_lobbyStartResetJoiner();
+            return; /* engine has not driven BEGIN_LOADING yet -- keep waiting */
+        }
+        MdkrOnlineLiveRaceInfo vinfo{};
+        if (!mdkr_online_live_adapter_race_info(rs->visible, &vinfo) ||
+            !vinfo.ready || vinfo.matchEpoch == 0u) {
+            return; /* roster installed but the transport is not race-ready yet */
+        }
+        /* Fresh race-ready transport: re-install the match-input on the new epoch
+         * (the installed source's epoch is pinned at install; the re-cycle minted a
+         * fresh one). Same discipline as the tournament ADVANCED arm. */
+        mdkr_match_input_runtime_clear();
+        if (!armLiveMatchInput(rs->ctx, vinfo.matchEpoch, vinfo.activeSlotMask)) {
+            std::fprintf(stderr,
+                         "[online-resident-live] single-race match-input reinstall "
+                         "refused -- ending residency\n");
+            rs->phase = LiveResidentState::Phase::Done;
+            return;
+        }
+        std::fprintf(stderr,
+                     "[online-resident-live] single race race-ready epoch=%u "
+                     "active=0x%02x frames=%u (observe-only re-cycle; match-input "
+                     "re-installed; session LOBBY_WAIT will boot it)\n",
+                     static_cast<unsigned>(vinfo.matchEpoch),
+                     static_cast<unsigned>(vinfo.activeSlotMask),
+                     rs->singleObserveFrames);
+        rs->singleObserve = false;
+        rs->singleObserveFrames = 0u;
+        rs->phase = LiveResidentState::Phase::Racing;
         return;
     }
 
@@ -2205,10 +2329,17 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
     /* The TOURNAMENT lobby-start composes with the resident coordinator so
      * races 2..N re-cycle in-process (the demo's real flow). Detect it from the SAME
      * env the room builder used to pre-configure the cup. A single-race lobby-start
-     * (no tournament env) keeps the resident pointer null -> arm-and-race, unchanged. */
+     * (no tournament env) keeps the resident pointer null -> arm-and-race, unchanged
+     * -- UNLESS MDKR_APP_TEST_ONLINE_SINGLE_REPLAY is set (the T5 lane), which composes
+     * the resident for a SINGLE race too so its "Race Again" / "change picks" replays
+     * re-cycle in-process (production runOnlineLobbyStartLiveSession always composes
+     * it; this mirrors that for the loopback rig without disturbing the plain
+     * single-race lobby-start lane, which sets neither env). */
     const char *modeEnv = std::getenv("MDKR_APP_TEST_ONLINE_MODE");
     const bool tournament = modeEnv != nullptr && std::strcmp(modeEnv, "tournament") == 0;
-    LiveResidentState residentState; /* races 2..N (used only when tournament) */
+    const bool singleReplay =
+        !tournament && std::getenv("MDKR_APP_TEST_ONLINE_SINGLE_REPLAY") != nullptr;
+    LiveResidentState residentState; /* races 2..N (tournament) OR single-race replays */
 
     LiveLobbyStartState lobbyState;
     lobbyState.visible = visible;
@@ -2216,7 +2347,7 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
     lobbyState.ctx = &context;
     lobbyState.joinerCharacter = 1u; /* host native picks Pipsy(2); joiner != 2 */
     lobbyState.phase = LiveLobbyStartState::Phase::Lobby;
-    lobbyState.resident = tournament ? &residentState : nullptr;
+    lobbyState.resident = (tournament || singleReplay) ? &residentState : nullptr;
     /* On the loopback rig the peer is the test-only remote-sim. */
     lobbyState.singleEndpoint = singleEndpoint;
     lobbyState.remoteSim = singleEndpoint;
@@ -2320,9 +2451,10 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
     OnlineRoom_pumpPartyLink(visible);
     OnlineRoom_lobbyStartResetJoiner();
 
-    LiveResidentState residentState; /* re-cycles races 2..N for a tournament; for a
-                                      * single race it just fronts race 1 (T5 adds the
-                                      * native single-race replay re-cycle) */
+    LiveResidentState residentState; /* re-cycles races 2..N for a tournament; T5:
+                                      * also re-cycles a SINGLE race's "Race Again" /
+                                      * "change picks" replays in-process via the
+                                      * observe-only single-race re-cycle */
     LiveLobbyStartState lobbyState;
     lobbyState.visible = visible;
     lobbyState.peer = nullptr;       /* production: no local peer to drive */
@@ -2350,14 +2482,19 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
      * the adapter/room (no teardown here), so the human is back in the room. */
     const MdkrPartyLinkSessionEndReason endReason =
         onlineTakeSessionEndWitness(result);
-    /* A FINISHED tournament parks the reducer in RESULTS (room-ready
+    /* A FINISHED native session parks the reducer in RESULTS (room-ready
      * condition FALSE), so arm the re-arm here -- the panel's per-frame observer then
      * clears the latch while the room is out of the takeover window, and the host's
-     * next New Tournament (SELECTING+2+LOBBY+tournament rising edge) re-takes native
-     * for tournament #2. LEFT/ERROR/NONE land with the condition potentially still
-     * TRUE (a mid-tournament cancel drops the room straight back to SELECTING), so
-     * they must NOT arm: an instant re-arm there would re-boot the session the player
-     * just left. Reason-gating here is the load-bearing half of the no-loop proof. */
+     * next fresh SELECTING+2+LOBBY rising edge (ANY mode: a New Tournament, or a fresh
+     * single race after a prior one finished) re-takes native for session #2. T5:
+     * single-race "Race Again" / "change picks" never reach here -- they re-cycle
+     * IN-PROCESS (the session stays booted; see the resident coordinator's single-race
+     * observe-only re-cycle), so this arm is purely the whole-new-session path, still
+     * one arm per FINISHED return. LEFT/ERROR/NONE land with the condition potentially
+     * still TRUE (a mid-tournament / mid-re-cycle cancel or peer drop drops the room
+     * straight back to SELECTING), so they must NOT arm: an instant re-arm there would
+     * re-boot the session the player just left. Reason-gating here is the load-bearing
+     * half of the no-loop proof. */
     if (endReason == MDKR_PARTY_LINK_SESSION_END_FINISHED) {
         OnlineRoom_armRoomReadyRearm();
     }

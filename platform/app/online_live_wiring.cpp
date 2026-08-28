@@ -815,10 +815,16 @@ bool OnlineRoom_pollRoomReadyTransition(IMdkrOnlineAdapter *adapter) {
 
 void OnlineRoom_armRoomReadyRearm(void) {
     /* Called from the launcher ONLY after a FINISHED native session return (never
-     * LEFT/ERROR/NONE). Requests one re-arm of the room-ready latch so a 2nd
-     * tournament in the same session re-takes the native path. Completion is
-     * deferred to OnlineRoom_observeRoomReadyRearm (condition-false gated) -- arming
-     * here does NOT touch the latch, so nothing can re-boot on this frame. */
+     * LEFT/ERROR/NONE). Requests one re-arm of the room-ready latch so a 2nd native
+     * SESSION in the same room re-takes the native path -- mode-agnostic: a 2nd
+     * tournament (New Tournament) OR, symmetrically, a fresh single-race session
+     * after a prior one FINISHED. (T5 note: single-race "Race Again" / "change picks"
+     * do NOT come through here -- they re-cycle IN-PROCESS via the resident
+     * coordinator's single-race observe-only re-cycle, so no engine re-boot and no
+     * re-arm is involved for a same-session replay. This re-arm is only the
+     * whole-new-session path.) Completion is deferred to
+     * OnlineRoom_observeRoomReadyRearm (condition-false gated) -- arming here does NOT
+     * touch the latch, so nothing can re-boot on this frame. */
     sRoomReadyRearmPending = true;
     std::fprintf(stderr,
                  "[online-room-ready] re-arm armed (FINISHED return) -- latch "
@@ -833,8 +839,10 @@ void OnlineRoom_observeRoomReadyRearm(IMdkrOnlineAdapter *adapter) {
      * loop. When a re-arm IS pending it clears the latch ONLY while the room-ready
      * condition is FALSE (after FINISHED the reducer is parked in RESULTS). Clearing
      * the latch during a condition-FALSE frame guarantees the next
-     * SELECTING+2+LOBBY+tournament arrival is a real false->true rising edge that
-     * OnlineRoom_pollRoomReadyTransition fires on exactly once -- the poll is only
+     * SELECTING+2+LOBBY arrival (ANY mode -- a new tournament OR a fresh single race;
+     * the takeover condition is mode-agnostic since T2) is a real false->true rising
+     * edge that OnlineRoom_pollRoomReadyTransition fires on exactly once -- the poll is
+     * only
      * reachable from the SELECTING branch, so it never observes the RESULTS frames
      * itself; this observation is what supplies the "condition was false" half of the
      * edge. If the condition still HOLDS (belt-and-suspenders vs a hypothetical
@@ -846,7 +854,7 @@ void OnlineRoom_observeRoomReadyRearm(IMdkrOnlineAdapter *adapter) {
     sRoomReadyRearmPending = false;
     std::fprintf(stderr,
                  "[online-room-ready] re-arm complete (room out of takeover "
-                 "condition) -- next fresh tournament SELECTING re-takes native\n");
+                 "condition) -- next fresh SELECTING (any mode) re-takes native\n");
 }
 
 bool OnlineRoom_roomReadyTakeoverEngaged(void) {
