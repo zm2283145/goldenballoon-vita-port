@@ -345,6 +345,18 @@ def main() -> int:
                 characters,
                 (
                     "character-test-evidence-action "
+                    "action=publish-portrait-handoff-invalid applied=1 records=0 baselines=0",
+                ),
+                action="publish-portrait-handoff-invalid",
+                inspection_capture=root / "source" / "portrait.png",
+            )
+
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "character-test-evidence-action "
                     "action=publish-portrait-handoff applied=1 records=0 baselines=0",
                     "character-portrait-source package=" + PACKAGE_ID
                     + " kind=exact-renderer dimensions=40x40",

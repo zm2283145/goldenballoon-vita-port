@@ -12248,6 +12248,8 @@ void drawCharacterTestEvidenceMatrix(
             std::strcmp(
                 smokeAction, "publish-portrait-handoff") == 0 ||
             std::strcmp(
+                smokeAction, "publish-portrait-handoff-invalid") == 0 ||
+            std::strcmp(
                 smokeAction,
                 "publish-inspection-capture-stale-fit") == 0 ||
             std::strcmp(
@@ -12439,6 +12441,8 @@ void drawCharacterTestEvidenceMatrix(
                 std::strcmp(
                     smokeAction, "publish-portrait-handoff") == 0 ||
                 std::strcmp(
+                    smokeAction, "publish-portrait-handoff-invalid") == 0 ||
+                std::strcmp(
                     smokeAction,
                     "publish-inspection-capture-stale-fit") == 0 ||
                 std::strcmp(
@@ -12446,8 +12450,10 @@ void drawCharacterTestEvidenceMatrix(
             const bool staleInspectionCapture = std::strcmp(
                 smokeAction,
                 "publish-inspection-capture-stale-fit") == 0;
-            const bool portraitHandoff = std::strcmp(
-                smokeAction, "publish-portrait-handoff") == 0;
+            const bool invalidPortraitHandoff = std::strcmp(
+                smokeAction, "publish-portrait-handoff-invalid") == 0;
+            const bool portraitHandoff = invalidPortraitHandoff ||
+                std::strcmp(smokeAction, "publish-portrait-handoff") == 0;
             const bool inspectionCapture =
                 std::strcmp(smokeAction, "publish-inspection-capture") == 0 ||
                 staleInspectionCapture || portraitHandoff;
@@ -12572,7 +12578,8 @@ void drawCharacterTestEvidenceMatrix(
                         result.pose =
                             MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE;
                         result.pose_phase_milli = 500u;
-                        result.view_yaw_degrees = 180;
+                        result.view_yaw_degrees =
+                            invalidPortraitHandoff ? 145 : 180;
                         result.view_pitch_degrees = 0;
                     }
                 }
@@ -12710,13 +12717,23 @@ void drawCharacterTestEvidenceMatrix(
                 applied = session != g_characterPreviewResults.end() &&
                     latest == nullptr && !sessionMatches;
             } else if (portraitHandoff) {
+                int retainedCaptureExists = 0;
+                (void)mdkr_path_query_utf8(
+                    capturePath.c_str(), &retainedCaptureExists,
+                    nullptr, nullptr);
                 applied = portraitCapturePrepared &&
                     session != g_characterPreviewResults.end() &&
                     latest == nullptr && sessionMatches &&
                     session->second.result.pose ==
                         MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE &&
-                    g_characterPendingPortraitSources.find(entry->id) !=
-                        g_characterPendingPortraitSources.end();
+                    (invalidPortraitHandoff
+                         ? g_characterPendingPortraitSources.find(entry->id) ==
+                                   g_characterPendingPortraitSources.end() &&
+                               g_characterVisualCaptures[entry->id].empty() &&
+                               retainedCaptureExists == 0
+                         : g_characterPendingPortraitSources.find(entry->id) !=
+                                   g_characterPendingPortraitSources.end() &&
+                               retainedCaptureExists != 0);
             } else if (inspection) {
                 applied = session != g_characterPreviewResults.end() &&
                     latest == nullptr &&
@@ -14799,6 +14816,13 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
                 ? "Ready; returns to Portrait Studio automatically."
                 : "Unavailable until a supported base ROM is linked and verified on Play.",
             "Captures one stabilized transparent front portrait in the first supported exact vehicle context, validates it, and returns it to the reversible framing workflow without asking for a filename.");
+        if (!portraitPreviewReady) {
+            ImGui::TextColored(
+                AppTheme::accent(),
+                portraitContext >= MDKR_CHARACTER_CONTEXT_COUNT
+                    ? "No supported vehicle context is available for this package."
+                    : "Link and verify a supported base ROM on Play to create an exact model portrait.");
+        }
         ImGui::TextDisabled(
             "Default: front · 1 player · select-idle 50%% · bright light · transparent model only");
         ImGui::SeparatorText("Alternative portrait angles");
@@ -21789,6 +21813,7 @@ void Settings_publishCharacterPreviewResult(
                     return capture.pngPath == capturePng;
                 });
             if (recordValid && !alreadyListed &&
+                (!portraitSourceHandoff || portraitHandoffValid) &&
                 (captures.size() < CharacterVisualReport::kMaximumCaptures ||
                  portraitHandoffValid)) {
                 CharacterVisualReport::Capture capture{};

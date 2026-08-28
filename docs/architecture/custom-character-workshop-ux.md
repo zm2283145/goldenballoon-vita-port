@@ -697,7 +697,9 @@ stages. Identity also offers one-action model portrait creation: it chooses the
 first supported vehicle, captures a stabilized front-facing one-player
 select-idle model-alpha frame into the launcher's bounded cache, returns
 automatically, validates the source and PNG digest, and opens the same reversible
-framing workflow without changing the installed character. Offset Studio now
+framing workflow without changing the installed character. Inconsistent
+canonical-camera metadata fails closed and removes the private capture rather
+than relabelling it as an ordinary report image. Offset Studio now
 offers both a continuously interactive exact scene
 editor and a create-only inline exact still. The live editor uses the ordinary
 engine scene and renderer, applies validated fit changes frame-to-frame, keeps

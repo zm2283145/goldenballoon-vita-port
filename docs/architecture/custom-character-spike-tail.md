@@ -309,7 +309,10 @@ fit-bound.
   writes only to a bounded launcher-owned cache, returns automatically after a
   stabilized capture, validates the PNG and source digest, and opens the
   reversible crop/matte/palette/outline/readability workflow without asking for
-  a filename. The alternative angles prepare the same exact Test controls for
+  a filename. A result with inconsistent pose, phase, context, player, camera,
+  lighting, or render-product metadata is removed from the private cache and
+  cannot silently fall back into the ordinary report tray. The alternative
+  angles prepare the same exact Test controls for
   explicit report captures. This is the first portrait suggestion immediately
   after safe package intake; exact 40x40 editing and explicit Apply/Build remain
   authoritative.
