@@ -21,6 +21,15 @@
 #include "gameplay_event_trace.h"
 #include "rollback/rollback_game_runtime.h"
 #include "fast3d/gfx_level_lighting.h"
+#ifndef MDKR_ADVENTURE_PARTY_OMIT
+/* AP-08 hub roster/formation adapters. Headers and every call to them live
+ * behind NATIVE_PORT && !MDKR_ADVENTURE_PARTY_OMIT so the OMIT build and the
+ * matching N64 path compile the feature out entirely (Task 6 precedent). */
+#include "adventure_party/adventure_party_runtime.h"
+#include "adventure_party/adventure_party_spawn.h"
+#include "adventure_party/adventure_party_state.h"
+#include "adventure_party/adventure_party_trace.h"
+#endif
 #endif
 /* The level-object-map header is 16 bytes; gObjectMap[] is s32*, so the entries
  * begin 4 s32-elements in. The original code wrote this as sizeof(uintptr_t),
@@ -30,6 +39,7 @@
 #include "audio_vehicle.h"
 #include "audiosfx.h"
 #include "camera.h"
+#include "collision.h"
 #include "fade_transition.h"
 #include "game.h"
 #include "game_text.h"
@@ -2581,6 +2591,144 @@ s32 func_8000CC20(Object *obj) {
     return NextFreeIndex;
 }
 
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+/* AP-08 formation spacing, in world units, anchored on player one's authored
+ * setup point. Deliberately modest: a lobby is not a start grid, so the humans
+ * appear abreast of the host with enough gap to read as distinct karts (the
+ * multiplayer gate requires >= 30u median separation). */
+#define ADVENTURE_PARTY_HUB_SIDE_GAP 55.0f
+#define ADVENTURE_PARTY_HUB_REAR_STAGGER 45.0f
+#define ADVENTURE_PARTY_HUB_RING_STEP 35.0f
+/* Vertical ground probe about the host's y: cast down from a little above to
+ * well below so a candidate on gently rolling hub terrain still finds a floor. */
+#define ADVENTURE_PARTY_HUB_PROBE_UP 160.0f
+#define ADVENTURE_PARTY_HUB_PROBE_DOWN 520.0f
+#define ADVENTURE_PARTY_HUB_PROBE_RADIUS 9.0f
+
+/* A candidate is spawnable on solid, walkable ground: reject open water and the
+ * invisible boundary wall, and reject "no floor found" (SURFACE_NONE). Frozen
+ * water (walkable ice) and every land surface pass. */
+static s32 adventure_party_surface_spawnable(s8 surface) {
+    switch (surface) {
+    case SURFACE_WATER_CALM:
+    case SURFACE_WATER_WAVY:
+    case SURFACE_WATER_UNK_F:
+    case SURFACE_INVIS_WALL:
+    case SURFACE_NONE:
+        return FALSE;
+    default:
+        return TRUE;
+    }
+}
+
+/*
+ * The collision-validating half of the pure formation planner
+ * (platform/adventure_party/adventure_party_spawn.h). Player one keeps its
+ * authored setup point (spawn*[0]); each additional seat takes the FIRST
+ * planner candidate that projects to solid, non-water ground with the game's
+ * own vertical collision probe — generate_collision_candidates +
+ * resolve_collisions, the exact query racers run every frame (object_functions.c
+ * / racer.c). On success spawn*[seat] is filled and the ground y is written
+ * from the probe (resolve_collisions writes `target` in place; see objects.c
+ * embedded-point note).
+ *
+ * Transactional (plan: "Transactional roster"): if ANY seat exhausts its
+ * candidates this returns 0 and the caller loads stock 1P (host-only) — never a
+ * partial roster. A stacked-offset fallback onto the authored point is
+ * FORBIDDEN by the brief, so an unspawnable seat fails the whole party spawn,
+ * with one aparty_ diagnostic line.
+ *
+ * Returns the participant count (2..4) to spawn, or 0 for "not a party lobby
+ * load" and for fail-closed.
+ */
+static s32 adventure_party_hub_formation(u8 raceType, s32 *spawnX, s32 *spawnY,
+                                         s32 *spawnZ, s32 *spawnAngle) {
+    AdventurePartySession *session;
+    AdventurePartyFormationParams params;
+    AdventurePartyFormationPlan plan;
+    s32 count;
+    s32 j;
+    s32 cand;
+
+    /* Only a representative Adventure LOBBY, and only while the session is
+     * bound to a lobby for this load. Races/challenges/cutscenes are later
+     * tasks and take the stock path here. */
+    if (raceType != RACETYPE_HUBWORLD) {
+        return 0;
+    }
+    session = adventure_party_runtime_session();
+    if (session == NULL || session->state != ADVENTURE_PARTY_STATE_ACTIVE_LOBBY) {
+        return 0;
+    }
+    count = adventure_party_participant_count(session);
+    if (count < ADVENTURE_PARTY_MIN_PARTICIPANTS ||
+        count > ADVENTURE_PARTY_MAX_PARTICIPANTS) {
+        return 0;
+    }
+
+    /* Player one's authored point + heading anchor the formation. The game's
+     * y_rotation is a u16 turn (0..0x10000 == 0..2*pi); the pure planner wants
+     * radians. spawn*[] are s32 (positions truncated on write), matching the
+     * setup-point capture above. */
+    params.setup.x = (float) spawnX[0];
+    params.setup.y = (float) spawnY[0];
+    params.setup.z = (float) spawnZ[0];
+    params.heading = (float) spawnAngle[0] * (6.28318530717958647692f / 65536.0f);
+    params.participant_count = (uint8_t) count;
+    params.side_gap = ADVENTURE_PARTY_HUB_SIDE_GAP;
+    params.rear_stagger = ADVENTURE_PARTY_HUB_REAR_STAGGER;
+    params.ring_step = ADVENTURE_PARTY_HUB_RING_STEP;
+    params.max_candidates_per_seat = ADVENTURE_PARTY_MAX_CANDIDATES;
+    if (adventure_party_plan_formation(&params, &plan) != ADVENTURE_PARTY_FORMATION_OK) {
+        if (mdkr_trace_enabled()) {
+            mdkr_trace("aparty_spawn_abort: seat=0 reason=planner n=%d", (int) count);
+        }
+        return 0;
+    }
+
+    for (j = 0; j < plan.seat_count; j++) {
+        const AdventurePartySeatPlan *seatPlan = &plan.seats[j];
+        s32 seat = seatPlan->seat; /* game racer index 1..count-1 */
+        s32 placed = FALSE;
+
+        for (cand = 0; cand < seatPlan->candidate_count; cand++) {
+            Vec3f origin;
+            Vec3f target;
+            f32 radius = ADVENTURE_PARTY_HUB_PROBE_RADIUS;
+            s8 surface = SURFACE_NONE;
+            s32 hasCollision = FALSE;
+
+            origin.x = seatPlan->candidates[cand].point.x;
+            origin.z = seatPlan->candidates[cand].point.z;
+            origin.y = (f32) spawnY[0] + ADVENTURE_PARTY_HUB_PROBE_UP;
+            target.x = origin.x;
+            target.z = origin.z;
+            target.y = (f32) spawnY[0] - ADVENTURE_PARTY_HUB_PROBE_DOWN;
+
+            generate_collision_candidates(1, &origin, &target, VEHICLE_NO_OVERRIDE);
+            resolve_collisions(&origin, &target, &radius, &surface, 1, &hasCollision);
+            if (hasCollision && adventure_party_surface_spawnable(surface)) {
+                spawnX[seat] = (s32) origin.x;
+                spawnZ[seat] = (s32) origin.z;
+                spawnY[seat] = (s32) target.y; /* projected ground */
+                spawnAngle[seat] = spawnAngle[0];
+                placed = TRUE;
+                break;
+            }
+        }
+        if (!placed) {
+            /* Fail closed: abort the whole party spawn for this load. */
+            if (mdkr_trace_enabled()) {
+                mdkr_trace("aparty_spawn_abort: seat=%d reason=nofloor cands=%d",
+                           (int) seat, (int) seatPlan->candidate_count);
+            }
+            return 0;
+        }
+    }
+    return count;
+}
+#endif
+
 /**
  * Takes the level header and decides which race type to activate.
  * Sets up the racer spawning. Initialising vehicle types, racer count, then
@@ -2616,6 +2764,13 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
     Camera *cutsceneCameraSegment;
 #ifdef NATIVE_PORT
     Vehicle requestedVehicle = vehicle;
+#endif
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-08: 0 = stock (non-party) load; 2..4 = spawn that many humans as a
+     * party lobby roster. Decided once, below, after player one's authored
+     * setup point is known and BEFORE numPlayers/viewports are committed, so a
+     * fail-closed formation never yields a partial roster. */
+    s32 apPartySeats = 0;
 #endif
 
 #ifdef NATIVE_PORT
@@ -2712,6 +2867,13 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
     }
     D_8011ADC5 = vehicle; // UB if all setup points don't have an assigned vehicle ID.
     gPrevTimeTrialVehicle = D_8011ADC5;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-08 adapter 2 (formation): place the additional party seats around
+     * player one's authored setup point (spawn*[0], captured by the loop above)
+     * with collision-validated candidates. Decided here, before numPlayers is
+     * committed, so a fail-closed formation cleanly falls back to stock 1P. */
+    apPartySeats = adventure_party_hub_formation(raceType, spawnX, spawnY, spawnZ, spawnAngle);
+#endif
     numPlayers = playerCount + 1;
     gNumRacers = 8;
     gTwoActivePlayersInAdventure = FALSE;
@@ -2720,6 +2882,23 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
         gTwoActivePlayersInAdventure = TRUE;
         set_scene_viewport_num(VIEWPORT_LAYOUT_2_PLAYERS);
     }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-08 adapters 1 (racer count) + 4 (viewport layout): a party lobby fields
+     * N humans through N viewports — the SAME machinery the retail 2P-adventure
+     * block above uses, but WITHOUT gTwoActivePlayersInAdventure and
+     * race_is_adventure_2P (a party never engages the retail two-player protocol
+     * — AP-01). set_scene_viewport_num sets gScenePlayerViewports, which
+     * init_track's cam_set_layout(gScenePlayerViewports) installs (3P keeps the
+     * fourth-quadrant minimap, exactly as Tracks 3P). gNumRacers follows from
+     * numPlayers via the RACETYPE_HUBWORLD branch below, so the field is all
+     * humans, no CPUs. The numPlayers>=2 NO_MULTIPLAYER object filter then runs
+     * untouched: the AP-04 census proved every flagged hub object is cosmetic
+     * (docs/evidence/adventure-party/object-census-2026-08-28.md). */
+    if (apPartySeats >= ADVENTURE_PARTY_MIN_PARTICIPANTS) {
+        numPlayers = apPartySeats;
+        set_scene_viewport_num(apPartySeats - 1); /* VIEWPORT_LAYOUT_<N>_PLAYERS */
+    }
+#endif
     if (raceType == RACETYPE_HUBWORLD) {
         gTimeTrialEnabled = 0;
     }
@@ -2841,7 +3020,17 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
             } else {
                 if (racerEntry->playerIndex == 4 || race_is_adventure_2P()) {
                     vehicle = get_player_selected_vehicle(PLAYER_ONE);
-                } else if (numPlayers >= 2) {
+                } else if (numPlayers >= 2
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                           /* AP-08 adapter 3 (vehicle): a party lobby fields ONE
+                            * shared vehicle type — the lobby vehicle player one
+                            * gets (the authored setup-point vehicle, already in
+                            * `vehicle`). Skip the per-seat selection so every
+                            * seat keeps it, and never route through the 2P branch
+                            * above (a party is not a retail 2P adventure). */
+                           && apPartySeats < ADVENTURE_PARTY_MIN_PARTICIPANTS
+#endif
+                          ) {
                     vehicle = get_player_selected_vehicle(racerEntry->playerIndex);
                 }
             }
@@ -2978,6 +3167,25 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
             }
         }
     }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-08 adapter 7 (trace): the party roster is now published — gRacers /
+     * gRacersByPort hold N humans, gScenePlayerViewports is N, and the object
+     * filter has run. Emit the read-only roster / layout / per-seat binding
+     * facts (Task 3 emitters; MDKR_TRACE-gated). Seat i drives controller port i
+     * (gRacersByPort[i] carries the racer whose playerIndex is i), the stable
+     * seat->port->racer binding with no input_swap engagement. */
+    if (apPartySeats >= ADVENTURE_PARTY_MIN_PARTICIPANTS) {
+        AdventurePartySession *apSession = adventure_party_runtime_session();
+        if (apSession != NULL) {
+            s32 apSeat;
+            adventure_party_trace_emit_roster(&apSession->roster);
+            adventure_party_trace_emit_layout(apPartySeats, apPartySeats - 1);
+            for (apSeat = 0; apSeat < apPartySeats; apSeat++) {
+                adventure_party_trace_emit_binding((uint8_t) apSeat, (uint8_t) apSeat);
+            }
+        }
+    }
+#endif
     gGhostObjStaff = NULL;
     timetrial_free_staff_ghost();
     gTimeTrialContPak = -1;
