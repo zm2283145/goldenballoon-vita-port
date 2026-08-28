@@ -231,8 +231,24 @@ typedef struct CsInput {
  * cells right (to Pipsy, online id 2), press B once WHILE BROWSING (the I1
  * no-wedge coverage), confirm, then ready. Deterministic and inert in a normal
  * run. Exercises the SAME cursor/confirm/ready logic the live pad drives. */
+static s8 sRemoteVacateInput = -1; /* -1 unresolved, 0 off, 1 on (PD-T6d) */
+static u8 charselect_remote_vacate_active(void) {
+    if (sRemoteVacateInput < 0) {
+        sRemoteVacateInput =
+            (getenv("MDKR_TEST_ONLINE_REMOTE_VACATE") != NULL) ? 1 : 0;
+    }
+    return (u8) (sRemoteVacateInput > 0 ? 1 : 0);
+}
+
 static void charselect_input_scripted(CsInput *in) {
     memset(in, 0, sizeof(*in));
+    /* PD-T6d Minor-3 proof: keep the local seat BROWSING (never confirm/ready) so
+     * the room stays in LOBBY while the session's remote-vacated detector debounces
+     * and returns LEFT. Without this the scripted confirm+ready would hand off and
+     * eventually host-start, leaving LOBBY before the debounce elapses. */
+    if (charselect_remote_vacate_active()) {
+        return;
+    }
     switch (sCs.ticks) {
     case 2u:
         in->dx = 1; /* 0 -> 1 */
@@ -916,6 +932,15 @@ static void charselect_test_reduce_and_script(void) {
 u8 mdkr_online_charselect_test_active(void) {
     charselect_test_resolve();
     return (u8) (sTestActive > 0 ? 1 : 0);
+}
+
+/* PD-T6d: true when EITHER scripted-input seam is armed (the self-contained
+ * CHARSELECT seam or the lobby-start scripted cursor). Mirrors
+ * charselect_gather_input's own selector so the session can tell scripted input
+ * (whose tick-3 browse-B is the I1 no-wedge coverage) from a live human's B. */
+u8 mdkr_online_charselect_scripted_input_active(void) {
+    return (u8) ((mdkr_online_charselect_test_active() ||
+                  charselect_lobby_input_active()) ? 1 : 0);
 }
 
 /* F-I1: the screen's OWN locked+ready latch (reset by _enter's memset), used by

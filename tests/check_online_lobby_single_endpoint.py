@@ -74,6 +74,11 @@ MID_UNWIND_RE = re.compile(
     r"^\[online-session\] mid-tournament UNWIND: room regressed to LOBBY",
     re.MULTILINE)
 CHARSELECT_ENTER_RE = re.compile(r"^\[online-charselect\] enter:", re.MULTILINE)
+# PD-T6d engine->launcher FINISH/RETURN handshake witnesses.
+SESSION_END_RE = re.compile(
+    r"^\[online-session-end\] reason=(\w+) result=(-?\d+)", re.MULTILINE)
+FINISHED_ENGINE_RE = re.compile(
+    r"^\[online-session\] FINISHED: final standings", re.MULTILINE)
 ROOM_READY_PROBE_RE = re.compile(
     r"^\[online-room-ready-probe\] fires=(\d+) conditionHeld=(\d+) "
     r"published=(\d+) route=(\S+)", re.MULTILINE)
@@ -183,6 +188,16 @@ def check_single_endpoint_advance(binary: Path, rom: Path, ticks: int,
     if MID_UNWIND_RE.search(output):
         return fail("[single-advance] a mid-tournament UNWIND fired spuriously in "
                     "the happy path", output)
+    # PD-T6d re-audit: the final standings no longer HOLD to the tick budget -- the
+    # host's "A: FINISH" now fires the FINISHED handshake (engine note + launcher
+    # read + clean return), so the run terminates ON the FINISH with rc 0.
+    if not FINISHED_ENGINE_RE.search(output):
+        return fail("[single-advance] the engine never noted FINISHED at the final "
+                    "standings (the FINISH handshake did not fire)", output)
+    ends = SESSION_END_RE.findall(output)
+    if not any(reason == "FINISHED" and code == "0" for reason, code in ends):
+        return fail("[single-advance] the launcher never read the FINISHED session "
+                    f"end (reason=FINISHED result=0); saw {ends}", output)
     return None
 
 
@@ -259,6 +274,12 @@ def check_wallclock_wait(binary: Path, rom: Path, verbose: bool, wedge: str,
     if rc == 0:
         return fail(f"[wall-clock {wedge}] exited 0 -- a stuck wait must carry an "
                     f"ERROR signal (nonzero), not look like a normal finish", output)
+    # PD-T6d: the watchdog trip also notes the ERROR reason, which the launcher's
+    # session-end read surfaces (one uniform channel alongside the nonzero rc).
+    ends = SESSION_END_RE.findall(output)
+    if not any(reason == "ERROR" for reason, _code in ends):
+        return fail(f"[wall-clock {wedge}] the launcher never read the ERROR session "
+                    f"end (reason=ERROR); saw {ends}", output)
     return None
 
 
@@ -290,12 +311,21 @@ def check_mid_tournament_cancel(binary: Path, rom: Path,
         return fail("[mid-cancel] the engine did NOT unwind the mid-tournament "
                     "cancel -- it would park on a stale round with no re-front",
                     output)
-    # >= 2 charselect enters: race 1's, plus the re-front after the cancel.
-    if len(CHARSELECT_ENTER_RE.findall(output)) < 2:
-        return fail("[mid-cancel] CHARSELECT was not re-fronted after the "
-                    "mid-tournament unwind (expected >= 2 charselect enters)",
-                    output)
-    # At least race 1 booted before the cancel, and the session is bounded.
+    # PD-T6d (Minor-4): the mid-tournament cancel now returns CLEANLY to the room --
+    # note LEFT + platform_request_exit(0) -- replacing the PD-T6h2c re-front that
+    # dropped the human into the doomed 900-frame advance budget (a bounded ERROR).
+    # So the run exits 0 with a LEFT session-end the launcher reads (NOT a re-front,
+    # NOT an error exit), after at least race 1 booted.
+    if rc != 0:
+        return fail(f"[mid-cancel] exited {rc} (expected a clean LEFT return 0, not "
+                    f"a re-front-into-error)", output)
+    ends = SESSION_END_RE.findall(output)
+    if not any(reason == "LEFT" and code == "0" for reason, code in ends):
+        return fail("[mid-cancel] the launcher never read the LEFT session end "
+                    f"(reason=LEFT result=0); saw {ends}", output)
+    # Race 1 fronted CHARSELECT + booted before the cancel.
+    if len(CHARSELECT_ENTER_RE.findall(output)) < 1:
+        return fail("[mid-cancel] CHARSELECT never fronted for race 1", output)
     if len(DIRECT_BOOT_RE.findall(output)) < 1:
         return fail("[mid-cancel] no race booted before the cancel", output)
     return None
@@ -354,8 +384,10 @@ def main() -> int:
         "for a tournament room (route=lobby-start) and deferred a single-race room to "
         "the race-ready fallback; the WALL-CLOCK watchdog bounded all three "
         "descriptor-less waits (race-1 re-wait, results rematch-hold, per-round) with "
-        "a nonzero ERROR exit; and a mid-tournament CANCEL unwound + re-fronted "
-        "CHARSELECT (never a hang).")
+        "a nonzero ERROR exit + a launcher reason=ERROR read; the final standings "
+        "fired the PD-T6d FINISHED handshake (engine note + launcher reason=FINISHED "
+        "+ clean return); and a mid-tournament CANCEL returned cleanly to the room "
+        "(reason=LEFT, exit 0) instead of a re-front-into-error (never a hang).")
     return 0
 
 

@@ -748,10 +748,44 @@ static void test_dispatch_zeroed_intent_contract(void) {
     CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK) >= 0);
 }
 
+/* PD-T6d: the engine->launcher session end-reason channel. Mirrors the
+ * single-endpoint note: engine writes, launcher one-shot takes, reset by
+ * install/clear so no stale verdict leaks across sessions. */
+static void test_session_end_reason(void) {
+    /* Default (fresh statics / after clear) is NONE, and take is a one-shot that
+     * resets to NONE. */
+    mdkr_party_link_clear();
+    CHECK(mdkr_party_link_take_session_end() == MDKR_PARTY_LINK_SESSION_END_NONE);
+
+    CHECK(mdkr_party_link_install());
+    /* No note yet: NONE. */
+    CHECK(mdkr_party_link_take_session_end() == MDKR_PARTY_LINK_SESSION_END_NONE);
+
+    mdkr_party_link_note_session_end(MDKR_PARTY_LINK_SESSION_END_FINISHED);
+    /* One-shot take returns the reason, then resets to NONE. */
+    CHECK(mdkr_party_link_take_session_end() ==
+          MDKR_PARTY_LINK_SESSION_END_FINISHED);
+    CHECK(mdkr_party_link_take_session_end() == MDKR_PARTY_LINK_SESSION_END_NONE);
+
+    /* A later write wins; each reason round-trips. */
+    mdkr_party_link_note_session_end(MDKR_PARTY_LINK_SESSION_END_LEFT);
+    mdkr_party_link_note_session_end(MDKR_PARTY_LINK_SESSION_END_ERROR);
+    CHECK(mdkr_party_link_take_session_end() ==
+          MDKR_PARTY_LINK_SESSION_END_ERROR);
+
+    /* install() resets a stale reason to NONE (no leak across sessions). */
+    mdkr_party_link_note_session_end(MDKR_PARTY_LINK_SESSION_END_LEFT);
+    mdkr_party_link_clear();
+    CHECK(mdkr_party_link_install());
+    CHECK(mdkr_party_link_take_session_end() == MDKR_PARTY_LINK_SESSION_END_NONE);
+    mdkr_party_link_clear();
+}
+
 int main(void) {
     test_round_trip();
     test_generation_monotonicity();
     test_intent_one_shot();
+    test_session_end_reason();
     test_snapshot_field_mapping();
     test_dispatch_plan();
     test_dispatch_session_config();

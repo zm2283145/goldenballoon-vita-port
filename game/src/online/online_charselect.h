@@ -47,6 +47,14 @@ MdkrOnlineCharselectResult mdkr_online_charselect_tick(s32 updateRate);
  * MDKR_TEST_ONLINE_CHARSELECT). Ordinary runs always return false. */
 u8 mdkr_online_charselect_test_active(void);
 
+/* PD-T6d: true when the CHARSELECT cursor/confirm/ready is driven by SCRIPTED
+ * input (env MDKR_TEST_ONLINE_CHARSELECT or MDKR_TEST_ONLINE_LOBBY_START) rather
+ * than the live pad. The scripted script presses a browse-B at tick 3 as the I1
+ * no-wedge coverage, which must NOT leave-to-room, so the session honors a
+ * charselect backout as a genuine LEFT only for LIVE input (a real human) --
+ * unless the dedicated backout seam overrides it. Ordinary runs return false. */
+u8 mdkr_online_charselect_scripted_input_active(void);
+
 /* True when the LOCAL player has locked a character AND readied on THIS screen
  * (the screen's own latch, not the lagging lobby snapshot). The session gates the
  * CHARSELECT -> TRACKSELECT hand-off on this so a live B-back (whose snapshot

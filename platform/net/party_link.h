@@ -160,6 +160,30 @@ bool mdkr_party_link_active(void);
 void mdkr_party_link_note_single_endpoint(bool single);
 bool mdkr_party_link_is_single_endpoint(void);
 
+/* PD-T6d SESSION END-REASON channel (engine writes, launcher reads). Mirrors the
+ * single-endpoint note above -- an engine-written note that survives across the
+ * mdkr64_engine_boot() boundary in the SAME party_link TU -- so after a native
+ * online session returns the launcher can distinguish WHY (a tournament finished,
+ * a player left, or a watchdog error) and route back to the Online Room. The
+ * descriptor-less engine session sets it right before platform_request_exit(); the
+ * launcher's runOnlineLobbyStart{Live,Engine}Session TAKES it (one-shot) right
+ * after the boot returns and BEFORE OnlineRoom_clearPartyLink(). Reset to NONE by
+ * install/clear so a stale reason never leaks across sessions and the OFF
+ * standalone party_link test exe starts neutral. */
+typedef enum MdkrPartyLinkSessionEndReason {
+    MDKR_PARTY_LINK_SESSION_END_NONE = 0, /* no native-session verdict (app-quit / postrace) */
+    MDKR_PARTY_LINK_SESSION_END_FINISHED, /* tournament complete (final standings FINISH) */
+    MDKR_PARTY_LINK_SESSION_END_LEFT,     /* a player backed out / a seat vacated / a cancel */
+    MDKR_PARTY_LINK_SESSION_END_ERROR     /* the wall-clock watchdog tripped */
+} MdkrPartyLinkSessionEndReason;
+
+/* Engine writes the end reason just before requesting the platform exit. It only
+ * stores the value; safe to call from the beta-gated session TU. */
+void mdkr_party_link_note_session_end(MdkrPartyLinkSessionEndReason reason);
+/* Launcher one-shot take: returns the stored reason and resets it to NONE, so a
+ * second read (or a session that never set one) yields NONE. */
+MdkrPartyLinkSessionEndReason mdkr_party_link_take_session_end(void);
+
 /* Launcher writes the latest snapshot. Monotonic generation: if the caller did
  * not advance snapshot->generation past the stored one, publish bumps it, so a
  * reader can always detect a new snapshot. No-op when uninstalled. */

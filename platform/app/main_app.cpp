@@ -2048,6 +2048,35 @@ static void liveLobbyStartServiceStep(void) {
     }
 }
 
+/* PD-T6d engine->launcher FINISH/RETURN handshake. Take the engine-written
+ * session end reason (one-shot) right after mdkr64_engine_boot returns and BEFORE
+ * OnlineRoom_clearPartyLink() drops it, log a clear witness, and return the reason
+ * so the caller/loop can route back to the Online Room. FINISHED (tournament
+ * complete) and LEFT (a player backed out / a seat vacated / a mid-tournament
+ * cancel) are clean returns; ERROR mirrors the nonzero watchdog rc. NONE means the
+ * session ended without a native verdict (app-quit / a non-session postrace exit)
+ * -- treated as before. The launcher loop already re-draws the room with the
+ * adapter intact, so this needs NO teardown; it is the witness + reason surface. */
+static MdkrPartyLinkSessionEndReason onlineTakeSessionEndWitness(int result) {
+    const MdkrPartyLinkSessionEndReason reason =
+        mdkr_party_link_take_session_end();
+    const char *label = "NONE";
+    switch (reason) {
+    case MDKR_PARTY_LINK_SESSION_END_FINISHED: label = "FINISHED"; break;
+    case MDKR_PARTY_LINK_SESSION_END_LEFT:     label = "LEFT"; break;
+    case MDKR_PARTY_LINK_SESSION_END_ERROR:    label = "ERROR"; break;
+    case MDKR_PARTY_LINK_SESSION_END_NONE:
+    default: break;
+    }
+    if (reason != MDKR_PARTY_LINK_SESSION_END_NONE) {
+        std::fprintf(stderr,
+                     "[online-session-end] reason=%s result=%d -> returning to "
+                     "Online Room\n",
+                     label, result);
+    }
+    return reason;
+}
+
 /* PD-T6h2a: boot the VISIBLE engine DESCRIPTOR-LESS on a lobby-start loopback
  * room. Unlike runOnlineLiveEngineSession this skips the roster/race-info gates
  * (there is no descriptor at boot), installs party_link + primes the forward feed
@@ -2155,6 +2184,10 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
 
     const int result = mdkr64_engine_boot(&config);
 
+    /* PD-T6d: read the engine's session end reason BEFORE OnlineRoom_clearPartyLink
+     * drops the party_link note (the launcher then resumes the room). */
+    (void)onlineTakeSessionEndWitness(result);
+
     platformSetOverlayHooks(nullptr);
     platformSetHostWebGpuRecovery(nullptr, nullptr);
     platformSetHostWebGpu(nullptr, nullptr, nullptr, nullptr, nullptr, 0);
@@ -2241,6 +2274,13 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
     }
 
     const int result = mdkr64_engine_boot(&config);
+
+    /* PD-T6d engine->launcher FINISH/RETURN handshake: read WHY the native session
+     * ended (FINISHED / LEFT / ERROR) BEFORE OnlineRoom_clearPartyLink() drops the
+     * note, so the launcher loop resumes the Online Room with the reason logged.
+     * The room-ready block below `continue`s on any return; the panel still owns
+     * the adapter/room (no teardown here), so the human is back in the room. */
+    (void)onlineTakeSessionEndWitness(result);
 
     platformSetOverlayHooks(nullptr);
     platformSetHostWebGpuRecovery(nullptr, nullptr);
@@ -4123,9 +4163,11 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
                              lobbyResult);
             }
             /* The session ran the whole tournament in-process (or bounded a stuck
-             * wait); fall back into the launcher loop. The panel owns the room /
-             * final-standings return (the engine->launcher finish handshake is the
-             * PD-T6 stub -- see report). */
+             * wait); fall back into the launcher loop. PD-T6d: the engine->launcher
+             * FINISH/RETURN handshake now fires -- runOnlineLobbyStartLiveSession
+             * logged the [online-session-end] reason (FINISHED / LEFT / ERROR)
+             * before returning. The panel still owns the adapter/room, so this
+             * `continue` re-draws the Online Room with the human back in it. */
             continue;
         }
         /* Make-or-break handoff: an Online Room adapter (driven by the UX-owned

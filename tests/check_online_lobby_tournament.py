@@ -105,6 +105,11 @@ UNWIND_RE = re.compile(
     r"pending", re.MULTILINE)
 CANCEL_SUBMIT_RE = re.compile(
     r"^\[online-lobby-start\] WEDGE cancel-loading:.*submitted=1$", re.MULTILINE)
+# PD-T6d engine->launcher FINISH/RETURN handshake witnesses.
+SESSION_END_RE = re.compile(
+    r"^\[online-session-end\] reason=(\w+) result=(-?\d+)", re.MULTILINE)
+FINISHED_ENGINE_RE = re.compile(
+    r"^\[online-session\] FINISHED: final standings", re.MULTILINE)
 POSTRACE_EXIT = "[online-postrace] session end requested"
 
 FORBIDDEN = ("[FATAL]", "[CRASH]", "AddressSanitizer",
@@ -427,6 +432,22 @@ def main() -> int:
     if WATCHDOG_RE.search(output):
         return fail("the descless watchdog TRIPPED in the happy path (a re-cycle "
                     "wedged)", output)
+
+    # PD-T6d re-audit: the final standings no longer HOLD to the tick budget. The
+    # scripted host "A: FINISH" (MDKR_TEST_ONLINE_RESULTS_HOST_PRESS) now fires the
+    # FINISHED handshake at race 4's final standings -- the engine notes it + the
+    # launcher reads reason=FINISHED and returns cleanly to the room -- so the run
+    # terminates ON the FINISH (rc 0), AFTER all 4 boots / RESULTS / REMATCH
+    # witnesses above (which is why every count assertion still holds).
+    if not FINISHED_ENGINE_RE.search(output):
+        return fail("the engine never noted FINISHED at the final standings -- the "
+                    "PD-T6d FINISH handshake did not fire (final standings would "
+                    "hold forever instead of returning to the room)", output)
+    ends = SESSION_END_RE.findall(output)
+    if not any(reason == "FINISHED" and code == "0" for reason, code in ends):
+        return fail("the launcher never read the FINISHED session end (reason="
+                    f"FINISHED result=0) -- no clean return-to-room; saw {ends}",
+                    output)
 
     # Wedge sub-tests (the deferred safety findings fire cleanly, never hang).
     result = check_watchdog_wedge(binary, rom, args.verbose)

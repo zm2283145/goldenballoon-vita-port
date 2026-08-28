@@ -1587,6 +1587,21 @@ UNWIND`) + re-fronts CHARSELECT + recovers (race 1 still boots). A source-scan p
 `MDKR_ONLINE_SESSION_CUP_ROUNDS == MDKR_ONLINE_CUP_ROUNDS` (Minor-3). Default
 `--build build-beta`.
 
+`check_online_session_end.py` (standalone lane, not run-checks registered) is the
+PD-T6d gate for the engine->launcher FINISH/RETURN handshake (the session
+end-reason channel). After a native online session ends the engine notes WHY on
+the party_link channel (`mdkr_party_link_note_session_end`) + requests the platform
+exit; the launcher's `runOnlineLobbyStart{Live,Engine}Session` TAKES that reason
+(`mdkr_party_link_take_session_end`) right after the boot returns and BEFORE
+`OnlineRoom_clearPartyLink()`, logging `[online-session-end] reason=...`. The lane
+proves each reason end-to-end on the loopback lobby-start rig: FINISHED (host
+"A: FINISH" on the final standings -> exit 0), LEFT via a genuine CHARSELECT
+browse-B backout (`MDKR_TEST_ONLINE_CHARSELECT_BACKOUT`; the scripted lanes' tick-3
+I1 browse-B still STAYs), LEFT via a pre-START remote-vacated seat
+(`MDKR_TEST_ONLINE_REMOTE_VACATE`, Minor-3; debounced), LEFT via a mid-tournament
+leader cancel (Minor-4; a clean return replacing the PD-T6h2c re-front-into-error),
+and ERROR via the wall-clock watchdog (nonzero exit). Default `--build build-beta`.
+
 `check_online_tournament.py` (standalone lane, not run-checks registered)
 drives a FULL 4-race Dino Domain cup (mode
 tournament, cup 0: tracks 5, 3, 29, 7) through ONE loopback room

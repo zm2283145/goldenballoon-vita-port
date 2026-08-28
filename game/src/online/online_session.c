@@ -158,6 +158,12 @@ typedef struct MdkrOnlineSessionState {
      * initial next-round SELECTING the re-wait first observes). Reset at each boot.
      * Single-endpoint only. */
     u8 desclessRoundLeftLobby;
+    /* PD-T6d (Minor-3): debounce counter for the pre-START remote-seat-vacated
+     * detector. Incremented each CHARSELECT/TRACKSELECT tick the forward feed shows
+     * a LOBBY-phase room seating the LOCAL player but NO remote seat; reset the
+     * instant a remote reappears (or the room leaves LOBBY). On a sustained absence
+     * the session notes LEFT + exits. Inert for a descriptor-first begin. */
+    u16 remoteAbsentTicks;
 } MdkrOnlineSessionState;
 
 /* Session-owned state -- deliberately NOT any offline global. */
@@ -422,7 +428,10 @@ static bool online_session_descless_watchdog_tick(const char *where) {
         /* Nonzero code: strengthens the clean exit into a FAILURE the launcher's
          * online engine-session caller sees (liveResult != 0 -> stay in the Online
          * Room, panel surfaces recovery) rather than a normal finish. The thread3
-         * loop honors the flag, the engine returns, teardown runs. */
+         * loop honors the flag, the engine returns, teardown runs. PD-T6d: note the
+         * ERROR reason so the launcher's session-end read surfaces it as ERROR (one
+         * uniform channel + witness alongside the nonzero rc). */
+        mdkr_party_link_note_session_end(MDKR_PARTY_LINK_SESSION_END_ERROR);
         platform_request_exit(2);
         return true;
     }
@@ -523,6 +532,7 @@ static void online_session_boot_race(void) {
      * fresh (Minor-C). */
     sOnlineSession.desclessWaitDeadlineNs = 0u;
     sOnlineSession.desclessRoundLeftLobby = 0u;
+    sOnlineSession.remoteAbsentTicks = 0u; /* PD-T6d: fresh vacate debounce */
 
     sOnlineSession.raceCount++; /* PD-T5: count engine races booted this process */
     sOnlineSession.phase = MDKR_ONLINE_SESSION_RACE;
@@ -657,6 +667,96 @@ static bool online_session_local_seat_ready_in_lobby(
     return false;
 }
 
+/* PD-T6d: the CHARSELECT browse-B backout leave-to-room seam (env, resolved
+ * once). Off in every normal run. */
+static s8 sCharselectBackoutResolved = -1; /* -1 unresolved, 0 off, 1 on */
+static bool online_session_charselect_backout_seam(void) {
+    if (sCharselectBackoutResolved < 0) {
+        sCharselectBackoutResolved =
+            (getenv("MDKR_TEST_ONLINE_CHARSELECT_BACKOUT") != NULL) ? 1 : 0;
+    }
+    return sCharselectBackoutResolved > 0;
+}
+
+/* PD-T6d set-point B gate: honor a CHARSELECT browse-B as a genuine leave-to-room
+ * ONLY for a live human (unscripted pad). The scripted lobby-start lanes press a
+ * browse-B at tick 3 as the I1 no-wedge coverage and must keep the warn-once stub
+ * (STAY) so they still confirm+ready+start race 1; the seam-armed charselect lane
+ * is descriptor-first and already excluded by beganWithoutDescriptor. The
+ * dedicated backout seam overrides the scripted-input suppression for the headless
+ * proof of this LEFT path. */
+static bool online_session_charselect_backout_honored(void) {
+    if (online_session_charselect_backout_seam()) return true;
+    return !mdkr_online_charselect_scripted_input_active();
+}
+
+/* PD-T6d (Minor-3): force the remote-seat-vacated predicate for the headless proof
+ * -- a real transport departure cannot be cheaply staged on the loopback rig, so
+ * this seam makes the detector READ the remote as gone while the debounce + note
+ * LEFT + exit(0) action all run genuinely. Off in every normal run. */
+static s8 sRemoteVacateResolved = -1;
+static bool online_session_remote_vacate_forced(void) {
+    if (sRemoteVacateResolved < 0) {
+        sRemoteVacateResolved =
+            (getenv("MDKR_TEST_ONLINE_REMOTE_VACATE") != NULL) ? 1 : 0;
+    }
+    return sRemoteVacateResolved > 0;
+}
+
+/* Any occupied seat that is NOT the local player -- the remote(s) still present in
+ * the room. Mirrors online_session_snapshot_has_local_seat. */
+static bool online_session_snapshot_has_remote_seat(
+    const MdkrPartyLinkSnapshot *snap) {
+    unsigned i;
+    for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
+        if (snap->seats[i].occupied && !snap->seats[i].is_local) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* PD-T6d (Minor-3) pre-START remote-vacated detector. While a DESCRIPTOR-LESS
+ * session waits on the native CHARSELECT/TRACKSELECT screens, a remote seat that
+ * VACATES (the peer left / the room dissolved) means the race can never start --
+ * parking would be indefinite (only app-quit exits pre-START). Read the forward
+ * feed: if a LOBBY-phase room still seats the LOCAL player but NO remote seat is
+ * occupied, DEBOUNCE it (a one-frame transient must never trip), and on a
+ * sustained absence note LEFT + platform_request_exit(0) so the launcher returns
+ * cleanly to the room. Gated on beganWithoutDescriptor, so a descriptor-first lane
+ * (whose remote stays seated through selection) never trips. Returns true (exit
+ * requested) on a trip. */
+#define MDKR_ONLINE_SESSION_REMOTE_VACATE_DEBOUNCE 45u
+static bool online_session_detect_remote_vacated(const char *where) {
+    MdkrPartyLinkSnapshot snap;
+    if (!sOnlineSession.beganWithoutDescriptor) {
+        return false;
+    }
+    if (!mdkr_party_link_read(&snap) ||
+        snap.phase != (uint8_t) MDKR_ONLINE_SESSION_LOBBY_PHASE ||
+        !online_session_snapshot_has_local_seat(&snap)) {
+        sOnlineSession.remoteAbsentTicks = 0u;
+        return false;
+    }
+    if (online_session_snapshot_has_remote_seat(&snap) &&
+        !online_session_remote_vacate_forced()) {
+        sOnlineSession.remoteAbsentTicks = 0u; /* remote back / present: reset */
+        return false;
+    }
+    sOnlineSession.remoteAbsentTicks++;
+    if (sOnlineSession.remoteAbsentTicks <
+        MDKR_ONLINE_SESSION_REMOTE_VACATE_DEBOUNCE) {
+        return false; /* still within the debounce window */
+    }
+    mdkr_party_link_note_session_end(MDKR_PARTY_LINK_SESSION_END_LEFT);
+    fprintf(stderr,
+            "[online-session] LEFT: remote seat vacated pre-START at %s "
+            "(debounced %u ticks) -> return to room (exit 0)\n",
+            where, (unsigned) sOnlineSession.remoteAbsentTicks);
+    platform_request_exit(0);
+    return true;
+}
+
 /* DEFERRED to PD-T6 (do NOT build here -- documented so the seam is explicit):
  *   - Making LIVE play resident: pumping OnlineRoom_pumpPartyLink / the reverse
  *     intent feed from the overlay-service hook during residency, publishing
@@ -666,8 +766,12 @@ static bool online_session_local_seat_ready_in_lobby(
  *     soak re-enters and every live lane still exits unchanged.
  *   - The champion CEREMONY 3D cutscene (the MDKR_ONLINE_SESSION_CEREMONY phase,
  *     still default:-swallowed below): the final STANDINGS holds in its place.
- *   - The real engine->launcher return handshake (the same wiring that boots this
- *     session at LOBBY phase): a RESULTS/CHARSELECT LEAVE is a documented stub.
+ *   - (PD-T6d, now wired) The engine->launcher return handshake: a RESULTS FINISH,
+ *     a CHARSELECT backout, a pre-START remote-vacate, or a mid-tournament cancel
+ *     notes an end reason (mdkr_party_link_note_session_end) + platform_request_exit,
+ *     which the launcher takes (mdkr_party_link_take_session_end) after the boot
+ *     returns to resume the Online Room. The warn-once CHARSELECT stub remains for
+ *     the descriptor-first / scripted lanes (byte-behaviour-unchanged).
  *   - ABANDON_RACE is NOT needed: abnormal ends keep platform_request_exit(0)
  *     (R-B), which resume_results below preserves by returning false when no
  *     finish was captured. */
@@ -843,17 +947,19 @@ void mdkr_online_session_tick(s32 updateRate) {
                 MdkrPartyLinkSnapshot rsnap;
                 if (mdkr_party_link_read(&rsnap)) {
                     online_session_stash_intended(&rsnap);
-                    /* PD-T6h2c MID-TOURNAMENT CANCEL unwind (Minor-C). SINGLE-ENDPOINT
-                     * only: rounds 2..N re-cycle the room from the launcher (LOBBY ->
-                     * LOADING -> race-ready). If the LEADER cancels mid-tournament
-                     * (RETURN_TO_LOBBY -> CANCEL_LOADING) the room regresses LOADING ->
-                     * LOBBY and the next race's descriptor/epoch never arms -- parking
-                     * would leave only watchdog-bounded death with no re-front. Latch
-                     * "left LOBBY this round" first (so the initial next-round SELECTING
-                     * the re-wait observes is NOT mistaken for a cancel), then, on a
-                     * return to LOBBY with our seat still present while not ready,
-                     * re-front native CHARSELECT so the human re-selects for the
-                     * restarted round (production UX). Gated on singleEndpoint, so the
+                    /* PD-T6h2c/PD-T6d MID-TOURNAMENT CANCEL unwind (Minor-C/Minor-4).
+                     * SINGLE-ENDPOINT only: rounds 2..N re-cycle the room from the
+                     * launcher (LOBBY -> LOADING -> race-ready). If the LEADER cancels
+                     * mid-tournament (RETURN_TO_LOBBY -> CANCEL_LOADING) the room
+                     * regresses LOADING -> LOBBY and the next race's descriptor/epoch
+                     * never arms -- parking would leave only watchdog-bounded death.
+                     * Latch "left LOBBY this round" first (so the initial next-round
+                     * SELECTING the re-wait observes is NOT mistaken for a cancel),
+                     * then, on a return to LOBBY with our seat still present while not
+                     * ready, note LEFT + platform_request_exit(0): a CLEAN engine->
+                     * launcher return-to-room (PD-T6d), replacing the PD-T6h2c re-front
+                     * that dropped the human into the doomed 900-frame advance budget
+                     * (a bounded ERROR exit(2)). Gated on singleEndpoint, so the
                      * loopback resident/lobby-tournament lanes are byte-unchanged. */
                     if (sOnlineSession.singleEndpoint) {
                         if (rsnap.phase !=
@@ -861,20 +967,16 @@ void mdkr_online_session_tick(s32 updateRate) {
                             sOnlineSession.desclessRoundLeftLobby = 1u;
                         } else if (sOnlineSession.desclessRoundLeftLobby && !ready &&
                                    online_session_snapshot_has_local_seat(&rsnap)) {
-                            sOnlineSession.liveReWaitLastReady = 0xFFu;
-                            sOnlineSession.desclessWaitTicks = 0u;
-                            sOnlineSession.desclessWaitDeadlineNs = 0u;
-                            sOnlineSession.desclessRoundLeftLobby = 0u;
-                            sOnlineSession.phase = MDKR_ONLINE_SESSION_CHARSELECT;
-                            sCharselectLeaveWarned = 0u;
-                            mdkr_online_charselect_enter();
+                            mdkr_party_link_note_session_end(
+                                MDKR_PARTY_LINK_SESSION_END_LEFT);
                             fprintf(stderr,
                                     "[online-session] mid-tournament UNWIND: room "
                                     "regressed to LOBBY during the per-round re-wait "
-                                    "(leader CANCEL_LOADING) -> re-fronting CHARSELECT "
-                                    "(race=%u tick=%u)\n",
+                                    "(leader CANCEL_LOADING) -> LEFT: return to room "
+                                    "(exit 0) (race=%u tick=%u)\n",
                                     sOnlineSession.raceCount,
                                     sOnlineSession.lobbyWaitTicks);
+                            platform_request_exit(0);
                             break;
                         }
                     }
@@ -956,6 +1058,12 @@ void mdkr_online_session_tick(s32 updateRate) {
     }
     case MDKR_ONLINE_SESSION_CHARSELECT: {
         MdkrOnlineCharselectResult r;
+        /* PD-T6d (Minor-3): pre-START remote-vacated detector. If the remote seat
+         * leaves the LOBBY-phase room while we wait on CHARSELECT, note LEFT + exit
+         * (debounced). Inert for a descriptor-first begin. */
+        if (online_session_detect_remote_vacated("charselect")) {
+            break;
+        }
         {
             /* PD-T4: track the host-intended pick as the room converges. M2:
              * stashing PRE-tick is correct here (unlike TRACKSELECT, which reads
@@ -997,14 +1105,26 @@ void mdkr_online_session_tick(s32 updateRate) {
                         "ready in LOBBY)\n");
             }
         } else if (r == MDKR_ONLINE_CHARSELECT_LEAVE) {
-            /* Backing all the way out to the launcher room requires the
-             * engine->launcher return handshake that is PD-T6 (the same wiring
-             * that boots this session at LOBBY phase in the first place). For now
-             * this is a documented stub: log it ONCE and remain on the screen
-             * rather than half-tear-down into an unwired state. The tick returns
-             * LEAVE as an edge (ADVANCE always wins), so this can never wedge the
-             * session -- a host-start still boots this endpoint. */
-            if (!sCharselectLeaveWarned) {
+            if (sOnlineSession.beganWithoutDescriptor &&
+                online_session_charselect_backout_honored()) {
+                /* PD-T6d LEFT handshake: a genuine browse-B backout on the
+                 * descriptor-less path returns to the launcher room. mdkr_online_
+                 * charselect_exit frees the screen assets; note LEFT + request the
+                 * clean platform exit so the launcher reads the reason + resumes. */
+                mdkr_online_charselect_exit();
+                mdkr_party_link_note_session_end(
+                    MDKR_PARTY_LINK_SESSION_END_LEFT);
+                fprintf(stderr,
+                        "[online-session] LEFT: charselect backout -> return to "
+                        "room (exit 0)\n");
+                platform_request_exit(0);
+            } else if (!sCharselectLeaveWarned) {
+                /* Non-descriptor-less begin, or the scripted lobby-start lanes'
+                 * tick-3 I1 no-wedge browse-B: keep the warn-once stub (STAY) so
+                 * the seam-armed charselect lane and the loopback lobby-start lanes
+                 * are byte-behaviour-unchanged. The tick returns LEAVE as an edge
+                 * (ADVANCE always wins), so this can never wedge the session -- a
+                 * host-start still boots this endpoint. */
                 sCharselectLeaveWarned = 1u;
                 fprintf(stderr,
                         "[online-charselect] leave requested; engine->launcher "
@@ -1014,8 +1134,13 @@ void mdkr_online_session_tick(s32 updateRate) {
         break;
     }
     case MDKR_ONLINE_SESSION_TRACKSELECT: {
-        MdkrOnlineTrackselectResult r =
-            mdkr_online_trackselect_tick(updateRate);
+        MdkrOnlineTrackselectResult r;
+        /* PD-T6d (Minor-3): pre-START remote-vacated detector (also covers the
+         * TRACKSELECT wait). Inert for a descriptor-first begin. */
+        if (online_session_detect_remote_vacated("trackselect")) {
+            break;
+        }
+        r = mdkr_online_trackselect_tick(updateRate);
         {
             /* PD-T4: read AFTER the tick so the host's just-reduced config
              * (SET_CONFIG_TRACK / SET_CUP) is captured before any boot. */
@@ -1177,10 +1302,30 @@ void mdkr_online_session_tick(s32 updateRate) {
              * raceCount == sResidentRaces (env-sized). The screen returned isFinal,
              * so it holds the final standings; nothing to boot. */
         } else if (r == MDKR_ONLINE_RESULTS_LEAVE) {
-            /* Backing out to the launcher room is the PD-T6 engine->launcher
-             * return handshake (same wiring that boots this session). For now,
-             * hold on the screen rather than half-tear-down into an unwired
-             * state; the resident soak never presses B. */
+            /* PD-T6d engine->launcher FINISH/RETURN handshake (replaces the PD-T6
+             * hold stub). The results screen returns LEAVE for the host's
+             * "A: FINISH" on the FINAL standings (resultsIsFinal) or a non-final
+             * B-back. Free the screen assets, note the reason, and request the
+             * clean platform exit so the launcher reads the reason + resumes the
+             * Online Room. */
+            mdkr_online_results_exit();
+            if (sOnlineSession.resultsIsFinal) {
+                mdkr_party_link_note_session_end(
+                    MDKR_PARTY_LINK_SESSION_END_FINISHED);
+                fprintf(stderr,
+                        "[online-session] FINISHED: final standings A:FINISH -> "
+                        "return to room (exit 0)\n");
+            } else {
+                /* Non-final local back-out = a mid-tournament LEFT. (The scripted
+                 * resident lanes never press B, so this fires only for a live
+                 * human / a descriptor-less back-out.) */
+                mdkr_party_link_note_session_end(
+                    MDKR_PARTY_LINK_SESSION_END_LEFT);
+                fprintf(stderr,
+                        "[online-session] LEFT: non-final results back-out -> "
+                        "return to room (exit 0)\n");
+            }
+            platform_request_exit(0);
         }
         break;
     }

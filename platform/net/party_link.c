@@ -28,6 +28,10 @@ static uint32_t sIntentPolledEpoch;
  * (production) instead of the frame-count + clean-exit path (headless loopback).
  * Reset by install/clear; the launcher sets it AFTER install, before boot. */
 static bool sSingleEndpoint;
+/* PD-T6d: the engine-written session end reason (why the last native online
+ * session returned). Reset to NONE by install/clear so each session starts
+ * neutral and no stale verdict leaks across sessions. */
+static MdkrPartyLinkSessionEndReason sSessionEndReason;
 
 bool mdkr_party_link_install(void) {
     if (sActive) return false;
@@ -36,6 +40,7 @@ bool mdkr_party_link_install(void) {
     sIntentEpoch = 0u;
     sIntentPolledEpoch = 0u;
     sSingleEndpoint = false;
+    sSessionEndReason = MDKR_PARTY_LINK_SESSION_END_NONE;
     sActive = true;
     return true;
 }
@@ -46,6 +51,7 @@ void mdkr_party_link_clear(void) {
     sIntentEpoch = 0u;
     sIntentPolledEpoch = 0u;
     sSingleEndpoint = false;
+    sSessionEndReason = MDKR_PARTY_LINK_SESSION_END_NONE;
     sActive = false;
 }
 
@@ -59,6 +65,16 @@ void mdkr_party_link_note_single_endpoint(bool single) {
 
 bool mdkr_party_link_is_single_endpoint(void) {
     return sActive && sSingleEndpoint;
+}
+
+void mdkr_party_link_note_session_end(MdkrPartyLinkSessionEndReason reason) {
+    sSessionEndReason = reason;
+}
+
+MdkrPartyLinkSessionEndReason mdkr_party_link_take_session_end(void) {
+    MdkrPartyLinkSessionEndReason reason = sSessionEndReason;
+    sSessionEndReason = MDKR_PARTY_LINK_SESSION_END_NONE;
+    return reason;
 }
 
 void mdkr_party_link_publish(const MdkrPartyLinkSnapshot *snapshot) {
