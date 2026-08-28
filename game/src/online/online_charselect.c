@@ -1,4 +1,8 @@
-/* SEPARATED-BOOT-PATH (Strategy D2) native online CHARACTER/VEHICLE select.
+/* SEPARATED-BOOT-PATH (Strategy D2) native online CHARACTER select.
+ *
+ * (Vehicle choice is now its OWN dedicated native screen, online_vehicleselect.c,
+ * fronted right after this one; this screen only SEEDS a legality-safe default
+ * vehicle so the seat can READY -- see mdkr_online_charselect_enter.)
  *
  * ============================ THE D2 REUSE BOUNDARY ========================
  * This screen is the first player-facing SCREEN of the separated online flow.
@@ -70,6 +74,7 @@
 #include "PR/os_cont.h" /* A_BUTTON / B_BUTTON / *_JPAD / START_BUTTON */
 #include "net/party_link.h"
 #include "online/online_trackselect.h" /* defer self-start to TRACKSELECT */
+#include "online/online_vehicleselect.h" /* defer self-start to VEHICLESELECT */
 #include "online/online_portraits.h" /* the shared portrait/name/asset
                                         tables (DRY with results/ceremony) */
 #include "online/online_screen_util.h" /* shared local_seat / text / pulse /
@@ -660,8 +665,11 @@ void mdkr_online_charselect_enter(void) {
     /* Reuse the EXACT default vehicle menu_online_versus_race_setup() applies at
      * boot (get_player_selected_vehicle(PLAYER_ONE)); clamp to a base vehicle so
      * it is always inside the 0x07 player mask and the seat can legally READY
-     * here (the reducer refuses READY without a vehicle). Real vehicle choice is
-     * the track screen. */
+     * here (the reducer refuses READY without a vehicle). This is only the SEED /
+     * legality-safe default now: the player makes the REAL vehicle choice on the
+     * dedicated native VEHICLE select screen (online_vehicleselect.c), which the
+     * session fronts right after this one (CHARSELECT -> VEHICLESELECT ->
+     * TRACKSELECT); TRACKSELECT's auto-narrow remains the final legality clamp. */
     defaultVehicle = get_player_selected_vehicle(CS_LOCAL_PAD);
     if (defaultVehicle < 0 || (u8) defaultVehicle >= CS_PLAYER_VEHICLE_COUNT) {
         defaultVehicle = (s8) VEHICLE_CAR;
@@ -884,7 +892,8 @@ static void charselect_test_reduce_and_script(void) {
      * the TRACKSELECT seam drives the eventual host-start. The standalone
      * CHARSELECT lane (trackselect seam off) keeps its historical self-start. */
     if (sTestRoom.seats[0].ready && sTestRoom.seats[1].ready &&
-        !mdkr_online_trackselect_test_active()) {
+        !mdkr_online_trackselect_test_active() &&
+        !mdkr_online_vehicleselect_test_active()) {
         sTestStartArmed++;
         if (sTestStartArmed >= 6u) {
             sTestRoom.phase = (uint8_t) (CS_LOBBY_PHASE + 1u); /* LOADING */

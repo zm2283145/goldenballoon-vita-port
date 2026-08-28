@@ -42,7 +42,13 @@ typedef enum MdkrOnlineSessionPhase {
     MDKR_ONLINE_SESSION_TRACKSELECT,    /* native track select */
     MDKR_ONLINE_SESSION_RACE,           /* hand off to the in-game race boot */
     MDKR_ONLINE_SESSION_RESULTS,        /* results */
-    MDKR_ONLINE_SESSION_CEREMONY        /* tournament ceremony */
+    MDKR_ONLINE_SESSION_CEREMONY,       /* tournament ceremony */
+    /* Appended (NOT inserted) so no live enumerator value shifts: the native
+     * VEHICLE select screen (game/src/online/online_vehicleselect.c). The flow
+     * order is CHARSELECT -> VEHICLESELECT -> TRACKSELECT (driven by the switch +
+     * transitions in online_session.c, NOT by this enum's numeric order). Beta-only
+     * by construction (the whole header is #if MDKR_ENABLE_ONLINE_BETA). */
+    MDKR_ONLINE_SESSION_VEHICLESELECT   /* native vehicle select (car/hover/plane) */
 } MdkrOnlineSessionPhase;
 
 /* Enter the separated online boot path. Called from the (already beta-gated)
