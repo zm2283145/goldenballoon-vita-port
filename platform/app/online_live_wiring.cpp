@@ -155,7 +155,7 @@ public:
         return belt != nullptr ? belt->inner() : room_.get();
     }
 
-    /* PD-T6h2c: the RAW inner LiveAdapter. The wrapper's submit/view/service just
+    /* The RAW inner LiveAdapter. The wrapper's submit/view/service just
      * delegate to inner_ (the belt lives on room_, not on the adapter methods), but
      * mdkr_online_live_adapter_lobby / _race_info / _race_set_local_input all
      * dynamic_cast their argument to the CONCRETE LiveAdapter and so fail-closed on
@@ -432,7 +432,7 @@ void partyLinkFakeSnapshot(unsigned step, MdkrPartyLinkSnapshot *out) {
 }  // namespace
 
 void OnlineRoom_installPartyLink(void) {
-    /* Clear-then-install (F3): install() refuses when already active, which would
+    /* Clear-then-install: install() refuses when already active, which would
      * leave a stale prior snapshot live -- clearing first guarantees a fresh
      * session every time. */
     mdkr_party_link_clear();
@@ -472,8 +472,8 @@ static void partyLinkBuildLocalView(IMdkrOnlineAdapter *adapter,
     MdkrOnlineLobby lobby{};
     if (!mdkr_online_live_adapter_lobby(adapter, &lobby)) return;
     out->phase = static_cast<uint8_t>(lobby.phase);
-    /* Session-config convergence signals for the host-only dispatch kinds
-     * (PD-T3). These are lobby-wide, not per-seat. */
+    /* Session-config convergence signals for the host-only dispatch kinds.
+     * These are lobby-wide, not per-seat. */
     out->mode = lobby.mode;
     out->configured_track = lobby.configured_track;
     out->cup_id = lobby.cup_id;
@@ -574,7 +574,7 @@ void OnlineRoom_pumpPartyLinkIntent(IMdkrOnlineAdapter *adapter) {
             sent = partyLinkSubmit(adapter, MDKR_ONLINE_VIEW_ACTION_START_RACE,
                                    partyLinkStartVehicleMask(adapter)).accepted;
             break;
-        /* Host-only session config (PD-T3): the adapter helpers are themselves
+        /* Host-only session config: the adapter helpers are themselves
          * leader-gated, so a non-leader submit is a no-op (and the planner never
          * offers these to a joiner in the first place). */
         case MDKR_PARTY_LINK_DISPATCH_SET_MODE:
@@ -583,7 +583,7 @@ void OnlineRoom_pumpPartyLinkIntent(IMdkrOnlineAdapter *adapter) {
         case MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK:
             sent = mdkr_online_live_adapter_set_config_track(adapter,
                                                              action.value);
-            /* PD-T6h2a witness: a track config genuinely driven over the REVERSE
+            /* Witness: a track config genuinely driven over the REVERSE
              * feed (a native TRACKSELECT lock), value + send result. This fires
              * only when the host's on-screen lock DIVERGES from the current
              * configured_track (convergence dedupe suppresses a no-op), so the
@@ -598,7 +598,7 @@ void OnlineRoom_pumpPartyLinkIntent(IMdkrOnlineAdapter *adapter) {
             sent = mdkr_online_live_adapter_set_cup(adapter, action.value);
             break;
         case MDKR_PARTY_LINK_DISPATCH_REMATCH:
-            /* Host-only post-race "advance to next race" (PD-T6b): reuse the
+            /* Host-only post-race "advance to next race": reuse the
              * adapter's EXISTING leader+RESULTS-gated REMATCH path -- the
              * RACE_AGAIN view action maps to MDKR_ONLINE_REMATCH exactly as the
              * ImGui results button does (match_live_adapter.cpp). A non-leader or
@@ -652,11 +652,29 @@ void OnlineRoom_runTestPartyLinkFake(void) {
  * The live adapter publishes itself here the instant its race transport becomes
  * ready (LiveAdapter::setUpRace); a teardown / SAS re-verify retracts it. The
  * launcher's interactive loop polls it and boots the visible engine on the live
- * transport. Launcher-thread only (published from service() inside the panel
- * draw, polled from the same loop), so a plain pointer needs no lock.
+ * transport.
  * ======================================================================== */
 namespace {
-IMdkrOnlineAdapter *sPendingEngineRaceBoot = nullptr;
+/* A consume-once launcher-thread handoff of a single adapter pointer: publish
+ * assigns; retract compare-and-clears (a stale owner can never wipe a newer
+ * publish); poll hands the pointer out exactly once. Launcher-thread only
+ * (published from service() inside the panel draw, polled from the same loop),
+ * so a plain pointer needs no lock. Shared by the race-boot and room-ready
+ * registries. */
+struct ConsumeOnceHandoff {
+    IMdkrOnlineAdapter *pending = nullptr;
+    void publish(IMdkrOnlineAdapter *adapter) { pending = adapter; }
+    void retract(IMdkrOnlineAdapter *adapter) {
+        if (pending == adapter) pending = nullptr;
+    }
+    IMdkrOnlineAdapter *poll() {
+        IMdkrOnlineAdapter *out = pending;
+        pending = nullptr; /* consume once */
+        return out;
+    }
+};
+
+ConsumeOnceHandoff sRaceBoot;
 /* Explicit owner of the process-global engine roster. It lives HERE, in the
  * beta-only wiring TU, rather than in platform/net/net_roster_runtime.c: that
  * file is compiled into every build without the MDKR_ENABLE_ONLINE_BETA macro,
@@ -667,36 +685,33 @@ uint64_t sRosterOwnerToken = 0u;
 }  // namespace
 
 void OnlineRoom_publishEngineRaceBoot(IMdkrOnlineAdapter *adapter) {
-    sPendingEngineRaceBoot = adapter;
+    sRaceBoot.publish(adapter);
 }
 
 void OnlineRoom_retractEngineRaceBoot(IMdkrOnlineAdapter *adapter) {
-    if (sPendingEngineRaceBoot == adapter) sPendingEngineRaceBoot = nullptr;
+    sRaceBoot.retract(adapter);
 }
 
 IMdkrOnlineAdapter *OnlineRoom_pollEngineRaceBoot(void) {
-    IMdkrOnlineAdapter *pending = sPendingEngineRaceBoot;
-    sPendingEngineRaceBoot = nullptr; /* consume once: boot exactly one race */
-    return pending;
+    return sRaceBoot.poll();
 }
 
 /* ======================================================================== *
- * PD-T6h2c: engine ROOM-READY handoff registry (production native takeover)
+ * Engine ROOM-READY handoff registry (production native takeover)
  *
  * The SECOND consume-once registry (mirrors the race-boot one above), for the
  * PRE-descriptor room-ready moment. The panel/test detects a TOURNAMENT room at
  * SELECTING (2 members, LOBBY phase) and publishes the visible adapter here; the
  * interactive launcher polls it BEFORE the race-boot poll and boots the visible
- * engine DESCRIPTOR-LESS (peer == nullptr) so native owns race 1. Launcher-thread
- * only, so a plain pointer needs no lock.
+ * engine DESCRIPTOR-LESS (peer == nullptr) so native owns race 1.
  * ======================================================================== */
 namespace {
-IMdkrOnlineAdapter *sPendingEngineRoomReady = nullptr;
+ConsumeOnceHandoff sRoomReady;
 /* One-shot latch so the panel publishes room-ready exactly ONCE per adapter (the
  * SELECTING condition holds for many frames). Reset when a fresh adapter/session
  * begins. */
 bool sRoomReadyLatched = false;
-/* PD-T6e MINOR-4 (safe 2nd-tournament re-arm). The latch above is set for the WHOLE
+/* Safe 2nd-tournament re-arm. The latch above is set for the WHOLE
  * lifetime of one adapter, so after the first tournament's native session returns the
  * room-ready trigger can never re-fire -- a SECOND tournament in the SAME session (same
  * adapter) would silently fall back to the per-race ImGui path instead of the native
@@ -723,22 +738,20 @@ IMdkrOnlineAdapter *OnlineRoom_resolveRawLiveAdapter(IMdkrOnlineAdapter *adapter
 }
 
 void OnlineRoom_publishEngineRoomReady(IMdkrOnlineAdapter *adapter) {
-    sPendingEngineRoomReady = adapter;
+    sRoomReady.publish(adapter);
 }
 
 void OnlineRoom_retractEngineRoomReady(IMdkrOnlineAdapter *adapter) {
-    if (sPendingEngineRoomReady == adapter) sPendingEngineRoomReady = nullptr;
+    sRoomReady.retract(adapter);
 }
 
 IMdkrOnlineAdapter *OnlineRoom_pollEngineRoomReady(void) {
-    IMdkrOnlineAdapter *pending = sPendingEngineRoomReady;
-    sPendingEngineRoomReady = nullptr; /* consume once */
-    return pending;
+    return sRoomReady.poll();
 }
 
 void OnlineRoom_resetRoomReadyLatch(void) {
     sRoomReadyLatched = false;
-    sPendingEngineRoomReady = nullptr;
+    sRoomReady.pending = nullptr;
     /* A fresh adapter/session is a clean slate: drop any pending re-arm too so a
      * stale FINISHED from a previous adapter cannot leak in. The room-ready probe
      * (main_app.cpp) resets here and never arms, so its exactly-1-fire contract is
@@ -822,16 +835,16 @@ void OnlineRoom_observeRoomReadyRearm(IMdkrOnlineAdapter *adapter) {
 }
 
 bool OnlineRoom_roomReadyTakeoverEngaged(void) {
-    /* PD-T6e fix1 (Critical-1). True only when the native takeover can still fire
+    /* True only when the native takeover can still fire
      * this frame OR just fired and a boot is pending; false once a LEFT/ERROR return
      * has left the latch SET with nothing pending -- the intended no-re-boot-loop
      * state, in which the takeover will NEVER re-fire in this room and the ImGui
      * per-race fallback (its Ready/Start UI) is the live continuation, NOT the
      * hand-off card. The panel ANDs this into `tournamentHandoff` so the card never
      * lies: `!sRoomReadyLatched` means the SELECTING-branch poll (run BEFORE the body
-     * each frame) will fire this frame; `sPendingEngineRoomReady != nullptr` means it
+     * each frame) will fire this frame; `sRoomReady.pending != nullptr` means it
      * just fired and the launcher has not yet consumed + booted. */
-    return !sRoomReadyLatched || sPendingEngineRoomReady != nullptr;
+    return !sRoomReadyLatched || sRoomReady.pending != nullptr;
 }
 
 void OnlineRoom_setRosterOwner(uint64_t token) {
@@ -1562,7 +1575,7 @@ MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLoopbackRace(std::string *error) 
 }
 
 /* ======================================================================== *
- * PD-T6h2a: LOBBY-START loopback room (MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START)
+ * LOBBY-START loopback room (MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START)
  *
  * Stands up the SAME two real loopback adapters as OnlineRoom_makeTestLoopbackRace
  * but STOPS at SELECTING -- both endpoints in the LOBBY phase, member_count 2, NO
@@ -1633,7 +1646,7 @@ MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLobbyStartRoom(std::string *error
         set_err("confirm phrase did not reach SELECTING");
         return nullptr;
     }
-    /* PD-T6h2b TOURNAMENT compose: when MDKR_APP_TEST_ONLINE_MODE=tournament, this
+    /* TOURNAMENT compose: when MDKR_APP_TEST_ONLINE_MODE=tournament, this
      * is the demo mode -- pre-configure the room as a tournament + cup (READY-unlock)
      * exactly as OnlineRoom_makeTestLoopbackRace does, instead of the single track.
      * A tournament room offers READY DIRECTLY (no per-race track vote gate -- the cup
@@ -1776,7 +1789,7 @@ void OnlineRoom_lobbyStartServiceJoiner(IMdkrOnlineAdapter *joiner,
     if (sent) sLobbyStartJoinerLastAction = action;
 }
 
-/* PD-T6h2b WEDGE (b): the LEADER cancels loading (RETURN_TO_LOBBY -> the reducer's
+/* UNWIND WEDGE: the LEADER cancels loading (RETURN_TO_LOBBY -> the reducer's
  * leader-only MDKR_ONLINE_CANCEL_LOADING). Only applicable while the leader's lobby
  * is in the LOADING phase; the accepted cancel's LOBBY-phase snapshot walks the room
  * back to SELECTING. Returns true when a cancel was applicable + submitted. */
@@ -2100,7 +2113,7 @@ bool loopbackTournamentContinuation(MdkrOnlineTestLoopbackRace *race) {
 }  // namespace
 
 /* ======================================================================== *
- * PD-T6h1: FRAME-STEPPED per-round re-cycle for a RESIDENT LIVE session.
+ * FRAME-STEPPED per-round re-cycle for a RESIDENT LIVE session.
  *
  * Driven by the launcher overlay service the instant the native RESULTS screen's
  * host-advance REMATCH (reverse feed) has returned the room to LOBBY with
@@ -2108,23 +2121,23 @@ bool loopbackTournamentContinuation(MdkrOnlineTestLoopbackRace *race) {
  * dance, but for the IN-PROCESS resident engine (the engine will race the round,
  * not us): clear the roster runtime (the adapter re-installs at the next
  * BEGIN_LOADING), re-Ready both endpoints (selections persist across REMATCH; a
- * tournament offers no track vote -- T6h2 owns per-round NATIVE re-selection), the
+ * tournament offers no track vote -- per-round NATIVE re-selection is handled
+ * separately), the
  * leader STARTs the round with the round track's raw table mask, and both race
  * transports reach READY on a fresh epoch.
  *
- * NON-BLOCKING: unlike the T6ac original this is NOT a single sleep-until-converged
- * call. It is a resumable step machine -- each OnlineRoom_residentAdvanceStep does
- * ONE pump (service both endpoints once) + ONE state check and returns WORKING
- * (call again next frame), ADVANCED (race N+1 is race-ready), or FAILED. The
- * native RESULTS screen keeps presenting between calls; the launcher's per-frame
- * service thread is never blocked (single-threaded launcher/engine alternation --
- * party_link.h:13-20). Side-effect ORDERING is byte-for-byte the same as the old
- * blocking dance; only the driving (frame-stepped vs. sleep) changed.
+ * NON-BLOCKING: this is NOT a single sleep-until-converged call. It is a resumable
+ * step machine -- each OnlineRoom_residentAdvanceStep does ONE pump (service both
+ * endpoints once) + ONE state check and returns WORKING (call again next frame),
+ * ADVANCED (race N+1 is race-ready), or FAILED. The native RESULTS screen keeps
+ * presenting between calls; the launcher's per-frame service thread is never
+ * blocked (single-threaded launcher/engine alternation -- party_link.h:13-20).
+ * Side-effect ORDERING is fixed regardless of the frame-stepping.
  * ======================================================================== */
 namespace {
 
-/* Sub-states of ONE round advance, in the exact order the T6ac blocking dance
- * executed them. `stage` in MdkrResidentAdvanceState starts at 0 == Init. */
+/* Sub-states of ONE round advance, in execution order. `stage` in
+ * MdkrResidentAdvanceState starts at 0 == Init. */
 enum ResidentAdvanceStage {
     kResidentAdvanceInit = 0,
     kResidentAdvanceWaitSelecting,
@@ -2148,15 +2161,15 @@ enum ResidentAdvanceStage {
  * cold re-handshake or a loaded CI host even at high headless frame rates (a few
  * seconds of wall clock) -- while staying ~5% of the autoplay tick budget (18000),
  * so a genuine wedge is caught with a clear diagnostic long before the process
- * would appear hung. (T6h2 must revisit this when it fronts residency
- * interactively over a real WAN, where convergence is far slower.) */
+ * would appear hung. (A future interactive-over-WAN residency must revisit this:
+ * convergence there is far slower.) */
 const unsigned kResidentAdvanceFrameBudget = 900u;
 
 }  // namespace
 
 MdkrResidentAdvanceStatus OnlineRoom_residentAdvanceStep(
     MdkrResidentAdvanceState *st) {
-    /* PD-T6h2c: peer may be NULL for a SINGLE-ENDPOINT (real 2-process) advance;
+    /* peer may be NULL for a SINGLE-ENDPOINT (real 2-process) advance;
      * the two-endpoint loopback path still requires it. */
     const bool single = (st != nullptr) && st->singleEndpoint;
     if (st == nullptr || st->visible == nullptr ||
@@ -2390,19 +2403,19 @@ void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race) {
      * default env this is a plain delete, exactly as before. */
     if (race != nullptr) {
         const char *mode = std::getenv("MDKR_APP_TEST_ONLINE_MODE");
-        /* PD-T6ac: the RESIDENT LIVE lane already drove every round IN-PROCESS
+        /* The RESIDENT LIVE lane already drove every round IN-PROCESS
          * (OnlineRoom_residentAdvanceStep per round, in the engine boot), so do
          * NOT also run the post-exit transport-level continuation here -- that is
          * only for the non-resident tournament gate.
-         * M1: parse with strtoul>0 so RESIDENT=0 means OFF, matching runAutoplay's
-         * gate (main_app.cpp) and the PD-T5 M-4 "=0 means OFF" rule -- otherwise a
+         * Parse with strtoul>0 so RESIDENT=0 means OFF, matching runAutoplay's
+         * gate (main_app.cpp) -- otherwise a
          * `RESIDENT=0` non-resident tournament run would wrongly skip the
          * continuation and lose its rounds-2..4 witnesses. */
         const char *residentEnv =
             std::getenv("MDKR_APP_TEST_ONLINE_LIVE_RESIDENT");
         const bool resident =
             residentEnv != nullptr && std::strtoul(residentEnv, nullptr, 10) > 0u;
-        /* PD-T6h2b: the LOBBY-START tournament lane ALSO drove every round in-process
+        /* The LOBBY-START tournament lane ALSO drove every round in-process
          * (the lobby-start coordinator fronts race 1, then hands off to the resident
          * coordinator for rounds 2..N -- exactly like the resident lane), so it must
          * NOT also run the post-exit transport-level continuation. Only the
