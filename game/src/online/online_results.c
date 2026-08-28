@@ -54,11 +54,11 @@
 #include "PR/os_cont.h" /* A_BUTTON / START_BUTTON */
 #include "net/party_link.h"
 #include "net/online_race_results.h"
-#include "online/online_standings.h" /* PD-T6f: the ONE seat-ranking sort, shared
+#include "online/online_standings.h" /* the ONE seat-ranking sort, shared
                                         DRY with online_ceremony.c so the champion
                                         the CEREMONY crowns is byte-for-byte the
                                         seat this screen ranks #1. */
-#include "online/online_portraits.h" /* screens I-3: the ONE portrait/name/asset-id
+#include "online/online_portraits.h" /* the ONE portrait/name/asset-id
                                         set, shared DRY across the three screens. */
 #include "online/online_screen_util.h" /* shared local_seat / text / pulse /
                                           seat_name / seconds_left / draw_portrait */
@@ -89,8 +89,8 @@ extern char *gRacePlacementsArray[8];
 #define RES_PHASE_RESULTS 4u      /* MDKR_ONLINE_RESULTS (party_link phase byte;
                                    * LOBBY=1 LOADING=2 RACING=3 RESULTS=4) -- the
                                    * joiner's authoritative ADVANCE is this phase
-                                   * leaving RESULTS (R-D convergence model). */
-#define RES_INPUT_GRACE 30u       /* F3: manual-advance lockout at each stage entry
+                                   * leaving RESULTS (the convergence model). */
+#define RES_INPUT_GRACE 30u       /* manual-advance lockout at each stage entry
                                    * (~0.5s), so a host still mashing at the finish
                                    * line cannot skip the results on frame one. */
 
@@ -99,12 +99,12 @@ extern char *gRacePlacementsArray[8];
 #define RES_STAGE_RESULTS 0u
 #define RES_STAGE_STANDINGS 1u
 
-/* Visible countdowns (R7): results 15s, standings 10s. updateRate accumulates in
+/* Visible countdowns: results 15s, standings 10s. updateRate accumulates in
  * 60ths of a second, so seconds*60. */
 #define RES_RESULTS_UNITS 900u   /* 15s */
 #define RES_STANDINGS_UNITS 600u /* 10s */
 
-/* Exit-gate C1: the FINAL-standings JOINER terminal self-advance backstop. The
+/* the FINAL-standings JOINER terminal self-advance backstop. The
  * HOST holds interactively on "A: FINISH", but a non-host joiner's forward feed
  * PARKS in RESULTS after the host finishes (the reducer never leaves RESULTS on a
  * final race -- no REMATCH, no CLOSE), so the joiner's old "wait for the phase to
@@ -121,15 +121,15 @@ extern char *gRacePlacementsArray[8];
 #define RES_SFX_TICK SOUND_MENU_PICK2
 
 /* Trophy weights {9,7,5,3,1,0,0,0} == gTrophyRacePointsArray (menu.c) /
- * kTrophyPoints (lobby_core.c). Two honest uses (M-2): (1) the headless stand-in
+ * kTrophyPoints (lobby_core.c). Two honest uses: (1) the headless stand-in
  * reducer test seam ACCRUES with them, and (2) the STANDINGS stage derives this
  * race's "+delta" purely for DISPLAY from snap.last_placements[]. The running
  * TOTAL is always read straight from snap.points[] -- the reducer's authority; the
- * screen never accumulates into or mutates the trophy/points state (R-E permits
- * the read-only weight mirror). */
+ * screen never accumulates into or mutates the trophy/points state (a
+ * read-only weight mirror). */
 static const u16 sTrophyPoints[8] = {9u, 7u, 5u, 3u, 1u, 0u, 0u, 0u};
 
-/* Online id -> portrait / name / asset-id tables: screens I-3 DRY lift into the
+/* Online id -> portrait / name / asset-id tables: the DRY lift into the
  * shared online_portraits.h (byte-identical across charselect/results/ceremony;
  * sOnlineToPortrait[], sOnlineNames[], sPortraitAssetIds[] now live there). */
 
@@ -140,7 +140,7 @@ typedef struct MdkrOnlineResultsState {
     u8 raceIndex;     /* 0-based cup round, for the "RACE n/4" copy */
     u8 assets;        /* portrait group + fonts loaded */
     u8 host;          /* local seat is the room leader (advance authority) */
-    u8 leave;         /* B: back-out request (edge; PD-T6 return) */
+    u8 leave;         /* B: back-out request (edge; the LEFT return) */
     u8 haveResults;   /* THIS race's placements were read from the reducer feed */
     u8 advanced;      /* an ADVANCE was already returned for this stage (edge) */
     u8 advanceCommitted; /* T6ac: host committed the rematch advance -- republish
@@ -167,11 +167,11 @@ static void results_test_capture(void);
 static void results_test_pump(void);
 static void results_test_reduce(void);
 static u8 results_host_press_active(void);
-static u8 results_joiner_finish_seam(void);          /* PD-T6d test seam */
+static u8 results_joiner_finish_seam(void);          /* test seam */
 static u8 results_joiner_finish_departed(u32 stageTicks);
-static u8 results_joiner_terminal_seam(void);        /* exit-gate C1 no-seam proof */
-static u8 results_remote_vacate_final_probe(void);   /* final-review P2 probe */
-static u8 results_resident_remote_wins(void);        /* I-1 champion-on-disconnect */
+static u8 results_joiner_terminal_seam(void);        /* no-seam proof */
+static u8 results_remote_vacate_final_probe(void);   /* probe */
+static u8 results_resident_remote_wins(void);        /* champion-on-disconnect */
 
 /* ======================================================================== *
  * Small helpers
@@ -198,10 +198,10 @@ static void results_host_name(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
  * ======================================================================== */
 
 /* The "this screen is over, what does a button do now" footer, shared by the
- * single-race RESULTS terminal (F4, "RACE COMPLETE") and the tournament STANDINGS
- * terminal (F6, "CUP COMPLETE"): a pulsed label + an explicit host affordance
+ * single-race RESULTS terminal ("RACE COMPLETE") and the tournament STANDINGS
+ * terminal ("CUP COMPLETE"): a pulsed label + an explicit host affordance
  * ("A: FINISH", wired to the LEAVE return) / the joiner's own self-advance
- * countdown to the champion celebration (exit-gate C1). No dead button. */
+ * countdown to the champion celebration. No dead button. */
 static void results_render_complete(const MdkrPartyLinkSnapshot *snap,
                                     bool haveSnap, const char *label) {
     s32 tri = mdkr_online_screen_pulse(sRes.pulseTicks);
@@ -214,11 +214,11 @@ static void results_render_complete(const MdkrPartyLinkSnapshot *snap,
         mdkr_online_screen_text(RES_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, "A: FINISH",
                      ALIGN_MIDDLE_CENTER, 255, 255, 255);
     } else {
-        /* Exit-gate C1: the JOINER self-advances off this terminal (its feed parks
+        /* the JOINER self-advances off this terminal (its feed parks
          * in RESULTS, so it must not wait on the host). Show its own visible
          * countdown to the champion celebration -- never the old "WAITING FOR
          * HOST..." (misleading now, and the host may already be gone). Final-review
-         * M3: advertise BOTH honored buttons -- A OR B advances immediately to the
+         * advertise BOTH honored buttons -- A OR B advances immediately to the
          * celebration (the joiner terminal honors in.bEdge too, online_results.c
          * joinerPress), so surface the navigation input rather than leaving B silent. */
         u32 secs = mdkr_online_screen_seconds_left(sRes.stageTicks,RES_JOINER_TERMINAL_UNITS);
@@ -243,7 +243,7 @@ static void results_render_countdown(const MdkrPartyLinkSnapshot *snap,
     mdkr_online_screen_text(RES_SCREEN_W_HALF, 208, ASSET_FONTS_SMALLFONT, line,
                  ALIGN_MIDDLE_CENTER, 200, 200, 255);
     if (sRes.host) {
-        /* Screens I-2: advertise the (previously silent) non-final back-out. B on a
+        /* Advertise the non-final back-out. B on a
          * non-final results/standings is a mid-tournament LEAVE-to-room, so surface
          * it beside the host's advance affordance. */
         char hv[40];
@@ -317,7 +317,7 @@ static void results_render_results(const MdkrPartyLinkSnapshot *snap,
              * portrait never overprints the label or the name. The place label
              * is FUNFONT: BIGFONT has NO digit glyphs (its '0'..'9' textureIDs are
              * 0xFF), so "1ST" would render "ST" -- the offline results screen
-             * draws these exact strings in FUNFONT for the same reason (F1). Row
+             * draws these exact strings in FUNFONT for the same reason. Row
              * text sits at the portrait's optical centre (rowY+12). */
             mdkr_online_screen_text(52, rowY + 12, ASSET_FONTS_FUNFONT, placeLabel,
                          ALIGN_MIDDLE_RIGHT, nr, ng, nb);
@@ -332,7 +332,7 @@ static void results_render_results(const MdkrPartyLinkSnapshot *snap,
         }
     }
 
-    /* Footer: a single race's FINAL result is a terminal hold (F4 -- no
+    /* Footer: a single race's FINAL result is a terminal hold (no
      * countdown, no dead button); otherwise a live countdown to the next step. */
     if (sRes.isFinal && !tournament) {
         results_render_complete(snap, haveSnap, "RACE COMPLETE");
@@ -359,7 +359,7 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
     mdkr_online_screen_text(RES_SCREEN_W_HALF, 18, ASSET_FONTS_BIGFONT,
                  sRes.isFinal ? "FINAL STANDINGS" : "STANDINGS",
                  ALIGN_MIDDLE_CENTER, 255, 224, 96);
-    /* M-6: never show "RACE n/N" alongside the FINAL banner (the cup is over). */
+    /* never show "RACE n/N" alongside the FINAL banner (the cup is over). */
     if (haveSnap && !sRes.isFinal) {
         (void) snprintf(line, sizeof(line), "RACE %u/%u",
                         (unsigned) (snap->race_index + 1u), RES_CUP_ROUNDS);
@@ -370,7 +370,7 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
     /* Collect the occupied seats + their (reducer-accrued) points from the
      * snapshot, then selection-sort by points descending, tie-broken on THIS
      * race's finish (lower last_placement wins) so equal totals are not
-     * host-biased by seat order. PD-T6f: the collect+sort is the shared
+     * host-biased by seat order. The collect+sort is the shared
      * mdkr_online_standings_compute() helper (byte-identical to the loop that
      * lived here) so the CEREMONY's champion always agrees with this #1. */
     {
@@ -391,7 +391,7 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
         char name[32];
         s32 nr, ng, nb;
         /* This race's +delta, DISPLAY-only, from last_placement's trophy weight
-         * (M-2: the running total below is read straight from snap.points[]). */
+         * (the running total below is read straight from snap.points[]). */
         u16 delta = (lastpl[i] < 8u) ? sTrophyPoints[lastpl[i]] : 0u;
 
         if (haveSnap && snap->seats[slot].character_id < RES_CHAR_COUNT) {
@@ -406,7 +406,7 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
 
         /* Row: rank | portrait | name (left) | points (FUNFONT, right) | delta.
          * The rank is FUNFONT: BIGFONT has no digit glyphs, so "%u." would render
-         * a bare "." (F2). Row text at the portrait's optical centre (rowY+12). */
+         * a bare ".". Row text at the portrait's optical centre (rowY+12). */
         (void) snprintf(line, sizeof(line), "%u.", i + 1u);
         mdkr_online_screen_text(44, rowY + 12, ASSET_FONTS_FUNFONT, line,
                      ALIGN_MIDDLE_RIGHT, nr, ng, nb);
@@ -429,7 +429,7 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
         rowY += 40;
     }
 
-    /* Footer: the FINAL standings is a terminal hold (F6 -- pulsed CUP COMPLETE +
+    /* Footer: the FINAL standings is a terminal hold (pulsed CUP COMPLETE +
      * host A:FINISH / joiner waiting); otherwise a live countdown to the next
      * race. */
     if (sRes.isFinal) {
@@ -449,7 +449,7 @@ static void results_witness(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
     u8 mode = haveSnap ? snap->mode : RES_MODE_SINGLE;
     u16 p0 = haveSnap ? snap->points[0] : 0u;
     u16 p1 = haveSnap ? snap->points[1] : 0u;
-    /* M-5: placements are 8-bit (0xFF == absent), but they only get 4 bits each
+    /* placements are 8-bit (0xFF == absent), but they only get 4 bits each
      * in the key -- mask to a nibble (0xFF -> 0xF) so an absent seat cannot smear
      * the higher secs/mode/points fields and silently weaken the countdown
      * change-detect. */
@@ -495,9 +495,9 @@ void mdkr_online_results_enter(u8 isFinalRace, u8 raceIndex) {
     }
     sWitnessKey = 0xFFFFFFFFu;
 
-    /* PD-T6ac POLL-CONTENTION RESOLUTION. This screen NO LONGER consumes the
-     * one-shot engine results poll -- that single owner is the LAUNCHER pump,
-     * which polls mid-residency and PUBLISH_RESULTS to the reducer. THIS race's
+    /* POLL CONTENTION. This screen must NOT consume the one-shot engine results
+     * poll -- that single owner is the LAUNCHER pump, which polls mid-residency
+     * and PUBLISH_RESULTS to the reducer. THIS race's
      * finishing order is read from the forward-feed snapshot's last_placements[]
      * (which the reducer records at PUBLISH_RESULTS), exactly as the cup points
      * are already read from snapshot.points[]. In the headless soak the launcher
@@ -552,7 +552,7 @@ void mdkr_online_results_exit(void) {
 }
 
 /* Read the local pad: HOST advance (A/START) is immediate (host authority); a
- * JOINER press is a no-op (watch-only, R-D). B is a back-out edge (PD-T6). */
+ * JOINER press is a no-op (watch-only). B is a back-out edge. */
 typedef struct ResInput {
     u8 advanceEdge;
     u8 bEdge;
@@ -566,10 +566,10 @@ static void results_input_live(ResInput *in) {
 }
 
 /* Scripted headless input (only under the test seam): the HOST presses ADVANCE
- * right after the F3 entry lockout on the RESULTS stage, proving host-press
+ * right after the entry lockout on the RESULTS stage, proving host-press
  * advance. The STANDINGS stage is deliberately left un-pressed so BOTH the
  * host-advance (RESULTS) and the countdown-to-zero auto-advance (STANDINGS) paths
- * are exercised in one soak; the final STANDINGS then holds (F6). */
+ * are exercised in one soak; the final STANDINGS then holds. */
 static void results_input_scripted(ResInput *in) {
     memset(in, 0, sizeof(*in));
     if (sRes.stageTicks < RES_INPUT_GRACE) {
@@ -585,7 +585,7 @@ static void results_input_scripted(ResInput *in) {
         if (sRes.isFinal && results_remote_vacate_final_probe()) {
             return;
         }
-        /* PD-T6ac live-resident lane: also press the STANDINGS stage so the host
+        /* live-resident lane: also press the STANDINGS stage so the host
          * advance (-> REMATCH) fires promptly rather than after the full ~10s
          * countdown, keeping the headless resident lane fast. The scripted soak
          * (host_press_both false) deliberately leaves STANDINGS on the auto path. */
@@ -604,12 +604,12 @@ static void results_gather_input(ResInput *in) {
     }
 }
 
-/* PD-T6b/T6ac: the HOST publishes its post-race REMATCH intent on the reverse
+/* The HOST publishes its post-race REMATCH intent on the reverse
  * feed to "start the next race". The launcher pump polls it and drives the
  * reducer's leader-only MDKR_ONLINE_REMATCH (return to LOBBY + tournament
  * race_index++).
  *
- * CONVERGENCE MODEL (carried T6b Important finding): once the host commits the
+ * CONVERGENCE MODEL: once the host commits the
  * advance off a NON-final tournament STANDINGS, this is republished EVERY tick
  * (silently) until the snapshot phase leaves RESULTS -- a one-shot EDGE could be
  * dropped by a missed/failed/overwritten reverse-feed pump and permanently wedge
@@ -647,12 +647,13 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
 
     haveSnap = mdkr_party_link_read(&snap);
     localSeat = haveSnap ? mdkr_online_screen_local_seat(&snap) : -1;
-    /* M-1 / F5: a feed-less endpoint (no snapshot at all -- legacy direct boot)
-     * owns the progression; but when a feed IS present, be a JOINER unless the
-     * resolved local seat is the host. The old "no local seat -> assume host"
-     * fallback wrongly granted advance authority to a feed-having endpoint that
-     * could not resolve its seat, which would split a live room. The resident
-     * soak's local seat IS host, so it still drives via the host path below. */
+    /* A feed-less endpoint (no snapshot at all -- legacy direct boot) owns the
+     * progression; but when a feed IS present, be a JOINER unless the resolved
+     * local seat is the host. A "no local seat -> assume host" fallback would
+     * wrongly grant advance authority to a feed-having endpoint that could not
+     * resolve its seat, splitting a live room -- so a feed-having endpoint that
+     * cannot resolve its seat is a joiner. The resident soak's local seat IS
+     * host, so it still drives via the host path below. */
     if (!haveSnap) {
         sRes.host = 1u;
     } else {
@@ -662,12 +663,12 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
     limit = (sRes.stage == RES_STAGE_RESULTS) ? RES_RESULTS_UNITS
                                               : RES_STANDINGS_UNITS;
     /* The terminal screen holds (no ADVANCE): the final race's last shown stage
-     * -- tournament STANDINGS (F6), or a single race's RESULTS (F4). */
+     * -- tournament STANDINGS, or a single race's RESULTS. */
     terminal = sRes.isFinal && (sRes.stage == RES_STAGE_STANDINGS ||
                                 (sRes.stage == RES_STAGE_RESULTS && !tournament));
 
     results_gather_input(&in);
-    /* M-2: latch a B-back LEAVE only on a NON-terminal screen, where the consumer
+    /* latch a B-back LEAVE only on a NON-terminal screen, where the consumer
      * at the bottom (`if (sRes.leave)`) is actually reached. On the terminal FINAL
      * standings the host branch returns STAY before that consumer and the joiner
      * branch honors in.bEdge directly (joinerPress), so an unconditional write
@@ -699,8 +700,8 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
     }
     sRes.prevSecs = (u8) (secs > 255u ? 255u : secs);
 
-    /* Advance authority (R7 / R-D):
-     *  - HOST: a manual A/START edge (after the F3 entry lockout) OR the countdown
+    /* Advance authority:
+     *  - HOST: a manual A/START edge (after the entry lockout) OR the countdown
      *    reaching zero -- host is the room authority.
      *  - JOINER: never returns the room-affecting ADVANCE on its own countdown;
      *    it FOLLOWS the authoritative snapshot phase leaving RESULTS. */
@@ -709,7 +710,7 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
 
     if (terminal) {
         /* HOST: the interactive hold. "A: FINISH" -> LEAVE, which the session maps
-         * to FINISHED via resultsIsFinal (PD-T6d handshake -> CEREMONY -> FINISHED).
+         * to FINISHED via resultsIsFinal (the handshake -> CEREMONY -> FINISHED).
          * The host is NEVER auto-bounded here (its hold is legitimate + interactive
          * -- do NOT give the host a countdown). The test seam suppresses this so the
          * JOINER path below can be exercised on a rig where the visible endpoint
@@ -719,7 +720,7 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
             fprintf(stderr, "[online-results] finish: host A -> LEAVE\n");
             return MDKR_ONLINE_RESULTS_LEAVE;
         }
-        /* JOINER (exit-gate C1): a bound INDEPENDENT of the host. The joiner's feed
+        /* JOINER: a bound INDEPENDENT of the host. The joiner's feed
          * PARKS in RESULTS after the host finishes (the phase never leaves RESULTS),
          * so the old "wait for the phase to depart RESULTS" exit could never fire in
          * real play -- the joiner hung forever. It now LEAVEs on ANY of:
@@ -774,7 +775,7 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
             return MDKR_ONLINE_RESULTS_STAY;
         }
     } else if (sRes.host && tournament && sRes.stage == RES_STAGE_STANDINGS) {
-        /* PD-T6ac CONVERGENCE-DRIVEN host advance off a NON-final tournament
+        /* CONVERGENCE-DRIVEN host advance off a NON-final tournament
          * STANDINGS ("start the next race" -> REMATCH). On the host's commit edge
          * (press/auto) latch committed + LOG the rematch once; then republish the
          * rematch intent EVERY tick until the snapshot phase leaves RESULTS, and
@@ -841,7 +842,7 @@ static MdkrPartyLinkSnapshot sTestRoom;
 static u16 sTestPoints[RES_SLOTS];   /* running cup totals (persist across races) */
 static u8 sTestLastPlacements[RES_SLOTS]; /* THIS race's finish order (the poll) */
 static u8 sTestSeatChar[RES_SLOTS] = {0u, 5u, 0xFFu, 0xFFu}; /* Diddy / Bumper */
-/* PD-T6b: the stand-in reducer's own cup round counter -- advanced ONLY when it
+/* the stand-in reducer's own cup round counter -- advanced ONLY when it
  * observes the REMATCH reverse-feed intent (results_test_reduce), NEVER off the
  * session's boot count, so the soak proves the results screen drives the next
  * race via rematch (not the old start signal). It is what the scripted forward
@@ -850,14 +851,14 @@ static u8 sTestRaceIndex;
 
 static void results_test_resolve(void) {
     if (sTestActive < 0) {
-        /* M-4: uniform truthiness with online_session.c / main_app.cpp -- the flag
+        /* uniform truthiness with online_session.c / main_app.cpp -- the flag
          * is the RACE COUNT, so "=0" means OFF (a half-armed seam proves nothing). */
         const char *e = getenv("MDKR_TEST_ONLINE_RESIDENT");
         sTestActive = (e != NULL && strtoul(e, NULL, 10) > 0ul) ? 1 : 0;
     }
 }
 
-/* PD-T6ac stand-in LAUNCHER (headless soak only): the single owner of the
+/* stand-in LAUNCHER (headless soak only): the single owner of the
  * one-shot engine results poll (mirroring the live launcher pump), called from
  * _enter BEFORE the screen reads the snapshot. It polls THIS race's captured
  * finishing order, accrues the trophy points into the running cup total, and
@@ -881,7 +882,7 @@ static void results_test_capture(void) {
             sTestLastPlacements[i] = polled[i];
         }
     }
-    /* I-1 test seam (env MDKR_TEST_ONLINE_RESIDENT_REMOTE_WINS): make the REMOTE
+    /* test seam (env MDKR_TEST_ONLINE_RESIDENT_REMOTE_WINS): make the REMOTE
      * seat (slot 1) win the cup so the LOCAL seat (slot 0) is the LOSER -- the
      * configuration the ceremony-champion-on-disconnect scenario needs (the true
      * winner is the seat that then departs). Force slot 1 first, slot 0 second, so
@@ -894,7 +895,7 @@ static void results_test_capture(void) {
     memset(&sTestRoom, 0, sizeof(sTestRoom));
     sTestRoom.mode = (uint8_t) RES_MODE_TOURNAMENT;
     sTestRoom.phase = (uint8_t) RES_PHASE_RESULTS; /* MDKR_ONLINE_RESULTS */
-    /* PD-T6b: the round is what the stand-in reducer has advanced via observed
+    /* the round is what the stand-in reducer has advanced via observed
      * REMATCH intents (results_test_reduce), not the session boot count. */
     sTestRoom.race_index = sTestRaceIndex;
     sTestRoom.configured_track = 0xFFFFu;
@@ -943,7 +944,7 @@ static void results_test_pump(void) {
     mdkr_party_link_publish(&sTestRoom);
 }
 
-/* PD-T6b/T6ac stand-in reducer: polls the RESULTS screen's republished REMATCH
+/* Stand-in reducer: polls the RESULTS screen's republished REMATCH
  * intent and, on rematch_requested, advances the scripted room's cup round AND
  * leaves the RESULTS phase (-> LOBBY) -- exactly what the launcher reducer's
  * leader-only, RESULTS-gated MDKR_ONLINE_REMATCH does. The phase gate makes the
@@ -970,7 +971,7 @@ static void results_test_reduce(void) {
     }
 }
 
-/* PD-T6ac live-resident host-press seam (env MDKR_TEST_ONLINE_RESULTS_HOST_PRESS):
+/* live-resident host-press seam (env MDKR_TEST_ONLINE_RESULTS_HOST_PRESS):
  * make the RESULTS screen advance via a scripted HOST press (both stages) instead
  * of the ~25s auto countdown, so the LIVE-loopback resident lane runs fast and
  * proves the host-advance -> REMATCH path explicitly. This does NOT enable the
@@ -985,7 +986,7 @@ static u8 results_host_press_active(void) {
     return (u8) (sHostPressActive > 0 ? 1 : 0);
 }
 
-/* PD-T6d IMPORTANT-1 proof seam (env MDKR_TEST_ONLINE_RESULTS_JOINER_FINISH): at
+/* IMPORTANT-1 proof seam (env MDKR_TEST_ONLINE_RESULTS_JOINER_FINISH): at
  * the FINAL standings only, act as a JOINER whose host has departed RESULTS so the
  * non-host terminal-follow return is exercised end-to-end (engine FINISHED note +
  * launcher reason=FINISHED). It suppresses the host "A: FINISH" at the terminal and
@@ -1006,13 +1007,13 @@ static u8 results_joiner_finish_departed(u32 stageTicks) {
                      ? 1 : 0);
 }
 
-/* Exit-gate C1 NO-SEAM proof seam (env MDKR_TEST_ONLINE_RESULTS_JOINER_TERMINAL):
+/* NO-SEAM proof seam (env MDKR_TEST_ONLINE_RESULTS_JOINER_TERMINAL):
  * at the FINAL standings ONLY, route the terminal into the JOINER branch (suppress
  * the host "A: FINISH"), WITHOUT forcing results_joiner_finish_departed -- so the
  * forward feed genuinely stays in RESULTS (the loopback reducer parks there on the
  * final race, no REMATCH/CLOSE) and the joiner leaves via the REAL production
  * paths only: the self-advance DWELL, or an honored A/B press. This is the seam
- * that proves the C1 fix without the old MDKR_TEST_ONLINE_RESULTS_JOINER_FINISH
+ * that proves the fix without the masking MDKR_TEST_ONLINE_RESULTS_JOINER_FINISH
  * departure that MASKED the bug. It only flips the terminal ROLE (the visible
  * loopback endpoint is the host, so a real 2-process joiner cannot be cheaply
  * staged); the self-advance/press DECISION, the FINISHED mapping via CEREMONY and
@@ -1043,10 +1044,10 @@ static u8 results_remote_vacate_final_probe(void) {
     return (u8) (sRemoteVacateFinalProbe > 0 ? 1 : 0);
 }
 
-/* I-1 champion-on-disconnect seam (env MDKR_TEST_ONLINE_RESIDENT_REMOTE_WINS):
+/* champion-on-disconnect seam (env MDKR_TEST_ONLINE_RESIDENT_REMOTE_WINS):
  * flip the resident soak's final-race placements so the REMOTE seat wins the cup
  * and the LOCAL seat is the loser (results_test_capture). Paired with the
- * ceremony's remote-absent seam, this stages the exact production defect I-1
+ * ceremony's remote-absent seam, this stages the exact production defect it
  * guards: a losing local endpoint whose winning remote departs at ceremony enter.
  * Inert unless the env is set. */
 static s8 sResidentRemoteWins = -1;

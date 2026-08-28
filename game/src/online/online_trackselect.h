@@ -4,7 +4,7 @@
 /* SEPARATED-BOOT-PATH (Strategy D2) native online HOST TRACK / CUP select.
  *
  * This is the SECOND player-facing screen of the separated online flow, inserted
- * between the native CHARSELECT (online_charselect.{c,h}, PD-T2) and the race. It
+ * between the native CHARSELECT (online_charselect.{c,h}) and the race. It
  * is driven by the online session (game/src/online/online_session.c) as its
  * MDKR_ONLINE_SESSION_TRACKSELECT phase, NOT by the offline menu state machine:
  * it deliberately does NOT call menu.c's track-select _loop. See the file header
@@ -55,8 +55,8 @@ u8 mdkr_online_trackselect_test_active(void);
 
 /* Resolve a tournament cup's scheduled round track id from the screen's
  * authoritative sTrackIds mirror (cup-major, round order -- the same table the
- * lane already asserts equals the reducer's kCupTracks). PD-T4 uses this so the
- * online session can resolve the host-intended tournament track WITHOUT pulling a
+ * lane already asserts equals the reducer's kCupTracks). The online session uses
+ * this to resolve the host-intended tournament track WITHOUT pulling a
  * launcher/platform online header (the no-launcher-header discipline). Returns 0
  * for an out-of-range cup/round. */
 u16 mdkr_online_trackselect_cup_track(unsigned cup, unsigned round);

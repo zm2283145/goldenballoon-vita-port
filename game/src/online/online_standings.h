@@ -4,8 +4,8 @@
 /* SEPARATED-BOOT-PATH (Strategy D2) shared final-standings ordering.
  *
  * The ONE selection-sort both the native online RESULTS/STANDINGS screen
- * (online_results.c) and the native online champion CEREMONY (online_ceremony.c,
- * PD-T6f) run to rank the room's occupied seats by cup points. Lifting it here
+ * (online_results.c) and the native online champion CEREMONY (online_ceremony.c)
+ * run to rank the room's occupied seats by cup points. Keeping it here
  * DRY guarantees the two screens can NEVER disagree about who is in the lead: the
  * ceremony's champion (order[0]) is byte-for-byte the same seat the STANDINGS
  * screen just crowned #1. It is a pure function of the party_link forward-feed
@@ -16,8 +16,7 @@
  * The ENTIRE header is #if MDKR_ENABLE_ONLINE_BETA so a normal (beta OFF) build
  * sees nothing here, and it is only ever included by the beta-gated online TUs
  * (game/src/online/ is NOT auto-globbed). The sort is a static inline (each TU
- * gets its own copy -- no linkage change, no new object), and it is the EXACT
- * algorithm online_results.c ran inline before T6f: collect occupied seats in
+ * gets its own copy -- no linkage change, no new object): collect occupied seats in
  * seat order, then selection-sort by points DESCENDING, tie-broken on this race's
  * finish (lower last_placement wins) so equal totals are not host-biased by seat
  * order.

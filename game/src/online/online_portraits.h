@@ -9,13 +9,12 @@
  *   - sOnlineNames[]       online char id -> canonical short display name
  *   - sPortraitAssetIds[]  the portrait-ONLY texture group (KRUNCH..TIMBER, -1)
  *
- * Before this header each screen carried its OWN copy, each commented "the single
- * truth" -- a drift hazard where a future character re-order or portrait-asset
- * change applied to only two of the three files would silently draw the WRONG FACE
- * on one screen, with no compile-time or headless catch (each screen's witness
- * only asserts its own copy). Lifting them here DRY guarantees the three screens
- * can NEVER disagree about which face/name maps to a given online id (screens I-3,
- * the obvious sibling of the online_standings.h lift).
+ * Keeping them here (rather than a per-screen copy) is a drift guard: a future
+ * character re-order or portrait-asset change applied to only some of the screens
+ * would silently draw the WRONG FACE on one, with no compile-time or headless
+ * catch (each screen's witness only asserts its own copy). One source guarantees
+ * the three screens can NEVER disagree about which face/name maps to a given
+ * online id -- the obvious sibling of the online_standings.h lift.
  *
  * The ENTIRE header is #if MDKR_ENABLE_ONLINE_BETA so a normal (beta OFF) build
  * sees nothing here, and it is only ever included by the beta-gated online TUs

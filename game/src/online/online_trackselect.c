@@ -24,7 +24,7 @@
  *   - level_name(id)             (game.c) the REAL, language-aware track names --
  *                                engine truth, so the list can never drift.
  *   - leveltable_vehicle_usable(id) (game.c) the REAL per-track vehicle mask --
- *                                engine truth for the R-A auto-narrow, zero drift.
+ *                                engine truth for the auto-narrow, zero drift.
  *   - draw_text / set_text_*     (font.h) the real DKR font.
  *   - texrect_draw / bgdraw_*    (rcp_dkr.h) the game's own 2D blit.
  *   - sound_play + SOUND_*       (audio.h / sound_ids.h) the real menu SFX.
@@ -37,7 +37,7 @@
  * + the host's config + the host_cursor) is read from platform/net/party_link;
  * the JOINER renders that snapshot, not local state.
  *
- * ISOLATION (R-D): this engine TU pulls NO launcher/platform headers -- only the
+ * ISOLATION: this engine TU pulls NO launcher/platform headers -- only the
  * decomp game headers and net/party_link.h, exactly like CHARSELECT. Track NAMES
  * come from level_name(); vehicle MASKS from leveltable_vehicle_usable(). The 20
  * selectable track ids are mirrored locally (sTrackIds[]); the headless lane
@@ -87,7 +87,7 @@
  * declared in online_screen_util.h, shared with the other native screens. */
 extern void *gMenuAssets[128];
 
-/* ---- Local mirrors of the launcher lobby's id space (R-D: no launcher headers) */
+/* ---- Local mirrors of the launcher lobby's id space (no launcher headers) */
 #define TS_CHAR_COUNT 10u            /* MDKR_ONLINE_CHARACTER_COUNT */
 #define TS_NO_CHARACTER 0xFFu        /* MDKR_ONLINE_NO_CHARACTER */
 #define TS_NO_VEHICLE 0xFFu          /* MDKR_ONLINE_NO_VEHICLE */
@@ -127,15 +127,15 @@ extern void *gMenuAssets[128];
 #define TS_SFX_START SOUND_SELECT3
 #define TS_SFX_BACK SOUND_MENU_BACK3
 #define TS_SFX_REJECT SOUND_ELECTRIC_BUZZ
-#define TS_SFX_MODE SOUND_MENU_PICK2 /* P2: distinct from the lock sound */
+#define TS_SFX_MODE SOUND_MENU_PICK2 /* distinct from the lock sound */
 
-#define TS_LOCK_FLASH_TICKS 15u /* P8: short flash; START works during it */
+#define TS_LOCK_FLASH_TICKS 15u /* short flash; START works during it */
 #define TS_VEH_FLASH_TICKS 20u  /* auto-narrow "vehicle changed" highlight */
 
 /* The 20 selectable track ids, cup-major then round order -- MIRRORS kCupTracks
  * in platform/online/lobby_core.c (the reducer's authoritative accepted set) and
  * online_track_table.c. Column c == cup c (world display order); row r == round r;
- * track index == c*4 + r. R-D: the headless lane asserts this equals the reducer
+ * track index == c*4 + r. The headless lane asserts this equals the reducer
  * set (test_online_lobby_core.c pins the same literal against known_race_track),
  * and the test seam refuses a config_track NOT in this table. (Every id is <= 33,
  * so it fits the u8 dispatch value the reverse feed carries.) */
@@ -162,7 +162,7 @@ static const s16 sCupBgTop[TS_COLS] = {
 };
 
 /* Short, plain world labels (display chrome only -- NOT the drift-sensitive track
- * set, so a static label is allowed by R-C; track names themselves come from
+ * set, so a static label is fine; track names themselves come from
  * level_name()). The full cup name goes to the status line. */
 static const char *const sWorldLabels[TS_COLS] = {
     "DINO", "SNOW", "SHERBET", "DRAGON", "FUTURE",
@@ -172,7 +172,7 @@ static const char *const sCupNames[TS_COLS] = {
     "FUTURE FUN CUP",
 };
 
-/* Vehicle names for the always-on VEHICLE line (F-D7). */
+/* Vehicle names for the always-on VEHICLE line. */
 static const char *const sVehicleNames[TS_PLAYER_VEHICLE_COUNT] = {
     "CAR", "HOVERCRAFT", "PLANE",
 };
@@ -208,7 +208,7 @@ typedef struct MdkrOnlineTrackselectState {
 
 static MdkrOnlineTrackselectState sTs;
 
-/* P1: persists ACROSS entries (NOT reset by _enter's memset) so a tournament
+/* persists ACROSS entries (NOT reset by _enter's memset) so a tournament
  * group's next race restarts on the mode + selection they last locked. */
 static u8 sLastMode = TS_MODE_SINGLE;
 static u8 sLastLockedTrack = TS_NONE; /* track INDEX 0..19 */
@@ -275,7 +275,7 @@ static u8 trackselect_index_of(u16 trackId) {
 }
 
 /* The usable-vehicle mask for a track at this player count: engine truth from
- * leveltable_vehicle_usable(), then the retail 2-player narrowing (R-A). */
+ * leveltable_vehicle_usable(), then the retail 2-player narrowing. */
 static u8 trackselect_track_mask(u8 trackId, unsigned occupied) {
     u8 mask = (u8) leveltable_vehicle_usable((s32) trackId);
     if (mask == 0u) {
@@ -292,12 +292,12 @@ static u8 trackselect_track_mask(u8 trackId, unsigned occupied) {
     return mask;
 }
 
-/* The track the vehicle auto-narrow resolves against. F-D5: once the HOST has
+/* The track the vehicle auto-narrow resolves against. Once the HOST has
  * LOCKED a selection, resolve against the LOCKED track (single) / the locked
  * cup's round-0 track (tournament), NOT the hovered one -- otherwise browsing a
  * no-hovercraft track after locking hovercraft-only Whale Bay would re-narrow to
  * an illegal-for-the-locked-track vehicle and silently wedge START. A joiner
- * (F-I2) resolves against the host's locked track/cup from the snapshot (which is
+ * resolves against the host's locked track/cup from the snapshot (which is
  * unset in tournament until the host locks -- so key off snap.cup_id too). Returns
  * TS_NONE when there is nothing to narrow against yet (keep the seed vehicle). */
 static u8 trackselect_resolve_narrow_track(const MdkrPartyLinkSnapshot *snap,
@@ -321,7 +321,7 @@ static u8 trackselect_resolve_narrow_track(const MdkrPartyLinkSnapshot *snap,
     }
     if (snap->mode == TS_MODE_TOURNAMENT) {
         if (snap->cup_id < TS_COLS) {
-            return sTrackIds[(snap->cup_id * TS_ROWS) + 0u]; /* F-I2 */
+            return sTrackIds[(snap->cup_id * TS_ROWS) + 0u];
         }
         return TS_NONE;
     }
@@ -332,7 +332,7 @@ static u8 trackselect_resolve_narrow_track(const MdkrPartyLinkSnapshot *snap,
     return TS_NONE;
 }
 
-/* R-A: keep the local seat's vehicle inside a track's mask (lowest legal bit when
+/* keep the local seat's vehicle inside a track's mask (lowest legal bit when
  * the current one is illegal). Flags a change so the VEHICLE line can flash. */
 static void trackselect_autonarrow_vehicle(u8 trackId, unsigned occupied) {
     u8 mask;
@@ -356,7 +356,7 @@ static void trackselect_autonarrow_vehicle(u8 trackId, unsigned occupied) {
 }
 
 /* Resolve the first occupied non-local (remote) seat into a bounded view.
- * NOTE fenced 2-endpoint beta: first remote seat only (M6). */
+ * NOTE fenced 2-endpoint beta: first remote seat only. */
 static void trackselect_resolve_remote(const MdkrPartyLinkSnapshot *snap,
                                        bool haveSnap, s32 localSeat,
                                        TsRemoteView *out) {
@@ -396,7 +396,7 @@ typedef struct TsInput {
  *   0 SINGLE_HOST (default) -- host locks a single track; also the B-back lane.
  *   1 JOINER          -- local seat is a JOINER; the seam scripts a remote HOST
  *                        locking a tournament cup, to prove the joiner renders the
- *                        room (F-D3) and narrows to the cup's round-0 track (F-I2). */
+ *                        room and narrows to the cup's round-0 track. */
 #define TS_SCN_SINGLE_HOST 0
 #define TS_SCN_JOINER 1
 static s8 sTsScenario = -1;
@@ -406,8 +406,8 @@ static s8 sTsScenario = -1;
  * suppressed), so nothing is scripted here -- the seam drives the remote host. In
  * the SINGLE_HOST scenario: entry 1 proves the B->CHARSELECT back path (no wedge);
  * later entries walk to Whale Bay (cup2/round0, track 8, hovercraft-only 0x2) so
- * the R-A auto-narrow moves off Car, LOCK it, then browse AWAY to Spaceport Alpha
- * (cup4/round3, track 15 -- 2P narrowing drops its hovercraft) to prove F-D5 (the
+ * the auto-narrow moves off Car, LOCK it, then browse AWAY to Spaceport Alpha
+ * (cup4/round3, track 15 -- 2P narrowing drops its hovercraft) to prove (the
  * publishable vehicle stays legal for the LOCKED track, not the hovered one), then
  * Start. */
 static u8 sTsEntryCount; /* incremented each _enter (test), persists across a run */
@@ -433,7 +433,7 @@ static void trackselect_input_scripted(TsInput *in) {
     case 6u:
         in->aEdge = 1u; /* lock track 8 -> SET_CONFIG_TRACK(8) (clears ready) */
         break;
-    /* F-D5: browse AWAY from the locked track to Spaceport Alpha (col4,row3). Its
+    /* browse AWAY from the locked track to Spaceport Alpha (col4,row3). Its
      * 2P mask drops hovercraft, so the OLD (hovered-track) narrow would flip the
      * seat to Car -- illegal for the LOCKED Whale Bay -- wedging Start. The fix
      * narrows against the LOCKED track, so the vehicle must stay hovercraft. */
@@ -500,7 +500,7 @@ static void trackselect_input_live(TsInput *in) {
     in->modeEdge = (pressed & Z_TRIG) ? 1u : 0u;
 }
 
-/* PD-T6h2a: minimal scripted input for the headless LOBBY-START lane (env
+/* minimal scripted input for the headless LOBBY-START lane (env
  * MDKR_TEST_ONLINE_LOBBY_START). Unlike the co-designed SINGLE_HOST scenario
  * (which walks specific tracks against the self-contained reducer), this drives a
  * REAL launcher adapter, so it stays trivial + convergence-robust: browse ONE row
@@ -521,7 +521,7 @@ static u8 trackselect_lobby_input_active(void) {
     return (u8) (sTsLobbyStartInput > 0 ? 1 : 0);
 }
 
-/* PD-T6h2b: the lobby-start TOURNAMENT lane (the demo mode). When set, the native
+/* the lobby-start TOURNAMENT lane (the demo mode). When set, the native
  * TRACKSELECT ENTERS in TOURNAMENT mode focused on the room's pre-configured cup
  * (read from the forward feed), so it publishes mode=TOURNAMENT + that cup from the
  * FIRST frame -- a converged no-op with the room, never a stray SET_MODE(SINGLE)
@@ -565,7 +565,7 @@ static void trackselect_gather_input(TsInput *in) {
     }
 }
 
-/* Track/cup/mode/start are HOST-ONLY (R-C: the joiner watches). B backs out for
+/* Track/cup/mode/start are HOST-ONLY (the joiner watches). B backs out for
  * everyone. */
 static void trackselect_apply_input(const TsInput *in) {
     if (in->bEdge) {
@@ -581,11 +581,11 @@ static void trackselect_apply_input(const TsInput *in) {
         sTs.mode = (sTs.mode == TS_MODE_SINGLE) ? TS_MODE_TOURNAMENT
                                                 : TS_MODE_SINGLE;
         sTs.lockedTrack = TS_NONE; /* the reducer clears ready too; republish
-                                    * reconverges (R-B) */
+                                    * reconverges */
         sTs.lockedCup = TS_NONE;
         sTs.startReq = 0u;
         sTs.cursorRow = 0u;
-        sound_play(TS_SFX_MODE, NULL); /* P2: distinct from the lock sound */
+        sound_play(TS_SFX_MODE, NULL); /* distinct from the lock sound */
         return;
     }
 
@@ -614,10 +614,10 @@ static void trackselect_apply_input(const TsInput *in) {
     if (in->aEdge) {
         if (sTs.mode == TS_MODE_SINGLE) {
             sTs.lockedTrack = (u8) ((sTs.cursorCol * TS_ROWS) + sTs.cursorRow);
-            sLastLockedTrack = sTs.lockedTrack; /* P1 persistence */
+            sLastLockedTrack = sTs.lockedTrack; /* persistence */
         } else {
             sTs.lockedCup = sTs.cursorCol;
-            sLastLockedCup = sTs.lockedCup; /* P1 persistence */
+            sLastLockedCup = sTs.lockedCup; /* persistence */
         }
         sLastMode = sTs.mode;
         sTs.startReq = 0u; /* a fresh lock re-arms Start */
@@ -636,8 +636,8 @@ static void trackselect_apply_input(const TsInput *in) {
     }
 }
 
-/* Publish the FULL local intent every frame (R-B: continuous republish so the
- * reducer's ready-clear on any config change reconverges within a pump). C1: the
+/* Publish the FULL local intent every frame (continuous republish so the
+ * reducer's ready-clear on any config change reconverges within a pump). The
  * intent starts from the shared init helper so the host-only config fields carry
  * their UNSET sentinels unless THIS (host) screen sets them. */
 static void trackselect_publish_intent(u8 localSeatChar) {
@@ -686,7 +686,7 @@ static void trackselect_draw_banner(u8 col, u8 dim) {
 static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                                s32 localSeat, const TsRemoteView *rv) {
     /* Everything on this screen is driven by the AUTHORITATIVE snapshot for a
-     * joiner (F-D3): the mode, the focused world, the locked cell and the status
+     * joiner: the mode, the focused world, the locked cell and the status
      * all come from the room, and the local cursor is SUPPRESSED (a pulsing
      * cursor that ignores input reads as hung). The host renders its own live
      * selection. */
@@ -789,11 +789,11 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
         }
         if (locked) {
             nr = 120; ng = 255; nb = 120;
-            /* F-D8: text redundancy, not colour alone. */
+            /* text redundancy, not colour alone. */
             (void) snprintf(label, sizeof(label), "*%s*", name);
         } else if (onCursor) {
             nr = 255; ng = 190 + tri * 4; nb = 60 + tri * 3;
-            (void) snprintf(label, sizeof(label), ">%s<", name); /* F7 */
+            (void) snprintf(label, sizeof(label), ">%s<", name);
         } else {
             if (effMode == TS_MODE_TOURNAMENT) {
                 nr = ng = nb = 150; /* dim read-only preview */
@@ -804,7 +804,7 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                          ALIGN_MIDDLE_CENTER, nr, ng, nb);
     }
 
-    /* F-D7: the always-on VEHICLE line (the screen visibly knows the track's
+    /* the always-on VEHICLE line (the screen visibly knows the track's
      * legal vehicles), with a brief highlight when the auto-narrow changes it. */
     {
         bool flash = sTs.ticks < sTs.vehFlashEnd;
@@ -818,7 +818,7 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     }
 
     /* Status line: names the pick + reflects the START / host-choosing state so a
-     * deferred/refused start is never a dead screen (F-D6/F-D8/F-D3). */
+     * deferred/refused start is never a dead screen. */
     {
         char pickName[24];
         const char *pick = "";
@@ -884,7 +884,7 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
         }
     }
 
-    /* F-D4: always-visible seat presence/ready pair (charselect family). Hold the
+    /* always-visible seat presence/ready pair (charselect family). Hold the
      * displayed READY through the lock-flash window so the reducer's 1-2-frame
      * ready-clear does not flicker CHOOSING. */
     {
@@ -909,7 +909,7 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
         }
     }
 
-    /* F-D10: context-sensitive help in the charselect verb family. */
+    /* context-sensitive help in the charselect verb family. */
     if (!host) {
         mdkr_online_screen_text(TS_SCREEN_W_HALF, TS_HELP_Y, ASSET_FONTS_SMALLFONT,
                          "B: BACK", ALIGN_MIDDLE_CENTER, 255, 255, 255);
@@ -943,7 +943,7 @@ static void trackselect_witness(const MdkrPartyLinkSnapshot *snap, bool haveSnap
         snapPhase = snap->phase;
     }
 
-    /* M3: fold mode/cursor/vehicle/ready/phase/resolvedTrack AND the snapshot's
+    /* fold mode/cursor/vehicle/ready/phase/resolvedTrack AND the snapshot's
      * configured_track + cup_id + the locked selection into the change key so the
      * joiner + tournament assertions get their rows. */
     key = ((u32) sTs.mode) | ((u32) sTs.cursorCol << 1) |
@@ -975,7 +975,7 @@ static void trackselect_witness(const MdkrPartyLinkSnapshot *snap, bool haveSnap
 }
 
 /* Emit the offered track-id list ONCE so the lane can assert it equals the
- * reducer-accepted set (R-D). */
+ * reducer-accepted set. */
 static void trackselect_witness_tracks(void) {
     char buf[128];
     int off = 0;
@@ -1002,7 +1002,7 @@ void mdkr_online_trackselect_enter(void) {
     u8 c;
 
     memset(&sTs, 0, sizeof(sTs));
-    /* P1: restore the last locked mode + cursor position (not the lock itself --
+    /* restore the last locked mode + cursor position (not the lock itself --
      * the host re-confirms, exactly as charselect re-confirms its cursor seed). */
     sTs.mode = sLastMode;
     sTs.lockedTrack = TS_NONE;
@@ -1014,7 +1014,7 @@ void mdkr_online_trackselect_enter(void) {
         sTs.cursorCol = sLastLockedCup;
     }
 
-    /* PD-T6h2b: the lobby-start TOURNAMENT lane enters in TOURNAMENT mode focused on
+    /* the lobby-start TOURNAMENT lane enters in TOURNAMENT mode focused on
      * the room's PRE-CONFIGURED cup (from the forward feed), so the very first
      * published intent carries mode=TOURNAMENT + that cup -- converged with the room,
      * never a stray SET_MODE(SINGLE) that would flip the pre-configured tournament.
@@ -1051,7 +1051,7 @@ void mdkr_online_trackselect_enter(void) {
     load_font(ASSET_FONTS_SMALLFONT);
 
     sTs.assets = 1u;
-    bgdraw_fillcolour(16, 24, 48); /* P3: match charselect's backdrop family */
+    bgdraw_fillcolour(16, 24, 48); /* match charselect's backdrop family */
 
     if (mdkr_online_trackselect_test_active()) {
         sTsEntryCount++;
@@ -1102,14 +1102,14 @@ MdkrOnlineTrackselectResult mdkr_online_trackselect_tick(s32 updateRate) {
         sTs.host = snap.seats[localSeat].is_host ? 1u : 0u;
         localSeatChar = snap.seats[localSeat].character_id;
     } else {
-        /* M4: no resolvable local seat -> assume host so a real run still lets the
+        /* no resolvable local seat -> assume host so a real run still lets the
          * leader drive the screen. This is UI-only: the launcher-side dispatch is
          * separately gated on the local seat's is_host in the lobby view, so a
          * mislabelled joiner can never actually send a host-config command. */
         sTs.host = 1u;
     }
 
-    /* R-A / F-D5 / F-I2: narrow the local vehicle against the LOCKED track (host)
+    /* narrow the local vehicle against the LOCKED track (host)
      * or the host's locked track/cup from the snapshot (joiner) -- never the
      * merely-hovered track once something is locked. */
     narrowTrack = trackselect_resolve_narrow_track(&snap, haveSnap);
@@ -1168,11 +1168,11 @@ MdkrOnlineTrackselectResult mdkr_online_trackselect_tick(s32 updateRate) {
  * config change), re-assert the scripted joiner's ready, reconverge the host's
  * ready, and flip to LOADING on the host's start.
  *
- * F-I3: it REFUSES a config_track that is not in sTrackIds (mirrors the reducer's
+ * it REFUSES a config_track that is not in sTrackIds (mirrors the reducer's
  * known_race_track), so a drifted screen id can never converge and the lane's
  * convergence assertion catches the drift.
  *
- * M5: the CHARSELECT seam re-initialises ITS own room on a back-out re-entry, so
+ * the CHARSELECT seam re-initialises ITS own room on a back-out re-entry, so
  * the snapshot this seam adopts on the next TRACKSELECT entry is the freshly
  * reconverged room -- there is no stale trackselect config carried across a
  * back-out (sTsAdopted resets in _enter -> trackselect_test_reset).
@@ -1241,7 +1241,7 @@ void mdkr_online_trackselect_test_lobby_pump(void) {
     }
 }
 
-/* F-I3: does the offered screen accept this config_track? (mirrors the reducer's
+/* does the offered screen accept this config_track? (mirrors the reducer's
  * known_race_track over sTrackIds). */
 static u8 trackselect_test_known_track(u16 trackId) {
     return (u8) (trackselect_index_of(trackId) != TS_NONE ? 1u : 0u);
@@ -1278,8 +1278,8 @@ static void trackselect_test_reduce_and_script(void) {
 
     /* JOINER scenario: the seam plays the REMOTE HOST -- it locks a tournament cup
      * (Sherbet, cup 2; round 0 == Whale Bay, hovercraft-only) so the joiner must
-     * render the room (F-D3) and narrow its own vehicle to the cup's round-0 track
-     * (F-I2), then it starts. The local joiner publishes only its char/vehicle/
+     * render the room and narrow its own vehicle to the cup's round-0 track
+     *, then it starts. The local joiner publishes only its char/vehicle/
      * ready (no config), which we converge below. */
     if (sTsScenario == TS_SCN_JOINER) {
         u8 configChangedJ = 0u;
@@ -1329,7 +1329,7 @@ static void trackselect_test_reduce_and_script(void) {
         }
         /* Host session config -- change-detected exactly like the plan dedupe;
          * each accepted change clears EVERY member's ready (lobby_core.c:756-757).
-         * A config_track outside sTrackIds is REFUSED (F-I3), never converged. */
+         * A config_track outside sTrackIds is REFUSED, never converged. */
         if (intent.mode != MDKR_PARTY_LINK_MODE_UNSET &&
             sTsRoom.mode != intent.mode) {
             sTsRoom.mode = intent.mode;
@@ -1384,7 +1384,7 @@ u8 mdkr_online_trackselect_test_active(void) {
     return (u8) (sTsTestActive > 0 ? 1 : 0);
 }
 
-/* PD-T4: cup round -> track id from the authoritative sTrackIds mirror (track
+/* cup round -> track id from the authoritative sTrackIds mirror (track
  * index == cup*TS_ROWS + round). Kept here (not duplicated in online_session.c)
  * so there is a single engine-side copy of the accepted set. */
 u16 mdkr_online_trackselect_cup_track(unsigned cup, unsigned round) {

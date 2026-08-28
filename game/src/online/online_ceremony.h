@@ -18,9 +18,9 @@
  * (host and joiner alike), with NO cross-endpoint / snapshot convergence gate, so
  * it is impossible to hang the session on. A host press may SKIP the hold early;
  * a joiner never blocks anyone. If a remote seat VACATES mid-ceremony it ends
- * promptly. The RESULTS terminal already took the one human "A: FINISH" confirm
- * (PD-T6d), so the ceremony adds NO second required gate (which would reopen the
- * joiner-parks-forever class T6d Important-1 fixed).
+ * promptly. The RESULTS terminal already took the one human "A: FINISH" confirm,
+ * so the ceremony adds NO second required gate (which would reopen the
+ * joiner-parks-forever hang class).
  *
  * The ENTIRE header is #if MDKR_ENABLE_ONLINE_BETA so a normal (beta OFF) build
  * sees nothing here, and the TU is compiled into the engine ONLY under the beta

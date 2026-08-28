@@ -33,7 +33,7 @@
  * convergence gate, so it is impossible to hang the session on. A host press may
  * SKIP the hold early; a joiner never blocks anyone; a mid-ceremony remote vacate
  * ends it promptly. It adds NO second required "press A" (the RESULTS terminal
- * already took the one human FINISH confirm, PD-T6d).
+ * already took the one human FINISH confirm).
  *
  * The ENTIRE TU is #if MDKR_ENABLE_ONLINE_BETA and it is added to the build only
  * inside the beta CMake gate (game/src/online/ is not globbed), so a normal (beta
@@ -59,7 +59,7 @@
 #include "PR/os_cont.h" /* A_BUTTON / START_BUTTON */
 #include "net/party_link.h"
 #include "online/online_standings.h" /* the shared champion sort (DRY with results) */
-#include "online/online_portraits.h" /* screens I-3: the shared portrait/name/asset
+#include "online/online_portraits.h" /* the shared portrait/name/asset
                                         tables (DRY with charselect/results) */
 #include "online/online_screen_util.h" /* shared local_seat / text / pulse /
                                           seat_name / seconds_left / draw_portrait */
@@ -97,7 +97,7 @@
 #define CER_SFX_CELEBRATE SOUND_CROWD   /* a crowd cheer for the champion (on enter) */
 #define CER_SFX_ADVANCE SOUND_SELECT3   /* the skip/advance blip */
 
-/* Online id -> portrait / name / asset-id tables: screens I-3 DRY lift into the
+/* Online id -> portrait / name / asset-id tables: the DRY lift into the
  * shared online_portraits.h (byte-identical across charselect/results/ceremony;
  * sOnlineToPortrait[], sOnlineNames[], sPortraitAssetIds[] now live there). */
 
@@ -402,7 +402,7 @@ MdkrOnlineCeremonyResult mdkr_online_ceremony_tick(s32 updateRate) {
         (!ceremony_has_remote_seat(&snap) || ceremony_vacate_forced())) {
         /* ONE debounce gate for BOTH the genuine (remote seat gone from the feed)
          * and the forced-test path: the test seam overrides ONLY the "remote is
-         * gone" predicate (mirroring the T6d pre-START vacate seam,
+         * gone" predicate (mirroring the pre-START vacate seam,
          * online_session_remote_vacate_forced), so the SAME
          * vacateTicks >= CER_VACATE_DEBOUNCE branch the shipped code takes is what
          * the vacate lane exercises -- not a substitute gate. */
@@ -487,7 +487,7 @@ static u8 ceremony_vacate_forced(void) {
  * ceremony enter. Unlike the VACATE seam (which only forces the mid-ceremony
  * detector's "remote gone" predicate), this makes the seat ACTUALLY absent, so it
  * proves the champion is taken from the CAPTURED final ranking rather than a
- * degraded live recompute (I-1). Off in every normal run. */
+ * degraded live recompute. Off in every normal run. */
 static s8 sRemoteAbsentForced = -1;
 static u8 ceremony_remote_absent_forced(void) {
     if (sRemoteAbsentForced < 0) {

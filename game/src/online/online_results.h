@@ -32,7 +32,7 @@ extern "C" {
 typedef enum MdkrOnlineResultsResult {
     MDKR_ONLINE_RESULTS_STAY = 0, /* keep showing the screen */
     MDKR_ONLINE_RESULTS_ADVANCE,  /* countdown fired / host advanced: move on */
-    MDKR_ONLINE_RESULTS_LEAVE     /* local player backed out (PD-T6 return) */
+    MDKR_ONLINE_RESULTS_LEAVE     /* local player backed out (the LEFT return) */
 } MdkrOnlineResultsResult;
 
 /* Load the screen's borrowed game assets (portraits + fonts) and reset the local
