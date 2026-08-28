@@ -5671,6 +5671,39 @@ directory contributes no violations. `--self-test` feeds every rule a synthetic
 in-memory violation (never touching the repo on disk) and asserts the rule
 fires while a matching clean control stays silent.
 
+### Adventure Party admission — `tests/check_adventure_party_admission.py`
+
+```bash
+python3 tests/check_adventure_party_admission.py            # ~2-3 min, muted + headless
+python3 tests/check_adventure_party_admission.py -v
+```
+
+The AP-06 focused route: the FIRST game-source integration of Adventure Party
+(`docs/architecture/adventure-party.md`). It drives two, three, and four
+controllers through Character Select with `Enhancements.AdventureParty` on and
+proves each reaches the ordinary Adventure route the retail game denies them —
+`CHARACTER_SELECT(3) -> GAME_SELECT(19) -> Adventure -> FILE_SELECT(6) ->`
+campaign load — and that a session is formed at file entry (`aparty_session`
+FORMING then ACTIVE_LOBBY with the joined seat/character roster). Reaching Game
+Select with three or four seats *is* the party path: retail stops a 3/4-player
+Adventure selection at `TRACK_SELECT(15)` because the JOINTVENTURE offset admits
+at most two, so the run also asserts no JOINTVENTURE magic code was submitted.
+With the enhancement off, three/four players route to Tracks exactly as stock and
+no `aparty_` line appears; one player is unchanged in both arms and never forms a
+party.
+
+Two positive controls run inside the gate and mutate the route/env, never the
+sources: the OFF-arm 3-player run (the behaviour a clamped-to-two admission would
+produce) must FAIL the ON-arm assertions, and an ON-arm run with its
+`aparty_session` lines stripped must FAIL them too.
+
+Save fixture: the check writes its own EEPROM image — a started, checksum-valid
+Adventure One save in slot 0, built with the `harness_utils` bit-stream encoders
+(the same slot shape `check_adventure_two.py` resumes on its Adventure One arm,
+minus its progress) — so the host's single FILE_SELECT confirm resumes an
+existing file. The new-game shared-scene envelope is AP-11, out of scope here. No
+developer save is read or written; every run uses a private temporary directory.
+
 ### Harness isolation — `tests/check_harness_isolation.py`
 
 ```bash

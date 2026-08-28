@@ -764,6 +764,11 @@ CHECKS = (
           "Taj identity, presentation, shield anchoring, and dash evidence over "
           "all forty-seven legal track/vehicle pairs",
           ("--taj", "--frames", "5200")),
+    Check("adventure_party_admission", "check_adventure_party_admission.py",
+          "native",
+          "AP-06 Adventure Party menu admission: 2/3/4 players reach the ordinary "
+          "Adventure route and form a session with the enhancement on; 1P and the "
+          "off arm are stock; retail 2P globals never engaged"),
     Check("adventure_hub", "check_adventure_hub.py", "native",
           "Adventure hub traversal"),
     Check("adventure_two", "check_adventure_two.py", "native",

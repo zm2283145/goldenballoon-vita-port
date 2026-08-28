@@ -1,0 +1,28 @@
+# Adventure Party control — ONE local player from the title.
+#
+# The single-player Adventure route is unchanged by AP-06: confirmOffset==1 >= 1
+# already admits one player to GAME_SELECT (via the CAUTION(28) screen on a fresh
+# process), and the admission adapter only adds a route for 2-4 seats, so one
+# player never forms a party even with Enhancements.AdventureParty on. This
+# fixture proves that: it reaches GAME_SELECT/FILE_SELECT exactly as stock and no
+# aparty_ session is created.
+#
+# Save fixture: see tests/check_adventure_party_admission.py (started Adventure
+# One save in slot 0).
+
+# --- Title: reveal Start/Options, then Character Select ---
+1250 START 4
+1330 START 4
+
+# --- PLAYER SELECT: confirm a character, then accept ---
+1450 A 4 P1
+1560 A 4 P1
+
+# --- CAUTION(28) acknowledgement (one-player route only) ---
+1750 A 4 P1
+
+# --- GAME_SELECT: Adventure One is option 0 -> FILE_SELECT ---
+1950 A 4 P1
+
+# --- FILE_SELECT: resume the started slot 0 ---
+2200 A 4 P1

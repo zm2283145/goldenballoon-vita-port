@@ -52,16 +52,29 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import resolve_binary, save_env
+from check_adventure_party_admission import eeprom_image
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BUILD = ROOT / "build" / "mdkr64"
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
+
+# The adventure_party_3p proof route: three controllers join in Character Select
+# and select Adventure. With the enhancement on they are admitted to the ordinary
+# Adventure route and reach the central hub (levelId 0); with it off, three
+# players route to Tracks — the retail JOINTVENTURE offset admits at most two.
+ADMISSION_SCRIPT = ROOT / "tests" / "input_scripts" / "adventure_party_3p_admit.txt"
+ADMISSION_FRAMES = 3200
+HUB_LEVEL_ID = 0
+# A generous floor on the identical pre-admission prefix: title, logos, and the
+# whole join/confirm phase run byte-identically before the enhancement admits.
+ADMISSION_PRE_MIN_TICKS = 1000
 
 # 3500, not 900, and the reason is the same defect found twice.
 #
@@ -164,6 +177,47 @@ def run(binary: Path, rom: Path, work: Path, label: str,
     return rows
 
 
+SIMHASH_RE = re.compile(r"\[SIMHASH\] tick=(\d+) objs=(\d+) h=([0-9a-f]+)")
+LEVEL_RE = re.compile(r"level_load: levelId=(-?\d+) numPlayers=(-?\d+).*@frame~(\d+)")
+
+
+def run_admission_route(binary: Path, rom: Path, work: Path, label: str,
+                        enabled: bool, verbose: bool):
+    """Drive the 3-controller Adventure admission route; return its [SIMHASH]
+    hash stream and the level loads it produced. Uses the same started Adventure
+    One save fixture the admission gate builds."""
+    run_dir = work / label
+    save_dir = run_dir / "save"
+    save_dir.mkdir(parents=True)
+    (save_dir / "eeprom.bin").write_bytes(eeprom_image())
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("MDKR", "GE007_"))}
+    env.update(LC_ALL="C", MDKR_AUDIO="0", MDKR_STATE_HASH=HASH_VERSION,
+               MDKR_TRACE="1", MDKR_RENDERER="gl")
+    save_env(env, str(save_dir))
+    command = [
+        str(binary), "--headless-frames", str(ADMISSION_FRAMES),
+        "--input-script", str(ADMISSION_SCRIPT), "--rom", str(rom),
+        "--window-size", "640x480",
+        "--video-set", f"Enhancements.AdventureParty={1 if enabled else 0}",
+    ]
+    if verbose:
+        print(f"$ ({label}) {' '.join(command)}", flush=True)
+    proc = subprocess.run(command, cwd=run_dir, env=env, text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          timeout=600, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{label}: exit {proc.returncode}\n"
+                           f"{(proc.stdout or '')[-3000:]}")
+    out = proc.stdout or ""
+    sims = [m.group(3) for m in SIMHASH_RE.finditer(out)]
+    loads = [(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+             for m in LEVEL_RE.finditer(out)]
+    if not sims:
+        raise RuntimeError(f"{label}: no [SIMHASH] rows; the instrument did not arm")
+    return sims, loads
+
+
 def dump_table(binary: Path, rom: Path, work: Path,
                verbose: bool) -> list[dict[str, str]]:
     run_dir = work / "table"
@@ -246,39 +300,88 @@ def main() -> int:
                 continue
 
             if profile == PROFILE_ADVENTURE_PARTY_3P:
-                # The full proof this profile ultimately needs runs an actual
-                # 2-4 player Adventure admission/race route and compares the
-                # off, on, and compiled-out arms. That route does not exist
-                # yet — it lands with the menu-admission task — so it is the
-                # NOT-YET-IMPLEMENTED part of this profile.
+                # AP-06: the 3-player ADMISSION route. Three controllers join in
+                # Character Select and select Adventure; with the enhancement on
+                # they are admitted to the ordinary Adventure route and reach the
+                # central hub (levelId 0), and with it off three players route to
+                # Tracks (the retail JOINTVENTURE offset admits at most two). The
+                # gate flips the row across off and on and compares the [SIMHASH]
+                # streams. (The compiled-out arm is the separate
+                # MDKR_ADVENTURE_PARTY_OMIT build, verified in AP-06's off-arm
+                # evidence; it behaves as the off arm here.)
                 #
-                # What IS provable today, and is this row's authority evidence,
-                # is the OFF-arm compatibility invariant: flipping a dormant
-                # party-admission policy on the SOLO time-trial fixture must be
-                # a no-op. So the existing flip machinery still runs the row on
-                # the solo fixture and asserts the [SIMHASH] stream is
-                # UNCHANGED. A 3p row that instead MOVED the solo stream would
-                # be leaking into solo play, and — with no route yet to prove
-                # that intentional — is failed here.
-                base = run(binary, rom, work, f"{key}-default", [],
-                           args.verbose)
-                alt = run(binary, rom, work, f"{key}-probe",
-                          [f"{key}={probe}"], args.verbose)
-                if base == alt:
-                    print(f"  {key:32s} {authority:12s} inert on the solo "
-                          f"fixture (off-arm compatibility proven); full 2-4 "
-                          f"player route proof NOT YET IMPLEMENTED — lands "
-                          f"with the menu-admission task")
+                # What this asserts for THIS task (AP-06):
+                #   1. Nothing before admission moves: the off and on streams are
+                #      byte-identical for a long common prefix (title, logos, the
+                #      whole join/confirm phase).
+                #   2. The measured gameplay effect is the admission itself: on
+                #      reaches the Adventure hub (levelId 0) while off does not,
+                #      so the streams then diverge — which is exactly the gameplay
+                #      authority the row declares.
+                #   3. The party hub is NOT the roster-expanded hub yet: it loads
+                #      as one racer (numPlayers 0, i.e. gNumberOfActivePlayers
+                #      collapsed to 1 exactly as retail), so today's on-arm hub is
+                #      still 1P — the party is native-side bookkeeping only.
+                #
+                # NOTE (2026-08-28): the brief framed this as "on-arm hub sim
+                # IDENTICAL to off-arm"; that is not assertable today because a
+                # 3-controller OFF selection routes to Tracks, not the hub, and a
+                # party-hub-vs-1P-baseline SIMHASH identity does not hold either
+                # (the multi-pad Character Select perturbs pre-hub RNG state that
+                # carries into the hub even though the hub correctly renders one
+                # racer — same object count). So this asserts the honest, provable
+                # facts above instead. TODO(AP-08): when roster expansion lands,
+                # the party hub will load with numPlayers N-1 and gain the party's
+                # racers; assertion 3 flips (expect the party count) and an in-hub
+                # racer/roster assertion is added here. TODO(AP-12): extend the
+                # route past the hub into a full 3P race.
+                off_sim, off_loads = run_admission_route(
+                    binary, rom, work, f"{key}-off", False, args.verbose)
+                on_sim, on_loads = run_admission_route(
+                    binary, rom, work, f"{key}-on", True, args.verbose)
+
+                on_hub = [ld for ld in on_loads if ld[0] == HUB_LEVEL_ID]
+                off_hub = [ld for ld in off_loads if ld[0] == HUB_LEVEL_ID]
+                common = 0
+                for a, b in zip(off_sim, on_sim):
+                    if a != b:
+                        break
+                    common += 1
+
+                problems: list[str] = []
+                if not on_hub:
+                    problems.append("the enhanced arm never reached the Adventure "
+                                    f"hub (levelId {HUB_LEVEL_ID}); the party was "
+                                    "not admitted")
+                if off_hub:
+                    problems.append("the off arm reached the Adventure hub with "
+                                    "the enhancement off — three players must "
+                                    "route to Tracks on the retail path")
+                if on_sim == off_sim:
+                    problems.append("the on and off SIMHASH streams are identical; "
+                                    "a gameplay-class admission must move the "
+                                    "authoritative stream")
+                if common < ADMISSION_PRE_MIN_TICKS:
+                    problems.append(
+                        f"on/off SIMHASH diverged after only {common} ticks "
+                        f"(< {ADMISSION_PRE_MIN_TICKS}); the enhancement perturbed "
+                        f"the frontend before admission")
+                if on_hub and on_hub[0][1] != 0:
+                    problems.append(
+                        f"the party hub loaded with numPlayers={on_hub[0][1]}, "
+                        f"expected 0 (rendered as 1P for AP-06 — roster expansion "
+                        f"is AP-08). If AP-08 has landed, flip this assertion.")
+
+                if problems:
+                    for p in problems:
+                        failures.append(f"{key}: {p}")
                 else:
-                    failures.append(
-                        f"{key}: proof profile adventure_party_3p requires the "
-                        f"row to be dormant in solo play, but flipping it to "
-                        f"'{probe}' moved the solo time-trial state stream. The "
-                        f"2-4 player route that would prove this change "
-                        f"intentional is not implemented yet (it lands with the "
-                        f"menu-admission task); until then a party-admission "
-                        f"policy that is not inert in a solo race is a "
-                        f"compatibility failure.")
+                    print(f"  {key:32s} {authority:12s} 3P admission route: party "
+                          f"reaches the Adventure hub (levelId 0, numPlayers 0) "
+                          f"while off routes to Tracks; SIMHASH identical for "
+                          f"{common} pre-admission ticks then diverges — gameplay "
+                          f"authority confirmed via admission (in-hub roster is "
+                          f"AP-08)")
                 continue
 
             if profile != PROFILE_SOLO_RACE:
