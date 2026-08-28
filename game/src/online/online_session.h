@@ -35,15 +35,14 @@ extern "C" {
 #define GAMEMODE_ONLINE_SESSION GAMEMODE_UNUSED_2
 
 /* The online session flow, held in session-owned state (never an offline
- * global). PD-T1 implements LOBBY_WAIT and the RACE hand-off only; the
- * remaining phases are the contract PD-T2..T6 build their screens on. */
+ * global). Each phase drives one native screen or the race hand-off. */
 typedef enum MdkrOnlineSessionPhase {
     MDKR_ONLINE_SESSION_LOBBY_WAIT = 0, /* read party_link; wait for boot signal */
-    MDKR_ONLINE_SESSION_CHARSELECT,     /* PD-T2/T3: native character select */
-    MDKR_ONLINE_SESSION_TRACKSELECT,    /* PD-T3: native track select */
+    MDKR_ONLINE_SESSION_CHARSELECT,     /* native character select */
+    MDKR_ONLINE_SESSION_TRACKSELECT,    /* native track select */
     MDKR_ONLINE_SESSION_RACE,           /* hand off to the in-game race boot */
-    MDKR_ONLINE_SESSION_RESULTS,        /* PD-T5: results */
-    MDKR_ONLINE_SESSION_CEREMONY        /* PD-T6: tournament ceremony */
+    MDKR_ONLINE_SESSION_RESULTS,        /* results */
+    MDKR_ONLINE_SESSION_CEREMONY        /* tournament ceremony */
 } MdkrOnlineSessionPhase;
 
 /* Enter the separated online boot path. Called from the (already beta-gated)
@@ -53,22 +52,22 @@ typedef enum MdkrOnlineSessionPhase {
 void mdkr_online_session_begin(const MdkrMatchLaunchDescriptorV1 *launch);
 
 /* Per-frame tick for GAMEMODE_ONLINE_SESSION, dispatched from main_game_loop().
- * PD-T1: LOBBY_WAIT idles on the party_link forward feed until the room leaves
+ * LOBBY_WAIT idles on the party_link forward feed until the room leaves
  * selection, then hands off to the race boot (which sets GAMEMODE_INGAME). */
 void mdkr_online_session_tick(s32 updateRate);
 
 /* The direct online race boot (mdkr_online_boot_direct_race) was extracted in
- * PD-T4 into game/src/online/online_race_boot.{c,h}; online_session.c includes
+ * into game/src/online/online_race_boot.{c,h}; online_session.c includes
  * that header and calls it for the RACE hand-off. */
 
-/* PD-T5 post-race RE-ENTRY (scoping ruling R-A). Called from the online
+/* post-race RE-ENTRY. Called from the online
  * post-race hook (menu.c) when the grace period elapses. Re-arms the session
  * into its RESULTS phase in THIS engine process and returns true ONLY when
  * resident mode is on (env MDKR_TEST_ONLINE_RESIDENT, set only by the scripted
  * soak) AND this race captured a finish order. Returns false for every live lane
  * (resident OFF) and every abnormal end (no captured results), so the caller
  * keeps calling platform_request_exit(0) exactly as today -- zero live-lane
- * behaviour change. Making LIVE play resident is PD-T6. */
+ * behaviour change. */
 bool mdkr_online_session_resume_results(void);
 
 #ifdef __cplusplus

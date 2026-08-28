@@ -1,4 +1,4 @@
-/* SEPARATED-BOOT-PATH (Strategy D) online session -- PD-T1 skeleton + fork.
+/* SEPARATED-BOOT-PATH (Strategy D) online session state machine.
  *
  * The whole translation unit is #if MDKR_ENABLE_ONLINE_BETA and the file is
  * added to the build ONLY inside the beta CMake gate (game/src/online/ is NOT
@@ -6,12 +6,12 @@
  * the release engine object is untouched. See game/src/online/online_session.h
  * for the architecture rationale.
  *
- * PD-T1 implements ONLY: the session-owned state, LOBBY_WAIT (read the
- * party_link forward feed and wait until the room leaves selection), and the
- * RACE hand-off (call the EXISTING mdkr_online_boot_direct_race, which sets
- * GAMEMODE_INGAME -- no race-setup logic is duplicated here; extraction is
- * PD-T4). The remaining phases (CHARSELECT / TRACKSELECT / RESULTS / CEREMONY)
- * are placeholders PD-T2..T6 fill in.
+ * The session owns its own state and drives the phase machine: LOBBY_WAIT (read
+ * the party_link forward feed and wait until the room leaves selection), the
+ * native CHARSELECT / TRACKSELECT screens, the RACE hand-off (call the existing
+ * mdkr_online_boot_direct_race, which sets GAMEMODE_INGAME -- no race-setup logic
+ * is duplicated here; the boot lives in online/online_race_boot.c), and the
+ * post-race RESULTS / CEREMONY screens.
  */
 #include "online/online_session.h"
 
@@ -24,20 +24,20 @@
 
 #include "types.h"
 #include "thread3_main.h"
-#include "platform_os.h"               /* PD-T6h2b watchdog: platform_request_exit
+#include "platform_os.h"               /* watchdog: platform_request_exit
                                           (the SAME clean engine-exit menu.c uses on
                                           the online post-race path) */
 #include "net/party_link.h"
-#include "net/online_race_results.h"   /* PD-T5 captured-placements availability */
-#include "net/net_roster_runtime.h"    /* PD-T6ac per-round launch descriptor re-fetch */
-#include "net/match_input_runtime.h"   /* PD-T6ac live re-wait: match-input epoch gate */
-#include "online/online_charselect.h"  /* PD-T2 native CHARSELECT phase */
-#include "online/online_trackselect.h" /* PD-T3 native TRACKSELECT phase +
+#include "net/online_race_results.h"   /* captured-placements availability */
+#include "net/net_roster_runtime.h"    /* per-round launch descriptor re-fetch */
+#include "net/match_input_runtime.h"   /* live re-wait: match-input epoch gate */
+#include "online/online_charselect.h"  /* native CHARSELECT phase */
+#include "online/online_trackselect.h" /* native TRACKSELECT phase +
                                           mdkr_online_trackselect_cup_track */
-#include "online/online_race_boot.h"   /* PD-T4 direct race boot (extracted) */
-#include "online/online_results.h"     /* PD-T5 native RESULTS/STANDINGS phase */
-#include "online/online_ceremony.h"    /* PD-T6f native champion CEREMONY phase */
-#include "online/online_standings.h"   /* I-1: capture the final ranking (shared sort) */
+#include "online/online_race_boot.h"   /* direct race boot (extracted) */
+#include "online/online_results.h"     /* native RESULTS/STANDINGS phase */
+#include "online/online_ceremony.h"    /* native champion CEREMONY phase */
+#include "online/online_standings.h"   /* capture the final ranking (shared sort) */
 
 /* The engine's live game-mode selector. Defined (external linkage) in
  * thread3_main.c; no shared header declares it, so the session declares the
@@ -69,7 +69,7 @@ typedef struct MdkrOnlineSessionState {
     MdkrOnlineSessionPhase phase;
     const MdkrMatchLaunchDescriptorV1 *launch;
     u32 lobbyWaitTicks;
-    /* PD-T4: the last-seen resolved host-INTENDED race track from the forward
+    /* the last-seen resolved host-INTENDED race track from the forward
      * feed (single race -> configured_track; tournament -> the cup's scheduled
      * round track), or MDKR_ONLINE_SESSION_TRACK_NONE. This is an OBSERVABILITY
      * value ONLY -- the boot always loads launch->manifest.track_id (the peer
@@ -77,51 +77,51 @@ typedef struct MdkrOnlineSessionState {
      * host's locked track is what loads" is explicit and testable. */
     u16 intendedTrack;
     u8 active;
-    /* PD-T5: number of engine races booted this process (>=2 in the resident
+    /* number of engine races booted this process (>=2 in the resident
      * soak; the ADVANCE off the last race's STANDINGS does NOT re-boot). */
     u32 raceCount;
-    /* PD-T5: the RESULTS phase must call the screen's _enter on its next tick
+    /* the RESULTS phase must call the screen's _enter on its next tick
      * (set by mdkr_online_session_resume_results, cleared once entered). */
     u8 resultsPending;
-    /* M1: the last observed forward-feed mode, so a tournament->single interlude
+    /* the last observed forward-feed mode, so a tournament->single interlude
      * clears the sticky intendedTrack stash instead of carrying a stale pick into
      * the boot's divergence check. 0xFF == none observed yet. */
     u8 lastModeSeen;
-    /* PD-T6ac: LIVE residency (a real two-adapter session, resumed on the reducer
+    /* LIVE residency (a real two-adapter session, resumed on the reducer
      * snapshot showing RESULTS -- NOT the scripted MDKR_TEST_ONLINE_RESIDENT
      * soak). It changes the RESULTS->next-race path: instead of re-booting inline
      * (the scripted soak, no transport), the session re-enters LOBBY_WAIT and
      * waits for the launcher to re-cycle the room to a fresh race-ready transport
      * (a new match_epoch) before booting. */
     u8 liveResident;
-    /* PD-T6ac: the match_epoch of the race this session last booted. In a LIVE
+    /* the match_epoch of the race this session last booted. In a LIVE
      * resident re-wait, the next boot is gated on the runtime descriptor's epoch
      * having advanced past this (the launcher's fresh per-round install). */
     u32 bootedEpoch;
-    /* PD-T6h1 (M4): throttle the per-tick live re-wait witness. Now that the
+    /* throttle the per-tick live re-wait witness. Now that the
      * launcher-side round advance is FRAME-DRIVEN the re-wait spans MANY engine
      * ticks, so logging every tick would flood stderr. Log only the FIRST re-wait
      * tick of each round and every time `ready` changes. 0xFF == not yet logged
      * this round (reset in online_session_boot_race). */
     u8 liveReWaitLastReady;
-    /* PD-T6h2a: the session BEGAN without a launch descriptor (the party_link
+    /* the session BEGAN without a launch descriptor (the party_link
      * lobby-start path -- the native online screens own race 1). Every new
      * behaviour (the descriptor-less begin witness, the race-1 readiness gate in
      * online_session_boot_race, the descriptor-less LOBBY_WAIT re-wait, and the
      * feed-derived isFinal) is gated on this latch, so a descriptor-first begin
      * (every existing lane + real play today) is byte-behaviour-unchanged. */
     u8 beganWithoutDescriptor;
-    /* PD-T6h2a: set once the descriptor-less room has committed to loading (a
+    /* set once the descriptor-less room has committed to loading (a
      * boot was requested while the real descriptor was not yet live -- the native
      * ADVANCE / LOBBY_WAIT phase-left-LOBBY fires frames before the launcher
      * builds it). While set, LOBBY_WAIT routes through the descriptor-less re-wait
      * (below) instead of re-fronting CHARSELECT, and boots once the descriptor +
      * roster + match-input are ready. Cleared implicitly at the (single) boot. */
     u8 desclessBootPending;
-    /* PD-T6h2a: throttle the descriptor-less re-wait witness (mirrors
+    /* throttle the descriptor-less re-wait witness (mirrors
      * liveReWaitLastReady). 0xFF == not yet logged. */
     u8 desclessReWaitLastReady;
-    /* PD-T6h2b: the feed-derived finality of the CURRENT RESULTS race, latched at
+    /* the feed-derived finality of the CURRENT RESULTS race, latched at
      * RESULTS ENTER (when the snapshot's race_index still names the just-finished
      * race). The RESULTS->next-race decision for a descriptor-less session MUST read
      * THIS, not a fresh online_session_feed_isfinal() at ADVANCE time -- by the time
@@ -130,7 +130,7 @@ typedef struct MdkrOnlineSessionState {
      * wrongly treat the non-final race N (race_index N-1) as final once N-1 reached
      * CUP_ROUNDS-1 via the just-landed rematch. Unused for a descriptor-first begin. */
     u8 resultsIsFinal;
-    /* PD-T6h2b WALL-CLOCK WATCHDOG (Important-2b): frames spent in the CURRENT
+    /* WALL-CLOCK WATCHDOG: frames spent in the CURRENT
      * descriptor-less wait (the race-1 re-wait OR, for a descriptor-less session,
      * the per-round live re-wait). Reset to 0 at every boot, so each round's wait
      * gets a fresh budget; incremented only on the descriptor-less waits. When it
@@ -139,35 +139,35 @@ typedef struct MdkrOnlineSessionState {
      * descriptor-first begin (beganWithoutDescriptor == 0), so the resident lane's
      * shared live re-wait is byte-behaviour-unchanged. */
     u32 desclessWaitTicks;
-    /* PD-T6h2c: this descriptor-less session drives a SINGLE local endpoint (a real
+    /* this descriptor-less session drives a SINGLE local endpoint (a real
      * 2-process room -- the remote readies itself over the transport), latched from
      * mdkr_party_link_is_single_endpoint() at begin. When set, the descriptor-less
      * waits use the WALL-CLOCK deadline below (a real cross-process DTLS handshake +
      * preflight is seconds and variable; a frame count is wrong when the frame rate
-     * varies) and route a stuck wait to an ERROR exit (Minor-B), and the per-round
-     * re-wait gains a mid-tournament CANCEL unwind (Minor-C). The two-endpoint
+     * varies) and route a stuck wait to an ERROR exit, and the per-round
+     * re-wait gains a mid-tournament CANCEL unwind. The two-endpoint
      * loopback lanes leave this 0 -> the existing frame-count + clean-exit path is
      * byte-behaviour-unchanged. */
     u8 singleEndpoint;
-    /* PD-T6h2c WALL-CLOCK deadline (ns, platform_perf_monotonic_ns). Absolute
+    /* WALL-CLOCK deadline (ns, platform_perf_monotonic_ns). Absolute
      * deadline of the CURRENT descriptor-less wait; 0 == not armed. Re-armed at each
-     * boot, at RESULTS enter (the REMATCH-convergence hold -- Minor-A), and when a
+     * boot, at RESULTS enter (the REMATCH-convergence hold), and when a
      * per-round re-wait begins, so each of the THREE descriptor-less waits gets its
      * own fresh budget. Used only when singleEndpoint. */
     u64 desclessWaitDeadlineNs;
-    /* PD-T6h2c (Minor-C): in the per-round re-wait, set once the room has LEFT LOBBY
+    /* in the per-round re-wait, set once the room has LEFT LOBBY
      * this round (the launcher advance drove it to LOADING). Only AFTER that does a
      * return to LOBBY unambiguously mean a mid-tournament CANCEL_LOADING (vs. the
      * initial next-round SELECTING the re-wait first observes). Reset at each boot.
      * Single-endpoint only. */
     u8 desclessRoundLeftLobby;
-    /* PD-T6d (Minor-3): debounce counter for the pre-START remote-seat-vacated
+    /* debounce counter for the pre-START remote-seat-vacated
      * detector. Incremented each CHARSELECT/TRACKSELECT tick the forward feed shows
      * a LOBBY-phase room seating the LOCAL player but NO remote seat; reset the
      * instant a remote reappears (or the room leaves LOBBY). On a sustained absence
      * the session notes LEFT + exits. Inert for a descriptor-first begin. */
     u16 remoteAbsentTicks;
-    /* I-1: the COMPLETE final ranking captured at the final standings while BOTH
+    /* the COMPLETE final ranking captured at the final standings while BOTH
      * seats were present (via the shared mdkr_online_standings_compute), and a
      * latch that a capture happened. Re-captured every final-standings tick that
      * still seats both players, so it always holds the last-known-good full
@@ -181,7 +181,7 @@ typedef struct MdkrOnlineSessionState {
 /* Session-owned state -- deliberately NOT any offline global. */
 static MdkrOnlineSessionState sOnlineSession;
 
-/* Warn-once latch for the CHARSELECT leave stub (PD-T6): the engine->launcher
+/* Warn-once latch for the CHARSELECT leave stub: the engine->launcher
  * return handshake is not wired yet, so a browse-B is logged exactly once, not
  * per-frame. Reset when CHARSELECT is entered. */
 static u8 sCharselectLeaveWarned;
@@ -197,7 +197,7 @@ static u8 sCharselectLeaveWarned;
  * OnlineRoom_runTestPartyLinkFake uses. Beta-only by construction. */
 static u8 sTestScriptInstalled;
 static u32 sTestHoldTicks;
-/* M-3: optional tournament->single MODE INTERLUDE (env
+/* optional tournament->single MODE INTERLUDE (env
  * MDKR_TEST_ONLINE_SESSION_MODE_INTERLUDE = the cup id to stash under tournament).
  * -1 unresolved, -2 off. When on, the first half of the hold publishes
  * mode=TOURNAMENT + that cup (so the session STASHES the cup's round-0 track),
@@ -236,7 +236,7 @@ static void online_session_test_maybe_script(void) {
     snap.phase = (sOnlineSession.lobbyWaitTicks < sTestHoldTicks)
                      ? (uint8_t) MDKR_ONLINE_SESSION_LOBBY_PHASE
                      : (uint8_t) MDKR_ONLINE_SESSION_LOADING_PHASE;
-    /* PD-T4: publish the config "none" sentinels, not the bare memset zeros. This
+    /* publish the config "none" sentinels, not the bare memset zeros. This
      * lane scripts an EMPTY room with no host pick -- it boots the vote-derived
      * manifest -- so the session's intended-track resolution must read NONE. A
      * plain memset(0) would read as mode=SINGLE + configured_track=0 == "intended
@@ -245,7 +245,7 @@ static void online_session_test_maybe_script(void) {
     snap.configured_track = MDKR_PARTY_LINK_TRACK_UNSET; /* 0xFFFF == none */
     snap.cup_id = MDKR_PARTY_LINK_CUP_UNSET;             /* 0xFF == none */
     snap.mode = (uint8_t) MDKR_PARTY_LINK_MODE_SINGLE;
-    /* M-3 interlude: TOURNAMENT (stash the cup's round-0 track) for the first half
+    /* interlude: TOURNAMENT (stash the cup's round-0 track) for the first half
      * of the hold, then SINGLE (M1 must clear the stale stash). */
     if (sInterludeCup >= 0 &&
         sOnlineSession.lobbyWaitTicks < (sTestHoldTicks / 2u)) {
@@ -264,7 +264,7 @@ static void online_session_test_script_teardown(void) {
 
 /* ---- Session ------------------------------------------------------------- */
 
-/* PD-T4: resolve the host-intended race track from a forward-feed snapshot,
+/* resolve the host-intended race track from a forward-feed snapshot,
  * mirroring the launcher reducer's own resolution: tournament -> the cup's
  * scheduled round track (mdkr_online_cup_track / kCupTracks, re-exposed engine-
  * side as mdkr_online_trackselect_cup_track over the same accepted set); single
@@ -289,7 +289,7 @@ static u16 online_session_resolve_intended(const MdkrPartyLinkSnapshot *snap) {
  * boot). Observability only; the boot still loads launch->manifest.track_id. */
 static void online_session_stash_intended(const MdkrPartyLinkSnapshot *snap) {
     u16 intended;
-    /* M1: a mode interlude (e.g. tournament -> single before the host re-locks)
+    /* a mode interlude (e.g. tournament -> single before the host re-locks)
      * must not leave the previous mode's resolved track stuck in intendedTrack --
      * that stale pick would then log a spurious "[online-boot] track divergence"
      * against the freshly-booted manifest. When the observed forward-feed mode
@@ -305,13 +305,13 @@ static void online_session_stash_intended(const MdkrPartyLinkSnapshot *snap) {
     }
 }
 
-/* ---- PD-T5 resident-mode flag (scoping ruling R-A) ------------------------ *
+/* ---- resident-mode flag ------------------------------------------------- *
  * The post-race fork re-enters the session (RESULTS -> next race in ONE engine
  * process) ONLY when this flag is on. It is set ONLY by the scripted resident
  * soak (env MDKR_TEST_ONLINE_RESIDENT = the number of engine races to drive).
  * With it OFF -- every existing live lane and real play today -- the menu.c
  * post-race hook keeps calling platform_request_exit(0) exactly as now, so no
- * live lane changes behaviour. Making LIVE play resident is PD-T6. */
+ * live lane changes behaviour. */
 static s8 sResidentResolved = -1; /* -1 unresolved, 0 off, 1 on */
 static u32 sResidentRaces;        /* total engine races the soak drives (0 == off) */
 
@@ -320,7 +320,7 @@ static void online_session_resident_resolve(void) {
         const char *e = getenv("MDKR_TEST_ONLINE_RESIDENT");
         unsigned long n = (e != NULL) ? strtoul(e, NULL, 10) : 0ul;
         if (n == 0ul) {
-            /* PD-T6ac: the LIVE-loopback resident lane's TARGET race count (the
+            /* the LIVE-loopback resident lane's TARGET race count (the
              * scripted-soak env is unset there). Residency itself latches off the
              * reducer snapshot at resume -- this only sizes the RESULTS screen's
              * isFinal decision. Non-resident live lanes set neither env, so this
@@ -333,7 +333,7 @@ static void online_session_resident_resolve(void) {
     }
 }
 
-/* PD-T6h2a race-1 READINESS GATE (recon risk 2). For a descriptor-less
+/* race-1 READINESS GATE. For a descriptor-less
  * (lobby-start) session the boot must NOT fire until the launcher has built +
  * installed the REAL launch descriptor and armed the match-input source on that
  * epoch -- otherwise online_session_boot_race would deref a NULL/stale launch
@@ -351,7 +351,7 @@ static bool online_session_descless_boot_ready(void) {
            mdkr_match_input_runtime_epoch() == launch->manifest.match_epoch;
 }
 
-/* PD-T6h2a (M2) FEED-DERIVED finality. A descriptor-less (interactive) session
+/* FEED-DERIVED finality. A descriptor-less (interactive) session
  * has no MDKR_APP_TEST_ONLINE_LIVE_RESIDENT env to size the run, so finality is
  * read from the SAME party_link forward feed the screens render: a tournament is
  * final on its last cup round (race_index >= CUP_ROUNDS-1 -- mirrors the
@@ -361,7 +361,7 @@ static bool online_session_descless_boot_ready(void) {
  * byte-behaviour-unchanged; this applies only when beganWithoutDescriptor. */
 #define MDKR_ONLINE_SESSION_CUP_ROUNDS 4u /* == MDKR_ONLINE_CUP_ROUNDS (lobby_core.h) */
 
-/* PD-T6h2b WALL-CLOCK WATCHDOG budget (Important-2b). The max engine frames one
+/* WALL-CLOCK WATCHDOG budget. The max engine frames one
  * DESCRIPTOR-LESS wait may spend before it gives up: the race-1 re-wait (host
  * STARTed but the launcher's descriptor/roster/match-input never went live), and
  * the per-round live re-wait (the launcher's REMATCH re-cycle never re-armed the
@@ -381,7 +381,7 @@ static bool online_session_descless_boot_ready(void) {
  * budget stands in here) and retune against measured WAN convergence. */
 #define MDKR_ONLINE_SESSION_DESCLESS_WAIT_FRAME_BUDGET 2700u
 
-/* PD-T6h2c WALL-CLOCK watchdog. The SINGLE-ENDPOINT (real 2-process) path bounds
+/* WALL-CLOCK watchdog. The SINGLE-ENDPOINT (real 2-process) path bounds
  * every descriptor-less wait by REAL wall clock (platform_perf_monotonic_ns), not a
  * frame count: a cross-process DTLS handshake + preflight is seconds and variable,
  * and a frame count over-/under-shoots as the interactive frame rate varies. The
@@ -390,13 +390,18 @@ static bool online_session_descless_boot_ready(void) {
  * fresh budget. Default is generous for a real WAN; MDKR_ONLINE_SESSION_DESCLESS_
  * WAIT_DEADLINE_MS overrides it (the single-endpoint test lanes pin a short one). */
 #define MDKR_ONLINE_SESSION_DESCLESS_WAIT_DEADLINE_MS_DEFAULT 45000u
+/* 10-minute sanity ceiling on the env override: a value above this (or 0) is
+ * treated as unset and falls back to the default, so a fat-fingered env can never
+ * stall a descriptor-less wait for an absurd duration. */
+#define MDKR_ONLINE_SESSION_DESCLESS_WAIT_DEADLINE_MS_MAX 600000u
 
 static u64 online_session_descless_deadline_ns(void) {
     static s64 sBudgetMs = -1; /* resolved once; -1 == unresolved */
     if (sBudgetMs < 0) {
         const char *e = getenv("MDKR_ONLINE_SESSION_DESCLESS_WAIT_DEADLINE_MS");
         unsigned long ms = (e != NULL) ? strtoul(e, NULL, 10) : 0ul;
-        if (ms == 0ul || ms > 600000ul) {
+        if (ms == 0ul ||
+            ms > MDKR_ONLINE_SESSION_DESCLESS_WAIT_DEADLINE_MS_MAX) {
             ms = MDKR_ONLINE_SESSION_DESCLESS_WAIT_DEADLINE_MS_DEFAULT;
         }
         sBudgetMs = (s64) ms;
@@ -416,8 +421,8 @@ static void online_session_descless_wallclock_arm(void) {
  * the platform exit) if the current wait has exceeded its budget. Called only from
  * the descriptor-less waits, only under beganWithoutDescriptor.
  *
- * PD-T6h2c: two modes. SINGLE-ENDPOINT (real 2-process) uses the WALL-CLOCK deadline
- * and requests a NONZERO exit (Minor-B: a genuine stuck trip is DISTINGUISHABLE from
+ * two modes. SINGLE-ENDPOINT (real 2-process) uses the WALL-CLOCK deadline
+ * and requests a NONZERO exit (a genuine stuck trip is DISTINGUISHABLE from
  * a normal finish, so the launcher routes back to the room / surfaces the failure to
  * the human). The two-endpoint LOOPBACK path keeps the exact frame-count budget +
  * clean exit(0) it had, so those lanes are byte-behaviour-unchanged. */
@@ -440,7 +445,7 @@ static bool online_session_descless_watchdog_tick(const char *where) {
         /* Nonzero code: strengthens the clean exit into a FAILURE the launcher's
          * online engine-session caller sees (liveResult != 0 -> stay in the Online
          * Room, panel surfaces recovery) rather than a normal finish. The thread3
-         * loop honors the flag, the engine returns, teardown runs. PD-T6d: note the
+         * loop honors the flag, the engine returns, teardown runs. Note the
          * ERROR reason so the launcher's session-end read surfaces it as ERROR (one
          * uniform channel + witness alongside the nonzero rc). */
         mdkr_party_link_note_session_end(MDKR_PARTY_LINK_SESSION_END_ERROR);
@@ -480,7 +485,7 @@ static void online_session_boot_race(void) {
     u16 intended;
     s32 manifestTrack;
 
-    /* PD-T6ac: RE-FETCH the launch descriptor each boot. mdkr_online_session_begin
+    /* RE-FETCH the launch descriptor each boot. mdkr_online_session_begin
      * stashed race 1's; but in a resident LIVE session the launcher clears +
      * re-installs the roster/descriptor per round (a fresh match_epoch and, in a
      * tournament, the next cup track), so a stale race-1 pointer would boot the
@@ -495,7 +500,7 @@ static void online_session_boot_race(void) {
         }
     }
 
-    /* PD-T6h2a RACE-1 READINESS GATE. When the session began descriptor-less, the
+    /* RACE-1 READINESS GATE. When the session began descriptor-less, the
      * native CHARSELECT/TRACKSELECT ADVANCE (and LOBBY_WAIT's phase-left-LOBBY)
      * fire the instant the host START drives the room out of LOBBY -- several
      * frames-to-seconds before the launcher builds the descriptor, installs the
@@ -509,7 +514,7 @@ static void online_session_boot_race(void) {
         !online_session_descless_boot_ready()) {
         if (!sOnlineSession.desclessBootPending) {
             sOnlineSession.desclessBootPending = 1u;
-            /* PD-T6h2c: the race-1 re-wait begins now -- arm its wall-clock deadline
+            /* the race-1 re-wait begins now -- arm its wall-clock deadline
              * fresh (single-endpoint only; inert otherwise). */
             sOnlineSession.desclessWaitTicks = 0u;
             online_session_descless_wallclock_arm();
@@ -520,7 +525,7 @@ static void online_session_boot_race(void) {
         sOnlineSession.phase = MDKR_ONLINE_SESSION_LOBBY_WAIT;
         return;
     }
-    /* PD-T6h2a defensive NULL guard: never deref a NULL launch. Unreachable for a
+    /* defensive NULL guard: never deref a NULL launch. Unreachable for a
      * descriptor-first begin (mode_intro validated non-NULL) and the gate above
      * guarantees non-NULL for the descriptor-less path, but the brief requires
      * every launch-> deref be guarded. */
@@ -532,26 +537,26 @@ static void online_session_boot_race(void) {
     intended = sOnlineSession.intendedTrack;
     manifestTrack = (s32) sOnlineSession.launch->manifest.track_id;
     sOnlineSession.bootedEpoch = sOnlineSession.launch->manifest.match_epoch;
-    /* M4: arm the live re-wait witness throttle so the NEXT round's re-wait logs
+    /* arm the live re-wait witness throttle so the NEXT round's re-wait logs
      * its first tick + ready changes afresh (0xFF != any real ready value). */
     sOnlineSession.liveReWaitLastReady = 0xFFu;
-    /* PD-T6h2b: a boot just fired, so the next descriptor-less wait (the per-round
+    /* a boot just fired, so the next descriptor-less wait (the per-round
      * live re-wait) starts its watchdog budget fresh. */
     sOnlineSession.desclessWaitTicks = 0u;
-    /* PD-T6h2c: also disarm the wall-clock deadline; the next descriptor-less wait
+    /* also disarm the wall-clock deadline; the next descriptor-less wait
      * (RESULTS REMATCH-hold, then the per-round re-wait) re-arms it fresh. And clear
      * the per-round "left LOBBY" latch so the NEXT round's cancel detection starts
-     * fresh (Minor-C). */
+     * fresh. */
     sOnlineSession.desclessWaitDeadlineNs = 0u;
     sOnlineSession.desclessRoundLeftLobby = 0u;
-    sOnlineSession.remoteAbsentTicks = 0u; /* PD-T6d: fresh vacate debounce */
+    sOnlineSession.remoteAbsentTicks = 0u; /* fresh vacate debounce */
 
-    sOnlineSession.raceCount++; /* PD-T5: count engine races booted this process */
+    sOnlineSession.raceCount++; /* count engine races booted this process */
     sOnlineSession.phase = MDKR_ONLINE_SESSION_RACE;
     /* Isolation witness: on the online path control reached the session
      * (gGameMode == GAMEMODE_ONLINE_SESSION) and the offline boot menu was
      * never loaded (gCurrentMenuId still 0, i.e. not MENU_BOOT). */
-    /* M-6: the LOBBY_WAIT tick count is meaningful only for the FIRST boot; a
+    /* the LOBBY_WAIT tick count is meaningful only for the FIRST boot; a
      * RESULTS-origin re-boot (race >= 2) reuses that stale counter, so the trailing
      * [race=N] disambiguates which engine race this is (the re-boot itself is
      * announced separately at the RESULTS ADVANCE). The witness prefix through
@@ -563,7 +568,7 @@ static void online_session_boot_race(void) {
             sOnlineSession.lobbyWaitTicks, gGameMode, gCurrentMenuId,
             sOnlineSession.raceCount);
 
-    /* PD-T4 observable agreement check. The race ALWAYS boots the manifest's
+    /* observable agreement check. The race ALWAYS boots the manifest's
      * track (the peer rollback-admission authority: the launcher froze the
      * manifest from the CONVERGED lobby at the LOADING barrier, so in live play
      * it already equals the host's locked pick -- rollback_game_runtime.c ->
@@ -584,8 +589,8 @@ static void online_session_boot_race(void) {
 
     online_session_test_script_teardown();
     sOnlineSession.active = 0;
-    /* Reuse the game's own race boot (extracted to online/online_race_boot.c in
-     * PD-T4); it loads launch->manifest.track_id and sets gGameMode =
+    /* Reuse the game's own race boot (extracted to online/online_race_boot.c);
+     * it loads launch->manifest.track_id and sets gGameMode =
      * GAMEMODE_INGAME. No race-setup logic is duplicated. */
     mdkr_online_boot_direct_race(sOnlineSession.launch);
 }
@@ -598,22 +603,22 @@ void mdkr_online_session_begin(const MdkrMatchLaunchDescriptorV1 *launch) {
      * (legacy direct boot) reads "intended none" and logs the honored path, never
      * a spurious "divergence snapshot=0". */
     sOnlineSession.intendedTrack = MDKR_ONLINE_SESSION_TRACK_NONE;
-    sOnlineSession.lastModeSeen = 0xFFu; /* M1: no forward-feed mode observed yet */
-    sOnlineSession.liveReWaitLastReady = 0xFFu; /* M4: re-wait witness unthrottled */
-    sOnlineSession.desclessReWaitLastReady = 0xFFu; /* PD-T6h2a: ditto */
+    sOnlineSession.lastModeSeen = 0xFFu; /* no forward-feed mode observed yet */
+    sOnlineSession.liveReWaitLastReady = 0xFFu; /* re-wait witness unthrottled */
+    sOnlineSession.desclessReWaitLastReady = 0xFFu; /* ditto */
     sOnlineSession.active = 1;
     /* Enter the SEPARATED mode. Offline code never produces this value, so the
      * offline menu state machine is never entered on this route. */
     gGameMode = GAMEMODE_ONLINE_SESSION;
     if (launch == NULL) {
-        /* PD-T6h2a DESCRIPTOR-LESS begin (the party_link lobby-start path): no
+        /* DESCRIPTOR-LESS begin (the party_link lobby-start path): no
          * launch descriptor exists yet -- the native online screens front
          * CHARSELECT -> TRACKSELECT and the host START builds it. The race-1
          * readiness gate (online_session_boot_race) holds the boot until the real
          * descriptor + roster + match-input are live, so the NULL launch stashed
          * here is never dereferenced. */
         sOnlineSession.beganWithoutDescriptor = 1u;
-        /* PD-T6h2c: latch whether the launcher drives a SINGLE local endpoint (a
+        /* latch whether the launcher drives a SINGLE local endpoint (a
          * real 2-process room) vs the two-adapter loopback. Selects the WALL-CLOCK
          * watchdog + error-signal + mid-tournament-cancel unwind path below. */
         sOnlineSession.singleEndpoint =
@@ -634,7 +639,7 @@ void mdkr_online_session_begin(const MdkrMatchLaunchDescriptorV1 *launch) {
 
 /* True when the snapshot seats a resolvable LOCAL player -- the signal that the
  * room is a live selection room this endpoint is actually in, so the native
- * CHARSELECT screen (PD-T2) should be shown rather than idling. The PD-T1
+ * CHARSELECT screen should be shown rather than idling. The
  * session-boot lane publishes an empty room (no occupied seats), so it never
  * trips this and keeps its LOBBY_WAIT-then-boot behaviour unchanged. */
 static bool online_session_snapshot_has_local_seat(
@@ -648,20 +653,20 @@ static bool online_session_snapshot_has_local_seat(
     return false;
 }
 
-/* PD-T3: whether CHARSELECT should hand off to the native TRACKSELECT screen once
+/* whether CHARSELECT should hand off to the native TRACKSELECT screen once
  * the local seat is confirmed+ready. It does in real play and in the TRACKSELECT
  * lane; the STANDALONE CHARSELECT lane (which scripts its own host-start straight
  * to LOADING and asserts the historical charselect->race hand-off) deliberately
  * keeps that behaviour, so we DON'T insert TRACKSELECT when the CHARSELECT seam is
  * armed WITHOUT the TRACKSELECT seam. This is the smallest wiring that satisfies
- * ruling R-B while keeping check_online_charselect.py green unchanged. */
+ * while keeping check_online_charselect.py green unchanged. */
 static bool online_session_trackselect_enabled(void) {
     return !(mdkr_online_charselect_test_active() &&
              !mdkr_online_trackselect_test_active());
 }
 
 /* True once the LOCAL seat has both a locked character and its ready flag while
- * the room is still in LOBBY -- the R-B signal that CHARSELECT is done and the
+ * the room is still in LOBBY -- the signal that CHARSELECT is done and the
  * host/joiner should move on to the native TRACKSELECT screen. */
 static bool online_session_local_seat_ready_in_lobby(
     const MdkrPartyLinkSnapshot *snap) {
@@ -679,7 +684,7 @@ static bool online_session_local_seat_ready_in_lobby(
     return false;
 }
 
-/* PD-T6d: the CHARSELECT browse-B backout leave-to-room seam (env, resolved
+/* the CHARSELECT browse-B backout leave-to-room seam (env, resolved
  * once). Off in every normal run. */
 static s8 sCharselectBackoutResolved = -1; /* -1 unresolved, 0 off, 1 on */
 static bool online_session_charselect_backout_seam(void) {
@@ -690,7 +695,7 @@ static bool online_session_charselect_backout_seam(void) {
     return sCharselectBackoutResolved > 0;
 }
 
-/* PD-T6d set-point B gate: honor a CHARSELECT browse-B as a genuine leave-to-room
+/* set-point B gate: honor a CHARSELECT browse-B as a genuine leave-to-room
  * ONLY for a live human (unscripted pad). The scripted lobby-start lanes press a
  * browse-B at tick 3 as the I1 no-wedge coverage and must keep the warn-once stub
  * (STAY) so they still confirm+ready+start race 1; the seam-armed charselect lane
@@ -702,7 +707,7 @@ static bool online_session_charselect_backout_honored(void) {
     return !mdkr_online_charselect_scripted_input_active();
 }
 
-/* PD-T6d (Minor-3): force the remote-seat-vacated predicate for the headless proof
+/* force the remote-seat-vacated predicate for the headless proof
  * -- a real transport departure cannot be cheaply staged on the loopback rig, so
  * this seam makes the detector READ the remote as gone while the debounce + note
  * LEFT + exit(0) action all run genuinely. Off in every normal run. */
@@ -746,7 +751,7 @@ static bool online_session_snapshot_has_remote_seat(
     return false;
 }
 
-/* PD-T6d (Minor-3) remote-vacated detector. While a DESCRIPTOR-LESS session waits
+/* remote-vacated detector. While a DESCRIPTOR-LESS session waits
  * on a native screen, a remote seat that VACATES (the peer left / the room
  * dissolved) means the round can never proceed -- parking would be indefinite
  * (only app-quit exits otherwise). Read the forward feed: if a room that is still
@@ -757,7 +762,7 @@ static bool online_session_snapshot_has_remote_seat(
  * beganWithoutDescriptor, so a descriptor-first lane (whose remote stays seated
  * through selection) never trips. Returns true (exit requested) on a trip.
  *
- * Exit-gate C1: extended to accept the RESULTS phase too, so the four native
+ * extended to accept the RESULTS phase too, so the four native
  * screens are symmetric (CHARSELECT/TRACKSELECT/CEREMONY already catch a remote
  * departure; RESULTS was the lone screen with no graceful vacate exit). In the
  * NORMAL tournament end the host parks in RESULTS with its seat OCCUPIED and keeps
@@ -797,29 +802,29 @@ static bool online_session_detect_remote_vacated(const char *where) {
     return true;
 }
 
-/* DEFERRED to PD-T6 (do NOT build here -- documented so the seam is explicit):
- *   - Making LIVE play resident: pumping OnlineRoom_pumpPartyLink / the reverse
- *     intent feed from the overlay-service hook during residency, publishing
- *     results mid-residency, per-round roster re-freeze/cycling, and replacing
- *     the live-path platform_request_exit(0) with the resident return. PD-T5
- *     gates all of that behind MDKR_TEST_ONLINE_RESIDENT so only the scripted
- *     soak re-enters and every live lane still exits unchanged.
- *   - (PD-T6f, now wired) The champion CEREMONY: a native 2D celebration of the
- *     cup champion (online_ceremony.c) that the final-standings FINISH now detours
- *     into before the FINISHED handshake -- a bounded, auto-advancing screen that
- *     falls into the SAME FINISHED note + exit(0) below (fired exactly once, after
- *     the ceremony). No 3D cutscene / offline trophy cinematic is entered.
- *   - (PD-T6d, now wired) The engine->launcher return handshake: a RESULTS FINISH,
- *     a CHARSELECT backout, a pre-START remote-vacate, or a mid-tournament cancel
- *     notes an end reason (mdkr_party_link_note_session_end) + platform_request_exit,
- *     which the launcher takes (mdkr_party_link_take_session_end) after the boot
- *     returns to resume the Online Room. The warn-once CHARSELECT stub remains for
- *     the descriptor-first / scripted lanes (byte-behaviour-unchanged).
- *   - ABANDON_RACE is NOT needed: abnormal ends keep platform_request_exit(0)
- *     (R-B), which resume_results below preserves by returning false when no
- *     finish was captured. */
+/* Session-end + residency contract (the seams are explicit here):
+ *   - LIVE play is resident: OnlineRoom_pumpPartyLink / the reverse intent feed
+ *     pump from the overlay-service hook during residency, results are published
+ *     mid-residency, the roster re-freezes/cycles per round, and the live-path
+ *     platform_request_exit(0) becomes the resident return. Residency is gated
+ *     behind MDKR_TEST_ONLINE_RESIDENT so only the scripted soak re-enters and
+ *     every live lane still exits unchanged.
+ *   - The champion CEREMONY: a native 2D celebration of the cup champion
+ *     (online_ceremony.c) that the final-standings FINISH detours into before the
+ *     FINISHED handshake -- a bounded, auto-advancing screen that falls into the
+ *     SAME FINISHED note + exit(0) below (fired exactly once, after the ceremony).
+ *     No 3D cutscene / offline trophy cinematic is entered.
+ *   - The engine->launcher return handshake: a RESULTS FINISH, a CHARSELECT
+ *     backout, a pre-START remote-vacate, or a mid-tournament cancel notes an end
+ *     reason (mdkr_party_link_note_session_end) + platform_request_exit, which the
+ *     launcher takes (mdkr_party_link_take_session_end) after the boot returns to
+ *     resume the Online Room. The warn-once CHARSELECT stub remains for the
+ *     descriptor-first / scripted lanes (byte-behaviour-unchanged).
+ *   - ABANDON_RACE is NOT needed: abnormal ends keep platform_request_exit(0),
+ *     which resume_results below preserves by returning false when no finish was
+ *     captured. */
 
-/* PD-T5 post-race RE-ENTRY (scoping ruling R-A / R-B). Called from the online
+/* post-race RE-ENTRY. Called from the online
  * post-race hook (menu.c) when the grace period elapses. Returns true -- and
  * re-arms the session into its RESULTS phase in THIS engine process -- ONLY when
  * BOTH: resident mode is on (the scripted soak) AND this race captured a finish
@@ -839,14 +844,14 @@ bool mdkr_online_session_resume_results(void) {
          * the P1 recovery routing. */
         return false;
     }
-    /* PD-T6ac LIVE residency (the real behaviour now): the launcher pump PUBLISH_-
+    /* LIVE residency (the real behaviour now): the launcher pump PUBLISH_-
      * RESULTS mid-residency, so the reducer snapshot shows RESULTS for this race.
      * Resume on that REAL signal (not an env), reading placements/points from the
      * snapshot. This is what makes a live session resident across races. */
     {
         MdkrPartyLinkSnapshot snap;
         if (mdkr_party_link_read(&snap) &&
-            snap.phase == (uint8_t) 4u /* MDKR_ONLINE_RESULTS */) {
+            snap.phase == (uint8_t) MDKR_ONLINE_SESSION_RESULTS_PHASE) {
             sOnlineSession.liveResident = 1u;
             online_session_resident_resolve();
             sOnlineSession.active = 1;
@@ -870,7 +875,7 @@ bool mdkr_online_session_resume_results(void) {
         return false; /* resident OFF: caller exits (zero live-lane change) */
     }
     if (!mdkr_online_race_results_available()) {
-        return false; /* abnormal end / nothing captured (R-B): caller exits */
+        return false; /* abnormal end / nothing captured: caller exits */
     }
     sOnlineSession.active = 1;
     sOnlineSession.phase = MDKR_ONLINE_SESSION_RESULTS;
@@ -901,7 +906,7 @@ void mdkr_online_session_tick(s32 updateRate) {
         bool readyToBoot = false;
         bool toCharselect = false;
 
-        /* PD-T6h2a DESCRIPTOR-LESS race-1 re-wait. The native CHARSELECT/
+        /* DESCRIPTOR-LESS race-1 re-wait. The native CHARSELECT/
          * TRACKSELECT fronted and the host START drove the room out of LOBBY, so
          * boot_race requested a boot the readiness gate refused (descriptor not
          * live yet) -- it set desclessBootPending and parked us here. Boot race 1
@@ -922,7 +927,7 @@ void mdkr_online_session_tick(s32 updateRate) {
             if (haveReSnap) {
                 online_session_stash_intended(&rsnap);
             }
-            /* PD-T6h2b UNWIND (Important-2a). The boot was deferred because the host
+            /* UNWIND. The boot was deferred because the host
              * STARTed (room left LOBBY) but the descriptor was not live yet. If the
              * LEADER now CANCELs loading (RETURN_TO_LOBBY -> CANCEL_LOADING,
              * lobby_core.c:660 / match_live_adapter.cpp:670) the room returns to
@@ -939,7 +944,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                 sOnlineSession.desclessBootPending = 0u;
                 sOnlineSession.desclessReWaitLastReady = 0xFFu;
                 sOnlineSession.desclessWaitTicks = 0u;
-                sOnlineSession.desclessWaitDeadlineNs = 0u; /* PD-T6h2c */
+                sOnlineSession.desclessWaitDeadlineNs = 0u;
                 sOnlineSession.phase = MDKR_ONLINE_SESSION_CHARSELECT;
                 sCharselectLeaveWarned = 0u;
                 mdkr_online_charselect_enter();
@@ -970,7 +975,7 @@ void mdkr_online_session_tick(s32 updateRate) {
             break;
         }
 
-        /* PD-T6ac LIVE residency re-wait: after a RESULTS advance we re-entered
+        /* LIVE residency re-wait: after a RESULTS advance we re-entered
          * LOBBY_WAIT and the launcher is re-cycling the room (REMATCH -> re-Ready
          * -> START) to a fresh race-ready transport. Boot the next race ONLY once
          * a NEW roster/descriptor is installed (match_epoch advanced past the
@@ -979,18 +984,17 @@ void mdkr_online_session_tick(s32 updateRate) {
          * from the first boot (raceCount 0) and from the scripted soak (which
          * re-boots inline off the RESULTS advance, never through here). */
         if (sOnlineSession.liveResident && sOnlineSession.raceCount > 0u) {
+            /* The readiness predicate is the shared helper (the same one the race-1
+             * re-wait uses); the local launch fetch is kept only for the witness
+             * log below. */
             const MdkrMatchLaunchDescriptorV1 *launch =
                 mdkr_net_roster_runtime_launch_descriptor();
-            bool ready =
-                launch != NULL && mdkr_net_roster_runtime_active() &&
-                launch->manifest.match_epoch != sOnlineSession.bootedEpoch &&
-                mdkr_match_input_runtime_active() &&
-                mdkr_match_input_runtime_epoch() == launch->manifest.match_epoch;
+            bool ready = online_session_descless_boot_ready();
             {
                 MdkrPartyLinkSnapshot rsnap;
                 if (mdkr_party_link_read(&rsnap)) {
                     online_session_stash_intended(&rsnap);
-                    /* PD-T6h2c/PD-T6d MID-TOURNAMENT CANCEL unwind (Minor-C/Minor-4).
+                    /* MID-TOURNAMENT CANCEL unwind.
                      * SINGLE-ENDPOINT only: rounds 2..N re-cycle the room from the
                      * launcher (LOBBY -> LOADING -> race-ready). If the LEADER cancels
                      * mid-tournament (RETURN_TO_LOBBY -> CANCEL_LOADING) the room
@@ -1000,7 +1004,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                      * SELECTING the re-wait observes is NOT mistaken for a cancel),
                      * then, on a return to LOBBY with our seat still present while not
                      * ready, note LEFT + platform_request_exit(0): a CLEAN engine->
-                     * launcher return-to-room (PD-T6d), replacing the PD-T6h2c re-front
+                     * launcher return-to-room, replacing the earlier re-front
                      * that dropped the human into the doomed 900-frame advance budget
                      * (a bounded ERROR exit(2)). Gated on singleEndpoint, so the
                      * loopback resident/lobby-tournament lanes are byte-unchanged. */
@@ -1025,7 +1029,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                     }
                 }
             }
-            /* M4: throttle to the first re-wait tick + every ready-state change,
+            /* throttle to the first re-wait tick + every ready-state change,
              * not every tick -- the frame-driven advance makes this wait span many
              * ticks and an unthrottled line would flood stderr. */
             if (sOnlineSession.liveReWaitLastReady != (u8) ready) {
@@ -1043,7 +1047,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                 online_session_boot_race();
             } else if (sOnlineSession.beganWithoutDescriptor &&
                        online_session_descless_watchdog_tick("per-round re-wait")) {
-                /* PD-T6h2b: a DESCRIPTOR-LESS session's per-round re-cycle never
+                /* a DESCRIPTOR-LESS session's per-round re-cycle never
                  * re-armed the next race (the launcher's REMATCH re-cycle wedged) --
                  * bound it + exit cleanly. Gated on beganWithoutDescriptor, so the
                  * resident lane (descriptor-first) is byte-behaviour-unchanged. */
@@ -1054,17 +1058,17 @@ void mdkr_online_session_tick(s32 updateRate) {
 
         /* Dormant unless a headless test seam is enabled. */
         online_session_test_maybe_script();
-        /* PD-T2: inert unless the CHARSELECT headless seam is armed; then it
+        /* inert unless the CHARSELECT headless seam is armed; then it
          * installs the forward feed and publishes a scripted LOBBY room. */
         mdkr_online_charselect_test_lobby_pump();
-        /* PD-T3: inert unless the TRACKSELECT headless seam is armed AND nothing
+        /* inert unless the TRACKSELECT headless seam is armed AND nothing
          * else installed the feed (the CHARSELECT seam owns install in the
          * combined lane); a defensive standalone install otherwise. */
         mdkr_online_trackselect_test_lobby_pump();
 
         haveSnap = mdkr_party_link_read(&snap);
         if (haveSnap) {
-            online_session_stash_intended(&snap); /* PD-T4 observability */
+            online_session_stash_intended(&snap); /* observability */
         }
         if (!haveSnap) {
             /* No live forward feed installed (legacy direct-boot / the launcher
@@ -1074,7 +1078,7 @@ void mdkr_online_session_tick(s32 updateRate) {
             readyToBoot = true;
         } else if (snap.phase == (uint8_t) MDKR_ONLINE_SESSION_LOBBY_PHASE) {
             /* Room is still selecting. Show the native CHARSELECT once a local
-             * seat is resolvable; otherwise keep idling (the PD-T1 session-boot
+             * seat is resolvable; otherwise keep idling (the session-boot
              * lane publishes an empty room and boots when the phase leaves
              * LOBBY). */
             toCharselect = online_session_snapshot_has_local_seat(&snap);
@@ -1101,7 +1105,7 @@ void mdkr_online_session_tick(s32 updateRate) {
     }
     case MDKR_ONLINE_SESSION_CHARSELECT: {
         MdkrOnlineCharselectResult r;
-        /* PD-T6d (Minor-3): pre-START remote-vacated detector. If the remote seat
+        /* pre-START remote-vacated detector. If the remote seat
          * leaves the LOBBY-phase room while we wait on CHARSELECT, note LEFT + exit
          * (debounced). Inert for a descriptor-first begin. Free the screen assets on
          * the trip (symmetry with the backout / FINISH exit-free paths). */
@@ -1110,7 +1114,7 @@ void mdkr_online_session_tick(s32 updateRate) {
             break;
         }
         {
-            /* PD-T4: track the host-intended pick as the room converges. M2:
+            /* track the host-intended pick as the room converges. M2:
              * stashing PRE-tick is correct here (unlike TRACKSELECT, which reads
              * POST-tick to capture the host's just-reduced SET_CONFIG_TRACK /
              * SET_CUP): CHARSELECT reduces NO host session config, so its tick
@@ -1124,16 +1128,16 @@ void mdkr_online_session_tick(s32 updateRate) {
         r = mdkr_online_charselect_tick(updateRate);
         if (r == MDKR_ONLINE_CHARSELECT_ADVANCE) {
             /* The authoritative lobby left LOBBY (host started / loading). This
-             * is the safety path (R-B) and the historical CHARSELECT-lane
+             * is the safety path and the historical CHARSELECT-lane
              * hand-off: boot the race directly. */
             mdkr_online_charselect_exit();
             online_session_boot_race();
         } else if (r == MDKR_ONLINE_CHARSELECT_STAY &&
                    online_session_trackselect_enabled() &&
                    mdkr_online_charselect_local_ready()) {
-            /* PD-T3 (R-B): once the local seat is confirmed+ready while the room
+            /* once the local seat is confirmed+ready while the room
              * is still in LOBBY, hand off to the native TRACKSELECT screen.
-             * F-I1: gate on the SCREEN's own confirmed+ready latch AS WELL AS the
+             * gate on the SCREEN's own confirmed+ready latch AS WELL AS the
              * snapshot's ready flag. The snapshot ready lags un-ready by >=1 pump
              * after a TRACKSELECT->CHARSELECT back-out, so relying on it alone
              * would one-frame flash charselect and re-advance; the screen latch
@@ -1152,7 +1156,7 @@ void mdkr_online_session_tick(s32 updateRate) {
         } else if (r == MDKR_ONLINE_CHARSELECT_LEAVE) {
             if (sOnlineSession.beganWithoutDescriptor &&
                 online_session_charselect_backout_honored()) {
-                /* PD-T6d LEFT handshake: a genuine browse-B backout on the
+                /* LEFT handshake: a genuine browse-B backout on the
                  * descriptor-less path returns to the launcher room. mdkr_online_
                  * charselect_exit frees the screen assets; note LEFT + request the
                  * clean platform exit so the launcher reads the reason + resumes. */
@@ -1180,7 +1184,7 @@ void mdkr_online_session_tick(s32 updateRate) {
     }
     case MDKR_ONLINE_SESSION_TRACKSELECT: {
         MdkrOnlineTrackselectResult r;
-        /* PD-T6d (Minor-3): pre-START remote-vacated detector (also covers the
+        /* pre-START remote-vacated detector (also covers the
          * TRACKSELECT wait). Inert for a descriptor-first begin. Free the screen
          * assets on the trip (symmetry with the other exit-free paths). */
         if (online_session_detect_remote_vacated("trackselect")) {
@@ -1189,7 +1193,7 @@ void mdkr_online_session_tick(s32 updateRate) {
         }
         r = mdkr_online_trackselect_tick(updateRate);
         {
-            /* PD-T4: read AFTER the tick so the host's just-reduced config
+            /* read AFTER the tick so the host's just-reduced config
              * (SET_CONFIG_TRACK / SET_CUP) is captured before any boot. */
             MdkrPartyLinkSnapshot tsSnap;
             if (mdkr_party_link_read(&tsSnap)) {
@@ -1201,11 +1205,11 @@ void mdkr_online_session_tick(s32 updateRate) {
             mdkr_online_trackselect_exit();
             online_session_boot_race();
         } else if (r == MDKR_ONLINE_TRACKSELECT_LEAVE) {
-            /* R-B: B on TRACKSELECT is a clean "back one level" to CHARSELECT
+            /* B on TRACKSELECT is a clean "back one level" to CHARSELECT
              * (NOT the leave-to-launcher stub). The local player re-readies on
              * CHARSELECT as a natural consequence. Deliberately do NOT reset
              * sCharselectLeaveWarned: this is a continuation of the same session,
-             * so the PD-T6 leave-to-launcher warn-once latch is preserved (a
+             * so the leave-to-launcher warn-once latch is preserved (a
              * browse-B on the re-entered CHARSELECT never re-spams the stub). */
             mdkr_online_trackselect_exit();
             sOnlineSession.phase = MDKR_ONLINE_SESSION_CHARSELECT;
@@ -1223,13 +1227,13 @@ void mdkr_online_session_tick(s32 updateRate) {
         online_session_boot_race();
         break;
     case MDKR_ONLINE_SESSION_RESULTS: {
-        /* PD-T5: the native RESULTS/STANDINGS screen, re-entered by the resident
+        /* the native RESULTS/STANDINGS screen, re-entered by the resident
          * post-race fork (mdkr_online_session_resume_results). Enter it once on
          * the first tick after the resume (the enter polls this race's captured
          * placements); the screen renders placements from the poll + the cup
          * points from the party_link snapshot. */
         MdkrOnlineResultsResult r;
-        /* Exit-gate C1: RESULTS remote-vacate detector (mirrors charselect :1069 /
+        /* RESULTS remote-vacate detector (mirrors charselect :1069 /
          * trackselect :1147), so a genuine host/remote departure or a stale feed
          * DURING a NON-FINAL results screen is caught gracefully (debounced, notes
          * LEFT + exits) instead of parking -- there is still a next round to
@@ -1251,7 +1255,7 @@ void mdkr_online_session_tick(s32 updateRate) {
         }
         if (sOnlineSession.resultsPending) {
             online_session_resident_resolve();
-            /* PD-T6ac LIVE residency: FREE the just-finished race level NOW, on
+            /* LIVE residency: FREE the just-finished race level NOW, on
              * RESULTS entry, before showing the screen. Unlike the scripted soak
              * (a transport-less autopilot race, harmless to keep loaded), a LIVE
              * race's rollback runtime keeps DRAINING its transport every frame
@@ -1269,7 +1273,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                 /* isFinal: no further race will boot (the ADVANCE off this
                  * screen would be the (N+1)th boot). The final STANDINGS holds
                  * on screen and the autoplay tick budget ends the process.
-                 * PD-T6h2a (M2): a descriptor-less (interactive) session has no
+                 * a descriptor-less (interactive) session has no
                  * resident env, so size finality from the FEED; the ENV path
                  * stays FIRST so the two resident lanes are byte-unchanged. */
                 u8 isFinal = sOnlineSession.beganWithoutDescriptor
@@ -1280,14 +1284,14 @@ void mdkr_online_session_tick(s32 updateRate) {
                 u8 raceIndex = (sOnlineSession.raceCount > 0u)
                                    ? (u8) (sOnlineSession.raceCount - 1u)
                                    : 0u;
-                /* PD-T6h2b: latch finality NOW (race_index still names this race) so
+                /* latch finality NOW (race_index still names this race) so
                  * the ADVANCE decision below is not fooled by the REMATCH advancing
                  * race_index before the screen returns ADVANCE. */
                 sOnlineSession.resultsIsFinal = isFinal;
                 mdkr_online_results_enter(isFinal, raceIndex);
             }
             sOnlineSession.resultsPending = 0u;
-            /* PD-T6h2c (Minor-A): the RESULTS-phase REMATCH-convergence hold is the
+            /* the RESULTS-phase REMATCH-convergence hold is the
              * THIRD descriptor-less wait. After the host commits the advance the
              * screen republishes REMATCH and HOLDS "STARTING NEXT RACE..." until the
              * snapshot leaves RESULTS -- on a real WAN a link drop mid-RESULTS (after
@@ -1299,7 +1303,7 @@ void mdkr_online_session_tick(s32 updateRate) {
             online_session_descless_wallclock_arm();
         }
         r = mdkr_online_results_tick(updateRate);
-        /* I-1: while the FINAL standings are shown with BOTH seats still present,
+        /* while the FINAL standings are shown with BOTH seats still present,
          * (re)capture the COMPLETE ranking with the SAME shared sort the STANDINGS
          * render runs (DRY). The champion CEREMONY celebrates THIS captured winner
          * rather than recomputing from a live snapshot that may have lost the host
@@ -1321,11 +1325,11 @@ void mdkr_online_session_tick(s32 updateRate) {
                 }
             }
         }
-        /* PD-T6h2c (Minor-A): bound the RESULTS hold. The results screen returns STAY
+        /* bound the RESULTS hold. The results screen returns STAY
          * during both its countdown and the post-commit REMATCH-convergence hold; the
          * wall-clock deadline (armed at enter) covers both. On a non-final race a wedge
          * after PUBLISH_RESULTS (REMATCH never lands) trips it -> route to a clean
-         * ERROR exit (Minor-B) rather than a silent RESULTS hang. The final STANDINGS
+         * ERROR exit rather than a silent RESULTS hang. The final STANDINGS
          * legitimately hold (resultsIsFinal), so do NOT bound that -- only a non-final
          * race is waiting for the next round. Single-endpoint only. */
         if (sOnlineSession.singleEndpoint && !sOnlineSession.resultsIsFinal &&
@@ -1334,7 +1338,7 @@ void mdkr_online_session_tick(s32 updateRate) {
             break;
         }
         if (r == MDKR_ONLINE_RESULTS_ADVANCE) {
-            /* Screens M-5 (exit-symmetry): free the RESULTS screen on the ADVANCE
+            /* Exit-symmetry: free the RESULTS screen on the ADVANCE
              * return ITSELF, unconditionally -- every other screen exits on its
              * non-STAY return, and this was the one _exit call gated on a second
              * predicate (shouldAdvance). Idempotent (sRes.assets latch), so a
@@ -1342,7 +1346,7 @@ void mdkr_online_session_tick(s32 updateRate) {
              * ADVANCE-while-!shouldAdvance busy-return that would re-tick a loaded
              * screen forever. */
             mdkr_online_results_exit();
-            /* PD-T6h2b (Minor-1): the RESULTS->next-race decision. A DESCRIPTOR-LESS
+            /* the RESULTS->next-race decision. A DESCRIPTOR-LESS
              * (lobby-start) session has no MDKR_APP_TEST_ONLINE_LIVE_RESIDENT env
              * (sResidentRaces == 0), so `raceCount < sResidentRaces` is always false
              * and the session would DEAD-END at RESULTS -- even though
@@ -1368,7 +1372,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                     unload_level_game();
                 }
                 if (sOnlineSession.liveResident) {
-                    /* PD-T6ac LIVE residency: do NOT boot inline -- the RESULTS
+                    /* LIVE residency: do NOT boot inline -- the RESULTS
                      * host-advance drove the reducer's REMATCH via the reverse
                      * feed, but the launcher must still re-Ready + START the room
                      * and re-install a fresh roster + match-input source (new
@@ -1376,7 +1380,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                      * transport. Re-enter LOBBY_WAIT, whose live re-wait gate boots
                      * once that fresh descriptor + match-input are live. */
                     sOnlineSession.phase = MDKR_ONLINE_SESSION_LOBBY_WAIT;
-                    /* PD-T6h2c: the per-round re-wait begins now -- arm its own fresh
+                    /* the per-round re-wait begins now -- arm its own fresh
                      * wall-clock budget (single-endpoint only), separate from the
                      * RESULTS hold's budget just consumed. */
                     sOnlineSession.desclessWaitDeadlineNs = 0u;
@@ -1398,15 +1402,15 @@ void mdkr_online_session_tick(s32 updateRate) {
              * raceCount == sResidentRaces (env-sized). The screen returned isFinal,
              * so it holds the final standings; nothing to boot. */
         } else if (r == MDKR_ONLINE_RESULTS_LEAVE) {
-            /* PD-T6d engine->launcher FINISH/RETURN handshake (replaces the PD-T6
-             * hold stub). The results screen returns LEAVE for the host's
+            /* engine->launcher FINISH/RETURN handshake. The results screen
+             * returns LEAVE for the host's
              * "A: FINISH" on the FINAL standings (resultsIsFinal) or a non-final
              * B-back. Free the screen assets, note the reason, and request the
              * clean platform exit so the launcher reads the reason + resumes the
              * Online Room. */
             mdkr_online_results_exit();
             if (sOnlineSession.resultsIsFinal) {
-                /* PD-T6f DETOUR: the tournament is over, so instead of the FINISHED
+                /* DETOUR: the tournament is over, so instead of the FINISHED
                  * handshake firing HERE, run the native champion CEREMONY first.
                  * The FINISHED note + platform_request_exit(0) below moved INTACT
                  * into the CEREMONY case, so it still fires EXACTLY ONCE (with the
@@ -1414,9 +1418,9 @@ void mdkr_online_session_tick(s32 updateRate) {
                  * The ceremony crowns the ranking CAPTURED above (the SAME shared
                  * sort the final STANDINGS showed, while both seats were present),
                  * so its champion agrees with the standings even if the winner's
-                 * seat then departs (I-1). */
+                 * seat then departs. */
                 sOnlineSession.phase = MDKR_ONLINE_SESSION_CEREMONY;
-                /* I-1: hand the ceremony the ranking captured while both seats
+                /* hand the ceremony the ranking captured while both seats
                  * were present. If nothing was captured (a disconnect so early the
                  * final standings never latched with two present), pass NULL and the
                  * ceremony falls back to a live compute (and refuses to crown a lone
@@ -1445,12 +1449,12 @@ void mdkr_online_session_tick(s32 updateRate) {
         break;
     }
     case MDKR_ONLINE_SESSION_CEREMONY: {
-        /* PD-T6f: the native champion celebration, entered from the final-standings
+        /* The native champion celebration, entered from the final-standings
          * FINISH above. It is a bounded, auto-advancing screen (timer fires for
          * every endpoint; a host may skip early; a remote vacate ends it promptly),
          * so it can NEVER hang the session. When it ends (ADVANCE/LEAVE), fall into
-         * the EXACT PD-T6d FINISHED handshake the RESULTS LEAVE used to fire inline
-         * -- freed screen assets, one FINISHED note, one platform_request_exit(0). */
+         * the FINISHED handshake -- freed screen assets, one FINISHED note, one
+         * platform_request_exit(0). */
         MdkrOnlineCeremonyResult r = mdkr_online_ceremony_tick(updateRate);
         if (r != MDKR_ONLINE_CEREMONY_STAY) {
             mdkr_online_ceremony_exit();
