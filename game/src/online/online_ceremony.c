@@ -179,6 +179,23 @@ static bool ceremony_has_local_seat(const MdkrPartyLinkSnapshot *snap) {
     return false;
 }
 
+/* The champion's display name, resolved from the CAPTURED character id (latched at
+ * the final standings, sCer.champChar) rather than the live seat -- so a
+ * disconnected winner still shows their canonical racer name (sOnlineNames)
+ * instead of a "Pn" slot fallback. It is the exact sibling of the portrait, which
+ * blits from the same sCer.champChar. On the happy path char_id[0] == the live
+ * champion's character and the real flow leaves seat names empty (party_link.c), so
+ * this returns the same canonical name the prior live-seat lookup produced. */
+static void ceremony_champ_name(char *out, size_t cap) {
+    if (sCer.champSeat == 0xFFu) {
+        (void) snprintf(out, cap, "(none)");
+    } else if (sCer.champChar < MDKR_ONLINE_PORTRAIT_COUNT) {
+        (void) snprintf(out, cap, "%s", sOnlineNames[sCer.champChar]);
+    } else {
+        (void) snprintf(out, cap, "P%u", (unsigned) sCer.champSeat + 1u);
+    }
+}
+
 /* ======================================================================== *
  * Render (native: real portraits + real font, into the engine frame list)
  * ======================================================================== */
@@ -200,7 +217,7 @@ static void ceremony_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
      * winner's name is BIGFONT gold (unmistakable); the total is FUNFONT because
      * BIGFONT has no digit glyphs (the RESULTS rank/points reason). */
     if (sCer.champSeat != 0xFFu) {
-        mdkr_online_screen_seat_name(snap, haveSnap, sCer.champSeat, name, sizeof(name));
+        ceremony_champ_name(name, sizeof(name));
         mdkr_online_screen_draw_portrait(sCer.champChar, CER_SCREEN_W_HALF - 22, 74,
                                255, 224, 96);
         (void) snprintf(line, sizeof(line), "%.12s%s", name,
@@ -304,16 +321,16 @@ void mdkr_online_ceremony_enter(const MdkrOnlineStandings *finalRanking) {
     if (crown) {
         sCer.champSeat = sCer.st.order[0];
         sCer.champPoints = sCer.st.points[0];
-        /* champChar is resolved from the live snapshot's captured seat only when
-         * that seat is still occupied. On a real disconnect the champion (host)
-         * seat is gone, so no portrait is drawn -- honest, and it never draws a
-         * different racer's face. On the happy path the seat is present, so this
-         * is byte-identical to the prior resolution. */
-        if (haveSnap && sCer.champSeat < MDKR_PARTY_LINK_SEATS &&
-            snap.seats[sCer.champSeat].occupied &&
-            snap.seats[sCer.champSeat].character_id < CER_CHAR_COUNT) {
-            sCer.champChar = snap.seats[sCer.champSeat].character_id;
-        }
+        /* champChar (and, via it, the champion's PORTRAIT + NAME) comes from the
+         * CAPTURED character id, not the live seat: on a real disconnect the
+         * winner's seat is gone from the live snapshot, but char_id[0] was latched
+         * at the final standings while both seats were present, so the true winner
+         * still shows their real face + canonical name instead of degrading to a
+         * "Pn"/no-portrait fallback. On the happy path char_id[0] == the live
+         * champion's character (the capture read the same published snapshot), so
+         * this is byte-identical to the prior live-seat resolution. */
+        sCer.champChar =
+            (sCer.st.char_id[0] < CER_CHAR_COUNT) ? sCer.st.char_id[0] : 0xFFu;
         sCer.champLocal = (localSeat >= 0 && (u8) localSeat == sCer.champSeat)
                               ? 1u
                               : 0u;
@@ -330,15 +347,12 @@ void mdkr_online_ceremony_enter(const MdkrOnlineStandings *finalRanking) {
     bgdraw_fillcolour(16, 24, 48); /* match the charselect/trackselect/results backdrop */
     sound_play(CER_SFX_CELEBRATE, NULL);
 
-    /* Only resolve a name for a real champion seat; a feed-less endpoint (no
-     * champion) logs "(none)" rather than the misleading "P256" a slot-255 name
-     * fallback would print. Witness cosmetics only -- the render path already
-     * guards the no-champion case ("CUP COMPLETE"). */
-    if (sCer.champSeat != 0xFFu) {
-        mdkr_online_screen_seat_name(&snap, haveSnap, sCer.champSeat, name, sizeof(name));
-    } else {
-        (void) snprintf(name, sizeof(name), "(none)");
-    }
+    /* Resolve the champion name from the CAPTURED character id (ceremony_champ_name):
+     * a real champion shows their canonical racer name even after their seat has
+     * disconnected, a feed-less endpoint (no champion) logs "(none)". Witness
+     * cosmetics only -- the render path already guards the no-champion case
+     * ("CUP COMPLETE"). */
+    ceremony_champ_name(name, sizeof(name));
     fprintf(stderr,
             "[online-ceremony] enter: champion seat=%u name=%.12s points=%u "
             "seats=%u local=%u (native cup celebration; offline trophy cinematic "

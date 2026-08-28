@@ -33,12 +33,18 @@ extern "C" {
 #endif
 
 /* Occupied seats ranked best-first. order[i] is the canonical seat slot, with
- * points[i] / lastpl[i] parallel to it; count is the number of occupied seats.
- * After compute(), order[0] / points[0] is the champion + their final total. */
+ * points[i] / lastpl[i] / char_id[i] parallel to it; count is the number of
+ * occupied seats. After compute(), order[0] / points[0] is the champion + their
+ * final total, and char_id[0] is the champion's captured character id. char_id is
+ * latched HERE (not re-read from a live seat) so the champion CEREMONY can still
+ * resolve the winner's portrait + canonical name after that seat has DISCONNECTED
+ * -- the departed winner keeps their real face/name instead of degrading to a "Pn"
+ * slot fallback. */
 typedef struct MdkrOnlineStandings {
     u8 order[MDKR_PARTY_LINK_SEATS];
     u16 points[MDKR_PARTY_LINK_SEATS];
     u8 lastpl[MDKR_PARTY_LINK_SEATS];
+    u8 char_id[MDKR_PARTY_LINK_SEATS];
     unsigned count;
 } MdkrOnlineStandings;
 
@@ -59,6 +65,7 @@ static inline void mdkr_online_standings_compute(
             out->order[out->count] = (u8) i;
             out->points[out->count] = snap->points[i];
             out->lastpl[out->count] = snap->last_placements[i];
+            out->char_id[out->count] = snap->seats[i].character_id;
             out->count++;
         }
     }
@@ -80,6 +87,11 @@ static inline void mdkr_online_standings_compute(
                     u8 tl = out->lastpl[i];
                     out->lastpl[i] = out->lastpl[j];
                     out->lastpl[j] = tl;
+                }
+                {
+                    u8 tc = out->char_id[i];
+                    out->char_id[i] = out->char_id[j];
+                    out->char_id[j] = tc;
                 }
             }
         }

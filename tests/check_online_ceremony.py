@@ -318,13 +318,19 @@ def check_champion_on_disconnect(binary: Path, rom: Path, verbose: bool) -> int 
     ASSERTS the ceremony crowns the CAPTURED winner: champion == the remote seat
     (seat 1) with the winner's higher points, seats == 2 (the captured ranking, NOT
     a degraded 1-seat live recompute), and champLocal == 0 (the local loser is NOT
-    told it won). The ceremony ends via the REAL remote-vacate path -- proof the
-    live snapshot truly lost the remote seat while the crown still came from the
-    capture. FINISHED still fires exactly once, rc 0.
+    told it won). It ALSO asserts (M4) the departed winner still shows their REAL
+    identity -- the ceremony resolves the champion name (and portrait) from the
+    CAPTURED char_id, so it prints the canonical "BUMPER" (slot 1 == online char 5)
+    rather than the "Pn" slot fallback a live-seat lookup gives once the winning seat
+    is gone. The ceremony ends via the REAL remote-vacate path -- proof the live
+    snapshot truly lost the remote seat while the crown still came from the capture.
+    FINISHED still fires exactly once, rc 0.
 
     PRE-FIX this FAILS: recomputing over the seat-absent live snapshot yields
     count=1, order[0]=the surviving local seat, so the witness would read
-    champion=0 points=<loser total> seats=1 local=1 -- the wrong-winner defect."""
+    champion=0 points=<loser total> seats=1 local=1 -- the wrong-winner defect; and
+    even with the correct crown, PRE-M4 the champion name degrades to "P2" with no
+    portrait because the winner's live seat is gone."""
     tag = "host-gone-champion"
     try:
         rc, output = run_engine(
@@ -386,7 +392,7 @@ def check_champion_on_disconnect(binary: Path, rom: Path, verbose: bool) -> int 
     if not enter:
         return fail(f"[{tag}] no ceremony ENTER witness (with champLocal) to read "
                     f"the crowned champion from", output)
-    seat, _name, points, seats, local = enter.groups()
+    seat, name, points, seats, local = enter.groups()
     if int(seat) != 1:
         return fail(f"[{tag}] ceremony crowned seat={seat}, not the remote winner "
                     f"seat 1 -- the surviving local loser was mis-crowned (the "
@@ -401,6 +407,23 @@ def check_champion_on_disconnect(binary: Path, rom: Path, verbose: bool) -> int 
     if int(local) != 0:
         return fail(f"[{tag}] champLocal={local} -- the local LOSER was crowned as "
                     f"[YOU] (the pre-fix survivor mis-crown)", output)
+    # M4: the DEPARTED winner still shows their REAL character/name, resolved from
+    # the CAPTURED char_id -- not the live seat, which lost the winner. The resident
+    # rig seats the remote winner (slot 1) as Bumper (online char 5), so the ceremony
+    # must show the canonical "BUMPER". PRE-M4 the champion name/portrait were re-read
+    # from the (now seat-absent) live snapshot, degrading the name to the "Pn" slot
+    # fallback ("P2") with no portrait; the captured-char_id resolution restores both.
+    name = name.strip()
+    if re.fullmatch(r"P\d+", name):
+        return fail(f"[{tag}] champion name={name!r} is a 'Pn' slot fallback -- the "
+                    f"disconnected winner's identity was lost (pre-M4: the live seat "
+                    f"was gone, so no real char/name/portrait resolved)", output)
+    if name != "BUMPER":
+        return fail(f"[{tag}] champion name={name!r}, expected the departed winner's "
+                    f"canonical character name 'BUMPER' (slot 1 == online char 5), "
+                    f"resolved from the captured char_id -- the M4 portrait+name fix "
+                    f"(a valid char also means the real portrait is blit, not blank)",
+                    output)
     return None
 
 
@@ -436,9 +459,11 @@ def main() -> int:
         "never a park; assets freed on every exit path; (host-gone-champion, I-1) "
         "with the WINNING remote seat genuinely absent from the ceremony's live "
         "snapshot the ceremony crowns the CAPTURED true winner (the departed "
-        "remote/higher-points seat, seats=2, champLocal=0) -- NOT the surviving "
-        "local loser a 1-seat live recompute would mis-crown -- and still reaches "
-        "the single FINISHED via the real remote-vacate path.")
+        "remote/higher-points seat, seats=2, champLocal=0) with their REAL "
+        "character name+portrait resolved from the captured char_id (canonical "
+        "'BUMPER', not the 'Pn' fallback) -- NOT the surviving local loser a 1-seat "
+        "live recompute would mis-crown -- and still reaches the single FINISHED via "
+        "the real remote-vacate path.")
     return 0
 
 
