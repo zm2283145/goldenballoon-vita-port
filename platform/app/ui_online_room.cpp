@@ -774,11 +774,22 @@ BetaFakeInviteOverride g_betaFakeInvite;
 enum class BetaSelectingRender { None, Handoff, FullSelect };
 BetaSelectingRender g_betaSelectingRender = BetaSelectingRender::None;
 
+// Records which branch drawBetaResultsBody last rendered: the concise native "the
+// game is showing results" hand-off card, or the full ImGui results/standings/replay
+// fallback (per-race placements, cumulative standings, champion banner, the
+// Next-Race / Race-Again / New-Tournament prompts). Same witness discipline as
+// g_betaSelectingRender: emitted by the render seam as a semantic witness a headless
+// test asserts on, written by a single enum assignment on the live path too
+// (negligible), consulted only by the seam.
+enum class BetaResultsRender { None, Handoff, FullResults };
+BetaResultsRender g_betaResultsRender = BetaResultsRender::None;
+
 // TEST-ONLY: when the render seam builds a "*-fallback" stage it sets this so
-// drawBetaSelectingBody reads the native takeover as NOT engaged, reproducing the
-// post-LEFT/ERROR state (latch SET, nothing pending) in which the full ImGui
-// recovery grid is reachable at BASE. The live/production beta path never sets it,
-// so the real takeover gate (OnlineRoom_roomReadyTakeoverEngaged) is unchanged.
+// drawBetaSelectingBody / drawBetaResultsBody read the native takeover as NOT
+// engaged, reproducing the post-LEFT/ERROR state (latch SET, nothing pending) in
+// which the full ImGui recovery grid (SELECTING) or results/standings/replay body
+// (RESULTS) is reachable at BASE. The live/production beta path never sets it, so the
+// real takeover gate (OnlineRoom_roomReadyTakeoverEngaged) is unchanged.
 bool g_betaFakeForceFallback = false;
 
 // Restrict the join-code field to the 6 digits the fallback code uses. This
@@ -2185,6 +2196,28 @@ void drawBetaNativeHandoffCard(bool tournament) {
     ui::CardEnd();
 }
 
+// ---- Native RESULTS hand-off card -------------------------------------------
+// After a race the native RESULTS screen + the MORE-RACES chooser + the champion
+// ceremony (T4) OWN per-race placements, cumulative standings, the champion banner
+// AND every replay choice (Race Again / Change Track / Change Cup / New Tournament /
+// Change Character+Vehicle / Finish) for EVERY online mode -- single race and
+// tournament alike. This concise card replaces the WHOLE ImGui results/standings/
+// replay surface so the human never lands on a stale standings body -- or worse, an
+// editable Next-Race / New-Tournament prompt -- the game already owns. It is the
+// exact RESULTS mirror of the SELECTING hand-off (T3) and is shown ONLY while the
+// takeover is engaged (OnlineRoom_roomReadyTakeoverEngaged); after a LEFT/ERROR
+// return that predicate is false and the full ImGui results fallback shows instead,
+// so this card never lies.
+void drawBetaNativeResultsHandoffCard() {
+    if (ui::CardBegin("##beta-native-results-handoff", AppTheme::accent(), 0.0f)) {
+        ImGui::TextUnformatted("The game is showing results…");
+        ui::TextSubtleWrapped(
+            "Standings, the trophy ceremony, and your options for more races "
+            "are all in the game — pick what's next on screen.");
+    }
+    ui::CardEnd();
+}
+
 // ---- The MK8D-style lobby body (SELECTING, snapshot-backed) ----------------
 // Roster strip, host settings card (or the joiner's read-only mirror), the
 // always-interactive racer grid, the vehicle chips, and the Ready/Start
@@ -2370,6 +2403,26 @@ void drawBetaResultsBody(LauncherState &state,
     drawBetaRosterStrip(lobby, localEndpoint);
     ui::Gap(ui::kGapM);
 
+    // Native takeover window (T6): after T4 the native RESULTS + MORE-RACES chooser +
+    // champion ceremony own placements, standings, the banner AND every replay choice
+    // for EVERY online mode, so this whole ImGui results/standings/replay surface is
+    // dead while the takeover is engaged. Show only the roster strip (already drawn)
+    // and a concise hand-off card -- the exact RESULTS mirror of the SELECTING
+    // hand-off (T3). OnlineRoom_roomReadyTakeoverEngaged() is mode-agnostic; a
+    // LEFT/ERROR return leaves the latch SET with nothing pending, the predicate is
+    // then false, and the FULL ImGui results fallback below is the working recovery at
+    // BASE (R7: recovery is never worse than base). The render seam forces
+    // g_betaFakeForceFallback for its "*-fallback" stages to capture that recovery
+    // state headlessly; the live path never sets it.
+    bool takeoverEngaged = OnlineRoom_roomReadyTakeoverEngaged();
+    if (g_betaFakeForceFallback) takeoverEngaged = false;
+    if (takeoverEngaged) {
+        g_betaResultsRender = BetaResultsRender::Handoff;
+        drawBetaNativeResultsHandoffCard();
+        return;
+    }
+    g_betaResultsRender = BetaResultsRender::FullResults;
+
     const bool tournament = lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT &&
                             lobby.cup_id != MDKR_ONLINE_NO_CUP;
     const bool finalRound =
@@ -2461,25 +2514,14 @@ void drawBetaResultsBody(LauncherState &state,
                           "1 with fresh points."
                         : "Waiting for the host to start a new tournament or "
                           "end the session.");
-            } else if (OnlineRoom_roomReadyTakeoverEngaged()) {
-                // With the re-arm in place a tournament's races run
-                // in-process under the native takeover, so when the takeover is still
-                // live the host's Next Race (RACE_AGAIN -> REMATCH) flips the room back
-                // to SELECTING where the room-ready trigger hands the next race to the
-                // native screens -- a concise hand-off note is honest here.
-                ui::TextSubtleWrapped(
-                    isLeader
-                        ? "Continue the tournament — the game takes over from "
-                          "the next race."
-                        : "Waiting for the host to continue — the game takes "
-                          "over from the next race.");
             } else {
-                // The native takeover is NOT live in this
-                // room (a LEFT/ERROR return left the latch set with nothing pending),
-                // so the ImGui per-race fallback IS the continuation -- show the honest
-                // Next-Race prompt, never a false hand-off promise. The
-                // Next Race button below then re-races this cup round via the race-boot
-                // fallback, exactly as at BASE.
+                // This full results body is only reached when the native takeover is
+                // NOT engaged (a LEFT/ERROR return left the latch set with nothing
+                // pending -- the top-of-body gate already handed off otherwise), so the
+                // ImGui per-race fallback IS the continuation -- show the honest
+                // Next-Race prompt, never a false hand-off promise. The Next Race button
+                // below then re-races this cup round via the race-boot fallback, exactly
+                // as at BASE.
                 const MdkrOnlineTrackInfo *nextTrack =
                     mdkr_online_track_by_id(mdkr_online_cup_track_id(
                         lobby.cup_id,
@@ -2892,6 +2934,49 @@ void betaFakeBuildSelectingStage(MdkrOnlineViewModel *model,
     model->local_member_is_leader = true;
 }
 
+// A faithful 2-seat RESULTS lobby + view model for the native-RESULTS hand-off body,
+// for either mode. `fallback` reproduces the post-LEFT/ERROR recovery state (the
+// takeover is no longer engaged), the ONLY state in which the full ImGui results/
+// standings/replay body is reachable -- so the seam captures both the concise
+// hand-off card (fallback=false) and the recovery results body (fallback=true).
+// Tournament uses the FINAL round (champion banner + final standings); single race
+// uses the two-placement body.
+void betaFakeBuildResultsStage(MdkrOnlineViewModel *model,
+                               MdkrOnlineLobby *lobby, bool *haveLobby,
+                               bool tournament, bool fallback) {
+    g_betaFakeForceFallback = fallback;
+    betaFakeInitLobby(lobby,
+                      tournament ? MDKR_ONLINE_MODE_TOURNAMENT
+                                 : MDKR_ONLINE_MODE_SINGLE_RACE,
+                      MDKR_ONLINE_RESULTS);
+    lobby->seats[0].character_id = 2u;  // Pipsy (you)
+    lobby->seats[1].character_id = 1u;  // Timber (friend)
+    lobby->last_placements[0] = 0u;  // 1st this race
+    lobby->last_placements[1] = 1u;  // 2nd this race
+    if (tournament) {
+        lobby->cup_id = 0u;  // first cup
+        lobby->race_index =
+            static_cast<std::uint8_t>(MDKR_ONLINE_CUP_ROUNDS - 1u);  // final
+        lobby->points[0] = 34u;
+        lobby->points[1] = 30u;
+    }
+    *haveLobby = true;
+    model->kind = MDKR_ONLINE_VIEW_RESULTS;
+    model->title = tournament ? "Race Complete" : "Race Results";
+    model->explanation =
+        tournament ? "The trophy is decided." : "The race is decided.";
+    model->primary = betaFakeControl(
+        MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN,
+        tournament ? "New Tournament" : "Race Again");
+    model->secondary = betaFakeControl(
+        MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS, "Connection Details");
+    model->cancel =
+        betaFakeControl(MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM, "Leave Room");
+    model->member_count = 2u;
+    model->seat_count = 2u;
+    model->local_member_is_leader = true;
+}
+
 // Build (model, lobby, haveLobby) for one stage and arm/disarm the fake invite.
 // Returns false for an unknown stage.
 bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
@@ -2956,31 +3041,28 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
         betaFakeBuildSelectingStage(model, lobby, haveLobby, true, true);
         return true;
     }
+    // RESULTS body, native takeover engaged (the shipping post-race state for BOTH
+    // modes): drawBetaResultsBody shows the concise "showing results" hand-off card
+    // and NO standings/replay body -- the native RESULTS + MORE-RACES chooser +
+    // ceremony (T4) own all of that. "results" is single race; "finished" is a
+    // tournament-final alias (champion decided) -- both hand off on the native path.
+    if (std::strcmp(stage, "results") == 0) {
+        betaFakeBuildResultsStage(model, lobby, haveLobby, false, false);
+        return true;
+    }
     if (std::strcmp(stage, "finished") == 0) {
-        betaFakeInitLobby(lobby, MDKR_ONLINE_MODE_TOURNAMENT,
-                          MDKR_ONLINE_RESULTS);
-        lobby->cup_id = 0u;  // first cup
-        lobby->race_index =
-            static_cast<std::uint8_t>(MDKR_ONLINE_CUP_ROUNDS - 1u);  // final
-        lobby->seats[0].character_id = 2u;  // Pipsy (you)
-        lobby->seats[1].character_id = 1u;  // Timber (friend)
-        lobby->points[0] = 34u;
-        lobby->points[1] = 30u;
-        lobby->last_placements[0] = 0u;  // 1st this race
-        lobby->last_placements[1] = 1u;  // 2nd this race
-        *haveLobby = true;
-        model->kind = MDKR_ONLINE_VIEW_RESULTS;
-        model->title = "Race Complete";
-        model->explanation = "The trophy is decided.";
-        model->primary = betaFakeControl(MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN,
-                                         "New Tournament");
-        model->secondary = betaFakeControl(
-            MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS, "Connection Details");
-        model->cancel =
-            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM, "Leave Room");
-        model->member_count = 2u;
-        model->seat_count = 2u;
-        model->local_member_is_leader = true;
+        betaFakeBuildResultsStage(model, lobby, haveLobby, true, false);
+        return true;
+    }
+    // RESULTS body, native takeover NOT engaged (a LEFT/ERROR native return): the full
+    // ImGui results/standings/replay body IS reachable, exactly as at BASE -- proof R7
+    // recovery is never worse than base for either mode.
+    if (std::strcmp(stage, "results-fallback") == 0) {
+        betaFakeBuildResultsStage(model, lobby, haveLobby, false, true);
+        return true;
+    }
+    if (std::strcmp(stage, "finished-fallback") == 0) {
+        betaFakeBuildResultsStage(model, lobby, haveLobby, true, true);
         return true;
     }
     if (std::strcmp(stage, "recovery") == 0) {
@@ -3032,8 +3114,8 @@ void drawBetaRoomFake(LauncherState &state) {
             "Unknown Beta Stage",
             "Set MDKR_APP_ONLINE_BETA_STAGE to one of: chooser, joincode, "
             "invite, phrase, room-single, room-tournament, handoff, "
-            "room-single-fallback, room-tournament-fallback, finished, "
-            "recovery.");
+            "room-single-fallback, room-tournament-fallback, results, "
+            "results-fallback, finished, finished-fallback, recovery.");
         return;
     }
 
@@ -3101,6 +3183,20 @@ void drawBetaRoomFake(LauncherState &state) {
                lobby.phase == MDKR_ONLINE_RESULTS) {
         drawBetaResultsBody(state, model, lobby);
         primaryDrawn = true;
+        // Semantic witness for the headless results-retire test: which RESULTS surface
+        // drawBetaResultsBody produced -- the concise native "showing results" hand-off
+        // card, or the full ImGui results/standings/replay fallback body (placements +
+        // standings + champion banner + Next-Race/New-Tournament prompts). Emitted only
+        // from the render seam, never the live path.
+        std::fprintf(
+            stderr,
+            "[online-beta-results] stage=%s mode=%s render=%s\n", stage,
+            lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT ? "tournament" : "single",
+            g_betaResultsRender == BetaResultsRender::Handoff
+                ? "handoff"
+                : g_betaResultsRender == BetaResultsRender::FullResults
+                      ? "full-results"
+                      : "none");
     } else {
         primaryDrawn = drawBetaSelection(model);
     }
