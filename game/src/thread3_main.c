@@ -708,54 +708,81 @@ void unload_level_game(void) {
  * Involves the updating of all objects and setting up the render scene.
  */
 #if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
-/* Controller-disconnect shared pause (AP-10), lobby-scoped this task. While any
- * bound seat's pad is absent during ACTIVE_LOBBY, force the ONE shared pause and
- * block unpause (re-asserting *paused after the pause menu has run); when every
- * bound pad is present again the host may confirm resume as normal. Pad presence
- * is the platform API, overridable by the MDKR_AP_DROP_PAD test injector so a
- * headless route can simulate a mid-session drop (the input-script presence mask
- * is whole-route and cannot). */
-static void adventure_party_disconnect_tick(s8 *paused) {
+/* Controller-disconnect shared pause (AP-10), lobby-scoped this task. Pad
+ * presence is the platform API, overridable by the MDKR_AP_DROP_PAD test injector
+ * so a headless route can simulate a mid-session drop (the input-script presence
+ * mask is whole-route and cannot). Split into a GUARDED force-open and a
+ * block-unpause so a drop can never bypass the retail pause guards. */
+
+/* 1 if a bound seat's controller is absent during the lobby -> the shared pause
+ * must be held. Fills *out_seat (when non-NULL) with the first missing bound
+ * seat (host seat as fallback). Reads pad presence, then the pure policy
+ * decision. */
+static int adventure_party_disconnect_hold(int *out_seat) {
     AdventurePartySession *s = adventure_party_runtime_session();
-    static int sPrevHold;
-    int seat, n, present_mask, hold, dropped;
+    int seat, n, present_mask = 0;
     if (!adventure_party_runtime_is_active() ||
         s->state != ADVENTURE_PARTY_STATE_ACTIVE_LOBBY) {
-        sPrevHold = 0;
-        return;
+        return 0;
     }
     n = adventure_party_participant_count(s);
-    present_mask = 0;
     for (seat = 0; seat < n; seat++) {
         /* Hub binding is identity (seat i -> controller port i, Task 7). */
-        int absent = !platform_pad_present(seat) ||
-                     mdkr_test_pad_absent(seat);
-        if (!absent) {
+        if (platform_pad_present(seat) && !mdkr_test_pad_absent(seat)) {
             present_mask |= (1 << seat);
         }
     }
-    hold = adventure_party_disconnect_should_pause(s->roster.seat_mask,
-                                                   (uint8_t) present_mask);
-    if (hold) {
-        if (!*paused) {
-            *paused = TRUE;
-            menu_pause_init();
-        } else {
-            *paused = TRUE; /* block unpause while a bound pad is missing */
+    if (!adventure_party_disconnect_should_pause(s->roster.seat_mask,
+                                                 (uint8_t) present_mask)) {
+        return 0;
+    }
+    if (out_seat) {
+        *out_seat = adventure_party_host_seat(s);
+        for (seat = 0; seat < n; seat++) {
+            if (!(present_mask & (1 << seat))) { *out_seat = seat; break; }
         }
-        if (!sPrevHold) {
-            dropped = adventure_party_host_seat(s);
-            for (seat = 0; seat < n; seat++) {
-                if (!(present_mask & (1 << seat))) { dropped = seat; break; }
-            }
-            adventure_party_trace_emit_interaction(
-                (uint8_t) dropped, ADVENTURE_PARTY_ACTION_PAUSE_DECISION,
-                ADVENTURE_PARTY_ARBITRATE_REJECTED_SEAT);
-        }
-    } else if (sPrevHold) {
-        /* Every bound pad is back: resume is unblocked (host confirms). */
+    }
+    return 1;
+}
+
+/* Part A -- force the shared pause OPEN on a bound-pad drop, but ONLY under the
+ * exact safety guards the retail Start open uses: never mid-fade during a door
+ * transition (racer_enter_door raises gPauseLockTimer every tick precisely to
+ * forbid pausing then, which would otherwise inject a QUIT-capable menu while a
+ * func_8006D968 load is still pending), never mid-level-load, out of INGAME, in
+ * a post-race screen, a scene push, or a cutscene. The hold persists, so a drop
+ * inside the door window simply opens the pause on the next safe frame (the
+ * destination lobby). Called at the retail open site, so gPauseLockTimer is the
+ * un-decremented value set by this frame's obj_update. Emits the drop diagnostic
+ * only when the pause actually opens. */
+static void adventure_party_disconnect_open_if_safe(void) {
+    int dropped;
+    if (is_game_paused() || !adventure_party_disconnect_hold(&dropped)) {
+        return;
+    }
+    if (level_properties_get() != 0 || gDrumstickSceneLoadTimer != 0 ||
+        gGameMode != GAMEMODE_INGAME || gPostRaceViewPort != FALSE ||
+        gLevelLoadTimer != 0 || gPauseLockTimer != 0) {
+        return; /* not a safe frame -- the hold persists, retry next frame */
+    }
+    gIsPaused = TRUE;
+    menu_pause_init();
+    adventure_party_trace_emit_interaction(
+        (uint8_t) dropped, ADVENTURE_PARTY_ACTION_PAUSE_DECISION,
+        ADVENTURE_PARTY_ARBITRATE_REJECTED_SEAT);
+}
+
+/* Part B -- BLOCK unpause: while a bound pad is missing, re-assert a pause that
+ * was already open before the menu ran (never opens a fresh one; that is Part A's
+ * guarded job). Emits the resume diagnostic when every bound pad returns. */
+static void adventure_party_disconnect_block_unpause(s8 was_paused) {
+    static int sPrevHold;
+    int hold = adventure_party_disconnect_hold(NULL);
+    if (hold && was_paused) {
+        gIsPaused = TRUE;
+    } else if (!hold && sPrevHold) {
         adventure_party_trace_emit_interaction(
-            (uint8_t) adventure_party_host_seat(s),
+            (uint8_t) adventure_party_host_seat(adventure_party_runtime_session()),
             ADVENTURE_PARTY_ACTION_PAUSE_DECISION,
             ADVENTURE_PARTY_ARBITRATE_LATCHED);
     }
@@ -806,6 +833,13 @@ void mode_game(s32 updateRate) {
                 gIsPaused = TRUE;
                 menu_pause_init();
             }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+            /* A dropped bound pad forces the shared pause here, under the very
+             * same guards as the Start open above (this frame's un-decremented
+             * gPauseLockTimer), so a drop mid-door-transition waits for a safe
+             * frame instead of injecting a QUIT-capable menu mid-fade. */
+            adventure_party_disconnect_open_if_safe();
+#endif
         }
     } else {
         set_anti_aliasing(TRUE);
@@ -972,6 +1006,11 @@ void mode_game(s32 updateRate) {
             menu_close_dialogue();
         }
     }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* Whether the shared pause was open BEFORE the menu runs, so the disconnect
+     * block-unpause below re-asserts only a pause that already existed. */
+    s8 apWasPaused = gIsPaused;
+#endif
     if (gIsPaused) {
         i = menu_pause_loop(&gCurrDisplayList, updateRate);
         switch (i) {
@@ -1033,10 +1072,10 @@ void mode_game(s32 updateRate) {
         }
     }
 #if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
-    /* After the pause menu has run, force/hold the shared pause if a bound
-     * controller is missing (runs last so it overrides a host CONTINUE that
-     * would otherwise unpause while a pad is still absent). */
-    adventure_party_disconnect_tick(&gIsPaused);
+    /* Block unpause: after the pause menu has run, re-assert the shared pause if a
+     * bound controller is still missing (overrides a host CONTINUE). Only ever
+     * re-asserts a pause that was already open -- Part A owns the guarded open. */
+    adventure_party_disconnect_block_unpause(apWasPaused);
 #endif
     if (!sRollbackResimulating
 #ifdef NATIVE_PORT

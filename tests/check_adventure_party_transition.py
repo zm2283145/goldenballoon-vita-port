@@ -278,6 +278,35 @@ def main():
                         "shared pause (no aparty_interaction seat=2 "
                         f"action={ACTION_PAUSE} verdict={VERDICT_REJECTED_SEAT})")
 
+    # --- Disconnect during the door window: the forced pause must WAIT for a
+    #     safe frame (the destination lobby). racer_enter_door raises the pause
+    #     lockout every tick during the fade precisely to forbid pausing, so a
+    #     drop then must NOT inject a QUIT-capable menu while func_8006D968 is
+    #     still pending -- it would compose this task's own two features into the
+    #     competing-transition state it exists to prevent. Drop a NON-winner pad
+    #     (seat 1) mid-fade while the host drives seat 0 through E12. ---
+    guard = run_arm(binary, rom, admit3, 3, seat_route=f"0={HUB_TO_E12}",
+                    drop="1@2685", frames=3600, verbose=args.verbose)
+    g_tr = transitions(guard)
+    if len(g_tr) != 1 or g_tr[0][1] != DEST_LEVEL_ID:
+        failures.append(f"disconnect-guard: door transition did not complete cleanly "
+                        f"(competing quit?), transitions={g_tr}")
+    if len(dest_loads(guard)) != 1:
+        failures.append(f"disconnect-guard: expected exactly one destination load, "
+                        f"saw {dest_loads(guard)}")
+    glines = guard.splitlines()
+    load_i = next((k for k, l in enumerate(glines)
+                   if f"level_load: levelId={DEST_LEVEL_ID}" in l), -1)
+    drop_i = next((k for k, l in enumerate(glines)
+                   if re.search(r"aparty_interaction: seat=\d+ action=1 verdict=-3", l)),
+                  -1)
+    if drop_i < 0:
+        failures.append("disconnect-guard: the pad drop never forced the shared pause")
+    elif load_i < 0 or drop_i < load_i:
+        failures.append("disconnect-guard: the forced pause opened BEFORE the destination "
+                        "lobby loaded -- a pad drop bypassed the door-transition pause "
+                        "lockout (retail open guards)")
+
     # --- Positive control 1: single-door output must FAIL conflicting asserts ---
     if not assert_conflicting(single3, 3, "PC-conflict"):
         failures.append("positive control: single-door output PASSED the conflicting "
@@ -298,7 +327,9 @@ def main():
     print("check_adventure_party_transition: PASS -- one arbitrated whole-party "
           "transition per generation (single + conflicting doors, 2P/3P), any-seat "
           "balloon collect-once, non-host pause open with host resume authority, "
-          "and disconnect-forced shared pause; both positive controls fired")
+          "disconnect-forced shared pause, and a mid-door-window drop that waits for "
+          "the destination lobby (no pause bypasses the transition lockout); both "
+          "positive controls fired")
     return 0
 
 
