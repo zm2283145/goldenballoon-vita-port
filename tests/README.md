@@ -968,7 +968,11 @@ only; the engine must reject that mismatch before tick one, exit nonzero without
 an abort, and complete owner-last host teardown. `match_manifest`, `net_roster`
 and `rollback_game_runtime` separately pin atomic manifest+roster publication,
 standard-rules-only validation, track/race-type/regional-cadence matching, and
-wrong-value controls. Passing `--profile` repeats all four isolated endpoints under
+wrong-value controls. `tests/check_net_roster_owner_guard.py` is a standalone
+source proof (host `cc`, no ROM, no CMake target) that a local-Play boot cannot
+inherit an online session's process-global roster and stall on network input
+that never arrives -- ownership is explicit and the guard is idempotent. Passing
+`--profile` repeats all four isolated endpoints under
 LAN, regional-good, regional-variable, poor, two-second-outage or adversarial
 packet/clock schedules. Ordinary through poor must complete and converge;
 outage/adversarial must preserve the exact pre-fault prefix, detect the first

@@ -617,6 +617,9 @@ CHECKS = (
           "raw pointer/token narrowing confined to typed boundary helpers"),
     Check("delta_inventory", "check_delta_inventory.py", "source",
           "every //!@Delta simulation-cadence site carries an M0 classification"),
+    Check("net_roster_owner_guard", "check_net_roster_owner_guard.py", "source",
+          "local-Play boot cannot inherit a foreign online roster; ownership is "
+          "explicit and the guard is idempotent (compiles + runs standalone)"),
     Check("harness_isolation", "check_harness_isolation.py", "source",
           "every check that isolates MDKR_SAVE_DIR also pins "
           "MDKR_VIDEO_CONFIG_PATH, so a repo-root mdkr64.ini cannot reach "
@@ -1022,6 +1025,41 @@ WORKFLOW_COMPANION_SCRIPTS = {
     "check_browser_local_only_release.py",
 }
 
+# The native online-takeover (Golden Balloon beta) regression lanes. Every one
+# boots the REAL engine off the ROM and is TIMING-SENSITIVE (wall-clock
+# watchdogs, live loopback-transport convergence, countdown dwells that only
+# behave with the machine to themselves), so they must NEVER enter this parallel
+# runner's pool. They are OWNED by tools/run_online_checks.py -- the serial
+# aggregating exit gate that runs each lane strictly one at a time -- and several
+# are also runnable standalone. Registered here as owned/known so run_checks.py
+# --list and check_ci_contract accept the tree WITHOUT the runner ever executing
+# a flaky online lane. (online_process_convergence and online_profile_rematch
+# ship as real CHECKS entries above, and online_live_transport_e2e as the
+# browser_local capstone, so they are deliberately absent from this set.)
+ONLINE_TAKEOVER_SCRIPTS = {
+    "check_online_camera_lens.py",
+    "check_online_ceremony.py",
+    "check_online_charselect.py",
+    "check_online_engine_boot.py",
+    "check_online_engine_boot_direct.py",
+    "check_online_isolation_selftest.py",
+    "check_online_joiner_terminal.py",
+    "check_online_lobby_single_endpoint.py",
+    "check_online_lobby_start.py",
+    "check_online_lobby_takeover.py",
+    "check_online_lobby_tournament.py",
+    "check_online_partition_integrity.py",
+    "check_online_peer_loss.py",
+    "check_online_rearm_third.py",
+    "check_online_resident_live.py",
+    "check_online_room_ready_rearm.py",
+    "check_online_session_boot.py",
+    "check_online_session_end.py",
+    "check_online_session_results.py",
+    "check_online_tournament.py",
+    "check_online_trackselect.py",
+}
+
 
 def cmake_registered_test_scripts() -> set[str]:
     """Script basenames a CMake ``add_test()`` command actually runs."""
@@ -1044,7 +1082,8 @@ def cmake_registered_test_scripts() -> set[str]:
 def validate_manifest() -> None:
     discovered = {path.name for path in TESTS.glob("check_*.py")}
     registered = ({check.script for check in CHECKS if check.script} |
-                  CTEST_COMPANION_SCRIPTS | WORKFLOW_COMPANION_SCRIPTS)
+                  CTEST_COMPANION_SCRIPTS | WORKFLOW_COMPANION_SCRIPTS |
+                  ONLINE_TAKEOVER_SCRIPTS)
     missing = sorted(discovered - registered)
     stale = sorted(registered - discovered)
     duplicate_names = sorted(
