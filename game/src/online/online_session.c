@@ -201,11 +201,11 @@ static u32 sTestHoldTicks;
  * MDKR_TEST_ONLINE_SESSION_MODE_INTERLUDE = the cup id to stash under tournament).
  * -1 unresolved, -2 off. When on, the first half of the hold publishes
  * mode=TOURNAMENT + that cup (so the session STASHES the cup's round-0 track),
- * then the second half flips to mode=SINGLE (no track). M1 must clear the sticky
- * stash on that mode change, so the boot logs "track honored" on the SINGLE
- * manifest; if the M1 clear is reverted the stale cup track lingers and the boot
+ * then the second half flips to mode=SINGLE (no track). The session must clear the
+ * sticky stash on that mode change, so the boot logs "track honored" on the SINGLE
+ * manifest; if that clear is reverted the stale cup track lingers and the boot
  * logs a "track divergence" -- which the session-boot lane's interlude scenario
- * asserts against, making this a NON-vacuous M1 regression guard. */
+ * asserts against, making this a NON-vacuous regression guard. */
 static s8 sInterludeCup = -1;
 
 static void online_session_interlude_resolve(void) {
@@ -246,7 +246,7 @@ static void online_session_test_maybe_script(void) {
     snap.cup_id = MDKR_PARTY_LINK_CUP_UNSET;             /* 0xFF == none */
     snap.mode = (uint8_t) MDKR_PARTY_LINK_MODE_SINGLE;
     /* interlude: TOURNAMENT (stash the cup's round-0 track) for the first half
-     * of the hold, then SINGLE (M1 must clear the stale stash). */
+     * of the hold, then SINGLE (the session must clear the stale stash). */
     if (sInterludeCup >= 0 &&
         sOnlineSession.lobbyWaitTicks < (sTestHoldTicks / 2u)) {
         snap.mode = (uint8_t) MDKR_PARTY_LINK_MODE_TOURNAMENT;
@@ -720,11 +720,11 @@ static bool online_session_remote_vacate_forced(void) {
     return sRemoteVacateResolved > 0;
 }
 
-/* Final-review P2 probe (env MDKR_TEST_ONLINE_REMOTE_VACATE_AT_RESULTS_FINAL):
+/* Remote-vacate probe (env MDKR_TEST_ONLINE_REMOTE_VACATE_AT_RESULTS_FINAL):
  * force the remote-seat-vacated predicate ONLY once the FINAL standings are latched
  * (resultsIsFinal). This is scoped to resultsIsFinal so it stays inert during the
  * non-final results screens (the cup proceeds normally) and only reads the remote
- * as gone at the terminal -- exactly the condition the P2 gate now guards. Without
+ * as gone at the terminal -- exactly the condition the gate now guards. Without
  * the gate the detector would trip -> LEFT; with the gate the detector is never
  * called at the final standings, so the dwell -> FINISHED wins. Off in every normal
  * run (resolved once). */
@@ -1114,8 +1114,8 @@ void mdkr_online_session_tick(s32 updateRate) {
             break;
         }
         {
-            /* track the host-intended pick as the room converges. M2:
-             * stashing PRE-tick is correct here (unlike TRACKSELECT, which reads
+            /* track the host-intended pick as the room converges.
+             * Stashing PRE-tick is correct here (unlike TRACKSELECT, which reads
              * POST-tick to capture the host's just-reduced SET_CONFIG_TRACK /
              * SET_CUP): CHARSELECT reduces NO host session config, so its tick
              * cannot change the intended track and there is nothing to read after
@@ -1239,7 +1239,7 @@ void mdkr_online_session_tick(s32 updateRate) {
          * LEFT + exits) instead of parking -- there is still a next round to
          * coordinate, so a vanished remote means the round can never proceed.
          *
-         * Final-review P2 (code M5 / design C-4): GATE this on !resultsIsFinal. At
+         * GATE this on !resultsIsFinal. At
          * the FINAL standings the match is COMPLETE -- nothing remains to coordinate
          * -- and the joiner has EARNED its FINISHED + champion ceremony. Running the
          * detector there let a 45-tick (0.75s) remote-vacate PRE-EMPT the joiner's

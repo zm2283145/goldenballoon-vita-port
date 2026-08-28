@@ -168,7 +168,7 @@ static u32 sWitnessKey = 0xFFFFFFFFu;
 static s32 sWitnessRemoteSeat = -2;
 
 /* Resolved (display-only) view of the remote seat, with a bounded, NUL-forced
- * name copy -- seat->name is untrusted (T6 makes it remote-controlled). */
+ * name copy -- seat->name is untrusted (remote-controlled). */
 typedef struct CsRemoteView {
     s8 seat;      /* remote seat index, -1 when none */
     u8 present;   /* an occupied remote seat exists */
@@ -420,7 +420,7 @@ static void charselect_draw_label(u8 onlineId, s32 dy, s32 fontId, char *text,
 }
 
 /* Resolve the (first occupied, non-local) remote seat into a bounded view.
- * NOTE fenced 2-endpoint beta: first remote seat only (code M6). T6 revisits for
+ * NOTE fenced 2-endpoint beta: first remote seat only. Revisit for
  * true 4-player rendering. */
 static void charselect_resolve_remote(const MdkrPartyLinkSnapshot *snap,
                                       bool haveSnap, s32 localSeat,
