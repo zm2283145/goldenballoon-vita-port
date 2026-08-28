@@ -77,18 +77,35 @@ static inline s32 mdkr_online_screen_local_seat(
     return -1;
 }
 
-/* Draw text into the engine frame's display list with the given font + colour.
- * A 1px near-black drop shadow is drawn first so plain menu text stays legible
- * over the scrolling-sky backdrop (the retail technique) -- without it, light
- * body text washes out on the brighter world skies. Applied here once so every
- * native screen's text pops uniformly (DRY). */
+/* Draw text into the engine frame's display list with the given font + colour,
+ * wrapped in a legibility SCRIM (T7b).
+ *
+ * The scrim is an 8-direction near-black halo drawn behind every glyph -- a
+ * per-glyph dark backing that keeps body text crisp over even the brightest
+ * world sky. T7 flagged that the authentic scrolling skies washed out light body
+ * text on trackselect/results even WITH the former single 1px drop shadow; a full
+ * halo fixes it. This is the retail "outline the font" technique, NOT a heavy
+ * opaque box, and it is deliberately built from proven draw_text calls only -- no
+ * raw fill-rect microcode (the RDP-state hazard online_results.c's chooser text
+ * documented) and, crucially, the halo lives in the SAME virtual coordinate space
+ * as the glyphs, so it can never mis-register the way a framebuffer-space
+ * fill-rect panel would on the aspect-scaled widescreen host. Applied here once so
+ * EVERY native online screen's text (charselect / vehicle / track / results /
+ * ceremony) pops uniformly over the busy sky (DRY -- the screens cannot drift). */
 static inline void mdkr_online_screen_text(s32 x, s32 y, s32 fontId, char *text,
                                            AlignmentFlags align, s32 r, s32 g,
                                            s32 b) {
+    /* +-1 virtual unit == a clean thin halo at the menu font scale (the same
+     * offsets online_results.c's chooser proved legible over the brightest sky). */
+    static const s32 ox[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+    static const s32 oy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+    unsigned i;
     set_text_font(fontId);
     set_text_background_colour(0, 0, 0, 0);
     set_text_colour(0, 0, 0, 0, 255);
-    draw_text(&gCurrDisplayList, x + 1, y + 1, text, align);
+    for (i = 0u; i < 8u; i++) {
+        draw_text(&gCurrDisplayList, x + ox[i], y + oy[i], text, align);
+    }
     set_text_colour(r, g, b, 0, 255);
     draw_text(&gCurrDisplayList, x, y, text, align);
 }

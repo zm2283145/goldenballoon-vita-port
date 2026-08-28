@@ -782,25 +782,13 @@ static void results_chooser_witness(void) {
             (unsigned) sRes.chooserChoice);
 }
 
-/* Chooser text with a BOLD black outline (an 8-direction halo, not just the
- * shared 1px drop-shadow) so the SMALLFONT option list stays crisp over even the
- * BRIGHTEST world sky -- the "dark scrim for contrast over the busy sky" the brief
- * calls for, done per-glyph with proven draw_text calls (no raw fill-rect
- * microcode). The colour pass reuses mdkr_online_screen_text (its own +1 shadow
- * rides inside the halo). */
+/* Chooser text. The BOLD 8-direction black legibility halo this used to draw
+ * locally was promoted (T7b) into the shared mdkr_online_screen_text scrim, which
+ * now applies it uniformly to EVERY native online screen -- so this is a thin
+ * forwarder, kept only so the chooser's many call sites read unchanged and never
+ * double-halo (which a local outline + the shared scrim would now do). */
 static void results_chooser_text(s32 x, s32 y, s32 fontId, char *text,
                                  AlignmentFlags align, s32 r, s32 g, s32 b) {
-    /* +-1 virtual unit == ~8 render px at the 8x menu scale: a clean thin halo,
-     * not the fat merged bars a +-2 (16px) outline made. */
-    static const s32 ox[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
-    static const s32 oy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
-    unsigned i;
-    set_text_font(fontId);
-    set_text_background_colour(0, 0, 0, 0);
-    set_text_colour(0, 0, 0, 0, 255);
-    for (i = 0u; i < 8u; i++) {
-        draw_text(&gCurrDisplayList, x + ox[i], y + oy[i], text, align);
-    }
     mdkr_online_screen_text(x, y, fontId, text, align, r, g, b);
 }
 

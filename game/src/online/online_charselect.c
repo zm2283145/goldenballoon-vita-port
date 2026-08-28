@@ -418,10 +418,11 @@ static void charselect_draw_label(u8 onlineId, s32 dy, s32 fontId, char *text,
     s32 row = (s32) (onlineId / CS_COLS);
     s32 cx = CS_GRID_X + col * CS_CELL_W + CS_PORTRAIT_HALF;
     s32 y = CS_GRID_Y + row * CS_CELL_H + dy;
-    set_text_font(fontId);
-    set_text_background_colour(0, 0, 0, 0);
-    set_text_colour(r, g, b, 0, 255);
-    draw_text(&gCurrDisplayList, cx, y, text, ALIGN_MIDDLE_CENTER);
+    /* Route through the shared scrim helper so the grid labels get the SAME
+     * legibility halo as every other native online screen (T7b) -- they sit over
+     * the bright hub sky and were the one text block still bypassing it (a raw
+     * draw_text). */
+    mdkr_online_screen_text(cx, y, fontId, text, ALIGN_MIDDLE_CENTER, r, g, b);
 }
 
 /* Resolve the (first occupied, non-local) remote seat into a bounded view.
