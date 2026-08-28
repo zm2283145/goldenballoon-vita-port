@@ -76,6 +76,30 @@ class PublicSurfaceGuardTests(unittest.TestCase):
             [],
         )
 
+    def test_extensionless_fuzz_seed_keeps_binary_content_scan(self) -> None:
+        safe_seed = b"\x81\x05hello\0wire"
+        self.assertEqual(
+            guard.blob_hits(
+                "tests/fuzz_corpus/protocol/valid_frame",
+                safe_seed,
+                self.patterns,
+            ),
+            [],
+        )
+        marker = "Cl" + "aude generated hidden fixture"
+        unsafe_seed = b"\x81\x00" + marker.encode() + b"\0wire"
+        hits = guard.blob_hits(
+            "tests/fuzz_corpus/protocol/unsafe_frame",
+            unsafe_seed,
+            self.patterns,
+        )
+        self.assertEqual(len(hits), 1)
+        self.assertIn("high-risk text in binary blob", hits[0])
+        self.assertEqual(
+            guard.blob_hits("fixtures/extensionless", safe_seed, self.patterns),
+            ["fixtures/extensionless: NUL byte in text/source-like public blob"],
+        )
+
     def test_detector_paths_are_not_blanket_content_exemptions(self) -> None:
         marker = "Cl" + "aude"
         self.assertTrue(
