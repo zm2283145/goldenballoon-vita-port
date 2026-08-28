@@ -50,9 +50,13 @@ PACKAGE_SCHEMA_V1 = "mdkr-character-source-v1"
 PACKAGE_SCHEMA = "mdkr-character-source-v2"
 PACKAGE_SCHEMA_V3 = "mdkr-character-source-v3"
 PACKAGE_SCHEMA_V4 = "mdkr-character-source-v4"
+PACKAGE_SCHEMA_V5 = "mdkr-character-source-v5"
 PACKAGE_SCHEMAS = {
     PACKAGE_SCHEMA_V1, PACKAGE_SCHEMA, PACKAGE_SCHEMA_V3, PACKAGE_SCHEMA_V4,
+    PACKAGE_SCHEMA_V5,
 }
+IDENTITY_SCHEMAS = {PACKAGE_SCHEMA_V3, PACKAGE_SCHEMA_V4, PACKAGE_SCHEMA_V5}
+RIG_SCHEMAS = {PACKAGE_SCHEMA_V4, PACKAGE_SCHEMA_V5}
 PACKAGE_MEMBERS = ("manifest.json", "model.glb", "LICENSE.txt")
 PORTABLE_PACKAGE_MEMBERS = PACKAGE_MEMBERS + ("compiled.mdkc",)
 PACKAGE_MEMBERS_V3 = (
@@ -105,6 +109,9 @@ HUMANOID_ROLES = (
     "upper_leg.right", "lower_leg.right", "foot.right",
 )
 HUMANOID_ROLE_SET = set(HUMANOID_ROLES)
+MAX_SECONDARY_CHAINS = 8
+MAX_SECONDARY_JOINTS = 64
+MAX_SECONDARY_JOINTS_PER_CHAIN = 16
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")
 SEMANTIC_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -633,7 +640,7 @@ def _inspect_texture_png(
 
 
 def package_members_for_schema(schema: object, portable: bool = False) -> tuple[str, ...]:
-    if schema in (PACKAGE_SCHEMA_V3, PACKAGE_SCHEMA_V4):
+    if schema in IDENTITY_SCHEMAS:
         return PORTABLE_PACKAGE_MEMBERS_V3 if portable else PACKAGE_MEMBERS_V3
     return PORTABLE_PACKAGE_MEMBERS if portable else PACKAGE_MEMBERS
 
@@ -921,7 +928,7 @@ def _gltf_float32(value: Any) -> float | None:
 def _validate_glb_scene_and_materials(
     document: dict[str, Any], errors: list[str]
 ) -> None:
-    """Validate the JSON contracts consumed directly by cache version 1."""
+    """Validate the JSON contracts consumed by the private cache compiler."""
     array_names = (
         "scenes", "nodes", "meshes", "materials", "images", "textures",
         "samplers", "skins", "animations",
@@ -2365,6 +2372,7 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
         "schema", "id", "display_name", "renderer_profile", "license",
         "animations", "gameplay", "presentation", "sockets", "model",
         "model_sha256", "license_file", "identity", "rig",
+        "secondary_motion",
     }
     for field in sorted(set(manifest) - allowed):
         errors.append(f"manifest contains unknown field {field!r}")
@@ -2385,9 +2393,9 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
     if manifest.get("renderer_profile") != "modern-skeletal-v1":
         errors.append("manifest.renderer_profile must be 'modern-skeletal-v1'")
     identity = manifest.get("identity")
-    if schema in (PACKAGE_SCHEMA_V3, PACKAGE_SCHEMA_V4):
+    if schema in IDENTITY_SCHEMAS:
         if not isinstance(identity, dict):
-            errors.append("manifest.identity object is required for v3/v4")
+            errors.append("manifest.identity object is required for v3/v4/v5")
         else:
             for field in sorted(set(identity) - {
                 "portrait_file", "portrait_sha256", "minimap_rgb",
@@ -2427,11 +2435,11 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
                         "printable UTF-8 bytes when present"
                     )
     elif identity is not None:
-        errors.append("manifest.identity requires mdkr-character-source-v3 or v4")
+        errors.append("manifest.identity requires mdkr-character-source-v3, v4, or v5")
     rig = manifest.get("rig")
-    if schema == PACKAGE_SCHEMA_V4:
+    if schema in RIG_SCHEMAS:
         if not isinstance(rig, dict):
-            errors.append("manifest.rig object is required for v4")
+            errors.append("manifest.rig object is required for v4/v5")
         else:
             for field in sorted(set(rig) - {"mode", "reviewed", "roles"}):
                 errors.append(f"manifest.rig contains unknown field {field!r}")
@@ -2458,10 +2466,13 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
                     if not isinstance(mapping, dict):
                         errors.append(f"manifest.rig.roles.{role} must be an object")
                         continue
-                    for field in sorted(set(mapping) - {
+                    role_fields = {
                         "node", "inferred", "confidence", "rest_rotation_xyzw",
                         "bend_axis",
-                    }):
+                    }
+                    if schema == PACKAGE_SCHEMA_V5:
+                        role_fields.add("constraint")
+                    for field in sorted(set(mapping) - role_fields):
                         errors.append(
                             f"manifest.rig.roles.{role} contains unknown field {field!r}"
                         )
@@ -2521,6 +2532,74 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
                             errors.append(
                                 f"manifest.rig.roles.{role}.bend_axis must be zero or normalized"
                             )
+                    constraint = mapping.get("constraint")
+                    if constraint is not None:
+                        constraint_path = f"manifest.rig.roles.{role}.constraint"
+                        if schema != PACKAGE_SCHEMA_V5:
+                            errors.append(
+                                f"{constraint_path} requires mdkr-character-source-v5"
+                            )
+                        elif not isinstance(constraint, dict):
+                            errors.append(f"{constraint_path} must be an object")
+                        else:
+                            constraint_fields = {
+                                "twist_axis", "swing_limit_degrees",
+                                "twist_min_degrees", "twist_max_degrees",
+                            }
+                            for field in sorted(set(constraint) - constraint_fields):
+                                errors.append(
+                                    f"{constraint_path} contains unknown field {field!r}"
+                                )
+                            missing = sorted(constraint_fields - set(constraint))
+                            if missing:
+                                errors.append(
+                                    f"{constraint_path} is missing: " + ", ".join(missing)
+                                )
+                            axis = constraint.get("twist_axis")
+                            if (
+                                not isinstance(axis, list) or len(axis) != 3
+                                or any(
+                                    isinstance(value, bool)
+                                    or not isinstance(value, (int, float))
+                                    or not math.isfinite(float(value))
+                                    for value in axis
+                                )
+                                or not 0.999 <= sum(
+                                    float(value) ** 2 for value in axis
+                                ) <= 1.001
+                            ):
+                                errors.append(
+                                    f"{constraint_path}.twist_axis must be a normalized vector"
+                                )
+                            limits: dict[str, float] = {}
+                            for field, minimum, maximum in (
+                                ("swing_limit_degrees", 0.0, 180.0),
+                                ("twist_min_degrees", -180.0, 180.0),
+                                ("twist_max_degrees", -180.0, 180.0),
+                            ):
+                                value = constraint.get(field)
+                                if (
+                                    isinstance(value, bool)
+                                    or not isinstance(value, (int, float))
+                                    or not math.isfinite(float(value))
+                                    or not minimum <= float(value) <= maximum
+                                ):
+                                    errors.append(
+                                        f"{constraint_path}.{field} must be between "
+                                        f"{minimum:g} and {maximum:g} degrees"
+                                    )
+                                else:
+                                    limits[field] = float(value)
+                            if (
+                                "twist_min_degrees" in limits
+                                and "twist_max_degrees" in limits
+                                and limits["twist_min_degrees"]
+                                > limits["twist_max_degrees"]
+                            ):
+                                errors.append(
+                                    f"{constraint_path}.twist_min_degrees must not exceed "
+                                    "twist_max_degrees"
+                                )
                 if len(mapped_nodes) != len(set(mapped_nodes)):
                     errors.append("manifest.rig.roles must map to distinct nodes")
                 if mode == "humanoid-retarget-v1":
@@ -2531,7 +2610,118 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
                             + ", ".join(missing_roles)
                         )
     elif rig is not None:
-        errors.append("manifest.rig requires mdkr-character-source-v4")
+        errors.append("manifest.rig requires mdkr-character-source-v4 or v5")
+
+    secondary = manifest.get("secondary_motion")
+    if secondary is not None:
+        if schema != PACKAGE_SCHEMA_V5:
+            errors.append(
+                "manifest.secondary_motion requires mdkr-character-source-v5"
+            )
+        elif not isinstance(secondary, dict):
+            errors.append("manifest.secondary_motion must be an object")
+        else:
+            for field in sorted(set(secondary) - {"chains"}):
+                errors.append(
+                    f"manifest.secondary_motion contains unknown field {field!r}"
+                )
+            chains = secondary.get("chains")
+            if not isinstance(chains, list):
+                errors.append("manifest.secondary_motion.chains must be an array")
+            elif not 1 <= len(chains) <= MAX_SECONDARY_CHAINS:
+                errors.append(
+                    "manifest.secondary_motion.chains must contain between 1 and "
+                    f"{MAX_SECONDARY_CHAINS} chains"
+                )
+            else:
+                names: list[str] = []
+                roots: list[str] = []
+                dynamic_nodes: list[str] = []
+                for index, chain in enumerate(chains):
+                    path = f"manifest.secondary_motion.chains[{index}]"
+                    if not isinstance(chain, dict):
+                        errors.append(f"{path} must be an object")
+                        continue
+                    fields = {
+                        "name", "root", "joints", "bend_axis", "stiffness_hz",
+                        "damping_ratio", "inertia", "max_angle_degrees",
+                    }
+                    for field in sorted(set(chain) - fields):
+                        errors.append(f"{path} contains unknown field {field!r}")
+                    missing = sorted(fields - set(chain))
+                    if missing:
+                        errors.append(f"{path} is missing: " + ", ".join(missing))
+                    name = chain.get("name")
+                    if not isinstance(name, str) or SEMANTIC_RE.fullmatch(name) is None:
+                        errors.append(f"{path}.name must be a lowercase semantic slug")
+                    else:
+                        names.append(name)
+                    root = chain.get("root")
+                    if not isinstance(root, str) or not root.strip():
+                        errors.append(f"{path}.root must name a node")
+                    else:
+                        roots.append(root)
+                    joints = chain.get("joints")
+                    if (
+                        not isinstance(joints, list)
+                        or not 1 <= len(joints) <= MAX_SECONDARY_JOINTS_PER_CHAIN
+                        or any(not isinstance(node, str) or not node.strip()
+                               for node in joints)
+                        or len(joints) != len(set(joints))
+                    ):
+                        errors.append(
+                            f"{path}.joints must contain 1-{MAX_SECONDARY_JOINTS_PER_CHAIN} "
+                            "unique node names"
+                        )
+                    else:
+                        dynamic_nodes.extend(joints)
+                        if isinstance(root, str) and root in joints:
+                            errors.append(f"{path}.root must not also be a dynamic joint")
+                    axis = chain.get("bend_axis")
+                    if (
+                        not isinstance(axis, list) or len(axis) != 3
+                        or any(
+                            isinstance(value, bool)
+                            or not isinstance(value, (int, float))
+                            or not math.isfinite(float(value))
+                            for value in axis
+                        )
+                        or not 0.999 <= sum(float(value) ** 2 for value in axis) <= 1.001
+                    ):
+                        errors.append(f"{path}.bend_axis must be a normalized vector")
+                    for field, minimum, maximum in (
+                        ("stiffness_hz", 0.1, 30.0),
+                        ("damping_ratio", 0.0, 2.0),
+                        ("inertia", 0.0, 1.0),
+                        ("max_angle_degrees", 0.0, 90.0),
+                    ):
+                        value = chain.get(field)
+                        if (
+                            isinstance(value, bool)
+                            or not isinstance(value, (int, float))
+                            or not math.isfinite(float(value))
+                            or not minimum <= float(value) <= maximum
+                        ):
+                            errors.append(
+                                f"{path}.{field} must be between {minimum:g} and {maximum:g}"
+                            )
+                if len(names) != len(set(names)):
+                    errors.append("manifest.secondary_motion chain names must be unique")
+                if len(dynamic_nodes) > MAX_SECONDARY_JOINTS:
+                    errors.append(
+                        "manifest.secondary_motion exceeds the total dynamic-joint limit "
+                        f"of {MAX_SECONDARY_JOINTS}"
+                    )
+                if len(dynamic_nodes) != len(set(dynamic_nodes)):
+                    errors.append(
+                        "manifest.secondary_motion dynamic joints must not overlap chains"
+                    )
+                rooted_dynamic = sorted(set(roots).intersection(dynamic_nodes))
+                if rooted_dynamic:
+                    errors.append(
+                        "manifest.secondary_motion roots must not be dynamic joints: "
+                        + ", ".join(rooted_dynamic)
+                    )
     license_info = manifest.get("license")
     if not isinstance(license_info, dict):
         errors.append("manifest.license object is required")
@@ -2642,7 +2832,7 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
     presentation = manifest.get("presentation")
     if not isinstance(presentation, dict):
         errors.append("manifest.presentation object is required")
-    elif schema in (PACKAGE_SCHEMA, PACKAGE_SCHEMA_V3, PACKAGE_SCHEMA_V4):
+    elif schema in ({PACKAGE_SCHEMA} | IDENTITY_SCHEMAS):
         for field in sorted(set(presentation) - {
             "source_forward", "target_height_m", "contexts", "lod_bias"
         }):
@@ -2840,9 +3030,9 @@ def build_package(model_path: Path, manifest_path: Path, license_path: Path,
         raise ProbeError("manifest root must be an object")
     portrait = None
     portrait_report = None
-    if manifest.get("schema") in (PACKAGE_SCHEMA_V3, PACKAGE_SCHEMA_V4):
+    if manifest.get("schema") in IDENTITY_SCHEMAS:
         if portrait_path is None:
-            raise ProbeError("v3/v4 packages require --portrait")
+            raise ProbeError("v3/v4/v5 packages require --portrait")
         portrait = _read_bounded(portrait_path, MAX_PORTRAIT_BYTES, "portrait.png")
         portrait_report = inspect_portrait_png(portrait)
         identity = manifest.get("identity")
@@ -2854,7 +3044,7 @@ def build_package(model_path: Path, manifest_path: Path, license_path: Path,
         manifest = dict(manifest)
         manifest["identity"] = identity
     elif portrait_path is not None:
-        raise ProbeError("--portrait requires mdkr-character-source-v3 or v4")
+        raise ProbeError("--portrait requires mdkr-character-source-v3, v4, or v5")
     manifest_errors = validate_manifest(manifest, report)
     if manifest_errors:
         raise ProbeError("invalid manifest: " + "; ".join(manifest_errors))
@@ -2901,7 +3091,12 @@ def _compiled_cache_valid(data: bytes) -> bool:
     if len(data) < 832:
         return False
     magic, version, header_bytes, file_bytes = struct.unpack_from("<4sIIQ", data, 0)
-    if magic != b"MDKC" or version != 1 or header_bytes != 832 or file_bytes != len(data):
+    expected_headers = {1: 832, 2: 928}
+    if (
+        magic != b"MDKC"
+        or header_bytes != expected_headers.get(version)
+        or file_bytes != len(data)
+    ):
         return False
     expected_crc = struct.unpack_from("<I", data, 52)[0]
     return (zlib.crc32(data[header_bytes:]) & 0xFFFFFFFF) == expected_crc
@@ -2983,7 +3178,7 @@ def verify_package(path: Path) -> dict[str, Any]:
     if manifest.get("model_sha256") != _sha256(model):
         errors.append("manifest model_sha256 does not match model.glb")
     portrait_report = None
-    if manifest.get("schema") in (PACKAGE_SCHEMA_V3, PACKAGE_SCHEMA_V4):
+    if manifest.get("schema") in IDENTITY_SCHEMAS:
         portrait = archive.read("portrait.png")
         try:
             portrait_report = inspect_portrait_png(portrait)
@@ -3100,7 +3295,7 @@ def _parser() -> argparse.ArgumentParser:
     pack.add_argument("--compiled-cache", type=Path)
     pack.add_argument(
         "--portrait", type=Path,
-        help="square 8-bit RGB/RGBA PNG required by source-v3/v4",
+        help="square 8-bit RGB/RGBA PNG required by source-v3/v4/v5",
     )
     verify = sub.add_parser("verify", help="verify an existing .mdkrchar source package")
     verify.add_argument("input", type=Path)

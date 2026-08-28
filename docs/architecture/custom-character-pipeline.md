@@ -93,6 +93,15 @@ content-addressed paths;
   missing select/race semantics plus bounded vehicle hand/foot contact solving.
   Authored clips take precedence and remain unmodified. Exact vehicle previews
   report post-warm-up solve count and mean/maximum physical contact error.
+- source-v5 motion-safety metadata: optional per-role cone/twist limits and up
+  to eight named, non-overlapping secondary chains (64 dynamic joints total),
+  with normalized local axes and bounded spring parameters. Compiler-v9 emits
+  typed MDKC-v2 sections and the native loader independently verifies role
+  binding, direct parent paths, uniqueness and every numeric bound. The pose
+  player clamps bind-relative swing/twist before and after vehicle contacts,
+  and advances secondary deflection on a fixed 240 Hz accumulator with bounded
+  hitch resets and exact held-sample resets. The corresponding Studio is the
+  next implementation gate.
 
 This is deliberately a vertical slice, not a claim of production readiness.
 OpenGL intentionally falls back to the retail driver, while WebGPU now has an
@@ -267,7 +276,7 @@ versions for every character. A virtual identity registry over donor assets is
 the scalable design; a canonical gameplay-profile registry can be added later
 without pretending custom stats are cosmetic.
 
-## Source package contracts (`mdkr-character-source-v2`, `v3`, and `v4`)
+## Source package contracts (`mdkr-character-source-v2` through `v5`)
 
 The spike implements the smallest useful envelope in
 `tools/character_asset_probe.py`:
@@ -275,14 +284,14 @@ The spike implements the smallest useful envelope in
 ```text
 manifest.json
 model.glb
-[portrait.png] # required by v3/v4; absent from v1/v2
+[portrait.png] # required by v3/v4/v5; absent from v1/v2
 LICENSE.txt
 [compiled.mdkc]  # optional author-prepared cache for native player import
 ```
 
 Entries have a fixed order, are stored without compression, timestamped at the
 ZIP epoch, and restricted to regular files. `manifest.json` records the SHA-256 of
-`model.glb`; v3/v4 also record the SHA-256 of `portrait.png`. This makes repeated builds byte-identical and gives the cache,
+`model.glb`; v3/v4/v5 also record the SHA-256 of `portrait.png`. This makes repeated builds byte-identical and gives the cache,
 multiplayer compatibility layer, and bug reports one stable content identity.
 `character_package_manager.py prepare` adds `compiled.mdkc` as the last
 canonical stored member. The Python manager recompiles and byte-compares that
@@ -455,6 +464,42 @@ exactly opposite the current limb direction; zero requests a stable automatic
 axis. Rig Studio exposes both under each role, normalizes edited values, clears
 review after any change, and shows exact compiled node indices alongside
 bounded UTF-8-safe display names.
+
+Source-v5 may add a `constraint` to a mapped role and a top-level
+`secondary_motion` object:
+
+```json
+"constraint": {
+  "twist_axis": [1.0, 0.0, 0.0],
+  "swing_limit_degrees": 85.0,
+  "twist_min_degrees": -70.0,
+  "twist_max_degrees": 70.0
+},
+"secondary_motion": {
+  "chains": [{
+    "name": "hair.main",
+    "root": "mixamorig:Head",
+    "joints": ["hair.01", "hair.02"],
+    "bend_axis": [1.0, 0.0, 0.0],
+    "stiffness_hz": 6.0,
+    "damping_ratio": 0.8,
+    "inertia": 0.65,
+    "max_angle_degrees": 35.0
+  }]
+}
+```
+
+Constraint axes are normalized in bind joint-local coordinates; swing is
+0–180 degrees and each ordered twist endpoint is within -180–180 degrees.
+There may be at most eight uniquely named chains, 16 dynamic skin joints per
+chain and 64 total. Each chain is a direct root-to-child node path. Dynamic
+joints cannot overlap another chain, a chain root, or a humanoid role. Spring
+frequency is 0.1–30 Hz, damping ratio 0–2, inertia 0–1, and maximum deflection
+0–90 degrees. The runtime applies each spring as a local additive delta over
+the authored pose, clamps every integration result, and resets rather than
+integrating a presentation discontinuity longer than 100 ms. Exact zero-time
+held samples reset to the authored pose so comparison captures do not inherit
+history from an unrelated preview.
 
 `source_forward` is deliberately explicit because arbitrary geometry does not
 contain a reliable semantic front. The wizard accepts `+z`, `-z`, `+x`, or

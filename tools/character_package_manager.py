@@ -916,9 +916,7 @@ def _compile_candidate(package_path: Path) -> dict[str, Any]:
         model = archive.read("model.glb")
         portrait = (
             archive.read("portrait.png")
-            if manifest.get("schema") in (
-                probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4
-            ) else None
+            if manifest.get("schema") in probe.IDENTITY_SCHEMAS else None
         )
         compiler_digest = _compiler_source_digest(archive)
         embedded = archive.read("compiled.mdkc") if verification.get("portable") else None
@@ -1016,7 +1014,9 @@ def write_candidate_index(package_path: Path, directory: Path,
         str(report["animation_channels"]), str(report["animation_keys"]),
         "1" if report["identity_portrait"] else "0",
         str(rig_mode_value), "1" if report["rig_reviewed"] else "0",
-        str(report["rig_roles"]), str(report["encoded_texture_bytes"]),
+        str(report["rig_roles"]), str(report["joint_constraints"]),
+        str(report["secondary_chains"]), str(report["secondary_joints"]),
+        str(report["encoded_texture_bytes"]),
         str(report["decoded_texture_bytes"]),
         *(str(value) for value in report["lod_vertices"]),
         *(str(value) for value in report["lod_triangles"]),
@@ -1029,7 +1029,7 @@ def write_candidate_index(package_path: Path, directory: Path,
         candidate["source_url"].encode("utf-8").hex(),
     ]
     payload = (
-        "mdkr-character-candidate-v4\n" + "\t".join(fields) + "\n"
+        "mdkr-character-candidate-v5\n" + "\t".join(fields) + "\n"
     ).encode("ascii")
     _write_atomic(index_path, payload)
     return {
@@ -1243,13 +1243,11 @@ def _upgrade_identity_manifest(manifest: dict[str, Any],
             "lod_bias": presentation.get("lod_bias", 0.0),
         }
         migration = "legacy v1 transform migrated losslessly; identity added"
-    elif original_schema not in (
-        probe.PACKAGE_SCHEMA, probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4
-    ):
+    elif original_schema not in ({probe.PACKAGE_SCHEMA} | probe.IDENTITY_SCHEMAS):
         raise ManagerError("installed package uses an unsupported source schema")
     upgraded["schema"] = (
-        probe.PACKAGE_SCHEMA_V4
-        if original_schema == probe.PACKAGE_SCHEMA_V4
+        original_schema
+        if original_schema in probe.RIG_SCHEMAS
         else probe.PACKAGE_SCHEMA_V3
     )
     prior_identity = manifest.get("identity")
@@ -1412,9 +1410,7 @@ def _revise_manifest(
             license_text = archive.read("LICENSE.txt")
             portrait = (
                 archive.read("portrait.png")
-                if manifest.get("schema") in (
-                    probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4
-                ) else None
+                if manifest.get("schema") in probe.IDENTITY_SCHEMAS else None
             )
         if not isinstance(manifest, dict):
             raise ManagerError("active source manifest is not an object")
@@ -1467,7 +1463,7 @@ def revise_profile(package_id: str, donor: str, vehicles: tuple[str, ...],
         }
         if revised.get("schema") in (
             probe.PACKAGE_SCHEMA, probe.PACKAGE_SCHEMA_V3,
-            probe.PACKAGE_SCHEMA_V4,
+            probe.PACKAGE_SCHEMA_V4, probe.PACKAGE_SCHEMA_V5,
         ):
             presentation = revised.get("presentation")
             if not isinstance(presentation, dict):
@@ -1591,6 +1587,39 @@ def _apply_disabled_semantics(
     manifest["animations"] = revised_animations
 
 
+def _retain_v5_constraints(
+        manifest: dict[str, Any], revised_rig: dict[str, Any]) -> dict[str, Any]:
+    """Carry limits across non-anatomical edits; remapped roles invalidate them."""
+    if manifest.get("schema") != probe.PACKAGE_SCHEMA_V5:
+        return revised_rig
+    original_rig = manifest.get("rig")
+    original_roles = (
+        original_rig.get("roles") if isinstance(original_rig, dict) else None
+    )
+    revised_roles = revised_rig.get("roles")
+    if not isinstance(original_roles, dict) or not isinstance(revised_roles, dict):
+        return revised_rig
+    retained_roles: dict[str, Any] = {}
+    for role, revised_mapping in revised_roles.items():
+        if not isinstance(revised_mapping, dict):
+            retained_roles[role] = revised_mapping
+            continue
+        retained_mapping = dict(revised_mapping)
+        original_mapping = original_roles.get(role)
+        if (
+            isinstance(original_mapping, dict)
+            and original_mapping.get("node") == revised_mapping.get("node")
+            and isinstance(original_mapping.get("constraint"), dict)
+        ):
+            retained_mapping["constraint"] = dict(
+                original_mapping["constraint"]
+            )
+        retained_roles[role] = retained_mapping
+    retained_rig = dict(revised_rig)
+    retained_rig["roles"] = retained_roles
+    return retained_rig
+
+
 def revise_rig(package_id: str, rig_draft_path: Path,
                directory: Path) -> dict[str, Any]:
     """Create and atomically activate a reviewed skeleton-map revision."""
@@ -1601,13 +1630,17 @@ def revise_rig(package_id: str, rig_draft_path: Path,
 
     def transform(manifest: dict[str, Any], _: dict[str, Any]) -> dict[str, Any]:
         schema = manifest.get("schema")
-        if schema not in (probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4):
+        if schema not in probe.IDENTITY_SCHEMAS:
             raise ManagerError(
-                "rig authoring requires an identity-capable source-v3/v4 package"
+                "rig authoring requires an identity-capable source-v3/v4/v5 package"
             )
         revised = dict(manifest)
-        revised["schema"] = probe.PACKAGE_SCHEMA_V4
-        revised["rig"] = rig
+        revised["schema"] = (
+            probe.PACKAGE_SCHEMA_V5
+            if schema == probe.PACKAGE_SCHEMA_V5
+            else probe.PACKAGE_SCHEMA_V4
+        )
+        revised["rig"] = _retain_v5_constraints(manifest, rig)
         _apply_disabled_semantics(revised, disabled)
         return revised
 
@@ -1757,8 +1790,12 @@ def build_workshop_draft(package_id: str, draft_path: Path,
             })
         presentation["contexts"] = contexts
         revised["presentation"] = presentation
-        revised["schema"] = probe.PACKAGE_SCHEMA_V4
-        revised["rig"] = rig
+        revised["schema"] = (
+            probe.PACKAGE_SCHEMA_V5
+            if manifest.get("schema") == probe.PACKAGE_SCHEMA_V5
+            else probe.PACKAGE_SCHEMA_V4
+        )
+        revised["rig"] = _retain_v5_constraints(manifest, rig)
         _apply_disabled_semantics(revised, disabled)
 
         model_path = work / "model.glb"
@@ -2559,9 +2596,7 @@ def prepare(package_path: Path, output_path: Path) -> dict[str, Any]:
         model = archive.read("model.glb")
         portrait = (
             archive.read("portrait.png")
-            if manifest.get("schema") in (
-                probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4
-            ) else None
+            if manifest.get("schema") in probe.IDENTITY_SCHEMAS else None
         )
         digest = _compiler_source_digest(archive)
     validation = _validate_character_glb(
@@ -2836,7 +2871,7 @@ def _parser() -> argparse.ArgumentParser:
     profile_parser.add_argument("vehicles", nargs="+")
     rig_parser = sub.add_parser(
         "revise-rig",
-        help="create and install a source-v4 skeleton role-map revision",
+        help="create and install a skeleton role-map revision",
     )
     rig_parser.add_argument("id")
     rig_parser.add_argument("draft", type=Path)

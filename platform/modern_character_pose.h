@@ -14,6 +14,14 @@ typedef struct MdkrModernTrs {
     float scale[3];
 } MdkrModernTrs;
 
+typedef struct MdkrModernSecondaryDiagnostics {
+    uint32_t chain_count;
+    uint32_t joint_count;
+    uint32_t active_joint_count;
+    float max_deflection_degrees;
+    uint64_t discontinuity_resets;
+} MdkrModernSecondaryDiagnostics;
+
 typedef struct MdkrModernPose {
     const MdkrModernCharacterAsset *asset;
     MdkrModernTrs *local;
@@ -33,6 +41,20 @@ typedef struct MdkrModernPose {
     float rig_rest_rotation[MDKR_MODERN_HUMANOID_ROLE_COUNT][4];
     float rig_bend_axis[MDKR_MODERN_HUMANOID_ROLE_COUNT][3];
     uint32_t rig_role_mask;
+    MdkrModernJointConstraint
+        joint_constraints[MDKR_MODERN_HUMANOID_ROLE_COUNT];
+    uint32_t joint_constraint_mask;
+    uint32_t constraint_clamped_mask;
+    MdkrModernSecondaryChain secondary_chains[8];
+    MdkrModernSecondaryJoint secondary_joints[64];
+    float secondary_angle[64];
+    float secondary_velocity[64];
+    float secondary_driver_rotation[64][4];
+    uint32_t secondary_chain_count;
+    uint32_t secondary_joint_count;
+    float secondary_accumulator;
+    uint64_t secondary_discontinuity_resets;
+    int secondary_initialized;
     float procedural_time;
     float procedural_weight;
     float normalized_phase;
@@ -82,7 +104,7 @@ int mdkr_modern_pose_advance_phase(MdkrModernPose *pose, float seconds,
 int mdkr_modern_pose_has_semantic(const MdkrModernPose *pose,
                                   const char *semantic);
 
-/* True only for a complete, author-reviewed source-v4 humanoid role map. */
+/* True only for a complete, author-reviewed source-v4/v5 humanoid role map. */
 int mdkr_modern_pose_humanoid_retarget_ready(const MdkrModernPose *pose);
 
 /* Measures each reviewed semantic joint's current node-local rotation against
@@ -94,6 +116,14 @@ int mdkr_modern_pose_joint_excursions(
     const MdkrModernPose *pose,
     float degrees[MDKR_MODERN_HUMANOID_ROLE_COUNT],
     uint32_t *valid_mask);
+
+/* Roles whose authored cone/twist limit changed the current evaluated pose.
+ * The mask is exact per generation and remains valid after contact solving. */
+uint32_t mdkr_modern_pose_constraint_clamped_mask(
+    const MdkrModernPose *pose);
+
+int mdkr_modern_pose_secondary_diagnostics(
+    const MdkrModernPose *pose, MdkrModernSecondaryDiagnostics *out);
 
 /* Applies bounded presentation-only hand/foot contact solving for one vehicle
  * context. Target offsets are engine-owned and converted into source space by

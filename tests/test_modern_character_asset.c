@@ -279,6 +279,9 @@ int main(int argc, char **argv) {
     MdkrModernIdentity identity;
     MdkrModernRig rig;
     MdkrModernRigRole rig_role;
+    MdkrModernJointConstraint joint_constraint;
+    MdkrModernSecondaryChain secondary_chain;
+    MdkrModernSecondaryJoint secondary_joint;
     MdkrModernProvenance provenance;
     MdkrModernCharacterIdentityView identity_view;
     MdkrModernCharacterRuntimeMetrics runtime_metrics;
@@ -305,7 +308,7 @@ int main(int argc, char **argv) {
     float joint_excursion_degrees[MDKR_MODERN_HUMANOID_ROLE_COUNT];
     uint32_t joint_excursion_mask;
     int32_t parent_joint_node;
-    float palette[256];
+    float palette[18u * 16u];
     char error[256];
     unsigned char *bytes;
     size_t size;
@@ -480,13 +483,14 @@ int main(int argc, char **argv) {
                 stats.primitives == 1u && stats.lod_levels == 1u &&
                 stats.materials == 1u,
             "compiled geometry statistics");
-    require(stats.nodes == 17u && stats.skins == 1u && stats.joints == 16u,
+    require(stats.nodes == 19u && stats.skins == 1u && stats.joints == 18u,
             "compiled rig statistics");
     require(stats.animations == 1u && stats.animation_channels == 1u &&
                 stats.animation_keys == 2u,
             "compiled animation statistics");
     require(stats.semantics == 4u && stats.sockets == 2u &&
-                stats.rig_roles == 16u,
+                stats.rig_roles == 16u && stats.joint_constraints == 1u &&
+                stats.secondary_chains == 1u && stats.secondary_joints == 2u,
             "compiled presentation mapping statistics");
     require(stats.encoded_texture_bytes > 64u &&
                 stats.decoded_texture_bytes == 4u,
@@ -529,6 +533,33 @@ int main(int argc, char **argv) {
                     &asset, 0u, &rig_role) && rig_role.node == 0u &&
                 rig_role.flags == 0u && rig_role.confidence_milli == 1000u,
             "read bounded source-v4 rig role contract");
+    require(mdkr_modern_character_asset_joint_constraint(
+                &asset, 0u, &joint_constraint) &&
+                joint_constraint.role == 5u && joint_constraint.node == 5u &&
+                joint_constraint.twist_axis[0] == 1.0f &&
+                joint_constraint.swing_limit_degrees == 45.0f &&
+                joint_constraint.twist_min_degrees == -70.0f &&
+                joint_constraint.twist_max_degrees == 70.0f,
+            "read bounded source-v5 cone-twist constraint");
+    require(mdkr_modern_character_asset_secondary_chain(
+                &asset, 0u, &secondary_chain) &&
+                strcmp(mdkr_modern_character_asset_string(
+                           &asset, secondary_chain.name), "hair.main") == 0 &&
+                secondary_chain.root_node == 3u &&
+                secondary_chain.first_joint == 0u &&
+                secondary_chain.joint_count == 2u &&
+                fabsf(secondary_chain.stiffness_hz - 6.0f) < 1.0e-6f &&
+                fabsf(secondary_chain.damping_ratio - 0.8f) < 1.0e-6f &&
+                fabsf(secondary_chain.inertia - 0.65f) < 1.0e-6f &&
+                fabsf(secondary_chain.max_angle_degrees - 35.0f) < 1.0e-6f &&
+                mdkr_modern_character_asset_secondary_joint(
+                    &asset, 0u, &secondary_joint) &&
+                secondary_joint.node == 16u && secondary_joint.chain == 0u &&
+                secondary_joint.order == 0u && secondary_joint.flags == 0u &&
+                mdkr_modern_character_asset_secondary_joint(
+                    &asset, 1u, &secondary_joint) &&
+                secondary_joint.node == 17u && secondary_joint.order == 1u,
+            "read bounded source-v5 deterministic secondary chain");
     require(mdkr_modern_character_asset_provenance(&asset, &provenance) &&
                 provenance.flags ==
                     MDKR_MODERN_PROVENANCE_LICENSE_TEXT_BOUND &&
@@ -640,6 +671,36 @@ int main(int argc, char **argv) {
 
     bytes = read_file(argv[1], &size);
     {
+        unsigned char *constraint = section_payload(
+            bytes, MDKR_MDKC_JOINT_CONSTRAINTS);
+        require(constraint != NULL,
+                "locate compiled joint constraint for mutation test");
+        write_u32_le(constraint + 8u, 0u); /* zero the only nonzero axis */
+        refresh_payload_crc(bytes, size);
+        require(!mdkr_modern_character_asset_load_memory(
+                    bytes, size, &refused, error, sizeof(error)) &&
+                    strstr(error, "joint constraint") != NULL,
+                "native admission rejects a forged zero constraint axis");
+    }
+    free(bytes);
+
+    bytes = read_file(argv[1], &size);
+    {
+        unsigned char *joint = section_payload(
+            bytes, MDKR_MDKC_SECONDARY_JOINTS);
+        require(joint != NULL,
+                "locate compiled secondary joint for mutation test");
+        write_u32_le(joint, 5u); /* mapped lower-arm role */
+        refresh_payload_crc(bytes, size);
+        require(!mdkr_modern_character_asset_load_memory(
+                    bytes, size, &refused, error, sizeof(error)) &&
+                    strstr(error, "secondary joint") != NULL,
+                "native admission rejects a forged secondary rig overlap");
+    }
+    free(bytes);
+
+    bytes = read_file(argv[1], &size);
+    {
         unsigned char *rig_bytes = section_payload(bytes, MDKR_MDKC_RIG);
         require(rig_bytes != NULL, "locate compiled rig header for mutation test");
         write_u32_le(rig_bytes + 12u, 0u);
@@ -723,7 +784,7 @@ int main(int argc, char **argv) {
                 registry.entries[0].lod_vertices[0] == 3u &&
                 registry.entries[0].lod_triangles[0] == 1u &&
                 registry.entries[0].lod_primitives[0] == 1u &&
-                registry.entries[0].lod_palette_matrices[0] == 16u &&
+                registry.entries[0].lod_palette_matrices[0] == 18u &&
                 registry.entries[0].provenance_present == 1u &&
                 strcmp(registry.entries[0].license_spdx, "CC0-1.0") == 0 &&
                 strcmp(registry.entries[0].attribution,
@@ -737,6 +798,55 @@ int main(int argc, char **argv) {
             "load selected registry character");
     require(mdkr_modern_pose_init(&pose, &asset, error, sizeof(error)),
             "initialize semantic skeletal pose");
+    {
+        MdkrModernPose first_secondary;
+        MdkrModernPose second_secondary;
+        MdkrModernSecondaryDiagnostics secondary_diagnostics;
+        uint64_t first_signature;
+        unsigned frame;
+        require(mdkr_modern_pose_init(
+                    &first_secondary, &asset, error, sizeof(error)) &&
+                    mdkr_modern_pose_init(
+                    &second_secondary, &asset, error, sizeof(error)),
+                "initialize duplicate deterministic secondary poses");
+        for (frame = 0u; frame < 30u; frame++) {
+            require(mdkr_modern_pose_advance(
+                        &first_secondary, 1.0f / 60.0f,
+                        error, sizeof(error)) &&
+                        mdkr_modern_pose_advance(
+                            &second_secondary, 1.0f / 60.0f,
+                            error, sizeof(error)),
+                    "advance fixed-step secondary spring at gameplay cadence");
+        }
+        first_signature = pose_world_signature(&first_secondary);
+        require(first_signature == pose_world_signature(&second_secondary) &&
+                    mdkr_modern_pose_secondary_diagnostics(
+                        &first_secondary, &secondary_diagnostics) &&
+                    secondary_diagnostics.chain_count == 1u &&
+                    secondary_diagnostics.joint_count == 2u &&
+                    secondary_diagnostics.active_joint_count != 0u &&
+                    secondary_diagnostics.max_deflection_degrees > 0.001f &&
+                    secondary_diagnostics.max_deflection_degrees <= 35.001f &&
+                    secondary_diagnostics.discontinuity_resets == 0u,
+                "secondary motion is deterministic, active, and author bounded");
+        require(mdkr_modern_pose_advance_phase(
+                    &second_secondary, 0.0f, 0.5f,
+                    error, sizeof(error)) &&
+                    mdkr_modern_pose_secondary_diagnostics(
+                        &second_secondary, &secondary_diagnostics) &&
+                    secondary_diagnostics.active_joint_count == 0u &&
+                    secondary_diagnostics.discontinuity_resets == 0u,
+                "exact held samples reset secondary history without a hitch warning");
+        require(mdkr_modern_pose_advance(
+                    &first_secondary, 0.25f, error, sizeof(error)) &&
+                    mdkr_modern_pose_secondary_diagnostics(
+                        &first_secondary, &secondary_diagnostics) &&
+                    secondary_diagnostics.active_joint_count == 0u &&
+                    secondary_diagnostics.discontinuity_resets == 1u,
+                "secondary motion resets safely across a presentation discontinuity");
+        mdkr_modern_pose_shutdown(&second_secondary);
+        mdkr_modern_pose_shutdown(&first_secondary);
+    }
     require(mdkr_modern_pose_humanoid_retarget_ready(&pose),
             "reviewed complete humanoid map enables reference motion");
     require(mdkr_modern_pose_joint_excursions(
@@ -841,6 +951,12 @@ int main(int argc, char **argv) {
     require(mdkr_modern_pose_advance_phase(
                 &pose, 0.2f, 1.0f, error, sizeof(error)),
             "reviewed humanoid fallback accepts right steering phase");
+    require((mdkr_modern_pose_constraint_clamped_mask(&pose) & (1u << 5u)) != 0u &&
+                mdkr_modern_pose_joint_excursions(
+                    &pose, joint_excursion_degrees,
+                    &joint_excursion_mask) &&
+                joint_excursion_degrees[5] <= 45.01f,
+            "source-v5 cone limit clamps the evaluated lower arm against bind");
     memcpy(procedural_arm_right,
            mdkr_modern_pose_node_matrix(&pose, 4u, 0),
            sizeof(procedural_arm_right));
@@ -854,6 +970,8 @@ int main(int argc, char **argv) {
                 isfinite(pose.contact_max_error) &&
                 pose.contact_max_error < 0.25f &&
                 pose.contact_valid_mask == 0xFu &&
+                (mdkr_modern_pose_constraint_clamped_mask(&pose) &
+                 (1u << 5u)) != 0u &&
                 isfinite(pose.contact_target[0][0]) &&
                 isfinite(pose.contact_end[3][2]) &&
                 pose.contact_error[0] >= 0.0f,
@@ -981,11 +1099,11 @@ int main(int argc, char **argv) {
         mdkr_modern_pose_shutdown(&item_pose);
         mdkr_modern_character_asset_unload(&item_asset);
     }
-    require(mdkr_modern_pose_skin_palette(&pose, 0u, 16u, 0,
-                                           palette, 16u,
+    require(mdkr_modern_pose_skin_palette(&pose, 0u, 18u, 0,
+                                           palette, 18u,
                                            error, sizeof(error)),
             "build mesh-relative GPU skin palette");
-    require(isfinite(palette[0]) && isfinite(palette[255]),
+    require(isfinite(palette[0]) && isfinite(palette[18u * 16u - 1u]),
             "skin palette contains finite matrices");
     require(mdkr_modern_render_asset_init(&render, &asset,
                                           error, sizeof(error)),
@@ -999,14 +1117,14 @@ int main(int argc, char **argv) {
                 render.gpu.textures[0].level_count == 1,
             "renderer decodes bounded embedded PNG texture ownership");
     {
-        float identity_palette[16u * 16u] = {0.0f};
+        float identity_palette[18u * 16u] = {0.0f};
         float center[3];
         float translated[3];
         float expected[3] = {0.0f, 0.0f, 0.0f};
         uint32_t joint;
         uint32_t vertex;
         unsigned axis;
-        for (joint = 0u; joint < 16u; ++joint) {
+        for (joint = 0u; joint < 18u; ++joint) {
             identity_palette[joint * 16u] = 1.0f;
             identity_palette[joint * 16u + 5u] = 1.0f;
             identity_palette[joint * 16u + 10u] = 1.0f;
@@ -1019,17 +1137,17 @@ int main(int argc, char **argv) {
             }
         }
         require(mdkr_modern_render_primitive_sort_center(
-                    &render, 0u, identity_palette, 16u, center),
+                    &render, 0u, identity_palette, 18u, center),
                 "renderer resolves an exact posed primitive centroid");
         for (axis = 0u; axis < 3u; ++axis) {
             require(fabsf(center[axis] - expected[axis]) < 0.0001f,
                     "identity skinning centroid matches source geometry");
         }
-        for (joint = 0u; joint < 16u; ++joint) {
+        for (joint = 0u; joint < 18u; ++joint) {
             identity_palette[joint * 16u + 12u] = 2.0f;
         }
         require(mdkr_modern_render_primitive_sort_center(
-                    &render, 0u, identity_palette, 16u, translated) &&
+                    &render, 0u, identity_palette, 18u, translated) &&
                     fabsf(translated[0] - center[0] - 2.0f) < 0.0001f &&
                     fabsf(translated[1] - center[1]) < 0.0001f &&
                     fabsf(translated[2] - center[2]) < 0.0001f,
@@ -1081,7 +1199,7 @@ int main(int argc, char **argv) {
                 install_result.vehicle_mask == 7u &&
                 install_result.vertices == 3u &&
                 install_result.triangles == 1u &&
-                install_result.joints == 16u &&
+                install_result.joints == 18u &&
                 install_result.animations == 1u &&
                 install_result.animation_channels == 1u &&
                 install_result.animation_keys == 2u &&
@@ -1095,6 +1213,9 @@ int main(int argc, char **argv) {
                 install_result.rig_mode == 2u &&
                 install_result.rig_reviewed == 1u &&
                 install_result.rig_roles == 16u &&
+                install_result.joint_constraints == 1u &&
+                install_result.secondary_chains == 1u &&
+                install_result.secondary_joints == 2u &&
                 install_result.provenance_present == 1u &&
                 strcmp(install_result.license_spdx, "CC0-1.0") == 0 &&
                 strcmp(install_result.attribution,

@@ -21,7 +21,7 @@ std::string zeroFields(unsigned count) {
 
 int main() {
     const std::string digest(64u, 'a');
-    const std::string fields =
+    const std::string v4Fields =
         "org.example.hero\t4865726fc2ae"
         "\t4865726f"
         "\t4865726f20636861726163746572"
@@ -33,7 +33,12 @@ int main() {
         "\t1\t43432d42592d342e30"
         "\t416e6120c2a9204578616d706c65"
         "\t68747470733a2f2f6578616d706c652e696e76616c69642f6865726f";
-    const std::string valid = "mdkr-character-candidate-v4\n" + fields + "\n";
+    std::string fields = v4Fields;
+    const size_t v5Insertion = fields.find("\t16\t4096\t16384");
+    expect(v5Insertion != std::string::npos,
+           "version-five authoring insertion point is present");
+    fields.insert(v5Insertion + 3u, "\t2\t1\t3");
+    const std::string valid = "mdkr-character-candidate-v5\n" + fields + "\n";
     CharacterCandidateIndex::Candidate candidate;
     expect(CharacterCandidateIndex::parse(valid, candidate),
            "valid candidate index parses");
@@ -45,6 +50,9 @@ int main() {
                candidate.vehicleMask == 7u && candidate.vertices == 1000u &&
                candidate.identityPresent && candidate.rigMode == 2u &&
                candidate.rigReviewed && candidate.rigRoles == 16u &&
+               candidate.jointConstraints == 2u &&
+               candidate.secondaryChains == 1u &&
+               candidate.secondaryJoints == 3u &&
                candidate.animationChannels == 30u &&
                candidate.animationKeys == 400u &&
                candidate.semanticIntentPresent &&
@@ -83,9 +91,9 @@ int main() {
            "non-canonical leading-zero numbers are rejected");
     {
         std::string inconsistent = valid;
-        const size_t rig = inconsistent.find("\t1\t2\t1\t16\t4096");
+        const size_t rig = inconsistent.find("\t1\t2\t1\t16\t2");
         expect(rig != std::string::npos, "rig fixture is present");
-        inconsistent.replace(rig, 9u, "\t1\t0\t1\t16");
+        inconsistent.replace(rig, 10u, "\t1\t0\t1\t16");
         expect(!CharacterCandidateIndex::parse(inconsistent, candidate),
                "inconsistent absent-rig review data is rejected");
     }
@@ -121,7 +129,7 @@ int main() {
                "control characters in provenance are rejected");
     }
     {
-        std::string legacyFields = fields;
+        std::string legacyFields = v4Fields;
         const size_t semanticIntent =
             legacyFields.rfind("\t1\t0\t1\t43432d42592d342e30");
         expect(semanticIntent != std::string::npos,

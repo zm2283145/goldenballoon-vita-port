@@ -276,8 +276,14 @@ flip, collapse, or mirror inversion.
   focusable, spoken per-role matrix. Partial, non-finite, and out-of-range
   publications fail closed. No generic anatomy threshold is presented as a
   pass, limit, or runtime clamp.
-- Add optional author-defined constraint profiles and deterministic hair/tail
-  secondary motion without weakening authored-clip precedence.
+- **Runtime contract implemented:** source-v5 strictly validates optional
+  cone/twist profiles and bounded hair/tail chains; compiler-v9 emits typed
+  MDKC-v2 records, native admission rechecks their graph and numeric bounds,
+  unchanged rig edits preserve limits, remaps invalidate them, and package
+  review discloses all three counts. Bind-relative constraints run before and
+  after vehicle contacts; secondary motion uses a bounded fixed-step spring,
+  explicit hitch resets, and exact held-sample resets without weakening
+  authored-clip precedence. The matching direct-manipulation Studio remains.
 
 Acceptance: the example no longer T-poses in select, every missing authored state
 uses an intentional reviewed reference, and the source/fallback decision appears

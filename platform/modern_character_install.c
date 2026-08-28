@@ -16,7 +16,7 @@
 #define MANIFEST_MAX (1024u * 1024u)
 #define LICENSE_MAX (1024u * 1024u)
 #define PORTRAIT_MAX (8u * 1024u * 1024u)
-#define COMPILER_ID "mdkr-character-compiler/8"
+#define COMPILER_ID "mdkr-character-compiler/9"
 #define LEGACY_COMPILER_ID_V7 "mdkr-character-compiler/7"
 #define LEGACY_COMPILER_ID_V6 "mdkr-character-compiler/6"
 #define LEGACY_COMPILER_ID_V5 "mdkr-character-compiler/5"
@@ -610,6 +610,9 @@ static int portable_package_operation(
                 }
             }
             result->rig_roles = stats.rig_roles;
+            result->joint_constraints = stats.joint_constraints;
+            result->secondary_chains = stats.secondary_chains;
+            result->secondary_joints = stats.secondary_joints;
             result->encoded_texture_bytes = stats.encoded_texture_bytes;
             result->decoded_texture_bytes = stats.decoded_texture_bytes;
             {

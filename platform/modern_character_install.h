@@ -48,6 +48,9 @@ typedef struct MdkrModernCharacterInstallResult {
     uint32_t rig_mode;
     uint32_t rig_reviewed;
     uint32_t rig_roles;
+    uint32_t joint_constraints;
+    uint32_t secondary_chains;
+    uint32_t secondary_joints;
     uint64_t encoded_texture_bytes;
     uint64_t decoded_texture_bytes;
     uint32_t lod_vertices[4];

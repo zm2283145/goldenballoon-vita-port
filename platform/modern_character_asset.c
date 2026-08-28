@@ -13,7 +13,7 @@
 static const uint32_t s_expected_strides[MDKR_MDKC_SECTION_LAST + 1] = {
     0u, 1u, 72u, 4u, 32u, 80u, 40u, 1u, 48u, 16u, 68u,
     16u, 24u, 52u, 64u, 16u, 8u, 48u, 64u, 24u, 1u, 16u, 44u, 16u,
-    12u
+    12u, 32u, 44u, 16u
 };
 
 static void set_error(char *error, size_t error_size, const char *message) {
@@ -586,6 +586,55 @@ int mdkr_modern_character_asset_rig_role(
     return 1;
 }
 
+int mdkr_modern_character_asset_joint_constraint(
+    const MdkrModernCharacterAsset *asset, uint32_t index,
+    MdkrModernJointConstraint *out) {
+    const uint8_t *data = record(asset, MDKR_MDKC_JOINT_CONSTRAINTS, index);
+    unsigned component;
+    if (data == NULL || out == NULL) return 0;
+    out->role = read_u32(data);
+    out->node = read_u32(data + 4u);
+    for (component = 0u; component < 3u; component++) {
+        out->twist_axis[component] = read_f32(data + 8u + component * 4u);
+    }
+    out->swing_limit_degrees = read_f32(data + 20u);
+    out->twist_min_degrees = read_f32(data + 24u);
+    out->twist_max_degrees = read_f32(data + 28u);
+    return 1;
+}
+
+int mdkr_modern_character_asset_secondary_chain(
+    const MdkrModernCharacterAsset *asset, uint32_t index,
+    MdkrModernSecondaryChain *out) {
+    const uint8_t *data = record(asset, MDKR_MDKC_SECONDARY_CHAINS, index);
+    unsigned component;
+    if (data == NULL || out == NULL) return 0;
+    out->name = read_u32(data);
+    out->root_node = read_u32(data + 4u);
+    out->first_joint = read_u32(data + 8u);
+    out->joint_count = read_u32(data + 12u);
+    out->stiffness_hz = read_f32(data + 16u);
+    out->damping_ratio = read_f32(data + 20u);
+    out->inertia = read_f32(data + 24u);
+    out->max_angle_degrees = read_f32(data + 28u);
+    for (component = 0u; component < 3u; component++) {
+        out->bend_axis[component] = read_f32(data + 32u + component * 4u);
+    }
+    return 1;
+}
+
+int mdkr_modern_character_asset_secondary_joint(
+    const MdkrModernCharacterAsset *asset, uint32_t index,
+    MdkrModernSecondaryJoint *out) {
+    const uint8_t *data = record(asset, MDKR_MDKC_SECONDARY_JOINTS, index);
+    if (data == NULL || out == NULL) return 0;
+    out->node = read_u32(data);
+    out->chain = read_u32(data + 4u);
+    out->order = read_u32(data + 8u);
+    out->flags = read_u32(data + 12u);
+    return 1;
+}
+
 int mdkr_modern_character_asset_provenance(
     const MdkrModernCharacterAsset *asset, MdkrModernProvenance *out) {
     const uint8_t *data = record(asset, MDKR_MDKC_PROVENANCE, 0u);
@@ -647,6 +696,25 @@ static int node_is_ancestor(const MdkrModernCharacterAsset *asset,
             node.parent < 0) return 0;
         descendant = (uint32_t)node.parent;
         if (descendant == ancestor) return 1;
+    }
+    return 0;
+}
+
+static int node_world_orientation_preserving(
+    const MdkrModernCharacterAsset *asset, uint32_t node_index) {
+    const uint32_t count = asset->sections[MDKR_MDKC_NODES].count;
+    double determinant = 1.0;
+    uint32_t steps;
+    for (steps = 0u; steps < count; steps++) {
+        MdkrModernNode node;
+        if (!mdkr_modern_character_asset_node(asset, node_index, &node)) {
+            return 0;
+        }
+        determinant *= (double)node.scale[0] * (double)node.scale[1] *
+                       (double)node.scale[2];
+        if (!isfinite(determinant) || fabs(determinant) < 1.0e-12) return 0;
+        if (node.parent < 0) return determinant > 0.0;
+        node_index = (uint32_t)node.parent;
     }
     return 0;
 }
@@ -1172,6 +1240,183 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
             }
         }
     }
+    if (asset->sections[MDKR_MDKC_JOINT_CONSTRAINTS].data != NULL) {
+        const MdkrModernSectionView *constraints =
+            &asset->sections[MDKR_MDKC_JOINT_CONSTRAINTS];
+        uint32_t constraint_mask = 0u;
+        uint32_t constraint_index;
+        if (asset->sections[MDKR_MDKC_RIG].data == NULL ||
+            constraints->count > MDKR_MODERN_HUMANOID_ROLE_COUNT) {
+            set_error(error, error_size,
+                      "compiled character joint constraints have no rig");
+            return 0;
+        }
+        for (constraint_index = 0u; constraint_index < constraints->count;
+             constraint_index++) {
+            MdkrModernJointConstraint constraint;
+            uint32_t role_index;
+            uint32_t bit;
+            float axis_length;
+            int mapped = 0;
+            (void)mdkr_modern_character_asset_joint_constraint(
+                asset, constraint_index, &constraint);
+            bit = constraint.role < MDKR_MODERN_HUMANOID_ROLE_COUNT
+                ? 1u << constraint.role : 0u;
+            axis_length =
+                constraint.twist_axis[0] * constraint.twist_axis[0] +
+                constraint.twist_axis[1] * constraint.twist_axis[1] +
+                constraint.twist_axis[2] * constraint.twist_axis[2];
+            for (role_index = 0u;
+                 role_index < asset->sections[MDKR_MDKC_RIG_ROLES].count;
+                 role_index++) {
+                MdkrModernRigRole role;
+                const char *semantic;
+                (void)mdkr_modern_character_asset_rig_role(
+                    asset, role_index, &role);
+                semantic = mdkr_modern_character_asset_string(
+                    asset, role.semantic);
+                if (rig_role_bit(semantic) == bit &&
+                    role.node == constraint.node) {
+                    mapped = 1;
+                    break;
+                }
+            }
+            if (bit == 0u || (constraint_mask & bit) != 0u || !mapped ||
+                !finite_array(constraint.twist_axis, 3u) ||
+                axis_length < 0.999f || axis_length > 1.001f ||
+                !isfinite(constraint.swing_limit_degrees) ||
+                constraint.swing_limit_degrees < 0.0f ||
+                constraint.swing_limit_degrees > 180.0f ||
+                !isfinite(constraint.twist_min_degrees) ||
+                !isfinite(constraint.twist_max_degrees) ||
+                constraint.twist_min_degrees < -180.0f ||
+                constraint.twist_max_degrees > 180.0f ||
+                constraint.twist_min_degrees > constraint.twist_max_degrees) {
+                set_error(error, error_size,
+                          "compiled character joint constraint is invalid");
+                return 0;
+            }
+            constraint_mask |= bit;
+        }
+    }
+    if ((asset->sections[MDKR_MDKC_SECONDARY_CHAINS].data == NULL) !=
+        (asset->sections[MDKR_MDKC_SECONDARY_JOINTS].data == NULL)) {
+        set_error(error, error_size,
+                  "compiled character secondary-motion sections are incomplete");
+        return 0;
+    }
+    if (asset->sections[MDKR_MDKC_SECONDARY_CHAINS].data != NULL) {
+        const MdkrModernSectionView *chains =
+            &asset->sections[MDKR_MDKC_SECONDARY_CHAINS];
+        const MdkrModernSectionView *secondary_joints =
+            &asset->sections[MDKR_MDKC_SECONDARY_JOINTS];
+        uint32_t chain_index;
+        uint32_t expected_first = 0u;
+        if (chains->count == 0u || chains->count > 8u ||
+            secondary_joints->count == 0u || secondary_joints->count > 64u) {
+            set_error(error, error_size,
+                      "compiled character secondary-motion bounds are invalid");
+            return 0;
+        }
+        for (chain_index = 0u; chain_index < chains->count; chain_index++) {
+            MdkrModernSecondaryChain chain;
+            const char *name;
+            uint32_t joint_index;
+            uint32_t previous_node;
+            float axis_length;
+            (void)mdkr_modern_character_asset_secondary_chain(
+                asset, chain_index, &chain);
+            name = mdkr_modern_character_asset_string(asset, chain.name);
+            axis_length =
+                chain.bend_axis[0] * chain.bend_axis[0] +
+                chain.bend_axis[1] * chain.bend_axis[1] +
+                chain.bend_axis[2] * chain.bend_axis[2];
+            if (!compiled_semantic_valid(name) ||
+                chain.root_node >= nodes->count ||
+                !node_world_orientation_preserving(asset, chain.root_node) ||
+                chain.first_joint != expected_first ||
+                chain.joint_count == 0u || chain.joint_count > 16u ||
+                !range_u32(chain.first_joint, chain.joint_count,
+                           secondary_joints->count) ||
+                !isfinite(chain.stiffness_hz) || chain.stiffness_hz < 0.1f ||
+                chain.stiffness_hz > 30.0f ||
+                !isfinite(chain.damping_ratio) || chain.damping_ratio < 0.0f ||
+                chain.damping_ratio > 2.0f ||
+                !isfinite(chain.inertia) || chain.inertia < 0.0f ||
+                chain.inertia > 1.0f ||
+                !isfinite(chain.max_angle_degrees) ||
+                chain.max_angle_degrees < 0.0f ||
+                chain.max_angle_degrees > 90.0f ||
+                !finite_array(chain.bend_axis, 3u) ||
+                axis_length < 0.999f || axis_length > 1.001f) {
+                set_error(error, error_size,
+                          "compiled character secondary chain is invalid");
+                return 0;
+            }
+            for (joint_index = 0u; joint_index < chain_index; joint_index++) {
+                MdkrModernSecondaryChain previous_chain;
+                const char *previous_name;
+                (void)mdkr_modern_character_asset_secondary_chain(
+                    asset, joint_index, &previous_chain);
+                previous_name = mdkr_modern_character_asset_string(
+                    asset, previous_chain.name);
+                if (previous_name != NULL && strcmp(name, previous_name) == 0) {
+                    set_error(error, error_size,
+                              "compiled character secondary chain name is duplicated");
+                    return 0;
+                }
+            }
+            previous_node = chain.root_node;
+            for (joint_index = 0u; joint_index < chain.joint_count;
+                 joint_index++) {
+                const uint32_t absolute = chain.first_joint + joint_index;
+                MdkrModernSecondaryJoint joint;
+                MdkrModernNode node;
+                uint32_t prior;
+                (void)mdkr_modern_character_asset_secondary_joint(
+                    asset, absolute, &joint);
+                if (joint.node >= nodes->count || !node_is_joint(asset, joint.node) ||
+                    !node_world_orientation_preserving(asset, joint.node) ||
+                    joint.chain != chain_index || joint.order != joint_index ||
+                    joint.flags != 0u ||
+                    !mdkr_modern_character_asset_node(asset, joint.node, &node) ||
+                    node.parent < 0 || (uint32_t)node.parent != previous_node) {
+                    set_error(error, error_size,
+                              "compiled character secondary joint is invalid");
+                    return 0;
+                }
+                for (prior = 0u; prior < absolute; prior++) {
+                    MdkrModernSecondaryJoint previous;
+                    (void)mdkr_modern_character_asset_secondary_joint(
+                        asset, prior, &previous);
+                    if (previous.node == joint.node) {
+                        set_error(error, error_size,
+                                  "compiled character secondary joint is reused");
+                        return 0;
+                    }
+                }
+                for (prior = 0u;
+                     prior < asset->sections[MDKR_MDKC_RIG_ROLES].count;
+                     prior++) {
+                    MdkrModernRigRole role;
+                    (void)mdkr_modern_character_asset_rig_role(
+                        asset, prior, &role);
+                    if (role.node == joint.node) {
+                        set_error(error, error_size,
+                                  "compiled character secondary joint overlaps its rig");
+                        return 0;
+                    }
+                }
+                previous_node = joint.node;
+            }
+            expected_first += chain.joint_count;
+        }
+        if (expected_first != secondary_joints->count) {
+            set_error(error, error_size,
+                      "compiled character secondary joints are unreferenced");
+            return 0;
+        }
+    }
     if (asset->sections[MDKR_MDKC_PROVENANCE].data != NULL) {
         MdkrModernProvenance provenance;
         const char *spdx;
@@ -1365,6 +1610,12 @@ void mdkr_modern_character_asset_stats(const MdkrModernCharacterAsset *asset,
     out->semantics = asset->sections[MDKR_MDKC_SEMANTICS].count;
     out->sockets = asset->sections[MDKR_MDKC_SOCKETS].count;
     out->rig_roles = asset->sections[MDKR_MDKC_RIG_ROLES].count;
+    out->joint_constraints =
+        asset->sections[MDKR_MDKC_JOINT_CONSTRAINTS].count;
+    out->secondary_chains =
+        asset->sections[MDKR_MDKC_SECONDARY_CHAINS].count;
+    out->secondary_joints =
+        asset->sections[MDKR_MDKC_SECONDARY_JOINTS].count;
     out->encoded_texture_bytes = asset->sections[MDKR_MDKC_TEXTURE_DATA].size;
     for (texture_index = 0u; texture_index < out->textures; texture_index++) {
         MdkrModernTexture texture;

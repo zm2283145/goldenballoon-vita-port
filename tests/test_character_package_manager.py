@@ -27,6 +27,7 @@ from test_character_asset_probe import (  # noqa: E402
     make_manifest,
     make_portrait_png,
     make_v4_manifest,
+    make_v5_character,
     rewrite_glb_document,
 )
 from character_validation_fixture import accepted_validation  # noqa: E402
@@ -54,9 +55,7 @@ class CharacterPackageManagerTests(unittest.TestCase):
             json.dumps(manifest_data or make_manifest()), encoding="utf-8"
         )
         license_file.write_text("CC0-1.0 test fixture\n", encoding="utf-8")
-        if (manifest_data or {}).get("schema") in (
-            probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4
-        ):
+        if (manifest_data or {}).get("schema") in probe.IDENTITY_SCHEMAS:
             portrait.write_bytes(make_portrait_png())
             portrait_path = portrait
         probe.build_package(
@@ -96,6 +95,43 @@ class CharacterPackageManagerTests(unittest.TestCase):
             self.assertEqual(3, len(removed["removed"]))
             self.assertFalse((installed / "org.example.pipeline-proof.mdkc").exists())
             self.assertTrue(collision.is_file())
+
+    def test_source_v5_installs_and_prepares_as_a_portable_package(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model, _, manifest = make_v5_character()
+            package = self.make_package(root, manifest, model)
+            installed = manager.install(package, root / "characters")
+            self.assertEqual("mdkc-v2", installed["report"]["format"])
+            self.assertEqual(1, installed["report"]["joint_constraints"])
+            self.assertEqual(1, installed["report"]["secondary_chains"])
+            self.assertEqual(2, installed["report"]["secondary_joints"])
+            portable = root / "portable.mdkrchar"
+            prepared = manager.prepare(package, portable)
+            self.assertEqual("mdkc-v2", prepared["report"]["format"])
+            self.assertTrue(portable.is_file())
+            verified = probe.verify_package(portable)
+            self.assertTrue(verified["valid"], verified["errors"])
+            self.assertEqual(probe.PACKAGE_SCHEMA_V5, verified["format"])
+
+    def test_source_v5_rig_edits_retain_only_still_bound_constraints(self) -> None:
+        _, _, manifest = make_v5_character()
+        original_roles = manifest["rig"]["roles"]
+        revised_roles = {
+            role: dict(mapping) for role, mapping in original_roles.items()
+        }
+        revised_roles["lower_arm.left"].pop("constraint")
+        revised = {
+            "mode": "humanoid-retarget-v1",
+            "reviewed": False,
+            "roles": revised_roles,
+        }
+        retained = manager._retain_v5_constraints(manifest, revised)
+        self.assertIn("constraint", retained["roles"]["lower_arm.left"])
+        revised_roles["lower_arm.left"]["node"] = "mixamorig:LeftHand"
+        invalidated = manager._retain_v5_constraints(manifest, revised)
+        self.assertNotIn("constraint", invalidated["roles"]["lower_arm.left"])
+        self.assertNotIn("constraint", revised_roles["lower_arm.left"])
 
     def test_disable_preserves_history_updates_and_workshop_revisions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -407,9 +443,9 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 source, character_dir, index_path
             )
             index_lines = index_path.read_text(encoding="ascii").splitlines()
-            self.assertEqual("mdkr-character-candidate-v4", index_lines[0])
+            self.assertEqual("mdkr-character-candidate-v5", index_lines[0])
             fields = index_lines[1].split("\t")
-            self.assertEqual(45, len(fields))
+            self.assertEqual(48, len(fields))
             self.assertEqual(inspected["id"], fields[0])
             self.assertEqual(inspected["display_name"], bytes.fromhex(
                 fields[1]
@@ -434,36 +470,45 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 inspected["report"]["animation_keys"], int(fields[20])
             )
             self.assertEqual(
-                inspected["report"]["semantic_mask"], int(fields[39])
+                inspected["report"]["joint_constraints"], int(fields[25])
+            )
+            self.assertEqual(
+                inspected["report"]["secondary_chains"], int(fields[26])
+            )
+            self.assertEqual(
+                inspected["report"]["secondary_joints"], int(fields[27])
+            )
+            self.assertEqual(
+                inspected["report"]["semantic_mask"], int(fields[42])
             )
             self.assertEqual(
                 inspected["report"]["disabled_semantic_mask"],
-                int(fields[40]),
+                int(fields[43]),
             )
             self.assertEqual(
                 inspected["report"]["lod_vertices"],
-                [int(value) for value in fields[27:31]],
+                [int(value) for value in fields[30:34]],
             )
             self.assertEqual(
                 inspected["report"]["lod_triangles"],
-                [int(value) for value in fields[31:35]],
+                [int(value) for value in fields[34:38]],
             )
             self.assertEqual(
                 inspected["report"]["lod_primitives"],
-                [int(value) for value in fields[35:39]],
+                [int(value) for value in fields[38:42]],
             )
-            self.assertEqual("1", fields[41])
+            self.assertEqual("1", fields[44])
             self.assertEqual(
                 inspected["license_spdx"],
-                bytes.fromhex(fields[42]).decode("utf-8"),
+                bytes.fromhex(fields[45]).decode("utf-8"),
             )
             self.assertEqual(
                 inspected["attribution"],
-                bytes.fromhex(fields[43]).decode("utf-8"),
+                bytes.fromhex(fields[46]).decode("utf-8"),
             )
             self.assertEqual(
                 inspected["source_url"],
-                bytes.fromhex(fields[44]).decode("utf-8"),
+                bytes.fromhex(fields[47]).decode("utf-8"),
             )
             with self.assertRaisesRegex(manager.ManagerError, "exact file"):
                 manager.write_candidate_index(

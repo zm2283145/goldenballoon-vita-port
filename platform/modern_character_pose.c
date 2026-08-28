@@ -83,6 +83,119 @@ static void quat_axis_angle(const float axis[3], float radians,
     output[3] = cosf(half);
 }
 
+static float clamp_range(float value, float minimum, float maximum) {
+    if (value < minimum) return minimum;
+    if (value > maximum) return maximum;
+    return value;
+}
+
+static int apply_joint_constraints(MdkrModernPose *pose, int reset_mask) {
+    uint32_t role;
+    if (reset_mask) pose->constraint_clamped_mask = 0u;
+    for (role = 0u; role < MDKR_MODERN_HUMANOID_ROLE_COUNT; role++) {
+        const MdkrModernJointConstraint *constraint;
+        MdkrModernNode bind;
+        MdkrModernTrs *current;
+        float inverse_bind[4];
+        float relative[4];
+        float twist[4];
+        float inverse_twist[4];
+        float swing[4];
+        float clamped_swing[4];
+        float clamped_twist[4];
+        float clamped_relative[4];
+        float projection;
+        float twist_length;
+        float twist_angle;
+        float swing_angle;
+        float clamped_twist_angle;
+        float clamped_swing_angle;
+        float swing_vector_length;
+        unsigned component;
+        if ((pose->joint_constraint_mask & (1u << role)) == 0u) continue;
+        constraint = &pose->joint_constraints[role];
+        if (constraint->role != role ||
+            constraint->node >= pose->node_count ||
+            !mdkr_modern_character_asset_node(
+                pose->asset, constraint->node, &bind)) return 0;
+        current = &pose->local[constraint->node];
+        inverse_bind[0] = -bind.rotation[0];
+        inverse_bind[1] = -bind.rotation[1];
+        inverse_bind[2] = -bind.rotation[2];
+        inverse_bind[3] = bind.rotation[3];
+        quat_multiply(inverse_bind, current->rotation, relative);
+        if (relative[3] < 0.0f) {
+            for (component = 0u; component < 4u; component++) {
+                relative[component] = -relative[component];
+            }
+        }
+        projection = relative[0] * constraint->twist_axis[0] +
+                     relative[1] * constraint->twist_axis[1] +
+                     relative[2] * constraint->twist_axis[2];
+        twist[0] = constraint->twist_axis[0] * projection;
+        twist[1] = constraint->twist_axis[1] * projection;
+        twist[2] = constraint->twist_axis[2] * projection;
+        twist[3] = relative[3];
+        twist_length = sqrtf(
+            twist[0] * twist[0] + twist[1] * twist[1] +
+            twist[2] * twist[2] + twist[3] * twist[3]);
+        if (twist_length < 1.0e-8f) {
+            twist[0] = twist[1] = twist[2] = 0.0f;
+            twist[3] = 1.0f;
+        } else {
+            for (component = 0u; component < 4u; component++) {
+                twist[component] /= twist_length;
+            }
+        }
+        if (twist[3] < 0.0f) {
+            for (component = 0u; component < 4u; component++) {
+                twist[component] = -twist[component];
+            }
+        }
+        inverse_twist[0] = -twist[0];
+        inverse_twist[1] = -twist[1];
+        inverse_twist[2] = -twist[2];
+        inverse_twist[3] = twist[3];
+        quat_multiply(relative, inverse_twist, swing);
+        if (swing[3] < 0.0f) {
+            for (component = 0u; component < 4u; component++) {
+                swing[component] = -swing[component];
+            }
+        }
+        twist_angle = 2.0f * atan2f(
+            twist[0] * constraint->twist_axis[0] +
+            twist[1] * constraint->twist_axis[1] +
+            twist[2] * constraint->twist_axis[2], twist[3]);
+        swing_vector_length = sqrtf(
+            swing[0] * swing[0] + swing[1] * swing[1] +
+            swing[2] * swing[2]);
+        swing_angle = 2.0f * atan2f(swing_vector_length, swing[3]);
+        clamped_twist_angle = clamp_range(
+            twist_angle,
+            constraint->twist_min_degrees * 0.01745329251994329577f,
+            constraint->twist_max_degrees * 0.01745329251994329577f);
+        clamped_swing_angle = clamp_range(
+            swing_angle, 0.0f,
+            constraint->swing_limit_degrees * 0.01745329251994329577f);
+        if (fabsf(clamped_twist_angle - twist_angle) < 1.0e-6f &&
+            fabsf(clamped_swing_angle - swing_angle) < 1.0e-6f) continue;
+        if (swing_angle > 1.0e-8f) {
+            static const float identity[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            quat_slerp(identity, swing,
+                       clamped_swing_angle / swing_angle, clamped_swing);
+        } else {
+            clamped_swing[0] = clamped_swing[1] = clamped_swing[2] = 0.0f;
+            clamped_swing[3] = 1.0f;
+        }
+        quat_axis_angle(constraint->twist_axis, clamped_twist_angle,
+                        clamped_twist);
+        quat_multiply(clamped_swing, clamped_twist, clamped_relative);
+        quat_multiply(bind.rotation, clamped_relative, current->rotation);
+        pose->constraint_clamped_mask |= 1u << role;
+    }
+    return 1;
+}
+
 static void matrix_identity(float output[16]) {
     memset(output, 0, sizeof(float) * 16u);
     output[0] = output[5] = output[10] = output[15] = 1.0f;
@@ -590,6 +703,150 @@ static int evaluate_world(MdkrModernPose *pose, float *output,
     return 1;
 }
 
+static int node_world_rotation(const MdkrModernPose *pose, uint32_t node_index,
+                               float output[4]) {
+    uint32_t steps;
+    if (pose == NULL || node_index >= pose->node_count) return 0;
+    memcpy(output, pose->local[node_index].rotation, sizeof(float) * 4u);
+    for (steps = 0u; steps < pose->node_count; steps++) {
+        MdkrModernNode node;
+        if (!mdkr_modern_character_asset_node(
+                pose->asset, node_index, &node)) return 0;
+        if (node.parent < 0) {
+            return isfinite(output[0]) && isfinite(output[1]) &&
+                   isfinite(output[2]) && isfinite(output[3]);
+        }
+        node_index = (uint32_t)node.parent;
+        if (node_index >= pose->node_count) return 0;
+        quat_multiply(pose->local[node_index].rotation, output, output);
+    }
+    return 0;
+}
+
+static int secondary_capture_drivers(MdkrModernPose *pose) {
+    uint32_t joint_index;
+    for (joint_index = 0u; joint_index < pose->secondary_joint_count;
+         joint_index++) {
+        const MdkrModernSecondaryJoint *joint =
+            &pose->secondary_joints[joint_index];
+        const MdkrModernSecondaryChain *chain =
+            &pose->secondary_chains[joint->chain];
+        if (!node_world_rotation(
+                pose, chain->root_node,
+                pose->secondary_driver_rotation[joint_index])) return 0;
+    }
+    return 1;
+}
+
+static int apply_secondary_motion(MdkrModernPose *pose, float seconds,
+                                  int exact_held_sample,
+                                  char *error, size_t error_size) {
+    static const float fixed_step = 1.0f / 240.0f;
+    uint32_t joint_index;
+    unsigned steps = 0u;
+    if (pose->secondary_joint_count == 0u) return 1;
+    if (exact_held_sample || seconds > 0.1f || !pose->secondary_initialized) {
+        if (seconds > 0.1f && pose->secondary_initialized) {
+            pose->secondary_discontinuity_resets++;
+        }
+        memset(pose->secondary_angle, 0, sizeof(pose->secondary_angle));
+        memset(pose->secondary_velocity, 0, sizeof(pose->secondary_velocity));
+        pose->secondary_accumulator = 0.0f;
+        if (!secondary_capture_drivers(pose)) {
+            set_error(error, error_size,
+                      "secondary-motion root rotation is invalid");
+            return 0;
+        }
+        pose->secondary_initialized = 1;
+        return 1;
+    }
+    for (joint_index = 0u; joint_index < pose->secondary_joint_count;
+         joint_index++) {
+        const MdkrModernSecondaryJoint *joint =
+            &pose->secondary_joints[joint_index];
+        const MdkrModernSecondaryChain *chain =
+            &pose->secondary_chains[joint->chain];
+        float current[4];
+        float inverse_previous[4];
+        float delta[4];
+        float driver_angle;
+        float distribution;
+        const float maximum =
+            chain->max_angle_degrees * 0.01745329251994329577f;
+        if (!node_world_rotation(pose, chain->root_node, current)) {
+            set_error(error, error_size,
+                      "secondary-motion root rotation is invalid");
+            return 0;
+        }
+        inverse_previous[0] = -pose->secondary_driver_rotation[joint_index][0];
+        inverse_previous[1] = -pose->secondary_driver_rotation[joint_index][1];
+        inverse_previous[2] = -pose->secondary_driver_rotation[joint_index][2];
+        inverse_previous[3] = pose->secondary_driver_rotation[joint_index][3];
+        quat_multiply(inverse_previous, current, delta);
+        if (delta[3] < 0.0f) {
+            unsigned component;
+            for (component = 0u; component < 4u; component++) {
+                delta[component] = -delta[component];
+            }
+        }
+        driver_angle = 2.0f * atan2f(
+            delta[0] * chain->bend_axis[0] +
+            delta[1] * chain->bend_axis[1] +
+            delta[2] * chain->bend_axis[2], delta[3]);
+        distribution = (float)(joint->order + 1u) /
+                       (float)chain->joint_count;
+        pose->secondary_angle[joint_index] = clamp_range(
+            pose->secondary_angle[joint_index] -
+                driver_angle * chain->inertia * distribution,
+            -maximum, maximum);
+        memcpy(pose->secondary_driver_rotation[joint_index], current,
+               sizeof(current));
+    }
+    pose->secondary_accumulator += seconds;
+    while (pose->secondary_accumulator + 1.0e-8f >= fixed_step &&
+           steps < 24u) {
+        for (joint_index = 0u; joint_index < pose->secondary_joint_count;
+             joint_index++) {
+            const MdkrModernSecondaryJoint *joint =
+                &pose->secondary_joints[joint_index];
+            const MdkrModernSecondaryChain *chain =
+                &pose->secondary_chains[joint->chain];
+            const float omega = 6.28318530717958647692f * chain->stiffness_hz;
+            const float decay = expf(
+                -2.0f * chain->damping_ratio * omega * fixed_step);
+            const float maximum =
+                chain->max_angle_degrees * 0.01745329251994329577f;
+            float velocity = pose->secondary_velocity[joint_index] -
+                omega * omega * pose->secondary_angle[joint_index] * fixed_step;
+            float angle;
+            velocity *= decay;
+            angle = pose->secondary_angle[joint_index] + velocity * fixed_step;
+            if (angle < -maximum || angle > maximum) {
+                angle = clamp_range(angle, -maximum, maximum);
+                if ((angle < 0.0f && velocity < 0.0f) ||
+                    (angle > 0.0f && velocity > 0.0f)) velocity = 0.0f;
+            }
+            pose->secondary_angle[joint_index] = angle;
+            pose->secondary_velocity[joint_index] = velocity;
+        }
+        pose->secondary_accumulator -= fixed_step;
+        steps++;
+    }
+    for (joint_index = 0u; joint_index < pose->secondary_joint_count;
+         joint_index++) {
+        const MdkrModernSecondaryJoint *joint =
+            &pose->secondary_joints[joint_index];
+        const MdkrModernSecondaryChain *chain =
+            &pose->secondary_chains[joint->chain];
+        float delta[4];
+        quat_axis_angle(chain->bend_axis, pose->secondary_angle[joint_index],
+                        delta);
+        quat_multiply(pose->local[joint->node].rotation, delta,
+                      pose->local[joint->node].rotation);
+    }
+    return evaluate_world(pose, pose->world_current, error, error_size);
+}
+
 static int build_evaluation_order(MdkrModernPose *pose,
                                   char *error, size_t error_size) {
     uint8_t *resolved;
@@ -687,6 +944,49 @@ int mdkr_modern_pose_init(MdkrModernPose *pose,
             }
             pose->humanoid_retarget_ready =
                 pose->rig_role_mask == 0xFFFFu;
+        }
+    }
+    {
+        const MdkrModernSectionView *constraints =
+            mdkr_modern_character_asset_section(
+                asset, MDKR_MDKC_JOINT_CONSTRAINTS);
+        uint32_t constraint_index;
+        if (constraints != NULL) {
+            for (constraint_index = 0u;
+                 constraint_index < constraints->count; constraint_index++) {
+                MdkrModernJointConstraint constraint;
+                (void)mdkr_modern_character_asset_joint_constraint(
+                    asset, constraint_index, &constraint);
+                if (constraint.role >= MDKR_MODERN_HUMANOID_ROLE_COUNT) {
+                    mdkr_modern_pose_shutdown(pose);
+                    set_error(error, error_size,
+                              "pose joint constraint role is invalid");
+                    return 0;
+                }
+                pose->joint_constraints[constraint.role] = constraint;
+                pose->joint_constraint_mask |= 1u << constraint.role;
+            }
+        }
+    }
+    {
+        const MdkrModernSectionView *chains =
+            mdkr_modern_character_asset_section(
+                asset, MDKR_MDKC_SECONDARY_CHAINS);
+        const MdkrModernSectionView *joints =
+            mdkr_modern_character_asset_section(
+                asset, MDKR_MDKC_SECONDARY_JOINTS);
+        uint32_t index;
+        if (chains != NULL && joints != NULL) {
+            pose->secondary_chain_count = chains->count;
+            pose->secondary_joint_count = joints->count;
+            for (index = 0u; index < chains->count; index++) {
+                (void)mdkr_modern_character_asset_secondary_chain(
+                    asset, index, &pose->secondary_chains[index]);
+            }
+            for (index = 0u; index < joints->count; index++) {
+                (void)mdkr_modern_character_asset_secondary_joint(
+                    asset, index, &pose->secondary_joints[index]);
+            }
         }
     }
     if (!build_evaluation_order(pose, error, error_size)) {
@@ -804,9 +1104,17 @@ static int pose_advance(MdkrModernPose *pose, float seconds,
     }
     pose->procedural_weight = blend_amount;
     apply_reference_pose(pose, phase_driven);
+    if (!apply_joint_constraints(pose, 1)) {
+        set_error(error, error_size,
+                  "pose joint constraint evaluation failed");
+        return 0;
+    }
+    if (!evaluate_world(pose, pose->world_current, error, error_size)) return 0;
+    if (!apply_secondary_motion(
+            pose, seconds, phase_driven && seconds == 0.0f,
+            error, error_size)) return 0;
     memcpy(pose->pre_contact, pose->local,
            (size_t)pose->node_count * sizeof(*pose->local));
-    if (!evaluate_world(pose, pose->world_current, error, error_size)) return 0;
     pose->generation++;
     if (pose->generation == 0u) pose->generation++;
     set_error(error, error_size, "");
@@ -828,6 +1136,32 @@ int mdkr_modern_pose_advance_phase(MdkrModernPose *pose, float seconds,
     }
     return pose_advance(pose, seconds, 1, normalized_phase,
                         error, error_size);
+}
+
+uint32_t mdkr_modern_pose_constraint_clamped_mask(
+    const MdkrModernPose *pose) {
+    return pose != NULL && pose->valid ? pose->constraint_clamped_mask : 0u;
+}
+
+int mdkr_modern_pose_secondary_diagnostics(
+    const MdkrModernPose *pose, MdkrModernSecondaryDiagnostics *out) {
+    MdkrModernSecondaryDiagnostics result;
+    uint32_t index;
+    if (pose == NULL || !pose->valid || out == NULL) return 0;
+    memset(&result, 0, sizeof(result));
+    result.chain_count = pose->secondary_chain_count;
+    result.joint_count = pose->secondary_joint_count;
+    result.discontinuity_resets = pose->secondary_discontinuity_resets;
+    for (index = 0u; index < pose->secondary_joint_count; index++) {
+        const float degrees = fabsf(pose->secondary_angle[index]) *
+            57.2957795130823208768f;
+        if (degrees > 0.001f) result.active_joint_count++;
+        if (degrees > result.max_deflection_degrees) {
+            result.max_deflection_degrees = degrees;
+        }
+    }
+    *out = result;
+    return 1;
 }
 
 static float vector_normalize(float value[3]) {
@@ -1085,10 +1419,13 @@ int mdkr_modern_pose_apply_vehicle_contacts(
             if (error_metres > max_error) max_error = error_metres;
         }
     }
-    if (!isfinite(max_error)) {
-        set_error(error, error_size, "vehicle contact solve became non-finite");
+    if (!apply_joint_constraints(pose, 0)) {
+        set_error(error, error_size,
+                  "post-contact joint constraint evaluation failed");
         return 0;
     }
+    if (!evaluate_world(pose, pose->world_current, error, error_size)) return 0;
+    max_error = 0.0f;
     pose->contact_valid_mask = 0u;
     for (contact = 0u; contact < MDKR_MODERN_CHARACTER_CONTACTS; contact++) {
         const float *root = pose->world_current +
@@ -1116,7 +1453,14 @@ int mdkr_modern_pose_apply_vehicle_contacts(
                       "vehicle contact witness became non-finite");
             return 0;
         }
+        if (pose->contact_error[contact] / source_units_per_metre > max_error) {
+            max_error = pose->contact_error[contact] / source_units_per_metre;
+        }
         pose->contact_valid_mask |= 1u << contact;
+    }
+    if (!isfinite(max_error)) {
+        set_error(error, error_size, "vehicle contact solve became non-finite");
+        return 0;
     }
     pose->contact_max_error = max_error;
     pose->contact_context = (uint32_t)context;

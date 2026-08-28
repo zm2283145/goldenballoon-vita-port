@@ -24,7 +24,7 @@ import character_asset_compiler as compiler  # noqa: E402
 import character_asset_probe as probe  # noqa: E402
 import character_package_manager as manager  # noqa: E402
 from test_character_asset_probe import (  # noqa: E402
-    make_humanoid_glb, make_portrait_png, make_v4_manifest,
+    make_v5_character,
 )
 from character_validation_fixture import accepted_validation  # noqa: E402
 
@@ -34,8 +34,7 @@ def main() -> int:
     parser.add_argument("--loader", required=True, type=Path)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="mdkr-modern-character-") as directory:
-        portrait_bytes = make_portrait_png()
-        manifest_data = make_v4_manifest(portrait_bytes, humanoid=True)
+        model_bytes, portrait_bytes, manifest_data = make_v5_character()
         manifest_data["identity"].update({
             "short_name": "Proof",
             "narration_name": "Pipeline Proof character",
@@ -44,7 +43,6 @@ def main() -> int:
         manifest_data["animations"]["states"]["race.item"] = "idle"
         manifest_data["animations"]["states"]["select.idle"] = "idle"
         manifest_data["animations"]["disabled_states"] = ["select.idle"]
-        model_bytes = make_humanoid_glb()
         cache = Path(directory) / "generated.mdkc"
         compiled, _ = compiler.compile_character(
             model_bytes, manifest_data, bytes(range(32)), portrait_bytes

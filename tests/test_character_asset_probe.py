@@ -423,7 +423,139 @@ def make_v4_manifest(portrait: bytes, *, humanoid: bool = False) -> dict[str, ob
     return manifest
 
 
+def make_v5_character() -> tuple[bytes, bytes, dict[str, object]]:
+    """Return a humanoid fixture with a two-joint non-role hair chain."""
+    portrait = make_portrait_png()
+
+    def add_secondary_nodes(document: dict[str, object]) -> None:
+        nodes = document["nodes"]
+        assert isinstance(nodes, list)
+        head = nodes[3]
+        assert isinstance(head, dict)
+        head.setdefault("children", []).append(16)
+        nodes.insert(16, {
+            "name": "hair.01", "translation": [0.0, 0.15, 0.0],
+            "children": [17],
+        })
+        nodes.insert(17, {
+            "name": "hair.02", "translation": [0.0, 0.15, 0.0],
+        })
+        # The character mesh node followed the 16 humanoid joints before the
+        # insertion and is deliberately shifted to index 18.
+        scenes = document["scenes"]
+        assert isinstance(scenes, list) and isinstance(scenes[0], dict)
+        scenes[0]["nodes"] = [0, 18]
+        skins = document["skins"]
+        assert isinstance(skins, list) and isinstance(skins[0], dict)
+        skins[0]["joints"] = list(range(18))
+
+    model = rewrite_glb_document(make_humanoid_glb(), add_secondary_nodes)
+    manifest = make_v4_manifest(portrait, humanoid=True)
+    manifest["schema"] = probe.PACKAGE_SCHEMA_V5
+    roles = manifest["rig"]["roles"]
+    roles["lower_arm.left"]["constraint"] = {
+        "twist_axis": [1.0, 0.0, 0.0],
+        "swing_limit_degrees": 45.0,
+        "twist_min_degrees": -70.0,
+        "twist_max_degrees": 70.0,
+    }
+    manifest["secondary_motion"] = {
+        "chains": [{
+            "name": "hair.main",
+            "root": "mixamorig:Head",
+            "joints": ["hair.01", "hair.02"],
+            "bend_axis": [0.0, 0.0, 1.0],
+            "stiffness_hz": 6.0,
+            "damping_ratio": 0.8,
+            "inertia": 0.65,
+            "max_angle_degrees": 35.0,
+        }],
+    }
+    return model, portrait, manifest
+
+
 class CharacterAssetProbeTests(unittest.TestCase):
+    def test_source_v5_constraints_and_secondary_motion_compile_deterministically(self) -> None:
+        model, portrait, manifest = make_v5_character()
+        policy = probe.inspect_glb_bytes(model, require_character=True)
+        self.assertEqual([], policy["errors"])
+        self.assertEqual([], probe.validate_manifest(manifest, policy))
+        first, first_report = compiler.compile_character(
+            model, manifest, bytes(range(32)), portrait
+        )
+        second, second_report = compiler.compile_character(
+            model, manifest, bytes(range(32)), portrait
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(first_report, second_report)
+        self.assertEqual("mdkc-v2", first_report["format"])
+        self.assertEqual(1, first_report["joint_constraints"])
+        self.assertEqual(1, first_report["secondary_chains"])
+        self.assertEqual(2, first_report["secondary_joints"])
+        sections = _compiled_sections(first)
+        self.assertEqual(
+            struct.calcsize(compiler.JOINT_CONSTRAINT_FORMAT),
+            sections[compiler.SECTION_JOINT_CONSTRAINTS]["stride"],
+        )
+        self.assertEqual(
+            struct.calcsize(compiler.SECONDARY_CHAIN_FORMAT),
+            sections[compiler.SECTION_SECONDARY_CHAINS]["stride"],
+        )
+        self.assertEqual(
+            struct.calcsize(compiler.SECONDARY_JOINT_FORMAT),
+            sections[compiler.SECTION_SECONDARY_JOINTS]["stride"],
+        )
+
+    def test_source_v5_authoring_bounds_fail_closed(self) -> None:
+        model, portrait, manifest = make_v5_character()
+        policy = probe.inspect_glb_bytes(model, require_character=True)
+        role = manifest["rig"]["roles"]["lower_arm.left"]
+        role["constraint"]["twist_axis"] = [0.0, 0.0, 0.0]
+        role["constraint"]["twist_min_degrees"] = 80.0
+        role["constraint"]["twist_max_degrees"] = -80.0
+        chain = manifest["secondary_motion"]["chains"][0]
+        chain["stiffness_hz"] = 60.0
+        chain["joints"] = ["hair.01", "hair.01"]
+        errors = probe.validate_manifest(manifest, policy)
+        self.assertTrue(any("twist_axis" in error for error in errors))
+        self.assertTrue(any("must not exceed" in error for error in errors))
+        self.assertTrue(any("stiffness_hz" in error for error in errors))
+        self.assertTrue(any("unique node names" in error for error in errors))
+        with self.assertRaises(compiler.CompileError):
+            compiler.compile_character(model, manifest, bytes(32), portrait)
+
+    def test_source_v5_secondary_graph_rejects_role_overlap_and_non_path(self) -> None:
+        model, portrait, manifest = make_v5_character()
+        manifest["secondary_motion"]["chains"][0]["joints"] = [
+            "mixamorig:LeftArm"
+        ]
+        manifest["secondary_motion"]["chains"][0]["root"] = "mixamorig:Head"
+        with self.assertRaisesRegex(compiler.CompileError, "parent-to-child"):
+            compiler.compile_character(model, manifest, bytes(32), portrait)
+        manifest["secondary_motion"]["chains"][0]["root"] = "mixamorig:Spine2"
+        with self.assertRaisesRegex(compiler.CompileError, "overlaps humanoid"):
+            compiler.compile_character(model, manifest, bytes(32), portrait)
+        _, _, valid_manifest = make_v5_character()
+        mirrored = rewrite_glb_document(
+            model,
+            lambda document: document["nodes"][16].update({
+                "scale": [-1.0, -1.0, -1.0],
+            }),
+        )
+        with self.assertRaisesRegex(compiler.CompileError, "mirrored or singular"):
+            compiler.compile_character(
+                mirrored, valid_manifest, bytes(32), portrait
+            )
+
+    def test_source_v4_does_not_silently_accept_v5_fields(self) -> None:
+        model, portrait, manifest = make_v5_character()
+        manifest["schema"] = probe.PACKAGE_SCHEMA_V4
+        errors = probe.validate_manifest(
+            manifest, probe.inspect_glb_bytes(model, require_character=True)
+        )
+        self.assertTrue(any("secondary_motion" in error for error in errors))
+        self.assertTrue(any("constraint" in error for error in errors))
+
     def test_semantic_playback_policy_is_engine_owned(self) -> None:
         self.assertEqual((0, 0.15), compiler._semantic_policy("race.land"))
         self.assertEqual((0, 0.15), compiler._semantic_policy("select.confirm"))

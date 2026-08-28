@@ -35,6 +35,9 @@ struct Candidate {
     uint32_t rigMode = 0u;
     bool rigReviewed = false;
     uint32_t rigRoles = 0u;
+    uint32_t jointConstraints = 0u;
+    uint32_t secondaryChains = 0u;
+    uint32_t secondaryJoints = 0u;
     uint64_t encodedTextureBytes = 0u;
     uint64_t decodedTextureBytes = 0u;
     bool provenancePresent = false;

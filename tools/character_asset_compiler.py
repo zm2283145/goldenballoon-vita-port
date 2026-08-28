@@ -25,12 +25,12 @@ import character_asset_probe as probe
 
 
 MDKC_MAGIC = b"MDKC"
-MDKC_VERSION = 1
-MDKC_HEADER_BYTES = 832
-MDKC_SECTION_SLOTS = 24
+MDKC_VERSION = 2
+MDKC_HEADER_BYTES = 928
+MDKC_SECTION_SLOTS = 27
 MDKC_SECTION_ENTRY_BYTES = 32
 MDKC_FILE_MAX = 1024 * 1024 * 1024
-COMPILER_ID = "mdkr-character-compiler/8"
+COMPILER_ID = "mdkr-character-compiler/9"
 
 SECTION_STRINGS = 1
 SECTION_VERTICES = 2
@@ -56,6 +56,9 @@ SECTION_RIG = 21
 SECTION_RIG_ROLES = 22
 SECTION_PROVENANCE = 23
 SECTION_IDENTITY_NAMES = 24
+SECTION_JOINT_CONSTRAINTS = 25
+SECTION_SECONDARY_CHAINS = 26
+SECTION_SECONDARY_JOINTS = 27
 
 VERTEX_FORMAT = "<3f3f4f2f4H4f"
 PRIMITIVE_FORMAT = "<8I"
@@ -77,6 +80,9 @@ IDENTITY_NAMES_FORMAT = "<3I"
 RIG_FORMAT = "<4I"
 RIG_ROLE_FORMAT = "<4I4f3f"
 PROVENANCE_FORMAT = "<4I"
+JOINT_CONSTRAINT_FORMAT = "<2I3f3f"
+SECONDARY_CHAIN_FORMAT = "<4I7f"
+SECONDARY_JOINT_FORMAT = "<4I"
 
 COMPONENTS = {
     5120: ("b", 1, True),
@@ -174,6 +180,21 @@ def _is_ancestor(parents: list[int], ancestor: int, descendant: int) -> bool:
             return False
         if current == ancestor:
             return True
+    raise CompileError("node hierarchy contains a cycle")
+
+
+def _orientation_preserving(
+        parents: list[int], scales: list[tuple[float, float, float]],
+        node: int) -> bool:
+    determinant = 1.0
+    for _ in range(len(parents)):
+        scale = scales[node]
+        determinant *= scale[0] * scale[1] * scale[2]
+        if not math.isfinite(determinant) or abs(determinant) < 1.0e-12:
+            return False
+        node = parents[node]
+        if node < 0:
+            return determinant > 0.0
     raise CompileError("node hierarchy contains a cycle")
 
 
@@ -1086,7 +1107,7 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
     source_forward = "+z"
     explicit_calibration = manifest["schema"] in (
         probe.PACKAGE_SCHEMA, probe.PACKAGE_SCHEMA_V3,
-        probe.PACKAGE_SCHEMA_V4,
+        probe.PACKAGE_SCHEMA_V4, probe.PACKAGE_SCHEMA_V5,
     )
     if explicit_calibration:
         source_forward = presentation["source_forward"]
@@ -1174,9 +1195,12 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
     rig_role_records = []
     rig_manifest = manifest.get("rig")
     rig_role_mask = 0
-    if manifest["schema"] == probe.PACKAGE_SCHEMA_V4:
+    joint_constraint_records = []
+    secondary_chain_records = []
+    secondary_joint_records = []
+    if manifest["schema"] in probe.RIG_SCHEMAS:
         if not isinstance(rig_manifest, dict):
-            raise CompileError("source-v4 package omits rig metadata")
+            raise CompileError("source-v4/v5 package omits rig metadata")
         role_nodes: dict[str, int] = {}
         for role in probe.HUMANOID_ROLES:
             mapping = rig_manifest["roles"].get(role)
@@ -1203,6 +1227,15 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
                 )),
                 *map(float, mapping.get("bend_axis", (0.0, 0.0, 0.0))),
             ))
+            constraint = mapping.get("constraint")
+            if constraint is not None:
+                joint_constraint_records.append((
+                    RIG_ROLE_IDS[role], node_index,
+                    *map(float, constraint["twist_axis"]),
+                    float(constraint["swing_limit_degrees"]),
+                    float(constraint["twist_min_degrees"]),
+                    float(constraint["twist_max_degrees"]),
+                ))
         for ancestor_role, descendant_role in RIG_HIERARCHY:
             if ancestor_role not in role_nodes or descendant_role not in role_nodes:
                 continue
@@ -1219,19 +1252,88 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             len(rig_role_records), rig_role_mask,
         ))
 
+    secondary_manifest = manifest.get("secondary_motion")
+    if isinstance(secondary_manifest, dict):
+        used_dynamic_nodes: set[int] = set()
+        role_node_set = {
+            record[1] for record in rig_role_records
+        }
+        for chain in secondary_manifest["chains"]:
+            root_name = chain["root"]
+            if root_name not in node_names:
+                raise CompileError(
+                    f"secondary chain {chain['name']!r} names missing root "
+                    f"node {root_name!r}"
+                )
+            root_node = node_names[root_name]
+            if not _orientation_preserving(parents, node_scales, root_node):
+                raise CompileError(
+                    f"secondary chain {chain['name']!r} root has a mirrored "
+                    "or singular world transform"
+                )
+            previous = root_node
+            first_joint = len(secondary_joint_records)
+            for order, node_name in enumerate(chain["joints"]):
+                if node_name not in node_names:
+                    raise CompileError(
+                        f"secondary chain {chain['name']!r} names missing "
+                        f"joint node {node_name!r}"
+                    )
+                node_index = node_names[node_name]
+                if node_index not in joint_node_set:
+                    raise CompileError(
+                        f"secondary chain {chain['name']!r} node "
+                        f"{node_name!r} is not a skin joint"
+                    )
+                if not _orientation_preserving(
+                        parents, node_scales, node_index):
+                    raise CompileError(
+                        f"secondary chain {chain['name']!r} node "
+                        f"{node_name!r} has a mirrored or singular world transform"
+                    )
+                if parents[node_index] != previous:
+                    raise CompileError(
+                        f"secondary chain {chain['name']!r} must be a direct "
+                        "parent-to-child node path"
+                    )
+                if node_index in used_dynamic_nodes:
+                    raise CompileError(
+                        f"secondary chain {chain['name']!r} reuses dynamic "
+                        f"node {node_name!r}"
+                    )
+                if node_index in role_node_set:
+                    raise CompileError(
+                        f"secondary chain {chain['name']!r} overlaps humanoid "
+                        f"role node {node_name!r}"
+                    )
+                used_dynamic_nodes.add(node_index)
+                secondary_joint_records.append((
+                    node_index, len(secondary_chain_records), order, 0,
+                ))
+                previous = node_index
+            secondary_chain_records.append((
+                strings.add(chain["name"]), root_node, first_joint,
+                len(chain["joints"]),
+                float(chain["stiffness_hz"]),
+                float(chain["damping_ratio"]),
+                float(chain["inertia"]),
+                float(chain["max_angle_degrees"]),
+                *map(float, chain["bend_axis"]),
+            ))
+
     identity_records = []
     identity_name_records = []
     identity_data = b""
     identity_manifest = manifest.get("identity")
-    if manifest["schema"] in (probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4):
+    if manifest["schema"] in probe.IDENTITY_SCHEMAS:
         if portrait is None:
-            raise CompileError("source-v3/v4 package omits portrait.png")
+            raise CompileError("source-v3/v4/v5 package omits portrait.png")
         try:
             probe.inspect_portrait_png(portrait)
         except probe.ProbeError as exc:
             raise CompileError(str(exc)) from exc
         if not isinstance(identity_manifest, dict):
-            raise CompileError("source-v3/v4 package omits identity metadata")
+            raise CompileError("source-v3/v4/v5 package omits identity metadata")
         if hashlib.sha256(portrait).hexdigest() != identity_manifest["portrait_sha256"]:
             raise CompileError("portrait.png digest does not match the manifest")
         red, green, blue = identity_manifest["minimap_rgb"]
@@ -1297,6 +1399,25 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
                     struct.calcsize(RIG_ROLE_FORMAT),
                     _pack_records(RIG_ROLE_FORMAT, rig_role_records)),
         ))
+    if joint_constraint_records:
+        sections.append(Section(
+            SECTION_JOINT_CONSTRAINTS, len(joint_constraint_records),
+            struct.calcsize(JOINT_CONSTRAINT_FORMAT),
+            _pack_records(JOINT_CONSTRAINT_FORMAT, joint_constraint_records),
+        ))
+    if secondary_chain_records:
+        sections.extend((
+            Section(
+                SECTION_SECONDARY_CHAINS, len(secondary_chain_records),
+                struct.calcsize(SECONDARY_CHAIN_FORMAT),
+                _pack_records(SECONDARY_CHAIN_FORMAT, secondary_chain_records),
+            ),
+            Section(
+                SECTION_SECONDARY_JOINTS, len(secondary_joint_records),
+                struct.calcsize(SECONDARY_JOINT_FORMAT),
+                _pack_records(SECONDARY_JOINT_FORMAT, secondary_joint_records),
+            ),
+        ))
     sections.append(Section(
         SECTION_PROVENANCE, 1, struct.calcsize(PROVENANCE_FORMAT),
         _pack_records(PROVENANCE_FORMAT, (provenance_record,)),
@@ -1312,7 +1433,7 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         lod_primitives[lod] += 1
     report = {
         "compiler": COMPILER_ID,
-        "format": "mdkc-v1",
+        "format": "mdkc-v2",
         "bytes": len(compiled),
         "sha256": hashlib.sha256(compiled).hexdigest(),
         "source_sha256": source_digest.hex(),
@@ -1378,6 +1499,9 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             if isinstance(rig_manifest, dict) else False
         ),
         "rig_roles": len(rig_role_records),
+        "joint_constraints": len(joint_constraint_records),
+        "secondary_chains": len(secondary_chain_records),
+        "secondary_joints": len(secondary_joint_records),
         "rig_role_mask": rig_role_mask,
     }
     return compiled, report
@@ -1394,9 +1518,7 @@ def compile_package(package_path: Path, output_path: Path) -> dict[str, Any]:
         model = archive.read("model.glb")
         portrait = (
             archive.read("portrait.png")
-            if manifest.get("schema") in (
-                probe.PACKAGE_SCHEMA_V3, probe.PACKAGE_SCHEMA_V4
-            ) else None
+            if manifest.get("schema") in probe.IDENTITY_SCHEMAS else None
         )
         digest = source_digest(
             (name, archive.read(name))

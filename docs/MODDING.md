@@ -461,7 +461,11 @@ draft removes only launcher-owned form data and its disposable candidate; it
 never deletes the external GLB or license file.
 
 The wizard emits `mdkr-character-source-v2` by default, v3 when identity media
-is supplied, and v4 when `--rig-mode` is also selected. `--source-forward` declares which
+is supplied, and v4 when `--rig-mode` is also selected. Source-v5 is the
+strict additive contract for optional authored joint constraints and secondary
+chains; until its dedicated Studio lands it is intended for hand-authored or
+external-tool manifests, and v1-v4 do not silently accept its fields.
+`--source-forward` declares which
 local horizontal axis the model's face points toward (`+z`, `-z`, `+x`, or
 `-x`); geometry alone cannot answer that reliably. `--target-height` is the
 intended standing height in meters. The compiler measures the transformed
@@ -471,7 +475,7 @@ packages still load but are clearly marked as legacy calibration in the
 workshop. If a preview is backward, use the visible 180-degree correction; if
 it is misplaced, adjust only the affected context.
 
-Source-v3/v4 identity may additionally author `short_name`, `narration_name`,
+Source-v3/v4/v5 identity may additionally author `short_name`, `narration_name`,
 and `sort_label` (each up to 96 UTF-8 bytes). Portrait Studio exposes all four
 names only inside a named draft, so a label edit cannot accidentally publish a
 partial identity revision. Compact select tiles use the short name, the detail

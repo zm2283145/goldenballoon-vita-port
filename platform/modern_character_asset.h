@@ -15,9 +15,9 @@
 extern "C" {
 #endif
 
-#define MDKR_MDKC_VERSION 1u
-#define MDKR_MDKC_HEADER_BYTES 832u
-#define MDKR_MDKC_SECTION_SLOTS 24u
+#define MDKR_MDKC_VERSION 2u
+#define MDKR_MDKC_HEADER_BYTES 928u
+#define MDKR_MDKC_SECTION_SLOTS 27u
 #define MDKR_MDKC_FILE_MAX (1024u * 1024u * 1024u)
 #define MDKR_MODERN_HUMANOID_ROLE_COUNT 16u
 
@@ -46,7 +46,10 @@ typedef enum MdkrModernSectionType {
     MDKR_MDKC_RIG_ROLES = 22,
     MDKR_MDKC_PROVENANCE = 23,
     MDKR_MDKC_IDENTITY_NAMES = 24,
-    MDKR_MDKC_SECTION_LAST = MDKR_MDKC_IDENTITY_NAMES
+    MDKR_MDKC_JOINT_CONSTRAINTS = 25,
+    MDKR_MDKC_SECONDARY_CHAINS = 26,
+    MDKR_MDKC_SECONDARY_JOINTS = 27,
+    MDKR_MDKC_SECTION_LAST = MDKR_MDKC_SECONDARY_JOINTS
 } MdkrModernSectionType;
 
 typedef struct MdkrModernSectionView {
@@ -219,7 +222,7 @@ typedef struct MdkrModernCalibration {
     float target_height;
 } MdkrModernCalibration;
 
-/* Optional source-v3/v4 presentation identity. The encoded portrait remains
+/* Optional source-v3/v4/v5 presentation identity. The encoded portrait remains
  * immutable cache data; a bounded runtime adapter owns decoded pixels. */
 typedef struct MdkrModernIdentity {
     uint32_t flags; /* bit zero: authored portrait and minimap colour */
@@ -245,7 +248,7 @@ enum MdkrModernRigFlags {
     MDKR_MODERN_RIG_REVIEWED = 1u << 0
 };
 
-/* Optional source-v4 semantic skeleton contract. A reviewed humanoid map is
+/* Optional source-v4/v5 semantic skeleton contract. A reviewed humanoid map is
  * structurally ready for a retargeter; authored-clips-only remains a complete,
  * supported mode and never asks the runtime to distort a non-humanoid rig. */
 typedef struct MdkrModernRig {
@@ -263,6 +266,38 @@ typedef struct MdkrModernRigRole {
     float rest_rotation[4];
     float bend_axis[3];
 } MdkrModernRigRole;
+
+/* Optional source-v5 cone/twist limit, expressed relative to the mapped
+ * role node's GLB bind rotation in node-local coordinates. */
+typedef struct MdkrModernJointConstraint {
+    uint32_t role;
+    uint32_t node;
+    float twist_axis[3];
+    float swing_limit_degrees;
+    float twist_min_degrees;
+    float twist_max_degrees;
+} MdkrModernJointConstraint;
+
+/* Bounded source-v5 inertial chain. The root follows the ordinary evaluated
+ * pose; only the contiguous records beginning at first_joint are dynamic. */
+typedef struct MdkrModernSecondaryChain {
+    uint32_t name;
+    uint32_t root_node;
+    uint32_t first_joint;
+    uint32_t joint_count;
+    float stiffness_hz;
+    float damping_ratio;
+    float inertia;
+    float max_angle_degrees;
+    float bend_axis[3];
+} MdkrModernSecondaryChain;
+
+typedef struct MdkrModernSecondaryJoint {
+    uint32_t node;
+    uint32_t chain;
+    uint32_t order;
+    uint32_t flags;
+} MdkrModernSecondaryJoint;
 
 enum MdkrModernProvenanceFlags {
     MDKR_MODERN_PROVENANCE_LICENSE_TEXT_BOUND = 1u << 0
@@ -301,6 +336,9 @@ typedef struct MdkrModernCharacterStats {
     uint32_t semantics;
     uint32_t sockets;
     uint32_t rig_roles;
+    uint32_t joint_constraints;
+    uint32_t secondary_chains;
+    uint32_t secondary_joints;
     uint64_t encoded_texture_bytes;
     uint64_t decoded_texture_bytes;
 } MdkrModernCharacterStats;
@@ -369,6 +407,15 @@ int mdkr_modern_character_asset_rig(const MdkrModernCharacterAsset *asset,
 int mdkr_modern_character_asset_rig_role(
     const MdkrModernCharacterAsset *asset, uint32_t index,
     MdkrModernRigRole *out);
+int mdkr_modern_character_asset_joint_constraint(
+    const MdkrModernCharacterAsset *asset, uint32_t index,
+    MdkrModernJointConstraint *out);
+int mdkr_modern_character_asset_secondary_chain(
+    const MdkrModernCharacterAsset *asset, uint32_t index,
+    MdkrModernSecondaryChain *out);
+int mdkr_modern_character_asset_secondary_joint(
+    const MdkrModernCharacterAsset *asset, uint32_t index,
+    MdkrModernSecondaryJoint *out);
 int mdkr_modern_character_asset_provenance(
     const MdkrModernCharacterAsset *asset, MdkrModernProvenance *out);
 int mdkr_modern_character_asset_socket(const MdkrModernCharacterAsset *asset,

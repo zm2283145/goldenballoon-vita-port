@@ -3782,6 +3782,9 @@ CharacterCandidateIndex::Candidate installedCharacterSummary(
     summary.rigReviewed =
         (entry.rig_flags & MDKR_MODERN_RIG_REVIEWED) != 0u;
     summary.rigRoles = entry.stats.rig_roles;
+    summary.jointConstraints = entry.stats.joint_constraints;
+    summary.secondaryChains = entry.stats.secondary_chains;
+    summary.secondaryJoints = entry.stats.secondary_joints;
     summary.encodedTextureBytes = entry.stats.encoded_texture_bytes;
     summary.decodedTextureBytes = entry.stats.decoded_texture_bytes;
     summary.provenancePresent = entry.provenance_present != 0u;
@@ -3829,6 +3832,9 @@ CharacterCandidateIndex::Candidate nativeCharacterSummary(
     summary.rigMode = result.rig_mode;
     summary.rigReviewed = result.rig_reviewed != 0u;
     summary.rigRoles = result.rig_roles;
+    summary.jointConstraints = result.joint_constraints;
+    summary.secondaryChains = result.secondary_chains;
+    summary.secondaryJoints = result.secondary_joints;
     summary.encodedTextureBytes = result.encoded_texture_bytes;
     summary.decodedTextureBytes = result.decoded_texture_bytes;
     summary.provenancePresent = result.provenance_present != 0u;
@@ -6223,7 +6229,7 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
     CharacterHistoryFrame history = beginCharacterHistory(
         entry, CharacterHistoryTool::Rig);
     ui::TextSubtleWrapped(
-        "Map semantic anatomy to the model's actual skin joints. Saving creates a validated source-v4 revision; the current playable cache remains active unless the complete compile succeeds.");
+        "Map semantic anatomy to the model's actual skin joints. Saving creates a validated source-v4 revision, or preserves an existing source-v5 revision; the current playable cache remains active unless the complete compile succeeds.");
     const char *modeNames[] = {
         "Authored clips only", "Reviewed humanoid reference motion"
     };
@@ -9924,7 +9930,7 @@ bool drawCharacterTuningEditor(int player,
                 if (!contactReady) {
                     ImGui::EndDisabled();
                     ui::TextSubtleWrapped(
-                        "Contact controls require a complete, reviewed source-v4 humanoid map.");
+                        "Contact controls require a complete, reviewed source-v4/v5 humanoid map.");
                 }
             }
             if (context != MDKR_CHARACTER_CONTEXT_SELECT &&
@@ -21876,7 +21882,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             ImGui::EndGroup();
         } else {
             ImGui::TextDisabled(
-                "Roster identity: donor fallback · Portrait: donor fallback · Import a source-v3/v4 package to author identity media");
+                "Roster identity: donor fallback · Portrait: donor fallback · Import a source-v3/v4/v5 package to author identity media");
         }
         ImGui::TextDisabled(
             "LOD0 performance guide: %s · %u triangles · %u vertices · %u draw parts · %u package materials · %u joints · %u texture(s) · %u LOD(s)",
@@ -22017,7 +22023,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                 }
                 if (humanoidRig && !rigReviewed) {
                     ui::TextSubtleWrapped(
-                        "The runtime lock is deliberate: inference is a starting point, not author approval. Correct the source-v4 role map as needed, then set reviewed only after checking every row in select and all supported vehicles.");
+                        "The runtime lock is deliberate: inference is a starting point, not author approval. Correct the source-v4/v5 role map as needed, then set reviewed only after checking every row in select and all supported vehicles.");
                 }
                 ImGui::TreePop();
             }
@@ -22040,7 +22046,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                 "Authored-clips-only is a supported final mode for creatures and unusual skeletons; no humanoid solver will alter this character.");
         } else {
             ImGui::TextWrapped(
-                "This legacy package has attachment sockets but no semantic skeleton contract. Its authored clips remain usable; re-author as source-v4 to opt into reviewed humanoid roles.");
+                "This legacy package has attachment sockets but no semantic skeleton contract. Its authored clips remain usable; re-author as source-v4 or newer to opt into reviewed humanoid roles.");
         }
         ImGui::TextDisabled(
             "%u/10 active authored race states · %u/3 active authored select states · %u/%u active authored clips move",
@@ -22139,7 +22145,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             }
         } else {
             ui::TextSubtleWrapped(
-                "Rig Studio requires an identity-capable source-v3/v4 package so a source-v4 revision can preserve its portrait and provenance exactly.");
+                "Rig Studio requires an identity-capable source-v3/v4/v5 package so its rig revision can preserve portrait and provenance exactly.");
         }
     }
 
@@ -22575,6 +22581,9 @@ bool drawCharacterCandidateReview(bool compact) {
                                                                                  : "Review required",
                         review.installed);
     addCandidateNumberRow(rows, "Rig roles", current.rigRoles, next.rigRoles, review.installed);
+    addCandidateNumberRow(rows, "Joint constraints", current.jointConstraints, next.jointConstraints, review.installed);
+    addCandidateNumberRow(rows, "Secondary chains", current.secondaryChains, next.secondaryChains, review.installed);
+    addCandidateNumberRow(rows, "Dynamic joints", current.secondaryJoints, next.secondaryJoints, review.installed);
     addCandidateTextRow(rows, "Performance profile", candidatePerformanceTier(current), candidatePerformanceTier(next), review.installed);
     addCandidateNumberRow(rows, "LOD0 vertices", current.lodVertices[0], next.lodVertices[0], review.installed);
     addCandidateNumberRow(rows, "LOD0 triangles", current.lodTriangles[0], next.lodTriangles[0], review.installed);
