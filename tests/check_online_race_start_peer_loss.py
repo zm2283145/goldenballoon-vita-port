@@ -1,37 +1,47 @@
 #!/usr/bin/env python3
-"""P0 CRASH REGRESSION: a peer that vanishes at RACE START returns to the room.
+"""P0 CRASH REGRESSION: a peer that vanishes returns to the room, never abort().
 
 A real two-machine host+joiner run had BOTH endpoints abort() (hard crash) when
-the WebRTC peer dropped at race start: the launcher's race-start barrier aborted
-the tick-1 input drain ("[START] race-start barrier: ... aborting to the room"),
-but the already-booted engine reached its first authored boundary and
-rollback_game_runtime.c's validate_boundary() reported the RECOVERABLE
-"[ROLLBACK] online bootstrap input unavailable tick=1" starvation. thread3_main.c
-then took that false return as a lost-authority INVARIANT violation and abort()ed
-the whole app, instead of returning cleanly to the Online Room. This lane had ZERO
-coverage before the fix.
+the WebRTC peer dropped. This lane covers the WHOLE peer-loss crash class -- two
+distinct engine abort sites that a clean peer drop would reach:
+
+  A. RACE START (validate_boundary): the launcher's race-start barrier aborts the
+     tick-1 input drain ("[START] ... aborting to the room"); the already-booted
+     engine reaches its first authored boundary and rollback validate_boundary()
+     reports "[ROLLBACK] online bootstrap input unavailable tick=1". thread3_main
+     used to take that as a lost-authority INVARIANT violation and abort().
+
+  B. MID RACE (prepare_tick): a peer/console that drops cleanly AFTER tick 1 (the
+     real "console drops mid-race" case) leaves the launcher input provider unable
+     to supply an authored tick, so prepare_tick reports "[ROLLBACK] launcher input
+     provider rejected tick=N" -> thread3_main used to abort() with "[FATAL]
+     rollback lab could not prepare canonical input".
+
+Both are RECOVERABLE peer/input starvations, not rollback invariant corruption.
+This lane had ZERO coverage before the fix.
 
 Reproduction (headless, no menu-nav script): the descriptor-less lobby-start
 loopback session (the SAME path a real 2-machine game uses -- native
-CHARSELECT/TRACKSELECT own race 1) boots the race, then the race-start peer-loss
-seam (MDKR_APP_TEST_ONLINE_DROP_RACE_START_INPUT, in liveDrainMatchInput) refuses
-the FIRST authored tick's remote input -- exactly what the production barrier does
-on a real ICE-failed peer. The engine's tick-1 boundary then starves.
+CHARSELECT/TRACKSELECT own race 1) boots the race, then a peer-loss seam refuses a
+target authored tick's remote input (tick 1 for A via
+MDKR_APP_TEST_ONLINE_DROP_RACE_START_INPUT; tick 50 for B via
+MDKR_APP_TEST_ONLINE_DROP_INPUT_AT_TICK, both in liveDrainMatchInput).
 
-Post-fix assertions (this is the whole point):
-  * the recoverable trigger genuinely fired
-        [ROLLBACK] online bootstrap input unavailable tick=1   (non-vacuous)
+Post-fix assertions, for BOTH scenarios (this is the whole point):
+  * the recoverable trigger genuinely fired (non-vacuous): the exact [ROLLBACK]
+    starvation line for that site (tick=1 bootstrap / tick=50 launcher-rejected)
   * the engine routed to a CLEAN return-to-room, NOT abort:
-        [online-session] LEFT: peer lost at race start ... exit 0   (engine)
-        [online-session-end] reason=LEFT result=0                   (launcher)
+        [online-session] LEFT: online peer/input lost ... exit 0   (engine)
+        [online-session-end] reason=LEFT result=0                  (launcher)
+  * clean teardown, ZERO leaked allocations: [HOST-SHUTDOWN] rom=0 arena=0 delayedFree=0
   * NO "[FATAL]" and NO SIGABRT/Abort trap -- the process exits cleanly (rc 0)
 
-Both ROLES take this identical engine path: the host (peer=joiner lost) and the
-joiner (peer=host lost/crashed) both reach validate_boundary's tick-1 starvation,
-so proving the engine-side clean return proves it for both.
+Both ROLES take the identical engine path: the host (peer=joiner lost) and the
+joiner (peer=host lost/crashed) both starve the same boundary.
 
-PRE-FIX PROOF: with the thread3_main graceful branch reverted, this SAME lane
-aborts (SIGABRT, "[FATAL] rollback lab lost a registered authority allocation").
+PRE-FIX PROOF: with the thread3_main graceful branch reverted, these SAME
+scenarios abort (SIGABRT) -- A: "[FATAL] rollback lab lost a registered authority
+allocation"; B: "[FATAL] rollback lab could not prepare canonical input".
 """
 
 from __future__ import annotations
@@ -50,21 +60,111 @@ from online_lane_util import (
 
 ROOT = Path(__file__).resolve().parent.parent
 TICKS = 20000
+MID_RACE_TICK = 50  # a "console drops mid-race" drop, well past the opening tick
 
 BEGIN_LOBBY_RE = re.compile(
     r"^\[online-session\] begin: lobby-start \(no descriptor\)", re.MULTILINE)
-# The exact RECOVERABLE starvation the P0 crash mis-classified as fatal.
-BOOTSTRAP_UNAVAIL_RE = re.compile(
-    r"^\[ROLLBACK\] online bootstrap input unavailable tick=1$", re.MULTILINE)
-# The engine-side clean return-to-room witness (the fix).
+# The engine-side clean return-to-room witness (the fix), shared by both sites.
 GRACEFUL_LEFT_RE = re.compile(
-    r"^\[online-session\] LEFT: peer lost at race start", re.MULTILINE)
-# The test seam actually fired (drop of the race-start remote input).
-SEAM_RE = re.compile(
-    r"^\[online-live\] TEST: race-start tick-\d+ remote input UNAVAILABLE",
-    re.MULTILINE)
+    r"^\[online-session\] LEFT: online peer/input lost", re.MULTILINE)
+# Clean teardown / zero-leak witness.
+HOST_SHUTDOWN_RE = re.compile(
+    r"^\[HOST-SHUTDOWN\] rom=(\d+) arena=(\d+) delayedFree=(\d+)", re.MULTILINE)
 
-fail = make_fail("race-start peer loss")
+fail = make_fail("peer loss")
+
+# The mid-race recoverable TRIGGER line ("[ROLLBACK] launcher input provider
+# rejected tick=N") is itself a FORBIDDEN_ONLINE marker -- because pre-fix it was a
+# hard rejection that abort()ed. Post-fix it is the EXPECTED recoverable trigger the
+# engine recovers from, so the mid-race scenario must not treat it as fatal. The
+# other genuinely-fatal FORBIDDEN_ONLINE markers (admission reject, startup reject)
+# stay forbidden; a real crash still surfaces via find_fatal ([FATAL]) + ABORT.
+MIDRACE_FORBIDDEN = tuple(
+    m for m in FORBIDDEN_ONLINE if m != "launcher input provider rejected")
+
+
+def run_scenario(binary: Path, rom: Path, args, *, label: str,
+                 seam_env: dict[str, str], seam_re: re.Pattern[str],
+                 trigger_re: re.Pattern[str], trigger_desc: str,
+                 forbidden: tuple[str, ...]) -> str | None:
+    """Run one peer-loss scenario; return None on success or a failure message."""
+    extra_env = {
+        # descriptor-less lobby-start loopback (native owns race 1) -- the real
+        # 2-machine crash path, and the sole path that prints [online-session-end].
+        "MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START": "1",
+        "MDKR_TEST_ONLINE_LOBBY_START": "1",
+    }
+    extra_env.update(seam_env)
+    try:
+        returncode, output = run_engine(
+            binary, rom, ticks=args.ticks, timeout=args.timeout,
+            verbose=args.verbose, extra_env=extra_env,
+            prefix=f"mdkr64-online-peer-loss-{label}-")
+    except subprocess.TimeoutExpired as error:
+        return (f"[{label}] engine run timed out (a hang instead of a clean "
+                f"return would look like this): {error}")
+
+    def bad(message: str) -> str:
+        if output:
+            print(output[-16000:], file=sys.stderr)
+        return f"[{label}] {message}"
+
+    # --- NO abort / NO fatal (the crash we are fixing) ----------------------
+    marker = forbidden_marker(output, *forbidden, *ABORT_MARKERS)
+    if marker:
+        return bad(f"observed a fatal/abort marker {marker!r} -- the peer loss "
+                   f"still crashes instead of returning to the room")
+    if returncode < 0:
+        return bad(f"process was killed by signal {-returncode} (SIGABRT=6) -- "
+                   f"the engine abort()ed on the recoverable peer loss")
+    if returncode != 0:
+        return bad(f"process exited {returncode}, expected a clean 0 "
+                   f"(return-to-room)")
+
+    # --- The session actually reached the race (non-vacuous) ----------------
+    if len(BEGIN_LOBBY_RE.findall(output)) != 1:
+        return bad("the session did not begin DESCRIPTOR-LESS (lobby-start) "
+                   "exactly once")
+    if not DIRECT_BOOT_RE.search(output):
+        return bad("the race was never booted (no [online-boot] direct race)")
+    if not ONLINE_RACE_RE.search(output):
+        return bad("the engine never entered the ONLINE rollback race before the "
+                   "peer-loss drop")
+    if not seam_re.search(output):
+        return bad("the peer-loss seam never fired (the remote input was never "
+                   "dropped)")
+
+    # --- The RECOVERABLE trigger genuinely fired (the exact crash cause) -----
+    if not trigger_re.search(output):
+        return bad(f"the recoverable trigger ({trigger_desc}) never fired -- this "
+                   f"scenario would be vacuous without it")
+
+    # --- The clean return-to-room (the fix) ---------------------------------
+    if not GRACEFUL_LEFT_RE.search(output):
+        return bad("the engine did not route the recoverable peer loss to a clean "
+                   "return-to-room ([online-session] LEFT: online peer/input lost)")
+    end = SESSION_END_RE.findall(output)
+    if not end:
+        return bad("the launcher never observed the [online-session-end] witness")
+    reason, result = end[-1]
+    if reason != "LEFT":
+        return bad(f"session-end reason={reason}, expected LEFT")
+    if int(result) != 0:
+        return bad(f"session-end result={result}, expected 0")
+
+    # --- Clean teardown: zero leaked allocations ----------------------------
+    shutdown = HOST_SHUTDOWN_RE.findall(output)
+    if not shutdown:
+        return bad("no [HOST-SHUTDOWN] witness -- cannot prove a clean teardown")
+    rom_leak, arena_leak, delayed = shutdown[-1]
+    if (int(rom_leak), int(arena_leak), int(delayed)) != (0, 0, 0):
+        return bad(f"host teardown leaked allocations: rom={rom_leak} "
+                   f"arena={arena_leak} delayedFree={delayed} (expected all 0)")
+
+    print(f"  [{label}] PASS: {trigger_desc} -> clean return (reason={reason} "
+          f"result={result}, rc 0, no [FATAL]/SIGABRT, HOST-SHUTDOWN "
+          f"rom={rom_leak} arena={arena_leak} delayedFree={delayed})")
+    return None
 
 
 def main() -> int:
@@ -82,85 +182,47 @@ def main() -> int:
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
 
-    extra_env = {
-        # descriptor-less lobby-start loopback (native owns race 1) -- the real
-        # 2-machine crash path, and the sole path that prints [online-session-end].
-        "MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START": "1",
-        "MDKR_TEST_ONLINE_LOBBY_START": "1",
-        # the peer-loss seam: refuse the FIRST authored tick's remote input.
-        "MDKR_APP_TEST_ONLINE_DROP_RACE_START_INPUT": "1",
-    }
-    try:
-        returncode, output = run_engine(
-            binary, rom, ticks=args.ticks, timeout=args.timeout,
-            verbose=args.verbose, extra_env=extra_env,
-            prefix="mdkr64-online-race-start-peer-loss-")
-    except subprocess.TimeoutExpired as error:
-        return fail(f"engine run timed out (a hang instead of a clean return "
-                    f"would look like this): {error}")
+    scenarios = (
+        dict(
+            label="race-start",
+            seam_env={"MDKR_APP_TEST_ONLINE_DROP_RACE_START_INPUT": "1"},
+            seam_re=re.compile(
+                r"^\[online-live\] TEST: race-start tick-\d+ remote input "
+                r"UNAVAILABLE", re.MULTILINE),
+            trigger_re=re.compile(
+                r"^\[ROLLBACK\] online bootstrap input unavailable tick=1$",
+                re.MULTILINE),
+            trigger_desc="tick-1 bootstrap input unavailable (validate_boundary)",
+            forbidden=FORBIDDEN_ONLINE,
+        ),
+        dict(
+            label="mid-race",
+            seam_env={"MDKR_APP_TEST_ONLINE_DROP_INPUT_AT_TICK": str(MID_RACE_TICK)},
+            seam_re=re.compile(
+                r"^\[online-live\] TEST: mid-race tick-\d+ remote input "
+                r"UNAVAILABLE", re.MULTILINE),
+            trigger_re=re.compile(
+                r"^\[ROLLBACK\] launcher input provider rejected tick=%d$"
+                % MID_RACE_TICK, re.MULTILINE),
+            trigger_desc=(f"tick-{MID_RACE_TICK} launcher input provider rejected "
+                          f"(prepare_tick)"),
+            forbidden=MIDRACE_FORBIDDEN,
+        ),
+    )
 
-    # --- NO abort / NO fatal (the crash we are fixing) ----------------------
-    # find_fatal catches [FATAL]/[CRASH]/sanitizers; ABORT_MARKERS adds the
-    # SIGABRT/Abort-trap text a crash handler / the shell would print.
-    marker = forbidden_marker(output, *FORBIDDEN_ONLINE, *ABORT_MARKERS)
-    if marker:
-        return fail(f"observed a fatal/abort marker {marker!r} -- the peer-loss "
-                    f"at race start still crashes instead of returning to the "
-                    f"room", output)
-    # A bare SIGABRT (no crash handler) surfaces only as a negative return code.
-    if returncode < 0:
-        return fail(f"process was killed by signal {-returncode} (SIGABRT=6) -- "
-                    f"the engine abort()ed on the recoverable peer loss", output)
-    if returncode != 0:
-        return fail(f"process exited {returncode}, expected a clean 0 "
-                    f"(return-to-room)", output)
-
-    # --- The session actually reached the race (non-vacuous) ----------------
-    if len(BEGIN_LOBBY_RE.findall(output)) != 1:
-        return fail("the session did not begin DESCRIPTOR-LESS (lobby-start) "
-                    "exactly once", output)
-    if not DIRECT_BOOT_RE.search(output):
-        return fail("the race was never booted (no [online-boot] direct race) -- "
-                    "the drop must happen AT a real race start, not before it",
-                    output)
-    if not ONLINE_RACE_RE.search(output):
-        return fail("the engine never entered the ONLINE rollback race before the "
-                    "peer-loss drop", output)
-    if not SEAM_RE.search(output):
-        return fail("the race-start peer-loss seam never fired (the remote input "
-                    "was never dropped)", output)
-
-    # --- The RECOVERABLE trigger genuinely fired (the exact crash cause) -----
-    if not BOOTSTRAP_UNAVAIL_RE.search(output):
-        return fail("the tick-1 bootstrap-input-unavailable starvation "
-                    "([ROLLBACK] online bootstrap input unavailable tick=1) never "
-                    "fired -- this lane would be vacuous without it", output)
-
-    # --- The clean return-to-room (the fix) ---------------------------------
-    if not GRACEFUL_LEFT_RE.search(output):
-        return fail("the engine did not route the recoverable peer loss to a "
-                    "clean return-to-room ([online-session] LEFT: peer lost at "
-                    "race start)", output)
-    end = SESSION_END_RE.findall(output)
-    if not end:
-        return fail("the launcher never observed the [online-session-end] "
-                    "witness (the engine->launcher clean-return handshake)",
-                    output)
-    reason, result = end[-1]
-    if reason != "LEFT":
-        return fail(f"session-end reason={reason}, expected LEFT (the peer left "
-                    f"at race start)", output)
-    if int(result) != 0:
-        return fail(f"session-end result={result}, expected 0 (a clean return, "
-                    f"not an error exit)", output)
+    for scenario in scenarios:
+        problem = run_scenario(binary, rom, args, **scenario)
+        if problem is not None:
+            return fail(problem)
 
     print(
-        "PASS online race-start peer loss: a peer that VANISHED at race start "
-        "(tick-1 bootstrap input unavailable -- the P0 crash trigger) routed to a "
-        "CLEAN return-to-room (engine [online-session] LEFT + platform exit 0, "
-        f"launcher [online-session-end] reason={reason} result={result}) instead "
-        "of abort() -- no [FATAL], no SIGABRT, process exited 0. Both roles take "
-        "this identical validate_boundary tick-1 path."
+        "PASS online peer loss: BOTH a race-start peer loss (tick-1 bootstrap "
+        "starvation, validate_boundary) AND a mid-race peer loss (tick-"
+        f"{MID_RACE_TICK} launcher-input-rejected, prepare_tick) routed to a CLEAN "
+        "return-to-room (engine [online-session] LEFT + platform exit 0, launcher "
+        "[online-session-end] reason=LEFT result=0, HOST-SHUTDOWN zero leaks) "
+        "instead of abort() -- no [FATAL], no SIGABRT, process exited 0. Both roles "
+        "take these identical boundary-starvation paths."
     )
     return 0
 

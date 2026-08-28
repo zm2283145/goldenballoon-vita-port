@@ -902,6 +902,10 @@ static bool reconcile_network_inputs(
             fprintf(stderr,
                     "[ROLLBACK] online corrected input unavailable tick=%u\n",
                     tick);
+            /* RECOVERABLE: a rewound tick's peer input is no longer available
+             * (peer/input starvation during a correction), not corruption. The
+             * ring-restore / replay-validation failures below stay CLEAR -> fatal. */
+            runtime->recoverable_online_input_failure = true;
             return false;
         }
         history->confirmed_mask = frame.confirmed_mask;
@@ -952,6 +956,11 @@ bool mdkr_rollback_game_runtime_prepare_tick(unsigned update_rate) {
     if (!runtime->active) {
         return true;
     }
+    /* Fresh verdict, mirroring validate_boundary: assume any false return below is
+     * a genuine invariant violation (fatal) until a RECOVERABLE online-input path
+     * (peer gone / input unavailable) explicitly sets this. So the tick-exhausted
+     * and prepared-twice invariants leave it clear and stay fatal. */
+    runtime->recoverable_online_input_failure = false;
     if (runtime->validated_boundaries >= UINT32_MAX) {
         return false;
     }
@@ -981,6 +990,10 @@ bool mdkr_rollback_game_runtime_prepare_tick(unsigned update_rate) {
             fprintf(stderr,
                     "[ROLLBACK] launcher input provider rejected tick=%u\n",
                     tick);
+            /* RECOVERABLE: the launcher's online input source could not supply
+             * this authored tick (peer gone / input unavailable) -- e.g. a peer
+             * that dropped cleanly MID-RACE. Not corruption. */
+            runtime->recoverable_online_input_failure = true;
             return false;
         }
         history = &runtime->input_history[

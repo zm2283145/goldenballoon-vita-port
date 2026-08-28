@@ -450,6 +450,24 @@ void main_game_loop(void) {
 #ifdef NATIVE_PORT
     if (!mdkr_rollback_game_runtime_prepare_tick(
             (unsigned)logicUpdateRate)) {
+#if MDKR_ENABLE_ONLINE_BETA
+        /* P0 CRASH FIX, mid-race sibling (beta only): a live online race whose
+         * peer/input for THIS authored tick vanished -- a peer/console that
+         * dropped cleanly mid-race, so the launcher input provider could not
+         * supply the tick (or a rewound correction's peer input is gone). That is
+         * a RECOVERABLE peer loss, NOT rollback invariant corruption: route it to
+         * the SAME clean return-to-room as the race-start path (note session-end
+         * LEFT + clean rollback teardown + platform_request_exit(0)) instead of
+         * crashing. Genuine invariant violations (tick-counter exhaustion,
+         * prepared-twice, snapshot restore, correction-replay allocation/coverage)
+         * leave the recoverable flag CLEAR and still hit the abort() below,
+         * byte-for-byte as before. Wrapped in MDKR_ENABLE_ONLINE_BETA so the OFF
+         * build's thread3_main.c.o (anchor 20ed811d) is byte-identical. */
+        if (mdkr_rollback_game_runtime_online_input_recoverable()) {
+            mdkr_online_session_return_to_room_on_peer_loss();
+            return;
+        }
+#endif
         fprintf(stderr,
                 "[FATAL] rollback lab could not prepare canonical input\n");
         abort();

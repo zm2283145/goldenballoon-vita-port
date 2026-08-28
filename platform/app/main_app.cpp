@@ -1254,6 +1254,23 @@ static bool liveTestDropRaceStartInput(void) {
     return cached != 0;
 }
 
+/* TEST-ONLY (beta) MID-RACE peer-loss seam. When
+ * MDKR_APP_TEST_ONLINE_DROP_INPUT_AT_TICK=<N> (N > firstTick) is set,
+ * liveDrainMatchInput refuses the drain for that ONE authored tick -- standing in
+ * for a peer/console that dropped cleanly MID-RACE (the real "console drops
+ * mid-race" case). The engine's prepare_tick canonical-input drain for tick N then
+ * fails ([ROLLBACK] launcher input provider rejected tick=N) -> the sibling of the
+ * race-start crash. 0 / unset == off. Resolved once. */
+static std::uint32_t liveTestDropInputAtTick(void) {
+    static long cached = -1;
+    if (cached < 0) {
+        const char *env = std::getenv("MDKR_APP_TEST_ONLINE_DROP_INPUT_AT_TICK");
+        const long parsed = (env != nullptr) ? std::strtol(env, nullptr, 10) : 0;
+        cached = (parsed > 0) ? parsed : 0;
+    }
+    return static_cast<std::uint32_t>(cached);
+}
+
 /* Advance the visible endpoint's race transport up to `tick` (idempotent), then
  * copy the canonical frame for `tick`. Authored ticks are 1-based and align with
  * the adapter's raceFirstTick (1), so one drain == one race_advance. */
@@ -1306,6 +1323,22 @@ bool liveDrainMatchInput(void *opaque, std::uint32_t /*epoch*/,
                          "session (no ghost race)\n",
                          drainTick);
             return false;
+        }
+        /* TEST-ONLY: drop this ONE mid-race authored tick's remote input to stand
+         * in for a peer that dropped cleanly mid-race (same verdict the real
+         * mid-race peer-loss latch above reaches). The engine's prepare_tick drain
+         * for this tick then starves -> the sibling crash's exact trigger. */
+        {
+            const std::uint32_t dropAt = liveTestDropInputAtTick();
+            if (dropAt != 0u && drainTick == dropAt &&
+                drainTick > info.firstTick) {
+                ctx->endReason = LiveRaceEndReason::OpponentLeft;
+                std::fprintf(stderr,
+                             "[online-live] TEST: mid-race tick-%u remote input "
+                             "UNAVAILABLE (peer-loss seam); ending session\n",
+                             drainTick);
+                return false;
+            }
         }
         if (ctx->peer != nullptr) {
             /* Advance the peer ahead: each advance seals its deterministic input
