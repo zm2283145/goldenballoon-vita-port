@@ -253,11 +253,11 @@ public:
     }
 
     ~LiveAdapter() override {
-        /* Exit-gate C2 / Bridge Minor-1: the race-boot AND room-ready registry
+        /* The race-boot AND room-ready registry
          * pointers are retracted synchronously on the LAUNCHER THREAD by
          * teardownAdapterAsync (ui_online_room.cpp) BEFORE the adapter is moved
          * to this detached teardown thread -- race-boot via the resolved-raw
-         * pointer (the wrapper cross-cast bug is fixed), room-ready likewise. The
+         * pointer, room-ready likewise. The
          * live adapter is only ever destroyed via teardownAdapterAsync, so the
          * launcher-thread retract always runs first and nothing can publish a
          * handoff after the owner moves the adapter out. A destructor backstop
@@ -267,7 +267,7 @@ public:
          * NEXT session, contrary to the registries' "launcher-thread only, no
          * lock" contract (online_live_wiring.cpp). It covers no real case now, so
          * it is deliberately DROPPED to keep that contract honest. */
-        /* W4 m4: a clean teardown tells the room goodbye. Best-effort and
+        /* A clean teardown tells the room goodbye. Best-effort and
          * fire-and-forget: the reducer refuses LEAVE outside LOBBY/RESULTS
          * and a closed transport refuses the submit; both are fine. */
         if (haveLobby_ && localEndpointId_ != 0u) {
@@ -330,7 +330,7 @@ public:
             in.lobby = &reVerifyLobby;
         } else if (raceEndFailureLatched_ &&
                    failure_ != MDKR_ONLINE_VIEW_FAILURE_NONE) {
-            /* O2: a race-end recovery card is latched. Do NOT hand the builder a
+            /* A race-end recovery card is latched. Do NOT hand the builder a
              * stale/late lobby snapshot -- the shared view model fails ATOMIC
              * (returns false) when the walked session's phase disagrees with the
              * snapshot's, BEFORE its failure-precedence path runs, so a late
@@ -382,7 +382,7 @@ public:
      * timeout card ("Room Took Too Long", "Setup Check Took Too Long", "Race Did
      * Not Load", "Selection Took Too Long" -> Return to Lobby / Try Again /
      * Leave Room) surfaces instead of an endless spinner. The anchor resets on
-     * every surface change AND (F2) on selection progress -- any pick/ready/
+     * every surface change AND on selection progress -- any pick/ready/
      * settings bumps lobby.revision, which re-anchors while SELECTING so the
      * "Selection Took Too Long" card fronts only a genuinely dead room, never
      * active picking. */
@@ -441,7 +441,7 @@ private:
             session_.state.room == MDKR_ROOM_SELECTING &&
             lobby_.phase == MDKR_ONLINE_LOBBY;
         if (key == lastPhaseKey_) {
-            /* F2: the phase key is constant across an entire selection screen, so
+            /* The phase key is constant across an entire selection screen, so
              * without this a human taking >30 s to pick would permanently front
              * the "Selection Took Too Long" card even while picks are actively
              * landing. Selection progress bumps lobby.revision (any pick / ready
@@ -594,17 +594,17 @@ private:
                 phraseConfirmed_ = true;
                 reVerify_ = false; /* the fresh SAS has been compared */
                 /* Pin the exact transcript the human just compared: any
-                 * later digest change re-arms the barrier (CRITICAL-1). */
+                 * later digest change re-arms the barrier. */
                 haveConfirmedDigest_ =
                     mesh_ && mesh_->transcriptDigest(confirmedDigest_);
                 /* After a RE-verify confirm, return the room to the
                  * authoritative lobby phase (the barrier had parked it at
                  * the preflight surface mid-LOADING). */
-                if (resync) syncPhase();
+                if (resync) followLobbyPhase();
                 return true;
             }
             case MDKR_ONLINE_VIEW_ACTION_REPORT_PHRASE_MISMATCH:
-                /* W4 M6: the mismatch RETIRES the compared keys instead of
+                /* The mismatch RETIRES the compared keys instead of
                  * just latching a failure the RETRY would clear back onto the
                  * SAME phrase. Tell every peer over the sealed control
                  * channel (so their "confirm the phrase" surface leaves too),
@@ -646,7 +646,7 @@ private:
                 return sendLobbyCommand(MDKR_ONLINE_SET_READY, 0u, 0u);
             case MDKR_ONLINE_VIEW_ACTION_START_RACE: {
                 /* Leader begins loading; both peers follow lobby.phase LOADING
-                 * (syncPhase) into the Loading barrier. The value is the usable
+                 * (followLobbyPhase) into the Loading barrier. The value is the usable
                  * vehicle mask for the voted track (see the panel note); it must
                  * equal leveltable_vehicle_usable(track) or the engine admission
                  * rejects the boot. */
@@ -662,13 +662,12 @@ private:
                 return sent;
             }
             case MDKR_ONLINE_VIEW_ACTION_RETURN_TO_LOBBY:
-                /* W4 M2: never move the local session ahead of the room
-                 * reducer. CANCEL_LOADING is leader-only; a joiner that
-                 * dispatched it anyway used to yank its own session to
-                 * SELECTING while the lobby stayed LOADING -- the exact
-                 * (session, lobby) mismatch that bricked the view ("Online
-                 * Room Unavailable"). Now only the LEADER sends the cancel,
-                 * NOBODY transitions locally, and the accepted cancel's
+                /* Never move the local session ahead of the room reducer.
+                 * CANCEL_LOADING is leader-only: only the LEADER sends the
+                 * cancel and NOBODY transitions locally, because a joiner that
+                 * yanked its own session to SELECTING while the lobby stayed
+                 * LOADING would create the (session, lobby) mismatch that bricks
+                 * the view ("Online Room Unavailable"). The accepted cancel's
                  * LOBBY-phase snapshot walks every endpoint's session back
                  * through followLobbyPhase(). */
                 journey_ = MDKR_ONLINE_JOURNEY_REMATCH;
@@ -679,7 +678,7 @@ private:
                 return true;
             case MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN:
             case MDKR_ONLINE_VIEW_ACTION_CHANGE_TRACK:
-                /* W4 C3(c): REMATCH is leader-only in the reducer; the shared
+                /* REMATCH is leader-only in the reducer; the shared
                  * results view offers Race Again to everyone, so a joiner's
                  * dispatch is a clean refusal here rather than a doomed
                  * command. CHANGE_TRACK maps onto the same REMATCH the panel
@@ -694,7 +693,7 @@ private:
                 journey_ = MDKR_ONLINE_JOURNEY_REMATCH;
                 return sendLobbyCommand(MDKR_ONLINE_REMATCH, 0u, 0u);
             case MDKR_ONLINE_VIEW_ACTION_ENTER_ANOTHER_CODE:
-                /* W4 M5: the live adapter's journey/join-code are fixed at
+                /* The live adapter's journey/join-code are fixed at
                  * construction and the room transport begins exactly once, so
                  * re-joining in place is impossible. Leave cleanly, park the
                  * session at HOME, and hand the panel the documented rebuild
@@ -720,7 +719,7 @@ private:
             case MDKR_ONLINE_VIEW_ACTION_PLAY_HERE:
             case MDKR_ONLINE_VIEW_ACTION_CHOOSE_ROM:
             case MDKR_ONLINE_VIEW_ACTION_RETURN_HOME:
-                /* W4 m4: a clean local leave/abandon tells the room goodbye
+                /* A clean local leave/abandon tells the room goodbye
                  * (best-effort; the reducer refuses it outside LOBBY/RESULTS
                  * and nothing depends on acceptance). */
                 if (action == MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM &&
@@ -794,7 +793,7 @@ private:
                             lobby_.member_count, readyCount(),
                             lobby_.selected_track, lobby_.selected_vehicle_mask,
                             lobby_.match_epoch);
-                        syncPhase();
+                        followLobbyPhase();
                         bump();
                     }
                     break;
@@ -891,20 +890,17 @@ private:
         }
     }
 
-    /* Follow the authoritative lobby phase for phases the room/leader drives
-     * (W4 C3: the full LOBBY -> LOADING -> RACING -> RESULTS -> LOBBY loop,
-     * not just the first LOADING). Local sub-phases (PREFLIGHT/SELECTING
-     * while lobby is LOBBY) are never overwritten here. While the SAS
-     * re-verify barrier is armed the room presentation stays at the
-     * re-verify surface -- a lobby snapshot must not yank the phase back and
-     * hide the fresh phrase; the authoritative phase re-syncs after the
-     * second confirmation. Bounded multi-step: one snapshot may require a
-     * short walk (e.g. RESULTS observed while still RACING -> engine
-     * FINISHED -> results scene), and a skipped intermediate snapshot (the
+    /* Follow the authoritative lobby phase for phases the room/leader drives:
+     * the full LOBBY -> LOADING -> RACING -> RESULTS -> LOBBY loop, not just the
+     * first LOADING. Local sub-phases (PREFLIGHT/SELECTING while lobby is LOBBY)
+     * are never overwritten here. While the SAS re-verify barrier is armed the
+     * room presentation stays at the re-verify surface -- a lobby snapshot must
+     * not yank the phase back and hide the fresh phrase; the authoritative phase
+     * re-syncs after the second confirmation. Bounded multi-step: one snapshot
+     * may require a short walk (e.g. RESULTS observed while still RACING ->
+     * engine FINISHED -> results scene), and a skipped intermediate snapshot (the
      * transport delivers latest-state, not every revision) may require the
      * return-to-lobby leg before the next loading leg. */
-    void syncPhase() { followLobbyPhase(); }
-
     void followLobbyPhase() {
         if (!haveLobby_ || reVerify_) return;
         for (unsigned guard = 0u; guard < 6u; ++guard) {
@@ -933,7 +929,7 @@ private:
                  * Walk the session home (engine RACING must pass through
                  * FINISHED; the reducer refuses everything else) and re-arm
                  * every one-race latch so the NEXT BEGIN_LOADING rebuilds
-                 * manifest + descriptor for the new epoch/track (W4 C2). */
+                 * manifest + descriptor for the new epoch/track. */
                 if (engine == MDKR_ENGINE_RACING) {
                     return sessionDispatch(MDKR_SESSION_COMMAND_SET_ENGINE_PHASE,
                                            MDKR_ENGINE_FINISHED);
@@ -1043,7 +1039,7 @@ private:
                ackLoadedSent_ || beginRaceSent_ || resultsReported_;
     }
 
-    /* W4 C2: re-arm every once-per-race latch when the room returns to the
+    /* Re-arm every once-per-race latch when the room returns to the
      * lobby phase, so the NEXT BEGIN_LOADING (new match_epoch, possibly a new
      * track/mode) rebuilds the manifest + descriptor through the O-T5 clamp,
      * re-runs preflight consensus (attestations bind the new epoch), re-runs
@@ -1101,7 +1097,7 @@ private:
         bump();
     }
 
-    /* W4 C3(a): drive the lobby's own loading handshake. After setUpRace
+    /* Drive the lobby's own loading handshake. After setUpRace
      * succeeded locally the endpoint acknowledges ACK_LOADED; once the
      * snapshot shows every member loaded the LEADER sends BEGIN_RACE. Both
      * are once-per-epoch (re-armed by resetRaceLatches). */
@@ -1130,7 +1126,7 @@ private:
     }
 
     /* Per-service race housekeeping: the deferred SAS-mismatch rekey, the
-     * in-race transport-recovery poll (W4 C4b) and the resend sweep (W4 C4a). */
+     * in-race transport-recovery poll and the resend sweep. */
     void raceServiceWork() {
         if (phraseNoticePending_) {
             if (sendPhraseMismatchNotice() ||
@@ -1175,10 +1171,10 @@ private:
         ++raceResendSweeps_;
     }
 
-    /* W4 M6: retire the WHOLE mesh session after a reported SAS mismatch --
+    /* Retire the WHOLE mesh session after a reported SAS mismatch --
      * keys, channels and signaling -- and bring it back up through the
      * backend so fresh ephemeral keys derive a fresh transcript (and thus a
-     * fresh phrase). Without this, RETRY re-presented the identical phrase
+     * fresh phrase). Without this, RETRY would re-present the identical phrase
      * the humans just refused. The preflight barrier resets with it; the
      * room stays. */
     void forcePhraseRekey() {
@@ -1282,16 +1278,16 @@ private:
         }
     }
 
-    /* W3 fix round (Critical): the SAS re-verification barrier.
+    /* The SAS re-verification barrier.
      *
      * A mesh rekey after the humans confirmed the phrase -- the local
      * endpoint's replacement /signal socket (re-welcome, higher generation)
      * or a PEER's replacement (presence bump -> rekeyPeer) -- derives fresh
      * keys and a fresh phrase. docs/ref/match-signaling-v1.md:114 ("Secure
      * connection changed"): retire keys/channels, reconnect, and compare a
-     * NEW phrase; NEVER reuse Ready. Pre-fix, phraseConfirmed_ latched
-     * forever and play silently continued on channels the SAS never
-     * validated.
+     * NEW phrase; NEVER reuse Ready. Without this barrier, phraseConfirmed_
+     * would latch forever and play would silently continue on channels the
+     * SAS never validated.
      *
      * Detection keys on the 256-bit TRANSCRIPT DIGEST, never the 20-bit
      * phrase (a phrase strcmp collides ~2^-20 and is grindable). Two
@@ -1355,10 +1351,9 @@ private:
             OnlineRoom_retractEngineRaceBoot(this);
 #endif
             failure_ = MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH;
-            /* W4 C3 follow-up: with the phase loop wired, the session may be
-             * mid-race (RACE_CHROME) when the rekey lands. The reducer
-             * refuses a room-phase hop out of an active race, so walk the
-             * abandoned race out first (FINISHED -> back to lobby); the
+            /* The session may be mid-race (RACE_CHROME) when the rekey lands.
+             * The reducer refuses a room-phase hop out of an active race, so
+             * walk the abandoned race out first (FINISHED -> back to lobby); the
              * in-progress presentation is abandoned by design. */
             if (session_.state.engine == MDKR_ENGINE_RACING) {
                 (void)sessionDispatch(MDKR_SESSION_COMMAND_SET_ENGINE_PHASE,
@@ -1429,7 +1424,7 @@ private:
                     onPreflightFragment(ev);
                     break;
                 case MdkrMatchPeerMeshEventType::PeerLost:
-                    /* W4 M1: expose the mid-race condition on the race info
+                    /* Expose the mid-race condition on the race info
                      * feed too -- during the race nobody renders the lobby
                      * failure surface, so the launcher's engine loop polls
                      * peerLost to end the session; the failure below then
@@ -1446,12 +1441,12 @@ private:
                         break;
                     }
                     failure_ = mapLostReason(ev.lostReason, raceReady_);
-                    /* R1: mark this as the IN-RACE loss-mapped failure so the
+                    /* Mark this as the IN-RACE loss-mapped failure so the
                      * capture path can clear exactly it (and nothing else, e.g.
                      * a genuine VERIFICATION_MISMATCH) when a finish order was
                      * committed before the peer dropped. */
                     raceLossFailureLatched_ = true;
-                    /* O2: while a race-END card (OPPONENT_LEFT /
+                    /* While a race-END card (OPPONENT_LEFT /
                      * CONNECTION_UNPLAYABLE, or the beta-OFF CONNECTION_CHECK
                      * fallback) is latched, view() must front it even if a late
                      * State snapshot re-latches a lobby whose phase disagrees
@@ -1489,7 +1484,7 @@ private:
                     break;
             }
         }
-        /* F3: a peer that aborted its race-start barrier (or ended mid-race)
+        /* A peer that aborted its race-start barrier (or ended mid-race)
          * signals us over the reliable control channel. Consume-once from the
          * mesh and latch it locally; the drain's barrier AND mid-race polls both
          * key on racePeerLost(), which folds this in, so a received abort ends
@@ -1784,7 +1779,7 @@ private:
     }
 
     /* The sealed control channel carries exactly one payload type the mesh
-     * surfaces to us (PREFLIGHT). The SAS-mismatch notice (W4 M6) rides the
+     * surfaces to us (PREFLIGHT). The SAS-mismatch notice rides the
      * same sealed 64-byte contract, distinguished by a header no legitimate
      * fragment can produce: byte 4 is the fragment index and the codec only
      * ever emits 0..2, so 0xFF is unreachable. */
@@ -1827,8 +1822,8 @@ private:
         }
         /* The sealed carrier keys its context on the MESH epoch (the stable
          * leader_generation -- deliberately round-independent), while the
-         * attestation inside binds the DESCRIPTOR match_epoch, which now
-         * advances every round (W4 C2). The fragment codec cross-checks the
+         * attestation inside binds the DESCRIPTOR match_epoch, which
+         * advances every round. The fragment codec cross-checks the
          * two, so translate the carrier context onto the current round's
          * epoch at this boundary; authentication already happened in the
          * mesh, and the attestation's own epoch is still validated against
@@ -2029,7 +2024,7 @@ public:
         out->localSlotMask = raceTransport_.local_slot_mask;
         out->remoteSlotMask = raceTransport_.remote_slot_mask;
         out->inputDelay = raceInputDelay_;
-        /* A peer that ABORTED its start barrier (F3) is, for the drain's
+        /* A peer that ABORTED its start barrier is, for the drain's
          * purposes, indistinguishable from a mesh-lost peer: either way we must
          * not keep racing its frozen input. Fold the received-abort latch into
          * the same signal. */
@@ -2043,10 +2038,10 @@ public:
     /* Cheap drain-facing peer-loss latch (see the header): the engine-session
      * drain polls this every service iteration to end the visible race the
      * moment the opponent vanishes -- or the moment the opponent tells us it
-     * aborted its own start barrier (F3). */
+     * aborted its own start barrier. */
     bool racePeerLost() const { return racePeerLost_ || raceAbortReceived_; }
 
-    /* F1: applying `incoming` over the already-latched `current` would DEMOTE a
+    /* Applying `incoming` over the already-latched `current` would DEMOTE a
      * more-specific mid-race breakdown to the drain's reason-blind OPPONENT_LEFT.
      * The drain sees only race_peer_lost() and reports OpponentLeft, so a
      * SealWindowExhausted (which the mesh already diagnosed as
@@ -2093,7 +2088,7 @@ public:
     }
 #endif
 
-    /* R2/F3: a race-end card fronts while the local session is still mid-race
+    /* A race-end card fronts while the local session is still mid-race
      * (RACE_CHROME / engine RACING), where the reducer refuses the card's
      * PLAY_HERE -> RETURN_HOME. Walk the abandoned race's engine out of RACING
      * (the beginReVerify precedent) so the card's primary is ACCEPTED, drop the
@@ -2107,7 +2102,7 @@ public:
                                   MDKR_ENGINE_FINISHED);
         }
         haveLobby_ = false;
-        /* O2: a late State snapshot can re-latch haveLobby_ under this card;
+        /* A late State snapshot can re-latch haveLobby_ under this card;
          * keep view() suppressing that stale lobby until the room resets. */
         raceEndFailureLatched_ = true;
         bump();
@@ -2119,13 +2114,13 @@ public:
     void setRaceEndFailure(MdkrOnlineViewFailure failure) {
         makeRaceEndCardActionable();
         raceLossFailureLatched_ = false; /* explicit card, not a loss-mapped one */
-        /* F1: never let the drain's generic OPPONENT_LEFT overwrite a more
+        /* Never let the drain's generic OPPONENT_LEFT overwrite a more
          * specific mid-race breakdown the mesh already latched. */
         if (!raceEndFailureDemotes(failure, failure_)) failure_ = failure;
         bump();
     }
 
-    /* R1: after a genuine finish is published despite a late peer drop, clear
+    /* After a genuine finish is published despite a late peer drop, clear
      * ONLY the in-race loss-mapped failure latch (mapLostReason set failure_ on
      * the same PeerLost that ended the session), so the RESULTS phase fronts
      * instead of a misleading "Lost connection" card. Leaves any unrelated
@@ -2138,7 +2133,7 @@ public:
         bump();
     }
 
-    /* F3: tell every reachable peer that we are aborting the race start, so a
+    /* Tell every reachable peer that we are aborting the race start, so a
      * slow-but-alive opponent stops waiting on our primed tick-1 fan-out and
      * never races our frozen input to the flag (nor publishes fabricated
      * placements). Best-effort broadcast on the reliable control channel; a
@@ -2390,7 +2385,7 @@ public:
         out->resendBundles = raceResendBundles_;
     }
 
-    /* ---- W4 C3(b): race-results handoff from the launcher ----------------- */
+    /* ---- Race-results handoff from the launcher --------------------------- */
     bool reportResults(const uint8_t placements[4]) {
         if (placements == nullptr || !haveLobby_) return false;
         if (lobby_.phase == MDKR_ONLINE_RESULTS) return true; /* already in */
@@ -2436,7 +2431,7 @@ public:
         return resultsReported_;
     }
 
-    /* ---- W4 C3(c): leader-only session configuration ---------------------- */
+    /* ---- Leader-only session configuration -------------------------------- */
     bool sendSessionConfig(MdkrOnlineCommandType type, uint32_t value) {
         if (!haveLobby_ || lobby_.phase != MDKR_ONLINE_LOBBY || !isLeader()) {
             return false;
@@ -2470,7 +2465,7 @@ public:
         return true;
     }
 
-    /* W4 m3: synchronous handoff retract for the owner (launcher thread). */
+    /* Synchronous handoff retract for the owner (launcher thread). */
     bool retractRaceBoot() {
 #if MDKR_ENABLE_ONLINE_BETA
         OnlineRoom_retractEngineRaceBoot(this);
@@ -2493,7 +2488,7 @@ private:
     bool phraseConfirmed_ = false;
     /* SAS re-verify barrier latch: armed by beginReVerify() after a
      * post-confirmation rekey, cleared by the second CONFIRM_PHRASE. While
-     * armed, syncPhase() leaves the room at the re-verify surface. */
+     * armed, followLobbyPhase() leaves the room at the re-verify surface. */
     bool reVerify_ = false;
     /* The 256-bit transcript digest the human confirmed. Re-verify detection
      * keys on THIS, never the 20-bit phrase: two different transcripts
@@ -2510,7 +2505,7 @@ private:
     /* One-shot advisory carried on the NEXT accepted step (currently only the
      * ENTER_ANOTHER_CODE rebuild sentinel the header documents). */
     uint32_t stepNote_ = 0u;
-    /* W4 M6 SAS-mismatch rekey: countdown (in service() calls) between the
+    /* SAS-mismatch rekey: countdown (in service() calls) between the
      * control-channel mismatch notice and the mesh teardown, so the sealed
      * notice flushes before its channel dies; the active flag suppresses the
      * teardown's own PeerLost from repainting the mismatch surface. */
@@ -2561,17 +2556,17 @@ private:
     uint32_t raceNextTick_ = 1u;
     uint8_t raceInputDelay_ = 2u;
     std::map<uint64_t, uint8_t> peerSlotMask_;
-    /* W4 C3(a) once-per-epoch lobby loading handshake latches. */
+    /* Once-per-epoch lobby loading handshake latches. */
     bool ackLoadedSent_ = false;
     bool beginRaceSent_ = false;
     bool resultsReported_ = false;
-    /* W4 C4 resend sweep + connection quality; W4 M1 peer-lost flag. */
+    /* Resend sweep + connection quality; peer-lost flag. */
     bool raceSendOwned_ = false;   /* true while race_advance drives the send */
     bool raceDegraded_ = false;
     bool racePeerLost_ = false;
-    bool raceAbortReceived_ = false; /* F3: peer told us it aborted the race */
-    bool raceLossFailureLatched_ = false; /* R1: failure_ came from mapLostReason */
-    bool raceEndFailureLatched_ = false;  /* O2: suppress stale lobby under a
+    bool raceAbortReceived_ = false; /* peer told us it aborted the race */
+    bool raceLossFailureLatched_ = false; /* failure_ came from mapLostReason */
+    bool raceEndFailureLatched_ = false;  /* suppress stale lobby under a
                                            * race-end recovery card */
     unsigned raceSweepServiceCalls_ = 0u;
     uint32_t raceResendSweeps_ = 0u;
@@ -2616,7 +2611,7 @@ private:
     uint64_t lastPhaseKey_ = UINT64_MAX;
     uint64_t viewAnchorMs_ = 0u;
     uint64_t viewTimeoutMs_ = 30000u;
-    /* F2: lobby revision the timeout anchor was last re-armed on while SELECTING,
+    /* Lobby revision the timeout anchor was last re-armed on while SELECTING,
      * so active picking (each pick/ready/settings change bumps it) never lets the
      * "Selection Took Too Long" card false-fire. */
     uint32_t lastAnchorRevision_ = 0u;
@@ -2704,7 +2699,7 @@ bool mdkr_online_live_adapter_walk_engine_out_of_race(
 
 #if MDKR_ENABLE_ONLINE_BETA
 /* Test-only (beta): expose the two pure decisions that govern race-end card
- * truthfulness -- the peer-loss -> failure mapping and the F1 no-demotion rule
+ * truthfulness -- the peer-loss -> failure mapping and the no-demotion rule
  * -- so the beta unit test pins them without driving a full loopback mesh. Not
  * part of the launcher API; only compiled in a beta build. */
 MdkrOnlineViewFailure mdkr_online_live_adapter_test_map_lost_reason(

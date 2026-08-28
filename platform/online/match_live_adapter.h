@@ -297,7 +297,7 @@ bool mdkr_online_live_adapter_probe(const IMdkrOnlineAdapter *adapter,
  * race_inputs_for_tick(). These functions return false for a non-live adapter
  * or before install; they never run on the launcher's fake-adapter path.
  *
- * INTEGRATION CONTRACT -- pump ordering (W3 N5, review A5). The send side is
+ * INTEGRATION CONTRACT -- pump ordering. The send side is
  * immediate (race_advance seals and hands the bundle to the mesh
  * synchronously), but the RECEIVE side is deferred: remote input only moves
  * from the mesh's bounded callback queue into mdkr_match_transport_receive
@@ -396,7 +396,7 @@ struct MdkrOnlineLiveRaceStats {
     uint32_t recoveryFirstTick = 0u;    /* first unrecoverable authored tick */
     uint32_t recoveryObservedTick = 0u; /* drain tick where it was observed */
     uint8_t recoverySlot = 0u;          /* the stalled canonical slot */
-    /* In-race resend sweep (W4 C4): every ~30 service() calls of a
+    /* In-race resend sweep: every ~30 service() calls of a
      * race_advance-driven (production loop shape) race, the adapter re-fans
      * the trailing sealed window (newest .. newest-60, stepping 3) so one
      * dropped datagram on the lossy state channel can never wedge a tick
@@ -457,7 +457,7 @@ bool mdkr_online_live_adapter_set_cup(IMdkrOnlineAdapter *adapter,
 bool mdkr_online_live_adapter_lobby(const IMdkrOnlineAdapter *adapter,
                                     MdkrOnlineLobby *out);
 
-/* Synchronous engine-race-boot handoff retract (W4 m3). The owner MUST call
+/* Synchronous engine-race-boot handoff retract. The owner MUST call
  * this on the launcher thread BEFORE handing the adapter to any teardown
  * thread: the destructor's own retract still exists but only as a backstop,
  * because a detached-thread destruction races the launcher's
@@ -479,7 +479,7 @@ bool mdkr_online_live_adapter_take_refusal(IMdkrOnlineAdapter *adapter,
 /* Test-only (beta build): the two pure decisions that govern race-end card
  * truthfulness, exposed so a beta-ON unit test can pin them without a full
  * loopback mesh. `map_lost_reason` is the mesh-reason -> failure mapping (its
- * in-race branches depend on raceBegun); `race_end_demotes` is the F1 rule that
+ * in-race branches depend on raceBegun); `race_end_demotes` is the rule that
  * keeps a more-specific CONNECTION_UNPLAYABLE from being overwritten by the
  * drain's reason-blind OPPONENT_LEFT. Never called by the launcher. */
 MdkrOnlineViewFailure mdkr_online_live_adapter_test_map_lost_reason(
@@ -504,7 +504,7 @@ bool mdkr_online_live_adapter_test_reverify_clears_peer_loss(bool via_abort);
  * seal history keeps later drains/retransmits byte-identical). */
 bool mdkr_online_live_adapter_race_prime_start(IMdkrOnlineAdapter *adapter);
 
-/* ---- ENTER_ANOTHER_CODE step contract (W4 M5 -- for the UI task) ---------- *
+/* ---- ENTER_ANOTHER_CODE step contract ---------------------------------- *
  *
  * The live adapter is constructed with a FIXED journey + join code and its
  * room transport begins exactly once, so "Enter Another Code" cannot re-join
@@ -571,7 +571,7 @@ bool mdkr_online_live_adapter_race_peer_lost(const IMdkrOnlineAdapter *adapter);
 bool mdkr_online_live_adapter_set_race_end_failure(IMdkrOnlineAdapter *adapter,
                                                    MdkrOnlineViewFailure failure);
 
-/* R1: clear ONLY the in-race peer-loss-mapped failure latch (the CONNECTION_CHECK
+/* Clear ONLY the in-race peer-loss-mapped failure latch (the CONNECTION_CHECK
  * / NETWORKS_CANNOT_CONNECT / etc. that the mid-race PeerLost set via
  * mapLostReason). The launcher calls this on the results-capture path so a
  * genuinely committed finish order -- e.g. the opponent quit during the ~2.5 s
@@ -581,7 +581,7 @@ bool mdkr_online_live_adapter_set_race_end_failure(IMdkrOnlineAdapter *adapter,
 bool mdkr_online_live_adapter_clear_race_loss_failure(
     IMdkrOnlineAdapter *adapter);
 
-/* F3: walk an abandoned race's engine out of RACING (and keep the race-end card
+/* Walk an abandoned race's engine out of RACING (and keep the race-end card
  * fronting over any late lobby snapshot) WITHOUT changing which failure shows.
  * The launcher calls this on the publish-failed keep-the-card path -- a genuine
  * finish was captured but PUBLISH_RESULTS never landed, so the loss-mapped
@@ -591,7 +591,7 @@ bool mdkr_online_live_adapter_clear_race_loss_failure(
 bool mdkr_online_live_adapter_walk_engine_out_of_race(
     IMdkrOnlineAdapter *adapter);
 
-/* F3 one-sided-abort guard: broadcast a race-abort to every reachable peer on
+/* One-sided-abort guard: broadcast a race-abort to every reachable peer on
  * the reliable control channel. The launcher's engine drain calls this when it
  * aborts the race-start barrier so a slow-but-alive opponent stops waiting on
  * our primed opening fan-out and never races our frozen input to the flag (nor,
@@ -709,7 +709,7 @@ void OnlineRoom_publishEngineRaceBoot(IMdkrOnlineAdapter *adapter);
 void OnlineRoom_retractEngineRaceBoot(IMdkrOnlineAdapter *adapter);
 IMdkrOnlineAdapter *OnlineRoom_pollEngineRaceBoot(void);
 
-/* ---- PD-T6h2c: engine ROOM-READY handoff registry (production takeover) ---- *
+/* ---- Engine ROOM-READY handoff registry (production takeover) ------------- *
  *
  * The SECOND consume-once registry, mirroring the race-boot one above but for the
  * PRE-descriptor room-ready moment: the instant both endpoints reach SELECTING in a
@@ -744,7 +744,7 @@ IMdkrOnlineAdapter *OnlineRoom_resolveRawLiveAdapter(IMdkrOnlineAdapter *adapter
 bool OnlineRoom_pollRoomReadyTransition(IMdkrOnlineAdapter *adapter);
 void OnlineRoom_resetRoomReadyLatch(void);
 
-/* ---- PD-T6e MINOR-4: safe 2nd-tournament room-ready re-arm ---------------- *
+/* ---- Safe 2nd-tournament room-ready re-arm -------------------------------- *
  *
  * The room-ready latch above stays set for the whole lifetime of ONE adapter, so
  * after the first tournament's native session returns the takeover can never
@@ -801,7 +801,7 @@ IMdkrOnlineAdapter *OnlineRoom_testLoopbackPeer(
     MdkrOnlineTestLoopbackRace *race);
 void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race);
 
-/* PD-T6h2a: LOBBY-START loopback room (MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START).
+/* LOBBY-START loopback room (MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START).
  * Same two loopback adapters as OnlineRoom_makeTestLoopbackRace but STOPPED at
  * SELECTING -- no selection, NO descriptor, NO roster -- so the visible engine
  * boots DESCRIPTOR-LESS and its native CHARSELECT/TRACKSELECT own race 1. Returns
@@ -813,25 +813,23 @@ void OnlineRoom_lobbyStartResetJoiner(void);
  * START can leave LOBBY. `character` must differ from the host's native pick. */
 void OnlineRoom_lobbyStartServiceJoiner(IMdkrOnlineAdapter *joiner,
                                         unsigned character);
-/* PD-T6h2b WEDGE (b): the LEADER cancels loading. If `leader`'s lobby is in the
+/* UNWIND WEDGE: the LEADER cancels loading. If `leader`'s lobby is in the
  * LOADING phase, submit RETURN_TO_LOBBY (-> reducer CANCEL_LOADING) so the room
  * returns to SELECTING; returns true when a cancel was applicable+submitted. Used
  * only by the descriptor-less UNWIND wedge lane to prove the engine re-fronts
  * CHARSELECT (never parks) when a leader cancel returns the room to LOBBY. */
 bool OnlineRoom_lobbyStartCancelLoading(IMdkrOnlineAdapter *leader);
 
-/* PD-T6h1: FRAME-STEPPED per-round re-cycle for a RESIDENT LIVE session.
+/* FRAME-STEPPED per-round re-cycle for a RESIDENT LIVE session.
  *
- * Replaces the T6ac blocking OnlineRoom_residentAdvanceRound: instead of driving
- * the room from a just-landed (reverse-feed) REMATCH back to a fresh race-ready
- * transport with sleep-until-converged pumps (which would FREEZE the launcher's
- * real per-frame service path), the SAME transition is expressed as a resumable
- * step machine. Each OnlineRoom_residentAdvanceStep call does O(1) bounded work
+ * Drives the room from a just-landed (reverse-feed) REMATCH back to a fresh
+ * race-ready transport as a resumable step machine rather than with
+ * sleep-until-converged pumps (which would FREEZE the launcher's real per-frame
+ * service path). Each OnlineRoom_residentAdvanceStep call does O(1) bounded work
  * -- one pump of both adapters + a single state check -- and returns its status,
  * so the RESULTS->next-race gap steps across serviced frames and NEVER blocks the
- * service thread. WHAT the transition does and its exact ordering are unchanged
- * (roster clear -> re-Ready both endpoints -> leader START -> both race-ready on a
- * fresh epoch -> roster re-installed); only HOW it is driven changed.
+ * service thread. Transition ordering: roster clear -> re-Ready both endpoints ->
+ * leader START -> both race-ready on a fresh epoch -> roster re-installed.
  *
  * Usage: the caller sets `visible`+`peer`, zero-inits the rest (value-init `{}`),
  * then calls OnlineRoom_residentAdvanceStep once per frame until it returns a
@@ -850,7 +848,7 @@ struct MdkrResidentAdvanceState {
     /* Set by the caller before the first step: */
     IMdkrOnlineAdapter *visible;
     IMdkrOnlineAdapter *peer;
-    /* PD-T6h2c: SINGLE-ENDPOINT advance (a real 2-process room). When true the step
+    /* SINGLE-ENDPOINT advance (a real 2-process room). When true the step
      * drives ONLY the local (visible) endpoint's per-round re-cycle -- re-Ready the
      * LOCAL seat, START only if the local seat is leader, and observe both-ready /
      * race-ready via the VIEW (the remote readies itself over the real transport) --
