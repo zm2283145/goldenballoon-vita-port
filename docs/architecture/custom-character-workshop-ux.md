@@ -658,25 +658,57 @@ stories. Each has an owner in the audit above and must retain its stated gate:
    retained-body, vehicle-part, and held-object scopes, accepts a completed
    zero-fragment query as actionable failing evidence, and never advertises
    pixel precision or a final culprit. Blended transparency and unsampled
-   motion remain outside it.
+   motion remain outside it. Frame-to-frame contact oscillation likewise needs
+   a bounded renderer witness before it can be qualified rather than inferred
+   from the current settled samples.
 2. Richer reference motion, joint-limit inspection, and full controller plus
    screen-reader traversal of Animation Studio/freeform gestures remain.
 3. Localization-aware game-font shaping is still needed beyond the disclosed
    deterministic unsupported-codepoint fallback.
 4. The device-profile corpus, projected-size LOD thresholds/hysteresis, and an
    optional offline simplification workflow remain performance follow-up.
-5. Bulk draft transfer remains downstream of a finalized portable sharing
-   contract; third-party format adapters remain outside the trusted runtime
-   until sandbox, signature, and update policy are explicit.
+5. Bulk draft transfer, recipient compatibility/diff review, packaged
+   cross-platform/offline repair qualification, and online visual-package
+   negotiation remain downstream of a finalized portable sharing contract;
+   third-party format adapters remain outside the trusted runtime until
+   sandbox, signature, and update policy are explicit.
 6. Any future character-indexed game surface must still declare package,
    donor, or scene ownership; the current audited surfaces are complete, not a
    license to infer ownership for new code.
-7. Modern-character rendering is currently WebGPU-only; OpenGL deliberately
+7. The high-fidelity renderer tail remains explicit: modern characters do not
+   yet enter world shadow maps; BLEND primitives lack stable per-view depth
+   ordering; KTX2/BasisU import is absent; LOD is distance- rather than
+   projected-size-driven; optional recorded simplification is absent; and
+   expanded hair/clearcoat/subsurface/morph capabilities need new authenticated
+   format contracts and measured fallbacks.
+8. Modern-character rendering is currently WebGPU-only; OpenGL deliberately
    retains the built-in donor rather than presenting a partial or misleading
    custom character. OpenGL parity needs its own renderer qualification if it
    becomes a release requirement.
-8. Custom physics remains a separate opt-in, hashed multiplayer system and is
+9. Custom physics remains a separate opt-in, hashed multiplayer system and is
    not part of a visual package or this release spike.
+
+### End-to-end story closure ledger
+
+No story is silently omitted. “Executable” means the local WebGPU workflow has
+an automated contract; it does not waive the named release qualification.
+
+| Story | Current closure | Residual release work |
+|---|---|---|
+| Install a finished package | Executable: inspect, rights-confirm, transactional install, enable, and assign | Cross-platform/offline packaged importer qualification |
+| Start from an artist model | Executable for GLB and one unambiguous DAE/ZIP conversion, with DCC-specific GLB guidance and resumable named drafts | Sandboxed/signed third-party adapter policy |
+| Correct scale, floor, facing, seating, and contacts | Executable with exact per-context previews, bounded measured starting points, direct/numeric controls, undo, and stale-evidence invalidation | Contact-oscillation and broader weather/vehicle witnesses; authored pole only if the solver gains that contract |
+| Create recognizable identity everywhere | Executable for the currently audited select/HUD/results/rankings/minimap/collection surfaces and exact 40x40 Portrait Studio | Localization-aware shaping and ownership declarations for future surfaces |
+| Choose fair gameplay | Executable: donor simulation/audio/save/ghost/network authority is separate and visible | Separate hashed custom-gameplay system only if later desired |
+| Target real hardware | Executable for exact 1P-4P source/fit/LOD/device-bound evidence and honest local exceptions | Maintained device corpus, projected LOD, renderer-tail features, and broader scenarios |
+| Update and recover work | Executable: async acknowledgement, named drafts, last-known-good revisions, transactional rebuild/install, and durable deletion cleanup | Packaged clean-install/upgrade/missing-tool/offline matrix on macOS, Windows, and Linux |
+| Share responsibly | Partially executable: no-overwrite portable export with authenticated source/runtime/license/provenance | Recipient diff/compatibility, bulk draft transfer, and online package negotiation/privacy |
+| Disable or delete safely | Executable: reversible disable plus scoped, journalled permanent removal that preserves the external source | Observed recovery qualification across supported platforms |
+
+Every story remains subject to observed mouse, keyboard, controller, touch,
+screen-reader, 200% scale, narrow-layout, reduced-motion, and colour-vision
+qualification. Automated keyboard/speech/touch and responsive gates are strong
+regression evidence, not a substitute for that M8 human release gate.
 
 The secure-import baseline now preflights every GLB buffer, buffer view, and
 accessor for exact bounds, alignment, stride, type, count, and consumed binary

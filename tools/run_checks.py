@@ -1037,6 +1037,9 @@ CHECKS = (
 # artifacts produced inside that CTest fixture rather than the runner's normal
 # role arguments. ``rom_free_units`` owns their execution.
 CTEST_COMPANION_SCRIPTS = {
+    # Cross-layer source contract registered as character_offset_studio_contract
+    # in cmake/tests.cmake; the broad ctest task owns its artifact-free run.
+    "check_character_offset_studio.py",
     "check_multiplayer_boundaries.py",
     "check_controller_settings_persistence.py",
     "check_host_input_focus.py",
