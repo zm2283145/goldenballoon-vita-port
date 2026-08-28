@@ -14,6 +14,14 @@
 #include "taj_mod_state_file.h"
 #include "video_config.h"
 #include "net/net_roster_runtime.h"
+#ifndef MDKR_ADVENTURE_PARTY_OMIT
+/* AP-06 admission/session adapters. These headers (and every call to them) live
+ * behind NATIVE_PORT && !MDKR_ADVENTURE_PARTY_OMIT so the OMIT build and the
+ * matching N64 path compile the feature out entirely. */
+#include "adventure_party/adventure_party_runtime.h"
+#include "adventure_party/adventure_party_state.h"
+#include "adventure_party/adventure_party_trace.h"
+#endif
 extern int g_frameCounter;
 #endif
 #include "asset_enums.h"
@@ -4309,6 +4317,22 @@ void menu_title_screen_init(void) {
      * outcome deferred mid-race, so unlock state and failure surfacing are
      * already correct on the title/options screens after a quit. */
     taj_mod_on_title_return();
+#endif
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* Quit-to-title also destroys any Adventure Party session (QUIT -> EXITING
+     * -> OFF), so a returning party never outlives its campaign and a re-formed
+     * party takes a fresh, higher session generation. is_active is 0 on the
+     * ordinary logo boot and every non-party return, making this a no-op there. */
+    if (adventure_party_runtime_is_active()) {
+        AdventurePartySession *session = adventure_party_runtime_session();
+        AdventurePartyEvent quit = {0};
+        AdventurePartyEvent destroy = {0};
+        quit.kind = ADVENTURE_PARTY_EVENT_QUIT;
+        destroy.kind = ADVENTURE_PARTY_EVENT_DESTROY;
+        adventure_party_session_apply(session, &quit);
+        adventure_party_session_apply(session, &destroy);
+        adventure_party_trace_emit_session(session);
+    }
 #endif
     gSaveFileIndex = 0;
     gTitleScreenCurrentOption = 0;
@@ -9334,6 +9358,61 @@ void charselect_assign_ai(s32 charSlot) {
     }
 }
 
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+/*
+ * AP-06 admission adapters (the ONLY game-source integration of Adventure
+ * Party). Every one of them is behind NATIVE_PORT && !MDKR_ADVENTURE_PARTY_OMIT
+ * and has an immediate stock else path, so with the enhancement off — or in the
+ * OMIT build — behaviour is byte-identical to retail. The count/enhancement
+ * policy lives here rather than being read out of a session, because admission
+ * happens at Character Select before any session exists.
+ *
+ * Deliberately NOT consulted here: gActiveMagicCodes / CHEAT_TWO_PLAYER_ADVENTURE
+ * (the retail JOINTVENTURE offset stays byte-identical for the retail path), and
+ * gIsInTwoPlayerAdventure / gTwoPlayerAdvRace (a party session never sets them —
+ * the compatibility invariant the AP-01 scanner enforces).
+ */
+static s32 adventure_party_menu_admits(void) {
+    const MdkrVideoConfig *config = mdkr_video_config_current();
+    if (config->values[MDKR_ENH_ADVENTURE_PARTY].number == 0.0f) {
+        return FALSE;
+    }
+    return gNumberOfActivePlayers >= 2 && gNumberOfActivePlayers <= 4;
+}
+
+/* File-entry commit for an existing save: build the FORM roster from the joined
+ * Character Select seats/characters (dense seats 0..N-1, host seat 0), then apply
+ * FORM and the file-entry (RESUME_SAVE) event to the process-wide session,
+ * emitting the read-only session/roster traces the admission gate asserts on. */
+static void adventure_party_menu_begin_session(void) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    AdventurePartyEvent form = {0};
+    AdventurePartyEvent resume = {0};
+    s32 seat;
+
+    form.kind = ADVENTURE_PARTY_EVENT_FORM;
+    form.enabled = TRUE;
+    form.adventure_selected = TRUE;
+    form.roster.participant_count = (uint8_t) gNumberOfActivePlayers;
+    for (seat = 0; seat < gNumberOfActivePlayers &&
+                   seat < ADVENTURE_PARTY_MAX_SEATS; seat++) {
+        form.roster.seat[seat] = (uint8_t) seat;
+        form.roster.character[seat] = (uint8_t) gCharacterIdSlots[seat];
+    }
+    /* FORM is legal only from OFF; a prior party is destroyed at quit-to-title,
+     * so a refusal here means a stale session and nothing is half-formed. */
+    if (adventure_party_session_apply(session, &form) != ADVENTURE_PARTY_OK) {
+        return;
+    }
+    adventure_party_trace_emit_session(session);
+    adventure_party_trace_emit_roster(&session->roster);
+
+    resume.kind = ADVENTURE_PARTY_EVENT_RESUME_SAVE;
+    adventure_party_session_apply(session, &resume);
+    adventure_party_trace_emit_session(session);
+}
+#endif
+
 /**
  * Handle the character select menu, letting players pick their character.
  * When finished, this will also assign all the AI racers their character IDs.
@@ -9425,7 +9504,16 @@ s32 menu_character_select_loop(s32 updateRate) {
             charselect_assign_players(gActivePlayersArray);
 
             gIsInTracksMode = TRUE;
-            if (confirmOffset >= gNumberOfActivePlayers) {
+            if (confirmOffset >= gNumberOfActivePlayers
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                /* Adventure Party admission: with the enhancement on and 2-4
+                 * seats joined on the Adventure entry (gEnteredCharSelectFrom==0,
+                 * i.e. not Tracks), admit the party to Game Select instead of
+                 * routing to Tracks. Purely additive — off, this OR is 0 and the
+                 * retail confirmOffset gate stands unchanged. */
+                || (gEnteredCharSelectFrom == 0 && adventure_party_menu_admits())
+#endif
+            ) {
                 music_change_off();
                 load_level_for_menu(ASSET_LEVEL_OPTIONSBACKGROUND, -1, 0);
                 if (gNumberOfActivePlayers == 1 && !gPlayerHasSeenCautionMenu) {
@@ -10073,10 +10161,19 @@ s32 fileselect_input_root(UNUSED s32 updateRate) {
     xAxisDirection = gControllersXAxisDirection[PLAYER_ONE];
     yAxisDirection = gControllersYAxisDirection[PLAYER_ONE];
     if (gNumberOfActivePlayers == 2) {
-        buttonsPressedPlayer2 = input_pressed(PLAYER_TWO);
-        buttonsPressed |= buttonsPressedPlayer2;
-        xAxisDirection += gControllersXAxisDirection[PLAYER_TWO];
-        yAxisDirection += gControllersYAxisDirection[PLAYER_TWO];
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+        /* In an Adventure Party formation the host (player one) owns the shared
+         * file decision, so player two's confirm/navigation is not aggregated.
+         * Retail JOINTVENTURE two-player file select is unchanged: off (or OMIT)
+         * this guard is absent/true and the aggregation runs exactly as stock. */
+        if (!adventure_party_menu_admits())
+#endif
+        {
+            buttonsPressedPlayer2 = input_pressed(PLAYER_TWO);
+            buttonsPressed |= buttonsPressedPlayer2;
+            xAxisDirection += gControllersXAxisDirection[PLAYER_TWO];
+            yAxisDirection += gControllersYAxisDirection[PLAYER_TWO];
+        }
     }
     if (buttonsPressed & (A_BUTTON | START_BUTTON)) {
         switch (gMenuStage) {
@@ -10443,7 +10540,23 @@ s32 menu_file_select_loop(s32 updateRate) {
             gUnlockedMagicCodes &= ~CHEAT_FREE_BALLOON;
             (*settings->balloonsPtr)++;
         }
-        gIsInTwoPlayerAdventure = (gNumberOfActivePlayers == 2);
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+        if (adventure_party_menu_admits()) {
+            /* Enhancements.AdventureParty owns 2-4 Adventure admission, so the
+             * retail two-player record below must NOT run: a party session never
+             * sets gIsInTwoPlayerAdventure (the compatibility invariant). An
+             * existing save forms the session here (FORM + RESUME_SAVE); a new
+             * file keeps the stock 1P path — the new-game shared-scene envelope
+             * is AP-11. gNumberOfActivePlayers still collapses to 1 below exactly
+             * as retail does; the campaign load protocol is unchanged. */
+            if (!settings->newGame) {
+                adventure_party_menu_begin_session();
+            }
+        } else
+#endif
+        {
+            gIsInTwoPlayerAdventure = (gNumberOfActivePlayers == 2);
+        }
         if (gIsInTwoPlayerAdventure) {
             reset_lead_player_index();
         }

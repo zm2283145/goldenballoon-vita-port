@@ -364,6 +364,17 @@
     },
     {
       "file": "game/src/menu.c",
+      "line": "return gNumberOfActivePlayers >= 2 && gNumberOfActivePlayers <= 4;",
+      "count": 1,
+      "kinds": [
+        "player-count-comparison"
+      ],
+      "classification": "adventure-party-admission-gate",
+      "treatment": "adapter-seam",
+      "note": "AP-06 party-size predicate (2-4 seats) inside adventure_party_menu_admits(), behind #ifdef NATIVE_PORT && !MDKR_ADVENTURE_PARTY_OMIT and gated on Enhancements.AdventureParty. Drives Adventure Party admission/session formation; NOT a retail 2P branch and never sets gIsInTwoPlayerAdventure."
+    },
+    {
+      "file": "game/src/menu.c",
       "line": "(gNumberOfActivePlayers == 2 && !(gActiveMagicCodes & CHEAT_TWO_PLAYER_ADVENTURE))) {",
       "count": 1,
       "kinds": [
