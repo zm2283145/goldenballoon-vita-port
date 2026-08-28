@@ -1941,10 +1941,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/game
         ${CMAKE_SOURCE_DIR}/game/src
         ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR
-        ${CMAKE_SOURCE_DIR}/game/include/sys
         ${CMAKE_SOURCE_DIR}/game/libultra
         ${CMAKE_SOURCE_DIR}/game/libultra/src/audio)
+    mdkr_add_legacy_game_quote_includes(mdkr_ghost_bank_test)
     target_compile_definitions(mdkr_ghost_bank_test PRIVATE
         VERSION_us_v80
         _LANGUAGE_C

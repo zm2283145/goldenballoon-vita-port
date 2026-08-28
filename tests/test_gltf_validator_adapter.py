@@ -293,6 +293,55 @@ class GltfValidatorAdapterTests(unittest.TestCase):
             with self.assertRaisesRegex(builder.BuildError, "linked"):
                 builder._extract_zip(archive, root / "out2")
 
+            normalized = root / "normalized.zip"
+            with zipfile.ZipFile(normalized, "w") as output:
+                output.writestr("docs/", b"")
+                output.writestr("docs/schema.json", b"{}")
+            self.assertEqual(
+                ["docs", "docs/schema.json"],
+                builder._extract_zip(normalized, root / "out3"),
+            )
+
+    def test_official_archive_builder_exercises_temporary_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            archive = root / "validator.tar.xz"
+            archive.write_bytes(b"pinned archive")
+            output = root / "published" / "gltf_validator"
+            output.parent.mkdir()
+            executable_bytes = b"pinned validator"
+            names = [
+                "docs", "docs/config-example.yaml",
+                "docs/validation.schema.json", "gltf_validator",
+                "LICENSE", "NOTICES",
+            ]
+
+            def extract(_archive: Path, destination: Path) -> list[str]:
+                executable = destination / "gltf_validator"
+                executable.write_bytes(executable_bytes)
+                executable.chmod(0o755)
+                return names
+
+            archive_digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            executable_digest = hashlib.sha256(executable_bytes).hexdigest()
+            with (
+                mock.patch.object(builder, "_extract_tar", side_effect=extract),
+                mock.patch.dict(
+                    adapter.OFFICIAL_ARCHIVE_SHA256,
+                    {"linux-x86_64": archive_digest},
+                ),
+                mock.patch.dict(
+                    adapter.PINNED_BUILD_SHA256,
+                    {"linux-x86_64": executable_digest},
+                ),
+            ):
+                report = builder._build_official(
+                    archive, "linux-x86_64", output
+                )
+
+            self.assertEqual(executable_bytes, output.read_bytes())
+            self.assertEqual("official-release", report["distribution"])
+
 
 if __name__ == "__main__":
     unittest.main()

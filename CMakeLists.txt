@@ -38,6 +38,25 @@ function(mdkr_serialize_gpu_ctests)
     endforeach()
 endfunction()
 
+# The translated game includes its legacy PR headers by basename (for example
+# "sched.h"), while host SDK headers include POSIX headers with the same names
+# using angle brackets. Keep those two namespaces distinct on compilers that
+# support quote-only search paths. In particular, glibc's <spawn.h> includes
+# <sched.h>; resolving that to game/include/PR/sched.h leaves struct
+# sched_param incomplete and breaks a clean Ubuntu build. MSVC has no -iquote
+# equivalent and its SDK does not have this collision.
+function(mdkr_add_legacy_game_quote_includes target_name)
+    if(MSVC)
+        target_include_directories(${target_name} PRIVATE
+            ${CMAKE_SOURCE_DIR}/game/include/PR
+            ${CMAKE_SOURCE_DIR}/game/include/sys)
+    else()
+        target_compile_options(${target_name} PRIVATE
+            -iquote${CMAKE_SOURCE_DIR}/game/include/PR
+            -iquote${CMAKE_SOURCE_DIR}/game/include/sys)
+    endif()
+endfunction()
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE)
@@ -576,8 +595,6 @@ target_include_directories(${MDKR_TARGET} PRIVATE
     ${CMAKE_SOURCE_DIR}/game
     ${CMAKE_SOURCE_DIR}/game/src
     ${CMAKE_SOURCE_DIR}/game/include
-    ${CMAKE_SOURCE_DIR}/game/include/PR
-    ${CMAKE_SOURCE_DIR}/game/include/sys
     ${CMAKE_SOURCE_DIR}/game/libultra
     ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
     ${CMAKE_SOURCE_DIR}/platform
@@ -589,6 +606,7 @@ target_include_directories(${MDKR_TARGET} PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/dr_libs      # dr_wav.h, taken by mod_music.c
     ${SDL2_INCLUDE_DIRS}
 )
+mdkr_add_legacy_game_quote_includes(${MDKR_TARGET})
 
 # --- Compile definitions (PLAN §8) ---------------------------------------
 target_compile_definitions(${MDKR_TARGET} PRIVATE
@@ -1023,6 +1041,7 @@ if(NOT EMSCRIPTEN)
                 add_executable(mdkr_match_peer_transport_test
                     ${CMAKE_SOURCE_DIR}/tests/test_match_peer_transport.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_crypto.cpp
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
@@ -1122,6 +1141,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+                    ${CMAKE_SOURCE_DIR}/platform/online/lobby_fake_adapter.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_preflight.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_roster_runtime.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c
@@ -1297,6 +1317,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+                    ${CMAKE_SOURCE_DIR}/platform/online/lobby_fake_adapter.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_preflight.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_roster_runtime.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c

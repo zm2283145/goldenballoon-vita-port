@@ -13,7 +13,7 @@
 #ifndef MDKR_AUDIO_COMPAT_INTERNAL_H
 #define MDKR_AUDIO_COMPAT_INTERNAL_H
 
-#include <libaudio.h>
+#include <PR/libaudio.h>
 #include "synthInternals.h"
 #include "seqp.h"
 #include "audio_event_queue.h"

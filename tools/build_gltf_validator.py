@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -68,7 +69,7 @@ def _extract_tar(archive_path: Path, destination: Path) -> list[str]:
             raise BuildError("validator archive has too many members")
         for member in members:
             relative = _safe_member_path(member.name.rstrip("/"))
-            names.append(member.name)
+            names.append(str(relative))
             target = destination.joinpath(*relative.parts)
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
@@ -97,7 +98,7 @@ def _extract_zip(archive_path: Path, destination: Path) -> list[str]:
             raise BuildError("validator archive has too many members")
         for member in members:
             relative = _safe_member_path(member.filename.rstrip("/"))
-            names.append(member.filename)
+            names.append(str(relative))
             target = destination.joinpath(*relative.parts)
             mode = member.external_attr >> 16
             if stat.S_ISLNK(mode):
@@ -233,7 +234,7 @@ def _build_official(archive_path: Path, target: str, output: Path) -> dict[str, 
         )
         executable_name = "gltf_validator.exe" if target.startswith("windows-") else "gltf_validator"
         expected_names = {
-            "docs/", "docs/config-example.yaml", "docs/validation.schema.json",
+            "docs", "docs/config-example.yaml", "docs/validation.schema.json",
             executable_name, "LICENSE", "NOTICES",
         }
         if set(names) != expected_names:

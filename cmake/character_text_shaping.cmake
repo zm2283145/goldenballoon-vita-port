@@ -60,16 +60,27 @@ set(SB_CONFIG_EXPERIMENTAL_TEXT_API OFF CACHE BOOL "" FORCE)
 set(SB_CONFIG_UNITY ON CACHE BOOL "" FORCE)
 set(BUILD_GENERATOR OFF CACHE BOOL "" FORCE)
 
+# DOWNLOAD_EXTRACT_TIMESTAMP was added in CMake 3.24. Ubuntu 22.04, the
+# oldest release host we qualify, ships 3.22; there an unknown keyword is
+# swallowed into URL_HASH and makes configure fail with a misleading malformed
+# hash error. Pre-3.24 already preserves archive timestamps, so omitting the
+# newer option retains its historical behavior.
+set(MDKR_CHARACTER_TEXT_EXTRACT_ARGS "")
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+    set(MDKR_CHARACTER_TEXT_EXTRACT_ARGS
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+endif()
+
 FetchContent_Declare(mdkr_harfbuzz
     URL "${_mdkr_harfbuzz_url}"
     URL_HASH
         "SHA256=0afa12c8ef4bc4ffebd99e5d2a4a2c56dfe329c661feda08a9bc878b7352be89"
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    ${MDKR_CHARACTER_TEXT_EXTRACT_ARGS})
 FetchContent_Declare(mdkr_sheenbidi
     URL "${_mdkr_sheenbidi_url}"
     URL_HASH
         "SHA256=9546f423820d4618c704a30c51c191b0b002aa79100e0ec34cb2cf461fd6353e"
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    ${MDKR_CHARACTER_TEXT_EXTRACT_ARGS})
 FetchContent_MakeAvailable(mdkr_harfbuzz mdkr_sheenbidi)
 
 add_library(mdkr_character_text_shaping INTERFACE)

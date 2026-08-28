@@ -159,8 +159,14 @@ class HighFidelityCharacterTests(unittest.TestCase):
         self.assertIn(
             '"cfe430e7375a7845b679adae9d51dac6deaa8858"', dependency
         )
-        self.assertEqual(2, dependency.count("URL_HASH"))
+        self.assertEqual(2, dependency.count("\n    URL_HASH"))
         self.assertIn("MDKR_CHARACTER_TEXT_DEP_CACHE", dependency)
+        self.assertIn(
+            "if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)", dependency
+        )
+        self.assertEqual(
+            4, dependency.count("MDKR_CHARACTER_TEXT_EXTRACT_ARGS")
+        )
         self.assertIn('set(HB_HAVE_CORETEXT OFF', dependency)
         self.assertIn('set(HB_HAVE_DIRECTWRITE OFF', dependency)
         self.assertIn('set(HB_BUILD_SUBSET OFF', dependency)

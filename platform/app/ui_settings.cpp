@@ -11014,13 +11014,14 @@ bool drawCharacterTuningEditor(int player,
             bool contactsWithinGuide = true;
             bool contactStabilityMeasured = false;
             bool contactsStable = true;
-            uint64_t contactStabilityMaximum = 0u;
-            uint64_t contactStabilityObservations = 0u;
-            constexpr uint64_t kContactStabilityGuideMicrometres = 2000u;
+            unsigned long long contactStabilityMaximum = 0u;
+            unsigned long long contactStabilityObservations = 0u;
+            constexpr unsigned long long
+                kContactStabilityGuideMicrometres = 2000u;
             if (fitEvidence.current &&
                 context != MDKR_CHARACTER_CONTEXT_SELECT) {
-                uint64_t contactSolves = 0u;
-                uint64_t contactMaximum = 0u;
+                unsigned long long contactSolves = 0u;
+                unsigned long long contactMaximum = 0u;
                 if (completeSceneReview) {
                     for (unsigned sceneIndex = 0u;
                          sceneIndex < motionSceneCount; ++sceneIndex) {
@@ -11056,7 +11057,7 @@ bool drawCharacterTuningEditor(int player,
                                          .contact_stability_mask[sampleIndex] &
                                      (1u << contact)) == 0u) continue;
                                 contactStabilityMeasured = true;
-                                const uint64_t observations =
+                                const unsigned long long observations =
                                     sceneReview->result
                                         .contact_stability_observations
                                             [sampleIndex][contact];
@@ -14548,8 +14549,9 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
                     std::snprintf(
                         gpuValue, sizeof(gpuValue),
                         "%llu samples · %llu in percentile window",
-                        distribution.samples,
-                        distribution.percentile_window_samples);
+                        static_cast<unsigned long long>(distribution.samples),
+                        static_cast<unsigned long long>(
+                            distribution.percentile_window_samples));
                     std::string sampleName =
                         std::string(scope) + " sample";
                     gpuMetric(sampleName.c_str(), gpuValue);
@@ -14599,20 +14601,20 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         char excludedValue[96];
         std::snprintf(
             excludedValue, sizeof(excludedValue), "%llu frame(s)",
-            gpu.pending_frames);
+            static_cast<unsigned long long>(gpu.pending_frames));
         (void)ImGui::Selectable("Pending timestamp frames", false);
         ui::SpeakFocusedItem(
             "Pending GPU timestamp frames", excludedValue,
             "Submitted readbacks that had not completed when the test ended. They are excluded from every value.");
         ui::TextSubtleWrapped(
             "%llu submitted timestamp frame(s) were still pending when the test ended and are excluded from every value above.",
-            gpu.pending_frames);
+            static_cast<unsigned long long>(gpu.pending_frames));
     }
     if (gpu.ring_full_frames != 0u) {
         char excludedValue[96];
         std::snprintf(
             excludedValue, sizeof(excludedValue), "%llu frame(s)",
-            gpu.ring_full_frames);
+            static_cast<unsigned long long>(gpu.ring_full_frames));
         (void)ImGui::Selectable("Readback ring-full frames", false);
         ui::SpeakFocusedItem(
             "GPU timestamp ring-full frames", excludedValue,
@@ -14620,7 +14622,7 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         ImGui::TextColored(
             AppTheme::accent(),
             "%llu frame(s) skipped GPU timing because all readback slots were busy",
-            gpu.ring_full_frames);
+            static_cast<unsigned long long>(gpu.ring_full_frames));
         ui::TextSubtleWrapped(
             "The renderer did not wait or perturb input/audio to recover those samples.");
     }
@@ -14628,14 +14630,14 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         char excludedValue[96];
         std::snprintf(
             excludedValue, sizeof(excludedValue), "%llu readback(s)",
-            gpu.invalid_samples);
+            static_cast<unsigned long long>(gpu.invalid_samples));
         (void)ImGui::Selectable("Invalid timestamp readbacks", false);
         ui::SpeakFocusedItem(
             "Invalid GPU timestamp readbacks", excludedValue,
             "Unwritten, non-monotonic, zero-resolution, or failed readbacks excluded from every distribution.");
         ImGui::TextColored(
             AppTheme::accent(), "%llu invalid timestamp readback(s) excluded",
-            gpu.invalid_samples);
+            static_cast<unsigned long long>(gpu.invalid_samples));
         ui::TextSubtleWrapped(
             "An unwritten, non-monotonic, zero-resolution, or failed readback is never folded into the distribution.");
     }
