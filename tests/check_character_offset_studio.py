@@ -95,10 +95,26 @@ def main() -> int:
     require("PR/gbi.h" not in bridge,
             "the app-safe studio bridge regressed into renderer/display-list coupling")
 
-    require("Review all motion states" in settings and
+    require("Review all motion and scenes" in settings and
             "representativeMotionReviewRoute" in settings and
+            "CharacterSceneReviewRun" in settings and
+            "Retry current course" in settings and
+            "Stop review" in settings and
+            "refreshAll" in settings and
+            "Opening the next qualified course automatically" in settings and
+            "MDKR_CHARACTER_PREVIEW_SCENE_COUNT" in entry and
             "MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT" in entry,
             "fitting lost its one-action complete semantic review workflow")
+    require("ASSET_LEVEL_ANCIENTLAKE" in game and
+            "ASSET_LEVEL_GREENWOODVILLAGE" in game and
+            "ASSET_LEVEL_SNOWBALLVALLEY" in game and
+            "ASSET_LEVEL_WHALEBAY" in game and
+            "ASSET_LEVEL_CRESCENTISLAND" in game and
+            "ASSET_LEVEL_HOTTOPVOLCANO" in game and
+            "ASSET_LEVEL_WINDMILLPLAINS" in game and
+            "ASSET_LEVEL_SPACEPORTALPHA" in game and
+            "ASSET_LEVEL_EVERFROSTPEAK" in game,
+            "the three vehicle review pressures lost their qualified course mappings")
     require("character_motion_review" in launcher and
             "character_motion_review_result" in launcher and
             "g_mdkrCharacterMotionReviewResult" in game,
@@ -124,17 +140,17 @@ def main() -> int:
             "slot->inspection_generation == s_inspection_generation" in runtime,
             "representative review lacks an engine-owned exact-pose settling witness")
     require("representativeMotionReady" in settings and
-            "mdkr-character-fit-review-v4-semantic-battery" in settings and
-            "all 11 exact race samples" in settings and
+            "mdkr-character-fit-review-v5-scene-battery" in settings and
+            "all 33 exact race-and-scene samples" in settings and
             "idle, hover, and confirm" in settings and
             "currentCharacterMotionReview" in settings and
             "value.fitSha256 == fit" in settings and
             "value.presentationSha256 == presentation" in settings,
             "vehicle approval can bypass current representative renderer evidence")
-    require("mdkr-fit-history-v6" in settings and
-            "kFitSemanticReviewVersion = 15u" in draft_snapshot and
+    require("mdkr-fit-history-v7" in settings and
+            "kFitMultiSceneReviewVersion = 16u" in draft_snapshot and
             "parsed.reviewedContexts = 0u" in draft_snapshot,
-            "legacy single-pose/five-state approvals can inherit the complete semantic-review meaning")
+            "legacy fixed-scene approvals can inherit the multi-scene review meaning")
 
     print("character Offset Studio contract passed: exact live scene, input isolation, "
           "post-edit fit handoff, one-action complete semantic evidence, "

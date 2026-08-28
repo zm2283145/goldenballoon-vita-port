@@ -391,6 +391,19 @@ void testExactFitReviewGate() {
     assert(CharacterWorkshop_reviewFit(facts).warnings);
 }
 
+void testSceneReviewProgression() {
+    constexpr uint32_t allThree = 0x7u;
+    assert(CharacterWorkshop_nextSceneReview(3u, 0u, allThree, true) == 1u);
+    assert(CharacterWorkshop_nextSceneReview(3u, 1u, allThree, true) == 2u);
+    assert(CharacterWorkshop_nextSceneReview(3u, 2u, allThree, true) == 3u);
+    assert(CharacterWorkshop_nextSceneReview(3u, 0u, 0x1u, false) == 1u);
+    assert(CharacterWorkshop_nextSceneReview(3u, 1u, 0x3u, false) == 2u);
+    assert(CharacterWorkshop_nextSceneReview(3u, 2u, allThree, false) == 3u);
+    assert(CharacterWorkshop_nextSceneReview(1u, 0u, 0x1u, false) == 1u);
+    assert(CharacterWorkshop_nextSceneReview(0u, 0u, 0u, false) == 0u);
+    assert(CharacterWorkshop_nextSceneReview(33u, 0u, 0u, false) == 33u);
+}
+
 void testSourceTransformDiagnosis() {
     float correction = 321.0f;
     assert(CharacterWorkshop_facingCorrectionDegrees(0u, correction) &&
@@ -592,6 +605,7 @@ int main() {
     testRuntimeLodHysteresis();
     testExactFitSuggestions();
     testExactFitReviewGate();
+    testSceneReviewProgression();
     testSourceTransformDiagnosis();
     testStructuralRigInference();
     return 0;

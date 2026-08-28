@@ -178,25 +178,25 @@ explicitly restricted to the generated fixture and exists only for CI.
 - **Implemented:** fit each context independently. The guided sequence never
   treats a car/hovercraft/plane correction or review as evidence for another;
   an explicit vehicle-only copy action remains available for intentional reuse.
-- **Implemented for the complete semantic review contract:** visible advisory bands classify floor/seat
+- **Implemented for the complete scene-review contract:** visible advisory bands classify floor/seat
   datum error, facing, and unusual volume proportions as Ready, Review, or
-  Action needed. Result v15 also retains the last complete accepted scene MVP,
+  Action needed. Result v18 also retains the last complete accepted scene MVP,
   viewport, and scissor and projects the calibrated volume plus exact
   current-pose hips/chest/head node origins into bounded fixed-point camera
   evidence. Offset Studio reports camera occupancy, clipping, head placement,
   torso placement, and seat-to-hips displacement across restart. For every
-  vehicle, one action now runs start, full steer, airborne, land, and finish in
-  one exact session; each held generation snaps to its target sample, publishes
+  vehicle, one resumable action now runs all eleven race samples on three
+  qualified courses: an open baseline, dense scenery, and an alternate
+  environment. Each held generation snaps to its target sample, publishes
   only after the runtime reports it settled plus sixty replacement draws (a
   deliberate human-visible inspection dwell), and
   returns automatically with aggregated framing, retained-body surface,
   topology-qualified containment, opaque-depth visibility, and contact evidence.
-  Approval requires that current source/fit/LOD/presentation-bound battery and
-  reopens legacy vehicle approvals once. This still does not identify a specific
-  Every select approval now covers idle/hover/confirm and every vehicle approval
-  covers all eleven race samples (both steering extremes, reverse, boost, item,
-  damage, spin, airborne, land, and both finishes). This still does not identify
-  a specific occluding attachment or prove unsampled course conditions.
+  Approval requires all current source/fit/LOD/presentation-bound course
+  batteries and reopens every legacy approval once. Select approval covers
+  idle/hover/confirm; every vehicle approval covers 33 samples in total. This
+  still does not identify a specific occluding attachment or prove weather and
+  vehicle conditions outside the qualified course set.
 
 Acceptance: the example faces the camera in select, its feet are floor-aligned,
 and its head/torso land inside each ordinary vehicle camera without manual JSON.
@@ -288,11 +288,12 @@ in the package review and durable evidence.
   survives named-draft v13 resume, and rolls back if persistence fails.
   Named attached-part attribution and frame-to-frame oscillation still require
   renderer-derived witnesses before they can be qualified honestly.
-- **Implemented:** test car, hovercraft, and plane across start, full steer,
-  airborne, land, and finish rather than one favourable parked frame. The UI
+- **Implemented:** test car, hovercraft, and plane across all eleven race
+  samples on three qualified courses rather than one favourable parked frame.
+  The UI
   names only an actual framing/body problem, truthfully distinguishes an
   unqualified volume or blended-material visual check, and reports the minimum
-  qualified visibility and maximum contact residual across all eleven race rows.
+  qualified visibility and maximum contact residual across all 33 rows.
 
 Acceptance: each example context is visually seated, ordinary cameras show the
 intended body region, and residuals/approved exceptions are source- and
@@ -423,10 +424,10 @@ The forward-axis thumbnail studio, structural/symmetry rig proposal, derived
 rest/bend bases, 72%-occupancy isolated capture, portrait handoff, exact
 retained-body surface intersection, topology-qualified bounded containment,
 final opaque-depth visibility witness, one-session three-state select and
-eleven-sample vehicle semantic batteries, and fresh five-context/performance
+three-course eleven-sample vehicle scene batteries, and fresh five-context/performance
 fixture qualification are complete.
 Fit approval now requires a current warmed exact contract, current aggregated
-vehicle motion evidence, and explicit composed-scene inspection; a completed
+vehicle motion-and-scene evidence, and explicit composed-scene inspection; a completed
 zero-fragment opaque/masked replay blocks approval, while unusual anatomy,
 intentional occlusion, transparent materials, and contact exceptions retain an
 explicit author-acknowledgement path. Detailed battery rows are session-only;
@@ -434,8 +435,8 @@ the durable approval remains source/fit/LOD/presentation and contract bound.
 The immediate remaining order is therefore:
 
 1. attribute separately drawn donor attachments where stable identities exist,
-   and add representative course/vehicle-condition variants beyond the fixed
-   Workshop scenes;
+   and add weather/vehicle-condition variants beyond the three qualified
+   Workshop course families;
 2. add a donor-reference silhouette/occlusion comparison and a real linked-ROM
    unusual-proportion fixture, then qualify richer reference clips, joint limits,
    and optional deterministic secondary hair/tail motion;

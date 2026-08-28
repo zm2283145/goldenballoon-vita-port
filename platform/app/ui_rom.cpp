@@ -438,6 +438,34 @@ static void requestValidation(LauncherState &s, ValidationPurpose purpose,
     validationWorker().request(purpose, path);
 }
 
+static void clearCharacterPreviewRequest(LauncherState &s) {
+    s.characterPreviewPackage.clear();
+    s.characterPreviewSourceSha256.clear();
+    s.characterPreviewFitSha256.clear();
+    s.characterPreviewPresentationSha256.clear();
+    s.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
+    s.characterPreviewScene = MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
+    s.characterPreviewPlayers = 0;
+    s.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    s.characterPreviewPosePhaseMilli = 0u;
+    s.characterPreviewTransitionFromPose =
+        MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    s.characterPreviewTransitionFromPhaseMilli = 0u;
+    s.characterPreviewViewYawDegrees = 0;
+    s.characterPreviewViewPitchDegrees = 0;
+    s.characterPreviewLighting =
+        MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+    s.characterPreviewCapturePng.clear();
+    s.characterPreviewCaptureKind =
+        MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+    s.characterPreviewAutoReturn = false;
+    s.characterPreviewCaptureLauncherOwned = false;
+    s.characterPreviewPortraitSourceHandoff = false;
+    s.characterPreviewInteractiveStudio = false;
+    s.characterPreviewRepresentativeMotionReview = false;
+    s.characterPreviewDispatched = false;
+}
+
 /* A cancellation is a user-visible decision, not merely a progress-bar change.
  * Invalidate the worker's generation before restoring the current selection so
  * a completed replacement/remembered result cannot publish after Cancel Change
@@ -460,28 +488,7 @@ static void cancelValidation(LauncherState &s, bool clearUnusableSelection) {
     s.romPlayValidationPending = false;
     s.romPlayValidationPassed = false;
     if (cancelledPlay) {
-        s.characterPreviewPackage.clear();
-        s.characterPreviewSourceSha256.clear();
-        s.characterPreviewFitSha256.clear();
-        s.characterPreviewPresentationSha256.clear();
-        s.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
-        s.characterPreviewPlayers = 0;
-        s.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
-        s.characterPreviewPosePhaseMilli = 0u;
-        s.characterPreviewTransitionFromPose =
-            MDKR_CHARACTER_PREVIEW_POSE_LIVE;
-        s.characterPreviewTransitionFromPhaseMilli = 0u;
-        s.characterPreviewViewYawDegrees = 0;
-        s.characterPreviewViewPitchDegrees = 0;
-        s.characterPreviewLighting =
-            MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
-        s.characterPreviewCapturePng.clear();
-        s.characterPreviewCaptureKind =
-            MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
-        s.characterPreviewAutoReturn = false;
-        s.characterPreviewCaptureLauncherOwned = false;
-        s.characterPreviewInteractiveStudio = false;
-        s.characterPreviewDispatched = false;
+        clearCharacterPreviewRequest(s);
     }
     s.romValidationPath.clear();
     s.romValidationBytes = 0u;
@@ -514,28 +521,7 @@ static void cancelCharacterPreview(LauncherState &s) {
     if (s.romPlayValidationPending) {
         cancelValidation(s, /*clearUnusableSelection=*/false);
     }
-    s.characterPreviewPackage.clear();
-    s.characterPreviewSourceSha256.clear();
-    s.characterPreviewFitSha256.clear();
-    s.characterPreviewPresentationSha256.clear();
-    s.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
-    s.characterPreviewPlayers = 0;
-    s.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
-    s.characterPreviewPosePhaseMilli = 0u;
-    s.characterPreviewTransitionFromPose =
-        MDKR_CHARACTER_PREVIEW_POSE_LIVE;
-    s.characterPreviewTransitionFromPhaseMilli = 0u;
-    s.characterPreviewViewYawDegrees = 0;
-    s.characterPreviewViewPitchDegrees = 0;
-    s.characterPreviewLighting =
-        MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
-    s.characterPreviewCapturePng.clear();
-    s.characterPreviewCaptureKind =
-        MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
-    s.characterPreviewAutoReturn = false;
-    s.characterPreviewCaptureLauncherOwned = false;
-    s.characterPreviewInteractiveStudio = false;
-    s.characterPreviewDispatched = false;
+    clearCharacterPreviewRequest(s);
 }
 
 void RomPanel_setRom(LauncherState &s, const char *path) {
@@ -581,28 +567,7 @@ void RomPanel_serviceValidation(LauncherState &s) {
                 "reconnect the drive or choose another file.",
                 result.info.message);
             s.bootErrorVisible = true;
-            s.characterPreviewPackage.clear();
-            s.characterPreviewSourceSha256.clear();
-            s.characterPreviewFitSha256.clear();
-            s.characterPreviewPresentationSha256.clear();
-            s.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
-            s.characterPreviewPlayers = 0;
-            s.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
-            s.characterPreviewPosePhaseMilli = 0u;
-            s.characterPreviewTransitionFromPose =
-                MDKR_CHARACTER_PREVIEW_POSE_LIVE;
-            s.characterPreviewTransitionFromPhaseMilli = 0u;
-            s.characterPreviewViewYawDegrees = 0;
-            s.characterPreviewViewPitchDegrees = 0;
-            s.characterPreviewLighting =
-                MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
-            s.characterPreviewCapturePng.clear();
-            s.characterPreviewCaptureKind =
-                MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
-            s.characterPreviewAutoReturn = false;
-            s.characterPreviewCaptureLauncherOwned = false;
-            s.characterPreviewInteractiveStudio = false;
-            s.characterPreviewDispatched = false;
+            clearCharacterPreviewRequest(s);
             /* Service priority: this pass can run after the navigation controls
              * have already drawn, so a plain assignment here would erase a tab
              * the player pressed during the in-flight Play check. The recovery

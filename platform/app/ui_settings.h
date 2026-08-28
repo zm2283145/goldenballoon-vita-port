@@ -24,6 +24,8 @@ struct SettingsCharacterPreviewRequest {
     std::string fitSha256;
     std::string presentationSha256;
     MdkrCharacterPreviewContext context = MDKR_CHARACTER_PREVIEW_SELECT;
+    MdkrCharacterPreviewScene scene =
+        MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
     int players = 1;
     MdkrCharacterPreviewPose pose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
     unsigned posePhaseMilli = 0u;
@@ -49,6 +51,8 @@ struct SettingsCharacterPreviewDisposition {
     bool portraitSourceHandoff = false;
     bool interactiveStudio = false;
     bool representativeMotionReview = false;
+    MdkrCharacterPreviewScene scene =
+        MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
 };
 
 struct SettingsCharacterStudioFrame {

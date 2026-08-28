@@ -110,6 +110,7 @@ void fillBootConfig(LauncherState &state, MdkrBootConfig &boot) {
         boot.character_preview_package =
             state.characterPreviewPackage.c_str();
         boot.character_preview_context = state.characterPreviewContext;
+        boot.character_preview_scene = state.characterPreviewScene;
         boot.character_preview_players = state.characterPreviewPlayers;
         boot.character_preview_pose = state.characterPreviewPose;
         boot.character_preview_pose_phase_milli =
@@ -962,6 +963,7 @@ void acceptCharacterPreviewRequest(
     state.characterPreviewPresentationSha256 =
         std::move(preview.presentationSha256);
     state.characterPreviewContext = preview.context;
+    state.characterPreviewScene = preview.scene;
     state.characterPreviewPlayers = preview.players;
     state.characterPreviewPose = preview.pose;
     state.characterPreviewPosePhaseMilli = preview.posePhaseMilli;
@@ -1096,6 +1098,7 @@ LauncherAction Launcher::draw(AppHost &host) {
             state_.characterPreviewInteractiveStudio;
         disposition.representativeMotionReview =
             state_.characterPreviewRepresentativeMotionReview;
+        disposition.scene = state_.characterPreviewScene;
         Settings_publishCharacterPreviewResult(
             state_.characterPreviewPackage,
             state_.characterPreviewSourceSha256,
@@ -1117,6 +1120,8 @@ LauncherAction Launcher::draw(AppHost &host) {
         state_.characterPreviewFitSha256.clear();
         state_.characterPreviewPresentationSha256.clear();
         state_.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
+        state_.characterPreviewScene =
+            MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
         state_.characterPreviewPlayers = 0;
         state_.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
         state_.characterPreviewPosePhaseMilli = 0u;

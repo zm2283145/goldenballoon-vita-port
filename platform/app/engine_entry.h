@@ -40,6 +40,17 @@ typedef enum {
     MDKR_CHARACTER_PREVIEW_PLANE,
 } MdkrCharacterPreviewContext;
 
+/* Vehicle review deliberately spans three fingerprinted course families. The
+ * names describe the authoring pressure, while the game owns the exact level
+ * mapping per vehicle. Character select has one authored room and therefore
+ * admits BASELINE only. */
+typedef enum {
+    MDKR_CHARACTER_PREVIEW_SCENE_BASELINE = 0,
+    MDKR_CHARACTER_PREVIEW_SCENE_DENSE,
+    MDKR_CHARACTER_PREVIEW_SCENE_ALTERNATE,
+    MDKR_CHARACTER_PREVIEW_SCENE_COUNT,
+} MdkrCharacterPreviewScene;
+
 /* A pose inspector is a presentation-only exact-renderer request. LIVE keeps
  * ordinary game-driven animation and is the only mode eligible for durable
  * performance evidence. Every other value holds the chosen semantic at the
@@ -299,6 +310,7 @@ typedef struct MdkrCharacterMotionReviewResult {
     int started;
     int completed;
     MdkrCharacterPreviewContext context;
+    MdkrCharacterPreviewScene scene;
     unsigned sample_count;
     unsigned completed_mask;
     unsigned failed_sample;
@@ -306,7 +318,7 @@ typedef struct MdkrCharacterMotionReviewResult {
         samples[MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT];
 } MdkrCharacterMotionReviewResult;
 
-#define MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION 2u
+#define MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION 3u
 #define MDKR_CHARACTER_MOTION_REVIEW_ALL_SAMPLES \
     MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_MASK( \
         MDKR_CHARACTER_MOTION_REVIEW_VEHICLE_SAMPLE_COUNT)
@@ -325,6 +337,7 @@ typedef struct {
     // select or race context without menu-navigation scripts; zero disables it.
     const char *character_preview_package;
     MdkrCharacterPreviewContext character_preview_context;
+    MdkrCharacterPreviewScene character_preview_scene;
     int character_preview_players;  // 1..4
     MdkrCharacterPreviewPose character_preview_pose;
     unsigned character_preview_pose_phase_milli;  // 0..1000

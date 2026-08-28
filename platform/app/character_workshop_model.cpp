@@ -455,6 +455,21 @@ void proposeRigBases(const std::vector<CharacterWorkshopRigJoint> &joints,
 
 } // namespace
 
+uint32_t CharacterWorkshop_nextSceneReview(
+    uint32_t sceneCount, uint32_t justCompletedScene,
+    uint32_t currentSceneMask, bool refreshAll) {
+    if (sceneCount == 0u || sceneCount > 32u ||
+        justCompletedScene >= sceneCount) return sceneCount;
+    if (refreshAll) {
+        return justCompletedScene + 1u < sceneCount
+            ? justCompletedScene + 1u : sceneCount;
+    }
+    for (uint32_t scene = 0u; scene < sceneCount; ++scene) {
+        if ((currentSceneMask & (1u << scene)) == 0u) return scene;
+    }
+    return sceneCount;
+}
+
 CharacterWorkshopReadiness CharacterWorkshop_evaluate(
     const CharacterWorkshopFacts &facts) {
     CharacterWorkshopReadiness result;

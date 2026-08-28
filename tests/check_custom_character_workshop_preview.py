@@ -572,7 +572,7 @@ def main() -> int:
                 failures.append(f"{label} exited with {process.returncode}")
                 continue
             expected = (f"character_workshop_preview: started context={context} "
-                        f"players={players}")
+                        f"scene=0 players={players}")
             if expected not in arm_output:
                 failures.append(f"{label} did not enter its direct context")
             if pose is not None:
@@ -1213,6 +1213,7 @@ def main() -> int:
             MDKR_RENDER_SCALE="1", MDKR_VIDEO_CONFIG_PATH=os.devnull,
             MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
             MDKR_CHARACTER_WORKSHOP_PREVIEW="car",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_SCENE="baseline",
             MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS="1",
             MDKR_CUSTOM_CHARACTER_P1=PACKAGE_ID,
             MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE="race.finish_win",
@@ -1434,6 +1435,7 @@ def main() -> int:
             MDKR_RENDER_SCALE="1", MDKR_VIDEO_CONFIG_PATH=os.devnull,
             MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
             MDKR_CHARACTER_WORKSHOP_PREVIEW="car",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_SCENE="baseline",
             MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS="1",
             MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE="race.steer",
             MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE="0",
@@ -1470,6 +1472,12 @@ def main() -> int:
             failures.append(
                 "representative motion did not publish the exact fixed "
                 f"complete race-semantic sequence: {observed_motion!r}"
+            )
+        if ("character_workshop_preview: started context=car scene=0 "
+                not in motion_output or "vehicle=0 level=5" not in
+                motion_output):
+            failures.append(
+                "baseline scene did not route the car review to Ancient Lake"
             )
         for row in samples:
             (_, _, _, draws, _, fallback, camera_flags, crossings,
@@ -1508,6 +1516,143 @@ def main() -> int:
             failures.append(
                 "malformed representative motion did not fail closed at the "
                 "engine boundary"
+            )
+
+        for scene_name, scene_index, level_id in (
+                ("dense", 1, 18), ("alternate", 2, 9)):
+            scene_env = dict(motion_env)
+            scene_env["MDKR_CHARACTER_WORKSHOP_PREVIEW_SCENE"] = scene_name
+            process = run([
+                str(binary), "--headless-frames", "1400", "--rom", str(rom),
+                "--window-size", "1280x960", "--restored",
+            ], env=scene_env)
+            scene_output = process.stdout or ""
+            output += f"\n===== car-{scene_name}-motion =====\n" + scene_output
+            scene_samples = re.findall(
+                r"character_motion_review: sample=(\d+) pose=(\d+) "
+                r"phase=(\d+) draws=(\d+) source=([1-3]) fallback=(\d+) "
+                r"cameraFlags=([0-9a-f]+) crossings=(\d+) inside=(\d+) "
+                r"visibility=(\d+)/(\d+) contactSolves=(\d+) "
+                r"contactMask=([0-9a-f]+) contactMaxUm=(\d+)",
+                scene_output,
+            )
+            observed_scene_motion = [
+                tuple(map(int, row[:3])) for row in scene_samples
+            ]
+            if process.returncode != 0:
+                failures.append(
+                    f"{scene_name} scene motion exited with {process.returncode}"
+                )
+            if observed_scene_motion != expected_motion:
+                failures.append(
+                    f"{scene_name} scene did not publish the complete race "
+                    f"sequence: {observed_scene_motion!r}"
+                )
+            if (f"character_workshop_preview: started context=car "
+                    f"scene={scene_index} " not in scene_output or
+                    f"vehicle=0 level={level_id}" not in scene_output):
+                failures.append(
+                    f"{scene_name} scene routed to the wrong qualified course"
+                )
+            if ("character_motion_review: complete samples=11 mask=7ff" not in
+                    scene_output or "[SDL] headless: reached" in scene_output):
+                failures.append(
+                    f"{scene_name} scene did not auto-return after 11 samples"
+                )
+            for row in scene_samples:
+                draws = int(row[3])
+                fallback = int(row[5])
+                scene_tiles = int(row[9])
+                isolated_tiles = int(row[10])
+                if (draws < 60 or fallback > draws or
+                        scene_tiles > isolated_tiles):
+                    failures.append(
+                        f"{scene_name} scene returned inconsistent evidence: "
+                        f"{row!r}"
+                    )
+                    break
+
+        for context, scene_name, scene_index, vehicle_id, level_id in (
+                ("hovercraft", "dense", 1, 1, 10),
+                ("hovercraft", "alternate", 2, 1, 7),
+                ("plane", "dense", 1, 2, 15),
+                ("plane", "alternate", 2, 2, 13)):
+            route_env = dict(motion_env)
+            route_env.update(
+                MDKR_CHARACTER_WORKSHOP_PREVIEW=context,
+                MDKR_CHARACTER_WORKSHOP_PREVIEW_SCENE=scene_name,
+                MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE="race.steer",
+                MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE="500",
+            )
+            route_env.pop("MDKR_CHARACTER_WORKSHOP_MOTION_REVIEW", None)
+            process = run([
+                str(binary), "--headless-frames", str(FRAMES), "--rom",
+                str(rom), "--window-size", "1280x960", "--restored",
+            ], env=route_env)
+            route_output = process.stdout or ""
+            output += (
+                f"\n===== {context}-{scene_name}-route =====\n" +
+                route_output
+            )
+            expected_route = (
+                f"character_workshop_preview: started context={context} "
+                f"scene={scene_index} players=1 vehicle={vehicle_id} "
+                f"level={level_id}"
+            )
+            render_match = re.search(
+                r"\[WGPU-MODERN-CHARACTER\] assetUploads=\d+ "
+                r"draws=(\d+) triangles=(\d+) refusedDraws=(\d+)",
+                route_output,
+            )
+            if (process.returncode != 0 or expected_route not in route_output):
+                failures.append(
+                    f"{context} {scene_name} routed to the wrong qualified "
+                    "course"
+                )
+            if (render_match is None or int(render_match.group(1)) == 0 or
+                    int(render_match.group(2)) == 0 or
+                    int(render_match.group(3)) != 0):
+                failures.append(
+                    f"{context} {scene_name} did not render the custom "
+                    "character cleanly"
+                )
+
+        invalid_scene_env = dict(motion_env)
+        invalid_scene_env["MDKR_CHARACTER_WORKSHOP_PREVIEW_SCENE"] = "unknown"
+        process = run([
+            str(binary), "--headless-frames", "60", "--rom", str(rom),
+            "--window-size", "1280x960", "--restored",
+        ], env=invalid_scene_env)
+        invalid_scene_output = process.stdout or ""
+        output += "\n===== invalid-review-scene =====\n" + invalid_scene_output
+        if (process.returncode == 0 or
+                "invalid Character Workshop scene" not in invalid_scene_output):
+            failures.append(
+                "an unknown review scene did not fail closed at game startup"
+            )
+
+        invalid_select_scene_env = dict(motion_env)
+        invalid_select_scene_env.update(
+            MDKR_CHARACTER_WORKSHOP_PREVIEW="select",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_SCENE="dense",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE="select.idle",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE="500",
+        )
+        invalid_select_scene_env.pop(
+            "MDKR_CHARACTER_WORKSHOP_MOTION_REVIEW", None
+        )
+        process = run([
+            str(binary), "--headless-frames", "60", "--rom", str(rom),
+            "--window-size", "1280x960", "--restored",
+        ], env=invalid_select_scene_env)
+        invalid_select_scene_output = process.stdout or ""
+        output += ("\n===== invalid-select-scene =====\n" +
+                   invalid_select_scene_output)
+        if (process.returncode == 0 or
+                "Character select admits only the baseline scene" not in
+                invalid_select_scene_output):
+            failures.append(
+                "character select admitted a vehicle-only review scene"
             )
 
         select_motion_env = dict(motion_env)
@@ -1695,7 +1840,8 @@ def main() -> int:
         "RGB gameplay and transparent RGBA model-only PNG capture, "
         "exact four-contact post-solve witnesses and qualified retained-vehicle "
         "surface intersection samples, bounded one-session three-state select "
-        "and complete eleven-sample race semantic batteries, exact isolated-versus-scene "
+        "and three-course complete eleven-sample race semantic batteries, "
+        "exact isolated-versus-scene "
         "opaque-depth region evidence with recoverable, bounded optional-GPU "
         "allocation failure, one-to-four-player WebGPU "
         "stress, exact nonblocking scene/character GPU timestamp contracts "

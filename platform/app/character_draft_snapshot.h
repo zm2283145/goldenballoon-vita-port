@@ -66,6 +66,9 @@ struct Snapshot {
     /* Decode-only migration witness. v15 approvals include the complete
      * select/race semantic battery; every older approval reopens once. */
     bool fitSemanticReviewContractPresent = false;
+    /* Decode-only migration witness. v16 vehicle approvals include all three
+     * qualified course families; every older approval reopens once. */
+    bool fitMultiSceneReviewContractPresent = false;
 
     float scale = 1.0f;
     float offset[3] = {};

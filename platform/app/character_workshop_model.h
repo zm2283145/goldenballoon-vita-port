@@ -300,6 +300,12 @@ CharacterWorkshopFitAssessment CharacterWorkshop_assessFit(
     const CharacterWorkshopFitMeasurement &measurement);
 CharacterWorkshopFitReviewDecision CharacterWorkshop_reviewFit(
     const CharacterWorkshopFitReviewFacts &facts);
+/* Returns sceneCount when the guided review is complete or the input is
+ * malformed. A requested full refresh advances in order even when older
+ * evidence is current; a resume selects the first missing scene. */
+uint32_t CharacterWorkshop_nextSceneReview(
+    uint32_t sceneCount, uint32_t justCompletedScene,
+    uint32_t currentSceneMask, bool refreshAll);
 /* Matches the compiler's +Z/-Z/+X/-X source-forward convention. Output is
  * unchanged for an invalid candidate. */
 bool CharacterWorkshop_facingCorrectionDegrees(

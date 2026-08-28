@@ -1163,8 +1163,9 @@ Fit approval consumes this result only after an explicit composed-scene
 acknowledgement; qualified zero-fragment opaque/masked evidence blocks approval.
 This qualifies the direct game route, visual inspection controls, capture seam,
 stress seam, coarse opaque-depth seam, and optional exact GPU timestamp seam.
-Embedded offscreen preview, donor-reference attribution, representative scene
-variants, and a maintained device-profile/headroom corpus remain open.
+Embedded offscreen preview, donor-reference attribution, weather and vehicle
+conditions beyond the three qualified course families, and a maintained
+device-profile/headroom corpus remain open.
 
 Launcher-owned previews also arm the existing bounded presentation census. The
 game discards a 120-authored-tick warm-up, resets only the observational timing
@@ -1182,16 +1183,20 @@ product, stable-frame count, byte count, and exact opaque-depth region masks.
 Fewer than 60 intervals
 and synthetic pacing are explicitly diagnostic-only. Visual-inspection results
 remain session-only and cannot contaminate durable timing evidence.
-Offset Studio also has a separate version-2 semantic-motion result containing
-three complete v18 select samples or eleven complete v18 vehicle samples. The
-strict one-player exact routes cover select idle/hover/confirm and the complete
-race library: both steer extremes, reverse, boost, item, damage, spin, airborne,
-land, and both finishes. Each sample requires the current held-pose generation
+Offset Studio also has a separate version-3 scene-review result containing
+three complete v18 select samples or eleven complete v18 vehicle samples bound
+to one of three qualified course families. A single resumable launcher action
+keeps select in its authored room and runs every vehicle on an open baseline,
+dense scenery, and an alternate environment. The strict one-player exact routes
+cover select idle/hover/confirm and the complete race library: both steer
+extremes, reverse, boost, item, damage, spin, airborne, land, and both finishes.
+Each sample requires the current held-pose generation
 to settle plus sixty subsequent replacement draws before fresh camera,
 visibility, and, for vehicles, surface/containment/contact evidence is accepted.
-The launcher aggregates the most concerning state for review but never stores
-these samples as clean performance evidence. Long clean race detail is
-collapsible; any warning opens the state table by default.
+The launcher preserves each course separately, skips already-current evidence
+when resuming, aggregates the most concerning state across all 33 vehicle rows,
+and never stores these samples as clean performance evidence. Long clean race
+detail is collapsible; any warning opens the state table by default.
 
 The launcher collects only version-18 captures armed after at least 12 eligible
 frames in bounded session metadata and can export a self-contained HTML
@@ -1261,8 +1266,9 @@ successful write; the established
 filename remains unchanged so old evidence is never orphaned. Same-environment
 baseline cards compare wall cadence, scene-pass GPU time, and—only when both
 devices expose the scope—custom-character draw GPU time independently.
-Representative scene variants and a maintained device-profile corpus remain
-separate work.
+Weather and vehicle-condition variants beyond the qualified open, dense, and
+alternate-environment course battery, plus a maintained device-profile corpus,
+remain separate work.
 
 The private Dixie fixture completed the same chain without contributing any
 tracked bytes: DAE -> self-contained GLB -> source and portable `.mdkrchar` ->

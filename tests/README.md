@@ -4982,8 +4982,11 @@ The gate is registered as `app_character_portrait_studio` and
 
 This gate generates and transactionally installs a license-clean package with
 a Bumper donor into a temporary isolated catalog. It directly starts the real
-character-select scene plus representative Ancient Lake car, Whale Bay
-hovercraft, and Windmill Plains plane races without an input script. The matrix
+character-select scene plus baseline Ancient Lake car, Whale Bay hovercraft,
+and Windmill Plains plane races without an input script. It also directly
+qualifies the dense and alternate routes for every vehicle: Greenwood Village
+and Snowball Valley for car, Crescent Island and Hot Top Volcano for
+hovercraft, and Spaceport Alpha and Everfrost Peak for plane. The matrix
 includes one-, three-, and four-player layouts and
 requires the package's non-Diddy donor, one shared WebGPU asset upload, nonzero
 modern draws and triangles, zero refused draws, nonempty captures, and real
@@ -5044,6 +5047,15 @@ contact witnesses; the gate independently recomputes the left-hand
 target-to-endpoint distance from quantized coordinates and rejects partial,
 detached, or fabricated select-context evidence. Authored-clips-only arms must
 publish an explicit zero mask when no automatic solve owns the pose.
+
+The bounded semantic-review arms require the exact three-state selection-room
+battery and all eleven race semantics on each of the car's open, dense, and
+alternate-environment courses. Every sample waits for the engine-owned settled
+pose witness plus 60 complete replacement draws, publishes framing, contact,
+retained-vehicle, and visibility evidence, and then returns automatically.
+Unknown scenes and vehicle-only scenes requested for character select fail
+closed. ROM-free rendered and pure-policy tests independently pin the launcher's
+one-action progression, resume, full-refresh, retry, stop, and approval rules.
 
 Every valid arm must additionally publish a completed asynchronous opaque-depth
 witness. The renderer replays player 0's exact current primitive set into an

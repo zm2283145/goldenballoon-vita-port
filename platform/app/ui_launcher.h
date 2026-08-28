@@ -100,6 +100,8 @@ struct LauncherState {
     std::string characterPreviewPresentationSha256;
     MdkrCharacterPreviewContext characterPreviewContext =
         MDKR_CHARACTER_PREVIEW_NONE;
+    MdkrCharacterPreviewScene characterPreviewScene =
+        MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
     int characterPreviewPlayers = 0;
     MdkrCharacterPreviewPose characterPreviewPose =
         MDKR_CHARACTER_PREVIEW_POSE_LIVE;

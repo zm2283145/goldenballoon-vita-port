@@ -116,6 +116,7 @@ int main() {
                parsed.contactExceptionContexts == 2u &&
                parsed.fitSceneReviewContractPresent &&
                parsed.fitSemanticReviewContractPresent &&
+               parsed.fitMultiSceneReviewContractPresent &&
                parsed.scale == 1.25f &&
                parsed.offset[1] == -12.5f &&
                parsed.contexts[1].contacts[0][0] == -0.25f &&
@@ -173,13 +174,22 @@ int main() {
     constexpr size_t contactExceptionTailBytes = 4u;
     constexpr size_t transitionInspectionTailBytes = 12u;
     constexpr size_t fitSceneReviewTailBytes = 4u;
+    std::string versionFifteen = encoded;
+    writeU32(versionFifteen, 4u, 15u);
+    expect(decode(versionFifteen, parsed, error) &&
+               parsed.reviewedContexts == 0u &&
+               parsed.contactExceptionContexts == 0u &&
+               parsed.fitSemanticReviewContractPresent &&
+               !parsed.fitMultiSceneReviewContractPresent,
+           "version-fifteen drafts reopen every approval for the multi-scene battery");
     std::string versionFourteen = encoded;
     writeU32(versionFourteen, 4u, 14u);
     expect(decode(versionFourteen, parsed, error) &&
                parsed.reviewedContexts == 0u &&
                parsed.contactExceptionContexts == 0u &&
                parsed.fitSceneReviewContractPresent &&
-               !parsed.fitSemanticReviewContractPresent,
+               !parsed.fitSemanticReviewContractPresent &&
+               !parsed.fitMultiSceneReviewContractPresent,
            "version-fourteen drafts reopen every approval for complete select and race semantic review");
     std::string versionThirteen = encoded;
     writeU32(versionThirteen, 4u, 13u);
@@ -187,7 +197,8 @@ int main() {
                parsed.reviewedContexts == 0u &&
                parsed.contactExceptionContexts == 0u &&
                parsed.fitSceneReviewContractPresent &&
-               !parsed.fitSemanticReviewContractPresent,
+               !parsed.fitSemanticReviewContractPresent &&
+               !parsed.fitMultiSceneReviewContractPresent,
            "version-thirteen drafts reopen every approval for complete semantic review");
     std::string versionTwelve = encoded.substr(
         0u, encoded.size() - fitSceneReviewTailBytes);

@@ -79,6 +79,15 @@ const char *characterPreviewLightingName(
     }
 }
 
+const char *characterPreviewSceneName(MdkrCharacterPreviewScene scene) {
+    switch (scene) {
+        case MDKR_CHARACTER_PREVIEW_SCENE_BASELINE: return "baseline";
+        case MDKR_CHARACTER_PREVIEW_SCENE_DENSE: return "dense";
+        case MDKR_CHARACTER_PREVIEW_SCENE_ALTERNATE: return "alternate";
+        default: return nullptr;
+    }
+}
+
 const char *characterPreviewCaptureKindName(
     MdkrCharacterPreviewCaptureKind kind) {
     switch (kind) {
@@ -421,6 +430,12 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
              cfg->character_preview_package[0] == '\0' ||
              characterPreviewContextName(cfg->character_preview_context) ==
                  nullptr ||
+             characterPreviewSceneName(cfg->character_preview_scene) ==
+                 nullptr ||
+             (cfg->character_preview_context ==
+                      MDKR_CHARACTER_PREVIEW_SELECT &&
+              cfg->character_preview_scene !=
+                  MDKR_CHARACTER_PREVIEW_SCENE_BASELINE) ||
              cfg->character_preview_players < 1 ||
              cfg->character_preview_players > 4 ||
              cfg->character_preview_pose <
@@ -653,6 +668,8 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
         cfg->character_preview_context != MDKR_CHARACTER_PREVIEW_NONE) {
         const char *context =
             characterPreviewContextName(cfg->character_preview_context);
+        const char *scene =
+            characterPreviewSceneName(cfg->character_preview_scene);
         const char *pose =
             characterPreviewPoseSemantic(cfg->character_preview_pose);
         const char *transitionFromPose = characterPreviewPoseSemantic(
@@ -669,6 +686,8 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             previewEnvironment.set(
                 "MDKR_CHARACTER_WORKSHOP_PREVIEW_PACKAGE",
                 cfg->character_preview_package) &&
+            previewEnvironment.set(
+                "MDKR_CHARACTER_WORKSHOP_PREVIEW_SCENE", scene) &&
             previewEnvironment.set(
                 "MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS",
                 std::to_string(cfg->character_preview_players).c_str()) &&
@@ -738,11 +757,11 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
         }
         std::fprintf(
             stderr,
-            "[app] character preview: package=%s context=%s players=%d "
+            "[app] character preview: package=%s context=%s scene=%s players=%d "
             "pose=%s phase=%u transitionFrom=%s transitionPhase=%u "
             "view=%d,%d lighting=%s captureKind=%s autoReturn=%d motionReview=%d "
             "capture=%s\n",
-            cfg->character_preview_package, context,
+            cfg->character_preview_package, context, scene,
             cfg->character_preview_players,
             pose != nullptr ? pose : "live",
             cfg->character_preview_pose_phase_milli,
@@ -796,6 +815,8 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
                 MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION;
             cfg->character_motion_review_result->context =
                 cfg->character_preview_context;
+            cfg->character_motion_review_result->scene =
+                cfg->character_preview_scene;
             cfg->character_motion_review_result->sample_count =
                 cfg->character_preview_context ==
                         MDKR_CHARACTER_PREVIEW_SELECT

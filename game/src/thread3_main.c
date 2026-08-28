@@ -3423,16 +3423,34 @@ static MdkrWorkshopPreviewLighting workshop_preview_lighting_from_name(
  * Plains provides the open elevation and camera angles needed to judge a
  * plane rider. These routes are part of the evidence contract: changing one
  * must also invalidate the launcher's presentation signature. */
-static s32 workshop_preview_level_for_vehicle(s32 vehicle) {
-    switch (vehicle) {
-        case VEHICLE_HOVERCRAFT:
-            return ASSET_LEVEL_WHALEBAY;
-        case VEHICLE_PLANE:
-            return ASSET_LEVEL_WINDMILLPLAINS;
-        case VEHICLE_CAR:
-        default:
-            return ASSET_LEVEL_ANCIENTLAKE;
+static s32 workshop_preview_level_for_vehicle(
+    s32 vehicle, MdkrCharacterPreviewScene scene) {
+    static const s32 levels[3][MDKR_CHARACTER_PREVIEW_SCENE_COUNT] = {
+        {ASSET_LEVEL_ANCIENTLAKE, ASSET_LEVEL_GREENWOODVILLAGE,
+         ASSET_LEVEL_SNOWBALLVALLEY},
+        {ASSET_LEVEL_WHALEBAY, ASSET_LEVEL_CRESCENTISLAND,
+         ASSET_LEVEL_HOTTOPVOLCANO},
+        {ASSET_LEVEL_WINDMILLPLAINS, ASSET_LEVEL_SPACEPORTALPHA,
+         ASSET_LEVEL_EVERFROSTPEAK},
+    };
+    if (vehicle < VEHICLE_CAR || vehicle > VEHICLE_PLANE ||
+        scene < MDKR_CHARACTER_PREVIEW_SCENE_BASELINE ||
+        scene >= MDKR_CHARACTER_PREVIEW_SCENE_COUNT) return -1;
+    return levels[vehicle][scene];
+}
+
+static MdkrCharacterPreviewScene workshop_preview_scene_from_name(
+    const char *name) {
+    if (name == NULL || strcmp(name, "baseline") == 0) {
+        return MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
     }
+    if (strcmp(name, "dense") == 0) {
+        return MDKR_CHARACTER_PREVIEW_SCENE_DENSE;
+    }
+    if (strcmp(name, "alternate") == 0) {
+        return MDKR_CHARACTER_PREVIEW_SCENE_ALTERNATE;
+    }
+    return MDKR_CHARACTER_PREVIEW_SCENE_COUNT;
 }
 
 static s32 workshop_preview_start(void) {
@@ -3448,6 +3466,7 @@ static s32 workshop_preview_start(void) {
     const char *captureText;
     const char *captureKindText;
     const char *motionReviewText;
+    const char *sceneText;
     MdkrCharacterPreviewPose pose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
     unsigned posePhaseMilli = 0u;
     MdkrCharacterPreviewPose transitionFromPose =
@@ -3457,6 +3476,8 @@ static s32 workshop_preview_start(void) {
     int viewPitchDegrees = 0;
     MdkrWorkshopPreviewLighting lighting =
         MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+    MdkrCharacterPreviewScene scene =
+        MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
     s32 players = 1;
     s32 vehicle = -1;
     s32 motionReview = FALSE;
@@ -3649,6 +3670,15 @@ static s32 workshop_preview_start(void) {
         }
         motionReview = TRUE;
     }
+    sceneText = getenv("MDKR_CHARACTER_WORKSHOP_PREVIEW_SCENE");
+    scene = workshop_preview_scene_from_name(sceneText);
+    if (scene == MDKR_CHARACTER_PREVIEW_SCENE_COUNT) {
+        fprintf(stderr,
+                "[FATAL] invalid Character Workshop scene: %s\n",
+                sceneText != NULL ? sceneText : "(null)");
+        platform_request_exit(EXIT_FAILURE);
+        return TRUE;
+    }
     if (strcmp(context, "car") == 0) {
         vehicle = VEHICLE_CAR;
     } else if (strcmp(context, "hovercraft") == 0) {
@@ -3659,6 +3689,12 @@ static s32 workshop_preview_start(void) {
         fprintf(stderr,
                 "[FATAL] invalid Character Workshop context: %s\n",
                 context);
+        platform_request_exit(EXIT_FAILURE);
+        return TRUE;
+    }
+    if (vehicle < 0 && scene != MDKR_CHARACTER_PREVIEW_SCENE_BASELINE) {
+        fprintf(stderr,
+                "[FATAL] Character select admits only the baseline scene\n");
         platform_request_exit(EXIT_FAILURE);
         return TRUE;
     }
@@ -3730,6 +3766,7 @@ static s32 workshop_preview_start(void) {
             vehicle < 0 ? MDKR_CHARACTER_PREVIEW_SELECT
                         : (MdkrCharacterPreviewContext)(vehicle +
                               MDKR_CHARACTER_PREVIEW_CAR);
+        g_mdkrCharacterMotionReviewResult->scene = scene;
         g_mdkrCharacterMotionReviewResult->sample_count =
             workshop_motion_review_sample_count(
                 g_mdkrCharacterMotionReviewResult->context);
@@ -3742,7 +3779,13 @@ static s32 workshop_preview_start(void) {
     } else {
         set_time_trial_enabled(FALSE);
         init_racer_headers();
-        gPlayableMapId = workshop_preview_level_for_vehicle(vehicle);
+        gPlayableMapId = workshop_preview_level_for_vehicle(vehicle, scene);
+        if (gPlayableMapId < 0) {
+            fprintf(stderr,
+                    "[FATAL] Character Workshop scene has no qualified course\n");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
         gGameNumPlayers = players - 1;
         gGameCurrentEntrance = 0;
         gGameCurrentCutscene = CUTSCENE_NONE;
@@ -3754,9 +3797,9 @@ static s32 workshop_preview_start(void) {
                         gGameCurrentEntrance, gLevelDefaultVehicleID);
     }
     MDKR_TRACE(
-        "character_workshop_preview: started context=%s players=%d "
+        "character_workshop_preview: started context=%s scene=%d players=%d "
         "vehicle=%d level=%d pose=%s phase=%u view=%d,%d lighting=%d capture=%d kind=%s",
-        context, players, vehicle,
+        context, (int)scene, players, vehicle,
         vehicle < 0 ? ASSET_LEVEL_CHARACTERSELECT : gPlayableMapId,
         pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ? "live" : poseText,
         posePhaseMilli, viewYawDegrees, viewPitchDegrees, (int)lighting,

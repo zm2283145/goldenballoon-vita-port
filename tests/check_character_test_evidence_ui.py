@@ -509,9 +509,13 @@ def main() -> int:
                     "character-contact-review-focus package=" + PACKAGE_ID
                     + " context=1 applied=1",
                     "character-motion-review accepted=1 package=" + PACKAGE_ID
-                    + " context=1 samples=3",
+                    + " context=1 scene=0 samples=3",
                     "character-motion-review accepted=1 package=" + PACKAGE_ID
-                    + " context=2 samples=11",
+                    + " context=2 scene=0 samples=11",
+                    "character-motion-review accepted=1 package=" + PACKAGE_ID
+                    + " context=2 scene=1 samples=11",
+                    "character-motion-review accepted=1 package=" + PACKAGE_ID
+                    + " context=2 scene=2 samples=11",
                     "character-motion-review accepted=0 package=" + PACKAGE_ID,
                     "character-contact-review package=" + PACKAGE_ID
                     + " context=1 measured=1 guide-met=0 "
@@ -539,9 +543,13 @@ def main() -> int:
                 characters,
                 (
                     "character-motion-review accepted=1 package=" + PACKAGE_ID
-                    + " context=1 samples=3",
+                    + " context=1 scene=0 samples=3",
                     "character-motion-review accepted=1 package=" + PACKAGE_ID
-                    + " context=2 samples=11",
+                    + " context=2 scene=0 samples=11",
+                    "character-motion-review accepted=1 package=" + PACKAGE_ID
+                    + " context=2 scene=1 samples=11",
+                    "character-motion-review accepted=1 package=" + PACKAGE_ID
+                    + " context=2 scene=2 samples=11",
                     "character-motion-review accepted=0 package=" + PACKAGE_ID,
                     "character-contact-review package=" + PACKAGE_ID
                     + " context=1 measured=1 guide-met=1 "
