@@ -769,18 +769,33 @@ bool OnlineRoom_roomReadyConditionHolds(IMdkrOnlineAdapter *adapter) {
     if (raw == nullptr) return false;
     MdkrOnlineViewModel vm{};
     if (!raw->view(&vm)) return false;
-    /* Mirror drawBetaRoom's SELECTING-body condition (ui_online_room.cpp:2457-2458)
-     * PLUS the TOURNAMENT scope: only a tournament room offers READY DIRECTLY (the
-     * cup schedules every round -- no per-race track VOTE gate), so the native
-     * CHARSELECT can confirm+ready and hand to TRACKSELECT without the READY-before-
-     * track wedge. A single-race / unconfigured room is deferred to the race-ready
-     * ImGui fallback (READY there is vote-gated, which native never casts). */
+    /* Mirror drawBetaRoom's SELECTING-body condition (ui_online_room.cpp:2457-2458):
+     * fire the native takeover for ANY online mode at SELECTING + 2 members + LOBBY.
+     *
+     * T2: the former TOURNAMENT-only clause here (dropped) deferred single race to the
+     * race-ready ImGui fallback on the theory that a single race's READY is track-VOTE-
+     * gated, which the native screens never cast. That justification is STALE for the
+     * native path:
+     *   - the reducer's READY gate (member_selection_complete + the SET_READY case,
+     *     lobby_core.c) requires ONLY character + vehicle -- there is NO track-vote
+     *     precondition on READY;
+     *   - BEGIN_LOADING resolves a single race's track from configured_track
+     *     (lobby_core.c), which the native TRACKSELECT sets via SET_CONFIG_TRACK before
+     *     it issues START (online_trackselect.c trackselect_publish_intent; the party-
+     *     link plan orders SET_CONFIG_TRACK before START_RACE, party_link.c);
+     *   - the native screens NEVER publish a vote (no SET_VOTE is ever dispatched over
+     *     the reverse feed, party_link.c), so select_track()'s vote path can never fire
+     *     spuriously -- and even an unconfigured-track edge fails CLOSED (select_track
+     *     returns NO_VOTE -> BEGIN_LOADING refuses with NOT_READY, never a wrong boot).
+     * So a native single-race host locks a track -> configured_track set -> both seats
+     * ready on char+vehicle -> START -> BEGIN_LOADING succeeds with no vote, exactly
+     * like a tournament. Routing single race through this descriptor-less native path
+     * is the whole point of T2. */
     if (vm.kind != MDKR_ONLINE_VIEW_SELECTING) return false;
     if (vm.member_count != 2u) return false;
     MdkrOnlineLobby lobby{};
     if (!mdkr_online_live_adapter_lobby(raw, &lobby)) return false;
     if (lobby.phase != MDKR_ONLINE_LOBBY) return false;
-    if (lobby.mode != MDKR_ONLINE_MODE_TOURNAMENT) return false;
     return true;
 }
 
@@ -792,8 +807,8 @@ bool OnlineRoom_pollRoomReadyTransition(IMdkrOnlineAdapter *adapter) {
      * descriptor-less boot's forward-feed pump + race arm see the real room state. */
     OnlineRoom_publishEngineRoomReady(OnlineRoom_resolveRawLiveAdapter(adapter));
     std::fprintf(stderr,
-                 "[online-room-ready] tournament room at SELECTING (2 members, "
-                 "LOBBY) -> route=lobby-start (native takeover; descriptor-less "
+                 "[online-room-ready] room at SELECTING (2 members, LOBBY, any "
+                 "mode) -> route=lobby-start (native takeover; descriptor-less "
                  "engine boot, peer=nullptr)\n");
     return true;
 }

@@ -32,6 +32,15 @@ Assertions:
   * no NULL deref, no premature/failed boot, no admission rejection
   * gGameMode == GAMEMODE_ONLINE_SESSION (2) and gCurrentMenuId == 0 at hand-off
   * the engine entered the ONLINE rollback race on the native track (loadedTrack=3)
+
+This lane runs SINGLE-RACE (no MDKR_APP_TEST_ONLINE_MODE env), so it is the single-
+race native lobby-start proof. It also asserts (T2) that the PRODUCTION room-ready
+GATE now ROUTES a single-race room to this native takeover:
+  * OnlineRoom_roomReadyConditionHolds fires EXACTLY ONCE for a SINGLE-RACE room and
+    routes to lobby-start (route=lobby-start) -- the tournament-only clause is dropped,
+    so single race takes the same descriptor-less native path a tournament does. READY
+    unlocks on char+vehicle (no track vote), and BEGIN_LOADING resolves the native
+    TRACKSELECT's configured_track with no vote (the native screens never cast a vote).
 """
 
 from __future__ import annotations
@@ -85,9 +94,41 @@ PRECONFIG_RE = re.compile(
     r"^\[online-lobby-start\] pre-config track=(\d+)", re.MULTILINE)
 REVERSE_TRACK_RE = re.compile(
     r"^\[online-reverse\] SET_CONFIG_TRACK value=(\d+) sent=(\d+)$", re.MULTILINE)
+ROOM_READY_PROBE_RE = re.compile(
+    r"^\[online-room-ready-probe\] fires=(\d+) conditionHeld=(\d+) "
+    r"published=(\d+) route=(\S+)", re.MULTILINE)
 
 
 fail = make_fail("lobby-start")
+
+
+def check_room_ready_gate_single_race(binary, rom, verbose):
+    """T2: the PRODUCTION room-ready GATE routes a SINGLE-RACE room to the native
+    takeover. The boot proof (this lane's main run) rides the descriptor-less engine
+    seam directly; this proves the routing gate OnlineRoom_roomReadyConditionHolds now
+    FIRES for a single-race room (no tournament env) -- exactly once + route=lobby-
+    start, the SAME native takeover a tournament room gets. Before T2 a single-race
+    room deferred to the race-ready ImGui fallback (fires=0), so single race never
+    reached the native path in production; T2 dropped that tournament-only clause."""
+    try:
+        returncode, output = run_engine(
+            binary, rom, ticks=2000, timeout=120, verbose=verbose,
+            extra_env={"MDKR_APP_TEST_ONLINE_ROOM_READY_PROBE": "1"},
+            prefix="mdkr64-online-lobby-start-gate-")
+    except subprocess.TimeoutExpired as error:
+        return fail(f"single-race room-ready gate probe timed out: {error}")
+    if returncode != 0:
+        return fail(f"single-race room-ready gate probe exited {returncode}", output)
+    m = ROOM_READY_PROBE_RE.search(output)
+    if m is None:
+        return fail("single-race room-ready gate probe emitted no result line", output)
+    fires, held, published, route = m.groups()
+    if fires != "1" or held != "1" or published != "1" or route != "lobby-start":
+        return fail(f"the room-ready gate did NOT route the single-race room to the "
+                    f"native takeover (T2 expects fires=1 held=1 published=1 "
+                    f"route=lobby-start): fires={fires} held={held} "
+                    f"published={published} route={route}", output)
+    return None
 
 
 def main() -> int:
@@ -251,6 +292,14 @@ def main() -> int:
         return fail(f"the engine never entered the ONLINE rollback race on the "
                     f"native track {HOST_TRACK} (saw {online_race!r})", output)
 
+    # --- T2: the production ROOM-READY GATE routes single race to lobby-start ------
+    # The boot above proves the descriptor-less NATIVE path converges for a single
+    # race; this proves the PRODUCTION routing gate now sends a single-race room THERE
+    # (pre-T2 it deferred to the race-ready ImGui fallback).
+    gate = check_room_ready_gate_single_race(binary, rom, args.verbose)
+    if gate is not None:
+        return gate
+
     print(
         "PASS online lobby-start: NATIVE owns race 1 -- session BEGAN "
         "descriptor-less (party_link fork, no descriptor), native CHARSELECT then "
@@ -264,7 +313,10 @@ def main() -> int:
         f"{PRECONFIG_TRACK}), players={direct_players}, honored, no divergence, no "
         f"admission reject, gGameMode={boot_gamemode} gCurrentMenuId={boot_menu_id} "
         f"throughout -- engine entered the online rollback race "
-        f"loadedTrack={online_race[0][0]} after {lobby_ticks} LOBBY_WAIT tick(s)."
+        f"loadedTrack={online_race[0][0]} after {lobby_ticks} LOBBY_WAIT tick(s). "
+        f"T2 GATE: the production room-ready gate routed the SINGLE-RACE room to the "
+        f"native takeover (fires=1, route=lobby-start) -- single race now takes the "
+        f"same descriptor-less native path as a tournament."
     )
     return 0
 

@@ -2276,14 +2276,19 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
 }
 
 /* PRODUCTION room-ready boot: front the NATIVE online screens for a REAL
- * human from race 1. Unlike the loopback runOnlineLobbyStartEngineSession this drives
- * a SINGLE live endpoint (peer == nullptr) -- the real remote process readies itself
- * and supplies its input over the mesh (the proven cloud/liveDrainMatchInput
- * peer==nullptr path). Scope is TOURNAMENT (the room-ready trigger only fires for a
- * tournament room), so it always composes with the resident coordinator for races
- * 2..N via the SINGLE-ENDPOINT advance. Booted from runInteractiveLauncher's
- * room-ready poll with the panel's live adapter; returns the engine result (a
- * watchdog error trip is a nonzero code the launcher routes back to the room). */
+ * human from race 1, for ANY online mode. Unlike the loopback
+ * runOnlineLobbyStartEngineSession this drives a SINGLE live endpoint (peer ==
+ * nullptr) -- the real remote process readies itself and supplies its input over the
+ * mesh (the proven cloud/liveDrainMatchInput peer==nullptr path). T2 dropped the
+ * room-ready trigger's TOURNAMENT-only gate (OnlineRoom_roomReadyConditionHolds), so
+ * this is now the descriptor-less native boot path for BOTH single race and
+ * tournament. The resident coordinator it composes with re-cycles rounds 2..N for a
+ * TOURNAMENT via the SINGLE-ENDPOINT advance; a SINGLE race boots race 1 native and
+ * ends (native single-race REPLAY re-cycle is the T5 follow-up -- until then a single
+ * race is one race per boot, exactly like the descriptor-first path it replaces).
+ * Booted from runInteractiveLauncher's room-ready poll with the panel's live adapter;
+ * returns the engine result (a watchdog error trip is a nonzero code the launcher
+ * routes back to the room). */
 int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
                                    IMdkrOnlineAdapter *visibleWrapper) {
     /* Resolve the concrete LiveAdapter behind the panel's owning wrapper: the
@@ -2315,7 +2320,9 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
     OnlineRoom_pumpPartyLink(visible);
     OnlineRoom_lobbyStartResetJoiner();
 
-    LiveResidentState residentState; /* races 2..N (tournament scope) */
+    LiveResidentState residentState; /* re-cycles races 2..N for a tournament; for a
+                                      * single race it just fronts race 1 (T5 adds the
+                                      * native single-race replay re-cycle) */
     LiveLobbyStartState lobbyState;
     lobbyState.visible = visible;
     lobbyState.peer = nullptr;       /* production: no local peer to drive */
@@ -2330,7 +2337,7 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
     std::fprintf(stderr,
                  "[online-lobby-start] PRODUCTION residency armed: party_link "
                  "installed, no descriptor, peer=nullptr -- native online screens "
-                 "own race 1 (single-endpoint tournament)\n");
+                 "own race 1 (single-endpoint, any mode)\n");
 
     liveEngineHostBind(host);
 
@@ -3746,9 +3753,12 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
      * not headless-runnable (it needs a live cloud adapter + a human), so this seam
      * drives the SAME loopback room to SELECTING and exercises the production
      * detection + consume-once publish DIRECTLY: OnlineRoom_pollRoomReadyTransition
-     * must fire EXACTLY ONCE on first-SELECTING+2members+LOBBY for a TOURNAMENT room
-     * (route=lobby-start), and NEVER for a single-race room (route=race-ready
-     * fallback). Ordinary autoplay never sets this. */
+     * must fire EXACTLY ONCE on first-SELECTING+2members+LOBBY for ANY mode
+     * (route=lobby-start). T2 dropped the former TOURNAMENT-only gate, so a
+     * single-race room now takes the SAME native takeover as a tournament room
+     * (both fire once + route to lobby-start); the pre-T2 "single race defers to the
+     * race-ready ImGui fallback" behaviour is gone. Ordinary autoplay never sets
+     * this. */
     if (std::getenv("MDKR_APP_TEST_ONLINE_ROOM_READY_PROBE") != nullptr) {
         std::string probeErr;
         MdkrOnlineTestLoopbackRace *race =
@@ -3780,14 +3790,14 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                      routed ? "lobby-start" : "race-ready-fallback");
         OnlineRoom_destroyTestLoopbackRace(race);
         host.shutdown();
-        /* Tournament room: exactly one fire + routed to lobby-start. Single-race
-         * room (no tournament env): zero fires (falls through to the race-ready
-         * ImGui path). */
-        const char *modeEnv = std::getenv("MDKR_APP_TEST_ONLINE_MODE");
-        const bool tournament =
-            modeEnv != nullptr && std::strcmp(modeEnv, "tournament") == 0;
-        if (tournament) return (fires == 1 && routed) ? 0 : 3;
-        return (fires == 0 && !routed) ? 0 : 3;
+        /* T2: EITHER mode fires exactly once + routes to lobby-start. Before T2 a
+         * single-race room (no tournament env) fired zero times and fell through to
+         * the race-ready ImGui path; the tournament-only gate is now dropped, so the
+         * single-race branch below asserts the SAME native takeover the tournament
+         * branch always has. (modeEnv is kept only to document that the assertion is
+         * now mode-independent.) */
+        (void)std::getenv("MDKR_APP_TEST_ONLINE_MODE"); /* now mode-independent */
+        return (fires == 1 && routed) ? 0 : 3;
     }
     if (std::getenv("MDKR_APP_TEST_ONLINE_ROOM_READY_REARM_PROBE") != nullptr) {
         /* Headless proof of the safe 2nd-tournament re-arm STATE
@@ -3803,12 +3813,15 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
          *      window;
          *   4. the next false->true condition rising edge (a New Tournament arrival)
          *      re-fires the takeover EXACTLY ONCE for tournament #2 (route=lobby-start).
-         * The room-ready condition is toggled by flipping lobby.mode
-         * tournament<->single-race: the state machine only reads the boolean
-         * OnlineRoom_roomReadyConditionHolds returns, so a mode flip is a faithful
-         * headless stand-in for the production RESULTS (condition false) -> New
-         * Tournament SELECTING (condition true) transition -- after a FINISHED return
-         * the reducer parks in RESULTS, which is likewise condition-false. */
+         * The room-ready condition is toggled by PARKING the room in RESULTS (a real
+         * finished race: ready both seats -> leader START -> RACING -> leader
+         * PUBLISH_RESULTS => phase RESULTS => condition false) and RETURNING it to
+         * SELECTING via the leader's REMATCH (=> condition true) -- the exact
+         * RESULTS-park -> New-selection transition production rides. (Before T2 this
+         * used a lobby.mode tournament<->single flip; that stopped changing the
+         * condition once T2 made single race take the native path too, so the toggle
+         * moved to the mode-independent RESULTS park -- which is also strictly MORE
+         * faithful.) */
         std::string probeErr;
         MdkrOnlineTestLoopbackRace *race =
             OnlineRoom_makeTestLobbyStartRoom(&probeErr);

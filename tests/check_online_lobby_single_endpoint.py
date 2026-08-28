@@ -15,9 +15,10 @@ drive ONLY its own endpoint and the REMOTE readies itself over the transport:
       single-endpoint witness on every round advance.
 
   (b) ROOM-READY trigger -- the production detection fires EXACTLY ONCE on first-
-      SELECTING + 2 members + LOBBY for a TOURNAMENT room and routes to lobby-start
-      (native takeover), and NEVER for a single-race room (which keeps the race-ready
-      ImGui fallback). Proven via a test seam (the full interactive loop needs a live
+      SELECTING + 2 members + LOBBY and routes to lobby-start (native takeover) for
+      ANY mode: T2 dropped the former TOURNAMENT-only gate, so a SINGLE-RACE room now
+      takes the SAME native takeover a tournament room does (both fire once + route to
+      lobby-start). Proven via a test seam (the full interactive loop needs a live
       cloud adapter + a human).
 
   (c) WALL-CLOCK watchdog over ALL THREE descriptor-less waits, with an ERROR signal:
@@ -159,8 +160,12 @@ def check_single_endpoint_advance(binary: Path, rom: Path, ticks: int,
 
 
 def check_room_ready_trigger(binary: Path, rom: Path, verbose: bool) -> int | None:
-    """(b) The room-ready trigger fires ONCE for a tournament room (route=lobby-
-    start) and NEVER for a single-race room (route=race-ready fallback)."""
+    """(b) The room-ready trigger fires ONCE and routes to lobby-start for ANY mode.
+
+    T2 dropped the former TOURNAMENT-only gate, so BOTH a tournament room AND a
+    single-race room now take the native takeover (fire exactly once, route=lobby-
+    start). Before T2 the single-race branch asserted zero fires + the race-ready
+    ImGui fallback; that behaviour is gone."""
     rc, output = run_engine(
         binary, rom, ticks=2000, timeout=120, verbose=verbose,
         extra_env={
@@ -180,6 +185,7 @@ def check_room_ready_trigger(binary: Path, rom: Path, verbose: bool) -> int | No
                     f"exactly once (fires={fires} held={held} published={published} "
                     f"route={route})", output)
 
+    # T2: a SINGLE-RACE room (no tournament env) now fires the SAME native takeover.
     rc, output = run_engine(
         binary, rom, ticks=2000, timeout=120, verbose=verbose,
         extra_env={"MDKR_APP_TEST_ONLINE_ROOM_READY_PROBE": "1"})
@@ -189,10 +195,11 @@ def check_room_ready_trigger(binary: Path, rom: Path, verbose: bool) -> int | No
     m = ROOM_READY_PROBE_RE.search(output)
     if not m:
         return fail("[room-ready] single-race probe emitted no result line", output)
-    fires, _held, published, route = m.groups()
-    if fires != "0" or published != "0" or route != "race-ready-fallback":
-        return fail(f"[room-ready] single-race room did NOT defer to the race-ready "
-                    f"fallback (fires={fires} published={published} route={route})",
+    fires, held, published, route = m.groups()
+    if fires != "1" or held != "1" or published != "1" or route != "lobby-start":
+        return fail(f"[room-ready] single-race room did NOT take the native takeover "
+                    f"(T2 routes it to lobby-start exactly once, same as a tournament): "
+                    f"fires={fires} held={held} published={published} route={route}",
                     output)
     return None
 
@@ -309,8 +316,8 @@ def main() -> int:
     if result is not None:
         return result
 
-    # (b) room-ready trigger (tournament fires once -> lobby-start; single-race
-    #     defers to the race-ready fallback)
+    # (b) room-ready trigger (T2: tournament AND single-race both fire once ->
+    #     lobby-start; the pre-T2 single-race race-ready fallback is gone)
     result = check_room_ready_trigger(binary, rom, args.verbose)
     if result is not None:
         return result
@@ -338,8 +345,9 @@ def main() -> int:
         "PASS online lobby-single-endpoint: the SINGLE-ENDPOINT per-round advance "
         f"drove ONLY the local endpoint (advance handed a NULL peer) for {CUP_ROUNDS} "
         f"boots on fresh epochs [2..{CUP_ROUNDS}]; the room-ready trigger fired ONCE "
-        "for a tournament room (route=lobby-start) and deferred a single-race room to "
-        "the race-ready fallback; the WALL-CLOCK watchdog bounded all three "
+        "for a tournament room (route=lobby-start) AND fired ONCE for a single-race "
+        "room too (T2: same native takeover, route=lobby-start); the WALL-CLOCK "
+        "watchdog bounded all three "
         "descriptor-less waits (race-1 re-wait, results rematch-hold, per-round) with "
         "a nonzero ERROR exit + a launcher reason=ERROR read; the final standings "
         "fired the PD-T6d FINISHED handshake (engine note + launcher reason=FINISHED "
