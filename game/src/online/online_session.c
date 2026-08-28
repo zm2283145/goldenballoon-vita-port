@@ -705,6 +705,24 @@ static bool online_session_remote_vacate_forced(void) {
     return sRemoteVacateResolved > 0;
 }
 
+/* Final-review P2 probe (env MDKR_TEST_ONLINE_REMOTE_VACATE_AT_RESULTS_FINAL):
+ * force the remote-seat-vacated predicate ONLY once the FINAL standings are latched
+ * (resultsIsFinal). This is scoped to resultsIsFinal so it stays inert during the
+ * non-final results screens (the cup proceeds normally) and only reads the remote
+ * as gone at the terminal -- exactly the condition the P2 gate now guards. Without
+ * the gate the detector would trip -> LEFT; with the gate the detector is never
+ * called at the final standings, so the dwell -> FINISHED wins. Off in every normal
+ * run (resolved once). */
+static s8 sRemoteVacateFinalResolved = -1;
+static bool online_session_remote_vacate_final_forced(void) {
+    if (sRemoteVacateFinalResolved < 0) {
+        sRemoteVacateFinalResolved =
+            (getenv("MDKR_TEST_ONLINE_REMOTE_VACATE_AT_RESULTS_FINAL") != NULL)
+                ? 1 : 0;
+    }
+    return sRemoteVacateFinalResolved > 0 && sOnlineSession.resultsIsFinal;
+}
+
 /* Any occupied seat that is NOT the local player -- the remote(s) still present in
  * the room. Mirrors online_session_snapshot_has_local_seat. */
 static bool online_session_snapshot_has_remote_seat(
@@ -750,7 +768,8 @@ static bool online_session_detect_remote_vacated(const char *where) {
         return false;
     }
     if (online_session_snapshot_has_remote_seat(&snap) &&
-        !online_session_remote_vacate_forced()) {
+        !online_session_remote_vacate_forced() &&
+        !online_session_remote_vacate_final_forced()) {
         sOnlineSession.remoteAbsentTicks = 0u; /* remote back / present: reset */
         return false;
     }
@@ -761,7 +780,7 @@ static bool online_session_detect_remote_vacated(const char *where) {
     }
     mdkr_party_link_note_session_end(MDKR_PARTY_LINK_SESSION_END_LEFT);
     fprintf(stderr,
-            "[online-session] LEFT: remote seat vacated pre-START at %s "
+            "[online-session] LEFT: remote seat vacated at %s "
             "(debounced %u ticks) -> return to room (exit 0)\n",
             where, (unsigned) sOnlineSession.remoteAbsentTicks);
     platform_request_exit(0);
@@ -1202,10 +1221,21 @@ void mdkr_online_session_tick(s32 updateRate) {
         MdkrOnlineResultsResult r;
         /* Exit-gate C1: RESULTS remote-vacate detector (mirrors charselect :1069 /
          * trackselect :1147), so a genuine host/remote departure or a stale feed
-         * DURING results is caught gracefully (debounced, notes LEFT + exits)
-         * instead of parking. Inert in the normal end (host parked in RESULTS with
-         * its seat occupied) -- the joiner's terminal self-advance handles that. */
-        if (online_session_detect_remote_vacated("results")) {
+         * DURING a NON-FINAL results screen is caught gracefully (debounced, notes
+         * LEFT + exits) instead of parking -- there is still a next round to
+         * coordinate, so a vanished remote means the round can never proceed.
+         *
+         * Final-review P2 (code M5 / design C-4): GATE this on !resultsIsFinal. At
+         * the FINAL standings the match is COMPLETE -- nothing remains to coordinate
+         * -- and the joiner has EARNED its FINISHED + champion ceremony. Running the
+         * detector there let a 45-tick (0.75s) remote-vacate PRE-EMPT the joiner's
+         * ~10s self-advance dwell (online_results.c) if the host lingered/dropped
+         * during the dwell, mis-reporting an earned FINISHED as LEFT. The final
+         * standings are owned solely by that already-bounded dwell -> CEREMONY ->
+         * FINISHED (no hang), so the detector is confined to the non-final screens
+         * where a vacate is genuinely unrecoverable. */
+        if (!sOnlineSession.resultsIsFinal &&
+            online_session_detect_remote_vacated("results")) {
             mdkr_online_results_exit();
             break;
         }

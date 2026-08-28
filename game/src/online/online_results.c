@@ -171,6 +171,7 @@ static u8 results_host_press_active(void);
 static u8 results_joiner_finish_seam(void);          /* PD-T6d test seam */
 static u8 results_joiner_finish_departed(u32 stageTicks);
 static u8 results_joiner_terminal_seam(void);        /* exit-gate C1 no-seam proof */
+static u8 results_remote_vacate_final_probe(void);   /* final-review P2 probe */
 
 /* ======================================================================== *
  * Small helpers
@@ -639,6 +640,13 @@ static void results_input_scripted(ResInput *in) {
     if (sRes.stage == RES_STAGE_RESULTS) {
         in->advanceEdge = 1u; /* RESULTS -> STANDINGS (host press) */
     } else if (results_host_press_active()) {
+        /* Final-review P2 probe: at the FINAL standings, "the host has vacated" ->
+         * script NO terminal press, so the joiner leaves via its self-advance DWELL
+         * (making the dwell-vs-vacate race unambiguous). Non-final standings still
+         * press (the cup advances fast). */
+        if (sRes.isFinal && results_remote_vacate_final_probe()) {
+            return;
+        }
         /* PD-T6ac live-resident lane: also press the STANDINGS stage so the host
          * advance (-> REMATCH) fires promptly rather than after the full ~10s
          * countdown, keeping the headless resident lane fast. The scripted soak
@@ -1061,6 +1069,22 @@ static u8 results_joiner_terminal_seam(void) {
         sJoinerTerminalActive = (e != NULL && e[0] != '\0') ? 1 : 0;
     }
     return (u8) (sJoinerTerminalActive > 0 ? 1 : 0);
+}
+
+/* Final-review P2 probe (env MDKR_TEST_ONLINE_REMOTE_VACATE_AT_RESULTS_FINAL):
+ * when armed, the paired online_session detector reads the remote as GONE at the
+ * FINAL standings. To make the joiner's SELF-ADVANCE DWELL (not a scripted press)
+ * the thing that leaves -- so the dwell (10s) vs the vacate detector (0.75s) race
+ * is unambiguous -- suppress the scripted terminal press below when this is set.
+ * Rounds 1..N-1 still press (fast); only the terminal waits out the dwell. Inert
+ * (no suppression) in every normal run and in the other seam lanes. */
+static s8 sRemoteVacateFinalProbe = -1;
+static u8 results_remote_vacate_final_probe(void) {
+    if (sRemoteVacateFinalProbe < 0) {
+        const char *e = getenv("MDKR_TEST_ONLINE_REMOTE_VACATE_AT_RESULTS_FINAL");
+        sRemoteVacateFinalProbe = (e != NULL && e[0] != '\0') ? 1 : 0;
+    }
+    return (u8) (sRemoteVacateFinalProbe > 0 ? 1 : 0);
 }
 
 u8 mdkr_online_results_test_active(void) {

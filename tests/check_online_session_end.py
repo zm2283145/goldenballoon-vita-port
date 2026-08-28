@@ -59,7 +59,7 @@ HOST_FINISH_RE = re.compile(
 CHARSELECT_LEFT_RE = re.compile(
     r"^\[online-session\] LEFT: charselect backout", re.MULTILINE)
 VACATE_LEFT_RE = re.compile(
-    r"^\[online-session\] LEFT: remote seat vacated pre-START", re.MULTILINE)
+    r"^\[online-session\] LEFT: remote seat vacated at ", re.MULTILINE)
 MID_UNWIND_LEFT_RE = re.compile(
     r"^\[online-session\] mid-tournament UNWIND: .* -> LEFT: return to room",
     re.MULTILINE)

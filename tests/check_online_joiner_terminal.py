@@ -71,6 +71,10 @@ FINISHED_ENGINE_RE = re.compile(
     r"^\[online-session\] FINISHED: final standings", re.MULTILINE)
 SESSION_END_RE = re.compile(
     r"^\[online-session-end\] reason=(\w+) result=(-?\d+)", re.MULTILINE)
+# The RESULTS remote-vacate detector's LEFT note (M2 wording). It must NOT appear at
+# the FINAL standings -- that is the LEFT the P2 gate (!resultsIsFinal) suppresses.
+VACATE_LEFT_RE = re.compile(
+    r"^\[online-session\] LEFT: remote seat vacated at ", re.MULTILINE)
 # Final-standings render witness (RESULTS screen); secs is the countdown.
 STANDINGS_FINAL_RE = re.compile(
     r"^\[online-results\] render stage=standings mode=\d+ race=\d+ host=\d+ "
@@ -249,6 +253,62 @@ def check_self_advance(binary: Path, rom: Path, verbose: bool) -> int | None:
     return None
 
 
+def check_remote_gone_final(binary: Path, rom: Path, verbose: bool) -> int | None:
+    """(remote-gone-final, final-review P2 / code M5 / design C-4) a descriptor-less
+    TOURNAMENT reaches the FINAL standings with the remote seat FORCED GONE
+    (MDKR_TEST_ONLINE_REMOTE_VACATE_AT_RESULTS_FINAL, scoped to resultsIsFinal so it
+    is inert on the non-final rounds). The joiner terminal must STILL reach FINISHED
+    via its self-advance DWELL: the P2 gate (!resultsIsFinal on the RESULTS remote-
+    vacate detector) keeps the 0.75s vacate detector OFF the final standings, so the
+    joiner's earned FINISHED -> CEREMONY is NOT pre-empted by a LEFT even though the
+    host has vanished during the ~10s dwell. Without the gate the detector would trip
+    LEFT first; this lane fails (LEFT appears / reason != FINISHED) in that case.
+    The host is NOT pressed at the terminal (the probe suppresses it), so the DWELL
+    -- not a press -- is unambiguously what leaves. Rounds 1..N-1 proceed normally."""
+    tag = "remote-gone-final"
+    try:
+        rc, output = run_engine(
+            binary, rom, ticks=35000, timeout=900, verbose=verbose,
+            extra_env={
+                "MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START": "1",
+                "MDKR_APP_TEST_ONLINE_MODE": "tournament",
+                "MDKR_APP_TEST_ONLINE_CUP": str(CUP),
+                "MDKR_TEST_ONLINE_LOBBY_START": "1",
+                "MDKR_TEST_ONLINE_LOBBY_TOURNAMENT": "1",
+                "MDKR_TEST_ONLINE_RESULTS_HOST_PRESS": "1",
+                "MDKR_TEST_ONLINE_RESULTS_JOINER_TERMINAL": "1",
+                "MDKR_TEST_ONLINE_REMOTE_VACATE_AT_RESULTS_FINAL": "1",
+                "MDKR_TEST_ONLINE_CEREMONY_SKIP": "1",
+            })
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[{tag}] run timed out (a reintroduced hang, or the vacate "
+                    f"detector pre-empted the dwell without a clean exit?): {error}")
+    guard = _common_joiner_asserts(tag, rc, output, "self-advance")
+    if guard is not None:
+        return guard
+    # THE P2 ASSERTION: the RESULTS remote-vacate detector must NOT have tripped at
+    # the final standings. A "vacated at" LEFT here is exactly the earned-FINISHED
+    # pre-emption the gate exists to prevent.
+    if VACATE_LEFT_RE.search(output):
+        return fail(f"[{tag}] the RESULTS remote-vacate detector tripped a LEFT at "
+                    f"the final standings -- the P2 gate (!resultsIsFinal) is NOT "
+                    f"holding; the joiner's earned FINISHED was pre-empted", output)
+    ends = SESSION_END_RE.findall(output)
+    if not any(reason == "FINISHED" and code == "0" for reason, code in ends):
+        return fail(f"[{tag}] launcher never read reason=FINISHED result=0 (a LEFT "
+                    f"would mean the vacate detector won the race); saw {ends}", output)
+    for reason, _code in ends:
+        if reason != "FINISHED":
+            return fail(f"[{tag}] an unexpected session-end reason {reason!r} leaked "
+                        f"-- the completed-cup joiner must finish FINISHED, not LEFT",
+                        output)
+    boots = DIRECT_BOOT_RE.findall(output)
+    if len(boots) != CUP_ROUNDS:
+        return fail(f"[{tag}] expected {CUP_ROUNDS} direct boots (the probe must stay "
+                    f"inert on the non-final rounds), saw {len(boots)}", output)
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default="build-beta")
@@ -263,7 +323,7 @@ def main() -> int:
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
 
-    for scenario in (check_press, check_self_advance):
+    for scenario in (check_press, check_self_advance, check_remote_gone_final):
         result = scenario(binary, rom, args.verbose)
         if result is not None:
             return result
@@ -278,7 +338,11 @@ def main() -> int:
         "RESIDENT single-final-race soak with NO terminal input -> the joiner "
         "self-advances on its own countdown DWELL (impossible-to-hang) -> CEREMONY "
         "-> the single FINISHED, rc 0, the final-standings countdown having "
-        "decremented to ~0 first. The host-press terminal path never fired.")
+        "decremented to ~0 first; (remote-gone-final, P2) with the remote seat FORCED "
+        "GONE at the final standings the joiner STILL reaches FINISHED via the dwell "
+        "-- the !resultsIsFinal gate keeps the RESULTS remote-vacate detector from "
+        "pre-empting the earned FINISHED with a LEFT (no 'vacated at' LEFT, reason "
+        "FINISHED, full 4-round cup). The host-press terminal path never fired.")
     return 0
 
 
