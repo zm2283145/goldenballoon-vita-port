@@ -31,10 +31,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = ROOT / "tests"
 
-# The full native-takeover lane set (the 13 exit-gate lanes + the C1 no-seam proof).
-# Order is deliberate: fastest structural boots first, the long multi-race loopback
-# soaks last, so a quick break surfaces early.
+# The full native-takeover lane set: the 13 exit-gate lanes + the C1 no-seam proof,
+# plus two coverage-fill lanes -- the isolation-guard self-test (proves the OFF
+# isolation gate is non-vacuous) and the 3-consecutive-tournament re-arm lane
+# (proves the re-arm is repeatable, not one-shot). Order is deliberate: the fast
+# structural/meta checks first, the long multi-race loopback soaks last, so a quick
+# break surfaces early.
 LANES = (
+    "check_online_isolation_selftest.py",   # meta: the isolation guard is non-vacuous
     "check_online_engine_boot_direct.py",   # golden race hash 7da2ea67 pinned
     "check_online_session_boot.py",
     "check_online_charselect.py",
@@ -47,6 +51,7 @@ LANES = (
     "check_online_lobby_start.py",
     "check_online_lobby_single_endpoint.py",
     "check_online_room_ready_rearm.py",
+    "check_online_rearm_third.py",          # 3 consecutive tournaments: re-arm repeatable
     "check_online_lobby_tournament.py",
     "check_online_tournament.py",           # keystone: 34,30 + peer==peer race-hash
 )                                           #  convergence (the GOLDEN literal is
