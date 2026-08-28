@@ -39,6 +39,7 @@ struct SettingsCharacterPreviewRequest {
         MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
     bool autoReturnAfterCapture = false;
     bool launcherOwnedCapture = false;
+    bool portraitSourceHandoff = false;
     bool interactiveStudio = false;
 };
 
@@ -108,6 +109,7 @@ void Settings_publishCharacterPreviewResult(
     const std::string &presentationSha256,
     const std::string &capturePng,
     bool launcherOwnedCapture,
+    bool portraitSourceHandoff,
     bool interactiveStudio,
     const MdkrCharacterPreviewResult &result);
 

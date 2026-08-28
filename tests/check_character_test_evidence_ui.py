@@ -344,6 +344,20 @@ def main() -> int:
                 root,
                 characters,
                 (
+                    "character-test-evidence-action "
+                    "action=publish-portrait-handoff applied=1 records=0 baselines=0",
+                    "character-portrait-source package=" + PACKAGE_ID
+                    + " kind=exact-renderer dimensions=40x40",
+                ),
+                action="publish-portrait-handoff",
+                inspection_capture=root / "source" / "portrait.png",
+            )
+
+            run(
+                binary,
+                root,
+                characters,
+                (
                     "character-fit-reference package=" + PACKAGE_ID
                     + " context=2 source-fit-context=current plane=-1 "
                     "planeMatch=0 product=model-alpha "

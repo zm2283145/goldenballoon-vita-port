@@ -155,6 +155,31 @@ def main() -> int:
     args = parser.parse_args()
     binary = Path(resolve_binary(args.build)).resolve()
     try:
+        settings_source = (
+            ROOT / "platform" / "app" / "ui_settings.cpp"
+        ).read_text(encoding="utf-8")
+        launcher_source = (
+            ROOT / "platform" / "app" / "ui_launcher.cpp"
+        ).read_text(encoding="utf-8")
+        for marker in (
+            "portraitSourceHandoff",
+            "prepareInlineCharacterCapture",
+            "g_characterPendingPortraitSources[packageId]",
+            "Portrait model capture validated and returned",
+        ):
+            if marker not in settings_source:
+                raise RuntimeError(
+                    f"quick portrait handoff lost settings link {marker!r}"
+                )
+        for marker in (
+            "acceptCharacterPreviewRequest",
+            "characterPreviewPortraitSourceHandoff",
+            "state_.characterPreviewPortraitSourceHandoff",
+        ):
+            if marker not in launcher_source:
+                raise RuntimeError(
+                    f"quick portrait handoff lost launcher link {marker!r}"
+                )
         with tempfile.TemporaryDirectory(
                 prefix="mdkr-portrait-studio-ui-") as temporary:
             root = Path(temporary)
@@ -178,7 +203,9 @@ def main() -> int:
                  "character-portrait-readability package=" + PACKAGE_ID +
                  " views=7 columns=1 scale=2.00",
                  "character-portrait-camera package=" + PACKAGE_ID +
-                 " presets=front,left-three-quarter,right-three-quarter"),
+                 " quickCreate=1 quickContext=1 quickAutoReturn=1 "
+                 "quickManagedCache=1 quickDigestHandoff=1 "
+                 "presets=front,left-three-quarter,right-three-quarter"),
             )
             check_bmp(compact_shot, 640, 480)
 
@@ -203,7 +230,9 @@ def main() -> int:
                  " loaded=1 applied=0",
                  "character-portrait-source package=" + PACKAGE_ID,
                  "character-portrait-camera package=" + PACKAGE_ID +
-                 " presets=front,left-three-quarter,right-three-quarter",
+                 " quickCreate=1 quickContext=1 quickAutoReturn=1 "
+                 "quickManagedCache=1 quickDigestHandoff=1 "
+                 "presets=front,left-three-quarter,right-three-quarter",
                  "kind=local-png dimensions=96x64",
                  "mask=1 removed=16",
                  "text=Portrait input PNG",
@@ -256,7 +285,8 @@ def main() -> int:
               file=sys.stderr)
         return 1
     print("check_character_portrait_studio_ui: PASS -- deterministic style "
-          "lab and six-variant comparison sheet, bounded PNG source/capture "
+          "lab and six-variant comparison sheet, one-action exact model "
+          "portrait handoff, bounded PNG source/capture "
           "framing with durable freeform subject mask, advanced pixel tools, "
           "200% compact rendering, keyboard "
           "speech, and installed-byte purity")

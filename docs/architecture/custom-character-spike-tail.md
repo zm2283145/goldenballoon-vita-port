@@ -301,14 +301,18 @@ fit-bound.
   framing.” Composed captures retain the actual camera; isolated captures use
   an independent replay slot and publish the correspondingly framed exact
   target-to-clip projection witness.
-- **Implemented:** add one-click front, left-three-quarter, and
-  right-three-quarter portrait preparations. Each configures the exact
+- **Implemented:** add a one-action default model portrait plus front,
+  left-three-quarter, and right-three-quarter alternatives. The default chooses
+  the first supported vehicle, configures the exact
   one-player model-only renderer, held select-idle midpoint, bright light,
-  repeatable vehicle-orbit camera, and 60–85% subject-fit contract, then hands
-  the create-only PNG into the existing crop/matte/palette/outline/readability
-  workflow from its capture report card.
-- Generate a first portrait suggestion during intake, while keeping exact 40x40
-  pixel editing and explicit author approval.
+  repeatable front vehicle-orbit camera, and 60–85% subject-fit contract. It
+  writes only to a bounded launcher-owned cache, returns automatically after a
+  stabilized capture, validates the PNG and source digest, and opens the
+  reversible crop/matte/palette/outline/readability workflow without asking for
+  a filename. The alternative angles prepare the same exact Test controls for
+  explicit report captures. This is the first portrait suggestion immediately
+  after safe package intake; exact 40x40 editing and explicit Apply/Build remain
+  authoritative.
 
 Acceptance: the example produces a centered isolated capture, a recognizable
 40x40 portrait, and matching select/HUD/results/minimap identity without an
@@ -415,10 +419,8 @@ author-acknowledgement path. The immediate remaining order is therefore:
 2. add a donor-reference silhouette/occlusion comparison and a real linked-ROM
    unusual-proportion fixture, then qualify richer reference clips, joint limits,
    and optional deterministic secondary hair/tail motion;
-3. generate a first portrait suggestion during intake while keeping the exact
-   40 x 40 approval/editor path authoritative;
-4. execute the M6 renderer tail (shadows, transparent ordering, compressed
+3. execute the M6 renderer tail (shadows, transparent ordering, compressed
    textures, projected LOD, optional simplification, and material expansion);
-5. complete packaged cross-platform/offline/adapter/online contracts; and
-6. run the observed human, controller/screen-reader, perceptual, and maintained
+4. complete packaged cross-platform/offline/adapter/online contracts; and
+5. run the observed human, controller/screen-reader, perceptual, and maintained
    multi-device qualification matrix in M8.

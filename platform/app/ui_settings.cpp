@@ -50,6 +50,7 @@
 #include <cstring>
 #include <cstdint>
 #include <ctime>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -5816,7 +5817,8 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              unsigned transitionFromPhaseMilli = 0u,
                              bool autoReturnAfterCapture = false,
                              bool launcherOwnedCapture = false,
-                             bool interactiveStudio = false);
+                             bool interactiveStudio = false,
+                             bool portraitSourceHandoff = false);
 
 bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                             bool compact) {
@@ -8974,7 +8976,8 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              unsigned transitionFromPhaseMilli,
                              bool autoReturnAfterCapture,
                              bool launcherOwnedCapture,
-                             bool interactiveStudio) {
+                             bool interactiveStudio,
+                             bool portraitSourceHandoff) {
     const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
     const std::string testTuningSignature = characterTestTuningSignature(
         entry, tuning, static_cast<unsigned>(context - 1));
@@ -9007,6 +9010,14 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
              MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE) ||
         (autoReturnAfterCapture && !capture) ||
         (launcherOwnedCapture && (!autoReturnAfterCapture || !capture)) ||
+        (portraitSourceHandoff &&
+         (!launcherOwnedCapture || interactiveStudio || players != 1 ||
+          context == MDKR_CHARACTER_PREVIEW_SELECT ||
+          pose != MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE ||
+          posePhaseMilli != 500u || transition || viewYawDegrees != 180 ||
+          viewPitchDegrees != 0 ||
+          lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_BRIGHT ||
+          captureKind != MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA)) ||
         (interactiveStudio &&
          (inspection || capture || autoReturnAfterCapture)) ||
         (transition && capture) ||
@@ -9070,6 +9081,8 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
         autoReturnAfterCapture;
     g_characterPreviewRequest.launcherOwnedCapture =
         launcherOwnedCapture;
+    g_characterPreviewRequest.portraitSourceHandoff =
+        portraitSourceHandoff;
     g_characterPreviewRequest.interactiveStudio = interactiveStudio;
     g_characterPreviewRequested = true;
     setStatus(
@@ -12233,6 +12246,8 @@ void drawCharacterTestEvidenceMatrix(
             std::strcmp(
                 smokeAction, "publish-inspection-capture") == 0 ||
             std::strcmp(
+                smokeAction, "publish-portrait-handoff") == 0 ||
+            std::strcmp(
                 smokeAction,
                 "publish-inspection-capture-stale-fit") == 0 ||
             std::strcmp(
@@ -12422,6 +12437,8 @@ void drawCharacterTestEvidenceMatrix(
                 std::strcmp(
                     smokeAction, "publish-inspection-capture") == 0 ||
                 std::strcmp(
+                    smokeAction, "publish-portrait-handoff") == 0 ||
+                std::strcmp(
                     smokeAction,
                     "publish-inspection-capture-stale-fit") == 0 ||
                 std::strcmp(
@@ -12429,9 +12446,11 @@ void drawCharacterTestEvidenceMatrix(
             const bool staleInspectionCapture = std::strcmp(
                 smokeAction,
                 "publish-inspection-capture-stale-fit") == 0;
+            const bool portraitHandoff = std::strcmp(
+                smokeAction, "publish-portrait-handoff") == 0;
             const bool inspectionCapture =
                 std::strcmp(smokeAction, "publish-inspection-capture") == 0 ||
-                staleInspectionCapture;
+                staleInspectionCapture || portraitHandoff;
             const bool inspectionFallback = std::strcmp(
                 smokeAction, "publish-inspection-fallback") == 0;
             const bool transitionInspection = std::strcmp(
@@ -12548,6 +12567,14 @@ void drawCharacterTestEvidenceMatrix(
                                        .reportPath),
                             "%s", smokeReportPath);
                     }
+                    if (portraitHandoff) {
+                        result.players = 1;
+                        result.pose =
+                            MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE;
+                        result.pose_phase_milli = 500u;
+                        result.view_yaw_degrees = 180;
+                        result.view_pitch_degrees = 0;
+                    }
                 }
             } else if (mixedMode) {
                 result.inspection_pose_ticks = 180u;
@@ -12578,8 +12605,24 @@ void drawCharacterTestEvidenceMatrix(
                 ? std::getenv(
                       "MDKR_APP_SMOKE_CHARACTER_INSPECTION_CAPTURE")
                 : nullptr;
-            const std::string capturePath = smokeCapturePath != nullptr
+            std::string capturePath = smokeCapturePath != nullptr
                 ? smokeCapturePath : std::string();
+            bool portraitCapturePrepared = !portraitHandoff;
+            if (portraitHandoff && !capturePath.empty()) {
+                std::string managedCapturePath;
+                if (prepareInlineCharacterCapture(
+                        entry, MDKR_CHARACTER_PREVIEW_CAR,
+                        managedCapturePath)) {
+                    std::error_code copyError;
+                    portraitCapturePrepared = std::filesystem::copy_file(
+                        std::filesystem::u8path(capturePath),
+                        std::filesystem::u8path(managedCapturePath),
+                        std::filesystem::copy_options::none, copyError);
+                    if (portraitCapturePrepared) {
+                        capturePath = std::move(managedCapturePath);
+                    }
+                }
+            }
             if (overbudgetMatrix) {
                 for (unsigned context = 0u;
                      context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
@@ -12636,13 +12679,14 @@ void drawCharacterTestEvidenceMatrix(
                         Settings_publishCharacterPreviewResult(
                             entry->id, source,
                             characterTestTuningSignature(entry, tuning, context),
-                            presentation, std::string(), false, false, cell);
+                            presentation, std::string(), false, false, false,
+                            cell);
                     }
                 }
             } else {
                 Settings_publishCharacterPreviewResult(
-                    entry->id, source, fit, presentation, capturePath, false,
-                    false, result);
+                    entry->id, source, fit, presentation, capturePath,
+                    portraitHandoff, portraitHandoff, false, result);
             }
             const auto session = g_characterPreviewResults.find(entry->id);
             const CharacterTestEvidenceStore::Evidence *latest =
@@ -12665,6 +12709,14 @@ void drawCharacterTestEvidenceMatrix(
             } else if (mixedMode) {
                 applied = session != g_characterPreviewResults.end() &&
                     latest == nullptr && !sessionMatches;
+            } else if (portraitHandoff) {
+                applied = portraitCapturePrepared &&
+                    session != g_characterPreviewResults.end() &&
+                    latest == nullptr && sessionMatches &&
+                    session->second.result.pose ==
+                        MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE &&
+                    g_characterPendingPortraitSources.find(entry->id) !=
+                        g_characterPendingPortraitSources.end();
             } else if (inspection) {
                 applied = session != g_characterPreviewResults.end() &&
                     latest == nullptr &&
@@ -14693,8 +14745,6 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
         "Validates and decodes the source without changing the draft canvas.");
     if (entry != nullptr) {
         ImGui::SeparatorText("Exact portrait camera");
-        ui::TextSubtleWrapped(
-            "Prepare a centered, transparent, 72%-occupancy model capture with one player, select-idle at midpoint, bright inspection light, and a repeatable vehicle-orbit camera. Test will still require a new PNG filename and an explicit launch, so no file can be overwritten accidentally.");
         struct PortraitCameraPreset {
             const char *label;
             int yaw;
@@ -14713,6 +14763,47 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
         static const char *contextNames[] = {
             "Character select", "Car", "Hovercraft", "Plane"
         };
+        static const MdkrCharacterPreviewContext previewContexts[] = {
+            MDKR_CHARACTER_PREVIEW_SELECT,
+            MDKR_CHARACTER_PREVIEW_CAR,
+            MDKR_CHARACTER_PREVIEW_HOVERCRAFT,
+            MDKR_CHARACTER_PREVIEW_PLANE,
+        };
+        const bool portraitPreviewReady =
+            portraitContext < MDKR_CHARACTER_CONTEXT_COUNT &&
+            donorProfilesAvailable();
+        ui::TextSubtleWrapped(
+            "Create a centered transparent model portrait in one step. The launcher uses a bounded private cache, holds select-idle at midpoint under bright inspection light, waits for a stable exact-renderer frame, returns automatically, validates its digest, and opens it here as a reversible source. Nothing is published until you apply and build the draft.");
+        if (!portraitPreviewReady) ImGui::BeginDisabled();
+        if (ImGui::Button("Create portrait from model", ui::kBtnFullWidth()) &&
+            portraitPreviewReady) {
+            std::string capturePath;
+            const MdkrCharacterPreviewContext previewContext =
+                previewContexts[portraitContext];
+            if (prepareInlineCharacterCapture(
+                    entry, previewContext, capturePath)) {
+                requestCharacterPreview(
+                    entry, previewContext, 1,
+                    MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE, 500u,
+                    180, 0, MDKR_WORKSHOP_PREVIEW_LIGHTING_BRIGHT,
+                    capturePath.c_str(),
+                    MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA,
+                    MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u,
+                    true, true, false, true);
+            }
+        }
+        if (!portraitPreviewReady) ImGui::EndDisabled();
+        ui::SpeakFocusedItem(
+            "Create portrait from model",
+            portraitPreviewReady
+                ? "Ready; returns to Portrait Studio automatically."
+                : "Unavailable until a supported base ROM is linked and verified on Play.",
+            "Captures one stabilized transparent front portrait in the first supported exact vehicle context, validates it, and returns it to the reversible framing workflow without asking for a filename.");
+        ImGui::TextDisabled(
+            "Default: front · 1 player · select-idle 50%% · bright light · transparent model only");
+        ImGui::SeparatorText("Alternative portrait angles");
+        ui::TextSubtleWrapped(
+            "Prepare a different repeatable angle in Test when the automatic front portrait is not the composition you want. Manual captures ask for a new filename and remain available in the visual report tray.");
         const int portraitColumns =
             ImGui::GetContentRegionAvail().x >= ui::kPairMinWidth() * 3.0f
                 ? 3 : 1;
@@ -14761,8 +14852,8 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
             if (tracedPortraitCameras.insert(entry->id).second) {
                 std::fprintf(
                     stderr,
-                    "[app-ui] character-portrait-camera package=%s presets=front,left-three-quarter,right-three-quarter pose=select.idle@500 players=1 pitch=0 light=bright capture=model-alpha occupancy=60-85-target exact-rom=1 create-only=1 handoff=portrait-source\n",
-                    entry->id);
+                    "[app-ui] character-portrait-camera package=%s quickCreate=1 quickContext=%u quickAutoReturn=1 quickManagedCache=1 quickDigestHandoff=1 presets=front,left-three-quarter,right-three-quarter pose=select.idle@500 players=1 pitch=0 light=bright capture=model-alpha occupancy=60-85-target exact-rom=1 handoff=portrait-source\n",
+                    entry->id, portraitContext);
             }
         }
     }
@@ -21565,6 +21656,7 @@ void Settings_publishCharacterPreviewResult(
     const std::string &presentationSha256,
     const std::string &capturePng,
     bool launcherOwnedCapture,
+    bool portraitSourceHandoff,
     bool interactiveStudio,
     const MdkrCharacterPreviewResult &result) {
     if (packageId.empty()) return;
@@ -21608,6 +21700,20 @@ void Settings_publishCharacterPreviewResult(
             characterInspectionPose(result.pose);
         const CharacterInspectionLighting *lighting =
             characterInspectionLighting(result.lighting);
+        const bool portraitHandoffValid = portraitSourceHandoff &&
+            launcherOwnedCapture &&
+            result.context > MDKR_CHARACTER_PREVIEW_SELECT &&
+            result.context <= MDKR_CHARACTER_PREVIEW_PLANE &&
+            result.players == 1 &&
+            result.pose == MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE &&
+            result.pose_phase_milli == 500u &&
+            result.transition_from_pose ==
+                MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+            result.view_yaw_degrees == 180 &&
+            result.view_pitch_degrees == 0 &&
+            result.lighting == MDKR_WORKSHOP_PREVIEW_LIGHTING_BRIGHT &&
+            result.capture_kind ==
+                MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA;
         if (result.capture_written) {
             auto &captures = g_characterVisualCaptures[packageId];
             const bool recordValid =
@@ -21683,7 +21789,8 @@ void Settings_publishCharacterPreviewResult(
                     return capture.pngPath == capturePng;
                 });
             if (recordValid && !alreadyListed &&
-                captures.size() < CharacterVisualReport::kMaximumCaptures) {
+                (captures.size() < CharacterVisualReport::kMaximumCaptures ||
+                 portraitHandoffValid)) {
                 CharacterVisualReport::Capture capture{};
                 capture.pngPath = capturePng;
                 capture.sourceSha256 = sourceSha256;
@@ -21740,10 +21847,22 @@ void Settings_publishCharacterPreviewResult(
                 std::string captureError;
                 if (CharacterVisualReport::bindPng(
                         capture, captureError)) {
-                    captures.push_back(std::move(capture));
                     launcherCaptureRetained = launcherOwnedCapture;
+                    if (portraitHandoffValid) {
+                        g_characterPendingPortraitSources[packageId] = {
+                            capture.pngPath, capture.pngSha256, true,
+                        };
+                        persistCharacterWorkshopTab(
+                            CharacterWorkshopTab::Identity, true);
+                    }
+                    if (captures.size() <
+                        CharacterVisualReport::kMaximumCaptures) {
+                        captures.push_back(std::move(capture));
+                    }
                     setStatus(
-                        launcherOwnedCapture
+                        portraitHandoffValid
+                            ? "Portrait model capture validated and returned to the reversible framing workflow."
+                        : launcherOwnedCapture
                             ? "Exact still captured, digest-bound, and returned inline."
                             : "Inspection PNG saved, digest-bound, and added to the visual report tray.",
                         AppTheme::good());
@@ -21757,7 +21876,9 @@ void Settings_publishCharacterPreviewResult(
                 }
             } else if (!alreadyListed) {
                 setStatus(
-                    launcherOwnedCapture
+                        portraitSourceHandoff
+                            ? "The portrait source was discarded because its exact inspection metadata was inconsistent."
+                        : launcherOwnedCapture
                         ? recordValid
                             ? "The inline still was discarded because the session report is full; export or clear the tray before trying again."
                             : "The inline still was discarded because its inspection metadata was inconsistent."

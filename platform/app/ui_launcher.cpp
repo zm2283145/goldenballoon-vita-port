@@ -947,6 +947,33 @@ float Launcher_smokePanelScrollY() {
 
 namespace {
 
+void acceptCharacterPreviewRequest(
+    LauncherState &state, SettingsCharacterPreviewRequest preview) {
+    state.characterPreviewPackage = std::move(preview.packageId);
+    state.characterPreviewSourceSha256 = std::move(preview.sourceSha256);
+    state.characterPreviewFitSha256 = std::move(preview.fitSha256);
+    state.characterPreviewPresentationSha256 =
+        std::move(preview.presentationSha256);
+    state.characterPreviewContext = preview.context;
+    state.characterPreviewPlayers = preview.players;
+    state.characterPreviewPose = preview.pose;
+    state.characterPreviewPosePhaseMilli = preview.posePhaseMilli;
+    state.characterPreviewTransitionFromPose = preview.transitionFromPose;
+    state.characterPreviewTransitionFromPhaseMilli =
+        preview.transitionFromPhaseMilli;
+    state.characterPreviewViewYawDegrees = preview.viewYawDegrees;
+    state.characterPreviewViewPitchDegrees = preview.viewPitchDegrees;
+    state.characterPreviewLighting = preview.lighting;
+    state.characterPreviewCapturePng = std::move(preview.capturePng);
+    state.characterPreviewCaptureKind = preview.captureKind;
+    state.characterPreviewAutoReturn = preview.autoReturnAfterCapture;
+    state.characterPreviewCaptureLauncherOwned = preview.launcherOwnedCapture;
+    state.characterPreviewPortraitSourceHandoff =
+        preview.portraitSourceHandoff;
+    state.characterPreviewInteractiveStudio = preview.interactiveStudio;
+    Launcher_requestTab(state, kLauncherPanelPlay, kLauncherTabPlayer);
+}
+
 void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
     (void)out;
     // One page, one scroll owner. Keeping the introduction outside this child
@@ -993,29 +1020,7 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
     }
     SettingsCharacterPreviewRequest preview;
     if (Settings_takeCharacterPreviewRequest(preview)) {
-        s.characterPreviewPackage = std::move(preview.packageId);
-        s.characterPreviewSourceSha256 =
-            std::move(preview.sourceSha256);
-        s.characterPreviewFitSha256 = std::move(preview.fitSha256);
-        s.characterPreviewPresentationSha256 =
-            std::move(preview.presentationSha256);
-        s.characterPreviewContext = preview.context;
-        s.characterPreviewPlayers = preview.players;
-        s.characterPreviewPose = preview.pose;
-        s.characterPreviewPosePhaseMilli = preview.posePhaseMilli;
-        s.characterPreviewTransitionFromPose = preview.transitionFromPose;
-        s.characterPreviewTransitionFromPhaseMilli =
-            preview.transitionFromPhaseMilli;
-        s.characterPreviewViewYawDegrees = preview.viewYawDegrees;
-        s.characterPreviewViewPitchDegrees = preview.viewPitchDegrees;
-        s.characterPreviewLighting = preview.lighting;
-        s.characterPreviewCapturePng = std::move(preview.capturePng);
-        s.characterPreviewCaptureKind = preview.captureKind;
-        s.characterPreviewAutoReturn = preview.autoReturnAfterCapture;
-        s.characterPreviewCaptureLauncherOwned =
-            preview.launcherOwnedCapture;
-        s.characterPreviewInteractiveStudio = preview.interactiveStudio;
-        Launcher_requestTab(s, kLauncherPanelPlay, kLauncherTabPlayer);
+        acceptCharacterPreviewRequest(s, std::move(preview));
     }
     ui::TouchScrollCurrentWindow();
     g_smokeSettingsScrollMin = ImGui::GetWindowPos();
@@ -1039,29 +1044,7 @@ void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out) {
     Settings_drawCharacterWorkshop(s.hostWindow, /*compact=*/false);
     SettingsCharacterPreviewRequest preview;
     if (Settings_takeCharacterPreviewRequest(preview)) {
-        s.characterPreviewPackage = std::move(preview.packageId);
-        s.characterPreviewSourceSha256 =
-            std::move(preview.sourceSha256);
-        s.characterPreviewFitSha256 = std::move(preview.fitSha256);
-        s.characterPreviewPresentationSha256 =
-            std::move(preview.presentationSha256);
-        s.characterPreviewContext = preview.context;
-        s.characterPreviewPlayers = preview.players;
-        s.characterPreviewPose = preview.pose;
-        s.characterPreviewPosePhaseMilli = preview.posePhaseMilli;
-        s.characterPreviewTransitionFromPose = preview.transitionFromPose;
-        s.characterPreviewTransitionFromPhaseMilli =
-            preview.transitionFromPhaseMilli;
-        s.characterPreviewViewYawDegrees = preview.viewYawDegrees;
-        s.characterPreviewViewPitchDegrees = preview.viewPitchDegrees;
-        s.characterPreviewLighting = preview.lighting;
-        s.characterPreviewCapturePng = std::move(preview.capturePng);
-        s.characterPreviewCaptureKind = preview.captureKind;
-        s.characterPreviewAutoReturn = preview.autoReturnAfterCapture;
-        s.characterPreviewCaptureLauncherOwned =
-            preview.launcherOwnedCapture;
-        s.characterPreviewInteractiveStudio = preview.interactiveStudio;
-        Launcher_requestTab(s, kLauncherPanelPlay, kLauncherTabPlayer);
+        acceptCharacterPreviewRequest(s, std::move(preview));
     }
 }
 
@@ -1106,6 +1089,7 @@ LauncherAction Launcher::draw(AppHost &host) {
             state_.characterPreviewPresentationSha256,
             state_.characterPreviewCapturePng,
             state_.characterPreviewCaptureLauncherOwned,
+            state_.characterPreviewPortraitSourceHandoff,
             state_.characterPreviewInteractiveStudio,
             state_.characterPreviewResult);
         Launcher_requestTab(
@@ -1130,6 +1114,7 @@ LauncherAction Launcher::draw(AppHost &host) {
             MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
         state_.characterPreviewAutoReturn = false;
         state_.characterPreviewCaptureLauncherOwned = false;
+        state_.characterPreviewPortraitSourceHandoff = false;
         state_.characterPreviewInteractiveStudio = false;
         state_.characterPreviewDispatched = false;
     }

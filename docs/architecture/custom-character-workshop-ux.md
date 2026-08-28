@@ -693,7 +693,12 @@ model-only stabilized PNG products, and self-contained schema-v3 qualification
 contact sheets are implemented through the exact renderer. Test captures hand
 directly to bounded Portrait Studio crop, edge matte, freeform subject mask,
 background, style, six-treatment comparison, readability proof, and pixel
-stages. Offset Studio now offers both a continuously interactive exact scene
+stages. Identity also offers one-action model portrait creation: it chooses the
+first supported vehicle, captures a stabilized front-facing one-player
+select-idle model-alpha frame into the launcher's bounded cache, returns
+automatically, validates the source and PNG digest, and opens the same reversible
+framing workflow without changing the installed character. Offset Studio now
+offers both a continuously interactive exact scene
 editor and a create-only inline exact still. The live editor uses the ordinary
 engine scene and renderer, applies validated fit changes frame-to-frame, keeps
 simulation running while capturing gameplay input, and publishes only a
