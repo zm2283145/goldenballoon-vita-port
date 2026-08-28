@@ -494,8 +494,11 @@ names only inside a named draft, so a label edit cannot accidentally publish a
 partial identity revision. Compact select tiles use the short name, the detail
 view uses the full display name, and roster ordering uses the sort label. The
 narration field is spoken by the Workshop library and player-assignment
-controls. The current in-game font safely substitutes unsupported glyphs and
-does not yet claim full Unicode shaping.
+controls. Covered Latin, Greek, Cyrillic, Arabic, Hebrew, combining, and mixed
+right-to-left names use the same pinned HarfBuzz/SheenBidi raster path previewed
+in Portrait Studio. Missing glyphs and unsafe invisible direction controls fail
+closed to the disclosed retail-font projection; no host font or second ROM is
+consulted.
 
 Portrait Studio can also start from any local, non-animated, non-interlaced,
 8-bit RGB/RGBA PNG from 16 through 4096 pixels per side. It validates the full

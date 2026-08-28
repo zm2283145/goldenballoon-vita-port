@@ -12,9 +12,11 @@ extern "C" {
 enum {
     GFX_CHARACTER_TEXT_MAX_WIDTH = 240,
     GFX_CHARACTER_TEXT_MAX_HEIGHT = 24,
-    /* Package identity fields admit at most 96 UTF-8 bytes, so this preserves
-     * the entire worst-case printable-ASCII field without a hidden lower cap. */
-    GFX_CHARACTER_TEXT_MAX_GLYPHS = 96,
+    GFX_CHARACTER_TEXT_MAX_CODEPOINTS = 96,
+    /* OpenType substitutions can expand one input character into multiple
+     * positioned glyphs. Keep that bounded without imposing an ASCII-shaped
+     * limit on joining scripts. */
+    GFX_CHARACTER_TEXT_MAX_GLYPHS = 192,
 };
 
 typedef enum GfxCharacterTextFallbackReason {
@@ -23,7 +25,7 @@ typedef enum GfxCharacterTextFallbackReason {
     GFX_CHARACTER_TEXT_FALLBACK_UNTERMINATED,
     GFX_CHARACTER_TEXT_FALLBACK_INVALID_UTF8,
     GFX_CHARACTER_TEXT_FALLBACK_CONTROL,
-    GFX_CHARACTER_TEXT_FALLBACK_SHAPING_REQUIRED,
+    GFX_CHARACTER_TEXT_FALLBACK_INVISIBLE_SEQUENCE,
     GFX_CHARACTER_TEXT_FALLBACK_MISSING_GLYPH,
     GFX_CHARACTER_TEXT_FALLBACK_TOO_MANY_GLYPHS,
     GFX_CHARACTER_TEXT_FALLBACK_FONT_UNAVAILABLE,
@@ -39,17 +41,23 @@ typedef struct GfxCharacterTextMetrics {
     uint32_t non_ascii_codepoints;
     uint32_t missing_codepoints;
     uint32_t shaping_codepoints;
+    uint32_t bidi_runs;
     bool valid_utf8;
     bool terminated;
+    bool native_renderable;
+    bool shaping_applied;
+    bool right_to_left;
+    /* Compatibility name retained for callers from the original LTR renderer;
+     * true means the project-owned native renderer handled the full string. */
     bool direct_renderable;
     bool truncated;
     GfxCharacterTextFallbackReason fallback_reason;
 } GfxCharacterTextMetrics;
 
-/* Measure a bounded UTF-8 custom-character name against the project-owned
- * font. This direct path intentionally supports only non-joining LTR scripts;
- * callers must use their documented fallback when direct_renderable is false.
- * max_width and height are destination pixels, not source-font units. */
+/* Measure bounded UTF-8 against the project-owned, deterministic OpenType
+ * stack. Latin/Greek/Cyrillic, Arabic and Hebrew are shaped natively; malformed,
+ * unsafe-control, or uncovered text fails closed to the documented retail-font
+ * fallback. max_width and height are destination pixels, not font units. */
 bool gfx_character_text_measure(const char *source, size_t source_capacity,
                                 uint32_t max_width, uint32_t height,
                                 GfxCharacterTextMetrics *metrics);

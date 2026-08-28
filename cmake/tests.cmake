@@ -715,6 +715,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform
         ${CMAKE_SOURCE_DIR}/platform/fast3d
         ${CMAKE_SOURCE_DIR}/lib/stb)
+    target_link_libraries(mdkr_character_text_test PRIVATE
+        mdkr_character_text_shaping)
     if(NOT WIN32)
         target_link_libraries(mdkr_character_text_test PRIVATE m)
     endif()

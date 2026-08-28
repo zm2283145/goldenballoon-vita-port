@@ -2453,11 +2453,13 @@ static DrawTexture *menu_custom_roster_name(
         sCustomRosterNameCatalogIndices[pageSlot] = item->catalog_index;
         sCustomRosterNameRevisions[pageSlot] = item->revision;
         MDKR_TRACE(
-            "custom_character_name: context=tile package=%s mode=%s reason=%s codepoints=%u width=%u truncated=%d",
+            "custom_character_name: context=tile package=%s mode=%s reason=%s codepoints=%u glyphs=%u bidi_runs=%u rtl=%d width=%u truncated=%d",
             item->id,
             sCustomRosterNameModes[pageSlot] == 1u ? "native" : "retail-fallback",
             gfx_character_text_fallback_reason_name(metrics->fallback_reason),
-            metrics->input_codepoints, metrics->width, metrics->truncated);
+            metrics->input_codepoints, metrics->rendered_glyphs,
+            metrics->bidi_runs, metrics->right_to_left,
+            metrics->width, metrics->truncated);
     } else if (sCustomRosterNameModes[pageSlot] == 1u) {
         dkr_dl_register_host_ptr(texture->texels);
     }
@@ -2503,12 +2505,15 @@ static DrawTexture *menu_custom_display_name(
         sCustomDisplayNameCatalogIndex = item->catalog_index;
         sCustomDisplayNameRevision = item->revision;
         MDKR_TRACE(
-            "custom_character_name: context=display package=%s mode=%s reason=%s codepoints=%u width=%u truncated=%d",
+            "custom_character_name: context=display package=%s mode=%s reason=%s codepoints=%u glyphs=%u bidi_runs=%u rtl=%d width=%u truncated=%d",
             item->id,
             sCustomDisplayNameMode == 1u ? "native" : "retail-fallback",
             gfx_character_text_fallback_reason_name(
                 sCustomDisplayNameMetrics.fallback_reason),
             sCustomDisplayNameMetrics.input_codepoints,
+            sCustomDisplayNameMetrics.rendered_glyphs,
+            sCustomDisplayNameMetrics.bidi_runs,
+            sCustomDisplayNameMetrics.right_to_left,
             sCustomDisplayNameMetrics.width,
             sCustomDisplayNameMetrics.truncated);
     } else if (sCustomDisplayNameMode == 1u) {

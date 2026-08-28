@@ -106,6 +106,8 @@ verify_windows_archive() {
     GoldenBalloon/BasisU-LICENSE.txt \
     GoldenBalloon/BasisU-Zstd-LICENSE.txt \
     GoldenBalloon/BasisU-README.md \
+    GoldenBalloon/CharacterText-HarfBuzz-COPYING.txt \
+    GoldenBalloon/CharacterText-SheenBidi-LICENSE.txt \
     GoldenBalloon/Meshoptimizer-LICENSE.md \
     GoldenBalloon/Meshoptimizer-README.md \
     GoldenBalloon/NativePhoneParty-NOTICES.txt \
@@ -159,6 +161,10 @@ with zipfile.ZipFile(sys.argv[1], "r") as archive:
             "2c1a7fa704df8f3a606f6fc010b8b5aaebf403f3aeec339a12048f1ba7331a0b",
         "GoldenBalloon/BasisU-README.md":
             "d15b94b7cb320ed39156c8ddf7d8e814185c6d0de51005113f1d18784785975c",
+        "GoldenBalloon/CharacterText-HarfBuzz-COPYING.txt":
+            "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64",
+        "GoldenBalloon/CharacterText-SheenBidi-LICENSE.txt":
+            "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
         "GoldenBalloon/Meshoptimizer-LICENSE.md":
             "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26",
     }
@@ -206,6 +212,10 @@ if [[ "$self_test" == true ]]; then
     "$test_root/GoldenBalloon/BasisU-Zstd-LICENSE.txt"
   cp third_party/basisu/README.md \
     "$test_root/GoldenBalloon/BasisU-README.md"
+  cp third_party/character_text/HarfBuzz-COPYING.txt \
+    "$test_root/GoldenBalloon/CharacterText-HarfBuzz-COPYING.txt"
+  cp third_party/gltf_validator/LICENSE.txt \
+    "$test_root/GoldenBalloon/CharacterText-SheenBidi-LICENSE.txt"
   cp third_party/meshoptimizer/LICENSE.md \
     "$test_root/GoldenBalloon/Meshoptimizer-LICENSE.md"
   cp third_party/meshoptimizer/README.md \
@@ -332,6 +342,10 @@ cp LICENSE README.md "$stage/"
 cp third_party/basisu/LICENSE.txt "$stage/BasisU-LICENSE.txt"
 cp third_party/basisu/Zstd-LICENSE.txt "$stage/BasisU-Zstd-LICENSE.txt"
 cp third_party/basisu/README.md "$stage/BasisU-README.md"
+cp third_party/character_text/HarfBuzz-COPYING.txt \
+  "$stage/CharacterText-HarfBuzz-COPYING.txt"
+cp third_party/gltf_validator/LICENSE.txt \
+  "$stage/CharacterText-SheenBidi-LICENSE.txt"
 cp third_party/meshoptimizer/LICENSE.md "$stage/Meshoptimizer-LICENSE.md"
 cp third_party/meshoptimizer/README.md "$stage/Meshoptimizer-README.md"
 # A Windows Git checkout may materialize tracked text with CRLF. Canonicalize

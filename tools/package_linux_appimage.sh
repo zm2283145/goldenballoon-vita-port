@@ -106,6 +106,8 @@ verify_linux_tarball() {
       Golden-Balloon.AppDir/BasisU-LICENSE.txt \
       Golden-Balloon.AppDir/BasisU-Zstd-LICENSE.txt \
       Golden-Balloon.AppDir/BasisU-README.md \
+      Golden-Balloon.AppDir/CharacterText-HarfBuzz-COPYING.txt \
+      Golden-Balloon.AppDir/CharacterText-SheenBidi-LICENSE.txt \
       Golden-Balloon.AppDir/Meshoptimizer-LICENSE.md \
       Golden-Balloon.AppDir/Meshoptimizer-README.md \
       Golden-Balloon.AppDir/NativePhoneParty-NOTICES.txt \
@@ -193,6 +195,10 @@ with tarfile.open(sys.argv[1], "r:gz") as archive:
             "2c1a7fa704df8f3a606f6fc010b8b5aaebf403f3aeec339a12048f1ba7331a0b",
         "BasisU-README.md":
             "d15b94b7cb320ed39156c8ddf7d8e814185c6d0de51005113f1d18784785975c",
+        "CharacterText-HarfBuzz-COPYING.txt":
+            "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64",
+        "CharacterText-SheenBidi-LICENSE.txt":
+            "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
         "Meshoptimizer-LICENSE.md":
             "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26",
     }
@@ -233,6 +239,10 @@ if [[ "$self_test" == true ]]; then
   cp third_party/basisu/LICENSE.txt "$test_appdir/BasisU-LICENSE.txt"
   cp third_party/basisu/Zstd-LICENSE.txt "$test_appdir/BasisU-Zstd-LICENSE.txt"
   cp third_party/basisu/README.md "$test_appdir/BasisU-README.md"
+  cp third_party/character_text/HarfBuzz-COPYING.txt \
+    "$test_appdir/CharacterText-HarfBuzz-COPYING.txt"
+  cp third_party/gltf_validator/LICENSE.txt \
+    "$test_appdir/CharacterText-SheenBidi-LICENSE.txt"
   cp third_party/meshoptimizer/LICENSE.md "$test_appdir/Meshoptimizer-LICENSE.md"
   cp third_party/meshoptimizer/README.md "$test_appdir/Meshoptimizer-README.md"
   cp third_party/native_phone_party/NOTICE.txt \
@@ -352,6 +362,10 @@ mkdir -p "$appdir/usr/bin" "$appdir/usr/lib"
 cp third_party/basisu/LICENSE.txt "$appdir/BasisU-LICENSE.txt"
 cp third_party/basisu/Zstd-LICENSE.txt "$appdir/BasisU-Zstd-LICENSE.txt"
 cp third_party/basisu/README.md "$appdir/BasisU-README.md"
+cp third_party/character_text/HarfBuzz-COPYING.txt \
+  "$appdir/CharacterText-HarfBuzz-COPYING.txt"
+cp third_party/gltf_validator/LICENSE.txt \
+  "$appdir/CharacterText-SheenBidi-LICENSE.txt"
 cp third_party/meshoptimizer/LICENSE.md "$appdir/Meshoptimizer-LICENSE.md"
 cp third_party/meshoptimizer/README.md "$appdir/Meshoptimizer-README.md"
 

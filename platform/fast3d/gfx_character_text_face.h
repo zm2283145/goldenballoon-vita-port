@@ -9,8 +9,8 @@
  *   ofl/roboto/Roboto[wdth,wght].ttf
  *   sha256 d7598e12c5dbef095ff8272cfc55da0250bd07fbdecbac8a530b9b277872a134
  * Modification: FontTools 4.63.0, wght=600/wdth=100 static instance, no
- * hinting, subset to the bounded LTR repertoire documented below while
- * retaining all applicable OpenType layout features for a future shaper.
+ * hinting, subset to the bounded primary repertoire documented below while
+ * retaining all applicable OpenType layout features for the pinned shaper.
  * Subset sha256:
  *   d8a1237268dcec64c5b0007c927431adf8f58a114e79cc04fc9d238e82f71642
  * Compression: Dear ImGui binary_to_compressed_c at project pin
@@ -37,11 +37,10 @@
  * The face is SIL Open Font License 1.1. See lib/fonts/LICENSE.txt and
  * THIRD_PARTY.md. Roboto reserves no font name.
  *
- * Admitted direct-glyph policy is deliberately narrower than the subset:
- * printable LTR Latin, Greek, Cyrillic, their precomposed extensions, and
- * neutral punctuation. Joining scripts, bidirectional layout, and arbitrary
- * combining sequences require a real shaping/bidi engine and never enter the
- * direct renderer by accident.
+ * This primary face covers Latin, Greek, Cyrillic, their extensions, combining
+ * marks, and neutral punctuation. The runtime uses it with pinned HarfBuzz and
+ * SheenBidi plus reviewed Noto script faces; missing glyphs and unsafe invisible
+ * controls fail closed instead of consulting host fonts.
  */
 #ifndef MDKR_GFX_CHARACTER_TEXT_FACE_H
 #define MDKR_GFX_CHARACTER_TEXT_FACE_H

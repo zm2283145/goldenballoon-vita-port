@@ -99,6 +99,8 @@ if(MDKR_CHARACTER_LOD_TOOLS AND NOT EMSCRIPTEN)
     enable_language(CXX)
     include(${CMAKE_SOURCE_DIR}/cmake/character_meshoptimizer.cmake)
 endif()
+enable_language(CXX)
+include(${CMAKE_SOURCE_DIR}/cmake/character_text_shaping.cmake)
 include(${CMAKE_SOURCE_DIR}/cmake/tests.cmake)
 
 if(NOT EMSCRIPTEN)
@@ -564,6 +566,7 @@ add_executable(${MDKR_TARGET}
     ${MINIZ_SOURCES}
     ${DR_LIBS_SOURCES}
 )
+target_link_libraries(${MDKR_TARGET} PRIVATE mdkr_character_text_shaping)
 
 # Include layout mirrors the DKR Makefile (-I . -I include -I include/libc
 # -I include/PR -I include/sys -I src -I libultra), rooted at game/ so paths like

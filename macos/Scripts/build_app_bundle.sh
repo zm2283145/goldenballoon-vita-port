@@ -603,6 +603,12 @@ ditto "${PROJECT_ROOT}/third_party/basisu/Zstd-LICENSE.txt" \
 ditto "${PROJECT_ROOT}/third_party/basisu/README.md" \
     "${THIRD_PARTY_RESOURCE_DIR}/BasisU-README.md" ||
     die "Failed to copy the Basis Universal provenance notice."
+ditto "${PROJECT_ROOT}/third_party/character_text/HarfBuzz-COPYING.txt" \
+    "${THIRD_PARTY_RESOURCE_DIR}/CharacterText-HarfBuzz-COPYING.txt" ||
+    die "Failed to copy the HarfBuzz license."
+ditto "${PROJECT_ROOT}/third_party/gltf_validator/LICENSE.txt" \
+    "${THIRD_PARTY_RESOURCE_DIR}/CharacterText-SheenBidi-LICENSE.txt" ||
+    die "Failed to copy the SheenBidi Apache license."
 
 CHARACTER_IMPORTER_BUNDLED=""
 CHARACTER_IMPORTER_MANIFEST_DEST=""

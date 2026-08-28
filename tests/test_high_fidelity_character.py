@@ -148,6 +148,24 @@ def make_grid_glb(
 
 
 class HighFidelityCharacterTests(unittest.TestCase):
+    def test_identity_shaping_dependencies_are_pinned_and_offline_ready(self) -> None:
+        dependency = (ROOT / "cmake" /
+                      "character_text_shaping.cmake").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            '"36cb489cb02ce4b92099669ba9f9bea348eff93f"', dependency
+        )
+        self.assertIn(
+            '"cfe430e7375a7845b679adae9d51dac6deaa8858"', dependency
+        )
+        self.assertEqual(2, dependency.count("URL_HASH"))
+        self.assertIn("MDKR_CHARACTER_TEXT_DEP_CACHE", dependency)
+        self.assertIn('set(HB_HAVE_CORETEXT OFF', dependency)
+        self.assertIn('set(HB_HAVE_DIRECTWRITE OFF', dependency)
+        self.assertIn('set(HB_BUILD_SUBSET OFF', dependency)
+        self.assertIn('set(SB_CONFIG_EXPERIMENTAL_TEXT_API OFF', dependency)
+
     def test_ktx2_runtime_dependency_and_device_fallback_are_pinned(self) -> None:
         dependency = (ROOT / "cmake" / "character_basisu.cmake").read_text(
             encoding="utf-8"

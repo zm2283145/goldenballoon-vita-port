@@ -81,6 +81,18 @@ for BASISU_NOTICE_SPEC in \
        "${BASISU_NOTICE_HASH}" ]] ||
         die "bundled Basis Universal notice changed: ${BASISU_NOTICE_NAME}"
 done
+for CHARACTER_TEXT_NOTICE_SPEC in \
+    "CharacterText-HarfBuzz-COPYING.txt:ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64" \
+    "CharacterText-SheenBidi-LICENSE.txt:cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"; do
+    CHARACTER_TEXT_NOTICE_NAME="${CHARACTER_TEXT_NOTICE_SPEC%%:*}"
+    CHARACTER_TEXT_NOTICE_HASH="${CHARACTER_TEXT_NOTICE_SPEC#*:}"
+    CHARACTER_TEXT_NOTICE_PATH="${BASISU_NOTICE_DIR}/${CHARACTER_TEXT_NOTICE_NAME}"
+    [[ -f "${CHARACTER_TEXT_NOTICE_PATH}" && ! -L "${CHARACTER_TEXT_NOTICE_PATH}" ]] ||
+        die "bundled character-text notice is missing or linked: ${CHARACTER_TEXT_NOTICE_NAME}"
+    [[ "$(shasum -a 256 "${CHARACTER_TEXT_NOTICE_PATH}" | awk '{print $1}')" ==
+       "${CHARACTER_TEXT_NOTICE_HASH}" ]] ||
+        die "bundled character-text notice changed: ${CHARACTER_TEXT_NOTICE_NAME}"
+done
 CHARACTER_IMPORTER="${APP_PATH}/Contents/MacOS/tools/character_importer"
 CHARACTER_IMPORTER_MANIFEST="${APP_PATH}/Contents/Resources/ThirdParty/CharacterImporter-MANIFEST.json"
 CHARACTER_CPYTHON_LICENSE="${APP_PATH}/Contents/Resources/ThirdParty/CharacterImporter-CPython-LICENSE.txt"

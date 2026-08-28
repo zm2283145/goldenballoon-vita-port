@@ -602,6 +602,11 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
                     # Exact runtime transcoder terms and immutable source
                     # provenance; verify_unsigned_release.sh pins every file.
                     ;;
+                Contents/Resources/ThirdParty/CharacterText-HarfBuzz-COPYING.txt|\
+                Contents/Resources/ThirdParty/CharacterText-SheenBidi-LICENSE.txt)
+                    # Exact licenses for the statically linked, ROM-independent
+                    # custom-name shaping stack; the release verifier pins both.
+                    ;;
                 Contents/Resources/ThirdParty/Meshoptimizer-LICENSE.md|\
                 Contents/Resources/ThirdParty/Meshoptimizer-README.md)
                     # Exact offline simplifier terms and immutable source

@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <hb.h>
+#include <hb-ot.h>
+#include <SheenBidi/SheenBidi.h>
+
 /* stb_truetype is intentionally isolated in this translation unit. Its input
  * is the exact compile-time font below, never a package or host-system font. */
 #define STBTT_STATIC
@@ -23,6 +27,15 @@
 #endif
 
 #include "gfx_character_text_face.h"
+#include "gfx_character_text_arabic_face.h"
+#include "gfx_character_text_hebrew_face.h"
+
+enum {
+    TEXT_FACE_PRIMARY = 0,
+    TEXT_FACE_ARABIC,
+    TEXT_FACE_HEBREW,
+    TEXT_FACE_COUNT,
+};
 
 typedef struct DecodeState {
     const uint8_t *input_begin;
@@ -34,22 +47,32 @@ typedef struct DecodeState {
 
 typedef struct TextGlyph {
     int glyph;
-    uint32_t codepoint;
+    uint8_t face;
     float pen_x;
+    float pen_y;
 } TextGlyph;
 
 typedef struct TextLayout {
     TextGlyph glyphs[GFX_CHARACTER_TEXT_MAX_GLYPHS];
     uint32_t count;
-    float scale;
     float advance_width;
     int baseline;
 } TextLayout;
 
-static uint8_t *s_font_bytes;
-static stbtt_fontinfo s_font;
-static bool s_font_ready;
-static bool s_font_failed;
+typedef struct EmbeddedFace {
+    const char *encoded;
+    uint8_t *bytes;
+    size_t bytes_size;
+    stbtt_fontinfo stb;
+    hb_blob_t *blob;
+    hb_face_t *hb_face;
+    hb_font_t *hb_font;
+    float scale;
+} EmbeddedFace;
+
+static EmbeddedFace s_faces[TEXT_FACE_COUNT];
+static bool s_fonts_ready;
+static bool s_fonts_failed;
 static uint8_t *s_mask;
 static size_t s_mask_capacity;
 
@@ -206,16 +229,21 @@ static int base85_value(unsigned char value) {
     return value >= '\\' ? (int)value - 36 : (int)value - 35;
 }
 
-static bool load_font(void) {
-    const char *encoded = MdkrCharacterText_compressed_data_base85;
+static void release_face(EmbeddedFace *face) {
+    if (face->hb_font != NULL) hb_font_destroy(face->hb_font);
+    if (face->hb_face != NULL) hb_face_destroy(face->hb_face);
+    if (face->blob != NULL) hb_blob_destroy(face->blob);
+    free(face->bytes);
+    memset(face, 0, sizeof(*face));
+}
+
+static bool load_face(EmbeddedFace *face, const char *encoded) {
     size_t encoded_size;
     size_t compressed_size;
     uint8_t *compressed = NULL;
     size_t source_at;
     size_t output_at;
     uint32_t decompressed_size;
-    if (s_font_ready) return true;
-    if (s_font_failed) return false;
     encoded_size = strlen(encoded);
     if (encoded_size == 0u || encoded_size % 5u != 0u) goto fail;
     compressed_size = encoded_size / 5u * 4u;
@@ -240,23 +268,56 @@ static bool load_font(void) {
     if (compressed_size < 12u) goto fail;
     decompressed_size = read_be32(compressed + 8u);
     if (decompressed_size == 0u || decompressed_size > 1024u * 1024u) goto fail;
-    s_font_bytes = (uint8_t *)malloc(decompressed_size);
-    if (s_font_bytes == NULL ||
-        !decompress_stb(s_font_bytes, decompressed_size,
+    face->bytes = (uint8_t *)malloc(decompressed_size);
+    if (face->bytes == NULL ||
+        !decompress_stb(face->bytes, decompressed_size,
                         compressed, compressed_size) ||
-        stbtt_InitFont(&s_font, s_font_bytes,
-                       stbtt_GetFontOffsetForIndex(s_font_bytes, 0)) == 0) {
+        stbtt_InitFont(&face->stb, face->bytes,
+                       stbtt_GetFontOffsetForIndex(face->bytes, 0)) == 0) {
         goto fail;
     }
+    face->encoded = encoded;
+    face->bytes_size = decompressed_size;
+    face->blob = hb_blob_create((const char *)face->bytes,
+                                (unsigned int)face->bytes_size,
+                                HB_MEMORY_MODE_READONLY, NULL, NULL);
+    face->hb_face = hb_face_create(face->blob, 0u);
+    face->hb_font = hb_font_create(face->hb_face);
+    if (face->blob == hb_blob_get_empty() ||
+        face->hb_face == hb_face_get_empty() ||
+        face->hb_font == hb_font_get_empty()) {
+        goto fail;
+    }
+    hb_ot_font_set_funcs(face->hb_font);
+    hb_font_set_scale(face->hb_font,
+                      (int)hb_face_get_upem(face->hb_face),
+                      (int)hb_face_get_upem(face->hb_face));
     free(compressed);
-    s_font_ready = true;
     return true;
 fail:
     free(compressed);
-    free(s_font_bytes);
-    s_font_bytes = NULL;
-    s_font_failed = true;
+    release_face(face);
     return false;
+}
+
+static bool load_fonts(void) {
+    if (s_fonts_ready) return true;
+    if (s_fonts_failed) return false;
+    if (!load_face(&s_faces[TEXT_FACE_PRIMARY],
+                   MdkrCharacterText_compressed_data_base85) ||
+        !load_face(&s_faces[TEXT_FACE_ARABIC],
+                   MdkrCharacterTextArabic_compressed_data_base85) ||
+        !load_face(&s_faces[TEXT_FACE_HEBREW],
+                   MdkrCharacterTextHebrew_compressed_data_base85)) {
+        size_t index;
+        for (index = 0u; index < TEXT_FACE_COUNT; ++index) {
+            release_face(&s_faces[index]);
+        }
+        s_fonts_failed = true;
+        return false;
+    }
+    s_fonts_ready = true;
+    return true;
 }
 
 static bool utf8_next(const char *source, size_t capacity, size_t *at,
@@ -302,20 +363,7 @@ static bool utf8_next(const char *source, size_t capacity, size_t *at,
     return true;
 }
 
-static bool requires_shaping(uint32_t cp) {
-    return (cp >= 0x0300u && cp <= 0x036Fu) ||
-           (cp >= 0x0483u && cp <= 0x0489u) ||
-           (cp >= 0x0590u && cp <= 0x08FFu) ||
-           (cp >= 0x1AB0u && cp <= 0x1AFFu) ||
-           (cp >= 0x1DC0u && cp <= 0x1DFFu) ||
-           (cp >= 0x20D0u && cp <= 0x20FFu) ||
-           (cp >= 0x2DE0u && cp <= 0x2DFFu) ||
-           (cp >= 0xA674u && cp <= 0xA67Du) ||
-           (cp >= 0xFE00u && cp <= 0xFE2Fu) ||
-           (cp >= 0x1F1E6u && cp <= 0x1FAFFu);
-}
-
-static bool admitted_ltr(uint32_t cp) {
+static bool admitted_primary(uint32_t cp) {
     if (cp >= 0x20u && cp <= 0x7Eu) return true;
     if (cp >= 0x00A0u && cp <= 0x024Fu) return true;
     if (cp >= 0x0370u && cp <= 0x052Fu) return true;
@@ -327,6 +375,68 @@ static bool admitted_ltr(uint32_t cp) {
     if (cp >= 0x2100u && cp <= 0x214Fu) return true;
     if (cp >= 0xA640u && cp <= 0xA69Fu) return true;
     return false;
+}
+
+static bool unsafe_control(uint32_t cp) {
+    return cp < 0x20u || (cp >= 0x7Fu && cp <= 0x9Fu) || cp == 0x00ADu ||
+           cp == 0x034Fu || cp == 0x061Cu || cp == 0x200Bu ||
+           cp == 0x200Eu || cp == 0x200Fu ||
+           (cp >= 0x2028u && cp <= 0x202Eu) ||
+           (cp >= 0x2060u && cp <= 0x206Fu) ||
+           (cp >= 0xFE00u && cp <= 0xFE0Fu) || cp == 0xFEFFu ||
+           (cp >= 0xE0100u && cp <= 0xE01EFu);
+}
+
+static bool arabic_codepoint(uint32_t cp) {
+    return (cp >= 0x0600u && cp <= 0x06FFu) ||
+           (cp >= 0x0750u && cp <= 0x077Fu) ||
+           (cp >= 0x0870u && cp <= 0x089Fu) ||
+           (cp >= 0x08A0u && cp <= 0x08FFu) ||
+           (cp >= 0xFB50u && cp <= 0xFDFFu) ||
+           (cp >= 0xFE70u && cp <= 0xFEFFu);
+}
+
+static bool hebrew_codepoint(uint32_t cp) {
+    return (cp >= 0x0590u && cp <= 0x05FFu) ||
+           (cp >= 0xFB1Du && cp <= 0xFB4Fu);
+}
+
+static bool combining_codepoint(uint32_t cp) {
+    hb_unicode_general_category_t category = hb_unicode_general_category(
+        hb_unicode_funcs_get_default(), cp);
+    return category == HB_UNICODE_GENERAL_CATEGORY_SPACING_MARK ||
+           category == HB_UNICODE_GENERAL_CATEGORY_ENCLOSING_MARK ||
+           category == HB_UNICODE_GENERAL_CATEGORY_NON_SPACING_MARK;
+}
+
+static uint8_t preferred_face(uint32_t cp) {
+    if (arabic_codepoint(cp)) return TEXT_FACE_ARABIC;
+    if (hebrew_codepoint(cp)) return TEXT_FACE_HEBREW;
+    return TEXT_FACE_PRIMARY;
+}
+
+static bool visible_identity_base(uint32_t cp) {
+    hb_unicode_general_category_t category = hb_unicode_general_category(
+        hb_unicode_funcs_get_default(), cp);
+    return category != HB_UNICODE_GENERAL_CATEGORY_SPACE_SEPARATOR &&
+           category != HB_UNICODE_GENERAL_CATEGORY_LINE_SEPARATOR &&
+           category != HB_UNICODE_GENERAL_CATEGORY_PARAGRAPH_SEPARATOR &&
+           category != HB_UNICODE_GENERAL_CATEGORY_FORMAT &&
+           !combining_codepoint(cp);
+}
+
+static bool joiner_has_arabic_context(const uint32_t *codepoints,
+                                      uint32_t count, uint32_t index) {
+    uint32_t left = index;
+    uint32_t right = index + 1u;
+    while (left != 0u) {
+        left--;
+        if (!combining_codepoint(codepoints[left])) break;
+    }
+    while (right < count && combining_codepoint(codepoints[right])) right++;
+    return left < index && right < count &&
+           arabic_codepoint(codepoints[left]) &&
+           arabic_codepoint(codepoints[right]);
 }
 
 static void set_fallback(GfxCharacterTextMetrics *metrics,
@@ -341,19 +451,16 @@ static uint32_t position_layout(TextLayout *layout) {
     float right = 1.0f;
     float shift = 0.0f;
     uint32_t index;
-    layout->advance_width = 0.0f;
     for (index = 0u; index < layout->count; ++index) {
-        int advance;
-        int bearing;
+        EmbeddedFace *face = &s_faces[layout->glyphs[index].face];
         int x0;
         int y0;
         int x1;
         int y1;
         float glyph_left;
         float glyph_right;
-        layout->glyphs[index].pen_x = layout->advance_width + 1.0f;
-        stbtt_GetGlyphBitmapBox(&s_font, layout->glyphs[index].glyph,
-                                layout->scale, layout->scale,
+        stbtt_GetGlyphBitmapBox(&face->stb, layout->glyphs[index].glyph,
+                                face->scale, face->scale,
                                 &x0, &y0, &x1, &y1);
         (void)y0;
         (void)y1;
@@ -361,15 +468,6 @@ static uint32_t position_layout(TextLayout *layout) {
         glyph_right = floorf(layout->glyphs[index].pen_x) + (float)x1;
         if (glyph_left < left) left = glyph_left;
         if (glyph_right > right) right = glyph_right;
-        stbtt_GetGlyphHMetrics(&s_font, layout->glyphs[index].glyph,
-                              &advance, &bearing);
-        (void)bearing;
-        layout->advance_width += (float)advance * layout->scale;
-        if (index + 1u < layout->count) {
-            layout->advance_width += (float)stbtt_GetGlyphKernAdvance(
-                &s_font, layout->glyphs[index].glyph,
-                layout->glyphs[index + 1u].glyph) * layout->scale;
-        }
     }
     if (left < 1.0f) shift = 1.0f - left;
     if (shift != 0.0f) {
@@ -384,14 +482,214 @@ static uint32_t position_layout(TextLayout *layout) {
     return (uint32_t)ceilf(right) + 1u;
 }
 
+static bool shape_segment(const uint32_t *codepoints, uint32_t total,
+                          uint32_t offset, uint32_t length, uint8_t face_index,
+                          hb_script_t script, hb_direction_t direction,
+                          TextLayout *layout) {
+    EmbeddedFace *face = &s_faces[face_index];
+    hb_buffer_t *buffer = hb_buffer_create();
+    hb_glyph_info_t *infos;
+    hb_glyph_position_t *positions;
+    unsigned int glyph_count = 0u;
+    unsigned int index;
+    float pen_x = layout->advance_width;
+    if (buffer == hb_buffer_get_empty()) return false;
+    hb_buffer_set_cluster_level(buffer,
+        HB_BUFFER_CLUSTER_LEVEL_MONOTONE_CHARACTERS);
+    hb_buffer_set_direction(buffer, direction);
+    hb_buffer_set_script(buffer, script);
+    hb_buffer_set_language(buffer, hb_language_from_string(
+        script == HB_SCRIPT_ARABIC ? "ar" :
+        script == HB_SCRIPT_HEBREW ? "he" : "und", -1));
+    hb_buffer_add_utf32(buffer, codepoints, (int)total, offset, (int)length);
+    hb_shape(face->hb_font, buffer, NULL, 0u);
+    infos = hb_buffer_get_glyph_infos(buffer, &glyph_count);
+    positions = hb_buffer_get_glyph_positions(buffer, NULL);
+    if (glyph_count > GFX_CHARACTER_TEXT_MAX_GLYPHS - layout->count) {
+        hb_buffer_destroy(buffer);
+        return false;
+    }
+    for (index = 0u; index < glyph_count; ++index) {
+        TextGlyph *glyph = &layout->glyphs[layout->count++];
+        glyph->glyph = (int)infos[index].codepoint;
+        glyph->face = face_index;
+        glyph->pen_x = pen_x + (float)positions[index].x_offset * face->scale;
+        glyph->pen_y = -(float)positions[index].y_offset * face->scale;
+        pen_x += (float)positions[index].x_advance * face->scale;
+    }
+    layout->advance_width = pen_x;
+    hb_buffer_destroy(buffer);
+    return true;
+}
+
+static bool shape_codepoints(const uint32_t *codepoints, uint32_t count,
+                             const uint8_t *faces, const hb_script_t *scripts,
+                             uint32_t height,
+                             TextLayout *layout,
+                             GfxCharacterTextMetrics *metrics) {
+    SBCodepointSequence sequence;
+    SBAlgorithmRef algorithm = NULL;
+    SBParagraphRef paragraph = NULL;
+    SBLineRef line = NULL;
+    const SBRun *runs;
+    SBUInteger run_count;
+    SBUInteger run_index;
+    float top = 0.0f;
+    float bottom = 0.0f;
+    uint32_t face_index;
+    memset(layout, 0, sizeof(*layout));
+    for (face_index = 0u; face_index < TEXT_FACE_COUNT; ++face_index) {
+        int ascent;
+        int descent;
+        int line_gap;
+        EmbeddedFace *face = &s_faces[face_index];
+        face->scale = stbtt_ScaleForPixelHeight(&face->stb,
+                                                (float)height - 4.0f);
+        stbtt_GetFontVMetrics(&face->stb, &ascent, &descent, &line_gap);
+        (void)line_gap;
+        if ((float)ascent * face->scale > top) {
+            top = (float)ascent * face->scale;
+        }
+        if ((float)-descent * face->scale > bottom) {
+            bottom = (float)-descent * face->scale;
+        }
+    }
+    layout->baseline = (int)floorf(
+        ((float)height - top - bottom) * 0.5f + top + 0.5f);
+    sequence.stringEncoding = SBStringEncodingUTF32;
+    sequence.stringBuffer = codepoints;
+    sequence.stringLength = count;
+    algorithm = SBAlgorithmCreate(&sequence);
+    if (algorithm == NULL) goto fail;
+    paragraph = SBAlgorithmCreateParagraph(algorithm, 0u, count,
+                                           SBLevelDefaultLTR);
+    if (paragraph == NULL) goto fail;
+    line = SBParagraphCreateLine(paragraph, 0u, count);
+    if (line == NULL) goto fail;
+    run_count = SBLineGetRunCount(line);
+    runs = SBLineGetRunsPtr(line);
+    metrics->bidi_runs = (uint32_t)run_count;
+    for (run_index = 0u; run_index < run_count; ++run_index) {
+        const SBRun *run = &runs[run_index];
+        uint32_t segment_starts[GFX_CHARACTER_TEXT_MAX_CODEPOINTS];
+        uint32_t segment_lengths[GFX_CHARACTER_TEXT_MAX_CODEPOINTS];
+        uint8_t segment_faces[GFX_CHARACTER_TEXT_MAX_CODEPOINTS];
+        hb_script_t segment_scripts[GFX_CHARACTER_TEXT_MAX_CODEPOINTS];
+        uint32_t segment_count = 0u;
+        uint32_t at = (uint32_t)run->offset;
+        uint32_t end = at + (uint32_t)run->length;
+        while (at < end) {
+            uint32_t start = at;
+            uint8_t selected = faces[at++];
+            hb_script_t script = scripts[start];
+            while (at < end && faces[at] == selected &&
+                   scripts[at] == script) at++;
+            segment_starts[segment_count] = start;
+            segment_lengths[segment_count] = at - start;
+            segment_faces[segment_count] = selected;
+            segment_scripts[segment_count] = script;
+            segment_count++;
+        }
+        if ((run->level & 1u) != 0u) {
+            metrics->right_to_left = true;
+            while (segment_count != 0u) {
+                uint32_t segment = --segment_count;
+                if (!shape_segment(codepoints, count,
+                                   segment_starts[segment],
+                                   segment_lengths[segment],
+                                   segment_faces[segment],
+                                   segment_scripts[segment], HB_DIRECTION_RTL,
+                                   layout)) goto fail;
+            }
+        } else {
+            uint32_t segment;
+            for (segment = 0u; segment < segment_count; ++segment) {
+                if (!shape_segment(codepoints, count,
+                                   segment_starts[segment],
+                                   segment_lengths[segment],
+                                   segment_faces[segment],
+                                   segment_scripts[segment], HB_DIRECTION_LTR,
+                                   layout)) goto fail;
+            }
+        }
+    }
+    SBLineRelease(line);
+    SBParagraphRelease(paragraph);
+    SBAlgorithmRelease(algorithm);
+    return true;
+fail:
+    if (line != NULL) SBLineRelease(line);
+    if (paragraph != NULL) SBParagraphRelease(paragraph);
+    if (algorithm != NULL) SBAlgorithmRelease(algorithm);
+    return false;
+}
+
+static void assign_context_faces(const uint32_t *codepoints, uint32_t count,
+                                 uint8_t *faces) {
+    uint32_t index;
+    for (index = 0u; index < count; ++index) {
+        faces[index] = preferred_face(codepoints[index]);
+    }
+    for (index = 0u; index < count; ++index) {
+        hb_script_t script = hb_unicode_script(hb_unicode_funcs_get_default(),
+                                               codepoints[index]);
+        bool contextual = script == HB_SCRIPT_COMMON ||
+                          script == HB_SCRIPT_INHERITED ||
+                          codepoints[index] == 0x200Cu ||
+                          codepoints[index] == 0x200Du;
+        if (contextual && index != 0u && faces[index - 1u] != TEXT_FACE_PRIMARY &&
+            stbtt_FindGlyphIndex(&s_faces[faces[index - 1u]].stb,
+                                 (int)codepoints[index]) != 0) {
+            faces[index] = faces[index - 1u];
+        }
+    }
+    for (index = count; index-- > 0u;) {
+        hb_script_t script = hb_unicode_script(hb_unicode_funcs_get_default(),
+                                               codepoints[index]);
+        if ((script == HB_SCRIPT_COMMON || script == HB_SCRIPT_INHERITED) &&
+            faces[index] == TEXT_FACE_PRIMARY && index + 1u < count &&
+            faces[index + 1u] != TEXT_FACE_PRIMARY &&
+            stbtt_FindGlyphIndex(&s_faces[faces[index + 1u]].stb,
+                                 (int)codepoints[index]) != 0) {
+            faces[index] = faces[index + 1u];
+        }
+    }
+}
+
+static void assign_context_scripts(const uint32_t *codepoints, uint32_t count,
+                                   hb_script_t *scripts) {
+    uint32_t index;
+    for (index = 0u; index < count; ++index) {
+        scripts[index] = hb_unicode_script(hb_unicode_funcs_get_default(),
+                                           codepoints[index]);
+    }
+    for (index = 1u; index < count; ++index) {
+        if (scripts[index] == HB_SCRIPT_COMMON ||
+            scripts[index] == HB_SCRIPT_INHERITED) {
+            if (scripts[index - 1u] != HB_SCRIPT_COMMON &&
+                scripts[index - 1u] != HB_SCRIPT_INHERITED) {
+                scripts[index] = scripts[index - 1u];
+            }
+        }
+    }
+    for (index = count; index-- > 0u;) {
+        if ((scripts[index] == HB_SCRIPT_COMMON ||
+             scripts[index] == HB_SCRIPT_INHERITED) &&
+            index + 1u < count) {
+            scripts[index] = scripts[index + 1u];
+        }
+    }
+}
+
 static bool build_layout(const char *source, size_t source_capacity,
                          uint32_t max_width, uint32_t height,
                          TextLayout *layout, GfxCharacterTextMetrics *metrics) {
     size_t at = 0u;
     bool terminated = false;
-    int ascent;
-    int descent;
-    int line_gap;
+    uint32_t codepoints[GFX_CHARACTER_TEXT_MAX_CODEPOINTS + 1u];
+    uint8_t faces[GFX_CHARACTER_TEXT_MAX_CODEPOINTS + 1u];
+    hb_script_t scripts[GFX_CHARACTER_TEXT_MAX_CODEPOINTS + 1u];
+    uint32_t count = 0u;
     memset(metrics, 0, sizeof(*metrics));
     metrics->valid_utf8 = true;
     metrics->height = height;
@@ -402,13 +700,12 @@ static bool build_layout(const char *source, size_t source_capacity,
         set_fallback(metrics, GFX_CHARACTER_TEXT_FALLBACK_INVALID_ARGUMENT);
         return false;
     }
-    if (!load_font()) {
+    if (!load_fonts()) {
         set_fallback(metrics, GFX_CHARACTER_TEXT_FALLBACK_FONT_UNAVAILABLE);
         return false;
     }
     while (!terminated) {
         uint32_t cp;
-        int glyph;
         if (at >= source_capacity) {
             set_fallback(metrics,
                          GFX_CHARACTER_TEXT_FALLBACK_UNTERMINATED);
@@ -422,60 +719,103 @@ static bool build_layout(const char *source, size_t source_capacity,
         }
         metrics->input_codepoints++;
         if (cp >= 0x80u) metrics->non_ascii_codepoints++;
-        if (cp < 0x20u || cp == 0x7Fu ||
-            (cp >= 0x2028u && cp <= 0x202Fu) ||
-            (cp >= 0x2060u && cp <= 0x206Fu)) {
+        if (unsafe_control(cp)) {
             set_fallback(metrics, GFX_CHARACTER_TEXT_FALLBACK_CONTROL);
             return false;
         }
-        if (requires_shaping(cp) || !admitted_ltr(cp)) {
+        if (arabic_codepoint(cp) || hebrew_codepoint(cp) ||
+            combining_codepoint(cp) || cp == 0x200Cu || cp == 0x200Du) {
             metrics->shaping_codepoints++;
-            set_fallback(metrics, GFX_CHARACTER_TEXT_FALLBACK_SHAPING_REQUIRED);
-            return false;
         }
-        glyph = stbtt_FindGlyphIndex(&s_font, (int)cp);
-        if (glyph == 0) {
+        if (!admitted_primary(cp) && !arabic_codepoint(cp) &&
+            !hebrew_codepoint(cp) && cp != 0x200Cu && cp != 0x200Du &&
+            !combining_codepoint(cp)) {
             metrics->missing_codepoints++;
             set_fallback(metrics, GFX_CHARACTER_TEXT_FALLBACK_MISSING_GLYPH);
             return false;
         }
-        if (layout->count >= GFX_CHARACTER_TEXT_MAX_GLYPHS) {
+        if (count >= GFX_CHARACTER_TEXT_MAX_CODEPOINTS) {
             set_fallback(metrics, GFX_CHARACTER_TEXT_FALLBACK_TOO_MANY_GLYPHS);
             return false;
         }
-        layout->glyphs[layout->count].glyph = glyph;
-        layout->glyphs[layout->count].codepoint = cp;
-        layout->count++;
+        codepoints[count++] = cp;
     }
     metrics->terminated = terminated;
     if (!terminated) {
         set_fallback(metrics, GFX_CHARACTER_TEXT_FALLBACK_UNTERMINATED);
         return false;
     }
-    if (layout->count == 0u) {
+    if (count == 0u) {
         set_fallback(metrics, GFX_CHARACTER_TEXT_FALLBACK_INVALID_ARGUMENT);
         return false;
     }
-    stbtt_GetFontVMetrics(&s_font, &ascent, &descent, &line_gap);
-    (void)line_gap;
-    layout->scale = stbtt_ScaleForPixelHeight(&s_font, (float)height - 4.0f);
-    layout->baseline = (int)floorf(
-        ((float)height - (float)(ascent - descent) * layout->scale) * 0.5f +
-        (float)ascent * layout->scale + 0.5f);
-    metrics->width = position_layout(layout);
-    if (metrics->width > max_width) {
-        int ellipsis = stbtt_FindGlyphIndex(&s_font, 0x2026);
-        uint32_t keep = layout->count - 1u;
-        if (ellipsis == 0) {
-            metrics->missing_codepoints++;
+    {
+        bool has_visible_base = false;
+        bool has_mark_base = false;
+        uint32_t index;
+        for (index = 0u; index < count; ++index) {
+            uint32_t cp = codepoints[index];
+            if (cp == 0x200Cu || cp == 0x200Du) {
+                if (!joiner_has_arabic_context(codepoints, count, index)) {
+                    set_fallback(metrics,
+                        GFX_CHARACTER_TEXT_FALLBACK_INVISIBLE_SEQUENCE);
+                    return false;
+                }
+                continue;
+            }
+            if (combining_codepoint(cp)) {
+                if (!has_mark_base) {
+                    set_fallback(metrics,
+                        GFX_CHARACTER_TEXT_FALLBACK_INVISIBLE_SEQUENCE);
+                    return false;
+                }
+                continue;
+            }
+            has_mark_base = visible_identity_base(cp);
+            if (has_mark_base) has_visible_base = true;
+        }
+        if (!has_visible_base) {
             set_fallback(metrics,
-                         GFX_CHARACTER_TEXT_FALLBACK_MISSING_GLYPH);
+                         GFX_CHARACTER_TEXT_FALLBACK_INVISIBLE_SEQUENCE);
             return false;
         }
+    }
+    assign_context_faces(codepoints, count, faces);
+    assign_context_scripts(codepoints, count, scripts);
+    {
+        uint32_t index;
+        for (index = 0u; index < count; ++index) {
+            if (stbtt_FindGlyphIndex(&s_faces[faces[index]].stb,
+                                     (int)codepoints[index]) == 0 &&
+                codepoints[index] != 0x200Cu && codepoints[index] != 0x200Du) {
+                metrics->missing_codepoints++;
+                set_fallback(metrics, GFX_CHARACTER_TEXT_FALLBACK_MISSING_GLYPH);
+                return false;
+            }
+        }
+    }
+    if (!shape_codepoints(codepoints, count, faces, scripts, height, layout,
+                          metrics)) {
+        set_fallback(metrics, GFX_CHARACTER_TEXT_FALLBACK_OUT_OF_MEMORY);
+        return false;
+    }
+    metrics->width = position_layout(layout);
+    if (metrics->width > max_width) {
+        uint32_t keep = count - 1u;
         for (;;) {
-            layout->count = keep + 1u;
-            layout->glyphs[keep].glyph = ellipsis;
-            layout->glyphs[keep].codepoint = 0x2026u;
+            while (keep != 0u &&
+                   (combining_codepoint(codepoints[keep]) ||
+                    codepoints[keep] == 0x200Cu || codepoints[keep] == 0x200Du)) {
+                keep--;
+            }
+            codepoints[keep] = 0x2026u;
+            assign_context_faces(codepoints, keep + 1u, faces);
+            assign_context_scripts(codepoints, keep + 1u, scripts);
+            if (!shape_codepoints(codepoints, keep + 1u, faces, scripts, height,
+                                  layout, metrics)) {
+                set_fallback(metrics, GFX_CHARACTER_TEXT_FALLBACK_OUT_OF_MEMORY);
+                return false;
+            }
             metrics->width = position_layout(layout);
             if (metrics->width <= max_width) break;
             if (keep == 0u) {
@@ -490,6 +830,8 @@ static bool build_layout(const char *source, size_t source_capacity,
     if (metrics->width == 0u) metrics->width = 1u;
     if (metrics->width > max_width) metrics->width = max_width;
     metrics->rendered_glyphs = layout->count;
+    metrics->native_renderable = true;
+    metrics->shaping_applied = true;
     metrics->direct_renderable = true;
     return true;
 }
@@ -529,7 +871,6 @@ bool gfx_character_text_render_rgba(
     bool output_valid = output != NULL && max_width != 0u &&
         max_width <= GFX_CHARACTER_TEXT_MAX_WIDTH && height != 0u &&
         height <= GFX_CHARACTER_TEXT_MAX_HEIGHT &&
-        (size_t)max_width <= SIZE_MAX / 4u &&
         output_stride >= (size_t)max_width * 4u &&
         (size_t)height <= SIZE_MAX / output_stride;
     if (output_valid) needed = output_stride * height;
@@ -556,6 +897,7 @@ bool gfx_character_text_render_rgba(
     }
     memset(s_mask, 0, mask_size);
     for (glyph_index = 0u; glyph_index < layout.count; ++glyph_index) {
+        EmbeddedFace *face = &s_faces[layout.glyphs[glyph_index].face];
         int x0;
         int y0;
         int x1;
@@ -564,20 +906,22 @@ bool gfx_character_text_render_rgba(
         int draw_y;
         int width;
         int glyph_height;
-        stbtt_GetGlyphBitmapBox(&s_font, layout.glyphs[glyph_index].glyph,
-                                layout.scale, layout.scale,
+        stbtt_GetGlyphBitmapBox(&face->stb,
+                                layout.glyphs[glyph_index].glyph,
+                                face->scale, face->scale,
                                 &x0, &y0, &x1, &y1);
         width = x1 - x0;
         glyph_height = y1 - y0;
         draw_x = (int)floorf(layout.glyphs[glyph_index].pen_x) + x0;
-        draw_y = layout.baseline + y0;
+        draw_y = layout.baseline +
+                 (int)floorf(layout.glyphs[glyph_index].pen_y) + y0;
         if (width <= 0 || glyph_height <= 0 || draw_x < 0 || draw_y < 0 ||
             draw_x + width > (int)max_width ||
             draw_y + glyph_height > (int)height) continue;
-        stbtt_MakeGlyphBitmap(&s_font,
+        stbtt_MakeGlyphBitmap(&face->stb,
             s_mask + (size_t)draw_y * max_width + (size_t)draw_x,
             width, glyph_height, (int)max_width,
-            layout.scale, layout.scale, layout.glyphs[glyph_index].glyph);
+            face->scale, face->scale, layout.glyphs[glyph_index].glyph);
     }
     /* Black one-pixel dilation first, then white antialiased fill. */
     for (y = 0u; y < height; ++y) {
@@ -624,7 +968,7 @@ const char *gfx_character_text_fallback_reason_name(
         case GFX_CHARACTER_TEXT_FALLBACK_UNTERMINATED: return "unterminated text";
         case GFX_CHARACTER_TEXT_FALLBACK_INVALID_UTF8: return "invalid UTF-8";
         case GFX_CHARACTER_TEXT_FALLBACK_CONTROL: return "control character";
-        case GFX_CHARACTER_TEXT_FALLBACK_SHAPING_REQUIRED: return "shaping or bidi required";
+        case GFX_CHARACTER_TEXT_FALLBACK_INVISIBLE_SEQUENCE: return "unsafe invisible sequence";
         case GFX_CHARACTER_TEXT_FALLBACK_MISSING_GLYPH: return "missing glyph";
         case GFX_CHARACTER_TEXT_FALLBACK_TOO_MANY_GLYPHS: return "too many glyphs";
         case GFX_CHARACTER_TEXT_FALLBACK_FONT_UNAVAILABLE: return "font unavailable";
@@ -635,12 +979,13 @@ const char *gfx_character_text_fallback_reason_name(
 }
 
 void gfx_character_text_shutdown(void) {
-    free(s_font_bytes);
+    size_t index;
+    for (index = 0u; index < TEXT_FACE_COUNT; ++index) {
+        release_face(&s_faces[index]);
+    }
     free(s_mask);
-    s_font_bytes = NULL;
-    s_font_ready = false;
-    s_font_failed = false;
+    s_fonts_ready = false;
+    s_fonts_failed = false;
     s_mask = NULL;
     s_mask_capacity = 0u;
-    memset(&s_font, 0, sizeof(s_font));
 }

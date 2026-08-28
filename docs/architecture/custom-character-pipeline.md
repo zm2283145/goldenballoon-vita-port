@@ -428,10 +428,12 @@ ASCII; deterministically folds common Latin diacritics and ligatures, attached
 combining marks, typographic punctuation, and full-width ASCII; and replaces
 each still-unsupported Unicode codepoint with one question-mark cell. Authors
 see the exact projected display/short names, folded and fallback counts, and
-the ASCII-case-insensitive deterministic sort policy before Build; the live ROM
-font still performs final pixel-width fitting. Native glyph rendering, shaping,
-and bidirectional layout for scripts outside that retail repertoire remain
-separate presentation work.
+the ASCII-case-insensitive deterministic sort policy before Build. Covered
+non-ASCII names instead use the shared pinned HarfBuzz/SheenBidi renderer with
+embedded OFL Roboto/Noto subsets; the Workshop previews its exact live pixels,
+including joining, combining placement, bidirectional order, and final
+cluster-safe width fitting. Missing faces or unsafe invisible controls fail
+closed to the retail projection rather than consulting a host font.
 The runtime independently bounds and decodes it, then uses integer
 premultiplied-alpha bilinear filtering to produce the game-owned 40x40 card.
 Legacy v1/v2 packages retain donor portrait and minimap fallbacks.

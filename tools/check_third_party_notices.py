@@ -73,6 +73,10 @@ def main() -> int:
         "third_party/gltf_validator/LICENSE.txt": (
             "Apache License", "Version 2.0, January 2004",
         ),
+        "third_party/character_text/HarfBuzz-COPYING.txt": (
+            "HarfBuzz is licensed under the so-called \"Old MIT\" license",
+            "Permission is hereby granted",
+        ),
         "third_party/gltf_validator/NOTICES.txt": (
             "Dart SDK", "args", "collection",
         ),
@@ -145,6 +149,8 @@ def main() -> int:
             "dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245",
         "third_party/gltf_validator/LICENSE.txt":
             "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "third_party/character_text/HarfBuzz-COPYING.txt":
+            "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64",
         "third_party/gltf_validator/NOTICES.txt":
             "d7a1cefe85110c1308632d0384b7a67a18c125193e54175c50d1982d8c81a2f4",
         "third_party/gltf_validator/pubspec.lock":
