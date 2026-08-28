@@ -61,6 +61,22 @@
 #include <sys/stat.h>
 #endif
 
+#if MDKR_ENABLE_ONLINE_BETA
+/* T2 re-arm probe condition toggle: defined in online_live_wiring.cpp. Declared
+ * locally (not in match_live_adapter.h) to keep the T2 change scoped to the
+ * launcher/wiring TUs + tests. Beta-only, exactly like the match_live_adapter.h
+ * include above (IMdkrOnlineAdapter is beta-gated, so this block must be too or the
+ * OFF build cannot name the type). Drive the loopback room OUT of the room-ready
+ * takeover window (park a finished race in RESULTS => condition false) and back
+ * (leader REMATCH => SELECTING => condition true) -- the mode-independent, RESULTS-
+ * park-faithful replacement for the old mode-flip toggle, which stopped changing
+ * OnlineRoom_roomReadyConditionHolds once single race also takes the native path. */
+bool OnlineRoom_testParkRoomInResults(IMdkrOnlineAdapter *leader,
+                                      IMdkrOnlineAdapter *peer);
+bool OnlineRoom_testReturnRoomToSelecting(IMdkrOnlineAdapter *leader,
+                                          IMdkrOnlineAdapter *peer);
+#endif /* MDKR_ENABLE_ONLINE_BETA */
+
 namespace {
 
 class DiagLogScope {
@@ -3812,18 +3828,6 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                 peer->service();
             }
         };
-        auto setModePump = [&](unsigned mode) -> bool {
-            (void)mdkr_online_live_adapter_set_mode(visible, mode);
-            for (int i = 0; i < 240; ++i) {
-                visible->service();
-                peer->service();
-                MdkrOnlineLobby lb{};
-                if (mdkr_online_live_adapter_lobby(visible, &lb) &&
-                    lb.mode == mode)
-                    return true;
-            }
-            return false;
-        };
 
         OnlineRoom_resetRoomReadyLatch();
         pump(30);
@@ -3866,10 +3870,11 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
          * state whose card would lie. It must flip to engaged once the latch clears. */
         const bool engagedBeforeClear = OnlineRoom_roomReadyTakeoverEngaged();
 
-        /* (4a) Drive the room OUT of the takeover condition (headless stand-in for the
-         * FINISHED->RESULTS park). The armed observer clears the latch HERE -- and only
-         * here, because the condition is now false; the trigger must NOT fire. */
-        const bool wentFalse = setModePump(MDKR_ONLINE_MODE_SINGLE_RACE);
+        /* (4a) Drive the room OUT of the takeover condition by PARKING a finished race
+         * in RESULTS (the real FINISHED->RESULTS park). The armed observer clears the
+         * latch HERE -- and only here, because the condition is now false; the trigger
+         * must NOT fire. */
+        const bool wentFalse = OnlineRoom_testParkRoomInResults(visible, peer);
         for (int i = 0; i < 30; ++i) {
             OnlineRoom_observeRoomReadyRearm(visible);
             pump(1);
@@ -3884,9 +3889,10 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             !OnlineRoom_roomReadyConditionHolds(visible) && fires == 1 &&
             !engagedBeforeClear && engagedAfterClear;
 
-        /* (4b) Fresh New-Tournament rising edge: the condition goes true again and the
-         * re-armed latch lets the trigger fire EXACTLY ONCE for tournament #2. */
-        const bool wentTrue = setModePump(MDKR_ONLINE_MODE_TOURNAMENT);
+        /* (4b) Fresh New-selection rising edge: the leader's REMATCH returns the room
+         * to SELECTING (condition true again) and the re-armed latch lets the trigger
+         * fire EXACTLY ONCE for tournament #2. */
+        const bool wentTrue = OnlineRoom_testReturnRoomToSelecting(visible, peer);
         pump(5);
         OnlineRoom_observeRoomReadyRearm(visible); /* no-op: rearm already completed */
         if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
@@ -3909,18 +3915,19 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
          * the latch on the false frame and the true edge would fire a bogus 4th time. */
         OnlineRoom_armRoomReadyRearm();
         OnlineRoom_resetRoomReadyLatch(); /* must clear latch AND the pending re-arm */
-        (void)setModePump(MDKR_ONLINE_MODE_TOURNAMENT); /* condition holds again */
+        /* The room is already at SELECTING from step (4b)'s REMATCH, so the condition
+         * holds again with no drive needed. */
         pump(5);
         if (OnlineRoom_pollRoomReadyTransition(visible)) fires++; /* fresh #1 fires once */
         (void)OnlineRoom_pollEngineRoomReady();                   /* launcher boots it */
         const int firesAfterFreshBoot = fires;                    /* expect 3 */
-        (void)setModePump(MDKR_ONLINE_MODE_SINGLE_RACE);          /* condition false */
+        (void)OnlineRoom_testParkRoomInResults(visible, peer);    /* condition false */
         for (int i = 0; i < 30; ++i) {
             OnlineRoom_observeRoomReadyRearm(visible); /* must be a NO-OP: rearm dropped */
             pump(1);
             if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
         }
-        (void)setModePump(MDKR_ONLINE_MODE_TOURNAMENT); /* condition true again */
+        (void)OnlineRoom_testReturnRoomToSelecting(visible, peer); /* condition true again */
         pump(5);
         OnlineRoom_observeRoomReadyRearm(visible);
         if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
@@ -3953,9 +3960,11 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
          * once PER FINISHED return (twice), for a total of exactly three takeovers, and
          * a LEFT return WEDGED BETWEEN #1 and #2 must NOT re-arm even with the room-ready
          * condition still TRUE (no re-boot loop across cycles). The condition is toggled
-         * by flipping lobby.mode tournament<->single, a faithful headless stand-in for
-         * the production RESULTS-park -> New-Tournament SELECTING transition, exactly as
-         * the single-cycle probe does. */
+         * by PARKING a real finished race in RESULTS (=> condition false) and RETURNING
+         * to SELECTING via the leader's REMATCH (=> condition true) -- the production
+         * RESULTS-park -> New-selection transition, exactly as the single-cycle probe
+         * does. (Pre-T2 this flipped lobby.mode tournament<->single; that no longer
+         * changes the condition once single race also takes the native path.) */
         std::string probeErr;
         MdkrOnlineTestLoopbackRace *race =
             OnlineRoom_makeTestLobbyStartRoom(&probeErr);
@@ -3974,17 +3983,6 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                 visible->service();
                 peer->service();
             }
-        };
-        auto setModePump = [&](unsigned mode) -> bool {
-            (void)mdkr_online_live_adapter_set_mode(visible, mode);
-            for (int i = 0; i < 240; ++i) {
-                visible->service();
-                peer->service();
-                MdkrOnlineLobby lb{};
-                if (mdkr_online_live_adapter_lobby(visible, &lb) && lb.mode == mode)
-                    return true;
-            }
-            return false;
         };
 
         OnlineRoom_resetRoomReadyLatch();
@@ -4028,13 +4026,13 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             }
             const bool noInstant =
                 fires == before && OnlineRoom_roomReadyConditionHolds(visible);
-            const bool wentFalse = setModePump(MDKR_ONLINE_MODE_SINGLE_RACE);
+            const bool wentFalse = OnlineRoom_testParkRoomInResults(visible, peer);
             for (int i = 0; i < 30; ++i) { /* condition false: latch clears here */
                 OnlineRoom_observeRoomReadyRearm(visible);
                 pump(1);
                 if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
             }
-            const bool wentTrue = setModePump(MDKR_ONLINE_MODE_TOURNAMENT);
+            const bool wentTrue = OnlineRoom_testReturnRoomToSelecting(visible, peer);
             pump(5);
             OnlineRoom_observeRoomReadyRearm(visible); /* already cleared: no-op */
             if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;

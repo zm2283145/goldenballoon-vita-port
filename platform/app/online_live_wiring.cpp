@@ -1810,6 +1810,137 @@ bool OnlineRoom_lobbyStartCancelLoading(IMdkrOnlineAdapter *leader) {
     return sent;
 }
 
+/* ======================================================================== *
+ * Re-arm probe condition toggle (T2)
+ *
+ * The room-ready re-arm probes (main_app.cpp) exercise the arm -> clear-while-
+ * condition-false -> rising-edge state machine, which needs to drive the loopback
+ * room OUT of the takeover window (OnlineRoom_roomReadyConditionHolds == false)
+ * and back (== true). They historically toggled lobby.mode tournament<->single
+ * race, which flipped the condition ONLY because the condition was tournament-
+ * scoped. T2 drops that scope (single race now ALSO takes the native path), so a
+ * mode flip no longer changes the condition. These two helpers give the probes a
+ * mode-independent, production-FAITHFUL toggle: park the room in RESULTS (a
+ * finished race -- phase != LOBBY and kind != SELECTING => condition false) and
+ * return it to SELECTING via the leader's REMATCH (=> condition true) -- exactly
+ * the RESULTS-park -> New-selection transition the production re-arm rides. The
+ * loopback rooms make endpoint A the room leader; BEGIN_LOADING / PUBLISH_RESULTS
+ * / REMATCH are all leader-only, so `leader` MUST be that endpoint.
+ * ======================================================================== */
+bool OnlineRoom_testParkRoomInResults(IMdkrOnlineAdapter *leader,
+                                      IMdkrOnlineAdapter *peer) {
+    if (leader == nullptr || peer == nullptr) return false;
+    const std::vector<IMdkrOnlineAdapter *> both{leader, peer};
+    const LoopbackSessionConfig cfg = loopbackSessionConfig();
+    if (!cfg.valid) return false;
+    /* A previous cycle's race installed the once-only process-global roster; the
+     * next BEGIN_LOADING re-installs, so clear it first (mirrors
+     * loopbackTournamentContinuation's per-round clear). */
+    mdkr_net_roster_runtime_clear();
+
+    /* Drive one seat to Ready by FOLLOWING its offered primary action (so a second
+     * park -- whose character/vehicle survived the prior clear_round -- lands
+     * straight on READY). Characters are unique per seat; cfg.vehicle is legal for
+     * the configured track / every cup round (loopbackSessionConfig). */
+    auto readySeat = [&](IMdkrOnlineAdapter *self, unsigned character) -> bool {
+        for (unsigned step = 0u; step < 8u; ++step) {
+            const MdkrOnlineViewAction act = loopbackView(self).primary.action;
+            switch (act) {
+            case MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER:
+                self->submit(loopbackCmd(
+                    self, MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER, 0u, character));
+                break;
+            case MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE:
+                self->submit(loopbackCmd(
+                    self, MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE, 0u, cfg.vehicle));
+                break;
+            case MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK:
+                /* Configured / tournament rooms never offer the vote (the reducer
+                 * resolves configured_track / the cup schedule); present only so the
+                 * loop cannot wedge if a single-race unconfigured room ever appears. */
+                self->submit(loopbackCmd(self, MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK,
+                                         0u, 5u));
+                break;
+            case MDKR_ONLINE_VIEW_ACTION_READY:
+                self->submit(
+                    loopbackCmd(self, MDKR_ONLINE_VIEW_ACTION_READY, 0u, 1u));
+                break;
+            default:
+                /* CHANGE_SELECTION / START_RACE / none: this seat is already ready. */
+                return true;
+            }
+            /* Submit once per state, then pump until the offered action advances. */
+            if (!loopbackPumpUntil(both, [&]() {
+                    return loopbackView(self).primary.action != act;
+                }, 8000u)) {
+                return false;
+            }
+        }
+        return false;
+    };
+    if (!readySeat(leader, 1u) || !readySeat(peer, 2u)) return false;
+    if (!loopbackPumpUntil(both, [&]() {
+            return loopbackView(leader).ready_count == 2u &&
+                   loopbackView(peer).ready_count == 2u;
+        }, 8000u)) {
+        return false;
+    }
+
+    /* Leader START: BEGIN_LOADING with a legal vehicle mask -> LOADING; the
+     * adapters auto-drive ACK_LOADED + leader BEGIN_RACE -> RACING. */
+    if (!loopbackPumpUntil(both, [&]() {
+            return loopbackView(leader).primary.action ==
+                   MDKR_ONLINE_VIEW_ACTION_START_RACE;
+        }, 8000u)) {
+        return false;
+    }
+    leader->submit(loopbackCmd(leader, MDKR_ONLINE_VIEW_ACTION_START_RACE, 0u,
+                               cfg.startMask));
+    if (!loopbackPumpUntil(both, [&]() {
+            MdkrOnlineLobby lb{};
+            return mdkr_online_live_adapter_lobby(leader, &lb) &&
+                   lb.phase == MDKR_ONLINE_RACING;
+        }, 30000u)) {
+        return false;
+    }
+
+    /* Leader publishes a valid 2-racer finish -> RESULTS (condition now false). */
+    const uint8_t placements[4] = {0u, 1u, 0xffu, 0xffu};
+    if (!mdkr_online_live_adapter_report_results(leader, placements)) return false;
+    return loopbackPumpUntil(both, [&]() {
+        MdkrOnlineLobby la{}, lb{};
+        return mdkr_online_live_adapter_lobby(leader, &la) &&
+               la.phase == MDKR_ONLINE_RESULTS &&
+               mdkr_online_live_adapter_lobby(peer, &lb) &&
+               lb.phase == MDKR_ONLINE_RESULTS;
+    }, 15000u);
+}
+
+bool OnlineRoom_testReturnRoomToSelecting(IMdkrOnlineAdapter *leader,
+                                          IMdkrOnlineAdapter *peer) {
+    if (leader == nullptr || peer == nullptr) return false;
+    const std::vector<IMdkrOnlineAdapter *> both{leader, peer};
+    /* Leader REMATCH (RACE_AGAIN -> reducer REMATCH): RESULTS -> LOBBY, and the
+     * view returns to SELECTING with both members present (condition true). */
+    if (!leader->submit(loopbackCmd(leader, MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN))
+             .accepted) {
+        return false;
+    }
+    const bool ok = loopbackPumpUntil(both, [&]() {
+        MdkrOnlineLobby lb{};
+        return mdkr_online_live_adapter_lobby(leader, &lb) &&
+               lb.phase == MDKR_ONLINE_LOBBY &&
+               loopbackView(leader).kind == MDKR_ONLINE_VIEW_SELECTING &&
+               loopbackView(peer).kind == MDKR_ONLINE_VIEW_SELECTING &&
+               loopbackView(leader).member_count == 2u;
+    }, 15000u);
+    /* The parked race installed the once-only roster; clear it so the room is a
+     * clean pre-boot SELECTING room again (matches makeTestLobbyStartRoom's
+     * no-roster invariant and the next park's re-install). */
+    mdkr_net_roster_runtime_clear();
+    return ok;
+}
+
 IMdkrOnlineAdapter *OnlineRoom_testLoopbackVisible(
     MdkrOnlineTestLoopbackRace *race) {
     if (race == nullptr) return nullptr;
