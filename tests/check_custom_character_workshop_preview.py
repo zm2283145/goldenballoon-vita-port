@@ -466,7 +466,7 @@ def main() -> int:
         ("car", 1, False, "select.idle", "500", False,
          180, 15, "bright", "scene"),
         ("car", 1, False, "select.idle", "500", False,
-         180, 15, "bright", "model-alpha"),
+         180, 0, "bright", "model-alpha"),
         ("car", 4, False, "select.idle", "500", False,
          180, 15, "bright", "model-alpha"),
         ("car", 1, False, "select.idle", "500", False,
@@ -547,8 +547,10 @@ def main() -> int:
             auto_return = (
                 context == "car" and players == 1
                 and pose == "select.idle" and pose_phase == "500"
-                and view_yaw == 180 and view_pitch == 15
-                and lighting == "bright" and capture_kind == "scene"
+                and view_yaw == 180 and lighting == "bright"
+                and ((view_pitch == 15 and capture_kind == "scene")
+                     or (view_pitch == 0 and
+                         capture_kind == "model-alpha"))
             )
             if auto_return:
                 env["MDKR_CHARACTER_WORKSHOP_CAPTURE_AUTO_RETURN"] = "1"
