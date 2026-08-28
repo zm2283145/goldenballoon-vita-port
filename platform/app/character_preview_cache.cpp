@@ -31,9 +31,12 @@ bool cacheDirectoryPath(const std::string &charactersDirectory,
 bool capturePathFor(const std::string &charactersDirectory,
                     const std::string &packageId,
                     uint32_t context,
+                    Subject subject,
                     std::string &path) {
     if (packageId.empty() || packageId.size() > 64u ||
-        !contextValid(context)) {
+        !contextValid(context) ||
+        (subject != Subject::CustomCharacter &&
+         subject != Subject::RetailDonor)) {
         return false;
     }
     std::string directory;
@@ -41,7 +44,8 @@ bool capturePathFor(const std::string &charactersDirectory,
     char digest[MDKR_SHA256_HEX_SIZE];
     mdkr_sha256_hex(packageId.data(), packageId.size(), digest);
     path = directory + "/" + std::string(digest, 64u) + "-" +
-        std::to_string(context) + ".png";
+        std::to_string(context) +
+        (subject == Subject::RetailDonor ? "-donor.png" : ".png");
     return path.size() <= kMaximumRendererPathBytes;
 }
 
@@ -99,9 +103,11 @@ bool removeExactPath(const std::string &path) {
 }
 
 bool managedFilename(const std::string &name) {
-    if (name.size() != 70u || name[64] != '-' ||
+    const bool donor = name.size() == 76u &&
+        name.compare(66u, 10u, "-donor.png") == 0;
+    if ((!donor && name.size() != 70u) || name[64] != '-' ||
         name[65] < '1' || name[65] > '4' ||
-        name.compare(66u, 4u, ".png") != 0) {
+        (!donor && name.compare(66u, 4u, ".png") != 0)) {
         return false;
     }
     for (size_t index = 0u; index < 64u; ++index) {
@@ -119,6 +125,7 @@ bool managedFilename(const std::string &name) {
 bool prepare(const std::string &charactersDirectory,
              const std::string &packageId,
              uint32_t context,
+             Subject subject,
              std::string &capturePath,
              std::string &error) {
     capturePath.clear();
@@ -126,7 +133,7 @@ bool prepare(const std::string &charactersDirectory,
     std::string directory;
     if (!ensureCacheDirectory(charactersDirectory, directory, error) ||
         !capturePathFor(
-            charactersDirectory, packageId, context, capturePath)) {
+            charactersDirectory, packageId, context, subject, capturePath)) {
         if (error.empty()) {
             error = "The package or preview context cannot own an inline capture path.";
         }
@@ -141,16 +148,28 @@ bool prepare(const std::string &charactersDirectory,
     return true;
 }
 
+bool prepare(const std::string &charactersDirectory,
+             const std::string &packageId,
+             uint32_t context,
+             std::string &capturePath,
+             std::string &error) {
+    return prepare(charactersDirectory, packageId, context,
+                   Subject::CustomCharacter, capturePath, error);
+}
+
 bool owns(const std::string &charactersDirectory,
           const std::string &packageId,
           const std::string &capturePath) {
     for (uint32_t context = kFirstContext;
          context <= kLastContext; ++context) {
-        std::string expected;
-        if (capturePathFor(
-                charactersDirectory, packageId, context, expected) &&
-            capturePath == expected) {
-            return true;
+        for (Subject subject :
+             {Subject::CustomCharacter, Subject::RetailDonor}) {
+            std::string expected;
+            if (capturePathFor(
+                    charactersDirectory, packageId, context, subject,
+                    expected) && capturePath == expected) {
+                return true;
+            }
         }
     }
     return false;
@@ -160,7 +179,8 @@ bool remove(const std::string &charactersDirectory,
             const std::string &packageId,
             uint32_t context) {
     std::string path;
-    return capturePathFor(charactersDirectory, packageId, context, path) &&
+    return capturePathFor(charactersDirectory, packageId, context,
+                          Subject::CustomCharacter, path) &&
         removeExactPath(path);
 }
 
@@ -176,6 +196,11 @@ void removePackage(const std::string &charactersDirectory,
     for (uint32_t context = kFirstContext;
          context <= kLastContext; ++context) {
         (void)remove(charactersDirectory, packageId, context);
+        std::string donorPath;
+        if (capturePathFor(charactersDirectory, packageId, context,
+                           Subject::RetailDonor, donorPath)) {
+            (void)removeExactPath(donorPath);
+        }
     }
 }
 

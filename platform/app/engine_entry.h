@@ -125,6 +125,11 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned long long replacement_draws;
     unsigned long long replacement_primitives;
     unsigned long long hidden_donor_batches;
+    /* Comparison-only witness. A nonzero value proves qualified retail donor
+     * character batches reached the ordinary composed scene while modern
+     * replacement draws remained suppressed. */
+    int donor_reference;
+    unsigned long long donor_reference_batches;
     unsigned long long contact_solves;
     unsigned long long contact_error_mean_micrometres;
     unsigned long long contact_error_max_micrometres;
@@ -267,7 +272,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 18u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 19u
 #define MDKR_CHARACTER_PREVIEW_TRANSITION_DWELL_MILLI \
     MDKR_MODERN_CHARACTER_INSPECTION_TRANSITION_DWELL_MILLI
 #define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u
@@ -283,7 +288,7 @@ extern MdkrCharacterPreviewResult *g_mdkrCharacterPreviewResult;
  * gameplay-camera, visibility, and (for vehicles) retained-body/contact
  * witnesses. Keeping the samples separate prevents a favourable frame from
  * hiding another state's clipping or occlusion without invalidating durable
- * v18 timing evidence. */
+ * v19 timing evidence. */
 typedef enum MdkrCharacterMotionReviewSample {
     MDKR_CHARACTER_MOTION_REVIEW_START = 0,
     MDKR_CHARACTER_MOTION_REVIEW_STEER,
@@ -348,6 +353,7 @@ typedef struct {
     MdkrWorkshopPreviewLighting character_preview_lighting;
     const char *character_preview_capture_png;    // optional, create-only
     MdkrCharacterPreviewCaptureKind character_preview_capture_kind;
+    int character_preview_donor_reference; // comparison capture only
     int character_preview_auto_return; // return after queued one-shot capture
     /* Launcher-owned exact Offset Studio. The ordinary game overlay remains
      * available for every other boot; this mode keeps a focused editor open

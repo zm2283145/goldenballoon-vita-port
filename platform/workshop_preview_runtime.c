@@ -8,6 +8,8 @@ static MdkrWorkshopPreviewLighting s_lighting =
     MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
 static uint64_t s_camera_override_ticks;
 static uint64_t s_lighting_override_draws;
+static uint64_t s_donor_reference_batches;
+static int s_donor_reference_enabled;
 
 static void set_error(char *error, size_t size, const char *message) {
     if (error != NULL && size != 0u) {
@@ -39,6 +41,7 @@ void mdkr_workshop_preview_visual_clear(void) {
     s_yaw_degrees = 0;
     s_pitch_degrees = 0;
     s_lighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+    s_donor_reference_enabled = 0;
 }
 
 int mdkr_workshop_preview_view(int *yaw_degrees, int *pitch_degrees) {
@@ -59,9 +62,22 @@ void mdkr_workshop_preview_note_lighting_override(void) {
     s_lighting_override_draws++;
 }
 
+void mdkr_workshop_preview_reference_set(int enabled) {
+    s_donor_reference_enabled = enabled != 0;
+}
+
+int mdkr_workshop_preview_reference_enabled(void) {
+    return s_donor_reference_enabled;
+}
+
+void mdkr_workshop_preview_note_donor_reference_batch(void) {
+    if (s_donor_reference_enabled) s_donor_reference_batches++;
+}
+
 void mdkr_workshop_preview_visual_metrics_reset(void) {
     s_camera_override_ticks = 0u;
     s_lighting_override_draws = 0u;
+    s_donor_reference_batches = 0u;
 }
 
 void mdkr_workshop_preview_visual_metrics(
@@ -69,4 +85,5 @@ void mdkr_workshop_preview_visual_metrics(
     if (out == NULL) return;
     out->camera_override_ticks = s_camera_override_ticks;
     out->lighting_override_draws = s_lighting_override_draws;
+    out->donor_reference_batches = s_donor_reference_batches;
 }

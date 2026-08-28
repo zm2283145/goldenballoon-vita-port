@@ -463,6 +463,7 @@ static void clearCharacterPreviewRequest(LauncherState &s) {
     s.characterPreviewPortraitSourceHandoff = false;
     s.characterPreviewInteractiveStudio = false;
     s.characterPreviewRepresentativeMotionReview = false;
+    s.characterPreviewDonorReference = false;
     s.characterPreviewDispatched = false;
 }
 

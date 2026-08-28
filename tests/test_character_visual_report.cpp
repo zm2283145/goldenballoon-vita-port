@@ -151,6 +151,35 @@ int main() {
     expect(validateBoundPng(capture, error) &&
                validateBoundPng(alphaCapture, error),
            "unchanged bound capture files remain eligible for downstream use");
+    Capture donorCapture = capture;
+    donorCapture.pngSha256.clear();
+    donorCapture.subject = Subject::RetailDonor;
+    donorCapture.referenceDonor = "Diddy Kong";
+    donorCapture.pose = "Live retail animation";
+    donorCapture.lighting = "Neutral";
+    donorCapture.players = 1u;
+    donorCapture.phaseMilli = 0u;
+    donorCapture.viewYawDegrees = 0;
+    donorCapture.viewPitchDegrees = 0;
+    donorCapture.exactPose = false;
+    expect(bindPng(donorCapture, error),
+           "a composed retail donor reference binds as comparison-only evidence");
+    Capture donorAlpha = alphaCapture;
+    donorAlpha.pngSha256.clear();
+    donorAlpha.subject = Subject::RetailDonor;
+    donorAlpha.exactPose = false;
+    expect(!bindPng(donorAlpha, error),
+           "a retail donor reference cannot claim a custom model-only product");
+    Capture donorExactPose = donorCapture;
+    donorExactPose.pngSha256.clear();
+    donorExactPose.exactPose = true;
+    expect(!bindPng(donorExactPose, error),
+           "live donor animation cannot claim an exact custom semantic phase");
+    Capture unnamedDonor = donorCapture;
+    unnamedDonor.pngSha256.clear();
+    unnamedDonor.referenceDonor.clear();
+    expect(!bindPng(unnamedDonor, error),
+           "a portable retail reference must name the selected donor");
     Capture missingProjection = alphaCapture;
     missingProjection.fitProjection = FitProjection{};
     expect(!validateBoundPng(missingProjection, error),
@@ -163,7 +192,45 @@ int main() {
     expect(!bindPng(alreadyBound, error) &&
                alreadyBound.pngSha256 == capture.pngSha256,
            "published captures cannot be silently rebound to later bytes");
-    std::vector<Capture> captures{capture, alphaCapture};
+
+    std::vector<Capture> slotCaptures;
+    Capture firstSlot = capture;
+    firstSlot.pngSha256.clear();
+    expect(bindAndStore(slotCaptures, firstSlot, error) ==
+               StoreResult::Added &&
+               slotCaptures.size() == 1u,
+           "a create-only capture slot is added to the session tray");
+    const std::string firstSlotDigest = slotCaptures.front().pngSha256;
+    expect(writeBytes(pngPath, kChangedOnePixelPng,
+                      sizeof(kChangedOnePixelPng)),
+           "replacement slot PNG is written");
+    Capture replacementSlot = capture;
+    replacementSlot.pngSha256.clear();
+    expect(bindAndStore(slotCaptures, replacementSlot, error) ==
+               StoreResult::Replaced &&
+               slotCaptures.size() == 1u &&
+               slotCaptures.front().pngSha256 != firstSlotDigest,
+           "recapturing an owned path replaces its stale digest record");
+    expect(writeBytes(pngPath, kOnePixelPng,
+                      sizeof(kOnePixelPng) - 12u),
+           "invalid replacement slot PNG is written");
+    Capture invalidSlot = capture;
+    invalidSlot.pngSha256.clear();
+    expect(bindAndStore(slotCaptures, invalidSlot, error) ==
+               StoreResult::Invalid &&
+               slotCaptures.empty(),
+           "an invalid recapture removes the now-stale same-path record");
+    std::vector<Capture> fullTray(kMaximumCaptures, capture);
+    Capture overflowSlot = alphaCapture;
+    overflowSlot.pngSha256.clear();
+    expect(bindAndStore(fullTray, overflowSlot, error) ==
+               StoreResult::Full &&
+               fullTray.size() == kMaximumCaptures,
+           "a new capture cannot silently exceed the report safety capacity");
+    expect(writeBytes(pngPath, kOnePixelPng, sizeof(kOnePixelPng)),
+           "capture slot fixture is restored after replacement tests");
+
+    std::vector<Capture> captures{capture, alphaCapture, donorCapture};
     const std::string hostileName =
         "Dixie </script><script>alert('x')</script> & friends";
     const bool initialExport = exportHtml(
@@ -186,10 +253,18 @@ int main() {
                    std::string::npos &&
                report.find("</script><script>alert") == std::string::npos,
            "display metadata is safe in both HTML and embedded JSON contexts");
-    expect(report.find("\"version\":3") != std::string::npos &&
+    expect(report.find("\"version\":4") != std::string::npos &&
                report.find("\"renderProduct\":\"scene\"") !=
                    std::string::npos &&
                report.find("\"renderProduct\":\"model-alpha\"") !=
+                   std::string::npos &&
+               report.find("\"subject\":\"custom-character\"") !=
+                   std::string::npos &&
+               report.find("\"subject\":\"retail-donor-reference\"") !=
+                   std::string::npos &&
+               report.find("\"referenceDonor\":\"Diddy Kong\"") !=
+                   std::string::npos &&
+               report.find("Comparison only · live retail animation") !=
                    std::string::npos &&
                report.find("\"sourceSha256\":\"") != std::string::npos &&
                report.find("\"fitSha256\":\"") != std::string::npos &&

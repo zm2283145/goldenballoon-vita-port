@@ -104,6 +104,28 @@ const char *renderProductToken(
     }
 }
 
+const char *subjectName(CharacterVisualReport::Subject subject) {
+    switch (subject) {
+        case CharacterVisualReport::Subject::CustomCharacter:
+            return "Custom character";
+        case CharacterVisualReport::Subject::RetailDonor:
+            return "Retail donor reference";
+        default:
+            return nullptr;
+    }
+}
+
+const char *subjectToken(CharacterVisualReport::Subject subject) {
+    switch (subject) {
+        case CharacterVisualReport::Subject::CustomCharacter:
+            return "custom-character";
+        case CharacterVisualReport::Subject::RetailDonor:
+            return "retail-donor-reference";
+        default:
+            return nullptr;
+    }
+}
+
 bool readPng(const CharacterVisualReport::Capture &capture,
              std::vector<unsigned char> &bytes, std::string &sha,
              std::string &error) {
@@ -313,7 +335,19 @@ bool captureMetadataValid(const CharacterVisualReport::Capture &capture,
     if (capture.renderProduct ==
             CharacterVisualReport::RenderProduct::ModelAlpha &&
         !projection.valid) projectionValid = false;
-    return projectionValid &&
+    const bool subjectValid = subjectName(capture.subject) != nullptr &&
+        (capture.subject == CharacterVisualReport::Subject::RetailDonor
+             ? capture.renderProduct ==
+                       CharacterVisualReport::RenderProduct::Scene &&
+                   !capture.exactPose && !capture.fitProjection.valid &&
+                   capture.players == 1u && capture.phaseMilli == 0u &&
+                   capture.viewYawDegrees == 0 &&
+                   capture.viewPitchDegrees == 0 &&
+                   capture.pose == "Live retail animation" &&
+                   capture.lighting == "Neutral" &&
+                   textValid(capture.referenceDonor, 64u, true)
+             : capture.referenceDonor.empty());
+    return projectionValid && subjectValid &&
            textValid(capture.pngPath, 4095u, true) &&
            (requirePngDigest ? digestValid(capture.pngSha256)
                              : capture.pngSha256.empty()) &&
@@ -364,6 +398,31 @@ bool validateBoundPng(const Capture &capture, std::string &error) {
     if (!readPng(capture, bytes, digest, error)) return false;
     error.clear();
     return true;
+}
+
+StoreResult bindAndStore(
+    std::vector<Capture> &captures, Capture &capture, std::string &error) {
+    auto existing = std::find_if(
+        captures.begin(), captures.end(),
+        [&capture](const Capture &candidate) {
+            return candidate.pngPath == capture.pngPath;
+        });
+    if (existing == captures.end() && captures.size() >= kMaximumCaptures) {
+        error = "The visual report tray reached its safety capacity.";
+        return StoreResult::Full;
+    }
+    if (!bindPng(capture, error)) {
+        if (existing != captures.end()) captures.erase(existing);
+        return StoreResult::Invalid;
+    }
+    if (existing != captures.end()) {
+        *existing = capture;
+        error.clear();
+        return StoreResult::Replaced;
+    }
+    captures.push_back(capture);
+    error.clear();
+    return StoreResult::Added;
 }
 
 bool exportHtml(const std::string &outputPath,
@@ -456,20 +515,25 @@ bool exportHtml(const std::string &outputPath,
         html += "<figcaption><strong>" + htmlEscape(capture.context) +
             " · " + htmlEscape(capture.pose) + "</strong><br>";
         html += htmlEscape(renderProductName(capture.renderProduct)) +
-            " · ";
+            " · " + htmlEscape(subjectName(capture.subject)) + " · ";
+        if (capture.subject == Subject::RetailDonor) {
+            html += htmlEscape(capture.referenceDonor) + " · ";
+        }
         html += "Phase " + std::to_string(capture.phaseMilli) +
             "/1000 · " + htmlEscape(capture.lighting) +
             " light · view " + std::to_string(capture.viewYawDegrees) +
             "°/" + std::to_string(capture.viewPitchDegrees) +
             "° · " + std::to_string(capture.stableFrames) +
             " stable frames<br>";
-        html += capture.exactPose
+        html += capture.subject == Subject::RetailDonor
+            ? "<span class=\"warn\">Comparison only · live retail animation</span>"
+            : capture.exactPose
             ? "<span class=\"ok\">Exact semantic phase</span>"
             : "<span class=\"warn\">Source fallback shown</span>";
         html += "<br><code>PNG SHA-256 " + item.sha + "</code></figcaption></figure>";
     }
     html += "</div><script id=\"mdkr-character-visual-report\" type=\"application/json\">{";
-    html += "\"version\":3,\"packageId\":\"" + jsonEscape(packageId) +
+    html += "\"version\":4,\"packageId\":\"" + jsonEscape(packageId) +
         "\",\"displayName\":\"" + jsonEscape(displayName) +
         "\",\"captures\":[";
     for (size_t index = 0u; index < loaded.size(); ++index) {
@@ -479,6 +543,9 @@ bool exportHtml(const std::string &outputPath,
             "\",\"players\":" + std::to_string(capture.players) +
             ",\"renderProduct\":\"" +
             renderProductToken(capture.renderProduct) + "\"" +
+            ",\"subject\":\"" + subjectToken(capture.subject) + "\"" +
+            ",\"referenceDonor\":\"" +
+            jsonEscape(capture.referenceDonor) + "\"" +
             ",\"pose\":\"" + jsonEscape(capture.pose) +
             "\",\"phaseMilli\":" + std::to_string(capture.phaseMilli) +
             ",\"lighting\":\"" + jsonEscape(capture.lighting) +

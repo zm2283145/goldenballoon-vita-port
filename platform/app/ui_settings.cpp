@@ -3535,7 +3535,8 @@ bool characterPreviewCacheDirectory(std::string &directory) {
 bool prepareInlineCharacterCapture(
     const MdkrModernCharacterEntry *entry,
     MdkrCharacterPreviewContext context,
-    std::string &capturePath) {
+    std::string &capturePath,
+    bool donorReference = false) {
     std::string directory;
     std::string error;
     if (entry == nullptr ||
@@ -3544,6 +3545,9 @@ bool prepareInlineCharacterCapture(
         !characterPreviewCacheDirectory(directory) ||
         !CharacterPreviewCache::prepare(
             directory, entry->id, static_cast<uint32_t>(context),
+            donorReference
+                ? CharacterPreviewCache::Subject::RetailDonor
+                : CharacterPreviewCache::Subject::CustomCharacter,
             capturePath, error)) {
         setStatus(
             error.empty()
@@ -5927,6 +5931,12 @@ CharacterPreviewRouteOptions inlineCharacterStillRoute() {
     CharacterPreviewRouteOptions options;
     options.autoReturnAfterCapture = true;
     options.disposition.launcherOwnedCapture = true;
+    return options;
+}
+
+CharacterPreviewRouteOptions donorReferenceStillRoute() {
+    CharacterPreviewRouteOptions options = inlineCharacterStillRoute();
+    options.disposition.donorReference = true;
     return options;
 }
 
@@ -8597,6 +8607,38 @@ bool drawCharacterTuningEditor(int player,
                 }
                 ImGui::TextDisabled("held midpoint · neutral gameplay light");
             }
+            {
+                const char *referenceLabel = "Capture retail donor reference";
+                if (!exactPreviewReady) ImGui::BeginDisabled();
+                if (ImGui::Button(referenceLabel, ui::kBtnSecondary()) &&
+                    exactPreviewReady) {
+                    std::string capturePath;
+                    if (persistCharacterTuning(entry->id, edit) &&
+                        prepareInlineCharacterCapture(
+                            entry, previewContext, capturePath, true)) {
+                        requestCharacterPreview(
+                            entry, previewContext, 1,
+                            MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u, 0, 0,
+                            MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
+                            capturePath.c_str(),
+                            MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE,
+                            MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u,
+                            donorReferenceStillRoute());
+                    }
+                }
+                if (!exactPreviewReady) ImGui::EndDisabled();
+                ui::SpeakFocusedItem(
+                    referenceLabel,
+                    exactPreviewReady
+                        ? "Ready; uses the package's chosen donor and returns automatically."
+                        : "Unavailable until a supported base ROM is linked and verified on Play.",
+                    "Captures one stabilized composed frame with the modern replacement deliberately suppressed. The chosen retail donor, kart, attachments, course, and gameplay camera remain on the ordinary game render path. It is labeled as comparison-only and cannot satisfy custom-character fit or performance review.");
+                if (!compact && ImGui::GetContentRegionAvail().x >= 360.0f) {
+                    ImGui::SameLine();
+                }
+                ImGui::TextDisabled(
+                    "1 player · live donor animation · comparison only");
+            }
             std::array<const CharacterMotionReviewSessionResult *,
                        MDKR_CHARACTER_PREVIEW_SCENE_COUNT> motionReviews{};
             const unsigned motionSceneCount =
@@ -9873,6 +9915,7 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
         options.disposition.portraitSourceHandoff;
     const bool representativeMotionReview =
         options.disposition.representativeMotionReview;
+    const bool donorReference = options.disposition.donorReference;
     const MdkrCharacterPreviewScene scene = options.scene;
     const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
     const std::string testTuningSignature = characterTestTuningSignature(
@@ -9910,6 +9953,13 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
              MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE) ||
         (autoReturnAfterCapture && !capture) ||
         (launcherOwnedCapture && (!autoReturnAfterCapture || !capture)) ||
+        (donorReference &&
+         (!launcherOwnedCapture || portraitSourceHandoff ||
+          interactiveStudio || representativeMotionReview || players != 1 ||
+          !capture || captureKind != MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE ||
+          pose != MDKR_CHARACTER_PREVIEW_POSE_LIVE || posePhaseMilli != 0u ||
+          transition || viewYawDegrees != 0 || viewPitchDegrees != 0 ||
+          lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL)) ||
         (portraitSourceHandoff &&
          (!launcherOwnedCapture || interactiveStudio || players != 1 ||
           context == MDKR_CHARACTER_PREVIEW_SELECT ||
@@ -9934,7 +9984,8 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
         (interactiveStudio &&
          (inspection || capture || autoReturnAfterCapture)) ||
         (transition && capture) ||
-        (!inspection && (viewYawDegrees != 0 || viewPitchDegrees != 0 ||
+        (!inspection && !donorReference &&
+         (viewYawDegrees != 0 || viewPitchDegrees != 0 ||
                          lighting !=
                              MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
                          capture)) ||
@@ -10000,9 +10051,12 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
     g_characterPreviewRequest.interactiveStudio = interactiveStudio;
     g_characterPreviewRequest.representativeMotionReview =
         representativeMotionReview;
+    g_characterPreviewRequest.donorReference = donorReference;
     g_characterPreviewRequested = true;
     setStatus(
-        representativeMotionReview
+        donorReference
+            ? "Checking the selected ROM, then capturing the chosen retail donor in the same game context."
+        : representativeMotionReview
             ? "Checking the selected ROM, then reviewing start, steer, airborne, landing, and finish motion in one exact game session."
         : interactiveStudio
             ? "Checking the selected ROM, then opening the live exact Offset Studio."
@@ -12173,14 +12227,20 @@ void drawCharacterCaptureThumbnail(
     (void)ImGui::Selectable(
         "##character-capture-thumbnail", false,
         ImGuiSelectableFlags_None, extent);
-    const char *product = capture.renderProduct ==
+    const bool donorReference = capture.subject ==
+        CharacterVisualReport::Subject::RetailDonor;
+    const char *product = donorReference
+        ? "retail donor reference"
+        : capture.renderProduct ==
             CharacterVisualReport::RenderProduct::ModelAlpha
         ? "model-only transparent" : "composed gameplay";
     char spokenState[160];
     std::snprintf(
         spokenState, sizeof(spokenState),
-        "%s image, %u by %u pixels, exact digest %.8s%s",
-        product, capture.width, capture.height,
+        "%s%s%s image, %u by %u pixels, exact digest %.8s%s",
+        product, donorReference ? ", " : "",
+        donorReference ? capture.referenceDonor.c_str() : "",
+        capture.width, capture.height,
         capture.pngSha256.c_str(),
         capture.fitProjection.valid
             ? ", with registered bounds, anchor, and forward overlay" : "");
@@ -12583,12 +12643,24 @@ void drawCharacterFitReference(
     };
     const auto captures = g_characterVisualCaptures.find(entry->id);
     const CharacterVisualReport::Capture *best = nullptr;
+    const CharacterVisualReport::Capture *donorBest = nullptr;
     int bestScore = -1;
     if (captures != g_characterVisualCaptures.end()) {
         for (auto candidate = captures->second.rbegin();
              candidate != captures->second.rend(); ++candidate) {
+            if (donorBest == nullptr &&
+                candidate->subject ==
+                    CharacterVisualReport::Subject::RetailDonor &&
+                candidate->sourceSha256 == sourceSha256 &&
+                candidate->fitSha256 == fitSha256 &&
+                candidate->context ==
+                    characterPreviewResultContext(context)) {
+                donorBest = &*candidate;
+            }
             if (candidate->sourceSha256 != sourceSha256 ||
                 candidate->fitSha256 != fitSha256 ||
+                candidate->subject !=
+                    CharacterVisualReport::Subject::CustomCharacter ||
                 candidate->context != characterPreviewResultContext(context)) {
                 continue;
             }
@@ -12605,6 +12677,28 @@ void drawCharacterFitReference(
             }
         }
     }
+    const auto drawDonorComparison = [&]() {
+        ImGui::SeparatorText("Retail donor comparison");
+        if (donorBest == nullptr) {
+            ui::TextSubtleWrapped(
+                "No current donor reference is captured for this context. Use Capture retail donor reference above to render the package's chosen donor, vehicle, attachments, course, and gameplay camera without the custom replacement. This is a visual baseline only, never fit or performance evidence.");
+            return;
+        }
+        ImGui::PushID("character-donor-reference");
+        ImGui::PushID(donorBest->pngSha256.c_str());
+        ImGui::Text("%s · composed gameplay frame",
+                    donorBest->referenceDonor.c_str());
+        ui::TextSubtleWrapped(
+            "This digest-bound image matches the current package source, fit revision, donor, and context. It shows live retail animation, so compare seat height, facing, scale, kart occlusion, and attachment coverage—not exact limb-phase parity.");
+        drawCharacterCaptureThumbnail(entry, *donorBest);
+        if (!compact) {
+            ImGui::TextDisabled(
+                "1 player · live gameplay camera · SHA-256 %.12s…",
+                donorBest->pngSha256.c_str());
+        }
+        ImGui::PopID();
+        ImGui::PopID();
+    };
 
     ImGui::SeparatorText("Exact renderer reference");
     if (best == nullptr) {
@@ -12626,6 +12720,7 @@ void drawCharacterFitReference(
                 ? "No source-, fit-, and vehicle-matching renderer capture is available for this plane yet. Prepare the corresponding front, side, or exact top model-only camera, then run this vehicle inspection."
                 : "No source-, fit-, and vehicle-matching renderer capture is available in this Workshop session. Create a stabilized model-only or gameplay capture in Test to place actual renderer pixels beside these measurements.");
         drawPrepareAction();
+        drawDonorComparison();
         return;
     }
 
@@ -12675,6 +12770,7 @@ void drawCharacterFitReference(
     }
     ImGui::PopID();
     ImGui::PopID();
+    drawDonorComparison();
 }
 
 void drawCharacterVisualCaptureTray(
@@ -12703,18 +12799,26 @@ void drawCharacterVisualCaptureTray(
         ImGui::PushID(static_cast<int>(index));
         if (ui::CardBegin("##character-visual-capture", AppTheme::surface(),
                           0.0f)) {
+            const bool donorReference = capture.subject ==
+                CharacterVisualReport::Subject::RetailDonor;
+            const std::string productLabel = donorReference
+                ? "Retail donor reference: " + capture.referenceDonor +
+                      " · comparison only"
+                : capture.renderProduct ==
+                          CharacterVisualReport::RenderProduct::ModelAlpha
+                    ? "Model only · transparent"
+                    : "Gameplay frame";
             ImGui::Text("%s · %s · phase %.1f%%",
                         capture.context.c_str(), capture.pose.c_str(),
                         capture.phaseMilli / 10.0);
             ImGui::TextDisabled(
                 "%s · %s light · view %d°/%d° · %u×%u · %s",
-                capture.renderProduct ==
-                        CharacterVisualReport::RenderProduct::ModelAlpha
-                    ? "Model only · transparent"
-                    : "Gameplay frame",
+                productLabel.c_str(),
                 capture.lighting.c_str(), capture.viewYawDegrees,
                 capture.viewPitchDegrees, capture.width, capture.height,
-                capture.exactPose ? "exact semantic" : "source fallback");
+                donorReference
+                    ? "live retail animation"
+                    : capture.exactPose ? "exact semantic" : "source fallback");
             ImGui::TextDisabled("Source %.8s · test tuning %.8s · PNG %.8s",
                                 capture.sourceSha256.c_str(),
                                 capture.fitSha256.c_str(),
@@ -12726,7 +12830,8 @@ void drawCharacterVisualCaptureTray(
             } else {
                 ui::TextSubtleUnformattedWrapped(capture.pngPath.c_str());
             }
-            if (ImGui::Button("Use for portrait")) {
+            if (donorReference) ImGui::BeginDisabled();
+            if (ImGui::Button("Use for portrait") && !donorReference) {
                 std::string captureError;
                 if (CharacterVisualReport::validateBoundPng(
                         capture, captureError)) {
@@ -12745,9 +12850,12 @@ void drawCharacterVisualCaptureTray(
                         AppTheme::bad());
                 }
             }
+            if (donorReference) ImGui::EndDisabled();
             ui::SpeakFocusedItem(
                 "Use capture for portrait", nullptr,
-                launcherOwned
+                donorReference
+                    ? "Unavailable for retail donor references. Capture or import your custom character for portrait artwork."
+                : launcherOwned
                     ? "Opens Portrait Studio with this exact stabilized still as a reversible local source. Apply or save the portrait before refreshing or removing this inline still."
                     : "Opens Portrait Studio with this exact stabilized PNG as a reversible local source. The capture file is not changed or deleted.");
             ImGui::SameLine();
@@ -22615,6 +22723,7 @@ void Settings_publishCharacterPreviewResult(
     const bool interactiveStudio = disposition.interactiveStudio;
     const bool representativeMotionReview =
         disposition.representativeMotionReview;
+    const bool donorReference = disposition.donorReference;
     if (packageId.empty()) return;
     if (representativeMotionReview) {
         unsigned expectedCount = 0u;
@@ -22840,6 +22949,130 @@ void Settings_publishCharacterPreviewResult(
         }
         return;
     }
+    if (donorReference) {
+        bool retained = false;
+        bool capacityReached = false;
+        const MdkrModernCharacterEntry *entry =
+            characterStudioEntry(packageId.c_str());
+        const bool contextSupported = entry != nullptr &&
+            (result.context == MDKR_CHARACTER_PREVIEW_SELECT ||
+             (result.context >= MDKR_CHARACTER_PREVIEW_CAR &&
+              result.context <= MDKR_CHARACTER_PREVIEW_PLANE &&
+              (entry->vehicle_mask &
+               (1u << static_cast<unsigned>(
+                   result.context - MDKR_CHARACTER_PREVIEW_CAR))) != 0u));
+        const bool valid =
+            contextSupported &&
+            sourceSha256 == characterDigestHex(entry->source_sha256) &&
+            launcherOwnedCapture && !portraitSourceHandoff &&
+            !interactiveStudio && !representativeMotionReview &&
+            motionReview == nullptr &&
+            result.version == MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
+            result.started && result.warmup_complete &&
+            result.donor_reference == 1 &&
+            result.donor_reference_batches != 0u &&
+            result.replacement_draws == 0u &&
+            result.replacement_primitives == 0u &&
+            result.hidden_donor_batches == 0u &&
+            result.players == 1 &&
+            result.context >= MDKR_CHARACTER_PREVIEW_SELECT &&
+            result.context <= MDKR_CHARACTER_PREVIEW_PLANE &&
+            result.pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+            result.pose_phase_milli == 0u &&
+            result.transition_from_pose ==
+                MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+            result.transition_from_phase_milli == 0u &&
+            result.inspection_pose_ticks == 0u &&
+            result.inspection_pose_fallback_ticks == 0u &&
+            result.view_yaw_degrees == 0 &&
+            result.view_pitch_degrees == 0 &&
+            result.lighting == MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL &&
+            result.camera_override_ticks == 0u &&
+            result.lighting_override_draws == 0u &&
+            result.capture_requested && result.capture_armed &&
+            result.capture_written &&
+            result.capture_kind == MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE &&
+            result.capture_stable_frames >=
+                MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES &&
+            result.capture_png_bytes != 0u &&
+            result.output_width >= 1u && result.output_width <= 16384u &&
+            result.output_height >= 1u && result.output_height <= 16384u &&
+            characterDigestTextValid(sourceSha256) &&
+            characterDigestTextValid(fitSha256) &&
+            characterDigestTextValid(presentationSha256) &&
+            !capturePng.empty() &&
+            characterCaptureIsLauncherOwned(packageId, capturePng) &&
+            characterPreviewFitDiagnosticsValid(result) &&
+            characterPreviewCameraProjectionValid(result) &&
+            characterPreviewVehicleSurfaceValid(result) &&
+            characterPreviewOpaqueVisibilityValid(result) &&
+            characterPreviewProjectionValid(result) &&
+            characterPreviewContactDiagnosticsValid(result) &&
+            mdkr_modern_character_gpu_timing_metrics_valid(
+                &result.gpu_timing) != 0;
+        if (valid) {
+            auto &captures = g_characterVisualCaptures[packageId];
+            CharacterVisualReport::Capture capture{};
+            capture.pngPath = capturePng;
+            capture.sourceSha256 = sourceSha256;
+            capture.fitSha256 = fitSha256;
+            capture.context = characterPreviewResultContext(
+                result.context);
+            capture.pose = "Live retail animation";
+            capture.lighting = "Neutral";
+            capture.renderProduct =
+                CharacterVisualReport::RenderProduct::Scene;
+            capture.subject =
+                CharacterVisualReport::Subject::RetailDonor;
+            capture.referenceDonor = donorName(entry->donor);
+            capture.players = 1u;
+            capture.width = result.output_width;
+            capture.height = result.output_height;
+            capture.stableFrames = result.capture_stable_frames;
+            std::string captureError;
+            const CharacterVisualReport::StoreResult stored =
+                CharacterVisualReport::bindAndStore(
+                    captures, capture, captureError);
+            capacityReached = stored ==
+                CharacterVisualReport::StoreResult::Full;
+            if (stored == CharacterVisualReport::StoreResult::Added ||
+                stored == CharacterVisualReport::StoreResult::Replaced) {
+                retained = true;
+                setStatus(
+                    "Retail donor reference captured and labeled comparison-only. It cannot satisfy custom-character approval or portrait requirements.",
+                    AppTheme::good());
+            } else if (!capacityReached) {
+                setStatus(
+                    ("The donor reference was discarded because its PNG could not be validated: " +
+                     captureError).c_str(),
+                    AppTheme::accent());
+            }
+        }
+        if (!retained) {
+            std::string directory;
+            if (characterPreviewCacheDirectory(directory)) {
+                (void)CharacterPreviewCache::removeOwnedPath(
+                    directory, packageId, capturePng);
+            }
+            if (!valid) {
+                setStatus(
+                    "The donor reference returned inconsistent comparison metadata and was discarded. No custom-character evidence changed.",
+                    AppTheme::bad());
+            } else if (capacityReached) {
+                setStatus(
+                    "The donor reference was discarded because the visual report tray reached its safety capacity. Export or clear captures, then try again.",
+                    AppTheme::accent());
+            }
+        }
+        return;
+    }
+    if (result.donor_reference != 0 ||
+        result.donor_reference_batches != 0u) {
+        setStatus(
+            "A donor-reference result reached a custom-character route and was rejected. No evidence changed.",
+            AppTheme::bad());
+        return;
+    }
     if (result.pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
         result.context >= MDKR_CHARACTER_PREVIEW_SELECT &&
         result.context <= MDKR_CHARACTER_PREVIEW_PLANE) {
@@ -22963,15 +23196,17 @@ void Settings_publishCharacterPreviewResult(
                 result.output_height <= 16384u &&
                 characterDigestTextValid(sourceSha256) &&
                 characterDigestTextValid(fitSha256);
-            const bool alreadyListed = std::any_of(
+            auto existing = std::find_if(
                 captures.begin(), captures.end(),
                 [&capturePng](const CharacterVisualReport::Capture &capture) {
                     return capture.pngPath == capturePng;
                 });
-            if (recordValid && !alreadyListed &&
+            const bool hasTrayCapacity =
+                existing != captures.end() ||
+                captures.size() < CharacterVisualReport::kMaximumCaptures;
+            if (recordValid &&
                 (!portraitSourceHandoff || portraitHandoffValid) &&
-                (captures.size() < CharacterVisualReport::kMaximumCaptures ||
-                 portraitHandoffValid)) {
+                (hasTrayCapacity || portraitHandoffValid)) {
                 CharacterVisualReport::Capture capture{};
                 capture.pngPath = capturePng;
                 capture.sourceSha256 = sourceSha256;
@@ -23026,8 +23261,24 @@ void Settings_publishCharacterPreviewResult(
                     }
                 }
                 std::string captureError;
-                if (CharacterVisualReport::bindPng(
-                        capture, captureError)) {
+                CharacterVisualReport::StoreResult stored =
+                    CharacterVisualReport::StoreResult::Full;
+                bool captureBound = false;
+                if (hasTrayCapacity) {
+                    stored = CharacterVisualReport::bindAndStore(
+                        captures, capture, captureError);
+                    captureBound =
+                        stored == CharacterVisualReport::StoreResult::Added ||
+                        stored ==
+                            CharacterVisualReport::StoreResult::Replaced;
+                } else if (portraitHandoffValid) {
+                    /* Portrait handoff remains useful when the report tray is
+                     * full. Bind it for the reversible editor without
+                     * exceeding the tray's safety capacity. */
+                    captureBound = CharacterVisualReport::bindPng(
+                        capture, captureError);
+                }
+                if (captureBound) {
                     launcherCaptureRetained = launcherOwnedCapture;
                     if (portraitHandoffValid) {
                         g_characterPendingPortraitSources[packageId] = {
@@ -23035,10 +23286,6 @@ void Settings_publishCharacterPreviewResult(
                         };
                         persistCharacterWorkshopTab(
                             CharacterWorkshopTab::Identity, true);
-                    }
-                    if (captures.size() <
-                        CharacterVisualReport::kMaximumCaptures) {
-                        captures.push_back(std::move(capture));
                     }
                     setStatus(
                         portraitHandoffValid
@@ -23055,7 +23302,10 @@ void Settings_publishCharacterPreviewResult(
                          captureError).c_str(),
                         AppTheme::accent());
                 }
-            } else if (!alreadyListed) {
+            } else {
+                /* A matching record cannot remain valid after this path was
+                 * recreated, even when the returned metadata is rejected. */
+                if (existing != captures.end()) captures.erase(existing);
                 setStatus(
                         portraitSourceHandoff
                             ? "The portrait source was discarded because its exact inspection metadata was inconsistent."

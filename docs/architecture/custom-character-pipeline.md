@@ -1139,7 +1139,7 @@ character material to form a large contiguous component inside the central safe
 frame, and proves the RGBA product has a nonempty bounded subject, a genuinely
 transparent background, and no hidden matte color in zero-alpha pixels. It also
 proves an existing capture stays byte-identical.
-Every valid arm also requires result-v18's asynchronous 8 x 8 opaque-depth
+Every valid custom-character arm also requires result-v19's asynchronous 8 x 8 opaque-depth
 witness: one exact replay records isolated occupied regions and a second replay
 uses equality against the completed scene depth. Portable WebGPU occlusion
 queries are treated only as booleans. Exact masks and popcounts are retained;
@@ -1163,13 +1163,19 @@ Fit approval consumes this result only after an explicit composed-scene
 acknowledgement; qualified zero-fragment opaque/masked evidence blocks approval.
 This qualifies the direct game route, visual inspection controls, capture seam,
 stress seam, coarse opaque-depth seam, and optional exact GPU timestamp seam.
-Embedded offscreen preview, donor-reference attribution, weather and vehicle
-conditions beyond the three qualified course families, and a maintained
+The same linked-ROM gate also captures a one-player composed retail-donor
+reference with the replacement transaction suppressed: the result requires
+zero modern draws, nonzero fingerprint-qualified donor-character batches, the
+package's selected donor, 12 stable frames, and automatic return. This is
+explicitly comparison-only live animation and cannot satisfy fit, motion,
+portrait, or performance evidence. Embedded offscreen preview, named attachment
+attribution, paired silhouette registration, weather and vehicle conditions
+beyond the three qualified course families, and a maintained
 device-profile/headroom corpus remain open.
 
 Launcher-owned previews also arm the existing bounded presentation census. The
 game discards a 120-authored-tick warm-up, resets only the observational timing
-window, and freezes a structured version-18 result when the F1 overlay opens (or
+window, and freezes a structured version-19 result when the F1 overlay opens (or
 at engine shutdown). The surviving launcher publishes that result back to the
 same package inspector: displayed interval sample count, median/p95/p99/mean/max,
 authored tick-wall sample/mean, and warmed replacement/part/donor-suppression
@@ -1184,7 +1190,7 @@ Fewer than 60 intervals
 and synthetic pacing are explicitly diagnostic-only. Visual-inspection results
 remain session-only and cannot contaminate durable timing evidence.
 Offset Studio also has a separate version-3 scene-review result containing
-three complete v18 select samples or eleven complete v18 vehicle samples bound
+three complete v19 select samples or eleven complete v19 vehicle samples bound
 to one of three qualified course families. A single resumable launcher action
 keeps select in its authored room and runs every vehicle on an open baseline,
 dense scenery, and an alternate environment. The strict one-player exact routes
@@ -1198,7 +1204,7 @@ when resuming, aggregates the most concerning state across all 33 vehicle rows,
 and never stores these samples as clean performance evidence. Long clean race
 detail is collapsible; any warning opens the state table by default.
 
-The launcher collects only version-18 captures armed after at least 12 eligible
+The launcher collects only version-19 captures armed after at least 12 eligible
 frames in bounded session metadata and can export a self-contained HTML
 qualification report. Publication validates the complete typed PNG and binds
 its SHA-256 immediately. A model-only result also requires the renderer's exact
@@ -1213,8 +1219,14 @@ thumbnail per visible digest, presents transparent products over a checkerboard,
 and never retains full-resolution pixels. Report export and Portrait Studio
 handoff reread the external file and refuse any later byte replacement; the
 handoff carries the bound digest through its own decode so a path swap cannot
-cross that boundary. Report schema v3 records `scene` or `model-alpha` for
-every item, displays transparency over a checkerboard, and refuses RGB/RGBA
+cross that boundary. Report schema v4 records `scene` or `model-alpha` and an
+explicit `custom-character` or `retail-donor-reference` subject for every item,
+requires the selected donor's display identity for every retail reference,
+and replaces the digest record when a launcher-owned context slot is
+recaptured. A failed replacement removes the stale same-path thumbnail because
+its former bytes no longer exist; a full tray still admits replacement without
+growing past its cap.
+It displays transparency over a checkerboard and refuses RGB/RGBA
 files that contradict the recorded product. It additionally records the fixed
 projection witness and draws registered bounds, anchor, and forward direction
 over the embedded PNG using an integer SVG coordinate space. It refuses absent
@@ -1246,7 +1258,7 @@ anchor, normalized facing direction, and four exact post-solve
 root/bend/target/end/error contact witnesses from the successful replacement
 draw, retained-vehicle topology and containment facts, and the opaque-depth
 grid, so Fit and Performance retain the same renderer measurement after
-restart. The v18 result contract requires either all four self-consistent
+restart. The v19 result contract requires either all four self-consistent
 witnesses or none; a vehicle result with nonzero automatic solve count cannot
 omit or partially publish them. It also carries a versioned GPU timing contract:
 the initial gameplay color/depth pass is timestamped when the device supports
@@ -1372,7 +1384,7 @@ fail before GPU allocation; decoded cost accounting matches actual allocations.
   cross-fades, presentation endpoint retention, WebGPU GPU skinning, reviewed
   humanoid fallback poses, and vehicle contacts are implemented.
 - Exact Animation Studio review holds 0/50/100% samples or alternates two
-  distinct semantics through those same cross-fades. The current result-v18 contract reports both
+  distinct semantics through those same cross-fades. The current result-v19 contract reports both
   motion sources, per-destination blend milliseconds, switches, blended ticks,
   completions, and package-fallback ticks without entering durable performance
   evidence.

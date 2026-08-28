@@ -23,6 +23,9 @@ typedef enum MdkrWorkshopPreviewLighting {
 typedef struct MdkrWorkshopPreviewVisualMetrics {
     uint64_t camera_override_ticks;
     uint64_t lighting_override_draws;
+    /* Qualified retail donor-character batches drawn while the exact
+     * comparison route deliberately leaves the replacement suppressed. */
+    uint64_t donor_reference_batches;
 } MdkrWorkshopPreviewVisualMetrics;
 
 /* Presentation-only state for an exact Workshop inspection. Zero view angles
@@ -41,6 +44,9 @@ int mdkr_workshop_preview_view(int *yaw_degrees, int *pitch_degrees);
 MdkrWorkshopPreviewLighting mdkr_workshop_preview_lighting(void);
 void mdkr_workshop_preview_note_camera_override(void);
 void mdkr_workshop_preview_note_lighting_override(void);
+void mdkr_workshop_preview_reference_set(int enabled);
+int mdkr_workshop_preview_reference_enabled(void);
+void mdkr_workshop_preview_note_donor_reference_batch(void);
 void mdkr_workshop_preview_visual_metrics_reset(void);
 void mdkr_workshop_preview_visual_metrics(
     MdkrWorkshopPreviewVisualMetrics *out);

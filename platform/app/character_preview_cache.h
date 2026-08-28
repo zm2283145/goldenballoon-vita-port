@@ -9,10 +9,22 @@ namespace CharacterPreviewCache {
 constexpr uint32_t kFirstContext = 1u;
 constexpr uint32_t kLastContext = 4u;
 
+enum class Subject : uint8_t {
+    CustomCharacter = 0,
+    RetailDonor,
+};
+
 // Reserve the one launcher-owned PNG location for this package/context. Any
 // prior regular file at that exact derived location is removed; unrelated
 // files, directories, and links are never touched. The renderer still creates
 // the PNG exclusively, so this function does not weaken its no-overwrite rule.
+bool prepare(const std::string &charactersDirectory,
+             const std::string &packageId,
+             uint32_t context,
+             Subject subject,
+             std::string &capturePath,
+             std::string &error);
+
 bool prepare(const std::string &charactersDirectory,
              const std::string &packageId,
              uint32_t context,

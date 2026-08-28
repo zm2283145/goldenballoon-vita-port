@@ -407,16 +407,23 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
                          "[app] boot rejected conflicting tick/frame limits\n");
             return 2;
         }
-        if ((cfg->character_preview_studio || cfg->character_motion_review) &&
+        if ((cfg->character_preview_studio || cfg->character_motion_review ||
+             cfg->character_preview_donor_reference) &&
             cfg->character_preview_context == MDKR_CHARACTER_PREVIEW_NONE) {
             std::fprintf(stderr,
-                         "[app] boot rejected character studio/review without preview\n");
+                         "[app] boot rejected character studio/review/reference without preview\n");
             return 2;
         }
         if (cfg->character_motion_review != 0 &&
             cfg->character_motion_review != 1) {
             std::fprintf(stderr,
                          "[app] boot rejected invalid character motion review flag\n");
+            return 2;
+        }
+        if (cfg->character_preview_donor_reference != 0 &&
+            cfg->character_preview_donor_reference != 1) {
+            std::fprintf(stderr,
+                         "[app] boot rejected invalid donor-reference flag\n");
             return 2;
         }
         if (!cfg->character_motion_review &&
@@ -462,6 +469,25 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
               cfg->character_preview_auto_return != 1) ||
              (cfg->character_preview_studio != 0 &&
               cfg->character_preview_studio != 1) ||
+             (cfg->character_preview_donor_reference &&
+              (cfg->character_preview_players != 1 ||
+               cfg->character_preview_pose !=
+                   MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+               cfg->character_preview_pose_phase_milli != 0u ||
+               cfg->character_preview_transition_from_pose !=
+                   MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+               cfg->character_preview_transition_from_phase_milli != 0u ||
+               cfg->character_preview_view_yaw_degrees != 0 ||
+               cfg->character_preview_view_pitch_degrees != 0 ||
+               cfg->character_preview_lighting !=
+                   MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
+               cfg->character_preview_capture_png == nullptr ||
+               cfg->character_preview_capture_png[0] == '\0' ||
+               cfg->character_preview_capture_kind !=
+                   MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE ||
+               !cfg->character_preview_auto_return ||
+               cfg->character_preview_studio ||
+               cfg->character_motion_review)) ||
              (cfg->character_motion_review &&
               (cfg->character_preview_context <
                    MDKR_CHARACTER_PREVIEW_SELECT ||
@@ -502,8 +528,9 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
              (cfg->character_preview_auto_return &&
               (cfg->character_preview_capture_png == nullptr ||
                cfg->character_preview_capture_png[0] == '\0' ||
-               cfg->character_preview_pose ==
-                   MDKR_CHARACTER_PREVIEW_POSE_LIVE)) ||
+               (!cfg->character_preview_donor_reference &&
+                cfg->character_preview_pose ==
+                   MDKR_CHARACTER_PREVIEW_POSE_LIVE))) ||
              (cfg->character_preview_context ==
                   MDKR_CHARACTER_PREVIEW_SELECT &&
               (cfg->character_preview_view_yaw_degrees != 0 ||
@@ -518,7 +545,8 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
                cfg->character_preview_view_pitch_degrees != 0 ||
                cfg->character_preview_lighting !=
                    MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
-               (cfg->character_preview_capture_png != nullptr &&
+               (!cfg->character_preview_donor_reference &&
+                cfg->character_preview_capture_png != nullptr &&
                 cfg->character_preview_capture_png[0] != '\0'))) ||
              (cfg->character_preview_pose !=
                   MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
@@ -697,6 +725,9 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             previewEnvironment.set(
                 "MDKR_CHARACTER_WORKSHOP_MOTION_REVIEW",
                 cfg->character_motion_review ? "1" : "") &&
+            previewEnvironment.set(
+                "MDKR_CHARACTER_WORKSHOP_DONOR_REFERENCE",
+                cfg->character_preview_donor_reference ? "1" : "") &&
             previewEnvironment.set("MDKR_PRESENT_PERF", "1");
         const std::string posePhase = pose != nullptr
             ? std::to_string(cfg->character_preview_pose_phase_milli)
@@ -735,12 +766,15 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
                 pose != nullptr ? lighting : "") &&
             previewEnvironment.set(
                 "MDKR_CHARACTER_WORKSHOP_CAPTURE_PNG",
-                pose != nullptr &&
+                (pose != nullptr ||
+                 cfg->character_preview_donor_reference) &&
                         cfg->character_preview_capture_png != nullptr
                     ? cfg->character_preview_capture_png : "") &&
             previewEnvironment.set(
                 "MDKR_CHARACTER_WORKSHOP_CAPTURE_KIND",
-                pose != nullptr && captureRequested ? captureKind : "") &&
+                (pose != nullptr ||
+                 cfg->character_preview_donor_reference) && captureRequested
+                    ? captureKind : "") &&
             environmentReady;
         for (int player = 0; player < 4; ++player) {
             const std::string variable =
@@ -759,7 +793,7 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             stderr,
             "[app] character preview: package=%s context=%s scene=%s players=%d "
             "pose=%s phase=%u transitionFrom=%s transitionPhase=%u "
-            "view=%d,%d lighting=%s captureKind=%s autoReturn=%d motionReview=%d "
+            "view=%d,%d lighting=%s captureKind=%s autoReturn=%d motionReview=%d donorReference=%d "
             "capture=%s\n",
             cfg->character_preview_package, context, scene,
             cfg->character_preview_players,
@@ -773,6 +807,7 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             captureRequested ? captureKind : "none",
             cfg->character_preview_auto_return,
             cfg->character_motion_review,
+            cfg->character_preview_donor_reference,
             cfg->character_preview_capture_png != nullptr &&
                     cfg->character_preview_capture_png[0] != '\0'
                 ? cfg->character_preview_capture_png : "none");
@@ -806,6 +841,8 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
                 captureRequested;
             cfg->character_preview_result->capture_kind =
                 cfg->character_preview_capture_kind;
+            cfg->character_preview_result->donor_reference =
+                cfg->character_preview_donor_reference;
             g_mdkrCharacterPreviewResult = cfg->character_preview_result;
         }
         if (cfg->character_motion_review_result != nullptr) {

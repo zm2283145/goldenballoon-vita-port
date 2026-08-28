@@ -44,6 +44,7 @@ struct SettingsCharacterPreviewRequest {
     bool portraitSourceHandoff = false;
     bool interactiveStudio = false;
     bool representativeMotionReview = false;
+    bool donorReference = false;
 };
 
 struct SettingsCharacterPreviewDisposition {
@@ -51,6 +52,7 @@ struct SettingsCharacterPreviewDisposition {
     bool portraitSourceHandoff = false;
     bool interactiveStudio = false;
     bool representativeMotionReview = false;
+    bool donorReference = false;
     MdkrCharacterPreviewScene scene =
         MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
 };

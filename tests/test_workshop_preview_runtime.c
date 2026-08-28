@@ -26,6 +26,14 @@ int main(void) {
     expect(mdkr_workshop_preview_lighting() ==
                MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
            "cleared runtime has neutral character lighting");
+    expect(!mdkr_workshop_preview_reference_enabled(),
+           "cleared runtime cannot suppress the custom replacement");
+    mdkr_workshop_preview_note_donor_reference_batch();
+    mdkr_workshop_preview_reference_set(1);
+    mdkr_workshop_preview_note_donor_reference_batch();
+    mdkr_workshop_preview_note_donor_reference_batch();
+    expect(mdkr_workshop_preview_reference_enabled(),
+           "explicit comparison mode is observable by qualified donor draws");
 
     expect(mdkr_workshop_preview_visual_set(
                -180, 90, MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT,
@@ -69,22 +77,26 @@ int main(void) {
     memset(&metrics, 0, sizeof(metrics));
     mdkr_workshop_preview_visual_metrics(&metrics);
     expect(metrics.camera_override_ticks == 2u &&
-               metrics.lighting_override_draws == 1u,
+               metrics.lighting_override_draws == 1u &&
+               metrics.donor_reference_batches == 2u,
            "presentation-only evidence counters are exact");
     mdkr_workshop_preview_visual_metrics(NULL);
     mdkr_workshop_preview_visual_clear();
     expect(!mdkr_workshop_preview_view(NULL, NULL) &&
                mdkr_workshop_preview_lighting() ==
-                   MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
+                   MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL &&
+               !mdkr_workshop_preview_reference_enabled(),
            "clear restores visuals without requiring output pointers");
     mdkr_workshop_preview_visual_metrics(&metrics);
     expect(metrics.camera_override_ticks == 2u &&
-               metrics.lighting_override_draws == 1u,
+               metrics.lighting_override_draws == 1u &&
+               metrics.donor_reference_batches == 2u,
            "clearing visual state does not erase already measured evidence");
     mdkr_workshop_preview_visual_metrics_reset();
     mdkr_workshop_preview_visual_metrics(&metrics);
     expect(metrics.camera_override_ticks == 0u &&
-               metrics.lighting_override_draws == 0u,
+               metrics.lighting_override_draws == 0u &&
+               metrics.donor_reference_batches == 0u,
            "metric reset starts a new measurement epoch");
 
     if (failures != 0) return 1;

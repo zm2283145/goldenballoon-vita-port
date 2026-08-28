@@ -129,6 +129,8 @@ void fillBootConfig(LauncherState &state, MdkrBootConfig &boot) {
                 ? nullptr : state.characterPreviewCapturePng.c_str();
         boot.character_preview_capture_kind =
             state.characterPreviewCaptureKind;
+        boot.character_preview_donor_reference =
+            state.characterPreviewDonorReference ? 1 : 0;
         boot.character_preview_auto_return =
             state.characterPreviewAutoReturn ? 1 : 0;
         boot.character_preview_studio =
@@ -982,6 +984,7 @@ void acceptCharacterPreviewRequest(
     state.characterPreviewInteractiveStudio = preview.interactiveStudio;
     state.characterPreviewRepresentativeMotionReview =
         preview.representativeMotionReview;
+    state.characterPreviewDonorReference = preview.donorReference;
     Launcher_requestTab(state, kLauncherPanelPlay, kLauncherTabPlayer);
 }
 
@@ -1098,6 +1101,8 @@ LauncherAction Launcher::draw(AppHost &host) {
             state_.characterPreviewInteractiveStudio;
         disposition.representativeMotionReview =
             state_.characterPreviewRepresentativeMotionReview;
+        disposition.donorReference =
+            state_.characterPreviewDonorReference;
         disposition.scene = state_.characterPreviewScene;
         Settings_publishCharacterPreviewResult(
             state_.characterPreviewPackage,
@@ -1140,6 +1145,7 @@ LauncherAction Launcher::draw(AppHost &host) {
         state_.characterPreviewPortraitSourceHandoff = false;
         state_.characterPreviewInteractiveStudio = false;
         state_.characterPreviewRepresentativeMotionReview = false;
+        state_.characterPreviewDonorReference = false;
         state_.characterPreviewDispatched = false;
     }
     state_.hostWindow = host.window();

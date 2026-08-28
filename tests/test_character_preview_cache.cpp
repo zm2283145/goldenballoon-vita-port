@@ -58,6 +58,15 @@ int main() {
            "does not transfer ownership across packages");
     expect(!fs::exists(fs::u8path(capture)),
            "preparation leaves the destination absent for exclusive creation");
+    std::string donorCapture;
+    expect(CharacterPreviewCache::prepare(
+               utf8(root), packageId, 2u,
+               CharacterPreviewCache::Subject::RetailDonor,
+               donorCapture, error) && donorCapture != capture &&
+               CharacterPreviewCache::owns(
+                   utf8(root), packageId, donorCapture),
+           "retail donor references own a distinct bounded context slot");
+    writeText(fs::u8path(donorCapture), "donor preview");
 
     writeText(fs::u8path(capture), "old preview");
     expect(!CharacterPreviewCache::removeOwnedPath(
@@ -85,6 +94,8 @@ int main() {
     CharacterPreviewCache::removePackage(utf8(root), packageId);
     expect(fs::exists(unrelated),
            "package cleanup preserves unrelated cache-directory files");
+    expect(!fs::exists(fs::u8path(donorCapture)),
+           "package cleanup removes the exact donor-reference slot");
     for (uint32_t context = CharacterPreviewCache::kFirstContext;
          context <= CharacterPreviewCache::kLastContext; ++context) {
         std::string path;

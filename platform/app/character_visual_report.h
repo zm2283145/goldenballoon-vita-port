@@ -18,6 +18,11 @@ enum class RenderProduct : uint8_t {
     ModelAlpha,
 };
 
+enum class Subject : uint8_t {
+    CustomCharacter = 0,
+    RetailDonor,
+};
+
 constexpr size_t kFitProjectionPoints = 10u;
 
 struct FitProjection {
@@ -41,6 +46,8 @@ struct Capture {
     std::string pose;
     std::string lighting;
     RenderProduct renderProduct = RenderProduct::Scene;
+    Subject subject = Subject::CustomCharacter;
+    std::string referenceDonor;
     uint32_t players = 1u;
     uint32_t phaseMilli = 0u;
     int32_t viewYawDegrees = 0;
@@ -52,11 +59,25 @@ struct Capture {
     FitProjection fitProjection;
 };
 
+enum class StoreResult : uint8_t {
+    Added = 0,
+    Replaced,
+    Full,
+    Invalid,
+};
+
 /* Validate an unbound exact typed PNG at capture-publication time and bind its
  * digest into session metadata. Export and preview later refuse changed bytes.
  * The capture changes only on complete success; rebinding is refused. */
 bool bindPng(Capture &capture, std::string &error);
 bool validateBoundPng(const Capture &capture, std::string &error);
+
+/* Bind and retain a create-only capture by path. Reusing a launcher-owned slot
+ * replaces its prior digest record instead of duplicating it. If the recreated
+ * file is invalid, the stale same-path record is removed because it can no
+ * longer describe the bytes on disk. */
+StoreResult bindAndStore(
+    std::vector<Capture> &captures, Capture &capture, std::string &error);
 
 /* Writes one self-contained, responsive HTML contact sheet. PNG bytes are
  * embedded as data URIs and a JSON record is embedded beside them, so the

@@ -121,6 +121,7 @@ struct LauncherState {
     bool characterPreviewPortraitSourceHandoff = false;
     bool characterPreviewInteractiveStudio = false;
     bool characterPreviewRepresentativeMotionReview = false;
+    bool characterPreviewDonorReference = false;
     bool characterPreviewDispatched = false;
     MdkrCharacterPreviewResult characterPreviewResult{};
     MdkrCharacterMotionReviewResult characterMotionReviewResult{};

@@ -1334,6 +1334,111 @@ def main() -> int:
             f"sessions ({one_player_subject!r} vs {four_player_subject!r})"
         )
 
+    if not failures:
+        donor_dir = evidence / "car-retail-donor-reference"
+        donor_dir.mkdir(parents=True, exist_ok=True)
+        donor_capture = donor_dir / "stabilized.png"
+        donor_env = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith(("MDKR", "GE007_"))
+        }
+        donor_env.update(
+            LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
+            MDKR_PRESENT_PERF="1", MDKR_RENDERER="webgpu",
+            MDKR_RENDER_SCALE="1", MDKR_VIDEO_CONFIG_PATH=os.devnull,
+            MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
+            MDKR_CHARACTER_WORKSHOP_PREVIEW="car",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS="1",
+            MDKR_CHARACTER_WORKSHOP_DONOR_REFERENCE="1",
+            MDKR_CHARACTER_WORKSHOP_CAPTURE_PNG=str(donor_capture),
+            MDKR_CHARACTER_WORKSHOP_CAPTURE_KIND="scene",
+            MDKR_CHARACTER_WORKSHOP_CAPTURE_AUTO_RETURN="1",
+            MDKR_CUSTOM_CHARACTER_P1=PACKAGE_ID,
+            MDKR64_HIDDEN="1",
+        )
+        process = run([
+            str(binary), "--headless-frames", str(PRODUCT_CAPTURE_FRAMES),
+            "--rom", str(rom), "--window-size", "1280x960", "--restored",
+        ], env=donor_env)
+        donor_output = process.stdout or ""
+        output += "\n===== car-retail-donor-reference =====\n" + donor_output
+        donor_result = re.search(
+            r"character_workshop_result: warmup=1 .*replacements=(\d+) "
+            r"donorReference=(\d+)/(\d+) .*capture=1/1/0 kind=0 "
+            r"captureStableFrames=(\d+) bytes=0 ",
+            donor_output,
+        )
+        if (process.returncode != 0 or donor_result is None):
+            failures.append(
+                "retail donor reference did not return a complete typed result"
+            )
+        else:
+            replacements, reference, batches, stable = map(
+                int, donor_result.groups()
+            )
+            if (replacements != 0 or reference != 1 or batches == 0 or
+                    stable < 12):
+                failures.append(
+                    "retail donor reference mixed replacement and donor "
+                    f"evidence: {donor_result.groups()!r}"
+                )
+        if ("donor0=1" not in donor_output or
+                "donorReference=1" not in donor_output or
+                "[WORKSHOP-CAPTURE] auto-return after presented frame=" not in
+                donor_output or "[SDL] headless: reached" in donor_output):
+            failures.append(
+                "retail donor reference did not preserve the chosen donor or "
+                "auto-return after the presented capture"
+            )
+        try:
+            width, height, pixels = read_png_rgb(donor_capture)
+            colours = {
+                pixels[(y * width + x) * 3:(y * width + x) * 3 + 3]
+                for y in range(0, height, max(1, height // 32))
+                for x in range(0, width, max(1, width // 32))
+            }
+            if width < 320 or height < 240 or len(colours) < 16:
+                failures.append(
+                    "retail donor reference PNG was empty or incorrectly sized"
+                )
+        except (OSError, ValueError) as error:
+            failures.append(f"retail donor reference PNG invalid: {error}")
+
+        donor_rejection_arms = [
+            ("donor-reference-without-capture", {
+                "MDKR_CHARACTER_WORKSHOP_CAPTURE_PNG": None,
+                "MDKR_CHARACTER_WORKSHOP_CAPTURE_KIND": None,
+                "MDKR_CHARACTER_WORKSHOP_CAPTURE_AUTO_RETURN": None,
+            }),
+            ("donor-reference-multiplayer", {
+                "MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS": "2",
+                "MDKR_CUSTOM_CHARACTER_P2": PACKAGE_ID,
+            }),
+            ("donor-reference-model-alpha", {
+                "MDKR_CHARACTER_WORKSHOP_CAPTURE_KIND": "model-alpha",
+            }),
+        ]
+        for label, changes in donor_rejection_arms:
+            invalid_env = dict(donor_env)
+            for key, value in changes.items():
+                if value is None:
+                    invalid_env.pop(key, None)
+                else:
+                    invalid_env[key] = value
+            process = run([
+                str(binary), "--headless-frames", "60", "--rom", str(rom),
+                "--window-size", "1280x960", "--restored",
+            ], env=invalid_env)
+            invalid_output = process.stdout or ""
+            output += f"\n===== {label} =====\n" + invalid_output
+            if (process.returncode == 0 or
+                    "donor reference requires one-player live gameplay, "
+                    "neutral presentation, and a composed capture" not in
+                    invalid_output):
+                failures.append(
+                    f"{label} did not fail closed at the game boundary"
+                )
+
     rejection_arms = [
         ("invalid-context", "boat", "1", True, None, None, None,
          "invalid Character Workshop context: boat"),
@@ -1838,6 +1943,8 @@ def main() -> int:
         "target-frame anchor/bounds/facing plus exact gameplay-camera/anatomy "
         "measurements, exclusive stabilized "
         "RGB gameplay and transparent RGBA model-only PNG capture, "
+        "comparison-only retail-donor capture with qualified donor-batch "
+        "witness and zero replacement draws, "
         "exact four-contact post-solve witnesses and qualified retained-vehicle "
         "surface intersection samples, bounded one-session three-state select "
         "and three-course complete eleven-sample race semantic batteries, "

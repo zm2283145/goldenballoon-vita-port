@@ -428,7 +428,7 @@ def main() -> int:
                 or rows[0][0] != "0"
                 or rows[0][1] != PACKAGE_ID
                 or (rows[0][7], rows[0][8]) != ("2", "4")
-                or rows[0][9] != "18"
+                or rows[0][9] != "19"
                 or bytes.fromhex(rows[0][29]).decode("utf-8")
                 != "webgpu-test"
                 or bytes.fromhex(rows[0][30]).decode("utf-8")

@@ -5042,7 +5042,7 @@ aspect-fits that selected viewport into the full output without distortion, and
 publishes bounded fixed-point projections for eight calibrated bounds corners,
 the fitted anchor, and the forward endpoint. The gate installs a second
 reviewed-humanoid package and drives a real car arm through automatic contact
-solving. The current result-v18 contract must publish all four bounded
+solving. The current result-v19 contract must publish all four bounded
 contact witnesses; the gate independently recomputes the left-hand
 target-to-endpoint distance from quantized coordinates and rejects partial,
 detached, or fabricated select-context evidence. Authored-clips-only arms must
@@ -5138,15 +5138,21 @@ exclusive export, and list-clear controls to remain reachable at 200% scale.
 The pure `character_visual_report` test independently proves embedded PNG/JSON
 output, capture-time digest binding, same-size/same-product file-replacement
 refusal, rebinding refusal, HTML/script escaping, source-path privacy, PNG
-completeness/dimension/product checks, schema-v3 scene/model-alpha and fixed
+completeness/dimension/product checks, schema-v4 scene/model-alpha plus
+custom/retail-donor subject identity and fixed
 projection metadata, integer-space registered SVG overlay, checkerboard
 transparency presentation, and overwrite refusal;
-`character_preview_cache` proves the Offset Studio no-filename path derives one
-bounded hashed slot per package/context, preserves unrelated files, cleans only
+`character_preview_cache` proves the Offset Studio no-filename path derives
+distinct bounded custom and retail-donor hashed slots per package/context,
+preserves unrelated files, cleans only
 regular non-link owned files, rejects cross-package ownership and hostile links,
 and leaves the renderer destination absent for exclusive PNG creation;
-`workshop_preview_runtime`
-proves visual bounds, failure-without-mutation, and measurement epochs.
+`workshop_preview_runtime` proves visual bounds, donor-reference enable/reset
+and qualified-batch counting, failure-without-mutation, and measurement epochs.
+The linked-ROM gate separately requires the donor route to preserve the
+package's selected donor, produce zero modern replacements and nonzero qualified
+donor-character batches, capture a nonempty composed RGB frame, and auto-return
+after 12 stable frames.
 The pure `character_test_evidence_store` unit separately covers canonical parsing,
 whole-inventory and row authentication, strict unsigned/signed numeric and UTF-8
 bounds, renderer-fit/contact-witness invariants, exact key replacement,

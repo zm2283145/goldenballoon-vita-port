@@ -213,6 +213,7 @@ static MdkrWorkshopPreviewVisualMetrics sWorkshopPreviewVisualBaseline;
 static char sWorkshopPreviewCapturePath[1024];
 static u64 sWorkshopPreviewCaptureStableFrames;
 static u64 sWorkshopPreviewCaptureLastReplacementDraws;
+static u64 sWorkshopPreviewCaptureLastDonorReferenceBatches;
 static s32 sWorkshopPreviewCaptureArmed;
 static MdkrCharacterPreviewCaptureKind sWorkshopPreviewCaptureKind;
 static u32 sWorkshopMotionReviewSample;
@@ -1010,6 +1011,12 @@ static void workshop_preview_measurement_finish(void) {
             (void)workshop_preview_publish_opaque_visibility(result);
         }
         mdkr_workshop_preview_visual_metrics(&visual);
+        result->donor_reference_batches =
+            visual.donor_reference_batches >=
+                    sWorkshopPreviewVisualBaseline.donor_reference_batches
+                ? visual.donor_reference_batches -
+                      sWorkshopPreviewVisualBaseline.donor_reference_batches
+                : 0u;
         result->camera_override_ticks = visual.camera_override_ticks >=
                 sWorkshopPreviewVisualBaseline.camera_override_ticks
             ? visual.camera_override_ticks -
@@ -1025,6 +1032,7 @@ static void workshop_preview_measurement_finish(void) {
     MDKR_TRACE(
         "character_workshop_result: warmup=%d realtime=%d samples=%llu "
         "p50us=%llu p95us=%llu p99us=%llu maxus=%llu replacements=%llu "
+        "donorReference=%d/%llu "
         "contacts=%llu contactMaxUm=%llu contactWitness=%x "
         "contactWitnessErrorUm=%llu,%llu,%llu,%llu "
         "contactLHUm=root:%lld,%lld,%lld bend:%lld,%lld,%lld "
@@ -1055,6 +1063,8 @@ static void workshop_preview_measurement_finish(void) {
         result->interval_samples, result->interval_p50_us,
         result->interval_p95_us, result->interval_p99_us,
         result->interval_max_us, result->replacement_draws,
+        result->donor_reference,
+        result->donor_reference_batches,
         result->contact_solves, result->contact_error_max_micrometres,
         result->contact_witness_mask,
         result->contact_witness_error_micrometres[0],
@@ -1197,10 +1207,14 @@ static void workshop_preview_capture_service(void) {
      * leave that state machine held forever. Instead require consecutive
      * frames in which every requested presentation layer actually rendered. */
     ready =
-        character.replacement_draws >
-            sWorkshopPreviewCaptureLastReplacementDraws &&
-        character.inspection_pose_ticks >
-            sWorkshopPreviewCharacterBaseline.inspection_pose_ticks &&
+        (result->donor_reference
+             ? visual.donor_reference_batches >
+                   sWorkshopPreviewCaptureLastDonorReferenceBatches
+             : character.replacement_draws >
+                       sWorkshopPreviewCaptureLastReplacementDraws &&
+                   character.inspection_pose_ticks >
+                       sWorkshopPreviewCharacterBaseline
+                           .inspection_pose_ticks) &&
         ((result->view_yaw_degrees == 0 &&
           result->view_pitch_degrees == 0) ||
          visual.camera_override_ticks >
@@ -1210,6 +1224,8 @@ static void workshop_preview_capture_service(void) {
             sWorkshopPreviewVisualBaseline.lighting_override_draws);
     sWorkshopPreviewCaptureLastReplacementDraws =
         character.replacement_draws;
+    sWorkshopPreviewCaptureLastDonorReferenceBatches =
+        visual.donor_reference_batches;
     if (ready) {
         sWorkshopPreviewCaptureStableFrames++;
     } else {
@@ -1294,7 +1310,8 @@ static void workshop_preview_measurement_service(s32 overlayPaused) {
          * Retry a consumed/failed request while there is still a 20-tick
          * settling margin, but never let this authoring diagnostic pollute the
          * measured performance interval. */
-        if (result->context >= MDKR_CHARACTER_PREVIEW_CAR &&
+        if (!result->donor_reference &&
+            result->context >= MDKR_CHARACTER_PREVIEW_CAR &&
             result->context <= MDKR_CHARACTER_PREVIEW_PLANE &&
             sWorkshopPreviewWarmupTicks <=
                 WORKSHOP_PREVIEW_WARMUP_TICKS - 20u) {
@@ -1342,6 +1359,8 @@ static void workshop_preview_measurement_service(s32 overlayPaused) {
                 &sWorkshopPreviewVisualBaseline);
             sWorkshopPreviewCaptureLastReplacementDraws =
                 sWorkshopPreviewCharacterBaseline.replacement_draws;
+            sWorkshopPreviewCaptureLastDonorReferenceBatches =
+                sWorkshopPreviewVisualBaseline.donor_reference_batches;
             sWorkshopPreviewMeasurementStarted = TRUE;
             result->warmup_complete = TRUE;
             if (g_mdkrCharacterMotionReviewResult != NULL) {
@@ -1420,6 +1439,7 @@ void thread3_main(UNUSED void *unused) {
     sWorkshopPreviewCapturePath[0] = '\0';
     sWorkshopPreviewCaptureStableFrames = 0u;
     sWorkshopPreviewCaptureLastReplacementDraws = 0u;
+    sWorkshopPreviewCaptureLastDonorReferenceBatches = 0u;
     sWorkshopPreviewCaptureArmed = FALSE;
     sWorkshopPreviewCaptureKind =
         MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
@@ -3467,6 +3487,7 @@ static s32 workshop_preview_start(void) {
     const char *captureKindText;
     const char *motionReviewText;
     const char *sceneText;
+    const char *donorReferenceText;
     MdkrCharacterPreviewPose pose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
     unsigned posePhaseMilli = 0u;
     MdkrCharacterPreviewPose transitionFromPose =
@@ -3481,6 +3502,7 @@ static s32 workshop_preview_start(void) {
     s32 players = 1;
     s32 vehicle = -1;
     s32 motionReview = FALSE;
+    s32 donorReference = FALSE;
     if (context == NULL || context[0] == '\0') return FALSE;
     playersText = getenv("MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS");
     if (playersText != NULL && playersText[0] != '\0') {
@@ -3577,6 +3599,17 @@ static s32 workshop_preview_start(void) {
     lightingText = getenv("MDKR_CHARACTER_WORKSHOP_LIGHTING");
     captureText = getenv("MDKR_CHARACTER_WORKSHOP_CAPTURE_PNG");
     captureKindText = getenv("MDKR_CHARACTER_WORKSHOP_CAPTURE_KIND");
+    donorReferenceText = getenv(
+        "MDKR_CHARACTER_WORKSHOP_DONOR_REFERENCE");
+    if (donorReferenceText != NULL && donorReferenceText[0] != '\0') {
+        if (strcmp(donorReferenceText, "1") != 0) {
+            fprintf(stderr,
+                    "[FATAL] invalid Character Workshop donor-reference request\n");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        donorReference = TRUE;
+    }
     if ((yawText != NULL && yawText[0] != '\0') ||
         (pitchText != NULL && pitchText[0] != '\0') ||
         (lightingText != NULL && lightingText[0] != '\0')) {
@@ -3630,7 +3663,8 @@ static s32 workshop_preview_start(void) {
     }
     if (captureText != NULL && captureText[0] != '\0') {
         const size_t captureLength = strlen(captureText);
-        if (pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+        if ((!donorReference &&
+             pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE) ||
             transitionFromPose != MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
             captureLength >= sizeof(sWorkshopPreviewCapturePath) ||
             captureLength < 4u ||
@@ -3660,6 +3694,21 @@ static s32 workshop_preview_start(void) {
         sWorkshopPreviewCaptureKind =
             MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
     }
+    if (donorReference &&
+        (players != 1 || pose != MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+         posePhaseMilli != 0u ||
+         transitionFromPose != MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+         viewYawDegrees != 0 || viewPitchDegrees != 0 ||
+         lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
+         sWorkshopPreviewCapturePath[0] == '\0' ||
+         sWorkshopPreviewCaptureKind !=
+             MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE)) {
+        fprintf(stderr,
+                "[FATAL] donor reference requires one-player live gameplay, neutral presentation, and a composed capture\n");
+        platform_request_exit(EXIT_FAILURE);
+        return TRUE;
+    }
+    mdkr_workshop_preview_reference_set(donorReference);
     motionReviewText = getenv("MDKR_CHARACTER_WORKSHOP_MOTION_REVIEW");
     if (motionReviewText != NULL && motionReviewText[0] != '\0') {
         if (strcmp(motionReviewText, "1") != 0) {
@@ -3752,6 +3801,7 @@ static s32 workshop_preview_start(void) {
             sWorkshopPreviewCapturePath[0] != '\0';
         g_mdkrCharacterPreviewResult->capture_kind =
             sWorkshopPreviewCaptureKind;
+        g_mdkrCharacterPreviewResult->donor_reference = donorReference;
     }
     if (motionReview) {
         if (g_mdkrCharacterMotionReviewResult == NULL) {
@@ -3798,7 +3848,7 @@ static s32 workshop_preview_start(void) {
     }
     MDKR_TRACE(
         "character_workshop_preview: started context=%s scene=%d players=%d "
-        "vehicle=%d level=%d pose=%s phase=%u view=%d,%d lighting=%d capture=%d kind=%s",
+        "vehicle=%d level=%d pose=%s phase=%u view=%d,%d lighting=%d capture=%d kind=%s donorReference=%d",
         context, (int)scene, players, vehicle,
         vehicle < 0 ? ASSET_LEVEL_CHARACTERSELECT : gPlayableMapId,
         pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ? "live" : poseText,
@@ -3806,7 +3856,8 @@ static s32 workshop_preview_start(void) {
         sWorkshopPreviewCapturePath[0] != '\0',
         sWorkshopPreviewCaptureKind ==
                 MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA
-            ? "model-alpha" : "scene");
+            ? "model-alpha" : "scene",
+        donorReference);
     return TRUE;
 }
 #endif

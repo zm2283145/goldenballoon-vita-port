@@ -23,6 +23,7 @@
 #include "fast3d/gfx_level_lighting.h"
 #include "modern_character_donor.h"
 #include "modern_character_runtime.h"
+#include "workshop_preview_runtime.h"
 #endif
 /* The level-object-map header is 16 bytes; gObjectMap[] is s32*, so the entries
  * begin 4 s32-elements in. The original code wrote this as sizeof(uintptr_t),
@@ -6514,7 +6515,14 @@ void render_3d_model(Object *obj) {
                             "select fallback: donor ground frame is unavailable");
                         goto modern_select_done;
                     }
-                    if (mdkr_modern_character_emit(
+                    if (mdkr_workshop_preview_reference_enabled()) {
+                        sModernCharacterReplacementObject = obj;
+                        sModernCharacterReplacementModel = objModel;
+                        sModernCharacterReplacementDonor = donor;
+                        sModernCharacterReplacementVehicle = -1;
+                        sModernCharacterReplacementLod = 0;
+                        sModernCharacterReplacementSelect = TRUE;
+                    } else if (mdkr_modern_character_emit(
                             player, get_current_viewport(),
                             MDKR_CHARACTER_CONTEXT_SELECT,
                             targetFrame, NULL,
@@ -6584,7 +6592,8 @@ modern_select_done:;
                         "fallback: donor seat frame is unavailable");
                     goto modern_racer_done;
                 }
-                if (mdkr_modern_character_surface_diagnostics_requested(
+                if (!mdkr_workshop_preview_reference_enabled() &&
+                    mdkr_modern_character_surface_diagnostics_requested(
                         player, context)) {
                     /* A failed shell build deliberately passes an empty shell:
                      * emit consumes the one-shot request and leaves evidence
@@ -6598,7 +6607,14 @@ modern_select_done:;
                         racerObj->headAngle, &vehicleShell);
                     vehicleShellPtr = &vehicleShell;
                 }
-                if (mdkr_modern_character_emit(
+                if (mdkr_workshop_preview_reference_enabled()) {
+                    sModernCharacterReplacementObject = obj;
+                    sModernCharacterReplacementModel = objModel;
+                    sModernCharacterReplacementDonor = racerObj->characterId;
+                    sModernCharacterReplacementVehicle = racerObj->vehicleIDPrev;
+                    sModernCharacterReplacementLod = modernModelIndex;
+                    sModernCharacterReplacementSelect = FALSE;
+                } else if (mdkr_modern_character_emit(
                         player, get_current_viewport(),
                         context, targetFrame, vehicleShellPtr,
                         gSceneDrawDistanceValid ? gSceneDrawDistance
@@ -7889,17 +7905,24 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
             continue;
         }
         if (obj == sModernCharacterReplacementObject &&
-            objModel == sModernCharacterReplacementModel &&
-            !(sModernCharacterReplacementSelect
-                  ? mdkr_modern_donor_select_batch_visible(
-                        sModernCharacterReplacementDonor, i)
-                  : mdkr_modern_donor_batch_visible(
-                        sModernCharacterReplacementDonor,
-                        sModernCharacterReplacementVehicle,
-                        sModernCharacterReplacementLod, i))) {
-            mdkr_modern_character_note_hidden_donor_batch();
-            i++;
-            continue;
+            objModel == sModernCharacterReplacementModel) {
+            const s32 retainedVehicleBatch =
+                sModernCharacterReplacementSelect
+                    ? mdkr_modern_donor_select_batch_visible(
+                          sModernCharacterReplacementDonor, i)
+                    : mdkr_modern_donor_batch_visible(
+                          sModernCharacterReplacementDonor,
+                          sModernCharacterReplacementVehicle,
+                          sModernCharacterReplacementLod, i);
+            if (!retainedVehicleBatch) {
+                if (mdkr_workshop_preview_reference_enabled()) {
+                    mdkr_workshop_preview_note_donor_reference_batch();
+                } else {
+                    mdkr_modern_character_note_hidden_donor_batch();
+                    i++;
+                    continue;
+                }
+            }
         }
 #endif
         if (!(DKR_PTR(TriangleBatchInfo, objModel->batches)[i].flags & RENDER_SEMI_TRANSPARENT) || flags & RENDER_SEMI_TRANSPARENT) {
