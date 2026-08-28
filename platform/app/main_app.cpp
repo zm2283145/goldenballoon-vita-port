@@ -2280,7 +2280,19 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
      * note, so the launcher loop resumes the Online Room with the reason logged.
      * The room-ready block below `continue`s on any return; the panel still owns
      * the adapter/room (no teardown here), so the human is back in the room. */
-    (void)onlineTakeSessionEndWitness(result);
+    const MdkrPartyLinkSessionEndReason endReason =
+        onlineTakeSessionEndWitness(result);
+    /* PD-T6e MINOR-4: a FINISHED tournament parks the reducer in RESULTS (room-ready
+     * condition FALSE), so arm the re-arm here -- the panel's per-frame observer then
+     * clears the latch while the room is out of the takeover window, and the host's
+     * next New Tournament (SELECTING+2+LOBBY+tournament rising edge) re-takes native
+     * for tournament #2. LEFT/ERROR/NONE land with the condition potentially still
+     * TRUE (a mid-tournament cancel drops the room straight back to SELECTING), so
+     * they must NOT arm: an instant re-arm there would re-boot the session the player
+     * just left. Reason-gating here is the load-bearing half of the no-loop proof. */
+    if (endReason == MDKR_PARTY_LINK_SESSION_END_FINISHED) {
+        OnlineRoom_armRoomReadyRearm();
+    }
 
     platformSetOverlayHooks(nullptr);
     platformSetHostWebGpuRecovery(nullptr, nullptr);
@@ -3719,6 +3731,136 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             modeEnv != nullptr && std::strcmp(modeEnv, "tournament") == 0;
         if (tournament) return (fires == 1 && routed) ? 0 : 3;
         return (fires == 0 && !routed) ? 0 : 3;
+    }
+    if (std::getenv("MDKR_APP_TEST_ONLINE_ROOM_READY_REARM_PROBE") != nullptr) {
+        /* PD-T6e MINOR-4 headless proof of the safe 2nd-tournament re-arm STATE
+         * MACHINE. The full interactive 2-tournament loop needs a live cloud adapter +
+         * a human, so this seam drives the loopback tournament room and exercises the
+         * wiring's re-arm edges DIRECTLY. It proves, in ONE process:
+         *   1. tournament #1 fires the room-ready takeover EXACTLY ONCE;
+         *   2. a LEFT/ERROR return (no arm) does NOT re-fire even though the room-ready
+         *      condition is STILL TRUE (SELECTING+2+LOBBY+tournament) -- no re-boot
+         *      loop;
+         *   3. a FINISHED return (arm) does NOT instantly re-fire while the condition
+         *      still holds -- the latch clears only once the room is OUT of the takeover
+         *      window;
+         *   4. the next false->true condition rising edge (a New Tournament arrival)
+         *      re-fires the takeover EXACTLY ONCE for tournament #2 (route=lobby-start).
+         * The room-ready condition is toggled by flipping lobby.mode
+         * tournament<->single-race: the state machine only reads the boolean
+         * OnlineRoom_roomReadyConditionHolds returns, so a mode flip is a faithful
+         * headless stand-in for the production RESULTS (condition false) -> New
+         * Tournament SELECTING (condition true) transition -- after a FINISHED return
+         * the reducer parks in RESULTS, which is likewise condition-false. */
+        std::string probeErr;
+        MdkrOnlineTestLoopbackRace *race =
+            OnlineRoom_makeTestLobbyStartRoom(&probeErr);
+        if (race == nullptr) {
+            std::fprintf(stderr,
+                         "[online-room-ready-rearm-probe] loopback room setup "
+                         "failed: %s\n",
+                         probeErr.c_str());
+            host.shutdown();
+            return 2;
+        }
+        IMdkrOnlineAdapter *visible = OnlineRoom_testLoopbackVisible(race);
+        IMdkrOnlineAdapter *peer = OnlineRoom_testLoopbackPeer(race);
+        auto pump = [&](int n) {
+            for (int i = 0; i < n; ++i) {
+                visible->service();
+                peer->service();
+            }
+        };
+        auto setModePump = [&](unsigned mode) -> bool {
+            (void)mdkr_online_live_adapter_set_mode(visible, mode);
+            for (int i = 0; i < 240; ++i) {
+                visible->service();
+                peer->service();
+                MdkrOnlineLobby lb{};
+                if (mdkr_online_live_adapter_lobby(visible, &lb) &&
+                    lb.mode == mode)
+                    return true;
+            }
+            return false;
+        };
+
+        OnlineRoom_resetRoomReadyLatch();
+        pump(30);
+        int fires = 0;
+
+        /* (1) tournament #1: exactly one fire, then the one-shot latch holds. */
+        const bool cond1 = OnlineRoom_roomReadyConditionHolds(visible);
+        if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        const int firesAfterT1 = fires;
+        (void)OnlineRoom_pollEngineRoomReady(); /* the launcher would boot here */
+        for (int i = 0; i < 60; ++i) {
+            pump(1);
+            if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        }
+        const bool t1Once = cond1 && firesAfterT1 == 1 && fires == 1;
+
+        /* (2) LEFT/ERROR return: DO NOT arm. With the condition still TRUE the observer
+         * is a no-op and the trigger never re-fires -- proves no re-boot loop. */
+        for (int i = 0; i < 60; ++i) {
+            OnlineRoom_observeRoomReadyRearm(visible);
+            pump(1);
+            if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        }
+        const bool leftNoRearm =
+            fires == 1 && OnlineRoom_roomReadyConditionHolds(visible);
+
+        /* (3) FINISHED return: arm. While the condition STILL holds (the instant of
+         * return, before the room parks in RESULTS) the observer must NOT clear the
+         * latch, so the takeover cannot instantly re-fire. */
+        OnlineRoom_armRoomReadyRearm();
+        for (int i = 0; i < 60; ++i) {
+            OnlineRoom_observeRoomReadyRearm(visible);
+            pump(1);
+            if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        }
+        const bool finishedNoInstant =
+            fires == 1 && OnlineRoom_roomReadyConditionHolds(visible);
+
+        /* (4a) Drive the room OUT of the takeover condition (headless stand-in for the
+         * FINISHED->RESULTS park). The armed observer clears the latch HERE -- and only
+         * here, because the condition is now false; the trigger must NOT fire. */
+        const bool wentFalse = setModePump(MDKR_ONLINE_MODE_SINGLE_RACE);
+        for (int i = 0; i < 30; ++i) {
+            OnlineRoom_observeRoomReadyRearm(visible);
+            pump(1);
+            if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        }
+        const bool clearedWhileFalse = wentFalse &&
+            !OnlineRoom_roomReadyConditionHolds(visible) && fires == 1;
+
+        /* (4b) Fresh New-Tournament rising edge: the condition goes true again and the
+         * re-armed latch lets the trigger fire EXACTLY ONCE for tournament #2. */
+        const bool wentTrue = setModePump(MDKR_ONLINE_MODE_TOURNAMENT);
+        pump(5);
+        OnlineRoom_observeRoomReadyRearm(visible); /* no-op: rearm already completed */
+        if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        const int firesAfterT2 = fires;
+        for (int i = 0; i < 60; ++i) {
+            pump(1);
+            if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        }
+        IMdkrOnlineAdapter *published2 = OnlineRoom_pollEngineRoomReady();
+        const bool routed2 = published2 == visible;
+        const bool t2Once =
+            wentTrue && firesAfterT2 == 2 && fires == 2 && routed2;
+
+        const bool ok = t1Once && leftNoRearm && finishedNoInstant &&
+                        clearedWhileFalse && t2Once;
+        std::fprintf(stderr,
+                     "[online-room-ready-rearm-probe] totalFires=%d t1Once=%d "
+                     "leftNoRearm=%d finishedNoInstant=%d clearedWhileFalse=%d "
+                     "t2Once=%d routed2=%d verdict=%s\n",
+                     fires, t1Once ? 1 : 0, leftNoRearm ? 1 : 0,
+                     finishedNoInstant ? 1 : 0, clearedWhileFalse ? 1 : 0,
+                     t2Once ? 1 : 0, routed2 ? 1 : 0, ok ? "PASS" : "FAIL");
+        OnlineRoom_destroyTestLoopbackRace(race);
+        host.shutdown();
+        return ok ? 0 : 3;
     }
     if (const char *lobbyStartEnv =
             std::getenv("MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START");

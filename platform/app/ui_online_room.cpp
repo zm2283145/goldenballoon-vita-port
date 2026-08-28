@@ -1629,7 +1629,8 @@ void betaSelectableChipColors(bool selected) {
                           AppTheme::navSelectedActive());
 }
 
-void drawBetaSessionCard(const MdkrOnlineLobby &lobby, bool isLeader) {
+void drawBetaSessionCard(const MdkrOnlineLobby &lobby, bool isLeader,
+                         bool tournamentHandoff) {
     IMdkrOnlineAdapter *adapter = g_online.adapter.get();
     const std::uint8_t mode =
         isLeader && g_online.betaPendingMode != 0xFFu
@@ -1742,6 +1743,15 @@ void drawBetaSessionCard(const MdkrOnlineLobby &lobby, bool isLeader) {
                 ImGui::TextUnformatted("Host is choosing…");
             }
         }
+    } else if (tournamentHandoff) {
+        // PD-T6e: this is the native takeover window (SELECTING + 2 members + LOBBY +
+        // tournament) -- native TRACKSELECT owns cup choice the instant it boots
+        // (within a frame or two), so the ImGui cup picker + series line are dead.
+        // Replace them with a compact note; the prominent hand-off card in the body
+        // carries the main "handing to the game" message. The MODE chips above stay
+        // (they are the tournament-entry control the trigger keys off).
+        ui::TextSubtle("Cup");
+        ui::TextSubtleWrapped("Choose your cup in the game — starting now…");
     } else {
         // Trophy Tournament: one of the 5 cups (4 scheduled races each,
         // authentic 9/7/5/3/1 points, champion after race 4).
@@ -2012,6 +2022,24 @@ bool drawBetaSelection(const MdkrOnlineViewModel &model) {
     return drawSelectionControl(model);
 }
 
+// ---- PD-T6e tournament hand-off card ---------------------------------------
+// For a TOURNAMENT room in the native takeover window (SELECTING + 2 members +
+// LOBBY + tournament) the descriptor-less native online screens boot within a
+// frame or two and OWN cup choice, character/vehicle, ready and every race, so
+// the ImGui tournament selection widgets are dead. This concise card replaces
+// them so the human never lands on a stale tournament grid. It is strictly
+// tournament-scoped: single-race is never taken over by native, so this never
+// draws for a single-race room, and it never touches the single-race widgets.
+void drawBetaTournamentHandoffCard() {
+    if (ui::CardBegin("##beta-tournament-handoff", AppTheme::accent(), 0.0f)) {
+        ImGui::TextUnformatted("Starting tournament — handing to the game…");
+        ui::TextSubtleWrapped(
+            "The game takes over from here. Pick your cup, racer, and vehicle "
+            "on the next screen.");
+    }
+    ui::CardEnd();
+}
+
 // ---- The MK8D-style lobby body (SELECTING, snapshot-backed) ----------------
 // Roster strip, host settings card (or the joiner's read-only mirror), the
 // always-interactive racer grid, the vehicle chips, and the Ready/Start
@@ -2023,6 +2051,17 @@ void drawBetaSelectingBody(LauncherState &state,
     const bool isLeader = model.local_member_is_leader;
     const std::uint64_t localEndpoint = betaLocalEndpoint(lobby, isLeader);
     const MdkrOnlineSeat *localSeat = betaSeatFor(lobby, localEndpoint);
+
+    // PD-T6e: the native takeover window. This mirrors the wiring's room-ready
+    // condition (online_live_wiring.cpp OnlineRoom_roomReadyConditionHolds): this
+    // body is only reached at SELECTING + LOBBY, so a tournament room with 2 members
+    // is exactly the room-ready trigger's scope -- native boots within a frame or two.
+    // While it holds, the tournament-scoped ImGui widgets (cup picker, series line,
+    // ready/start) are dead; a hand-off card stands in for them. Single-race never
+    // matches (mode != tournament), so its full ImGui selection is untouched.
+    const bool tournamentHandoff =
+        lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT &&
+        lobby.phase == MDKR_ONLINE_LOBBY && model.member_count == 2u;
 
     // Reconcile optimistic staging with the authoritative snapshot.
     if (localSeat != nullptr) {
@@ -2055,7 +2094,7 @@ void drawBetaSelectingBody(LauncherState &state,
 
     drawBetaRosterStrip(lobby, localEndpoint);
     ui::Gap(ui::kGapM);
-    drawBetaSessionCard(lobby, isLeader);
+    drawBetaSessionCard(lobby, isLeader, tournamentHandoff);
     ui::Gap(ui::kGapM);
 
     // Racer grid: interactive for the whole selection phase.
@@ -2106,6 +2145,15 @@ void drawBetaSelectingBody(LauncherState &state,
         ImGui::PopStyleColor();
     }
     ui::Gap(ui::kGapM);
+
+    // PD-T6e: in the tournament takeover window the native CHARSELECT owns ready, so
+    // the tournament ready-gating region is dead -- show the hand-off card instead.
+    // Single-race (and a 1-member tournament still filling up) keeps the full
+    // Ready/Start region below unchanged.
+    if (tournamentHandoff) {
+        drawBetaTournamentHandoffCard();
+        return;
+    }
 
     // Ready / Start region. The view model stays the single source of the
     // primary action; a picker-step primary renders as a disabled Ready with
@@ -2240,21 +2288,20 @@ void drawBetaResultsBody(LauncherState &state,
                         : "Waiting for the host to start a new tournament or "
                           "end the session.");
             } else {
-                const MdkrOnlineTrackInfo *nextTrack =
-                    mdkr_online_track_by_id(mdkr_online_cup_track_id(
-                        lobby.cup_id,
-                        static_cast<unsigned>(lobby.race_index) + 1u));
-                if (nextTrack != nullptr) {
-                    char nextLine[96];
-                    std::snprintf(nextLine, sizeof(nextLine), "Next: %s",
-                                  nextTrack->name);
-                    ImGui::TextUnformatted(nextLine);
-                }
+                // PD-T6e: with Minor-4's re-arm in place, a tournament's races all
+                // run in-process under the native takeover, so this mid-cup RESULTS
+                // branch is no longer part of normal play -- it is only reached as a
+                // recovery surface (e.g. an ERROR/watchdog return that left the room
+                // parked mid-cup). The host's Next Race below (RACE_AGAIN -> REMATCH)
+                // flips the room back to SELECTING, where the room-ready trigger hands
+                // the next race to the native screens. A concise hand-off note stands
+                // in for the old per-race "Next: <track>" ImGui flow.
                 ui::TextSubtleWrapped(
                     isLeader
-                        ? "Press Next Race when everyone is ready to "
-                          "continue."
-                        : "Waiting for the host to start the next race.");
+                        ? "Continue the tournament — the game takes over from "
+                          "the next race."
+                        : "Waiting for the host to continue — the game takes "
+                          "over from the next race.");
             }
         } else {
             // Single race: placements, first place first.
@@ -2454,6 +2501,14 @@ void drawBetaRoom(LauncherState &state) {
     }
 
     drawBetaStartRaceFeedback(model);
+
+    /* PD-T6e MINOR-4: complete a pending room-ready re-arm every frame, BEFORE the
+     * SELECTING branch polls the trigger. A no-op unless a FINISHED return armed it;
+     * then it clears the latch while the room is out of the takeover condition (here,
+     * parked in RESULTS), so the host's next New Tournament re-fires the native
+     * takeover for tournament #2. It never clears while the condition still holds, so
+     * a LEFT/ERROR return (which does not arm anyway) can never re-boot-loop. */
+    OnlineRoom_observeRoomReadyRearm(g_online.adapter.get());
 
     // Snapshot-backed rich bodies (they own the PRIMARY slot); everything
     // else keeps the generic control stack.

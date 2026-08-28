@@ -744,6 +744,25 @@ IMdkrOnlineAdapter *OnlineRoom_resolveRawLiveAdapter(IMdkrOnlineAdapter *adapter
 bool OnlineRoom_pollRoomReadyTransition(IMdkrOnlineAdapter *adapter);
 void OnlineRoom_resetRoomReadyLatch(void);
 
+/* ---- PD-T6e MINOR-4: safe 2nd-tournament room-ready re-arm ---------------- *
+ *
+ * The room-ready latch above stays set for the whole lifetime of ONE adapter, so
+ * after the first tournament's native session returns the takeover can never
+ * re-fire and a SECOND tournament in the SAME session would silently fall back to
+ * the per-race ImGui path. These two seams re-arm it safely, edge-triggered and
+ * reason-aware:
+ *   - OnlineRoom_armRoomReadyRearm(): the launcher calls it ONLY after a FINISHED
+ *     native return (never LEFT/ERROR/NONE). It requests a re-arm but does NOT clear
+ *     the latch, so nothing can re-boot on the return frame.
+ *   - OnlineRoom_observeRoomReadyRearm(adapter): the panel calls it every frame. It
+ *     is a no-op unless a re-arm is pending, and it clears the latch ONLY while the
+ *     room-ready condition is FALSE (parked in RESULTS after FINISHED). That makes
+ *     the next SELECTING+2+LOBBY+tournament arrival a genuine rising edge the poll
+ *     re-fires on -- and makes a re-boot loop impossible (LEFT/ERROR never arm, and a
+ *     still-holding condition is never cleared). Defined in online_live_wiring.cpp. */
+void OnlineRoom_armRoomReadyRearm(void);
+void OnlineRoom_observeRoomReadyRearm(IMdkrOnlineAdapter *adapter);
+
 /* ---- Engine-roster ownership guard (local-Play beach-ball fix, beta only) -- *
  *
  * The process-global engine roster (platform/net/net_roster_runtime) is installed

@@ -696,6 +696,19 @@ IMdkrOnlineAdapter *sPendingEngineRoomReady = nullptr;
  * SELECTING condition holds for many frames). Reset when a fresh adapter/session
  * begins. */
 bool sRoomReadyLatched = false;
+/* PD-T6e MINOR-4 (safe 2nd-tournament re-arm). The latch above is set for the WHOLE
+ * lifetime of one adapter, so after the first tournament's native session returns the
+ * room-ready trigger can never re-fire -- a SECOND tournament in the SAME session (same
+ * adapter) would silently fall back to the per-race ImGui path instead of the native
+ * takeover. This flag lets a *FINISHED* return (tournament complete) request a single
+ * re-arm: it is armed ONLY on FINISHED (never LEFT/ERROR/NONE -- those land with the
+ * room-ready condition still TRUE, so an instant re-arm would re-boot the session the
+ * player just left) and it clears the latch only once the room is observed OUT of the
+ * takeover condition (parked in RESULTS after FINISHED). Because the latch is cleared
+ * while the condition is FALSE, the NEXT SELECTING+2+LOBBY+tournament arrival (the
+ * host's New Tournament) is a genuine false->true rising edge that re-fires the
+ * takeover exactly once. It CANNOT re-boot-loop: see OnlineRoom_observeRoomReadyRearm. */
+bool sRoomReadyRearmPending = false;
 }  // namespace
 
 IMdkrOnlineAdapter *OnlineRoom_resolveRawLiveAdapter(IMdkrOnlineAdapter *adapter) {
@@ -726,6 +739,11 @@ IMdkrOnlineAdapter *OnlineRoom_pollEngineRoomReady(void) {
 void OnlineRoom_resetRoomReadyLatch(void) {
     sRoomReadyLatched = false;
     sPendingEngineRoomReady = nullptr;
+    /* A fresh adapter/session is a clean slate: drop any pending re-arm too so a
+     * stale FINISHED from a previous adapter cannot leak in. The room-ready probe
+     * (main_app.cpp) resets here and never arms, so its exactly-1-fire contract is
+     * unaffected. */
+    sRoomReadyRearmPending = false;
 }
 
 bool OnlineRoom_roomReadyConditionHolds(IMdkrOnlineAdapter *adapter) {
@@ -765,6 +783,42 @@ bool OnlineRoom_pollRoomReadyTransition(IMdkrOnlineAdapter *adapter) {
                  "LOBBY) -> route=lobby-start (native takeover; descriptor-less "
                  "engine boot, peer=nullptr)\n");
     return true;
+}
+
+void OnlineRoom_armRoomReadyRearm(void) {
+    /* Called from the launcher ONLY after a FINISHED native session return (never
+     * LEFT/ERROR/NONE). Requests one re-arm of the room-ready latch so a 2nd
+     * tournament in the same session re-takes the native path. Completion is
+     * deferred to OnlineRoom_observeRoomReadyRearm (condition-false gated) -- arming
+     * here does NOT touch the latch, so nothing can re-boot on this frame. */
+    sRoomReadyRearmPending = true;
+    std::fprintf(stderr,
+                 "[online-room-ready] re-arm armed (FINISHED return) -- latch "
+                 "clears once the room is observed out of the takeover condition\n");
+}
+
+void OnlineRoom_observeRoomReadyRearm(IMdkrOnlineAdapter *adapter) {
+    /* Per-frame driver the panel calls every drawBetaRoom frame. It COMPLETES a
+     * pending re-arm, and only then: it is a no-op unless a FINISHED return armed
+     * sRoomReadyRearmPending, so LEFT/ERROR returns (which can land with the
+     * room-ready condition still TRUE) never reach the clear below -> no re-boot
+     * loop. When a re-arm IS pending it clears the latch ONLY while the room-ready
+     * condition is FALSE (after FINISHED the reducer is parked in RESULTS). Clearing
+     * the latch during a condition-FALSE frame guarantees the next
+     * SELECTING+2+LOBBY+tournament arrival is a real false->true rising edge that
+     * OnlineRoom_pollRoomReadyTransition fires on exactly once -- the poll is only
+     * reachable from the SELECTING branch, so it never observes the RESULTS frames
+     * itself; this observation is what supplies the "condition was false" half of the
+     * edge. If the condition still HOLDS (belt-and-suspenders vs a hypothetical
+     * FINISHED that skipped RESULTS) we wait, so the latch is never cleared while the
+     * takeover would immediately re-fire. */
+    if (!sRoomReadyRearmPending) return;
+    if (OnlineRoom_roomReadyConditionHolds(adapter)) return;
+    sRoomReadyLatched = false;
+    sRoomReadyRearmPending = false;
+    std::fprintf(stderr,
+                 "[online-room-ready] re-arm complete (room out of takeover "
+                 "condition) -- next fresh tournament SELECTING re-takes native\n");
 }
 
 void OnlineRoom_setRosterOwner(uint64_t token) {

@@ -1635,6 +1635,28 @@ CTest-registered -- like the other `MDKR_APP_TEST_ONLINE_LIVE` engine boots
 they need the local US 1.1 ROM -- so run them standalone with
 `--build <dir> --rom <path>`.
 
+`check_online_room_ready_rearm.py` (standalone lane, not run-checks / CTest
+registered) is the PD-T6e MINOR-4 gate: the safe 2nd-tournament room-ready
+RE-ARM state machine. The native takeover latch
+(`OnlineRoom_pollRoomReadyTransition`) is one-shot per adapter, so before Minor-4
+a SECOND tournament in the SAME session fell back to the per-race ImGui path
+instead of the native takeover; the re-arm is edge-triggered and reason-aware (a
+FINISHED native return ARMS `OnlineRoom_armRoomReadyRearm`; LEFT/ERROR/NONE do
+NOT; the panel's per-frame `OnlineRoom_observeRoomReadyRearm` clears the latch
+ONLY while the room-ready condition is FALSE, so the next
+SELECTING+2+LOBBY+tournament arrival is a genuine rising edge). The full
+interactive two-tournament loop needs a live cloud adapter + a human, so this
+lane drives the loopback tournament room through the wiring edges DIRECTLY via the
+`MDKR_APP_TEST_ONLINE_ROOM_READY_REARM_PROBE` seam and asserts every sub-flag of
+the probe verdict: `totalFires=2` (exactly one native takeover per tournament --
+no re-boot loop), `t1Once` (tournament #1 fired once), `leftNoRearm` (a LEFT/ERROR
+return never re-fires even with the condition still TRUE), `finishedNoInstant` (a
+FINISHED return does not instantly re-fire while the condition holds),
+`clearedWhileFalse` (the latch clears only out of the takeover window), and
+`t2Once`/`routed2` (tournament #2 re-takes native once, route=lobby-start). Like
+the sibling engine lanes it needs the local US 1.1 ROM; run it standalone with
+`--build <dir> --rom <path>`.
+
 `check_online_peer_loss.py` (standalone lane, not run-checks / CTest
 registered) is the process-level peer-loss gate. It reuses the O-T6
 `mdkr_online_live_transport_e2e_driver` but drives it against small in-process
