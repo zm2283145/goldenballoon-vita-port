@@ -38,6 +38,13 @@ struct Candidate {
     uint32_t jointConstraints = 0u;
     uint32_t secondaryChains = 0u;
     uint32_t secondaryJoints = 0u;
+    bool tangentDiagnosticsPresent = false;
+    uint32_t authoredTangentPrimitives = 0u;
+    uint32_t generatedTangentPrimitives = 0u;
+    uint32_t authoredTangentRepairedVertices = 0u;
+    uint32_t generatedTangentDegenerateUvTriangles = 0u;
+    uint32_t tangentFallbackVertices = 0u;
+    uint32_t normalMapTangentFallbackVertices = 0u;
     uint64_t encodedTextureBytes = 0u;
     uint64_t decodedTextureBytes = 0u;
     bool provenancePresent = false;

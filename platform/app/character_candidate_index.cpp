@@ -130,6 +130,8 @@ namespace CharacterCandidateIndex {
 
 bool parse(const std::string &text, Candidate &output) {
     static const std::string latestHeader =
+        "mdkr-character-candidate-v6\n";
+    static const std::string authoredMotionHeader =
         "mdkr-character-candidate-v5\n";
     static const std::string currentHeader =
         "mdkr-character-candidate-v4\n";
@@ -137,28 +139,36 @@ bool parse(const std::string &text, Candidate &output) {
         "mdkr-character-candidate-v3\n";
     Candidate parsed;
     std::vector<std::string> fields;
-    uint64_t numbers[37] = {};
+    uint64_t numbers[43] = {};
     const bool latest =
         text.compare(0u, latestHeader.size(), latestHeader) == 0;
+    const bool authoredMotion =
+        text.compare(0u, authoredMotionHeader.size(), authoredMotionHeader) == 0;
     const bool current =
         text.compare(0u, currentHeader.size(), currentHeader) == 0;
     const std::string &header = latest ? latestHeader
+        : authoredMotion ? authoredMotionHeader
         : current ? currentHeader : legacyHeader;
-    const size_t numberCount = latest ? 37u : current ? 34u : 32u;
-    const size_t provenanceField = latest ? 44u : current ? 41u : 39u;
-    const size_t encodedIndex = latest ? 21u : 18u;
-    const size_t decodedIndex = latest ? 22u : 19u;
-    const size_t lodVertexIndex = latest ? 23u : 20u;
-    const size_t lodTriangleIndex = latest ? 27u : 24u;
-    const size_t lodPrimitiveIndex = latest ? 31u : 28u;
-    const size_t semanticIndex = latest ? 35u : 32u;
-    if ((!latest && !current &&
+    const bool hasAuthoredMotion = latest || authoredMotion;
+    const bool hasSemanticIntent = hasAuthoredMotion || current;
+    const size_t numberCount = latest ? 43u
+        : authoredMotion ? 37u : current ? 34u : 32u;
+    const size_t provenanceField = latest ? 50u
+        : authoredMotion ? 44u : current ? 41u : 39u;
+    const size_t encodedIndex = hasAuthoredMotion ? 21u : 18u;
+    const size_t decodedIndex = hasAuthoredMotion ? 22u : 19u;
+    const size_t lodVertexIndex = hasAuthoredMotion ? 23u : 20u;
+    const size_t lodTriangleIndex = hasAuthoredMotion ? 27u : 24u;
+    const size_t lodPrimitiveIndex = hasAuthoredMotion ? 31u : 28u;
+    const size_t semanticIndex = hasAuthoredMotion ? 35u : 32u;
+    if ((!latest && !authoredMotion && !current &&
          text.compare(0u, legacyHeader.size(), legacyHeader) != 0) ||
         text.empty() || text.back() != '\n' ||
         text.find('\n', header.size()) != text.size() - 1u ||
         !splitFields(
             text.substr(header.size(), text.size() - header.size() - 1u),
-            latest ? 48u : current ? 45u : 43u, fields) ||
+            latest ? 54u : authoredMotion ? 48u : current ? 45u : 43u,
+            fields) ||
         !idValid(fields[0]) ||
         !decodeText(fields[1], 96u, parsed.displayName) ||
         !decodeText(fields[2], 96u, parsed.shortName) ||
@@ -177,11 +187,16 @@ bool parse(const std::string &text, Candidate &output) {
         numbers[5] == 0u || numbers[5] > 4u || numbers[6] > 256u ||
         numbers[10] > 256u || numbers[14] > 1u || numbers[15] > 2u ||
         numbers[16] > 1u || numbers[17] > 16u ||
-        (latest && (numbers[18] > 16u || numbers[19] > 8u ||
-                    numbers[20] > 64u || numbers[18] > numbers[17] ||
-                    (numbers[15] == 0u && numbers[18] != 0u) ||
-                    ((numbers[19] == 0u) != (numbers[20] == 0u)) ||
-                    numbers[19] > numbers[20])) ||
+        (hasAuthoredMotion &&
+         (numbers[18] > 16u || numbers[19] > 8u ||
+          numbers[20] > 64u || numbers[18] > numbers[17] ||
+          (numbers[15] == 0u && numbers[18] != 0u) ||
+          ((numbers[19] == 0u) != (numbers[20] == 0u)) ||
+          numbers[19] > numbers[20])) ||
+        (latest &&
+         (numbers[37] > 512u || numbers[38] > 512u ||
+          numbers[39] > 1000000u || numbers[40] > 2000000u ||
+          numbers[41] > 1000000u || numbers[42] > numbers[41])) ||
         numbers[decodedIndex] > 512u * 1024u * 1024u ||
         (numbers[15] == 0u && (numbers[16] != 0u || numbers[17] != 0u)) ||
         (numbers[15] == 1u && numbers[17] != 0u) ||
@@ -192,7 +207,7 @@ bool parse(const std::string &text, Candidate &output) {
         return false;
     }
     constexpr uint64_t semanticMask = 0x3FFFu;
-    if ((latest || current) &&
+    if (hasSemanticIntent &&
         ((numbers[semanticIndex] & ~semanticMask) != 0u ||
          (numbers[semanticIndex + 1u] & ~(semanticMask & ~1u)) != 0u ||
          (numbers[semanticIndex] & numbers[semanticIndex + 1u]) != 0u ||
@@ -238,7 +253,7 @@ bool parse(const std::string &text, Candidate &output) {
     parsed.animations = static_cast<uint32_t>(numbers[11]);
     parsed.animationChannels = static_cast<uint32_t>(numbers[12]);
     parsed.animationKeys = static_cast<uint32_t>(numbers[13]);
-    if (latest || current) {
+    if (hasSemanticIntent) {
         parsed.semanticMask = static_cast<uint32_t>(numbers[semanticIndex]);
         parsed.disabledSemanticMask =
             static_cast<uint32_t>(numbers[semanticIndex + 1u]);
@@ -248,10 +263,25 @@ bool parse(const std::string &text, Candidate &output) {
     parsed.rigMode = static_cast<uint32_t>(numbers[15]);
     parsed.rigReviewed = numbers[16] != 0u;
     parsed.rigRoles = static_cast<uint32_t>(numbers[17]);
-    if (latest) {
+    if (hasAuthoredMotion) {
         parsed.jointConstraints = static_cast<uint32_t>(numbers[18]);
         parsed.secondaryChains = static_cast<uint32_t>(numbers[19]);
         parsed.secondaryJoints = static_cast<uint32_t>(numbers[20]);
+    }
+    if (latest) {
+        parsed.authoredTangentPrimitives =
+            static_cast<uint32_t>(numbers[37]);
+        parsed.generatedTangentPrimitives =
+            static_cast<uint32_t>(numbers[38]);
+        parsed.authoredTangentRepairedVertices =
+            static_cast<uint32_t>(numbers[39]);
+        parsed.generatedTangentDegenerateUvTriangles =
+            static_cast<uint32_t>(numbers[40]);
+        parsed.tangentFallbackVertices =
+            static_cast<uint32_t>(numbers[41]);
+        parsed.normalMapTangentFallbackVertices =
+            static_cast<uint32_t>(numbers[42]);
+        parsed.tangentDiagnosticsPresent = true;
     }
     parsed.encodedTextureBytes = numbers[encodedIndex];
     parsed.decodedTextureBytes = numbers[decodedIndex];

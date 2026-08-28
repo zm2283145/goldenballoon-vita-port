@@ -23496,6 +23496,22 @@ std::string candidateBytes(uint64_t bytes) {
     return text;
 }
 
+std::string candidateTangentSummary(
+    const CharacterCandidateIndex::Candidate &candidate) {
+    if (!candidate.tangentDiagnosticsPresent) {
+        return "Unavailable (legacy or installed summary)";
+    }
+    return std::to_string(candidate.authoredTangentPrimitives) +
+        " authored source part" +
+        (candidate.authoredTangentPrimitives == 1u ? "" : "s") + " · " +
+        std::to_string(candidate.generatedTangentPrimitives) +
+        " generated source part" +
+        (candidate.generatedTangentPrimitives == 1u ? "" : "s") + " · " +
+        std::to_string(candidate.tangentFallbackVertices) +
+        " fallback vert" +
+        (candidate.tangentFallbackVertices == 1u ? "ex" : "ices");
+}
+
 std::string candidateDelta(uint64_t current, uint64_t next) {
     if (current == next) return "No change";
     if (next > current) return "+" + std::to_string(next - current);
@@ -23616,6 +23632,7 @@ bool drawCharacterCandidateReview(bool compact) {
     addCandidateNumberRow(rows, "Secondary chains", current.secondaryChains, next.secondaryChains, review.installed);
     addCandidateNumberRow(rows, "Dynamic joints", current.secondaryJoints, next.secondaryJoints, review.installed);
     addCandidateTextRow(rows, "Performance profile", candidatePerformanceTier(current), candidatePerformanceTier(next), review.installed);
+    addCandidateTextRow(rows, "Tangent basis", candidateTangentSummary(current), candidateTangentSummary(next), review.installed);
     addCandidateNumberRow(rows, "LOD0 vertices", current.lodVertices[0], next.lodVertices[0], review.installed);
     addCandidateNumberRow(rows, "LOD0 triangles", current.lodTriangles[0], next.lodTriangles[0], review.installed);
     addCandidateNumberRow(rows, "LOD0 draw parts", current.lodPrimitives[0], next.lodPrimitives[0], review.installed);
@@ -23663,6 +23680,17 @@ bool drawCharacterCandidateReview(bool compact) {
         "This package controls local appearance, portrait, animation, fit, and presentation. The selected built-in donor continues to own handling, weight, acceleration, voice, and game authority.");
     const bool rigReady = next.rigMode != 2u || next.rigReviewed;
     const char *performanceTier = candidatePerformanceTier(next);
+    const char *tangentReadiness =
+        !next.tangentDiagnosticsPresent
+            ? "authoring diagnostics unavailable in this summary"
+        : next.normalMapTangentFallbackVertices != 0u
+            ? "normal-map tangent correction and lit-scene review required"
+        : next.tangentFallbackVertices != 0u
+            ? "fallbacks affect only parts without normal maps"
+        : next.authoredTangentRepairedVertices != 0u ||
+                  next.generatedTangentDegenerateUvTriangles != 0u
+            ? "safe deterministic repairs applied; no fallback vertices"
+            : "orthogonal basis ready without repairs or fallbacks";
     const char *installRelationship = sameSource
         ? "Exact compiled source already active"
         : review.installed
@@ -23693,6 +23721,7 @@ bool drawCharacterCandidateReview(bool compact) {
                     ? "authored clips"
                     : "package fallback animation"
                 : "compatible package, but humanoid review is still required before normal play");
+        ImGui::TextWrapped("Surface detail: %s", tangentReadiness);
         ImGui::TextWrapped(
             "Import estimate: %s · %u LOD level%s · not a measured device result",
             performanceTier, next.lodLevels,
@@ -23701,17 +23730,82 @@ bool drawCharacterCandidateReview(bool compact) {
             "After installation, run the exact select and vehicle scenes plus the 1–4 player performance matrix on this device before approval.");
     }
     ui::CardEnd();
+    if (next.tangentDiagnosticsPresent) {
+        const bool normalMapFallback =
+            next.normalMapTangentFallbackVertices != 0u;
+        const bool anyFallback = next.tangentFallbackVertices != 0u;
+        const bool repaired =
+            next.authoredTangentRepairedVertices != 0u ||
+            next.generatedTangentDegenerateUvTriangles != 0u;
+        const ImVec4 color = normalMapFallback || anyFallback || repaired
+            ? AppTheme::accent() : AppTheme::good();
+        if (ui::CardBegin("##character-tangent-readiness", color, 0.0f)) {
+            ImGui::PushFont(AppTheme::fonts().section);
+            ImGui::TextUnformatted(
+                normalMapFallback ? "Normal-map tangent review required"
+                : anyFallback ? "Tangent fallback review recommended"
+                : repaired ? "Tangent repairs applied"
+                           : "Tangent basis ready");
+            ImGui::PopFont();
+            if (normalMapFallback) {
+                ImGui::TextWrapped(
+                    "%u fallback vert%s affect normal-mapped parts. The importer kept the mesh safe and deterministic, but lighting may be visibly incorrect around collapsed or overlapping UVs.",
+                    next.normalMapTangentFallbackVertices,
+                    next.normalMapTangentFallbackVertices == 1u ? "ex" : "ices");
+                ui::TextSubtleWrapped(
+                    "Fix collapsed or overlapping UVs, or export an orthogonal tangent basis from the DCC tool, then rebuild and review the lit game scenes.");
+            } else if (anyFallback) {
+                ImGui::TextWrapped(
+                    "%u fallback vert%s occur only on parts without a normal map. The result is safe to install; review those parts if their material changes later.",
+                    next.tangentFallbackVertices,
+                    next.tangentFallbackVertices == 1u ? "ex" : "ices");
+            } else if (repaired) {
+                ImGui::TextWrapped(
+                    "The importer repaired %u authored tangent vert%s and detected %u degenerate UV triangle%s without needing a fallback basis.",
+                    next.authoredTangentRepairedVertices,
+                    next.authoredTangentRepairedVertices == 1u ? "ex" : "ices",
+                    next.generatedTangentDegenerateUvTriangles,
+                    next.generatedTangentDegenerateUvTriangles == 1u ? "" : "s");
+            } else {
+                ImGui::TextWrapped(
+                    "%u authored and %u generated source part%s have an orthogonal tangent basis with no fallback vertices.",
+                    next.authoredTangentPrimitives,
+                    next.generatedTangentPrimitives,
+                    next.authoredTangentPrimitives +
+                                next.generatedTangentPrimitives == 1u
+                        ? "" : "s");
+            }
+            const std::string tangentNarration =
+                candidateTangentSummary(next) + ". " +
+                (normalMapFallback
+                     ? "Normal-map lighting review is required. Fix collapsed or overlapping UVs or export an orthogonal tangent basis, then rebuild."
+                     : anyFallback
+                     ? "Fallbacks affect only parts without a normal map; review them if their material changes."
+                     : repaired
+                     ? "The importer repaired the basis without requiring fallback vertices."
+                     : "The tangent basis is ready without fallbacks.");
+            ui::SpeakFocusedItem(
+                "Tangent basis", nullptr, tangentNarration.c_str());
+        }
+        ui::CardEnd();
+    } else {
+        ui::TextSubtleWrapped(
+            "Tangent diagnostics are unavailable in this legacy or installed summary. Rebuild with the current authoring tools for exact normal-map readiness details.");
+    }
     if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
         static std::string tracedPackage;
         if (tracedPackage != next.packageSha256) {
             tracedPackage = next.packageSha256;
             std::fprintf(
                 stderr,
-                "[app-ui] character-recipient-review compatibility=1 mode=%s relationship=%s rig_ready=%d performance=%s lods=%u webgpu_required=1 rights_confirmed=%d\n",
+                "[app-ui] character-recipient-review compatibility=1 mode=%s relationship=%s rig_ready=%d performance=%s lods=%u webgpu_required=1 rights_confirmed=%d tangent_diag=%d tangent_fallback=%u normal_map_fallback=%u\n",
                 review.portable ? "portable" : "source",
                 sameSource ? "same-source" : review.installed ? "update" : "new",
                 rigReady ? 1 : 0, performanceTier, next.lodLevels,
-                review.rightsConfirmed ? 1 : 0);
+                review.rightsConfirmed ? 1 : 0,
+                next.tangentDiagnosticsPresent ? 1 : 0,
+                next.tangentFallbackVertices,
+                next.normalMapTangentFallbackVertices);
         }
     }
     if (review.installed && !review.installedEnabled) {
@@ -23802,6 +23896,13 @@ bool drawCharacterCandidateReview(bool compact) {
         (rigReady
              ? "Its motion contract is ready for post-install scene review. "
              : "Its humanoid mapping still requires author review before normal play. ") +
+        (next.tangentDiagnosticsPresent
+             ? next.normalMapTangentFallbackVertices != 0u
+                 ? "Its tangent basis has fallback vertices on normal-mapped parts; lighting review and a UV or authored-tangent correction are required. "
+                 : next.tangentFallbackVertices != 0u
+                 ? "Its tangent basis has fallback vertices only on parts without normal maps; review them if those materials change. "
+                 : "Its tangent basis is ready without fallback vertices. "
+             : "Tangent diagnostics are unavailable in this legacy or installed summary. ") +
         "The " + performanceTier +
         " performance label is an import estimate, not a measurement on this device. ";
     (void)ImGui::Checkbox(

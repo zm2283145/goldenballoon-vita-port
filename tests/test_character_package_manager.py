@@ -458,9 +458,9 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 source, character_dir, index_path
             )
             index_lines = index_path.read_text(encoding="ascii").splitlines()
-            self.assertEqual("mdkr-character-candidate-v5", index_lines[0])
+            self.assertEqual("mdkr-character-candidate-v6", index_lines[0])
             fields = index_lines[1].split("\t")
-            self.assertEqual(48, len(fields))
+            self.assertEqual(54, len(fields))
             self.assertEqual(inspected["id"], fields[0])
             self.assertEqual(inspected["display_name"], bytes.fromhex(
                 fields[1]
@@ -501,6 +501,34 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 int(fields[43]),
             )
             self.assertEqual(
+                inspected["report"]["authored_tangent_primitives"],
+                int(fields[44]),
+            )
+            self.assertEqual(
+                inspected["report"]["generated_tangent_primitives"],
+                int(fields[45]),
+            )
+            self.assertEqual(
+                inspected["report"]["authored_tangent_repaired_vertices"],
+                int(fields[46]),
+            )
+            self.assertEqual(
+                inspected["report"][
+                    "generated_tangent_degenerate_uv_triangles"
+                ],
+                int(fields[47]),
+            )
+            self.assertEqual(
+                inspected["report"]["tangent_fallback_vertices"],
+                int(fields[48]),
+            )
+            self.assertEqual(
+                inspected["report"][
+                    "normal_map_tangent_fallback_vertices"
+                ],
+                int(fields[49]),
+            )
+            self.assertEqual(
                 inspected["report"]["lod_vertices"],
                 [int(value) for value in fields[30:34]],
             )
@@ -512,18 +540,18 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 inspected["report"]["lod_primitives"],
                 [int(value) for value in fields[38:42]],
             )
-            self.assertEqual("1", fields[44])
+            self.assertEqual("1", fields[50])
             self.assertEqual(
                 inspected["license_spdx"],
-                bytes.fromhex(fields[45]).decode("utf-8"),
+                bytes.fromhex(fields[51]).decode("utf-8"),
             )
             self.assertEqual(
                 inspected["attribution"],
-                bytes.fromhex(fields[46]).decode("utf-8"),
+                bytes.fromhex(fields[52]).decode("utf-8"),
             )
             self.assertEqual(
                 inspected["source_url"],
-                bytes.fromhex(fields[47]).decode("utf-8"),
+                bytes.fromhex(fields[53]).decode("utf-8"),
             )
             with self.assertRaisesRegex(manager.ManagerError, "exact file"):
                 manager.write_candidate_index(

@@ -698,10 +698,20 @@ License List, and it never interprets whether a declaration grants rights.
   indices, inverse-bind counts, node cycles, and skin roots.
 - Verify texture roles and color spaces: base color/emissive are sRGB;
   normal/occlusion/metallic-roughness are linear.
-- Generate MikkTSpace tangents in the compiler when a normal-mapped primitive
-  lacks them. Invalid supplied tangents are removed before generation. A
-  degenerate UV island receives a counted diagnostic and material fallback,
-  never a NaN.
+- Generate a deterministic tangent basis when a primitive lacks one. Supplied
+  tangents are independently finite-checked, Gram-Schmidt orthogonalized
+  against the final normal, and given a stable least-aligned-axis fallback
+  when degenerate; generated bases use the same last-resort path for collapsed
+  UV triangles. The compiler reports authored/generated source-part counts,
+  authored repairs, degenerate UV triangles, all fallback vertices, and the
+  subset touching normal-mapped materials. Candidate protocol v6 carries those
+  bounded facts into mutation-free locally compiled source review, where
+  normal-map fallbacks require a specific UV/tangent and lit-scene review.
+  Older candidate summaries remain accepted with diagnostics explicitly
+  unavailable. MDKC v2 has no free section for these authoring-only counters,
+  so portable and installed-cache summaries also say unavailable rather than
+  reconstructing or inventing them. The portable package still carries the
+  repaired runtime tangent basis itself. No tangent path may emit a NaN.
 - Compute world-space bounds after node transforms. Compare height, origin,
   orientation, and seat socket against policy; never infer a silent 100x scale
   correction.
@@ -1493,7 +1503,11 @@ pause, replay, character select, and device recovery with no CPU vertex stream.
   alpha mask, sun/ambient response, fog, fitted skinned shadow casting for
   OPAQUE/MASK, and cascaded receiving for every visible material are
   implemented on the qualified WebGPU path. BLEND is receive-only by design.
-- Add tangent repair diagnostics and material fallbacks.
+- **Implemented:** deterministic tangent repair/fallback plus exact authoring
+  diagnostics in the compiler, candidate protocol, visual review, and spoken
+  review. Retaining those counters in a future runtime-cache format is optional
+  authoring provenance work, not a rendering prerequisite; current installed-
+  cache summaries disclose that they are unavailable.
 - Calibrate a stylized response that belongs in DKR rather than copying a
   cinematic renderer blindly.
 

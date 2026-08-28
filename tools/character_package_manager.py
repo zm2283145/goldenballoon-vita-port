@@ -1023,13 +1023,19 @@ def write_candidate_index(package_path: Path, directory: Path,
         *(str(value) for value in report["lod_primitives"]),
         str(report["semantic_mask"]),
         str(report["disabled_semantic_mask"]),
+        str(report["authored_tangent_primitives"]),
+        str(report["generated_tangent_primitives"]),
+        str(report["authored_tangent_repaired_vertices"]),
+        str(report["generated_tangent_degenerate_uv_triangles"]),
+        str(report["tangent_fallback_vertices"]),
+        str(report["normal_map_tangent_fallback_vertices"]),
         "1",
         candidate["license_spdx"].encode("utf-8").hex(),
         candidate["attribution"].encode("utf-8").hex(),
         candidate["source_url"].encode("utf-8").hex(),
     ]
     payload = (
-        "mdkr-character-candidate-v5\n" + "\t".join(fields) + "\n"
+        "mdkr-character-candidate-v6\n" + "\t".join(fields) + "\n"
     ).encode("ascii")
     _write_atomic(index_path, payload)
     return {

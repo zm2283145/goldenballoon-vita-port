@@ -1006,7 +1006,9 @@ def main() -> int:
                     "raw-draft-action action=build-review-only applied=1",
                     "character-recipient-review compatibility=1 mode=source "
                     "relationship=new rig_ready=1 performance=Excellent "
-                    "lods=1 webgpu_required=1 rights_confirmed=0",
+                    "lods=1 webgpu_required=1 rights_confirmed=0 "
+                    "tangent_diag=1 tangent_fallback=0 "
+                    "normal_map_fallback=0",
                 ),
             )
             check_bmp(recipient_shot, 1280, 720)
@@ -1066,7 +1068,8 @@ def main() -> int:
                     "character-recipient-review compatibility=1 "
                     "mode=portable relationship=new rig_ready=1 "
                     "performance=Excellent lods=1 webgpu_required=1 "
-                    "rights_confirmed=0",
+                    "rights_confirmed=0 tangent_diag=0 "
+                    "tangent_fallback=0 normal_map_fallback=0",
                     "text=Local-use rights confirmation. Package "
                     "compatibility passed. This is a received portable package",
                 ),
@@ -1105,7 +1108,8 @@ def main() -> int:
                     "character-recipient-review compatibility=1 "
                     "mode=portable relationship=new rig_ready=1 "
                     "performance=Excellent lods=1 webgpu_required=1 "
-                    "rights_confirmed=0",
+                    "rights_confirmed=0 tangent_diag=0 "
+                    "tangent_fallback=0 normal_map_fallback=0",
                     "compact-layout dense=1 contained=1 overlap=0 ",
                 ),
             )

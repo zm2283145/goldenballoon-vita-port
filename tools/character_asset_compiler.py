@@ -424,14 +424,57 @@ def _normalize3(value: Iterable[float], fallback: tuple[float, float, float]) ->
     return x / length, y / length, z / length
 
 
+def _orthogonal_tangent(
+    normal: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    """Return one deterministic unit vector perpendicular to ``normal``.
+
+    Choosing a constant fallback is incorrect when that axis is parallel to the
+    normal. Select the least-aligned cardinal axis, project it onto the tangent
+    plane, and normalize. The input is already normalized and finite.
+    """
+    axis = min(range(3), key=lambda index: abs(normal[index]))
+    candidate = [0.0, 0.0, 0.0]
+    candidate[axis] = 1.0
+    projection = sum(normal[index] * candidate[index] for index in range(3))
+    tangent = tuple(
+        candidate[index] - normal[index] * projection for index in range(3)
+    )
+    return _normalize3(tangent, (0.0, 0.0, 1.0))
+
+
+def _sanitize_tangent(
+    normal: tuple[float, float, float], value: Iterable[float],
+) -> tuple[tuple[float, float, float, float], bool, bool]:
+    tangent = _finite(value, "TANGENT")
+    if len(tangent) != 4 or abs(abs(tangent[3]) - 1.0) > 1.0e-6:
+        raise CompileError("TANGENT must contain XYZ plus handedness -1 or 1")
+    projection = sum(normal[axis] * tangent[axis] for axis in range(3))
+    orthogonal = tuple(
+        tangent[axis] - normal[axis] * projection for axis in range(3)
+    )
+    length_squared = sum(component * component for component in orthogonal)
+    fallback = length_squared < 1.0e-20
+    repaired_xyz = (
+        _orthogonal_tangent(normal)
+        if fallback else _normalize3(orthogonal, _orthogonal_tangent(normal))
+    )
+    result = (*repaired_xyz, -1.0 if tangent[3] < 0.0 else 1.0)
+    repaired = any(
+        abs(result[index] - tangent[index]) > 1.0e-5 for index in range(4)
+    )
+    return result, repaired, fallback
+
+
 def _tangents(
     positions: list[tuple[Any, ...]],
     normals: list[tuple[Any, ...]],
     uvs: list[tuple[Any, ...]],
     indices: list[int],
-) -> list[tuple[float, float, float, float]]:
+) -> tuple[list[tuple[float, float, float, float]], int, int]:
     tan1 = [[0.0, 0.0, 0.0] for _ in positions]
     tan2 = [[0.0, 0.0, 0.0] for _ in positions]
+    degenerate_uv_triangles = 0
     for tri in range(0, len(indices), 3):
         a, b, c = indices[tri:tri + 3]
         if min(a, b, c) < 0 or max(a, b, c) >= len(positions):
@@ -445,6 +488,7 @@ def _tangents(
         t1, t2 = w1[1] - w0[1], w2[1] - w0[1]
         denominator = s1 * t2 - s2 * t1
         if abs(denominator) < 1.0e-20:
+            degenerate_uv_triangles += 1
             continue
         reciprocal = 1.0 / denominator
         sdir = ((t2 * x1 - t1 * x2) * reciprocal,
@@ -458,12 +502,17 @@ def _tangents(
                 tan1[vertex][axis] += sdir[axis]
                 tan2[vertex][axis] += tdir[axis]
     output = []
+    fallback_vertices = 0
     for index, normal_value in enumerate(normals):
         normal = _normalize3(normal_value, (0.0, 1.0, 0.0))
         tangent = tan1[index]
         projection = sum(normal[axis] * tangent[axis] for axis in range(3))
         ortho = tuple(tangent[axis] - normal[axis] * projection for axis in range(3))
-        tangent3 = _normalize3(ortho, (1.0, 0.0, 0.0))
+        if sum(component * component for component in ortho) < 1.0e-20:
+            tangent3 = _orthogonal_tangent(normal)
+            fallback_vertices += 1
+        else:
+            tangent3 = _normalize3(ortho, _orthogonal_tangent(normal))
         cross = (
             normal[1] * tangent3[2] - normal[2] * tangent3[1],
             normal[2] * tangent3[0] - normal[0] * tangent3[2],
@@ -471,7 +520,7 @@ def _tangents(
         )
         handedness = -1.0 if sum(cross[axis] * tan2[index][axis] for axis in range(3)) < 0.0 else 1.0
         output.append((*tangent3, handedness))
-    return output
+    return output, degenerate_uv_triangles, fallback_vertices
 
 
 def _quaternion_from_rotation(matrix: list[list[float]]) -> tuple[float, float, float, float]:
@@ -723,6 +772,12 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
     vertex_records: list[tuple[Any, ...]] = []
     indices_output: list[int] = []
     mesh_primitive_records: dict[int, list[tuple[int, int, int, int]]] = {}
+    authored_tangent_primitives = 0
+    generated_tangent_primitives = 0
+    authored_tangent_repaired_vertices = 0
+    generated_tangent_degenerate_uv_triangles = 0
+    tangent_fallback_vertices = 0
+    tangent_fallback_vertices_by_material: dict[int, int] = {}
     meshes = _array(document, "meshes")
     for mesh_index, mesh in enumerate(meshes):
         if not isinstance(mesh, dict):
@@ -745,18 +800,37 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             if not local_indices or len(local_indices) % 3:
                 raise CompileError("primitive index count must be nonzero and divisible by three")
             tangent_index = attributes.get("TANGENT")
-            tangents = reader.values(tangent_index) if tangent_index is not None else _tangents(
-                positions, normals, uvs, local_indices
-            )
+            generated_fallback_vertices = 0
+            if tangent_index is not None:
+                authored_tangent_primitives += 1
+                tangents = reader.values(tangent_index)
+            else:
+                generated_tangent_primitives += 1
+                (tangents,
+                 degenerate_uv_triangles,
+                 generated_fallback_vertices) = _tangents(
+                    positions, normals, uvs, local_indices
+                )
+                generated_tangent_degenerate_uv_triangles += (
+                    degenerate_uv_triangles
+                )
+                tangent_fallback_vertices += generated_fallback_vertices
             joints = reader.values(attributes.get("JOINTS_0"), as_float=False) if "JOINTS_0" in attributes else [(0, 0, 0, 0)] * len(positions)
             weights = reader.values(attributes.get("WEIGHTS_0")) if "WEIGHTS_0" in attributes else [(1.0, 0.0, 0.0, 0.0)] * len(positions)
             if not all(len(values) == len(positions) for values in (tangents, joints, weights)):
                 raise CompileError("primitive vertex attribute counts do not match")
             first_vertex = len(vertex_records)
+            authored_fallback_vertices = 0
             for vertex_index in range(len(positions)):
                 position = _finite(positions[vertex_index], "POSITION")
                 normal = _normalize3(normals[vertex_index], (0.0, 1.0, 0.0))
-                tangent = _finite(tangents[vertex_index], "TANGENT")
+                tangent, tangent_repaired, tangent_fallback = _sanitize_tangent(
+                    normal, tangents[vertex_index]
+                )
+                if tangent_index is not None and tangent_repaired:
+                    authored_tangent_repaired_vertices += 1
+                if tangent_index is not None and tangent_fallback:
+                    authored_fallback_vertices += 1
                 uv = _finite(uvs[vertex_index], "TEXCOORD_0")
                 joint = tuple(int(value) for value in joints[vertex_index])
                 if len(position) != 3 or len(tangent) != 4 or len(uv) != 2 or len(joint) != 4:
@@ -772,6 +846,8 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
                 else:
                     weight = [value / weight_sum for value in weight]
                 vertex_records.append((*position, *normal, *tangent, *uv, *joint, *weight))
+            if tangent_index is not None:
+                tangent_fallback_vertices += authored_fallback_vertices
             first_index = len(indices_output)
             for local_index in local_indices:
                 if local_index < 0 or local_index >= len(positions):
@@ -780,6 +856,14 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             material = primitive.get("material", -1)
             if not isinstance(material, int) or isinstance(material, bool):
                 raise CompileError("primitive material index is invalid")
+            fallback_count = (
+                generated_fallback_vertices + authored_fallback_vertices
+            )
+            if fallback_count != 0:
+                tangent_fallback_vertices_by_material[material] = (
+                    tangent_fallback_vertices_by_material.get(material, 0) +
+                    fallback_count
+                )
             built.append((first_vertex, len(positions), first_index, len(local_indices), material))
         mesh_primitive_records[mesh_index] = built
 
@@ -808,6 +892,7 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         materials = [{}]
     texture_roles = [0] * len(textures_source)  # 1 sRGB, 2 linear data, 4 normal
     texture_cutoffs: list[float | None] = [None] * len(textures_source)
+    normal_map_tangent_fallback_vertices = 0
     for material_index, material in enumerate(materials):
         if not isinstance(material, dict):
             raise CompileError(f"material[{material_index}] must be an object")
@@ -821,6 +906,10 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             (_material_texture(material.get("occlusionTexture")), 2),
             (_material_texture(material.get("emissiveTexture")), 1),
         )
+        if uses[2][0] >= 0:
+            normal_map_tangent_fallback_vertices += (
+                tangent_fallback_vertices_by_material.get(material_index, 0)
+            )
         for texture_index, role in uses:
             if texture_index < 0:
                 continue
@@ -1455,6 +1544,18 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         "textures": len(texture_records),
         "encoded_texture_bytes": len(texture_data),
         "decoded_texture_bytes": decoded_texture_bytes,
+        "authored_tangent_primitives": authored_tangent_primitives,
+        "generated_tangent_primitives": generated_tangent_primitives,
+        "authored_tangent_repaired_vertices": (
+            authored_tangent_repaired_vertices
+        ),
+        "generated_tangent_degenerate_uv_triangles": (
+            generated_tangent_degenerate_uv_triangles
+        ),
+        "tangent_fallback_vertices": tangent_fallback_vertices,
+        "normal_map_tangent_fallback_vertices": (
+            normal_map_tangent_fallback_vertices
+        ),
         "nodes": len(node_records),
         "skins": len(skin_records),
         "joints": len(joint_records),

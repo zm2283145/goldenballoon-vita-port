@@ -16,10 +16,14 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import character_asset_compiler as compiler  # noqa: E402
 import character_asset_probe as probe  # noqa: E402
-from test_character_asset_probe import make_manifest  # noqa: E402
+from test_character_asset_probe import make_manifest, make_portrait_png  # noqa: E402
 
 
-def make_grid_glb(side: int = 160) -> bytes:
+def make_grid_glb(
+    side: int = 160, *, degenerate_uvs: bool = False,
+    authored_tangent: tuple[float, float, float, float] | None = None,
+    normal_map: bool = False,
+) -> bytes:
     binary = bytearray()
     views: list[dict[str, int]] = []
     accessors: list[dict[str, object]] = []
@@ -48,7 +52,11 @@ def make_grid_glb(side: int = 160) -> bytes:
         for x in range(side):
             positions.extend(struct.pack("<3f", x / (side - 1) - 0.5,
                                          y / (side - 1), 0.0))
-            uvs.extend(struct.pack("<2f", x / (side - 1), y / (side - 1)))
+            uvs.extend(struct.pack(
+                "<2f",
+                0.0 if degenerate_uvs else x / (side - 1),
+                0.0 if degenerate_uvs else y / (side - 1),
+            ))
     indices = bytearray()
     for y in range(side - 1):
         for x in range(side - 1):
@@ -60,6 +68,11 @@ def make_grid_glb(side: int = 160) -> bytes:
     normal_accessor = add(struct.pack("<3f", 0.0, 0.0, 1.0) * count,
                           5126, "VEC3", count)
     uv_accessor = add(bytes(uvs), 5126, "VEC2", count)
+    tangent_accessor = (
+        add(struct.pack("<4f", *authored_tangent) * count,
+            5126, "VEC4", count)
+        if authored_tangent is not None else None
+    )
     joint_accessor = add(bytes((0, 0, 0, 0)) * count, 5121, "VEC4", count)
     weight_accessor = add(struct.pack("<4f", 1.0, 0.0, 0.0, 0.0) * count,
                           5126, "VEC4", count)
@@ -71,6 +84,17 @@ def make_grid_glb(side: int = 160) -> bytes:
                         minimum=[0.0], maximum=[1.0])
     animation_accessor = add(struct.pack("<6f", 0.0, 0.0, 0.0,
                                           0.0, 0.0, 0.0), 5126, "VEC3", 2)
+    normal_image_view = None
+    if normal_map:
+        normal_image = make_portrait_png()
+        binary.extend(b"\0" * ((-len(binary)) % 4))
+        normal_image_offset = len(binary)
+        binary.extend(normal_image)
+        views.append({
+            "buffer": 0, "byteOffset": normal_image_offset,
+            "byteLength": len(normal_image),
+        })
+        normal_image_view = len(views) - 1
     document = {
         "asset": {"version": "2.0", "generator": "mdkr-high-fidelity-test"},
         "scene": 0, "scenes": [{"nodes": [0, 2]}],
@@ -79,15 +103,29 @@ def make_grid_glb(side: int = 160) -> bytes:
             {"name": "character", "mesh": 0, "skin": 0},
         ],
         "meshes": [{"primitives": [{
-            "attributes": {"POSITION": position_accessor, "NORMAL": normal_accessor,
-                           "TEXCOORD_0": uv_accessor, "JOINTS_0": joint_accessor,
-                           "WEIGHTS_0": weight_accessor},
+            "attributes": {
+                "POSITION": position_accessor, "NORMAL": normal_accessor,
+                "TEXCOORD_0": uv_accessor, "JOINTS_0": joint_accessor,
+                "WEIGHTS_0": weight_accessor,
+                **({"TANGENT": tangent_accessor}
+                   if tangent_accessor is not None else {}),
+            },
             "indices": index_accessor, "material": 0,
         }]}],
-        "materials": [{"name": "body", "pbrMetallicRoughness": {
-            "baseColorFactor": [0.7, 0.2, 0.1, 1.0],
-            "metallicFactor": 0.0, "roughnessFactor": 0.7,
-        }}],
+        "materials": [{
+            "name": "body",
+            "pbrMetallicRoughness": {
+                "baseColorFactor": [0.7, 0.2, 0.1, 1.0],
+                "metallicFactor": 0.0, "roughnessFactor": 0.7,
+            },
+            **({"normalTexture": {"index": 0}} if normal_map else {}),
+        }],
+        **({
+            "images": [{
+                "bufferView": normal_image_view, "mimeType": "image/png",
+            }],
+            "textures": [{"source": 0}],
+        } if normal_map else {}),
         "skins": [{"name": "rig", "joints": [0], "skeleton": 0,
                    "inverseBindMatrices": bind_accessor}],
         "animations": [{"name": "idle", "samplers": [{
@@ -117,6 +155,10 @@ class HighFidelityCharacterTests(unittest.TestCase):
         compiled, report = compiler.compile_character(model, make_manifest(), bytes(32))
         self.assertGreater(report["triangles"], 50_000)
         self.assertEqual(25_600, report["vertices"])
+        self.assertEqual(0, report["authored_tangent_primitives"])
+        self.assertEqual(1, report["generated_tangent_primitives"])
+        self.assertEqual(0, report["generated_tangent_degenerate_uv_triangles"])
+        self.assertEqual(0, report["tangent_fallback_vertices"])
         self.assertGreater(len(compiled), 2_000_000)
 
     def test_model_above_old_hundred_thousand_vertex_cap_compiles(self) -> None:
@@ -129,6 +171,38 @@ class HighFidelityCharacterTests(unittest.TestCase):
         self.assertEqual(129_600, report["vertices"])
         self.assertGreater(report["triangles"], 250_000)
         self.assertGreater(len(compiled), 10_000_000)
+
+    def test_degenerate_uvs_get_orthogonal_disclosed_fallbacks(self) -> None:
+        model = make_grid_glb(side=2, degenerate_uvs=True, normal_map=True)
+        compiled, report = compiler.compile_character(
+            model, make_manifest(), bytes(32)
+        )
+        self.assertGreater(len(compiled), 0)
+        self.assertEqual(2, report["generated_tangent_degenerate_uv_triangles"])
+        self.assertEqual(4, report["tangent_fallback_vertices"])
+        self.assertEqual(4, report["normal_map_tangent_fallback_vertices"])
+        # Locate the vertex section from the authenticated section table.
+        vertex_offset = struct.unpack_from(
+            "<Q", compiled, 64 + compiler.MDKC_SECTION_ENTRY_BYTES + 8
+        )[0]
+        tangent = struct.unpack_from("<4f", compiled, vertex_offset + 24)
+        normal = struct.unpack_from("<3f", compiled, vertex_offset + 12)
+        self.assertAlmostEqual(0.0, sum(
+            tangent[index] * normal[index] for index in range(3)
+        ), places=6)
+        self.assertAlmostEqual(1.0, sum(
+            tangent[index] * tangent[index] for index in range(3)
+        ), places=6)
+
+    def test_parallel_authored_tangents_are_repaired_and_disclosed(self) -> None:
+        model = make_grid_glb(
+            side=2, authored_tangent=(0.0, 0.0, 1.0, -1.0)
+        )
+        _, report = compiler.compile_character(model, make_manifest(), bytes(32))
+        self.assertEqual(1, report["authored_tangent_primitives"])
+        self.assertEqual(0, report["generated_tangent_primitives"])
+        self.assertEqual(4, report["authored_tangent_repaired_vertices"])
+        self.assertEqual(4, report["tangent_fallback_vertices"])
 
 
 if __name__ == "__main__":
