@@ -607,6 +607,13 @@ void mdkr_online_results_enter(u8 isFinalRace, u8 raceIndex, u8 chooserEnabled) 
             mdkr_online_screen_sky_world_for_snapshot(&bg, haveBg));
     }
 
+    /* T7b: reveal from black (retail fade cadence) + restore the retail menu music
+     * for the post-race screen (the race level -- and its track music -- was
+     * unloaded on RESULTS entry). Isolation-safe primitive borrows -- see
+     * online_screen_util.h. */
+    mdkr_online_screen_fade_in_from_black();
+    mdkr_online_screen_menu_music();
+
     fprintf(stderr,
             "[online-results] enter: native results up race=%u final=%u "
             "haveResults=%u placements=%u,%u,%u,%u (offline MENU_RESULTS "

@@ -350,6 +350,12 @@ void mdkr_online_ceremony_enter(const MdkrOnlineStandings *finalRanking) {
         mdkr_online_screen_sky_world_for_snapshot(&snap, haveSnap));
     sound_play(CER_SFX_CELEBRATE, NULL);
 
+    /* T7b: reveal the champion celebration from black (retail fade cadence) + keep
+     * the retail menu music underneath the crowd cheer (isolation-safe primitive
+     * borrows -- see online_screen_util.h). */
+    mdkr_online_screen_fade_in_from_black();
+    mdkr_online_screen_menu_music();
+
     /* Resolve the champion name from the CAPTURED character id (ceremony_champ_name):
      * a real champion shows their canonical racer name even after their seat has
      * disconnected, a feed-less endpoint (no champion) logs "(none)". Witness

@@ -39,6 +39,9 @@
 #include "enums.h"      /* AlignmentFlags */
 #include "menu.h"       /* font.h: set_text_font/colour, draw_text; DrawTexture */
 #include "rcp_dkr.h"    /* texrect_draw */
+#include "audio.h"      /* music_play / music_current_sequence -- primitive borrow */
+#include "sequence_ids.h"    /* SEQUENCE_MAIN_MENU */
+#include "fade_transition.h" /* transition_begin + FADE_TRANSITION -- primitive borrow */
 #include "net/party_link.h"
 #include "online/online_portraits.h" /* sOnlineToPortrait, sOnlineNames,
                                         MDKR_ONLINE_PORTRAIT_COUNT */
@@ -160,6 +163,56 @@ static inline void mdkr_online_screen_draw_portrait(u8 character, s32 x, s32 y,
     portrait = gRacerPortraits[sOnlineToPortrait[character]];
     if (portrait != NULL && portrait[0].texture != NULL) {
         texrect_draw(&gCurrDisplayList, portrait, x, y, r, g, b, 255);
+    }
+}
+
+/* ======================================================================== *
+ * T7b: seamless phase transitions + menu ambiance (isolation-safe primitive
+ * borrows -- the SAME discipline the scrolling-sky backdrop uses for bgdraw).
+ * ------------------------------------------------------------------------
+ * The native online screens deliberately bypass the offline gCurrentMenuId
+ * menu/transition state machine for isolation, so historically they HARD-CUT
+ * between phases and the launcher->engine hand-off could show a black-frame jump.
+ * These two helpers restore the retail FEEL without re-entering any offline loop:
+ *
+ *   - mdkr_online_screen_fade_in_from_black(): arms the engine's OWN transition
+ *     system (transition_begin) to REVEAL the screen from black over ~0.3s. The
+ *     engine's per-frame driver -- transition_update() + transition_render() at
+ *     thread3_main.c:536, run every frame AFTER the gamemode tick REGARDLESS of
+ *     mode -- then draws the receding black veil on top of whatever the screen
+ *     drew. This is the exact "already in the loop" primitive-borrow the backdrop
+ *     leans on for bgdraw_render(): we only ADD a transition_begin() call from the
+ *     beta-gated screens; the vanilla driver is untouched (so the OFF build is
+ *     byte-identical). Each screen calls this from its _enter(), so EVERY phase
+ *     change -- and the very first native screen after the launcher hand-off --
+ *     fades up from black instead of snapping in. Cadence matches the retail menu
+ *     (menu.c sMenuTransitionFadeOut: FADE_FULLSCREEN black, 18 frames).
+ *     FADE_FULLSCREEN is allocation-free, so firing it on every entry is cheap and
+ *     needs no transition workspace.
+ *
+ *   - mdkr_online_screen_menu_music(): starts (idempotently) the retail menu music
+ *     sequence via the self-contained music_play() primitive -- the exact call
+ *     menu.c makes (menu.c:4642) -- NOT the offline menu music state machine. The
+ *     select / results screens were SFX-only; this gives them the retail menu
+ *     ambiance. The race level loader replaces the sequence on the RACE hand-off.
+ * ======================================================================== */
+
+/* REVEAL the screen from black (retail menu cadence). FADE_FLAG_OUT drives the
+ * black veil opacity 255 -> 0, i.e. the veil RECEDES to expose the screen -- the
+ * engine's flag naming is inverted from the visual sense; this is menu.c's "fade
+ * the freshly-entered screen in" transition (sMenuTransitionFadeOut). endTimer 0
+ * so the transition auto-clears once the screen is fully revealed. */
+static inline void mdkr_online_screen_fade_in_from_black(void) {
+    static FadeTransition reveal =
+        FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_OUT, FADE_COLOR_BLACK, 18, 0);
+    transition_begin(&reveal);
+}
+
+/* Start / keep the retail menu music on the native menu-family screens. Idempotent
+ * (music_current_sequence guards against restarting it every entry). */
+static inline void mdkr_online_screen_menu_music(void) {
+    if (music_current_sequence() != (u8) SEQUENCE_MAIN_MENU) {
+        music_play((u8) SEQUENCE_MAIN_MENU);
     }
 }
 

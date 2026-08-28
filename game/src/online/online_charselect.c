@@ -698,6 +698,14 @@ void mdkr_online_charselect_enter(void) {
     /* Neutral hub sky (Dino Domain) -- charselect is world-agnostic. */
     mdkr_online_screen_backdrop((u8) MDKR_ONLINE_SKY_WORLD_NEUTRAL);
 
+    /* T7b: reveal this screen from black (retail fade cadence) and start the
+     * retail menu music. Charselect is the FIRST native screen after the launcher
+     * hand-off, so its reveal is also what makes that hand-off read as one
+     * continuous motion instead of a black-frame jump. Isolation-safe primitive
+     * borrows (transition_begin / music_play) -- see online_screen_util.h. */
+    mdkr_online_screen_fade_in_from_black();
+    mdkr_online_screen_menu_music();
+
     fprintf(stderr,
             "[online-charselect] enter: native screen up defaultVehicle=%u "
             "cursor=%u (portraits loaded, offline _loop bypassed)\n",

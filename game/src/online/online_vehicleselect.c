@@ -688,6 +688,11 @@ void mdkr_online_vehicleselect_enter(void) {
     /* Neutral hub sky (Dino Domain) -- the vehicle screen is world-agnostic. */
     mdkr_online_screen_backdrop((u8) MDKR_ONLINE_SKY_WORLD_NEUTRAL);
 
+    /* T7b: reveal from black (retail fade cadence) + keep the retail menu music
+     * (isolation-safe primitive borrows -- see online_screen_util.h). */
+    mdkr_online_screen_fade_in_from_black();
+    mdkr_online_screen_menu_music();
+
     fprintf(stderr,
             "[online-vehicleselect] enter: native screen up character=%u "
             "vehicle=%u track=%u mask=0x%x (portraits loaded, offline _loop "

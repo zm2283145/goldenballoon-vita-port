@@ -1065,6 +1065,11 @@ void mdkr_online_trackselect_enter(void) {
     }
     trackselect_witness_tracks();
 
+    /* T7b: reveal from black (retail fade cadence) + keep the retail menu music
+     * (isolation-safe primitive borrows -- see online_screen_util.h). */
+    mdkr_online_screen_fade_in_from_black();
+    mdkr_online_screen_menu_music();
+
     fprintf(stderr,
             "[online-trackselect] enter: native track select up entry=%u "
             "mode=%u defaultVehicle=%u (world backgrounds loaded, offline _loop "
