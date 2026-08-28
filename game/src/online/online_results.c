@@ -172,6 +172,7 @@ static u8 results_joiner_finish_seam(void);          /* PD-T6d test seam */
 static u8 results_joiner_finish_departed(u32 stageTicks);
 static u8 results_joiner_terminal_seam(void);        /* exit-gate C1 no-seam proof */
 static u8 results_remote_vacate_final_probe(void);   /* final-review P2 probe */
+static u8 results_resident_remote_wins(void);        /* I-1 champion-on-disconnect */
 
 /* ======================================================================== *
  * Small helpers
@@ -735,7 +736,15 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
                                 (sRes.stage == RES_STAGE_RESULTS && !tournament));
 
     results_gather_input(&in);
-    if (in.bEdge) {
+    /* M-2: latch a B-back LEAVE only on a NON-terminal screen, where the consumer
+     * at the bottom (`if (sRes.leave)`) is actually reached. On the terminal FINAL
+     * standings the host branch returns STAY before that consumer and the joiner
+     * branch honors in.bEdge directly (joinerPress), so an unconditional write
+     * there was dead -- and it wrongly implied B "does something" for a host that
+     * reflexively presses B to go back. Guarding on !terminal removes the dead
+     * write while leaving every reachable B-back (non-final host/joiner) unchanged.
+     * (Host A:FINISH is advanceEdge, never bEdge, so it is untouched.) */
+    if (in.bEdge && !terminal) {
         sRes.leave = 1u;
     }
 
@@ -941,6 +950,16 @@ static void results_test_capture(void) {
             sTestLastPlacements[i] = polled[i];
         }
     }
+    /* I-1 test seam (env MDKR_TEST_ONLINE_RESIDENT_REMOTE_WINS): make the REMOTE
+     * seat (slot 1) win the cup so the LOCAL seat (slot 0) is the LOSER -- the
+     * configuration the ceremony-champion-on-disconnect scenario needs (the true
+     * winner is the seat that then departs). Force slot 1 first, slot 0 second, so
+     * the existing trophy accrual below gives slot 1 the higher total. Off in every
+     * normal run; the other resident scenarios (local wins) are unchanged. */
+    if (results_resident_remote_wins()) {
+        sTestLastPlacements[0] = 1u; /* local: 2nd */
+        sTestLastPlacements[1] = 0u; /* remote: 1st */
+    }
     memset(&sTestRoom, 0, sizeof(sTestRoom));
     sTestRoom.mode = (uint8_t) RES_MODE_TOURNAMENT;
     sTestRoom.phase = (uint8_t) RES_PHASE_RESULTS; /* MDKR_ONLINE_RESULTS */
@@ -1091,6 +1110,21 @@ static u8 results_remote_vacate_final_probe(void) {
         sRemoteVacateFinalProbe = (e != NULL && e[0] != '\0') ? 1 : 0;
     }
     return (u8) (sRemoteVacateFinalProbe > 0 ? 1 : 0);
+}
+
+/* I-1 champion-on-disconnect seam (env MDKR_TEST_ONLINE_RESIDENT_REMOTE_WINS):
+ * flip the resident soak's final-race placements so the REMOTE seat wins the cup
+ * and the LOCAL seat is the loser (results_test_capture). Paired with the
+ * ceremony's remote-absent seam, this stages the exact production defect I-1
+ * guards: a losing local endpoint whose winning remote departs at ceremony enter.
+ * Inert unless the env is set. */
+static s8 sResidentRemoteWins = -1;
+static u8 results_resident_remote_wins(void) {
+    if (sResidentRemoteWins < 0) {
+        const char *e = getenv("MDKR_TEST_ONLINE_RESIDENT_REMOTE_WINS");
+        sResidentRemoteWins = (e != NULL && e[0] != '\0') ? 1 : 0;
+    }
+    return (u8) (sResidentRemoteWins > 0 ? 1 : 0);
 }
 
 u8 mdkr_online_results_test_active(void) {
