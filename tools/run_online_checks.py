@@ -48,8 +48,9 @@ LANES = (
     "check_online_lobby_single_endpoint.py",
     "check_online_room_ready_rearm.py",
     "check_online_lobby_tournament.py",
-    "check_online_tournament.py",           # keystone: 34,30 + golden race hash
-)
+    "check_online_tournament.py",           # keystone: 34,30 + peer==peer race-hash
+)                                           #  convergence (the GOLDEN literal is
+#                                            pinned only by check_online_engine_boot_direct.py)
 
 
 def run_lane(lane: str, build: str, rom: str, verbose: bool) -> tuple[bool, float]:
@@ -68,15 +69,22 @@ def run_lane(lane: str, build: str, rom: str, verbose: bool) -> tuple[bool, floa
     return ok, elapsed
 
 
-def run_isolation(verbose: bool) -> bool:
+def run_isolation(verbose: bool) -> tuple[bool, list[str]]:
     print("\n===== isolation guard (fresh OFF build) =====")
     cmd = [sys.executable, str(ROOT / "tools" / "check_online_isolation.py")]
     if verbose:
         cmd.append("-v")
     proc = subprocess.run(cmd, cwd=ROOT, text=True,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    print((proc.stdout or "").strip())
-    return proc.returncode == 0
+    out = (proc.stdout or "").strip()
+    print(out)
+    # M1(a): the guard's byte-identity gate is now HARD, but a deliberate
+    # --allow-hash-drift or a degraded environment (e.g. no reference build cache)
+    # still emits a WARNING while exiting 0. Surface every such line in the final
+    # summary so a degradation can NEVER hide behind "RESULT: GREEN".
+    warnings = [line.strip() for line in out.splitlines()
+                if "[isolation] WARNING" in line]
+    return proc.returncode == 0, warnings
 
 
 def main() -> int:
@@ -95,8 +103,9 @@ def main() -> int:
         # Keep going after a failure so the operator sees the full picture.
 
     isolation_ok = True
+    isolation_warnings: list[str] = []
     if not args.no_isolation:
-        isolation_ok = run_isolation(args.verbose)
+        isolation_ok, isolation_warnings = run_isolation(args.verbose)
 
     passed = sum(1 for _n, ok, _t in results if ok)
     total = len(results)
@@ -106,6 +115,10 @@ def main() -> int:
              else f"; isolation guard {'PASS' if isolation_ok else 'FAIL'}"))
     for name, ok, elapsed in results:
         print(f"  [{'PASS' if ok else 'FAIL'}] {name} ({elapsed:.1f}s)")
+    # M1(a): surface any isolation warning/degradation in the summary so it cannot
+    # hide behind a GREEN result (e.g. an --allow-hash-drift toolchain bump).
+    for warning in isolation_warnings:
+        print(f"  [WARN] isolation: {warning}")
     all_ok = passed == total and isolation_ok
     print("RESULT:", "GREEN" if all_ok else "RED")
     print("NOTE: ctest excludes these engine lanes by design; this runner is the "

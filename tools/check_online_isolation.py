@@ -18,12 +18,21 @@ offline regression. This guard closes that hole:
         game/src/menu.c.o                  cfeb2121
         platform/net/online_race_results.c.o  12487bac
   3. Asserts the OFF `mdkr64` binary links ZERO online symbols (mdkr_online_* /
-     party_link / ceremony) -- robust to compiler drift where a legit toolchain
-     change moves the hashes but isolation still holds.
+     party_link / ceremony) -- a second, name-based gate that also catches a leak
+     whose codegen happens to leave the anchor bytes untouched.
 
-A hash mismatch is only a HARD failure if the symbol check ALSO finds a leak (a
-compiler/toolchain change can legitimately move the bytes); the symbol check is
-the authoritative isolation gate. Both must pass for a clean bill.
+ALL THREE gates are HARD (a failure of any one exits non-zero). The anchor bytes
+are the GROUND TRUTH for isolation, so a hash mismatch is a HARD FAILURE by
+default -- the symbol allowlist is a fixed set of name prefixes and cannot catch
+a leak that inlines with no external symbol, uses an un-listed name, or perturbs
+an offline TU's codegen without referencing anything online; only the anchor
+hashes see that. The guard already pins the compiler (/usr/bin/cc) and Release,
+so on the toolchain the pins were minted on the bytes must not move.
+
+For a DELIBERATE toolchain bump (a legitimate compiler upgrade that moves the
+bytes while isolation still holds), pass --allow-hash-drift: the mismatch is then
+downgraded to a WARNING (the run still PASSES) and the new prefixes are printed so
+the pins can be re-minted. Without that flag, a moved anchor hash fails the guard.
 """
 
 from __future__ import annotations
@@ -117,6 +126,12 @@ def main() -> int:
     parser.add_argument(
         "--keep", action="store_true",
         help="keep the scratch OFF build dir (default: remove after hashing)")
+    parser.add_argument(
+        "--allow-hash-drift", action="store_true",
+        help="downgrade an anchor byte-identity MISMATCH from a HARD failure to a "
+             "WARNING (still exits 0). Use ONLY for a deliberate toolchain bump: it "
+             "prints the new prefixes so the pins can be re-minted. The symbol + "
+             "TU-object gates stay HARD regardless.")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -196,7 +211,21 @@ def main() -> int:
         if not binary.is_file():
             return fail("the OFF mdkr64 binary was not produced")
         nm = subprocess.run(["nm", str(binary)], text=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # M4: a silent nm failure yields empty stdout -> zero matches -> a VACUOUS
+        # symbol PASS. Treat a non-zero nm (stripped/fat binary, toolchain quirk) or
+        # empty output on a real binary as a HARD error, never a clean pass.
+        if nm.returncode != 0:
+            print("\n".join(hash_report), file=sys.stderr)
+            print(f"[isolation] nm stderr: {(nm.stderr or '').strip()[:2000]}",
+                  file=sys.stderr)
+            return fail(f"nm failed (exit {nm.returncode}) on the OFF binary -- the "
+                        f"symbol gate cannot run, so isolation is UNPROVEN (a silent "
+                        f"empty-output PASS would be vacuous)")
+        if not nm.stdout.strip():
+            print("\n".join(hash_report), file=sys.stderr)
+            return fail("nm produced NO symbols for the OFF binary -- the symbol "
+                        "gate would be vacuous; refusing to report a clean pass")
         leaked = sorted({
             line for line in nm.stdout.splitlines()
             if any(sym in line for sym in LEAK_SYMBOLS)
@@ -210,21 +239,32 @@ def main() -> int:
                         f"an isolation leak into the release engine")
 
         if not hash_ok:
-            # Symbols are clean but the bytes moved: only a HARD fail if it is not
-            # a plausible toolchain drift. We treat a clean-symbol hash drift as a
-            # WARNING (bump the pins), since the symbol gate proved isolation holds.
+            # I-1: the anchor bytes are the GROUND TRUTH for isolation. A hash
+            # mismatch is a HARD failure by default -- the symbol allowlist is a
+            # fixed set of name prefixes and cannot see a leak that inlines with no
+            # external symbol, uses an un-listed name, or only perturbs an offline
+            # TU's codegen. Only a DELIBERATE toolchain bump (--allow-hash-drift)
+            # downgrades it to a WARNING so a legit compiler upgrade is not a wall.
             print("\n".join(hash_report), file=sys.stderr)
-            print("[isolation] WARNING: anchor hashes moved but the OFF binary has "
-                  "ZERO online symbols -- likely a compiler/toolchain drift; update "
-                  "the pinned prefixes if the toolchain changed intentionally.",
-                  file=sys.stderr)
+            if not args.allow_hash_drift:
+                return fail(
+                    "anchor object bytes MOVED on the pinned toolchain (/usr/bin/cc "
+                    "+ Release). The anchor bytes are the isolation ground truth, so "
+                    "this is a HARD failure: an offline TU's codegen changed. If this "
+                    "is a DELIBERATE toolchain bump (not a leak), re-run with "
+                    "--allow-hash-drift and re-mint the pinned prefixes above.")
+            print("[isolation] WARNING: anchor hashes moved but --allow-hash-drift "
+                  "was given -- treating as a deliberate toolchain bump. Re-mint the "
+                  "pinned prefixes above (ANCHORS in this file) so the guard hard-"
+                  "enforces the NEW toolchain's bytes.", file=sys.stderr)
 
         print(
             "PASS online isolation: a FRESH clean OFF build links ZERO online "
             "symbols (mdkr_online_*/party_link/ceremony) into the release engine"
             + (", and all 3 anchor objects are byte-identical (thread3_main "
                "20ed811d, menu cfeb2121, online_race_results 12487bac)"
-               if hash_ok else " (anchor hashes moved -- see WARNING above)")
+               if hash_ok else " (anchor hashes DRIFTED -- see WARNING above; "
+               "--allow-hash-drift)")
             + ".")
         if args.verbose or not hash_ok:
             print("\n".join(hash_report))
