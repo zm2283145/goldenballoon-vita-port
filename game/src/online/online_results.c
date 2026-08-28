@@ -217,8 +217,8 @@ static void results_render_complete(const MdkrPartyLinkSnapshot *snap,
         /* the JOINER self-advances off this terminal (its feed parks
          * in RESULTS, so it must not wait on the host). Show its own visible
          * countdown to the champion celebration -- never the old "WAITING FOR
-         * HOST..." (misleading now, and the host may already be gone). Final-review
-         * advertise BOTH honored buttons -- A OR B advances immediately to the
+         * HOST..." (misleading now, and the host may already be gone). Advertise
+         * BOTH honored buttons -- A OR B advances immediately to the
          * celebration (the joiner terminal honors in.bEdge too, online_results.c
          * joinerPress), so surface the navigation input rather than leaving B silent. */
         u32 secs = mdkr_online_screen_seconds_left(sRes.stageTicks,RES_JOINER_TERMINAL_UNITS);
@@ -254,7 +254,7 @@ static void results_render_countdown(const MdkrPartyLinkSnapshot *snap,
         char host[16];
         s32 c = 130 + tri * 5;
         results_host_name(snap, haveSnap, host, sizeof(host));
-        /* Final-review M3: advertise the joiner's B affordance. A joiner's B on a
+        /* Advertise the joiner's B affordance. A joiner's B on a
          * NON-final results/standings is a genuine mid-tournament LEAVE-to-room
          * (in.bEdge -> sRes.leave -> LEFT), symmetric with the host footer's
          * "B: LEAVE" (results_render_countdown) -- it was previously silent. */
@@ -578,7 +578,7 @@ static void results_input_scripted(ResInput *in) {
     if (sRes.stage == RES_STAGE_RESULTS) {
         in->advanceEdge = 1u; /* RESULTS -> STANDINGS (host press) */
     } else if (results_host_press_active()) {
-        /* Final-review P2 probe: at the FINAL standings, "the host has vacated" ->
+        /* Remote-vacate probe: at the FINAL standings, "the host has vacated" ->
          * script NO terminal press, so the joiner leaves via its self-advance DWELL
          * (making the dwell-vs-vacate race unambiguous). Non-final standings still
          * press (the cup advances fast). */
@@ -908,7 +908,13 @@ static void results_test_capture(void) {
         sTestRoom.points[i] = sTestPoints[i];
         sTestRoom.last_placements[i] = place;
     }
-    /* Two occupied seats: seat 0 local+host, seat 1 the remote rival. */
+    /* Two occupied seats: seat 0 local+host, seat 1 the remote rival. seat 0 is the
+     * room HOST because the resident soak drives its own cup advancement from the
+     * LOCAL endpoint (host-press) -- a rig requirement, NOT a claim about who wins.
+     * It is immaterial to the ENDPOINT-AGNOSTIC champion crown: the ceremony crowns
+     * by the CAPTURED points ranking, so in the champion-on-disconnect scenario
+     * (where this local host is the LOSER and the winning remote joiner departs) the
+     * crown + champLocal=0 hold regardless of seat 0 being host. */
     sTestRoom.seats[0].occupied = 1u;
     sTestRoom.seats[0].is_local = 1u;
     sTestRoom.seats[0].is_host = 1u;
@@ -1028,7 +1034,7 @@ static u8 results_joiner_terminal_seam(void) {
     return (u8) (sJoinerTerminalActive > 0 ? 1 : 0);
 }
 
-/* Final-review P2 probe (env MDKR_TEST_ONLINE_REMOTE_VACATE_AT_RESULTS_FINAL):
+/* Remote-vacate probe (env MDKR_TEST_ONLINE_REMOTE_VACATE_AT_RESULTS_FINAL):
  * when armed, the paired online_session detector reads the remote as GONE at the
  * FINAL standings. To make the joiner's SELF-ADVANCE DWELL (not a scripted press)
  * the thing that leaves -- so the dwell (10s) vs the vacate detector (0.75s) race
@@ -1045,11 +1051,11 @@ static u8 results_remote_vacate_final_probe(void) {
 }
 
 /* champion-on-disconnect seam (env MDKR_TEST_ONLINE_RESIDENT_REMOTE_WINS):
- * flip the resident soak's final-race placements so the REMOTE seat wins the cup
- * and the LOCAL seat is the loser (results_test_capture). Paired with the
- * ceremony's remote-absent seam, this stages the exact production defect it
- * guards: a losing local endpoint whose winning remote departs at ceremony enter.
- * Inert unless the env is set. */
+ * flip the resident soak's placements on EVERY race (results_test_resolve forces
+ * slot 1 first, slot 0 second each round) so the REMOTE seat wins the cup and the
+ * LOCAL seat is the loser. Paired with the ceremony's remote-absent seam, this
+ * stages the exact production defect it guards: a losing local endpoint whose
+ * winning remote departs at ceremony enter. Inert unless the env is set. */
 static s8 sResidentRemoteWins = -1;
 static u8 results_resident_remote_wins(void) {
     if (sResidentRemoteWins < 0) {
