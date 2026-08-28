@@ -1446,7 +1446,8 @@ void drawBetaPhraseDecision(const MdkrOnlineViewModel &model,
                             LauncherState &state) {
     ui::Gap(ui::kGapM);
     if (ui::CardBegin("##beta-phrase", AppTheme::accent(), 0.0f)) {
-        ImGui::TextUnformatted("Compare These Words");
+        // The "Compare These Words" title is the SectionHeader above this card;
+        // it is not repeated here (N3) -- the card opens straight into the how-to.
         ui::TextSubtleWrapped(
             "Read the words aloud with your friend. They must match exactly on "
             "both screens — this is what keeps your connection private.");
@@ -1481,6 +1482,24 @@ void drawBetaPhraseDecision(const MdkrOnlineViewModel &model,
             "If even one word is different, choose \"Words Differ\" and reconnect.");
     }
     ui::CardEnd();
+
+    // Direct exit during the compare (N2): the view model's cancel ("Leave
+    // Room") was previously undrawn on this screen, so leaving mid-compare meant
+    // routing through Words Differ -> recovery -> Leave. Render it as a small,
+    // tertiary control below the card so it never competes with the prominent
+    // Words Match / Words Differ decision.
+    if (model.cancel.visible && model.cancel.label != nullptr) {
+        ui::Gap(ui::kGapS);
+        if (!model.cancel.enabled) ImGui::BeginDisabled();
+        if (ImGui::Button(model.cancel.label,
+                          ImVec2(ui::kControlWidth(), 0.0f)) &&
+            model.cancel.enabled) {
+            handleAction(model.cancel.action, state);
+        }
+        ui::SpeakFocusedItem(model.cancel.label, "Leave",
+                             "Leaves the room without comparing the words.");
+        if (!model.cancel.enabled) ImGui::EndDisabled();
+    }
 }
 
 // A purely decorative per-racer accent -- a color standing in for a portrait.
@@ -1766,23 +1785,51 @@ void drawBetaSessionCard(const MdkrOnlineLobby &lobby, bool isLeader,
     }
 
     if (!tournament) {
-        // Single Race: all 20 tracks, grouped by world.
+        // Single Race: the 20 tracks, one world at a time (host picks the world,
+        // then one of its 4 tracks); the joiner sees the host's choice read-only.
         if (isLeader) {
+            // Compact world-scoped picker: a World selector plus that world's 4
+            // tracks (2x2), instead of the full 5-world / 20-track grid. This
+            // keeps Race Settings a few rows tall so the racer grid, vehicle
+            // chips and Ready stay on-screen at 960x720 without scrolling (P2).
+            // The selector auto-follows the configured track's world, so the
+            // world holding the current pick is always the one shown.
+            const MdkrOnlineTrackInfo *configuredInfo =
+                configuredTrack != MDKR_ONLINE_NO_VOTE
+                    ? mdkr_online_track_by_id(configuredTrack) : nullptr;
+            static std::uint8_t sActiveWorld = 0u;
+            static std::uint16_t sWorldSyncedTrack = 0xFFFFu;
+            if (configuredInfo != nullptr &&
+                sWorldSyncedTrack != configuredTrack) {
+                sActiveWorld = configuredInfo->world;
+            }
+            sWorldSyncedTrack = configuredTrack;
+            if (sActiveWorld >= MDKR_ONLINE_WORLD_COUNT) sActiveWorld = 0u;
+
+            ui::TextSubtle("World");
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::BeginCombo("##beta-track-world",
+                                  mdkr_online_world_name(sActiveWorld))) {
+                for (unsigned w = 0u; w < MDKR_ONLINE_WORLD_COUNT; ++w) {
+                    const bool sel = sActiveWorld == w;
+                    if (ImGui::Selectable(mdkr_online_world_name(w), sel)) {
+                        sActiveWorld = static_cast<std::uint8_t>(w);
+                    }
+                    if (sel) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ui::SpeakFocusedItem("World", mdkr_online_world_name(sActiveWorld),
+                                 "Picks which world's tracks to choose from.");
+            ui::Gap(ui::kGapXS);
+
             const float full = ImGui::GetContentRegionAvail().x;
             const float half =
                 (full - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-            std::uint8_t lastWorld = 0xFFu;
             unsigned column = 0u;
             for (unsigned t = 0u; t < mdkr_online_track_count(); ++t) {
                 const MdkrOnlineTrackInfo *track = mdkr_online_track_at(t);
-                if (track == nullptr) continue;
-                if (track->world != lastWorld) {
-                    lastWorld = track->world;
-                    column = 0u;
-                    ui::Gap(ui::kGapXS);
-                    ui::TextSubtle("%s",
-                                   mdkr_online_world_name(track->world));
-                }
+                if (track == nullptr || track->world != sActiveWorld) continue;
                 if (column % 2u == 1u) ImGui::SameLine();
                 ++column;
                 const bool selected = configuredTrack == track->id;
@@ -2187,9 +2234,26 @@ void drawBetaSelectingBody(LauncherState &state,
 
     drawBetaRosterStrip(lobby, localEndpoint);
     ui::Gap(ui::kGapM);
-    drawBetaSessionCard(lobby, isLeader, tournamentHandoff);
-    ui::Gap(ui::kGapM);
 
+    // Tournament takeover window: the native CHARSELECT/TRACKSELECT own the cup,
+    // racer, vehicle and Ready the instant they boot, so the ImGui racer grid +
+    // vehicle chips + Ready region are all dead. Show ONLY Race Settings (the mode
+    // chips + the compact cup note) and the hand-off card here (P1) -- rendering
+    // the editable-looking racer grid and vehicle chips above a card that says
+    // "pick on the next screen" reads as contradictory. Single-race (and a
+    // 1-member tournament still filling up) never engages this.
+    if (tournamentHandoff) {
+        drawBetaSessionCard(lobby, isLeader, tournamentHandoff);
+        ui::Gap(ui::kGapM);
+        drawBetaTournamentHandoffCard();
+        return;
+    }
+
+    // [P2] Personal picks first -- racer, vehicle, then Ready -- so the essential
+    // controls stay reachable without scrolling on a 960x720 window; the host's
+    // Race Settings (mode + the compacted track/cup picker) follow below. When a
+    // track is still needed the blocked-Ready hint points the host down to Race
+    // Settings, so the ordering never traps them.
     // Racer grid: interactive for the whole selection phase.
     ImGui::TextUnformatted("Your Racer");
     drawCharacterGrid(MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER, &lobby,
@@ -2239,15 +2303,6 @@ void drawBetaSelectingBody(LauncherState &state,
     }
     ui::Gap(ui::kGapM);
 
-    // In the tournament takeover window the native CHARSELECT owns ready, so
-    // the tournament ready-gating region is dead -- show the hand-off card instead.
-    // Single-race (and a 1-member tournament still filling up) keeps the full
-    // Ready/Start region below unchanged.
-    if (tournamentHandoff) {
-        drawBetaTournamentHandoffCard();
-        return;
-    }
-
     // Ready / Start region. The view model stays the single source of the
     // primary action; a picker-step primary renders as a disabled Ready with
     // the reason spelled out, so this screen is never silently locked.
@@ -2275,6 +2330,13 @@ void drawBetaSelectingBody(LauncherState &state,
     } else if (drawActionButton(model.primary, true)) {
         handleAction(model.primary.action, state);
     }
+
+    // Host Race Settings LAST (P2): keeping the mode + track/cup picker below the
+    // racer/vehicle/Ready controls keeps those essentials on screen at 960x720.
+    // The joiner's mirror is compact; the host's picker is the compacted
+    // world-scoped selector, so this block stays short either way.
+    ui::Gap(ui::kGapM);
+    drawBetaSessionCard(lobby, isLeader, tournamentHandoff);
 }
 
 // ---- Results / standings body (RESULTS, snapshot-backed) -------------------
@@ -2597,11 +2659,23 @@ void drawBetaRoom(LauncherState &state) {
         return;
     }
 
-    ui::Gap(ui::kGapM);
-
     const MdkrOnlineViewAction timeoutAction =
         model.timeout.present && g_online.adapter->timeoutExpired()
             ? model.timeout.primary.action : MDKR_ONLINE_VIEW_ACTION_NONE;
+    // N4: only lead with a gap when something separable follows -- the rich
+    // lobby/results bodies, an expired-timeout box, or an active start-race
+    // feedback region. A generic invite/recovery body with an inert feedback
+    // region no longer floats the section rule above a dead band.
+    const bool richBody =
+        haveLobby &&
+        ((model.kind == MDKR_ONLINE_VIEW_SELECTING &&
+          lobby.phase == MDKR_ONLINE_LOBBY) ||
+         (model.kind == MDKR_ONLINE_VIEW_RESULTS &&
+          lobby.phase == MDKR_ONLINE_RESULTS));
+    if (g_online.startRacePressed || richBody ||
+        timeoutAction != MDKR_ONLINE_VIEW_ACTION_NONE) {
+        ui::Gap(ui::kGapM);
+    }
     if (timeoutAction != MDKR_ONLINE_VIEW_ACTION_NONE) {
         ui::CautionBox(model.timeout.title, model.timeout.explanation);
         ui::Gap(ui::kGapS);
@@ -2952,7 +3026,19 @@ void drawBetaRoomFake(LauncherState &state) {
         return;
     }
 
-    ui::Gap(ui::kGapM);
+    // N4: only lead with a gap when something separable follows. The rich
+    // lobby/results bodies and an active start-race feedback region keep their
+    // leading separation; a generic invite/recovery body with an inert feedback
+    // region does not, so the section rule no longer floats above a dead band.
+    const bool richBody =
+        haveLobby &&
+        ((model.kind == MDKR_ONLINE_VIEW_SELECTING &&
+          lobby.phase == MDKR_ONLINE_LOBBY) ||
+         (model.kind == MDKR_ONLINE_VIEW_RESULTS &&
+          lobby.phase == MDKR_ONLINE_RESULTS));
+    if (g_online.startRacePressed || richBody) {
+        ui::Gap(ui::kGapM);
+    }
     drawBetaStartRaceFeedback(model);
 
     bool primaryDrawn = false;
