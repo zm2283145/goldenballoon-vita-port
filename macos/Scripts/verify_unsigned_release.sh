@@ -89,6 +89,24 @@ GLTF_VALIDATOR="${APP_PATH}/Contents/MacOS/tools/validators/gltf_validator"
 GLTF_VALIDATOR_MANIFEST="${APP_PATH}/Contents/MacOS/tools/validators/gltf_validator.manifest.json"
 GLTF_VALIDATOR_LICENSE="${APP_PATH}/Contents/Resources/ThirdParty/GltfValidator-LICENSE.txt"
 GLTF_VALIDATOR_NOTICES="${APP_PATH}/Contents/Resources/ThirdParty/GltfValidator-NOTICES.txt"
+CHARACTER_LOD_TOOL="${APP_PATH}/Contents/MacOS/tools/mdkr-character-lod"
+MESHOPTIMIZER_LICENSE="${APP_PATH}/Contents/Resources/ThirdParty/Meshoptimizer-LICENSE.md"
+MESHOPTIMIZER_README="${APP_PATH}/Contents/Resources/ThirdParty/Meshoptimizer-README.md"
+[[ -x "${CHARACTER_LOD_TOOL}" && ! -L "${CHARACTER_LOD_TOOL}" ]] ||
+    die "bundled Character Workshop LOD helper is missing, linked, or not executable"
+[[ -f "${MESHOPTIMIZER_LICENSE}" && ! -L "${MESHOPTIMIZER_LICENSE}" ]] ||
+    die "bundled meshoptimizer license is missing or linked"
+[[ "$(shasum -a 256 "${MESHOPTIMIZER_LICENSE}" | awk '{print $1}')" ==
+   "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26" ]] ||
+    die "bundled meshoptimizer license changed"
+[[ -f "${MESHOPTIMIZER_README}" && ! -L "${MESHOPTIMIZER_README}" ]] ||
+    die "bundled meshoptimizer provenance notice is missing or linked"
+CHARACTER_LOD_SIGNATURE="$(codesign -dvvv "${CHARACTER_LOD_TOOL}" 2>&1)"
+printf '%s\n' "${CHARACTER_LOD_SIGNATURE}" | grep -Fq 'Signature=adhoc' ||
+    die "bundled Character Workshop LOD helper is not ad-hoc integrity signed"
+if printf '%s\n' "${CHARACTER_LOD_SIGNATURE}" | grep -Fq 'Authority='; then
+    die "bundled Character Workshop LOD helper unexpectedly carries a trusted signing authority"
+fi
 [[ -x "${CHARACTER_IMPORTER}" ]] ||
     die "bundled Character Workshop importer is missing or not executable"
 [[ -f "${CHARACTER_IMPORTER_MANIFEST}" ]] ||

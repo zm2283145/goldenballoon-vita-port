@@ -246,6 +246,7 @@ jobs:
             --character-importer-manifest build-tools/character_importer.exe.manifest.json \
             --gltf-validator build-tools/validators/gltf_validator.exe \
             --gltf-validator-manifest build-tools/validators/gltf_validator.exe.manifest.json \
+            --character-lod-tool build/tools/mdkr-character-lod.exe \
             --version dev
           expected_version="$(./build/mdkr64.exe --version | tr -d '\r')"
           package_root="$RUNNER_TEMP/windows package with spaces"

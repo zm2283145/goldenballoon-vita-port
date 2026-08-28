@@ -57,6 +57,7 @@ character_importer=""
 character_importer_manifest=""
 gltf_validator=""
 gltf_validator_manifest=""
+character_lod_tool=""
 version="dev"
 self_test=false
 while [[ $# -gt 0 ]]; do
@@ -66,9 +67,10 @@ while [[ $# -gt 0 ]]; do
     --character-importer-manifest) character_importer_manifest="$2"; shift 2 ;;
     --gltf-validator) gltf_validator="$2"; shift 2 ;;
     --gltf-validator-manifest) gltf_validator_manifest="$2"; shift 2 ;;
+    --character-lod-tool) character_lod_tool="$2"; shift 2 ;;
     --version) version="$2"; shift 2 ;;
     --self-test) self_test=true; shift ;;
-    -h|--help) echo "Usage: $0 [--binary PATH] --character-importer PATH --character-importer-manifest PATH --gltf-validator PATH --gltf-validator-manifest PATH [--version VER] [--self-test]"; exit 0 ;;
+    -h|--help) echo "Usage: $0 [--binary PATH] --character-importer PATH --character-importer-manifest PATH --gltf-validator PATH --gltf-validator-manifest PATH --character-lod-tool PATH [--version VER] [--self-test]"; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -92,6 +94,7 @@ verify_windows_archive() {
     GoldenBalloon/tools/ \
     GoldenBalloon/tools/character_importer.exe \
     GoldenBalloon/tools/character_importer.exe.manifest.json \
+    GoldenBalloon/tools/mdkr-character-lod.exe \
     GoldenBalloon/tools/CPython-LICENSE.txt \
     GoldenBalloon/tools/PyInstaller-COPYING.txt \
     GoldenBalloon/tools/validators/ \
@@ -103,6 +106,8 @@ verify_windows_archive() {
     GoldenBalloon/BasisU-LICENSE.txt \
     GoldenBalloon/BasisU-Zstd-LICENSE.txt \
     GoldenBalloon/BasisU-README.md \
+    GoldenBalloon/Meshoptimizer-LICENSE.md \
+    GoldenBalloon/Meshoptimizer-README.md \
     GoldenBalloon/NativePhoneParty-NOTICES.txt \
     GoldenBalloon/README.md \
     GoldenBalloon/RUN_ME.txt \
@@ -154,6 +159,8 @@ with zipfile.ZipFile(sys.argv[1], "r") as archive:
             "2c1a7fa704df8f3a606f6fc010b8b5aaebf403f3aeec339a12048f1ba7331a0b",
         "GoldenBalloon/BasisU-README.md":
             "d15b94b7cb320ed39156c8ddf7d8e814185c6d0de51005113f1d18784785975c",
+        "GoldenBalloon/Meshoptimizer-LICENSE.md":
+            "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26",
     }
     for name, expected in notices.items():
         if hashlib.sha256(archive.read(name)).hexdigest() != expected:
@@ -199,12 +206,17 @@ if [[ "$self_test" == true ]]; then
     "$test_root/GoldenBalloon/BasisU-Zstd-LICENSE.txt"
   cp third_party/basisu/README.md \
     "$test_root/GoldenBalloon/BasisU-README.md"
+  cp third_party/meshoptimizer/LICENSE.md \
+    "$test_root/GoldenBalloon/Meshoptimizer-LICENSE.md"
+  cp third_party/meshoptimizer/README.md \
+    "$test_root/GoldenBalloon/Meshoptimizer-README.md"
   tr -d '\r' < third_party/native_phone_party/NOTICE.txt \
     > "$test_root/GoldenBalloon/NativePhoneParty-NOTICES.txt"
   : >"$test_root/GoldenBalloon/README.md"
   : >"$test_root/GoldenBalloon/RUN_ME.txt"
   : >"$test_root/GoldenBalloon/gamecontrollerdb.txt"
   : >"$test_root/GoldenBalloon/tools/character_importer.exe"
+  : >"$test_root/GoldenBalloon/tools/mdkr-character-lod.exe"
   cp third_party/character_importer/CPython-LICENSE.txt \
     "$test_root/GoldenBalloon/tools/CPython-LICENSE.txt"
   cp third_party/character_importer/PyInstaller-COPYING.txt \
@@ -272,6 +284,10 @@ fi
   echo "ERROR: --gltf-validator-manifest must name its attestation." >&2
   exit 1
 }
+[[ -n "$character_lod_tool" && -f "$character_lod_tool" ]] || {
+  echo "ERROR: --character-lod-tool must name the native Windows LOD helper." >&2
+  exit 1
+}
 
 python3 tools/verify_character_importer.py \
   --executable "$character_importer" \
@@ -289,6 +305,7 @@ python3 tools/verify_gltf_validator.py \
 ./tools/check_windows_imports.sh "$binary"
 ./tools/check_windows_imports.sh "$character_importer"
 ./tools/check_windows_imports.sh "$gltf_validator"
+./tools/check_windows_imports.sh "$character_lod_tool"
 
 dist="$(pwd)/dist"; mkdir -p "$dist"
 package_root="$(mktemp -d "${TMPDIR:-/tmp}/mdkr-windows-package.XXXXXX")"
@@ -299,6 +316,7 @@ mkdir -p "$stage"
 cp "$binary" "$stage/GoldenBalloon.exe"
 mkdir -p "$stage/tools"
 cp "$character_importer" "$stage/tools/character_importer.exe"
+cp "$character_lod_tool" "$stage/tools/mdkr-character-lod.exe"
 cp "$character_importer_manifest" \
   "$stage/tools/character_importer.exe.manifest.json"
 cp third_party/character_importer/CPython-LICENSE.txt \
@@ -314,6 +332,8 @@ cp LICENSE README.md "$stage/"
 cp third_party/basisu/LICENSE.txt "$stage/BasisU-LICENSE.txt"
 cp third_party/basisu/Zstd-LICENSE.txt "$stage/BasisU-Zstd-LICENSE.txt"
 cp third_party/basisu/README.md "$stage/BasisU-README.md"
+cp third_party/meshoptimizer/LICENSE.md "$stage/Meshoptimizer-LICENSE.md"
+cp third_party/meshoptimizer/README.md "$stage/Meshoptimizer-README.md"
 # A Windows Git checkout may materialize tracked text with CRLF. Canonicalize
 # the distributed notice to the reviewed LF byte sequence pinned above.
 tr -d '\r' < third_party/native_phone_party/NOTICE.txt \

@@ -268,7 +268,8 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 "Creative Commons test license\n", encoding="utf-8"
             )
             inventory = manager.inspect_raw_glb(model)
-            self.assertEqual("mdkr-character-glb-intake-v2", inventory["schema"])
+            self.assertEqual("mdkr-character-glb-intake-v3", inventory["schema"])
+            self.assertEqual(1, inventory["lod_levels"])
             self.assertEqual("idle", inventory["fallback"])
             self.assertEqual("root", inventory["seat"])
             self.assertEqual("head", inventory["head"])
@@ -280,8 +281,9 @@ class CharacterPackageManagerTests(unittest.TestCase):
             self.assertEqual(inventory["model_sha256"], indexed["model_sha256"])
             lines = index.read_text(encoding="ascii").splitlines()
             self.assertTrue(lines[0].startswith(
-                "mdkr-character-glb-intake-v2\t" + inventory["model_sha256"]
+                "mdkr-character-glb-intake-v3\t" + inventory["model_sha256"]
             ))
+            self.assertTrue(lines[0].endswith("\t1"))
             self.assertEqual("defaults\t69646c65\t726f6f74\t68656164", lines[1])
             with self.assertRaisesRegex(manager.ManagerError, "exact file"):
                 manager.write_raw_glb_index(
@@ -303,6 +305,7 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 manifest = probe.json_loads_strict(archive.read("manifest.json"))
                 self.assertEqual("org.example.raw-intake", manifest["id"])
                 self.assertEqual("-z", manifest["presentation"]["source_forward"])
+
                 self.assertEqual(1.4, manifest["presentation"]["target_height_m"])
                 self.assertEqual(["car", "plane"], manifest["gameplay"]["vehicles"])
                 self.assertEqual(
@@ -346,6 +349,47 @@ class CharacterPackageManagerTests(unittest.TestCase):
                     characters / manager.RAW_INTAKE_CANDIDATE_NAME) as archive:
                 manifest = probe.json_loads_strict(archive.read("manifest.json"))
             self.assertEqual("org.example.raw-cli", manifest["id"])
+
+    def test_lod_generation_is_digest_bound_exclusive_and_profile_recorded(
+            self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.glb"
+            output = root / "source-lod.glb"
+            helper = root / "mdkr-character-lod"
+            payload = make_animated_glb()
+            source.write_bytes(payload)
+            helper.write_bytes(b"fixture helper")
+            helper.chmod(0o700)
+            digest = hashlib.sha256(payload).hexdigest()
+            generation = {
+                "schema": "mdkr-character-lod-result-v1",
+                "levels": [],
+            }
+            with mock.patch.object(
+                    manager.lod_builder, "build_lods",
+                    return_value=(payload, generation)) as build:
+                report = manager.generate_lod_glb(
+                    source, output, digest, "balanced", helper.resolve()
+                )
+            self.assertEqual(payload, source.read_bytes())
+            self.assertEqual(payload, output.read_bytes())
+            self.assertEqual("balanced", report["profile"])
+            self.assertEqual(generation, report["generation"])
+            build.assert_called_once_with(
+                payload, helper.resolve(),
+                ratios=manager.LOD_PROFILES["balanced"][0],
+                error_limits=manager.LOD_PROFILES["balanced"][1],
+            )
+            with self.assertRaisesRegex(manager.ManagerError, "already exists"):
+                manager.generate_lod_glb(
+                    source, output, digest, "balanced", helper.resolve()
+                )
+            with self.assertRaisesRegex(manager.ManagerError, "changed after"):
+                manager.generate_lod_glb(
+                    source, root / "other.glb", "0" * 64,
+                    "quality", helper.resolve(),
+                )
 
     def test_animationless_raw_glb_builds_without_a_fabricated_source_clip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

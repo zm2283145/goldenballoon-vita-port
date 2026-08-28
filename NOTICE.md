@@ -205,6 +205,12 @@ SHA-256-pinned source files. Their complete Apache-2.0 and BSD license texts,
 plus immutable source provenance, are retained in `third_party/basisu/` and
 travel with every native package. No encoder or example texture is included.
 
+The optional offline custom-character LOD authoring helper statically compiles
+the meshoptimizer v1.2 simplifier from exact SHA-256-pinned source files. Its
+complete MIT license and immutable source provenance are retained in
+`third_party/meshoptimizer/`. The bounded helper communicates only over pipes,
+does not receive paths or ROM data, and is never loaded into the game process.
+
 `third_party/qrcodegen/qrcodegen.ts`, its C++ port and the generated browser
 artifact `dist/web/party/qrcodegen.js` are Project Nayuki's QR Code generator library at
 commit `2c9044de6b049ca25cb3cd1649ed7e27aa055138`, under the MIT License. Both

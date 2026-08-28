@@ -29,6 +29,7 @@ from typing import Any, Callable, Iterator
 
 import character_asset_compiler as compiler
 import character_asset_probe as probe
+import character_lod_builder as lod_builder
 import character_manifest_wizard as wizard
 import character_source_adapter as source_adapter
 import collada_to_glb as collada
@@ -59,6 +60,11 @@ MAX_FAILURE_RECORDS = 4096
 MAX_UI_FAILURES = 256
 MAX_FAILURE_TEXT_BYTES = 8192
 MAX_FAILURE_PATH_BYTES = 4096
+LOD_PROFILES: dict[str, tuple[tuple[float, ...], tuple[float, ...]]] = {
+    "quality": ((0.65, 0.40, 0.22), (0.006, 0.015, 0.035)),
+    "balanced": (lod_builder.DEFAULT_RATIOS, lod_builder.DEFAULT_ERROR_LIMITS),
+    "performance": ((0.40, 0.18, 0.08), (0.015, 0.035, 0.070)),
+}
 
 
 class ManagerError(ValueError):
@@ -856,6 +862,81 @@ def _read_report(path: Path) -> dict[str, Any]:
     if not isinstance(report, dict):
         raise ManagerError("provenance report must be an object")
     return report
+
+
+def generate_lod_glb(
+        input_path: Path, output_path: Path, expected_source_sha256: str,
+        profile: str, helper_path: Path | None) -> dict[str, Any]:
+    """Create one validated derived GLB without mutating the artist source."""
+    if input_path.suffix.lower() != ".glb" or output_path.suffix.lower() != ".glb":
+        raise ManagerError("LOD input and output must both use a .glb suffix")
+    if profile not in LOD_PROFILES:
+        raise ManagerError("LOD profile must be quality, balanced, or performance")
+    if (
+        len(expected_source_sha256) != 64
+        or any(character not in "0123456789abcdef"
+               for character in expected_source_sha256)
+    ):
+        raise ManagerError("inspected LOD source digest is invalid")
+    if helper_path is None:
+        raise ManagerError(
+            "this installation is missing the pinned LOD helper; repair or "
+            "reinstall the complete Character Workshop"
+        )
+    if output_path.parent.is_symlink() or not output_path.parent.is_dir():
+        raise ManagerError("LOD output directory must be a real existing directory")
+    destination = output_path.parent.resolve() / output_path.name
+    if destination.exists() or destination.is_symlink():
+        raise ManagerError("LOD output destination already exists")
+    source = _bounded_authoring_input(
+        input_path, probe.MAX_INPUT_BYTES, "LOD source GLB"
+    )
+    source_sha256 = hashlib.sha256(source).hexdigest()
+    if source_sha256 != expected_source_sha256:
+        raise ManagerError(
+            "the GLB changed after inspection; inspect the new bytes before "
+            "generating LODs"
+        )
+    source_validation = _validate_character_glb(
+        source, "LOD source character model"
+    )
+    ratios, error_limits = LOD_PROFILES[profile]
+    try:
+        generated, generation = lod_builder.build_lods(
+            source, helper_path, ratios=ratios, error_limits=error_limits
+        )
+    except lod_builder.LodBuildError as exc:
+        raise ManagerError(str(exc)) from exc
+    generated_validation = _validate_character_glb(
+        generated, "generated LOD character model"
+    )
+    generated_sha256 = hashlib.sha256(generated).hexdigest()
+    try:
+        identity = _write_exclusive(destination, generated)
+    except FileExistsError as exc:
+        raise ManagerError("LOD output destination already exists") from exc
+    try:
+        observed = _bounded_authoring_input(
+            destination, probe.MAX_INPUT_BYTES, "generated LOD GLB"
+        )
+        if hashlib.sha256(observed).hexdigest() != generated_sha256:
+            raise ManagerError("generated LOD GLB changed during publication")
+    except BaseException:
+        _unlink_created_exact(destination, identity, generated_sha256)
+        raise
+    return {
+        "schema": MANAGER_SCHEMA,
+        "action": "generate-lods",
+        "profile": profile,
+        "source_file": str(input_path),
+        "source_sha256": source_sha256,
+        "generated_file": str(destination),
+        "generated_sha256": generated_sha256,
+        "bytes": len(generated),
+        "generation": generation,
+        "source_validation": _validation_summary(source_validation),
+        "generated_validation": _validation_summary(generated_validation),
+    }
 
 
 def _installed_cache_path(root: Path, package_id: str, *,
@@ -2118,6 +2199,15 @@ def inspect_raw_glb(model_path: Path) -> dict[str, Any]:
             "GLB is not character-ready: " + "; ".join(report["errors"])
         )
     document, _ = probe.parse_glb(payload)
+    lod_levels = 1
+    for node in document.get("nodes", []):
+        if not isinstance(node, dict):
+            continue
+        extensions = node.get("extensions")
+        lod = extensions.get("MSFT_lod") if isinstance(extensions, dict) else None
+        ids = lod.get("ids") if isinstance(lod, dict) else None
+        if isinstance(ids, list):
+            lod_levels = max(lod_levels, len(ids) + 1)
     clips: list[str] = []
     for index, animation in enumerate(document.get("animations", [])):
         if not isinstance(animation, dict):
@@ -2213,7 +2303,7 @@ def inspect_raw_glb(model_path: Path) -> dict[str, Any]:
             "GLB scene-world height is too small to calibrate"
         )
     return {
-        "schema": "mdkr-character-glb-intake-v2",
+        "schema": "mdkr-character-glb-intake-v3",
         "model": str(model_path.resolve()),
         "model_sha256": hashlib.sha256(payload).hexdigest(),
         "vertices": report["vertex_count"],
@@ -2222,6 +2312,7 @@ def inspect_raw_glb(model_path: Path) -> dict[str, Any]:
         "textures": report["texture_count"],
         "skins": report["skin_count"],
         "joints": report["max_joints"],
+        "lod_levels": lod_levels,
         "source_height_m": source_height_m,
         "mesh_local_bounds": [mesh_local_min, mesh_local_max],
         "scene_world_bounds": [bounds_min, bounds_max],
@@ -2264,6 +2355,7 @@ def write_raw_glb_index(model_path: Path, directory: Path,
                   inventory["mesh_local_bounds"],
                   inventory["scene_world_bounds"],
               ) for point in bounds for value in point),
+            str(inventory["lod_levels"]),
         )) + "\n",
         "defaults\t" + "\t".join((
             encoded(inventory["fallback"]), encoded(inventory["seat"]),
@@ -2786,6 +2878,10 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", type=Path)
     parser.add_argument(
+        "--lod-tool", type=Path,
+        help="absolute path to the separately attested mdkr-character-lod helper",
+    )
+    parser.add_argument(
         "--result-file",
         type=Path,
         help="write the same bounded JSON result for a native launcher caller",
@@ -2818,6 +2914,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     convert_parser.add_argument("input", type=Path)
     convert_parser.add_argument("output", type=Path)
+    lod_parser = sub.add_parser(
+        "generate-lods",
+        help="create a new recorded, validated MSFT_lod GLB",
+    )
+    lod_parser.add_argument("input", type=Path)
+    lod_parser.add_argument("output", type=Path)
+    lod_parser.add_argument("expected_source_sha256")
+    lod_parser.add_argument("profile", choices=tuple(LOD_PROFILES))
     adapter_index_parser = sub.add_parser(
         "write-adapter-output-index",
         help="validate a canonical data-only adapter result for review",
@@ -2996,6 +3100,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "convert-authoring-source":
             report = convert_authoring_source(args.input, args.output)
+        elif args.command == "generate-lods":
+            report = generate_lod_glb(
+                args.input, args.output, args.expected_source_sha256,
+                args.profile, args.lod_tool,
+            )
         elif args.command == "write-adapter-output-index":
             report = write_adapter_output_index(
                 args.input, args.directory, args.output

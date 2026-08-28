@@ -4932,6 +4932,11 @@ python3 tests/check_character_raw_intake_ui.py \
   --build build-character-tests
 ```
 
+The rendered pass also keyboard-walks and speaks the optional LOD profile,
+exclusive-create destination, and “Create LOD copy and continue” action; native
+geometry generation and four-level compilation are independently exercised by
+`character_lod_builder`.
+
 The gate is registered as the `app_character_raw_intake` CTest and the
 `character_raw_intake_ui` run-check; it needs neither a ROM nor a community
 model.

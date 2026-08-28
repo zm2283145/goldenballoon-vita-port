@@ -456,6 +456,7 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
     RESOURCE_DIR="${APP_BUNDLE}/Contents/Resources"
     CHARACTER_IMPORTER="${APP_BUNDLE}/Contents/MacOS/tools/character_importer"
     GLTF_VALIDATOR="${APP_BUNDLE}/Contents/MacOS/tools/validators/gltf_validator"
+    CHARACTER_LOD_TOOL="${APP_BUNDLE}/Contents/MacOS/tools/mdkr-character-lod"
 
     # The Workshop importer is code, not a resource, but it is a second opaque
     # executable in the bundle and therefore needs its own exact-layout and ROM
@@ -480,6 +481,29 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
             *)
                 printf '%s\n' "${CHARACTER_MAGIC_MATCH}" >&2
                 fail "Could not inspect the Character Workshop importer."
+                RESOURCE_FAIL=1
+                ;;
+        esac
+    fi
+    if [[ ! -f "${CHARACTER_LOD_TOOL}" || -L "${CHARACTER_LOD_TOOL}" ]]; then
+        fail "App bundle is missing its regular Character Workshop LOD helper."
+        RESOURCE_FAIL=1
+    elif [[ "$(file -b "${CHARACTER_LOD_TOOL}" 2>/dev/null)" != *Mach-O* ]]; then
+        fail "Character Workshop LOD helper is not an inspectable Mach-O executable."
+        RESOURCE_FAIL=1
+    else
+        LOD_MAGIC_MATCH="$(scan_bootstrap_magic_file \
+            "${CHARACTER_LOD_TOOL}" 2>&1)" && LOD_MAGIC_STATUS=0 ||
+            LOD_MAGIC_STATUS=$?
+        case "${LOD_MAGIC_STATUS}" in
+            0)
+                fail "Embedded N64 ROM bootstrap magic found in Character Workshop LOD helper (${LOD_MAGIC_MATCH})."
+                RESOURCE_FAIL=1
+                ;;
+            1) ;;
+            *)
+                printf '%s\n' "${LOD_MAGIC_MATCH}" >&2
+                fail "Could not inspect the Character Workshop LOD helper."
                 RESOURCE_FAIL=1
                 ;;
         esac
@@ -511,6 +535,7 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
         case "${MACOS_FILE#"${APP_BUNDLE}"/}" in
             "Contents/MacOS/${EXECUTABLE_NAME}"|\
             Contents/MacOS/tools/character_importer|\
+            Contents/MacOS/tools/mdkr-character-lod|\
             Contents/MacOS/tools/validators/gltf_validator|\
             Contents/MacOS/tools/validators/gltf_validator.manifest.json) ;;
             *)
@@ -576,6 +601,11 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
                 Contents/Resources/ThirdParty/BasisU-README.md)
                     # Exact runtime transcoder terms and immutable source
                     # provenance; verify_unsigned_release.sh pins every file.
+                    ;;
+                Contents/Resources/ThirdParty/Meshoptimizer-LICENSE.md|\
+                Contents/Resources/ThirdParty/Meshoptimizer-README.md)
+                    # Exact offline simplifier terms and immutable source
+                    # provenance; verify_unsigned_release.sh pins the license.
                     ;;
                 Contents/Resources/ThirdParty/CharacterImporter-MANIFEST.json|\
                 Contents/Resources/ThirdParty/CharacterImporter-CPython-LICENSE.txt|\

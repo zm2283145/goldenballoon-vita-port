@@ -164,9 +164,11 @@ bool parse(const std::string &text, Inventory &output) {
     uint64_t values[8] = {};
     if (text.size() > 1024u * 1024u || end == std::string::npos) return false;
     const std::string header = text.substr(0u, end);
-    const bool detailed =
+    const bool current =
+        header.rfind("mdkr-character-glb-intake-v3\t", 0u) == 0u;
+    const bool detailed = current ||
         header.rfind("mdkr-character-glb-intake-v2\t", 0u) == 0u;
-    if (!splitLine(header, detailed ? 23u : 11u, fields) ||
+    if (!splitLine(header, current ? 24u : (detailed ? 23u : 11u), fields) ||
         (!detailed && fields[0] != "mdkr-character-glb-intake-v1") ||
         !digestValid(fields[1])) return false;
     for (size_t index = 0u; index < 6u; ++index) {
@@ -220,6 +222,13 @@ bool parse(const std::string &text, Inventory &output) {
             return false;
         }
         parsed.detailedBounds = true;
+    }
+    if (current) {
+        uint64_t lodLevels = 0u;
+        if (!parseUnsigned(fields[23], 4u, lodLevels) || lodLevels == 0u) {
+            return false;
+        }
+        parsed.lodLevels = static_cast<uint32_t>(lodLevels);
     }
 
     begin = end + 1u;

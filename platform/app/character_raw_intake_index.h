@@ -19,6 +19,9 @@ struct Inventory {
     uint32_t textures = 0u;
     uint32_t skins = 0u;
     uint32_t joints = 0u;
+    // Zero means a legacy helper did not publish this fact. Current v3
+    // inventories always publish one to four levels.
+    uint32_t lodLevels = 0u;
     double sourceHeightM = 0.0;
     bool detailedBounds = false;
     std::array<double, 3> meshLocalMinimum{};

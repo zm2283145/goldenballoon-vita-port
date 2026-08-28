@@ -63,6 +63,19 @@ int main() {
                detailedInventory.sceneWorldMinimum[1] == -0.0001 &&
                detailedInventory.sceneWorldMaximum[1] == 0.0194,
            "v2 intake retains mesh-local and scene-world transform evidence");
+    std::string current = detailed;
+    current.replace(0u, sizeof("mdkr-character-glb-intake-v2") - 1u,
+                    "mdkr-character-glb-intake-v3");
+    current.insert(current.find('\n'), "\t4");
+    CharacterRawIntakeIndex::Inventory currentInventory;
+    expect(CharacterRawIntakeIndex::parse(current, currentInventory) &&
+               currentInventory.lodLevels == 4u &&
+               currentInventory.detailedBounds,
+           "v3 intake publishes the exact bounded LOD level count");
+    std::string invalidLods = current;
+    invalidLods.replace(invalidLods.find("\t4\n"), 3u, "\t5\n");
+    expect(!CharacterRawIntakeIndex::parse(invalidLods, currentInventory),
+           "v3 intake rejects out-of-profile LOD level counts");
     std::string inconsistentDetailed = detailed;
     inconsistentDetailed.replace(
         inconsistentDetailed.find("\t0.0194\t"), 8u, "\t0.0204\t");

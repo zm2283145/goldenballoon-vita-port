@@ -48,6 +48,7 @@ character_importer=""
 character_importer_manifest=""
 gltf_validator=""
 gltf_validator_manifest=""
+character_lod_tool=""
 version="dev"
 # Release packaging is STRICT by default -- a missing bundled SDL2 runtime or
 # a missing AppImage is a hard failure, so a release can't ship a broken/
@@ -62,10 +63,11 @@ while [[ $# -gt 0 ]]; do
     --character-importer-manifest) character_importer_manifest="$2"; shift 2 ;;
     --gltf-validator) gltf_validator="$2"; shift 2 ;;
     --gltf-validator-manifest) gltf_validator_manifest="$2"; shift 2 ;;
+    --character-lod-tool) character_lod_tool="$2"; shift 2 ;;
     --version) version="$2"; shift 2 ;;
     --dev) dev=true; shift ;;
     --self-test) self_test=true; shift ;;
-    -h|--help) echo "Usage: $0 [--binary PATH] --character-importer PATH --character-importer-manifest PATH --gltf-validator PATH --gltf-validator-manifest PATH [--version VER] [--dev] [--self-test]"; exit 0 ;;
+    -h|--help) echo "Usage: $0 [--binary PATH] --character-importer PATH --character-importer-manifest PATH --gltf-validator PATH --gltf-validator-manifest PATH --character-lod-tool PATH [--version VER] [--dev] [--self-test]"; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -104,6 +106,8 @@ verify_linux_tarball() {
       Golden-Balloon.AppDir/BasisU-LICENSE.txt \
       Golden-Balloon.AppDir/BasisU-Zstd-LICENSE.txt \
       Golden-Balloon.AppDir/BasisU-README.md \
+      Golden-Balloon.AppDir/Meshoptimizer-LICENSE.md \
+      Golden-Balloon.AppDir/Meshoptimizer-README.md \
       Golden-Balloon.AppDir/NativePhoneParty-NOTICES.txt \
       Golden-Balloon.AppDir/README.md \
       Golden-Balloon.AppDir/RUN_ME.txt \
@@ -113,6 +117,7 @@ verify_linux_tarball() {
       Golden-Balloon.AppDir/usr/bin/mdkr64 \
       Golden-Balloon.AppDir/usr/bin/tools/character_importer \
       Golden-Balloon.AppDir/usr/bin/tools/character_importer.manifest.json \
+      Golden-Balloon.AppDir/usr/bin/tools/mdkr-character-lod \
       Golden-Balloon.AppDir/usr/bin/tools/CPython-LICENSE.txt \
       Golden-Balloon.AppDir/usr/bin/tools/PyInstaller-COPYING.txt \
       Golden-Balloon.AppDir/usr/bin/tools/validators/gltf_validator \
@@ -188,6 +193,8 @@ with tarfile.open(sys.argv[1], "r:gz") as archive:
             "2c1a7fa704df8f3a606f6fc010b8b5aaebf403f3aeec339a12048f1ba7331a0b",
         "BasisU-README.md":
             "d15b94b7cb320ed39156c8ddf7d8e814185c6d0de51005113f1d18784785975c",
+        "Meshoptimizer-LICENSE.md":
+            "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26",
     }
     for name, expected in basis_notices.items():
         if hashlib.sha256(root_payload(name)).hexdigest() != expected:
@@ -226,11 +233,14 @@ if [[ "$self_test" == true ]]; then
   cp third_party/basisu/LICENSE.txt "$test_appdir/BasisU-LICENSE.txt"
   cp third_party/basisu/Zstd-LICENSE.txt "$test_appdir/BasisU-Zstd-LICENSE.txt"
   cp third_party/basisu/README.md "$test_appdir/BasisU-README.md"
+  cp third_party/meshoptimizer/LICENSE.md "$test_appdir/Meshoptimizer-LICENSE.md"
+  cp third_party/meshoptimizer/README.md "$test_appdir/Meshoptimizer-README.md"
   cp third_party/native_phone_party/NOTICE.txt \
     "$test_appdir/NativePhoneParty-NOTICES.txt"
   : >"$test_appdir/usr/bin/gamecontrollerdb.txt"
   : >"$test_appdir/usr/bin/mdkr64"
   : >"$test_appdir/usr/bin/tools/character_importer"
+  : >"$test_appdir/usr/bin/tools/mdkr-character-lod"
   cp third_party/character_importer/CPython-LICENSE.txt \
     "$test_appdir/usr/bin/tools/CPython-LICENSE.txt"
   cp third_party/character_importer/PyInstaller-COPYING.txt \
@@ -299,6 +309,10 @@ fi
   echo "ERROR: --gltf-validator-manifest must name its attestation." >&2
   exit 1
 }
+[[ -n "$character_lod_tool" && -x "$character_lod_tool" ]] || {
+  echo "ERROR: --character-lod-tool must name the native Linux LOD helper." >&2
+  exit 1
+}
 
 python3 tools/verify_character_importer.py \
   --executable "$character_importer" \
@@ -338,11 +352,15 @@ mkdir -p "$appdir/usr/bin" "$appdir/usr/lib"
 cp third_party/basisu/LICENSE.txt "$appdir/BasisU-LICENSE.txt"
 cp third_party/basisu/Zstd-LICENSE.txt "$appdir/BasisU-Zstd-LICENSE.txt"
 cp third_party/basisu/README.md "$appdir/BasisU-README.md"
+cp third_party/meshoptimizer/LICENSE.md "$appdir/Meshoptimizer-LICENSE.md"
+cp third_party/meshoptimizer/README.md "$appdir/Meshoptimizer-README.md"
 
 cp "$binary" "$appdir/usr/bin/mdkr64"
 mkdir -p "$appdir/usr/bin/tools"
 cp "$character_importer" "$appdir/usr/bin/tools/character_importer"
 chmod +x "$appdir/usr/bin/tools/character_importer"
+cp "$character_lod_tool" "$appdir/usr/bin/tools/mdkr-character-lod"
+chmod +x "$appdir/usr/bin/tools/mdkr-character-lod"
 cp "$character_importer_manifest" \
   "$appdir/usr/bin/tools/character_importer.manifest.json"
 cp third_party/character_importer/CPython-LICENSE.txt \

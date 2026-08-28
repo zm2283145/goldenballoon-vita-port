@@ -145,7 +145,7 @@ def check(executable_path: Path, *, source_python: bool = False) -> None:
         )
         expected = {
             "ok": True,
-            "schema": "mdkr-character-glb-intake-v2",
+            "schema": "mdkr-character-glb-intake-v3",
             "model_sha256": hashlib.sha256(model_payload).hexdigest(),
             "vertices": 3,
             "triangles": 1,
@@ -153,6 +153,7 @@ def check(executable_path: Path, *, source_python: bool = False) -> None:
             "textures": 1,
             "skins": 1,
             "joints": 2,
+            "lod_levels": 1,
             "source_height_m": 1.0,
             "mesh_local_bounds": [[-0.5, 0.0, 0.0], [0.5, 1.0, 0.0]],
             "scene_world_bounds": [[-0.5, 0.0, 0.0], [0.5, 1.0, 0.0]],
@@ -190,9 +191,9 @@ def check(executable_path: Path, *, source_python: bool = False) -> None:
         if Path(result["model"]).resolve(strict=True) != model.resolve(strict=True):
             raise SmokeError("raw intake result identifies the wrong model")
         expected_index = (
-            "mdkr-character-glb-intake-v2\t"
+            "mdkr-character-glb-intake-v3\t"
             f"{expected['model_sha256']}\t3\t1\t1\t1\t1\t2\t1\t1\t3"
-            "\t-0.5\t0\t0\t0.5\t1\t0\t-0.5\t0\t0\t0.5\t1\t0\n"
+            "\t-0.5\t0\t0\t0.5\t1\t0\t-0.5\t0\t0\t0.5\t1\t0\t1\n"
             "defaults\t69646c65\t726f6f74\t68656164\n"
             "clip\t69646c65\n"
             "node\t726f6f74\n"

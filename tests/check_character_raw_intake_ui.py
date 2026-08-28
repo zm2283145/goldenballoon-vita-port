@@ -1227,6 +1227,9 @@ def main() -> int:
                  "text=Duplicate as a new raw draft",
                  "text=Close raw editor",
                  "text=Gameplay donor",
+                 "text=LOD profile",
+                 "text=New LOD GLB destination",
+                 "text=Create LOD copy and continue",
                  "text=Model faces +Z",
                  "text=Standing height in metres",
                  "text=Accept scale and facing proposal",
@@ -1262,6 +1265,7 @@ def main() -> int:
           "recipient compatibility/readiness review, "
           "mutation-free FBX/OBJ/BLEND/glTF/USD/DCC export guidance, "
           "multi-draft GLB intake, "
+          "accessible no-overwrite LOD-copy authoring, "
           "same-source branching, source-bound mapping restore, exact "
           "switch/delete/install cleanup, "
           "legacy migration, corruption fail-closed behavior, source-byte "

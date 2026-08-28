@@ -93,6 +93,12 @@ if(MDKR_CHARACTER_KTX2)
     enable_language(CXX)
     include(${CMAKE_SOURCE_DIR}/cmake/character_basisu.cmake)
 endif()
+option(MDKR_CHARACTER_LOD_TOOLS
+       "Build the bounded offline custom-character LOD simplifier" ON)
+if(MDKR_CHARACTER_LOD_TOOLS AND NOT EMSCRIPTEN)
+    enable_language(CXX)
+    include(${CMAKE_SOURCE_DIR}/cmake/character_meshoptimizer.cmake)
+endif()
 include(${CMAKE_SOURCE_DIR}/cmake/tests.cmake)
 
 if(NOT EMSCRIPTEN)

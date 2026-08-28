@@ -190,6 +190,8 @@ Options:
   --gltf-validator PATH  Native arm64 Khronos validator to bundle.
   --gltf-validator-manifest PATH
                          Build attestation produced with the validator.
+  --character-lod-tool PATH
+                         Native meshoptimizer LOD helper to bundle.
   --validate-output-only Validate --output safety and exit without writing
   --no-cmake             Reuse an existing <build-dir>/mdkr64
   -h, --help             Show this help
@@ -217,6 +219,7 @@ CHARACTER_IMPORTER=""
 CHARACTER_IMPORTER_MANIFEST=""
 GLTF_VALIDATOR=""
 GLTF_VALIDATOR_MANIFEST=""
+CHARACTER_LOD_TOOL=""
 RUN_CMAKE=true
 VALIDATE_OUTPUT_ONLY=false
 APP_NAME="mdkr64"
@@ -295,6 +298,11 @@ while [[ $# -gt 0 ]]; do
             GLTF_VALIDATOR_MANIFEST="$2"
             shift 2
             ;;
+        --character-lod-tool)
+            [[ $# -ge 2 ]] || die "--character-lod-tool requires a path"
+            CHARACTER_LOD_TOOL="$2"
+            shift 2
+            ;;
         --validate-output-only) VALIDATE_OUTPUT_ONLY=true; shift ;;
         --no-cmake) RUN_CMAKE=false; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -341,7 +349,7 @@ esac
 
 if [[ "${BUILD_TYPE}" == "Release" || -n "${CHARACTER_IMPORTER}" ||
       -n "${CHARACTER_IMPORTER_MANIFEST}" || -n "${GLTF_VALIDATOR}" ||
-      -n "${GLTF_VALIDATOR_MANIFEST}" ]]; then
+      -n "${GLTF_VALIDATOR_MANIFEST}" || -n "${CHARACTER_LOD_TOOL}" ]]; then
     [[ -n "${CHARACTER_IMPORTER}" && -x "${CHARACTER_IMPORTER}" ]] ||
         die "Release bundles require --character-importer with an executable helper."
     [[ -n "${CHARACTER_IMPORTER_MANIFEST}" &&
@@ -495,13 +503,17 @@ if [[ "${RUN_CMAKE}" == true ]]; then
 
     NCPU="$(sysctl -n hw.ncpu)"
     info "Building mdkr64 with ${NCPU} parallel jobs..."
-    cmake --build "${BUILD_DIR}" --target mdkr64 --parallel "${NCPU}" \
+    cmake --build "${BUILD_DIR}" --target mdkr64 mdkr-character-lod --parallel "${NCPU}" \
         || die "mdkr64 build failed."
 fi
 
 ENGINE_BUILD_OUTPUT="${BUILD_DIR}/mdkr64"
 if [[ ! -f "${ENGINE_BUILD_OUTPUT}" ]]; then
     die "Missing built executable: ${ENGINE_BUILD_OUTPUT}. Run without --no-cmake first."
+fi
+if [[ "${BUILD_TYPE}" == "Release" || -n "${CHARACTER_IMPORTER}" ]]; then
+    [[ -n "${CHARACTER_LOD_TOOL}" && -x "${CHARACTER_LOD_TOOL}" ]] ||
+        die "Release bundles require --character-lod-tool with an executable helper."
 fi
 
 CMAKE_CACHE="${BUILD_DIR}/CMakeCache.txt"
@@ -596,6 +608,7 @@ CHARACTER_IMPORTER_BUNDLED=""
 CHARACTER_IMPORTER_MANIFEST_DEST=""
 GLTF_VALIDATOR_BUNDLED=""
 GLTF_VALIDATOR_MANIFEST_DEST=""
+CHARACTER_LOD_BUNDLED=""
 if [[ -n "${CHARACTER_IMPORTER}" ]]; then
     CHARACTER_TOOL_DIR="${OUTPUT_APP}/Contents/MacOS/tools"
     CHARACTER_NOTICE_DIR="${OUTPUT_APP}/Contents/Resources/ThirdParty"
@@ -629,6 +642,16 @@ if [[ -n "${CHARACTER_IMPORTER}" ]]; then
     ditto "${PROJECT_ROOT}/third_party/gltf_validator/NOTICES.txt" \
         "${CHARACTER_NOTICE_DIR}/GltfValidator-NOTICES.txt" ||
         die "Failed to copy the Khronos glTF Validator notices."
+    CHARACTER_LOD_BUNDLED="${CHARACTER_TOOL_DIR}/mdkr-character-lod"
+    ditto "${CHARACTER_LOD_TOOL}" "${CHARACTER_LOD_BUNDLED}" ||
+        die "Failed to copy the Character Workshop LOD helper."
+    chmod +x "${CHARACTER_LOD_BUNDLED}"
+    ditto "${PROJECT_ROOT}/third_party/meshoptimizer/LICENSE.md" \
+        "${CHARACTER_NOTICE_DIR}/Meshoptimizer-LICENSE.md" ||
+        die "Failed to copy the meshoptimizer license."
+    ditto "${PROJECT_ROOT}/third_party/meshoptimizer/README.md" \
+        "${CHARACTER_NOTICE_DIR}/Meshoptimizer-README.md" ||
+        die "Failed to copy the meshoptimizer provenance notice."
 fi
 
 ICONSET_DIR="${BUILD_DIR}/AppIcon.iconset"
@@ -759,6 +782,11 @@ echo "APPL????" > "${OUTPUT_APP}/Contents/PkgInfo"
 # xattrs, sign nested code first, then seal the outer bundle. A later Developer
 # ID release signature replaces these ad-hoc signatures inside-out.
 xattr -cr "${OUTPUT_APP}"
+if [[ -n "${CHARACTER_LOD_BUNDLED}" ]]; then
+    info "Applying ad-hoc integrity signature to Character Workshop LOD helper..."
+    codesign --force --sign - "${CHARACTER_LOD_BUNDLED}" ||
+        die "Failed to ad-hoc sign the Character Workshop LOD helper."
+fi
 if [[ -n "${GLTF_VALIDATOR_BUNDLED}" ]]; then
     info "Applying ad-hoc integrity signature to Khronos glTF Validator..."
     codesign --force --sign - "${GLTF_VALIDATOR_BUNDLED}" ||
@@ -856,6 +884,9 @@ if [[ -n "${SDL2_BUNDLED_PATH}" ]]; then
 fi
 if [[ -n "${CHARACTER_IMPORTER_BUNDLED}" ]]; then
     info "Char importer : ${CHARACTER_IMPORTER_BUNDLED}"
+fi
+if [[ -n "${CHARACTER_LOD_BUNDLED}" ]]; then
+    info "LOD helper    : ${CHARACTER_LOD_BUNDLED}"
 fi
 info "Verify assets : ${PROJECT_ROOT}/macos/Scripts/verify_asset_free.sh '${OUTPUT_APP}'"
 info "CLI/CI use    : '${ENGINE_PATH}' --rom ROM --headless-frames N   (any argument bypasses the launcher)"

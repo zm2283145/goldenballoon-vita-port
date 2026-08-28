@@ -394,6 +394,7 @@ jobs:
             --character-importer-manifest build-tools/character_importer.manifest.json \
             --gltf-validator build-tools/validators/gltf_validator \
             --gltf-validator-manifest build-tools/validators/gltf_validator.manifest.json \
+            --character-lod-tool build/tools/mdkr-character-lod \
             --version "${{ needs.validate.outputs.version }}"
       - name: Qualify extracted tar/AppRun from an unrelated directory
         env:
@@ -621,7 +622,7 @@ jobs:
           # GPU, window or network, so the documented GPU limitation that
           # keeps a launcher gate off this runner does not apply to them.
           cmake --build build --target mdkr64 mdkr_memory_allocator_test \
-            mdkr_native_party_bringup_test mdkr_native_party_host_test \
+            mdkr-character-lod mdkr_native_party_bringup_test mdkr_native_party_host_test \
             mdkr_native_party_qr_test mdkr_native_party_sas_test -j
       - name: Build and attest the self-contained Character Workshop toolchain
         run: |
@@ -728,6 +729,7 @@ jobs:
             --character-importer-manifest build-tools/character_importer.exe.manifest.json \
             --gltf-validator build-tools/validators/gltf_validator.exe \
             --gltf-validator-manifest build-tools/validators/gltf_validator.exe.manifest.json \
+            --character-lod-tool build/tools/mdkr-character-lod.exe \
             --version "${{ needs.validate.outputs.version }}"
       - name: Verify extracted package startup from an unrelated directory
         env:

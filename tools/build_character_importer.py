@@ -32,6 +32,7 @@ SOURCE_MODULES = (
     "tools/gltf_validator_adapter.py",
     "tools/character_asset_compiler.py",
     "tools/character_asset_probe.py",
+    "tools/character_lod_builder.py",
     "tools/character_manifest_wizard.py",
     "tools/character_source_adapter.py",
     "tools/collada_to_glb.py",

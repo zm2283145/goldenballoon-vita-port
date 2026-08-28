@@ -550,9 +550,14 @@ They are assembly profiles, not a vague “detail” slider:
 - show estimated shared asset memory and per-player pose/palette memory;
 - run a ten-racer/four-viewport stress scene and record actual GPU/CPU timing.
 
-The current runtime LOD preference is useful only for packages with multiple
-authored LODs. The launcher must say “one LOD; re-export or generate LODs” when
-that control cannot improve performance.
+The runtime LOD preference is useful only for packages with multiple levels.
+For a one-level raw source, the launcher offers Quality, Balanced, and
+Four-player profiles that exclusively create a separate, validated,
+provenance-recorded `MSFT_lod` GLB and resumable draft. It never overwrites the
+source or authored LODs, explains that target ratios may retain more geometry,
+and reopens fingerprint and transform review before build. An installed
+one-level package routes the author back to its raw source draft rather than
+pretending a runtime slider can manufacture geometry.
 
 The executable first assembly layer exposes the four targets as named starting
 points over two honest inputs: local-player layout and a bounded shift of the
@@ -699,8 +704,8 @@ stories. Each has an owner in the audit above and must retain its stated gate:
    remains intentionally mandatory.
 3. Localization-aware game-font shaping is still needed beyond the disclosed
    deterministic unsupported-codepoint fallback.
-4. A maintained device-profile corpus and optional offline simplification
-   workflow remain performance follow-up. Projected-height thresholds and
+4. A maintained device-profile corpus remains performance follow-up. Recorded,
+   optional offline simplification and projected-height thresholds with
    per-view hysteresis are complete; their explicit legacy-distance fallback
    remains part of the supported fail-visible contract.
 5. Signed clean-machine/upgrade/offline observation and online visual-package
@@ -725,7 +730,7 @@ stories. Each has an owner in the audit above and must retain its stated gate:
    transparent triangles inside one primitive and transparency ordering against
    independent vehicle/world render queues still require visual review.
    KTX2/BasisU intake and capability-selected transcode are implemented with a
-   portable RGBA8 fallback; optional recorded simplification is absent; and
+   portable RGBA8 fallback; recorded offline simplification is implemented; and
    expanded hair/clearcoat/subsurface/morph capabilities need new authenticated
    format contracts and measured fallbacks.
 8. Modern-character rendering is currently WebGPU-only; OpenGL deliberately
@@ -884,9 +889,9 @@ results and qualified pinned baselines. Changing only LOD policy makes existing
 timing evidence stale without invalidating vehicle-fit review. It refuses
 cross-build, cross-result-contract, cross-presentation, cross-resolution or
 cross-device deltas and preserves malformed storage byte-for-byte.
-Further bespoke scene-owned conditions, a maintained device profile corpus,
-and optional recorded offline simplification remain. The projected-height
-transition visualization and per-view runtime hysteresis are executable.
+Further bespoke scene-owned conditions and a maintained device profile corpus
+remain. Recorded offline simplification, projected-height transition
+visualization, and per-view runtime hysteresis are executable.
 
 Select and vehicle fit approval use the source-and-fit-bound v7 expanded-scene
 contract. Select requires its current three-state room battery. Each vehicle

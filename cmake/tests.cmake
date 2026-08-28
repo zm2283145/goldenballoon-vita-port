@@ -454,6 +454,12 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME high_fidelity_character
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_high_fidelity_character.py)
+    if(MDKR_CHARACTER_LOD_TOOLS)
+        add_test(NAME character_lod_builder
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_character_lod_builder.py
+                    --helper $<TARGET_FILE:mdkr-character-lod>)
+    endif()
 
     # When a pack PNG is refused, relative to when it is decoded. A pack is a
     # file a player downloaded from a stranger, so the cache cap is only a

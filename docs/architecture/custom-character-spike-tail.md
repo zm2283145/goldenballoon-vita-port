@@ -411,10 +411,17 @@ external image editor.
    logical viewport height with thresholds, 8% hysteresis, per-view state,
    sparse authored-level fallback, and deterministic split-screen behavior;
    invalid projection evidence retains an explicit distance fallback.
-5. **Offline simplification:** integrate a deterministic meshoptimizer stage as
-   an optional recorded source revision. Preserve seams, skin weights, material
-   boundaries, sockets, and author-provided LODs; show comparison/error evidence
-   before replacement.
+5. **Offline simplification (implemented):** raw authoring can create a separate,
+   deterministic three-level `MSFT_lod` GLB through the pinned meshoptimizer 1.2
+   helper. The bounded pipe-only helper receives no paths or ROM bytes; the
+   manager binds generation to the inspected source digest, validates both
+   inputs and outputs, refuses overwrite and existing authored LODs, preserves
+   material boundaries and exact surviving vertex attributes, records profile,
+   ratios, errors, algorithm commit, and per-level results, then opens the copy
+   as an independently resumable draft. Identity, rights, donor, vehicles, and
+   exact-name mappings carry forward while fingerprint and transform acceptance
+   deliberately reopen. Source files, source drafts, packages, and installs are
+   never replaced.
 6. **Material expansion:** add IBL/calibrated tone mapping, then bounded optional
    hair/clearcoat/subsurface profiles. Every feature needs an explicit fallback
    and device cost. Add morph targets and secondary skin influences only through
@@ -557,8 +564,8 @@ The immediate remaining order is therefore:
    camera, viewport/scissor, and output-grid registration rather than inferring
    alignment;
 3. execute the remaining optional M6 renderer tail (within-primitive/global
-   transparency qualification, compressed textures, recorded simplification,
-   and expanded material profiles); custom world-shadow casting/receiving,
+   transparency qualification and expanded material profiles); compressed
+   textures, recorded simplification, custom world-shadow casting/receiving,
    per-view primitive ordering, and projected LOD are complete;
 4. complete signed clean-machine/upgrade observation plus online contracts;
    the data-only adapter contract, recipient compatibility/diff review,

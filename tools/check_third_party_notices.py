@@ -89,6 +89,15 @@ def main() -> int:
             "4d6fc70eaf62ad0558e63e8d97eb9766118327a6",
             "MDKR_BASISU_LOCAL_CACHE", "No encoder",
         ),
+        "third_party/meshoptimizer/LICENSE.md": (
+            "Copyright (c) 2016-2026 Arseny Kapoulkine",
+            "Permission is hereby granted, free of charge",
+        ),
+        "third_party/meshoptimizer/README.md": (
+            "meshoptimizer v1.2",
+            "9d9890c73011d75920af614485296d1e03e95448",
+            "MDKR_MESHOPTIMIZER_LOCAL_CACHE",
+        ),
         "cmake/patches/libdatachannel-windows-mbedtls-verify.patch": (
             "defined(_WIN32) && !USE_MBEDTLS",
             "TLS certificate verification with root CA is not supported on Windows",
@@ -146,6 +155,8 @@ def main() -> int:
             "2c1a7fa704df8f3a606f6fc010b8b5aaebf403f3aeec339a12048f1ba7331a0b",
         "third_party/basisu/README.md":
             "d15b94b7cb320ed39156c8ddf7d8e814185c6d0de51005113f1d18784785975c",
+        "third_party/meshoptimizer/LICENSE.md":
+            "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26",
         "cmake/patches/libdatachannel-windows-mbedtls-verify.patch":
             "b47d81ee765b2eed51f75b9cb599522fdd6f9eda7511b025214c63cc4c3336a7",
     }
@@ -213,6 +224,8 @@ def main() -> int:
             "tools/character_importer_build_requirements.txt",
             "third_party/gltf_validator/",
             "third_party/basisu/",
+            "third_party/meshoptimizer/",
+            "9d9890c73011d75920af614485296d1e03e95448",
             "4d6fc70eaf62ad0558e63e8d97eb9766118327a6",
             "Zstd-LICENSE.txt",
             "KhronosGroup/glTF-Validator",
@@ -246,6 +259,8 @@ def main() -> int:
             "third_party/gltf_validator/",
             "third_party/basisu/",
             "Basis Universal KTX2",
+            "meshoptimizer v1.2",
+            "third_party/meshoptimizer/",
         ):
             if needle not in notice_text:
                 problems.append(f"NOTICE.md is missing expected text: {needle!r}")

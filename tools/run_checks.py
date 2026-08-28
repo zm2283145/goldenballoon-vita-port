@@ -744,7 +744,8 @@ CHECKS = (
     Check("character_raw_intake_ui", "check_character_raw_intake_ui.py", "native",
           "ROM-free review-first data-only adapter handoff, multi-draft GLB "
           "intake, same-source branching, source-bound "
-          "mapping restore, close/resume navigation, exact switch/delete/install "
+          "mapping restore, accessible no-overwrite LOD-copy authoring, "
+          "close/resume navigation, exact switch/delete/install "
           "cleanup, legacy migration, source-byte "
           "purity, corruption refusal, keyboard speech, and 200% compact "
           "Workshop rendering"),

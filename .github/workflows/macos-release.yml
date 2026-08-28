@@ -186,7 +186,8 @@ jobs:
             --character-importer build-tools/character_importer \
             --character-importer-manifest build-tools/character_importer.manifest.json \
             --gltf-validator build-tools/validators/gltf_validator \
-            --gltf-validator-manifest build-tools/validators/gltf_validator.manifest.json
+            --gltf-validator-manifest build-tools/validators/gltf_validator.manifest.json \
+            --character-lod-tool build-macos-release/tools/mdkr-character-lod
           ./macos/Scripts/verify_asset_free.sh dist/mdkr64.app
           ./macos/Scripts/verify_gatekeeper_bundle.sh dist/mdkr64.app
           ./macos/Scripts/verify_unsigned_release.sh \
