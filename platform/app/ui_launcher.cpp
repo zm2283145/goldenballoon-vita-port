@@ -95,6 +95,7 @@ ImVec2 g_smokePanelScrollMin;
 ImVec2 g_smokePanelScrollMax;
 float g_smokePanelScrollY = 0.0f;
 bool g_smokePanelScrollValid = false;
+bool g_smokePrimaryActionLabelContained = true;
 
 void fillBootConfig(LauncherState &state, MdkrBootConfig &boot) {
     boot = MdkrBootConfig{};
@@ -209,18 +210,31 @@ void preparePlay(LauncherState &state) {
 }
 
 void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size,
-                               bool workshopWithoutRom) {
+                               bool workshopActive) {
     const bool ready = !state.romPath.empty() && state.romInfo.valid;
-    const bool busy = state.romPlayValidationPending ||
-                      (!ready && state.romValidationPending);
+    const bool busy = !workshopActive &&
+                      (state.romPlayValidationPending ||
+                       (!ready && state.romValidationPending));
+    const float actionWidth = size.x > 0.0f
+        ? size.x : ImGui::GetContentRegionAvail().x;
     const char *label = "Play";
-    if (busy) {
+    if (workshopActive) {
+        const char *fullLabel = "Browse character source…";
+        const float fullLabelWidth = ImGui::CalcTextSize(fullLabel).x +
+            ImGui::GetStyle().FramePadding.x * 2.0f;
+        label = actionWidth >= fullLabelWidth
+            ? fullLabel : "Import character…";
+    } else if (busy) {
         label = "Checking ROM…";
     } else if (!ready) {
-        label = workshopWithoutRom ? "Add ROM to test" : "Choose ROM";
+        label = "Choose ROM";
     } else if (Settings_restartPending()) {
         label = "Play with Changes";
     }
+
+    g_smokePrimaryActionLabelContained =
+        ImGui::CalcTextSize(label).x +
+            ImGui::GetStyle().FramePadding.x * 2.0f <= actionWidth + 0.5f;
 
     if (busy) ImGui::BeginDisabled();
     const bool pressed = ui::BrandPrimaryButton(label, size);
@@ -233,13 +247,15 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size,
     // during a check without a special case.
     ui::SpeakFocusedItem(
         label, nullptr,
-        ready ? "Starts the game with your current ROM and settings."
-              : workshopWithoutRom
-              ? "Choose your base game ROM only when you are ready to run exact game tests or play. Character authoring remains available now."
+        workshopActive
+              ? "Choose a local character package, model, adapter result, or authoring source. This does not require a ROM and nothing installs before validation and review."
+              : ready ? "Starts the game with your current ROM and settings."
               : "Opens a file picker to choose the game ROM before you can play.");
     if (!pressed) return;
 
-    if (ready) {
+    if (workshopActive) {
+        (void)Settings_chooseCharacterSource();
+    } else if (ready) {
         preparePlay(state);
     } else {
         // A disabled-looking dead Play button gave first-run players no useful
@@ -505,7 +521,8 @@ void drawNavigation(int &activePanel, LauncherState &state,
     ui::Gap(ui::kGapS);
 
     drawPrimaryLauncherAction(
-        state, ImVec2(-1, ui::kBtnPrimary().y), workshopWithoutRom);
+        state, ImVec2(-1, ui::kBtnPrimary().y),
+        activePanel == kLauncherPanelCharacterWorkshop);
 
     if (ImGui::Button("Quit", ui::kBtnFullWidth())) {
         action.type = LauncherActionType::Quit;
@@ -662,7 +679,8 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
         : 190.0f * scale;
     ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - playWidth);
     drawPrimaryLauncherAction(
-        state, ImVec2(playWidth, ui::kBtnPrimary().y), workshopWithoutRom);
+        state, ImVec2(playWidth, ui::kBtnPrimary().y),
+        activePanel == kLauncherPanelCharacterWorkshop);
     playMin = ImGui::GetItemRectMin();
     playMax = ImGui::GetItemRectMax();
     // The primary action is the header's last and lowest item in both branches,
@@ -722,10 +740,12 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
             const bool contentSeparated = contentStartY >= navBottomY;
             std::fprintf(stderr,
                          "[app-ui] compact-layout dense=1 contained=%d "
-                         "overlap=%d contentSeparated=%d\n",
+                         "overlap=%d contentSeparated=%d "
+                         "primaryLabelContained=%d\n",
                          denseControlsContained ? 1 : 0,
                          denseOverlap ? 1 : 0,
-                         contentSeparated ? 1 : 0);
+                         contentSeparated ? 1 : 0,
+                         g_smokePrimaryActionLabelContained ? 1 : 0);
             tracedDenseLayout = true;
         }
     }
@@ -1054,6 +1074,29 @@ void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out) {
         "Character Workshop",
         "Import, author, test, and package local character presentation. "
         "Built-in donor profiles remain authoritative for gameplay.");
+    const bool romReady = !s.romPath.empty() && s.romInfo.valid;
+    if (!romReady && !s.romValidationPending) {
+        ui::TextSubtleWrapped(
+            "A ROM is optional while you import and author. Add your own base-game ROM only when you want exact vehicle/scene previews, final tests, or play.");
+        if (ImGui::SmallButton("Add ROM for exact tests…")) {
+            if (RomPanel_chooseRom(s)) {
+                Launcher_requestTab(
+                    s, kLauncherPanelPlay, kLauncherTabPlayer);
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Add ROM for exact character tests", nullptr,
+            "Optionally chooses your base-game ROM and opens its validation page. Your character sources and drafts remain unchanged.");
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            static bool tracedWorkshopEntryHierarchy = false;
+            if (!tracedWorkshopEntryHierarchy) {
+                std::fprintf(
+                    stderr,
+                    "[app-ui] active-panel=Character Workshop workshop-primary=source-import rom=optional\n");
+                tracedWorkshopEntryHierarchy = true;
+            }
+        }
+    }
     Settings_setDonorGameplayProfiles(
         &s.romInfo.donor_profiles, s.romInfo.donor_profiles_message);
     Settings_drawCharacterWorkshop(s.hostWindow, /*compact=*/false);

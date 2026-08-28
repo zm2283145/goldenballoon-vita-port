@@ -1865,7 +1865,7 @@ if(NOT EMSCRIPTEN)
                     WORKING_DIRECTORY "${MDKR_APP_TEST_ROOT}/workshop"
                     ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=6;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_character_workshop.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_PANEL=Character Workshop;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/workshop/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/workshop/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/workshop/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
-                    PASS_REGULAR_EXPRESSION "active-panel=Character Workshop"
+                    PASS_REGULAR_EXPRESSION "active-panel=Character Workshop workshop-primary=source-import rom=optional"
                     TIMEOUT 180)
                 add_test(NAME app_character_workshop_content
                     COMMAND ${Python3_EXECUTABLE}
@@ -1885,7 +1885,7 @@ if(NOT EMSCRIPTEN)
                     WORKING_DIRECTORY "${MDKR_APP_TEST_ROOT}/workshop-min"
                     ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=10;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_character_workshop_minimum.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Character Workshop;MDKR_APP_UI_TRACE=1;MDKR_APP_SMOKE_TOUCH_SCROLL=1;MDKR_APP_SMOKE_TOUCH_TOKEN=mdkr64-app-touch-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/workshop-min/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/workshop-min/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/workshop-min/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
-                    PASS_REGULAR_EXPRESSION "compact-layout dense=1 contained=1 overlap=0 contentSeparated=1"
+                    PASS_REGULAR_EXPRESSION "compact-layout dense=1 contained=1 overlap=0 contentSeparated=1 primaryLabelContained=1"
                     TIMEOUT 180)
                 add_test(NAME app_character_workshop_minimum_content
                     COMMAND ${Python3_EXECUTABLE}

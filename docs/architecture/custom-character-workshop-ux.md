@@ -86,6 +86,14 @@ inspectable when it cannot be activated. Disabled actions always say why.
 
 The import flow is a resumable sequence, not one blocking dialog:
 
+On the Workshop destination, the launcher's persistent gold action is the
+source picker even when a ROM is linked or still validating. The optional ROM
+action is a quieter, explicitly test-only control inside the Workshop. At
+narrow/200% layouts the primary label contracts to “Import character…” only
+when the full label would clip; a rendered geometry trace proves the chosen
+label remains inside its button. This keeps “no second ROM required” true in
+the interaction hierarchy, not merely in explanatory prose.
+
 1. **Choose source** — `.mdkrchar` preferred; GLB convenience import creates a
    draft and asks for provenance before it can build.
 2. **Inventory** — show package author, declared license, source URL, digest,
@@ -767,7 +775,12 @@ launcher destination. Wide layouts use independently scrollable library and
 editor surfaces; narrow layouts preserve the same tools in one column. Eight
 persisted tabs, six named readiness rows, distinct preview/play verdicts, and a
 pure tested best-next-action resolver preserve the safe importer/runtime
-boundary. An explicit no-overwrite DAE/ZIP-to-GLB handoff covers ordinary
+boundary. The destination's persistent primary action now opens the exact same
+bounded source picker as the library rail; optional ROM setup is visibly
+secondary and never blocks source authoring while ROM validation runs. The
+source picker retains ordinary explicit validation rather than auto-installing,
+and its compact label has a rendered containment gate. An explicit
+no-overwrite DAE/ZIP-to-GLB handoff covers ordinary
 download archives before raw authoring. Authenticated exact-source and
 current-compiler portable export sit
 beside revision restore; current-source rebuild uses the same optimistic,

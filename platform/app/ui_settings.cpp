@@ -24903,13 +24903,7 @@ void drawCharacterImportControls(bool rail) {
                                    760.0f * AppTheme::uiScale();
     if (filedialog::isAvailable()) {
         if (ImGui::Button("Browse for source...")) {
-            std::string picked;
-            if (filedialog::openCharacterSource(picked)) {
-                std::snprintf(g_characterImportPath,
-                              sizeof(g_characterImportPath),
-                              "%s",
-                              picked.c_str());
-            }
+            (void)Settings_chooseCharacterSource();
         }
         ui::SpeakFocusedItem(
             "Browse for character source",
@@ -26017,6 +26011,29 @@ bool Settings_importCharacterPackage(const char *path) {
         "That file type is not a supported character source; nothing changed.",
         AppTheme::bad());
     return false;
+}
+
+bool Settings_chooseCharacterSource() {
+    if (!filedialog::isAvailable()) {
+        setStatus(
+            "A native source picker is unavailable on this desktop. Type or paste a path in the Workshop source field, or drop the source anywhere on the launcher.",
+            AppTheme::accent());
+        return false;
+    }
+    std::string picked;
+    if (!filedialog::openCharacterSource(picked)) return false;
+    if (picked.empty() || picked.size() >= sizeof(g_characterImportPath)) {
+        setStatus(
+            "The selected source path is too long for the bounded Workshop input. No source bytes were read or changed; choose the source from a shorter path.",
+            AppTheme::bad());
+        return false;
+    }
+    std::snprintf(g_characterImportPath, sizeof(g_characterImportPath),
+                  "%s", picked.c_str());
+    setStatus(
+        "Character source selected. Review the path, then validate it; nothing has been imported or installed.",
+        AppTheme::good());
+    return true;
 }
 
 bool Settings_drawCharacterWorkshop(SDL_Window *window, bool compact) {

@@ -97,6 +97,13 @@ void Settings_setDonorGameplayProfiles(
 // explicit commit boundary.
 bool Settings_importCharacterPackage(const char *path);
 
+// Open the same bounded native source picker used by the Workshop import
+// rail and retain the selected path for ordinary explicit validation/review.
+// This lets the launcher's contextual primary action lead directly into the
+// ROM-free authoring journey without duplicating picker filters or bypassing
+// any import gate. False means unavailable or cancelled.
+bool Settings_chooseCharacterSource();
+
 // Consume the one-shot exact-game preview requested by the launcher Workshop.
 // The in-game compact Settings view never produces one: starting another engine
 // inside a running engine would violate the host/session lifetime contract.
