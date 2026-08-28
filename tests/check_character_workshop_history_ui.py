@@ -288,7 +288,10 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
             r"lodBands=(\d+) inspectionHeight=12\.0 inspectionLod=0 "
             r"monotonic=([01]) dramatic=([01]) "
             r"importCeiling=unchanged history=performance "
-            r"projectedPolicy=1 hysteresis=8% fallback=distance",
+            r"projectedPolicy=1 hysteresis=8% fallback=distance "
+            r"blendOrder=posed-centroid-per-view "
+            r"transparentSelfSort=visual-review "
+            r"transparentSceneQueue=visual-review",
             process.stdout,
         )
         if marker not in process.stdout or transition is None or \

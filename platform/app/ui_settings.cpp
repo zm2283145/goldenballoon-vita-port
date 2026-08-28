@@ -10163,9 +10163,9 @@ void drawCharacterPerformanceAssembly(
         "Explains which high-fidelity model features are executable and which still require source authoring or future renderer work.");
     if (fidelityLimitsOpen) {
         ui::TextSubtleWrapped(
-            "Available now: WebGPU GPU skinning, 32-bit indexed high-detail geometry, PBR-style embedded PNG materials with generated mipmaps, authored animation, and up to four authored LODs. Import limits are safety ceilings, not performance recommendations.");
+            "Available now: WebGPU GPU skinning, 32-bit indexed high-detail geometry, PBR-style embedded PNG materials with generated mipmaps, authored animation, up to four authored LODs, and deterministic per-view primitive ordering. OPAQUE and MASK parts draw first; BLEND parts sort back-to-front from their live posed centroids. Import limits are safety ceilings, not performance recommendations.");
         ui::TextSubtleWrapped(
-            "Not qualification-ready yet: custom-character geometry does not cast the world's mapped shadows; BLEND material parts render in authored primitive order rather than per-frame depth order; KTX2/BasisU texture transcode and automatic offline mesh simplification are not implemented. Camera-aware LOD is available for authored levels. Use MASK materials for hair/fur cutouts, author LODs in the source, and prove the result in every exact context.");
+            "Still requires explicit visual review: transparent triangles that overlap or intersect inside one primitive, and transparency ordering against independently rendered vehicle or world surfaces. Custom-character geometry does not yet cast the world's mapped shadows; KTX2/BasisU texture transcode and automatic offline mesh simplification are not implemented. Camera-aware LOD is available for authored levels. Prefer MASK for hair/fur cutouts, separate large transparent layers into primitives, author LODs in the source, and prove the result in every exact context.");
         ImGui::TreePop();
     }
     const bool hasMultipleLods = entry->stats.lod_levels > 1u;
@@ -10515,12 +10515,12 @@ void drawCharacterPerformanceAssembly(
             entry->lod_primitives[lod]);
     }
     ui::TextSubtleWrapped(
-        "Near-view selection uses the same projected-height thresholds, package bias, local bias, clamping, and sparse-LOD fallback as the runtime. Live cameras add an 8%% guard band to prevent transition chatter; invalid projection evidence explicitly falls back to the legacy distance policy. These are exact structural counts, not a frame-time prediction: materials, transparency, overdraw, skinning, visibility, GPU, resolution, and other racers still require an exact-context test.");
+        "Near-view selection uses the same projected-height thresholds, package bias, local bias, clamping, and sparse-LOD fallback as the runtime. Live cameras add an 8%% guard band to prevent transition chatter. Valid camera evidence also orders BLEND primitives by posed centroid; if it is unavailable, LOD falls back to distance and the complete BLEND subset keeps authored order, so rerun the exact context. These are exact structural counts, not a frame-time prediction: materials, transparency, overdraw, skinning, visibility, GPU, resolution, and other racers still require an exact-context test.");
     if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
         g_characterPerformanceTracePackages.insert(entry->id).second) {
         std::fprintf(
             stderr,
-            "[app-ui] character-performance-targets package=%s targets=quality,balanced,performance,four-player custom=1 sourceBias=%.1f localBias=%.1f players=%d selectedLod=%u exactAssembly=1 lodBands=%zu inspectionHeight=%.1f inspectionLod=%u monotonic=%d dramatic=%d importCeiling=unchanged history=performance projectedPolicy=1 hysteresis=8%% fallback=distance\n",
+            "[app-ui] character-performance-targets package=%s targets=quality,balanced,performance,four-player custom=1 sourceBias=%.1f localBias=%.1f players=%d selectedLod=%u exactAssembly=1 lodBands=%zu inspectionHeight=%.1f inspectionLod=%u monotonic=%d dramatic=%d importCeiling=unchanged history=performance projectedPolicy=1 hysteresis=8%% fallback=distance blendOrder=posed-centroid-per-view transparentSelfSort=visual-review transparentSceneQueue=visual-review\n",
             entry->id, static_cast<double>(entry->source_lod_bias),
             static_cast<double>(tuning.lodBias), players, assemblyLod,
             lodBandCount, static_cast<double>(inspectionHeight),

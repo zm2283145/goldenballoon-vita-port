@@ -1,5 +1,6 @@
 #include "character_workshop_model.h"
 #include "modern_character_lod.h"
+#include "modern_character_sort.h"
 
 #include <cassert>
 #include <cmath>
@@ -46,6 +47,39 @@ void testEmptyCharacter() {
            CharacterWorkshopReadinessStatus::Unavailable);
     assert(row(readiness, CharacterWorkshopReadinessId::VehicleFit).status ==
            CharacterWorkshopReadinessStatus::Missing);
+}
+
+void testTransparentPrimitiveOrdering() {
+    const uint32_t alpha[] = {2u, 0u, 1u, 2u, 2u};
+    const float depth[] = {10.0f, 0.0f, 0.0f, 20.0f, 20.0f};
+    uint32_t rows[5] = {};
+    size_t opaque = 0u;
+    size_t blend = 0u;
+    int exact = 0;
+    assert(mdkr_modern_character_order_primitive_rows(
+        alpha, depth, 5u, rows, &opaque, &blend, &exact));
+    const uint32_t expected[] = {1u, 2u, 3u, 4u, 0u};
+    assert(std::memcmp(rows, expected, sizeof(expected)) == 0);
+    assert(opaque == 2u && blend == 3u && exact == 1);
+
+    const float incompleteDepth[] = {
+        10.0f, 0.0f, 0.0f, NAN, 20.0f};
+    assert(mdkr_modern_character_order_primitive_rows(
+        alpha, incompleteDepth, 5u, rows, &opaque, &blend, &exact));
+    const uint32_t fallback[] = {1u, 2u, 0u, 3u, 4u};
+    assert(std::memcmp(rows, fallback, sizeof(fallback)) == 0);
+    assert(opaque == 2u && blend == 3u && exact == 0);
+
+    const uint32_t opaqueOnly[] = {0u, 1u};
+    const float unusedDepth[] = {NAN, NAN};
+    assert(mdkr_modern_character_order_primitive_rows(
+        opaqueOnly, unusedDepth, 2u, rows, &opaque, &blend, &exact));
+    assert(rows[0] == 0u && rows[1] == 1u);
+    assert(opaque == 2u && blend == 0u && exact == 1);
+
+    const uint32_t invalidAlpha[] = {3u};
+    assert(!mdkr_modern_character_order_primitive_rows(
+        invalidAlpha, unusedDepth, 1u, rows, nullptr, nullptr, nullptr));
 }
 
 void testReadinessOrdering() {
@@ -665,6 +699,7 @@ void testStructuralRigInference() {
 
 int main() {
     testEmptyCharacter();
+    testTransparentPrimitiveOrdering();
     testReadinessOrdering();
     testVehicleReviewMaskAndRequiredPerformance();
     testAuthoredMotionDoesNotRequireOptionalRig();

@@ -8,6 +8,7 @@
 #include "modern_character_donor.h"
 #include "modern_character_identity.h"
 #include "modern_character_lod.h"
+#include "modern_character_sort.h"
 
 #include <errno.h>
 #include <math.h>
@@ -401,6 +402,59 @@ static int projected_calibration_height(
     *height_pixels = (maximum - minimum) *
         view->logical_viewport_height * 0.5f;
     return isfinite(*height_pixels) && *height_pixels >= 0.0f;
+}
+
+/* Return the perspective clip-W of a primitive's current posed centroid. The
+ * centroid comes from activation-time linear-skinning moments, so this work is
+ * proportional to joint count rather than vertex count. */
+static int primitive_camera_depth(
+    MdkrModernRuntimePool *pool, MdkrModernRuntimePlayer *slot,
+    uint32_t primitive_index, const float anchored_transform[16],
+    const MdkrModernCharacterLodView *view, float *depth) {
+    const struct GfxModernPrimitive *gpu_primitive;
+    const float *node_world;
+    float center[3];
+    float model[16];
+    float world_center[3];
+    float clip_w;
+    unsigned component;
+    uint32_t bone_count = 0u;
+    if (pool == NULL || slot == NULL || anchored_transform == NULL ||
+        view == NULL || depth == NULL || view->projection_generation == 0u ||
+        primitive_index >= pool->render.gpu.primitive_count) return 0;
+    for (component = 0u; component < 16u; ++component) {
+        if (!isfinite(view->object_mvp[component])) return 0;
+    }
+    gpu_primitive = &pool->render.gpu.primitives[primitive_index];
+    node_world = mdkr_modern_pose_node_matrix(
+        &slot->pose, gpu_primitive->node, 0);
+    if (node_world == NULL) return 0;
+    if (gpu_primitive->skin >= 0) {
+        MdkrModernSkin skin;
+        char ignored_error[128];
+        if (!mdkr_modern_character_asset_skin(
+                &pool->asset, (uint32_t)gpu_primitive->skin, &skin) ||
+            skin.joint_count > MODERN_RUNTIME_MAX_BONES ||
+            !mdkr_modern_pose_skin_palette(
+                &slot->pose, (uint32_t)gpu_primitive->skin,
+                gpu_primitive->node, 0, slot->palette,
+                MODERN_RUNTIME_MAX_BONES, ignored_error,
+                sizeof(ignored_error))) return 0;
+        bone_count = skin.joint_count;
+    }
+    if (!mdkr_modern_render_primitive_sort_center(
+            &pool->render, primitive_index,
+            bone_count != 0u ? slot->palette : NULL, bone_count, center)) {
+        return 0;
+    }
+    matrix_multiply(anchored_transform, node_world, model);
+    matrix_transform_point(model, center, world_center);
+    clip_w = view->object_mvp[3] * world_center[0] +
+        view->object_mvp[7] * world_center[1] +
+        view->object_mvp[11] * world_center[2] + view->object_mvp[15];
+    if (!isfinite(clip_w) || clip_w <= 1.0e-9f) return 0;
+    *depth = clip_w;
+    return 1;
 }
 
 static int calibration_fit_diagnostics(
@@ -1951,6 +2005,14 @@ int mdkr_modern_character_emit(int player, int view,
     uint32_t authored_lod_mask = 0u;
     uint32_t lod_state;
     uint32_t lod_state_bit;
+    uint32_t assembly_primitive[MDKR_MODERN_CHARACTER_MAX_PRIMITIVES];
+    uint32_t assembly_alpha_mode[MDKR_MODERN_CHARACTER_MAX_PRIMITIVES];
+    uint32_t ordered_rows[MDKR_MODERN_CHARACTER_MAX_PRIMITIVES];
+    float assembly_camera_depth[MDKR_MODERN_CHARACTER_MAX_PRIMITIVES];
+    size_t assembly_count = 0u;
+    size_t opaque_masked_count = 0u;
+    size_t blend_count = 0u;
+    int blend_sort_exact = 1;
     MdkrModernCharacterLodDiagnostics lod_diagnostics;
     float projected_height_pixels = NAN;
     int used_projected_height = 0;
@@ -2128,6 +2190,46 @@ int mdkr_modern_character_emit(int player, int view,
                   "character LOD policy or authored levels are invalid");
         return 0;
     }
+    for (primitive_index = 0u;
+         primitive_index < pool->render.gpu.primitive_count;
+         ++primitive_index) {
+        const struct GfxModernPrimitive *primitive =
+            &pool->render.gpu.primitives[primitive_index];
+        uint32_t alpha_mode;
+        if (primitive->lod != selected_lod) continue;
+        if (assembly_count >= MDKR_MODERN_CHARACTER_MAX_PRIMITIVES ||
+            primitive->material >= pool->render.gpu.material_count) {
+            set_error(error, error_size,
+                      "selected character LOD assembly is invalid");
+            return 0;
+        }
+        alpha_mode = pool->render.gpu.materials[primitive->material].flags & 3u;
+        assembly_primitive[assembly_count] = primitive_index;
+        assembly_alpha_mode[assembly_count] = alpha_mode;
+        assembly_camera_depth[assembly_count] = NAN;
+        if (alpha_mode == 2u) {
+            (void)primitive_camera_depth(
+                pool, slot, primitive_index, anchored_transform, lod_view,
+                &assembly_camera_depth[assembly_count]);
+        }
+        ++assembly_count;
+    }
+    if (!mdkr_modern_character_order_primitive_rows(
+            assembly_alpha_mode, assembly_camera_depth, assembly_count,
+            ordered_rows, &opaque_masked_count, &blend_count,
+            &blend_sort_exact) || assembly_count == 0u) {
+        set_error(error, error_size,
+                  "selected character LOD ordering is invalid");
+        return 0;
+    }
+    lod_diagnostics.opaque_masked_primitives =
+        (uint32_t)opaque_masked_count;
+    lod_diagnostics.blend_primitives = (uint32_t)blend_count;
+    lod_diagnostics.blend_sort_mode = blend_count == 0u
+        ? MDKR_MODERN_CHARACTER_BLEND_SORT_NONE
+        : blend_sort_exact
+            ? MDKR_MODERN_CHARACTER_BLEND_SORT_POSED_CENTROID
+            : MDKR_MODERN_CHARACTER_BLEND_SORT_AUTHORED_FALLBACK;
     if (has_calibration) {
         fit_diagnostics_ready = calibration_fit_diagnostics(
             &calibration, adjusted_transform, source_anchor,
@@ -2238,16 +2340,17 @@ int mdkr_modern_character_emit(int player, int view,
         }
     }
     for (primitive_index = 0u;
-         primitive_index < pool->render.gpu.primitive_count;
+         primitive_index < (uint32_t)assembly_count;
          primitive_index++) {
         MdkrModernPrimitive primitive;
         struct GfxModernSkinnedDraw draw;
         const float *node_world;
         const float *previous_node_world;
+        const uint32_t ordered_primitive =
+            assembly_primitive[ordered_rows[primitive_index]];
         memset(&draw, 0, sizeof(draw));
-        if (pool->render.gpu.primitives[primitive_index].lod != selected_lod) continue;
         (void)mdkr_modern_character_asset_primitive(
-            &pool->asset, primitive_index, &primitive);
+            &pool->asset, ordered_primitive, &primitive);
         node_world = mdkr_modern_pose_node_matrix(&slot->pose,
                                                   primitive.node, 0);
         previous_node_world = mdkr_modern_pose_node_matrix(
@@ -2257,7 +2360,7 @@ int mdkr_modern_character_emit(int player, int view,
             return 0;
         }
         draw.asset = &pool->render.gpu;
-        draw.primitive = primitive_index;
+        draw.primitive = ordered_primitive;
         draw.player = (uint32_t)player;
         draw.view = (uint32_t)view;
         draw.reference_only = reference_only ? 1u : 0u;

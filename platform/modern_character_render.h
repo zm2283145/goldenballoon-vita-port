@@ -14,6 +14,13 @@ typedef struct MdkrModernDecodedTexture {
     uint8_t *mip_scratch;
 } MdkrModernDecodedTexture;
 
+typedef struct MdkrModernPrimitiveSortData {
+    uint32_t first_moment;
+    uint32_t moment_count;
+    float rigid_center[3];
+    float inverse_vertex_count;
+} MdkrModernPrimitiveSortData;
+
 typedef struct MdkrModernRenderAsset {
     struct GfxModernSkinnedAsset gpu;
     struct GfxModernSkinnedVertex *vertices;
@@ -22,6 +29,10 @@ typedef struct MdkrModernRenderAsset {
     struct GfxModernMaterial *materials;
     struct GfxModernTexture *textures;
     MdkrModernDecodedTexture *decoded;
+    MdkrModernPrimitiveSortData *primitive_sort;
+    /* Four floats per joint: sum(weight * xyz), then sum(weight). */
+    float *sort_moments;
+    size_t sort_moment_count;
     size_t decoded_texture_bytes;
     int valid;
 } MdkrModernRenderAsset;
@@ -30,6 +41,12 @@ int mdkr_modern_render_asset_init(MdkrModernRenderAsset *render,
                                   const MdkrModernCharacterAsset *asset,
                                   char *error, size_t error_size);
 void mdkr_modern_render_asset_shutdown(MdkrModernRenderAsset *render);
+
+/* Exact linear-skinning centroid used for per-view transparent ordering. The
+ * activation-time moments make this O(joints), independent of polygon count. */
+int mdkr_modern_render_primitive_sort_center(
+    const MdkrModernRenderAsset *render, uint32_t primitive,
+    const float *bone_matrices, size_t bone_count, float output[3]);
 
 /* Resolve one immutable retained draw at an exact presentation alpha. The
  * caller supplies bounded palette scratch; endpoints remain bit-exact. */

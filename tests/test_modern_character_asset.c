@@ -55,6 +55,8 @@ static uint64_t pose_world_signature(const MdkrModernPose *pose) {
 static uint32_t registered_draws;
 static uint32_t released_assets;
 static float last_model_matrix[16];
+static const struct GfxModernSkinnedAsset *last_registered_asset;
+static uint32_t last_registered_primitive;
 static bool modern_character_supported = true;
 static bool reject_modern_draw;
 
@@ -91,6 +93,8 @@ uint32_t gfx_modern_character_register_draw(
                 "runtime retains both immutable skinning endpoints");
     }
     memcpy(last_model_matrix, draw->model_matrix, sizeof(last_model_matrix));
+    last_registered_asset = draw->asset;
+    last_registered_primitive = draw->primitive;
     if (reject_modern_draw) return 0u;
     return ++registered_draws;
 }
@@ -270,7 +274,7 @@ int main(int argc, char **argv) {
     char error[256];
     unsigned char *bytes;
     size_t size;
-    Gfx commands[8];
+    Gfx commands[10];
     Gfx *command_cursor = commands;
     char import_lock[4096];
     char prefix_witness[4096];
@@ -930,6 +934,43 @@ int main(int argc, char **argv) {
                 render.decoded_texture_bytes == 4u &&
                 render.gpu.textures[0].level_count == 1,
             "renderer decodes bounded embedded PNG texture ownership");
+    {
+        float identity_palette[16u * 16u] = {0.0f};
+        float center[3];
+        float translated[3];
+        float expected[3] = {0.0f, 0.0f, 0.0f};
+        uint32_t joint;
+        uint32_t vertex;
+        unsigned axis;
+        for (joint = 0u; joint < 16u; ++joint) {
+            identity_palette[joint * 16u] = 1.0f;
+            identity_palette[joint * 16u + 5u] = 1.0f;
+            identity_palette[joint * 16u + 10u] = 1.0f;
+            identity_palette[joint * 16u + 15u] = 1.0f;
+        }
+        for (vertex = 0u; vertex < render.gpu.vertex_count; ++vertex) {
+            for (axis = 0u; axis < 3u; ++axis) {
+                expected[axis] += render.gpu.vertices[vertex].position[axis] /
+                    (float)render.gpu.vertex_count;
+            }
+        }
+        require(mdkr_modern_render_primitive_sort_center(
+                    &render, 0u, identity_palette, 16u, center),
+                "renderer resolves an exact posed primitive centroid");
+        for (axis = 0u; axis < 3u; ++axis) {
+            require(fabsf(center[axis] - expected[axis]) < 0.0001f,
+                    "identity skinning centroid matches source geometry");
+        }
+        for (joint = 0u; joint < 16u; ++joint) {
+            identity_palette[joint * 16u + 12u] = 2.0f;
+        }
+        require(mdkr_modern_render_primitive_sort_center(
+                    &render, 0u, identity_palette, 16u, translated) &&
+                    fabsf(translated[0] - center[0] - 2.0f) < 0.0001f &&
+                    fabsf(translated[1] - center[1]) < 0.0001f &&
+                    fabsf(translated[2] - center[2]) < 0.0001f,
+                "activation-time moments follow live linear skinning without a vertex walk");
+    }
     mdkr_modern_render_asset_shutdown(&render);
     mdkr_modern_pose_shutdown(&pose);
     mdkr_modern_character_asset_unload(&asset);
@@ -1536,7 +1577,11 @@ int main(int argc, char **argv) {
                 lod_diagnostics.projected_height_pixels > 0.0f &&
                 lod_diagnostics.projection_generation == 42u &&
                 lod_diagnostics.selected_lod == 0u &&
-                lod_diagnostics.authored_lod_mask == 1u,
+                lod_diagnostics.authored_lod_mask == 1u &&
+                lod_diagnostics.opaque_masked_primitives == 1u &&
+                lod_diagnostics.blend_primitives == 0u &&
+                lod_diagnostics.blend_sort_mode ==
+                    MDKR_MODERN_CHARACTER_BLEND_SORT_NONE,
             "runtime LOD evidence binds calibrated screen coverage to the exact projection generation");
     select_model_y = last_model_matrix[13];
     require(mdkr_modern_character_emit(0, 0, MDKR_CHARACTER_CONTEXT_CAR,
@@ -1723,6 +1768,44 @@ int main(int argc, char **argv) {
                     3, MDKR_CHARACTER_CONTEXT_SELECT,
                     &surface_diagnostics),
             "one requested vehicle draw streams exact posed triangles through a bounded retained-shell witness without charging ordinary draws");
+    {
+        struct GfxModernMaterial *materials;
+        uint32_t material_index;
+        uint32_t original_flags;
+        require(last_registered_asset != NULL &&
+                    last_registered_primitive <
+                        last_registered_asset->primitive_count,
+                "transparent-order integration test retains the live render asset");
+        material_index = last_registered_asset
+            ->primitives[last_registered_primitive].material;
+        require(material_index < last_registered_asset->material_count,
+                "transparent-order integration test material is in range");
+        materials = (struct GfxModernMaterial *)(uintptr_t)
+            last_registered_asset->materials;
+        original_flags = materials[material_index].flags;
+        materials[material_index].flags = (original_flags & ~3u) | 2u;
+        require(mdkr_modern_character_emit(
+                    0, 0, MDKR_CHARACTER_CONTEXT_SELECT, NULL, NULL,
+                    &lod_view, 0.0f, &command_cursor, error, sizeof(error)) &&
+                    mdkr_modern_character_player_lod_diagnostics(
+                        0, 0, MDKR_CHARACTER_CONTEXT_SELECT,
+                        &lod_diagnostics) &&
+                    lod_diagnostics.opaque_masked_primitives == 0u &&
+                    lod_diagnostics.blend_primitives == 1u &&
+                    lod_diagnostics.blend_sort_mode ==
+                        MDKR_MODERN_CHARACTER_BLEND_SORT_POSED_CENTROID,
+                "valid camera evidence publishes exact posed-centroid BLEND ordering");
+        require(mdkr_modern_character_emit(
+                    0, 0, MDKR_CHARACTER_CONTEXT_SELECT, NULL, NULL, NULL,
+                    0.0f, &command_cursor, error, sizeof(error)) &&
+                    mdkr_modern_character_player_lod_diagnostics(
+                        0, 0, MDKR_CHARACTER_CONTEXT_SELECT,
+                        &lod_diagnostics) &&
+                    lod_diagnostics.blend_sort_mode ==
+                        MDKR_MODERN_CHARACTER_BLEND_SORT_AUTHORED_FALLBACK,
+                "missing camera evidence preserves authored BLEND order and discloses the fallback");
+        materials[material_index].flags = original_flags;
+    }
     require(mdkr_modern_character_get_tuning(0, &tuning) &&
                 mdkr_modern_character_set_tuning(
                     0, &tuning, error, sizeof(error)) &&

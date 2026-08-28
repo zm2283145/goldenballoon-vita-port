@@ -96,7 +96,16 @@ typedef struct MdkrModernCharacterLodDiagnostics {
     uint32_t selected_lod;
     uint32_t authored_lod_mask;
     uint32_t used_projected_height;
+    uint32_t opaque_masked_primitives;
+    uint32_t blend_primitives;
+    uint32_t blend_sort_mode;
 } MdkrModernCharacterLodDiagnostics;
+
+enum {
+    MDKR_MODERN_CHARACTER_BLEND_SORT_NONE = 0,
+    MDKR_MODERN_CHARACTER_BLEND_SORT_POSED_CENTROID = 1,
+    MDKR_MODERN_CHARACTER_BLEND_SORT_AUTHORED_FALLBACK = 2
+};
 
 /* Lightweight, borrowed library record for menu/workshop roster surfaces.
  * Catalog inspection never loads GPU mesh data; pointers remain valid until

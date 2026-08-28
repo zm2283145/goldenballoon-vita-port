@@ -112,13 +112,148 @@ static int allocate_arrays(MdkrModernRenderAsset *render,
     render->indices = (uint32_t *)calloc(indices->count, sizeof(*render->indices));
     render->primitives = (struct GfxModernPrimitive *)calloc(primitives->count, sizeof(*render->primitives));
     render->materials = (struct GfxModernMaterial *)calloc(materials->count, sizeof(*render->materials));
+    render->primitive_sort = (MdkrModernPrimitiveSortData *)calloc(
+        primitives->count, sizeof(*render->primitive_sort));
     if (textures->count != 0u) {
         render->textures = (struct GfxModernTexture *)calloc(textures->count, sizeof(*render->textures));
         render->decoded = (MdkrModernDecodedTexture *)calloc(textures->count, sizeof(*render->decoded));
     }
     return render->vertices != NULL && render->indices != NULL &&
            render->primitives != NULL && render->materials != NULL &&
+           render->primitive_sort != NULL &&
            (textures->count == 0u || (render->textures != NULL && render->decoded != NULL));
+}
+
+static int build_primitive_sort_data(
+    MdkrModernRenderAsset *render, const MdkrModernCharacterAsset *asset,
+    uint32_t primitive_count, char *error, size_t error_size) {
+    size_t moment_count = 0u;
+    uint32_t primitive_index;
+    for (primitive_index = 0u; primitive_index < primitive_count;
+         ++primitive_index) {
+        MdkrModernPrimitive primitive;
+        MdkrModernSkin skin;
+        if (!mdkr_modern_character_asset_primitive(
+                asset, primitive_index, &primitive)) return 0;
+        if (primitive.skin >= 0) {
+            if (!mdkr_modern_character_asset_skin(
+                    asset, (uint32_t)primitive.skin, &skin) ||
+                skin.joint_count > SIZE_MAX - moment_count) return 0;
+            moment_count += skin.joint_count;
+        }
+    }
+    if (moment_count > SIZE_MAX / (sizeof(float) * 4u)) {
+        set_error(error, error_size,
+                  "character transparent-sort moments exceed addressable memory");
+        return 0;
+    }
+    if (moment_count != 0u) {
+        render->sort_moments = (float *)calloc(
+            moment_count * 4u, sizeof(*render->sort_moments));
+        if (render->sort_moments == NULL) {
+            set_error(error, error_size,
+                      "could not allocate character transparent-sort moments");
+            return 0;
+        }
+    }
+    render->sort_moment_count = moment_count;
+    moment_count = 0u;
+    for (primitive_index = 0u; primitive_index < primitive_count;
+         ++primitive_index) {
+        MdkrModernPrimitive primitive;
+        MdkrModernPrimitiveSortData *sort =
+            &render->primitive_sort[primitive_index];
+        uint32_t vertex_offset;
+        if (!mdkr_modern_character_asset_primitive(
+                asset, primitive_index, &primitive) ||
+            primitive.vertex_count == 0u) return 0;
+        sort->inverse_vertex_count = 1.0f / (float)primitive.vertex_count;
+        if (primitive.skin >= 0) {
+            MdkrModernSkin skin;
+            if (!mdkr_modern_character_asset_skin(
+                    asset, (uint32_t)primitive.skin, &skin) ||
+                moment_count > UINT32_MAX ||
+                skin.joint_count > UINT32_MAX - (uint32_t)moment_count) {
+                return 0;
+            }
+            sort->first_moment = (uint32_t)moment_count;
+            sort->moment_count = skin.joint_count;
+            moment_count += skin.joint_count;
+        }
+        for (vertex_offset = 0u; vertex_offset < primitive.vertex_count;
+             ++vertex_offset) {
+            const uint32_t vertex_index =
+                primitive.first_vertex + vertex_offset;
+            const struct GfxModernSkinnedVertex *vertex =
+                &render->vertices[vertex_index];
+            if (sort->moment_count == 0u) {
+                unsigned axis;
+                for (axis = 0u; axis < 3u; ++axis) {
+                    sort->rigid_center[axis] += vertex->position[axis];
+                }
+            } else {
+                unsigned influence;
+                for (influence = 0u; influence < 4u; ++influence) {
+                    const float weight = vertex->weights[influence];
+                    const uint32_t joint = vertex->joints[influence];
+                    float *moment;
+                    unsigned axis;
+                    if (weight == 0.0f) continue;
+                    if (joint >= sort->moment_count) return 0;
+                    moment = &render->sort_moments[
+                        (size_t)(sort->first_moment + joint) * 4u];
+                    for (axis = 0u; axis < 3u; ++axis) {
+                        moment[axis] += weight * vertex->position[axis];
+                    }
+                    moment[3] += weight;
+                }
+            }
+        }
+        if (sort->moment_count == 0u) {
+            unsigned axis;
+            for (axis = 0u; axis < 3u; ++axis) {
+                sort->rigid_center[axis] *= sort->inverse_vertex_count;
+                if (!isfinite(sort->rigid_center[axis])) return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+int mdkr_modern_render_primitive_sort_center(
+    const MdkrModernRenderAsset *render, uint32_t primitive,
+    const float *bone_matrices, size_t bone_count, float output[3]) {
+    const MdkrModernPrimitiveSortData *sort;
+    unsigned axis;
+    if (render == NULL || !render->valid || output == NULL ||
+        primitive >= render->gpu.primitive_count ||
+        render->primitive_sort == NULL) return 0;
+    sort = &render->primitive_sort[primitive];
+    if (sort->moment_count == 0u) {
+        memcpy(output, sort->rigid_center, sizeof(sort->rigid_center));
+        return isfinite(output[0]) && isfinite(output[1]) &&
+            isfinite(output[2]);
+    }
+    if (bone_matrices == NULL || bone_count < sort->moment_count ||
+        sort->first_moment > render->sort_moment_count ||
+        sort->moment_count >
+            render->sort_moment_count - sort->first_moment) return 0;
+    for (axis = 0u; axis < 3u; ++axis) {
+        double sum = 0.0;
+        uint32_t joint;
+        for (joint = 0u; joint < sort->moment_count; ++joint) {
+            const float *moment = &render->sort_moments[
+                (size_t)(sort->first_moment + joint) * 4u];
+            const float *bone = &bone_matrices[(size_t)joint * 16u];
+            sum += (double)bone[axis] * moment[0] +
+                (double)bone[4u + axis] * moment[1] +
+                (double)bone[8u + axis] * moment[2] +
+                (double)bone[12u + axis] * moment[3];
+        }
+        output[axis] = (float)(sum * sort->inverse_vertex_count);
+        if (!isfinite(output[axis])) return 0;
+    }
+    return 1;
 }
 
 int mdkr_modern_render_asset_init(MdkrModernRenderAsset *render,
@@ -187,6 +322,16 @@ int mdkr_modern_render_asset_init(MdkrModernRenderAsset *render,
         destination->occlusion_strength = source.occlusion_strength;
         destination->alpha_cutoff = source.alpha_cutoff;
         destination->flags = source.flags;
+    }
+    set_error(error, error_size, "");
+    if (!build_primitive_sort_data(
+            render, asset, primitive_section->count, error, error_size)) {
+        mdkr_modern_render_asset_shutdown(render);
+        if (error == NULL || error_size == 0u || error[0] == '\0') {
+            set_error(error, error_size,
+                      "could not prepare character transparent ordering");
+        }
+        return 0;
     }
     for (index = 0u; index < texture_section->count; index++) {
         MdkrModernTexture source;
@@ -321,6 +466,8 @@ void mdkr_modern_render_asset_shutdown(MdkrModernRenderAsset *render) {
         }
     }
     free(render->decoded);
+    free(render->sort_moments);
+    free(render->primitive_sort);
     free(render->textures);
     free(render->materials);
     free(render->primitives);
