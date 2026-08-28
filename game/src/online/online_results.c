@@ -77,6 +77,16 @@
  * rather than by editing menu.c. */
 extern char *gRacePlacementsArray[8];
 
+/* The engine's live frame-dump directory (platform_os.h; set by --dump-frames on
+ * the automation path). The native online screens are reached ONLY on the
+ * INTERACTIVE launcher/autoplay path (the resident soak), where --dump-frames
+ * cannot be passed, so the T4 chooser "show" seam ARMS this global from an env dir
+ * (MDKR_TEST_ONLINE_RESULTS_CHOOSER_SHOT) once the chooser fronts -- reusing the
+ * existing engine capture to produce the visual (PNG) proof of the native screen.
+ * Beta-only + env-gated + declared locally (the gGameMode extern pattern), so the
+ * OFF build never sees it and no lane arms it. */
+extern const char *g_dumpFramesDir;
+
 /* ---- Local mirrors of the launcher lobby's id space (no launcher headers) --- */
 #define RES_CHAR_COUNT 10u        /* MDKR_ONLINE_CHARACTER_COUNT */
 #define RES_NO_CHARACTER 0xFFu    /* MDKR_ONLINE_NO_CHARACTER */
@@ -772,10 +782,32 @@ static void results_chooser_witness(void) {
             (unsigned) sRes.chooserChoice);
 }
 
+/* Chooser text with a BOLD black outline (an 8-direction halo, not just the
+ * shared 1px drop-shadow) so the SMALLFONT option list stays crisp over even the
+ * BRIGHTEST world sky -- the "dark scrim for contrast over the busy sky" the brief
+ * calls for, done per-glyph with proven draw_text calls (no raw fill-rect
+ * microcode). The colour pass reuses mdkr_online_screen_text (its own +1 shadow
+ * rides inside the halo). */
+static void results_chooser_text(s32 x, s32 y, s32 fontId, char *text,
+                                 AlignmentFlags align, s32 r, s32 g, s32 b) {
+    /* +-1 virtual unit == ~8 render px at the 8x menu scale: a clean thin halo,
+     * not the fat merged bars a +-2 (16px) outline made. */
+    static const s32 ox[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+    static const s32 oy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+    unsigned i;
+    set_text_font(fontId);
+    set_text_background_colour(0, 0, 0, 0);
+    set_text_colour(0, 0, 0, 0, 255);
+    for (i = 0u; i < 8u; i++) {
+        draw_text(&gCurrDisplayList, x + ox[i], y + oy[i], text, align);
+    }
+    mdkr_online_screen_text(x, y, fontId, text, align, r, g, b);
+}
+
 /* Render the "more races" menu into the engine frame list over the scrolling sky.
- * Legibility is the shared drop-shadow (mdkr_online_screen_text) the other native
- * screens use; the highlighted host option pulses gold inside "> <" brackets, the
- * rest are grey. A joiner shows the same list greyed (no cursor) + a pulsing
+ * Every line wears the bold black outline (results_chooser_text) for legibility;
+ * the highlighted host option pulses gold inside "> <" brackets, the rest are a
+ * bright near-white, a joiner shows the list dimmer (no cursor) + a pulsing
  * "WAITING FOR <host>..." line -- the display-only mirror. */
 static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
                                    bool haveSnap, s32 localSeat) {
@@ -787,26 +819,26 @@ static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
 
     (void) localSeat;
 
-    mdkr_online_screen_text(RES_SCREEN_W_HALF, 44, ASSET_FONTS_BIGFONT,
-                            "MORE RACES?", ALIGN_MIDDLE_CENTER, 255, 224, 96);
-    mdkr_online_screen_text(RES_SCREEN_W_HALF, 66, ASSET_FONTS_SMALLFONT,
-                            sRes.chooserMode == RES_MODE_TOURNAMENT
-                                ? (char *) "TOURNAMENT COMPLETE"
-                                : (char *) "RACE COMPLETE",
-                            ALIGN_MIDDLE_CENTER, 200, 200, 255);
+    results_chooser_text(RES_SCREEN_W_HALF, 44, ASSET_FONTS_BIGFONT,
+                         "MORE RACES?", ALIGN_MIDDLE_CENTER, 255, 224, 96);
+    results_chooser_text(RES_SCREEN_W_HALF, 66, ASSET_FONTS_SMALLFONT,
+                         sRes.chooserMode == RES_MODE_TOURNAMENT
+                             ? (char *) "TOURNAMENT COMPLETE"
+                             : (char *) "RACE COMPLETE",
+                         ALIGN_MIDDLE_CENTER, 210, 210, 255);
 
     for (i = 0u; i < sRes.chooserCount; i++) {
         bool selected = (!sRes.chooserJoiner && (u8) i == sRes.chooserCursor);
         if (selected) {
             s32 pg = 200 + tri * 3; /* 200..248 gold pulse */
             (void) snprintf(line, sizeof(line), "> %s <", opts[i].label);
-            mdkr_online_screen_text(RES_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
-                                    line, ALIGN_MIDDLE_CENTER, 255, (u8) pg, 96);
+            results_chooser_text(RES_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
+                                 line, ALIGN_MIDDLE_CENTER, 255, (u8) pg, 80);
         } else {
-            s32 c = sRes.chooserJoiner ? 150 : 190;
-            mdkr_online_screen_text(RES_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
-                                    (char *) opts[i].label, ALIGN_MIDDLE_CENTER, c,
-                                    c, c);
+            s32 c = sRes.chooserJoiner ? 200 : 235;
+            results_chooser_text(RES_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
+                                 (char *) opts[i].label, ALIGN_MIDDLE_CENTER, c, c,
+                                 c);
         }
         rowY += 22;
     }
@@ -815,19 +847,19 @@ static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
     if (sRes.chooserCommitted) {
         (void) snprintf(line, sizeof(line), "%s...",
                         opts[sRes.chooserCursor].label);
-        mdkr_online_screen_text(RES_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
-                                ALIGN_MIDDLE_CENTER, 120, (u8) (170 + tri * 5), 120);
+        results_chooser_text(RES_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
+                             ALIGN_MIDDLE_CENTER, 140, (u8) (200 + tri * 3), 140);
     } else if (sRes.chooserJoiner) {
         char host[16];
-        s32 c = 130 + tri * 5;
+        s32 c = 170 + tri * 5;
         results_host_name(snap, haveSnap, host, sizeof(host));
         (void) snprintf(line, sizeof(line), "WAITING FOR %.12s...", host);
-        mdkr_online_screen_text(RES_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
-                                ALIGN_MIDDLE_CENTER, c, c, c);
+        results_chooser_text(RES_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
+                             ALIGN_MIDDLE_CENTER, c, c, c);
     } else {
-        mdkr_online_screen_text(RES_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
-                                "A: SELECT   UP/DOWN: MOVE", ALIGN_MIDDLE_CENTER,
-                                255, 255, 255);
+        results_chooser_text(RES_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
+                             "A: SELECT   UP/DOWN: MOVE", ALIGN_MIDDLE_CENTER, 255,
+                             255, 255);
     }
     results_chooser_witness();
 }
@@ -1076,6 +1108,18 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
                     tournament ? "tournament-final" : "single-race",
                     (unsigned) sRes.chooserMode, (unsigned) sRes.host,
                     (unsigned) sRes.chooserJoiner);
+            /* Visual proof: on the "show" seam arm the engine frame-dump so the
+             * interactive resident soak captures the chooser frames (see the
+             * g_dumpFramesDir extern note). Inert unless the env dir is set. */
+            if (results_chooser_seam_show() && g_dumpFramesDir == NULL) {
+                const char *shot = getenv("MDKR_TEST_ONLINE_RESULTS_CHOOSER_SHOT");
+                if (shot != NULL && shot[0] != '\0') {
+                    g_dumpFramesDir = shot;
+                    fprintf(stderr,
+                            "[online-results] chooser: frame-dump armed -> %s\n",
+                            shot);
+                }
+            }
             return results_chooser_tick(&snap, haveSnap, localSeat, updateRate);
         }
     }
