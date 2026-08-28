@@ -21,14 +21,14 @@ static MdkrPartyLinkLocalIntent sIntent;
  * later stops an already-read intent from being re-read (online_race_results). */
 static uint32_t sIntentEpoch;
 static uint32_t sIntentPolledEpoch;
-/* PD-T6h2c: the launcher notes whether this descriptor-less session drives a
+/* The launcher notes whether this descriptor-less session drives a
  * SINGLE local endpoint (a real 2-process room -- the remote readies itself over
  * the transport) rather than the two-adapter in-process loopback. The engine
  * session reads it at begin to select the WALL-CLOCK watchdog + error-signal path
  * (production) instead of the frame-count + clean-exit path (headless loopback).
  * Reset by install/clear; the launcher sets it AFTER install, before boot. */
 static bool sSingleEndpoint;
-/* PD-T6d: the engine-written session end reason (why the last native online
+/* The engine-written session end reason (why the last native online
  * session returned). Reset to NONE by install/clear so each session starts
  * neutral and no stale verdict leaks across sessions. */
 static MdkrPartyLinkSessionEndReason sSessionEndReason;
@@ -182,7 +182,7 @@ void mdkr_party_link_snapshot_from_lobby(
         dst->occupied = seat->occupied ? 1u : 0u;
         if (!seat->occupied) {
             /* Never publish a real racer id (0) for an empty seat: force the
-             * unset sentinels so P2-T2 readers can trust the fields (F4). */
+             * unset sentinels so readers can trust the fields. */
             dst->character_id = MDKR_ONLINE_NO_CHARACTER;
             dst->vehicle_id = MDKR_ONLINE_NO_VEHICLE;
             continue;
@@ -204,7 +204,7 @@ void mdkr_party_link_snapshot_from_lobby(
         out->points[i] = lobby->points[i];
         out->last_placements[i] = lobby->last_placements[i];
     }
-    /* host_cursor stays zero/invalid (P2-T3). */
+    /* host_cursor stays zero/invalid (not yet populated). */
 }
 
 /* ---- Reverse-feed dispatch plan (pure, convergence-driven) -------------- */
@@ -255,7 +255,7 @@ static uint8_t party_link_kind_state(uint8_t kind,
         *value = 0u; /* mask filled by the wiring */
         *converged = local != NULL && local->phase != (uint8_t)MDKR_ONLINE_LOBBY;
         return 1u;
-    /* Host-only session config (PD-T3). Wanted only for the leader seat and only
+    /* Host-only session config. Wanted only for the leader seat and only
      * when the intent carries a non-sentinel value; the joiner always publishes
      * the UNSET sentinels, so it never wants these regardless of the is_host
      * gate. The reducer clears every member's ready on any of these, which is why
@@ -269,7 +269,7 @@ static uint8_t party_link_kind_state(uint8_t kind,
     case MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK:
         if (!have || !local->is_host) return 0u;
         if (intent->config_track == MDKR_PARTY_LINK_TRACK_UNSET) return 0u;
-        /* M1 cross-gate: a configured track only applies in single-race mode, so
+        /* Cross-gate: a configured track only applies in single-race mode, so
          * never want it when the intent asks for tournament -- a stray intent must
          * not dispatch cup+track together. */
         if (intent->mode == MDKR_PARTY_LINK_MODE_TOURNAMENT) return 0u;
@@ -280,14 +280,14 @@ static uint8_t party_link_kind_state(uint8_t kind,
     case MDKR_PARTY_LINK_DISPATCH_SET_CUP:
         if (!have || !local->is_host) return 0u;
         if (intent->cup_id == MDKR_PARTY_LINK_CUP_UNSET) return 0u;
-        /* M1 cross-gate: a cup only applies in tournament mode. */
+        /* Cross-gate: a cup only applies in tournament mode. */
         if (intent->mode != MDKR_PARTY_LINK_MODE_TOURNAMENT) return 0u;
         *value = intent->cup_id;
         *converged = local->cup_id == intent->cup_id;
         return 1u;
     case MDKR_PARTY_LINK_DISPATCH_REMATCH:
-        /* Host-only "advance to the next race" from the RESULTS/STANDINGS screen
-         * (PD-T6b). WANTED only for the leader seat while it has published
+        /* Host-only "advance to the next race" from the RESULTS/STANDINGS screen.
+         * WANTED only for the leader seat while it has published
          * rematch_requested (a joiner is watch-only and never publishes it).
          * CONVERGED once the reducer accepted REMATCH and the lobby LEFT
          * MDKR_ONLINE_RESULTS (it returns to LOBBY and, in a tournament, advances
@@ -301,9 +301,9 @@ static uint8_t party_link_kind_state(uint8_t kind,
          * payload: the reducer command carries none relevant. */
         if (!intent->rematch_requested) return 0u;
         if (!have || !local->is_host) return 0u;
+        /* `have` already guaranteed local != NULL above. */
         *value = 0u;
-        *converged =
-            local != NULL && local->phase != (uint8_t)MDKR_ONLINE_RESULTS;
+        *converged = local->phase != (uint8_t)MDKR_ONLINE_RESULTS;
         return 1u;
     default:
         return 0u;

@@ -1,14 +1,12 @@
 #ifndef MDKR_ONLINE_RACE_BOOT_H
 #define MDKR_ONLINE_RACE_BOOT_H
 
-/* SEPARATED-BOOT-PATH (Strategy D) online race boot.
+/* SEPARATED-BOOT-PATH online race boot.
  *
- * PD-T4 extraction: the direct online race-boot body used to live in the shared,
- * vendored game/src/thread3_main.c, entirely inside a single #if
- * MDKR_ENABLE_ONLINE_BETA. It is relocated here so the battle-tested OFFLINE file
- * carries no online code at all -- a net isolation win. Because the preprocessor
- * emitted NOTHING for that block in a beta-OFF build, deleting it leaves the
- * release engine's thread3_main.o byte-identical.
+ * The direct online race-boot body lives here rather than in the shared, vendored
+ * game/src/thread3_main.c, so that battle-tested OFFLINE file carries no online
+ * code at all -- a net isolation win. thread3_main.c's release object is
+ * unaffected: none of this boot body is present there in any build.
  *
  * The ENTIRE header is #if MDKR_ENABLE_ONLINE_BETA so a normal (beta OFF) build
  * sees nothing here, and the TU is compiled into the engine ONLY under the beta

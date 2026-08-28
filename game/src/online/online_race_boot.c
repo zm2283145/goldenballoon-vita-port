@@ -1,11 +1,9 @@
-/* SEPARATED-BOOT-PATH (Strategy D) online race boot -- PD-T4 extraction.
+/* SEPARATED-BOOT-PATH online race boot.
  *
- * The direct online race-boot body was relocated here VERBATIM from
- * game/src/thread3_main.c (where it lived entirely inside a single #if
- * MDKR_ENABLE_ONLINE_BETA). Moving it out keeps the shared, battle-tested offline
- * file free of online code -- the isolation win PD-T4 buys. The beta-OFF
- * thread3_main.o is byte-identical before and after the move because the
- * preprocessor emitted nothing for the deleted block in an OFF build.
+ * The direct online race-boot body lives here rather than in the shared,
+ * battle-tested offline game/src/thread3_main.c, keeping that file free of online
+ * code -- an isolation win. thread3_main.c's beta-OFF object is unaffected: none
+ * of this boot body is present there in any build.
  *
  * The whole TU is #if MDKR_ENABLE_ONLINE_BETA and it is added to the build ONLY
  * inside the beta CMake gate (game/src/online/ is not globbed), so a normal (beta
@@ -37,24 +35,14 @@ extern s32 gGameMode;
 extern s32 gGameCurrentEntrance;
 extern s32 gGameCurrentCutscene;
 
-/**
- * Boot straight into the online race described by the installed launch
- * descriptor, bypassing the entire single-player front-end (title screen,
- * Wizpig hub, Adventure/Time-Trial select, tracks menu, in-game character
- * select). The player never drives or even sees those screens.
- *
- * This reuses the game's own tracks-mode versus race-start rather than
- * re-implementing it: menu_online_versus_race_setup() lays down the same
- * mode/track/count globals the menu walk left behind, init_racer_headers()
- * bakes the manifest's per-seat characters into the racer table, and the
- * ordinary in-game loader (load_next_ingame_level -> load_level_game ->
- * level_load) does the rest. gGameCurrentCutscene stays CUTSCENE_NONE (0) so
- * the launch-descriptor seam in level_load() applies the manifest track/vehicle.
- */
-/* PD-T4: relocated VERBATIM out of thread3_main.c into this beta-only TU. The
- * separated online session (game/src/online/online_session.c) calls this to
- * reuse the game's own race boot rather than duplicating the race-setup logic.
- * Prototype lives in online/online_race_boot.h. */
+/* Implementation notes (the contract lives in online_race_boot.h): the reused
+ * tracks-mode versus race-start is assembled from the game's own helpers --
+ * menu_online_versus_race_setup() lays down the same mode/track/count globals the
+ * menu walk left behind, init_racer_headers() bakes the manifest's per-seat
+ * characters into the racer table, and the ordinary in-game loader
+ * (load_next_ingame_level -> load_level_game -> level_load) does the rest.
+ * gGameCurrentCutscene stays CUTSCENE_NONE (0) so the launch-descriptor seam in
+ * level_load() applies the manifest track/vehicle. */
 void mdkr_online_boot_direct_race(
     const MdkrMatchLaunchDescriptorV1 *launch) {
     s32 canonicalPlayers = (s32) mdkr_net_roster_runtime_canonical_player_count(2u);

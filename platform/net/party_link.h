@@ -53,7 +53,7 @@ typedef struct MdkrPartyLinkSeat {
     char name[MDKR_PARTY_LINK_NAME_BYTES]; /* NUL-terminated; empty when unknown */
 } MdkrPartyLinkSeat;
 
-/* Host's live cursor on the native screen (P2-T3 fills it; zero/invalid here). */
+/* Host's live cursor on the native screen (not yet populated; zero/invalid here). */
 typedef struct MdkrPartyLinkHostCursor {
     uint8_t screen;
     int8_t x;
@@ -110,7 +110,7 @@ typedef struct MdkrPartyLinkSnapshot {
  * so the vehicle lands first), then READY / START_RACE.
  *
  * rematch_requested is the HOST-ONLY post-race "advance to the next race" from
- * the native RESULTS/STANDINGS screen (PD-T6b): it drives the reducer's
+ * the native RESULTS/STANDINGS screen: it drives the reducer's
  * leader-only MDKR_ONLINE_REMATCH (return to LOBBY + tournament race_index++).
  * It is a plain 0/1 request (zero == not wanted), so it needs NO unset sentinel;
  * a joiner never publishes it (watch-only) and START_RACE must NOT be reused for
@@ -118,7 +118,7 @@ typedef struct MdkrPartyLinkSnapshot {
  * true during RESULTS, so it would be a permanent no-op there).
  *
  * The three session-config fields (mode / config_track / cup_id) are HOST-ONLY
- * (the native TRACK/CUP select screen, PD-T3): the host publishes them, a joiner
+ * (the native TRACK/CUP select screen): the host publishes them, a joiner
  * always leaves them at the UNSET sentinels above. config_track keeps the u16
  * width the lobby/snapshot use, but the dispatch ACTION.value is a u8 -- fine,
  * because every one of the 20 standard race track ids is <= 33 (a documented
@@ -149,7 +149,7 @@ void mdkr_party_link_clear(void);
 /* Engine-facing predicate: false when uninstalled. */
 bool mdkr_party_link_active(void);
 
-/* PD-T6h2c SINGLE-ENDPOINT signal (launcher writes, engine reads). A REAL
+/* SINGLE-ENDPOINT signal (launcher writes, engine reads). A REAL
  * 2-process room drives only the LOCAL endpoint (the remote readies itself over
  * the transport); the in-process loopback lanes drive both. The launcher's
  * production room-ready boot (and the single-endpoint test lane) note this after
@@ -160,7 +160,7 @@ bool mdkr_party_link_active(void);
 void mdkr_party_link_note_single_endpoint(bool single);
 bool mdkr_party_link_is_single_endpoint(void);
 
-/* PD-T6d SESSION END-REASON channel (engine writes, launcher reads). Mirrors the
+/* SESSION END-REASON channel (engine writes, launcher reads). Mirrors the
  * single-endpoint note above -- an engine-written note that survives across the
  * mdkr64_engine_boot() boundary in the SAME party_link TU -- so after a native
  * online session returns the launcher can distinguish WHY (a tournament finished,
@@ -204,7 +204,7 @@ void mdkr_party_link_intent_init(MdkrPartyLinkLocalIntent *intent);
 
 /* Engine publishes the local player's intent. Each publish re-arms the poll
  * below (a per-publish epoch, exactly like online_race_results). No-op when
- * uninstalled. Beta-gated callers arrive in P2-T2. */
+ * uninstalled. */
 void mdkr_party_link_intent_publish(const MdkrPartyLinkLocalIntent *intent);
 /* Launcher one-shot poll: copies the recorded intent into *out and returns true
  * exactly once per publish (an already-read intent -- or none -- is never handed
@@ -258,13 +258,13 @@ typedef enum MdkrPartyLinkDispatchKind {
     MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION,
     MDKR_PARTY_LINK_DISPATCH_READY,
     MDKR_PARTY_LINK_DISPATCH_START_RACE,
-    /* Host-only session config (PD-T3). Appended AFTER the existing kinds so the
+    /* Host-only session config. Appended AFTER the existing kinds so the
      * pre-existing enum values are unchanged; the processing order is set by
      * kOrder[] in party_link.c (config before ready/start), not by this order. */
     MDKR_PARTY_LINK_DISPATCH_SET_MODE,
     MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK,
     MDKR_PARTY_LINK_DISPATCH_SET_CUP,
-    /* Host-only post-race "advance to next race" (PD-T6b). Drives the reducer's
+    /* Host-only post-race "advance to next race". Drives the reducer's
      * leader-only MDKR_ONLINE_REMATCH. Appended AFTER the existing kinds so the
      * pre-existing enum values are unchanged; kOrder[] runs it LAST (a RESULTS-
      * phase action, mutually exclusive with the LOBBY-phase config/ready/start
@@ -347,7 +347,7 @@ void mdkr_party_link_dispatch_note_refusal(MdkrPartyLinkDispatchState *state,
  * Pure field mapping: project a launcher lobby snapshot + view model into the
  * pinned forward-feed record. It DOES NOT publish (the caller does) and DOES
  * NOT set out->generation (mdkr_party_link_publish owns monotonicity -- the
- * field is zeroed here). host_cursor is left zero/invalid (P2-T3 fills it).
+ * field is zeroed here). host_cursor is left zero/invalid (not yet populated).
  *
  * `local_endpoint_id` selects the local seat(s): pass the endpoint id when the
  * caller knows it, or 0 to fall back to view->local_member_is_leader (correct
