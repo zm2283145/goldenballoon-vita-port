@@ -363,16 +363,20 @@ external image editor.
 1. **Custom shadow integration:** replay accepted modern primitives into the
    world shadow maps and receive cascaded shadows under the same material/skin
    transforms. Add missing-resource failover and one-to-four-player cost gates.
-2. **Transparent ordering:** sort BLEND primitives per view using stable depth
-   keys, retain MASK as the preferred hair/fur path, and qualify intersecting
-   hair/face layers. Do not reorder opaque or alpha-mask batches.
+2. **Transparent ordering (primitive assembly implemented):** OPAQUE/MASK
+   primitives remain authored-first and BLEND primitives stably sort per view
+   from live posed-centroid depth. Missing camera evidence retains the complete
+   authored BLEND subset. Intersecting/self-overlapping triangles inside one
+   primitive and independent vehicle/world transparency queues remain visual
+   qualification work; MASK remains the preferred hair/fur path.
 3. **Texture compression:** add bounded KTX2/BasisU validation/transcoding,
    authenticated compiler records, format-capability selection, mip accounting,
    and PNG fallback. Preserve the current 4096-side/512 MiB decoded safety
    profile until device evidence supports a change.
-4. **Projected LOD:** replace distance-only selection with projected-size
-   thresholds, hysteresis, per-view state, sparse authored-level fallback, and
-   deterministic split-screen behavior.
+4. **Projected LOD (implemented):** calibrated bounds use exact object MVP and
+   logical viewport height with thresholds, 8% hysteresis, per-view state,
+   sparse authored-level fallback, and deterministic split-screen behavior;
+   invalid projection evidence retains an explicit distance fallback.
 5. **Offline simplification:** integrate a deterministic meshoptimizer stage as
    an optional recorded source revision. Preserve seams, skin weights, material
    boundaries, sockets, and author-provided LODs; show comparison/error evidence
@@ -466,8 +470,9 @@ The immediate remaining order is therefore:
    already requires exact source, fit, presentation, scene, held motion source,
    camera, viewport/scissor, and output-grid registration rather than inferring
    alignment;
-3. execute the M6 renderer tail (shadows, transparent ordering, compressed
-   textures, projected LOD, optional simplification, and material expansion);
+3. execute the remaining M6 renderer tail (shadows, within-primitive/global
+   transparency qualification, compressed textures, optional simplification,
+   and material expansion);
 4. complete packaged cross-platform/offline/adapter/online contracts; and
 5. run the observed human, controller/screen-reader, perceptual, and maintained
    multi-device qualification matrix in M8.

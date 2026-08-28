@@ -725,7 +725,7 @@ an automated contract; it does not waive the named release qualification.
 | Correct scale, floor, facing, seating, and contacts | Executable with exact per-context previews, bounded measured starting points, direct/numeric controls, undo, stale-evidence invalidation, and settled residual-stability witnesses | Bespoke scene-owned boss/battle/cinematic witnesses only if presentation authority expands; authored pole only if the solver gains that contract |
 | Create recognizable identity everywhere | Executable for the currently audited select/HUD/results/rankings/minimap/collection surfaces and exact 40x40 Portrait Studio | Localization-aware shaping and ownership declarations for future surfaces |
 | Choose fair gameplay | Executable: donor simulation/audio/save/ghost/network authority is separate and visible | Separate hashed custom-gameplay system only if later desired |
-| Target real hardware | Executable for exact 1P-4P source/fit/LOD/device-bound evidence and honest local exceptions | Maintained device corpus, projected LOD, renderer-tail features, and broader scenarios |
+| Target real hardware | Executable for exact 1P-4P source/fit/LOD/device-bound evidence, projected-height LOD with per-view hysteresis, and honest local exceptions | Maintained device corpus, remaining renderer-tail features, and broader scenarios |
 | Update and recover work | Executable: async acknowledgement, named drafts, last-known-good revisions, transactional rebuild/install, and durable deletion cleanup | Packaged clean-install/upgrade/missing-tool/offline matrix on macOS, Windows, and Linux |
 | Share responsibly | Partially executable: no-overwrite portable export with authenticated source/runtime/license/provenance | Recipient diff/compatibility, bulk draft transfer, and online package negotiation/privacy |
 | Disable or delete safely | Executable: reversible disable plus scoped, journalled permanent removal that preserves the external source | Observed recovery qualification across supported platforms |
@@ -855,9 +855,9 @@ results and qualified pinned baselines. Changing only LOD policy makes existing
 timing evidence stale without invalidating vehicle-fit review. It refuses
 cross-build, cross-result-contract, cross-presentation, cross-resolution or
 cross-device deltas and preserves malformed storage byte-for-byte.
-Further bespoke scene-owned conditions, transition visualization, a
-maintained device profile corpus, projected-size LOD hysteresis and optional
-recorded offline simplification remain.
+Further bespoke scene-owned conditions, a maintained device profile corpus,
+and optional recorded offline simplification remain. The projected-height
+transition visualization and per-view runtime hysteresis are executable.
 
 Select and vehicle fit approval use the source-and-fit-bound v7 expanded-scene
 contract. Select requires its current three-state room battery. Each vehicle
