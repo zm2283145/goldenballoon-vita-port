@@ -56,6 +56,12 @@ int mdkr_modern_render_shadow_bounds(
     const float bounds_min[3], const float bounds_max[3],
     float output[8u * 3u]);
 
+/* Convert the exact presentation-camera eye from world space into the same
+ * donor-object space as the shader's post-model vertex. Fails closed for a
+ * singular/non-finite binding and leaves output untouched. */
+int mdkr_modern_render_camera_object_position(
+    const float world[16], const float camera_world[3], float output[3]);
+
 /* Resolve one immutable retained draw at an exact presentation alpha. The
  * caller supplies bounded palette scratch; endpoints remain bit-exact. */
 int mdkr_modern_render_resolve_draw(

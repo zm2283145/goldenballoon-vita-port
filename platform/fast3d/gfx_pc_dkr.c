@@ -139,6 +139,10 @@ typedef struct DkrModernDrawEntry {
  */
 static DkrModernDrawEntry dkr_modern_draw_ring[DKR_MODERN_DRAW_RING];
 static uint32_t dkr_modern_draw_serial = 1u;
+static uint64_t dkr_modern_camera_missing_matrix;
+static uint64_t dkr_modern_camera_missing_eye;
+static uint64_t dkr_modern_camera_singular_world;
+static uint64_t dkr_modern_camera_resolved;
 
 bool gfx_modern_character_supported(void) {
     return gfx_rapi != NULL && gfx_rapi->draw_modern_skinned != NULL;
@@ -3491,8 +3495,36 @@ static void dkr_draw_modern_character(uint32_t token) {
     resolved.shadow_binding_valid = 0u;
     resolved.shadow_cast_valid = 0u;
     resolved.shadow_cast_view = 0u;
+    resolved.camera_position_valid = 0u;
+    memset(resolved.camera_position, 0, sizeof(resolved.camera_position));
     memset(resolved.shadow_world_matrix, 0,
            sizeof(resolved.shadow_world_matrix));
+
+    /* Resolve specular view response from the exact camera eye that owns the
+     * retained task. This is deliberately independent of the optional shadow
+     * feature: a character still needs a truthful eye vector when shadows are
+     * disabled. The world binding is the same proven donor-object transform
+     * used by the shadow path, while the eye is captured with its authored VP
+     * and replaced atomically during presentation replay. Any unavailable or
+     * singular input leaves the shader's explicit bounded fallback active. */
+    if (rsp.shadow_matrix_valid[rsp.active_slot]) {
+        float donor_world[16];
+        memcpy(donor_world, rsp.shadow_matrix[rsp.active_slot].world,
+               sizeof(donor_world));
+        if (!rsp.shadow_matrix[rsp.active_slot].view_eye_valid) {
+            dkr_modern_camera_missing_eye++;
+        } else if (!mdkr_modern_render_camera_object_position(
+                       donor_world,
+                       rsp.shadow_matrix[rsp.active_slot].view_eye_position,
+                       resolved.camera_position)) {
+            dkr_modern_camera_singular_world++;
+        } else {
+            resolved.camera_position_valid = 1u;
+            dkr_modern_camera_resolved++;
+        }
+    } else {
+        dkr_modern_camera_missing_matrix++;
+    }
 
     /* Modern geometry stays GPU-owned. The HLE walk contributes its exact
      * donor-object -> world binding for receivers and, for opaque/masked
@@ -8068,6 +8100,24 @@ static void dkr_rect_skip_report(void) {
     if (trace != NULL && trace[0] != '\0' && trace[0] != '0') {
         fprintf(stderr, "[RECT-SKIP] skipped=%llu\n",
                 (unsigned long long)dkr_inverted_rects_skipped);
+    }
+}
+
+__attribute__((destructor))
+static void dkr_modern_camera_report(void) {
+    const char *trace = getenv("MDKR_TRACE");
+    if (trace != NULL && trace[0] != '\0' && trace[0] != '0' &&
+        (dkr_modern_camera_missing_matrix != 0u ||
+         dkr_modern_camera_missing_eye != 0u ||
+         dkr_modern_camera_singular_world != 0u ||
+         dkr_modern_camera_resolved != 0u)) {
+        fprintf(stderr,
+                "[MODERN-CAMERA] resolved=%llu missingMatrix=%llu "
+                "missingEye=%llu singularWorld=%llu\n",
+                (unsigned long long)dkr_modern_camera_resolved,
+                (unsigned long long)dkr_modern_camera_missing_matrix,
+                (unsigned long long)dkr_modern_camera_missing_eye,
+                (unsigned long long)dkr_modern_camera_singular_world);
     }
 }
 

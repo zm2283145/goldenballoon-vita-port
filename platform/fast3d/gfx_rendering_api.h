@@ -161,6 +161,11 @@ struct GfxModernSkinnedDraw {
     float previous_model_matrix[16];
     const float *previous_bone_matrices;
     uint32_t bone_count;
+    /* Exact presentation-camera eye transformed into donor-object space by
+     * the HLE walk. The shader uses this for view-dependent material response;
+     * an unavailable/cut-incomplete camera retains the bounded legacy view. */
+    uint32_t camera_position_valid;
+    float camera_position[3];
     float light_direction[3];   /* normalized in asset/model space */
     float ambient;
 };

@@ -67,6 +67,34 @@ static void test_shadow_bounds(void) {
             "shadow bounds reject non-finite matrix ownership");
 }
 
+static void test_camera_object_position(void) {
+    float world[16] = {0};
+    const float camera_world[3] = {14.0f, 28.0f, 45.0f};
+    float output[3] = {-1.0f, -1.0f, -1.0f};
+    world[0] = 2.0f;
+    world[5] = 4.0f;
+    world[10] = 5.0f;
+    world[12] = 10.0f;
+    world[13] = 20.0f;
+    world[14] = 30.0f;
+    world[15] = 1.0f;
+    require(mdkr_modern_render_camera_object_position(
+                world, camera_world, output) &&
+                output[0] == 2.0f && output[1] == 2.0f &&
+                output[2] == 3.0f,
+            "camera eye transforms into donor-object space under nonuniform world scale");
+    world[10] = 0.0f;
+    require(!mdkr_modern_render_camera_object_position(
+                world, camera_world, output) && output[0] == 2.0f &&
+                output[1] == 2.0f && output[2] == 3.0f,
+            "singular camera binding fails without changing prior output");
+    world[10] = 5.0f;
+    world[15] = NAN;
+    require(!mdkr_modern_render_camera_object_position(
+                world, camera_world, output),
+            "non-finite camera binding fails closed");
+}
+
 static uint64_t pose_world_signature(const MdkrModernPose *pose) {
     const unsigned char *bytes;
     size_t size;
@@ -317,6 +345,7 @@ int main(int argc, char **argv) {
     char import_lock[4096];
     char prefix_witness[4096];
     test_shadow_bounds();
+    test_camera_object_position();
     char deletion_failure_witness[4096];
     char transaction_cache[TRANSACTION_FIXTURES][4096];
     char transaction_source[4096];

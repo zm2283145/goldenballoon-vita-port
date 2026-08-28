@@ -157,6 +157,12 @@ class HighFidelityCharacterTests(unittest.TestCase):
             "srgbToLinear(u.fog.rgb)", shader_source,
             "display-space fog must be decoded before linear-light blending",
         )
+        self.assertIn("u.eye.xyz-v.objectPos", shader_source)
+        self.assertIn("u.eye.w>0.5", shader_source)
+        self.assertNotIn(
+            "let view=vec3<f32>(0.0,0.0,1.0)", shader_source,
+            "specular response must use the exact presentation-camera eye",
+        )
         self.assertNotIn(
             "pow(baseSample.rgb,vec3<f32>(2.2))", shader_source
         )

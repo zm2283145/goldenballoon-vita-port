@@ -253,6 +253,12 @@ typedef struct GfxShadowMatrixBinding {
      * behaviour (see gfx_shadow_replay_restore).
      */
     float camera_position[3];
+    /* Exact eye that authored view_projection, including camera shake. Unlike
+     * camera_position (the unshaken camera-follow translation), this is
+     * meaningful for every gameplay matrix whose registration supplied it.
+     * Replay replaces it atomically with an interpolated VP. */
+    bool view_eye_valid;
+    float view_eye_position[3];
     /*
      * The view-projection AS CAPTURED, never overridden. The replay recomposes
      * with this first and compares the result against the display list's own
@@ -410,6 +416,11 @@ typedef struct GfxShadowReplayViewProjection {
      * the tick-T translation baked into its captured world -- see
      * GfxShadowMatrixBinding.camera_locked. */
     float camera_position[3];
+    /* Effective view eye, including the same shake used to build the matrix.
+     * This differs deliberately from camera_position, which remains the raw
+     * camera-follow translation consumed by the skydome. */
+    bool view_eye_valid;
+    float view_eye_position[3];
     /* The exact target endpoint derived from the same immutable snapshot pair.
      * The replay observer carries it to the following task, where that target
      * must become the next alpha-zero authored VP byte-for-byte. */
@@ -442,6 +453,9 @@ void gfx_shadow_matrix_set_site(int site);
  * (see GfxShadowMatrixBinding.camera_locked). Consumed the same way `site`
  * is: cleared on every register attempt whether or not it was read. */
 void gfx_shadow_matrix_set_camera_locked(bool camera_locked);
+/* Attaches the exact effective eye to the NEXT registration. NULL or a
+ * non-finite vector clears it. Consumed on every registration attempt. */
+void gfx_shadow_matrix_set_view_eye(const float position[3]);
 /* Copied into the NEXT registration and consumed on every register attempt,
  * like the site tag. NULL explicitly clears the pending owner. */
 void gfx_shadow_matrix_set_presentation_owner(

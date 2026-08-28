@@ -535,18 +535,18 @@ static int        s_modern_ubo_cap  = 0;   /* slots in s_modern_ubo */
 static int        s_modern_ubo_used = 0;   /* slots consumed this frame */
 static uint32_t   s_modern_ubo_gen  = 0;   /* bumped on (re)create; stamps cached bgs */
 
-/* Generic skeletal characters use one 16,736-byte uniform per primitive draw:
+/* Generic skeletal characters use one 16,752-byte uniform per primitive draw:
  * transform/material/fog/light parameters followed by 256 mat4 skin entries.
  * Slots are 256-byte aligned and never rewritten within a frame. */
 #define WGPU_SKINNED_MAX_BONES 256u
-#define WGPU_SKINNED_UNIFORM_FLOATS (88u + WGPU_SKINNED_MAX_BONES * 16u)
+#define WGPU_SKINNED_UNIFORM_FLOATS (92u + WGPU_SKINNED_MAX_BONES * 16u)
 #define WGPU_SKINNED_UNIFORM_BYTES (WGPU_SKINNED_UNIFORM_FLOATS * sizeof(float))
 #define WGPU_SKINNED_SLOT_BYTES \
     ((WGPU_SKINNED_UNIFORM_BYTES + WGPU_MODERN_UBO_ALIGN - 1u) & \
      ~(WGPU_MODERN_UBO_ALIGN - 1u))
 #define WGPU_SKINNED_SLOT_FLOATS \
     (WGPU_SKINNED_SLOT_BYTES / sizeof(float))
-_Static_assert(WGPU_SKINNED_UNIFORM_BYTES == 16736u,
+_Static_assert(WGPU_SKINNED_UNIFORM_BYTES == 16752u,
                "skinned WGSL and CPU uniform layouts diverged");
 _Static_assert(WGPU_SKINNED_SLOT_BYTES == 16896u,
                "skinned uniform slot lost 256-byte alignment");
@@ -9804,7 +9804,7 @@ static const char *kSkinnedWGSL =
     " @location(4) joints:vec4<u32>, @location(5) weights:vec4<f32> };\n"
     "struct U { mvp:mat4x4<f32>, model:mat4x4<f32>, normalModel:mat4x4<f32>, fog:vec4<f32>, fogParams:vec4<f32>,\n"
     " light:vec4<f32>, base:vec4<f32>, emissiveMetal:vec4<f32>,\n"
-    " material:vec4<f32>, shadowModel:mat4x4<f32>, bones:array<mat4x4<f32>,256> };\n"
+    " material:vec4<f32>, eye:vec4<f32>, shadowModel:mat4x4<f32>, bones:array<mat4x4<f32>,256> };\n"
     "@group(0) @binding(0) var<uniform> u:U;\n"
     "@group(0) @binding(1) var baseTex:texture_2d<f32>;\n"
     "@group(0) @binding(2) var mrTex:texture_2d<f32>;\n"
@@ -9819,7 +9819,8 @@ static const char *kSkinnedWGSL =
     "struct VOut { @builtin(position) position:vec4<f32>, @location(0) uv:vec2<f32>,\n"
     " @location(1) nrm:vec3<f32>, @location(2) tan:vec3<f32>,\n"
     " @location(3) handed:f32, @location(4) fogA:f32,\n"
-    " @location(5) worldPos:vec3<f32>, @location(6) shadowDepth:f32 };\n"
+    " @location(5) worldPos:vec3<f32>, @location(6) shadowDepth:f32,\n"
+    " @location(7) objectPos:vec3<f32> };\n"
     "@vertex fn vs_main(v:VIn)->VOut {\n"
     " let skin=u.bones[v.joints.x]*v.weights.x+u.bones[v.joints.y]*v.weights.y+\n"
     "          u.bones[v.joints.z]*v.weights.z+u.bones[v.joints.w]*v.weights.w;\n"
@@ -9832,7 +9833,7 @@ static const char *kSkinnedWGSL =
     " clip.z=(clip.z+clip.w)*0.5; var o:VOut; o.position=clip; o.uv=v.uv;\n"
     " o.nrm=normalize((u.normalModel*skin*vec4<f32>(v.nrm,0.0)).xyz);\n"
     " o.tan=normalize((u.normalModel*skin*vec4<f32>(v.tan.xyz,0.0)).xyz);\n"
-    " o.handed=v.tan.w; o.fogA=fogA; o.worldPos=shadowWorld.xyz/shadowWorld.w; o.shadowDepth=shadowDepth; return o; }\n"
+    " o.handed=v.tan.w; o.fogA=fogA; o.worldPos=shadowWorld.xyz/shadowWorld.w; o.shadowDepth=shadowDepth; o.objectPos=p.xyz/p.w; return o; }\n"
     "fn shadowCascade(cascade:i32,layer:i32,worldPos:vec3<f32>)->f32 {\n"
     " let sc=shadowU.worldToClip[cascade]*vec4<f32>(worldPos,1.0); if(sc.w<=0.0){return 1.0;} let ndc=sc.xyz/sc.w;\n"
     " let suv=vec3<f32>(ndc.x*0.5+0.5,0.5-ndc.y*0.5,ndc.z*0.5+0.5); if(any(suv<vec3<f32>(0.0))||any(suv>vec3<f32>(1.0))){return 1.0;}\n"
@@ -9849,7 +9850,8 @@ static const char *kSkinnedWGSL =
     " nts=normalize(vec3<f32>(nts.xy*u.material.y,nts.z));\n"
     " let n0=normalize(v.nrm); let t=normalize(v.tan-n0*dot(n0,v.tan));\n"
     " let b=cross(n0,t)*v.handed; let n=normalize(mat3x3<f32>(t,b,n0)*nts);\n"
-    " let l=normalize(-u.light.xyz); let view=vec3<f32>(0.0,0.0,1.0);\n"
+    " let l=normalize(-u.light.xyz); var view=vec3<f32>(0.0,0.0,1.0);let eyeDelta=u.eye.xyz-v.objectPos;\n"
+    " if(u.eye.w>0.5&&dot(eyeDelta,eyeDelta)>0.00000001){view=normalize(eyeDelta);}\n"
     " let h=normalize(l+view); let ndl=max(dot(n,l),0.0); let ndh=max(dot(n,h),0.0);\n"
     " let mr=textureSample(mrTex,texSampler,v.uv);\n"
     " let rough=clamp(u.material.x*mr.g,0.04,1.0); let metal=clamp(u.emissiveMetal.w*mr.b,0.0,1.0);\n"
@@ -9900,6 +9902,8 @@ static uint64_t s_skinned_asset_uploads = 0u;
 static uint64_t s_skinned_draws = 0u;
 static uint64_t s_skinned_triangles = 0u;
 static uint64_t s_skinned_refused_draws = 0u;
+static uint64_t s_skinned_camera_eye_draws = 0u;
+static uint64_t s_skinned_camera_fallback_draws = 0u;
 static bool wgpu_skinned_layout(void);
 
 static void wgpu_skinned_shadow_bind_groups_invalidate(void) {
@@ -9926,7 +9930,7 @@ static const char *kSkinnedShadowWGSL =
     "struct ShadowPass { worldToClip:mat4x4<f32> };\n"
     "@group(0) @binding(0) var<uniform> shadow:ShadowPass;\n"
     "struct U { world:mat4x4<f32>, model:mat4x4<f32>, normalModel:mat4x4<f32>, fog:vec4<f32>, fogParams:vec4<f32>,\n"
-    " light:vec4<f32>, base:vec4<f32>, emissiveMetal:vec4<f32>, material:vec4<f32>, shadowModel:mat4x4<f32>, bones:array<mat4x4<f32>,256> };\n"
+    " light:vec4<f32>, base:vec4<f32>, emissiveMetal:vec4<f32>, material:vec4<f32>, eye:vec4<f32>, shadowModel:mat4x4<f32>, bones:array<mat4x4<f32>,256> };\n"
     "@group(1) @binding(0) var<uniform> u:U;\n"
     "@group(1) @binding(1) var baseTex:texture_2d<f32>;\n"
     "@group(1) @binding(2) var texSampler:sampler;\n"
@@ -10977,17 +10981,21 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
     uniform[67] = material->metallic;
     uniform[68] = material->roughness; uniform[69] = material->normal_scale;
     uniform[70] = material->occlusion_strength; uniform[71] = material->alpha_cutoff;
-    uniform[72] = uniform[77] = uniform[82] = uniform[87] = 1.0f;
+    uniform[72] = draw->camera_position[0];
+    uniform[73] = draw->camera_position[1];
+    uniform[74] = draw->camera_position[2];
+    uniform[75] = draw->camera_position_valid == 1u ? 1.0f : 0.0f;
+    uniform[76] = uniform[81] = uniform[86] = uniform[91] = 1.0f;
     if (draw->shadow_binding_valid == 1u) {
-        memcpy(&uniform[72], draw->shadow_world_matrix,
+        memcpy(&uniform[76], draw->shadow_world_matrix,
                sizeof(draw->shadow_world_matrix));
     }
     for (uint32_t bone = 0u; bone < WGPU_SKINNED_MAX_BONES; bone++) {
-        float *matrix = &uniform[88u + bone * 16u];
+        float *matrix = &uniform[92u + bone * 16u];
         matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
     }
     if (draw->bone_matrices != NULL && draw->bone_count != 0u) {
-        memcpy(&uniform[88], draw->bone_matrices,
+        memcpy(&uniform[92], draw->bone_matrices,
                (size_t)draw->bone_count * 16u * sizeof(float));
     }
     slot = (uint32_t)s_skinned_ubo_used++;
@@ -11174,6 +11182,11 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
     if (!draw->reference_only) {
         s_skinned_draws++;
         s_skinned_triangles += primitive->index_count / 3u;
+        if (draw->camera_position_valid == 1u) {
+            s_skinned_camera_eye_draws++;
+        } else {
+            s_skinned_camera_fallback_draws++;
+        }
     }
 }
 
@@ -13200,7 +13213,8 @@ static void wgpu_shutdown(void) {
             "triangles=%llu refusedDraws=%llu shadowCaptured=%llu "
             "shadowDrawn=%llu shadowReceived=%llu "
             "shadowReceiveFallbacks=%llu shadowDropped=%llu "
-            "shadowOverflows=%llu\n",
+            "shadowOverflows=%llu cameraEyeDraws=%llu "
+            "cameraFallbackDraws=%llu\n",
             (unsigned long long)s_skinned_asset_uploads,
             (unsigned long long)s_skinned_draws,
             (unsigned long long)s_skinned_triangles,
@@ -13210,11 +13224,15 @@ static void wgpu_shutdown(void) {
             (unsigned long long)s_skinned_shadow_received,
             (unsigned long long)s_skinned_shadow_receive_fallbacks,
             (unsigned long long)s_skinned_shadow_dropped,
-            (unsigned long long)s_skinned_shadow_overflows);
+            (unsigned long long)s_skinned_shadow_overflows,
+            (unsigned long long)s_skinned_camera_eye_draws,
+            (unsigned long long)s_skinned_camera_fallback_draws);
     s_skinned_asset_uploads = 0u;
     s_skinned_draws = 0u;
     s_skinned_triangles = 0u;
     s_skinned_refused_draws = 0u;
+    s_skinned_camera_eye_draws = 0u;
+    s_skinned_camera_fallback_draws = 0u;
     s_skinned_shadow_captured = 0u;
     s_skinned_shadow_drawn = 0u;
     s_skinned_shadow_received = 0u;

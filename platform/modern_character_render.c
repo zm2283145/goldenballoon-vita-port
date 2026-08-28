@@ -88,6 +88,65 @@ int mdkr_modern_render_shadow_bounds(
     return 1;
 }
 
+int mdkr_modern_render_camera_object_position(
+    const float world[16], const float camera_world[3], float output[3]) {
+    float inverse[16];
+    float translated[3];
+    float result[3];
+    float a00;
+    float a01;
+    float a02;
+    float a10;
+    float a11;
+    float a12;
+    float a20;
+    float a21;
+    float a22;
+    float determinant;
+    float reciprocal;
+    size_t index;
+    if (world == NULL || camera_world == NULL || output == NULL) return 0;
+    for (index = 0u; index < 16u; ++index) {
+        if (!isfinite(world[index])) return 0;
+    }
+    for (index = 0u; index < 3u; ++index) {
+        if (!isfinite(camera_world[index])) return 0;
+    }
+    if (fabsf(world[3]) > 1.0e-6f || fabsf(world[7]) > 1.0e-6f ||
+        fabsf(world[11]) > 1.0e-6f || fabsf(world[15] - 1.0f) > 1.0e-6f) {
+        return 0;
+    }
+    a00 = world[0]; a01 = world[4]; a02 = world[8];
+    a10 = world[1]; a11 = world[5]; a12 = world[9];
+    a20 = world[2]; a21 = world[6]; a22 = world[10];
+    determinant = a00 * (a11 * a22 - a12 * a21) -
+                  a01 * (a10 * a22 - a12 * a20) +
+                  a02 * (a10 * a21 - a11 * a20);
+    if (!isfinite(determinant) || fabsf(determinant) < 1.0e-12f) return 0;
+    reciprocal = 1.0f / determinant;
+    memset(inverse, 0, sizeof(inverse));
+    inverse[0] = (a11 * a22 - a12 * a21) * reciprocal;
+    inverse[4] = (a02 * a21 - a01 * a22) * reciprocal;
+    inverse[8] = (a01 * a12 - a02 * a11) * reciprocal;
+    inverse[1] = (a12 * a20 - a10 * a22) * reciprocal;
+    inverse[5] = (a00 * a22 - a02 * a20) * reciprocal;
+    inverse[9] = (a02 * a10 - a00 * a12) * reciprocal;
+    inverse[2] = (a10 * a21 - a11 * a20) * reciprocal;
+    inverse[6] = (a01 * a20 - a00 * a21) * reciprocal;
+    inverse[10] = (a00 * a11 - a01 * a10) * reciprocal;
+    translated[0] = camera_world[0] - world[12];
+    translated[1] = camera_world[1] - world[13];
+    translated[2] = camera_world[2] - world[14];
+    for (index = 0u; index < 3u; ++index) {
+        result[index] = inverse[index] * translated[0] +
+                        inverse[4u + index] * translated[1] +
+                        inverse[8u + index] * translated[2];
+        if (!isfinite(result[index])) return 0;
+    }
+    memcpy(output, result, sizeof(result));
+    return 1;
+}
+
 static float exact_lerp(float previous, float current,
                         uint64_t numerator, uint64_t denominator) {
     double alpha;

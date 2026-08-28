@@ -705,6 +705,12 @@ License List, and it never interprets whether a declaration grants rights.
   already color-aware mip builder at every level; the old `pow(2.2)` shortcut
   is forbidden by a source contract test and the generated fixture compiles
   and renders through select, all three vehicles, and four-player WebGPU.
+- View-dependent response uses the exact effective eye that authored each
+  gameplay view-projection, including camera shake. Matrix registration carries
+  the eye and donor world together; presentation replay replaces both eye and
+  view-projection from the same immutable camera pair before the HLE walk.
+  The generated linked-ROM gate requires nonzero exact-eye draws and zero
+  camera fallbacks in select, car, hovercraft, plane, and four-player car.
 - Generate a deterministic tangent basis when a primitive lacks one. Supplied
   tangents are independently finite-checked, Gram-Schmidt orthogonalized
   against the final normal, and given a stable least-aligned-axis fallback
@@ -1510,6 +1516,10 @@ pause, replay, character select, and device recovery with no CPU vertex stream.
   alpha mask, sun/ambient response, fog, fitted skinned shadow casting for
   OPAQUE/MASK, and cascaded receiving for every visible material are
   implemented on the qualified WebGPU path. BLEND is receive-only by design.
+- **Implemented:** presentation-camera-correct specular response. The runtime
+  transforms the registered effective eye into donor-object space, interpolates
+  it with the same replay camera as the VP, and records exact/fallback draw
+  counts; release evidence refuses any fallback in its five standard contexts.
 - **Implemented:** deterministic tangent repair/fallback plus exact authoring
   diagnostics in the compiler, candidate protocol, visual review, and spoken
   review. Retaining those counters in a future runtime-cache format is optional

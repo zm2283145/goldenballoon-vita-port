@@ -56,7 +56,8 @@ class CharacterSpikeEvidenceTests(unittest.TestCase):
             "backend=webgpu-metal adapter=Fixture GPU driver=test "
             "vendor=00000001 device=00000002 output=1280x960 render=1280x960\n"
             "[WGPU-MODERN-CHARACTER] assetUploads=1 draws=120 "
-            "triangles=240 refusedDraws=0\n"
+            "triangles=240 refusedDraws=0 cameraEyeDraws=120 "
+            "cameraFallbackDraws=0\n"
         )
         parsed = evidence._parse_result(output, "car-1p")
         self.assertEqual(
@@ -75,6 +76,11 @@ class CharacterSpikeEvidenceTests(unittest.TestCase):
                                     "warmed real-time"):
             evidence._parse_result(output.replace("realtime=1", "realtime=0"),
                                    "car-1p")
+        with self.assertRaisesRegex(evidence.EvidenceError,
+                                    "clean modern character"):
+            evidence._parse_result(
+                output.replace("cameraFallbackDraws=0",
+                               "cameraFallbackDraws=1"), "car-1p")
 
     def test_context_match_tracks_the_scene_aware_preview_contract(self) -> None:
         output = (

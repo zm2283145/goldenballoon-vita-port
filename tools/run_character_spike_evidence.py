@@ -377,7 +377,13 @@ def _parse_result(output: str, label: str) -> dict[str, Any]:
         raise EvidenceError(f"{label} returned invalid fit evidence")
     if pose[3] <= 0 or pose[4] != 0:
         raise EvidenceError(f"{label} used an unintended package fallback pose")
-    if "[WGPU-MODERN-CHARACTER]" not in output or "refusedDraws=0" not in output:
+    backend_rows = re.findall(
+        r"\[WGPU-MODERN-CHARACTER\].*?refusedDraws=(\d+).*?"
+        r"cameraEyeDraws=(\d+) cameraFallbackDraws=(\d+)", output,
+    )
+    if (not backend_rows or int(backend_rows[-1][0]) != 0 or
+            int(backend_rows[-1][1]) <= 0 or
+            int(backend_rows[-1][2]) != 0):
         raise EvidenceError(f"{label} did not render a clean modern character")
     return {
         "measurement": {
@@ -506,8 +512,15 @@ def _exact_context(
         raise EvidenceError(
             f"{label} screenshot run did not enter the requested game context"
         )
-    if ("[WGPU-MODERN-CHARACTER]" not in capture_output or
-            "refusedDraws=0" not in capture_output):
+    capture_backend_rows = re.findall(
+        r"\[WGPU-MODERN-CHARACTER\].*?refusedDraws=(\d+).*?"
+        r"cameraEyeDraws=(\d+) cameraFallbackDraws=(\d+)",
+        capture_output,
+    )
+    if (not capture_backend_rows or
+            int(capture_backend_rows[-1][0]) != 0 or
+            int(capture_backend_rows[-1][1]) <= 0 or
+            int(capture_backend_rows[-1][2]) != 0):
         raise EvidenceError(
             f"{label} screenshot run did not render a clean modern character"
         )
