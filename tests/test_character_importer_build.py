@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -104,6 +105,29 @@ class CharacterImporterBuildTests(unittest.TestCase):
             helper.chmod(helper.stat().st_mode | stat.S_IXUSR)
             with self.assertRaisesRegex(builder.BuildError, "non-frozen"):
                 builder._run_tool_info(helper)
+
+    def test_tool_info_checks_allow_bounded_first_launch_security_scan(self) -> None:
+        report = json.dumps({
+            "ok": True,
+            "schema": builder.INFO_SCHEMA,
+            "frozen": True,
+            "python": ".".join(map(str, builder.PINNED_PYTHON)),
+        }).encode("utf-8")
+        completed = mock.Mock(returncode=0, stdout=report, stderr=b"")
+        with mock.patch.object(
+                subprocess, "run", return_value=completed) as run:
+            builder._run_tool_info(Path("character_importer"))
+            self.assertEqual(
+                builder.TOOL_INFO_TIMEOUT_SECONDS,
+                run.call_args.kwargs["timeout"],
+            )
+        with mock.patch.object(
+                subprocess, "run", return_value=completed) as run:
+            verifier._tool_info(Path("character_importer"))
+            self.assertEqual(
+                builder.TOOL_INFO_TIMEOUT_SECONDS,
+                run.call_args.kwargs["timeout"],
+            )
 
     def test_build_refuses_wrong_python_before_pyinstaller(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

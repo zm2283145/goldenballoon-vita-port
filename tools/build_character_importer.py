@@ -27,6 +27,10 @@ INFO_SCHEMA = "mdkr-character-importer-info-v1"
 PYINSTALLER_VERSION = "6.22.2"
 PINNED_PYTHON = (3, 13, 13)
 MAX_TOOL_INFO_BYTES = 16 * 1024
+# A newly signed/frozen executable can spend tens of seconds in the operating
+# system's first-launch security scan on a loaded release host. Keep this
+# bounded, but do not misclassify that scan as a broken importer.
+TOOL_INFO_TIMEOUT_SECONDS = 120
 SOURCE_MODULES = (
     "tools/character_package_manager.py",
     "tools/gltf_validator_adapter.py",
@@ -119,7 +123,7 @@ def _run_tool_info(executable: Path) -> dict[str, Any]:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=30,
+            timeout=TOOL_INFO_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise BuildError(f"built importer could not run tool-info: {exc}") from exc

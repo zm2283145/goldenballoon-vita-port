@@ -77,7 +77,7 @@ for BASISU_NOTICE_SPEC in \
     BASISU_NOTICE_PATH="${BASISU_NOTICE_DIR}/${BASISU_NOTICE_NAME}"
     [[ -f "${BASISU_NOTICE_PATH}" && ! -L "${BASISU_NOTICE_PATH}" ]] ||
         die "bundled Basis Universal notice is missing or linked: ${BASISU_NOTICE_NAME}"
-    [[ "$(shasum -a 256 "${BASISU_NOTICE_PATH}" | awk '{print $1}')" ==
+    [[ "$(shasum -a 256 "${BASISU_NOTICE_PATH}" | awk '{print $1}')" == \
        "${BASISU_NOTICE_HASH}" ]] ||
         die "bundled Basis Universal notice changed: ${BASISU_NOTICE_NAME}"
 done
@@ -89,7 +89,7 @@ for CHARACTER_TEXT_NOTICE_SPEC in \
     CHARACTER_TEXT_NOTICE_PATH="${BASISU_NOTICE_DIR}/${CHARACTER_TEXT_NOTICE_NAME}"
     [[ -f "${CHARACTER_TEXT_NOTICE_PATH}" && ! -L "${CHARACTER_TEXT_NOTICE_PATH}" ]] ||
         die "bundled character-text notice is missing or linked: ${CHARACTER_TEXT_NOTICE_NAME}"
-    [[ "$(shasum -a 256 "${CHARACTER_TEXT_NOTICE_PATH}" | awk '{print $1}')" ==
+    [[ "$(shasum -a 256 "${CHARACTER_TEXT_NOTICE_PATH}" | awk '{print $1}')" == \
        "${CHARACTER_TEXT_NOTICE_HASH}" ]] ||
         die "bundled character-text notice changed: ${CHARACTER_TEXT_NOTICE_NAME}"
 done
@@ -108,7 +108,7 @@ MESHOPTIMIZER_README="${APP_PATH}/Contents/Resources/ThirdParty/Meshoptimizer-RE
     die "bundled Character Workshop LOD helper is missing, linked, or not executable"
 [[ -f "${MESHOPTIMIZER_LICENSE}" && ! -L "${MESHOPTIMIZER_LICENSE}" ]] ||
     die "bundled meshoptimizer license is missing or linked"
-[[ "$(shasum -a 256 "${MESHOPTIMIZER_LICENSE}" | awk '{print $1}')" ==
+[[ "$(shasum -a 256 "${MESHOPTIMIZER_LICENSE}" | awk '{print $1}')" == \
    "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26" ]] ||
     die "bundled meshoptimizer license changed"
 [[ -f "${MESHOPTIMIZER_README}" && ! -L "${MESHOPTIMIZER_README}" ]] ||
@@ -127,10 +127,10 @@ fi
     die "bundled Character Workshop CPython license is missing or linked"
 [[ -f "${CHARACTER_PYINSTALLER_LICENSE}" && ! -L "${CHARACTER_PYINSTALLER_LICENSE}" ]] ||
     die "bundled Character Workshop PyInstaller terms are missing or linked"
-[[ "$(shasum -a 256 "${CHARACTER_CPYTHON_LICENSE}" | awk '{print $1}')" ==
+[[ "$(shasum -a 256 "${CHARACTER_CPYTHON_LICENSE}" | awk '{print $1}')" == \
    "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb" ]] ||
     die "bundled Character Workshop CPython license changed"
-[[ "$(shasum -a 256 "${CHARACTER_PYINSTALLER_LICENSE}" | awk '{print $1}')" ==
+[[ "$(shasum -a 256 "${CHARACTER_PYINSTALLER_LICENSE}" | awk '{print $1}')" == \
    "dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245" ]] ||
     die "bundled Character Workshop PyInstaller terms changed"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -154,10 +154,10 @@ fi
     die "bundled Khronos glTF Validator license is missing or linked"
 [[ -f "${GLTF_VALIDATOR_NOTICES}" && ! -L "${GLTF_VALIDATOR_NOTICES}" ]] ||
     die "bundled Khronos glTF Validator notices are missing or linked"
-[[ "$(shasum -a 256 "${GLTF_VALIDATOR_LICENSE}" | awk '{print $1}')" ==
+[[ "$(shasum -a 256 "${GLTF_VALIDATOR_LICENSE}" | awk '{print $1}')" == \
    "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30" ]] ||
     die "bundled Khronos glTF Validator license changed"
-[[ "$(shasum -a 256 "${GLTF_VALIDATOR_NOTICES}" | awk '{print $1}')" ==
+[[ "$(shasum -a 256 "${GLTF_VALIDATOR_NOTICES}" | awk '{print $1}')" == \
    "d7a1cefe85110c1308632d0384b7a67a18c125193e54175c50d1982d8c81a2f4" ]] ||
     die "bundled Khronos glTF Validator notices changed"
 python3 "${PROJECT_ROOT}/tools/verify_gltf_validator.py" \

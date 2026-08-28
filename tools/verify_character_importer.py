@@ -70,7 +70,8 @@ def _tool_info(executable: Path) -> dict[str, Any]:
         completed = subprocess.run(
             [str(executable), "tool-info"], check=False,
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, timeout=30,
+            stderr=subprocess.PIPE,
+            timeout=builder.TOOL_INFO_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise VerificationError(f"could not execute importer tool-info: {exc}") from exc
