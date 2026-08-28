@@ -3577,11 +3577,14 @@ static s32 workshop_preview_level_for_vehicle(
     s32 vehicle, MdkrCharacterPreviewScene scene) {
     static const s32 levels[3][MDKR_CHARACTER_PREVIEW_SCENE_COUNT] = {
         {ASSET_LEVEL_ANCIENTLAKE, ASSET_LEVEL_GREENWOODVILLAGE,
-         ASSET_LEVEL_SNOWBALLVALLEY},
+         ASSET_LEVEL_SNOWBALLVALLEY, ASSET_LEVEL_HAUNTEDWOODS,
+         ASSET_LEVEL_JUNGLEFALLS},
         {ASSET_LEVEL_WHALEBAY, ASSET_LEVEL_CRESCENTISLAND,
-         ASSET_LEVEL_HOTTOPVOLCANO},
+         ASSET_LEVEL_HOTTOPVOLCANO, ASSET_LEVEL_TREASURECAVES,
+         ASSET_LEVEL_PIRATELAGOON},
         {ASSET_LEVEL_WINDMILLPLAINS, ASSET_LEVEL_SPACEPORTALPHA,
-         ASSET_LEVEL_EVERFROSTPEAK},
+         ASSET_LEVEL_EVERFROSTPEAK, ASSET_LEVEL_DARKMOONCAVERNS,
+         ASSET_LEVEL_SPACEDUSTALLEY},
     };
     if (vehicle < VEHICLE_CAR || vehicle > VEHICLE_PLANE ||
         scene < MDKR_CHARACTER_PREVIEW_SCENE_BASELINE ||
@@ -3599,6 +3602,12 @@ static MdkrCharacterPreviewScene workshop_preview_scene_from_name(
     }
     if (strcmp(name, "alternate") == 0) {
         return MDKR_CHARACTER_PREVIEW_SCENE_ALTERNATE;
+    }
+    if (strcmp(name, "low-visibility") == 0) {
+        return MDKR_CHARACTER_PREVIEW_SCENE_LOW_VISIBILITY;
+    }
+    if (strcmp(name, "effects") == 0) {
+        return MDKR_CHARACTER_PREVIEW_SCENE_EFFECTS;
     }
     return MDKR_CHARACTER_PREVIEW_SCENE_COUNT;
 }

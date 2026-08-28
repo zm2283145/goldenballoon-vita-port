@@ -453,12 +453,19 @@ void testExactContactSuggestions() {
 
 void testSceneReviewProgression() {
     constexpr uint32_t allThree = 0x7u;
+    constexpr uint32_t allFive = 0x1Fu;
     assert(CharacterWorkshop_nextSceneReview(3u, 0u, allThree, true) == 1u);
     assert(CharacterWorkshop_nextSceneReview(3u, 1u, allThree, true) == 2u);
     assert(CharacterWorkshop_nextSceneReview(3u, 2u, allThree, true) == 3u);
     assert(CharacterWorkshop_nextSceneReview(3u, 0u, 0x1u, false) == 1u);
     assert(CharacterWorkshop_nextSceneReview(3u, 1u, 0x3u, false) == 2u);
     assert(CharacterWorkshop_nextSceneReview(3u, 2u, allThree, false) == 3u);
+    assert(CharacterWorkshop_nextSceneReview(5u, 0u, allFive, true) == 1u);
+    assert(CharacterWorkshop_nextSceneReview(5u, 3u, allFive, true) == 4u);
+    assert(CharacterWorkshop_nextSceneReview(5u, 4u, allFive, true) == 5u);
+    assert(CharacterWorkshop_nextSceneReview(5u, 1u, 0x7u, false) == 3u);
+    assert(CharacterWorkshop_nextSceneReview(5u, 3u, 0xFu, false) == 4u);
+    assert(CharacterWorkshop_nextSceneReview(5u, 4u, allFive, false) == 5u);
     assert(CharacterWorkshop_nextSceneReview(1u, 0u, 0x1u, false) == 1u);
     assert(CharacterWorkshop_nextSceneReview(0u, 0u, 0u, false) == 0u);
     assert(CharacterWorkshop_nextSceneReview(33u, 0u, 0u, false) == 33u);

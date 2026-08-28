@@ -73,6 +73,9 @@ struct Snapshot {
      * frame-to-frame contact-residual stability; every older approval reopens
      * once. */
     bool fitContactStabilityContractPresent = false;
+    /* Decode-only migration witness. v18 vehicle approvals include all five
+     * qualified scene pressures; every older approval reopens once. */
+    bool fitExpandedSceneContractPresent = false;
 
     float scale = 1.0f;
     float offset[3] = {};

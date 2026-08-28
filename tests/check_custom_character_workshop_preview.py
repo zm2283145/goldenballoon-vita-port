@@ -1844,7 +1844,10 @@ def main() -> int:
             )
 
         for scene_name, scene_index, level_id in (
-                ("dense", 1, 18), ("alternate", 2, 9)):
+                ("dense", 1, 18),
+                ("alternate", 2, 9),
+                ("low-visibility", 3, 31),
+                ("effects", 4, 29)):
             scene_env = dict(motion_env)
             scene_env["MDKR_CHARACTER_WORKSHOP_PREVIEW_SCENE"] = scene_name
             process = run([
@@ -1909,8 +1912,12 @@ def main() -> int:
         for context, scene_name, scene_index, vehicle_id, level_id in (
                 ("hovercraft", "dense", 1, 1, 10),
                 ("hovercraft", "alternate", 2, 1, 7),
+                ("hovercraft", "low-visibility", 3, 1, 30),
+                ("hovercraft", "effects", 4, 1, 4),
                 ("plane", "dense", 1, 2, 15),
-                ("plane", "alternate", 2, 2, 13)):
+                ("plane", "alternate", 2, 2, 13),
+                ("plane", "low-visibility", 3, 2, 32),
+                ("plane", "effects", 4, 2, 17)):
             route_env = dict(motion_env)
             route_env.update(
                 MDKR_CHARACTER_WORKSHOP_PREVIEW=context,
@@ -2185,7 +2192,7 @@ def main() -> int:
         "exact four-contact post-solve witnesses and qualified retained-vehicle "
         "surface intersection samples plus settled per-limb residual-drift "
         "witnesses, bounded one-session three-state select "
-        "and three-course complete eleven-sample race semantic batteries, "
+        "and five-course complete eleven-sample race semantic batteries, "
         "exact isolated-versus-scene opaque-depth regions plus game-tagged "
         "vehicle-body/part/held-object presence, qualification, and overlap "
         "evidence with recoverable, bounded optional-GPU "

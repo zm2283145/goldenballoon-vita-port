@@ -185,21 +185,22 @@ explicitly restricted to the generated fixture and exists only for CI.
   current-pose hips/chest/head node origins into bounded fixed-point camera
   evidence. Offset Studio reports camera occupancy, clipping, head placement,
   torso placement, and seat-to-hips displacement across restart. For every
-  vehicle, one resumable action now runs all eleven race samples on three
-  qualified courses: an open baseline, dense scenery, and an alternate
-  environment. Each held generation snaps to its target sample, publishes
+  vehicle, one resumable action now runs all eleven race samples on five
+  qualified courses: open baseline, dense scenery, alternate climate,
+  dark/enclosed visibility, and effects-heavy presentation. Each held
+  generation snaps to its target sample, publishes
   only after the runtime reports it settled plus sixty replacement draws (a
   deliberate human-visible inspection dwell), and
   returns automatically with aggregated framing, retained-body surface,
   topology-qualified containment, opaque-depth visibility, and contact evidence.
   Approval requires all current source/fit/LOD/presentation-bound course
   batteries and reopens every legacy approval once. Select approval covers
-  idle/hover/confirm; every vehicle approval covers 33 samples in total.
+  idle/hover/confirm; every vehicle approval covers 55 samples in total.
   Stable game-owned scopes now distinguish retained body, vehicle-part sprites,
   and held objects and carry their presence, replay qualification, and in-front
   overlap into the per-state table and explicit warning acknowledgement. This
-  intentionally does not identify an individual wheel/prop sprite or prove
-  weather and vehicle conditions outside the qualified course set.
+  intentionally does not identify an individual wheel/prop sprite or claim
+  scene-owned boss, battle, or cinematic presentation as package-owned.
 
 Acceptance: the example faces the camera in select, its feet are floor-aligned,
 and its head/torso land inside each ordinary vehicle camera without manual JSON.
@@ -284,7 +285,7 @@ in the package review and durable evidence.
   topology-qualified bounded containment, and an isolated-versus-final-depth
   visibility grid. It does not mislabel 2D overlap as penetration or claim one
   pose covers motion.
-- **Implemented:** the current exact result or complete 33-state battery reduces
+- **Implemented:** the current exact result or complete 55-state battery reduces
   root/bend/target/end witnesses to the constant least-squares endpoint-minus-
   target correction for each limb. Offset Studio shows millimetre deltas and
   sample counts, refuses the one-click proposal outside the +/-1 m safety
@@ -303,11 +304,11 @@ in the package review and durable evidence.
   Named retained-body, vehicle-part, and held-object attribution is now an exact
   sampled-pose renderer witness.
 - **Implemented:** test car, hovercraft, and plane across all eleven race
-  samples on three qualified courses rather than one favourable parked frame.
+  samples on five qualified courses rather than one favourable parked frame.
   The UI
   names only an actual framing/body problem, truthfully distinguishes an
   unqualified volume or blended-material visual check, and reports the minimum
-  qualified visibility and maximum contact residual across all 33 rows.
+  qualified visibility and maximum contact residual across all 55 rows.
 
 Acceptance: each example context is visually seated, ordinary cameras show the
 intended body region, and residuals/approved exceptions are source- and
@@ -438,7 +439,7 @@ The forward-axis thumbnail studio, structural/symmetry rig proposal, derived
 rest/bend bases, 72%-occupancy isolated capture, portrait handoff, exact
 retained-body surface intersection, topology-qualified bounded containment,
 final opaque-depth visibility witness, one-session three-state select and
-three-course eleven-sample vehicle scene batteries, a renderer-registered
+five-course eleven-sample vehicle scene batteries, a renderer-registered
 held-pose retail-donor/custom comparison studio, and fresh
 five-context/performance fixture qualification are complete.
 Fit approval now requires a current warmed exact contract, current aggregated
@@ -449,8 +450,8 @@ explicit author-acknowledgement path. Detailed battery rows are session-only;
 the durable approval remains source/fit/LOD/presentation and contract bound.
 The immediate remaining order is therefore:
 
-1. add weather/vehicle-condition variants beyond the three qualified Workshop
-   course families;
+1. add bespoke boss, battle, and scripted-cinematic conditions only if those
+   scene-owned surfaces become part of package presentation authority;
 2. add a real linked-ROM unusual-proportion fixture, then qualify richer
    reference clips, joint limits, and optional deterministic secondary
    hair/tail motion; the comparison overlay already requires exact source,

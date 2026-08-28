@@ -40,7 +40,7 @@ typedef enum {
     MDKR_CHARACTER_PREVIEW_PLANE,
 } MdkrCharacterPreviewContext;
 
-/* Vehicle review deliberately spans three fingerprinted course families. The
+/* Vehicle review deliberately spans five fingerprinted course families. The
  * names describe the authoring pressure, while the game owns the exact level
  * mapping per vehicle. Character select has one authored room and therefore
  * admits BASELINE only. */
@@ -48,6 +48,8 @@ typedef enum {
     MDKR_CHARACTER_PREVIEW_SCENE_BASELINE = 0,
     MDKR_CHARACTER_PREVIEW_SCENE_DENSE,
     MDKR_CHARACTER_PREVIEW_SCENE_ALTERNATE,
+    MDKR_CHARACTER_PREVIEW_SCENE_LOW_VISIBILITY,
+    MDKR_CHARACTER_PREVIEW_SCENE_EFFECTS,
     MDKR_CHARACTER_PREVIEW_SCENE_COUNT,
 } MdkrCharacterPreviewScene;
 
@@ -352,7 +354,7 @@ typedef struct MdkrCharacterMotionReviewResult {
         [MDKR_CHARACTER_PREVIEW_CONTACTS];
 } MdkrCharacterMotionReviewResult;
 
-#define MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION 4u
+#define MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION 5u
 #define MDKR_CHARACTER_CONTACT_STABILITY_MINIMUM_OBSERVATIONS 8u
 #define MDKR_CHARACTER_MOTION_REVIEW_ALL_SAMPLES \
     MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_MASK( \

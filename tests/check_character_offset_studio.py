@@ -146,18 +146,29 @@ def main() -> int:
             "slot->inspection_generation == s_inspection_generation" in runtime,
             "representative review lacks an engine-owned exact-pose settling witness")
     require("representativeMotionReady" in settings and
-            "mdkr-character-fit-review-v6-contact-stability" in settings and
-            "all 33 exact race-and-scene samples" in settings and
+            "mdkr-character-fit-review-v7-expanded-scenes" in settings and
+            "all 55 exact race-and-scene samples" in settings and
             "idle, hover, and confirm" in settings and
             "currentCharacterMotionReview" in settings and
             "value.fitSha256 == fit" in settings and
-            "value.presentationSha256 == presentation" in settings,
-            "vehicle approval can bypass current representative renderer evidence or retain a pre-stability active approval")
-    require("mdkr-fit-history-v8" in settings and
-            "kFitContactStabilityVersion = 17u" in draft_snapshot and
-            "fitContactStabilityContractPresent" in draft_header and
+            "value.presentationSha256 == presentation" in settings and
+            "mdkr-character-test-presentation-v3" in settings and
+            "MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION 5u" in entry,
+            "vehicle approval can bypass current representative renderer evidence or retain an older active approval")
+    require("mdkr-fit-history-v9" in settings and
+            "kFitExpandedSceneVersion = 18u" in draft_snapshot and
+            "fitExpandedSceneContractPresent" in draft_header and
             "parsed.reviewedContexts = 0u" in draft_snapshot,
-            "older approvals can inherit the settled contact-stability meaning")
+            "older approvals can inherit the expanded five-scene meaning")
+    require("MDKR_CHARACTER_PREVIEW_SCENE_LOW_VISIBILITY" in entry and
+            "MDKR_CHARACTER_PREVIEW_SCENE_EFFECTS" in entry and
+            "ASSET_LEVEL_HAUNTEDWOODS" in game and
+            "ASSET_LEVEL_TREASURECAVES" in game and
+            "ASSET_LEVEL_DARKMOONCAVERNS" in game and
+            "ASSET_LEVEL_JUNGLEFALLS" in game and
+            "ASSET_LEVEL_PIRATELAGOON" in game and
+            "ASSET_LEVEL_SPACEDUSTALLEY" in game,
+            "expanded scene approval can omit a vehicle-specific low-visibility or effects-heavy route")
     require("characterMotionReviewContactStabilityValid" in settings and
             "Residual stability:" in settings and
             "contactStabilityMeasured" in settings and

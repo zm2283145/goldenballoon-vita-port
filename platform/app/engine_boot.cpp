@@ -113,6 +113,9 @@ const char *characterPreviewSceneName(MdkrCharacterPreviewScene scene) {
         case MDKR_CHARACTER_PREVIEW_SCENE_BASELINE: return "baseline";
         case MDKR_CHARACTER_PREVIEW_SCENE_DENSE: return "dense";
         case MDKR_CHARACTER_PREVIEW_SCENE_ALTERNATE: return "alternate";
+        case MDKR_CHARACTER_PREVIEW_SCENE_LOW_VISIBILITY:
+            return "low-visibility";
+        case MDKR_CHARACTER_PREVIEW_SCENE_EFFECTS: return "effects";
         default: return nullptr;
     }
 }

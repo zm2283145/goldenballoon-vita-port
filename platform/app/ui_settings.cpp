@@ -2275,6 +2275,12 @@ constexpr CharacterReviewSceneDefinition kCharacterReviewScenes[] = {
      {"Greenwood Village", "Crescent Island", "Spaceport Alpha"}},
     {MDKR_CHARACTER_PREVIEW_SCENE_ALTERNATE, "Alternate environment",
      {"Snowball Valley", "Hot Top Volcano", "Everfrost Peak"}},
+    {MDKR_CHARACTER_PREVIEW_SCENE_LOW_VISIBILITY,
+     "Dark / enclosed visibility",
+     {"Haunted Woods", "Treasure Caves", "Darkmoon Caverns"}},
+    {MDKR_CHARACTER_PREVIEW_SCENE_EFFECTS,
+     "Effects-heavy environment",
+     {"Jungle Falls", "Pirate Lagoon", "Spacedust Alley"}},
 };
 
 static_assert(std::size(kCharacterReviewScenes) ==
@@ -2687,10 +2693,9 @@ std::string characterTestPresentationSignature() {
         MDKR_ENH_LOD_BIAS,
         MDKR_VIDEO_WIDESCREEN_HUD,
     };
-    /* v2 binds the representative per-vehicle Workshop courses introduced
-     * with the car/Whale Bay/Windmill Plains route matrix. Timing evidence
-     * from the former all-Ancient-Lake matrix must never satisfy readiness. */
-    std::string canonical = "mdkr-character-test-presentation-v2\n";
+    /* v3 binds the five-course per-vehicle route matrix. Evidence from the
+     * former three-course battery must never satisfy current readiness. */
+    std::string canonical = "mdkr-character-test-presentation-v3\n";
     canonical += AppVersion();
     canonical.push_back('\n');
     for (MdkrVideoKey key : keys) {
@@ -2761,11 +2766,11 @@ std::string characterFitReviewSignature(
     const CharacterTuningEdit &edit,
     unsigned context) {
     if (entry == nullptr || context >= MDKR_CHARACTER_CONTEXT_COUNT) return {};
-    /* v6 additionally binds vehicle approval to the settled per-limb contact
-     * residual-stability witness. Select shares the version so no active,
+    /* v7 additionally binds vehicle approval to the dark/enclosed and
+     * effects-heavy course families. Select shares the version so no active,
      * draft, or history approval silently inherits the stronger meaning. */
     std::string canonical =
-        "mdkr-character-fit-review-v6-contact-stability\n";
+        "mdkr-character-fit-review-v7-expanded-scenes\n";
     canonical.append(reinterpret_cast<const char *>(entry->source_sha256),
                      sizeof(entry->source_sha256));
     canonical += "\n" + std::to_string(entry->donor) + "\n";
@@ -9029,7 +9034,7 @@ bool drawCharacterTuningEditor(int player,
                         : "Complete semantic motion check");
                 ui::TextSubtleWrapped(
                     vehicleMotion
-                        ? "One guided workflow checks every race semantic against this vehicle on three qualified courses: an open baseline, dense scenery, and an alternate environment. Each course visibly holds both steering extremes, reverse, boost, item, damage, spin, airborne, landing, and both finishes for at least 60 complete character draws. The launcher returns and advances automatically; completed courses remain resumable if a later launch stops."
+                        ? "One guided workflow checks every race semantic against this vehicle on five qualified courses: open baseline, dense scenery, alternate climate, dark/enclosed visibility, and effects-heavy presentation. Each course visibly holds both steering extremes, reverse, boost, item, damage, spin, airborne, landing, and both finishes for at least 60 complete character draws. The launcher returns and advances automatically; completed courses remain resumable if a later launch stops."
                         : "One guided run checks select idle, hover, and confirm in the real selection room. The game settles and visibly holds all three states for at least 60 complete character draws, then returns automatically with fresh framing and visibility evidence.");
                 CharacterSceneReviewRun &sceneRun =
                     g_characterSceneReviewRuns[entry->id];
@@ -9121,11 +9126,11 @@ bool drawCharacterTuningEditor(int player,
                             ? "The last course did not return evidence. Retry it without losing completed courses."
                             : exactPreviewReady
                                 ? vehicleMotion
-                                    ? "Ready; three qualified courses, 11 race samples per course, automatic return and resume."
+                                    ? "Ready; five qualified courses, 11 race samples per course, automatic return and resume."
                                     : "Ready; fixed one-player exact camera, all three select states visibly held, automatic return."
                                 : "Unavailable until a supported base ROM is linked and verified on Play.",
                     vehicleMotion
-                        ? "Runs a bounded exact-game review across the complete race semantic library on open, dense, and alternate-environment courses. It does not save performance evidence or require manual game navigation."
+                        ? "Runs a bounded exact-game review across the complete race semantic library on open, dense, alternate-climate, dark/enclosed, and effects-heavy courses. It does not save performance evidence or require manual game navigation."
                         : "Runs a bounded exact-game review across idle, hover, and confirm. It does not save performance evidence or require manual game navigation.");
                 if (sceneRun.active && !sceneLaunchNowPending) {
                     ImGui::SameLine();
@@ -9189,7 +9194,7 @@ bool drawCharacterTuningEditor(int player,
                     ImGui::TextColored(
                         AppTheme::good(),
                         vehicleMotion
-                            ? "All 33 exact race-and-scene samples are current."
+                            ? "All 55 exact race-and-scene samples are current."
                             : "All three exact select states are current.");
                 } else if (staleMotionReview) {
                     ImGui::TextColored(
@@ -9199,7 +9204,7 @@ bool drawCharacterTuningEditor(int player,
                     ImGui::TextColored(
                         AppTheme::good(),
                         vehicleMotion
-                            ? "The current approval records all three course batteries; rerun to refresh session measurements."
+                            ? "The current approval records all five course batteries; rerun to refresh session measurements."
                             : "Complete three-state select review is recorded in the current approval; rerun to refresh detailed measurements.");
                 } else {
                     ImGui::TextDisabled(
@@ -9952,7 +9957,7 @@ bool drawCharacterTuningEditor(int player,
                         !representativeMotionReady
                             ? context == MDKR_CHARACTER_CONTEXT_SELECT
                                 ? "Run Complete semantic motion check above. Select approval requires fresh source-and-fit-bound evidence from idle, hover, and confirm—not one favourable static frame."
-                                : "Run Complete motion and scene check above. Vehicle approval requires fresh source-and-fit-bound evidence from every race semantic on all three qualified courses—not one favourable parked frame."
+                                : "Run Complete motion and scene check above. Vehicle approval requires fresh source-and-fit-bound evidence from every race semantic on all five qualified courses—not one favourable parked frame."
                             : "Run this exact context again. Approval stays unavailable when fit, camera, vehicle-surface, contact, or opaque-depth evidence is incomplete or invalid.");
                 } else if (visibilityBlocksReview) {
                     ImGui::TextColored(
@@ -9969,10 +9974,10 @@ bool drawCharacterTuningEditor(int player,
                     const char *sceneReviewLabel = reviewWarnings
                         ? context == MDKR_CHARACTER_CONTEXT_SELECT
                             ? "I inspected the exact composed scene and accept the highlighted fit, clipping, or visibility warnings"
-                            : "I inspected all 33 exact race-and-scene samples and accept the highlighted fit, clipping, or visibility warnings"
+                            : "I inspected all 55 exact race-and-scene samples and accept the highlighted fit, clipping, or visibility warnings"
                         : context == MDKR_CHARACTER_CONTEXT_SELECT
                             ? "I inspected idle, hover, and confirm for placement, silhouette, and visibility"
-                            : "I inspected all 33 exact race-and-scene samples for placement, silhouette, vehicle occlusion, and attachments";
+                            : "I inspected all 55 exact race-and-scene samples for placement, silhouette, vehicle occlusion, and attachments";
                     if (ImGui::Checkbox(sceneReviewLabel, &sceneReviewed)) {
                         if (sceneReviewed) {
                             pendingSceneReviews |= 1u << context;
@@ -18448,7 +18453,7 @@ bool captureCharacterHistoryPayload(
         }
     } else if (tool == CharacterHistoryTool::Fit) {
         const CharacterTuningEdit &edit = loadCharacterTuning(0, entry->id);
-        payload = "mdkr-fit-history-v8\n";
+        payload = "mdkr-fit-history-v9\n";
         appendCharacterHistoryValue(payload, edit.scale);
         for (float value : edit.offset) {
             appendCharacterHistoryValue(payload, value);
@@ -18854,7 +18859,10 @@ bool applyCharacterHistoryPayload(
         }
         g_characterRigEdits[entry->id] = std::move(replacement);
     } else if (tool == CharacterHistoryTool::Fit) {
+        const bool hasExpandedSceneContract =
+            consumeHeader("mdkr-fit-history-v9\n");
         const bool hasContactStabilityContract =
+            hasExpandedSceneContract ||
             consumeHeader("mdkr-fit-history-v8\n");
         const bool hasMultiSceneReviewContract =
             hasContactStabilityContract ||
@@ -18922,7 +18930,8 @@ bool applyCharacterHistoryPayload(
         }
         if (!hasSceneReviewContract || !hasSemanticReviewContract ||
             !hasMultiSceneReviewContract ||
-            !hasContactStabilityContract) {
+            !hasContactStabilityContract ||
+            !hasExpandedSceneContract) {
             reviewed = 0u;
             contactExceptions = 0u;
         }
@@ -24167,7 +24176,7 @@ void Settings_publishCharacterPreviewResult(
                     run.refreshAll = false;
                     setStatus(
                         vehicle
-                            ? "Complete race and scene review is ready: all 11 semantics were checked across all three qualified courses."
+                            ? "Complete race and scene review is ready: all 11 semantics were checked across all five qualified courses."
                             : "Complete character-select motion review is ready: idle, hover, and confirm all have current framing and visibility evidence.",
                         AppTheme::good());
                 }

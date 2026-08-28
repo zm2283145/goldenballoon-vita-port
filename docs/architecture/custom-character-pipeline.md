@@ -1184,8 +1184,8 @@ the source, fit, renderer presentation, qualified scene, pose, motion source,
 warmed frame/inspection timeline, target-frame fit, camera projection,
 viewport/scissor, and output grid match exactly. Both products remain
 comparison-only and cannot satisfy fit, motion,
-portrait, or performance evidence. Embedded offscreen preview, weather and
-vehicle conditions beyond the three qualified course
+portrait, or performance evidence. Embedded offscreen preview, bespoke boss,
+battle, or scripted-cinematic conditions beyond the five qualified course
 families, and a maintained device-profile/headroom corpus remain open.
 
 Launcher-owned previews also arm the existing bounded presentation census. The
@@ -1204,21 +1204,22 @@ product, stable-frame count, byte count, and exact opaque-depth region masks.
 Fewer than 60 intervals
 and synthetic pacing are explicitly diagnostic-only. Visual-inspection results
 remain session-only and cannot contaminate durable timing evidence.
-Offset Studio also has a separate version-4 scene-review result containing
+Offset Studio also has a separate version-5 scene-review result containing
 three complete v21 select samples or eleven complete v21 vehicle samples bound
-to one of three qualified course families. Procedurally solved vehicle states
+to one of five qualified course families. Procedurally solved vehicle states
 also carry a per-limb count and maximum consecutive change in endpoint-minus-
 target after settling, isolating contact drift from ordinary model movement. A
 single resumable launcher action
 keeps select in its authored room and runs every vehicle on an open baseline,
-dense scenery, and an alternate environment. The strict one-player exact routes
+dense scenery, an alternate climate, dark/enclosed visibility, and an
+effects-heavy environment. The strict one-player exact routes
 cover select idle/hover/confirm and the complete race library: both steer
 extremes, reverse, boost, item, damage, spin, airborne, land, and both finishes.
 Each sample requires the current held-pose generation
 to settle plus sixty subsequent replacement draws before fresh camera,
 visibility, and, for vehicles, surface/containment/contact evidence is accepted.
 The launcher preserves each course separately, skips already-current evidence
-when resuming, aggregates the most concerning state across all 33 vehicle rows,
+when resuming, aggregates the most concerning state across all 55 vehicle rows,
 and never stores these samples as clean performance evidence. Long clean race
 detail is collapsible; any warning opens the state table by default.
 
