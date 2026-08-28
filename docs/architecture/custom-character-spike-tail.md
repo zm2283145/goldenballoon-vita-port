@@ -414,8 +414,9 @@ LOD transitions; unsupported optional features degrade visibly and safely.
   qualify clean install, upgrade, missing-tool repair, and offline behavior on
   macOS, Windows, and Linux.
 - Maintain portable-package rights/provenance review, recipient diff, receiving-
-  build compatibility, and non-overwrite export; add bulk named-draft
-  import/export only with its own bounded sharing contract.
+  build compatibility, and non-overwrite export. Maintain the separate bounded
+  named-draft transfer contract: one exact source revision, privacy-normalized
+  snapshots, exclusive export, mutation-free review, and additive import.
 - Add a documented extension point for third-party source adapters that must
   output canonical self-contained GLB plus provenance. Do not load arbitrary
   importer code in the game process.
@@ -449,6 +450,19 @@ WebGPU/OpenGL behavior, rig-review status, LOD count, and the explicitly
 unmeasured import estimate before the exhaustive installed-versus-candidate
 diff. The same decision evidence is spoken from the focusable rights control
 before consent; no package bytes install during review.
+
+Named-draft transfer is separately executable and deliberately carries no
+installation authority. A `.mdkrdrafts` file contains only all current-base
+editor snapshots for one package, with exact portrait pixels and saved
+timestamps disclosed before export; it strips the external portrait path and
+omits model, package, license, ROM/save, and performance-evidence bytes. The
+complete bounded inventory is integrity-checked and schema-validated. Recipient
+review shows package/source compatibility, additions, semantic duplicates, and
+collision renames before a local-use confirmation. Import re-reads the exact
+reviewed digest and atomically adds only new snapshots; it never overwrites,
+rebases, resumes, builds, activates, or assigns a character. The real rendered
+two-catalog lifecycle covers exclusive export, 200% keyboard/speech review,
+confirmed durable import, duplicate idempotence, and wrong-source refusal.
 
 ### M8 — Human and device qualification (ongoing release gate)
 
@@ -504,9 +518,9 @@ The immediate remaining order is therefore:
    transparency qualification, compressed textures, recorded simplification,
    and expanded material profiles); custom world-shadow casting/receiving,
    per-view primitive ordering, and projected LOD are complete;
-4. complete signed clean-machine/upgrade observation plus adapter/bulk-draft/
-   online contracts; recipient compatibility/diff review and the frozen and
-   packaged importer lifecycle are automated
+4. complete signed clean-machine/upgrade observation plus adapter and online
+   contracts; recipient compatibility/diff review, exact-base draft transfer,
+   and the frozen and packaged importer lifecycle are automated
    on all three release operating systems; and
 5. run the observed human, controller/screen-reader, perceptual, and maintained
    multi-device qualification matrix in M8.

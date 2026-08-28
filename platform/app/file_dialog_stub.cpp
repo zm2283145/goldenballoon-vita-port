@@ -36,6 +36,11 @@ bool openPortraitImage(std::string &out) {
     return false;
 }
 
+bool openCharacterDraftBundle(std::string &out) {
+    (void)out;
+    return false;
+}
+
 bool saveCharacterConvertedGlb(std::string &out) {
     (void)out;
     return false;
@@ -52,6 +57,11 @@ bool saveCharacterReport(std::string &out) {
 }
 
 bool saveCharacterPackage(std::string &out) {
+    (void)out;
+    return false;
+}
+
+bool saveCharacterDraftBundle(std::string &out) {
     (void)out;
     return false;
 }

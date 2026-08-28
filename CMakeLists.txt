@@ -796,6 +796,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/character_test_evidence_store.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_draft_store.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_draft_snapshot.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_draft_transfer.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_png_validation.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_visual_report.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_workshop_model.cpp
@@ -1577,6 +1578,26 @@ if(NOT EMSCRIPTEN)
             add_test(NAME character_draft_snapshot
                 COMMAND mdkr_character_draft_snapshot_test)
 
+            add_executable(mdkr_character_draft_transfer_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_draft_transfer.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_draft_transfer.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_draft_store.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_draft_snapshot.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_png_validation.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_import.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_studio.cpp
+                ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+                ${CMAKE_SOURCE_DIR}/platform/sha256.c
+                ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c)
+            target_include_directories(mdkr_character_draft_transfer_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform
+                ${CMAKE_SOURCE_DIR}/platform/app
+                ${CMAKE_SOURCE_DIR}/lib/stb)
+            target_compile_features(mdkr_character_draft_transfer_test PRIVATE
+                cxx_std_17)
+            add_test(NAME character_draft_transfer
+                COMMAND mdkr_character_draft_transfer_test)
+
             add_executable(mdkr_workshop_preview_runtime_test
                 ${CMAKE_SOURCE_DIR}/tests/test_workshop_preview_runtime.c
                 ${CMAKE_SOURCE_DIR}/platform/workshop_preview_runtime.c)
@@ -1885,6 +1906,15 @@ if(NOT EMSCRIPTEN)
                     DEPENDS app_character_workshop_smoke
                     LABELS gpu
                     TIMEOUT 180)
+
+                add_test(NAME app_character_draft_transfer
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_character_draft_transfer_ui.py
+                        --build ${CMAKE_CURRENT_BINARY_DIR})
+                set_tests_properties(app_character_draft_transfer PROPERTIES
+                    DEPENDS app_character_workshop_smoke
+                    LABELS gpu
+                    TIMEOUT 300)
 
                 add_test(NAME app_character_test_evidence
                     COMMAND ${Python3_EXECUTABLE}

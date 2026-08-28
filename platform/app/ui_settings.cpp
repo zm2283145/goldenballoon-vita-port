@@ -8,6 +8,7 @@
 #include "character_candidate_index.h"
 #include "character_draft_snapshot.h"
 #include "character_draft_store.h"
+#include "character_draft_transfer.h"
 #include "character_edit_history.h"
 #include "character_failure_index.h"
 #include "character_portrait_import.h"
@@ -2517,6 +2518,7 @@ void finishCharacterHistory(const MdkrModernCharacterEntry *entry,
 CharacterDraftStore::Inventory g_characterDrafts;
 bool g_characterDraftsLoaded = false;
 bool g_characterDraftsWritable = false;
+uint64_t g_characterDraftInventoryGeneration = 0u;
 std::string g_characterDraftError;
 std::map<std::string, std::string> g_characterActiveDrafts;
 struct CharacterDraftReviewState {
@@ -2532,6 +2534,25 @@ std::map<std::string, bool> g_characterPendingDraftFit;
 std::string g_characterPendingDraftRemoval;
 char g_characterDraftName[CharacterDraftStore::kMaximumNameBytes + 1u] = {};
 std::string g_characterDraftNameOwner;
+char g_characterDraftBundleImportPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {};
+char g_characterDraftBundleExportPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {};
+bool g_characterDraftBundleShareRightsConfirmed = false;
+struct CharacterDraftBundleReview {
+    bool ready = false;
+    bool mergeReady = false;
+    bool localUseRightsConfirmed = false;
+    size_t fileBytes = 0u;
+    std::string path;
+    std::string fileSha256;
+    std::string plannedPackageId;
+    std::string plannedSourceDigest;
+    uint64_t plannedInventoryGeneration = UINT64_MAX;
+    std::string error;
+    CharacterDraftTransfer::Bundle bundle;
+    CharacterDraftTransfer::MergeSummary summary;
+};
+CharacterDraftBundleReview g_characterDraftBundleReview;
+bool g_characterDraftTransferSmokeApplied = false;
 MdkrTextStateFileSpec g_characterDraftFileSpec{
     "character_workshop_drafts-v1.tsv", nullptr, nullptr,
 };
@@ -2567,10 +2588,12 @@ bool replaceCharacterDraftInventory(
         return false;
     }
     g_characterDrafts = std::move(inventory);
+    ++g_characterDraftInventoryGeneration;
     return true;
 }
 
 void refreshCharacterRegistry();
+void selectCharacterWorkshopEntry(const MdkrModernCharacterEntry *entry);
 const char *characterPreviewResultContext(
     MdkrCharacterPreviewContext context);
 
@@ -19856,7 +19879,572 @@ bool buildCharacterDraftSource(
     return queued;
 }
 
+bool readCharacterDraftBundleFile(const std::string &path,
+                                  std::string &bytes,
+                                  std::string &error) {
+    if (path.empty() || !characterPathHasExtension(path, ".mdkrdrafts")) {
+        error = "Choose a .mdkrdrafts bundle.";
+        return false;
+    }
+    std::FILE *file = mdkr_fopen_utf8(path.c_str(), "rb");
+    if (file == nullptr) {
+        error = "The draft bundle could not be opened.";
+        return false;
+    }
+    std::string loaded;
+    char buffer[32u * 1024u];
+    bool oversized = false;
+    while (true) {
+        const size_t count = std::fread(buffer, 1u, sizeof(buffer), file);
+        if (count != 0u) {
+            if (loaded.size() >=
+                    CharacterDraftTransfer::kMaximumBundleBytes ||
+                count > CharacterDraftTransfer::kMaximumBundleBytes -
+                    loaded.size()) {
+                oversized = true;
+                break;
+            }
+            loaded.append(buffer, count);
+        }
+        if (count < sizeof(buffer)) break;
+    }
+    const bool readFailed = std::ferror(file) != 0;
+    const bool closed = std::fclose(file) == 0;
+    if (oversized || loaded.size() >
+            CharacterDraftTransfer::kMaximumBundleBytes) {
+        error = "The draft bundle exceeds its bounded size.";
+        return false;
+    }
+    if (readFailed || !closed) {
+        error = "The complete draft bundle could not be read.";
+        return false;
+    }
+    bytes = std::move(loaded);
+    error.clear();
+    return true;
+}
+
+bool writeNewCharacterDraftBundleFile(const std::string &path,
+                                      const std::string &bytes,
+                                      std::string &error) {
+    if (path.empty() || !characterPathHasExtension(path, ".mdkrdrafts")) {
+        error = "Choose a new .mdkrdrafts destination.";
+        return false;
+    }
+    std::FILE *file = mdkr_fopen_utf8(path.c_str(), "wbx");
+    if (file == nullptr) {
+        error = "The destination already exists or cannot be created; choose a new filename.";
+        return false;
+    }
+    const bool written = std::fwrite(
+        bytes.data(), 1u, bytes.size(), file) == bytes.size();
+    const bool synced = written && mdkr_file_sync(file) == 0;
+    const bool closed = std::fclose(file) == 0;
+    if (!written || !synced || !closed) {
+        (void)mdkr_remove_utf8(path.c_str());
+        error = "The complete draft bundle could not be written; the incomplete destination was removed.";
+        return false;
+    }
+    if (mdkr_parent_directory_sync_utf8(path.c_str()) != 0) {
+        error = "The bundle was written, but durable directory completion could not be confirmed.";
+        return true;
+    }
+    error.clear();
+    return true;
+}
+
+std::string characterDraftBundleDigest(const std::string &bytes) {
+    char digest[MDKR_SHA256_HEX_SIZE];
+    mdkr_sha256_hex(bytes.data(), bytes.size(), digest);
+    return digest;
+}
+
+bool characterDraftBundleCompatible(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterDraftTransfer::Bundle &bundle) {
+    return entry != nullptr && bundle.packageId == entry->id &&
+        bundle.baseSourceDigest == characterDigestHex(entry->source_sha256);
+}
+
+void refreshCharacterDraftBundlePlan(const MdkrModernCharacterEntry *entry) {
+    CharacterDraftBundleReview &review = g_characterDraftBundleReview;
+    if (!review.ready) return;
+    const std::string packageId = entry != nullptr ? entry->id : "";
+    const std::string sourceDigest = entry != nullptr
+        ? characterDigestHex(entry->source_sha256) : "";
+    if (review.plannedPackageId == packageId &&
+        review.plannedSourceDigest == sourceDigest &&
+        review.plannedInventoryGeneration ==
+            g_characterDraftInventoryGeneration) return;
+    review.plannedPackageId = packageId;
+    review.plannedSourceDigest = sourceDigest;
+    review.plannedInventoryGeneration = g_characterDraftInventoryGeneration;
+    review.mergeReady = false;
+    review.summary = CharacterDraftTransfer::MergeSummary{};
+    review.error.clear();
+    if (!characterDraftBundleCompatible(entry, review.bundle)) return;
+    CharacterDraftStore::Inventory preview;
+    review.mergeReady = CharacterDraftTransfer::merge(
+        g_characterDrafts, review.bundle, preview,
+        review.summary, review.error);
+}
+
+bool reviewCharacterDraftBundle(const MdkrModernCharacterEntry *entry,
+                                const std::string &path) {
+    CharacterDraftBundleReview review;
+    review.path = path;
+    std::string bytes;
+    if (!readCharacterDraftBundleFile(path, bytes, review.error) ||
+        !CharacterDraftTransfer::parse(bytes, review.bundle, review.error)) {
+        g_characterDraftBundleReview = std::move(review);
+        return false;
+    }
+    review.ready = true;
+    review.fileBytes = bytes.size();
+    review.fileSha256 = characterDraftBundleDigest(bytes);
+    g_characterDraftBundleReview = std::move(review);
+    refreshCharacterDraftBundlePlan(entry);
+    return g_characterDraftBundleReview.ready;
+}
+
+bool exportCharacterDraftBundle(const MdkrModernCharacterEntry *entry,
+                                const std::string &path,
+                                std::string &error) {
+    if (entry == nullptr || !autosaveActiveCharacterDraft(entry)) {
+        error = "The latest active draft could not be saved before export.";
+        return false;
+    }
+    CharacterDraftTransfer::Bundle bundle;
+    const std::time_t now = std::time(nullptr);
+    if (!CharacterDraftTransfer::create(
+            g_characterDrafts, entry->id,
+            characterDigestHex(entry->source_sha256),
+            now >= 0 ? static_cast<uint64_t>(now) : 0u,
+            bundle, error)) return false;
+    std::string bytes;
+    if (!CharacterDraftTransfer::encode(bundle, bytes, error)) return false;
+    return writeNewCharacterDraftBundleFile(path, bytes, error);
+}
+
+bool importReviewedCharacterDraftBundle(
+    const MdkrModernCharacterEntry *entry, std::string &error) {
+    if (!g_characterDraftBundleReview.ready ||
+        !g_characterDraftBundleReview.localUseRightsConfirmed ||
+        !g_characterDraftBundleReview.mergeReady ||
+        g_characterDraftBundleReview.summary.additions == 0u ||
+        !characterDraftBundleCompatible(
+            entry, g_characterDraftBundleReview.bundle)) {
+        error = "Review a compatible bundle with new drafts and confirm local-use rights first.";
+        return false;
+    }
+    std::string bytes;
+    CharacterDraftTransfer::Bundle verified;
+    if (!readCharacterDraftBundleFile(
+            g_characterDraftBundleReview.path, bytes, error) ||
+        characterDraftBundleDigest(bytes) !=
+            g_characterDraftBundleReview.fileSha256 ||
+        !CharacterDraftTransfer::parse(bytes, verified, error)) {
+        if (error.empty()) {
+            error = "The bundle changed after review; review it again.";
+        }
+        return false;
+    }
+    if (!characterDraftBundleCompatible(entry, verified)) {
+        error = "The selected character no longer matches the reviewed bundle.";
+        return false;
+    }
+    CharacterDraftStore::Inventory merged;
+    CharacterDraftTransfer::MergeSummary summary;
+    if (!CharacterDraftTransfer::merge(
+            g_characterDrafts, verified, merged, summary, error) ||
+        !replaceCharacterDraftInventory(std::move(merged))) {
+        if (error.empty()) error = g_characterDraftError;
+        return false;
+    }
+    g_characterDraftBundleReview.localUseRightsConfirmed = false;
+    refreshCharacterDraftBundlePlan(entry);
+    error.clear();
+    return true;
+}
+
 std::string characterRevisionTimestamp(uint64_t installedUnix);
+
+void drawCharacterDraftTransfer(const MdkrModernCharacterEntry *entry) {
+    const std::string currentDigest = characterDigestHex(entry->source_sha256);
+    const bool narrow = AppTheme::uiScale() >= 1.5f ||
+        ImGui::GetContentRegionAvail().x < 560.0f;
+    const char *smokeAction = std::getenv(
+        "MDKR_APP_SMOKE_DRAFT_TRANSFER_ACTION");
+    const char *smokeToken = std::getenv(
+        "MDKR_APP_SMOKE_DRAFT_TRANSFER_TOKEN");
+    const char *smokePath = std::getenv(
+        "MDKR_APP_SMOKE_DRAFT_TRANSFER_PATH");
+    if (!g_characterDraftTransferSmokeApplied && smokeAction != nullptr &&
+        smokeToken != nullptr && smokePath != nullptr &&
+        std::strcmp(smokeToken, "mdkr64-app-draft-transfer-v1") == 0) {
+        g_characterDraftTransferSmokeApplied = true;
+        bool applied = false;
+        std::string error;
+        if (std::strcmp(smokeAction, "seed-export") == 0) {
+            g_characterDraftNameOwner = entry->id;
+            std::snprintf(g_characterDraftName,
+                          sizeof(g_characterDraftName), "%s",
+                          "Transfer proof draft");
+            applied = saveCharacterDraft(entry, true) &&
+                exportCharacterDraftBundle(entry, smokePath, error);
+        } else if (std::strcmp(smokeAction, "review-import") == 0) {
+            std::snprintf(
+                g_characterDraftBundleImportPath,
+                sizeof(g_characterDraftBundleImportPath), "%s", smokePath);
+            applied = reviewCharacterDraftBundle(entry, smokePath);
+        } else if (std::strcmp(smokeAction, "confirm-import") == 0) {
+            std::snprintf(
+                g_characterDraftBundleImportPath,
+                sizeof(g_characterDraftBundleImportPath), "%s", smokePath);
+            applied = reviewCharacterDraftBundle(entry, smokePath);
+            g_characterDraftBundleReview.localUseRightsConfirmed = applied;
+            applied = applied &&
+                importReviewedCharacterDraftBundle(entry, error);
+        }
+        std::fprintf(
+            stderr,
+            "[app-ui] character-draft-transfer-action action=%s applied=%d error=%s\n",
+            smokeAction, applied ? 1 : 0,
+            error.empty() ? "none" : error.c_str());
+    }
+    size_t transferable = 0u;
+    for (const CharacterDraftStore::Draft &draft : g_characterDrafts.drafts) {
+        if (draft.packageId == entry->id &&
+            draft.baseSourceDigest == currentDigest) ++transferable;
+    }
+    if (smokeAction != nullptr) {
+        ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    }
+    if (!ImGui::CollapsingHeader(
+            narrow ? "Draft transfer##character-draft-transfer"
+                   : "Move or share named drafts##character-draft-transfer")) {
+        return;
+    }
+    ui::TextSubtleWrapped(
+        "A .mdkrdrafts bundle moves all named drafts for this exact active source revision. It includes names, saved timestamps, exact portrait pixels, profile, rig, fit, quality, and review state. It omits the model, character package, license, ROM/save data, performance evidence, and every local source path. The recipient must obtain and install the exact character package separately.");
+
+    ImGui::TextDisabled(
+        "%zu resumable draft%s for source %.12s…",
+        transferable, transferable == 1u ? "" : "s", currentDigest.c_str());
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::InputTextWithHint(
+            "##character-draft-bundle-export",
+            "/path/to/character-drafts.mdkrdrafts",
+            g_characterDraftBundleExportPath,
+            sizeof(g_characterDraftBundleExportPath))) {
+        g_characterDraftBundleShareRightsConfirmed = false;
+    }
+    if (filedialog::isAvailable()) {
+        if (ImGui::Button("Choose draft export...")) {
+            std::string path;
+            if (filedialog::saveCharacterDraftBundle(path)) {
+                std::snprintf(
+                    g_characterDraftBundleExportPath,
+                    sizeof(g_characterDraftBundleExportPath), "%s",
+                    path.c_str());
+                g_characterDraftBundleShareRightsConfirmed = false;
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Choose named-draft export", nullptr,
+            "Opens the operating system save panel for a new mdkrdrafts filename. Existing files are never replaced.");
+    }
+    (void)ImGui::Checkbox(
+        narrow ? "I may copy or share this content"
+               : "I confirm I may copy or share the included artwork and names",
+        &g_characterDraftBundleShareRightsConfirmed);
+    if (narrow) {
+        ui::TextSubtleWrapped(
+            "The bundle includes exact portrait artwork and player-facing names.");
+    }
+    ui::SpeakFocusedItem(
+        "Draft artwork sharing confirmation", nullptr,
+        "Required before export because the bundle contains the exact draft portrait pixels and player-facing names. It contains no model, package, ROM, save, or local path bytes.");
+    const bool canExport = transferable != 0u &&
+        g_characterDraftBundleExportPath[0] != '\0' &&
+        g_characterDraftBundleShareRightsConfirmed;
+    if (!canExport) ImGui::BeginDisabled();
+    if (ImGui::Button("Export named drafts") && canExport) {
+        std::string error;
+        if (exportCharacterDraftBundle(
+                entry, g_characterDraftBundleExportPath, error)) {
+            setStatus(
+                error.empty()
+                    ? "Named drafts exported without model, ROM, local path, or overwrite authority."
+                    : error.c_str(),
+                error.empty() ? AppTheme::good() : AppTheme::accent());
+        } else {
+            setStatus(
+                error.empty() ? "Named draft export failed; no existing destination was changed."
+                              : error.c_str(),
+                AppTheme::bad());
+        }
+    }
+    if (!canExport) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Export named drafts",
+        canExport ? nullptr
+            : transferable == 0u ? "Save a named draft for the active source first."
+            : g_characterDraftBundleExportPath[0] == '\0'
+                ? "Choose a new destination first."
+                : "Confirm artwork and name sharing rights first.",
+        "Autosaves the resumed draft, privacy-normalizes all exact-base snapshots, integrity-checks the complete bounded bundle, and exclusively creates one new file without changing installed play.");
+
+    ui::Gap(ui::kGapS);
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::InputTextWithHint(
+            "##character-draft-bundle-import",
+            "/path/to/received-drafts.mdkrdrafts",
+            g_characterDraftBundleImportPath,
+            sizeof(g_characterDraftBundleImportPath))) {
+        g_characterDraftBundleReview = CharacterDraftBundleReview{};
+    }
+    if (filedialog::isAvailable()) {
+        if (ImGui::Button("Choose draft bundle...")) {
+            std::string path;
+            if (filedialog::openCharacterDraftBundle(path)) {
+                std::snprintf(
+                    g_characterDraftBundleImportPath,
+                    sizeof(g_characterDraftBundleImportPath), "%s",
+                    path.c_str());
+                g_characterDraftBundleReview = CharacterDraftBundleReview{};
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Choose named-draft bundle", nullptr,
+            "Chooses one local mdkrdrafts file for bounded validation and compatibility review without importing it.");
+    }
+    const bool hasImportPath = g_characterDraftBundleImportPath[0] != '\0';
+    if (!hasImportPath) ImGui::BeginDisabled();
+    if (ImGui::Button("Review draft bundle") && hasImportPath) {
+        const bool reviewed = reviewCharacterDraftBundle(
+            entry, g_characterDraftBundleImportPath);
+        setStatus(
+            reviewed
+                ? "Draft bundle integrity and contents verified for compatibility review; nothing has been imported."
+                : g_characterDraftBundleReview.error.empty()
+                    ? "Draft bundle review failed; no local work was changed."
+                    : g_characterDraftBundleReview.error.c_str(),
+            reviewed ? AppTheme::accent() : AppTheme::bad());
+    }
+    if (!hasImportPath) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        "Review draft bundle",
+        hasImportPath ? nullptr : "Choose a bundle path first.",
+        "Authenticates and validates the complete bounded file, then previews exact-source compatibility, additions, duplicates, and collision renaming without changing local drafts.");
+
+    refreshCharacterDraftBundlePlan(entry);
+    CharacterDraftBundleReview &review = g_characterDraftBundleReview;
+    if (!review.ready) {
+        if (!review.error.empty()) {
+            ImGui::TextColored(AppTheme::bad(), "%s", review.error.c_str());
+        }
+        return;
+    }
+    const bool packageMatch = review.bundle.packageId == entry->id;
+    const bool compatible = characterDraftBundleCompatible(
+        entry, review.bundle);
+    if (ui::CardBegin(
+            "##character-draft-bundle-review",
+            compatible && review.mergeReady ? AppTheme::good()
+                                             : AppTheme::warn(),
+            0.0f)) {
+        ImGui::PushFont(AppTheme::fonts().section);
+        ImGui::TextWrapped(
+            "%s",
+            compatible
+                ? narrow ? "Compatible"
+                         : "Exact source compatibility passed"
+                : packageMatch
+                    ? narrow ? "Source differs"
+                             : "Different source revision"
+                    : narrow ? "Character differs"
+                             : "Different character package");
+        ImGui::PopFont();
+        ImGui::TextWrapped(
+            "%zu validated draft%s · %zu KiB · created %s",
+            review.bundle.inventory.drafts.size(),
+            review.bundle.inventory.drafts.size() == 1u ? "" : "s",
+            (review.fileBytes + 1023u) / 1024u,
+            characterRevisionTimestamp(review.bundle.createdUnix).c_str());
+        ImGui::TextWrapped(
+            "Character: %s · source %.12s…",
+            review.bundle.packageId.c_str(),
+            review.bundle.baseSourceDigest.c_str());
+        if (compatible && review.mergeReady) {
+            ImGui::TextWrapped(
+                "Import result: %zu new · %zu already present · %zu id collision%s safely renamed",
+                review.summary.additions, review.summary.duplicates,
+                review.summary.renamed,
+                review.summary.renamed == 1u ? "" : "s");
+            ui::TextSubtleWrapped(
+                "Import is additive and atomic. It will not resume a draft, publish a character, change fit, alter assignments, or replace any local snapshot.");
+        } else if (!compatible) {
+            ui::TextSubtleWrapped(
+                packageMatch
+                    ? "Restore the bundle's exact retained source in Revision history, then return here. Draft rig nodes and review evidence are never rebased onto a different model."
+                    : "Select and install the named character package separately. A draft bundle deliberately carries no model or install authority.");
+            if (!packageMatch) {
+                const int matchingIndex = mdkr_modern_character_registry_find(
+                    &g_characterRegistry, review.bundle.packageId.c_str());
+                const MdkrModernCharacterEntry *matching =
+                    mdkr_modern_character_registry_entry(
+                        &g_characterRegistry, matchingIndex);
+                if (matching != nullptr) {
+                    if (ImGui::Button("Select bundle character")) {
+                        selectCharacterWorkshopEntry(matching);
+                        setStatus(
+                            "Selected the bundle's installed character for exact-source compatibility review.",
+                            AppTheme::accent());
+                    }
+                    ui::SpeakFocusedItem(
+                        "Select bundle character", nullptr,
+                        "Selects the already-installed character named by this bundle. It does not import drafts or change player assignments.");
+                }
+            }
+        } else {
+            ImGui::TextColored(AppTheme::bad(), "%s", review.error.c_str());
+        }
+        if (ImGui::TreeNode("Drafts in this bundle")) {
+            for (const CharacterDraftStore::Draft &draft :
+                 review.bundle.inventory.drafts) {
+                ImGui::PushID(draft.id.c_str());
+                (void)ImGui::Selectable(draft.name.c_str(), false);
+                const std::string detail =
+                    "Source locked editor snapshot saved " +
+                    characterRevisionTimestamp(draft.updatedUnix) +
+                    ". Selecting it here does not import or resume it.";
+                ui::SpeakFocusedItem(
+                    ("Draft " + draft.name).c_str(), nullptr,
+                    detail.c_str());
+                ImGui::PopID();
+            }
+            ImGui::TreePop();
+        }
+    }
+    ui::CardEnd();
+    if (smokeAction != nullptr &&
+        std::strcmp(smokeAction, "review-import") == 0) {
+        static bool smokeReviewScrolled = false;
+        if (!smokeReviewScrolled) {
+            ImGui::SetScrollHereY(0.5f);
+            smokeReviewScrolled = true;
+        }
+    }
+
+    const std::string reviewHelp =
+        std::string("Integrity-checked and schema-validated draft bundle. ") +
+        (compatible
+            ? "It matches the selected character and exact source revision. "
+            : packageMatch
+                ? "It names the selected character but requires a different exact source revision. "
+                : "It belongs to a different character package. ") +
+        (compatible && review.mergeReady
+            ? std::to_string(review.summary.additions) + " new drafts, " +
+                std::to_string(review.summary.duplicates) +
+                " already present, and " +
+                std::to_string(review.summary.renamed) +
+                " id collisions will be safely renamed. "
+            : "No import is available. ") +
+        "The bundle contains portrait pixels and names, but no model, character package, ROM, save data, performance evidence, or local source path.";
+    if (ImGui::Button(
+            narrow ? "Read summary" : "Read compatibility summary")) {
+        setStatus(
+            "Compatibility summary read; the bundle remains staged and no drafts were imported.",
+            compatible && review.mergeReady ? AppTheme::good()
+                                             : AppTheme::accent());
+    }
+    ui::SpeakFocusedItem(
+        "Draft bundle compatibility summary", nullptr,
+        reviewHelp.c_str());
+    const bool canConfirm = compatible && review.mergeReady &&
+        review.summary.additions != 0u;
+    if (!canConfirm) ImGui::BeginDisabled();
+    (void)ImGui::Checkbox(
+        narrow ? "I may use this content locally"
+               : "I confirm I have the right to use these draft contents locally",
+        &review.localUseRightsConfirmed);
+    if (narrow) {
+        ui::TextSubtleWrapped(
+            "Local-use rights are required before additive import.");
+    }
+    if (!canConfirm) ImGui::EndDisabled();
+    const std::string rightsHelp = reviewHelp +
+        " Local-use confirmation is required before additive import.";
+    ui::SpeakFocusedItem(
+        "Draft bundle local-use rights confirmation",
+        canConfirm ? nullptr
+            : compatible && review.mergeReady
+                ? "Every draft in this bundle is already present."
+                : "The reviewed bundle is not import-ready.",
+        rightsHelp.c_str());
+    const bool canImport = canConfirm &&
+        review.localUseRightsConfirmed;
+    if (!canImport) ImGui::BeginDisabled();
+    const std::string importLabel = review.summary.additions == 0u
+        ? narrow ? "Import drafts" : "Import new drafts"
+        : review.summary.additions == 1u
+            ? narrow ? "Import 1 draft" : "Import 1 new draft"
+            : "Import " +
+                std::to_string(review.summary.additions) + " new drafts";
+    if (ImGui::Button(importLabel.c_str()) && canImport) {
+        const size_t additions = review.summary.additions;
+        std::string error;
+        if (importReviewedCharacterDraftBundle(entry, error)) {
+            setStatus(
+                (std::to_string(additions) +
+                 " named draft" + (additions == 1u ? "" : "s") +
+                 " imported additively; local drafts and playable state were retained.").c_str(),
+                AppTheme::good());
+        } else {
+            setStatus(
+                error.empty()
+                    ? "Draft import failed atomically; local drafts are unchanged."
+                    : error.c_str(),
+                AppTheme::bad());
+        }
+    }
+    if (!canImport) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        importLabel.c_str(),
+        canImport ? nullptr
+            : !canConfirm ? "There are no compatible new drafts to import."
+                          : "Confirm local-use rights first.",
+        "Re-reads, integrity-checks, and validates the exact reviewed file, then atomically adds only new snapshots. It never overwrites, resumes, builds, activates, or assigns a character.");
+    ImGui::SameLine();
+    const bool closeReview = ImGui::Button(
+        narrow ? "Close review" : "Close bundle review");
+    if (closeReview) {
+        g_characterDraftBundleReview = CharacterDraftBundleReview{};
+        g_characterDraftBundleImportPath[0] = '\0';
+    }
+    ui::SpeakFocusedItem(
+        "Close draft bundle review", nullptr,
+        "Forgets only this staged review. The external bundle and all local drafts remain unchanged.");
+    if (closeReview) return;
+
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static std::string traced;
+        const std::string traceKey = review.fileSha256 + "\0" + entry->id +
+            "\0" + currentDigest + "\0" +
+            std::to_string(g_characterDraftInventoryGeneration);
+        if (traced != traceKey) {
+            traced = traceKey;
+            std::fprintf(
+                stderr,
+                "[app-ui] character-draft-transfer-review package=%s compatible=%d drafts=%zu additions=%zu duplicates=%zu renamed=%zu paths=0 model=0 rom=0 mutation=0\n",
+                review.bundle.packageId.c_str(), compatible ? 1 : 0,
+                review.bundle.inventory.drafts.size(),
+                review.summary.additions, review.summary.duplicates,
+                review.summary.renamed);
+        }
+    }
+}
 
 bool drawCharacterDraftLifecycle(const MdkrModernCharacterEntry *entry) {
     loadCharacterDraftInventory();
@@ -20026,6 +20614,8 @@ bool drawCharacterDraftLifecycle(const MdkrModernCharacterEntry *entry) {
         "Build and activate draft",
         canBuild ? nullptr : "Resume a draft based on the current source first.",
         "Autosaves the editor snapshot, validates every staged source-owned field, and publishes one new retained source revision only after the complete compile succeeds. Local fit settings remain in the named draft until explicitly applied.");
+    ui::Gap(ui::kGapM);
+    drawCharacterDraftTransfer(entry);
     if (packageDrafts.empty()) return false;
     ImGui::TextUnformatted("Saved drafts");
     for (const CharacterDraftStore::Draft *draft : packageDrafts) {

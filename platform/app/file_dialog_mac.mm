@@ -157,6 +157,33 @@ bool openPortraitImage(std::string &out) {
     }
 }
 
+bool openCharacterDraftBundle(std::string &out) {
+    @autoreleasepool {
+        if (![NSThread isMainThread]) return false;
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        panel.title = @"Review a character draft bundle";
+        panel.message = @"Choose a Golden Balloon named-draft bundle. Nothing is imported until compatibility, contents, and local-use rights are reviewed.";
+        panel.prompt = @"Review Bundle";
+        panel.allowsMultipleSelection = NO;
+        panel.canChooseDirectories = NO;
+        panel.canChooseFiles = YES;
+        panel.resolvesAliases = YES;
+        panel.treatsFilePackagesAsDirectories = NO;
+        panel.showsHiddenFiles = NO;
+        UTType *type = [UTType typeWithFilenameExtension:@"mdkrdrafts"];
+        if (type != nil) panel.allowedContentTypes = @[ type ];
+        panel.allowsOtherFileTypes = NO;
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([panel runModal] != NSModalResponseOK) return false;
+        NSURL *url = panel.URLs.firstObject;
+        if (url == nil || !url.isFileURL) return false;
+        const char *path = url.fileSystemRepresentation;
+        if (path == nullptr || path[0] == '\0') return false;
+        out = path;
+        return true;
+    }
+}
+
 bool saveCharacterConvertedGlb(std::string &out) {
     @autoreleasepool {
         if (![NSThread isMainThread]) return false;
@@ -234,6 +261,29 @@ bool saveCharacterPackage(std::string &out) {
         panel.nameFieldStringValue = @"custom-character.mdkrchar";
         panel.canCreateDirectories = YES;
         UTType *type = [UTType typeWithFilenameExtension:@"mdkrchar"];
+        if (type != nil) panel.allowedContentTypes = @[ type ];
+        panel.allowsOtherFileTypes = NO;
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([panel runModal] != NSModalResponseOK) return false;
+        NSURL *url = panel.URL;
+        if (url == nil || !url.isFileURL) return false;
+        const char *path = url.fileSystemRepresentation;
+        if (path == nullptr || path[0] == '\0') return false;
+        out = path;
+        return true;
+    }
+}
+
+bool saveCharacterDraftBundle(std::string &out) {
+    @autoreleasepool {
+        if (![NSThread isMainThread]) return false;
+        NSSavePanel *panel = [NSSavePanel savePanel];
+        panel.title = @"Export character named drafts";
+        panel.message = @"Choose a new mdkrdrafts filename. The bundle omits models, ROM data, and local paths, and Golden Balloon never overwrites an existing file.";
+        panel.prompt = @"Choose Filename";
+        panel.nameFieldStringValue = @"character-drafts.mdkrdrafts";
+        panel.canCreateDirectories = YES;
+        UTType *type = [UTType typeWithFilenameExtension:@"mdkrdrafts"];
         if (type != nil) panel.allowedContentTypes = @[ type ];
         panel.allowsOtherFileTypes = NO;
         [NSApp activateIgnoringOtherApps:YES];

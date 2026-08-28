@@ -59,6 +59,11 @@ bool openCharacterLicense(std::string &out);
 // resampling happen in the Workshop; the dialog grants no import authority.
 bool openPortraitImage(std::string &out);
 
+// Choose a bounded named-draft transfer. This is editor state only; the
+// Workshop authenticates it and requires the exact installed source revision
+// before offering an additive import.
+bool openCharacterDraftBundle(std::string &out);
+
 // Choose a destination for a self-contained GLB derived from a DAE/ZIP source.
 // Conversion uses exclusive create, so a returned existing path still cannot
 // authorize replacement.
@@ -78,6 +83,10 @@ bool saveCharacterReport(std::string &out);
 // Export remains exclusive-create; the dialog does not imply redistribution
 // rights and callers must collect that confirmation separately.
 bool saveCharacterPackage(std::string &out);
+
+// Choose a destination for a privacy-normalized named-draft bundle. The writer
+// remains exclusive-create and never treats the panel as overwrite authority.
+bool saveCharacterDraftBundle(std::string &out);
 
 // Choose a destination for bounded failed-import metadata (never model bytes).
 bool saveCharacterDiagnostic(std::string &out);

@@ -187,6 +187,37 @@ bool openPortraitImage(std::string &out) {
     return true;
 }
 
+bool openCharacterDraftBundle(std::string &out) {
+    static const wchar_t kFilter[] =
+        L"Golden Balloon draft bundles\0*.mdkrdrafts\0\0";
+    std::vector<wchar_t> file(32768, L'\0');
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    SDL_Window *window = SDL_GetKeyboardFocus();
+    if (window == nullptr) window = SDL_GetMouseFocus();
+    SDL_SysWMinfo windowInfo;
+    SDL_VERSION(&windowInfo.version);
+    if (window != nullptr &&
+        SDL_GetWindowWMInfo(window, &windowInfo) == SDL_TRUE &&
+        windowInfo.subsystem == SDL_SYSWM_WINDOWS) {
+        ofn.hwndOwner = windowInfo.info.win.window;
+    }
+    ofn.lpstrFilter = kFilter;
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFile = file.data();
+    ofn.nMaxFile = static_cast<DWORD>(file.size());
+    ofn.lpstrTitle = L"Review a character draft bundle";
+    ofn.lpstrDefExt = L"mdkrdrafts";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
+                OFN_EXPLORER | OFN_HIDEREADONLY;
+    if (!GetOpenFileNameW(&ofn)) return false;
+    std::string picked = toUtf8(file.data());
+    if (picked.empty()) return false;
+    out = picked;
+    return true;
+}
+
 bool saveCharacterConvertedGlb(std::string &out) {
     static const wchar_t kFilter[] = L"glTF binary models\0*.glb\0\0";
     std::vector<wchar_t> file(32768, L'\0');
@@ -304,6 +335,38 @@ bool saveCharacterPackage(std::string &out) {
     ofn.nMaxFile = (DWORD)file.size();
     ofn.lpstrTitle = L"Export custom character package";
     ofn.lpstrDefExt = L"mdkrchar";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+    if (!GetSaveFileNameW(&ofn)) return false;
+    std::string picked = toUtf8(file.data());
+    if (picked.empty()) return false;
+    out = picked;
+    return true;
+}
+
+bool saveCharacterDraftBundle(std::string &out) {
+    static const wchar_t kFilter[] =
+        L"Golden Balloon draft bundles\0*.mdkrdrafts\0\0";
+    std::vector<wchar_t> file(32768, L'\0');
+    const wchar_t initial[] = L"character-drafts.mdkrdrafts";
+    std::copy(std::begin(initial), std::end(initial), file.begin());
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    SDL_Window *window = SDL_GetKeyboardFocus();
+    if (window == nullptr) window = SDL_GetMouseFocus();
+    SDL_SysWMinfo windowInfo;
+    SDL_VERSION(&windowInfo.version);
+    if (window != nullptr &&
+        SDL_GetWindowWMInfo(window, &windowInfo) == SDL_TRUE &&
+        windowInfo.subsystem == SDL_SYSWM_WINDOWS) {
+        ofn.hwndOwner = windowInfo.info.win.window;
+    }
+    ofn.lpstrFilter = kFilter;
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFile = file.data();
+    ofn.nMaxFile = static_cast<DWORD>(file.size());
+    ofn.lpstrTitle = L"Export character named drafts";
+    ofn.lpstrDefExt = L"mdkrdrafts";
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
     if (!GetSaveFileNameW(&ofn)) return false;
     std::string picked = toUtf8(file.data());

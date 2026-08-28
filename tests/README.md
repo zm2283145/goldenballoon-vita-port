@@ -4949,6 +4949,35 @@ to transition from their honest no-ROM treatment to exact ROM-derived metric
 bars and acceleration signatures; this uses only the game's ordinary verified
 base ROM.
 
+## Named-draft transfer — `tests/check_character_draft_transfer_ui.py`
+
+This ROM-free two-catalog gate drives the real Package workspace to save and
+exclusively export an exact-source `.mdkrdrafts` bundle, then reviews and imports
+it in an independently installed copy of the same generated CC0 character. It
+requires the transfer to strip local portrait paths, omit model/package/ROM
+bytes, retain exact portrait/editor state, refuse overwrite, expose source and
+add/duplicate/collision outcomes before consent, and remain mutation-free at
+review. The recipient review is rendered at 200% in the compact 640x480 layout;
+a keyboard/speech traversal must reach the compatibility summary before the
+rights-gated action. Confirmed import must re-read the reviewed file and add all
+new snapshots atomically without resuming, building, activating, assigning, or
+changing installed character bytes. A second review must be idempotent, and a
+same-id package with a different source digest must fail compatibility without
+publishing a hidden draft.
+
+The pure `character_draft_transfer` test independently proves complete-payload
+integrity detection, bounded parsing, privacy normalization, exact-base
+selection, fail-atomic capacity refusal, deterministic non-overwriting id
+renaming, and semantic duplicate suppression.
+
+```bash
+python3 tests/check_character_draft_transfer_ui.py \
+  --build build-character-tests
+```
+
+The rendered gate is registered as `app_character_draft_transfer`; neither arm
+requires a ROM, a network, or a community asset.
+
 ## Portrait Studio authoring — `tests/check_character_portrait_studio_ui.py`
 
 This ROM-free gate installs a generated CC0 package into an isolated catalog,
