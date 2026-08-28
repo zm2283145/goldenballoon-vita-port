@@ -20,12 +20,13 @@
 
 #include <cstdio>
 
-/* Beta build references these (resetRaceLatches / setUpRace boot handoff; the
- * PD-T6h2c ~LiveAdapter destructor also retracts the room-ready handoff); the
- * decisions under test never invoke them, so no-op stubs suffice. */
+/* Beta build references these (resetRaceLatches / setUpRace boot handoff +
+ * retractRaceBoot); the decisions under test never invoke them, so no-op stubs
+ * suffice. Exit-gate C2 dropped the ~LiveAdapter room-ready/race-boot backstop,
+ * so the destructor no longer references the registry (the launcher thread
+ * retracts both synchronously before teardown). */
 void OnlineRoom_publishEngineRaceBoot(IMdkrOnlineAdapter *) {}
 void OnlineRoom_retractEngineRaceBoot(IMdkrOnlineAdapter *) {}
-void OnlineRoom_retractEngineRoomReady(IMdkrOnlineAdapter *) {}
 
 static int g_failures = 0;
 static int g_checks = 0;

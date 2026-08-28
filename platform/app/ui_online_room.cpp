@@ -2738,10 +2738,17 @@ static void teardownAdapterAsync(std::unique_ptr<IMdkrOnlineAdapter> adapter) {
         return;
     }
     // Retract any pending engine-race-boot handoff ON THE LAUNCHER THREAD
-    // before the adapter crosses to the teardown thread: the destructor's own
-    // retract is only a backstop, and a detached-thread destruction would race
-    // OnlineRoom_pollEngineRaceBoot() against a dying adapter.
-    (void)mdkr_online_live_adapter_retract_race_boot(adapter.get());
+    // before the adapter crosses to the teardown thread: a detached-thread
+    // destruction would race OnlineRoom_pollEngineRaceBoot() against a dying
+    // adapter. race-boot is PUBLISHED with the RESOLVED RAW inner LiveAdapter
+    // (setUpRace -> OnlineRoom_publishEngineRaceBoot(this)), so it must be
+    // RETRACTED with that same raw pointer -- the panel owns the OwningLiveAdapter
+    // WRAPPER, and mdkr_online_live_adapter_retract_race_boot's inner
+    // dynamic_cast<LiveAdapter*>(wrapper) is a sibling cross-cast that yields
+    // nullptr, making a retract-by-wrapper a silent no-op (matches the room-ready
+    // resolve-raw two lines below).
+    (void)mdkr_online_live_adapter_retract_race_boot(
+        OnlineRoom_resolveRawLiveAdapter(adapter.get()));
     // PD-T6h2c IMPORTANT-1 (same hazard class for the room-ready registry): the
     // room-ready poll publishes the RESOLVED RAW inner LiveAdapter pointer, so a
     // "Leave Race" click on the very frame the room first hits SELECTING+2members+

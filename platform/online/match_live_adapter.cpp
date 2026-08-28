@@ -253,18 +253,20 @@ public:
     }
 
     ~LiveAdapter() override {
-#if MDKR_ENABLE_ONLINE_BETA
-        /* Backstop only (W4 m3): the owner is expected to have retracted the
-         * boot handoff synchronously on the launcher thread via
-         * mdkr_online_live_adapter_retract_race_boot BEFORE this destructor
-         * can run on a teardown thread. Never leave a dangling handoff. */
-        OnlineRoom_retractEngineRaceBoot(this);
-        /* PD-T6h2c IMPORTANT-1: structural backstop for the ROOM-READY registry
-         * (published as this raw LiveAdapter pointer). Mirrors the race-boot retract
-         * above so a raw-pointer retract happens on destruction regardless of the
-         * teardown path -- never hand runInteractiveLauncher a freed adapter. */
-        OnlineRoom_retractEngineRoomReady(this);
-#endif
+        /* Exit-gate C2 / Bridge Minor-1: the race-boot AND room-ready registry
+         * pointers are retracted synchronously on the LAUNCHER THREAD by
+         * teardownAdapterAsync (ui_online_room.cpp) BEFORE the adapter is moved
+         * to this detached teardown thread -- race-boot via the resolved-raw
+         * pointer (the wrapper cross-cast bug is fixed), room-ready likewise. The
+         * live adapter is only ever destroyed via teardownAdapterAsync, so the
+         * launcher-thread retract always runs first and nothing can publish a
+         * handoff after the owner moves the adapter out. A destructor backstop
+         * here would read/write the launcher-owned sPendingEngineRaceBoot /
+         * sPendingEngineRoomReady globals from this thread -- a formally-UB
+         * racing access of pointers the launcher may already be writing for the
+         * NEXT session, contrary to the registries' "launcher-thread only, no
+         * lock" contract (online_live_wiring.cpp). It covers no real case now, so
+         * it is deliberately DROPPED to keep that contract honest. */
         /* W4 m4: a clean teardown tells the room goodbye. Best-effort and
          * fire-and-forget: the reducer refuses LEAVE outside LOBBY/RESULTS
          * and a closed transport refuses the submit; both are fine. */
