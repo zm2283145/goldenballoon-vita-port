@@ -91,6 +91,17 @@ typedef struct MdkrRollbackGameRuntime {
     bool item_probe_mutation_control;
     bool network_input;
     bool tick_prepared;
+    /* Set by validate_boundary when its LAST false return was a RECOVERABLE
+     * online-input starvation (an online race whose peer/bootstrap input for the
+     * boundary never arrived -- the peer LOST at race start / mid-race), as
+     * opposed to a genuine rollback INVARIANT violation (allocation lifetime or
+     * coverage changed, snapshot capture failed, side-effect journal rejected,
+     * tick counter exhausted). Cleared at the top of every validate_boundary so it
+     * only ever describes the most recent verdict. Queried by
+     * mdkr_rollback_game_runtime_online_input_recoverable() so the engine tick
+     * loop can route a peer loss to a clean return-to-room instead of abort()ing.
+     * Only ever set on the network_input path, so it is always false offline. */
+    bool recoverable_online_input_failure;
     bool side_effect_error;
     bool pending_sound;
     bool authored_frame_timing_active;
@@ -1806,6 +1817,10 @@ bool mdkr_rollback_game_runtime_validate_boundary(unsigned update_rate) {
     if (!sRollbackGameRuntime.active) {
         return true;
     }
+    /* Fresh verdict: assume any false return below is a genuine invariant
+     * violation (fatal) until a RECOVERABLE online-input path explicitly sets
+     * this. So the genuine-invariant checks that follow leave it clear. */
+    sRollbackGameRuntime.recoverable_online_input_failure = false;
     if (sRollbackGameRuntime.authored_frame_timing_active) {
         const uint64_t finished = rollback_clock_now(NULL);
         mdkr_rollback_timing_record(
@@ -1859,6 +1874,9 @@ bool mdkr_rollback_game_runtime_validate_boundary(unsigned update_rate) {
                 !bridge_input_samples(&frame, history->input)) {
                 fprintf(stderr,
                         "[ROLLBACK] online bootstrap input unavailable tick=1\n");
+                /* RECOVERABLE: the peer/bootstrap input for the opening tick
+                 * never arrived (peer LOST at race start). Not corruption. */
+                sRollbackGameRuntime.recoverable_online_input_failure = true;
                 return false;
             }
             memcpy(history->received_input, history->input,
@@ -1873,6 +1891,9 @@ bool mdkr_rollback_game_runtime_validate_boundary(unsigned update_rate) {
             fprintf(stderr,
                     "[ROLLBACK] launcher input boundary was not prepared "
                     "tick=%u\n", tick);
+            /* RECOVERABLE: the launcher's online input source did not prepare
+             * this boundary (peer/input unavailable). Not corruption. */
+            sRollbackGameRuntime.recoverable_online_input_failure = true;
             return false;
         }
         sRollbackGameRuntime.tick_prepared = false;
@@ -1999,4 +2020,13 @@ bool mdkr_rollback_game_runtime_validate_boundary(unsigned update_rate) {
     }
     log_authority_range_hashes(&sRollbackGameRuntime, tick);
     return true;
+}
+
+bool mdkr_rollback_game_runtime_online_input_recoverable(void) {
+    /* True only when the LAST validate_boundary verdict was a recoverable
+     * online-input starvation on an online (network_input) race. A genuine
+     * invariant violation leaves the flag clear, so the caller keeps aborting
+     * on real corruption. Always false offline (network_input is never set). */
+    return sRollbackGameRuntime.network_input &&
+           sRollbackGameRuntime.recoverable_online_input_failure;
 }

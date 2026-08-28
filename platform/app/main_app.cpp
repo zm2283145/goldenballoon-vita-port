@@ -1235,6 +1235,25 @@ static void liveEngineHostUnbind(void) {
     platformSetHostWindow(nullptr, nullptr);
 }
 
+/* TEST-ONLY (beta) race-start peer-loss seam. When
+ * MDKR_APP_TEST_ONLINE_DROP_RACE_START_INPUT is set, liveDrainMatchInput refuses
+ * the FIRST authored tick's drain -- exactly what the production race-start
+ * barrier does when the peer LOST before ever delivering tick-1 (ICE failed /
+ * opponent vanished; see the barrier at drainTick == firstTick below). The engine
+ * then reaches its tick-1 canonical-input boundary with no input, which is the P0
+ * crash's trigger: rollback's validate_boundary reports the RECOVERABLE
+ * "online bootstrap input unavailable tick=1" starvation. Inert (resolved once)
+ * in every normal run. */
+static bool liveTestDropRaceStartInput(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env =
+            std::getenv("MDKR_APP_TEST_ONLINE_DROP_RACE_START_INPUT");
+        cached = (env != nullptr && std::strtoul(env, nullptr, 10) > 0ul) ? 1 : 0;
+    }
+    return cached != 0;
+}
+
 /* Advance the visible endpoint's race transport up to `tick` (idempotent), then
  * copy the canonical frame for `tick`. Authored ticks are 1-based and align with
  * the adapter's raceFirstTick (1), so one drain == one race_advance. */
@@ -1260,6 +1279,19 @@ bool liveDrainMatchInput(void *opaque, std::uint32_t /*epoch*/,
     const std::uint32_t lead = static_cast<std::uint32_t>(info.inputDelay) + 2u;
     for (unsigned guard = 0u; info.nextTick <= tick && guard < 100000u; ++guard) {
         const std::uint32_t drainTick = info.nextTick;
+        /* TEST-ONLY: drop the FIRST authored tick's remote/bootstrap input to
+         * stand in for a peer that vanished at race start (the production barrier
+         * below reaches this same "aborting to the room" verdict on a real peer
+         * loss). The engine's tick-1 boundary then starves -> the P0 crash lane's
+         * exact trigger. Reason mirrors the barrier's OpponentNeverStarted. */
+        if (drainTick == info.firstTick && liveTestDropRaceStartInput()) {
+            ctx->endReason = LiveRaceEndReason::OpponentNeverStarted;
+            std::fprintf(stderr,
+                         "[online-live] TEST: race-start tick-%u remote input "
+                         "UNAVAILABLE (peer-loss seam); aborting to the room\n",
+                         drainTick);
+            return false;
+        }
         /* End the visible race the instant a roster peer is lost mid-race,
          * rather than silently predicting against a frozen ghost all the way to
          * the finish line. The start barrier (drainTick == firstTick) reports

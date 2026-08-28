@@ -70,6 +70,14 @@ void mdkr_online_session_tick(s32 updateRate);
  * behaviour change. */
 bool mdkr_online_session_resume_results(void);
 
+/* P0 CRASH FIX: route a RECOVERABLE race-start (or mid-race) peer loss to a clean
+ * return-to-room instead of abort()ing the app. Called from the engine tick loop
+ * (thread3_main.c, beta-gated) ONLY when the boundary validator reports the
+ * recoverable online-input starvation (mdkr_rollback_game_runtime_online_input_-
+ * recoverable()): notes the session end (LEFT), tears the rollback runtime down
+ * cleanly, and requests platform_request_exit(0) so the launcher resumes the room. */
+void mdkr_online_session_return_to_room_on_peer_loss(void);
+
 #ifdef __cplusplus
 }
 #endif

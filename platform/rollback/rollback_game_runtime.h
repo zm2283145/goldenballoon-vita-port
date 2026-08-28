@@ -29,6 +29,14 @@ bool mdkr_rollback_game_runtime_prepare_tick(unsigned update_rate);
 /* Fail if an allocator-owned authority range was freed, resized or replaced.
  * Unrelated cache churn cannot move a live block and is intentionally ignored. */
 bool mdkr_rollback_game_runtime_validate_boundary(unsigned update_rate);
+/* Distinguish WHY the most recent validate_boundary() returned false. True only
+ * when that false was a RECOVERABLE online-input starvation -- an online race
+ * whose peer/bootstrap input for the boundary never arrived (the peer LOST at
+ * race start or mid-race) -- and false for a genuine rollback INVARIANT violation
+ * (allocation lifetime/coverage, snapshot capture, side-effect journal, tick
+ * exhaustion) OR any offline runtime. Lets the engine tick loop route a peer
+ * loss to a clean return-to-room while still aborting on real corruption. */
+bool mdkr_rollback_game_runtime_online_input_recoverable(void);
 /* The final host-I/O firewall. Ordinary play is unaffected. While a rollback
  * match is active, resimulation may never touch the host and progression data
  * may never be persisted from the match timeline. Call this at the platform

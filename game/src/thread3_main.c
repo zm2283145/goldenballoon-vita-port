@@ -528,6 +528,25 @@ void main_game_loop(void) {
      * finished authoring and fb_update has not issued the next ticket yet. */
     if (!mdkr_rollback_game_runtime_validate_boundary(
             (unsigned)logicUpdateRate)) {
+#if MDKR_ENABLE_ONLINE_BETA
+        /* P0 CRASH FIX (beta only): a live online race whose peer/bootstrap input
+         * vanished at race start -- the peer LOST (ICE failed) and the launcher's
+         * race-start barrier aborted the tick-1 drain -- starves this boundary.
+         * That is a RECOVERABLE peer loss, NOT rollback invariant corruption:
+         * route it to a clean return-to-room (note session-end LEFT + clean
+         * rollback teardown + platform_request_exit(0)) and break out of the tick
+         * loop, instead of crashing BOTH machines. Genuine invariant violations
+         * (authority allocation lifetime/coverage, snapshot capture, side-effect
+         * journal, tick-counter exhaustion) leave the recoverable flag CLEAR and
+         * still hit the abort() below, byte-for-byte as before. Wrapped in
+         * MDKR_ENABLE_ONLINE_BETA so the OFF build's thread3_main.c.o (anchor
+         * 20ed811d) is untouched: the preprocessor strips this block entirely and
+         * the offline / OFF abort() path is byte-identical. */
+        if (mdkr_rollback_game_runtime_online_input_recoverable()) {
+            mdkr_online_session_return_to_room_on_peer_loss();
+            return;
+        }
+#endif
         fprintf(stderr,
                 "[FATAL] rollback lab lost a registered authority allocation\n");
         abort();

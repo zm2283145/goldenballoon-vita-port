@@ -38,6 +38,8 @@
 #include "online/online_results.h"     /* native RESULTS/STANDINGS phase */
 #include "online/online_ceremony.h"    /* native champion CEREMONY phase */
 #include "online/online_standings.h"   /* capture the final ranking (shared sort) */
+#include "rollback/rollback_game_runtime.h" /* clean rollback teardown on the
+                                              recoverable peer-loss unwind */
 
 /* The engine's live game-mode selector. Defined (external linkage) in
  * thread3_main.c; no shared header declares it, so the session declares the
@@ -823,6 +825,41 @@ static bool online_session_detect_remote_vacated(const char *where) {
  *   - ABANDON_RACE is NOT needed: abnormal ends keep platform_request_exit(0),
  *     which resume_results below preserves by returning false when no finish was
  *     captured. */
+
+/* THE RACE-START (and mid-race) PEER-LOSS CLEAN RETURN -- the P0 crash fix.
+ *
+ * The engine's per-tick boundary validator (rollback_game_runtime.c) returns
+ * false at the first authored boundary when the peer/bootstrap input for that
+ * tick never arrived -- the peer LOST at race start (ICE failed / opponent
+ * vanished) and the launcher's race-start barrier aborted the tick-1 drain. That
+ * is a RECOVERABLE peer loss, NOT rollback invariant corruption; the engine tick
+ * loop (thread3_main.c, beta-gated) used to abort() the whole app on it and crash
+ * BOTH machines. Route it instead to the SAME clean return-to-room contract every
+ * other abnormal online end uses (see the remote-vacate + watchdog paths above):
+ *   1. note the session end -- LEFT, because the peer left (the launcher's
+ *      onlineTakeSessionEndWitness then logs [online-session-end] reason=LEFT and
+ *      resumes the Online Room, exactly as the remote-vacate LEFT path does);
+ *   2. tear the pinned rollback runtime down cleanly here -- mirror
+ *      unload_level_game()'s mdkr_rollback_game_runtime_level_end() so the
+ *      recoverable unwind strands no authority allocation / snapshot ring (this is
+ *      idempotent with the engine-shutdown level_end in main_pc.c, which also runs
+ *      when a level is still loaded at exit);
+ *   3. request the platform exit(0) -- the SAME clean engine-exit the online
+ *      post-race path uses; the thread3 loop honors it and returns.
+ * Called ONLY from the engine boundary-failure handler, ONLY when the failure was
+ * the recoverable online-input kind (mdkr_rollback_game_runtime_online_input_-
+ * recoverable()). Both roles reach the identical path: the host (peer=joiner lost)
+ * and the joiner (peer=host lost/crashed) both starve the tick-1 boundary. */
+void mdkr_online_session_return_to_room_on_peer_loss(void) {
+    mdkr_party_link_note_session_end(MDKR_PARTY_LINK_SESSION_END_LEFT);
+    fprintf(stderr,
+            "[online-session] LEFT: peer lost at race start (tick-1 input "
+            "unavailable) -> return to room (exit 0)\n");
+    /* Release the pinned rollback assets/authority + snapshot ring now, so the
+     * recoverable unwind leaks nothing (idempotent with engine-shutdown teardown). */
+    mdkr_rollback_game_runtime_level_end();
+    platform_request_exit(0);
+}
 
 /* post-race RE-ENTRY. Called from the online
  * post-race hook (menu.c) when the grace period elapses. Returns true -- and
