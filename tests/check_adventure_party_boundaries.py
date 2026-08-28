@@ -368,9 +368,27 @@ def run_self_tests(
                 f"self-test[{name}]: clean control fired unexpectedly: {result}"
             )
 
-    # Rule 1 — a new undeclared branch, a stale entry, and the clean tree.
+    # Rule 1 — run synthetic source through the real detection pipeline
+    # (occurrences_from_sources -> line_kinds -> the comparison regexes) so the
+    # control exercises the parser, not just the drift comparison. Cover both
+    # operand orders, including the right-operand form (COUNT_CMP_RIGHT_RE),
+    # which no inventory entry and no other control would otherwise touch.
+    synthetic_source = {
+        "game/src/__selftest__.c":
+            "void selftest(void) {\n"
+            "    if (gNumberOfActivePlayers == 5) { g(); }  /* left operand */\n"
+            "    if (5 == gNumActivePlayers) { g(); }       /* right operand */\n"
+            "}\n"
+    }
+    synthetic_occ = occurrences_from_sources(synthetic_source)
+    if len(synthetic_occ) != 2:
+        problems.append(
+            "self-test[rule1-detection]: synthetic source parsed into "
+            f"{len(synthetic_occ)} comparison occurrence(s), expected 2 (one per "
+            "operand order) — the detection pipeline, e.g. COUNT_CMP_RIGHT_RE, "
+            "is not matching what this control asserts")
     new_branch = dict(current)
-    new_branch[("game/src/__selftest__.c", "if (gNumberOfActivePlayers == 5) {")] = 1
+    new_branch.update(synthetic_occ)
     fires("rule1-new-branch", rule1_inventory_drift(new_branch, expected))
     if expected:
         dropped = next(iter(expected))
