@@ -766,6 +766,21 @@ struct BetaFakeInviteOverride {
 };
 BetaFakeInviteOverride g_betaFakeInvite;
 
+// Records which branch drawBetaSelectingBody last rendered: the universal native
+// hand-off card, or the full ImGui per-race fallback (racer grid + vehicle chips +
+// Race Settings picker + Ready/Start). The render seam (drawBetaRoomFake) emits it
+// as a semantic witness a headless test asserts on. Written by a single enum
+// assignment on the live path too (negligible), consulted only by the seam.
+enum class BetaSelectingRender { None, Handoff, FullSelect };
+BetaSelectingRender g_betaSelectingRender = BetaSelectingRender::None;
+
+// TEST-ONLY: when the render seam builds a "*-fallback" stage it sets this so
+// drawBetaSelectingBody reads the native takeover as NOT engaged, reproducing the
+// post-LEFT/ERROR state (latch SET, nothing pending) in which the full ImGui
+// recovery grid is reachable at BASE. The live/production beta path never sets it,
+// so the real takeover gate (OnlineRoom_roomReadyTakeoverEngaged) is unchanged.
+bool g_betaFakeForceFallback = false;
+
 // Restrict the join-code field to the 6 digits the fallback code uses. This
 // same filter also sanitizes PASTE: ImGui runs every clipboard character
 // through the CallbackCharFilter (imgui_widgets.cpp InputTextFilterCharacter,
@@ -1729,8 +1744,12 @@ void betaSelectableChipColors(bool selected) {
                           AppTheme::navSelectedActive());
 }
 
-void drawBetaSessionCard(const MdkrOnlineLobby &lobby, bool isLeader,
-                         bool tournamentHandoff) {
+// Race Settings card (mode chips + the single-race track picker / tournament cup
+// picker). Reached ONLY on the ImGui per-race fallback (a LEFT/ERROR native
+// return, or a room still filling to 2 members): once the native takeover is
+// engaged, drawBetaSelectingBody shows the hand-off card and returns before ever
+// calling this, so the old tournament-takeover cup-note branch is retired.
+void drawBetaSessionCard(const MdkrOnlineLobby &lobby, bool isLeader) {
     IMdkrOnlineAdapter *adapter = g_online.adapter.get();
     const std::uint8_t mode =
         isLeader && g_online.betaPendingMode != 0xFFu
@@ -1871,15 +1890,6 @@ void drawBetaSessionCard(const MdkrOnlineLobby &lobby, bool isLeader,
                 ImGui::TextUnformatted("Host is choosing…");
             }
         }
-    } else if (tournamentHandoff) {
-        // This is the native takeover window (SELECTING + 2 members + LOBBY +
-        // tournament) -- native TRACKSELECT owns cup choice the instant it boots
-        // (within a frame or two), so the ImGui cup picker + series line are dead.
-        // Replace them with a compact note; the prominent hand-off card in the body
-        // carries the main "handing to the game" message. The MODE chips above stay
-        // (they are the tournament-entry control the trigger keys off).
-        ui::TextSubtle("Cup");
-        ui::TextSubtleWrapped("Choose your cup in the game — starting now…");
     } else {
         // Trophy Tournament: one of the 5 cups (4 scheduled races each,
         // authentic 9/7/5/3/1 points, champion after race 4).
@@ -2150,20 +2160,27 @@ bool drawBetaSelection(const MdkrOnlineViewModel &model) {
     return drawSelectionControl(model);
 }
 
-// ---- Tournament hand-off card ----------------------------------------------
-// For a TOURNAMENT room in the native takeover window (SELECTING + 2 members +
-// LOBBY + tournament) the descriptor-less native online screens boot within a
-// frame or two and OWN cup choice, character/vehicle, ready and every race, so
-// the ImGui tournament selection widgets are dead. This concise card replaces
-// them so the human never lands on a stale tournament grid. It is strictly
-// tournament-scoped: single-race is never taken over by native, so this never
-// draws for a single-race room, and it never touches the single-race widgets.
-void drawBetaTournamentHandoffCard() {
-    if (ui::CardBegin("##beta-tournament-handoff", AppTheme::accent(), 0.0f)) {
-        ImGui::TextUnformatted("Starting tournament — handing to the game…");
+// ---- Native hand-off card ---------------------------------------------------
+// After pairing, the descriptor-less native online screens (CHARSELECT ->
+// VEHICLE SELECT -> TRACKSELECT) boot within a frame or two and OWN character,
+// vehicle, and track/cup/mode for EVERY online mode -- single race and tournament
+// alike (T2 routed single race through the same descriptor-less native path, so
+// the room-ready takeover now fires for both). This concise card replaces the
+// WHOLE ImGui per-race selection surface (racer grid, vehicle chips, Race
+// Settings mode/cup/track picker, Ready/Start) so the human never lands on a
+// stale editable grid the game is about to own. It is shown ONLY while the
+// takeover is engaged (OnlineRoom_roomReadyTakeoverEngaged); after a LEFT/ERROR
+// return that predicate is false and the full ImGui fallback shows instead, so
+// this card never lies.
+void drawBetaNativeHandoffCard(bool tournament) {
+    if (ui::CardBegin("##beta-native-handoff", AppTheme::accent(), 0.0f)) {
+        ImGui::TextUnformatted("Starting — handing to the game…");
         ui::TextSubtleWrapped(
-            "The game takes over from here. Pick your cup, racer, and vehicle "
-            "on the next screen.");
+            tournament
+                ? "The game takes over from here. Pick your cup, racer, and "
+                  "vehicle on the next screen."
+                : "The game takes over from here. Pick your racer, vehicle, and "
+                  "track on the next screen.");
     }
     ui::CardEnd();
 }
@@ -2180,28 +2197,29 @@ void drawBetaSelectingBody(LauncherState &state,
     const std::uint64_t localEndpoint = betaLocalEndpoint(lobby, isLeader);
     const MdkrOnlineSeat *localSeat = betaSeatFor(lobby, localEndpoint);
 
-    // The native takeover window. The base condition mirrors the wiring's
-    // room-ready condition (online_live_wiring.cpp OnlineRoom_roomReadyConditionHolds):
-    // this body is only reached at SELECTING + LOBBY, so a tournament room with 2
-    // members is exactly the room-ready trigger's scope. While it holds AND the
-    // takeover is actually live, the tournament-scoped ImGui widgets (cup picker,
-    // series line, ready/start) are dead and a hand-off card stands in for them.
-    // AND in OnlineRoom_roomReadyTakeoverEngaged() so the
-    // card is shown ONLY when the takeover can still fire (or just fired, boot
-    // pending). After a LEFT/ERROR return the room lands back at SELECTING+2+LOBBY+
-    // tournament but the latch stays SET with nothing pending (by design -- LEFT/ERROR
-    // must not re-arm), so the takeover will NEVER re-fire here; the predicate is then
-    // false and the FULL ImGui per-race fallback (character grid / vehicle / Ready /
-    // Start -- the working recovery at BASE) shows instead of a lying hand-off card.
-    // Single-race never matches (mode != tournament), so its full selection is
-    // untouched. Consistency: the poll runs on the same adapter one call earlier in
-    // drawBetaRoom (before this body), and its condition check is the identical
-    // predicate set over the same reducer snapshot, so when the base condition holds
-    // with `!sRoomReadyLatched` the poll fires this frame -> `engaged` is true.
-    const bool tournamentHandoff =
-        lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT &&
+    // The native takeover window. This body is only reached at SELECTING + LOBBY
+    // (drawBetaRoom guards it), so "2 members + LOBBY" here is exactly the wiring's
+    // room-ready condition (OnlineRoom_roomReadyConditionHolds) -- for ANY online
+    // mode. T2 dropped that predicate's tournament-only clause, so single race now
+    // fires the descriptor-less native takeover too; this hand-off is therefore
+    // UNIVERSAL, not tournament-scoped. OnlineRoom_roomReadyTakeoverEngaged() (also
+    // mode-agnostic) is ANDed in so the card shows ONLY while the takeover can still
+    // fire (or just fired, boot pending). After a LEFT/ERROR return the room lands
+    // back at SELECTING+2+LOBBY but the latch stays SET with nothing pending (by
+    // design -- LEFT/ERROR must not re-arm), so the takeover NEVER re-fires here; the
+    // predicate is then false and the FULL ImGui per-race fallback (character grid /
+    // vehicle / Ready / Start -- the working recovery at BASE) shows instead of a
+    // lying hand-off card. Consistency with the live poll: it runs on the same
+    // adapter one call earlier in drawBetaRoom (before this body) over the same
+    // reducer snapshot, so when the base condition holds with `!sRoomReadyLatched`
+    // the poll fires this frame -> `engaged` is true. (The render seam forces
+    // g_betaFakeForceFallback for its "*-fallback" stages to capture that recovery
+    // state headlessly; the live path never sets it.)
+    bool takeoverEngaged = OnlineRoom_roomReadyTakeoverEngaged();
+    if (g_betaFakeForceFallback) takeoverEngaged = false;
+    const bool nativeHandoff =
         lobby.phase == MDKR_ONLINE_LOBBY && model.member_count == 2u &&
-        OnlineRoom_roomReadyTakeoverEngaged();
+        takeoverEngaged;
 
     // Reconcile optimistic staging with the authoritative snapshot.
     if (localSeat != nullptr) {
@@ -2235,19 +2253,20 @@ void drawBetaSelectingBody(LauncherState &state,
     drawBetaRosterStrip(lobby, localEndpoint);
     ui::Gap(ui::kGapM);
 
-    // Tournament takeover window: the native CHARSELECT/TRACKSELECT own the cup,
-    // racer, vehicle and Ready the instant they boot, so the ImGui racer grid +
-    // vehicle chips + Ready region are all dead. Show ONLY Race Settings (the mode
-    // chips + the compact cup note) and the hand-off card here (P1) -- rendering
-    // the editable-looking racer grid and vehicle chips above a card that says
-    // "pick on the next screen" reads as contradictory. Single-race (and a
-    // 1-member tournament still filling up) never engages this.
-    if (tournamentHandoff) {
-        drawBetaSessionCard(lobby, isLeader, tournamentHandoff);
-        ui::Gap(ui::kGapM);
-        drawBetaTournamentHandoffCard();
+    // Native takeover window (ANY mode): the native CHARSELECT -> VEHICLE SELECT ->
+    // TRACKSELECT own character, vehicle, and track/cup/mode the instant they boot,
+    // so EVERY ImGui per-race widget -- the racer grid, the vehicle chips, the Race
+    // Settings mode/cup/track picker AND the Ready/Start region -- is dead. Show only
+    // the roster strip (already drawn above) and a clean hand-off card; rendering an
+    // editable-looking grid above a card that says "pick on the next screen" reads as
+    // contradictory. A LEFT/ERROR return (takeover no longer engaged) or a room still
+    // filling to 2 members falls through to the full ImGui fallback below.
+    if (nativeHandoff) {
+        g_betaSelectingRender = BetaSelectingRender::Handoff;
+        drawBetaNativeHandoffCard(lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT);
         return;
     }
+    g_betaSelectingRender = BetaSelectingRender::FullSelect;
 
     // [P2] Personal picks first -- racer, vehicle, then Ready -- so the essential
     // controls stay reachable without scrolling on a 960x720 window; the host's
@@ -2336,7 +2355,7 @@ void drawBetaSelectingBody(LauncherState &state,
     // The joiner's mirror is compact; the host's picker is the compacted
     // world-scoped selector, so this block stays short either way.
     ui::Gap(ui::kGapM);
-    drawBetaSessionCard(lobby, isLeader, tournamentHandoff);
+    drawBetaSessionCard(lobby, isLeader);
 }
 
 // ---- Results / standings body (RESULTS, snapshot-backed) -------------------
@@ -2827,6 +2846,52 @@ MdkrOnlineViewControl betaFakeControl(MdkrOnlineViewAction action,
     return c;
 }
 
+// A faithful 2-seat SELECTING lobby + view model for the native-takeover body,
+// for either mode. `fallback` reproduces the post-LEFT/ERROR recovery state (the
+// takeover is no longer engaged), which is the ONLY state in which the full ImGui
+// per-race grid is reachable -- so the seam can capture both the universal
+// hand-off card (fallback=false) and the recovery grid (fallback=true).
+void betaFakeBuildSelectingStage(MdkrOnlineViewModel *model,
+                                 MdkrOnlineLobby *lobby, bool *haveLobby,
+                                 bool tournament, bool fallback) {
+    g_betaFakeForceFallback = fallback;
+    betaFakeInitLobby(lobby,
+                      tournament ? MDKR_ONLINE_MODE_TOURNAMENT
+                                 : MDKR_ONLINE_MODE_SINGLE_RACE,
+                      MDKR_ONLINE_LOBBY);
+    // Single race: host has locked a track. Tournament: cup left NO_CUP so the
+    // resolved track is NO_VOTE (mask = all base). Either way the chosen vehicle is
+    // legal, so the fallback grid's illegal-vehicle auto-fix (which would dispatch on
+    // the absent adapter) stays inert.
+    std::uint16_t track = MDKR_ONLINE_NO_VOTE;
+    if (!tournament) {
+        track = 5u;  // Ancient Lake (Dino Domain, race 1)
+        lobby->configured_track = track;
+    }
+    const std::uint8_t veh = betaFakeLegalVehicle(track);
+    lobby->seats[0].character_id = 2u;  // Pipsy (you)
+    lobby->seats[0].vehicle_id = veh;
+    lobby->seats[1].character_id = 5u;  // Bumper (friend)
+    lobby->seats[1].vehicle_id = veh;
+    if (!tournament) lobby->members[1].ready = true;  // friend ready; you choosing
+    *haveLobby = true;
+    model->kind = MDKR_ONLINE_VIEW_SELECTING;
+    model->title = tournament ? "Trophy Tournament" : "Pick Your Racer";
+    model->explanation =
+        tournament
+            ? "Pick your cup, racer and vehicle in the game on the next screen."
+            : "Choose a racer and vehicle, then Ready up.";
+    model->primary = betaFakeControl(MDKR_ONLINE_VIEW_ACTION_READY, "Ready");
+    model->secondary = betaFakeControl(
+        MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS, "Connection Details");
+    model->cancel =
+        betaFakeControl(MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM, "Leave Room");
+    model->member_count = 2u;
+    model->ready_count = tournament ? 0u : 1u;
+    model->seat_count = 2u;
+    model->local_member_is_leader = true;
+}
+
 // Build (model, lobby, haveLobby) for one stage and arm/disarm the fake invite.
 // Returns false for an unknown stage.
 bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
@@ -2834,6 +2899,7 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
     std::memset(model, 0, sizeof(*model));
     *haveLobby = false;
     g_betaFakeInvite.active = false;
+    g_betaFakeForceFallback = false;
     g_online.betaHostJourney = true;  // the fake local player hosts
 
     if (std::strcmp(stage, "invite") == 0) {
@@ -2867,56 +2933,27 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
         model->local_member_is_leader = true;
         return true;
     }
+    // SELECTING body, native takeover engaged (the shipping post-pairing state for
+    // BOTH modes): drawBetaSelectingBody shows the universal hand-off card and NO
+    // per-race grid. "handoff" is kept as a legacy alias of room-tournament.
     if (std::strcmp(stage, "room-single") == 0) {
-        betaFakeInitLobby(lobby, MDKR_ONLINE_MODE_SINGLE_RACE,
-                          MDKR_ONLINE_LOBBY);
-        lobby->configured_track = 5u;  // Ancient Lake (Dino Domain, race 1)
-        const std::uint8_t veh = betaFakeLegalVehicle(lobby->configured_track);
-        lobby->seats[0].character_id = 2u;  // Pipsy (you)
-        lobby->seats[0].vehicle_id = veh;
-        lobby->seats[1].character_id = 5u;  // Bumper (friend)
-        lobby->seats[1].vehicle_id = veh;
-        lobby->members[1].ready = true;     // friend ready; you are choosing
-        *haveLobby = true;
-        model->kind = MDKR_ONLINE_VIEW_SELECTING;
-        model->title = "Pick Your Racer";
-        model->explanation = "Choose a racer and vehicle, then Ready up.";
-        model->primary =
-            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_READY, "Ready");
-        model->secondary = betaFakeControl(
-            MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS, "Connection Details");
-        model->cancel =
-            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM, "Leave Room");
-        model->member_count = 2u;
-        model->ready_count = 1u;
-        model->seat_count = 2u;
-        model->local_member_is_leader = true;
+        betaFakeBuildSelectingStage(model, lobby, haveLobby, false, false);
         return true;
     }
     if (std::strcmp(stage, "room-tournament") == 0 ||
         std::strcmp(stage, "handoff") == 0) {
-        betaFakeInitLobby(lobby, MDKR_ONLINE_MODE_TOURNAMENT,
-                          MDKR_ONLINE_LOBBY);
-        // cup left NO_CUP so the resolved track is NO_VOTE (mask = all base):
-        // the hand-off card owns the body and the vehicle auto-fix stays inert.
-        lobby->seats[0].character_id = 2u;  // Pipsy (you)
-        lobby->seats[0].vehicle_id = betaFakeLegalVehicle(MDKR_ONLINE_NO_VOTE);
-        lobby->seats[1].character_id = 5u;  // Bumper (friend)
-        lobby->seats[1].vehicle_id = betaFakeLegalVehicle(MDKR_ONLINE_NO_VOTE);
-        *haveLobby = true;
-        model->kind = MDKR_ONLINE_VIEW_SELECTING;
-        model->title = "Trophy Tournament";
-        model->explanation =
-            "Pick your cup, racer and vehicle in the game on the next screen.";
-        model->primary =
-            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_READY, "Ready");
-        model->secondary = betaFakeControl(
-            MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS, "Connection Details");
-        model->cancel =
-            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM, "Leave Room");
-        model->member_count = 2u;
-        model->seat_count = 2u;
-        model->local_member_is_leader = true;
+        betaFakeBuildSelectingStage(model, lobby, haveLobby, true, false);
+        return true;
+    }
+    // SELECTING body, native takeover NOT engaged (a LEFT/ERROR native return): the
+    // full ImGui per-race recovery grid IS reachable, exactly as at BASE -- proof
+    // R7 recovery is never worse than base for either mode.
+    if (std::strcmp(stage, "room-single-fallback") == 0) {
+        betaFakeBuildSelectingStage(model, lobby, haveLobby, false, true);
+        return true;
+    }
+    if (std::strcmp(stage, "room-tournament-fallback") == 0) {
+        betaFakeBuildSelectingStage(model, lobby, haveLobby, true, true);
         return true;
     }
     if (std::strcmp(stage, "finished") == 0) {
@@ -2994,7 +3031,8 @@ void drawBetaRoomFake(LauncherState &state) {
         ui::CautionBox(
             "Unknown Beta Stage",
             "Set MDKR_APP_ONLINE_BETA_STAGE to one of: chooser, joincode, "
-            "invite, phrase, room-single, room-tournament, handoff, finished, "
+            "invite, phrase, room-single, room-tournament, handoff, "
+            "room-single-fallback, room-tournament-fallback, finished, "
             "recovery.");
         return;
     }
@@ -3046,6 +3084,19 @@ void drawBetaRoomFake(LauncherState &state) {
         lobby.phase == MDKR_ONLINE_LOBBY) {
         drawBetaSelectingBody(state, model, lobby);
         primaryDrawn = true;
+        // Semantic witness for the headless takeover-retire test: which SELECTING
+        // surface drawBetaSelectingBody produced -- the universal hand-off card, or
+        // the full ImGui per-race fallback grid (racer + vehicle + Race Settings +
+        // Ready/Start). Emitted only from the render seam, never the live path.
+        std::fprintf(
+            stderr,
+            "[online-beta-selecting] stage=%s mode=%s render=%s\n", stage,
+            lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT ? "tournament" : "single",
+            g_betaSelectingRender == BetaSelectingRender::Handoff
+                ? "handoff"
+                : g_betaSelectingRender == BetaSelectingRender::FullSelect
+                      ? "full-select"
+                      : "none");
     } else if (haveLobby && model.kind == MDKR_ONLINE_VIEW_RESULTS &&
                lobby.phase == MDKR_ONLINE_RESULTS) {
         drawBetaResultsBody(state, model, lobby);
