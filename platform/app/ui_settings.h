@@ -43,6 +43,12 @@ struct SettingsCharacterPreviewRequest {
     bool interactiveStudio = false;
 };
 
+struct SettingsCharacterPreviewDisposition {
+    bool launcherOwnedCapture = false;
+    bool portraitSourceHandoff = false;
+    bool interactiveStudio = false;
+};
+
 struct SettingsCharacterStudioFrame {
     bool fitReady = false;
     bool measurementReady = false;
@@ -108,9 +114,7 @@ void Settings_publishCharacterPreviewResult(
     const std::string &fitSha256,
     const std::string &presentationSha256,
     const std::string &capturePng,
-    bool launcherOwnedCapture,
-    bool portraitSourceHandoff,
-    bool interactiveStudio,
+    const SettingsCharacterPreviewDisposition &disposition,
     const MdkrCharacterPreviewResult &result);
 
 // Discard any in-progress audible Audio slider preview. Used when navigation

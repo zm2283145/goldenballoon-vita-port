@@ -1088,9 +1088,11 @@ LauncherAction Launcher::draw(AppHost &host) {
                 : state_.characterPreviewFitSha256,
             state_.characterPreviewPresentationSha256,
             state_.characterPreviewCapturePng,
-            state_.characterPreviewCaptureLauncherOwned,
-            state_.characterPreviewPortraitSourceHandoff,
-            state_.characterPreviewInteractiveStudio,
+            SettingsCharacterPreviewDisposition{
+                state_.characterPreviewCaptureLauncherOwned,
+                state_.characterPreviewPortraitSourceHandoff,
+                state_.characterPreviewInteractiveStudio,
+            },
             state_.characterPreviewResult);
         Launcher_requestTab(
             state_, kLauncherPanelCharacterWorkshop, kLauncherTabPlayer);

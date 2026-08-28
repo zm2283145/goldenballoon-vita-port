@@ -12686,14 +12686,17 @@ void drawCharacterTestEvidenceMatrix(
                         Settings_publishCharacterPreviewResult(
                             entry->id, source,
                             characterTestTuningSignature(entry, tuning, context),
-                            presentation, std::string(), false, false, false,
-                            cell);
+                            presentation, std::string(),
+                            SettingsCharacterPreviewDisposition{}, cell);
                     }
                 }
             } else {
                 Settings_publishCharacterPreviewResult(
                     entry->id, source, fit, presentation, capturePath,
-                    portraitHandoff, portraitHandoff, false, result);
+                    SettingsCharacterPreviewDisposition{
+                        portraitHandoff, portraitHandoff, false,
+                    },
+                    result);
             }
             const auto session = g_characterPreviewResults.find(entry->id);
             const CharacterTestEvidenceStore::Evidence *latest =
@@ -21679,10 +21682,11 @@ void Settings_publishCharacterPreviewResult(
     const std::string &fitSha256,
     const std::string &presentationSha256,
     const std::string &capturePng,
-    bool launcherOwnedCapture,
-    bool portraitSourceHandoff,
-    bool interactiveStudio,
+    const SettingsCharacterPreviewDisposition &disposition,
     const MdkrCharacterPreviewResult &result) {
+    const bool launcherOwnedCapture = disposition.launcherOwnedCapture;
+    const bool portraitSourceHandoff = disposition.portraitSourceHandoff;
+    const bool interactiveStudio = disposition.interactiveStudio;
     if (packageId.empty()) return;
     if (result.pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
         result.context >= MDKR_CHARACTER_PREVIEW_SELECT &&
