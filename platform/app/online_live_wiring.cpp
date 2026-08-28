@@ -821,6 +821,19 @@ void OnlineRoom_observeRoomReadyRearm(IMdkrOnlineAdapter *adapter) {
                  "condition) -- next fresh tournament SELECTING re-takes native\n");
 }
 
+bool OnlineRoom_roomReadyTakeoverEngaged(void) {
+    /* PD-T6e fix1 (Critical-1). True only when the native takeover can still fire
+     * this frame OR just fired and a boot is pending; false once a LEFT/ERROR return
+     * has left the latch SET with nothing pending -- the intended no-re-boot-loop
+     * state, in which the takeover will NEVER re-fire in this room and the ImGui
+     * per-race fallback (its Ready/Start UI) is the live continuation, NOT the
+     * hand-off card. The panel ANDs this into `tournamentHandoff` so the card never
+     * lies: `!sRoomReadyLatched` means the SELECTING-branch poll (run BEFORE the body
+     * each frame) will fire this frame; `sPendingEngineRoomReady != nullptr` means it
+     * just fired and the launcher has not yet consumed + booted. */
+    return !sRoomReadyLatched || sPendingEngineRoomReady != nullptr;
+}
+
 void OnlineRoom_setRosterOwner(uint64_t token) {
     /* Ownership is meaningful only while a roster is installed. */
     sRosterOwnerToken = mdkr_net_roster_runtime_active() ? token : 0u;

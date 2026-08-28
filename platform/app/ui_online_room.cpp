@@ -2052,16 +2052,28 @@ void drawBetaSelectingBody(LauncherState &state,
     const std::uint64_t localEndpoint = betaLocalEndpoint(lobby, isLeader);
     const MdkrOnlineSeat *localSeat = betaSeatFor(lobby, localEndpoint);
 
-    // PD-T6e: the native takeover window. This mirrors the wiring's room-ready
-    // condition (online_live_wiring.cpp OnlineRoom_roomReadyConditionHolds): this
-    // body is only reached at SELECTING + LOBBY, so a tournament room with 2 members
-    // is exactly the room-ready trigger's scope -- native boots within a frame or two.
-    // While it holds, the tournament-scoped ImGui widgets (cup picker, series line,
-    // ready/start) are dead; a hand-off card stands in for them. Single-race never
-    // matches (mode != tournament), so its full ImGui selection is untouched.
+    // PD-T6e: the native takeover window. The base condition mirrors the wiring's
+    // room-ready condition (online_live_wiring.cpp OnlineRoom_roomReadyConditionHolds):
+    // this body is only reached at SELECTING + LOBBY, so a tournament room with 2
+    // members is exactly the room-ready trigger's scope. While it holds AND the
+    // takeover is actually live, the tournament-scoped ImGui widgets (cup picker,
+    // series line, ready/start) are dead and a hand-off card stands in for them.
+    // PD-T6e fix1 (Critical-1): AND in OnlineRoom_roomReadyTakeoverEngaged() so the
+    // card is shown ONLY when the takeover can still fire (or just fired, boot
+    // pending). After a LEFT/ERROR return the room lands back at SELECTING+2+LOBBY+
+    // tournament but the latch stays SET with nothing pending (by design -- LEFT/ERROR
+    // must not re-arm), so the takeover will NEVER re-fire here; the predicate is then
+    // false and the FULL ImGui per-race fallback (character grid / vehicle / Ready /
+    // Start -- the working recovery at BASE) shows instead of a lying hand-off card.
+    // Single-race never matches (mode != tournament), so its full selection is
+    // untouched. Consistency: the poll runs on the same adapter one call earlier in
+    // drawBetaRoom (before this body), and its condition check is the identical
+    // predicate set over the same reducer snapshot, so when the base condition holds
+    // with `!sRoomReadyLatched` the poll fires this frame -> `engaged` is true.
     const bool tournamentHandoff =
         lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT &&
-        lobby.phase == MDKR_ONLINE_LOBBY && model.member_count == 2u;
+        lobby.phase == MDKR_ONLINE_LOBBY && model.member_count == 2u &&
+        OnlineRoom_roomReadyTakeoverEngaged();
 
     // Reconcile optimistic staging with the authoritative snapshot.
     if (localSeat != nullptr) {
@@ -2287,21 +2299,39 @@ void drawBetaResultsBody(LauncherState &state,
                           "1 with fresh points."
                         : "Waiting for the host to start a new tournament or "
                           "end the session.");
-            } else {
-                // PD-T6e: with Minor-4's re-arm in place, a tournament's races all
-                // run in-process under the native takeover, so this mid-cup RESULTS
-                // branch is no longer part of normal play -- it is only reached as a
-                // recovery surface (e.g. an ERROR/watchdog return that left the room
-                // parked mid-cup). The host's Next Race below (RACE_AGAIN -> REMATCH)
-                // flips the room back to SELECTING, where the room-ready trigger hands
-                // the next race to the native screens. A concise hand-off note stands
-                // in for the old per-race "Next: <track>" ImGui flow.
+            } else if (OnlineRoom_roomReadyTakeoverEngaged()) {
+                // PD-T6e: with Minor-4's re-arm in place a tournament's races run
+                // in-process under the native takeover, so when the takeover is still
+                // live the host's Next Race (RACE_AGAIN -> REMATCH) flips the room back
+                // to SELECTING where the room-ready trigger hands the next race to the
+                // native screens -- a concise hand-off note is honest here.
                 ui::TextSubtleWrapped(
                     isLeader
                         ? "Continue the tournament — the game takes over from "
                           "the next race."
                         : "Waiting for the host to continue — the game takes "
                           "over from the next race.");
+            } else {
+                // PD-T6e fix1 (Critical-1): the native takeover is NOT live in this
+                // room (a LEFT/ERROR return left the latch set with nothing pending),
+                // so the ImGui per-race fallback IS the continuation -- show the honest
+                // Next-Race prompt (pre-T6e copy), never a false hand-off promise. The
+                // Next Race button below then re-races this cup round via the race-boot
+                // fallback, exactly as at BASE.
+                const MdkrOnlineTrackInfo *nextTrack =
+                    mdkr_online_track_by_id(mdkr_online_cup_track_id(
+                        lobby.cup_id,
+                        static_cast<unsigned>(lobby.race_index) + 1u));
+                if (nextTrack != nullptr) {
+                    char nextLine[96];
+                    std::snprintf(nextLine, sizeof(nextLine), "Next: %s",
+                                  nextTrack->name);
+                    ImGui::TextUnformatted(nextLine);
+                }
+                ui::TextSubtleWrapped(
+                    isLeader
+                        ? "Press Next Race when everyone is ready to continue."
+                        : "Waiting for the host to start the next race.");
             }
         } else {
             // Single race: placements, first place first.

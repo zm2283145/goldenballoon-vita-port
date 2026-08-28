@@ -2185,7 +2185,12 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
     const int result = mdkr64_engine_boot(&config);
 
     /* PD-T6d: read the engine's session end reason BEFORE OnlineRoom_clearPartyLink
-     * drops the party_link note (the launcher then resumes the room). */
+     * drops the party_link note (the launcher then resumes the room). PD-T6e fix1
+     * (Minor-2): this is the LOOPBACK TEST path (peer != nullptr, driven by the
+     * lobby-start/tournament/single-endpoint lanes); it deliberately does NOT arm the
+     * room-ready re-arm -- the probe + lanes own the latch state and assert exact fire
+     * counts, so arming here would pollute them. The production native path
+     * (runOnlineLobbyStartLiveSession) is the sole arm site. */
     (void)onlineTakeSessionEndWitness(result);
 
     platformSetOverlayHooks(nullptr);
@@ -3820,6 +3825,10 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         }
         const bool finishedNoInstant =
             fires == 1 && OnlineRoom_roomReadyConditionHolds(visible);
+        /* Minor-1 DIRECT witness: with the latch SET and nothing pending (armed but
+         * not yet cleared), the takeover is NOT engaged -- this is the post-return
+         * state whose card would lie. It must flip to engaged once the latch clears. */
+        const bool engagedBeforeClear = OnlineRoom_roomReadyTakeoverEngaged();
 
         /* (4a) Drive the room OUT of the takeover condition (headless stand-in for the
          * FINISHED->RESULTS park). The armed observer clears the latch HERE -- and only
@@ -3830,8 +3839,14 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             pump(1);
             if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
         }
+        /* Minor-1 DIRECT witness: the latch actually cleared (engaged flipped
+         * false->true). This proves the CLEAR itself, not just "no fire while the
+         * condition is false" (which is trivially true regardless of latch state);
+         * the harness additionally asserts the "re-arm complete" log line. */
+        const bool engagedAfterClear = OnlineRoom_roomReadyTakeoverEngaged();
         const bool clearedWhileFalse = wentFalse &&
-            !OnlineRoom_roomReadyConditionHolds(visible) && fires == 1;
+            !OnlineRoom_roomReadyConditionHolds(visible) && fires == 1 &&
+            !engagedBeforeClear && engagedAfterClear;
 
         /* (4b) Fresh New-Tournament rising edge: the condition goes true again and the
          * re-armed latch lets the trigger fire EXACTLY ONCE for tournament #2. */
@@ -3849,15 +3864,43 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         const bool t2Once =
             wentTrue && firesAfterT2 == 2 && fires == 2 && routed2;
 
+        /* (5) Minor-1 coda: OnlineRoom_resetRoomReadyLatch must DROP a pending re-arm
+         * (wiring: fresh adapter = clean slate), so a stale FINISHED cannot leak into a
+         * successor room. Model it: arm (a stale FINISHED), reset (a fresh adapter is
+         * built), then let the fresh room fire its own tournament #1 ONCE -- after
+         * which a full condition false->true cycle must NOT manufacture a spurious
+         * re-take. If reset had NOT dropped the pending re-arm, the observer would clear
+         * the latch on the false frame and the true edge would fire a bogus 4th time. */
+        OnlineRoom_armRoomReadyRearm();
+        OnlineRoom_resetRoomReadyLatch(); /* must clear latch AND the pending re-arm */
+        (void)setModePump(MDKR_ONLINE_MODE_TOURNAMENT); /* condition holds again */
+        pump(5);
+        if (OnlineRoom_pollRoomReadyTransition(visible)) fires++; /* fresh #1 fires once */
+        (void)OnlineRoom_pollEngineRoomReady();                   /* launcher boots it */
+        const int firesAfterFreshBoot = fires;                    /* expect 3 */
+        (void)setModePump(MDKR_ONLINE_MODE_SINGLE_RACE);          /* condition false */
+        for (int i = 0; i < 30; ++i) {
+            OnlineRoom_observeRoomReadyRearm(visible); /* must be a NO-OP: rearm dropped */
+            pump(1);
+            if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        }
+        (void)setModePump(MDKR_ONLINE_MODE_TOURNAMENT); /* condition true again */
+        pump(5);
+        OnlineRoom_observeRoomReadyRearm(visible);
+        if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        const bool resetDropsPending =
+            firesAfterFreshBoot == 3 && fires == 3; /* no spurious 4th fire */
+
         const bool ok = t1Once && leftNoRearm && finishedNoInstant &&
-                        clearedWhileFalse && t2Once;
+                        clearedWhileFalse && t2Once && resetDropsPending;
         std::fprintf(stderr,
                      "[online-room-ready-rearm-probe] totalFires=%d t1Once=%d "
                      "leftNoRearm=%d finishedNoInstant=%d clearedWhileFalse=%d "
-                     "t2Once=%d routed2=%d verdict=%s\n",
+                     "t2Once=%d routed2=%d resetDropsPending=%d verdict=%s\n",
                      fires, t1Once ? 1 : 0, leftNoRearm ? 1 : 0,
                      finishedNoInstant ? 1 : 0, clearedWhileFalse ? 1 : 0,
-                     t2Once ? 1 : 0, routed2 ? 1 : 0, ok ? "PASS" : "FAIL");
+                     t2Once ? 1 : 0, routed2 ? 1 : 0, resetDropsPending ? 1 : 0,
+                     ok ? "PASS" : "FAIL");
         OnlineRoom_destroyTestLoopbackRace(race);
         host.shutdown();
         return ok ? 0 : 3;
@@ -4335,6 +4378,19 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
              * suppresses the publish and the panel already fronts the
              * OPPONENT_LEFT / OPPONENT_NEVER_STARTED recovery card. */
             reportOnlineRaceResults(raceBoot, liveEndReason);
+            /* PD-T6e fix1 (Minor-2): this per-race race-boot fallback deliberately
+             * does NOT arm the room-ready re-arm. It carries a single race and reports
+             * a per-race LiveRaceEndReason, not the tournament-level party_link
+             * session-end reason; a tournament run entirely on this fallback (only
+             * reachable after a LEFT/ERROR native return, post-Critical-1) completes
+             * via the reducer's final-standings landing + New Tournament REMATCH, which
+             * emits no FINISHED session-end note to gate on. The latch stays set from
+             * the original native takeover, so the next tournament in this room also
+             * uses this fallback -- a benign degradation (never worse than BASE, never a
+             * re-boot loop), not the native path. Arming here has no FINISHED signal to
+             * hook, and arming would have to stay FINISHED-only to preserve the no-loop
+             * property; a UI-event hook on the New-Tournament press is out of this
+             * fix's scope. Documented per the review's allowance. */
             if (liveResult != 0) {
                 /* M7: a failed ONLINE boot must never quit the whole app -- that
                  * tore down the adapter/mesh and stranded the peer in a dead

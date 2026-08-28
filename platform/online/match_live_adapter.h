@@ -762,6 +762,12 @@ void OnlineRoom_resetRoomReadyLatch(void);
  *     still-holding condition is never cleared). Defined in online_live_wiring.cpp. */
 void OnlineRoom_armRoomReadyRearm(void);
 void OnlineRoom_observeRoomReadyRearm(IMdkrOnlineAdapter *adapter);
+/* True only when the native takeover can still fire this frame (latch not yet set)
+ * OR just fired and a boot is pending. False after a LEFT/ERROR return leaves the
+ * latch set with nothing pending -- in which case the ImGui per-race fallback is the
+ * live continuation and its Ready/Start UI must show, not the tournament hand-off
+ * card. The panel ANDs this into the hand-off gate so the card never lies. */
+bool OnlineRoom_roomReadyTakeoverEngaged(void);
 
 /* ---- Engine-roster ownership guard (local-Play beach-ball fix, beta only) -- *
  *
