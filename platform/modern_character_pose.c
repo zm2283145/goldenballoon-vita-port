@@ -383,21 +383,28 @@ static void apply_role_xyz(MdkrModernPose *pose, int role,
 }
 
 /* Engine-owned reference motion for a reviewed humanoid when the package has
- * no clip for the requested semantic. These are small canonical-space deltas,
- * conjugated through each role's authored rest correction. They are not used
- * for authored-clips-only rigs or over an explicitly mapped clip. */
-static void apply_reference_pose(MdkrModernPose *pose) {
+ * no clip for the requested semantic. These are bounded canonical-space
+ * deltas, conjugated through each role's authored rest correction. They are
+ * not used for authored-clips-only rigs or over an explicitly mapped clip. */
+static void apply_reference_pose(MdkrModernPose *pose, int phase_driven) {
     const char *semantic = pose->requested_semantic;
-    const float wave = sinf(pose->procedural_time * 5.026548246f);
+    const float wave_time = phase_driven
+        ? clamp01(pose->normalized_phase) * 6.283185307f
+        : pose->procedural_time * 5.026548246f;
+    const float wave = sinf(wave_time);
     const int race = strncmp(semantic, "race.", 5u) == 0;
     const int select = strncmp(semantic, "select.", 7u) == 0;
-    float steer = clamp01(pose->normalized_phase) * 2.0f - 1.0f;
+    const float steer = strcmp(semantic, "race.steer") == 0
+        ? clamp01(pose->normalized_phase) * 2.0f - 1.0f : 0.0f;
     if (!pose->humanoid_retarget_ready ||
         pose->requested_semantic_explicit || (!race && !select)) return;
 
     if (race) {
         /* Seated reference stance: shoulders reach down/forward, elbows bend,
-         * and the legs fold into a kart without translating the hips. */
+         * and the legs fold into a kart without translating the hips. Every
+         * semantic below adds a recognizable silhouette to this common grip;
+         * source clips still take precedence, so this is a deliberate safety
+         * net for reviewed rigs rather than an animation replacement. */
         apply_role_xyz(pose, 1, -0.12f + wave * 0.015f, 0.0f, 0.0f);
         apply_role_xyz(pose, 2, -0.12f, steer * 0.10f, 0.0f);
         apply_role_xyz(pose, 3, 0.03f, steer * -0.08f, 0.0f);
@@ -411,26 +418,76 @@ static void apply_reference_pose(MdkrModernPose *pose) {
         apply_role_xyz(pose, 11, 1.12f, 0.0f, 0.0f);
         apply_role_xyz(pose, 13, -0.92f, 0.0f, -0.10f);
         apply_role_xyz(pose, 14, 1.12f, 0.0f, 0.0f);
-        if (strcmp(semantic, "race.boost") == 0) {
-            apply_role_xyz(pose, 1, -0.16f, 0.0f, 0.0f);
-            apply_role_xyz(pose, 3, 0.10f, 0.0f, 0.0f);
-        } else if (strcmp(semantic, "race.damage") == 0 ||
-                   strcmp(semantic, "race.spin") == 0) {
-            apply_role_xyz(pose, 1, 0.0f, 0.0f, wave * 0.22f);
-            apply_role_xyz(pose, 3, 0.0f, wave * -0.28f, 0.0f);
+        if (strcmp(semantic, "race.reverse") == 0) {
+            /* Look over the shoulder while keeping both hands near the wheel. */
+            apply_role_xyz(pose, 1, 0.04f, 0.18f, 0.0f);
+            apply_role_xyz(pose, 2, 0.02f, 0.30f, 0.0f);
+            apply_role_xyz(pose, 3, 0.02f, 0.58f, -0.05f);
+            apply_role_xyz(pose, 4, 0.0f, 0.08f, 0.10f);
+            apply_role_xyz(pose, 7, 0.0f, 0.12f, -0.08f);
+        } else if (strcmp(semantic, "race.boost") == 0) {
+            /* Brace forward with a tucked head and firmer elbow bend. */
+            apply_role_xyz(pose, 1, -0.20f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 2, -0.10f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 3, 0.14f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 5, 0.0f, -0.18f, 0.0f);
+            apply_role_xyz(pose, 8, 0.0f, 0.18f, 0.0f);
+        } else if (strcmp(semantic, "race.item") == 0) {
+            /* One hand leaves the controls and presents the held item beside
+             * the head; the opposite arm deliberately retains the base grip. */
+            apply_role_xyz(pose, 2, -0.02f, -0.12f, 0.0f);
+            apply_role_xyz(pose, 3, 0.0f, 0.18f, 0.0f);
+            apply_role_xyz(pose, 7, -0.28f, 0.12f,
+                           -1.18f + wave * 0.05f);
+            apply_role_xyz(pose, 8, 0.0f, 0.72f, -0.18f);
+            apply_role_xyz(pose, 9, 0.0f, 0.20f, 0.0f);
+        } else if (strcmp(semantic, "race.damage") == 0) {
+            /* A short asymmetric recoil remains readable in a tight cockpit. */
+            apply_role_xyz(pose, 1, 0.10f, -0.10f, wave * 0.20f);
+            apply_role_xyz(pose, 2, 0.08f, -0.18f, wave * 0.16f);
+            apply_role_xyz(pose, 3, -0.08f, 0.22f, wave * -0.24f);
+            apply_role_xyz(pose, 4, 0.08f, 0.0f, 0.24f);
+            apply_role_xyz(pose, 7, -0.08f, 0.0f, -0.16f);
+        } else if (strcmp(semantic, "race.spin") == 0) {
+            /* Counter-rotate head and torso and spread the arms to brace. */
+            apply_role_xyz(pose, 1, 0.0f, wave * 0.32f, 0.0f);
+            apply_role_xyz(pose, 2, 0.0f, wave * 0.58f,
+                           wave * 0.10f);
+            apply_role_xyz(pose, 3, 0.0f, wave * -0.52f, 0.0f);
+            apply_role_xyz(pose, 4, 0.0f, 0.0f, 0.34f);
+            apply_role_xyz(pose, 7, 0.0f, 0.0f, -0.34f);
         } else if (strcmp(semantic, "race.airborne") == 0) {
-            apply_role_xyz(pose, 4, 0.0f, 0.0f, 0.30f);
-            apply_role_xyz(pose, 7, 0.0f, 0.0f, -0.30f);
+            apply_role_xyz(pose, 1, -0.06f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 4, -0.10f, 0.0f, 0.52f);
+            apply_role_xyz(pose, 7, -0.10f, 0.0f, -0.52f);
+            apply_role_xyz(pose, 10, -0.24f, 0.0f, 0.12f);
+            apply_role_xyz(pose, 13, -0.24f, 0.0f, -0.12f);
         } else if (strcmp(semantic, "race.land") == 0) {
-            apply_role_xyz(pose, 1, 0.24f, 0.0f, 0.0f);
-            apply_role_xyz(pose, 10, -0.20f, 0.0f, 0.0f);
-            apply_role_xyz(pose, 13, -0.20f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 1, 0.30f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 2, 0.12f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 3, -0.10f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 10, -0.28f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 11, 0.36f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 13, -0.28f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 14, 0.36f, 0.0f, 0.0f);
         } else if (strcmp(semantic, "race.finish_win") == 0) {
-            apply_role_xyz(pose, 4, 0.0f, 0.0f, 1.65f);
-            apply_role_xyz(pose, 7, 0.0f, 0.0f, -1.65f);
+            apply_role_xyz(pose, 1, -0.10f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 2, -0.08f, wave * 0.10f, 0.0f);
+            apply_role_xyz(pose, 3, -0.12f, wave * -0.12f, 0.0f);
+            apply_role_xyz(pose, 4, 0.0f, 0.0f,
+                           1.68f + wave * 0.06f);
+            apply_role_xyz(pose, 5, 0.0f, -0.30f, 0.0f);
+            apply_role_xyz(pose, 7, 0.0f, 0.0f,
+                           -1.68f - wave * 0.06f);
+            apply_role_xyz(pose, 8, 0.0f, 0.30f, 0.0f);
         } else if (strcmp(semantic, "race.finish_lose") == 0) {
-            apply_role_xyz(pose, 2, 0.25f, 0.0f, 0.0f);
-            apply_role_xyz(pose, 3, 0.32f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 1, 0.18f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 2, 0.30f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 3, 0.38f, 0.0f, 0.08f);
+            apply_role_xyz(pose, 4, 0.18f, 0.0f, -0.30f);
+            apply_role_xyz(pose, 5, 0.0f, 0.22f, 0.0f);
+            apply_role_xyz(pose, 7, 0.18f, 0.0f, 0.30f);
+            apply_role_xyz(pose, 8, 0.0f, -0.22f, 0.0f);
         }
     } else {
         /* Standing reference stance replaces a raw T-pose while preserving
@@ -442,12 +499,20 @@ static void apply_reference_pose(MdkrModernPose *pose) {
         apply_role_xyz(pose, 7, 0.0f, 0.0f, 1.18f - wave * 0.025f);
         apply_role_xyz(pose, 8, 0.0f, 0.12f, 0.0f);
         if (strcmp(semantic, "select.hover") == 0) {
-            apply_role_xyz(pose, 3, 0.0f, wave * 0.12f, 0.0f);
-            apply_role_xyz(pose, 8, 0.0f, 0.45f, -0.18f);
+            apply_role_xyz(pose, 2, -0.03f, wave * -0.05f, 0.0f);
+            apply_role_xyz(pose, 3, 0.0f, wave * 0.14f, 0.0f);
+            apply_role_xyz(pose, 7, 0.0f, 0.0f, -0.34f);
+            apply_role_xyz(pose, 8, 0.0f,
+                           0.48f + wave * 0.05f, -0.18f);
+            apply_role_xyz(pose, 9, 0.0f, wave * 0.18f, 0.0f);
         } else if (strcmp(semantic, "select.confirm") == 0) {
+            apply_role_xyz(pose, 1, -0.16f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 2, -0.08f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 3, -0.12f, 0.0f, 0.0f);
             apply_role_xyz(pose, 4, 0.0f, 0.0f, 1.90f);
+            apply_role_xyz(pose, 5, 0.0f, -0.24f, 0.0f);
             apply_role_xyz(pose, 7, 0.0f, 0.0f, -1.90f);
-            apply_role_xyz(pose, 1, -0.12f, 0.0f, 0.0f);
+            apply_role_xyz(pose, 8, 0.0f, 0.24f, 0.0f);
         }
     }
 }
@@ -688,7 +753,7 @@ static int pose_advance(MdkrModernPose *pose, float seconds,
                    blend_amount, pose->local[node].rotation);
     }
     pose->procedural_weight = blend_amount;
-    apply_reference_pose(pose);
+    apply_reference_pose(pose, phase_driven);
     memcpy(pose->pre_contact, pose->local,
            (size_t)pose->node_count * sizeof(*pose->local));
     if (!evaluate_world(pose, pose->world_current, error, error_size)) return 0;

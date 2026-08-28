@@ -15732,7 +15732,7 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
 
     ImGui::SeparatorText("Animation Studio");
     ui::TextSubtleWrapped(
-        "Review an exact held sample or watch the real pose player cross-fade between two engine states. Use held start/middle/end samples for grounding and deformation; use transition review for pops, fallback changes, and blend timing. These sessions never replace performance evidence or pinned baselines.");
+        "Review an exact held sample or watch the real pose player cross-fade between two engine states. Use held start/middle/end samples for grounding and deformation; use transition review for pops, fallback changes, and blend timing. Missing states on a reviewed humanoid use distinct engine gestures for all 13 select and race actions, but proportions and joint axes still require visual review here. Authored clips always win. These sessions never replace performance evidence or pinned baselines.");
     int inspectionMode = transition ? 1 : 0;
     (void)ImGui::RadioButton("Held sample", &inspectionMode, 0);
     ImGui::SameLine();
@@ -21003,7 +21003,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             ImGui::PopStyleColor();
         } else if (humanoidRolesComplete && rigReviewed) {
             ImGui::TextWrapped(
-                "The humanoid hierarchy is structurally validated. Engine reference motion and bounded vehicle hand/foot contacts fill missing or author-disabled semantic clips; active authored package clips win.");
+                "The humanoid hierarchy is structurally validated. Distinct engine gestures cover all 13 missing or author-disabled select and race states, and bounded vehicle hand/foot contacts adapt them to each cockpit. Active authored package clips win. Structural validation cannot judge silhouette quality, so review the complete motion battery in Animation Studio before approval.");
         } else if (entry->rig_present != 0u) {
             ImGui::TextWrapped(
                 "Authored-clips-only is a supported final mode for creatures and unusual skeletons; no humanoid solver will alter this character.");

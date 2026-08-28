@@ -573,8 +573,9 @@ Later schema versions should add, without changing the principles above:
   `MSFT_lod` chains and a package LOD bias);
 - per-semantic loop/once behavior, playback scale, blend duration, normalized
   parameters, and optional additive masks;
-- expanded project-owned reference clips, per-context author target offsets,
-  and richer joint/pole constraints over the bounded contact solver;
+- optional richer/additive project-owned reference animation beyond the
+  implemented distinct 13-state bounded library, plus richer joint/pole
+  constraints over the implemented per-context target-offset contact solver;
 - optional material variants and eye/mouth morph mappings;
 - richer background/frame presets and icon derivatives
   beyond the implemented imported/exact-renderer
@@ -1407,12 +1408,17 @@ fail before GPU allocation; decoded cost accounting matches actual allocations.
 
 - Skeleton/clip compilation, semantic state adaptation, TRS sampling,
   cross-fades, presentation endpoint retention, WebGPU GPU skinning, reviewed
-  humanoid fallback poses, and vehicle contacts are implemented.
+  humanoid fallback poses, and vehicle contacts are implemented. Every one of
+  the 13 select/race semantics has a distinct bounded reference performance;
+  evaluated-skeleton tests prove distinction and the articulated CC0 stress
+  fixture exercises readable silhouettes through the linked-ROM WebGPU route.
+  Package-specific artistic review remains required.
 - Exact Animation Studio review holds 0/50/100% samples or alternates two
   distinct semantics through those same cross-fades. The current result-v21 contract reports both
   motion sources, per-destination blend milliseconds, switches, blended ticks,
   completions, and package-fallback ticks without entering durable performance
-  evidence.
+  evidence. Held reference samples are phase-derived and therefore independent
+  of capture timing, while ordinary live reference motion continues to animate.
 - Skin normals/tangents correctly and validate conservative animated bounds.
 - Expand the implemented seat/head/hand/foot socket contract to named effect
   sockets only when an actual game consumer exists.

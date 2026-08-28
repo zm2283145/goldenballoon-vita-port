@@ -262,10 +262,14 @@ flip, collapse, or mirror inversion.
   authored clip, reviewed reference, or package fallback independently for both
   ends. Moving reviews cannot create a misleading nondeterministic screenshot;
   held samples feed the existing digest-bound side-by-side capture tray.
-- Expand the reference library for select hover/confirm, steering, reverse,
-  boost, damage, item, spin, airborne/land, and finish states. Add optional
-  hair/tail secondary motion only after deterministic base-pose behavior is
-  locked.
+- **Implemented:** expand the bounded reference library so select idle,
+  hover/confirm, steering, reverse, boost, damage, item, spin, airborne/land,
+  and win/lose finish states each evaluate to a distinct skeleton pose. A
+  generated articulated CC0 humanoid exercises readable select and race
+  silhouettes through the linked-ROM WebGPU capture route. This qualifies the
+  pipeline, not universal artistic quality for every imported rig.
+- Add joint-limit inspection and optional deterministic hair/tail secondary
+  motion without weakening authored-clip precedence.
 
 Acceptance: the example no longer T-poses in select, every missing authored state
 uses an intentional reviewed reference, and the source/fallback decision appears
@@ -456,11 +460,12 @@ The immediate remaining order is therefore:
 
 1. add bespoke boss, battle, and scripted-cinematic conditions only if those
    scene-owned surfaces become part of package presentation authority;
-2. add a real linked-ROM unusual-proportion fixture, then qualify richer
-   reference clips, joint limits, and optional deterministic secondary
-   hair/tail motion; the comparison overlay already requires exact source,
-   fit, presentation, scene, held motion source, camera, viewport/scissor, and
-   output-grid registration rather than inferring alignment;
+2. add joint-limit inspection and optional deterministic secondary hair/tail
+   motion; the linked-ROM articulated unusual-proportion fixture and distinct
+   13-state bounded reference library are complete, and the comparison overlay
+   already requires exact source, fit, presentation, scene, held motion source,
+   camera, viewport/scissor, and output-grid registration rather than inferring
+   alignment;
 3. execute the M6 renderer tail (shadows, transparent ordering, compressed
    textures, projected LOD, optional simplification, and material expansion);
 4. complete packaged cross-platform/offline/adapter/online contracts; and

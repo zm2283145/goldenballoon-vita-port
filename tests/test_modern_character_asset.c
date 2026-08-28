@@ -36,6 +36,22 @@ static void require(int condition, const char *message) {
     }
 }
 
+static uint64_t pose_world_signature(const MdkrModernPose *pose) {
+    const unsigned char *bytes;
+    size_t size;
+    uint64_t hash = UINT64_C(1469598103934665603);
+    require(pose != NULL && pose->world_current != NULL &&
+                pose->node_count != 0u,
+            "reference pose signature requires an evaluated skeleton");
+    bytes = (const unsigned char *)pose->world_current;
+    size = (size_t)pose->node_count * 16u * sizeof(float);
+    while (size-- != 0u) {
+        hash ^= *bytes++;
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
 static uint32_t registered_draws;
 static uint32_t released_assets;
 static float last_model_matrix[16];
@@ -272,6 +288,7 @@ int main(int argc, char **argv) {
     int assignment_plan[MDKR_MODERN_CHARACTER_PLAYERS];
     uint64_t stable_identity_revision;
     uint64_t roster_identity_revision[MDKR_MODERN_CHARACTER_PLAYERS];
+    uint64_t reference_pose_signatures[12];
 
     require(argc == 11,
             "usage: test_modern_character_asset <generated.mdkc> <directory> <source.mdkrchar> <portable.mdkrchar> <install-directory> <corrupt-portable.mdkrchar> <mismatched-portable.mdkrchar> <legacy-portable.mdkrchar> <legacy-v5-portable.mdkrchar> <transaction-fixture-directory>");
@@ -788,6 +805,110 @@ int main(int argc, char **argv) {
                     contact_offsets, error, sizeof(error)),
             "direct contact solver rejects non-finite author adjustments");
     contact_offsets[MDKR_CHARACTER_CONTACT_HAND_LEFT][0] = 0.0f;
+    {
+        static const char *reference_semantics[] = {
+            "select.idle", "select.hover", "select.confirm",
+            "race.steer", "race.reverse", "race.boost", "race.damage",
+            "race.spin", "race.airborne", "race.land",
+            "race.finish_win", "race.finish_lose",
+        };
+        size_t semantic_index;
+        size_t comparison;
+        for (semantic_index = 0u;
+             semantic_index < sizeof(reference_semantics) /
+                 sizeof(reference_semantics[0]);
+             ++semantic_index) {
+            require(mdkr_modern_pose_set_semantic(
+                        &pose, reference_semantics[semantic_index],
+                        error, sizeof(error)) &&
+                        mdkr_modern_pose_advance_phase(
+                            &pose, 1.0f, 0.5f, error, sizeof(error)),
+                    "every missing select/race semantic resolves to a complete reviewed reference pose");
+            reference_pose_signatures[semantic_index] =
+                pose_world_signature(&pose);
+            require(mdkr_modern_pose_advance_phase(
+                        &pose, 5.0f, 0.5f, error, sizeof(error)) &&
+                        reference_pose_signatures[semantic_index] ==
+                            pose_world_signature(&pose),
+                    "a held reference sample is independent of capture timing");
+            for (comparison = 0u; comparison < semantic_index;
+                 ++comparison) {
+                require(reference_pose_signatures[semantic_index] !=
+                            reference_pose_signatures[comparison],
+                        "every reference semantic produces a distinct evaluated skeleton pose");
+            }
+        }
+        require(mdkr_modern_pose_set_semantic(
+                    &pose, "race.damage", error, sizeof(error)) &&
+                    mdkr_modern_pose_advance(
+                        &pose, 0.2f, error, sizeof(error)),
+                "live reference motion starts from its semantic origin");
+        reference_pose_signatures[0] = pose_world_signature(&pose);
+        require(mdkr_modern_pose_advance(
+                    &pose, 0.2f, error, sizeof(error)) &&
+                    reference_pose_signatures[0] !=
+                        pose_world_signature(&pose),
+                "live reference motion remains animated outside held review");
+    }
+    {
+        MdkrModernCharacterAsset item_asset;
+        MdkrModernPose item_pose;
+        MdkrModernSemantic semantic;
+        const size_t semantic_offset = (size_t)(
+            asset.sections[MDKR_MDKC_SEMANTICS].data - asset.owned_bytes);
+        uint8_t *item_bytes = (uint8_t *)malloc(asset.size);
+        uint32_t item_index = UINT32_MAX;
+        uint64_t steering_signature;
+        uint64_t item_signature;
+        memset(&item_asset, 0, sizeof(item_asset));
+        memset(&item_pose, 0, sizeof(item_pose));
+        require(item_bytes != NULL,
+                "prepare disabled item-reference motion fixture");
+        memcpy(item_bytes, asset.owned_bytes, asset.size);
+        for (uint32_t index = 0u;
+             index < asset.sections[MDKR_MDKC_SEMANTICS].count; ++index) {
+            require(mdkr_modern_character_asset_semantic(
+                        &asset, index, &semantic),
+                    "read semantic record for item-reference fixture");
+            if (strcmp(mdkr_modern_character_asset_string(
+                           &asset, semantic.semantic), "race.item") == 0) {
+                item_index = index;
+                break;
+            }
+        }
+        require(item_index != UINT32_MAX,
+                "fixture contains an authored race item semantic");
+        write_u32_le(
+            item_bytes + semantic_offset +
+                (size_t)item_index *
+                    asset.sections[MDKR_MDKC_SEMANTICS].stride + 8u,
+            semantic.flags | MDKR_MODERN_SEMANTIC_DISABLED);
+        refresh_payload_crc(item_bytes, asset.size);
+        require(mdkr_modern_character_asset_load_memory(
+                    item_bytes, asset.size, &item_asset,
+                    error, sizeof(error)) &&
+                    mdkr_modern_pose_init(
+                        &item_pose, &item_asset, error, sizeof(error)),
+                "load reviewed fixture with its item clip intentionally disabled");
+        free(item_bytes);
+        require(mdkr_modern_pose_set_semantic(
+                    &item_pose, "race.steer", error, sizeof(error)) &&
+                    mdkr_modern_pose_advance_phase(
+                        &item_pose, 1.0f, 0.5f, error, sizeof(error)),
+                "evaluate neutral reference steering for item comparison");
+        steering_signature = pose_world_signature(&item_pose);
+        require(mdkr_modern_pose_set_semantic(
+                    &item_pose, "race.item", error, sizeof(error)) &&
+                    !mdkr_modern_pose_has_semantic(&item_pose, "race.item") &&
+                    mdkr_modern_pose_advance_phase(
+                        &item_pose, 1.0f, 0.5f, error, sizeof(error)),
+                "disabled authored item clip resolves through reviewed reference motion");
+        item_signature = pose_world_signature(&item_pose);
+        require(item_signature != steering_signature,
+                "reference item use raises one hand instead of silently reusing the steering silhouette");
+        mdkr_modern_pose_shutdown(&item_pose);
+        mdkr_modern_character_asset_unload(&item_asset);
+    }
     require(mdkr_modern_pose_skin_palette(&pose, 0u, 16u, 0,
                                            palette, 16u,
                                            error, sizeof(error)),
