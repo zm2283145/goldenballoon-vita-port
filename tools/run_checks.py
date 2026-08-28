@@ -769,6 +769,10 @@ CHECKS = (
           "AP-06 Adventure Party menu admission: 2/3/4 players reach the ordinary "
           "Adventure route and form a session with the enhancement on; 1P and the "
           "off arm are stock; retail 2P globals never engaged"),
+    Check("adventure_party_hub", "check_adventure_party_hub.py", "native",
+          "AP-08 Adventure Party hub roster: 2/3/4 humans spawn atomically with N "
+          "viewports (3P minimap), per-seat input binding, and a per-viewport hub "
+          "HUD; off routes to Tracks; flat-field and swapped-binding controls fire"),
     Check("adventure_hub", "check_adventure_hub.py", "native",
           "Adventure hub traversal"),
     Check("adventure_two", "check_adventure_two.py", "native",

@@ -81,6 +81,7 @@ SESSION_RE = re.compile(
     r"aparty_session: state=(\w+) sgen=(\d+) lgen=(\d+) host=(\d+)"
 )
 ROSTER_RE = re.compile(r"aparty_roster: n=(\d+) mask=0x([0-9a-fA-F]+)((?: c\d+=\d+)*)")
+LAYOUT_RE = re.compile(r"aparty_layout: viewports=(\d+) layout=(\d+)")
 # JOINTVENTURE is magic code id 24 (see tests/check_taj_p2_adventure.py).
 JOINTVENTURE_RE = re.compile(r"magic_code_submit: accepted=1 id=24")
 BAD_RE = re.compile(
@@ -304,6 +305,16 @@ def check_on_arm(output: str, players: int) -> list[str]:
     if not any(frame > file_frame for frame in load_frames):
         failures.append(
             f"{label}: no campaign level_load after FILE_SELECT; loads={load_frames}")
+
+    # Post-AP-08 expectation (was: the hub still rendered as stock 1P): the party
+    # hub now expands its roster to N split-screen viewports. This gate proves
+    # admission + session; the full N-racer/HUD/binding proof is
+    # check_adventure_party_hub.py.
+    layouts = [(int(m.group(1)), int(m.group(2))) for m in LAYOUT_RE.finditer(output)]
+    if (players, players - 1) not in layouts:
+        failures.append(
+            f"{label}: party hub did not expand to {players} viewports "
+            f"(no aparty_layout viewports={players}); saw {layouts}")
 
     return failures
 

@@ -5704,6 +5704,47 @@ minus its progress) — so the host's single FILE_SELECT confirm resumes an
 existing file. The new-game shared-scene envelope is AP-11, out of scope here. No
 developer save is read or written; every run uses a private temporary directory.
 
+### Adventure Party hub roster — `tests/check_adventure_party_hub.py`
+
+```bash
+python3 tests/check_adventure_party_hub.py                 # ~4-5 min, muted + headless
+python3 tests/check_adventure_party_hub.py --players 3 -v
+```
+
+The AP-08 focused route: with a party session active (admission proven by
+`check_adventure_party_admission.py`), an Adventure LOBBY load spawns the WHOLE
+party atomically. For 2, 3 and 4 players it proves, from the running binary:
+N human racers with the joined seat→character identity (`aparty_roster` + the
+`[PACE]`/`[PACEn]` probes); N viewports in the existing
+`VIEWPORT_LAYOUT_<N>_PLAYERS` composition — the 3P arm keeps the fourth-quadrant
+minimap — with per-quadrant pixel evidence; a per-viewport hub HUD (`hud_init`
+reports N viewports); a stable per-seat input binding (seat *i* reads only
+controller port *i*, no swap) demonstrated by driving each pad in isolation and
+asserting only that racer moves; no fail-closed spawn abort; and a stable roster
+generation. With the enhancement off, three/four controllers route to Tracks and
+no `aparty_` line appears.
+
+Two positive controls run inside the gate: a flat-field control flattens each
+viewport region of a real hub frame and requires the same scorer to reject it
+(a blank viewport must not pass), and a swapped-binding control re-attributes
+each driving round to a rotated seat and requires the motion analysis to fail
+(so it genuinely discriminates the binding). Note the hub viewport-liveness
+floor is deliberately looser than `check_race_multiplayer.py`'s — a lobby is not
+a race track, so a free-driving racer may briefly face a wall — but it still sits
+far above the single-colour flat fill the positive control produces.
+
+Save fixture: the started Adventure One slot-0 save from
+`check_adventure_party_admission.py` (imported), resumed by the host's FILE_SELECT
+confirm. No developer save is read or written.
+
+Key measurement finding: AP-08 overrides the racer/viewport count *inside*
+`track_setup_racers` (not `gNumberOfActivePlayers`), so the `level_load`
+`numPlayers` field stays 0 even for a party — the roster-expansion signal is the
+`aparty_layout`/`aparty_roster`/`aparty_binding` traces and `hud_init`, not
+`numPlayers`. `check_enhancement_authority.py`'s 3P profile and
+`check_adventure_party_admission.py` were updated to assert `aparty_layout`
+accordingly (was: the pre-AP-08 "hub still 1P" tripwire).
+
 ### Harness isolation — `tests/check_harness_isolation.py`
 
 ```bash

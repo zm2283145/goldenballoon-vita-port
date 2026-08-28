@@ -179,6 +179,7 @@ def run(binary: Path, rom: Path, work: Path, label: str,
 
 SIMHASH_RE = re.compile(r"\[SIMHASH\] tick=(\d+) objs=(\d+) h=([0-9a-f]+)")
 LEVEL_RE = re.compile(r"level_load: levelId=(-?\d+) numPlayers=(-?\d+).*@frame~(\d+)")
+APARTY_LAYOUT_RE = re.compile(r"aparty_layout: viewports=(\d+) layout=(\d+)")
 
 
 def run_admission_route(binary: Path, rom: Path, work: Path, label: str,
@@ -213,9 +214,11 @@ def run_admission_route(binary: Path, rom: Path, work: Path, label: str,
     sims = [m.group(3) for m in SIMHASH_RE.finditer(out)]
     loads = [(int(m.group(1)), int(m.group(2)), int(m.group(3)))
              for m in LEVEL_RE.finditer(out)]
+    layouts = [(int(m.group(1)), int(m.group(2)))
+               for m in APARTY_LAYOUT_RE.finditer(out)]
     if not sims:
         raise RuntimeError(f"{label}: no [SIMHASH] rows; the instrument did not arm")
-    return sims, loads
+    return sims, loads, layouts
 
 
 def dump_table(binary: Path, rom: Path, work: Path,
@@ -318,26 +321,27 @@ def main() -> int:
                 #      reaches the Adventure hub (levelId 0) while off does not,
                 #      so the streams then diverge — which is exactly the gameplay
                 #      authority the row declares.
-                #   3. The party hub is NOT the roster-expanded hub yet: it loads
-                #      as one racer (numPlayers 0, i.e. gNumberOfActivePlayers
-                #      collapsed to 1 exactly as retail), so today's on-arm hub is
-                #      still 1P — the party is native-side bookkeeping only.
+                #   3. AP-08 roster expansion: the on-arm party hub now spawns the
+                #      full N-seat roster — an aparty_layout viewports=3 trace is
+                #      emitted (three split-screen viewports) — while the off arm,
+                #      which never reaches the hub, emits none. (The level_load
+                #      numPlayers field stays 0: AP-08 overrides the racer/viewport
+                #      count INSIDE track_setup_racers, after that trace and
+                #      without touching gNumberOfActivePlayers, so numPlayers is
+                #      not the roster-expansion signal — aparty_layout is. The
+                #      dedicated proof of N racers/viewports/HUD/binding is
+                #      tests/check_adventure_party_hub.py.)
                 #
                 # NOTE (2026-08-28): the brief framed this as "on-arm hub sim
-                # IDENTICAL to off-arm"; that is not assertable today because a
-                # 3-controller OFF selection routes to Tracks, not the hub, and a
-                # party-hub-vs-1P-baseline SIMHASH identity does not hold either
-                # (the multi-pad Character Select perturbs pre-hub RNG state that
-                # carries into the hub even though the hub correctly renders one
-                # racer — same object count). So this asserts the honest, provable
-                # facts above instead. TODO(AP-08): when roster expansion lands,
-                # the party hub will load with numPlayers N-1 and gain the party's
-                # racers; assertion 3 flips (expect the party count) and an in-hub
-                # racer/roster assertion is added here. TODO(AP-12): extend the
-                # route past the hub into a full 3P race.
-                off_sim, off_loads = run_admission_route(
+                # IDENTICAL to off-arm"; that is not assertable because a
+                # 3-controller OFF selection routes to Tracks, not the hub. So this
+                # asserts the honest, provable facts above instead. AP-08 landed:
+                # assertion 3 now expects the split-screen party hub (was: the
+                # pre-AP-08 tripwire that the hub still rendered as 1P).
+                # TODO(AP-12): extend the route past the hub into a full 3P race.
+                off_sim, off_loads, off_layouts = run_admission_route(
                     binary, rom, work, f"{key}-off", False, args.verbose)
-                on_sim, on_loads = run_admission_route(
+                on_sim, on_loads, on_layouts = run_admission_route(
                     binary, rom, work, f"{key}-on", True, args.verbose)
 
                 on_hub = [ld for ld in on_loads if ld[0] == HUB_LEVEL_ID]
@@ -366,22 +370,26 @@ def main() -> int:
                         f"on/off SIMHASH diverged after only {common} ticks "
                         f"(< {ADMISSION_PRE_MIN_TICKS}); the enhancement perturbed "
                         f"the frontend before admission")
-                if on_hub and on_hub[0][1] != 0:
+                if (3, 2) not in on_layouts:
                     problems.append(
-                        f"the party hub loaded with numPlayers={on_hub[0][1]}, "
-                        f"expected 0 (rendered as 1P for AP-06 — roster expansion "
-                        f"is AP-08). If AP-08 has landed, flip this assertion.")
+                        "the enhanced party hub did not expand its roster: expected "
+                        "an aparty_layout viewports=3 (three split-screen viewports) "
+                        f"after AP-08; saw {on_layouts}")
+                if off_layouts:
+                    problems.append(
+                        f"the off arm emitted an aparty_layout {off_layouts} — the "
+                        "party hub must not form with the enhancement off")
 
                 if problems:
                     for p in problems:
                         failures.append(f"{key}: {p}")
                 else:
                     print(f"  {key:32s} {authority:12s} 3P admission route: party "
-                          f"reaches the Adventure hub (levelId 0, numPlayers 0) "
-                          f"while off routes to Tracks; SIMHASH identical for "
-                          f"{common} pre-admission ticks then diverges — gameplay "
-                          f"authority confirmed via admission (in-hub roster is "
-                          f"AP-08)")
+                          f"reaches the Adventure hub (levelId 0) and expands to a "
+                          f"3-viewport split (aparty_layout viewports=3) while off "
+                          f"routes to Tracks; SIMHASH identical for {common} "
+                          f"pre-admission ticks then diverges — gameplay authority "
+                          f"confirmed via admission + AP-08 roster expansion")
                 continue
 
             if profile != PROFILE_SOLO_RACE:
