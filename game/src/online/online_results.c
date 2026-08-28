@@ -274,11 +274,13 @@ static void results_render_complete(const MdkrPartyLinkSnapshot *snap,
         /* Exit-gate C1: the JOINER self-advances off this terminal (its feed parks
          * in RESULTS, so it must not wait on the host). Show its own visible
          * countdown to the champion celebration -- never the old "WAITING FOR
-         * HOST..." (misleading now, and the host may already be gone). A/B advances
-         * immediately (P2-c: the navigation input is advertised). */
+         * HOST..." (misleading now, and the host may already be gone). Final-review
+         * M3: advertise BOTH honored buttons -- A OR B advances immediately to the
+         * celebration (the joiner terminal honors in.bEdge too, online_results.c
+         * joinerPress), so surface the navigation input rather than leaving B silent. */
         u32 secs = results_seconds_left(RES_JOINER_TERMINAL_UNITS);
         s32 c = 130 + tri * 5;
-        (void) snprintf(line, sizeof(line), "CONTINUE IN %us  (A)", secs);
+        (void) snprintf(line, sizeof(line), "CONTINUE IN %us  (A/B)", secs);
         results_text(RES_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, line,
                      ALIGN_MIDDLE_CENTER, c, c, c);
         (void) snap;
@@ -309,7 +311,11 @@ static void results_render_countdown(const MdkrPartyLinkSnapshot *snap,
         char host[16];
         s32 c = 130 + tri * 5;
         results_host_name(snap, haveSnap, host, sizeof(host));
-        (void) snprintf(line, sizeof(line), "WAITING FOR %.12s...", host);
+        /* Final-review M3: advertise the joiner's B affordance. A joiner's B on a
+         * NON-final results/standings is a genuine mid-tournament LEAVE-to-room
+         * (in.bEdge -> sRes.leave -> LEFT), symmetric with the host footer's
+         * "B: LEAVE" (results_render_countdown) -- it was previously silent. */
+        (void) snprintf(line, sizeof(line), "WAITING FOR %.12s...   B: LEAVE", host);
         results_text(RES_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, line,
                      ALIGN_MIDDLE_CENTER, c, c, c);
     }
