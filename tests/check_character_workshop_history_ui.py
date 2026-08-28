@@ -225,7 +225,7 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
             "inline-exact-still=managed-cache,scene-held-midpoint-auto-return "
             "compact-preview=1 "
             "disabled-package-preview=1 "
-            "measured-starting-point=vertical-and-facing "
+            "measured-starting-point=vertical,facing,contacts-least-squares "
             "quality-bands=datum,facing,proportions "
             "camera-occlusion=exact-visual-only "
             "reset=package-anchor "

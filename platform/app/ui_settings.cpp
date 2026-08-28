@@ -8537,7 +8537,7 @@ bool drawCharacterTuningEditor(int player,
             entry->id);
         std::fprintf(
             stderr,
-            "[app-ui] character-offset-studio package=%s contexts=select,car,hovercraft,plane guided-fit=1 workflow=preview,measure,fine-tune,evidence,review exact-rom-preview=1 inline-exact-still=managed-cache,scene-held-midpoint-auto-return compact-preview=1 disabled-package-preview=1 measured-starting-point=vertical-and-facing quality-bands=datum,facing,proportions camera-occlusion=exact-visual-only reset=package-anchor review=current-source-and-fit\n",
+            "[app-ui] character-offset-studio package=%s contexts=select,car,hovercraft,plane guided-fit=1 workflow=preview,measure,fine-tune,evidence,review exact-rom-preview=1 inline-exact-still=managed-cache,scene-held-midpoint-auto-return compact-preview=1 disabled-package-preview=1 measured-starting-point=vertical,facing,contacts-least-squares quality-bands=datum,facing,proportions camera-occlusion=exact-visual-only reset=package-anchor review=current-source-and-fit\n",
             entry->id);
     }
 
@@ -9229,13 +9229,200 @@ bool drawCharacterTuningEditor(int player,
                 "Clears this context's size, position, and rotation corrections. It does not claim the package anchor is already fitted to the scene.");
             if (context != MDKR_CHARACTER_CONTEXT_SELECT) {
                 if (!contactReady) ImGui::BeginDisabled();
-                if (ImGui::TreeNode("Hand and foot contacts")) {
+                if (ImGui::TreeNodeEx(
+                        "Hand and foot contacts",
+                        ImGuiTreeNodeFlags_DefaultOpen)) {
                     static const char *contactLabels[
                         MDKR_MODERN_CHARACTER_CONTACTS] = {
                             "Left hand", "Right hand", "Left foot", "Right foot"
                         };
                     ui::TextSubtleWrapped(
                         "Fine-tune the engine-owned contact targets in metres relative to the mapped hips at the seat frame. These affect missing-semantic reference motion only; explicit authored clips remain untouched.");
+                    std::array<std::array<float, 3>, 4> currentContacts{};
+                    for (unsigned contact = 0u;
+                         contact < MDKR_MODERN_CHARACTER_CONTACTS;
+                         ++contact) {
+                        for (unsigned axis = 0u; axis < 3u; ++axis) {
+                            currentContacts[contact][axis] =
+                                placement.contacts[contact][axis];
+                        }
+                    }
+                    constexpr size_t kMaximumContactMeasurements =
+                        MDKR_CHARACTER_PREVIEW_SCENE_COUNT *
+                        MDKR_CHARACTER_MOTION_REVIEW_VEHICLE_SAMPLE_COUNT;
+                    std::array<CharacterWorkshopContactMeasurement,
+                               kMaximumContactMeasurements>
+                        contactMeasurements{};
+                    size_t contactMeasurementCount = 0u;
+                    const auto appendContactMeasurement = [&](const
+                        MdkrCharacterPreviewResult &sample) {
+                        if (sample.contact_witness_mask == 0u ||
+                            contactMeasurementCount >=
+                                contactMeasurements.size()) return;
+                        CharacterWorkshopContactMeasurement &measurement =
+                            contactMeasurements[contactMeasurementCount++];
+                        measurement.witnessMask = sample.contact_witness_mask;
+                        for (unsigned contact = 0u;
+                             contact < MDKR_CHARACTER_PREVIEW_CONTACTS;
+                             ++contact) {
+                            for (unsigned axis = 0u; axis < 3u; ++axis) {
+                                measurement.targetMicrometres[contact][axis] =
+                                    sample.contact_target_micrometres
+                                        [contact][axis];
+                                measurement.endpointMicrometres[contact][axis] =
+                                    sample.contact_end_micrometres
+                                        [contact][axis];
+                            }
+                        }
+                    };
+                    if (completeSceneReview) {
+                        for (unsigned sceneIndex = 0u;
+                             sceneIndex < motionSceneCount; ++sceneIndex) {
+                            const CharacterMotionReviewSessionResult *review =
+                                motionReviews[sceneIndex];
+                            for (unsigned sampleIndex = 0u;
+                                 sampleIndex < review->result.sample_count;
+                                 ++sampleIndex) {
+                                appendContactMeasurement(
+                                    review->result.samples[sampleIndex]);
+                            }
+                        }
+                    } else if (fitEvidence.current) {
+                        appendContactMeasurement(fitEvidence.result);
+                    }
+                    const CharacterWorkshopContactSuggestion
+                        contactSuggestion = CharacterWorkshop_suggestContacts(
+                            currentContacts, contactMeasurements.data(),
+                            contactMeasurementCount);
+                    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
+                        contactSuggestion.available) {
+                        const std::string traceKey =
+                            std::string(entry->id) + ":" +
+                            std::to_string(context) + ":" +
+                            fitEvidence.fitSha256;
+                        static std::set<std::string>
+                            tracedContactSuggestions;
+                        if (tracedContactSuggestions.insert(traceKey).second) {
+                            std::fprintf(
+                                stderr,
+                                "[app-ui] character-contact-suggestion package=%s context=%u witness-samples=%u mask=%x adjustment=%d within-limits=%d\n",
+                                entry->id, context,
+                                contactSuggestion.witnessSamples,
+                                contactSuggestion.contactMask,
+                                contactSuggestion.adjustment ? 1 : 0,
+                                contactSuggestion.withinLimits ? 1 : 0);
+                        }
+                    }
+                    ImGui::SeparatorText("Measured starting point");
+                    if (!contactSuggestion.valid) {
+                        ImGui::TextColored(
+                            AppTheme::bad(),
+                            "The exact contact witnesses are inconsistent; rerun this context.");
+                    } else if (!contactSuggestion.available) {
+                        ImGui::TextDisabled(
+                            "No procedural contact witness is available in the current exact evidence.");
+                        ui::TextSubtleWrapped(
+                            "Authored clips and locked solvers do not expose a target correction. You can still tune the controls below by visual review.");
+                    } else {
+                        ImGui::TextUnformatted(
+                            completeSceneReview
+                                ? "Complete scene review"
+                                : "Current exact pose");
+                        ImGui::SameLine();
+                        ImGui::TextDisabled(
+                            "· %u witnessed state%s",
+                            contactSuggestion.witnessSamples,
+                            contactSuggestion.witnessSamples == 1u
+                                ? "" : "s");
+                        ui::TextSubtleWrapped(
+                            "This source-and-fit-bound proposal averages endpoint minus target across the exact sampled states. It is the smallest constant least-squares correction for those witnesses. Positive values move the named target along the target-space axis; inspect wheel, control, and foot placement after applying it.");
+                        for (unsigned contact = 0u;
+                             contact < MDKR_MODERN_CHARACTER_CONTACTS;
+                             ++contact) {
+                            if ((contactSuggestion.contactMask &
+                                 (1u << contact)) == 0u) continue;
+                            ImGui::Text(
+                                "%s · %u state%s",
+                                contactLabels[contact],
+                                contactSuggestion.sampleCounts[contact],
+                                contactSuggestion.sampleCounts[contact] == 1u
+                                    ? "" : "s");
+                            ImGui::TextDisabled(
+                                "X %+.1f mm · Y %+.1f mm · Z %+.1f mm",
+                                contactSuggestion.deltaMetres[contact][0] *
+                                    1000.0f,
+                                contactSuggestion.deltaMetres[contact][1] *
+                                    1000.0f,
+                                contactSuggestion.deltaMetres[contact][2] *
+                                    1000.0f);
+                        }
+                        if (!contactSuggestion.withinLimits) {
+                            ImGui::TextColored(
+                                AppTheme::accent(),
+                                "One or more proposed targets exceed the +/-1 m safety range. Adjust root scale or placement and retest first.");
+                        } else if (!contactSuggestion.adjustment) {
+                            ImGui::TextColored(
+                                AppTheme::good(),
+                                "The measured endpoints are already centred on their targets.");
+                        } else {
+                            std::string spokenProposal =
+                                std::to_string(
+                                    contactSuggestion.witnessSamples) +
+                                (contactSuggestion.witnessSamples == 1u
+                                     ? " exact state. "
+                                     : " exact states. ");
+                            for (unsigned contact = 0u;
+                                 contact < MDKR_MODERN_CHARACTER_CONTACTS;
+                                 ++contact) {
+                                if ((contactSuggestion.contactMask &
+                                     (1u << contact)) == 0u) continue;
+                                char delta[160];
+                                std::snprintf(
+                                    delta, sizeof(delta),
+                                    "%s delta X %+.1f, Y %+.1f, Z %+.1f millimetres from %u states. ",
+                                    contactLabels[contact],
+                                    contactSuggestion.deltaMetres[contact][0] *
+                                        1000.0f,
+                                    contactSuggestion.deltaMetres[contact][1] *
+                                        1000.0f,
+                                    contactSuggestion.deltaMetres[contact][2] *
+                                        1000.0f,
+                                    contactSuggestion.sampleCounts[contact]);
+                                spokenProposal += delta;
+                            }
+                            if (ImGui::Button("Apply measured offsets")) {
+                                for (unsigned contact = 0u;
+                                     contact <
+                                         MDKR_MODERN_CHARACTER_CONTACTS;
+                                     ++contact) {
+                                    if ((contactSuggestion.contactMask &
+                                         (1u << contact)) == 0u) continue;
+                                    for (unsigned axis = 0u; axis < 3u;
+                                         ++axis) {
+                                        placement.contacts[contact][axis] =
+                                            std::clamp(
+                                                placement.contacts[contact]
+                                                    [axis] +
+                                                contactSuggestion.deltaMetres
+                                                    [contact][axis],
+                                                -1.0f, 1.0f);
+                                    }
+                                }
+                                const bool persisted =
+                                    persistCharacterTuning(entry->id, edit);
+                                changed |= persisted;
+                                if (persisted) {
+                                    setStatus(
+                                        "Applied the measured contact starting point. Rerun the exact context to verify every pose.",
+                                        AppTheme::good());
+                                }
+                            }
+                            ui::SpeakFocusedItem(
+                                "Apply measured offsets",
+                                spokenProposal.c_str(),
+                                "Adds the displayed average target corrections to this vehicle only, records one reversible Fit edit, and invalidates prior exact evidence until retested. It does not change authored animation clips.");
+                        }
+                    }
                     const std::string contactKey =
                         std::string(entry->id) + "#" +
                         std::to_string(context);

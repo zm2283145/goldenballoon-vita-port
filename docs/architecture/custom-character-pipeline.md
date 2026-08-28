@@ -891,8 +891,11 @@ Workshop offsets tune proportions without entering gameplay authority. Bone
 mappings and optional rest/bend corrections live in the source revision.
 Solver output is presentation-only, per-step angularly bounded, transition
 blended, and never affects physics. Anatomical joint-limit profiles and visual
-pole/target manipulators remain follow-up work and are not claimed by the
-current CCD implementation. Models with missing limbs, non-humanoid anatomy,
+authored-pole manipulators remain follow-up work and are not claimed by the
+current CCD implementation. Offset Studio does expose target manipulators and
+a bounded least-squares starting point derived from exact post-solve endpoint
+minus target witnesses across the current pose or complete scene battery; it
+never applies the proposal without author acceptance. Models with missing limbs, non-humanoid anatomy,
 mirrored bones, or unusable bind axes can choose authored-clips-only rather
 than being distorted by mandatory solving.
 

@@ -394,6 +394,63 @@ void testExactFitReviewGate() {
     assert(CharacterWorkshop_reviewFit(facts).warnings);
 }
 
+void testExactContactSuggestions() {
+    std::array<std::array<float, 3>, 4> current{};
+    auto suggestion = CharacterWorkshop_suggestContacts(
+        current, nullptr, 0u);
+    assert(suggestion.valid && !suggestion.available &&
+           !suggestion.adjustment && !suggestion.withinLimits);
+
+    std::array<CharacterWorkshopContactMeasurement, 2> measurements{};
+    measurements[0].witnessMask = 0x3u;
+    measurements[0].targetMicrometres[0][0] = 100000;
+    measurements[0].endpointMicrometres[0][0] = 80000;
+    measurements[0].targetMicrometres[1][1] = 200000;
+    measurements[0].endpointMicrometres[1][1] = 210000;
+    measurements[1].witnessMask = 0x1u;
+    measurements[1].targetMicrometres[0][0] = 100000;
+    measurements[1].endpointMicrometres[0][0] = 60000;
+    suggestion = CharacterWorkshop_suggestContacts(
+        current, measurements.data(), measurements.size());
+    assert(suggestion.valid && suggestion.available &&
+           suggestion.adjustment && suggestion.withinLimits &&
+           suggestion.contactMask == 0x3u &&
+           suggestion.witnessSamples == 2u &&
+           suggestion.sampleCounts[0] == 2u &&
+           suggestion.sampleCounts[1] == 1u);
+    assert(std::fabs(suggestion.deltaMetres[0][0] + 0.03f) < 1.0e-6f);
+    assert(std::fabs(suggestion.deltaMetres[1][1] - 0.01f) < 1.0e-6f);
+
+    measurements[0].witnessMask = 0x1u;
+    measurements[0].targetMicrometres[0] = {1, 2, 3};
+    measurements[0].endpointMicrometres[0] = {1, 2, 3};
+    suggestion = CharacterWorkshop_suggestContacts(
+        current, measurements.data(), 1u);
+    assert(suggestion.valid && suggestion.available &&
+           !suggestion.adjustment && suggestion.withinLimits);
+
+    current[0][0] = 0.99f;
+    measurements[0].targetMicrometres[0][0] = 0;
+    measurements[0].endpointMicrometres[0][0] = 20000;
+    suggestion = CharacterWorkshop_suggestContacts(
+        current, measurements.data(), 1u);
+    assert(suggestion.valid && suggestion.available &&
+           suggestion.adjustment && !suggestion.withinLimits);
+
+    measurements[0].witnessMask = 0x10u;
+    assert(!CharacterWorkshop_suggestContacts(
+                current, measurements.data(), 1u).valid);
+    measurements[0].witnessMask = 0x1u;
+    measurements[0].targetMicrometres[0][0] = INT64_C(1000000001);
+    assert(!CharacterWorkshop_suggestContacts(
+                current, measurements.data(), 1u).valid);
+    current[0][0] = NAN;
+    assert(!CharacterWorkshop_suggestContacts(
+                current, measurements.data(), 1u).valid);
+    assert(!CharacterWorkshop_suggestContacts(
+                {}, nullptr, 65u).valid);
+}
+
 void testSceneReviewProgression() {
     constexpr uint32_t allThree = 0x7u;
     assert(CharacterWorkshop_nextSceneReview(3u, 0u, allThree, true) == 1u);
@@ -607,6 +664,7 @@ int main() {
     testRuntimeEquivalentLodSelection();
     testRuntimeLodHysteresis();
     testExactFitSuggestions();
+    testExactContactSuggestions();
     testExactFitReviewGate();
     testSceneReviewProgression();
     testSourceTransformDiagnosis();

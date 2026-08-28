@@ -4919,10 +4919,13 @@ rendering every route leaves the installed source and cache byte-for-byte
 unchanged. The 200% keyboard/speech Gameplay route additionally requires all
 ten project-owned, colour-independent donor-profile metric badges with no
 retail portrait art. The distinct 200% Offset Studio route requires the linked-
-ROM exact-preview, disabled-package preview, measured-starting-point and honest
-package-anchor reset contracts plus the front/side/top placement and contact
-planes, context yaw, vehicle-only copy boundary, and Fit undo contract to
-render. The 200% keyboard/speech Performance route requires
+ROM exact-preview, disabled-package preview, measured vertical/facing/contact
+starting points and honest package-anchor reset contracts plus the
+front/side/top placement and contact planes, context yaw, vehicle-only copy
+boundary, and Fit undo contract to render. The contact proposal must expose its
+exact-state sample counts and XYZ deltas, remain inside the existing safety
+envelope, require explicit acceptance, and invalidate stale evidence for a new
+exact test. The 200% keyboard/speech Performance route requires
 all four named targets, the exact authored-LOD control, runtime-equivalent
 source/local-bias selection, merged distance intervals, session-only distance
 scrubbing, selected-LOD structural accounting, transition quality warnings,

@@ -142,6 +142,27 @@ struct CharacterWorkshopFitSuggestion {
     float targetMinimumYMetres = 0.0f;
 };
 
+/* A bounded exact-pose witness for one or more procedural contacts. The
+ * suggested constant target correction is the arithmetic mean of endpoint -
+ * target for each contact, which is the least-squares solution across the
+ * supplied states. It is a reversible starting point, not an anatomy guess. */
+struct CharacterWorkshopContactMeasurement {
+    uint32_t witnessMask = 0u;
+    std::array<std::array<int64_t, 3>, 4> targetMicrometres{};
+    std::array<std::array<int64_t, 3>, 4> endpointMicrometres{};
+};
+
+struct CharacterWorkshopContactSuggestion {
+    bool valid = false;
+    bool available = false;
+    bool adjustment = false;
+    bool withinLimits = false;
+    uint32_t contactMask = 0u;
+    uint32_t witnessSamples = 0u;
+    std::array<uint32_t, 4> sampleCounts{};
+    std::array<std::array<float, 3>, 4> deltaMetres{};
+};
+
 enum class CharacterWorkshopQualitySeverity : uint8_t {
     Nominal = 0,
     Review,
@@ -297,6 +318,10 @@ size_t CharacterWorkshop_lodBands(
 
 CharacterWorkshopFitSuggestion CharacterWorkshop_suggestFit(
     const CharacterWorkshopFitMeasurement &measurement);
+CharacterWorkshopContactSuggestion CharacterWorkshop_suggestContacts(
+    const std::array<std::array<float, 3>, 4> &currentContacts,
+    const CharacterWorkshopContactMeasurement *measurements,
+    size_t measurementCount);
 CharacterWorkshopFitAssessment CharacterWorkshop_assessFit(
     const CharacterWorkshopFitMeasurement &measurement);
 CharacterWorkshopFitReviewDecision CharacterWorkshop_reviewFit(

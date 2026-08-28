@@ -794,6 +794,72 @@ CharacterWorkshopFitSuggestion CharacterWorkshop_suggestFit(
     return result;
 }
 
+CharacterWorkshopContactSuggestion CharacterWorkshop_suggestContacts(
+    const std::array<std::array<float, 3>, 4> &currentContacts,
+    const CharacterWorkshopContactMeasurement *measurements,
+    size_t measurementCount) {
+    CharacterWorkshopContactSuggestion result;
+    constexpr size_t kMaximumMeasurements = 64u;
+    constexpr int64_t kCoordinateLimitMicrometres = INT64_C(1000000000);
+    constexpr double kContactLimitMetres = 1.0;
+    if (measurementCount > kMaximumMeasurements ||
+        (measurementCount != 0u && measurements == nullptr)) return result;
+    for (const auto &contact : currentContacts) {
+        for (float coordinate : contact) {
+            if (!std::isfinite(coordinate) ||
+                std::fabs(coordinate) > kContactLimitMetres) return result;
+        }
+    }
+    std::array<std::array<int64_t, 3>, 4> sums{};
+    for (size_t sampleIndex = 0u; sampleIndex < measurementCount;
+         ++sampleIndex) {
+        const CharacterWorkshopContactMeasurement &sample =
+            measurements[sampleIndex];
+        if ((sample.witnessMask & ~0xFu) != 0u) return result;
+        if (sample.witnessMask != 0u) ++result.witnessSamples;
+        for (size_t contact = 0u; contact < 4u; ++contact) {
+            if ((sample.witnessMask & (1u << contact)) == 0u) continue;
+            ++result.sampleCounts[contact];
+            result.contactMask |= 1u << contact;
+            for (size_t axis = 0u; axis < 3u; ++axis) {
+                const int64_t target =
+                    sample.targetMicrometres[contact][axis];
+                const int64_t endpoint =
+                    sample.endpointMicrometres[contact][axis];
+                if (target < -kCoordinateLimitMicrometres ||
+                    target > kCoordinateLimitMicrometres ||
+                    endpoint < -kCoordinateLimitMicrometres ||
+                    endpoint > kCoordinateLimitMicrometres) {
+                    return CharacterWorkshopContactSuggestion{};
+                }
+                sums[contact][axis] += endpoint - target;
+            }
+        }
+    }
+    result.valid = true;
+    result.available = result.contactMask != 0u;
+    result.withinLimits = result.available;
+    for (size_t contact = 0u; contact < 4u; ++contact) {
+        if (result.sampleCounts[contact] == 0u) continue;
+        for (size_t axis = 0u; axis < 3u; ++axis) {
+            const double delta =
+                static_cast<double>(sums[contact][axis]) /
+                static_cast<double>(result.sampleCounts[contact]) /
+                1000000.0;
+            result.deltaMetres[contact][axis] =
+                static_cast<float>(delta);
+            result.adjustment |= std::fabs(delta) >= 0.0000005;
+            const double proposed =
+                static_cast<double>(currentContacts[contact][axis]) + delta;
+            if (!std::isfinite(proposed) ||
+                std::fabs(proposed) > kContactLimitMetres) {
+                result.withinLimits = false;
+            }
+        }
+    }
+    return result;
+}
+
 CharacterWorkshopFitAssessment CharacterWorkshop_assessFit(
     const CharacterWorkshopFitMeasurement &measurement) {
     CharacterWorkshopFitAssessment result;

@@ -161,6 +161,18 @@ def main() -> int:
             "Gameplay-camera framing · Exact clipping measured" in settings and
             "wheel, skid, propeller, held object, or piece of scenery" in settings,
             "unusual anatomy can lose its head-clipping warning or attachment review scope between exact diagnostics and approval")
+    require("CharacterWorkshop_suggestContacts" in settings and
+            "Measured starting point" in settings and
+            "Complete scene review" in settings and
+            "Current exact pose" in settings and
+            "Apply measured offsets" in settings and
+            "smallest constant least-squares correction" in settings and
+            "Positive values move the named target" in settings and
+            '"X %+.1f mm · Y %+.1f mm · Z %+.1f mm"' in settings and
+            "invalidates prior exact evidence until retested" in settings and
+            "contactSuggestion.withinLimits" in settings and
+            "spokenProposal.c_str()" in settings,
+            "exact contact residuals no longer lead to a bounded, explicit, reversible starting point")
 
     require("Capture registered comparison pair" in settings and
             "CharacterComparisonRun" in settings and
@@ -193,8 +205,9 @@ def main() -> int:
             "comparison-only donor evidence can leak into custom approval or portrait workflows")
 
     print("character Offset Studio contract passed: exact live scene, input isolation, "
-          "post-edit fit handoff, one-action complete semantic and registered "
-          "comparison evidence, truthful approval, and bounded recovery")
+          "post-edit fit handoff, bounded measured contact starting point, "
+          "one-action complete semantic and registered comparison evidence, "
+          "truthful approval, and bounded recovery")
     return 0
 
 

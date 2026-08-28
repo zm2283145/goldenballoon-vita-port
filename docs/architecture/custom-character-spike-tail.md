@@ -273,18 +273,23 @@ in the package review and durable evidence.
   Hovercraft, and Plane, then routes to the next incomplete context. The exact
   preview/camera-layout step now reflows at compact width instead of disappearing
   for handheld or large-text users.
-- Continue the existing per-context sequence to
-  propose root translation/yaw/scale, preview exact gameplay, then propose four
-  contact offsets per vehicle.
+- **Implemented conservatively:** the per-context sequence proposes only the
+  exact-evidence vertical and facing corrections that can be justified from the
+  fitted volume, previews exact gameplay, and then offers all four measured
+  contact corrections per vehicle. X/Z and scale remain direct author controls
+  instead of being guessed from insufficient evidence.
 - **Implemented for the current pose:** the fit review card shows exact
   calibrated camera occupancy, head/torso points, seat-to-hips displacement,
   floor/seat datum, hand/foot reach, retained-body surface intersections,
   topology-qualified bounded containment, and an isolated-versus-final-depth
   visibility grid. It does not mislabel 2D overlap as penetration or claim one
   pose covers motion.
-- Use the existing root/bend/target/end witnesses to offer bounded least-squares
-  offset suggestions. Never change package/tuning state until the author accepts
-  each context.
+- **Implemented:** the current exact result or complete 33-state battery reduces
+  root/bend/target/end witnesses to the constant least-squares endpoint-minus-
+  target correction for each limb. Offset Studio shows millimetre deltas and
+  sample counts, refuses the one-click proposal outside the +/-1 m safety
+  envelope, changes nothing before acceptance, records one reversible Fit edit,
+  and requires exact retesting afterward.
 - **Partially implemented:** hand residual <=25 mm and foot residual <=40 mm
   are visible exact-evidence guides. An over-limit review now requires an
   explicit source-and-fit-bound exception, participates in Fit undo/redo,
@@ -439,9 +444,8 @@ explicit author-acknowledgement path. Detailed battery rows are session-only;
 the durable approval remains source/fit/LOD/presentation and contract bound.
 The immediate remaining order is therefore:
 
-1. attribute separately drawn donor attachments where stable identities exist,
-   and add weather/vehicle-condition variants beyond the three qualified
-   Workshop course families;
+1. add weather/vehicle-condition variants beyond the three qualified Workshop
+   course families and a bounded frame-to-frame contact-oscillation witness;
 2. add a real linked-ROM unusual-proportion fixture, then qualify richer
    reference clips, joint limits, and optional deterministic secondary
    hair/tail motion; the comparison overlay already requires exact source,
