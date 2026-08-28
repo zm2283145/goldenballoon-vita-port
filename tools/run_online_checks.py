@@ -49,6 +49,7 @@ LANES = (
     "check_online_vehicleselect.py",
     "check_online_trackselect.py",
     "check_online_session_results.py",
+    "check_online_results_chooser.py",    # T4: native "more races" RESULTS chooser
     "check_online_resident_live.py",
     "check_online_session_end.py",          # incl. joiner-follow seam scenario
     "check_online_race_start_peer_loss.py", # P0: peer-loss at race start -> clean
