@@ -752,6 +752,20 @@ void drawRoomPanel(LauncherState &state) {
 // touched here.
 // ===========================================================================
 
+// TEST-ONLY invite override for the beta lobby render seam (drawBetaRoomFake,
+// MDKR_APP_ONLINE_BETA_FAKE). drawBetaInviteCard consults this ONLY when
+// `active` is set, which happens exclusively while a synthetic fake stage is
+// being rendered for a headless screenshot. The live/production beta path never
+// sets it, so its behaviour (OnlineRoom_liveInvite) is unchanged; the whole
+// struct is compiled only under MDKR_ENABLE_ONLINE_BETA, so the OFF/release
+// build never sees it.
+struct BetaFakeInviteOverride {
+    bool active = false;
+    std::string code;
+    std::string url;
+};
+BetaFakeInviteOverride g_betaFakeInvite;
+
 // Restrict the join-code field to the 6 digits the fallback code uses. This
 // same filter also sanitizes PASTE: ImGui runs every clipboard character
 // through the CallbackCharFilter (imgui_widgets.cpp InputTextFilterCharacter,
@@ -1038,15 +1052,54 @@ const char *betaStatusLine(const MdkrOnlineViewModel &model) {
     case MDKR_ONLINE_VIEW_RACING: return "Racing";
     case MDKR_ONLINE_VIEW_RESULTS: return "Race complete";
     case MDKR_ONLINE_VIEW_RECOVERY:
+        /* N1: the top status line must AGREE with the specific failure body it
+         * sits above -- the section-header title (model.title, e.g. "Words Did
+         * Not Match") and the failure sentence (betaFailureCopy) -- never
+         * contradict them with a generic "Lost connection". Each recovery
+         * reason gets a matching short status; anything unmapped keeps the
+         * honest generic retry line. */
+        switch (model.failure) {
+        case MDKR_ONLINE_VIEW_FAILURE_INVITE_EXPIRED:
+        case MDKR_ONLINE_VIEW_FAILURE_INVITE_ROTATED:
+            return "That invite expired — get a fresh code";
+        case MDKR_ONLINE_VIEW_FAILURE_ROOM_FULL:
+            return "That room is full";
+        case MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE:
+        case MDKR_ONLINE_VIEW_FAILURE_SERVICE_BUDGET_SAFE:
+            return "Service unavailable — try again shortly";
+        case MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_BUILD:
+        case MDKR_ONLINE_VIEW_FAILURE_UPDATE_REQUIRED:
+            return "Game versions differ — update to match";
+        case MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_ROM:
+            return "ROMs differ — use the same ROM";
+        case MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_SETTINGS:
+            return "Settings differ — use the room's settings";
+        case MDKR_ONLINE_VIEW_FAILURE_CONTROLLER_NEEDED:
+            return "Controller needed to race online";
+        case MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK:
+        case MDKR_ONLINE_VIEW_FAILURE_RELAY_CAPACITY:
+        case MDKR_ONLINE_VIEW_FAILURE_NETWORKS_CANNOT_CONNECT:
+            return "Couldn't connect — check both networks";
+        case MDKR_ONLINE_VIEW_FAILURE_HOST_CLOSED:
+            return "The host closed the room";
+        case MDKR_ONLINE_VIEW_FAILURE_ROOM_EXPIRED:
+            return "The room expired";
+        case MDKR_ONLINE_VIEW_FAILURE_ENGINE_FAILED:
+        case MDKR_ONLINE_VIEW_FAILURE_EPOCH_MISMATCH:
+            return "The race couldn't start — try again";
+        case MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH:
+            return "Safety words didn't match — reconnect";
 #if MDKR_ENABLE_ONLINE_BETA
-        if (model.failure == MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT)
+        case MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT:
             return "Opponent disconnected — this room is done";
-        if (model.failure == MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED)
+        case MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED:
             return "Opponent couldn't start — create a fresh invite";
-        if (model.failure == MDKR_ONLINE_VIEW_FAILURE_CONNECTION_UNPLAYABLE)
+        case MDKR_ONLINE_VIEW_FAILURE_CONNECTION_UNPLAYABLE:
             return "Connection became unplayable — this room is done";
 #endif
-        return "Lost connection — you can retry";
+        default:
+            return "Lost connection — you can retry";
+        }
     default: return "Online race";
     }
 }
@@ -1295,9 +1348,17 @@ void drawBetaQr(const std::string &text) {
 void drawBetaInviteCard(bool isHost) {
     std::string code;
     std::string url;
-    const bool ready =
-        OnlineRoom_liveInvite(g_online.adapter.get(), &code, &url) &&
-        !code.empty();
+    bool ready;
+    if (g_betaFakeInvite.active) {
+        // Test-only synthetic invite (drawBetaRoomFake): render the REAL code +
+        // Copy + QR card without a live transport. Never taken on the live path.
+        code = g_betaFakeInvite.code;
+        url = g_betaFakeInvite.url;
+        ready = !code.empty();
+    } else {
+        ready = OnlineRoom_liveInvite(g_online.adapter.get(), &code, &url) &&
+                !code.empty();
+    }
     if (!ready) {
         if (!isHost) return;  // a joiner has no room of its own to share
         ui::Gap(ui::kGapM);
@@ -2606,6 +2667,324 @@ void drawBetaRoom(LauncherState &state) {
     drawUpdateHelp();
 }
 
+// ===========================================================================
+// TEST-ONLY beta lobby render seam (MDKR_APP_ONLINE_BETA_FAKE + _STAGE).
+//
+// The live drawBetaRoom only reaches the shipping beta lobby widgets behind a
+// real 2-peer cloud adapter (buildBetaLiveAdapter needs a live service, release
+// provenance and a verified ROM), and MDKR_APP_ONLINE_FAKE routes to the LEGACY
+// drawRoomPanel instead. That left every surface past the chooser -- the invite
+// card, the safety-phrase decision, the roster strip, the SELECTING body
+// (single-race + tournament hand-off), the FINISHED / New-Tournament landing and
+// the recovery cards -- with no solo/headless screenshot path.
+//
+// This seam synthesizes a faithful MdkrOnlineViewModel (+ lobby snapshot) for a
+// chosen stage and drives the SAME drawBeta* widget family drawBetaRoom uses, so
+// each surface renders standalone for MDKR_APP_SMOKE_SHOT. It is STRICTLY beta +
+// test-only: compiled only under MDKR_ENABLE_ONLINE_BETA (a release/OFF build
+// never sees it) and reached only when MDKR_APP_ONLINE_BETA_FAKE is set --
+// mirroring the MDKR_APP_ONLINE_FAKE gate. No live adapter is ever built
+// (g_online.adapter stays null), so the real (non-fake) path is unchanged.
+// ===========================================================================
+
+bool betaFakeStageEnabled() {
+    return std::getenv("MDKR_APP_ONLINE_BETA_FAKE") != nullptr;
+}
+
+// A vehicle that IS legal on `track` under the 2-player picker mask, so the
+// SELECTING body's illegal-vehicle auto-correction (which would dispatch on the
+// absent adapter) never fires while a fake stage is drawn.
+std::uint8_t betaFakeLegalVehicle(std::uint16_t track) {
+    const std::uint8_t mask =
+        track != MDKR_ONLINE_NO_VOTE
+            ? mdkr_online_track_picker_mask(track, 2u)
+            : static_cast<std::uint8_t>(MDKR_ONLINE_VEHICLE_BIT_ALL);
+    for (std::uint8_t v = 0u; v < MDKR_ONLINE_PLAYER_VEHICLE_COUNT; ++v) {
+        if (mask & (1u << v)) return v;
+    }
+    return 0u;
+}
+
+// A faithful 2-endpoint / 2-seat lobby (seat 0 = local host, seat 1 = friend),
+// matching the reducer's shape the live widgets read.
+void betaFakeInitLobby(MdkrOnlineLobby *lobby, std::uint8_t mode,
+                       MdkrOnlinePhase phase) {
+    std::memset(lobby, 0, sizeof(*lobby));
+    const std::uint64_t hostEp = UINT64_C(0x1001);
+    const std::uint64_t friendEp = UINT64_C(0x1002);
+    lobby->protocol_version = MDKR_ONLINE_PROTOCOL_VERSION;
+    lobby->revision = 7u;
+    lobby->room_id = UINT64_C(0x4245544141);
+    lobby->leader_endpoint_id = hostEp;
+    lobby->phase = phase;
+    lobby->mode = mode;
+    lobby->cup_id = MDKR_ONLINE_NO_CUP;
+    lobby->configured_track = MDKR_ONLINE_NO_VOTE;
+    lobby->member_count = 2u;
+    lobby->seat_count = 2u;
+    for (unsigned i = 0u; i < MDKR_ONLINE_MAX_SEATS; ++i) {
+        lobby->last_placements[i] = MDKR_ONLINE_NO_PLACEMENT;
+    }
+    lobby->members[0].occupied = true;
+    lobby->members[0].connected = true;
+    lobby->members[0].endpoint_id = hostEp;
+    lobby->members[0].seat_count = 1u;
+    lobby->members[1].occupied = true;
+    lobby->members[1].connected = true;
+    lobby->members[1].endpoint_id = friendEp;
+    lobby->members[1].seat_count = 1u;
+    lobby->seats[0].occupied = true;
+    lobby->seats[0].endpoint_id = hostEp;
+    lobby->seats[0].character_id = MDKR_ONLINE_NO_CHARACTER;
+    lobby->seats[0].vehicle_id = MDKR_ONLINE_NO_VEHICLE;
+    lobby->seats[1].occupied = true;
+    lobby->seats[1].endpoint_id = friendEp;
+    lobby->seats[1].character_id = MDKR_ONLINE_NO_CHARACTER;
+    lobby->seats[1].vehicle_id = MDKR_ONLINE_NO_VEHICLE;
+}
+
+MdkrOnlineViewControl betaFakeControl(MdkrOnlineViewAction action,
+                                     const char *label) {
+    MdkrOnlineViewControl c{};
+    c.action = action;
+    c.label = label;
+    c.visible = true;
+    c.enabled = true;
+    return c;
+}
+
+// Build (model, lobby, haveLobby) for one stage and arm/disarm the fake invite.
+// Returns false for an unknown stage.
+bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
+                        MdkrOnlineLobby *lobby, bool *haveLobby) {
+    std::memset(model, 0, sizeof(*model));
+    *haveLobby = false;
+    g_betaFakeInvite.active = false;
+    g_online.betaHostJourney = true;  // the fake local player hosts
+
+    if (std::strcmp(stage, "invite") == 0) {
+        model->kind = MDKR_ONLINE_VIEW_CONNECTING;
+        model->title = "Creating Private Room…";
+        model->explanation =
+            "Share the code with your friend — the lobby opens once they join.";
+        model->member_count = 1u;
+        model->local_member_is_leader = true;
+        g_betaFakeInvite.active = true;
+        g_betaFakeInvite.code = "123456";
+        g_betaFakeInvite.url = "/join#123456";
+        return true;
+    }
+    if (std::strcmp(stage, "phrase") == 0) {
+        model->kind = MDKR_ONLINE_VIEW_PREFLIGHT;
+        model->title = "Compare These Words";
+        model->explanation =
+            "Read all 3 groups aloud. Continue only when every display shows "
+            "exactly the same words.";
+        std::snprintf(model->verification_phrase,
+                      sizeof(model->verification_phrase), "%s",
+                      "Nimble-Pilot Jolly-Star Sunny-Falcon");
+        model->primary = betaFakeControl(MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE,
+                                         "Words Match");
+        model->secondary = betaFakeControl(
+            MDKR_ONLINE_VIEW_ACTION_REPORT_PHRASE_MISMATCH, "Words Differ");
+        model->cancel =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM, "Leave Room");
+        model->member_count = 2u;
+        model->local_member_is_leader = true;
+        return true;
+    }
+    if (std::strcmp(stage, "room-single") == 0) {
+        betaFakeInitLobby(lobby, MDKR_ONLINE_MODE_SINGLE_RACE,
+                          MDKR_ONLINE_LOBBY);
+        lobby->configured_track = 5u;  // Ancient Lake (Dino Domain, race 1)
+        const std::uint8_t veh = betaFakeLegalVehicle(lobby->configured_track);
+        lobby->seats[0].character_id = 2u;  // Pipsy (you)
+        lobby->seats[0].vehicle_id = veh;
+        lobby->seats[1].character_id = 5u;  // Bumper (friend)
+        lobby->seats[1].vehicle_id = veh;
+        lobby->members[1].ready = true;     // friend ready; you are choosing
+        *haveLobby = true;
+        model->kind = MDKR_ONLINE_VIEW_SELECTING;
+        model->title = "Pick Your Racer";
+        model->explanation = "Choose a racer and vehicle, then Ready up.";
+        model->primary =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_READY, "Ready");
+        model->secondary = betaFakeControl(
+            MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS, "Connection Details");
+        model->cancel =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM, "Leave Room");
+        model->member_count = 2u;
+        model->ready_count = 1u;
+        model->seat_count = 2u;
+        model->local_member_is_leader = true;
+        return true;
+    }
+    if (std::strcmp(stage, "room-tournament") == 0 ||
+        std::strcmp(stage, "handoff") == 0) {
+        betaFakeInitLobby(lobby, MDKR_ONLINE_MODE_TOURNAMENT,
+                          MDKR_ONLINE_LOBBY);
+        // cup left NO_CUP so the resolved track is NO_VOTE (mask = all base):
+        // the hand-off card owns the body and the vehicle auto-fix stays inert.
+        lobby->seats[0].character_id = 2u;  // Pipsy (you)
+        lobby->seats[0].vehicle_id = betaFakeLegalVehicle(MDKR_ONLINE_NO_VOTE);
+        lobby->seats[1].character_id = 5u;  // Bumper (friend)
+        lobby->seats[1].vehicle_id = betaFakeLegalVehicle(MDKR_ONLINE_NO_VOTE);
+        *haveLobby = true;
+        model->kind = MDKR_ONLINE_VIEW_SELECTING;
+        model->title = "Trophy Tournament";
+        model->explanation =
+            "Pick your cup, racer and vehicle in the game on the next screen.";
+        model->primary =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_READY, "Ready");
+        model->secondary = betaFakeControl(
+            MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS, "Connection Details");
+        model->cancel =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM, "Leave Room");
+        model->member_count = 2u;
+        model->seat_count = 2u;
+        model->local_member_is_leader = true;
+        return true;
+    }
+    if (std::strcmp(stage, "finished") == 0) {
+        betaFakeInitLobby(lobby, MDKR_ONLINE_MODE_TOURNAMENT,
+                          MDKR_ONLINE_RESULTS);
+        lobby->cup_id = 0u;  // first cup
+        lobby->race_index =
+            static_cast<std::uint8_t>(MDKR_ONLINE_CUP_ROUNDS - 1u);  // final
+        lobby->seats[0].character_id = 2u;  // Pipsy (you)
+        lobby->seats[1].character_id = 1u;  // Timber (friend)
+        lobby->points[0] = 34u;
+        lobby->points[1] = 30u;
+        lobby->last_placements[0] = 0u;  // 1st this race
+        lobby->last_placements[1] = 1u;  // 2nd this race
+        *haveLobby = true;
+        model->kind = MDKR_ONLINE_VIEW_RESULTS;
+        model->title = "Race Complete";
+        model->explanation = "The trophy is decided.";
+        model->primary = betaFakeControl(MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN,
+                                         "New Tournament");
+        model->secondary = betaFakeControl(
+            MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS, "Connection Details");
+        model->cancel =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM, "Leave Room");
+        model->member_count = 2u;
+        model->seat_count = 2u;
+        model->local_member_is_leader = true;
+        return true;
+    }
+    if (std::strcmp(stage, "recovery") == 0) {
+        model->kind = MDKR_ONLINE_VIEW_RECOVERY;
+        model->failure = MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH;
+        model->title = "Words Did Not Match";
+        model->explanation =
+            "The secure connection may have changed. Do not continue until "
+            "everyone compares a new phrase.";
+        model->primary =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_RETRY, "Reconnect Securely");
+        model->secondary =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_PLAY_HERE, "Play Here");
+        model->cancel =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM, "Leave Room");
+        model->announcement = MDKR_ONLINE_ANNOUNCE_ASSERTIVE;
+        return true;
+    }
+    return false;
+}
+
+// Render one synthetic stage through the REAL beta widgets. Mirrors
+// drawBetaRoom's composition but sources model/lobby from betaFakeBuildStage and
+// omits every live-adapter-only call (service/view/take_refusal/room-ready
+// polls). No button is ever pressed in a headless single-shot capture, so the
+// press-only dispatch paths inside the shared widgets are never reached.
+void drawBetaRoomFake(LauncherState &state) {
+    const char *stage = std::getenv("MDKR_APP_ONLINE_BETA_STAGE");
+    if (stage == nullptr || stage[0] == '\0') stage = "chooser";
+
+    if (std::strcmp(stage, "chooser") == 0) {
+        g_online.betaStage = OnlineRoomUiState::BetaStage::Chooser;
+        drawBetaChooser(state);
+        return;
+    }
+    if (std::strcmp(stage, "joincode") == 0) {
+        g_online.betaStage = OnlineRoomUiState::BetaStage::JoinCode;
+        std::snprintf(g_online.betaJoinCode, sizeof(g_online.betaJoinCode), "%s",
+                      "1234");
+        drawBetaChooser(state);
+        return;
+    }
+
+    MdkrOnlineViewModel model{};
+    MdkrOnlineLobby lobby{};
+    bool haveLobby = false;
+    if (!betaFakeBuildStage(stage, &model, &lobby, &haveLobby)) {
+        ui::CautionBox(
+            "Unknown Beta Stage",
+            "Set MDKR_APP_ONLINE_BETA_STAGE to one of: chooser, joincode, "
+            "invite, phrase, room-single, room-tournament, handoff, finished, "
+            "recovery.");
+        return;
+    }
+
+    announceView(model);
+    drawBetaStatusLine(model, haveLobby ? &lobby : nullptr);
+    char sectionTitle[128];
+    std::snprintf(sectionTitle, sizeof(sectionTitle), "%s",
+                  model.title != nullptr ? model.title : "");
+    betaAnimateEllipsis(sectionTitle, sizeof(sectionTitle));
+    ui::SectionHeader(sectionTitle, model.explanation);
+
+    if (model.kind == MDKR_ONLINE_VIEW_CONNECTING) {
+        drawBetaInviteCard(g_online.betaHostJourney);
+    } else if (model.kind == MDKR_ONLINE_VIEW_ROOM) {
+        drawBetaInviteCard(g_online.betaHostJourney ||
+                           model.local_member_is_leader);
+        if (haveLobby) {
+            ui::Gap(ui::kGapM);
+            drawBetaRosterStrip(
+                lobby, betaLocalEndpoint(lobby, model.local_member_is_leader));
+        }
+    }
+
+    if (model.kind == MDKR_ONLINE_VIEW_PREFLIGHT &&
+        model.verification_phrase[0] != '\0') {
+        drawBetaPhraseDecision(model, state);
+        drawConnectionDetails(model);
+        return;
+    }
+
+    ui::Gap(ui::kGapM);
+    drawBetaStartRaceFeedback(model);
+
+    bool primaryDrawn = false;
+    if (haveLobby && model.kind == MDKR_ONLINE_VIEW_SELECTING &&
+        lobby.phase == MDKR_ONLINE_LOBBY) {
+        drawBetaSelectingBody(state, model, lobby);
+        primaryDrawn = true;
+    } else if (haveLobby && model.kind == MDKR_ONLINE_VIEW_RESULTS &&
+               lobby.phase == MDKR_ONLINE_RESULTS) {
+        drawBetaResultsBody(state, model, lobby);
+        primaryDrawn = true;
+    } else {
+        primaryDrawn = drawBetaSelection(model);
+    }
+    if (!primaryDrawn && drawActionButton(model.primary, true)) {
+        handleAction(model.primary.action, state);
+    }
+    if (model.secondary.visible) {
+        ui::Gap(ui::kGapS);
+        if (drawActionButton(model.secondary, false)) {
+            handleAction(model.secondary.action, state);
+        }
+    }
+    if (model.cancel.visible) {
+        ui::Gap(ui::kGapS);
+        if (drawActionButton(model.cancel, false)) {
+            handleAction(model.cancel.action, state);
+        }
+    }
+    drawConnectionDetails(model);
+}
+
 void drawBetaOnlinePanel(LauncherState &state) {
     if (!g_online.adapter || !g_online.initialized) {
         drawBetaChooser(state);
@@ -2621,6 +3000,16 @@ void OnlineRoomPanel_draw(LauncherState &state, LauncherAction &action) {
     (void)action;
     ensureInitialized();
 #if MDKR_ENABLE_ONLINE_BETA
+    // TEST-ONLY: MDKR_APP_ONLINE_BETA_FAKE renders a synthetic beta lobby stage
+    // (MDKR_APP_ONLINE_BETA_STAGE) through the real drawBeta* widgets so each
+    // shipping lobby surface can be screenshotted headlessly. No adapter is
+    // built (ensureInitialized deferred it: MDKR_APP_ONLINE_FAKE is unset here),
+    // and a release/OFF build never compiles this branch. Mirrors the
+    // fakeEnabled() gate below.
+    if (betaFakeStageEnabled()) {
+        drawBetaRoomFake(state);
+        return;
+    }
     // Beta interactive path: with no fake smoke requested, run the create/join
     // chooser and the live Online Room UX. The chooser builds the live adapter
     // on the player's choice, so before that g_online.adapter is intentionally
