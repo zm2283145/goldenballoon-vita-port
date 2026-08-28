@@ -69,6 +69,8 @@
 #include "joypad.h"     /* input_pressed, input_clamp_stick_x/y */
 #include "PR/os_cont.h" /* A_BUTTON / B_BUTTON / *_JPAD / START_BUTTON / Z_TRIG */
 #include "net/party_link.h"
+#include "online/online_screen_util.h" /* shared local_seat / text / pulse helpers
+                                          (DRY across the native screens) */
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -79,12 +81,10 @@
 #define TS_SCREEN_W 320
 #define TS_SCREEN_W_HALF 160
 
-/* The engine's live 2D display list + menu asset table. Declared here (no shared
- * header exposes gCurrDisplayList; menu.h does not export gMenuAssets) rather
- * than by editing menu.c -- exactly how online_charselect.c reaches gCurrDisplayList
- * and gRacerPortraits. gMenuAssets[k] holds a TextureHeader* for a loaded
- * TEXTURE_* id (see menu_asset_load). */
-extern Gfx *gCurrDisplayList;
+/* The menu asset table. Declared here (menu.h does not export gMenuAssets) rather
+ * than by editing menu.c. gMenuAssets[k] holds a TextureHeader* for a loaded
+ * TEXTURE_* id (see menu_asset_load). gCurrDisplayList (the live 2D frame list) is
+ * declared in online_screen_util.h, shared with the other native screens. */
 extern void *gMenuAssets[128];
 
 /* ---- Local mirrors of the launcher lobby's id space (R-D: no launcher headers) */
@@ -237,16 +237,6 @@ static void trackselect_test_reduce_and_script(void);
 /* ======================================================================== *
  * Track / vehicle helpers (engine truth)
  * ======================================================================== */
-
-static s32 trackselect_local_seat(const MdkrPartyLinkSnapshot *snap) {
-    unsigned i;
-    for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
-        if (snap->seats[i].occupied && snap->seats[i].is_local) {
-            return (s32) i;
-        }
-    }
-    return -1;
-}
 
 static s32 trackselect_host_seat(const MdkrPartyLinkSnapshot *snap) {
     unsigned i;
@@ -677,14 +667,6 @@ static void trackselect_publish_intent(u8 localSeatChar) {
 /* ======================================================================== *
  * Render (native two-stage: sky-tile banner strip + hovered world's tracks)
  * ======================================================================== */
-static void trackselect_text(s32 x, s32 y, s32 fontId, char *text,
-                             AlignmentFlags align, s32 r, s32 g, s32 b) {
-    set_text_font(fontId);
-    set_text_background_colour(0, 0, 0, 0);
-    set_text_colour(r, g, b, 0, 255);
-    draw_text(&gCurrDisplayList, x, y, text, align);
-}
-
 /* Blit one 64x32 world-sky tile (dimmed) as a strip banner. */
 static void trackselect_draw_banner(u8 col, u8 dim) {
     DrawTexture tile[2];
@@ -710,7 +692,7 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
      * selection. */
     u8 host = sTs.host;
     u8 effMode = (host || !haveSnap) ? sTs.mode : (u8) snap->mode;
-    s32 tri = (s32) (sTs.ticks & 31u);
+    s32 tri = mdkr_online_screen_pulse(sTs.ticks);
     u8 focusWorld;
     u8 lockedTrackIdx = TS_NONE; /* which of the 20 is the effective lock */
     u8 lockedCup = TS_NONE;
@@ -720,10 +702,6 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     u8 r;
     char line[64];
     const char *rname = (rv->name[0] != '\0') ? rv->name : "RIVAL";
-
-    if (tri > 16) {
-        tri = 32 - tri;
-    }
 
     /* Resolve the effective lock + focus world from the right source. */
     if (host) {
@@ -757,7 +735,7 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     bothReady = haveSnap && localReady && rv->present && rv->ready;
 
     /* Title + mode line (P3: title y/backdrop match charselect's family). */
-    trackselect_text(TS_SCREEN_W_HALF, TS_TITLE_Y, ASSET_FONTS_BIGFONT,
+    mdkr_online_screen_text(TS_SCREEN_W_HALF, TS_TITLE_Y, ASSET_FONTS_BIGFONT,
                      effMode == TS_MODE_SINGLE ? "SELECT TRACK" : "SELECT CUP",
                      ALIGN_MIDDLE_CENTER, 255, 224, 96);
     if (host) {
@@ -767,7 +745,7 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
         (void) snprintf(line, sizeof(line), "%s",
                         effMode == TS_MODE_SINGLE ? "SINGLE RACE" : "TOURNAMENT");
     }
-    trackselect_text(TS_SCREEN_W_HALF, TS_MODE_Y, ASSET_FONTS_SMALLFONT, line,
+    mdkr_online_screen_text(TS_SCREEN_W_HALF, TS_MODE_Y, ASSET_FONTS_SMALLFONT, line,
                      ALIGN_MIDDLE_CENTER, 200, 200, 255);
 
     /* STAGE 1: the 5 world/cup sky banners. Hovered bright, others dim. The
@@ -787,7 +765,7 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
         } else {
             lr = 190; lg = 190; lb = 190;
         }
-        trackselect_text(cx, TS_BANNER_LABEL_Y, ASSET_FONTS_SMALLFONT,
+        mdkr_online_screen_text(cx, TS_BANNER_LABEL_Y, ASSET_FONTS_SMALLFONT,
                          (char *) sWorldLabels[c], ALIGN_MIDDLE_CENTER, lr, lg,
                          lb);
     }
@@ -822,7 +800,7 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
             }
             (void) snprintf(label, sizeof(label), "%s", name);
         }
-        trackselect_text(TS_SCREEN_W_HALF, y, ASSET_FONTS_SMALLFONT, label,
+        mdkr_online_screen_text(TS_SCREEN_W_HALF, y, ASSET_FONTS_SMALLFONT, label,
                          ALIGN_MIDDLE_CENTER, nr, ng, nb);
     }
 
@@ -834,7 +812,7 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                              ? sVehicleNames[sTs.vehicle]
                              : "CAR";
         (void) snprintf(line, sizeof(line), "VEHICLE: %s", vn);
-        trackselect_text(TS_SCREEN_W_HALF, TS_VEHICLE_Y, ASSET_FONTS_SMALLFONT,
+        mdkr_online_screen_text(TS_SCREEN_W_HALF, TS_VEHICLE_Y, ASSET_FONTS_SMALLFONT,
                          line, ALIGN_MIDDLE_CENTER, flash ? 255 : 180,
                          flash ? 240 : 180, flash ? 120 : 180);
     }
@@ -867,39 +845,39 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                                 snap->seats[hostSeat].name);
             }
             if (haveSnap && snap->phase != (uint8_t) TS_LOBBY_PHASE) {
-                trackselect_text(TS_SCREEN_W_HALF, TS_STATUS_Y,
+                mdkr_online_screen_text(TS_SCREEN_W_HALF, TS_STATUS_Y,
                                  ASSET_FONTS_SMALLFONT, "STARTING...",
                                  ALIGN_MIDDLE_CENTER, 120, 255, 120);
             } else if (haveLock) {
                 (void) snprintf(line, sizeof(line), "HOST PICKED: %s", pick);
-                trackselect_text(TS_SCREEN_W_HALF, TS_STATUS_Y,
+                mdkr_online_screen_text(TS_SCREEN_W_HALF, TS_STATUS_Y,
                                  ASSET_FONTS_SMALLFONT, line, ALIGN_MIDDLE_CENTER,
                                  120, 255, 120);
             } else {
                 (void) snprintf(line, sizeof(line), "%s IS CHOOSING...",
                                 hostName);
-                trackselect_text(TS_SCREEN_W_HALF, TS_STATUS_Y,
+                mdkr_online_screen_text(TS_SCREEN_W_HALF, TS_STATUS_Y,
                                  ASSET_FONTS_SMALLFONT, line, ALIGN_MIDDLE_CENTER,
                                  150 + tri * 4, 150 + tri * 4, 120);
             }
         } else if (sTs.startReq && haveLock) {
             if (bothReady) {
-                trackselect_text(TS_SCREEN_W_HALF, TS_STATUS_Y,
+                mdkr_online_screen_text(TS_SCREEN_W_HALF, TS_STATUS_Y,
                                  ASSET_FONTS_SMALLFONT, "STARTING...",
                                  ALIGN_MIDDLE_CENTER, 120, 255, 120);
             } else {
                 (void) snprintf(line, sizeof(line), "WAITING FOR %.12s...",
                                 rname);
-                trackselect_text(TS_SCREEN_W_HALF, TS_STATUS_Y,
+                mdkr_online_screen_text(TS_SCREEN_W_HALF, TS_STATUS_Y,
                                  ASSET_FONTS_SMALLFONT, line, ALIGN_MIDDLE_CENTER,
                                  255, 240, 120);
             }
         } else if (haveLock) {
             (void) snprintf(line, sizeof(line), "%s LOCKED - PRESS START", pick);
-            trackselect_text(TS_SCREEN_W_HALF, TS_STATUS_Y, ASSET_FONTS_SMALLFONT,
+            mdkr_online_screen_text(TS_SCREEN_W_HALF, TS_STATUS_Y, ASSET_FONTS_SMALLFONT,
                              line, ALIGN_MIDDLE_CENTER, 120, 255, 120);
         } else {
-            trackselect_text(TS_SCREEN_W_HALF, TS_STATUS_Y, ASSET_FONTS_SMALLFONT,
+            mdkr_online_screen_text(TS_SCREEN_W_HALF, TS_STATUS_Y, ASSET_FONTS_SMALLFONT,
                              effMode == TS_MODE_SINGLE ? "CHOOSE A TRACK"
                                                        : "CHOOSE A CUP",
                              ALIGN_MIDDLE_CENTER, 220, 220, 220);
@@ -914,18 +892,18 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
         bool youReady = localReady || holdReady;
         (void) snprintf(line, sizeof(line), "YOU: %s",
                         youReady ? "READY" : "SYNCING");
-        trackselect_text(24, TS_SEAT_Y, ASSET_FONTS_SMALLFONT, line,
+        mdkr_online_screen_text(24, TS_SEAT_Y, ASSET_FONTS_SMALLFONT, line,
                          ALIGN_MIDDLE_LEFT, youReady ? 120 : 220,
                          youReady ? 255 : 220, youReady ? 120 : 220);
         if (!rv->present) {
-            trackselect_text(TS_SCREEN_W - 24, TS_SEAT_Y, ASSET_FONTS_SMALLFONT,
+            mdkr_online_screen_text(TS_SCREEN_W - 24, TS_SEAT_Y, ASSET_FONTS_SMALLFONT,
                              "WAITING FOR PLAYER...", ALIGN_MIDDLE_RIGHT, 150, 150,
                              150);
         } else {
             bool rready = rv->ready || holdReady;
             (void) snprintf(line, sizeof(line), "%.12s: %s", rname,
                             rready ? "READY" : "CHOOSING");
-            trackselect_text(TS_SCREEN_W - 24, TS_SEAT_Y, ASSET_FONTS_SMALLFONT,
+            mdkr_online_screen_text(TS_SCREEN_W - 24, TS_SEAT_Y, ASSET_FONTS_SMALLFONT,
                              line, ALIGN_MIDDLE_RIGHT, rready ? 120 : 220,
                              rready ? 255 : 220, rready ? 120 : 220);
         }
@@ -933,12 +911,12 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
 
     /* F-D10: context-sensitive help in the charselect verb family. */
     if (!host) {
-        trackselect_text(TS_SCREEN_W_HALF, TS_HELP_Y, ASSET_FONTS_SMALLFONT,
+        mdkr_online_screen_text(TS_SCREEN_W_HALF, TS_HELP_Y, ASSET_FONTS_SMALLFONT,
                          "B: BACK", ALIGN_MIDDLE_CENTER, 255, 255, 255);
     } else {
         bool haveLock = (effMode == TS_MODE_SINGLE) ? (lockedTrackIdx != TS_NONE)
                                                     : (lockedCup != TS_NONE);
-        trackselect_text(TS_SCREEN_W_HALF, TS_HELP_Y, ASSET_FONTS_SMALLFONT,
+        mdkr_online_screen_text(TS_SCREEN_W_HALF, TS_HELP_Y, ASSET_FONTS_SMALLFONT,
                          haveLock ? "START: BEGIN   A: CHANGE PICK   B: BACK"
                                   : "A: SELECT   B: BACK",
                          ALIGN_MIDDLE_CENTER, 255, 255, 255);
@@ -1117,7 +1095,7 @@ MdkrOnlineTrackselectResult mdkr_online_trackselect_tick(s32 updateRate) {
     (void) updateRate;
 
     haveSnap = mdkr_party_link_read(&snap);
-    localSeat = haveSnap ? trackselect_local_seat(&snap) : -1;
+    localSeat = haveSnap ? mdkr_online_screen_local_seat(&snap) : -1;
     occupied = trackselect_occupied_seats(&snap, haveSnap);
 
     if (localSeat >= 0) {

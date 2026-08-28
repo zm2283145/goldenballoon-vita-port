@@ -72,6 +72,8 @@
 #include "online/online_trackselect.h" /* PD-T3: defer self-start to TRACKSELECT */
 #include "online/online_portraits.h" /* screens I-3: the shared portrait/name/asset
                                         tables (DRY with results/ceremony) */
+#include "online/online_screen_util.h" /* shared local_seat / text / pulse /
+                                          draw_portrait helpers (DRY across screens) */
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -83,20 +85,10 @@
 #define CS_SCREEN_W 320
 #define CS_SCREEN_W_HALF 160
 
-/* The engine's live 2D display list for the current frame. Set up by
- * main_game_loop() BEFORE the mode switch (rsp_init/rdp_init/bgdraw_render) and
- * closed after it (gDPFullSync/gSPEndDisplayList), so the GAMEMODE_ONLINE_SESSION
- * case can draw straight into it -- the same list menu_missing_controller() draws
- * into from the shared frame tail. Declared here (no shared header exposes it)
- * exactly as online_session.c declares gGameMode. */
-extern Gfx *gCurrDisplayList;
-
-/* The decoded racer portraits. Declared here (menu.h does not expose the array)
- * rather than by editing menu.c. gRacerPortraits[k] is a DrawTexture[2]:
- * element[0] is the portrait, element[1] the NULL terminator texrect_draw stops
- * on. NOTE the array is in its OWN portrait order, NOT the Character enum order
- * and NOT the online id order -- see sOnlineToPortrait[] below. */
-extern DrawTexture *gRacerPortraits[10];
+/* gCurrDisplayList (the engine's live 2D frame list) and gRacerPortraits[] (the
+ * decoded racer faces) are declared in online_screen_util.h, shared with the other
+ * native screens. Both are drawn into the same frame-tail display list
+ * menu_missing_controller() uses. */
 
 /* ---- Local mirrors of the launcher lobby's id space -----------------------
  * party_link.h is deliberately dependency-free, so (exactly like online_session.c)
@@ -407,14 +399,12 @@ static void charselect_publish_intent(void) {
  * Render (native: real portraits + real font, into the engine frame list)
  * ======================================================================== */
 static void charselect_draw_portrait(u8 onlineId, u8 r, u8 g, u8 b) {
+    /* Grid-relative wrapper: derive the cell coords, then the shared guarded blit. */
     s32 col = (s32) (onlineId % CS_COLS);
     s32 row = (s32) (onlineId / CS_COLS);
     s32 x = CS_GRID_X + col * CS_CELL_W;
     s32 y = CS_GRID_Y + row * CS_CELL_H;
-    DrawTexture *portrait = gRacerPortraits[sOnlineToPortrait[onlineId]];
-    if (portrait != NULL && portrait[0].texture != NULL) {
-        texrect_draw(&gCurrDisplayList, portrait, x, y, r, g, b, 255);
-    }
+    mdkr_online_screen_draw_portrait(onlineId, x, y, r, g, b);
 }
 
 static void charselect_draw_label(u8 onlineId, s32 dy, s32 fontId, char *text,
@@ -427,25 +417,6 @@ static void charselect_draw_label(u8 onlineId, s32 dy, s32 fontId, char *text,
     set_text_background_colour(0, 0, 0, 0);
     set_text_colour(r, g, b, 0, 255);
     draw_text(&gCurrDisplayList, cx, y, text, ALIGN_MIDDLE_CENTER);
-}
-
-static void charselect_draw_text_at(s32 x, s32 y, s32 fontId, char *text,
-                                    AlignmentFlags align, s32 r, s32 g, s32 b) {
-    set_text_font(fontId);
-    set_text_background_colour(0, 0, 0, 0);
-    set_text_colour(r, g, b, 0, 255);
-    draw_text(&gCurrDisplayList, x, y, text, align);
-}
-
-/* Which snapshot seat is the local one (display-only lookups). */
-static s32 charselect_local_seat(const MdkrPartyLinkSnapshot *snap) {
-    unsigned i;
-    for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
-        if (snap->seats[i].occupied && snap->seats[i].is_local) {
-            return (s32) i;
-        }
-    }
-    return -1;
 }
 
 /* Resolve the (first occupied, non-local) remote seat into a bounded view.
@@ -484,17 +455,14 @@ static void charselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     const char *rname = rv->name[0] != '\0' ? rv->name : "RIVAL";
     /* P4: triangle-wave pulse (0..16) off the tick counter for a native cursor
      * highlight feel with zero assets. */
-    s32 tri = (s32) (sCs.ticks & 31u);
+    s32 tri = mdkr_online_screen_pulse(sCs.ticks);
     u8 id;
 
     (void) snap;
     (void) localSeat;
-    if (tri > 16) {
-        tri = 32 - tri;
-    }
 
     /* Title. */
-    charselect_draw_text_at(CS_SCREEN_W_HALF, 18, ASSET_FONTS_BIGFONT,
+    mdkr_online_screen_text(CS_SCREEN_W_HALF, 18, ASSET_FONTS_BIGFONT,
                             "CHOOSE YOUR RACER", ALIGN_MIDDLE_CENTER, 255, 224,
                             96);
 
@@ -573,20 +541,20 @@ static void charselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
         const char *you = sCs.ready ? "READY" : (sCs.confirmed ? "PICKED"
                                                               : "CHOOSING");
         (void) snprintf(line, sizeof(line), "YOU: %s", you);
-        charselect_draw_text_at(24, 196, ASSET_FONTS_SMALLFONT, line,
+        mdkr_online_screen_text(24, 196, ASSET_FONTS_SMALLFONT, line,
                                 ALIGN_MIDDLE_LEFT, sCs.ready ? 120 : 220,
                                 sCs.ready ? 255 : 220, sCs.ready ? 120 : 220);
 
         /* Right status is ALWAYS drawn (F2): a first-time host must see the
          * remote's presence/waiting state, not an empty half. */
         if (!rv->present) {
-            charselect_draw_text_at(CS_SCREEN_W - 24, 196, ASSET_FONTS_SMALLFONT,
+            mdkr_online_screen_text(CS_SCREEN_W - 24, 196, ASSET_FONTS_SMALLFONT,
                                     "WAITING FOR PLAYER...", ALIGN_MIDDLE_RIGHT,
                                     150, 150, 150);
         } else {
             (void) snprintf(line, sizeof(line), "%.12s: %s", rname,
                             rv->ready ? "READY" : "CHOOSING"); /* F6 */
-            charselect_draw_text_at(CS_SCREEN_W - 24, 196, ASSET_FONTS_SMALLFONT,
+            mdkr_online_screen_text(CS_SCREEN_W - 24, 196, ASSET_FONTS_SMALLFONT,
                                     line, ALIGN_MIDDLE_RIGHT,
                                     rv->ready ? 120 : 220, rv->ready ? 255 : 220,
                                     rv->ready ? 120 : 220);
@@ -600,14 +568,14 @@ static void charselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     if (sCs.ticks < sCs.takenFlashEnd) {
         char msg[32];
         (void) snprintf(msg, sizeof(msg), "TAKEN BY %.7s", rname);
-        charselect_draw_text_at(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, msg,
+        mdkr_online_screen_text(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, msg,
                                 ALIGN_MIDDLE_CENTER, 255, 80, 80);
     } else if (!sCs.confirmed) {
-        charselect_draw_text_at(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
+        mdkr_online_screen_text(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
                                 "A: SELECT   B: LEAVE", ALIGN_MIDDLE_CENTER,
                                 255, 255, 255);
     } else if (!sCs.ready) {
-        charselect_draw_text_at(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
+        mdkr_online_screen_text(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
                                 "A: READY   B: CHANGE PICK", ALIGN_MIDDLE_CENTER,
                                 255, 255, 255);
     } else {
@@ -619,7 +587,7 @@ static void charselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
             (void) snprintf(msg, sizeof(msg),
                             "READY! WAITING FOR %.12s...   B: UNREADY", rname);
         }
-        charselect_draw_text_at(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, msg,
+        mdkr_online_screen_text(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, msg,
                                 ALIGN_MIDDLE_CENTER, 120, 255, 120);
     }
 }
@@ -740,7 +708,7 @@ MdkrOnlineCharselectResult mdkr_online_charselect_tick(s32 updateRate) {
     /* Read the authoritative forward feed the launcher publishes (both seats'
      * picks/ready + the remote name). Display-only for the remote seat. */
     haveSnap = mdkr_party_link_read(&snap);
-    localSeat = haveSnap ? charselect_local_seat(&snap) : -1;
+    localSeat = haveSnap ? mdkr_online_screen_local_seat(&snap) : -1;
     charselect_resolve_remote(&snap, haveSnap, localSeat, &rv);
 
     /* P1: seed the cursor from the first snapshot's local pick (e.g. a reconnect

@@ -61,6 +61,8 @@
 #include "online/online_standings.h" /* the shared champion sort (DRY with results) */
 #include "online/online_portraits.h" /* screens I-3: the shared portrait/name/asset
                                         tables (DRY with charselect/results) */
+#include "online/online_screen_util.h" /* shared local_seat / text / pulse /
+                                          seat_name / seconds_left / draw_portrait */
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -99,11 +101,9 @@
  * shared online_portraits.h (byte-identical across charselect/results/ceremony;
  * sOnlineToPortrait[], sOnlineNames[], sPortraitAssetIds[] now live there). */
 
-/* The engine's live 2D display list + the decoded portraits + place labels
- * (declared here, not exposed by menu.h -- exactly how online_results.c reaches
- * them). */
-extern Gfx *gCurrDisplayList;
-extern DrawTexture *gRacerPortraits[10];
+/* gCurrDisplayList + gRacerPortraits[] are declared in online_screen_util.h,
+ * shared with the other native screens; the place labels (menu.c
+ * gRacePlacementsArray, not exposed by menu.h) are declared here. */
 extern char *gRacePlacementsArray[8];
 
 /* ---- Session-owned screen state (never an offline global) ------------------ */
@@ -158,35 +158,6 @@ static bool ceremony_read_snapshot(MdkrPartyLinkSnapshot *snap) {
 /* ======================================================================== *
  * Small helpers
  * ======================================================================== */
-static s32 ceremony_local_seat(const MdkrPartyLinkSnapshot *snap) {
-    unsigned i;
-    for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
-        if (snap->seats[i].occupied && snap->seats[i].is_local) {
-            return (s32) i;
-        }
-    }
-    return -1;
-}
-
-/* Resolve one seat's short name (untrusted snapshot name, else the character's
- * canonical name, else a slot fallback) -- identical policy to results_seat_name. */
-static void ceremony_seat_name(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
-                               unsigned slot, char *out, size_t cap) {
-    if (haveSnap && slot < MDKR_PARTY_LINK_SEATS &&
-        snap->seats[slot].occupied && snap->seats[slot].name[0] != '\0') {
-        (void) snprintf(out, cap, "%.*s", (int) MDKR_PARTY_LINK_NAME_BYTES,
-                        snap->seats[slot].name);
-        return;
-    }
-    if (haveSnap && slot < MDKR_PARTY_LINK_SEATS &&
-        snap->seats[slot].character_id < CER_CHAR_COUNT) {
-        (void) snprintf(out, cap, "%s",
-                        sOnlineNames[snap->seats[slot].character_id]);
-        return;
-    }
-    (void) snprintf(out, cap, "P%u", slot + 1u);
-}
-
 /* Any occupied seat that is NOT the local player -- the remote(s) still present in
  * the room. Mirrors online_session_snapshot_has_remote_seat. */
 static bool ceremony_has_remote_seat(const MdkrPartyLinkSnapshot *snap) {
@@ -208,50 +179,11 @@ static bool ceremony_has_local_seat(const MdkrPartyLinkSnapshot *snap) {
     return false;
 }
 
-/* Triangle-wave pulse 0..16 off the free-running counter (the RESULTS terminal
- * vocabulary) -- gives the celebration footer a visible heartbeat so it never
- * reads as a hang. */
-static s32 ceremony_pulse(void) {
-    s32 tri = (s32) (sCer.pulseTicks & 31u);
-    if (tri > 16) {
-        tri = 32 - tri;
-    }
-    return tri;
-}
-
-/* Seconds still on the celebration clock (ceil), 0 when elapsed. */
-static u32 ceremony_seconds_left(void) {
-    u32 done = sCer.stageTicks;
-    if (done >= CER_HOLD_UNITS) {
-        return 0u;
-    }
-    return (CER_HOLD_UNITS - done + 59u) / 60u;
-}
-
 /* ======================================================================== *
  * Render (native: real portraits + real font, into the engine frame list)
  * ======================================================================== */
-static void ceremony_text(s32 x, s32 y, s32 fontId, char *text,
-                          AlignmentFlags align, s32 r, s32 g, s32 b) {
-    set_text_font(fontId);
-    set_text_background_colour(0, 0, 0, 0);
-    set_text_colour(r, g, b, 0, 255);
-    draw_text(&gCurrDisplayList, x, y, text, align);
-}
-
-static void ceremony_draw_portrait(u8 character, s32 x, s32 y, u8 r, u8 g, u8 b) {
-    DrawTexture *portrait;
-    if (character >= CER_CHAR_COUNT) {
-        return;
-    }
-    portrait = gRacerPortraits[sOnlineToPortrait[character]];
-    if (portrait != NULL && portrait[0].texture != NULL) {
-        texrect_draw(&gCurrDisplayList, portrait, x, y, r, g, b, 255);
-    }
-}
-
 static void ceremony_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
-    s32 tri = ceremony_pulse();
+    s32 tri = mdkr_online_screen_pulse(sCer.pulseTicks);
     u8 pg = (u8) (170 + tri * 5); /* 170..255 pulse */
     char line[64];
     char name[32];
@@ -259,30 +191,30 @@ static void ceremony_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
     unsigned i;
 
     /* Headline: a big gold "CHAMPION" + a smaller congratulations line. */
-    ceremony_text(CER_SCREEN_W_HALF, 34, ASSET_FONTS_BIGFONT, "CHAMPION",
+    mdkr_online_screen_text(CER_SCREEN_W_HALF, 34, ASSET_FONTS_BIGFONT, "CHAMPION",
                   ALIGN_MIDDLE_CENTER, 255, 224, 96);
-    ceremony_text(CER_SCREEN_W_HALF, 56, ASSET_FONTS_SMALLFONT, "CONGRATULATIONS!",
+    mdkr_online_screen_text(CER_SCREEN_W_HALF, 56, ASSET_FONTS_SMALLFONT, "CONGRATULATIONS!",
                   ALIGN_MIDDLE_CENTER, 200, 200, 255);
 
     /* The champion: a prominent centred portrait + name + point total. The
      * winner's name is BIGFONT gold (unmistakable); the total is FUNFONT because
      * BIGFONT has no digit glyphs (the RESULTS rank/points reason). */
     if (sCer.champSeat != 0xFFu) {
-        ceremony_seat_name(snap, haveSnap, sCer.champSeat, name, sizeof(name));
-        ceremony_draw_portrait(sCer.champChar, CER_SCREEN_W_HALF - 22, 74,
+        mdkr_online_screen_seat_name(snap, haveSnap, sCer.champSeat, name, sizeof(name));
+        mdkr_online_screen_draw_portrait(sCer.champChar, CER_SCREEN_W_HALF - 22, 74,
                                255, 224, 96);
         (void) snprintf(line, sizeof(line), "%.12s%s", name,
                         sCer.champLocal ? " [YOU]" : "");
-        ceremony_text(CER_SCREEN_W_HALF, 138, ASSET_FONTS_BIGFONT, line,
+        mdkr_online_screen_text(CER_SCREEN_W_HALF, 138, ASSET_FONTS_BIGFONT, line,
                       ALIGN_MIDDLE_CENTER, 255, 224, 96);
         (void) snprintf(line, sizeof(line), "CUP CHAMPION");
-        ceremony_text(CER_SCREEN_W_HALF, 158, ASSET_FONTS_SMALLFONT, line,
+        mdkr_online_screen_text(CER_SCREEN_W_HALF, 158, ASSET_FONTS_SMALLFONT, line,
                       ALIGN_MIDDLE_CENTER, 255, 255, 255);
         (void) snprintf(line, sizeof(line), "%u", (unsigned) sCer.champPoints);
-        ceremony_text(CER_SCREEN_W_HALF, 176, ASSET_FONTS_FUNFONT, line,
+        mdkr_online_screen_text(CER_SCREEN_W_HALF, 176, ASSET_FONTS_FUNFONT, line,
                       ALIGN_MIDDLE_CENTER, 255, 224, 96);
     } else {
-        ceremony_text(CER_SCREEN_W_HALF, 120, ASSET_FONTS_BIGFONT, "CUP COMPLETE",
+        mdkr_online_screen_text(CER_SCREEN_W_HALF, 120, ASSET_FONTS_BIGFONT, "CUP COMPLETE",
                       ALIGN_MIDDLE_CENTER, 255, 224, 96);
     }
 
@@ -292,21 +224,21 @@ static void ceremony_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
     rowY = 194;
     for (i = 1u; i < sCer.st.count && i < 4u; i++) {
         unsigned slot = sCer.st.order[i];
-        ceremony_seat_name(snap, haveSnap, slot, name, sizeof(name));
+        mdkr_online_screen_seat_name(snap, haveSnap, slot, name, sizeof(name));
         (void) snprintf(line, sizeof(line), "%s  %.10s  %u",
                         (i < 8u) ? gRacePlacementsArray[i] : "-", name,
                         (unsigned) sCer.st.points[i]);
-        ceremony_text(CER_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
+        mdkr_online_screen_text(CER_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
                       ALIGN_MIDDLE_CENTER, 200, 200, 200);
         rowY += 14;
     }
 
     /* Footer: a pulsed "returning" heartbeat (never a dead hold) + the host's
      * optional early-skip affordance. No countdown number, no required button. */
-    ceremony_text(CER_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
+    mdkr_online_screen_text(CER_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
                   "RETURNING TO ROOM...", ALIGN_MIDDLE_CENTER, 120, pg, 120);
     if (sCer.host) {
-        ceremony_text(CER_SCREEN_W_HALF, 234, ASSET_FONTS_SMALLFONT, "A: CONTINUE",
+        mdkr_online_screen_text(CER_SCREEN_W_HALF, 234, ASSET_FONTS_SMALLFONT, "A: CONTINUE",
                       ALIGN_MIDDLE_CENTER, 255, 255, 255);
     }
 }
@@ -314,7 +246,7 @@ static void ceremony_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
 /* Bounded stderr witness: one line only when the visible state changes, so the
  * headless lane can read the drawn champion + countdown (mirrors results_witness). */
 static void ceremony_witness(void) {
-    u32 secs = ceremony_seconds_left();
+    u32 secs = mdkr_online_screen_seconds_left(sCer.stageTicks, CER_HOLD_UNITS);
     u32 key = ((u32) sCer.champSeat & 0xFu) |
               ((u32) (sCer.champPoints & 0xFFFu) << 4) |
               ((u32) (secs & 0x3Fu) << 16) |
@@ -350,7 +282,7 @@ void mdkr_online_ceremony_enter(const MdkrOnlineStandings *finalRanking) {
      * endpoint has not departed), so resolve it from the live snapshot for the
      * champLocal / host affordance either way. */
     haveSnap = ceremony_read_snapshot(&snap);
-    localSeat = haveSnap ? ceremony_local_seat(&snap) : -1;
+    localSeat = haveSnap ? mdkr_online_screen_local_seat(&snap) : -1;
 
     /* Prefer the ranking the session CAPTURED at the final standings while BOTH
      * seats were present (the SAME sort the STANDINGS screen ran, so the two
@@ -403,7 +335,7 @@ void mdkr_online_ceremony_enter(const MdkrOnlineStandings *finalRanking) {
      * fallback would print. Witness cosmetics only -- the render path already
      * guards the no-champion case ("CUP COMPLETE"). */
     if (sCer.champSeat != 0xFFu) {
-        ceremony_seat_name(&snap, haveSnap, sCer.champSeat, name, sizeof(name));
+        mdkr_online_screen_seat_name(&snap, haveSnap, sCer.champSeat, name, sizeof(name));
     } else {
         (void) snprintf(name, sizeof(name), "(none)");
     }
@@ -438,7 +370,7 @@ MdkrOnlineCeremonyResult mdkr_online_ceremony_tick(s32 updateRate) {
     }
 
     haveSnap = ceremony_read_snapshot(&snap);
-    localSeat = haveSnap ? ceremony_local_seat(&snap) : -1;
+    localSeat = haveSnap ? mdkr_online_screen_local_seat(&snap) : -1;
     /* A feed-less endpoint owns its own progression (host); with a feed present be
      * the host only if the resolved local seat is the leader. The host may skip
      * the hold early, but NOBODY is ever blocked on the host -- the timer below

@@ -60,6 +60,8 @@
                                         seat this screen ranks #1. */
 #include "online/online_portraits.h" /* screens I-3: the ONE portrait/name/asset-id
                                         set, shared DRY across the three screens. */
+#include "online/online_screen_util.h" /* shared local_seat / text / pulse /
+                                          seat_name / seconds_left / draw_portrait */
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -69,13 +71,10 @@
 /* Screen space (mirrored, like online_charselect.c). */
 #define RES_SCREEN_W_HALF 160
 
-/* The engine's live 2D display list + the decoded portraits (declared here, not
- * exposed by menu.h -- exactly how online_charselect.c reaches them). */
-extern Gfx *gCurrDisplayList;
-extern DrawTexture *gRacerPortraits[10];
-/* The real "1ST".."8TH" place labels (menu.c gRacePlacementsArray). Declared
- * here (menu.h does not export it) rather than by editing menu.c, exactly how
- * gRacerPortraits is reached above. */
+/* gCurrDisplayList + gRacerPortraits[] are declared in online_screen_util.h,
+ * shared with the other native screens. The real "1ST".."8TH" place labels
+ * (menu.c gRacePlacementsArray) are declared here (menu.h does not export it)
+ * rather than by editing menu.c. */
 extern char *gRacePlacementsArray[8];
 
 /* ---- Local mirrors of the launcher lobby's id space (no launcher headers) --- */
@@ -177,45 +176,6 @@ static u8 results_resident_remote_wins(void);        /* I-1 champion-on-disconne
 /* ======================================================================== *
  * Small helpers
  * ======================================================================== */
-static s32 results_local_seat(const MdkrPartyLinkSnapshot *snap) {
-    unsigned i;
-    for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
-        if (snap->seats[i].occupied && snap->seats[i].is_local) {
-            return (s32) i;
-        }
-    }
-    return -1;
-}
-
-/* Countdown seconds still on the clock for the current stage (ceil), 0 when
- * elapsed. */
-static u32 results_seconds_left(u32 limit) {
-    u32 done = sRes.stageTicks;
-    if (done >= limit) {
-        return 0u;
-    }
-    return (limit - done + 59u) / 60u;
-}
-
-/* Resolve one seat's short name (untrusted snapshot name, else the character's
- * canonical name, else a slot fallback). */
-static void results_seat_name(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
-                              unsigned slot, char *out, size_t cap) {
-    if (haveSnap && slot < MDKR_PARTY_LINK_SEATS &&
-        snap->seats[slot].occupied && snap->seats[slot].name[0] != '\0') {
-        (void) snprintf(out, cap, "%.*s", (int) MDKR_PARTY_LINK_NAME_BYTES,
-                        snap->seats[slot].name);
-        return;
-    }
-    if (haveSnap && slot < MDKR_PARTY_LINK_SEATS &&
-        snap->seats[slot].character_id < RES_CHAR_COUNT) {
-        (void) snprintf(out, cap, "%s",
-                        sOnlineNames[snap->seats[slot].character_id]);
-        return;
-    }
-    (void) snprintf(out, cap, "P%u", slot + 1u);
-}
-
 /* The host seat's short name (for the joiner's "WAITING FOR <host>..." line). */
 static void results_host_name(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                               char *out, size_t cap) {
@@ -233,27 +193,9 @@ static void results_host_name(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     }
 }
 
-/* Triangle-wave pulse 0..16 off the free-running counter (the trackselect P4
- * vocabulary) -- gives the otherwise-static terminal "COMPLETE" hold a visible
- * heartbeat so it never reads as a hang (F4/F6). */
-static s32 results_pulse(void) {
-    s32 tri = (s32) (sRes.pulseTicks & 31u);
-    if (tri > 16) {
-        tri = 32 - tri;
-    }
-    return tri;
-}
-
 /* ======================================================================== *
  * Render (native: real portraits + real font, into the engine frame list)
  * ======================================================================== */
-static void results_text(s32 x, s32 y, s32 fontId, char *text,
-                         AlignmentFlags align, s32 r, s32 g, s32 b) {
-    set_text_font(fontId);
-    set_text_background_colour(0, 0, 0, 0);
-    set_text_colour(r, g, b, 0, 255);
-    draw_text(&gCurrDisplayList, x, y, text, align);
-}
 
 /* The "this screen is over, what does a button do now" footer, shared by the
  * single-race RESULTS terminal (F4, "RACE COMPLETE") and the tournament STANDINGS
@@ -262,14 +204,14 @@ static void results_text(s32 x, s32 y, s32 fontId, char *text,
  * countdown to the champion celebration (exit-gate C1). No dead button. */
 static void results_render_complete(const MdkrPartyLinkSnapshot *snap,
                                     bool haveSnap, const char *label) {
-    s32 tri = results_pulse();
+    s32 tri = mdkr_online_screen_pulse(sRes.pulseTicks);
     u8 pg = (u8) (170 + tri * 5); /* 170..255 pulse */
     char line[48];
 
-    results_text(RES_SCREEN_W_HALF, 208, ASSET_FONTS_SMALLFONT, (char *) label,
+    mdkr_online_screen_text(RES_SCREEN_W_HALF, 208, ASSET_FONTS_SMALLFONT, (char *) label,
                  ALIGN_MIDDLE_CENTER, 120, pg, 120);
     if (sRes.host) {
-        results_text(RES_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, "A: FINISH",
+        mdkr_online_screen_text(RES_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, "A: FINISH",
                      ALIGN_MIDDLE_CENTER, 255, 255, 255);
     } else {
         /* Exit-gate C1: the JOINER self-advances off this terminal (its feed parks
@@ -279,10 +221,10 @@ static void results_render_complete(const MdkrPartyLinkSnapshot *snap,
          * M3: advertise BOTH honored buttons -- A OR B advances immediately to the
          * celebration (the joiner terminal honors in.bEdge too, online_results.c
          * joinerPress), so surface the navigation input rather than leaving B silent. */
-        u32 secs = results_seconds_left(RES_JOINER_TERMINAL_UNITS);
+        u32 secs = mdkr_online_screen_seconds_left(sRes.stageTicks,RES_JOINER_TERMINAL_UNITS);
         s32 c = 130 + tri * 5;
         (void) snprintf(line, sizeof(line), "CONTINUE IN %us  (A/B)", secs);
-        results_text(RES_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, line,
+        mdkr_online_screen_text(RES_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, line,
                      ALIGN_MIDDLE_CENTER, c, c, c);
         (void) snap;
         (void) haveSnap;
@@ -294,11 +236,11 @@ static void results_render_complete(const MdkrPartyLinkSnapshot *snap,
 static void results_render_countdown(const MdkrPartyLinkSnapshot *snap,
                                      bool haveSnap, const char *nextLabel,
                                      const char *hostVerb, u32 secs) {
-    s32 tri = results_pulse();
+    s32 tri = mdkr_online_screen_pulse(sRes.pulseTicks);
     char line[48];
 
     (void) snprintf(line, sizeof(line), "%s IN %us", nextLabel, secs);
-    results_text(RES_SCREEN_W_HALF, 208, ASSET_FONTS_SMALLFONT, line,
+    mdkr_online_screen_text(RES_SCREEN_W_HALF, 208, ASSET_FONTS_SMALLFONT, line,
                  ALIGN_MIDDLE_CENTER, 200, 200, 255);
     if (sRes.host) {
         /* Screens I-2: advertise the (previously silent) non-final back-out. B on a
@@ -306,7 +248,7 @@ static void results_render_countdown(const MdkrPartyLinkSnapshot *snap,
          * it beside the host's advance affordance. */
         char hv[40];
         (void) snprintf(hv, sizeof(hv), "%s   B: LEAVE", hostVerb);
-        results_text(RES_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, hv,
+        mdkr_online_screen_text(RES_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, hv,
                      ALIGN_MIDDLE_CENTER, 255, 255, 255);
     } else {
         char host[16];
@@ -317,19 +259,8 @@ static void results_render_countdown(const MdkrPartyLinkSnapshot *snap,
          * (in.bEdge -> sRes.leave -> LEFT), symmetric with the host footer's
          * "B: LEAVE" (results_render_countdown) -- it was previously silent. */
         (void) snprintf(line, sizeof(line), "WAITING FOR %.12s...   B: LEAVE", host);
-        results_text(RES_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, line,
+        mdkr_online_screen_text(RES_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, line,
                      ALIGN_MIDDLE_CENTER, c, c, c);
-    }
-}
-
-static void results_draw_portrait(u8 character, s32 x, s32 y, u8 r, u8 g, u8 b) {
-    DrawTexture *portrait;
-    if (character >= RES_CHAR_COUNT) {
-        return;
-    }
-    portrait = gRacerPortraits[sOnlineToPortrait[character]];
-    if (portrait != NULL && portrait[0].texture != NULL) {
-        texrect_draw(&gCurrDisplayList, portrait, x, y, r, g, b, 255);
     }
 }
 
@@ -338,18 +269,18 @@ static void results_draw_portrait(u8 character, s32 x, s32 y, u8 r, u8 g, u8 b) 
 static void results_render_results(const MdkrPartyLinkSnapshot *snap,
                                    bool haveSnap, s32 localSeat) {
     bool tournament = haveSnap && snap->mode == RES_MODE_TOURNAMENT;
-    u32 secs = results_seconds_left(RES_RESULTS_UNITS);
+    u32 secs = mdkr_online_screen_seconds_left(sRes.stageTicks,RES_RESULTS_UNITS);
     s32 rowY = 60;
     u8 place;
     char line[64];
 
-    results_text(RES_SCREEN_W_HALF, 18, ASSET_FONTS_BIGFONT, "RACE RESULTS",
+    mdkr_online_screen_text(RES_SCREEN_W_HALF, 18, ASSET_FONTS_BIGFONT, "RACE RESULTS",
                  ALIGN_MIDDLE_CENTER, 255, 224, 96);
     /* Tournament: name the round on RESULTS too (parity with STANDINGS). */
     if (tournament) {
         (void) snprintf(line, sizeof(line), "RACE %u/%u",
                         (unsigned) (snap->race_index + 1u), RES_CUP_ROUNDS);
-        results_text(RES_SCREEN_W_HALF, 38, ASSET_FONTS_SMALLFONT, line,
+        mdkr_online_screen_text(RES_SCREEN_W_HALF, 38, ASSET_FONTS_SMALLFONT, line,
                      ALIGN_MIDDLE_CENTER, 200, 200, 255);
     }
 
@@ -371,7 +302,7 @@ static void results_render_results(const MdkrPartyLinkSnapshot *snap,
             if (haveSnap && snap->seats[slot].character_id < RES_CHAR_COUNT) {
                 character = snap->seats[slot].character_id;
             }
-            results_seat_name(snap, haveSnap, slot, name, sizeof(name));
+            mdkr_online_screen_seat_name(snap, haveSnap, slot, name, sizeof(name));
             placeLabel = (place < 8u) ? gRacePlacementsArray[place] : (char *) "-";
 
             /* Colour + a text tag carry the "this is you" state (no colour-only
@@ -388,13 +319,13 @@ static void results_render_results(const MdkrPartyLinkSnapshot *snap,
              * 0xFF), so "1ST" would render "ST" -- the offline results screen
              * draws these exact strings in FUNFONT for the same reason (F1). Row
              * text sits at the portrait's optical centre (rowY+12). */
-            results_text(52, rowY + 12, ASSET_FONTS_FUNFONT, placeLabel,
+            mdkr_online_screen_text(52, rowY + 12, ASSET_FONTS_FUNFONT, placeLabel,
                          ALIGN_MIDDLE_RIGHT, nr, ng, nb);
-            results_draw_portrait(character, 64, rowY - 8, (u8) nr, (u8) ng,
+            mdkr_online_screen_draw_portrait(character, 64, rowY - 8, (u8) nr, (u8) ng,
                                   (u8) nb);
             (void) snprintf(line, sizeof(line), "%.12s%s", name,
                             isLocal ? " [YOU]" : "");
-            results_text(118, rowY + 12, ASSET_FONTS_SMALLFONT, line,
+            mdkr_online_screen_text(118, rowY + 12, ASSET_FONTS_SMALLFONT, line,
                          ALIGN_MIDDLE_LEFT, nr, ng, nb);
             rowY += 40;
             break;
@@ -416,7 +347,7 @@ static void results_render_results(const MdkrPartyLinkSnapshot *snap,
  * descending), this race's delta shown, "RACE n/4". */
 static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
                                      bool haveSnap, s32 localSeat) {
-    u32 secs = results_seconds_left(RES_STANDINGS_UNITS);
+    u32 secs = mdkr_online_screen_seconds_left(sRes.stageTicks,RES_STANDINGS_UNITS);
     u16 points[RES_SLOTS];
     u8 order[RES_SLOTS];
     u8 lastpl[RES_SLOTS];
@@ -425,14 +356,14 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
     s32 rowY = 64;
     char line[64];
 
-    results_text(RES_SCREEN_W_HALF, 18, ASSET_FONTS_BIGFONT,
+    mdkr_online_screen_text(RES_SCREEN_W_HALF, 18, ASSET_FONTS_BIGFONT,
                  sRes.isFinal ? "FINAL STANDINGS" : "STANDINGS",
                  ALIGN_MIDDLE_CENTER, 255, 224, 96);
     /* M-6: never show "RACE n/N" alongside the FINAL banner (the cup is over). */
     if (haveSnap && !sRes.isFinal) {
         (void) snprintf(line, sizeof(line), "RACE %u/%u",
                         (unsigned) (snap->race_index + 1u), RES_CUP_ROUNDS);
-        results_text(RES_SCREEN_W_HALF, 38, ASSET_FONTS_SMALLFONT, line,
+        mdkr_online_screen_text(RES_SCREEN_W_HALF, 38, ASSET_FONTS_SMALLFONT, line,
                      ALIGN_MIDDLE_CENTER, 200, 200, 255);
     }
 
@@ -466,7 +397,7 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
         if (haveSnap && snap->seats[slot].character_id < RES_CHAR_COUNT) {
             character = snap->seats[slot].character_id;
         }
-        results_seat_name(snap, haveSnap, slot, name, sizeof(name));
+        mdkr_online_screen_seat_name(snap, haveSnap, slot, name, sizeof(name));
         if (isLocal) {
             nr = 255; ng = 224; nb = 96;
         } else {
@@ -477,22 +408,22 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
          * The rank is FUNFONT: BIGFONT has no digit glyphs, so "%u." would render
          * a bare "." (F2). Row text at the portrait's optical centre (rowY+12). */
         (void) snprintf(line, sizeof(line), "%u.", i + 1u);
-        results_text(44, rowY + 12, ASSET_FONTS_FUNFONT, line,
+        mdkr_online_screen_text(44, rowY + 12, ASSET_FONTS_FUNFONT, line,
                      ALIGN_MIDDLE_RIGHT, nr, ng, nb);
-        results_draw_portrait(character, 52, rowY - 8, (u8) nr, (u8) ng,
+        mdkr_online_screen_draw_portrait(character, 52, rowY - 8, (u8) nr, (u8) ng,
                               (u8) nb);
         (void) snprintf(line, sizeof(line), "%.10s%s", name,
                         isLocal ? " [YOU]" : "");
-        results_text(104, rowY + 12, ASSET_FONTS_SMALLFONT, line,
+        mdkr_online_screen_text(104, rowY + 12, ASSET_FONTS_SMALLFONT, line,
                      ALIGN_MIDDLE_LEFT, nr, ng, nb);
         /* Points in FUNFONT (the trophy-rankings vocabulary), with this race's
          * delta so a newcomer sees WHY the total moved. */
         (void) snprintf(line, sizeof(line), "%u", (unsigned) points[i]);
-        results_text(252, rowY + 12, ASSET_FONTS_FUNFONT, line,
+        mdkr_online_screen_text(252, rowY + 12, ASSET_FONTS_FUNFONT, line,
                      ALIGN_MIDDLE_RIGHT, nr, ng, nb);
         if (delta > 0u) {
             (void) snprintf(line, sizeof(line), "+%u", (unsigned) delta);
-            results_text(300, rowY + 12, ASSET_FONTS_SMALLFONT, line,
+            mdkr_online_screen_text(300, rowY + 12, ASSET_FONTS_SMALLFONT, line,
                          ALIGN_MIDDLE_RIGHT, 120, 255, 120);
         }
         rowY += 40;
@@ -512,7 +443,7 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
 /* Bounded stderr witness: one line only when the visible state changes, so the
  * headless soak lane can read the drawn placements/points + stage/countdown. */
 static void results_witness(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
-    u32 secs = results_seconds_left(sRes.stage == RES_STAGE_RESULTS
+    u32 secs = mdkr_online_screen_seconds_left(sRes.stageTicks,sRes.stage == RES_STAGE_RESULTS
                                         ? RES_RESULTS_UNITS
                                         : RES_STANDINGS_UNITS);
     u8 mode = haveSnap ? snap->mode : RES_MODE_SINGLE;
@@ -715,7 +646,7 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
     results_test_pump();
 
     haveSnap = mdkr_party_link_read(&snap);
-    localSeat = haveSnap ? results_local_seat(&snap) : -1;
+    localSeat = haveSnap ? mdkr_online_screen_local_seat(&snap) : -1;
     /* M-1 / F5: a feed-less endpoint (no snapshot at all -- legacy direct boot)
      * owns the progression; but when a feed IS present, be a JOINER unless the
      * resolved local seat is the host. The old "no local seat -> assume host"
@@ -762,7 +693,7 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
 
     /* Hurry-up SFX on the last three countdown seconds (native feel), only while
      * a live countdown is shown -- never on the terminal hold. */
-    secs = results_seconds_left(limit);
+    secs = mdkr_online_screen_seconds_left(sRes.stageTicks,limit);
     if (!terminal && secs != (u32) sRes.prevSecs && secs >= 1u && secs <= 3u) {
         sound_play(RES_SFX_TICK, NULL);
     }
