@@ -1291,6 +1291,9 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     float wheelFinalScroll = 0.0f;
     bool wheelQueued = false;
     bool onlineActionInputQueued = false;
+    int smokeA11yWalkFrame = 0;
+    int smokeA11yWaitFrames = 0;
+    const Uint64 smokeA11yDeadline = SDL_GetTicks64() + 120000u;
     int smokePlayActions = 0;
     std::string smokePlayActionRom;
     auto observeSmokePlay = [&](const LauncherAction &action) {
@@ -1323,7 +1326,11 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         host.shutdown();
         return 2;
     }
-    for (int i = 0; i < frames; ++i) {
+    for (int i = 0;
+         i < frames ||
+         (smokeA11yWalk && smokeA11yWalkFrame < frames &&
+          SDL_GetTicks64() < smokeA11yDeadline);
+         ++i) {
         if (smokeDrop && smokeDrop[0] && i == dropFrame) {
             host.queueDropFileForSmoke(smokeDrop);
         }
@@ -1331,10 +1338,15 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         host.beginFrame();
         const LauncherAction action = launcher.draw(host);
         observeSmokePlay(action);
+        const bool smokeSequenceFinalFrame = smokeA11yWalk
+            ? !launcher.state().romValidationPending &&
+                  smokeA11yWalkFrame == frames - 1
+            : i == frames - 1;
         const bool ok = host.endFrame(
-            (i == frames - 1 && !waitForCharacterJobs) ? shot : nullptr);
+            (smokeSequenceFinalFrame && !waitForCharacterJobs)
+                ? shot : nullptr);
         renderOk      = renderOk && ok;
-        if (i == frames - 1 && !waitForCharacterJobs) captureOk = ok;
+        if (smokeSequenceFinalFrame && !waitForCharacterJobs) captureOk = ok;
         /* A renderer failure is terminal. Starting another ImGui frame and
          * returning before ImGui::Render leaves dynamic texture state
          * half-transitioned and can make renderer shutdown release an
@@ -1649,7 +1661,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
             }
         }
 
-        if (smokeA11yWalk) {
+        if (smokeA11yWalk && !launcher.state().romValidationPending) {
             /*
              * Two phases, not one interleaved stream. Keyboard gets a clean
              * linear Tab pass before arrow navigation. Gamepad gets a forward
@@ -1658,14 +1670,14 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
              * the shorter directional-reversal phase.
              */
             const int tabFrames = frames - frames / 4;
-            if (i < tabFrames) {
+            if (smokeA11yWalkFrame < tabFrames) {
                 if (smokeUsesGamepad) {
                     // Sweep across each responsive row before advancing. A
                     // D-pad-only vertical walk can skip every second radio
                     // button and all but the first cell of a grid even though
                     // those controls are reachable by a real controller.
                     const SDL_GameControllerButton direction =
-                        i % 4 == 3
+                        smokeA11yWalkFrame % 4 == 3
                             ? SDL_CONTROLLER_BUTTON_DPAD_DOWN
                             : SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
                     renderOk = host.queueGamepadPressForSmoke(
@@ -1675,20 +1687,23 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                     host.queueKeyPressForSmoke(SDLK_TAB);
                 }
             } else {
-                if (i == tabFrames) {
+                if (smokeA11yWalkFrame == tabFrames) {
                     if (smokeUsesGamepad) {
                         std::printf(
                             "[app-a11y-walk] primary phase complete input=gamepad frame=%d\n",
-                            i);
+                            smokeA11yWalkFrame);
                     } else {
                         std::printf(
-                            "[app-a11y-walk] tab phase complete frame=%d\n", i);
+                            "[app-a11y-walk] tab phase complete frame=%d\n",
+                            smokeA11yWalkFrame);
                     }
                     std::fflush(stdout);
                 }
-                const bool forward = ((i - tabFrames) % 8) < 6;
+                const bool forward =
+                    ((smokeA11yWalkFrame - tabFrames) % 8) < 6;
                 if (smokeUsesGamepad) {
-                    const bool vertical = (i - tabFrames) % 4 == 3;
+                    const bool vertical =
+                        (smokeA11yWalkFrame - tabFrames) % 4 == 3;
                     SDL_GameControllerButton direction;
                     if (vertical) {
                         direction = forward
@@ -1707,6 +1722,9 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                         forward ? SDLK_DOWN : SDLK_UP);
                 }
             }
+            ++smokeA11yWalkFrame;
+        } else if (smokeA11yWalk) {
+            ++smokeA11yWaitFrames;
         }
 
         // Real widget navigation: keyboard movement follows the focused row in
@@ -1780,6 +1798,16 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
              * activate whichever row focus had drifted to. The same-process
              * Retry arm only ever passed by winning that race. */
         }
+    }
+
+    if (smokeA11yWalk) {
+        const bool completed = smokeA11yWalkFrame == frames;
+        std::fprintf(
+            stderr,
+            "[app-ui-test] accessibility walk frames=%d/%d readiness-wait-frames=%d settled=%d\n",
+            smokeA11yWalkFrame, frames, smokeA11yWaitFrames,
+            launcher.state().romValidationPending ? 0 : 1);
+        renderOk = renderOk && completed;
     }
 
     if (waitForCharacterJobs) {
