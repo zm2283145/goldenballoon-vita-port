@@ -61,6 +61,10 @@ import tempfile
 from pathlib import Path
 
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
+from online_lane_util import (
+    ENGINE_LIVE_RE, FORBIDDEN_ONLINE, ONLINE_RACE_RE, forbidden_marker, make_fail,
+    run_engine,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 TICKS = 9000  # stall bound; the engine exits itself ~2.5 s after the finish
@@ -73,19 +77,6 @@ CUP_TRACKS = (5, 3, 29, 7)
 CUP_MASKS = (0x7, 0x7, 0x7, 0x6)
 TROPHY_POINTS = (9, 7, 5, 3, 1, 0, 0, 0)  # gTrophyRacePointsArray
 
-ENGINE_LIVE_RE = re.compile(
-    r"^\[ENGINE-ONLINE-LIVE\] result=(-?\d+) racedTicks=(\d+) drainCalls=(\d+) "
-    r"advanceFailed=(\d+) inputEnvelopes=(\d+) transportAccepted=(\d+) "
-    r"transportCorrected=(\d+) transportDrained=(\d+) foldVisible=(\d+) "
-    r"foldPeer=(\d+) hashVisible=([0-9a-f]{16}) hashPeer=([0-9a-f]{16}) "
-    r"converged=(\d+)$",
-    re.MULTILINE,
-)
-ONLINE_RACE_RE = re.compile(
-    r"^\[ROLLBACK\] online race: loadedTrack=(\d+) raceType=(\d+) "
-    r"authoredHz=(\d+)$",
-    re.MULTILINE,
-)
 CONFIG_RE = re.compile(
     r"^\[online-live\] loopback config mode=tournament cup=(\d+) "
     r"round1Track=(\d+) startMask=0x([0-9a-f]{2}) vehicle=(\d+)$",
@@ -124,20 +115,7 @@ FINAL_RE = re.compile(
 )
 
 
-def fail(message: str, output: str = "") -> int:
-    print(f"FAIL online tournament: {message}", file=sys.stderr)
-    if output:
-        print(output[-16000:], file=sys.stderr)
-    return 1
-
-
-def clean_environment(**updates: str) -> dict[str, str]:
-    environment = {
-        key: value for key, value in os.environ.items()
-        if not key.startswith(("MDKR", "GE007_"))
-    }
-    environment.update(updates)
-    return environment
+fail = make_fail("tournament")
 
 
 def main() -> int:
@@ -155,54 +133,28 @@ def main() -> int:
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
 
-    with tempfile.TemporaryDirectory(prefix="mdkr64-online-tournament-") as temp:
-        run_dir = Path(temp)
-        (run_dir / "saves").mkdir()
-        (run_dir / "preferences").mkdir()
-        # The direct-boot environment (no menu-nav script; the only inputs are
-        # the live transport and MDKR_AUTOPILOT) plus the tournament seams.
-        environment = clean_environment(
-            LC_ALL="C",
-            MDKR_APP_AUTOPLAY="1",
-            MDKR_APP_TEST_ONLINE_LIVE="1",
-            MDKR_APP_TEST_ONLINE_MODE="tournament",
-            MDKR_APP_TEST_ONLINE_CUP=str(CUP),
-            MDKR_APP_AUTOPLAY_TICKS=str(args.ticks),
-            MDKR_APP_PREFS_DIR=str(run_dir / "preferences"),
-            MDKR_AUDIO="0",
-            MDKR_AUTOPILOT="1",
-            MDKR_NO_CRASH_HANDLER="1",
-            MDKR_PRESENT_RATE="original",
-            MDKR_RENDERER="gl",
-            MDKR_ROM=str(rom),
-            MDKR_SAVE_DIR=str(run_dir / "saves"),
-            MDKR_STATE_HASH="3",
-            MDKR_TEST_SCRIPT_ONLY_INPUT="1",
-            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
-            MDKR64_HIDDEN="1",
-        )
-        if args.verbose:
-            print(f"$ {binary}", flush=True)
-        try:
-            process = subprocess.run(
-                [str(binary)], cwd=run_dir, env=environment, text=True,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                timeout=args.timeout, check=False,
-            )
-        except subprocess.TimeoutExpired as error:
-            return fail(f"run timed out (a stall would look like this): "
-                        f"{error}")
-        output = process.stdout or ""
+    # The direct-boot environment (no menu-nav script; the only inputs are the
+    # live transport and MDKR_AUTOPILOT) plus the tournament seams.
+    extra_env = {
+        "MDKR_APP_TEST_ONLINE_LIVE": "1",
+        "MDKR_APP_TEST_ONLINE_MODE": "tournament",
+        "MDKR_APP_TEST_ONLINE_CUP": str(CUP),
+    }
+    try:
+        returncode, output = run_engine(
+            binary, rom, ticks=args.ticks, timeout=args.timeout,
+            verbose=args.verbose, extra_env=extra_env,
+            prefix="mdkr64-online-tournament-")
+    except subprocess.TimeoutExpired as error:
+        return fail(f"run timed out (a stall would look like this): "
+                    f"{error}")
 
-    for marker in ("[FATAL]", "[CRASH]", "AddressSanitizer",
-                   "online race admission rejected",
-                   "launcher input provider rejected",
-                   "engine startup rejected before authored tick one",
-                   "[online-tournament] result=error"):
-        if marker in output:
-            return fail(f"observed forbidden marker {marker!r}", output)
-    if process.returncode != 0:
-        return fail(f"process exited {process.returncode}", output)
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE,
+                              "[online-tournament] result=error")
+    if marker:
+        return fail(f"observed forbidden marker {marker!r}", output)
+    if returncode != 0:
+        return fail(f"process exited {returncode}", output)
     if "input-script" in output or "race_2p_split" in output:
         return fail("a menu-nav input script was loaded", output)
 

@@ -38,14 +38,16 @@ import tempfile
 from pathlib import Path
 
 from harness_utils import resolve_binary
+from online_lane_util import (
+    CUP_ROUNDS, DIRECT_BOOT_RE, FINISHED_ENGINE_RE, FORBIDDEN_ONLINE,
+    SESSION_END_RE, forbidden_marker, make_fail,
+)
+from online_lane_util import run_engine as _run_engine
 
 ROOT = Path(__file__).resolve().parent.parent
 TICKS = 30000
-CUP_ROUNDS = 4
 CUP = 1
 
-DIRECT_BOOT_RE = re.compile(
-    r"^\[online-boot\] direct race: track=(\d+) players=(\d+)$", re.MULTILINE)
 # Final-standings render (RESULTS): the champion is the max-points seat here.
 STANDINGS_FINAL_RE = re.compile(
     r"^\[online-results\] render stage=standings mode=\d+ race=\d+ host=\d+ "
@@ -78,19 +80,13 @@ CEREMONY_EXIT_RE = re.compile(
     r"^\[online-ceremony\] exit: freed portrait assets$", re.MULTILINE)
 PHASE_CEREMONY_RE = re.compile(
     r"^\[online-session\] phase=CEREMONY: final standings", re.MULTILINE)
-FINISHED_ENGINE_RE = re.compile(
-    r"^\[online-session\] FINISHED: final standings", re.MULTILINE)
-SESSION_END_RE = re.compile(
-    r"^\[online-session-end\] reason=(\w+) result=(-?\d+)", re.MULTILINE)
 POSTRACE_EXIT = "[online-postrace] session end requested"
 
-FORBIDDEN = ("[FATAL]", "[CRASH]", "AddressSanitizer",
-             "online race admission rejected",
-             "launcher input provider rejected",
-             "engine startup rejected before authored tick one",
-             "[online-resident-live] round advance error",
-             "[online-resident-live] round advance FAILED",
-             "[online-tournament] result=error")
+# A stalled resident-round or tournament advance is fatal for this lane, on top of
+# the shared engine/online forbidden markers.
+FORBIDDEN_EXTRA = ("[online-resident-live] round advance error",
+                   "[online-resident-live] round advance FAILED",
+                   "[online-tournament] result=error")
 
 TOURNAMENT_ENV = {
     "MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START": "1",
@@ -102,63 +98,22 @@ TOURNAMENT_ENV = {
 }
 
 
-def fail(message: str, output: str = "") -> int:
-    print(f"FAIL online ceremony: {message}", file=sys.stderr)
-    if output:
-        print(output[-16000:], file=sys.stderr)
-    return 1
-
-
-def clean_environment(**updates: str) -> dict[str, str]:
-    environment = {
-        key: value for key, value in os.environ.items()
-        if not key.startswith(("MDKR", "GE007_"))
-    }
-    environment.update(updates)
-    return environment
+fail = make_fail("ceremony")
 
 
 def run_engine(binary: Path, rom: Path, ticks: int, timeout: int, verbose: bool,
                extra_env: dict[str, str]) -> tuple[int, str]:
-    with tempfile.TemporaryDirectory(prefix="mdkr64-ceremony-") as temp:
-        run_dir = Path(temp)
-        (run_dir / "saves").mkdir()
-        (run_dir / "preferences").mkdir()
-        environment = clean_environment(
-            LC_ALL="C",
-            MDKR_APP_AUTOPLAY="1",
-            MDKR_APP_AUTOPLAY_TICKS=str(ticks),
-            MDKR_APP_PREFS_DIR=str(run_dir / "preferences"),
-            MDKR_AUDIO="0",
-            MDKR_AUTOPILOT="1",
-            MDKR_NO_CRASH_HANDLER="1",
-            MDKR_PRESENT_RATE="original",
-            MDKR_RENDERER="gl",
-            MDKR_ROM=str(rom),
-            MDKR_SAVE_DIR=str(run_dir / "saves"),
-            MDKR_STATE_HASH="3",
-            MDKR_TEST_SCRIPT_ONLY_INPUT="1",
-            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
-            MDKR64_HIDDEN="1",
-        )
-        environment.update(extra_env)
-        if verbose:
-            extras = " ".join(f"{k}={v}" for k, v in extra_env.items())
-            print(f"$ {extras} {binary}", flush=True)
-        process = subprocess.run(
-            [str(binary)], cwd=run_dir, env=environment, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=timeout, check=False,
-        )
-        return process.returncode, (process.stdout or "")
+    return _run_engine(binary, rom, ticks=ticks, timeout=timeout,
+                       verbose=verbose, extra_env=extra_env,
+                       prefix="mdkr64-ceremony-")
 
 
 def _common_finish_asserts(tag: str, rc: int, output: str) -> int | None:
     """Every scenario shares this contract: full cup, one detour, ONE FINISHED,
     launcher reads FINISHED result=0, clean rc 0, no forbidden markers/park."""
-    for marker in FORBIDDEN:
-        if marker in output:
-            return fail(f"[{tag}] observed forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE, *FORBIDDEN_EXTRA)
+    if marker:
+        return fail(f"[{tag}] observed forbidden marker {marker!r}", output)
     if rc != 0:
         return fail(f"[{tag}] process exited {rc} (expected clean 0)", output)
     if POSTRACE_EXIT in output:
@@ -386,9 +341,9 @@ def check_champion_on_disconnect(binary: Path, rom: Path, verbose: bool) -> int 
     except subprocess.TimeoutExpired as error:
         return fail(f"[{tag}] run timed out (the ceremony parked, or a round hung "
                     f"under the remote-wins/absent seams): {error}")
-    for marker in FORBIDDEN:
-        if marker in output:
-            return fail(f"[{tag}] observed forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE, *FORBIDDEN_EXTRA)
+    if marker:
+        return fail(f"[{tag}] observed forbidden marker {marker!r}", output)
     if rc != 0:
         return fail(f"[{tag}] process exited {rc} (expected clean 0)", output)
     if not PHASE_CEREMONY_RE.search(output):

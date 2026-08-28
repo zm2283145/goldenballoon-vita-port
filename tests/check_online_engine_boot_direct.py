@@ -50,6 +50,10 @@ import tempfile
 from pathlib import Path
 
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
+from online_lane_util import (
+    DIRECT_BOOT_RE, ENGINE_LIVE_RE, FORBIDDEN_ONLINE, ONLINE_RACE_RE,
+    forbidden_marker, make_fail, run_engine,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 # With the direct-boot seam the race level (rollback runtime active) is reached a
@@ -68,23 +72,6 @@ TICKS = 3000
 # Skipped when --track/--mask change the sim (a different track is a different hash).
 GOLDEN_RACE_HASH = "7da2ea6757bf1eba"
 
-ENGINE_LIVE_RE = re.compile(
-    r"^\[ENGINE-ONLINE-LIVE\] result=(-?\d+) racedTicks=(\d+) drainCalls=(\d+) "
-    r"advanceFailed=(\d+) inputEnvelopes=(\d+) transportAccepted=(\d+) "
-    r"transportCorrected=(\d+) transportDrained=(\d+) foldVisible=(\d+) "
-    r"foldPeer=(\d+) hashVisible=([0-9a-f]{16}) hashPeer=([0-9a-f]{16}) "
-    r"converged=(\d+)$",
-    re.MULTILINE,
-)
-ONLINE_RACE_RE = re.compile(
-    r"^\[ROLLBACK\] online race: loadedTrack=(\d+) raceType=(\d+) "
-    r"authoredHz=(\d+)$",
-    re.MULTILINE,
-)
-DIRECT_BOOT_RE = re.compile(
-    r"^\[online-boot\] direct race: track=(\d+) players=(\d+)$",
-    re.MULTILINE,
-)
 # Printed by the wiring only when a session-config env seam is set (--track).
 CONFIG_TRACK_RE = re.compile(
     r"^\[online-live\] loopback config mode=single track=(\d+) "
@@ -93,20 +80,7 @@ CONFIG_TRACK_RE = re.compile(
 )
 
 
-def fail(message: str, output: str = "") -> int:
-    print(f"FAIL online engine boot (direct): {message}", file=sys.stderr)
-    if output:
-        print(output[-16000:], file=sys.stderr)
-    return 1
-
-
-def clean_environment(**updates: str) -> dict[str, str]:
-    environment = {
-        key: value for key, value in os.environ.items()
-        if not key.startswith(("MDKR", "GE007_"))
-    }
-    environment.update(updates)
-    return environment
+fail = make_fail("engine boot (direct)")
 
 
 def main() -> int:
@@ -139,56 +113,28 @@ def main() -> int:
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
 
-    with tempfile.TemporaryDirectory(prefix="mdkr64-online-direct-") as temp:
-        run_dir = Path(temp)
-        (run_dir / "saves").mkdir()
-        (run_dir / "preferences").mkdir()
-        # Deliberately NO MDKR_APP_AUTOPLAY_INPUT_SCRIPT: the race must be reached
-        # from the manifest + boot alone. MDKR_TEST_SCRIPT_ONLY_INPUT stays on so
-        # no stray host input can reach the game either -- the only inputs are the
-        # live match transport (canonical) and MDKR_AUTOPILOT (driving line).
-        environment = clean_environment(
-            LC_ALL="C",
-            MDKR_APP_AUTOPLAY="1",
-            MDKR_APP_TEST_ONLINE_LIVE="1",
-            MDKR_APP_AUTOPLAY_TICKS=str(args.ticks),
-            MDKR_APP_PREFS_DIR=str(run_dir / "preferences"),
-            MDKR_AUDIO="0",
-            MDKR_AUTOPILOT="1",
-            MDKR_NO_CRASH_HANDLER="1",
-            MDKR_PRESENT_RATE="original",
-            MDKR_RENDERER="gl",
-            MDKR_ROM=str(rom),
-            MDKR_SAVE_DIR=str(run_dir / "saves"),
-            MDKR_STATE_HASH="3",
-            MDKR_TEST_SCRIPT_ONLY_INPUT="1",
-            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
-            MDKR64_HIDDEN="1",
-        )
-        if args.track is not None:
-            environment["MDKR_APP_TEST_ONLINE_TRACK"] = str(args.track)
-        if args.verbose:
-            print(f"$ {binary}", flush=True)
-        try:
-            process = subprocess.run(
-                [str(binary)], cwd=run_dir, env=environment, text=True,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                timeout=args.timeout, check=False,
-            )
-        except subprocess.TimeoutExpired as error:
-            return fail(f"engine run timed out (a stall would look like this): "
-                        f"{error}")
-        output = process.stdout or ""
+    # Deliberately NO MDKR_APP_AUTOPLAY_INPUT_SCRIPT: the race must be reached from
+    # the manifest + boot alone. MDKR_TEST_SCRIPT_ONLY_INPUT (in the shared env)
+    # stays on so no stray host input can reach the game -- the only inputs are the
+    # live match transport (canonical) and MDKR_AUTOPILOT (driving line).
+    extra_env = {"MDKR_APP_TEST_ONLINE_LIVE": "1"}
+    if args.track is not None:
+        extra_env["MDKR_APP_TEST_ONLINE_TRACK"] = str(args.track)
+    try:
+        returncode, output = run_engine(
+            binary, rom, ticks=args.ticks, timeout=args.timeout,
+            verbose=args.verbose, extra_env=extra_env,
+            prefix="mdkr64-online-direct-")
+    except subprocess.TimeoutExpired as error:
+        return fail(f"engine run timed out (a stall would look like this): "
+                    f"{error}")
 
-    for marker in ("[FATAL]", "[CRASH]", "AddressSanitizer",
-                   "online race admission rejected",
-                   "launcher input provider rejected",
-                   "engine startup rejected before authored tick one"):
-        if marker in output:
-            return fail(f"observed forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE)
+    if marker:
+        return fail(f"observed forbidden marker {marker!r}", output)
 
-    if process.returncode != 0:
-        return fail(f"process exited {process.returncode}", output)
+    if returncode != 0:
+        return fail(f"process exited {returncode}", output)
 
     direct = DIRECT_BOOT_RE.findall(output)
     if not direct:

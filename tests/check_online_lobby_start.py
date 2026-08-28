@@ -45,6 +45,10 @@ import tempfile
 from pathlib import Path
 
 from harness_utils import resolve_binary
+from online_lane_util import (
+    DIRECT_BOOT_RE, FORBIDDEN_ONLINE, GAMEMODE_ONLINE_SESSION, ONLINE_RACE_RE,
+    forbidden_marker, make_fail, run_engine,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 TICKS = 20000
@@ -77,34 +81,13 @@ RACE_RE = re.compile(
     re.MULTILINE)
 HONORED_RE = re.compile(
     r"^\[online-boot\] track honored: (\d+)$", re.MULTILINE)
-DIRECT_BOOT_RE = re.compile(
-    r"^\[online-boot\] direct race: track=(\d+) players=(\d+)$", re.MULTILINE)
-ONLINE_RACE_RE = re.compile(
-    r"^\[ROLLBACK\] online race: loadedTrack=(\d+) raceType=(\d+) "
-    r"authoredHz=(\d+)$", re.MULTILINE)
 PRECONFIG_RE = re.compile(
     r"^\[online-lobby-start\] pre-config track=(\d+)", re.MULTILINE)
 REVERSE_TRACK_RE = re.compile(
     r"^\[online-reverse\] SET_CONFIG_TRACK value=(\d+) sent=(\d+)$", re.MULTILINE)
 
-# GAMEMODE_ONLINE_SESSION aliases GAMEMODE_UNUSED_2 == 2 (game/src/thread3_main.h).
-GAMEMODE_ONLINE_SESSION = 2
 
-
-def fail(message: str, output: str = "") -> int:
-    print(f"FAIL online lobby-start: {message}", file=sys.stderr)
-    if output:
-        print(output[-16000:], file=sys.stderr)
-    return 1
-
-
-def clean_environment(**updates: str) -> dict[str, str]:
-    environment = {
-        key: value for key, value in os.environ.items()
-        if not key.startswith(("MDKR", "GE007_"))
-    }
-    environment.update(updates)
-    return environment
+fail = make_fail("lobby-start")
 
 
 def main() -> int:
@@ -122,57 +105,31 @@ def main() -> int:
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
 
-    with tempfile.TemporaryDirectory(prefix="mdkr64-online-lobby-start-") as temp:
-        run_dir = Path(temp)
-        (run_dir / "saves").mkdir()
-        (run_dir / "preferences").mkdir()
-        environment = clean_environment(
-            LC_ALL="C",
-            MDKR_APP_AUTOPLAY="1",
-            # The lobby-start lane (launcher): loopback pair STOPPED at SELECTING,
-            # party_link installed, visible engine booted descriptor-less.
-            MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START="1",
-            # The engine-side scripted screen INPUT (no self-contained feed): the
-            # native CHARSELECT/TRACKSELECT drive selection/ready/track/START whose
-            # intents ride the REAL reverse feed into the adapter.
-            MDKR_TEST_ONLINE_LOBBY_START="1",
-            MDKR_APP_AUTOPLAY_TICKS=str(args.ticks),
-            MDKR_APP_PREFS_DIR=str(run_dir / "preferences"),
-            MDKR_AUDIO="0",
-            MDKR_AUTOPILOT="1",
-            MDKR_NO_CRASH_HANDLER="1",
-            MDKR_PRESENT_RATE="original",
-            MDKR_RENDERER="gl",
-            MDKR_ROM=str(rom),
-            MDKR_SAVE_DIR=str(run_dir / "saves"),
-            MDKR_STATE_HASH="3",
-            MDKR_TEST_SCRIPT_ONLY_INPUT="1",
-            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
-            MDKR64_HIDDEN="1",
-        )
-        if args.verbose:
-            print(f"$ {binary}", flush=True)
-        try:
-            process = subprocess.run(
-                [str(binary)], cwd=run_dir, env=environment, text=True,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                timeout=args.timeout, check=False,
-            )
-        except subprocess.TimeoutExpired as error:
-            return fail(f"engine run timed out (a stuck lobby-start / a boot that "
-                        f"never becomes ready would look like this): {error}")
-        output = process.stdout or ""
+    # MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START (launcher): loopback pair STOPPED at
+    # SELECTING, party_link installed, visible engine booted descriptor-less.
+    # MDKR_TEST_ONLINE_LOBBY_START (engine-side scripted screen INPUT, no
+    # self-contained feed): the native CHARSELECT/TRACKSELECT drive
+    # selection/ready/track/START whose intents ride the REAL reverse feed.
+    extra_env = {
+        "MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START": "1",
+        "MDKR_TEST_ONLINE_LOBBY_START": "1",
+    }
+    try:
+        returncode, output = run_engine(
+            binary, rom, ticks=args.ticks, timeout=args.timeout,
+            verbose=args.verbose, extra_env=extra_env,
+            prefix="mdkr64-online-lobby-start-")
+    except subprocess.TimeoutExpired as error:
+        return fail(f"engine run timed out (a stuck lobby-start / a boot that "
+                    f"never becomes ready would look like this): {error}")
 
-    for marker in ("[FATAL]", "[CRASH]", "AddressSanitizer",
-                   "online race admission rejected",
-                   "[ROLLBACK] online race admission rejected",
-                   "launcher input provider rejected",
-                   "engine startup rejected before authored tick one"):
-        if marker in output:
-            return fail(f"observed forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE,
+                              "[ROLLBACK] online race admission rejected")
+    if marker:
+        return fail(f"observed forbidden marker {marker!r}", output)
 
-    if process.returncode != 0:
-        return fail(f"process exited {process.returncode}", output)
+    if returncode != 0:
+        return fail(f"process exited {returncode}", output)
 
     # --- Descriptor-less begin (the latch) ----------------------------------
     if len(BEGIN_LOBBY_RE.findall(output)) != 1:

@@ -49,26 +49,23 @@ import tempfile
 from pathlib import Path
 
 from harness_utils import resolve_binary
+from online_lane_util import (
+    DIRECT_BOOT_RE, FORBIDDEN_ONLINE, GAMEMODE_ONLINE_SESSION, PLACE_NONE,
+    SESSION_RACE_RE, forbidden_marker, make_fail,
+)
+from online_lane_util import run_engine as _run_engine
 
 ROOT = Path(__file__).resolve().parent.parent
 TICKS = 9000
 RACES = 2
 
-# GAMEMODE_ONLINE_SESSION aliases GAMEMODE_UNUSED_2 == 2 (game/src/thread3_main.h).
-GAMEMODE_ONLINE_SESSION = 2
 # Trophy weights {9,7,5,3,1,0,0,0} == gTrophyRacePointsArray / kTrophyPoints.
 TROPHY = [9, 7, 5, 3, 1, 0, 0, 0]
-PLACE_NONE = 255
 
 RESIDENT_INSTALL_RE = re.compile(
     r"^\[online-resident\] soak: roster installed \(track=(\d+) slots=(\d+)\)",
     re.MULTILINE)
 SESSION_BEGIN_RE = re.compile(r"^\[online-session\] begin:", re.MULTILINE)
-SESSION_RACE_RE = re.compile(
-    r"^\[online-session\] phase=RACE booting after (\d+) LOBBY_WAIT tick\(s\); "
-    r"isolation gGameMode=(\d+) gCurrentMenuId=(-?\d+)", re.MULTILINE)
-DIRECT_BOOT_RE = re.compile(
-    r"^\[online-boot\] direct race: track=(\d+) players=(\d+)$", re.MULTILINE)
 RESUME_RE = re.compile(
     r"^\[online-session\] resume: RESULTS phase \(race (\d+) of (\d+); "
     r"results captured\)", re.MULTILINE)
@@ -94,26 +91,8 @@ REDUCE_REMATCH_RE = re.compile(
     re.MULTILINE)
 POSTRACE_EXIT = "[online-postrace] session end requested"
 
-FORBIDDEN = ("[FATAL]", "[CRASH]", "AddressSanitizer",
-             "online race admission rejected",
-             "launcher input provider rejected",
-             "engine startup rejected before authored tick one")
 
-
-def fail(message: str, output: str = "") -> int:
-    print(f"FAIL online session results: {message}", file=sys.stderr)
-    if output:
-        print(output[-16000:], file=sys.stderr)
-    return 1
-
-
-def clean_environment(**updates: str) -> dict[str, str]:
-    environment = {
-        key: value for key, value in os.environ.items()
-        if not key.startswith(("MDKR", "GE007_"))
-    }
-    environment.update(updates)
-    return environment
+fail = make_fail("session results")
 
 
 def trophy(place: int) -> int:
@@ -122,38 +101,9 @@ def trophy(place: int) -> int:
 
 def run_engine(binary: Path, rom: Path, ticks: int, timeout: int, verbose: bool,
                extra_env: dict[str, str] | None = None) -> tuple[int, str]:
-    with tempfile.TemporaryDirectory(prefix="mdkr64-online-results-") as temp:
-        run_dir = Path(temp)
-        (run_dir / "saves").mkdir()
-        (run_dir / "preferences").mkdir()
-        environment = clean_environment(
-            LC_ALL="C",
-            MDKR_APP_AUTOPLAY="1",
-            MDKR_APP_AUTOPLAY_TICKS=str(ticks),
-            MDKR_APP_PREFS_DIR=str(run_dir / "preferences"),
-            MDKR_AUDIO="0",
-            MDKR_AUTOPILOT="1",
-            MDKR_NO_CRASH_HANDLER="1",
-            MDKR_PRESENT_RATE="original",
-            MDKR_RENDERER="gl",
-            MDKR_ROM=str(rom),
-            MDKR_SAVE_DIR=str(run_dir / "saves"),
-            MDKR_STATE_HASH="3",
-            MDKR_TEST_SCRIPT_ONLY_INPUT="1",
-            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
-            MDKR64_HIDDEN="1",
-        )
-        if extra_env:
-            environment.update(extra_env)
-        if verbose:
-            extras = " ".join(f"{k}={v}" for k, v in (extra_env or {}).items())
-            print(f"$ {extras} {binary}", flush=True)
-        process = subprocess.run(
-            [str(binary)], cwd=run_dir, env=environment, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=timeout, check=False,
-        )
-        return process.returncode, (process.stdout or "")
+    return _run_engine(binary, rom, ticks=ticks, timeout=timeout,
+                       verbose=verbose, extra_env=extra_env,
+                       prefix="mdkr64-online-results-")
 
 
 def check_m3_interlude(binary: Path, rom: Path, verbose: bool) -> int | None:
@@ -175,9 +125,9 @@ def check_m3_interlude(binary: Path, rom: Path, verbose: bool) -> int | None:
             })
     except subprocess.TimeoutExpired as error:
         return fail(f"[{scn}] engine run timed out: {error}")
-    for marker in FORBIDDEN:
-        if marker in output:
-            return fail(f"[{scn}] observed forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE)
+    if marker:
+        return fail(f"[{scn}] observed forbidden marker {marker!r}", output)
     if rc != 0:
         return fail(f"[{scn}] process exited {rc}", output)
     if "[online-boot] track divergence" in output:
@@ -218,9 +168,9 @@ def main() -> int:
         return fail(f"engine run timed out (a resident stall would look like "
                     f"this): {error}")
 
-    for marker in FORBIDDEN:
-        if marker in output:
-            return fail(f"observed forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE)
+    if marker:
+        return fail(f"observed forbidden marker {marker!r}", output)
     if rc != 0:
         return fail(f"process exited {rc}", output)
 

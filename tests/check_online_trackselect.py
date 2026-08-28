@@ -40,6 +40,11 @@ import tempfile
 from pathlib import Path
 
 from harness_utils import resolve_binary
+from online_lane_util import (
+    DIRECT_BOOT_RE, ENGINE_LIVE_RE, FORBIDDEN_ONLINE, GAMEMODE_ONLINE_SESSION,
+    ONLINE_RACE_RE, SESSION_RACE_RE, forbidden_marker,
+)
+from online_lane_util import run_engine as _run_engine
 
 ROOT = Path(__file__).resolve().parent.parent
 TICKS = 3000
@@ -56,8 +61,6 @@ NARROWED_VEHICLE = 1  # VEHICLE_HOVERCRAFT
 SPACEPORT_COL = 4     # Future Fun Land column
 SPACEPORT_ROW = 3     # Spaceport Alpha (track 15) row
 TOURN_CUP = 2         # Sherbet cup (round 0 == Whale Bay)
-
-GAMEMODE_ONLINE_SESSION = 2
 
 CS_ENTER_RE = re.compile(r"^\[online-charselect\] enter:", re.MULTILINE)
 CS_LEAVE_STUB = "[online-charselect] leave requested"
@@ -87,11 +90,6 @@ TS_RENDER_RE = re.compile(
 #  0 mode 1 col 2 row 3 host 4 track 5 mask 6 vehicle 7 lockedTrack 8 lockedCup
 #  9 r0 10 r1 11 snapMode 12 snapCfgTrack 13 snapCup 14 snapPhase 15 start
 
-SESSION_RACE_RE = re.compile(
-    r"^\[online-session\] phase=RACE booting after (\d+) LOBBY_WAIT tick\(s\); "
-    r"isolation gGameMode=(\d+) gCurrentMenuId=(-?\d+)", re.MULTILINE)
-DIRECT_BOOT_RE = re.compile(
-    r"^\[online-boot\] direct race: track=(\d+) players=(\d+)$", re.MULTILINE)
 # PD-T4: the observable agreement check the session logs at the RACE hand-off.
 # "honored" == the last-seen host-intended track (from the forward feed) equals
 # the booted manifest track; "divergence" == they differ (the manifest still
@@ -101,11 +99,6 @@ TRACK_HONORED_RE = re.compile(
 TRACK_DIVERGENCE_RE = re.compile(
     r"^\[online-boot\] track divergence: snapshot=(\d+) manifest=(\d+)",
     re.MULTILINE)
-# The engine's loaded-race witness (the track the rollback runtime actually
-# booted) -- the BOOTED half of LOCKED==BOOTED.
-ONLINE_RACE_RE = re.compile(
-    r"^\[ROLLBACK\] online race: loadedTrack=(\d+) raceType=(\d+) "
-    r"authoredHz=(\d+)$", re.MULTILINE)
 # The loopback wiring's manifest-config witness (the LOCKED half): the leader
 # froze the manifest via SET_CONFIG_TRACK (single) / SET_MODE+SET_CUP (tournament).
 CONFIG_SINGLE_RE = re.compile(
@@ -114,22 +107,11 @@ CONFIG_SINGLE_RE = re.compile(
 CONFIG_TOURNAMENT_RE = re.compile(
     r"^\[online-live\] loopback config mode=tournament cup=(\d+) "
     r"round1Track=(\d+) startMask=0x([0-9a-f]{2}) vehicle=(\d+)$", re.MULTILINE)
-ENGINE_LIVE_RE = re.compile(
-    r"^\[ENGINE-ONLINE-LIVE\] result=(-?\d+) racedTicks=(\d+) drainCalls=(\d+) "
-    r"advanceFailed=(\d+) inputEnvelopes=(\d+) transportAccepted=(\d+) "
-    r"transportCorrected=(\d+) transportDrained=(\d+) foldVisible=(\d+) "
-    r"foldPeer=(\d+) hashVisible=([0-9a-f]{16}) hashPeer=([0-9a-f]{16}) "
-    r"converged=(\d+)$", re.MULTILINE)
 
-FORBIDDEN = ("[FATAL]", "[CRASH]", "AddressSanitizer",
-             "online race admission rejected",
-             "launcher input provider rejected",
-             "engine startup rejected before authored tick one",
-             # M3 (PD-T4 carry-forward): the tournament joiner scenario drives a
-             # teardown-time transport continuation that logs
-             # "[online-tournament] result=error step=..." on any stall; treat it
-             # as fatal so a silently-degraded continuation can never pass.
-             "[online-tournament] result=error")
+# M3 (PD-T4 carry-forward): the tournament joiner scenario drives a teardown-time
+# transport continuation that logs "[online-tournament] result=error step=..." on
+# any stall; treat it as fatal so a silently-degraded continuation can never pass.
+FORBIDDEN_EXTRA = ("[online-tournament] result=error",)
 
 
 def fail(scenario: str, message: str, output: str = "") -> int:
@@ -139,58 +121,23 @@ def fail(scenario: str, message: str, output: str = "") -> int:
     return 1
 
 
-def clean_environment(**updates: str) -> dict[str, str]:
-    environment = {
-        key: value for key, value in os.environ.items()
-        if not key.startswith(("MDKR", "GE007_"))
-    }
-    environment.update(updates)
-    return environment
-
-
 def run_engine(binary: Path, rom: Path, ts_value: str, ticks: int,
                timeout: int, verbose: bool,
                extra_env: dict[str, str] | None = None) -> tuple[int, str]:
-    with tempfile.TemporaryDirectory(prefix="mdkr64-online-trackselect-") as temp:
-        run_dir = Path(temp)
-        (run_dir / "saves").mkdir()
-        (run_dir / "preferences").mkdir()
-        environment = clean_environment(
-            LC_ALL="C",
-            MDKR_APP_AUTOPLAY="1",
-            MDKR_APP_TEST_ONLINE_LIVE="1",
-            MDKR_APP_AUTOPLAY_TICKS=str(ticks),
-            MDKR_APP_PREFS_DIR=str(run_dir / "preferences"),
-            MDKR_AUDIO="0",
-            MDKR_AUTOPILOT="1",
-            MDKR_NO_CRASH_HANDLER="1",
-            MDKR_PRESENT_RATE="original",
-            MDKR_RENDERER="gl",
-            MDKR_ROM=str(rom),
-            MDKR_SAVE_DIR=str(run_dir / "saves"),
-            MDKR_STATE_HASH="3",
-            MDKR_TEST_SCRIPT_ONLY_INPUT="1",
-            MDKR_TEST_ONLINE_CHARSELECT="1",
-            MDKR_TEST_ONLINE_TRACKSELECT=ts_value,
-            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
-            MDKR64_HIDDEN="1",
-        )
-        # PD-T4: per-scenario loopback session-config seams so the frozen manifest
-        # equals the host's on-screen LOCK (single-race track / tournament cup) --
-        # the LOCKED==BOOTED proof. These drive the launcher-side manifest; the
-        # MDKR_TEST_ONLINE_* seams above drive the in-engine SCREEN.
-        if extra_env:
-            environment.update(extra_env)
-        if verbose:
-            extras = " ".join(f"{k}={v}" for k, v in (extra_env or {}).items())
-            print(f"$ MDKR_TEST_ONLINE_TRACKSELECT={ts_value} {extras} {binary}",
-                  flush=True)
-        process = subprocess.run(
-            [str(binary)], cwd=run_dir, env=environment, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=timeout, check=False,
-        )
-        return process.returncode, (process.stdout or "")
+    # The MDKR_TEST_ONLINE_* seams drive the in-engine SCREEN; a lane's extra_env
+    # adds the per-scenario loopback session-config seams so the frozen manifest
+    # equals the host's on-screen LOCK (single-race track / tournament cup) -- the
+    # LOCKED==BOOTED proof.
+    seams = {
+        "MDKR_APP_TEST_ONLINE_LIVE": "1",
+        "MDKR_TEST_ONLINE_CHARSELECT": "1",
+        "MDKR_TEST_ONLINE_TRACKSELECT": ts_value,
+    }
+    if extra_env:
+        seams.update(extra_env)
+    return _run_engine(binary, rom, ticks=ticks, timeout=timeout,
+                       verbose=verbose, extra_env=seams,
+                       prefix="mdkr64-online-trackselect-")
 
 
 def assert_locked_equals_booted(scn: str, output: str,
@@ -262,9 +209,9 @@ def assert_race_converges(scn: str, output: str) -> int | None:
 
 
 def check_common(scn: str, rc: int, output: str) -> int | None:
-    for marker in FORBIDDEN:
-        if marker in output:
-            return fail(scn, f"observed forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE, *FORBIDDEN_EXTRA)
+    if marker:
+        return fail(scn, f"observed forbidden marker {marker!r}", output)
     if rc != 0:
         return fail(scn, f"process exited {rc}", output)
     if not CS_ENTER_RE.search(output):

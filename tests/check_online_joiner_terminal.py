@@ -53,13 +53,15 @@ import tempfile
 from pathlib import Path
 
 from harness_utils import resolve_binary
+from online_lane_util import (
+    CUP_ROUNDS, DIRECT_BOOT_RE, FINISHED_ENGINE_RE, FORBIDDEN_ONLINE,
+    SESSION_END_RE, forbidden_marker, make_fail,
+)
+from online_lane_util import run_engine as _run_engine
 
 ROOT = Path(__file__).resolve().parent.parent
 CUP = 1
-CUP_ROUNDS = 4
 
-DIRECT_BOOT_RE = re.compile(
-    r"^\[online-boot\] direct race: track=(\d+) players=(\d+)$", re.MULTILINE)
 JOINER_TERMINAL_RE = re.compile(
     r"^\[online-results\] finish: joiner terminal advance \((press|self-advance|"
     r"feed-departed)\) -> LEAVE$", re.MULTILINE)
@@ -67,10 +69,6 @@ HOST_FINISH_RE = re.compile(
     r"^\[online-results\] finish: host A -> LEAVE", re.MULTILINE)
 PHASE_CEREMONY_RE = re.compile(
     r"^\[online-session\] phase=CEREMONY: final standings", re.MULTILINE)
-FINISHED_ENGINE_RE = re.compile(
-    r"^\[online-session\] FINISHED: final standings", re.MULTILINE)
-SESSION_END_RE = re.compile(
-    r"^\[online-session-end\] reason=(\w+) result=(-?\d+)", re.MULTILINE)
 # The RESULTS remote-vacate detector's LEFT note (M2 wording). It must NOT appear at
 # the FINAL standings -- that is the LEFT the P2 gate (!resultsIsFinal) suppresses.
 VACATE_LEFT_RE = re.compile(
@@ -81,61 +79,15 @@ STANDINGS_FINAL_RE = re.compile(
     r"placements=[\d,]+ points=[\d,]+ secs=(\d+) final=1$", re.MULTILINE)
 POSTRACE_EXIT = "[online-postrace] session end requested"
 
-FORBIDDEN = ("[FATAL]", "[CRASH]", "AddressSanitizer",
-             "online race admission rejected",
-             "launcher input provider rejected",
-             "engine startup rejected before authored tick one")
 
-
-def fail(message: str, output: str = "") -> int:
-    print(f"FAIL online joiner-terminal: {message}", file=sys.stderr)
-    if output:
-        print(output[-16000:], file=sys.stderr)
-    return 1
-
-
-def clean_environment(**updates: str) -> dict[str, str]:
-    environment = {
-        key: value for key, value in os.environ.items()
-        if not key.startswith(("MDKR", "GE007_"))
-    }
-    environment.update(updates)
-    return environment
+fail = make_fail("joiner-terminal")
 
 
 def run_engine(binary: Path, rom: Path, ticks: int, timeout: int, verbose: bool,
                extra_env: dict[str, str]) -> tuple[int, str]:
-    with tempfile.TemporaryDirectory(prefix="mdkr64-joiner-terminal-") as temp:
-        run_dir = Path(temp)
-        (run_dir / "saves").mkdir()
-        (run_dir / "preferences").mkdir()
-        environment = clean_environment(
-            LC_ALL="C",
-            MDKR_APP_AUTOPLAY="1",
-            MDKR_APP_AUTOPLAY_TICKS=str(ticks),
-            MDKR_APP_PREFS_DIR=str(run_dir / "preferences"),
-            MDKR_AUDIO="0",
-            MDKR_AUTOPILOT="1",
-            MDKR_NO_CRASH_HANDLER="1",
-            MDKR_PRESENT_RATE="original",
-            MDKR_RENDERER="gl",
-            MDKR_ROM=str(rom),
-            MDKR_SAVE_DIR=str(run_dir / "saves"),
-            MDKR_STATE_HASH="3",
-            MDKR_TEST_SCRIPT_ONLY_INPUT="1",
-            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
-            MDKR64_HIDDEN="1",
-        )
-        environment.update(extra_env)
-        if verbose:
-            extras = " ".join(f"{k}={v}" for k, v in extra_env.items())
-            print(f"$ {extras} {binary}", flush=True)
-        process = subprocess.run(
-            [str(binary)], cwd=run_dir, env=environment, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=timeout, check=False,
-        )
-        return process.returncode, (process.stdout or "")
+    return _run_engine(binary, rom, ticks=ticks, timeout=timeout,
+                       verbose=verbose, extra_env=extra_env,
+                       prefix="mdkr64-joiner-terminal-")
 
 
 def _common_joiner_asserts(tag: str, rc: int, output: str,
@@ -144,9 +96,9 @@ def _common_joiner_asserts(tag: str, rc: int, output: str,
     the REAL path (`want_kind`, never `feed-departed`), the host-press path did NOT
     fire, the session detoured through the CEREMONY into EXACTLY ONE FINISHED, and
     the run exited cleanly with no forbidden markers / no park."""
-    for marker in FORBIDDEN:
-        if marker in output:
-            return fail(f"[{tag}] observed forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE)
+    if marker:
+        return fail(f"[{tag}] observed forbidden marker {marker!r}", output)
     if rc != 0:
         return fail(f"[{tag}] process exited {rc} (a joiner hang would time out; a "
                     f"nonzero is a wrong end reason)", output)

@@ -50,6 +50,8 @@ import tempfile
 from pathlib import Path
 
 from harness_utils import resolve_binary
+from online_lane_util import make_fail
+from online_lane_util import run_engine as _run_engine
 
 VERDICT_RE = re.compile(
     r"^\[online-room-ready-rearm-probe\] totalFires=(\d+) t1Once=(\d+) "
@@ -63,50 +65,20 @@ REARM_COMPLETE_RE = re.compile(
     r"^\[online-room-ready\] re-arm complete ", re.MULTILINE)
 
 
-def clean_environment(**updates: str) -> dict[str, str]:
-    environment = {
-        key: value for key, value in os.environ.items()
-        if not key.startswith(("MDKR", "GE007_"))
-    }
-    environment.update(updates)
-    return environment
+fail = make_fail("room-ready re-arm")
 
 
 def run_probe(binary: Path, rom: Path, timeout: int,
               verbose: bool) -> tuple[int, str]:
-    with tempfile.TemporaryDirectory(prefix="mdkr64-rearm-") as temp:
-        run_dir = Path(temp)
-        (run_dir / "saves").mkdir()
-        (run_dir / "preferences").mkdir()
-        environment = clean_environment(
-            LC_ALL="C",
-            MDKR_APP_AUTOPLAY="1",
-            MDKR_APP_AUTOPLAY_TICKS="1",
-            MDKR_APP_PREFS_DIR=str(run_dir / "preferences"),
-            MDKR_AUDIO="0",
-            MDKR_AUTOPILOT="1",
-            MDKR_NO_CRASH_HANDLER="1",
-            MDKR_PRESENT_RATE="original",
-            MDKR_RENDERER="gl",
-            MDKR_ROM=str(rom),
-            MDKR_SAVE_DIR=str(run_dir / "saves"),
-            MDKR_STATE_HASH="3",
-            MDKR_TEST_SCRIPT_ONLY_INPUT="1",
-            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
-            MDKR64_HIDDEN="1",
-            MDKR_APP_TEST_ONLINE_ROOM_READY_REARM_PROBE="1",
-            MDKR_APP_TEST_ONLINE_MODE="tournament",
-            MDKR_APP_TEST_ONLINE_CUP="1",
-        )
-        if verbose:
-            print(f"$ MDKR_APP_TEST_ONLINE_ROOM_READY_REARM_PROBE=1 {binary}",
-                  flush=True)
-        process = subprocess.run(
-            [str(binary)], cwd=run_dir, env=environment, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=timeout, check=False,
-        )
-        return process.returncode, (process.stdout or "")
+    # The full interactive 2-tournament loop is driven headless by the wiring probe
+    # seam over the loopback tournament room.
+    return _run_engine(
+        binary, rom, ticks=1, timeout=timeout, verbose=verbose,
+        extra_env={
+            "MDKR_APP_TEST_ONLINE_ROOM_READY_REARM_PROBE": "1",
+            "MDKR_APP_TEST_ONLINE_MODE": "tournament",
+            "MDKR_APP_TEST_ONLINE_CUP": "1",
+        }, prefix="mdkr64-rearm-")
 
 
 def main() -> int:
@@ -119,28 +91,23 @@ def main() -> int:
 
     binary = Path(resolve_binary(args.build)).expanduser().resolve()
     if not binary.exists():
-        print(f"FAIL online room-ready re-arm: missing binary {binary}")
-        return 1
+        return fail(f"missing binary {binary}")
     rom = args.rom.expanduser().resolve()
     if not rom.exists():
-        print(f"FAIL online room-ready re-arm: missing ROM {rom}")
-        return 1
+        return fail(f"missing ROM {rom}")
 
     try:
         rc, output = run_probe(binary, rom, args.timeout, args.verbose)
     except subprocess.TimeoutExpired:
-        print("FAIL online room-ready re-arm: the probe hung "
-              "(re-arm state machine must be bounded, never a loop)")
-        return 1
+        return fail("the probe hung (re-arm state machine must be bounded, never "
+                    "a loop)")
 
     if args.verbose:
         print(output)
 
     match = VERDICT_RE.search(output)
     if match is None:
-        print("FAIL online room-ready re-arm: no probe verdict line "
-              f"(rc={rc}); the seam did not run")
-        return 1
+        return fail(f"no probe verdict line (rc={rc}); the seam did not run")
 
     (total_fires, t1_once, left_no_rearm, finished_no_instant,
      cleared_while_false, t2_once, routed2, reset_drops_pending,
@@ -162,11 +129,10 @@ def main() -> int:
     rearm_complete_count = len(REARM_COMPLETE_RE.findall(output))
     if verdict != "PASS" or rc != 0 or total_fires != "3" or bad or \
             rearm_complete_count != 1:
-        print("FAIL online room-ready re-arm: "
-              f"verdict={verdict} rc={rc} totalFires={total_fires} "
-              f"rearmCompleteLines={rearm_complete_count} (want 1) "
-              f"failed_flags={bad or 'none'}")
-        return 1
+        return fail(
+            f"verdict={verdict} rc={rc} totalFires={total_fires} "
+            f"rearmCompleteLines={rearm_complete_count} (want 1) "
+            f"failed_flags={bad or 'none'}")
 
     print(
         "PASS online room-ready re-arm: the 2nd-tournament re-arm state machine is "

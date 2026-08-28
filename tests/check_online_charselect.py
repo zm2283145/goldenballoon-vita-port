@@ -50,6 +50,10 @@ import tempfile
 from pathlib import Path
 
 from harness_utils import resolve_binary
+from online_lane_util import (
+    DIRECT_BOOT_RE, ENGINE_LIVE_RE, FORBIDDEN_ONLINE, GAMEMODE_ONLINE_SESSION,
+    SESSION_RACE_RE, forbidden_marker, make_fail, run_engine,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 TICKS = 3000
@@ -75,39 +79,14 @@ ADVANCE_RE = re.compile(
     re.MULTILINE)
 EXIT_RE = re.compile(
     r"^\[online-charselect\] exit: freed portrait assets", re.MULTILINE)
-SESSION_RACE_RE = re.compile(
-    r"^\[online-session\] phase=RACE booting after (\d+) LOBBY_WAIT tick\(s\); "
-    r"isolation gGameMode=(\d+) gCurrentMenuId=(-?\d+)", re.MULTILINE)
-DIRECT_BOOT_RE = re.compile(
-    r"^\[online-boot\] direct race: track=(\d+) players=(\d+)$", re.MULTILINE)
-ENGINE_LIVE_RE = re.compile(
-    r"^\[ENGINE-ONLINE-LIVE\] result=(-?\d+) racedTicks=(\d+) drainCalls=(\d+) "
-    r"advanceFailed=(\d+) inputEnvelopes=(\d+) transportAccepted=(\d+) "
-    r"transportCorrected=(\d+) transportDrained=(\d+) foldVisible=(\d+) "
-    r"foldPeer=(\d+) hashVisible=([0-9a-f]{16}) hashPeer=([0-9a-f]{16}) "
-    r"converged=(\d+)$", re.MULTILINE)
 
-GAMEMODE_ONLINE_SESSION = 2
 TARGET_CHARACTER = 2    # Pipsy, in the online id space (== grid cell == hover)
 TARGET_PORTRAIT = 8     # sOnlineToPortrait[2] == gRacerPortraits[8] (Pipsy)
 REMOTE_CHARACTER = 5    # Bumper, the scripted remote pick
 REMOTE_NAME = "RIVAL"
 
 
-def fail(message: str, output: str = "") -> int:
-    print(f"FAIL online charselect: {message}", file=sys.stderr)
-    if output:
-        print(output[-16000:], file=sys.stderr)
-    return 1
-
-
-def clean_environment(**updates: str) -> dict[str, str]:
-    environment = {
-        key: value for key, value in os.environ.items()
-        if not key.startswith(("MDKR", "GE007_"))
-    }
-    environment.update(updates)
-    return environment
+fail = make_fail("charselect")
 
 
 def main() -> int:
@@ -125,54 +104,28 @@ def main() -> int:
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
 
-    with tempfile.TemporaryDirectory(prefix="mdkr64-online-charselect-") as temp:
-        run_dir = Path(temp)
-        (run_dir / "saves").mkdir()
-        (run_dir / "preferences").mkdir()
-        environment = clean_environment(
-            LC_ALL="C",
-            MDKR_APP_AUTOPLAY="1",
-            MDKR_APP_TEST_ONLINE_LIVE="1",
-            MDKR_APP_AUTOPLAY_TICKS=str(args.ticks),
-            MDKR_APP_PREFS_DIR=str(run_dir / "preferences"),
-            MDKR_AUDIO="0",
-            MDKR_AUTOPILOT="1",
-            MDKR_NO_CRASH_HANDLER="1",
-            MDKR_PRESENT_RATE="original",
-            MDKR_RENDERER="gl",
-            MDKR_ROM=str(rom),
-            MDKR_SAVE_DIR=str(run_dir / "saves"),
-            MDKR_STATE_HASH="3",
-            MDKR_TEST_SCRIPT_ONLY_INPUT="1",
-            # The CHARSELECT seam under test: a scripted 2-seat LOBBY room + a
-            # minimal launcher reducer, all engine-side, so the native screen's
-            # cursor/intent/render round-trip is exercised headless.
-            MDKR_TEST_ONLINE_CHARSELECT="1",
-            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
-            MDKR64_HIDDEN="1",
-        )
-        if args.verbose:
-            print(f"$ {binary}", flush=True)
-        try:
-            process = subprocess.run(
-                [str(binary)], cwd=run_dir, env=environment, text=True,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                timeout=args.timeout, check=False,
-            )
-        except subprocess.TimeoutExpired as error:
-            return fail(f"engine run timed out (a CHARSELECT stall would look "
-                        f"like this): {error}")
-        output = process.stdout or ""
+    # The CHARSELECT seam under test: a scripted 2-seat LOBBY room + a minimal
+    # launcher reducer, all engine-side, so the native screen's cursor/intent/render
+    # round-trip is exercised headless.
+    extra_env = {
+        "MDKR_APP_TEST_ONLINE_LIVE": "1",
+        "MDKR_TEST_ONLINE_CHARSELECT": "1",
+    }
+    try:
+        returncode, output = run_engine(
+            binary, rom, ticks=args.ticks, timeout=args.timeout,
+            verbose=args.verbose, extra_env=extra_env,
+            prefix="mdkr64-online-charselect-")
+    except subprocess.TimeoutExpired as error:
+        return fail(f"engine run timed out (a CHARSELECT stall would look "
+                    f"like this): {error}")
 
-    for marker in ("[FATAL]", "[CRASH]", "AddressSanitizer",
-                   "online race admission rejected",
-                   "launcher input provider rejected",
-                   "engine startup rejected before authored tick one"):
-        if marker in output:
-            return fail(f"observed forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE)
+    if marker:
+        return fail(f"observed forbidden marker {marker!r}", output)
 
-    if process.returncode != 0:
-        return fail(f"process exited {process.returncode}", output)
+    if returncode != 0:
+        return fail(f"process exited {returncode}", output)
 
     # --- The native screen was entered -------------------------------------
     enter = ENTER_RE.findall(output)

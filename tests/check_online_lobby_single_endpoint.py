@@ -47,15 +47,17 @@ import tempfile
 from pathlib import Path
 
 from harness_utils import resolve_binary
+from online_lane_util import (
+    CUP_ROUNDS, DIRECT_BOOT_RE, FINISHED_ENGINE_RE, SESSION_END_RE,
+    forbidden_marker, make_fail,
+)
+from online_lane_util import run_engine as _run_engine
 
 ROOT = Path(__file__).resolve().parent.parent
 TICKS = 30000
-CUP_ROUNDS = 4
 CUP = 1
 CUP1_TRACKS = [13, 6, 9, 28]  # kCupTracks[1] (lobby_core.c) -- all Car-legal
 
-DIRECT_BOOT_RE = re.compile(
-    r"^\[online-boot\] direct race: track=(\d+) players=(\d+)$", re.MULTILINE)
 BEGIN_SINGLE_RE = re.compile(
     r"^\[online-session\] begin: lobby-start \(no descriptor\).*singleEndpoint=1",
     re.MULTILINE)
@@ -75,67 +77,19 @@ MID_UNWIND_RE = re.compile(
     re.MULTILINE)
 CHARSELECT_ENTER_RE = re.compile(r"^\[online-charselect\] enter:", re.MULTILINE)
 # PD-T6d engine->launcher FINISH/RETURN handshake witnesses.
-SESSION_END_RE = re.compile(
-    r"^\[online-session-end\] reason=(\w+) result=(-?\d+)", re.MULTILINE)
-FINISHED_ENGINE_RE = re.compile(
-    r"^\[online-session\] FINISHED: final standings", re.MULTILINE)
 ROOM_READY_PROBE_RE = re.compile(
     r"^\[online-room-ready-probe\] fires=(\d+) conditionHeld=(\d+) "
     r"published=(\d+) route=(\S+)", re.MULTILINE)
 
-FORBIDDEN = ("[FATAL]", "[CRASH]", "AddressSanitizer",
-             "online race admission rejected")
 
-
-def fail(message: str, output: str = "") -> int:
-    print(f"FAIL online lobby-single-endpoint: {message}", file=sys.stderr)
-    if output:
-        print(output[-16000:], file=sys.stderr)
-    return 1
-
-
-def clean_environment(**updates: str) -> dict[str, str]:
-    environment = {
-        key: value for key, value in os.environ.items()
-        if not key.startswith(("MDKR", "GE007_"))
-    }
-    environment.update(updates)
-    return environment
+fail = make_fail("lobby-single-endpoint")
 
 
 def run_engine(binary: Path, rom: Path, ticks: int, timeout: int, verbose: bool,
                extra_env: dict[str, str]) -> tuple[int, str]:
-    with tempfile.TemporaryDirectory(prefix="mdkr64-single-endpoint-") as temp:
-        run_dir = Path(temp)
-        (run_dir / "saves").mkdir()
-        (run_dir / "preferences").mkdir()
-        environment = clean_environment(
-            LC_ALL="C",
-            MDKR_APP_AUTOPLAY="1",
-            MDKR_APP_AUTOPLAY_TICKS=str(ticks),
-            MDKR_APP_PREFS_DIR=str(run_dir / "preferences"),
-            MDKR_AUDIO="0",
-            MDKR_AUTOPILOT="1",
-            MDKR_NO_CRASH_HANDLER="1",
-            MDKR_PRESENT_RATE="original",
-            MDKR_RENDERER="gl",
-            MDKR_ROM=str(rom),
-            MDKR_SAVE_DIR=str(run_dir / "saves"),
-            MDKR_STATE_HASH="3",
-            MDKR_TEST_SCRIPT_ONLY_INPUT="1",
-            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
-            MDKR64_HIDDEN="1",
-        )
-        environment.update(extra_env)
-        if verbose:
-            extras = " ".join(f"{k}={v}" for k, v in extra_env.items())
-            print(f"$ {extras} {binary}", flush=True)
-        process = subprocess.run(
-            [str(binary)], cwd=run_dir, env=environment, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=timeout, check=False,
-        )
-        return process.returncode, (process.stdout or "")
+    return _run_engine(binary, rom, ticks=ticks, timeout=timeout,
+                       verbose=verbose, extra_env=extra_env,
+                       prefix="mdkr64-single-endpoint-")
 
 
 def check_single_endpoint_advance(binary: Path, rom: Path, ticks: int,
@@ -156,9 +110,9 @@ def check_single_endpoint_advance(binary: Path, rom: Path, ticks: int,
             # single-endpoint frame budget + FINISHED assertion are preserved.
             "MDKR_TEST_ONLINE_CEREMONY_SKIP": "1",
         })
-    for marker in FORBIDDEN:
-        if marker in output:
-            return fail(f"[single-advance] forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output, "online race admission rejected")
+    if marker:
+        return fail(f"[single-advance] forbidden marker {marker!r}", output)
     if rc != 0:
         return fail(f"[single-advance] process exited {rc} (expected clean 0)",
                     output)
@@ -267,9 +221,9 @@ def check_wallclock_wait(binary: Path, rom: Path, verbose: bool, wedge: str,
     except subprocess.TimeoutExpired as error:
         return fail(f"[wall-clock {wedge}] run HUNG (the watchdog did not fire): "
                     f"{error}")
-    for marker in ("[FATAL]", "[CRASH]", "AddressSanitizer"):
-        if marker in output:
-            return fail(f"[wall-clock {wedge}] forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output)
+    if marker:
+        return fail(f"[wall-clock {wedge}] forbidden marker {marker!r}", output)
     trips = WATCHDOG_WALLCLOCK_RE.findall(output)
     if not any(w == where for _ms, w, _rc in trips):
         return fail(f"[wall-clock {wedge}] the wall-clock watchdog never tripped at "
@@ -307,9 +261,9 @@ def check_mid_tournament_cancel(binary: Path, rom: Path,
     except subprocess.TimeoutExpired as error:
         return fail(f"[mid-cancel] run HUNG (parked forever on the cancelled round): "
                     f"{error}")
-    for marker in FORBIDDEN:
-        if marker in output:
-            return fail(f"[mid-cancel] forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output, "online race admission rejected")
+    if marker:
+        return fail(f"[mid-cancel] forbidden marker {marker!r}", output)
     if not MID_UNWIND_RE.search(output):
         return fail("[mid-cancel] the engine did NOT unwind the mid-tournament "
                     "cancel -- it would park on a stale round with no re-front",

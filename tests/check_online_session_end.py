@@ -41,15 +41,15 @@ import tempfile
 from pathlib import Path
 
 from harness_utils import resolve_binary
+from online_lane_util import (
+    CUP_ROUNDS, DIRECT_BOOT_RE, FINISHED_ENGINE_RE, SESSION_END_RE,
+    forbidden_marker, make_fail,
+)
+from online_lane_util import run_engine as _run_engine
 
 ROOT = Path(__file__).resolve().parent.parent
 CUP = 1
-CUP_ROUNDS = 4
 
-SESSION_END_RE = re.compile(
-    r"^\[online-session-end\] reason=(\w+) result=(-?\d+)", re.MULTILINE)
-FINISHED_ENGINE_RE = re.compile(
-    r"^\[online-session\] FINISHED: final standings", re.MULTILINE)
 JOINER_FOLLOW_RE = re.compile(
     r"^\[online-results\] finish: joiner terminal advance \((?:feed-departed|press|"
     r"self-advance)\) -> LEAVE",
@@ -65,68 +65,22 @@ MID_UNWIND_LEFT_RE = re.compile(
     re.MULTILINE)
 WATCHDOG_ERROR_RE = re.compile(
     r"^\[online-session\] descless wait TIMEOUT: .* -- ERROR:", re.MULTILINE)
-DIRECT_BOOT_RE = re.compile(
-    r"^\[online-boot\] direct race: track=(\d+) players=(\d+)$", re.MULTILINE)
-
-FORBIDDEN = ("[FATAL]", "[CRASH]", "AddressSanitizer",
-             "online race admission rejected")
 
 
-def fail(message: str, output: str = "") -> int:
-    print(f"FAIL online session-end: {message}", file=sys.stderr)
-    if output:
-        print(output[-16000:], file=sys.stderr)
-    return 1
-
-
-def clean_environment(**updates: str) -> dict[str, str]:
-    environment = {
-        key: value for key, value in os.environ.items()
-        if not key.startswith(("MDKR", "GE007_"))
-    }
-    environment.update(updates)
-    return environment
+fail = make_fail("session-end")
 
 
 def run_engine(binary: Path, rom: Path, ticks: int, timeout: int, verbose: bool,
                extra_env: dict[str, str]) -> tuple[int, str]:
-    with tempfile.TemporaryDirectory(prefix="mdkr64-session-end-") as temp:
-        run_dir = Path(temp)
-        (run_dir / "saves").mkdir()
-        (run_dir / "preferences").mkdir()
-        environment = clean_environment(
-            LC_ALL="C",
-            MDKR_APP_AUTOPLAY="1",
-            MDKR_APP_AUTOPLAY_TICKS=str(ticks),
-            MDKR_APP_PREFS_DIR=str(run_dir / "preferences"),
-            MDKR_AUDIO="0",
-            MDKR_AUTOPILOT="1",
-            MDKR_NO_CRASH_HANDLER="1",
-            MDKR_PRESENT_RATE="original",
-            MDKR_RENDERER="gl",
-            MDKR_ROM=str(rom),
-            MDKR_SAVE_DIR=str(run_dir / "saves"),
-            MDKR_STATE_HASH="3",
-            MDKR_TEST_SCRIPT_ONLY_INPUT="1",
-            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
-            MDKR64_HIDDEN="1",
-        )
-        environment.update(extra_env)
-        if verbose:
-            extras = " ".join(f"{k}={v}" for k, v in extra_env.items())
-            print(f"$ {extras} {binary}", flush=True)
-        process = subprocess.run(
-            [str(binary)], cwd=run_dir, env=environment, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=timeout, check=False,
-        )
-        return process.returncode, (process.stdout or "")
+    return _run_engine(binary, rom, ticks=ticks, timeout=timeout,
+                       verbose=verbose, extra_env=extra_env,
+                       prefix="mdkr64-session-end-")
 
 
 def _no_forbidden(tag: str, output: str) -> int | None:
-    for marker in FORBIDDEN:
-        if marker in output:
-            return fail(f"[{tag}] observed forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output, "online race admission rejected")
+    if marker:
+        return fail(f"[{tag}] observed forbidden marker {marker!r}", output)
     return None
 
 
@@ -333,9 +287,9 @@ def check_error(binary: Path, rom: Path, verbose: bool) -> int | None:
             })
     except subprocess.TimeoutExpired as error:
         return fail(f"[ERROR] run HUNG (the watchdog did not fire): {error}")
-    for marker in ("[FATAL]", "[CRASH]", "AddressSanitizer"):
-        if marker in output:
-            return fail(f"[ERROR] forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output)
+    if marker:
+        return fail(f"[ERROR] forbidden marker {marker!r}", output)
     if rc == 0:
         return fail("[ERROR] exited 0 -- a stuck wait must carry a nonzero ERROR "
                     "signal", output)

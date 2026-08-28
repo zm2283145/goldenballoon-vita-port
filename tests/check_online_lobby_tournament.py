@@ -56,21 +56,18 @@ import tempfile
 from pathlib import Path
 
 from harness_utils import resolve_binary
+from online_lane_util import (
+    CUP_ROUNDS, DIRECT_BOOT_RE, FINISHED_ENGINE_RE, FORBIDDEN_ONLINE,
+    GAMEMODE_ONLINE_SESSION, PLACE_NONE, SESSION_END_RE, SESSION_RACE_RE,
+    forbidden_marker, make_fail,
+)
+from online_lane_util import run_engine as _run_engine
 
 ROOT = Path(__file__).resolve().parent.parent
 TICKS = 30000
-CUP_ROUNDS = 4
 CUP = 1
 CUP1_TRACKS = [13, 6, 9, 28]  # kCupTracks[1] (lobby_core.c) -- all Car-legal
 
-GAMEMODE_ONLINE_SESSION = 2  # aliases GAMEMODE_UNUSED_2 == 2 (thread3_main.h)
-PLACE_NONE = 255
-
-DIRECT_BOOT_RE = re.compile(
-    r"^\[online-boot\] direct race: track=(\d+) players=(\d+)$", re.MULTILINE)
-SESSION_RACE_RE = re.compile(
-    r"^\[online-session\] phase=RACE booting after (\d+) LOBBY_WAIT tick\(s\); "
-    r"isolation gGameMode=(\d+) gCurrentMenuId=(-?\d+)", re.MULTILINE)
 BEGIN_DESCLESS_RE = re.compile(
     r"^\[online-session\] begin: lobby-start \(no descriptor\)", re.MULTILINE)
 BEGIN_DESCFIRST_RE = re.compile(
@@ -106,70 +103,23 @@ UNWIND_RE = re.compile(
 CANCEL_SUBMIT_RE = re.compile(
     r"^\[online-lobby-start\] WEDGE cancel-loading:.*submitted=1$", re.MULTILINE)
 # PD-T6d engine->launcher FINISH/RETURN handshake witnesses.
-SESSION_END_RE = re.compile(
-    r"^\[online-session-end\] reason=(\w+) result=(-?\d+)", re.MULTILINE)
-FINISHED_ENGINE_RE = re.compile(
-    r"^\[online-session\] FINISHED: final standings", re.MULTILINE)
 POSTRACE_EXIT = "[online-postrace] session end requested"
 
-FORBIDDEN = ("[FATAL]", "[CRASH]", "AddressSanitizer",
-             "online race admission rejected",
-             "launcher input provider rejected",
-             "engine startup rejected before authored tick one",
-             "[online-resident-live] round advance error",
-             "[online-resident-live] round advance FAILED",
-             "[online-tournament] result=error")
+# A stalled resident-round or tournament advance is fatal for this lane, on top of
+# the shared engine/online forbidden markers.
+FORBIDDEN_EXTRA = ("[online-resident-live] round advance error",
+                   "[online-resident-live] round advance FAILED",
+                   "[online-tournament] result=error")
 
 
-def fail(message: str, output: str = "") -> int:
-    print(f"FAIL online lobby-tournament: {message}", file=sys.stderr)
-    if output:
-        print(output[-16000:], file=sys.stderr)
-    return 1
-
-
-def clean_environment(**updates: str) -> dict[str, str]:
-    environment = {
-        key: value for key, value in os.environ.items()
-        if not key.startswith(("MDKR", "GE007_"))
-    }
-    environment.update(updates)
-    return environment
+fail = make_fail("lobby-tournament")
 
 
 def run_engine(binary: Path, rom: Path, ticks: int, timeout: int, verbose: bool,
                extra_env: dict[str, str]) -> tuple[int, str]:
-    with tempfile.TemporaryDirectory(prefix="mdkr64-lobby-tournament-") as temp:
-        run_dir = Path(temp)
-        (run_dir / "saves").mkdir()
-        (run_dir / "preferences").mkdir()
-        environment = clean_environment(
-            LC_ALL="C",
-            MDKR_APP_AUTOPLAY="1",
-            MDKR_APP_AUTOPLAY_TICKS=str(ticks),
-            MDKR_APP_PREFS_DIR=str(run_dir / "preferences"),
-            MDKR_AUDIO="0",
-            MDKR_AUTOPILOT="1",
-            MDKR_NO_CRASH_HANDLER="1",
-            MDKR_PRESENT_RATE="original",
-            MDKR_RENDERER="gl",
-            MDKR_ROM=str(rom),
-            MDKR_SAVE_DIR=str(run_dir / "saves"),
-            MDKR_STATE_HASH="3",
-            MDKR_TEST_SCRIPT_ONLY_INPUT="1",
-            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
-            MDKR64_HIDDEN="1",
-        )
-        environment.update(extra_env)
-        if verbose:
-            extras = " ".join(f"{k}={v}" for k, v in extra_env.items())
-            print(f"$ {extras} {binary}", flush=True)
-        process = subprocess.run(
-            [str(binary)], cwd=run_dir, env=environment, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=timeout, check=False,
-        )
-        return process.returncode, (process.stdout or "")
+    return _run_engine(binary, rom, ticks=ticks, timeout=timeout,
+                       verbose=verbose, extra_env=extra_env,
+                       prefix="mdkr64-lobby-tournament-")
 
 
 def _scan_define(path: Path, macro: str) -> int | None:
@@ -220,9 +170,9 @@ def check_watchdog_wedge(binary: Path, rom: Path, verbose: bool) -> int | None:
             })
     except subprocess.TimeoutExpired as error:
         return fail(f"[W1 watchdog] run HUNG (the watchdog did not fire): {error}")
-    for marker in ("[FATAL]", "[CRASH]", "AddressSanitizer"):
-        if marker in output:
-            return fail(f"[W1 watchdog] forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output)
+    if marker:
+        return fail(f"[W1 watchdog] forbidden marker {marker!r}", output)
     if rc != 0:
         return fail(f"[W1 watchdog] process exited {rc} (expected a clean 0)", output)
     trips = WATCHDOG_RE.findall(output)
@@ -250,9 +200,9 @@ def check_unwind_wedge(binary: Path, rom: Path, verbose: bool) -> int | None:
     except subprocess.TimeoutExpired as error:
         return fail(f"[W2 unwind] run HUNG (parked forever on a stale pending boot): "
                     f"{error}")
-    for marker in ("[FATAL]", "[CRASH]", "AddressSanitizer"):
-        if marker in output:
-            return fail(f"[W2 unwind] forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output)
+    if marker:
+        return fail(f"[W2 unwind] forbidden marker {marker!r}", output)
     if rc != 0:
         return fail(f"[W2 unwind] process exited {rc} (expected a clean 0)", output)
     if not CANCEL_SUBMIT_RE.search(output):
@@ -311,9 +261,9 @@ def main() -> int:
         return fail(f"tournament run timed out (a compose/re-cycle stall would look "
                     f"like this): {error}")
 
-    for marker in FORBIDDEN:
-        if marker in output:
-            return fail(f"observed forbidden marker {marker!r}", output)
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE, *FORBIDDEN_EXTRA)
+    if marker:
+        return fail(f"observed forbidden marker {marker!r}", output)
     if rc != 0:
         return fail(f"process exited {rc}", output)
     if POSTRACE_EXIT in output:
