@@ -377,6 +377,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME character_importer_build
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_character_importer_build.py)
+    add_test(NAME character_text_font_generator
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_text_font_generator.py)
     add_test(NAME gltf_validator_adapter
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_gltf_validator_adapter.py)
@@ -704,6 +707,18 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_compile_definitions(mdkr_custom_character_roster_test PRIVATE
         NATIVE_PORT=1 VERSION_us_v80 _LANGUAGE_C MODERN_CC)
     add_test(NAME custom_character_roster COMMAND mdkr_custom_character_roster_test)
+
+    add_executable(mdkr_character_text_test
+        ${CMAKE_SOURCE_DIR}/tests/test_character_text.c
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_character_text.c)
+    target_include_directories(mdkr_character_text_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/fast3d
+        ${CMAKE_SOURCE_DIR}/lib/stb)
+    if(NOT WIN32)
+        target_link_libraries(mdkr_character_text_test PRIVATE m)
+    endif()
+    add_test(NAME character_text COMMAND mdkr_character_text_test)
 
     add_executable(mdkr_taj_mod_state_file_test
         ${CMAKE_SOURCE_DIR}/tests/test_taj_mod_state_file.c

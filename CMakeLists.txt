@@ -321,6 +321,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/modern_character_render.c # bounded PNG decode and immutable GPU resources
     ${CMAKE_SOURCE_DIR}/platform/modern_character_identity.c # bounded identity decode and game-ready portrait resampling
     ${CMAKE_SOURCE_DIR}/platform/modern_character_text.c # shared bounded UTF-8 to retail-font identity projection
+    ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_character_text.c # project-owned bounded LTR custom-name glyph renderer
     ${CMAKE_SOURCE_DIR}/platform/modern_character_runtime.c # assignments, animation instances, retained draw commands
     ${CMAKE_SOURCE_DIR}/platform/modern_character_gpu_timing.c # bounded exact Workshop GPU timestamp distributions
     ${CMAKE_SOURCE_DIR}/platform/modern_character_capture_projection.c # subject-scoped exact capture-space fit witness

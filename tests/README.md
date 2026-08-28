@@ -4820,14 +4820,20 @@ python3 tests/check_custom_character_roster.py \
 ```
 
 The gate is registered as `custom_character_roster` in `tools/run_checks.py`
-and is serialized with the other native GPU/pixel checks. Its pure C companion
-also proves the shared retail-font projection: printable ASCII survives exactly;
+and is serialized with the other native GPU/pixel checks. Its generated package
+uses a Greek display name and Cyrillic short name, and the runtime trace must
+prove both entered the ROM-independent native path. The dedicated pure C glyph
+test covers deterministic RGBA output, kerning/fitting, transparent-edge
+hygiene, supported LTR scripts, explicit shaping/missing/invalid fallbacks, and
+shutdown/reinitialization. The roster companion also proves the shared retail-
+font projection: printable ASCII survives exactly;
 common Latin diacritics, ligatures, attached combining marks, typographic
 punctuation, and full-width ASCII fold predictably; each remaining valid
 unsupported codepoint becomes one fallback cell; malformed UTF-8 and
 unterminated input fail boundedly; controls become spaces; and output truncation
 is explicit. The rendered Portrait Studio gate requires the same shared engine
-path to report display/short folded and fallback counts before Build.
+path to report display/short mode, reason, folded, and fallback counts before
+Build, including an emoji case that must not masquerade as native text.
 
 ## Custom-character identity surfaces — `tests/check_custom_character_identity_surfaces.py`
 

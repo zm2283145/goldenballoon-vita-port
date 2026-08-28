@@ -71,10 +71,15 @@ def main() -> int:
     model.write_bytes(make_animated_glb())
     portrait.write_bytes(make_portrait_png(40))
     manifest, _ = wizard.build_manifest(
-        model, "org.mdkr.roster-proof", "Roster Proof", "CC0-1.0",
+        model, "org.mdkr.roster-proof", "\u03a1\u03cc\u03c3\u03c4\u03b5\u03c1 \u0394\u03bf\u03ba\u03b9\u03bc\u03ae", "CC0-1.0",
         "Generated MDKR fixture", "https://example.invalid/roster-proof",
         "diddy", ["car", "hovercraft", "plane"], portrait=portrait,
         minimap_rgb=[80, 180, 240],
+    )
+    manifest["identity"].update(
+        short_name="\u0414\u0438\u043a\u0441\u0438",
+        narration_name="\u03a1\u03cc\u03c3\u03c4\u03b5\u03c1 \u0394\u03bf\u03ba\u03b9\u03bc\u03ae",
+        sort_label="Roster Proof",
     )
     manifest_path.write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -133,6 +138,15 @@ def main() -> int:
         failures.append("isolated catalog override was not honored")
     if "custom_roster: catalog=1 visible=1 rejected=0 pages=1" not in output:
         failures.append("generated package did not reach the roster model")
+    for context in ("tile", "display"):
+        witness = (
+            "custom_character_name: context=" + context +
+            " package=org.mdkr.roster-proof mode=native reason=none"
+        )
+        if witness not in output:
+            failures.append(
+                f"{context} did not use the ROM-independent native glyph path"
+            )
 
     dumps = sorted(frames.glob("frame_*.ppm"))
     if len(dumps) != 1:
@@ -164,7 +178,8 @@ def main() -> int:
         print(f"  evidence: {evidence}", file=sys.stderr)
         return 1
     print("check_custom_character_roster: PASS -- isolated package catalog, "
-          "real R-button route, centered identity portrait, and modal layout")
+          "real R-button route, native Greek/Cyrillic names, centered identity "
+          "portrait, and modal layout")
     if args.evidence_dir is not None:
         print(f"evidence: {evidence}")
     if temporary is not None:

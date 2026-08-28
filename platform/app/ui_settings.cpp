@@ -35,6 +35,7 @@
 #include "modern_character_studio_bridge.h"
 #include "modern_character_surface_intersection.h"
 #include "modern_character_text.h"
+#include "fast3d/gfx_character_text.h"
 #include "sha256.h"
 #include "user_paths.h"
 #include "video_config.h"
@@ -2178,6 +2179,15 @@ struct CharacterIdentityEdit {
     bool strokeActive = false;
     bool stylePreviewValid = false;
     bool showOnion = false;
+    std::string nativeDisplaySource;
+    std::string nativeShortSource;
+    std::array<uint8_t, GFX_CHARACTER_TEXT_MAX_WIDTH * 16u * 4u>
+        nativeDisplayPixels{};
+    std::array<uint8_t, 64u * 16u * 4u> nativeShortPixels{};
+    GfxCharacterTextMetrics nativeDisplayMetrics{};
+    GfxCharacterTextMetrics nativeShortMetrics{};
+    bool nativeDisplayReady = false;
+    bool nativeShortReady = false;
 };
 
 std::map<std::string, CharacterIdentityEdit> g_characterIdentityEdits;
@@ -19760,6 +19770,38 @@ CharacterIdentityEdit &loadCharacterIdentityEdit(
     return edit;
 }
 
+static void drawNativeCharacterNamePreview(
+    const char *id, const uint8_t *pixels, uint32_t stridePixels,
+    const GfxCharacterTextMetrics &metrics, const char *spokenLabel,
+    const char *spokenHelp) {
+    const float scale = std::max(1.0f, std::floor(
+        std::min(3.0f, ImGui::GetContentRegionAvail().x /
+            std::max(1u, metrics.width))));
+    const ImVec2 size(
+        std::max(1u, metrics.width) * scale,
+        std::max(1u, metrics.height) * scale);
+    ImGui::InvisibleButton(id, size);
+    const ImVec2 origin = ImGui::GetItemRectMin();
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y),
+                        IM_COL32(28, 32, 44, 255), 3.0f);
+    for (uint32_t y = 0u; y < metrics.height; ++y) {
+        for (uint32_t x = 0u; x < metrics.width; ++x) {
+            const uint8_t *pixel = pixels +
+                (static_cast<size_t>(y) * stridePixels + x) * 4u;
+            if (pixel[3] == 0u) continue;
+            draw->AddRectFilled(
+                ImVec2(origin.x + x * scale, origin.y + y * scale),
+                ImVec2(origin.x + (x + 1u) * scale,
+                       origin.y + (y + 1u) * scale),
+                IM_COL32(pixel[0], pixel[1], pixel[2], pixel[3]));
+        }
+    }
+    draw->AddRect(origin, ImVec2(origin.x + size.x, origin.y + size.y),
+                  IM_COL32(88, 98, 120, 255), 3.0f);
+    ui::SpeakFocusedItem(spokenLabel, "native glyph preview", spokenHelp);
+}
+
 bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     CharacterIdentityEdit &edit = loadCharacterIdentityEdit(entry);
     const auto pending = g_characterPendingPortraitSources.find(entry->id);
@@ -19798,12 +19840,29 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     const bool displayValid = mdkr_modern_character_text_project(
         edit.displayName, sizeof(edit.displayName), displayProjection,
         sizeof(displayProjection), &displayEvidence) != 0;
+    if (edit.nativeDisplaySource != edit.displayName) {
+        edit.nativeDisplaySource = edit.displayName;
+        edit.nativeDisplayPixels.fill(0u);
+        edit.nativeDisplayReady = gfx_character_text_render_rgba(
+            edit.displayName, sizeof(edit.displayName),
+            GFX_CHARACTER_TEXT_MAX_WIDTH, 16u,
+            edit.nativeDisplayPixels.data(), edit.nativeDisplayPixels.size(),
+            GFX_CHARACTER_TEXT_MAX_WIDTH * 4u,
+            &edit.nativeDisplayMetrics) &&
+            edit.nativeDisplayMetrics.non_ascii_codepoints != 0u;
+    }
     if (displayValid && displayEvidence.valid_utf8) {
-        std::snprintf(
-            displayProjectionHelp, sizeof(displayProjectionHelp),
-            "Sets the full player-facing name. In-game retail-font preview: %s. %u folded, %u unsupported. Narration remains separate UTF-8.",
-            displayProjection, displayEvidence.folded_codepoints,
-            displayEvidence.unsupported_codepoints);
+        if (edit.nativeDisplayReady) {
+            std::snprintf(
+                displayProjectionHelp, sizeof(displayProjectionHelp), "%s",
+                "Sets the full player-facing name. The exact project-font glyph preview is shown below; the game uses this path. Narration remains separate UTF-8.");
+        } else {
+            std::snprintf(
+                displayProjectionHelp, sizeof(displayProjectionHelp),
+                "Sets the full player-facing name. In-game retail-font fallback preview: %s. %u folded, %u unsupported. Narration remains separate UTF-8.",
+                displayProjection, displayEvidence.folded_codepoints,
+                displayEvidence.unsupported_codepoints);
+        }
     } else {
         std::snprintf(
             displayProjectionHelp, sizeof(displayProjectionHelp), "%s",
@@ -19819,12 +19878,27 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     const bool shortValid = mdkr_modern_character_text_project(
         edit.shortName, sizeof(edit.shortName), shortProjection,
         sizeof(shortProjection), &shortEvidence) != 0;
+    if (edit.nativeShortSource != edit.shortName) {
+        edit.nativeShortSource = edit.shortName;
+        edit.nativeShortPixels.fill(0u);
+        edit.nativeShortReady = gfx_character_text_render_rgba(
+            edit.shortName, sizeof(edit.shortName), 54u, 16u,
+            edit.nativeShortPixels.data(), edit.nativeShortPixels.size(),
+            64u * 4u, &edit.nativeShortMetrics) &&
+            edit.nativeShortMetrics.non_ascii_codepoints != 0u;
+    }
     if (shortValid && shortEvidence.valid_utf8) {
-        std::snprintf(
-            shortProjectionHelp, sizeof(shortProjectionHelp),
-            "Sets the compact custom-roster label. In-game retail-font preview: %s. %u folded, %u unsupported. Test performs the final pixel-width fit.",
-            shortProjection, shortEvidence.folded_codepoints,
-            shortEvidence.unsupported_codepoints);
+        if (edit.nativeShortReady) {
+            std::snprintf(
+                shortProjectionHelp, sizeof(shortProjectionHelp), "%s",
+                "Sets the compact custom-roster label. The exact fitted project-font glyph preview is shown below; the game uses this path.");
+        } else {
+            std::snprintf(
+                shortProjectionHelp, sizeof(shortProjectionHelp),
+                "Sets the compact custom-roster label. In-game retail-font fallback preview: %s. %u folded, %u unsupported. Test performs the final ROM-font pixel-width fit.",
+                shortProjection, shortEvidence.folded_codepoints,
+                shortEvidence.unsupported_codepoints);
+        }
     } else {
         std::snprintf(
             shortProjectionHelp, sizeof(shortProjectionHelp), "%s",
@@ -19860,9 +19934,9 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
             shortEvidence.input_codepoints != 0u &&
             !displayEvidence.output_truncated &&
             !shortEvidence.output_truncated;
-        ImGui::SeparatorText("Retail game-font preview");
+        ImGui::SeparatorText("In-game name preview");
         ui::TextSubtleWrapped(
-            "The custom roster draws the retail 96-glyph font. Printable ASCII is exact. Common Latin diacritics and ligatures, attached combining marks, typographic punctuation, and full-width ASCII fold predictably into readable glyphs. Every still-unsupported Unicode codepoint becomes one question-mark cell instead of one cell per UTF-8 byte. Narration keeps authored UTF-8. Test performs the final ROM-font pixel-width fit.");
+            "The roster uses the embedded project font for fully covered, non-joining left-to-right Unicode names. This exact rasterizer provides extended Latin, Greek, and Cyrillic glyphs without a second ROM or a host font. Plain ASCII retains the retail game font. Text needing joining, combining-mark placement, bidirectional layout, or a missing glyph uses the deterministic retail projection below rather than displaying a misleading approximation. Narration always keeps authored UTF-8.");
         if (!displayValid) {
             std::snprintf(displayProjection, sizeof(displayProjection),
                           "%s", "invalid");
@@ -19871,28 +19945,53 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
             std::snprintf(shortProjection, sizeof(shortProjection),
                           "%s", "invalid");
         }
-        ImGui::SetNextItemWidth(
-            std::min(420.0f, ImGui::GetContentRegionAvail().x));
-        (void)ImGui::InputText(
-            "Display preview##character-display-font-preview",
-            displayProjection, sizeof(displayProjection),
-            ImGuiInputTextFlags_ReadOnly);
-        ui::SpeakFocusedItem(
-            "Display game-font preview", displayProjection,
-            "Read-only exact retail-glyph projection. Select and copy this value if you need to review it outside the Workshop.");
-        ImGui::SetNextItemWidth(
-            std::min(420.0f, ImGui::GetContentRegionAvail().x));
-        (void)ImGui::InputText(
-            "Short tile preview##character-short-font-preview",
-            shortProjection, sizeof(shortProjection),
-            ImGuiInputTextFlags_ReadOnly);
-        ui::SpeakFocusedItem(
-            "Short tile game-font preview", shortProjection,
-            "Read-only retail-glyph projection. The exact game Test still performs final ROM-font pixel-width fitting.");
-        const uint32_t unsupported = displayEvidence.unsupported_codepoints +
-            shortEvidence.unsupported_codepoints;
-        const uint32_t folded = displayEvidence.folded_codepoints +
-            shortEvidence.folded_codepoints;
+        if (edit.nativeDisplayReady) {
+            ImGui::TextUnformatted("Display • native LTR glyphs");
+            drawNativeCharacterNamePreview(
+                "##character-display-native-preview",
+                edit.nativeDisplayPixels.data(),
+                GFX_CHARACTER_TEXT_MAX_WIDTH,
+                edit.nativeDisplayMetrics,
+                "Display native glyph preview",
+                "Exact read-only game raster for the authored display name.");
+        } else {
+            ImGui::SetNextItemWidth(
+                std::min(420.0f, ImGui::GetContentRegionAvail().x));
+            (void)ImGui::InputText(
+                "Display fallback##character-display-font-preview",
+                displayProjection, sizeof(displayProjection),
+                ImGuiInputTextFlags_ReadOnly);
+            ui::SpeakFocusedItem(
+                "Display retail-font fallback", displayProjection,
+                "Read-only exact retail-glyph projection. Select and copy this value if you need to review it outside the Workshop.");
+        }
+        if (edit.nativeShortReady) {
+            ImGui::TextUnformatted("Short tile • native LTR glyphs and exact fit");
+            drawNativeCharacterNamePreview(
+                "##character-short-native-preview",
+                edit.nativeShortPixels.data(), 64u,
+                edit.nativeShortMetrics,
+                "Short-name native glyph preview",
+                "Exact read-only game raster, including the compact tile width fit and ellipsis when needed.");
+        } else {
+            ImGui::SetNextItemWidth(
+                std::min(420.0f, ImGui::GetContentRegionAvail().x));
+            (void)ImGui::InputText(
+                "Short tile fallback##character-short-font-preview",
+                shortProjection, sizeof(shortProjection),
+                ImGuiInputTextFlags_ReadOnly);
+            ui::SpeakFocusedItem(
+                "Short tile retail-font fallback", shortProjection,
+                "Read-only retail-glyph projection. The exact game Test performs final ROM-font pixel-width fitting.");
+        }
+        const uint32_t unsupported =
+            (edit.nativeDisplayReady ? 0u
+                                     : displayEvidence.unsupported_codepoints) +
+            (edit.nativeShortReady ? 0u
+                                   : shortEvidence.unsupported_codepoints);
+        const uint32_t folded =
+            (edit.nativeDisplayReady ? 0u : displayEvidence.folded_codepoints) +
+            (edit.nativeShortReady ? 0u : shortEvidence.folded_codepoints);
         if (!projectionReady) {
             ImGui::TextColored(
                 AppTheme::bad(),
@@ -19900,13 +19999,17 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
         } else if (unsupported != 0u) {
             ImGui::TextColored(
                 AppTheme::accent(),
-                "%u unsupported visual %s use '?'; author an ASCII display/short name to avoid fallback.",
+                "%u unsupported fallback %s use '?'. Choose covered LTR glyphs or an ASCII visual name to avoid that fallback.",
                 unsupported, unsupported == 1u ? "codepoint" : "codepoints");
         } else if (folded != 0u) {
             ImGui::TextColored(
                 AppTheme::good(),
-                "%u visual %s folded into the exact readable preview above.",
+                "%u fallback visual %s folded into the exact readable preview above.",
                 folded, folded == 1u ? "codepoint was" : "codepoints were");
+        } else if (edit.nativeDisplayReady || edit.nativeShortReady) {
+            ImGui::TextColored(
+                AppTheme::good(),
+                "Native glyph paths are exact; any plain-ASCII field keeps the retail font by design.");
         } else {
             ImGui::TextColored(
                 AppTheme::good(),
@@ -19918,13 +20021,19 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
             g_characterNameProjectionTraceKeys.insert(entry->id).second) {
             std::fprintf(
                 stderr,
-                "[app-ui] character-name-projection package=%s display_codepoints=%u display_folded=%u display_fallback=%u short_codepoints=%u short_folded=%u short_fallback=%u valid=%d shared-engine-path=1\n",
+                "[app-ui] character-name-projection package=%s display_codepoints=%u display_folded=%u display_fallback=%u display_mode=%s display_reason=%s short_codepoints=%u short_folded=%u short_fallback=%u short_mode=%s short_reason=%s valid=%d shared-engine-path=1\n",
                 entry->id, displayEvidence.input_codepoints,
                 displayEvidence.folded_codepoints,
                 displayEvidence.unsupported_codepoints,
+                edit.nativeDisplayReady ? "native" : "retail",
+                gfx_character_text_fallback_reason_name(
+                    edit.nativeDisplayMetrics.fallback_reason),
                 shortEvidence.input_codepoints,
                 shortEvidence.folded_codepoints,
                 shortEvidence.unsupported_codepoints,
+                edit.nativeShortReady ? "native" : "retail",
+                gfx_character_text_fallback_reason_name(
+                    edit.nativeShortMetrics.fallback_reason),
                 projectionReady ? 1 : 0);
         }
     }

@@ -143,7 +143,8 @@ is trying to accomplish rather than the pipeline component currently on screen.
 4. **A creator makes the character recognizable in every UI.** One identity
    owns names, portrait pixels, minimap colour, and accessible narration.
    Capture, bounded image import, and exact-pixel drawing all converge on the
-   same 40x40 runtime canvas and disclose retail-font fallback before publish.
+   same 40x40 runtime canvas. Eligible LTR Unicode names show exact native
+   pixels; every other name discloses its retail-font fallback before publish.
 5. **A player chooses fair gameplay.** The selected built-in donor and vehicle
    compatibility are visible beside the custom appearance. Simulation, audio,
    saves, ghosts, records, and network identity are never implied to come from
@@ -212,16 +213,18 @@ Roster identity is not a donor side effect. Its versioned record should own:
   fallback, or intentionally silent;
 - creator attribution and license display.
 
-The Workshop previews the exact retail-font projection for display and short
-names through the same bounded function used by the live custom roster.
-Printable ASCII remains exact; common Latin diacritics and ligatures, attached
-combining marks, typographic punctuation, and full-width ASCII fold into
-readable retail glyphs; and each still-unsupported Unicode codepoint occupies
-one question-mark cell. Malformed or unterminated input fails safely, narration
-retains authored UTF-8, and the UI discloses both folded and fallback counts and
-that final pixel-width fitting occurs against the loaded ROM font. Those exact
-previews and counts are included in the accessible names-field guidance rather
-than being available only as visual text.
+The Workshop previews the exact runtime path for display and short names.
+Fully covered, non-joining LTR extended Latin, Greek, Cyrillic, and neutral
+punctuation use the same project-owned bounded rasterizer as the live roster;
+the preview shows its actual 16-pixel RGBA output and compact-width ellipsis.
+Printable ASCII intentionally keeps the retail font. Combining sequences,
+joining or bidirectional scripts, missing glyphs, controls, malformed UTF-8,
+and unterminated input cannot enter the direct renderer. They use the shared
+retail projection: common Latin identities and punctuation fold predictably,
+and each still-unsupported Unicode codepoint occupies one question-mark cell.
+The UI and accessible guidance name the active mode, fallback reason, folded
+and fallback counts. Narration retains authored UTF-8. This is honest LTR glyph
+coverage, not a claim of locale-aware shaping.
 Sort labels use deterministic ASCII-case-insensitive byte order with package id
 as the tie-break; authors are advised to use ASCII when locale-independent
 ordering matters. This makes today's fallback honest without claiming full
@@ -714,11 +717,16 @@ stories. Each has an owner in the audit above and must retain its stated gate:
    freeform authoring gestures still needs human qualification. The 13-state
    bounded reference library is complete; package-specific artistic review
    remains intentionally mandatory.
-3. Native glyph rendering, locale-aware shaping, and bidirectional layout are
-   still needed for scripts outside the retail font. The shared bounded path
-   now preserves printable ASCII, folds common Latin identities and punctuation
-   deterministically, and explicitly reports every remaining fallback; it does
-   not claim to be a general transliterator or shaping engine.
+3. ROM-independent native glyph rendering is now executable for fully covered,
+   non-joining LTR extended Latin, Greek, Cyrillic, and neutral punctuation.
+   The generated Roboto subset has pinned source/tool hashes; the same bounded,
+   cached rasterizer drives live roster tiles, selected-name display, and the
+   Workshop's exact pixel preview. Plain ASCII deliberately retains the retail
+   font. Combining sequences, joining scripts, direction controls, missing
+   glyphs, and malformed UTF-8 fail closed to the existing deterministic retail
+   projection with a named reason. Locale-aware shaping and bidirectional
+   layout remain release-tail work for scripts that require them; this direct
+   renderer does not claim to be a shaping engine.
 4. A maintained device-profile corpus remains performance follow-up. Recorded,
    optional offline simplification and projected-height thresholds with
    per-view hysteresis are complete; their explicit legacy-distance fallback
@@ -765,7 +773,7 @@ an automated contract; it does not waive the named release qualification.
 | Install a finished package | Executable: inspect, rights-confirm, transactional install, enable, and assign; every macOS/Windows/Linux release job exercises the frozen and packaged importer through the complete network-independent lifecycle | Signed/notarized clean-machine and physical offline observation |
 | Start from an artist model | Executable for GLB, one unambiguous DAE/ZIP conversion, and universal external-tool `.mdkrsource` output with mutation-free provenance review, exact revalidation, fail-atomic extraction, DCC-specific guidance, and resumable named drafts | Optional signed executable-adapter marketplace only if later desired; it is not required for the supported data-only extension |
 | Correct scale, floor, facing, seating, and contacts | Executable with exact per-context previews, bounded measured starting points, direct/numeric controls, undo, stale-evidence invalidation, and settled residual-stability witnesses | Bespoke scene-owned boss/battle/cinematic witnesses only if presentation authority expands; authored pole only if the solver gains that contract |
-| Create recognizable identity everywhere | Executable for the currently audited select/HUD/results/rankings/minimap/collection surfaces and exact 40x40 Portrait Studio | Localization-aware shaping and ownership declarations for future surfaces |
+| Create recognizable identity everywhere | Executable for the currently audited select/HUD/results/rankings/minimap/collection surfaces, exact 40x40 Portrait Studio, and ROM-independent native extended-Latin/Greek/Cyrillic LTR names with exact Workshop preview | Locale-aware shaping/bidirectional layout and ownership declarations for future surfaces |
 | Choose fair gameplay | Executable: donor simulation/audio/save/ghost/network authority is separate and visible | Separate hashed custom-gameplay system only if later desired |
 | Target real hardware | Executable for exact 1P-4P source/fit/LOD/device-bound evidence, projected-height LOD with per-view hysteresis, and honest local exceptions | Maintained device corpus, remaining renderer-tail features, and broader scenarios |
 | Update and recover work | Executable: async acknowledgement, named drafts, last-known-good revisions, transactional rebuild/install, durable deletion cleanup, packaged disable/rebuild/enable/remove gates on all release operating systems, and rendered actionable missing-importer recovery that preserves the source draft | Signed/notarized in-place upgrade and clean-machine repair observation on macOS, Windows, and Linux |

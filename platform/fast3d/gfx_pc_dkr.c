@@ -79,6 +79,7 @@
 #include "gfx_texture_edge.h"
 #include "gfx_font_sdf.h"
 #include "gfx_font_outline.h"
+#include "gfx_character_text.h"
 #include "gfx_level_lighting.h"
 #include "gfx_rl1_experiment.h"
 #include "gfx_render_scale.h"
@@ -8037,6 +8038,7 @@ void gfx_shutdown(void) {
     font_sdf_buf = NULL;
     font_sdf_cap = 0;
     gfx_font_outline_shutdown();
+    gfx_character_text_shutdown();
     free(tex_row_buf);
     tex_row_buf = NULL;
     tex_row_cap = 0;

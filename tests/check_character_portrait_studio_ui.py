@@ -224,11 +224,13 @@ def main() -> int:
                  " views=7",
                  "character-name-projection package=" + PACKAGE_ID +
                  " display_codepoints=11 display_folded=2 display_fallback=1 "
-                 "short_codepoints=11 short_folded=2 short_fallback=1 valid=1 "
+                 "display_mode=retail display_reason=shaping or bidi required "
+                 "short_codepoints=11 short_folded=2 short_fallback=1 "
+                 "short_mode=retail short_reason=shaping or bidi required valid=1 "
                  "shared-engine-path=1",
-                 "Display game-font preview, History OE ?. Read-only exact "
+                 "Display retail-font fallback, History OE ?. Read-only exact "
                  "retail-glyph projection.",
-                 "Short tile game-font preview, History OE ?. Read-only "
+                 "Short tile retail-font fallback, History OE ?. Read-only "
                  "retail-glyph projection.",
                  "character-portrait-source-action package=" + PACKAGE_ID +
                  " loaded=1 applied=0",

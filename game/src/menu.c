@@ -15,6 +15,7 @@
 #include "video_config.h"
 #include "net/net_roster_runtime.h"
 #include "custom_character_roster.h"
+#include "fast3d/gfx_character_text.h"
 #include "modern_character_runtime.h"
 #include "modern_character_text.h"
 extern int g_frameCounter;
@@ -1087,6 +1088,7 @@ static s32 sCustomCharacterDefaultSelection[MAXCONTROLLERS];
 static s32 sCustomCharacterRosterOwner = -1;
 static s32 sCustomCharacterRosterErrorTimer;
 static char sCustomCharacterRosterError[128];
+static void custom_name_cache_reset(void);
 
 enum TajCharacterSelectSound {
     TAJ_CHARSELECT_HIGHLIGHT,
@@ -1198,6 +1200,7 @@ static void charselect_custom_init(void) {
     s32 catalogCount;
     s32 controller;
     s32 i;
+    custom_name_cache_reset();
     mdkr_custom_roster_reset(&sCustomCharacterRoster);
     catalogCount = mdkr_modern_character_catalog_count();
     for (i = 0; i < catalogCount; i++) {
@@ -1855,6 +1858,11 @@ enum {
     TAJ_PORTRAIT_ART_SIZE = 32,
     TAJ_PORTRAIT_SIZE = 40,
     TAJ_PORTRAIT_COMMANDS = 12,
+    CUSTOM_NAME_HEIGHT = 16,
+    CUSTOM_NAME_TILE_WIDTH = 64,
+    CUSTOM_NAME_TILE_FIT_WIDTH = 54,
+    CUSTOM_NAME_DISPLAY_WIDTH = 240,
+    CUSTOM_NAME_COMMANDS = 12,
 };
 
 typedef struct TajPortraitTexture {
@@ -1883,6 +1891,45 @@ static Gfx *sCustomRosterPortraitCommands[MDKR_CUSTOM_ROSTER_PAGE_SIZE];
 static DrawTexture sCustomRosterPortraits[MDKR_CUSTOM_ROSTER_PAGE_SIZE][2];
 static u64 sCustomRosterPortraitRevisions[MDKR_CUSTOM_ROSTER_PAGE_SIZE];
 static s32 sCustomRosterPortraitCatalogIndices[MDKR_CUSTOM_ROSTER_PAGE_SIZE];
+
+typedef struct CustomTileNameTexture {
+    TextureHeader header;
+    u8 texels[CUSTOM_NAME_TILE_WIDTH * CUSTOM_NAME_HEIGHT * 4];
+} CustomTileNameTexture;
+
+typedef struct CustomDisplayNameTexture {
+    TextureHeader header;
+    u8 texels[CUSTOM_NAME_DISPLAY_WIDTH * CUSTOM_NAME_HEIGHT * 4];
+} CustomDisplayNameTexture;
+
+static CustomTileNameTexture
+    sCustomRosterNameTextures[MDKR_CUSTOM_ROSTER_PAGE_SIZE];
+static Gfx *sCustomRosterNameCommands[MDKR_CUSTOM_ROSTER_PAGE_SIZE];
+static DrawTexture sCustomRosterNames[MDKR_CUSTOM_ROSTER_PAGE_SIZE][2];
+static GfxCharacterTextMetrics
+    sCustomRosterNameMetrics[MDKR_CUSTOM_ROSTER_PAGE_SIZE];
+static u64 sCustomRosterNameRevisions[MDKR_CUSTOM_ROSTER_PAGE_SIZE];
+static s32 sCustomRosterNameCatalogIndices[MDKR_CUSTOM_ROSTER_PAGE_SIZE];
+/* 0 has not been attempted, 1 is native, 2 deliberately uses retail fallback. */
+static u8 sCustomRosterNameModes[MDKR_CUSTOM_ROSTER_PAGE_SIZE];
+
+static CustomDisplayNameTexture sCustomDisplayNameTexture;
+static Gfx *sCustomDisplayNameCommands;
+static DrawTexture sCustomDisplayName[2];
+static GfxCharacterTextMetrics sCustomDisplayNameMetrics;
+static u64 sCustomDisplayNameRevision;
+static s32 sCustomDisplayNameCatalogIndex;
+static u8 sCustomDisplayNameMode;
+
+static void custom_name_cache_reset(void) {
+    memset(sCustomRosterNameModes, 0, sizeof(sCustomRosterNameModes));
+    memset(sCustomRosterNameCommands, 0,
+           sizeof(sCustomRosterNameCommands));
+    memset(sCustomRosterNames, 0, sizeof(sCustomRosterNames));
+    sCustomDisplayNameMode = 0u;
+    sCustomDisplayNameCommands = NULL;
+    memset(sCustomDisplayName, 0, sizeof(sCustomDisplayName));
+}
 
 /* Taj has no retail results portrait. This small native RGBA card is original
  * port artwork assembled from geometric pixel primitives: it stays inside the
@@ -2347,6 +2394,127 @@ static DrawTexture *menu_custom_roster_portrait(
         dkr_dl_register_host_ptr(texture->texels);
     }
     return portrait;
+}
+
+static TextureHeader *custom_name_finish(TextureHeader *header, u8 *texels,
+                                         size_t texelSize, s32 width,
+                                         Gfx *commands) {
+    header->width = (u8)width;
+    header->height = CUSTOM_NAME_HEIGHT;
+    header->format = (TRANSPARENT << 4) | TEX_FORMAT_RGBA32;
+    header->numberOfInstances = 1;
+    header->flags = RENDER_CLAMP_X | RENDER_CLAMP_Y;
+    header->numOfTextures = 1;
+    header->textureSize = (s16)(sizeof(TextureHeader) + texelSize);
+    material_init(header, commands);
+    dkr_dl_register_host_ptr(texels);
+    return header;
+}
+
+static DrawTexture *menu_custom_roster_name(
+    const MdkrCustomRosterItem *item, s32 pageSlot) {
+    CustomTileNameTexture *texture;
+    DrawTexture *name;
+    GfxCharacterTextMetrics *metrics;
+    if (item == NULL || pageSlot < 0 ||
+        pageSlot >= MDKR_CUSTOM_ROSTER_PAGE_SIZE) return NULL;
+    texture = &sCustomRosterNameTextures[pageSlot];
+    name = sCustomRosterNames[pageSlot];
+    metrics = &sCustomRosterNameMetrics[pageSlot];
+    if (sCustomRosterNameCatalogIndices[pageSlot] != item->catalog_index ||
+        sCustomRosterNameRevisions[pageSlot] != item->revision ||
+        sCustomRosterNameModes[pageSlot] == 0u) {
+        memset(texture, 0, sizeof(*texture));
+        memset(metrics, 0, sizeof(*metrics));
+        name[0].texture = NULL;
+        name[1].texture = NULL;
+        if (gfx_character_text_render_rgba(
+                item->short_name, sizeof(item->short_name),
+                CUSTOM_NAME_TILE_FIT_WIDTH, CUSTOM_NAME_HEIGHT,
+                texture->texels, sizeof(texture->texels),
+                CUSTOM_NAME_TILE_WIDTH * 4u, metrics) &&
+            metrics->non_ascii_codepoints != 0u) {
+            if (sCustomRosterNameCommands[pageSlot] == NULL) {
+                sCustomRosterNameCommands[pageSlot] = mempool_alloc_safe(
+                    CUSTOM_NAME_COMMANDS *
+                        sizeof(*sCustomRosterNameCommands[pageSlot]),
+                    COLOUR_TAG_MAGENTA);
+            }
+            name[0].texture = custom_name_finish(
+                &texture->header, texture->texels, sizeof(texture->texels),
+                CUSTOM_NAME_TILE_WIDTH,
+                sCustomRosterNameCommands[pageSlot]);
+            name[0].xOffset = 0;
+            name[0].yOffset = 0;
+            sCustomRosterNameModes[pageSlot] = 1u;
+        } else {
+            sCustomRosterNameModes[pageSlot] = 2u;
+        }
+        sCustomRosterNameCatalogIndices[pageSlot] = item->catalog_index;
+        sCustomRosterNameRevisions[pageSlot] = item->revision;
+        MDKR_TRACE(
+            "custom_character_name: context=tile package=%s mode=%s reason=%s codepoints=%u width=%u truncated=%d",
+            item->id,
+            sCustomRosterNameModes[pageSlot] == 1u ? "native" : "retail-fallback",
+            gfx_character_text_fallback_reason_name(metrics->fallback_reason),
+            metrics->input_codepoints, metrics->width, metrics->truncated);
+    } else if (sCustomRosterNameModes[pageSlot] == 1u) {
+        dkr_dl_register_host_ptr(texture->texels);
+    }
+    return sCustomRosterNameModes[pageSlot] == 1u ? name : NULL;
+}
+
+static DrawTexture *menu_custom_display_name(
+    const MdkrCustomRosterItem *item) {
+    if (item == NULL) return NULL;
+    if (sCustomDisplayNameCatalogIndex != item->catalog_index ||
+        sCustomDisplayNameRevision != item->revision ||
+        sCustomDisplayNameMode == 0u) {
+        memset(&sCustomDisplayNameTexture, 0,
+               sizeof(sCustomDisplayNameTexture));
+        memset(&sCustomDisplayNameMetrics, 0,
+               sizeof(sCustomDisplayNameMetrics));
+        sCustomDisplayName[0].texture = NULL;
+        sCustomDisplayName[1].texture = NULL;
+        if (gfx_character_text_render_rgba(
+                item->display_name, sizeof(item->display_name),
+                CUSTOM_NAME_DISPLAY_WIDTH, CUSTOM_NAME_HEIGHT,
+                sCustomDisplayNameTexture.texels,
+                sizeof(sCustomDisplayNameTexture.texels),
+                CUSTOM_NAME_DISPLAY_WIDTH * 4u,
+                &sCustomDisplayNameMetrics) &&
+            sCustomDisplayNameMetrics.non_ascii_codepoints != 0u) {
+            if (sCustomDisplayNameCommands == NULL) {
+                sCustomDisplayNameCommands = mempool_alloc_safe(
+                    CUSTOM_NAME_COMMANDS * sizeof(*sCustomDisplayNameCommands),
+                    COLOUR_TAG_MAGENTA);
+            }
+            sCustomDisplayName[0].texture = custom_name_finish(
+                &sCustomDisplayNameTexture.header,
+                sCustomDisplayNameTexture.texels,
+                sizeof(sCustomDisplayNameTexture.texels),
+                CUSTOM_NAME_DISPLAY_WIDTH, sCustomDisplayNameCommands);
+            sCustomDisplayName[0].xOffset = 0;
+            sCustomDisplayName[0].yOffset = 0;
+            sCustomDisplayNameMode = 1u;
+        } else {
+            sCustomDisplayNameMode = 2u;
+        }
+        sCustomDisplayNameCatalogIndex = item->catalog_index;
+        sCustomDisplayNameRevision = item->revision;
+        MDKR_TRACE(
+            "custom_character_name: context=display package=%s mode=%s reason=%s codepoints=%u width=%u truncated=%d",
+            item->id,
+            sCustomDisplayNameMode == 1u ? "native" : "retail-fallback",
+            gfx_character_text_fallback_reason_name(
+                sCustomDisplayNameMetrics.fallback_reason),
+            sCustomDisplayNameMetrics.input_codepoints,
+            sCustomDisplayNameMetrics.width,
+            sCustomDisplayNameMetrics.truncated);
+    } else if (sCustomDisplayNameMode == 1u) {
+        dkr_dl_register_host_ptr(sCustomDisplayNameTexture.texels);
+    }
+    return sCustomDisplayNameMode == 1u ? sCustomDisplayName : NULL;
 }
 #endif
 
@@ -9050,6 +9218,7 @@ static void charselect_custom_draw_panel(void) {
     const MdkrCustomRosterItem *selected;
     const MdkrCustomRosterItem *item;
     DrawTexture *portrait;
+    DrawTexture *nativeName;
     char text[128];
     char shortName[20];
     s32 owner = sCustomCharacterRosterOwner;
@@ -9117,22 +9286,54 @@ static void charselect_custom_draw_panel(void) {
             draw_text(&sMenuCurrDisplayList, x + 20, y + 18,
                       "UPDATE", ALIGN_MIDDLE_CENTER);
         }
-        charselect_custom_fit_text(item->short_name, shortName,
-                                   sizeof(shortName), 54);
+        nativeName = menu_custom_roster_name(item, slot);
         if (itemIndex == cursor->item) {
             set_text_colour(playerColours[owner][0],
                             playerColours[owner][1],
                             playerColours[owner][2], 0, 255);
-            (void)snprintf(text, sizeof(text), "> %s <", shortName);
         } else if (item->availability != MDKR_CUSTOM_ROSTER_AVAILABLE) {
             set_text_colour(160, 160, 168, 0, 255);
-            (void)snprintf(text, sizeof(text), "%s", shortName);
         } else {
             set_text_colour(240, 240, 240, 0, 255);
-            (void)snprintf(text, sizeof(text), "%s", shortName);
         }
-        draw_text(&sMenuCurrDisplayList, x + 20, y + 44, text,
-                  ALIGN_MIDDLE_CENTER);
+        if (nativeName != NULL) {
+            const GfxCharacterTextMetrics *nameMetrics =
+                &sCustomRosterNameMetrics[slot];
+            u8 red = itemIndex == cursor->item
+                ? playerColours[owner][0]
+                : item->availability != MDKR_CUSTOM_ROSTER_AVAILABLE
+                    ? 160 : 240;
+            u8 green = itemIndex == cursor->item
+                ? playerColours[owner][1]
+                : item->availability != MDKR_CUSTOM_ROSTER_AVAILABLE
+                    ? 160 : 240;
+            u8 blue = itemIndex == cursor->item
+                ? playerColours[owner][2]
+                : item->availability != MDKR_CUSTOM_ROSTER_AVAILABLE
+                    ? 168 : 240;
+            texrect_draw(
+                &sMenuCurrDisplayList, nativeName,
+                x + 20 - (s32)nameMetrics->width / 2, y + 36,
+                red, green, blue, 255);
+            if (itemIndex == cursor->item) {
+                draw_text(&sMenuCurrDisplayList,
+                          x + 20 - (s32)nameMetrics->width / 2 - 4,
+                          y + 44, ">", ALIGN_MIDDLE_CENTER);
+                draw_text(&sMenuCurrDisplayList,
+                          x + 20 + (s32)nameMetrics->width / 2 + 4,
+                          y + 44, "<", ALIGN_MIDDLE_CENTER);
+            }
+        } else {
+            charselect_custom_fit_text(item->short_name, shortName,
+                                       sizeof(shortName), 54);
+            if (itemIndex == cursor->item) {
+                (void)snprintf(text, sizeof(text), "> %s <", shortName);
+            } else {
+                (void)snprintf(text, sizeof(text), "%s", shortName);
+            }
+            draw_text(&sMenuCurrDisplayList, x + 20, y + 44, text,
+                      ALIGN_MIDDLE_CENTER);
+        }
         text[0] = '\0';
         for (player = 0; player < MAXCONTROLLERS; player++) {
             if (gActivePlayersArray[player] &&
@@ -9155,10 +9356,19 @@ static void charselect_custom_draw_panel(void) {
     } else if (selected != NULL) {
         set_text_colour(playerColours[owner][0], playerColours[owner][1],
                         playerColours[owner][2], 0, 255);
-        charselect_custom_fit_text(selected->display_name, text,
-                                   sizeof(text), SCREEN_WIDTH - 24);
-        draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 184,
-                  text, ALIGN_MIDDLE_CENTER);
+        nativeName = menu_custom_display_name(selected);
+        if (nativeName != NULL) {
+            texrect_draw(
+                &sMenuCurrDisplayList, nativeName,
+                SCREEN_WIDTH_HALF - (s32)sCustomDisplayNameMetrics.width / 2,
+                176, playerColours[owner][0], playerColours[owner][1],
+                playerColours[owner][2], 255);
+        } else {
+            charselect_custom_fit_text(selected->display_name, text,
+                                       sizeof(text), SCREEN_WIDTH - 24);
+            draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 184,
+                      text, ALIGN_MIDDLE_CENTER);
+        }
         set_text_colour(184, 192, 208, 0, 255);
         (void)snprintf(text, sizeof(text), "GAMEPLAY PROFILE: %s",
             selected->donor < 10u ? donorNames[selected->donor] : "INVALID");
