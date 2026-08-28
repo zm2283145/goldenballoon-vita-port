@@ -74,10 +74,21 @@ LEAK_SYMBOLS = (
     "beganWithoutDescriptor",
 )
 
+# The engine target's object directory, relative to a build dir. The OFF-leak
+# object scan is SCOPED here so it is robust regardless of how the OFF tree was
+# built: a beta-only TU that leaked into the release engine lands under this dir,
+# whereas the SAME source compiled by a legitimate UNIT-TEST target lands under
+# that test target's own CMakeFiles/<target>.dir and is NOT a leak. Concretely,
+# platform/net/party_link.c carries no #if-beta guard and is compiled -- beta
+# macro OFF -- into mdkr_party_link_test, so a fully-built build-off contains
+# CMakeFiles/mdkr_party_link_test.dir/platform/net/party_link.c.o; an unscoped
+# whole-tree scan would flag that legit test object and false-positive.
+ENGINE_OBJ_DIR = "CMakeFiles/mdkr64.dir"
+
 # The beta-only engine TUs (+ party_link). If the CMake gate ever leaked (e.g. the
-# game/src glob went recursive), object files for these would appear in the OFF
-# tree -- the single most catastrophic, still-compiling isolation break. Their
-# ABSENCE is the strongest, false-positive-free isolation gate.
+# game/src glob went recursive), object files for these would appear in the ENGINE
+# object dir -- the single most catastrophic, still-compiling isolation break.
+# Their ABSENCE from the engine dir is the strongest, false-positive-free gate.
 BETA_TU_OBJECTS = (
     "game/src/online/online_session.c.o",
     "game/src/online/online_charselect.c.o",
@@ -115,6 +126,18 @@ def read_cache_var(cache: Path, name: str) -> str | None:
 
 def sha256_prefix(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:8]
+
+
+def present_beta_tu_basenames(build_dir: Path) -> set[str]:
+    """The BETA_TU_OBJECTS basenames that exist under `build_dir`'s ENGINE object
+    dir (CMakeFiles/mdkr64.dir), and ONLY there -- never under a unit-test
+    target's object dir. A beta-only TU that leaks into the release engine lands
+    at CMakeFiles/mdkr64.dir/<rel>, so this exact-path scan catches a real leak
+    while ignoring the same source legitimately compiled into a test target.
+    Feed the result to leaked_tu_objects()."""
+    engine = build_dir / ENGINE_OBJ_DIR
+    return {Path(rel).name for rel in BETA_TU_OBJECTS
+            if (engine / rel).is_file()}
 
 
 # --------------------------------------------------------------------------- #
@@ -245,11 +268,12 @@ def main() -> int:
             for rel in ANCHORS
         ]
 
-        # 2) No beta-only engine TU object files exist in the OFF tree (the
-        # strongest, false-positive-free gate -- catches a leaked CMake gate).
-        present_objs = {Path(rel).name for rel in BETA_TU_OBJECTS
-                        if list(scratch.rglob(Path(rel).name))}
-        leaked_objs = leaked_tu_objects(present_objs)
+        # 2) No beta-only engine TU object files exist in the ENGINE object dir
+        # (the strongest, false-positive-free gate -- catches a leaked CMake
+        # gate). Scoped to CMakeFiles/mdkr64.dir so a legit unit-test target that
+        # compiles a listed source (e.g. party_link.c into mdkr_party_link_test)
+        # is never mistaken for an engine leak.
+        leaked_objs = leaked_tu_objects(present_beta_tu_basenames(scratch))
         if leaked_objs:
             print("\n".join(hash_report), file=sys.stderr)
             return fail(f"the OFF build compiled beta-only engine TU object(s) "

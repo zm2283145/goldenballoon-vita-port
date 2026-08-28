@@ -103,16 +103,20 @@ def _check_tu_gate(notes: list[str]) -> int | None:
     if benign:
         return fail(f"TU gate false-positived on legitimate OFF objects {benign} "
                     f"-- it would block every clean release build")
-    # Positive on the REAL tree, when available.
+    # Positive on the REAL tree, when available. Scoped to the ENGINE object dir
+    # (via the guard's own present_beta_tu_basenames) so a FULLY-built build-off
+    # -- which legitimately compiles party_link.c into mdkr_party_link_test's own
+    # object dir -- does NOT false-positive; only a beta TU under
+    # CMakeFiles/mdkr64.dir counts as an engine leak.
     off = ROOT / "build-off"
     if off.is_dir():
-        present = {Path(rel).name for rel in guard.BETA_TU_OBJECTS
-                   if list(off.rglob(Path(rel).name))}
+        present = guard.present_beta_tu_basenames(off)
         real = guard.leaked_tu_objects(present)
         if real:
-            return fail(f"the REAL build-off tree contains beta-only engine TU "
-                        f"object(s) {real} -- the CMake beta gate leaked")
-        notes.append("TU gate: real build-off contains none of the beta engine TUs")
+            return fail(f"the REAL build-off ENGINE object dir contains beta-only "
+                        f"engine TU object(s) {real} -- the CMake beta gate leaked")
+        notes.append("TU gate: real build-off engine object dir contains none of "
+                     "the beta engine TUs")
     else:
         notes.append("TU gate: build-off absent (real-artifact positive skipped)")
     return None
