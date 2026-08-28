@@ -171,6 +171,8 @@ static void results_test_pump(void);
 static void results_test_reduce(void);
 static u8 results_host_press_active(void);
 static u8 results_host_press_both(void);
+static u8 results_joiner_finish_seam(void);          /* PD-T6d test seam */
+static u8 results_joiner_finish_departed(u32 stageTicks);
 
 /* ======================================================================== *
  * Small helpers
@@ -750,11 +752,31 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
     autoFire = (sRes.stageTicks >= limit) ? 1u : 0u;
 
     if (terminal) {
-        /* F4/F6 hold: no ADVANCE. The host's A is "A: FINISH" -> the LEAVE return
-         * (PD-T6 owns the real engine->launcher handshake; the session stubs LEAVE
-         * and keeps the screen up). The joiner just waits. */
-        if (sRes.host && manualEdge) {
+        /* F4/F6 hold: no ADVANCE. The host's A is "A: FINISH" -> LEAVE, which the
+         * session maps to FINISHED via resultsIsFinal (PD-T6d handshake). The test
+         * seam suppresses this so the JOINER path below can be exercised on a rig
+         * where the visible endpoint drove the rounds as host. */
+        if (sRes.host && manualEdge && !results_joiner_finish_seam()) {
             fprintf(stderr, "[online-results] finish: host A -> LEAVE\n");
+            return MDKR_ONLINE_RESULTS_LEAVE;
+        }
+        /* PD-T6d IMPORTANT-1: a NON-HOST (joiner) FOLLOWS the host out of the final
+         * standings. Without this, once the host "A: FINISH"es and returns, the
+         * joiner PARKS on the terminal screen forever (this branch used to return
+         * STAY before the bottom sRes.leave check -- the critical 2-human gap).
+         * Fire ONLY once the authoritative snapshot phase has LEFT RESULTS (the
+         * host/reducer departed) -- never on the joiner's own countdown -- so it
+         * cannot pre-empt the host. The session maps this LEAVE to FINISHED
+         * (resultsIsFinal), a non-host FINISHED return (exit 0). The test seam
+         * forces the joiner + host-departed inputs after a render grace so this
+         * path is provable end-to-end (a real transport host-departure cannot be
+         * cheaply staged on the loopback rig; reuses the remote-vacate technique). */
+        if ((!sRes.host || results_joiner_finish_seam()) &&
+            ((haveSnap && snap.phase != (uint8_t) RES_PHASE_RESULTS) ||
+             results_joiner_finish_departed(sRes.stageTicks))) {
+            fprintf(stderr,
+                    "[online-results] finish: joiner follows host out of RESULTS "
+                    "-> LEAVE\n");
             return MDKR_ONLINE_RESULTS_LEAVE;
         }
         return MDKR_ONLINE_RESULTS_STAY;
@@ -979,6 +1001,27 @@ static u8 results_host_press_active(void) {
 }
 static u8 results_host_press_both(void) {
     return results_host_press_active();
+}
+
+/* PD-T6d IMPORTANT-1 proof seam (env MDKR_TEST_ONLINE_RESULTS_JOINER_FINISH): at
+ * the FINAL standings only, act as a JOINER whose host has departed RESULTS so the
+ * non-host terminal-follow return is exercised end-to-end (engine FINISHED note +
+ * launcher reason=FINISHED). It suppresses the host "A: FINISH" at the terminal and
+ * forces the joiner + host-departed inputs after the render grace. A real transport
+ * host-departure can't be cheaply staged on the loopback rig; the follow DECISION,
+ * FINISHED mapping and launcher read all run genuinely. Inert unless the env is set;
+ * confined to the terminal branch, so rounds 1..N-1 advance normally (as host). */
+static s8 sJoinerFinishActive = -1;
+static u8 results_joiner_finish_seam(void) {
+    if (sJoinerFinishActive < 0) {
+        const char *e = getenv("MDKR_TEST_ONLINE_RESULTS_JOINER_FINISH");
+        sJoinerFinishActive = (e != NULL && e[0] != '\0') ? 1 : 0;
+    }
+    return (u8) (sJoinerFinishActive > 0 ? 1 : 0);
+}
+static u8 results_joiner_finish_departed(u32 stageTicks) {
+    return (u8) ((results_joiner_finish_seam() && stageTicks >= RES_INPUT_GRACE)
+                     ? 1 : 0);
 }
 
 u8 mdkr_online_results_test_active(void) {

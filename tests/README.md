@@ -1594,8 +1594,12 @@ the party_link channel (`mdkr_party_link_note_session_end`) + requests the platf
 exit; the launcher's `runOnlineLobbyStart{Live,Engine}Session` TAKES that reason
 (`mdkr_party_link_take_session_end`) right after the boot returns and BEFORE
 `OnlineRoom_clearPartyLink()`, logging `[online-session-end] reason=...`. The lane
-proves each reason end-to-end on the loopback lobby-start rig: FINISHED (host
-"A: FINISH" on the final standings -> exit 0), LEFT via a genuine CHARSELECT
+proves each reason end-to-end on the loopback lobby-start rig: FINISHED as the
+HOST ("A: FINISH" on the final standings -> exit 0), FINISHED as a JOINER
+(IMPORTANT-1: the non-host FOLLOWS the host out of the final standings once the
+snapshot phase leaves RESULTS -- otherwise it parked until window-close; proven via
+`MDKR_TEST_ONLINE_RESULTS_JOINER_FINISH`, terminal-only so the visible endpoint
+still drives rounds 1..N-1 as host), LEFT via a genuine CHARSELECT
 browse-B backout (`MDKR_TEST_ONLINE_CHARSELECT_BACKOUT`; the scripted lanes' tick-3
 I1 browse-B still STAYs), LEFT via a pre-START remote-vacated seat
 (`MDKR_TEST_ONLINE_REMOTE_VACATE`, Minor-3; debounced), LEFT via a mid-tournament

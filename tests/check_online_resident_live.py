@@ -77,6 +77,11 @@ ROUND_READY_RE = re.compile(
     r"frames=(\d+) \(roster re-installed\)$", re.MULTILINE)
 NEXT_ARMED_RE = re.compile(
     r"^\[online-resident-live\] next race armed: epoch=(\d+)", re.MULTILINE)
+# PD-T6d: this resident lane terminates via the FINISHED handshake at the final
+# standings (host "A: FINISH" under MDKR_TEST_ONLINE_RESULTS_HOST_PRESS), not the
+# old hold-to-tick-budget. Its path has the engine note only (no launcher read).
+FINISHED_ENGINE_RE = re.compile(
+    r"^\[online-session\] FINISHED: final standings", re.MULTILINE)
 POSTRACE_EXIT = "[online-postrace] session end requested"
 
 FORBIDDEN = ("[FATAL]", "[CRASH]", "AddressSanitizer",
@@ -311,6 +316,15 @@ def main() -> int:
         return fail(f"a round advance did NOT span multiple serviced frames "
                     f"(frames per round {span_frames}); the transition must be "
                     f"frame-stepped, not a blocking wait", output)
+
+    # PD-T6d: the resident session TERMINATES via the FINISHED handshake at the
+    # final standings (host "A: FINISH"), not the old hold-to-tick-budget. Pin that
+    # witness so a regression to the indefinite hold would FAIL here. (This path has
+    # the engine note only -- no launcher [online-session-end] read.)
+    if not FINISHED_ENGINE_RE.search(output):
+        return fail("the resident session did not terminate via the FINISHED "
+                    "handshake at the final standings (regressed to the old "
+                    "hold-to-tick-budget?)", output)
 
     # (f) the flag-OFF lane still boots once + exits (byte-behavior unchanged).
     off = check_flag_off(binary, rom, args.verbose)

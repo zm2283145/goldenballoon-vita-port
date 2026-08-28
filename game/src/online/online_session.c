@@ -1060,8 +1060,10 @@ void mdkr_online_session_tick(s32 updateRate) {
         MdkrOnlineCharselectResult r;
         /* PD-T6d (Minor-3): pre-START remote-vacated detector. If the remote seat
          * leaves the LOBBY-phase room while we wait on CHARSELECT, note LEFT + exit
-         * (debounced). Inert for a descriptor-first begin. */
+         * (debounced). Inert for a descriptor-first begin. Free the screen assets on
+         * the trip (symmetry with the backout / FINISH exit-free paths). */
         if (online_session_detect_remote_vacated("charselect")) {
+            mdkr_online_charselect_exit();
             break;
         }
         {
@@ -1136,8 +1138,10 @@ void mdkr_online_session_tick(s32 updateRate) {
     case MDKR_ONLINE_SESSION_TRACKSELECT: {
         MdkrOnlineTrackselectResult r;
         /* PD-T6d (Minor-3): pre-START remote-vacated detector (also covers the
-         * TRACKSELECT wait). Inert for a descriptor-first begin. */
+         * TRACKSELECT wait). Inert for a descriptor-first begin. Free the screen
+         * assets on the trip (symmetry with the other exit-free paths). */
         if (online_session_detect_remote_vacated("trackselect")) {
+            mdkr_online_trackselect_exit();
             break;
         }
         r = mdkr_online_trackselect_tick(updateRate);

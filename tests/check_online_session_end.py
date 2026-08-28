@@ -50,6 +50,11 @@ SESSION_END_RE = re.compile(
     r"^\[online-session-end\] reason=(\w+) result=(-?\d+)", re.MULTILINE)
 FINISHED_ENGINE_RE = re.compile(
     r"^\[online-session\] FINISHED: final standings", re.MULTILINE)
+JOINER_FOLLOW_RE = re.compile(
+    r"^\[online-results\] finish: joiner follows host out of RESULTS -> LEAVE",
+    re.MULTILINE)
+HOST_FINISH_RE = re.compile(
+    r"^\[online-results\] finish: host A -> LEAVE", re.MULTILINE)
 CHARSELECT_LEFT_RE = re.compile(
     r"^\[online-session\] LEFT: charselect backout", re.MULTILINE)
 VACATE_LEFT_RE = re.compile(
@@ -158,6 +163,53 @@ def check_finished(binary: Path, rom: Path, verbose: bool) -> int | None:
     if not any(r == "FINISHED" and c == "0" for r, c in reads):
         return fail(f"[FINISHED] launcher never read reason=FINISHED result=0; saw "
                     f"{reads}", output)
+    return None
+
+
+def check_finished_joiner(binary: Path, rom: Path, verbose: bool) -> int | None:
+    """FINISHED (IMPORTANT-1): a NON-HOST (joiner) FOLLOWS the host out of the final
+    standings -> clean return-to-room, instead of parking until window-close. The
+    joiner-finish seam suppresses the host "A: FINISH" at the terminal and, after a
+    render grace, forces the joiner + host-departed inputs so the non-host follow
+    return is exercised end-to-end (engine FINISHED note + launcher reason=FINISHED).
+    The visible endpoint drove rounds 1..N-1 as host (the seam is terminal-only)."""
+    try:
+        rc, output = run_engine(
+            binary, rom, ticks=30000, timeout=900, verbose=verbose,
+            extra_env={
+                "MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START": "1",
+                "MDKR_APP_TEST_ONLINE_MODE": "tournament",
+                "MDKR_APP_TEST_ONLINE_CUP": str(CUP),
+                "MDKR_TEST_ONLINE_LOBBY_START": "1",
+                "MDKR_TEST_ONLINE_LOBBY_TOURNAMENT": "1",
+                "MDKR_TEST_ONLINE_RESULTS_HOST_PRESS": "1",
+                "MDKR_TEST_ONLINE_RESULTS_JOINER_FINISH": "1",
+            })
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[FINISHED-joiner] run timed out (joiner parked on the final "
+                    f"standings instead of following the host out?): {error}")
+    guard = _no_forbidden("FINISHED-joiner", output)
+    if guard is not None:
+        return guard
+    if rc != 0:
+        return fail(f"[FINISHED-joiner] exited {rc} (expected clean 0)", output)
+    if not JOINER_FOLLOW_RE.search(output):
+        return fail("[FINISHED-joiner] the joiner never FOLLOWED the host out of "
+                    "the final standings (it would park until window-close)", output)
+    if HOST_FINISH_RE.search(output):
+        return fail("[FINISHED-joiner] the host-FINISH path fired -- the seam must "
+                    "exercise the JOINER follow, not the host press", output)
+    if not FINISHED_ENGINE_RE.search(output):
+        return fail("[FINISHED-joiner] the session never mapped the joiner LEAVE to "
+                    "FINISHED", output)
+    if len(DIRECT_BOOT_RE.findall(output)) != CUP_ROUNDS:
+        return fail("[FINISHED-joiner] the full cup did not run before the FINISH "
+                    "(the visible endpoint should drive rounds 1..N-1 as host)",
+                    output)
+    reads = _reads(output)
+    if not any(r == "FINISHED" and c == "0" for r, c in reads):
+        return fail(f"[FINISHED-joiner] launcher never read reason=FINISHED result=0; "
+                    f"saw {reads}", output)
     return None
 
 
@@ -301,19 +353,22 @@ def main() -> int:
             parser.error(f"missing {label}: {path}")
 
     for scenario in (check_left_charselect, check_left_remote_vacate,
-                     check_error, check_left_mid_cancel, check_finished):
+                     check_error, check_left_mid_cancel, check_finished,
+                     check_finished_joiner):
         result = scenario(binary, rom, args.verbose)
         if result is not None:
             return result
 
     print(
         "PASS online session-end: the PD-T6d engine->launcher FINISH/RETURN "
-        "handshake proved all five end reasons end-to-end (engine note + launcher "
-        "read + clean return): FINISHED (host A:FINISH on the final standings, exit "
-        "0), LEFT via CHARSELECT backout (exit 0, no race booted), LEFT via "
-        "remote-vacated pre-START (Minor-3; debounced, exit 0, no race booted), LEFT "
-        "via mid-tournament cancel (Minor-4; clean return replacing the re-front, "
-        "exit 0), and ERROR via the wall-clock watchdog (nonzero exit, reason=ERROR).")
+        "handshake proved every end reason end-to-end (engine note + launcher "
+        "read + clean return): FINISHED as HOST (A:FINISH on the final standings, "
+        "exit 0), FINISHED as JOINER (IMPORTANT-1: the non-host FOLLOWS the host out "
+        "of the final standings instead of parking, exit 0), LEFT via CHARSELECT "
+        "backout (exit 0, no race booted), LEFT via remote-vacated pre-START "
+        "(Minor-3; debounced, exit 0, no race booted), LEFT via mid-tournament "
+        "cancel (Minor-4/T6h2c; clean return replacing the re-front, exit 0), and "
+        "ERROR via the wall-clock watchdog (nonzero exit, reason=ERROR).")
     return 0
 
 
