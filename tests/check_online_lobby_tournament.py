@@ -301,6 +301,11 @@ def main() -> int:
                 "MDKR_TEST_ONLINE_LOBBY_START": "1",
                 "MDKR_TEST_ONLINE_LOBBY_TOURNAMENT": "1",
                 "MDKR_TEST_ONLINE_RESULTS_HOST_PRESS": "1",
+                # PD-T6f: the final-standings FINISH now detours through the native
+                # champion CEREMONY before FINISHED. Skip its (bounded) real-time
+                # hold so this lane's frame budget/counts are preserved -- FINISHED
+                # still fires exactly once after the (near-instant) ceremony.
+                "MDKR_TEST_ONLINE_CEREMONY_SKIP": "1",
             })
     except subprocess.TimeoutExpired as error:
         return fail(f"tournament run timed out (a compose/re-cycle stall would look "

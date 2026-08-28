@@ -36,6 +36,7 @@
                                           mdkr_online_trackselect_cup_track */
 #include "online/online_race_boot.h"   /* PD-T4 direct race boot (extracted) */
 #include "online/online_results.h"     /* PD-T5 native RESULTS/STANDINGS phase */
+#include "online/online_ceremony.h"    /* PD-T6f native champion CEREMONY phase */
 
 /* The engine's live game-mode selector. Defined (external linkage) in
  * thread3_main.c; no shared header declares it, so the session declares the
@@ -764,8 +765,11 @@ static bool online_session_detect_remote_vacated(const char *where) {
  *     the live-path platform_request_exit(0) with the resident return. PD-T5
  *     gates all of that behind MDKR_TEST_ONLINE_RESIDENT so only the scripted
  *     soak re-enters and every live lane still exits unchanged.
- *   - The champion CEREMONY 3D cutscene (the MDKR_ONLINE_SESSION_CEREMONY phase,
- *     still default:-swallowed below): the final STANDINGS holds in its place.
+ *   - (PD-T6f, now wired) The champion CEREMONY: a native 2D celebration of the
+ *     cup champion (online_ceremony.c) that the final-standings FINISH now detours
+ *     into before the FINISHED handshake -- a bounded, auto-advancing screen that
+ *     falls into the SAME FINISHED note + exit(0) below (fired exactly once, after
+ *     the ceremony). No 3D cutscene / offline trophy cinematic is entered.
  *   - (PD-T6d, now wired) The engine->launcher return handshake: a RESULTS FINISH,
  *     a CHARSELECT backout, a pre-START remote-vacate, or a mid-tournament cancel
  *     notes an end reason (mdkr_party_link_note_session_end) + platform_request_exit,
@@ -1314,27 +1318,55 @@ void mdkr_online_session_tick(s32 updateRate) {
              * Online Room. */
             mdkr_online_results_exit();
             if (sOnlineSession.resultsIsFinal) {
-                mdkr_party_link_note_session_end(
-                    MDKR_PARTY_LINK_SESSION_END_FINISHED);
+                /* PD-T6f DETOUR: the tournament is over, so instead of the FINISHED
+                 * handshake firing HERE, run the native champion CEREMONY first.
+                 * The FINISHED note + platform_request_exit(0) below moved INTACT
+                 * into the CEREMONY case, so it still fires EXACTLY ONCE (with the
+                 * same reason/result the launcher reads) once the celebration ends.
+                 * The ceremony reads the champion from the SAME snapshot + sort the
+                 * final STANDINGS just showed. */
+                sOnlineSession.phase = MDKR_ONLINE_SESSION_CEREMONY;
+                mdkr_online_ceremony_enter();
                 fprintf(stderr,
-                        "[online-session] FINISHED: final standings A:FINISH -> "
-                        "return to room (exit 0)\n");
+                        "[online-session] phase=CEREMONY: final standings A:FINISH "
+                        "-> champion celebration (FINISHED deferred until it "
+                        "ends)\n");
             } else {
                 /* Non-final local back-out = a mid-tournament LEFT. (The scripted
                  * resident lanes never press B, so this fires only for a live
-                 * human / a descriptor-less back-out.) */
+                 * human / a descriptor-less back-out.) The ceremony is FINAL-only,
+                 * so this path is unchanged: it exits immediately. */
                 mdkr_party_link_note_session_end(
                     MDKR_PARTY_LINK_SESSION_END_LEFT);
                 fprintf(stderr,
                         "[online-session] LEFT: non-final results back-out -> "
                         "return to room (exit 0)\n");
+                platform_request_exit(0);
             }
+        }
+        break;
+    }
+    case MDKR_ONLINE_SESSION_CEREMONY: {
+        /* PD-T6f: the native champion celebration, entered from the final-standings
+         * FINISH above. It is a bounded, auto-advancing screen (timer fires for
+         * every endpoint; a host may skip early; a remote vacate ends it promptly),
+         * so it can NEVER hang the session. When it ends (ADVANCE/LEAVE), fall into
+         * the EXACT PD-T6d FINISHED handshake the RESULTS LEAVE used to fire inline
+         * -- freed screen assets, one FINISHED note, one platform_request_exit(0). */
+        MdkrOnlineCeremonyResult r = mdkr_online_ceremony_tick(updateRate);
+        if (r != MDKR_ONLINE_CEREMONY_STAY) {
+            mdkr_online_ceremony_exit();
+            mdkr_party_link_note_session_end(
+                MDKR_PARTY_LINK_SESSION_END_FINISHED);
+            fprintf(stderr,
+                    "[online-session] FINISHED: final standings A:FINISH -> "
+                    "return to room (exit 0)\n");
             platform_request_exit(0);
         }
         break;
     }
     default:
-        /* CEREMONY (the champion cutscene) arrives in PD-T6. */
+        /* Every phase is handled above; this stays a defensive no-op. */
         break;
     }
 }

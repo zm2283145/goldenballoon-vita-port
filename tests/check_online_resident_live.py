@@ -192,6 +192,10 @@ def main() -> int:
                 "MDKR_APP_TEST_ONLINE_LIVE_RESIDENT": str(args.races),
                 "MDKR_APP_TEST_ONLINE_MODE": "tournament",
                 "MDKR_TEST_ONLINE_RESULTS_HOST_PRESS": "1",
+                # PD-T6f: the final standings now detours through the champion
+                # CEREMONY before the FINISHED handshake this lane asserts; skip its
+                # bounded hold so the resident frame budget is preserved.
+                "MDKR_TEST_ONLINE_CEREMONY_SKIP": "1",
             })
     except subprocess.TimeoutExpired as error:
         return fail(f"engine run timed out (a resident stall would look like "

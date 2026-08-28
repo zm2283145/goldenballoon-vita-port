@@ -152,6 +152,9 @@ def check_single_endpoint_advance(binary: Path, rom: Path, ticks: int,
             "MDKR_TEST_ONLINE_LOBBY_TOURNAMENT": "1",
             "MDKR_TEST_ONLINE_RESULTS_HOST_PRESS": "1",
             "MDKR_APP_TEST_ONLINE_SINGLE_ENDPOINT": "1",
+            # PD-T6f: skip the champion CEREMONY's bounded hold so this lane's
+            # single-endpoint frame budget + FINISHED assertion are preserved.
+            "MDKR_TEST_ONLINE_CEREMONY_SKIP": "1",
         })
     for marker in FORBIDDEN:
         if marker in output:

@@ -54,6 +54,10 @@
 #include "PR/os_cont.h" /* A_BUTTON / START_BUTTON */
 #include "net/party_link.h"
 #include "net/online_race_results.h"
+#include "online/online_standings.h" /* PD-T6f: the ONE seat-ranking sort, shared
+                                        DRY with online_ceremony.c so the champion
+                                        the CEREMONY crowns is byte-for-byte the
+                                        seat this screen ranks #1. */
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -404,7 +408,7 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
     u8 order[RES_SLOTS];
     u8 lastpl[RES_SLOTS];
     unsigned nseats = 0u;
-    unsigned i, j;
+    unsigned i;
     s32 rowY = 64;
     char line[64];
 
@@ -422,24 +426,17 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
     /* Collect the occupied seats + their (reducer-accrued) points from the
      * snapshot, then selection-sort by points descending, tie-broken on THIS
      * race's finish (lower last_placement wins) so equal totals are not
-     * host-biased by seat order. */
-    for (i = 0u; i < RES_SLOTS; i++) {
-        if (haveSnap && i < MDKR_PARTY_LINK_SEATS && snap->seats[i].occupied) {
-            order[nseats] = (u8) i;
-            points[nseats] = snap->points[i];
-            lastpl[nseats] = snap->last_placements[i];
-            nseats++;
-        }
-    }
-    for (i = 0u; i + 1u < nseats; i++) {
-        for (j = i + 1u; j < nseats; j++) {
-            bool swap = (points[j] > points[i]) ||
-                        (points[j] == points[i] && lastpl[j] < lastpl[i]);
-            if (swap) {
-                u16 tp = points[i]; points[i] = points[j]; points[j] = tp;
-                { u8 to = order[i]; order[i] = order[j]; order[j] = to; }
-                { u8 tl = lastpl[i]; lastpl[i] = lastpl[j]; lastpl[j] = tl; }
-            }
+     * host-biased by seat order. PD-T6f: the collect+sort is the shared
+     * mdkr_online_standings_compute() helper (byte-identical to the loop that
+     * lived here) so the CEREMONY's champion always agrees with this #1. */
+    {
+        MdkrOnlineStandings st;
+        mdkr_online_standings_compute(snap, haveSnap, &st);
+        nseats = st.count;
+        for (i = 0u; i < nseats; i++) {
+            order[i] = st.order[i];
+            points[i] = st.points[i];
+            lastpl[i] = st.lastpl[i];
         }
     }
 
