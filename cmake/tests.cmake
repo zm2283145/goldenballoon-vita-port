@@ -373,6 +373,23 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME adventure_party_spawn COMMAND mdkr_adventure_party_spawn_test)
 
+    # Adventure Party runtime singleton (AP-06a, controller ruling R12): the one
+    # process-wide session and the two queries adapters and save_state reach it
+    # through. Links adventure_party_state.c because the lifecycle assertions
+    # drive a real FORM through the reducer. Compiled directly and never keyed on
+    # MDKR_ADVENTURE_PARTY_OMIT, so it exercises the real runtime on both arms.
+    add_executable(mdkr_adventure_party_runtime_test
+        ${CMAKE_SOURCE_DIR}/tests/test_adventure_party_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_state.c)
+    target_include_directories(mdkr_adventure_party_runtime_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_adventure_party_runtime_test PRIVATE m)
+    endif()
+    add_test(NAME adventure_party_runtime
+        COMMAND mdkr_adventure_party_runtime_test)
+
     # Pack discovery, load order and path resolution. fs_utf8.c is a real link
     # dependency, not decoration: path access goes through mdkr_fopen_utf8 and
     # mdkr_path_query_utf8 so the Windows arm inherits the existing UTF-8
@@ -496,9 +513,16 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     # or save_codec.c: a save state is not the progress save, and the two must
     # not be able to become each other. The truncation sweep writes and re-reads
     # a real file at every offset, so it needs no ROM and no window.
+    # The adventure_party runtime + state sources are here because the
+    # party-active refusal is wired to the runtime singleton: the test drives a
+    # real session through it to prove validate()/read() fail closed while a
+    # party is live, and pass unchanged otherwise. Still NOTHING from
+    # save_container.c or save_codec.c — the two save formats stay separate.
     add_executable(mdkr_save_state_container_test
         ${CMAKE_SOURCE_DIR}/tests/test_save_state_container.c
-        ${CMAKE_SOURCE_DIR}/platform/save_state.c)
+        ${CMAKE_SOURCE_DIR}/platform/save_state.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_state.c)
     target_include_directories(mdkr_save_state_container_test PRIVATE
         ${CMAKE_SOURCE_DIR}/platform)
     if(NOT MSVC)

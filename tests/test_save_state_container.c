@@ -14,6 +14,9 @@
  */
 #include "save_state.h"
 
+#include "adventure_party/adventure_party_runtime.h"
+#include "adventure_party/adventure_party_state.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -687,6 +690,97 @@ static void test_unterminated_fields_refused(void) {
     remove(path);
 }
 
+/* ---------------------------------------------------------------- 9 */
+
+/* A save state must fail closed while an Adventure Party session is live: the
+ * container would omit the native roster/generation state, so validation (which
+ * the restore/read path routes through) refuses with a dedicated reason. With no
+ * session — and, in the OMIT build, with the module compiled out — the guard is
+ * a no-op and every other refusal keeps its exact meaning. */
+static AdventurePartyEvent party_form_event(void) {
+    AdventurePartyEvent e;
+    memset(&e, 0, sizeof e);
+    e.kind = ADVENTURE_PARTY_EVENT_FORM;
+    e.enabled = 1;
+    e.adventure_selected = 1;
+    e.winner_seat = ADVENTURE_PARTY_NO_SEAT;
+    e.roster.participant_count = 3;
+    e.roster.seat[0] = 0;
+    e.roster.seat[1] = 1;
+    e.roster.seat[2] = 2;
+    e.roster.character[0] = 1;
+    e.roster.character[1] = 2;
+    e.roster.character[2] = 3;
+    return e;
+}
+
+static void test_party_active_refuses(void) {
+    char path[512];
+    MdkrSaveStateHeader header = fixture_header();
+    MdkrSaveStateHeader read_back;
+    uint8_t buffer[SCRATCH_BYTES];
+    char err[ERR_SIZE];
+
+    adventure_party_runtime_reset();
+
+    /* Inactive direction: with no party, validation is exactly as it was — a
+     * matching session passes, so the guard adds nothing when it must not. */
+    err[0] = '\0';
+    CHECK_REASON(mdkr_save_state_validate(&header, "us.v80", "1.0.6", err,
+                                          sizeof(err)) == MDKR_SAVE_STATE_OK,
+                 err);
+
+    /* Write a genuine, loadable file to prove the refusal is the party guard
+     * and not some other read failure. */
+    temp_path(path, sizeof(path), "party_active.mdkrstate");
+    err[0] = '\0';
+    CHECK_REASON(mdkr_save_state_write(path, &header, g_payload, err,
+                                       sizeof(err)) == 0,
+                 err);
+    err[0] = '\0';
+    CHECK_REASON(mdkr_save_state_read(path, &read_back, buffer, sizeof(buffer),
+                                      err, sizeof(err)) == MDKR_SAVE_STATE_OK,
+                 err);
+
+    /* Active direction: form a party through the runtime, then the same header
+     * and the same file are refused with the dedicated reason. */
+    {
+        AdventurePartyEvent form = party_form_event();
+        CHECK(adventure_party_session_apply(adventure_party_runtime_session(),
+                                            &form) == ADVENTURE_PARTY_OK);
+        CHECK(adventure_party_runtime_is_active() == 1);
+    }
+
+    err[0] = '\0';
+    CHECK(mdkr_save_state_validate(&header, "us.v80", "1.0.6", err,
+                                   sizeof(err)) == MDKR_SAVE_STATE_ERR_PARTY_ACTIVE);
+    CHECK_REASON(contains(err, "party"), err);
+    CHECK(strchr(err, '\n') == NULL); /* one line, like every other refusal */
+
+    /* Restore fails closed too: read() routes through validate(), so a perfectly
+     * good file is refused for the same reason while the party is live. */
+    memset(&read_back, 0x5A, sizeof(read_back));
+    err[0] = '\0';
+    CHECK(mdkr_save_state_read(path, &read_back, buffer, sizeof(buffer), err,
+                              sizeof(err)) == MDKR_SAVE_STATE_ERR_PARTY_ACTIVE);
+    CHECK_REASON(contains(err, "party"), err);
+
+    /* Leaving the party lifts the refusal with nothing else changed: the same
+     * header validates again and the same file loads. */
+    adventure_party_runtime_reset();
+    CHECK(adventure_party_runtime_is_active() == 0);
+    err[0] = '\0';
+    CHECK_REASON(mdkr_save_state_validate(&header, "us.v80", "1.0.6", err,
+                                          sizeof(err)) == MDKR_SAVE_STATE_OK,
+                 err);
+    err[0] = '\0';
+    CHECK_REASON(mdkr_save_state_read(path, &read_back, buffer, sizeof(buffer),
+                                      err, sizeof(err)) == MDKR_SAVE_STATE_OK,
+                 err);
+
+    remove(path);
+}
+
 /* ---------------------------------------------------------------- main */
 
 typedef void (*TestFn)(void);
@@ -743,6 +837,8 @@ int main(void) {
         test_payload_larger_than_buffer, 7u);
     run("format version is checked, reason names both versions",
         test_format_version_checked, 8u);
+    run("an active Adventure Party refuses save states, both directions",
+        test_party_active_refuses, 9u);
 
     before = failures;
     test_crc32_is_standard();

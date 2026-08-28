@@ -426,6 +426,7 @@ if(NOT MDKR_ADVENTURE_PARTY_OMIT)
         ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_policy.c # capability table + arbitration + authority
         ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_trace.c  # AP-05 read-only trace formatters + emit wrappers
         ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_spawn.c  # AP-07 deterministic formation candidate planner (pure)
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_runtime.c # AP-06a process-wide session singleton (R12); save_state consumes its is_active query
     )
 endif()
 # GL-only support TUs — the browser build is WebGPU-only, so they'd only pull in
