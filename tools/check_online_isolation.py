@@ -65,6 +65,7 @@ LEAK_SYMBOLS = (
     "party_link",
     "mdkr_online_session",
     "mdkr_online_charselect",
+    "mdkr_online_vehicleselect",
     "mdkr_online_trackselect",
     "mdkr_online_ceremony",
     "mdkr_online_results_",

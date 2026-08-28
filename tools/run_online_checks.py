@@ -42,6 +42,7 @@ LANES = (
     "check_online_engine_boot_direct.py",   # golden race hash 7da2ea67 pinned
     "check_online_session_boot.py",
     "check_online_charselect.py",
+    "check_online_vehicleselect.py",
     "check_online_trackselect.py",
     "check_online_session_results.py",
     "check_online_resident_live.py",
