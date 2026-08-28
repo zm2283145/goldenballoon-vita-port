@@ -1078,6 +1078,13 @@ void drawAboutPanel(LauncherState &s, LauncherAction &out) {
 
 LauncherAction Launcher::draw(AppHost &host) {
     if (state_.characterPreviewDispatched) {
+        SettingsCharacterPreviewDisposition disposition;
+        disposition.launcherOwnedCapture =
+            state_.characterPreviewCaptureLauncherOwned;
+        disposition.portraitSourceHandoff =
+            state_.characterPreviewPortraitSourceHandoff;
+        disposition.interactiveStudio =
+            state_.characterPreviewInteractiveStudio;
         Settings_publishCharacterPreviewResult(
             state_.characterPreviewPackage,
             state_.characterPreviewSourceSha256,
@@ -1088,11 +1095,7 @@ LauncherAction Launcher::draw(AppHost &host) {
                 : state_.characterPreviewFitSha256,
             state_.characterPreviewPresentationSha256,
             state_.characterPreviewCapturePng,
-            SettingsCharacterPreviewDisposition{
-                state_.characterPreviewCaptureLauncherOwned,
-                state_.characterPreviewPortraitSourceHandoff,
-                state_.characterPreviewInteractiveStudio,
-            },
+            disposition,
             state_.characterPreviewResult);
         Launcher_requestTab(
             state_, kLauncherPanelCharacterWorkshop, kLauncherTabPlayer);

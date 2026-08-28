@@ -5799,6 +5799,30 @@ std::string missingCharacterSemantics(
     return missing;
 }
 
+struct CharacterPreviewRouteOptions {
+    bool autoReturnAfterCapture = false;
+    SettingsCharacterPreviewDisposition disposition;
+};
+
+CharacterPreviewRouteOptions interactiveCharacterStudioRoute() {
+    CharacterPreviewRouteOptions options;
+    options.disposition.interactiveStudio = true;
+    return options;
+}
+
+CharacterPreviewRouteOptions inlineCharacterStillRoute() {
+    CharacterPreviewRouteOptions options;
+    options.autoReturnAfterCapture = true;
+    options.disposition.launcherOwnedCapture = true;
+    return options;
+}
+
+CharacterPreviewRouteOptions portraitCharacterCaptureRoute() {
+    CharacterPreviewRouteOptions options = inlineCharacterStillRoute();
+    options.disposition.portraitSourceHandoff = true;
+    return options;
+}
+
 void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              MdkrCharacterPreviewContext context,
                              int players,
@@ -5815,10 +5839,7 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              MdkrCharacterPreviewPose transitionFromPose =
                                  MDKR_CHARACTER_PREVIEW_POSE_LIVE,
                              unsigned transitionFromPhaseMilli = 0u,
-                             bool autoReturnAfterCapture = false,
-                             bool launcherOwnedCapture = false,
-                             bool interactiveStudio = false,
-                             bool portraitSourceHandoff = false);
+                             const CharacterPreviewRouteOptions &options = {});
 
 bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                             bool compact) {
@@ -7946,8 +7967,8 @@ bool drawCharacterTuningEditor(int player,
                     MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u, 0, 0,
                     MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL, nullptr,
                     MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE,
-                    MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u, false, false,
-                    true);
+                    MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u,
+                    interactiveCharacterStudioRoute());
                 std::fprintf(
                     stderr,
                     "[app-ui] exact-character-studio smoke requested package=%s context=%u\n",
@@ -7963,8 +7984,8 @@ bool drawCharacterTuningEditor(int player,
                     MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u, 0, 0,
                     MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL, nullptr,
                     MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE,
-                    MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u, false, false,
-                    true);
+                    MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u,
+                    interactiveCharacterStudioRoute());
             }
             if (!exactPreviewReady) ImGui::EndDisabled();
             ui::SpeakFocusedItem(
@@ -7998,7 +8019,7 @@ bool drawCharacterTuningEditor(int player,
                             capturePath.c_str(),
                             MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE,
                             MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u,
-                            true, true);
+                            inlineCharacterStillRoute());
                     }
                 }
                 if (!exactPreviewReady) ImGui::EndDisabled();
@@ -8974,10 +8995,13 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
                              MdkrCharacterPreviewCaptureKind captureKind,
                              MdkrCharacterPreviewPose transitionFromPose,
                              unsigned transitionFromPhaseMilli,
-                             bool autoReturnAfterCapture,
-                             bool launcherOwnedCapture,
-                             bool interactiveStudio,
-                             bool portraitSourceHandoff) {
+                             const CharacterPreviewRouteOptions &options) {
+    const bool autoReturnAfterCapture = options.autoReturnAfterCapture;
+    const bool launcherOwnedCapture =
+        options.disposition.launcherOwnedCapture;
+    const bool interactiveStudio = options.disposition.interactiveStudio;
+    const bool portraitSourceHandoff =
+        options.disposition.portraitSourceHandoff;
     const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
     const std::string testTuningSignature = characterTestTuningSignature(
         entry, tuning, static_cast<unsigned>(context - 1));
@@ -12691,12 +12715,12 @@ void drawCharacterTestEvidenceMatrix(
                     }
                 }
             } else {
+                SettingsCharacterPreviewDisposition disposition;
+                disposition.launcherOwnedCapture = portraitHandoff;
+                disposition.portraitSourceHandoff = portraitHandoff;
                 Settings_publishCharacterPreviewResult(
                     entry->id, source, fit, presentation, capturePath,
-                    SettingsCharacterPreviewDisposition{
-                        portraitHandoff, portraitHandoff, false,
-                    },
-                    result);
+                    disposition, result);
             }
             const auto session = g_characterPreviewResults.find(entry->id);
             const CharacterTestEvidenceStore::Evidence *latest =
@@ -14809,7 +14833,7 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
                     capturePath.c_str(),
                     MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA,
                     MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u,
-                    true, true, false, true);
+                    portraitCharacterCaptureRoute());
             }
         }
         if (!portraitPreviewReady) ImGui::EndDisabled();
