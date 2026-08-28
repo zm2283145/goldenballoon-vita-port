@@ -691,6 +691,46 @@ static bool online_session_vehicleselect_enabled(void) {
     return true; /* pure live play: the player chooses their vehicle */
 }
 
+/* T4: whether the native "more races" chooser owns the RESULTS terminal. ON for
+ * real interactive play (and the dedicated chooser lane, which forces it via its
+ * own seam); OFF for EVERY pre-existing scripted/loopback lane -- each sets one of
+ * these "entry" seams while real play sets none -- so the terminal keeps its exact
+ * historical behaviour (A: FINISH / joiner self-advance / tournament round
+ * re-cycle) whenever the chooser is off, and only real play + the T4 lane get the
+ * replay menu. The SAME discipline online_session_vehicleselect_enabled() models. */
+static bool online_session_results_chooser_enabled(void) {
+    if (mdkr_online_results_chooser_test_active()) {
+        return true; /* the dedicated chooser lane forces the menu on */
+    }
+    if (mdkr_online_results_test_active() ||                    /* RESIDENT soak */
+        getenv("MDKR_TEST_ONLINE_LOBBY_START") != NULL ||
+        getenv("MDKR_TEST_ONLINE_LOBBY_TOURNAMENT") != NULL ||
+        getenv("MDKR_APP_TEST_ONLINE_LIVE") != NULL ||
+        getenv("MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START") != NULL ||
+        getenv("MDKR_APP_TEST_ONLINE_LIVE_RESIDENT") != NULL ||
+        getenv("MDKR_APP_TEST_ONLINE_ROOM_READY_PROBE") != NULL ||
+        getenv("MDKR_APP_TEST_ONLINE_ROOM_READY_REARM_PROBE") != NULL ||
+        getenv("MDKR_APP_TEST_ONLINE_ROOM_READY_REARM") != NULL ||
+        getenv("MDKR_APP_TEST_ONLINE_LOBBY_WEDGE") != NULL) {
+        return false;
+    }
+    return true; /* real interactive play: the chooser is the terminal */
+}
+
+/* Short name of a committed "more races" choice, for the routing witness. */
+static const char *online_session_chooser_name(MdkrOnlineResultsChoice choice) {
+    switch (choice) {
+    case MDKR_ONLINE_RESULTS_CHOICE_RACE_AGAIN:     return "race again";
+    case MDKR_ONLINE_RESULTS_CHOICE_CHANGE_TRACK:   return "change track";
+    case MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CUP:     return "change cup";
+    case MDKR_ONLINE_RESULTS_CHOICE_CHANGE_MODE:    return "change mode";
+    case MDKR_ONLINE_RESULTS_CHOICE_NEW_TOURNAMENT: return "new tournament";
+    case MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CHAR:    return "change character";
+    case MDKR_ONLINE_RESULTS_CHOICE_JOINER_FOLLOW:  return "joiner follow";
+    default:                                        return "?";
+    }
+}
+
 /* True once the LOCAL seat has both a locked character and its ready flag while
  * the room is still in LOBBY -- the signal that CHARSELECT is done and the
  * host/joiner should move on to the native TRACKSELECT screen. */
@@ -1433,7 +1473,9 @@ void mdkr_online_session_tick(s32 updateRate) {
                  * the ADVANCE decision below is not fooled by the REMATCH advancing
                  * race_index before the screen returns ADVANCE. */
                 sOnlineSession.resultsIsFinal = isFinal;
-                mdkr_online_results_enter(isFinal, raceIndex);
+                mdkr_online_results_enter(
+                    isFinal, raceIndex,
+                    online_session_results_chooser_enabled() ? 1u : 0u);
             }
             sOnlineSession.resultsPending = 0u;
             /* the RESULTS-phase REMATCH-convergence hold is the
@@ -1491,6 +1533,79 @@ void mdkr_online_session_tick(s32 updateRate) {
              * ADVANCE-while-!shouldAdvance busy-return that would re-tick a loaded
              * screen forever. */
             mdkr_online_results_exit();
+            {
+                /* T4 "more races" chooser routing. When the host committed a replay
+                 * option (or a joiner followed the host), the screen returned ADVANCE
+                 * only once its REMATCH drove the room out of RESULTS -> LOBBY. Route
+                 * back to the right native screen so the host re-locks the new config
+                 * over the existing SET_* feed / re-races the same config. choice ==
+                 * NONE for every pre-existing ADVANCE (the tournament round re-cycle /
+                 * scripted soak), which falls through to the historical path below
+                 * BYTE-FOR-BYTE unchanged. */
+                MdkrOnlineResultsChoice choice = mdkr_online_results_choice();
+                if (choice != MDKR_ONLINE_RESULTS_CHOICE_NONE) {
+                    switch (choice) {
+                    case MDKR_ONLINE_RESULTS_CHOICE_CHANGE_TRACK:
+                    case MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CUP:
+                    case MDKR_ONLINE_RESULTS_CHOICE_CHANGE_MODE:
+                    case MDKR_ONLINE_RESULTS_CHOICE_NEW_TOURNAMENT:
+                        /* re-front TRACKSELECT: the host re-locks the new track/cup/
+                         * mode over SET_CONFIG_TRACK / SET_CUP / SET_MODE (SET_CUP +
+                         * SET_MODE reset the tournament series to round 1). */
+                        if (!sOnlineSession.liveResident) {
+                            unload_level_game();
+                        }
+                        sOnlineSession.phase = MDKR_ONLINE_SESSION_TRACKSELECT;
+                        mdkr_online_trackselect_enter();
+                        fprintf(stderr,
+                                "[online-session] results -> trackselect (chooser: "
+                                "%s)\n",
+                                online_session_chooser_name(choice));
+                        break;
+                    case MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CHAR:
+                    case MDKR_ONLINE_RESULTS_CHOICE_JOINER_FOLLOW:
+                        /* re-front CHARSELECT (-> VEHICLE -> TRACKSELECT): change
+                         * character + vehicle between races. The display-only joiner
+                         * follows here too -- CHARSELECT is the safe universal
+                         * re-selection entry that mirrors the host's config downstream. */
+                        if (!sOnlineSession.liveResident) {
+                            unload_level_game();
+                        }
+                        sOnlineSession.phase = MDKR_ONLINE_SESSION_CHARSELECT;
+                        sCharselectLeaveWarned = 0u;
+                        mdkr_online_charselect_enter();
+                        fprintf(stderr,
+                                "[online-session] results -> charselect (chooser: "
+                                "%s)\n",
+                                online_session_chooser_name(choice));
+                        break;
+                    case MDKR_ONLINE_RESULTS_CHOICE_RACE_AGAIN:
+                    default:
+                        /* re-race the SAME config. T5 DEPENDENCY: the in-process
+                         * single-race re-cycle that actually re-boots is T5's job; T4
+                         * issues the REMATCH + routes here. Live residency re-waits
+                         * for the launcher re-cycle (the tournament round machinery);
+                         * the scripted soak re-boots inline off the frozen descriptor. */
+                        if (sOnlineSession.liveResident) {
+                            sOnlineSession.phase = MDKR_ONLINE_SESSION_LOBBY_WAIT;
+                            sOnlineSession.desclessWaitDeadlineNs = 0u;
+                            online_session_descless_wallclock_arm();
+                            fprintf(stderr,
+                                    "[online-session] results -> re-race same config "
+                                    "(chooser: race again; LIVE re-cycle awaits "
+                                    "launcher -- T5 completes single-race)\n");
+                        } else {
+                            unload_level_game();
+                            fprintf(stderr,
+                                    "[online-session] results -> re-race same config "
+                                    "(chooser: race again)\n");
+                            online_session_boot_race();
+                        }
+                        break;
+                    }
+                    break; /* chooser routing handled -- skip the pre-existing path */
+                }
+            }
             /* the RESULTS->next-race decision. A DESCRIPTOR-LESS
              * (lobby-start) session has no MDKR_APP_TEST_ONLINE_LIVE_RESIDENT env
              * (sResidentRaces == 0), so `raceCount < sResidentRaces` is always false

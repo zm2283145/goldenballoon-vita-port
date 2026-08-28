@@ -94,10 +94,47 @@ extern char *gRacePlacementsArray[8];
                                    * (~0.5s), so a host still mashing at the finish
                                    * line cannot skip the results on frame one. */
 
-/* Two visible stages of the post-race screen. A single race stops at RESULTS
- * (there is no cup standings); a tournament walks RESULTS -> STANDINGS. */
+/* Visible stages of the post-race screen. A single race shows RESULTS; a
+ * tournament walks RESULTS -> STANDINGS. When the native "more races" chooser is
+ * armed (real play / the T4 lane) the SESSION DECISION POINT (a single race's
+ * RESULTS, or a tournament's FINAL standings) hands to the CHOOSER stage instead
+ * of the old terminal hold -- the full retail replay menu (online_results.h). */
 #define RES_STAGE_RESULTS 0u
 #define RES_STAGE_STANDINGS 1u
+#define RES_STAGE_CHOOSER 2u
+
+/* Single-race RESULTS dwell before the chooser fronts, so the finishing order is
+ * readable first (host A skips it early); ~2s at 60Hz. */
+#define RES_CHOOSER_SINGLE_DWELL 120u
+
+/* One entry in a mode's "more races" option list: the on-screen label + the choice
+ * the session routes on. The list is per-mode (single offers CHANGE TRACK, a
+ * tournament offers CHANGE CUP -- the retail-faithful pick), and every distinct
+ * MdkrOnlineResultsChoice is reachable across the two. */
+typedef struct MdkrResChooserOption {
+    const char *label;
+    u8 choice; /* MdkrOnlineResultsChoice */
+} MdkrResChooserOption;
+
+/* SINGLE-race chooser: pick a track, flip to a tournament, or replay the race. */
+static const MdkrResChooserOption sChooserSingle[] = {
+    {"RACE AGAIN", (u8) MDKR_ONLINE_RESULTS_CHOICE_RACE_AGAIN},
+    {"CHANGE TRACK", (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_TRACK},
+    {"CHANGE MODE", (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_MODE},
+    {"NEW TOURNAMENT", (u8) MDKR_ONLINE_RESULTS_CHOICE_NEW_TOURNAMENT},
+    {"CHANGE CHARACTER", (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CHAR},
+    {"FINISH", (u8) MDKR_ONLINE_RESULTS_CHOICE_FINISH},
+};
+/* TOURNAMENT chooser: pick a cup, flip to single, replay/new the cup. */
+static const MdkrResChooserOption sChooserTournament[] = {
+    {"RACE AGAIN", (u8) MDKR_ONLINE_RESULTS_CHOICE_RACE_AGAIN},
+    {"CHANGE CUP", (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CUP},
+    {"CHANGE MODE", (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_MODE},
+    {"NEW TOURNAMENT", (u8) MDKR_ONLINE_RESULTS_CHOICE_NEW_TOURNAMENT},
+    {"CHANGE CHARACTER", (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CHAR},
+    {"FINISH", (u8) MDKR_ONLINE_RESULTS_CHOICE_FINISH},
+};
+#define RES_CHOOSER_MAX 6u
 
 /* Visible countdowns: results 15s, standings 10s. updateRate accumulates in
  * 60ths of a second, so seconds*60. */
@@ -154,6 +191,15 @@ typedef struct MdkrOnlineResultsState {
     u32 stageTicks;   /* countdown accumulator for the current stage */
     u32 pulseTicks;   /* free-running (drives the terminal-hold pulse, never reset) */
     u8 placements[RES_SLOTS]; /* THIS race's canonical-slot -> placement (poll) */
+    /* T4 "more races" chooser (host-driven; joiner mirror). */
+    u8 chooserEnabled;   /* the chooser arms at the session decision point */
+    u8 chooserMode;      /* forward-feed mode cached at chooser entry (option list) */
+    u8 chooserCursor;    /* the host's highlighted option index */
+    u8 chooserCount;     /* number of options in the current mode's list */
+    u8 chooserPrevCursor;/* last cursor drawn (nav SFX edge) */
+    u8 chooserChoice;    /* the committed MdkrOnlineResultsChoice (0 == none yet) */
+    u8 chooserCommitted; /* host committed -> republish the intent to convergence */
+    u8 chooserJoiner;    /* render as the joiner mirror (host-only drives) */
 } MdkrOnlineResultsState;
 
 static MdkrOnlineResultsState sRes;
@@ -172,6 +218,16 @@ static u8 results_joiner_finish_departed(u32 stageTicks);
 static u8 results_joiner_terminal_seam(void);        /* no-seam proof */
 static u8 results_remote_vacate_final_probe(void);   /* probe */
 static u8 results_resident_remote_wins(void);        /* champion-on-disconnect */
+/* T4 chooser seam + stage (test seam resolves at the bottom). */
+static s8 results_chooser_seam_select(void);         /* -1 none / 0..N option idx */
+static void results_chooser_seam_mark_fired(void);   /* one-shot scripted select */
+static u8 results_chooser_seam_show(void);           /* display-only (PNG capture) */
+static u8 results_chooser_seam_joiner(void);         /* force the joiner mirror */
+static u8 results_chooser_seam_single(void);         /* single-race stand-in room */
+static const MdkrResChooserOption *results_chooser_options(u8 *countOut);
+static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot *snap,
+                                                    bool haveSnap, s32 localSeat,
+                                                    s32 updateRate);
 
 /* ======================================================================== *
  * Small helpers
@@ -482,13 +538,15 @@ static void results_witness(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
 /* ======================================================================== *
  * Lifecycle
  * ======================================================================== */
-void mdkr_online_results_enter(u8 isFinalRace, u8 raceIndex) {
+void mdkr_online_results_enter(u8 isFinalRace, u8 raceIndex, u8 chooserEnabled) {
     unsigned i;
 
     memset(&sRes, 0, sizeof(sRes));
     sRes.stage = RES_STAGE_RESULTS;
     sRes.isFinal = isFinalRace ? 1u : 0u;
     sRes.raceIndex = raceIndex;
+    sRes.chooserEnabled = chooserEnabled ? 1u : 0u;
+    sRes.chooserPrevCursor = 0xFFu; /* no chooser cursor drawn yet (nav SFX edge) */
     sRes.prevSecs = 0xFFu; /* no countdown second drawn yet (hurry-up SFX edge) */
     for (i = 0u; i < RES_SLOTS; i++) {
         sRes.placements[i] = RES_PLACE_NONE;
@@ -547,6 +605,10 @@ void mdkr_online_results_enter(u8 isFinalRace, u8 raceIndex) {
             (unsigned) sRes.haveResults, (unsigned) sRes.placements[0],
             (unsigned) sRes.placements[1], (unsigned) sRes.placements[2],
             (unsigned) sRes.placements[3]);
+    /* chooser status on its OWN line so existing lanes' enter-line regexes are
+     * unaffected; the T4 lane reads this + the "chooser: fronted" line. */
+    fprintf(stderr, "[online-results] enter: chooser=%u\n",
+            (unsigned) sRes.chooserEnabled);
 }
 
 void mdkr_online_results_exit(void) {
@@ -568,6 +630,8 @@ void mdkr_online_results_exit(void) {
 typedef struct ResInput {
     u8 advanceEdge;
     u8 bEdge;
+    u8 upEdge;   /* T4 chooser navigation (dpad + stick) */
+    u8 downEdge;
 } ResInput;
 
 static void results_input_live(ResInput *in) {
@@ -575,6 +639,8 @@ static void results_input_live(ResInput *in) {
     memset(in, 0, sizeof(*in));
     in->advanceEdge = (pressed & (A_BUTTON | START_BUTTON)) ? 1u : 0u;
     in->bEdge = (pressed & B_BUTTON) ? 1u : 0u;
+    in->upEdge = (pressed & U_JPAD) ? 1u : 0u;
+    in->downEdge = (pressed & D_JPAD) ? 1u : 0u;
 }
 
 /* Scripted headless input (only under the test seam): the HOST presses ADVANCE
@@ -637,6 +703,260 @@ static void results_publish_rematch(void) {
     mdkr_party_link_intent_publish(&intent);
 }
 
+/* ======================================================================== *
+ * T4 -- native "more races" chooser (host-driven; joiner mirror)
+ *
+ * At the session decision point (a single race's RESULTS, or a tournament's FINAL
+ * standings) the terminal hands to this menu instead of the old binary
+ * continue/leave. The HOST navigates the full retail replay set; the joiner is
+ * display-only (it renders the mirror + "waiting for host" and follows the host's
+ * authoritative choice once the room leaves RESULTS). Every option maps to the
+ * EXISTING party_link reverse-feed intents (REMATCH + SET_MODE); the launcher
+ * reducer already handles them (no new command). See online_results.h for the
+ * option -> intent -> routing table.
+ * ======================================================================== */
+
+/* The current mode's option list + its length (single offers CHANGE TRACK, a
+ * tournament CHANGE CUP -- the retail-faithful pick). */
+static const MdkrResChooserOption *results_chooser_options(u8 *countOut) {
+    if (sRes.chooserMode == RES_MODE_TOURNAMENT) {
+        if (countOut != NULL) {
+            *countOut = (u8) (sizeof(sChooserTournament) /
+                              sizeof(sChooserTournament[0]));
+        }
+        return sChooserTournament;
+    }
+    if (countOut != NULL) {
+        *countOut = (u8) (sizeof(sChooserSingle) / sizeof(sChooserSingle[0]));
+    }
+    return sChooserSingle;
+}
+
+/* The host's committed intent for a more-races option: REMATCH always (return the
+ * room to LOBBY), plus SET_MODE for the mode-changing options. Republished every
+ * tick until the room leaves RESULTS (the convergence model results_publish_rematch
+ * uses). A joiner never calls this (watch-only). */
+static void results_publish_chooser_intent(u8 choice) {
+    MdkrPartyLinkLocalIntent intent;
+    mdkr_party_link_intent_init(&intent);
+    intent.rematch_requested = 1u;
+    if (choice == (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_MODE) {
+        intent.mode = (sRes.chooserMode == RES_MODE_TOURNAMENT)
+                          ? (uint8_t) RES_MODE_SINGLE
+                          : (uint8_t) RES_MODE_TOURNAMENT;
+    } else if (choice == (u8) MDKR_ONLINE_RESULTS_CHOICE_NEW_TOURNAMENT) {
+        intent.mode = (uint8_t) RES_MODE_TOURNAMENT;
+    }
+    mdkr_party_link_intent_publish(&intent);
+}
+
+/* Bounded chooser witness: one line only when the cursor / commit / role changes,
+ * so the headless lane can read the drawn option + role without flooding. */
+static void results_chooser_witness(void) {
+    static u32 sChooserKey = 0xFFFFFFFFu;
+    u32 key = ((u32) sRes.chooserCursor) | ((u32) sRes.chooserMode << 4) |
+              ((u32) sRes.chooserJoiner << 5) | ((u32) sRes.host << 6) |
+              ((u32) sRes.chooserCommitted << 7) |
+              ((u32) sRes.chooserChoice << 8);
+    const MdkrResChooserOption *opts = results_chooser_options(NULL);
+    if (key == sChooserKey) {
+        return;
+    }
+    sChooserKey = key;
+    fprintf(stderr,
+            "[online-results] chooser render mode=%u host=%u joiner=%u cursor=%u "
+            "option=%s committed=%u choice=%u\n",
+            (unsigned) sRes.chooserMode, (unsigned) sRes.host,
+            (unsigned) sRes.chooserJoiner, (unsigned) sRes.chooserCursor,
+            opts[sRes.chooserCursor].label, (unsigned) sRes.chooserCommitted,
+            (unsigned) sRes.chooserChoice);
+}
+
+/* Render the "more races" menu into the engine frame list over the scrolling sky.
+ * Legibility is the shared drop-shadow (mdkr_online_screen_text) the other native
+ * screens use; the highlighted host option pulses gold inside "> <" brackets, the
+ * rest are grey. A joiner shows the same list greyed (no cursor) + a pulsing
+ * "WAITING FOR <host>..." line -- the display-only mirror. */
+static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
+                                   bool haveSnap, s32 localSeat) {
+    const MdkrResChooserOption *opts = results_chooser_options(NULL);
+    s32 tri = mdkr_online_screen_pulse(sRes.pulseTicks);
+    s32 rowY = 92;
+    unsigned i;
+    char line[48];
+
+    (void) localSeat;
+
+    mdkr_online_screen_text(RES_SCREEN_W_HALF, 44, ASSET_FONTS_BIGFONT,
+                            "MORE RACES?", ALIGN_MIDDLE_CENTER, 255, 224, 96);
+    mdkr_online_screen_text(RES_SCREEN_W_HALF, 66, ASSET_FONTS_SMALLFONT,
+                            sRes.chooserMode == RES_MODE_TOURNAMENT
+                                ? (char *) "TOURNAMENT COMPLETE"
+                                : (char *) "RACE COMPLETE",
+                            ALIGN_MIDDLE_CENTER, 200, 200, 255);
+
+    for (i = 0u; i < sRes.chooserCount; i++) {
+        bool selected = (!sRes.chooserJoiner && (u8) i == sRes.chooserCursor);
+        if (selected) {
+            s32 pg = 200 + tri * 3; /* 200..248 gold pulse */
+            (void) snprintf(line, sizeof(line), "> %s <", opts[i].label);
+            mdkr_online_screen_text(RES_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
+                                    line, ALIGN_MIDDLE_CENTER, 255, (u8) pg, 96);
+        } else {
+            s32 c = sRes.chooserJoiner ? 150 : 190;
+            mdkr_online_screen_text(RES_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
+                                    (char *) opts[i].label, ALIGN_MIDDLE_CENTER, c,
+                                    c, c);
+        }
+        rowY += 22;
+    }
+
+    rowY += 6;
+    if (sRes.chooserCommitted) {
+        (void) snprintf(line, sizeof(line), "%s...",
+                        opts[sRes.chooserCursor].label);
+        mdkr_online_screen_text(RES_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
+                                ALIGN_MIDDLE_CENTER, 120, (u8) (170 + tri * 5), 120);
+    } else if (sRes.chooserJoiner) {
+        char host[16];
+        s32 c = 130 + tri * 5;
+        results_host_name(snap, haveSnap, host, sizeof(host));
+        (void) snprintf(line, sizeof(line), "WAITING FOR %.12s...", host);
+        mdkr_online_screen_text(RES_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
+                                ALIGN_MIDDLE_CENTER, c, c, c);
+    } else {
+        mdkr_online_screen_text(RES_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
+                                "A: SELECT   UP/DOWN: MOVE", ALIGN_MIDDLE_CENTER,
+                                255, 255, 255);
+    }
+    results_chooser_witness();
+}
+
+/* One CHOOSER-stage tick: host navigation + commit (-> intent republished to
+ * convergence -> ADVANCE), or the joiner mirror + follow. Returns STAY / ADVANCE
+ * (the session reads mdkr_online_results_choice to route) / LEAVE (FINISH, or the
+ * joiner terminal). */
+static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot *snap,
+                                                    bool haveSnap, s32 localSeat,
+                                                    s32 updateRate) {
+    const MdkrResChooserOption *opts = results_chooser_options(NULL);
+    ResInput in;
+
+    if (updateRate <= 0) {
+        updateRate = 1;
+    }
+    if (sRes.chooserCount == 0u) {
+        (void) results_chooser_options(&sRes.chooserCount);
+    }
+
+    results_gather_input(&in); /* zeroed on the CHOOSER stage under the seams */
+
+    /* HOST navigation (live pad) + the dedicated-lane scripted select. */
+    if (sRes.host && !sRes.chooserJoiner && !sRes.chooserCommitted) {
+        s8 sel = results_chooser_seam_select();
+        if (sel >= 0) {
+            if ((u8) sel < sRes.chooserCount) {
+                sRes.chooserCursor = (u8) sel;
+            }
+            if (sRes.stageTicks >= RES_INPUT_GRACE) {
+                in.advanceEdge = 1u; /* scripted A press */
+            }
+        } else if (!results_chooser_seam_show()) {
+            if (in.upEdge && sRes.chooserCursor > 0u) {
+                sRes.chooserCursor--;
+            }
+            if (in.downEdge && sRes.chooserCursor + 1u < sRes.chooserCount) {
+                sRes.chooserCursor++;
+            }
+        }
+        if (sRes.chooserCursor != sRes.chooserPrevCursor &&
+            sRes.chooserPrevCursor != 0xFFu) {
+            sound_play(RES_SFX_TICK, NULL);
+        }
+    }
+
+    results_chooser_render(snap, haveSnap, localSeat);
+    sRes.chooserPrevCursor = sRes.chooserCursor;
+    sRes.stageTicks += (u32) updateRate;
+    sRes.pulseTicks += (u32) updateRate;
+
+    /* HOST commit. */
+    if (sRes.host && !sRes.chooserJoiner && !sRes.chooserCommitted &&
+        !results_chooser_seam_show() && in.advanceEdge &&
+        sRes.stageTicks >= RES_INPUT_GRACE) {
+        u8 choice = opts[sRes.chooserCursor].choice;
+        sRes.chooserChoice = choice;
+        if (results_chooser_seam_select() >= 0) {
+            results_chooser_seam_mark_fired(); /* one-shot: no soak re-race loop */
+        }
+        sound_play(RES_SFX_ADVANCE, NULL);
+        if (choice == (u8) MDKR_ONLINE_RESULTS_CHOICE_FINISH) {
+            fprintf(stderr,
+                    "[online-results] chooser: committed option=FINISH -> LEAVE\n");
+            return MDKR_ONLINE_RESULTS_LEAVE;
+        }
+        sRes.chooserCommitted = 1u;
+        {
+            u8 mode = (uint8_t) MDKR_PARTY_LINK_MODE_UNSET;
+            if (choice == (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_MODE) {
+                mode = (sRes.chooserMode == RES_MODE_TOURNAMENT)
+                           ? (uint8_t) RES_MODE_SINGLE
+                           : (uint8_t) RES_MODE_TOURNAMENT;
+            } else if (choice ==
+                       (u8) MDKR_ONLINE_RESULTS_CHOICE_NEW_TOURNAMENT) {
+                mode = (uint8_t) RES_MODE_TOURNAMENT;
+            }
+            fprintf(stderr,
+                    "[online-results] chooser: committed option=%s choice=%u "
+                    "intent{rematch=1 mode=%u}\n",
+                    opts[sRes.chooserCursor].label, (unsigned) choice,
+                    (unsigned) mode);
+        }
+    }
+
+    /* HOST committed: republish the intent to convergence; ADVANCE once the room
+     * has left RESULTS (the reducer accepted the REMATCH). */
+    if (sRes.chooserCommitted) {
+        results_publish_chooser_intent(sRes.chooserChoice);
+        results_test_reduce(); /* stand-in reducer (inert in a live run) */
+        if (haveSnap && snap->phase != (uint8_t) RES_PHASE_RESULTS) {
+            fprintf(stderr,
+                    "[online-results] chooser: room left RESULTS -> ADVANCE "
+                    "(choice=%u)\n",
+                    (unsigned) sRes.chooserChoice);
+            return MDKR_ONLINE_RESULTS_ADVANCE;
+        }
+        return MDKR_ONLINE_RESULTS_STAY; /* "<option>..." hold until converged */
+    }
+
+    /* JOINER mirror: display-only. Follow the host's authoritative choice once the
+     * room leaves RESULTS (re-select); else a dwell / local press ends it (the same
+     * terminal self-advance the old joiner had -> ceremony/leave). */
+    if (sRes.chooserJoiner) {
+        if (haveSnap && snap->phase != (uint8_t) RES_PHASE_RESULTS) {
+            sRes.chooserChoice = (u8) MDKR_ONLINE_RESULTS_CHOICE_JOINER_FOLLOW;
+            fprintf(stderr,
+                    "[online-results] chooser: joiner follows host authoritative "
+                    "choice -> ADVANCE (re-select)\n");
+            return MDKR_ONLINE_RESULTS_ADVANCE;
+        }
+        {
+            u8 press = ((in.advanceEdge || in.bEdge) &&
+                        sRes.stageTicks >= RES_INPUT_GRACE)
+                           ? 1u
+                           : 0u;
+            u8 dwell = (sRes.stageTicks >= RES_JOINER_TERMINAL_UNITS) ? 1u : 0u;
+            if (press || dwell) {
+                fprintf(stderr,
+                        "[online-results] chooser: joiner terminal (%s) -> LEAVE\n",
+                        press ? "press" : "dwell");
+                return MDKR_ONLINE_RESULTS_LEAVE;
+            }
+        }
+    }
+    return MDKR_ONLINE_RESULTS_STAY;
+}
+
 MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
     MdkrPartyLinkSnapshot snap;
     bool haveSnap;
@@ -672,6 +992,13 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
         sRes.host = (localSeat >= 0 && snap.seats[localSeat].is_host) ? 1u : 0u;
     }
     tournament = haveSnap && snap.mode == RES_MODE_TOURNAMENT;
+
+    /* T4: once the native "more races" chooser has been fronted it OWNS the tick
+     * (its own render + host list / joiner mirror + intent publish + routing). */
+    if (sRes.stage == RES_STAGE_CHOOSER) {
+        return results_chooser_tick(&snap, haveSnap, localSeat, updateRate);
+    }
+
     limit = (sRes.stage == RES_STAGE_RESULTS) ? RES_RESULTS_UNITS
                                               : RES_STANDINGS_UNITS;
     /* The terminal screen holds (no ADVANCE): the final race's last shown stage
@@ -711,6 +1038,47 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
         sound_play(RES_SFX_TICK, NULL);
     }
     sRes.prevSecs = (u8) (secs > 255u ? 255u : secs);
+
+    /* T4: at the SESSION DECISION POINT hand off to the native "more races" chooser
+     * instead of the old terminal hold / single-race auto-advance. Armed only for
+     * real play + the dedicated T4 lane (sRes.chooserEnabled); every pre-existing
+     * scripted/loopback lane has it OFF and reaches the historical terminal + stage
+     * logic below byte-for-byte unchanged. A tournament reaches the chooser ONLY at
+     * its FINAL standings (non-final rounds still auto-REMATCH to the next round
+     * below); a single race after a short dwell so the finishing order is readable
+     * first (host A skips the dwell). */
+    if (sRes.chooserEnabled) {
+        bool tournFinal = tournament && sRes.isFinal &&
+                          sRes.stage == RES_STAGE_STANDINGS &&
+                          (sRes.stageTicks >= RES_CHOOSER_SINGLE_DWELL ||
+                           (sRes.host && in.advanceEdge &&
+                            sRes.stageTicks >= RES_INPUT_GRACE));
+        bool singleDone = !tournament && sRes.stage == RES_STAGE_RESULTS &&
+                          (sRes.stageTicks >= RES_CHOOSER_SINGLE_DWELL ||
+                           (sRes.host && in.advanceEdge &&
+                            sRes.stageTicks >= RES_INPUT_GRACE));
+        if (tournFinal || singleDone) {
+            sRes.stage = RES_STAGE_CHOOSER;
+            sRes.stageTicks = 0u;
+            sRes.chooserMode =
+                (u8) (tournament ? RES_MODE_TOURNAMENT : RES_MODE_SINGLE);
+            sRes.chooserCursor = 0u;
+            sRes.chooserPrevCursor = 0xFFu;
+            (void) results_chooser_options(&sRes.chooserCount);
+            /* A joiner (or the forced-joiner seam) renders the display-only mirror
+             * and follows the host; only the host drives the option list. */
+            sRes.chooserJoiner =
+                (u8) ((!sRes.host || results_chooser_seam_joiner()) ? 1u : 0u);
+            sound_play(RES_SFX_ADVANCE, NULL);
+            fprintf(stderr,
+                    "[online-results] chooser: fronted (%s mode=%u host=%u "
+                    "joiner=%u)\n",
+                    tournament ? "tournament-final" : "single-race",
+                    (unsigned) sRes.chooserMode, (unsigned) sRes.host,
+                    (unsigned) sRes.chooserJoiner);
+            return results_chooser_tick(&snap, haveSnap, localSeat, updateRate);
+        }
+    }
 
     /* Advance authority:
      *  - HOST: a manual A/START edge (after the entry lockout) OR the countdown
@@ -937,6 +1305,18 @@ static void results_test_capture(void) {
     sTestRoom.seats[1].connected = 1u;
     sTestRoom.seats[1].character_id = sTestSeatChar[1];
     memcpy(sTestRoom.seats[1].name, "RIVAL", sizeof("RIVAL"));
+    /* T4 SINGLE-race chooser variant (env MDKR_TEST_ONLINE_RESULTS_CHOOSER=single*):
+     * publish a SINGLE-race room (no cup, a configured track, no points) so the
+     * chooser fronts its SINGLE list (CHANGE TRACK etc.). Inert otherwise, so the
+     * tournament resident soak + every existing lane are byte-behaviour-unchanged. */
+    if (results_chooser_seam_single()) {
+        sTestRoom.mode = (uint8_t) RES_MODE_SINGLE;
+        sTestRoom.cup_id = 0xFFu;             /* CUP_UNSET */
+        sTestRoom.configured_track = 5u;      /* a single-race track */
+        for (i = 0u; i < RES_SLOTS; i++) {
+            sTestRoom.points[i] = 0u;         /* single race: no cup points */
+        }
+    }
     if (!sTestInstalled || !mdkr_party_link_active()) {
         mdkr_party_link_clear();
         (void) mdkr_party_link_install();
@@ -958,6 +1338,19 @@ static void results_test_pump(void) {
         mdkr_party_link_clear();
         (void) mdkr_party_link_install();
         sTestInstalled = 1u;
+    }
+    /* T4 joiner-mirror lane: the joiner never publishes REMATCH (watch-only), so
+     * the stand-in reducer would never leave RESULTS on its own. After the joiner
+     * mirror has been shown for a while, depart the feed (-> LOBBY) to STAND IN for
+     * the host's authoritative REMATCH landing over the transport, so the joiner
+     * follows into re-selection. Inert unless MDKR_TEST_ONLINE_RESULTS_CHOOSER=joiner. */
+    if (results_chooser_seam_joiner() &&
+        sTestRoom.phase == (uint8_t) RES_PHASE_RESULTS &&
+        sRes.stage == RES_STAGE_CHOOSER && sRes.stageTicks >= 200u) {
+        sTestRoom.phase = 1u; /* MDKR_ONLINE_LOBBY -- host REMATCH landed */
+        fprintf(stderr,
+                "[online-results] test-reducer: joiner-mirror feed departed "
+                "RESULTS -> LOBBY (host authoritative REMATCH stand-in)\n");
     }
     mdkr_party_link_publish(&sTestRoom);
 }
@@ -1080,6 +1473,82 @@ static u8 results_resident_remote_wins(void) {
 u8 mdkr_online_results_test_active(void) {
     results_test_resolve();
     return (u8) (sTestActive > 0 ? 1 : 0);
+}
+
+/* ======================================================================== *
+ * T4 chooser seam (env MDKR_TEST_ONLINE_RESULTS_CHOOSER; inert in a normal run):
+ *   "<n>"    the host auto-navigates to option index n and presses A (drives the
+ *            intent + routing for that option, per scenario)
+ *   "show"   the chooser is fronted and HELD (no auto-select) -- the frame-dump /
+ *            "just render it" variant used for the visual (PNG) proof
+ *   "joiner" the chooser renders as the display-only joiner mirror (role-flipped
+ *            on the host-seat rig, the results_joiner_terminal_seam pattern), and
+ *            the stand-in feed later departs RESULTS so the follow path runs
+ * The env being set at all forces the chooser ON (mdkr_online_results_chooser_test_
+ * active), so the dedicated lane can ride the RESIDENT soak to reach a terminal. */
+static s8 sChooserSeamKind = -1; /* -1 unresolved; 0 off; 1 select; 2 show; 3 joiner */
+static s8 sChooserSeamIndex = -1;
+static u8 sChooserSeamSingle;    /* the "single:" prefix -> SINGLE-race chooser */
+static void results_chooser_seam_resolve(void) {
+    if (sChooserSeamKind >= 0) {
+        return;
+    }
+    {
+        const char *e = getenv("MDKR_TEST_ONLINE_RESULTS_CHOOSER");
+        if (e == NULL || e[0] == '\0') {
+            sChooserSeamKind = 0;
+            return;
+        }
+        if (strncmp(e, "single:", 7) == 0) {
+            sChooserSeamSingle = 1u; /* SINGLE-race stand-in room */
+            e += 7;
+        }
+        if (strcmp(e, "show") == 0) {
+            sChooserSeamKind = 2;
+        } else if (strcmp(e, "joiner") == 0) {
+            sChooserSeamKind = 3;
+        } else if (e[0] >= '0' && e[0] <= '9') {
+            sChooserSeamKind = 1;
+            sChooserSeamIndex = (s8) strtol(e, NULL, 10);
+        } else {
+            sChooserSeamKind = 2; /* any other non-empty value: show-only */
+        }
+    }
+}
+static u8 results_chooser_seam_single(void) {
+    results_chooser_seam_resolve();
+    return sChooserSeamSingle;
+}
+/* Fires exactly once: after a scripted select commits, subsequent chooser entries
+ * (e.g. a RACE AGAIN re-boot reaching a fresh terminal) HOLD rather than auto-
+ * selecting again, so a soak cannot loop re-races to the tick budget. */
+static u8 sChooserSelectFired;
+static s8 results_chooser_seam_select(void) {
+    results_chooser_seam_resolve();
+    if (sChooserSeamKind != 1 || sChooserSelectFired) {
+        return (s8) -1;
+    }
+    return sChooserSeamIndex;
+}
+static void results_chooser_seam_mark_fired(void) {
+    sChooserSelectFired = 1u;
+}
+static u8 results_chooser_seam_show(void) {
+    results_chooser_seam_resolve();
+    return (u8) (sChooserSeamKind == 2 ? 1 : 0);
+}
+static u8 results_chooser_seam_joiner(void) {
+    results_chooser_seam_resolve();
+    return (u8) (sChooserSeamKind == 3 ? 1 : 0);
+}
+
+u8 mdkr_online_results_chooser_test_active(void) {
+    results_chooser_seam_resolve();
+    return (u8) (sChooserSeamKind > 0 ? 1 : 0);
+}
+
+MdkrOnlineResultsChoice mdkr_online_results_choice(void) {
+    return (MdkrOnlineResultsChoice) sRes.chooserChoice;
 }
 
 #endif /* MDKR_ENABLE_ONLINE_BETA */
