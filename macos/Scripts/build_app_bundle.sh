@@ -841,6 +841,7 @@ executable = Path(sys.argv[1])
 manifest_path = Path(sys.argv[2])
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 payload = executable.read_bytes()
+manifest["executable"] = executable.name
 manifest["executable_bytes"] = len(payload)
 manifest["executable_sha256"] = hashlib.sha256(payload).hexdigest()
 temporary = manifest_path.with_name(manifest_path.name + ".tmp")

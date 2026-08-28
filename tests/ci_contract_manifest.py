@@ -515,6 +515,8 @@ PIN_GROUPS: dict[str, PinGroup] = {
                 must_contain='codesign --force --sign - "${CHARACTER_IMPORTER_BUNDLED}"'),
             Pin("builder", "builder refreshes signed importer hash",
                 must_contain='manifest["executable_sha256"] = hashlib.sha256(payload).hexdigest()'),
+            Pin("builder", "builder binds packaged importer name",
+                must_contain='manifest["executable"] = executable.name'),
             Pin("builder", "builder verifies signed importer",
                 must_contain="Ad-hoc-signed Character Workshop importer attestation failed."),
             Pin("builder", "validator manifest remains sealed data",
@@ -2239,6 +2241,13 @@ CONTROL_GROUPS: dict[str, ControlGroup] = {
                 "builder",
                 "Ad-hoc-signed Character Workshop importer attestation failed.",
                 "Signed importer accepted without attestation.",
+                count=1,
+            ),
+            Control(
+                "packaged importer manifest name",
+                "builder",
+                'manifest["executable"] = executable.name',
+                'manifest["executable"] = "character_importer-sealed"',
                 count=1,
             ),
             Control(
