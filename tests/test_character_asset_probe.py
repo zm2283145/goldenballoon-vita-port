@@ -310,7 +310,9 @@ def rewrite_glb_binary(data: bytes, update) -> bytes:
     return bytes(output)
 
 
-def make_humanoid_glb(*, with_lod: bool = False) -> bytes:
+def make_humanoid_glb(
+        *, with_lod: bool = False,
+        unusual_proportions: bool = False) -> bytes:
     names = (
         "mixamorig:Hips", "mixamorig:Spine", "mixamorig:Spine2",
         "mixamorig:Head", "mixamorig:LeftArm", "mixamorig:LeftForeArm",
@@ -335,6 +337,22 @@ def make_humanoid_glb(*, with_lod: bool = False) -> bytes:
         12: [0.0, -0.40, 0.10], 13: [-0.15, -0.15, 0.0],
         14: [0.0, -0.45, 0.0], 15: [0.0, -0.40, 0.10],
     }
+    if unusual_proportions:
+        # A deliberately non-human, license-clean stress fixture: a broad,
+        # squat visible body, very high head landmark, wide shoulders/hips,
+        # and short terminal arm/leg chains. It exists to prove that fitting,
+        # camera evidence, contact exceptions, and rendering do not silently
+        # assume ordinary adult-human ratios.
+        translations.update({
+            0: [0.0, 0.45, 0.0], 1: [0.0, 0.08, 0.0],
+            2: [0.0, 0.10, 0.0], 3: [0.0, 0.95, 0.0],
+            4: [0.48, 0.05, 0.0], 5: [0.09, 0.0, 0.0],
+            6: [0.07, 0.0, 0.0], 7: [-0.48, 0.05, 0.0],
+            8: [-0.09, 0.0, 0.0], 9: [-0.07, 0.0, 0.0],
+            10: [0.42, -0.05, 0.0], 11: [0.0, -0.09, 0.0],
+            12: [0.0, -0.07, 0.08], 13: [-0.42, -0.05, 0.0],
+            14: [0.0, -0.09, 0.0], 15: [0.0, -0.07, 0.08],
+        })
 
     def update(document: dict[str, object]) -> None:
         nodes = [
@@ -343,7 +361,10 @@ def make_humanoid_glb(*, with_lod: bool = False) -> bytes:
             for index, name in enumerate(names)
         ]
         character_node = len(nodes)
-        nodes.append({"name": "character", "mesh": 0, "skin": 0})
+        character = {"name": "character", "mesh": 0, "skin": 0}
+        if unusual_proportions:
+            character["scale"] = [2.8, 0.65, 1.6]
+        nodes.append(character)
         if with_lod:
             lod_node = len(nodes)
             nodes.append({"name": "character_lod1", "mesh": 1, "skin": 0})
@@ -358,7 +379,8 @@ def make_humanoid_glb(*, with_lod: bool = False) -> bytes:
         document["animations"][0]["channels"][0]["target"]["node"] = 3
 
     return rewrite_glb_document(
-        make_animated_glb(with_lod=with_lod), update
+        make_animated_glb(
+            with_lod=with_lod, volumetric=unusual_proportions), update
     )
 
 
@@ -425,6 +447,24 @@ class CharacterAssetProbeTests(unittest.TestCase):
         self.assertEqual(4, report["triangle_count"])
         self.assertEqual([-0.5, 0.0, -0.5], report["bbox_min"])
         self.assertEqual([0.5, 1.0, 0.4], report["bbox_max"])
+
+    def test_generated_unusual_humanoid_is_character_ready(self) -> None:
+        data = make_humanoid_glb(unusual_proportions=True)
+        report = probe.inspect_glb_bytes(data, require_character=True)
+        document, _ = probe.parse_glb(data)
+        self.assertEqual([], report["errors"])
+        self.assertTrue(report["character_ready"])
+        self.assertEqual(4, report["triangle_count"])
+        character = next(
+            node for node in document["nodes"]
+            if node.get("name") == "character"
+        )
+        self.assertEqual([2.8, 0.65, 1.6], character["scale"])
+        head = next(
+            node for node in document["nodes"]
+            if node.get("name") == "mixamorig:Head"
+        )
+        self.assertEqual([0.0, 0.95, 0.0], head["translation"])
 
     def test_external_resource_is_rejected(self) -> None:
         report = probe.inspect_glb_bytes(make_animated_glb(external_buffer=True), require_character=True)

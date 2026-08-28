@@ -7856,6 +7856,17 @@ ImVec4 characterWorkshopQualityColour(
     }
 }
 
+unsigned characterPreviewCameraReviewFlags(
+    const MdkrCharacterPreviewResult &result) {
+    unsigned flags = result.camera_bounds_clip_flags;
+    if ((result.fit_landmark_mask &
+         (1u << MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD)) != 0u) {
+        flags |= result.camera_landmark_clip_flags
+            [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD];
+    }
+    return flags;
+}
+
 void drawCharacterFitQualityBands(
     const CharacterWorkshopFitAssessment &assessment,
     const MdkrCharacterPreviewResult &result) {
@@ -7890,11 +7901,16 @@ void drawCharacterFitQualityBands(
     const bool exactFraming =
         characterPreviewCameraProjectionValid(result) &&
         result.camera_projection_valid;
+    const bool framingClipped = exactFraming &&
+        characterPreviewCameraReviewFlags(result) != 0u;
     ImGui::TextColored(
-        exactFraming ? AppTheme::good() : AppTheme::accent(),
-        exactFraming
-            ? "Gameplay-camera framing · Exact envelope measured"
-            : "Gameplay-camera framing · Exact evidence unavailable");
+        !exactFraming ? AppTheme::accent()
+            : framingClipped ? AppTheme::bad() : AppTheme::good(),
+        !exactFraming
+            ? "Gameplay-camera framing · Exact evidence unavailable"
+            : framingClipped
+                ? "Gameplay-camera framing · Exact clipping measured"
+                : "Gameplay-camera framing · Exact envelope contained");
     const bool exactVehicleSurface = assessment.vehicleContext &&
         characterPreviewVehicleSurfaceValid(result) &&
         result.vehicle_surface_valid;
@@ -7939,10 +7955,12 @@ void drawCharacterFitQualityBands(
             "Opaque-depth visibility · Exact evidence unavailable");
     }
     ImGui::TextColored(
-        AppTheme::accent(),
-        "Named attachments and motion clearance · Representative visual review required");
+        assessment.vehicleContext ? AppTheme::accent() : AppTheme::subtle(),
+        assessment.vehicleContext
+            ? "Attached parts and motion clearance · Representative visual review required"
+            : "Motion silhouette clearance · Representative visual review required");
     ui::TextSubtleWrapped(
-        "Green means the measured starting range is ordinary, amber asks for judgement, and red identifies a likely placement defect. These advisory bands never reject unusual anatomy. Camera framing, retained-body surface crossings, qualified closed-volume containment, and the final opaque-depth region witness are exact within their stated bounds. The composed scene and representative poses remain authoritative for transparent materials, identifying which attached part hides the character, costume silhouette, unsampled geometry, and motion clearance.");
+        "Green means the measured starting range is ordinary, amber asks for judgement, and red identifies a likely placement defect. These advisory bands never reject unusual anatomy. Camera framing, retained-body surface crossings, qualified closed-volume containment, and the final opaque-depth region witness are exact within their stated bounds. The composed scene and representative poses remain authoritative for transparent materials, costume silhouette, unsampled geometry, motion clearance, and deciding whether a wheel, skid, propeller, held object, or piece of scenery caused an observed occlusion.");
 }
 
 void drawCharacterMotionReviewSummary(
@@ -7975,7 +7993,7 @@ void drawCharacterMotionReviewSummary(
         const MdkrCharacterPreviewResult &sample =
             session.result.samples[index];
         unsigned cameraBits = 0u;
-        for (unsigned flags = sample.camera_bounds_clip_flags;
+        for (unsigned flags = characterPreviewCameraReviewFlags(sample);
              flags != 0u; flags >>= 1u) {
             cameraBits += flags & 1u;
         }
@@ -8058,7 +8076,7 @@ void drawCharacterMotionReviewSummary(
             ImGui::TableSetColumnIndex(0);
             ImGui::TextUnformatted(definitions[index].label);
             ImGui::TableSetColumnIndex(1);
-            if (sample.camera_bounds_clip_flags == 0u) {
+            if (characterPreviewCameraReviewFlags(sample) == 0u) {
                 ImGui::TextColored(AppTheme::good(), "Inside frame");
             } else {
                 ImGui::TextColored(AppTheme::bad(), "Clipped");
@@ -9378,7 +9396,7 @@ bool drawCharacterTuningEditor(int player,
                  reviewAssessment.proportions !=
                      CharacterWorkshopQualitySeverity::Nominal);
             bool cameraWarning = exactReviewContract &&
-                fitEvidence.result.camera_bounds_clip_flags != 0u;
+                characterPreviewCameraReviewFlags(fitEvidence.result) != 0u;
             bool surfaceWarning = exactReviewContract &&
                 context != MDKR_CHARACTER_CONTEXT_SELECT &&
                 (fitEvidence.result.vehicle_surface_crossing_pairs != 0u ||
@@ -9408,7 +9426,7 @@ bool drawCharacterTuningEditor(int player,
                         const MdkrCharacterPreviewResult &sample =
                             sceneReview->result.samples[sampleIndex];
                         cameraWarning |=
-                            sample.camera_bounds_clip_flags != 0u;
+                            characterPreviewCameraReviewFlags(sample) != 0u;
                         if (context != MDKR_CHARACTER_CONTEXT_SELECT) {
                             surfaceWarning |=
                                 sample.vehicle_surface_crossing_pairs != 0u ||

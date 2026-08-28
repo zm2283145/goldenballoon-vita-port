@@ -37,6 +37,7 @@ PACKAGE_ID = "org.mdkr.context-proof"
 CONTACT_PACKAGE_ID = "org.mdkr.contact-proof"
 TRANSPARENT_PACKAGE_ID = "org.mdkr.transparent-proof"
 MASKED_PACKAGE_ID = "org.mdkr.masked-proof"
+UNUSUAL_PACKAGE_ID = "org.mdkr.unusual-proportions-proof"
 FRAMES = 180
 PRODUCT_CAPTURE_FRAMES = 360
 
@@ -321,6 +322,9 @@ def main() -> int:
     masked_model = source / "masked-model.glb"
     masked_manifest_path = source / "masked-manifest.json"
     masked_package = source / "masked-proof.mdkrchar"
+    unusual_model = source / "unusual-proportions-model.glb"
+    unusual_manifest_path = source / "unusual-proportions-manifest.json"
+    unusual_package = source / "unusual-proportions-proof.mdkrchar"
     portrait_bytes = portrait.read_bytes()
     contact_model.write_bytes(make_humanoid_glb())
     contact_manifest = make_v4_manifest(portrait_bytes, humanoid=True)
@@ -336,6 +340,21 @@ def main() -> int:
     }
     contact_manifest_path.write_text(
         json.dumps(contact_manifest, indent=2) + "\n", encoding="utf-8")
+
+    unusual_model.write_bytes(make_humanoid_glb(unusual_proportions=True))
+    unusual_manifest = make_v4_manifest(portrait_bytes, humanoid=True)
+    unusual_manifest["id"] = UNUSUAL_PACKAGE_ID
+    unusual_manifest["display_name"] = "Unusual Proportions Proof"
+    unusual_manifest["license"] = {
+        "spdx": "CC0-1.0",
+        "attribution": "Generated MDKR unusual-proportions fixture",
+        "source_url": "https://example.invalid/unusual-proportions-proof",
+    }
+    unusual_manifest["gameplay"] = {
+        "donor": "bumper", "vehicles": ["car", "hovercraft", "plane"],
+    }
+    unusual_manifest_path.write_text(
+        json.dumps(unusual_manifest, indent=2) + "\n", encoding="utf-8")
 
     def transparent_material(document: dict[str, object]) -> None:
         material = document["materials"][0]  # type: ignore[index]
@@ -400,6 +419,16 @@ def main() -> int:
     output += packed_contact.stdout or ""
     if packed_contact.returncode != 0:
         failures.append("contact witness package generation failed")
+    packed_unusual = run([
+        sys.executable, str(ROOT / "tools" / "character_asset_probe.py"),
+        "pack", "--model", str(unusual_model),
+        "--manifest", str(unusual_manifest_path),
+        "--license", str(license_path), "--portrait", str(portrait),
+        "--output", str(unusual_package),
+    ])
+    output += packed_unusual.stdout or ""
+    if packed_unusual.returncode != 0:
+        failures.append("unusual-proportions package generation failed")
     packed_transparent = run([
         sys.executable, str(ROOT / "tools" / "character_asset_probe.py"),
         "pack", "--model", str(transparent_model),
@@ -440,6 +469,7 @@ def main() -> int:
         for fixture_label, fixture_package in (
             ("transparent", transparent_package),
             ("masked multi-primitive", masked_package),
+            ("unusual proportions", unusual_package),
         ):
             installed_fixture = run([
                 sys.executable,
@@ -487,6 +517,22 @@ def main() -> int:
         "car", 1, False, None, None, False,
         None, None, None, None, MASKED_PACKAGE_ID,
     ))
+    arms.append((
+        "select", 1, True, None, None, False,
+        None, None, None, None, UNUSUAL_PACKAGE_ID,
+    ))
+    arms.append((
+        "car", 1, True, None, None, False,
+        None, None, None, None, UNUSUAL_PACKAGE_ID,
+    ))
+    arms.append((
+        "hovercraft", 1, True, None, None, False,
+        None, None, None, None, UNUSUAL_PACKAGE_ID,
+    ))
+    arms.append((
+        "plane", 1, True, None, None, False,
+        None, None, None, None, UNUSUAL_PACKAGE_ID,
+    ))
     arm_draws: dict[str, int] = {}
     subject_capture_draws: dict[str, int] = {}
     captures: dict[str, Path] = {}
@@ -510,6 +556,8 @@ def main() -> int:
                 label += "-transparent-witness"
             elif package_id == MASKED_PACKAGE_ID:
                 label += "-masked-multiprimitive-witness"
+            elif package_id == UNUSUAL_PACKAGE_ID:
+                label += "-unusual-proportions-witness"
             force_gpu_timing_disabled = (
                 context == "select" and players == 1 and pose is None
             )
@@ -824,6 +872,12 @@ def main() -> int:
                 if package_id == CONTACT_PACKAGE_ID and solves == 0:
                     failures.append(
                         f"{label} did not execute automatic humanoid contacts"
+                    )
+                if (package_id == UNUSUAL_PACKAGE_ID and context != "select"
+                        and (solves == 0 or max(errors) <= 40000)):
+                    failures.append(
+                        f"{label} did not exercise the explicit unusual-"
+                        "anatomy contact-review path"
                     )
             fit_match = re.search(
                 r"character_workshop_result: .* fit=(\d+) "
@@ -2033,7 +2087,8 @@ def main() -> int:
         "and runtime A/B cross-fades with per-leg blend/source/fallback "
         "accounting, deterministic camera/light controls, "
         "target-frame anchor/bounds/facing plus exact gameplay-camera/anatomy "
-        "measurements, exclusive stabilized "
+        "measurements, generated extreme-proportion select/car/hovercraft/"
+        "plane review findings, exclusive stabilized "
         "RGB gameplay and transparent RGBA model-only PNG capture, "
         "comparison-only retail-donor capture with qualified donor-batch "
         "witness and zero replacement draws plus a pixel-grid and fitted-camera "

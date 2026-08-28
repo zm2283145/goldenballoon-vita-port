@@ -156,6 +156,11 @@ def main() -> int:
             "kFitMultiSceneReviewVersion = 16u" in draft_snapshot and
             "parsed.reviewedContexts = 0u" in draft_snapshot,
             "legacy fixed-scene approvals can inherit the multi-scene review meaning")
+    require("characterPreviewCameraReviewFlags" in settings and
+            "camera_landmark_clip_flags" in settings and
+            "Gameplay-camera framing · Exact clipping measured" in settings and
+            "wheel, skid, propeller, held object, or piece of scenery" in settings,
+            "unusual anatomy can lose its head-clipping warning or attachment review scope between exact diagnostics and approval")
 
     require("Capture registered comparison pair" in settings and
             "CharacterComparisonRun" in settings and
