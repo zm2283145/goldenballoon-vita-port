@@ -36,6 +36,11 @@ def main() -> int:
     runtime = source("platform/modern_character_runtime.c")
     entry = source("platform/app/engine_entry.h")
     game = source("game/src/thread3_main.c")
+    objects = source("game/src/objects.c")
+    webgpu = source("platform/fast3d/gfx_webgpu.c")
+    report_h = source("platform/app/character_visual_report.h")
+    report = source("platform/app/character_visual_report.cpp")
+    preview_cache = source("platform/app/character_preview_cache.cpp")
 
     require("interactiveStudio" in settings and
             "g_characterPreviewRequest.interactiveStudio" in settings,
@@ -152,9 +157,39 @@ def main() -> int:
             "parsed.reviewedContexts = 0u" in draft_snapshot,
             "legacy fixed-scene approvals can inherit the multi-scene review meaning")
 
+    require("Capture registered comparison pair" in settings and
+            "CharacterComparisonRun" in settings and
+            "run.awaitingDonor = false" in settings and
+            "result.view_yaw_degrees" in settings and
+            "Comparison capture in progress" in settings and
+            "Retry registered comparison pair" in settings and
+            "Stop comparison" in settings and
+            "preparePreserving" in settings and
+            "bindAndStoreInlineCharacterCapture" in settings and
+            "retirePreviousInlineCharacterCaptures" in settings and
+            "capture->renderProduct == reportProduct" in settings and
+            "retainedPath == primary ? alternate : primary" in preview_cache and
+            "CustomModelAlpha" in preview_cache,
+            "Offset Studio lost its bounded one-action donor/custom comparison workflow")
+    require("reference_only" in runtime and
+            "reference_draws" in runtime and
+            "mdkr_workshop_preview_reference_enabled" in objects and
+            "!draw->reference_only" in webgpu,
+            "donor comparison no longer prepares the exact custom renderer witness while suppressing only its pixels")
+    require("sceneRegistrationSha256" in report_h and
+            "registeredComparison" in report_h and
+            "custom.sceneRegistrationSha256 ==" in report and
+            "CharacterVisualReport::registeredComparison(custom, donor)" in settings and
+            "SliderInt" in settings and "Donor %d%%" in settings,
+            "the comparison UI can infer an overlay without an exact shared witness or expose an inaccurate blend control")
+    require("result.reference_draws != 0u" in settings and
+            "A donor-reference result reached a custom-character route" in settings and
+            "Unavailable for retail donor references" in settings,
+            "comparison-only donor evidence can leak into custom approval or portrait workflows")
+
     print("character Offset Studio contract passed: exact live scene, input isolation, "
-          "post-edit fit handoff, one-action complete semantic evidence, "
-          "truthful approval, and bounded recovery")
+          "post-edit fit handoff, one-action complete semantic and registered "
+          "comparison evidence, truthful approval, and bounded recovery")
     return 0
 
 

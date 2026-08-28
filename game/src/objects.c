@@ -6515,14 +6515,7 @@ void render_3d_model(Object *obj) {
                             "select fallback: donor ground frame is unavailable");
                         goto modern_select_done;
                     }
-                    if (mdkr_workshop_preview_reference_enabled()) {
-                        sModernCharacterReplacementObject = obj;
-                        sModernCharacterReplacementModel = objModel;
-                        sModernCharacterReplacementDonor = donor;
-                        sModernCharacterReplacementVehicle = -1;
-                        sModernCharacterReplacementLod = 0;
-                        sModernCharacterReplacementSelect = TRUE;
-                    } else if (mdkr_modern_character_emit(
+                    if (mdkr_modern_character_emit(
                             player, get_current_viewport(),
                             MDKR_CHARACTER_CONTEXT_SELECT,
                             targetFrame, NULL,
@@ -6607,14 +6600,7 @@ modern_select_done:;
                         racerObj->headAngle, &vehicleShell);
                     vehicleShellPtr = &vehicleShell;
                 }
-                if (mdkr_workshop_preview_reference_enabled()) {
-                    sModernCharacterReplacementObject = obj;
-                    sModernCharacterReplacementModel = objModel;
-                    sModernCharacterReplacementDonor = racerObj->characterId;
-                    sModernCharacterReplacementVehicle = racerObj->vehicleIDPrev;
-                    sModernCharacterReplacementLod = modernModelIndex;
-                    sModernCharacterReplacementSelect = FALSE;
-                } else if (mdkr_modern_character_emit(
+                if (mdkr_modern_character_emit(
                         player, get_current_viewport(),
                         context, targetFrame, vehicleShellPtr,
                         gSceneDrawDistanceValid ? gSceneDrawDistance

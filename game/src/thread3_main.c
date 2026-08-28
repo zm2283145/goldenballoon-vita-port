@@ -213,6 +213,7 @@ static MdkrWorkshopPreviewVisualMetrics sWorkshopPreviewVisualBaseline;
 static char sWorkshopPreviewCapturePath[1024];
 static u64 sWorkshopPreviewCaptureStableFrames;
 static u64 sWorkshopPreviewCaptureLastReplacementDraws;
+static u64 sWorkshopPreviewCaptureLastReferenceDraws;
 static u64 sWorkshopPreviewCaptureLastDonorReferenceBatches;
 static s32 sWorkshopPreviewCaptureArmed;
 static MdkrCharacterPreviewCaptureKind sWorkshopPreviewCaptureKind;
@@ -932,6 +933,16 @@ static void workshop_preview_measurement_finish(void) {
             ? character.replacement_primitives -
                   sWorkshopPreviewCharacterBaseline.replacement_primitives
             : 0u;
+        result->reference_draws = character.reference_draws >=
+                sWorkshopPreviewCharacterBaseline.reference_draws
+            ? character.reference_draws -
+                  sWorkshopPreviewCharacterBaseline.reference_draws
+            : 0u;
+        result->reference_primitives = character.reference_primitives >=
+                sWorkshopPreviewCharacterBaseline.reference_primitives
+            ? character.reference_primitives -
+                  sWorkshopPreviewCharacterBaseline.reference_primitives
+            : 0u;
         result->hidden_donor_batches = character.hidden_donor_batches >=
                 sWorkshopPreviewCharacterBaseline.hidden_donor_batches
             ? character.hidden_donor_batches -
@@ -1009,6 +1020,14 @@ static void workshop_preview_measurement_finish(void) {
             (void)workshop_preview_publish_vehicle_surface_diagnostics(
                 result);
             (void)workshop_preview_publish_opaque_visibility(result);
+        } else if (result->donor_reference &&
+                   result->reference_draws != 0u) {
+            /* Reference-only commands reached the backend without drawing.
+             * Publish their exact fitted volume and camera projection so the
+             * launcher can register a donor image against a custom still. */
+            if (workshop_preview_publish_fit_diagnostics(result)) {
+                (void)workshop_preview_publish_camera_projection(result);
+            }
         }
         mdkr_workshop_preview_visual_metrics(&visual);
         result->donor_reference_batches =
@@ -1032,7 +1051,7 @@ static void workshop_preview_measurement_finish(void) {
     MDKR_TRACE(
         "character_workshop_result: warmup=%d realtime=%d samples=%llu "
         "p50us=%llu p95us=%llu p99us=%llu maxus=%llu replacements=%llu "
-        "donorReference=%d/%llu "
+        "reference=%llu/%llu donorReference=%d/%llu "
         "contacts=%llu contactMaxUm=%llu contactWitness=%x "
         "contactWitnessErrorUm=%llu,%llu,%llu,%llu "
         "contactLHUm=root:%lld,%lld,%lld bend:%lld,%lld,%lld "
@@ -1063,6 +1082,7 @@ static void workshop_preview_measurement_finish(void) {
         result->interval_samples, result->interval_p50_us,
         result->interval_p95_us, result->interval_p99_us,
         result->interval_max_us, result->replacement_draws,
+        result->reference_draws, result->reference_primitives,
         result->donor_reference,
         result->donor_reference_batches,
         result->contact_solves, result->contact_error_max_micrometres,
@@ -1209,7 +1229,13 @@ static void workshop_preview_capture_service(void) {
     ready =
         (result->donor_reference
              ? visual.donor_reference_batches >
-                   sWorkshopPreviewCaptureLastDonorReferenceBatches
+                       sWorkshopPreviewCaptureLastDonorReferenceBatches &&
+                   character.reference_draws >
+                       sWorkshopPreviewCaptureLastReferenceDraws &&
+                   (result->pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+                    character.inspection_pose_ticks >
+                        sWorkshopPreviewCharacterBaseline
+                            .inspection_pose_ticks)
              : character.replacement_draws >
                        sWorkshopPreviewCaptureLastReplacementDraws &&
                    character.inspection_pose_ticks >
@@ -1224,6 +1250,7 @@ static void workshop_preview_capture_service(void) {
             sWorkshopPreviewVisualBaseline.lighting_override_draws);
     sWorkshopPreviewCaptureLastReplacementDraws =
         character.replacement_draws;
+    sWorkshopPreviewCaptureLastReferenceDraws = character.reference_draws;
     sWorkshopPreviewCaptureLastDonorReferenceBatches =
         visual.donor_reference_batches;
     if (ready) {
@@ -1359,6 +1386,8 @@ static void workshop_preview_measurement_service(s32 overlayPaused) {
                 &sWorkshopPreviewVisualBaseline);
             sWorkshopPreviewCaptureLastReplacementDraws =
                 sWorkshopPreviewCharacterBaseline.replacement_draws;
+            sWorkshopPreviewCaptureLastReferenceDraws =
+                sWorkshopPreviewCharacterBaseline.reference_draws;
             sWorkshopPreviewCaptureLastDonorReferenceBatches =
                 sWorkshopPreviewVisualBaseline.donor_reference_batches;
             sWorkshopPreviewMeasurementStarted = TRUE;
@@ -1439,6 +1468,7 @@ void thread3_main(UNUSED void *unused) {
     sWorkshopPreviewCapturePath[0] = '\0';
     sWorkshopPreviewCaptureStableFrames = 0u;
     sWorkshopPreviewCaptureLastReplacementDraws = 0u;
+    sWorkshopPreviewCaptureLastReferenceDraws = 0u;
     sWorkshopPreviewCaptureLastDonorReferenceBatches = 0u;
     sWorkshopPreviewCaptureArmed = FALSE;
     sWorkshopPreviewCaptureKind =
@@ -3695,16 +3725,24 @@ static s32 workshop_preview_start(void) {
             MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
     }
     if (donorReference &&
-        (players != 1 || pose != MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
-         posePhaseMilli != 0u ||
+        (players != 1 ||
+         !((pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+            posePhaseMilli == 0u) ||
+           (posePhaseMilli == 500u &&
+            ((strcmp(context, "select") == 0 &&
+              pose == MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE) ||
+             (strcmp(context, "select") != 0 &&
+              pose == MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER)))) ||
          transitionFromPose != MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
-         viewYawDegrees != 0 || viewPitchDegrees != 0 ||
+         ((pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+           strcmp(context, "select") == 0) &&
+          (viewYawDegrees != 0 || viewPitchDegrees != 0)) ||
          lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
          sWorkshopPreviewCapturePath[0] == '\0' ||
          sWorkshopPreviewCaptureKind !=
              MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE)) {
         fprintf(stderr,
-                "[FATAL] donor reference requires one-player live gameplay, neutral presentation, and a composed capture\n");
+                "[FATAL] donor reference requires one player, a live or neutral held context pose, neutral presentation, and a composed capture\n");
         platform_request_exit(EXIT_FAILURE);
         return TRUE;
     }

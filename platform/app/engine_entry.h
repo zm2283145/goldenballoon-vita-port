@@ -130,6 +130,10 @@ typedef struct MdkrCharacterPreviewResult {
      * replacement draws remained suppressed. */
     int donor_reference;
     unsigned long long donor_reference_batches;
+    /* Exact custom commands prepared only to authenticate fit/camera
+     * registration. Their pixels and performance counters remain suppressed. */
+    unsigned long long reference_draws;
+    unsigned long long reference_primitives;
     unsigned long long contact_solves;
     unsigned long long contact_error_mean_micrometres;
     unsigned long long contact_error_max_micrometres;
@@ -272,7 +276,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 19u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 20u
 #define MDKR_CHARACTER_PREVIEW_TRANSITION_DWELL_MILLI \
     MDKR_MODERN_CHARACTER_INSPECTION_TRANSITION_DWELL_MILLI
 #define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u
@@ -288,7 +292,7 @@ extern MdkrCharacterPreviewResult *g_mdkrCharacterPreviewResult;
  * gameplay-camera, visibility, and (for vehicles) retained-body/contact
  * witnesses. Keeping the samples separate prevents a favourable frame from
  * hiding another state's clipping or occlusion without invalidating durable
- * v19 timing evidence. */
+ * v20 timing evidence. */
 typedef enum MdkrCharacterMotionReviewSample {
     MDKR_CHARACTER_MOTION_REVIEW_START = 0,
     MDKR_CHARACTER_MOTION_REVIEW_STEER,

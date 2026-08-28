@@ -2369,6 +2369,15 @@ struct CharacterSceneReviewRun {
     std::string presentationSha256;
 };
 std::map<std::string, CharacterSceneReviewRun> g_characterSceneReviewRuns;
+struct CharacterComparisonRun {
+    bool active = false;
+    bool awaitingDonor = true;
+    MdkrCharacterPreviewContext context = MDKR_CHARACTER_PREVIEW_SELECT;
+    std::string sourceSha256;
+    std::string fitSha256;
+    std::string presentationSha256;
+};
+std::map<std::string, CharacterComparisonRun> g_characterComparisonRuns;
 std::map<std::string, std::vector<CharacterVisualReport::Capture>>
     g_characterVisualCaptures;
 struct CharacterCaptureThumbnailCache {
@@ -2380,6 +2389,8 @@ std::map<std::string,
          std::map<std::string, CharacterCaptureThumbnailCache>>
     g_characterCaptureThumbnails;
 std::set<std::string> g_characterCaptureThumbnailTraceKeys;
+std::map<std::string, float> g_characterComparisonBlend;
+std::set<std::string> g_characterComparisonTraceKeys;
 std::set<std::string> g_characterFitReferenceTraceKeys;
 std::set<std::string> g_characterFacingStudioTracePackages;
 SettingsCharacterPreviewRequest g_characterPreviewRequest;
@@ -2554,6 +2565,8 @@ bool replaceCharacterDraftInventory(
 }
 
 void refreshCharacterRegistry();
+const char *characterPreviewResultContext(
+    MdkrCharacterPreviewContext context);
 
 float characterConfigFloat(int player, const char *packageId,
                            const char *suffix, float fallback,
@@ -3536,18 +3549,49 @@ bool prepareInlineCharacterCapture(
     const MdkrModernCharacterEntry *entry,
     MdkrCharacterPreviewContext context,
     std::string &capturePath,
-    bool donorReference = false) {
+    bool donorReference = false,
+    bool modelAlpha = false) {
     std::string directory;
     std::string error;
-    if (entry == nullptr ||
+    if (entry == nullptr || (donorReference && modelAlpha) ||
         context < MDKR_CHARACTER_PREVIEW_SELECT ||
         context > MDKR_CHARACTER_PREVIEW_PLANE ||
-        !characterPreviewCacheDirectory(directory) ||
-        !CharacterPreviewCache::prepare(
+        !characterPreviewCacheDirectory(directory)) {
+        setStatus(
+            "The launcher could not resolve its bounded local preview cache.",
+            AppTheme::bad());
+        return false;
+    }
+    const CharacterVisualReport::Subject subject = donorReference
+        ? CharacterVisualReport::Subject::RetailDonor
+        : CharacterVisualReport::Subject::CustomCharacter;
+    const CharacterPreviewCache::Product cacheProduct = donorReference
+        ? CharacterPreviewCache::Product::RetailDonorScene
+        : modelAlpha
+            ? CharacterPreviewCache::Product::CustomModelAlpha
+            : CharacterPreviewCache::Product::CustomScene;
+    const CharacterVisualReport::RenderProduct reportProduct = modelAlpha
+        ? CharacterVisualReport::RenderProduct::ModelAlpha
+        : CharacterVisualReport::RenderProduct::Scene;
+    std::string retainedPath;
+    const auto retained = g_characterVisualCaptures.find(entry->id);
+    if (retained != g_characterVisualCaptures.end()) {
+        for (auto capture = retained->second.rbegin();
+             capture != retained->second.rend(); ++capture) {
+            if (capture->subject == subject &&
+                capture->context == characterPreviewResultContext(context) &&
+                capture->renderProduct == reportProduct &&
+                CharacterPreviewCache::owns(
+                    directory, entry->id, capture->pngPath)) {
+                retainedPath = capture->pngPath;
+                break;
+            }
+        }
+    }
+    if (!CharacterPreviewCache::preparePreserving(
             directory, entry->id, static_cast<uint32_t>(context),
-            donorReference
-                ? CharacterPreviewCache::Subject::RetailDonor
-                : CharacterPreviewCache::Subject::CustomCharacter,
+            cacheProduct,
+            retainedPath,
             capturePath, error)) {
         setStatus(
             error.empty()
@@ -3578,6 +3622,74 @@ bool characterCaptureIsLauncherOwned(
     return characterPreviewCacheDirectory(directory) &&
         CharacterPreviewCache::owns(
             directory, packageId, capturePath);
+}
+
+CharacterVisualReport::StoreResult bindAndStoreInlineCharacterCapture(
+    const std::string &packageId,
+    std::vector<CharacterVisualReport::Capture> &captures,
+    CharacterVisualReport::Capture &capture,
+    std::string &error) {
+    std::string directory;
+    if (!characterPreviewCacheDirectory(directory)) {
+        error = "The launcher could not resolve its bounded local preview cache.";
+        return CharacterVisualReport::StoreResult::Invalid;
+    }
+    const auto replaceable = std::find_if(
+        captures.begin(), captures.end(),
+        [&](const CharacterVisualReport::Capture &candidate) {
+            return candidate.pngPath != capture.pngPath &&
+                candidate.subject == capture.subject &&
+                candidate.context == capture.context &&
+                candidate.renderProduct == capture.renderProduct &&
+                CharacterPreviewCache::owns(
+                    directory, packageId, candidate.pngPath);
+        });
+    if (replaceable == captures.end()) {
+        return CharacterVisualReport::bindAndStore(
+            captures, capture, error);
+    }
+    const CharacterVisualReport::Capture previous = *replaceable;
+    const CharacterVisualReport::StoreResult stored =
+        CharacterVisualReport::bindAndReplace(
+            captures,
+            static_cast<size_t>(replaceable - captures.begin()),
+            capture, error);
+    if (stored != CharacterVisualReport::StoreResult::Replaced) {
+        return stored;
+    }
+    g_characterCaptureThumbnails[packageId].erase(previous.pngSha256);
+    (void)CharacterPreviewCache::removeOwnedPath(
+        directory, packageId, previous.pngPath);
+    error.clear();
+    return stored;
+}
+
+void retirePreviousInlineCharacterCaptures(
+    const std::string &packageId,
+    const CharacterVisualReport::Capture &replacement) {
+    std::string directory;
+    auto found = g_characterVisualCaptures.find(packageId);
+    if (found == g_characterVisualCaptures.end() ||
+        !characterPreviewCacheDirectory(directory)) {
+        return;
+    }
+    auto &captures = found->second;
+    for (auto capture = captures.begin(); capture != captures.end();) {
+        if (capture->pngPath != replacement.pngPath &&
+            capture->subject == replacement.subject &&
+            capture->context == replacement.context &&
+            capture->renderProduct == replacement.renderProduct &&
+            CharacterPreviewCache::owns(
+                directory, packageId, capture->pngPath) &&
+            CharacterPreviewCache::removeOwnedPath(
+                directory, packageId, capture->pngPath)) {
+            g_characterCaptureThumbnails[packageId].erase(
+                capture->pngSha256);
+            capture = captures.erase(capture);
+        } else {
+            ++capture;
+        }
+    }
 }
 
 void removeLauncherOwnedCharacterCaptures(const std::string &packageId) {
@@ -4770,6 +4882,7 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterCaptureEdits.erase(id);
     g_characterVisualCaptures.erase(id);
     g_characterCaptureThumbnails.erase(id);
+    g_characterComparisonBlend.erase(id);
     g_characterPendingPortraitSources.erase(id);
     g_characterDonorProfileTraceKeys.erase(id + "\n0");
     g_characterDonorProfileTraceKeys.erase(id + "\n1");
@@ -4777,6 +4890,7 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterPreviewResults.erase(id);
     g_characterMotionReviewResults.erase(id);
     g_characterSceneReviewRuns.erase(id);
+    g_characterComparisonRuns.erase(id);
     g_characterTestEvidenceSelectedCell.erase(id);
     g_characterActiveDrafts.erase(id);
     g_characterDraftReviews.erase(id);
@@ -4980,6 +5094,9 @@ void refreshCharacterRegistry() {
     g_characterPreviewResults.clear();
     g_characterMotionReviewResults.clear();
     g_characterSceneReviewRuns.clear();
+    g_characterComparisonRuns.clear();
+    g_characterComparisonBlend.clear();
+    g_characterComparisonTraceKeys.clear();
     g_characterRevisionInventories.clear();
     g_characterRegistryDirectory.clear();
     g_characterRegistryInventoryAvailable = false;
@@ -8608,36 +8725,97 @@ bool drawCharacterTuningEditor(int player,
                 ImGui::TextDisabled("held midpoint · neutral gameplay light");
             }
             {
-                const char *referenceLabel = "Capture retail donor reference";
-                if (!exactPreviewReady) ImGui::BeginDisabled();
+                const auto comparisonRun =
+                    g_characterComparisonRuns.find(entry->id);
+                const bool comparisonRunActive =
+                    comparisonRun != g_characterComparisonRuns.end() &&
+                    comparisonRun->second.active;
+                const bool comparisonLaunchPending =
+                    comparisonRunActive && g_characterPreviewRequested;
+                const char *referenceLabel = comparisonLaunchPending
+                    ? "Comparison capture in progress…"
+                    : g_characterPreviewRequested
+                        ? "Another exact preview is queued…"
+                    : comparisonRunActive
+                        ? "Retry registered comparison pair"
+                    : "Capture registered comparison pair";
+                if (!exactPreviewReady || g_characterPreviewRequested) {
+                    ImGui::BeginDisabled();
+                }
                 if (ImGui::Button(referenceLabel, ui::kBtnSecondary()) &&
-                    exactPreviewReady) {
+                    exactPreviewReady && !g_characterPreviewRequested) {
                     std::string capturePath;
                     if (persistCharacterTuning(entry->id, edit) &&
                         prepareInlineCharacterCapture(
                             entry, previewContext, capturePath, true)) {
+                        CharacterComparisonRun &run =
+                            g_characterComparisonRuns[entry->id];
+                        run.active = true;
+                        run.awaitingDonor = true;
+                        run.context = previewContext;
+                        run.sourceSha256 =
+                            characterDigestHex(entry->source_sha256);
+                        run.fitSha256 = characterTestTuningSignature(
+                            entry, edit, context);
+                        run.presentationSha256 =
+                            characterTestPresentationSignature();
+                        const int comparisonYaw =
+                            previewContext == MDKR_CHARACTER_PREVIEW_SELECT
+                                ? 0 : 180;
                         requestCharacterPreview(
                             entry, previewContext, 1,
-                            MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u, 0, 0,
+                            context == MDKR_CHARACTER_CONTEXT_SELECT
+                                ? MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE
+                                : MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER,
+                            500u, comparisonYaw, 0,
                             MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
                             capturePath.c_str(),
                             MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE,
                             MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u,
                             donorReferenceStillRoute());
+                        if (!g_characterPreviewRequested) {
+                            run.active = false;
+                        }
                     }
                 }
-                if (!exactPreviewReady) ImGui::EndDisabled();
+                if (!exactPreviewReady || g_characterPreviewRequested) {
+                    ImGui::EndDisabled();
+                }
                 ui::SpeakFocusedItem(
                     referenceLabel,
-                    exactPreviewReady
-                        ? "Ready; uses the package's chosen donor and returns automatically."
+                    comparisonLaunchPending
+                        ? "The guided donor and custom capture is already in progress."
+                    : g_characterPreviewRequested
+                        ? "Another exact preview is already queued."
+                    : comparisonRunActive
+                        ? "The previous launch did not return a complete pair; retry starts both captures again."
+                    : exactPreviewReady
+                        ? "Ready; captures the chosen donor, then the custom character, and returns automatically after each."
                         : "Unavailable until a supported base ROM is linked and verified on Play.",
-                    "Captures one stabilized composed frame with the modern replacement deliberately suppressed. The chosen retail donor, kart, attachments, course, and gameplay camera remain on the ordinary game render path. It is labeled as comparison-only and cannot satisfy custom-character fit or performance review.");
+                    "Runs a two-capture guided comparison. First it renders the chosen retail donor, kart, attachments, course, and gameplay camera while retaining an invisible exact custom pose/projection witness. It then captures the custom character with the same contract. An overlay appears only if both witnesses match exactly; neither image can satisfy fit or performance approval by itself.");
                 if (!compact && ImGui::GetContentRegionAvail().x >= 360.0f) {
                     ImGui::SameLine();
                 }
                 ImGui::TextDisabled(
-                    "1 player · live donor animation · comparison only");
+                    comparisonLaunchPending
+                        ? "Please wait · returns here automatically"
+                        : g_characterPreviewRequested
+                            ? "Wait for the queued preview to launch"
+                        : comparisonRunActive
+                            ? "Interrupted · retry restarts the pair"
+                        : "2 automatic captures · 1 player · verified registration");
+                if (comparisonRunActive && !comparisonLaunchPending) {
+                    if (!compact) ImGui::SameLine();
+                    if (ImGui::Button("Stop comparison")) {
+                        g_characterComparisonRuns[entry->id].active = false;
+                        setStatus(
+                            "Registered comparison stopped. Existing retained captures were preserved; no fit, package, or approval state changed.",
+                            AppTheme::subtle());
+                    }
+                    ui::SpeakFocusedItem(
+                        "Stop registered comparison", nullptr,
+                        "Ends only the interrupted two-capture workflow. Any already retained digest-bound images remain in the visual report tray.");
+                }
             }
             std::array<const CharacterMotionReviewSessionResult *,
                        MDKR_CHARACTER_PREVIEW_SCENE_COUNT> motionReviews{};
@@ -9932,6 +10110,20 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
     const bool transition =
         transitionFromPose != MDKR_CHARACTER_PREVIEW_POSE_LIVE;
     const bool capture = capturePng != nullptr && capturePng[0] != '\0';
+    const bool donorPoseValid =
+        (pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+         posePhaseMilli == 0u) ||
+        (posePhaseMilli == 500u &&
+         (context == MDKR_CHARACTER_PREVIEW_SELECT
+              ? pose == MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE
+              : context >= MDKR_CHARACTER_PREVIEW_CAR &&
+                    context <= MDKR_CHARACTER_PREVIEW_PLANE &&
+                    pose == MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER));
+    const bool donorViewValid =
+        pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+                context == MDKR_CHARACTER_PREVIEW_SELECT
+            ? viewYawDegrees == 0 && viewPitchDegrees == 0
+            : true;
     int captureExists = 0;
     const size_t captureLength = capture ? std::strlen(capturePng) : 0u;
     if (capture) {
@@ -9957,8 +10149,8 @@ void requestCharacterPreview(const MdkrModernCharacterEntry *entry,
          (!launcherOwnedCapture || portraitSourceHandoff ||
           interactiveStudio || representativeMotionReview || players != 1 ||
           !capture || captureKind != MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE ||
-          pose != MDKR_CHARACTER_PREVIEW_POSE_LIVE || posePhaseMilli != 0u ||
-          transition || viewYawDegrees != 0 || viewPitchDegrees != 0 ||
+          !donorPoseValid ||
+          transition || !donorViewValid ||
           lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL)) ||
         (portraitSourceHandoff &&
          (!launcherOwnedCapture || interactiveStudio || players != 1 ||
@@ -10485,7 +10677,9 @@ bool characterPreviewFitDiagnosticsValid(
         }
         return true;
     }
-    if (result.replacement_draws == 0u) return false;
+    if (result.replacement_draws == 0u && result.reference_draws == 0u) {
+        return false;
+    }
     long long forwardLengthSquared = 0;
     constexpr long long kMaximumFitMicrometres = 1000000000LL;
     const auto withinFitRange = [](long long value) {
@@ -10517,7 +10711,8 @@ bool characterPreviewFitDiagnosticsValid(
         }
     }
     if (result.version >= 15u && result.warmup_complete &&
-        result.replacement_draws != 0u &&
+        (result.replacement_draws != 0u ||
+         result.reference_draws != 0u) &&
         (result.fit_landmark_mask &
          (1u << MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD)) == 0u) {
         return false;
@@ -10564,7 +10759,8 @@ bool characterPreviewCameraProjectionValid(
     if (!result.camera_projection_valid) {
         return allZero() &&
             !(result.version >= 15u && result.warmup_complete &&
-              result.replacement_draws != 0u);
+              (result.replacement_draws != 0u ||
+               result.reference_draws != 0u));
     }
     if (!result.fit_diagnostics_valid ||
         result.camera_projection_width == 0u ||
@@ -10678,6 +10874,80 @@ bool characterPreviewCameraProjectionValid(
         }
     }
     return true;
+}
+
+std::string characterSceneRegistrationSignature(
+    const MdkrCharacterPreviewResult &result) {
+    if (!characterPreviewFitDiagnosticsValid(result) ||
+        !result.fit_diagnostics_valid ||
+        !characterPreviewCameraProjectionValid(result) ||
+        !result.camera_projection_valid ||
+        result.context < MDKR_CHARACTER_PREVIEW_SELECT ||
+        result.context > MDKR_CHARACTER_PREVIEW_PLANE ||
+        result.players != 1 ||
+        result.pose <= MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+        result.pose >= MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
+        result.transition_from_pose !=
+            MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+        result.transition_from_phase_milli != 0u) {
+        return {};
+    }
+    std::string canonical =
+        "mdkr-character-scene-registration-v1\n";
+    const auto append = [&canonical](long long value) {
+        canonical += std::to_string(value);
+        canonical.push_back('\n');
+    };
+    append(result.version);
+    append(result.context);
+    append(result.players);
+    append(result.pose);
+    append(result.pose_phase_milli);
+    append(result.transition_from_motion_source);
+    append(result.warmup_ticks);
+    append(result.displayed_frames);
+    append(result.inspection_pose_ticks);
+    append(result.inspection_pose_fallback_ticks);
+    append(result.capture_stable_frames);
+    append(result.view_yaw_degrees);
+    append(result.view_pitch_degrees);
+    append(result.lighting);
+    append(result.output_width);
+    append(result.output_height);
+    append(result.render_width);
+    append(result.render_height);
+    for (unsigned axis = 0u; axis < 3u; ++axis) {
+        append(result.fit_bounds_min_micrometres[axis]);
+        append(result.fit_bounds_max_micrometres[axis]);
+        append(result.fit_anchor_micrometres[axis]);
+        append(result.fit_forward_milli[axis]);
+    }
+    append(result.fit_landmark_mask);
+    for (unsigned landmark = 0u;
+         landmark < MDKR_CHARACTER_PREVIEW_LANDMARKS; ++landmark) {
+        for (unsigned axis = 0u; axis < 3u; ++axis) {
+            append(result.fit_landmark_micrometres[landmark][axis]);
+        }
+    }
+    append(result.camera_projection_width);
+    append(result.camera_projection_height);
+    append(result.camera_projection_primitive_draws);
+    for (unsigned component = 0u; component < 4u; ++component) {
+        append(result.camera_projection_viewport[component]);
+        append(result.camera_projection_scissor[component]);
+        append(result.camera_bounds_pixel_milli[component]);
+    }
+    append(result.camera_bounds_clip_flags);
+    for (unsigned landmark = 0u;
+         landmark < MDKR_CHARACTER_PREVIEW_LANDMARKS; ++landmark) {
+        append(result.camera_landmark_pixel_milli[landmark][0]);
+        append(result.camera_landmark_pixel_milli[landmark][1]);
+        append(result.camera_landmark_depth_millionths[landmark]);
+        append(result.camera_landmark_clip_flags[landmark]);
+    }
+    char digest[MDKR_SHA256_HEX_SIZE];
+    mdkr_sha256_hex(canonical.data(), canonical.size(), digest);
+    return digest;
 }
 
 bool characterPreviewVehicleSurfaceValid(
@@ -12174,7 +12444,7 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
     ui::CardEnd();
 }
 
-void drawCharacterCaptureThumbnail(
+CharacterCaptureThumbnailCache &characterCaptureThumbnail(
     const MdkrModernCharacterEntry *entry,
     const CharacterVisualReport::Capture &capture) {
     CharacterCaptureThumbnailCache &cached =
@@ -12200,6 +12470,14 @@ void drawCharacterCaptureThumbnail(
             cached.error.clear();
         }
     }
+    return cached;
+}
+
+void drawCharacterCaptureThumbnail(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterVisualReport::Capture &capture) {
+    CharacterCaptureThumbnailCache &cached =
+        characterCaptureThumbnail(entry, capture);
     if (!cached.error.empty()) {
         ui::TextSubtleWrapped(
             "Preview unavailable: %s The capture stays listed, but export will refuse changed bytes.",
@@ -12243,7 +12521,10 @@ void drawCharacterCaptureThumbnail(
         capture.width, capture.height,
         capture.pngSha256.c_str(),
         capture.fitProjection.valid
-            ? ", with registered bounds, anchor, and forward overlay" : "");
+            ? ", with registered bounds, anchor, and forward overlay"
+            : !capture.sceneRegistrationSha256.empty()
+                ? ", with an exact composed-scene registration witness"
+                : "");
     ui::SpeakFocusedItem(
         "Captured renderer preview", spokenState,
         "A bounded thumbnail of the exact digest-bound PNG. The actions below use the full-resolution file.");
@@ -12368,6 +12649,138 @@ void drawCharacterCaptureThumbnail(
             thumbnail.height, capture.pngSha256.c_str(),
             capture.fitProjection.valid ? "registered" : "none",
             capture.fitProjection.primitiveDraws);
+    }
+}
+
+void drawRegisteredCharacterComparison(
+    const MdkrModernCharacterEntry *entry,
+    const CharacterVisualReport::Capture &custom,
+    const CharacterVisualReport::Capture &donor) {
+    if (!CharacterVisualReport::registeredComparison(custom, donor)) {
+        return;
+    }
+    CharacterCaptureThumbnailCache &customCache =
+        characterCaptureThumbnail(entry, custom);
+    CharacterCaptureThumbnailCache &donorCache =
+        characterCaptureThumbnail(entry, donor);
+    if (!customCache.error.empty() || !donorCache.error.empty()) {
+        ui::TextSubtleWrapped(
+            "Registered overlay unavailable because a bound thumbnail could not be decoded. Remove or recapture the affected frame; no unverified pixels were substituted.");
+        return;
+    }
+    const auto &customImage = customCache.thumbnail;
+    const auto &donorImage = donorCache.thumbnail;
+    if (customImage.width == 0u || customImage.height == 0u ||
+        customImage.width != donorImage.width ||
+        customImage.height != donorImage.height ||
+        customImage.rgba.size() != donorImage.rgba.size() ||
+        customImage.rgba.size() !=
+            static_cast<size_t>(customImage.width) *
+                customImage.height * 4u) {
+        ui::TextSubtleWrapped(
+            "Registered overlay unavailable because the bounded thumbnails do not share one pixel grid.");
+        return;
+    }
+    float &blend = g_characterComparisonBlend.try_emplace(
+        entry->id, 0.5f).first->second;
+    if (!(blend >= 0.0f && blend <= 1.0f)) blend = 0.5f;
+    int donorPercent = static_cast<int>(std::lround(blend * 100.0f));
+    ImGui::SetNextItemWidth(
+        std::min(420.0f, std::max(180.0f,
+            ImGui::GetContentRegionAvail().x)));
+    if (ImGui::SliderInt(
+            "Custom ↔ retail donor", &donorPercent, 0, 100,
+            "Donor %d%%", ImGuiSliderFlags_AlwaysClamp)) {
+        blend = donorPercent / 100.0f;
+    }
+    ui::SpeakFocusedItem(
+        "Registered comparison blend",
+        blend <= 0.01f ? "custom character only"
+        : blend >= 0.99f ? "retail donor only"
+        : "blended custom character and retail donor",
+        "Moves between two captures only after their exact source, fit, pose, camera projection, viewport, scissor, and output grid match. Fifty percent makes silhouette displacement and clipping easiest to see.");
+    if (ImGui::Button("Custom only")) blend = 0.0f;
+    ui::SpeakFocusedItem(
+        "Custom only", blend <= 0.01f ? "selected" : nullptr,
+        "Shows the custom-character capture without donor blending.");
+    ImGui::SameLine();
+    if (ImGui::Button("50 / 50")) blend = 0.5f;
+    ui::SpeakFocusedItem(
+        "50 / 50", std::abs(blend - 0.5f) <= 0.01f ? "selected" : nullptr,
+        "Blends both registered captures equally to reveal displacement and clipping.");
+    ImGui::SameLine();
+    if (ImGui::Button("Donor only")) blend = 1.0f;
+    ui::SpeakFocusedItem(
+        "Donor only", blend >= 0.99f ? "selected" : nullptr,
+        "Shows the retail-donor capture without custom-character blending.");
+
+    const float maximumWidth = std::min(
+        520.0f, std::max(120.0f, ImGui::GetContentRegionAvail().x));
+    const float scale = std::max(
+        1.0f, std::min(maximumWidth / customImage.width,
+                       300.0f / customImage.height));
+    const ImVec2 extent(
+        customImage.width * scale, customImage.height * scale);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    (void)ImGui::Selectable(
+        "##registered-character-comparison", false,
+        ImGuiSelectableFlags_None, extent);
+    const std::string comparisonSpeech =
+        std::to_string(custom.width) + " by " +
+        std::to_string(custom.height) + " pixels; registration " +
+        custom.sceneRegistrationSha256.substr(0u, 8u);
+    ui::SpeakFocusedItem(
+        "Pixel-registered donor and custom comparison",
+        comparisonSpeech.c_str(),
+        "The world, vehicle, and camera coordinates are renderer-authenticated. The retail and custom skeletons can still have different silhouettes and animation anatomy; the overlay is evidence for placement, scale, facing, and occlusion, not automatic approval.");
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(
+        origin, ImVec2(origin.x + extent.x, origin.y + extent.y),
+        IM_COL32(29, 35, 44, 255));
+    const uint32_t sampleStep = std::max<uint32_t>(
+        1u, (std::max(customImage.width, customImage.height) + 63u) / 64u);
+    for (uint32_t y = 0u; y < customImage.height; y += sampleStep) {
+        for (uint32_t x = 0u; x < customImage.width; x += sampleStep) {
+            const size_t pixel =
+                (static_cast<size_t>(y) * customImage.width + x) * 4u;
+            const uint8_t *a = customImage.rgba.data() + pixel;
+            const uint8_t *b = donorImage.rgba.data() + pixel;
+            const auto channel = [blend](uint8_t customValue,
+                                         uint8_t donorValue) {
+                return static_cast<int>(
+                    customValue * (1.0f - blend) + donorValue * blend +
+                    0.5f);
+            };
+            draw->AddRectFilled(
+                ImVec2(origin.x + x * scale, origin.y + y * scale),
+                ImVec2(
+                    origin.x + std::min(
+                        x + sampleStep, customImage.width) * scale,
+                    origin.y + std::min(
+                        y + sampleStep, customImage.height) * scale),
+                IM_COL32(channel(a[0], b[0]), channel(a[1], b[1]),
+                         channel(a[2], b[2]), 255));
+        }
+    }
+    draw->AddRect(
+        origin, ImVec2(origin.x + extent.x, origin.y + extent.y),
+        IM_COL32(112, 221, 255, 220), 0.0f, 0,
+        2.0f * AppTheme::uiScale());
+    ImGui::TextDisabled(
+        "Verified pixel grid %.12s… · custom %.8s… · donor %.8s…",
+        custom.sceneRegistrationSha256.c_str(),
+        custom.pngSha256.c_str(), donor.pngSha256.c_str());
+    ui::TextSubtleWrapped(
+        "Use 50 / 50 to spot vertical translation, facing, scale, seat height, kart clipping, and attachment coverage. Differences in limbs, hair, tail, or costume silhouette can be intentional; review them rather than asking the tool to guess anatomy.");
+    const std::string traceKey = std::string(entry->id) + "\n" +
+        custom.sceneRegistrationSha256;
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
+        g_characterComparisonTraceKeys.insert(traceKey).second) {
+        std::fprintf(
+            stderr,
+            "[app-ui] character-registered-comparison package=%s context=%s sourceFitPoseCamera=exact grid=%ux%u digest=%.12s overlay=slider,custom,half,donor accessible=1\n",
+            entry->id, custom.context.c_str(), custom.width, custom.height,
+            custom.sceneRegistrationSha256.c_str());
     }
 }
 
@@ -12607,6 +13020,8 @@ void drawCharacterFitReference(
         context > MDKR_CHARACTER_PREVIEW_PLANE) {
         return;
     }
+    const std::string currentPresentation =
+        characterTestPresentationSignature();
     const bool planePreset = context != MDKR_CHARACTER_PREVIEW_SELECT &&
         selectedView >= 0 && selectedView <= 2;
     const char *prepareLabel = planePreset
@@ -12644,6 +13059,12 @@ void drawCharacterFitReference(
     const auto captures = g_characterVisualCaptures.find(entry->id);
     const CharacterVisualReport::Capture *best = nullptr;
     const CharacterVisualReport::Capture *donorBest = nullptr;
+    const CharacterVisualReport::Capture *registeredCustom = nullptr;
+    const CharacterVisualReport::Capture *registeredDonor = nullptr;
+    std::map<std::string, const CharacterVisualReport::Capture *>
+        registeredCustomByWitness;
+    std::vector<const CharacterVisualReport::Capture *>
+        registeredDonorCandidates;
     int bestScore = -1;
     if (captures != g_characterVisualCaptures.end()) {
         for (auto candidate = captures->second.rbegin();
@@ -12653,12 +13074,36 @@ void drawCharacterFitReference(
                     CharacterVisualReport::Subject::RetailDonor &&
                 candidate->sourceSha256 == sourceSha256 &&
                 candidate->fitSha256 == fitSha256 &&
+                candidate->presentationSha256 == currentPresentation &&
+                candidate->scene ==
+                    MDKR_CHARACTER_PREVIEW_SCENE_BASELINE &&
                 candidate->context ==
                     characterPreviewResultContext(context)) {
                 donorBest = &*candidate;
             }
+            const bool currentIdentity =
+                candidate->sourceSha256 == sourceSha256 &&
+                candidate->fitSha256 == fitSha256 &&
+                candidate->presentationSha256 == currentPresentation &&
+                candidate->scene ==
+                    MDKR_CHARACTER_PREVIEW_SCENE_BASELINE &&
+                candidate->context ==
+                    characterPreviewResultContext(context);
+            if (currentIdentity &&
+                !candidate->sceneRegistrationSha256.empty()) {
+                if (candidate->subject ==
+                    CharacterVisualReport::Subject::CustomCharacter) {
+                    registeredCustomByWitness.try_emplace(
+                        candidate->sceneRegistrationSha256, &*candidate);
+                } else {
+                    registeredDonorCandidates.push_back(&*candidate);
+                }
+            }
             if (candidate->sourceSha256 != sourceSha256 ||
                 candidate->fitSha256 != fitSha256 ||
+                candidate->presentationSha256 != currentPresentation ||
+                candidate->scene !=
+                    MDKR_CHARACTER_PREVIEW_SCENE_BASELINE ||
                 candidate->subject !=
                     CharacterVisualReport::Subject::CustomCharacter ||
                 candidate->context != characterPreviewResultContext(context)) {
@@ -12677,11 +13122,23 @@ void drawCharacterFitReference(
             }
         }
     }
+    for (const auto *candidate : registeredDonorCandidates) {
+        const auto custom = registeredCustomByWitness.find(
+            candidate->sceneRegistrationSha256);
+        if (custom != registeredCustomByWitness.end() &&
+            CharacterVisualReport::registeredComparison(
+                *custom->second, *candidate)) {
+            registeredCustom = custom->second;
+            registeredDonor = candidate;
+            donorBest = candidate;
+            break;
+        }
+    }
     const auto drawDonorComparison = [&]() {
         ImGui::SeparatorText("Retail donor comparison");
         if (donorBest == nullptr) {
             ui::TextSubtleWrapped(
-                "No current donor reference is captured for this context. Use Capture retail donor reference above to render the package's chosen donor, vehicle, attachments, course, and gameplay camera without the custom replacement. This is a visual baseline only, never fit or performance evidence.");
+                "No donor reference matches this exact source, fit, renderer setup, baseline scene, and context. Use Capture registered comparison pair above to render the donor and custom character through the same held-pose camera contract. This is visual comparison evidence only, never fit or performance approval.");
             return;
         }
         ImGui::PushID("character-donor-reference");
@@ -12689,11 +13146,18 @@ void drawCharacterFitReference(
         ImGui::Text("%s · composed gameplay frame",
                     donorBest->referenceDonor.c_str());
         ui::TextSubtleWrapped(
-            "This digest-bound image matches the current package source, fit revision, donor, and context. It shows live retail animation, so compare seat height, facing, scale, kart occlusion, and attachment coverage—not exact limb-phase parity.");
+            registeredCustom != nullptr && registeredDonor == donorBest
+                ? "This donor frame has an exact source-, fit-, pose-, viewport-, scissor-, and camera-matching custom frame. The slider below uses one renderer-authenticated pixel grid."
+                : "This digest-bound donor image matches the current package source, fit revision, renderer setup, baseline scene, and context, but no exact custom-camera witness currently matches it. It remains useful side-by-side; the UI will not infer an overlay.");
         drawCharacterCaptureThumbnail(entry, *donorBest);
+        if (registeredCustom != nullptr && registeredDonor != nullptr) {
+            ImGui::SeparatorText("Verified overlay");
+            drawRegisteredCharacterComparison(
+                entry, *registeredCustom, *registeredDonor);
+        }
         if (!compact) {
             ImGui::TextDisabled(
-                "1 player · live gameplay camera · SHA-256 %.12s…",
+                "1 player · held midpoint · SHA-256 %.12s…",
                 donorBest->pngSha256.c_str());
         }
         ImGui::PopID();
@@ -12704,6 +13168,7 @@ void drawCharacterFitReference(
     if (best == nullptr) {
         const std::string traceKey = std::string(entry->id) + "\nnone\n" +
             sourceSha256 + "\n" + fitSha256 + "\n" +
+            currentPresentation + "\n" +
             std::to_string(static_cast<unsigned>(context)) + "\n" +
             std::to_string(selectedView);
         if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
@@ -12789,6 +13254,41 @@ void drawCharacterVisualCaptureTray(
     ui::TextSubtleWrapped(
         "Explicit Test exports are independent local documents. Offset Studio exact stills use a bounded launcher-owned cache and are removed with their entry, package, or on the next launcher start.");
 
+    const CharacterVisualReport::Capture *registeredCustom = nullptr;
+    const CharacterVisualReport::Capture *registeredDonor = nullptr;
+    std::map<std::string, const CharacterVisualReport::Capture *>
+        customByRegistration;
+    std::vector<const CharacterVisualReport::Capture *> donorCandidates;
+    for (auto candidate = captures.rbegin();
+         candidate != captures.rend(); ++candidate) {
+        if (candidate->sceneRegistrationSha256.empty()) continue;
+        if (candidate->subject ==
+            CharacterVisualReport::Subject::CustomCharacter) {
+            customByRegistration.try_emplace(
+                candidate->sceneRegistrationSha256, &*candidate);
+        } else {
+            donorCandidates.push_back(&*candidate);
+        }
+    }
+    for (const CharacterVisualReport::Capture *donor : donorCandidates) {
+        const auto custom = customByRegistration.find(
+            donor->sceneRegistrationSha256);
+        if (custom != customByRegistration.end() &&
+            CharacterVisualReport::registeredComparison(
+                *custom->second, *donor)) {
+            registeredCustom = custom->second;
+            registeredDonor = donor;
+            break;
+        }
+    }
+    if (registeredCustom != nullptr && registeredDonor != nullptr) {
+        ImGui::SeparatorText("Newest verified comparison");
+        ui::TextSubtleWrapped(
+            "This pair is bound to its captured source, fit, renderer setup, scene, held pose, camera, and output grid. It remains available in the report tray even when you leave Offset Studio; changed current settings do not relabel it as current evidence.");
+        drawRegisteredCharacterComparison(
+            entry, *registeredCustom, *registeredDonor);
+    }
+
     const size_t shown = std::min<size_t>(captures.size(), 8u);
     size_t removeIndex = captures.size();
     for (size_t row = 0u; row < shown; ++row) {
@@ -12817,12 +13317,14 @@ void drawCharacterVisualCaptureTray(
                 capture.lighting.c_str(), capture.viewYawDegrees,
                 capture.viewPitchDegrees, capture.width, capture.height,
                 donorReference
-                    ? "live retail animation"
+                    ? "registered held comparison"
                     : capture.exactPose ? "exact semantic" : "source fallback");
-            ImGui::TextDisabled("Source %.8s · test tuning %.8s · PNG %.8s",
-                                capture.sourceSha256.c_str(),
-                                capture.fitSha256.c_str(),
-                                capture.pngSha256.c_str());
+            ImGui::TextDisabled(
+                "Source %.8s · test tuning %.8s · setup %.8s · PNG %.8s",
+                capture.sourceSha256.c_str(),
+                capture.fitSha256.c_str(),
+                capture.presentationSha256.c_str(),
+                capture.pngSha256.c_str());
             drawCharacterCaptureThumbnail(entry, capture);
             if (launcherOwned) {
                 ui::TextSubtleUnformattedWrapped(
@@ -13263,7 +13765,107 @@ void drawCharacterTestEvidenceMatrix(
             smokeToken, "mdkr64-character-test-evidence-v1") == 0) {
         g_characterTestEvidenceSmokeActionApplied = true;
         bool applied = false;
-        if (std::strcmp(smokeAction, "publish-qualified") == 0 ||
+        if (std::strcmp(
+                smokeAction, "publish-registered-comparison") == 0) {
+            const char *customSource = std::getenv(
+                "MDKR_APP_SMOKE_CHARACTER_INSPECTION_CAPTURE");
+            const char *donorSource = std::getenv(
+                "MDKR_APP_SMOKE_CHARACTER_DONOR_CAPTURE");
+            std::string customPath;
+            std::string donorPath;
+            const std::string source =
+                characterDigestHex(entry->source_sha256);
+            const std::string fit = characterTestTuningSignature(
+                entry, tuning, MDKR_CHARACTER_CONTEXT_CAR);
+            const std::string presentation =
+                characterTestPresentationSignature();
+            const CharacterInspectionPose *pose = characterInspectionPose(
+                MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER);
+            bool customCopied = false;
+            bool donorCopied = false;
+            if (customSource != nullptr && donorSource != nullptr &&
+                pose != nullptr &&
+                prepareInlineCharacterCapture(
+                    entry, MDKR_CHARACTER_PREVIEW_CAR, customPath) &&
+                prepareInlineCharacterCapture(
+                    entry, MDKR_CHARACTER_PREVIEW_CAR, donorPath, true)) {
+                std::error_code copyError;
+                customCopied = std::filesystem::copy_file(
+                    std::filesystem::u8path(customSource),
+                    std::filesystem::u8path(customPath),
+                    std::filesystem::copy_options::none, copyError);
+                copyError.clear();
+                donorCopied = std::filesystem::copy_file(
+                    std::filesystem::u8path(donorSource),
+                    std::filesystem::u8path(donorPath),
+                    std::filesystem::copy_options::none, copyError);
+            }
+            auto makeCapture = [&](const std::string &path,
+                                   CharacterVisualReport::Subject subject) {
+                CharacterVisualReport::Capture capture{};
+                capture.pngPath = path;
+                capture.sourceSha256 = source;
+                capture.fitSha256 = fit;
+                capture.presentationSha256 = presentation;
+                capture.sceneRegistrationSha256 = std::string(64u, 'c');
+                capture.context = "Car";
+                capture.pose = pose != nullptr ? pose->label : std::string();
+                capture.lighting = "Neutral";
+                capture.renderProduct =
+                    CharacterVisualReport::RenderProduct::Scene;
+                capture.subject = subject;
+                if (subject ==
+                    CharacterVisualReport::Subject::RetailDonor) {
+                    capture.referenceDonor = donorName(entry->donor);
+                }
+                capture.scene = MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
+                capture.players = 1u;
+                capture.phaseMilli = 500u;
+                capture.viewYawDegrees = 180;
+                capture.width = 40u;
+                capture.height = 40u;
+                capture.stableFrames =
+                    MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES;
+                capture.exactPose = subject ==
+                    CharacterVisualReport::Subject::CustomCharacter;
+                return capture;
+            };
+            auto &captures = g_characterVisualCaptures[entry->id];
+            CharacterVisualReport::Capture custom = makeCapture(
+                customPath,
+                CharacterVisualReport::Subject::CustomCharacter);
+            CharacterVisualReport::Capture donor = makeCapture(
+                donorPath, CharacterVisualReport::Subject::RetailDonor);
+            std::string captureError;
+            const CharacterVisualReport::StoreResult customStored =
+                customCopied
+                    ? bindAndStoreInlineCharacterCapture(
+                          entry->id, captures, custom, captureError)
+                    : CharacterVisualReport::StoreResult::Invalid;
+            const CharacterVisualReport::StoreResult donorStored =
+                donorCopied
+                    ? bindAndStoreInlineCharacterCapture(
+                          entry->id, captures, donor, captureError)
+                    : CharacterVisualReport::StoreResult::Invalid;
+            const auto retained = [](CharacterVisualReport::StoreResult value) {
+                return value == CharacterVisualReport::StoreResult::Added ||
+                    value == CharacterVisualReport::StoreResult::Replaced;
+            };
+            applied = retained(customStored) && retained(donorStored) &&
+                CharacterVisualReport::registeredComparison(custom, donor);
+            if (!applied) {
+                if (!customPath.empty()) {
+                    std::string directory;
+                    if (characterPreviewCacheDirectory(directory)) {
+                        (void)CharacterPreviewCache::removeOwnedPath(
+                            directory, entry->id, customPath);
+                        (void)CharacterPreviewCache::removeOwnedPath(
+                            directory, entry->id, donorPath);
+                    }
+                }
+                captures.clear();
+            }
+        } else if (std::strcmp(smokeAction, "publish-qualified") == 0 ||
             std::strcmp(smokeAction, "publish-overbudget-matrix") == 0 ||
             std::strcmp(smokeAction, "publish-overlimit-contact") == 0 ||
             std::strcmp(smokeAction, "publish-zero-visibility") == 0 ||
@@ -13645,7 +14247,7 @@ void drawCharacterTestEvidenceMatrix(
                 std::string managedCapturePath;
                 if (prepareInlineCharacterCapture(
                         entry, MDKR_CHARACTER_PREVIEW_CAR,
-                        managedCapturePath)) {
+                        managedCapturePath, false, true)) {
                     std::error_code copyError;
                     portraitCapturePrepared = std::filesystem::copy_file(
                         std::filesystem::u8path(capturePath),
@@ -15827,7 +16429,7 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
             const MdkrCharacterPreviewContext previewContext =
                 previewContexts[portraitContext];
             if (prepareInlineCharacterCapture(
-                    entry, previewContext, capturePath)) {
+                    entry, previewContext, capturePath, false, true)) {
                 requestCharacterPreview(
                     entry, previewContext, 1,
                     MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE, 500u,
@@ -22780,6 +23382,8 @@ void Settings_publishCharacterPreviewResult(
                     sample.inspection_pose_ticks != 0u &&
                     sample.inspection_pose_fallback_ticks <=
                         sample.inspection_pose_ticks &&
+                    sample.reference_draws == 0u &&
+                    sample.reference_primitives == 0u &&
                     sample.replacement_draws >= 60u &&
                     sample.view_yaw_degrees == 0 &&
                     sample.view_pitch_degrees == 0 &&
@@ -22816,6 +23420,8 @@ void Settings_publishCharacterPreviewResult(
                     motionReview->samples[index];
                 if (unused.version != 0u || unused.started ||
                     unused.warmup_complete || unused.replacement_draws != 0u ||
+                    unused.reference_draws != 0u ||
+                    unused.reference_primitives != 0u ||
                     unused.fit_diagnostics_valid ||
                     unused.camera_projection_valid ||
                     unused.vehicle_surface_valid ||
@@ -22954,6 +23560,26 @@ void Settings_publishCharacterPreviewResult(
         bool capacityReached = false;
         const MdkrModernCharacterEntry *entry =
             characterStudioEntry(packageId.c_str());
+        const MdkrCharacterPreviewPose expectedPose =
+            result.context == MDKR_CHARACTER_PREVIEW_SELECT
+                ? MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE
+                : MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER;
+        const CharacterInspectionPose *pose =
+            characterInspectionPose(expectedPose);
+        const std::string sceneRegistration =
+            characterSceneRegistrationSignature(result);
+        auto comparisonRun = g_characterComparisonRuns.find(packageId);
+        const bool guidedComparison =
+            comparisonRun != g_characterComparisonRuns.end() &&
+            comparisonRun->second.active &&
+            comparisonRun->second.awaitingDonor &&
+            comparisonRun->second.context == result.context &&
+            comparisonRun->second.sourceSha256 == sourceSha256 &&
+            comparisonRun->second.fitSha256 == fitSha256 &&
+            comparisonRun->second.presentationSha256 ==
+                presentationSha256;
+        const int expectedComparisonYaw =
+            result.context == MDKR_CHARACTER_PREVIEW_SELECT ? 0 : 180;
         const bool contextSupported = entry != nullptr &&
             (result.context == MDKR_CHARACTER_PREVIEW_SELECT ||
              (result.context >= MDKR_CHARACTER_PREVIEW_CAR &&
@@ -22971,23 +23597,45 @@ void Settings_publishCharacterPreviewResult(
             result.started && result.warmup_complete &&
             result.donor_reference == 1 &&
             result.donor_reference_batches != 0u &&
+            result.reference_draws != 0u &&
+            result.reference_primitives != 0u &&
             result.replacement_draws == 0u &&
             result.replacement_primitives == 0u &&
             result.hidden_donor_batches == 0u &&
             result.players == 1 &&
             result.context >= MDKR_CHARACTER_PREVIEW_SELECT &&
             result.context <= MDKR_CHARACTER_PREVIEW_PLANE &&
-            result.pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
-            result.pose_phase_milli == 0u &&
+            result.pose == expectedPose && pose != nullptr &&
+            result.pose_phase_milli == 500u &&
             result.transition_from_pose ==
                 MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
             result.transition_from_phase_milli == 0u &&
-            result.inspection_pose_ticks == 0u &&
-            result.inspection_pose_fallback_ticks == 0u &&
-            result.view_yaw_degrees == 0 &&
-            result.view_pitch_degrees == 0 &&
+            result.inspection_pose_ticks != 0u &&
+            result.inspection_pose_fallback_ticks <=
+                result.inspection_pose_ticks &&
+            result.transition_from_motion_source >
+                MDKR_CHARACTER_PREVIEW_MOTION_NONE &&
+            result.transition_from_motion_source <
+                MDKR_CHARACTER_PREVIEW_MOTION_COUNT &&
+            result.transition_to_motion_source ==
+                MDKR_CHARACTER_PREVIEW_MOTION_NONE &&
+            result.view_yaw_degrees >= -180 &&
+            result.view_yaw_degrees <= 180 &&
+            result.view_pitch_degrees >=
+                MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES &&
+            result.view_pitch_degrees <=
+                MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES &&
+            (result.context != MDKR_CHARACTER_PREVIEW_SELECT ||
+             (result.view_yaw_degrees == 0 &&
+              result.view_pitch_degrees == 0)) &&
+            (!guidedComparison ||
+             (result.view_yaw_degrees == expectedComparisonYaw &&
+              result.view_pitch_degrees == 0)) &&
             result.lighting == MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL &&
-            result.camera_override_ticks == 0u &&
+            ((result.view_yaw_degrees == 0 &&
+              result.view_pitch_degrees == 0)
+                 ? result.camera_override_ticks == 0u
+                 : result.camera_override_ticks != 0u) &&
             result.lighting_override_draws == 0u &&
             result.capture_requested && result.capture_armed &&
             result.capture_written &&
@@ -23000,6 +23648,7 @@ void Settings_publishCharacterPreviewResult(
             characterDigestTextValid(sourceSha256) &&
             characterDigestTextValid(fitSha256) &&
             characterDigestTextValid(presentationSha256) &&
+            !sceneRegistration.empty() &&
             !capturePng.empty() &&
             characterCaptureIsLauncherOwned(packageId, capturePng) &&
             characterPreviewFitDiagnosticsValid(result) &&
@@ -23016,28 +23665,35 @@ void Settings_publishCharacterPreviewResult(
             capture.pngPath = capturePng;
             capture.sourceSha256 = sourceSha256;
             capture.fitSha256 = fitSha256;
+            capture.presentationSha256 = presentationSha256;
+            capture.sceneRegistrationSha256 = sceneRegistration;
             capture.context = characterPreviewResultContext(
                 result.context);
-            capture.pose = "Live retail animation";
+            capture.pose = pose->label;
             capture.lighting = "Neutral";
             capture.renderProduct =
                 CharacterVisualReport::RenderProduct::Scene;
             capture.subject =
                 CharacterVisualReport::Subject::RetailDonor;
             capture.referenceDonor = donorName(entry->donor);
+            capture.scene = static_cast<uint32_t>(disposition.scene);
             capture.players = 1u;
+            capture.phaseMilli = 500u;
+            capture.viewYawDegrees = result.view_yaw_degrees;
+            capture.viewPitchDegrees = result.view_pitch_degrees;
             capture.width = result.output_width;
             capture.height = result.output_height;
             capture.stableFrames = result.capture_stable_frames;
             std::string captureError;
             const CharacterVisualReport::StoreResult stored =
-                CharacterVisualReport::bindAndStore(
-                    captures, capture, captureError);
+                bindAndStoreInlineCharacterCapture(
+                    packageId, captures, capture, captureError);
             capacityReached = stored ==
                 CharacterVisualReport::StoreResult::Full;
             if (stored == CharacterVisualReport::StoreResult::Added ||
                 stored == CharacterVisualReport::StoreResult::Replaced) {
                 retained = true;
+                retirePreviousInlineCharacterCaptures(packageId, capture);
                 setStatus(
                     "Retail donor reference captured and labeled comparison-only. It cannot satisfy custom-character approval or portrait requirements.",
                     AppTheme::good());
@@ -23047,6 +23703,33 @@ void Settings_publishCharacterPreviewResult(
                      captureError).c_str(),
                     AppTheme::accent());
             }
+        }
+        if (retained && guidedComparison) {
+            CharacterComparisonRun &run = comparisonRun->second;
+            run.awaitingDonor = false;
+            std::string customCapturePath;
+            if (prepareInlineCharacterCapture(
+                    entry, result.context, customCapturePath)) {
+                requestCharacterPreview(
+                    entry, result.context, 1, expectedPose, 500u,
+                    result.view_yaw_degrees,
+                    result.view_pitch_degrees,
+                    MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL,
+                    customCapturePath.c_str(),
+                    MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE,
+                    MDKR_CHARACTER_PREVIEW_POSE_LIVE, 0u,
+                    inlineCharacterStillRoute());
+            }
+            if (!g_characterPreviewRequested) {
+                run.active = false;
+                setStatus(
+                    "The donor reference was retained, but the matching custom still could not be queued. Retry the registered comparison pair.",
+                    AppTheme::accent());
+            }
+        } else if (comparisonRun != g_characterComparisonRuns.end() &&
+                   comparisonRun->second.active &&
+                   comparisonRun->second.awaitingDonor) {
+            comparisonRun->second.active = false;
         }
         if (!retained) {
             std::string directory;
@@ -23067,11 +23750,34 @@ void Settings_publishCharacterPreviewResult(
         return;
     }
     if (result.donor_reference != 0 ||
-        result.donor_reference_batches != 0u) {
+        result.donor_reference_batches != 0u ||
+        result.reference_draws != 0u ||
+        result.reference_primitives != 0u) {
         setStatus(
             "A donor-reference result reached a custom-character route and was rejected. No evidence changed.",
             AppTheme::bad());
         return;
+    }
+    auto comparisonRun = g_characterComparisonRuns.find(packageId);
+    const bool completingComparison =
+        comparisonRun != g_characterComparisonRuns.end() &&
+        comparisonRun->second.active &&
+        !comparisonRun->second.awaitingDonor &&
+        comparisonRun->second.context == result.context &&
+        comparisonRun->second.sourceSha256 == sourceSha256 &&
+        comparisonRun->second.fitSha256 == fitSha256 &&
+        comparisonRun->second.presentationSha256 == presentationSha256 &&
+        result.players == 1 && result.pose_phase_milli == 500u &&
+        result.view_yaw_degrees ==
+            (result.context == MDKR_CHARACTER_PREVIEW_SELECT ? 0 : 180) &&
+        result.view_pitch_degrees == 0 &&
+        result.capture_kind == MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+    if (comparisonRun != g_characterComparisonRuns.end() &&
+        comparisonRun->second.active &&
+        !comparisonRun->second.awaitingDonor) {
+        /* This return consumes the second half of the bounded workflow even
+         * when publication later refuses it; Retry always starts clean. */
+        comparisonRun->second.active = false;
     }
     if (result.pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
         result.context >= MDKR_CHARACTER_PREVIEW_SELECT &&
@@ -23129,6 +23835,8 @@ void Settings_publishCharacterPreviewResult(
                 MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA;
         if (result.capture_written) {
             auto &captures = g_characterVisualCaptures[packageId];
+            const std::string sceneRegistration =
+                characterSceneRegistrationSignature(result);
             const bool recordValid =
                 result.version == MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
                 result.started && result.warmup_complete &&
@@ -23196,21 +23904,14 @@ void Settings_publishCharacterPreviewResult(
                 result.output_height <= 16384u &&
                 characterDigestTextValid(sourceSha256) &&
                 characterDigestTextValid(fitSha256);
-            auto existing = std::find_if(
-                captures.begin(), captures.end(),
-                [&capturePng](const CharacterVisualReport::Capture &capture) {
-                    return capture.pngPath == capturePng;
-                });
-            const bool hasTrayCapacity =
-                existing != captures.end() ||
-                captures.size() < CharacterVisualReport::kMaximumCaptures;
             if (recordValid &&
-                (!portraitSourceHandoff || portraitHandoffValid) &&
-                (hasTrayCapacity || portraitHandoffValid)) {
+                (!portraitSourceHandoff || portraitHandoffValid)) {
                 CharacterVisualReport::Capture capture{};
                 capture.pngPath = capturePng;
                 capture.sourceSha256 = sourceSha256;
                 capture.fitSha256 = fitSha256;
+                capture.presentationSha256 = presentationSha256;
+                capture.scene = static_cast<uint32_t>(disposition.scene);
                 capture.context = characterPreviewResultContext(result.context);
                 capture.pose = pose->label;
                 capture.lighting = lighting->label;
@@ -23219,6 +23920,10 @@ void Settings_publishCharacterPreviewResult(
                             MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA
                         ? CharacterVisualReport::RenderProduct::ModelAlpha
                         : CharacterVisualReport::RenderProduct::Scene;
+                if (capture.renderProduct ==
+                    CharacterVisualReport::RenderProduct::Scene) {
+                    capture.sceneRegistrationSha256 = sceneRegistration;
+                }
                 capture.players = static_cast<uint32_t>(result.players);
                 capture.phaseMilli = result.pose_phase_milli;
                 capture.viewYawDegrees = result.view_yaw_degrees;
@@ -23264,14 +23969,17 @@ void Settings_publishCharacterPreviewResult(
                 CharacterVisualReport::StoreResult stored =
                     CharacterVisualReport::StoreResult::Full;
                 bool captureBound = false;
-                if (hasTrayCapacity) {
-                    stored = CharacterVisualReport::bindAndStore(
-                        captures, capture, captureError);
-                    captureBound =
-                        stored == CharacterVisualReport::StoreResult::Added ||
-                        stored ==
-                            CharacterVisualReport::StoreResult::Replaced;
-                } else if (portraitHandoffValid) {
+                stored = launcherOwnedCapture
+                    ? bindAndStoreInlineCharacterCapture(
+                          packageId, captures, capture, captureError)
+                    : CharacterVisualReport::bindAndStore(
+                          captures, capture, captureError);
+                captureBound =
+                    stored == CharacterVisualReport::StoreResult::Added ||
+                    stored == CharacterVisualReport::StoreResult::Replaced;
+                if (!captureBound &&
+                    stored == CharacterVisualReport::StoreResult::Full &&
+                    portraitHandoffValid) {
                     /* Portrait handoff remains useful when the report tray is
                      * full. Bind it for the reversible editor without
                      * exceeding the tray's safety capacity. */
@@ -23280,6 +23988,14 @@ void Settings_publishCharacterPreviewResult(
                 }
                 if (captureBound) {
                     launcherCaptureRetained = launcherOwnedCapture;
+                    if (launcherOwnedCapture &&
+                        (stored ==
+                             CharacterVisualReport::StoreResult::Added ||
+                         stored ==
+                             CharacterVisualReport::StoreResult::Replaced)) {
+                        retirePreviousInlineCharacterCaptures(
+                            packageId, capture);
+                    }
                     if (portraitHandoffValid) {
                         g_characterPendingPortraitSources[packageId] = {
                             capture.pngPath, capture.pngSha256, true,
@@ -23287,13 +24003,27 @@ void Settings_publishCharacterPreviewResult(
                         persistCharacterWorkshopTab(
                             CharacterWorkshopTab::Identity, true);
                     }
+                    const bool comparisonRegistered =
+                        completingComparison &&
+                        std::any_of(
+                            captures.begin(), captures.end(),
+                            [&capture](const auto &candidate) {
+                                return CharacterVisualReport::
+                                    registeredComparison(
+                                        capture, candidate);
+                            });
                     setStatus(
-                        portraitHandoffValid
+                        completingComparison
+                            ? comparisonRegistered
+                                ? "Registered donor/custom comparison ready. The overlay uses identical renderer-authenticated pixel coordinates."
+                                : "Both comparison frames were retained, but their renderer witnesses differ. No overlay was inferred; retry the pair after the scene is stable."
+                        : portraitHandoffValid
                             ? "Portrait model capture validated and returned to the reversible framing workflow."
                         : launcherOwnedCapture
                             ? "Exact still captured, digest-bound, and returned inline."
                             : "Inspection PNG saved, digest-bound, and added to the visual report tray.",
-                        AppTheme::good());
+                        completingComparison && !comparisonRegistered
+                            ? AppTheme::accent() : AppTheme::good());
                 } else {
                     setStatus(
                         ((launcherOwnedCapture
@@ -23305,6 +24035,12 @@ void Settings_publishCharacterPreviewResult(
             } else {
                 /* A matching record cannot remain valid after this path was
                  * recreated, even when the returned metadata is rejected. */
+                const auto existing = std::find_if(
+                    captures.begin(), captures.end(),
+                    [&capturePng](
+                        const CharacterVisualReport::Capture &capture) {
+                        return capture.pngPath == capturePng;
+                    });
                 if (existing != captures.end()) captures.erase(existing);
                 setStatus(
                         portraitSourceHandoff
@@ -23318,6 +24054,10 @@ void Settings_publishCharacterPreviewResult(
                             : "The PNG was saved, but inconsistent inspection metadata prevented adding it to the report tray.",
                     AppTheme::accent());
             }
+        } else if (completingComparison) {
+            setStatus(
+                "The donor reference was retained, but the matching custom frame did not complete. Retry the registered comparison pair; no overlay or approval was inferred.",
+                AppTheme::accent());
         }
         if (launcherOwnedCapture && !launcherCaptureRetained) {
             std::string directory;

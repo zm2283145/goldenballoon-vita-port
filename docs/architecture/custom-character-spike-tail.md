@@ -180,7 +180,7 @@ explicitly restricted to the generated fixture and exists only for CI.
   an explicit vehicle-only copy action remains available for intentional reuse.
 - **Implemented for the complete scene-review contract:** visible advisory bands classify floor/seat
   datum error, facing, and unusual volume proportions as Ready, Review, or
-  Action needed. Result v19 also retains the last complete accepted scene MVP,
+  Action needed. Result v20 also retains the last complete accepted scene MVP,
   viewport, and scissor and projects the calibrated volume plus exact
   current-pose hips/chest/head node origins into bounded fixed-point camera
   evidence. Offset Studio reports camera occupancy, clipping, head placement,
@@ -424,8 +424,9 @@ The forward-axis thumbnail studio, structural/symmetry rig proposal, derived
 rest/bend bases, 72%-occupancy isolated capture, portrait handoff, exact
 retained-body surface intersection, topology-qualified bounded containment,
 final opaque-depth visibility witness, one-session three-state select and
-three-course eleven-sample vehicle scene batteries, and fresh five-context/performance
-fixture qualification are complete.
+three-course eleven-sample vehicle scene batteries, a renderer-registered
+held-pose retail-donor/custom comparison studio, and fresh
+five-context/performance fixture qualification are complete.
 Fit approval now requires a current warmed exact contract, current aggregated
 vehicle motion-and-scene evidence, and explicit composed-scene inspection; a completed
 zero-fragment opaque/masked replay blocks approval, while unusual anatomy,
@@ -437,10 +438,11 @@ The immediate remaining order is therefore:
 1. attribute separately drawn donor attachments where stable identities exist,
    and add weather/vehicle-condition variants beyond the three qualified
    Workshop course families;
-2. register the implemented comparison-only live retail-donor capture against
-   a custom silhouette where the cameras and animation genuinely match, add a
-   real linked-ROM unusual-proportion fixture, then qualify richer reference
-   clips, joint limits, and optional deterministic secondary hair/tail motion;
+2. add a real linked-ROM unusual-proportion fixture, then qualify richer
+   reference clips, joint limits, and optional deterministic secondary
+   hair/tail motion; the comparison overlay already requires exact source,
+   fit, presentation, scene, held motion source, camera, viewport/scissor, and
+   output-grid registration rather than inferring alignment;
 3. execute the M6 renderer tail (shadows, transparent ordering, compressed
    textures, projected LOD, optional simplification, and material expansion);
 4. complete packaged cross-platform/offline/adapter/online contracts; and

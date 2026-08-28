@@ -42,12 +42,17 @@ struct Capture {
     std::string pngSha256;
     std::string sourceSha256;
     std::string fitSha256;
+    std::string presentationSha256;
+    /* Digest of the exact fitted custom volume, held pose, target frame,
+     * camera projection, viewport, and scissor used for a composed frame. */
+    std::string sceneRegistrationSha256;
     std::string context;
     std::string pose;
     std::string lighting;
     RenderProduct renderProduct = RenderProduct::Scene;
     Subject subject = Subject::CustomCharacter;
     std::string referenceDonor;
+    uint32_t scene = 0u;
     uint32_t players = 1u;
     uint32_t phaseMilli = 0u;
     int32_t viewYawDegrees = 0;
@@ -78,6 +83,17 @@ bool validateBoundPng(const Capture &capture, std::string &error);
  * longer describe the bytes on disk. */
 StoreResult bindAndStore(
     std::vector<Capture> &captures, Capture &capture, std::string &error);
+
+/* Bind first, then transactionally replace one caller-qualified tray entry.
+ * Invalid bytes or an invalid index leave the retained entry unchanged. The
+ * caller owns the semantic policy that selected replacementIndex. */
+StoreResult bindAndReplace(
+    std::vector<Capture> &captures, size_t replacementIndex,
+    Capture &capture, std::string &error);
+
+/* True only when a custom composed still and retail donor reference can be
+ * overlaid in the same pixel coordinate system without UI-side guessing. */
+bool registeredComparison(const Capture &custom, const Capture &donor);
 
 /* Writes one self-contained, responsive HTML contact sheet. PNG bytes are
  * embedded as data URIs and a JSON record is embedded beside them, so the

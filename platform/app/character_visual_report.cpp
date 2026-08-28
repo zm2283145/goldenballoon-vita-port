@@ -335,24 +335,30 @@ bool captureMetadataValid(const CharacterVisualReport::Capture &capture,
     if (capture.renderProduct ==
             CharacterVisualReport::RenderProduct::ModelAlpha &&
         !projection.valid) projectionValid = false;
+    const bool registrationValid =
+        capture.sceneRegistrationSha256.empty() ||
+        (capture.renderProduct ==
+             CharacterVisualReport::RenderProduct::Scene &&
+         digestValid(capture.sceneRegistrationSha256));
     const bool subjectValid = subjectName(capture.subject) != nullptr &&
         (capture.subject == CharacterVisualReport::Subject::RetailDonor
              ? capture.renderProduct ==
                        CharacterVisualReport::RenderProduct::Scene &&
                    !capture.exactPose && !capture.fitProjection.valid &&
-                   capture.players == 1u && capture.phaseMilli == 0u &&
-                   capture.viewYawDegrees == 0 &&
-                   capture.viewPitchDegrees == 0 &&
-                   capture.pose == "Live retail animation" &&
+                   capture.players == 1u &&
                    capture.lighting == "Neutral" &&
-                   textValid(capture.referenceDonor, 64u, true)
+                   textValid(capture.pose, 96u, true) &&
+                   textValid(capture.referenceDonor, 64u, true) &&
+                   digestValid(capture.sceneRegistrationSha256)
              : capture.referenceDonor.empty());
-    return projectionValid && subjectValid &&
+    return projectionValid && registrationValid && subjectValid &&
            textValid(capture.pngPath, 4095u, true) &&
            (requirePngDigest ? digestValid(capture.pngSha256)
                              : capture.pngSha256.empty()) &&
            digestValid(capture.sourceSha256) &&
            digestValid(capture.fitSha256) &&
+           digestValid(capture.presentationSha256) &&
+           capture.scene < MDKR_CHARACTER_PREVIEW_SCENE_COUNT &&
            textValid(capture.context, 32u, true) &&
            textValid(capture.pose, 64u, true) &&
            textValid(capture.lighting, 32u, true) &&
@@ -423,6 +429,47 @@ StoreResult bindAndStore(
     captures.push_back(capture);
     error.clear();
     return StoreResult::Added;
+}
+
+StoreResult bindAndReplace(
+    std::vector<Capture> &captures, size_t replacementIndex,
+    Capture &capture, std::string &error) {
+    if (replacementIndex >= captures.size()) {
+        error = "The visual report replacement slot is unavailable.";
+        return StoreResult::Invalid;
+    }
+    if (!bindPng(capture, error)) return StoreResult::Invalid;
+    captures[replacementIndex] = capture;
+    error.clear();
+    return StoreResult::Replaced;
+}
+
+bool registeredComparison(const Capture &custom, const Capture &donor) {
+    return custom.subject == Subject::CustomCharacter &&
+        donor.subject == Subject::RetailDonor &&
+        custom.renderProduct == RenderProduct::Scene &&
+        donor.renderProduct == RenderProduct::Scene &&
+        custom.referenceDonor.empty() && !donor.referenceDonor.empty() &&
+        digestValid(custom.sourceSha256) &&
+        digestValid(custom.fitSha256) &&
+        digestValid(custom.presentationSha256) &&
+        digestValid(custom.sceneRegistrationSha256) &&
+        custom.sceneRegistrationSha256 ==
+            donor.sceneRegistrationSha256 &&
+        custom.sourceSha256 == donor.sourceSha256 &&
+        custom.fitSha256 == donor.fitSha256 &&
+        custom.presentationSha256 == donor.presentationSha256 &&
+        custom.scene < MDKR_CHARACTER_PREVIEW_SCENE_COUNT &&
+        custom.scene == donor.scene &&
+        custom.context == donor.context && custom.pose == donor.pose &&
+        custom.players == donor.players &&
+        custom.phaseMilli == donor.phaseMilli &&
+        custom.viewYawDegrees == donor.viewYawDegrees &&
+        custom.viewPitchDegrees == donor.viewPitchDegrees &&
+        custom.lighting == donor.lighting &&
+        custom.width >= 1u && custom.width <= 16384u &&
+        custom.height >= 1u && custom.height <= 16384u &&
+        custom.width == donor.width && custom.height == donor.height;
 }
 
 bool exportHtml(const std::string &outputPath,
@@ -526,14 +573,14 @@ bool exportHtml(const std::string &outputPath,
             "° · " + std::to_string(capture.stableFrames) +
             " stable frames<br>";
         html += capture.subject == Subject::RetailDonor
-            ? "<span class=\"warn\">Comparison only · live retail animation</span>"
+            ? "<span class=\"warn\">Comparison only · registered held camera</span>"
             : capture.exactPose
             ? "<span class=\"ok\">Exact semantic phase</span>"
             : "<span class=\"warn\">Source fallback shown</span>";
         html += "<br><code>PNG SHA-256 " + item.sha + "</code></figcaption></figure>";
     }
     html += "</div><script id=\"mdkr-character-visual-report\" type=\"application/json\">{";
-    html += "\"version\":4,\"packageId\":\"" + jsonEscape(packageId) +
+    html += "\"version\":5,\"packageId\":\"" + jsonEscape(packageId) +
         "\",\"displayName\":\"" + jsonEscape(displayName) +
         "\",\"captures\":[";
     for (size_t index = 0u; index < loaded.size(); ++index) {
@@ -561,6 +608,11 @@ bool exportHtml(const std::string &outputPath,
             std::string(capture.exactPose ? "true" : "false") +
             ",\"sourceSha256\":\"" + capture.sourceSha256 +
             "\",\"fitSha256\":\"" + capture.fitSha256 +
+            "\",\"presentationSha256\":\"" +
+            capture.presentationSha256 +
+            "\",\"scene\":" + std::to_string(capture.scene) +
+            ",\"sceneRegistrationSha256\":\"" +
+            capture.sceneRegistrationSha256 +
             "\",\"pngSha256\":\"" + capture.pngSha256 + "\"";
         if (capture.fitProjection.valid) {
             const auto &projection = capture.fitProjection;

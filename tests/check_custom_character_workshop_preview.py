@@ -1350,6 +1350,11 @@ def main() -> int:
             MDKR_CHARACTER_WORKSHOP_PREVIEW="car",
             MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS="1",
             MDKR_CHARACTER_WORKSHOP_DONOR_REFERENCE="1",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE="race.steer",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE="500",
+            MDKR_CHARACTER_WORKSHOP_VIEW_YAW_DEGREES="180",
+            MDKR_CHARACTER_WORKSHOP_VIEW_PITCH_DEGREES="0",
+            MDKR_CHARACTER_WORKSHOP_LIGHTING="neutral",
             MDKR_CHARACTER_WORKSHOP_CAPTURE_PNG=str(donor_capture),
             MDKR_CHARACTER_WORKSHOP_CAPTURE_KIND="scene",
             MDKR_CHARACTER_WORKSHOP_CAPTURE_AUTO_RETURN="1",
@@ -1364,7 +1369,10 @@ def main() -> int:
         output += "\n===== car-retail-donor-reference =====\n" + donor_output
         donor_result = re.search(
             r"character_workshop_result: warmup=1 .*replacements=(\d+) "
-            r"donorReference=(\d+)/(\d+) .*capture=1/1/0 kind=0 "
+            r"reference=(\d+)/(\d+) donorReference=(\d+)/(\d+) "
+            r".*pose=4 phase=500 .*poseTicks=(\d+) poseFallback=(\d+) "
+            r"view=180,0 lighting=0 cameraTicks=(\d+) .*"
+            r"capture=1/1/0 kind=0 "
             r"captureStableFrames=(\d+) bytes=0 ",
             donor_output,
         )
@@ -1373,10 +1381,15 @@ def main() -> int:
                 "retail donor reference did not return a complete typed result"
             )
         else:
-            replacements, reference, batches, stable = map(
+            (replacements, reference_draws, reference_primitives,
+             reference, batches, pose_ticks, pose_fallback, camera_ticks,
+             stable) = map(
                 int, donor_result.groups()
             )
-            if (replacements != 0 or reference != 1 or batches == 0 or
+            if (replacements != 0 or reference_draws == 0 or
+                    reference_primitives == 0 or reference != 1 or
+                    batches == 0 or pose_ticks == 0 or
+                    pose_fallback > pose_ticks or camera_ticks == 0 or
                     stable < 12):
                 failures.append(
                     "retail donor reference mixed replacement and donor "
@@ -1390,8 +1403,10 @@ def main() -> int:
                 "retail donor reference did not preserve the chosen donor or "
                 "auto-return after the presented capture"
             )
+        donor_dimensions = None
         try:
             width, height, pixels = read_png_rgb(donor_capture)
+            donor_dimensions = (width, height)
             colours = {
                 pixels[(y * width + x) * 3:(y * width + x) * 3 + 3]
                 for y in range(0, height, max(1, height // 32))
@@ -1403,6 +1418,79 @@ def main() -> int:
                 )
         except (OSError, ValueError) as error:
             failures.append(f"retail donor reference PNG invalid: {error}")
+
+        paired_dir = evidence / "car-registered-custom-pair"
+        paired_dir.mkdir(parents=True, exist_ok=True)
+        paired_capture = paired_dir / "stabilized.png"
+        paired_env = dict(donor_env)
+        paired_env.pop("MDKR_CHARACTER_WORKSHOP_DONOR_REFERENCE", None)
+        paired_env["MDKR_CHARACTER_WORKSHOP_CAPTURE_PNG"] = str(
+            paired_capture
+        )
+        process = run([
+            str(binary), "--headless-frames", str(PRODUCT_CAPTURE_FRAMES),
+            "--rom", str(rom), "--window-size", "1280x960", "--restored",
+        ], env=paired_env)
+        paired_output = process.stdout or ""
+        output += "\n===== car-registered-custom-pair =====\n" + paired_output
+        witness_pattern = re.compile(
+            r"fit=1 fitAnchorUm=(-?\d+),(-?\d+),(-?\d+) "
+            r"fitBoundsYUm=(-?\d+),(-?\d+) "
+            r"fitForwardMilli=(-?\d+),(-?\d+),(-?\d+) "
+            r"fitLandmarks=([0-9a-f]+) "
+            r"headUm=(-?\d+),(-?\d+),(-?\d+) cameraFit=1 "
+            r"cameraBoundsMilli=(-?\d+),(-?\d+),(-?\d+),(-?\d+)/([0-9a-f]+) "
+            r"cameraViewport=(-?\d+),(-?\d+),(-?\d+),(-?\d+) "
+            r"cameraHeadMilli=(-?\d+),(-?\d+),(-?\d+)/([0-9a-f]+)"
+        )
+        donor_witness = witness_pattern.search(donor_output)
+        paired_witness = witness_pattern.search(paired_output)
+        paired_result = re.search(
+            r"character_workshop_result: warmup=1 .*replacements=([1-9]\d*) "
+            r"reference=0/0 donorReference=0/0 .*pose=4 phase=500 .*"
+            r"poseTicks=(\d+) poseFallback=(\d+) view=180,0 lighting=0 "
+            r"cameraTicks=(\d+) .*capture=1/1/0 kind=0 "
+            r"captureStableFrames=(\d+) bytes=0 ",
+            paired_output,
+        )
+        if (process.returncode != 0 or paired_result is None or
+                donor_witness is None or paired_witness is None):
+            failures.append(
+                "matching custom half did not return a complete registered "
+                "capture witness"
+            )
+        elif donor_witness.groups() != paired_witness.groups():
+            failures.append(
+                "donor and custom halves did not publish identical fitted "
+                "camera coordinates"
+            )
+        else:
+            (_, paired_ticks, paired_fallback, paired_camera_ticks,
+             paired_stable) = map(int, paired_result.groups())
+            if (paired_ticks == 0 or paired_fallback > paired_ticks or
+                    paired_camera_ticks == 0 or paired_stable < 12):
+                failures.append(
+                    "matching custom half did not preserve the held pose, "
+                    "camera, or stabilization contract"
+                )
+        try:
+            paired_width, paired_height, paired_pixels = read_png_rgb(
+                paired_capture
+            )
+            paired_colours = {
+                paired_pixels[(y * paired_width + x) * 3:
+                              (y * paired_width + x) * 3 + 3]
+                for y in range(0, paired_height, max(1, paired_height // 32))
+                for x in range(0, paired_width, max(1, paired_width // 32))
+            }
+            if donor_dimensions is None or \
+                    (paired_width, paired_height) != donor_dimensions or \
+                    len(paired_colours) < 16:
+                failures.append(
+                    "matching custom PNG did not preserve the donor pixel grid"
+                )
+        except (OSError, ValueError) as error:
+            failures.append(f"matching custom comparison PNG invalid: {error}")
 
         donor_rejection_arms = [
             ("donor-reference-without-capture", {
@@ -1416,6 +1504,9 @@ def main() -> int:
             }),
             ("donor-reference-model-alpha", {
                 "MDKR_CHARACTER_WORKSHOP_CAPTURE_KIND": "model-alpha",
+            }),
+            ("donor-reference-wrong-held-pose", {
+                "MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE": "select.idle",
             }),
         ]
         for label, changes in donor_rejection_arms:
@@ -1432,8 +1523,9 @@ def main() -> int:
             invalid_output = process.stdout or ""
             output += f"\n===== {label} =====\n" + invalid_output
             if (process.returncode == 0 or
-                    "donor reference requires one-player live gameplay, "
-                    "neutral presentation, and a composed capture" not in
+                    "donor reference requires one player, a live or neutral "
+                    "held context pose, neutral presentation, and a composed "
+                    "capture" not in
                     invalid_output):
                 failures.append(
                     f"{label} did not fail closed at the game boundary"
@@ -1944,7 +2036,8 @@ def main() -> int:
         "measurements, exclusive stabilized "
         "RGB gameplay and transparent RGBA model-only PNG capture, "
         "comparison-only retail-donor capture with qualified donor-batch "
-        "witness and zero replacement draws, "
+        "witness and zero replacement draws plus a pixel-grid and fitted-camera "
+        "matching custom half, "
         "exact four-contact post-solve witnesses and qualified retained-vehicle "
         "surface intersection samples, bounded one-session three-state select "
         "and three-course complete eleven-sample race semantic batteries, "

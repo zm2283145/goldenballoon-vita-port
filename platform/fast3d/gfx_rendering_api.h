@@ -120,6 +120,9 @@ struct GfxModernSkinnedDraw {
      * compose exact target coordinates with the camera MVP. */
     uint32_t player;
     uint32_t view;
+    /* Workshop donor comparison prepares the exact custom pose/projection but
+     * suppresses its pixels so the ordinary retail donor remains visible. */
+    uint32_t reference_only;
     float target_frame_matrix[16];
     uint32_t capture_bounds_valid;
     float capture_bounds_min[3];

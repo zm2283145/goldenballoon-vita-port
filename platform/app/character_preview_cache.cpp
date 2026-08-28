@@ -31,12 +31,14 @@ bool cacheDirectoryPath(const std::string &charactersDirectory,
 bool capturePathFor(const std::string &charactersDirectory,
                     const std::string &packageId,
                     uint32_t context,
-                    Subject subject,
+                    Product product,
+                    bool alternate,
                     std::string &path) {
     if (packageId.empty() || packageId.size() > 64u ||
         !contextValid(context) ||
-        (subject != Subject::CustomCharacter &&
-         subject != Subject::RetailDonor)) {
+        (product != Product::CustomScene &&
+         product != Product::RetailDonorScene &&
+         product != Product::CustomModelAlpha)) {
         return false;
     }
     std::string directory;
@@ -45,7 +47,11 @@ bool capturePathFor(const std::string &charactersDirectory,
     mdkr_sha256_hex(packageId.data(), packageId.size(), digest);
     path = directory + "/" + std::string(digest, 64u) + "-" +
         std::to_string(context) +
-        (subject == Subject::RetailDonor ? "-donor.png" : ".png");
+        (product == Product::RetailDonorScene
+             ? (alternate ? "-donor-next.png" : "-donor.png")
+         : product == Product::CustomModelAlpha
+             ? (alternate ? "-model-next.png" : "-model.png")
+             : (alternate ? "-next.png" : ".png"));
     return path.size() <= kMaximumRendererPathBytes;
 }
 
@@ -103,12 +109,16 @@ bool removeExactPath(const std::string &path) {
 }
 
 bool managedFilename(const std::string &name) {
-    const bool donor = name.size() == 76u &&
-        name.compare(66u, 10u, "-donor.png") == 0;
-    if ((!donor && name.size() != 70u) || name[64] != '-' ||
-        name[65] < '1' || name[65] > '4' ||
-        (!donor && name.compare(66u, 4u, ".png") != 0)) {
+    if (name.size() < 70u || name[64] != '-' ||
+        name[65] < '1' || name[65] > '4') {
         return false;
+    }
+    const std::string suffix = name.substr(66u);
+    if (suffix != ".png" && suffix != "-next.png" &&
+        suffix != "-donor.png" && suffix != "-donor-next.png") {
+        if (suffix != "-model.png" && suffix != "-model-next.png") {
+            return false;
+        }
     }
     for (size_t index = 0u; index < 64u; ++index) {
         const char byte = name[index];
@@ -125,7 +135,7 @@ bool managedFilename(const std::string &name) {
 bool prepare(const std::string &charactersDirectory,
              const std::string &packageId,
              uint32_t context,
-             Subject subject,
+             Product product,
              std::string &capturePath,
              std::string &error) {
     capturePath.clear();
@@ -133,7 +143,8 @@ bool prepare(const std::string &charactersDirectory,
     std::string directory;
     if (!ensureCacheDirectory(charactersDirectory, directory, error) ||
         !capturePathFor(
-            charactersDirectory, packageId, context, subject, capturePath)) {
+            charactersDirectory, packageId, context, product, false,
+            capturePath)) {
         if (error.empty()) {
             error = "The package or preview context cannot own an inline capture path.";
         }
@@ -148,13 +159,49 @@ bool prepare(const std::string &charactersDirectory,
     return true;
 }
 
+bool preparePreserving(const std::string &charactersDirectory,
+                       const std::string &packageId,
+                       uint32_t context,
+                       Product product,
+                       const std::string &retainedPath,
+                       std::string &capturePath,
+                       std::string &error) {
+    capturePath.clear();
+    error.clear();
+    std::string directory;
+    std::string primary;
+    std::string alternate;
+    if (!ensureCacheDirectory(charactersDirectory, directory, error) ||
+        !capturePathFor(charactersDirectory, packageId, context, product,
+                        false, primary) ||
+        !capturePathFor(charactersDirectory, packageId, context, product,
+                        true, alternate)) {
+        if (error.empty()) {
+            error = "The package or preview context cannot own a preserving inline capture path.";
+        }
+        return false;
+    }
+    if (!retainedPath.empty() && retainedPath != primary &&
+        retainedPath != alternate) {
+        error = "The retained inline preview does not belong to this exact package, context, and product.";
+        return false;
+    }
+    capturePath = retainedPath == primary ? alternate : primary;
+    if (!removeExactPath(capturePath)) {
+        error = "The inactive inline preview slot is not a regular launcher-owned file and was preserved.";
+        capturePath.clear();
+        return false;
+    }
+    return true;
+}
+
 bool prepare(const std::string &charactersDirectory,
              const std::string &packageId,
              uint32_t context,
              std::string &capturePath,
              std::string &error) {
     return prepare(charactersDirectory, packageId, context,
-                   Subject::CustomCharacter, capturePath, error);
+                   Product::CustomScene, capturePath, error);
 }
 
 bool owns(const std::string &charactersDirectory,
@@ -162,13 +209,16 @@ bool owns(const std::string &charactersDirectory,
           const std::string &capturePath) {
     for (uint32_t context = kFirstContext;
          context <= kLastContext; ++context) {
-        for (Subject subject :
-             {Subject::CustomCharacter, Subject::RetailDonor}) {
+        for (Product product :
+             {Product::CustomScene, Product::RetailDonorScene,
+              Product::CustomModelAlpha}) {
             std::string expected;
-            if (capturePathFor(
-                    charactersDirectory, packageId, context, subject,
-                    expected) && capturePath == expected) {
-                return true;
+            for (bool alternate : {false, true}) {
+                if (capturePathFor(
+                        charactersDirectory, packageId, context, product,
+                        alternate, expected) && capturePath == expected) {
+                    return true;
+                }
             }
         }
     }
@@ -178,10 +228,18 @@ bool owns(const std::string &charactersDirectory,
 bool remove(const std::string &charactersDirectory,
             const std::string &packageId,
             uint32_t context) {
-    std::string path;
-    return capturePathFor(charactersDirectory, packageId, context,
-                          Subject::CustomCharacter, path) &&
-        removeExactPath(path);
+    bool removed = true;
+    for (Product product :
+         {Product::CustomScene, Product::CustomModelAlpha}) {
+        for (bool alternate : {false, true}) {
+            std::string path;
+            removed = capturePathFor(
+                          charactersDirectory, packageId, context,
+                          product, alternate, path) &&
+                    removeExactPath(path) && removed;
+        }
+    }
+    return removed;
 }
 
 bool removeOwnedPath(const std::string &charactersDirectory,
@@ -197,9 +255,12 @@ void removePackage(const std::string &charactersDirectory,
          context <= kLastContext; ++context) {
         (void)remove(charactersDirectory, packageId, context);
         std::string donorPath;
-        if (capturePathFor(charactersDirectory, packageId, context,
-                           Subject::RetailDonor, donorPath)) {
-            (void)removeExactPath(donorPath);
+        for (bool alternate : {false, true}) {
+            if (capturePathFor(
+                    charactersDirectory, packageId, context,
+                    Product::RetailDonorScene, alternate, donorPath)) {
+                (void)removeExactPath(donorPath);
+            }
         }
     }
 }

@@ -116,6 +116,7 @@ int main() {
     capture.pngPath = pngPath;
     capture.sourceSha256 = std::string(64u, 'a');
     capture.fitSha256 = std::string(64u, 'b');
+    capture.presentationSha256 = std::string(64u, 'e');
     capture.context = "Car <script>";
     capture.pose = "Race steer & lean";
     capture.lighting = "Bright";
@@ -155,31 +156,60 @@ int main() {
     donorCapture.pngSha256.clear();
     donorCapture.subject = Subject::RetailDonor;
     donorCapture.referenceDonor = "Diddy Kong";
-    donorCapture.pose = "Live retail animation";
+    donorCapture.sceneRegistrationSha256 = std::string(64u, 'c');
+    donorCapture.pose = "Race steer & lean";
     donorCapture.lighting = "Neutral";
     donorCapture.players = 1u;
-    donorCapture.phaseMilli = 0u;
-    donorCapture.viewYawDegrees = 0;
+    donorCapture.phaseMilli = 500u;
+    donorCapture.viewYawDegrees = 180;
     donorCapture.viewPitchDegrees = 0;
     donorCapture.exactPose = false;
     expect(bindPng(donorCapture, error),
            "a composed retail donor reference binds as comparison-only evidence");
+    Capture unregisteredDonor = donorCapture;
+    unregisteredDonor.pngSha256.clear();
+    unregisteredDonor.sceneRegistrationSha256.clear();
+    expect(!bindPng(unregisteredDonor, error),
+           "a donor reference without an exact scene witness fails closed");
     Capture donorAlpha = alphaCapture;
     donorAlpha.pngSha256.clear();
     donorAlpha.subject = Subject::RetailDonor;
     donorAlpha.exactPose = false;
     expect(!bindPng(donorAlpha, error),
            "a retail donor reference cannot claim a custom model-only product");
+    Capture registeredAlpha = alphaCapture;
+    registeredAlpha.pngSha256.clear();
+    registeredAlpha.sceneRegistrationSha256 = std::string(64u, 'c');
+    expect(!bindPng(registeredAlpha, error),
+           "a model-only product cannot claim composed-scene registration");
     Capture donorExactPose = donorCapture;
     donorExactPose.pngSha256.clear();
     donorExactPose.exactPose = true;
     expect(!bindPng(donorExactPose, error),
-           "live donor animation cannot claim an exact custom semantic phase");
+           "donor pixels cannot claim an exact custom semantic phase");
     Capture unnamedDonor = donorCapture;
     unnamedDonor.pngSha256.clear();
     unnamedDonor.referenceDonor.clear();
     expect(!bindPng(unnamedDonor, error),
            "a portable retail reference must name the selected donor");
+    Capture registeredCustom = donorCapture;
+    registeredCustom.subject = Subject::CustomCharacter;
+    registeredCustom.referenceDonor.clear();
+    registeredCustom.exactPose = true;
+    expect(registeredComparison(registeredCustom, donorCapture),
+           "matching exact scene witnesses admit a pixel-registered comparison");
+    Capture shiftedDonor = donorCapture;
+    shiftedDonor.sceneRegistrationSha256 = std::string(64u, 'd');
+    expect(!registeredComparison(registeredCustom, shiftedDonor),
+           "a different camera or fit witness refuses inferred registration");
+    Capture changedPresentation = donorCapture;
+    changedPresentation.presentationSha256 = std::string(64u, 'f');
+    expect(!registeredComparison(registeredCustom, changedPresentation),
+           "changed renderer presentation refuses a stale comparison");
+    Capture changedScene = donorCapture;
+    changedScene.scene = 1u;
+    expect(!registeredComparison(registeredCustom, changedScene),
+           "captures from different qualified scenes cannot be overlaid");
     Capture missingProjection = alphaCapture;
     missingProjection.fitProjection = FitProjection{};
     expect(!validateBoundPng(missingProjection, error),
@@ -227,6 +257,28 @@ int main() {
                StoreResult::Full &&
                fullTray.size() == kMaximumCaptures,
            "a new capture cannot silently exceed the report safety capacity");
+    Capture fullTrayReplacement = alphaCapture;
+    fullTrayReplacement.pngSha256.clear();
+    expect(bindAndReplace(
+               fullTray, 0u, fullTrayReplacement, error) ==
+               StoreResult::Replaced &&
+               fullTray.size() == kMaximumCaptures &&
+               fullTray.front().pngPath == alphaCapture.pngPath,
+           "a caller-qualified inline slot remains refreshable at tray capacity");
+    const Capture retainedReplacement = fullTray[1u];
+    Capture invalidFullTrayReplacement = capture;
+    invalidFullTrayReplacement.pngSha256.clear();
+    expect(bindAndReplace(
+               fullTray, 1u, invalidFullTrayReplacement, error) ==
+               StoreResult::Invalid &&
+               fullTray[1u].pngSha256 == retainedReplacement.pngSha256 &&
+               fullTray[1u].pngPath == retainedReplacement.pngPath,
+           "an invalid qualified replacement preserves the last good tray entry");
+    expect(bindAndReplace(
+               fullTray, fullTray.size(), fullTrayReplacement, error) ==
+               StoreResult::Invalid &&
+               fullTray.size() == kMaximumCaptures,
+           "an out-of-range replacement index fails without mutating the tray");
     expect(writeBytes(pngPath, kOnePixelPng, sizeof(kOnePixelPng)),
            "capture slot fixture is restored after replacement tests");
 
@@ -253,7 +305,7 @@ int main() {
                    std::string::npos &&
                report.find("</script><script>alert") == std::string::npos,
            "display metadata is safe in both HTML and embedded JSON contexts");
-    expect(report.find("\"version\":4") != std::string::npos &&
+    expect(report.find("\"version\":5") != std::string::npos &&
                report.find("\"renderProduct\":\"scene\"") !=
                    std::string::npos &&
                report.find("\"renderProduct\":\"model-alpha\"") !=
@@ -264,10 +316,18 @@ int main() {
                    std::string::npos &&
                report.find("\"referenceDonor\":\"Diddy Kong\"") !=
                    std::string::npos &&
-               report.find("Comparison only · live retail animation") !=
+               report.find("\"sceneRegistrationSha256\":\"" +
+                           donorCapture.sceneRegistrationSha256 +
+                           "\"") != std::string::npos &&
+               report.find("Comparison only · registered held camera") !=
                    std::string::npos &&
                report.find("\"sourceSha256\":\"") != std::string::npos &&
                report.find("\"fitSha256\":\"") != std::string::npos &&
+               report.find("\"presentationSha256\":\"") !=
+                   std::string::npos &&
+               report.find(
+                   "\"scene\":0,\"sceneRegistrationSha256\"") !=
+                   std::string::npos &&
                report.find("\"pngSha256\":\"" + capture.pngSha256 +
                            "\"") != std::string::npos &&
                report.find("\"stableFrames\":12") != std::string::npos &&

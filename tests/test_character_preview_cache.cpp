@@ -61,14 +61,50 @@ int main() {
     std::string donorCapture;
     expect(CharacterPreviewCache::prepare(
                utf8(root), packageId, 2u,
-               CharacterPreviewCache::Subject::RetailDonor,
+               CharacterPreviewCache::Product::RetailDonorScene,
                donorCapture, error) && donorCapture != capture &&
                CharacterPreviewCache::owns(
                    utf8(root), packageId, donorCapture),
            "retail donor references own a distinct bounded context slot");
     writeText(fs::u8path(donorCapture), "donor preview");
+    std::string modelCapture;
+    expect(CharacterPreviewCache::prepare(
+               utf8(root), packageId, 2u,
+               CharacterPreviewCache::Product::CustomModelAlpha,
+               modelCapture, error) && modelCapture != capture &&
+               modelCapture != donorCapture &&
+               CharacterPreviewCache::owns(
+                   utf8(root), packageId, modelCapture),
+           "transparent model captures do not evict composed custom or donor scenes");
+    writeText(fs::u8path(modelCapture), "model preview");
 
     writeText(fs::u8path(capture), "old preview");
+    const std::string retainedPrimary = capture;
+    std::string inactiveCapture;
+    expect(CharacterPreviewCache::preparePreserving(
+               utf8(root), packageId, 2u,
+               CharacterPreviewCache::Product::CustomScene,
+               retainedPrimary, inactiveCapture, error) &&
+               inactiveCapture != retainedPrimary &&
+               fs::exists(fs::u8path(retainedPrimary)) &&
+               !fs::exists(fs::u8path(inactiveCapture)),
+           "preserving preparation leaves the last published slot intact");
+    writeText(fs::u8path(inactiveCapture), "new preview");
+    std::string recycledCapture;
+    expect(CharacterPreviewCache::preparePreserving(
+               utf8(root), packageId, 2u,
+               CharacterPreviewCache::Product::CustomScene,
+               inactiveCapture, recycledCapture, error) &&
+               recycledCapture == retainedPrimary &&
+               fs::exists(fs::u8path(inactiveCapture)) &&
+               !fs::exists(fs::u8path(recycledCapture)),
+           "the bounded pair recycles only the inactive slot");
+    expect(!CharacterPreviewCache::preparePreserving(
+               utf8(root), packageId, 2u,
+               CharacterPreviewCache::Product::CustomScene,
+               utf8(root / "foreign.png"), recycledCapture, error),
+           "preserving preparation rejects a foreign retained path");
+    capture = inactiveCapture;
     expect(!CharacterPreviewCache::removeOwnedPath(
                utf8(root), "another-character", capture),
            "foreign package cleanup refuses the derived path");
@@ -96,6 +132,8 @@ int main() {
            "package cleanup preserves unrelated cache-directory files");
     expect(!fs::exists(fs::u8path(donorCapture)),
            "package cleanup removes the exact donor-reference slot");
+    expect(!fs::exists(fs::u8path(modelCapture)),
+           "package cleanup removes the exact model-alpha slot");
     for (uint32_t context = CharacterPreviewCache::kFirstContext;
          context <= CharacterPreviewCache::kLastContext; ++context) {
         std::string path;

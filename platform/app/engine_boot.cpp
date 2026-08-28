@@ -68,6 +68,35 @@ const char *characterPreviewPoseSemantic(MdkrCharacterPreviewPose pose) {
     }
 }
 
+bool characterPreviewDonorPoseValid(const MdkrBootConfig &cfg) {
+    if (cfg.character_preview_pose ==
+            MDKR_CHARACTER_PREVIEW_POSE_LIVE) {
+        return cfg.character_preview_pose_phase_milli == 0u;
+    }
+    return cfg.character_preview_pose_phase_milli == 500u &&
+        (cfg.character_preview_context == MDKR_CHARACTER_PREVIEW_SELECT
+             ? cfg.character_preview_pose ==
+                   MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE
+             : cfg.character_preview_context >=
+                       MDKR_CHARACTER_PREVIEW_CAR &&
+                   cfg.character_preview_context <=
+                       MDKR_CHARACTER_PREVIEW_PLANE &&
+                   cfg.character_preview_pose ==
+                       MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER);
+}
+
+bool characterPreviewDonorViewValid(const MdkrBootConfig &cfg) {
+    const bool authoredView =
+        cfg.character_preview_view_yaw_degrees == 0 &&
+        cfg.character_preview_view_pitch_degrees == 0;
+    return cfg.character_preview_pose ==
+                   MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+               cfg.character_preview_context ==
+                   MDKR_CHARACTER_PREVIEW_SELECT
+        ? authoredView
+        : true;
+}
+
 const char *characterPreviewLightingName(
     MdkrWorkshopPreviewLighting lighting) {
     switch (lighting) {
@@ -471,14 +500,11 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
               cfg->character_preview_studio != 1) ||
              (cfg->character_preview_donor_reference &&
               (cfg->character_preview_players != 1 ||
-               cfg->character_preview_pose !=
-                   MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
-               cfg->character_preview_pose_phase_milli != 0u ||
+               !characterPreviewDonorPoseValid(*cfg) ||
+               !characterPreviewDonorViewValid(*cfg) ||
                cfg->character_preview_transition_from_pose !=
                    MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
                cfg->character_preview_transition_from_phase_milli != 0u ||
-               cfg->character_preview_view_yaw_degrees != 0 ||
-               cfg->character_preview_view_pitch_degrees != 0 ||
                cfg->character_preview_lighting !=
                    MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
                cfg->character_preview_capture_png == nullptr ||

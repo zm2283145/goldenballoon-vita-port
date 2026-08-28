@@ -11,6 +11,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
@@ -34,12 +35,37 @@ PACKAGE_ID = "org.mdkr.test-evidence-proof"
 TOKEN = "mdkr64-character-test-evidence-v1"
 
 
+def make_scene_png(size: int, donor: bool) -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload)) + kind + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    rows = bytearray()
+    for y in range(size):
+        rows.append(0)
+        for x in range(size):
+            if donor:
+                rows.extend((180 + x % 45, 65 + y % 60, 55))
+            else:
+                rows.extend((55, 110 + x % 70, 155 + y % 70))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(bytes(rows), 9))
+        + chunk(b"IEND", b"")
+    )
+
+
 def install_fixture(root: Path) -> Path:
     source = root / "source"
     characters = root / "characters"
     source.mkdir()
     model = source / "model.glb"
     portrait = source / "portrait.png"
+    (source / "scene-custom.png").write_bytes(make_scene_png(40, False))
+    (source / "scene-donor.png").write_bytes(make_scene_png(40, True))
     manifest_path = source / "manifest.json"
     license_path = source / "LICENSE.txt"
     package = source / "test-evidence-proof.mdkrchar"
@@ -176,6 +202,7 @@ def run(
     compact: bool = False,
     accessible: bool = False,
     inspection_capture: Path | None = None,
+    donor_capture: Path | None = None,
     visual_report: Path | None = None,
     focus_fit_overlay: bool = False,
     focus_contact_review: bool = False,
@@ -249,6 +276,10 @@ def run(
     if inspection_capture is not None:
         environment["MDKR_APP_SMOKE_CHARACTER_INSPECTION_CAPTURE"] = str(
             inspection_capture
+        )
+    if donor_capture is not None:
+        environment["MDKR_APP_SMOKE_CHARACTER_DONOR_CAPTURE"] = str(
+            donor_capture
         )
     if visual_report is not None:
         environment["MDKR_APP_SMOKE_CHARACTER_VISUAL_REPORT"] = str(
@@ -370,6 +401,41 @@ def main() -> int:
                 root,
                 characters,
                 (
+                    "character-test-evidence-action "
+                    "action=publish-registered-comparison applied=1 records=0 baselines=0",
+                    "character-registered-comparison package=" + PACKAGE_ID
+                    + " context=Car sourceFitPoseCamera=exact grid=40x40",
+                ),
+                action="publish-registered-comparison",
+                inspection_capture=root / "source" / "scene-custom.png",
+                donor_capture=root / "source" / "scene-donor.png",
+                tab="test",
+            )
+
+            run(
+                binary,
+                root,
+                characters,
+                (
+                    "character-registered-comparison package=" + PACKAGE_ID
+                    + " context=Car sourceFitPoseCamera=exact grid=40x40",
+                    "text=Custom only",
+                    "text=50 / 50",
+                    "text=Donor only",
+                ),
+                action="publish-registered-comparison",
+                compact=True,
+                accessible=True,
+                inspection_capture=root / "source" / "scene-custom.png",
+                donor_capture=root / "source" / "scene-donor.png",
+                tab="test",
+            )
+
+            run(
+                binary,
+                root,
+                characters,
+                (
                     "character-fit-reference package=" + PACKAGE_ID
                     + " context=2 source-fit-context=current plane=-1 "
                     "planeMatch=0 product=model-alpha "
@@ -428,7 +494,7 @@ def main() -> int:
                 or rows[0][0] != "0"
                 or rows[0][1] != PACKAGE_ID
                 or (rows[0][7], rows[0][8]) != ("2", "4")
-                or rows[0][9] != "19"
+                or rows[0][9] != "20"
                 or bytes.fromhex(rows[0][29]).decode("utf-8")
                 != "webgpu-test"
                 or bytes.fromhex(rows[0][30]).decode("utf-8")
@@ -943,7 +1009,7 @@ def main() -> int:
         return 1
     print(
         "check_character_test_evidence_ui: PASS -- durable source/fit/device-"
-        "bound 4x4 matrix with focusable three-view bounds/anchor/facing overlays, digest-bound current renderer references with stale-fit refusal, signed renderer-fit and hand/foot contact diagnostics, same-"
+        "bound 4x4 matrix with focusable three-view bounds/anchor/facing overlays, digest-bound current renderer references with stale-fit refusal, rendered and spoken registered donor/custom blending, signed renderer-fit and hand/foot contact diagnostics, same-"
         "environment wall/scene/character GPU baseline lifecycle, corruption "
         "and invalid-fit/camera/contact/GPU refusal, pose-inspection exclusion, keyboard speech, "
         "200% rendering, and package-byte purity"

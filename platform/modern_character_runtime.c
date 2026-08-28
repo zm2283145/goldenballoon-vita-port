@@ -78,6 +78,8 @@ static MdkrModernRuntimePlayer s_players[MDKR_MODERN_CHARACTER_PLAYERS];
 static int s_initialized;
 static uint64_t s_replacement_draws;
 static uint64_t s_replacement_primitives;
+static uint64_t s_reference_draws;
+static uint64_t s_reference_primitives;
 static uint64_t s_hidden_donor_batches;
 static uint64_t s_contact_solves;
 static uint64_t s_contact_error_micrometres_sum;
@@ -939,6 +941,8 @@ int mdkr_modern_characters_init(const char *directory) {
     mdkr_modern_characters_shutdown();
     s_replacement_draws = 0u;
     s_replacement_primitives = 0u;
+    s_reference_draws = 0u;
+    s_reference_primitives = 0u;
     s_hidden_donor_batches = 0u;
     s_contact_solves = 0u;
     s_contact_error_micrometres_sum = 0u;
@@ -1036,6 +1040,8 @@ void mdkr_modern_character_runtime_metrics(
     if (out == NULL) return;
     out->replacement_draws = s_replacement_draws;
     out->replacement_primitives = s_replacement_primitives;
+    out->reference_draws = s_reference_draws;
+    out->reference_primitives = s_reference_primitives;
     out->hidden_donor_batches = s_hidden_donor_batches;
     out->contact_solves = s_contact_solves;
     out->contact_error_micrometres_sum =
@@ -1835,6 +1841,8 @@ int mdkr_modern_character_emit(int player, int view,
     uint32_t emitted = 0u;
     const MdkrWorkshopPreviewLighting inspection_lighting =
         mdkr_workshop_preview_lighting();
+    const int reference_only =
+        mdkr_workshop_preview_reference_enabled() != 0;
     if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
         view < 0 || view >= MDKR_MODERN_CHARACTER_VIEWS ||
         display_list == NULL || *display_list == NULL ||
@@ -2078,6 +2086,7 @@ int mdkr_modern_character_emit(int player, int view,
         draw.primitive = primitive_index;
         draw.player = (uint32_t)player;
         draw.view = (uint32_t)view;
+        draw.reference_only = reference_only ? 1u : 0u;
         memcpy(draw.target_frame_matrix, target_context,
                sizeof(draw.target_frame_matrix));
         if (fit_diagnostics_ready) {
@@ -2194,9 +2203,14 @@ int mdkr_modern_character_emit(int player, int view,
     if (inspection_lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL) {
         mdkr_workshop_preview_note_lighting_override();
     }
-    s_replacement_draws++;
-    s_replacement_primitives += emitted;
-    if (contact_solved) {
+    if (reference_only) {
+        s_reference_draws++;
+        s_reference_primitives += emitted;
+    } else {
+        s_replacement_draws++;
+        s_replacement_primitives += emitted;
+    }
+    if (contact_solved && !reference_only) {
         s_contact_solves++;
         if (UINT64_MAX - s_contact_error_micrometres_sum <
             contact_error_micrometres) {

@@ -153,6 +153,7 @@ uint32_t gfx_modern_character_register_draw(
         draw->primitive >= draw->asset->primitive_count ||
         draw->player >= MDKR_MODERN_CHARACTER_PLAYERS ||
         draw->view >= MDKR_MODERN_CHARACTER_VIEWS ||
+        draw->reference_only > 1u ||
         draw->bone_count > DKR_MODERN_MAX_BONES ||
         (draw->bone_count != 0u &&
          (draw->bone_matrices == NULL ||

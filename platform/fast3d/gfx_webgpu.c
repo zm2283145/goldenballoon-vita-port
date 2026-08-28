@@ -10130,19 +10130,24 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
         s_skinned_refused_draws++;
         return;
     }
-    timing_query = wgpu_character_gpu_timing_draw_begin();
-    wgpuRenderPassEncoderSetPipeline(s_pass, pipeline);
-    wgpuRenderPassEncoderSetBindGroup(s_pass, 0u, bind_group, 1u, &dynamic_offset);
-    s_pipe_applied = pipeline;
-    s_bg_applied = NULL;
-    wgpuRenderPassEncoderSetVertexBuffer(s_pass, 0u, resources->vbuf, 0u,
-                                         (uint64_t)asset->vertex_count * 72u);
-    wgpuRenderPassEncoderSetIndexBuffer(s_pass, resources->ibuf,
-                                        WGPUIndexFormat_Uint32, 0u,
-                                        (uint64_t)asset->index_count * 4u);
-    wgpuRenderPassEncoderDrawIndexed(s_pass, primitive->index_count, 1u,
-                                     primitive->first_index, 0, 0u);
-    wgpu_character_gpu_timing_draw_end(timing_query);
+    if (!draw->reference_only) {
+        timing_query = wgpu_character_gpu_timing_draw_begin();
+        wgpuRenderPassEncoderSetPipeline(s_pass, pipeline);
+        wgpuRenderPassEncoderSetBindGroup(
+            s_pass, 0u, bind_group, 1u, &dynamic_offset);
+        s_pipe_applied = pipeline;
+        s_bg_applied = NULL;
+        wgpuRenderPassEncoderSetVertexBuffer(
+            s_pass, 0u, resources->vbuf, 0u,
+            (uint64_t)asset->vertex_count * 72u);
+        wgpuRenderPassEncoderSetIndexBuffer(
+            s_pass, resources->ibuf, WGPUIndexFormat_Uint32, 0u,
+            (uint64_t)asset->index_count * 4u);
+        wgpuRenderPassEncoderDrawIndexed(
+            s_pass, primitive->index_count, 1u,
+            primitive->first_index, 0, 0u);
+        wgpu_character_gpu_timing_draw_end(timing_query);
+    }
     if (draw->player == 0u && draw->view == 0u &&
         !s_skinned_scene_projection_conflict) {
         MdkrModernCharacterCaptureProjection candidate = {0};
@@ -10211,7 +10216,8 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
             s_skinned_frame_scene_projection.primitive_draws++;
         }
     }
-    if (visibility_requested && draw->player == 0u && draw->view == 0u) {
+    if (!draw->reference_only && visibility_requested &&
+        draw->player == 0u && draw->view == 0u) {
         if (s_skinned_visibility_draw_count >=
                 WGPU_SKINNED_CAPTURE_MAX_DRAWS) {
             s_skinned_visibility_overflow = true;
@@ -10241,7 +10247,8 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
             }
         }
     }
-    if (capture_requested && draw->player == 0u && draw->view == 0u) {
+    if (!draw->reference_only && capture_requested &&
+        draw->player == 0u && draw->view == 0u) {
         if (s_skinned_capture_draw_count >=
                 WGPU_SKINNED_CAPTURE_MAX_DRAWS) {
             s_skinned_capture_overflow = true;
@@ -10290,8 +10297,10 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
             capture->framing_scale = 0.0f;
         }
     }
-    s_skinned_draws++;
-    s_skinned_triangles += primitive->index_count / 3u;
+    if (!draw->reference_only) {
+        s_skinned_draws++;
+        s_skinned_triangles += primitive->index_count / 3u;
+    }
 }
 
 static void wgpu_release_skinned_visibility_target(void) {

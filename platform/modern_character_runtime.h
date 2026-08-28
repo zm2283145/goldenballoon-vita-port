@@ -36,6 +36,8 @@ typedef struct MdkrModernCharacterIdentityView {
 typedef struct MdkrModernCharacterRuntimeMetrics {
     uint64_t replacement_draws;
     uint64_t replacement_primitives;
+    uint64_t reference_draws;
+    uint64_t reference_primitives;
     uint64_t hidden_donor_batches;
     uint64_t contact_solves;
     uint64_t contact_error_micrometres_sum;

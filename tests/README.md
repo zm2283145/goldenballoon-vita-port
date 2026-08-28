@@ -5042,7 +5042,7 @@ aspect-fits that selected viewport into the full output without distortion, and
 publishes bounded fixed-point projections for eight calibrated bounds corners,
 the fitted anchor, and the forward endpoint. The gate installs a second
 reviewed-humanoid package and drives a real car arm through automatic contact
-solving. The current result-v19 contract must publish all four bounded
+solving. The current result-v20 contract must publish all four bounded
 contact witnesses; the gate independently recomputes the left-hand
 target-to-endpoint distance from quantized coordinates and rejects partial,
 detached, or fabricated select-context evidence. Authored-clips-only arms must
@@ -5135,16 +5135,22 @@ camera/light/capture inspection into the session report tray, decodes and draws
 its bounded digest-bound thumbnail, announces descriptive preview text, and
 requires both render-product choices, portrait handoff, removal, report path,
 exclusive export, and list-clear controls to remain reachable at 200% scale.
+Another rendered arm publishes two distinct bounded RGB scene fixtures as a
+digest-bound registered donor/custom pair, opens the actual report-tray blend
+control, and requires its exact-grid accessibility trace. The pure report unit
+and linked-ROM gate separately prove refusal on witness drift and production
+renderer agreement, so this UI smoke does not manufacture renderer authority.
 The pure `character_visual_report` test independently proves embedded PNG/JSON
 output, capture-time digest binding, same-size/same-product file-replacement
 refusal, rebinding refusal, HTML/script escaping, source-path privacy, PNG
-completeness/dimension/product checks, schema-v4 scene/model-alpha plus
+completeness/dimension/product checks, schema-v5 scene/model-alpha plus
 custom/retail-donor subject identity and fixed
 projection metadata, integer-space registered SVG overlay, checkerboard
 transparency presentation, and overwrite refusal;
 `character_preview_cache` proves the Offset Studio no-filename path derives
-distinct bounded custom and retail-donor hashed slots per package/context,
-preserves unrelated files, cleans only
+distinct bounded two-slot custom-scene, model-alpha, and retail-donor products
+per package/context, preserves the last published product until its replacement
+binds, preserves unrelated files, cleans only
 regular non-link owned files, rejects cross-package ownership and hostile links,
 and leaves the renderer destination absent for exclusive PNG creation;
 `workshop_preview_runtime` proves visual bounds, donor-reference enable/reset
@@ -5152,7 +5158,10 @@ and qualified-batch counting, failure-without-mutation, and measurement epochs.
 The linked-ROM gate separately requires the donor route to preserve the
 package's selected donor, produce zero modern replacements and nonzero qualified
 donor-character batches, capture a nonempty composed RGB frame, and auto-return
-after 12 stable frames.
+after 12 stable frames. It then captures the custom half at the same held pose
+and camera, requiring identical fitted anchor/bounds/forward/head and camera
+bounds/viewport/head witnesses plus the same RGB pixel grid; this exercises
+both renderer halves of the launcher's registered overlay contract.
 The pure `character_test_evidence_store` unit separately covers canonical parsing,
 whole-inventory and row authentication, strict unsigned/signed numeric and UTF-8
 bounds, renderer-fit/contact-witness invariants, exact key replacement,
