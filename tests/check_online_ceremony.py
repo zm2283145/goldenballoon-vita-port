@@ -52,7 +52,7 @@ STANDINGS_FINAL_RE = re.compile(
     r"placements=[\d,]+ points=(\d+),(\d+),(\d+),(\d+) secs=\d+ final=1$",
     re.MULTILINE)
 CEREMONY_ENTER_RE = re.compile(
-    r"^\[online-ceremony\] enter: champion seat=(\d+) name=(\S+) points=(\d+) "
+    r"^\[online-ceremony\] enter: champion seat=(\d+) name=(.+?) points=(\d+) "
     r"seats=(\d+)", re.MULTILINE)
 CEREMONY_RENDER_RE = re.compile(
     r"^\[online-ceremony\] render champion=(\d+) points=(\d+) secs=(\d+) "
@@ -200,7 +200,11 @@ def _champion_matches_standings(tag: str, output: str) -> int | None:
                     f"the champion against", output)
     pts = [int(p) for p in standings[-1]]  # last final-standings render
     champ_points = max(pts)
-    champ_seat = pts.index(champ_points)
+    # Robust to a points tie: the engine's lastpl tie-break picks ONE of the
+    # max-point seats, so accept the champion being ANY max-point seat (still
+    # catches a non-max, i.e. wrong, champion). On the deterministic rig (34,30)
+    # there is a unique max, so this is exact there.
+    champ_seats = [i for i, p in enumerate(pts) if p == champ_points]
     enter = CEREMONY_ENTER_RE.search(output)
     if not enter:
         return fail(f"[{tag}] no ceremony ENTER witness to read the champion from",
@@ -209,9 +213,9 @@ def _champion_matches_standings(tag: str, output: str) -> int | None:
     if int(points) != champ_points:
         return fail(f"[{tag}] ceremony champion points={points} != the standings "
                     f"#1 total {champ_points} (the DRY sort disagreed)", output)
-    if int(seat) != champ_seat:
-        return fail(f"[{tag}] ceremony champion seat={seat} != the standings #1 "
-                    f"seat {champ_seat}", output)
+    if int(seat) not in champ_seats:
+        return fail(f"[{tag}] ceremony champion seat={seat} is not among the "
+                    f"max-point seats {champ_seats} (points {pts})", output)
     # The champion witness also matches on the render line.
     render = CEREMONY_RENDER_RE.search(output)
     if render and int(render.group(2)) != champ_points:
@@ -318,6 +322,18 @@ def check_vacate(binary: Path, rom: Path, verbose: bool) -> int | None:
     if CEREMONY_DONE_AUTO_RE.search(output):
         return fail(f"[{tag}] the ceremony ran to its full timer instead of ending "
                     f"promptly on the vacate", output)
+    # Prove the DEBOUNCE (15 frames), not the 6s timer: the ceremony ended while
+    # the countdown was still (near) full, which only the ~15-frame debounce can do
+    # -- the timer path would have counted secs down to 0. (Forced seam overrides
+    # only the "remote gone" predicate; the real vacateTicks>=CER_VACATE_DEBOUNCE
+    # branch is what fires -- Minor-1.)
+    secs = [int(r[2]) for r in CEREMONY_RENDER_RE.findall(output)]
+    if not secs:
+        return fail(f"[{tag}] no ceremony render witness to time the vacate", output)
+    if min(secs) < 5:
+        return fail(f"[{tag}] the ceremony countdown ran down to {min(secs)}s before "
+                    f"ending -- that is the 6s timer, not the ~15-frame debounce "
+                    f"(the real debounce branch was not exercised)", output)
     return None
 
 

@@ -365,7 +365,15 @@ void mdkr_online_ceremony_enter(void) {
     bgdraw_fillcolour(16, 24, 48); /* match the charselect/trackselect/results backdrop */
     sound_play(CER_SFX_CELEBRATE, NULL);
 
-    ceremony_seat_name(&snap, haveSnap, sCer.champSeat, name, sizeof(name));
+    /* Only resolve a name for a real champion seat; a feed-less endpoint (no
+     * champion) logs "(none)" rather than the misleading "P256" a slot-255 name
+     * fallback would print. Witness cosmetics only -- the render path already
+     * guards the no-champion case ("CUP COMPLETE"). */
+    if (sCer.champSeat != 0xFFu) {
+        ceremony_seat_name(&snap, haveSnap, sCer.champSeat, name, sizeof(name));
+    } else {
+        (void) snprintf(name, sizeof(name), "(none)");
+    }
     fprintf(stderr,
             "[online-ceremony] enter: champion seat=%u name=%.12s points=%u "
             "seats=%u (native cup celebration; offline trophy cinematic "
@@ -427,10 +435,14 @@ MdkrOnlineCeremonyResult mdkr_online_ceremony_tick(s32 updateRate) {
      * ending a few frames early changes nothing -- it just never parks. */
     if (haveSnap && ceremony_has_local_seat(&snap) &&
         (!ceremony_has_remote_seat(&snap) || ceremony_vacate_forced())) {
+        /* ONE debounce gate for BOTH the genuine (remote seat gone from the feed)
+         * and the forced-test path: the test seam overrides ONLY the "remote is
+         * gone" predicate (mirroring the T6d pre-START vacate seam,
+         * online_session_remote_vacate_forced), so the SAME
+         * vacateTicks >= CER_VACATE_DEBOUNCE branch the shipped code takes is what
+         * the vacate lane exercises -- not a substitute gate. */
         sCer.vacateTicks++;
-        if (ceremony_vacate_forced()
-                ? (sCer.stageTicks >= CER_ENTRY_GRACE)
-                : (sCer.vacateTicks >= CER_VACATE_DEBOUNCE)) {
+        if (sCer.vacateTicks >= CER_VACATE_DEBOUNCE) {
             sCer.done = 1u;
             fprintf(stderr,
                     "[online-ceremony] done: champion celebration ended early "
