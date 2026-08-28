@@ -336,6 +336,27 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME adventure_party_policy COMMAND mdkr_adventure_party_policy_test)
 
+    # Adventure Party read-only trace schema (AP-05). Pure formatters over the
+    # state/policy value structs; links adventure_party_state.c only for
+    # adventure_party_state_name() (the session line). The load-bearing check is
+    # the cross-language golden contract: this C test compares one exemplar line
+    # per fact class byte-exact against tests/data/adventure_party_trace_golden.txt,
+    # and tests/adventure_party_trace.py parses the SAME file, so drift in either
+    # language fails one of the two. The golden path is passed explicitly so the
+    # comparison is independent of the CTest working directory.
+    add_executable(mdkr_adventure_party_trace_test
+        ${CMAKE_SOURCE_DIR}/tests/test_adventure_party_trace.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_trace.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_state.c)
+    target_include_directories(mdkr_adventure_party_trace_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_adventure_party_trace_test PRIVATE m)
+    endif()
+    add_test(NAME adventure_party_trace
+        COMMAND mdkr_adventure_party_trace_test
+                ${CMAKE_SOURCE_DIR}/tests/data/adventure_party_trace_golden.txt)
+
     # Pack discovery, load order and path resolution. fs_utf8.c is a real link
     # dependency, not decoration: path access goes through mdkr_fopen_utf8 and
     # mdkr_path_query_utf8 so the Windows arm inherits the existing UTF-8
@@ -1957,6 +1978,14 @@ if(BUILD_TESTING)
         NAME multiplayer_boundaries
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/check_multiplayer_boundaries.py)
+    # AP-05 trace schema, Python half of the cross-language golden contract:
+    # parses tests/data/adventure_party_trace_golden.txt (the same file the C
+    # unit test compares against) and asserts field round-trip + schema. Runs
+    # with --self-test so its own parser controls fire in CTest.
+    add_test(
+        NAME adventure_party_trace_schema
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/adventure_party_trace.py --self-test)
     # Source-shaped: the D1 deferral is only safe if every menu transition
     # that closes the racer-bindings window also services it; those hooks
     # live in call sites the taj_mod unit binary cannot reach.
