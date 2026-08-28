@@ -54,6 +54,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #if !defined(_WIN32)
@@ -3870,6 +3871,133 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                      fires, t1Once ? 1 : 0, leftNoRearm ? 1 : 0,
                      finishedNoInstant ? 1 : 0, clearedWhileFalse ? 1 : 0,
                      t2Once ? 1 : 0, routed2 ? 1 : 0, resetDropsPending ? 1 : 0,
+                     ok ? "PASS" : "FAIL");
+        OnlineRoom_destroyTestLoopbackRace(race);
+        host.shutdown();
+        return ok ? 0 : 3;
+    }
+    if (std::getenv("MDKR_APP_TEST_ONLINE_ROOM_READY_REARM3_PROBE") != nullptr) {
+        /* Multi-cycle sibling of the ROOM_READY_REARM_PROBE above. That probe proves
+         * the re-arm across ONE FINISHED cycle (tournament #1 -> #2) plus a FRESH-
+         * adapter reset coda. What it CANNOT show is that the re-arm is REPEATABLE on
+         * the SAME adapter: a latent one-shot bug (e.g. a "re-armed once" static guard)
+         * would pass #1->#2 yet silently drop tournament #3. The human plan calls the
+         * 3rd tournament out explicitly ("a 3rd for good measure -- unexercised by any
+         * lane"). This seam drives THREE consecutive tournaments through the wiring's
+         * arm -> clear (condition-false) -> rising-edge cycle, so the re-arm must fire
+         * once PER FINISHED return (twice), for a total of exactly three takeovers, and
+         * a LEFT return WEDGED BETWEEN #1 and #2 must NOT re-arm even with the room-ready
+         * condition still TRUE (no re-boot loop across cycles). The condition is toggled
+         * by flipping lobby.mode tournament<->single, a faithful headless stand-in for
+         * the production RESULTS-park -> New-Tournament SELECTING transition, exactly as
+         * the single-cycle probe does. */
+        std::string probeErr;
+        MdkrOnlineTestLoopbackRace *race =
+            OnlineRoom_makeTestLobbyStartRoom(&probeErr);
+        if (race == nullptr) {
+            std::fprintf(stderr,
+                         "[online-room-ready-rearm3-probe] loopback room setup "
+                         "failed: %s\n",
+                         probeErr.c_str());
+            host.shutdown();
+            return 2;
+        }
+        IMdkrOnlineAdapter *visible = OnlineRoom_testLoopbackVisible(race);
+        IMdkrOnlineAdapter *peer = OnlineRoom_testLoopbackPeer(race);
+        auto pump = [&](int n) {
+            for (int i = 0; i < n; ++i) {
+                visible->service();
+                peer->service();
+            }
+        };
+        auto setModePump = [&](unsigned mode) -> bool {
+            (void)mdkr_online_live_adapter_set_mode(visible, mode);
+            for (int i = 0; i < 240; ++i) {
+                visible->service();
+                peer->service();
+                MdkrOnlineLobby lb{};
+                if (mdkr_online_live_adapter_lobby(visible, &lb) && lb.mode == mode)
+                    return true;
+            }
+            return false;
+        };
+
+        OnlineRoom_resetRoomReadyLatch();
+        pump(30);
+        int fires = 0;
+
+        /* (1) Tournament #1: the loopback room starts at SELECTING+2+LOBBY+tournament,
+         * so the condition holds and the takeover fires exactly once. */
+        const bool cond1 = OnlineRoom_roomReadyConditionHolds(visible);
+        if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        (void)OnlineRoom_pollEngineRoomReady(); /* the launcher would boot here */
+        for (int i = 0; i < 30; ++i) {
+            pump(1);
+            if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        }
+        const bool t1Once = cond1 && fires == 1;
+
+        /* (2) A LEFT return between #1 and #2: DO NOT arm. The observer is a no-op with
+         * nothing pending, so even with the condition STILL TRUE the takeover never
+         * re-fires -- the no-re-boot-loop invariant, held across a multi-cycle run. */
+        for (int i = 0; i < 60; ++i) {
+            OnlineRoom_observeRoomReadyRearm(visible);
+            pump(1);
+            if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        }
+        const bool leftNoRearm =
+            fires == 1 && OnlineRoom_roomReadyConditionHolds(visible);
+
+        /* One FINISHED re-arm cycle to the next tournament: arm (no instant re-fire
+         * while the condition holds), drive the condition false (RESULTS park; the
+         * armed observer clears the latch HERE, emitting "re-arm complete"), then a
+         * fresh SELECTING rising edge fires the takeover exactly once. Returns
+         * {no-instant held, this-cycle fired once + routed}. */
+        auto rearmCycle = [&](int expectFires) -> std::pair<bool, bool> {
+            OnlineRoom_armRoomReadyRearm(); /* FINISHED return arms (once per cycle) */
+            const int before = fires;
+            for (int i = 0; i < 60; ++i) { /* condition still holds: must NOT clear */
+                OnlineRoom_observeRoomReadyRearm(visible);
+                pump(1);
+                if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+            }
+            const bool noInstant =
+                fires == before && OnlineRoom_roomReadyConditionHolds(visible);
+            const bool wentFalse = setModePump(MDKR_ONLINE_MODE_SINGLE_RACE);
+            for (int i = 0; i < 30; ++i) { /* condition false: latch clears here */
+                OnlineRoom_observeRoomReadyRearm(visible);
+                pump(1);
+                if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+            }
+            const bool wentTrue = setModePump(MDKR_ONLINE_MODE_TOURNAMENT);
+            pump(5);
+            OnlineRoom_observeRoomReadyRearm(visible); /* already cleared: no-op */
+            if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+            for (int i = 0; i < 30; ++i) {
+                pump(1);
+                if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+            }
+            const bool routed = OnlineRoom_pollEngineRoomReady() == visible;
+            const bool once =
+                wentFalse && wentTrue && fires == expectFires && routed;
+            return {noInstant, once};
+        };
+
+        /* (3) FINISHED re-arm #1 -> tournament #2 (total fires 2). */
+        auto [finishedNoInstant2, t2Once] = rearmCycle(2);
+        /* (4) FINISHED re-arm #2 on the SAME adapter -> tournament #3 (total 3): the
+         * repeatability the single-cycle probe cannot prove. */
+        auto [finishedNoInstant3, t3Once] = rearmCycle(3);
+
+        const bool ok = t1Once && leftNoRearm && finishedNoInstant2 && t2Once &&
+                        finishedNoInstant3 && t3Once && fires == 3;
+        std::fprintf(stderr,
+                     "[online-room-ready-rearm3-probe] totalFires=%d t1Once=%d "
+                     "leftNoRearm=%d finishedNoInstant2=%d t2Once=%d "
+                     "finishedNoInstant3=%d t3Once=%d verdict=%s\n",
+                     fires, t1Once ? 1 : 0, leftNoRearm ? 1 : 0,
+                     finishedNoInstant2 ? 1 : 0, t2Once ? 1 : 0,
+                     finishedNoInstant3 ? 1 : 0, t3Once ? 1 : 0,
                      ok ? "PASS" : "FAIL");
         OnlineRoom_destroyTestLoopbackRace(race);
         host.shutdown();
