@@ -117,6 +117,52 @@ def sha256_prefix(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:8]
 
 
+# --------------------------------------------------------------------------- #
+#  Pure detection predicates (the three HARD gates + the anti-vacuity guard).
+#
+#  These are the guard's ENTIRE decision logic, factored out of main() so they
+#  can be driven directly by tests/check_online_isolation_selftest.py against
+#  deliberately-broken inputs -- proving each gate actually TRIPS on a leak (the
+#  guard is non-vacuous), not just that it PASSES on a clean OFF build. main()
+#  calls exactly these, so the self-test exercises the real detection code.
+# --------------------------------------------------------------------------- #
+
+def anchor_mismatches(got_by_rel: dict[str, str],
+                      expected: dict[str, str] | None = None) -> list[str]:
+    """Anchor rels whose sha256 prefix does NOT match the pin (empty == all
+    byte-identical). This is the gate-1 (byte-identity) decision."""
+    exp = ANCHORS if expected is None else expected
+    return [rel for rel, got in got_by_rel.items() if got != exp.get(rel)]
+
+
+def leaked_tu_objects(present_basenames) -> list[str]:
+    """BETA_TU_OBJECTS whose object basename is present in the OFF tree (empty ==
+    no beta-only engine TU leaked). This is the gate-2 (leaked CMake gate)
+    decision. Preserves BETA_TU_OBJECTS order for a stable report."""
+    present = set(present_basenames)
+    return [rel for rel in BETA_TU_OBJECTS if Path(rel).name in present]
+
+
+def leaked_symbols(nm_stdout: str) -> list[str]:
+    """The sorted nm lines that name a beta LEAK_SYMBOL (empty == no online
+    symbol linked into OFF). This is the gate-3 (symbol) decision."""
+    return sorted({
+        line for line in nm_stdout.splitlines()
+        if any(sym in line for sym in LEAK_SYMBOLS)
+    })
+
+
+def nm_vacuity_error(returncode: int, nm_stdout: str) -> str | None:
+    """The M4 anti-vacuity guard: a non-zero nm OR empty output means the symbol
+    gate cannot run, so a clean pass would be VACUOUS. Returns a reason string
+    when the gate must NOT report a pass, else None."""
+    if returncode != 0:
+        return f"nm failed (exit {returncode})"
+    if not nm_stdout.strip():
+        return "nm produced NO symbols"
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -185,22 +231,25 @@ def main() -> int:
             return fail("the fresh OFF build failed")
 
         # 1) Anchor byte-identity.
-        hash_ok = True
-        hash_report: list[str] = []
-        for rel, expected in ANCHORS.items():
+        got_by_rel: dict[str, str] = {}
+        for rel in ANCHORS:
             obj = scratch / rel
             if not obj.is_file():
                 return fail(f"anchor object missing from the OFF build: {rel}")
-            got = sha256_prefix(obj)
-            mark = "MATCH" if got == expected else "DIFFERS"
-            if got != expected:
-                hash_ok = False
-            hash_report.append(f"    {rel}: expected {expected} got {got} {mark}")
+            got_by_rel[rel] = sha256_prefix(obj)
+        mismatched = anchor_mismatches(got_by_rel)
+        hash_ok = not mismatched
+        hash_report = [
+            f"    {rel}: expected {ANCHORS[rel]} got {got_by_rel[rel]} "
+            f"{'MATCH' if got_by_rel[rel] == ANCHORS[rel] else 'DIFFERS'}"
+            for rel in ANCHORS
+        ]
 
         # 2) No beta-only engine TU object files exist in the OFF tree (the
         # strongest, false-positive-free gate -- catches a leaked CMake gate).
-        leaked_objs = [rel for rel in BETA_TU_OBJECTS
-                       if list(scratch.rglob(Path(rel).name))]
+        present_objs = {Path(rel).name for rel in BETA_TU_OBJECTS
+                        if list(scratch.rglob(Path(rel).name))}
+        leaked_objs = leaked_tu_objects(present_objs)
         if leaked_objs:
             print("\n".join(hash_report), file=sys.stderr)
             return fail(f"the OFF build compiled beta-only engine TU object(s) "
@@ -215,21 +264,18 @@ def main() -> int:
         # M4: a silent nm failure yields empty stdout -> zero matches -> a VACUOUS
         # symbol PASS. Treat a non-zero nm (stripped/fat binary, toolchain quirk) or
         # empty output on a real binary as a HARD error, never a clean pass.
-        if nm.returncode != 0:
+        vacuity = nm_vacuity_error(nm.returncode, nm.stdout)
+        if vacuity is not None:
             print("\n".join(hash_report), file=sys.stderr)
-            print(f"[isolation] nm stderr: {(nm.stderr or '').strip()[:2000]}",
-                  file=sys.stderr)
-            return fail(f"nm failed (exit {nm.returncode}) on the OFF binary -- the "
-                        f"symbol gate cannot run, so isolation is UNPROVEN (a silent "
-                        f"empty-output PASS would be vacuous)")
-        if not nm.stdout.strip():
-            print("\n".join(hash_report), file=sys.stderr)
+            if nm.returncode != 0:
+                print(f"[isolation] nm stderr: {(nm.stderr or '').strip()[:2000]}",
+                      file=sys.stderr)
+                return fail(f"nm failed (exit {nm.returncode}) on the OFF binary -- "
+                            f"the symbol gate cannot run, so isolation is UNPROVEN (a "
+                            f"silent empty-output PASS would be vacuous)")
             return fail("nm produced NO symbols for the OFF binary -- the symbol "
                         "gate would be vacuous; refusing to report a clean pass")
-        leaked = sorted({
-            line for line in nm.stdout.splitlines()
-            if any(sym in line for sym in LEAK_SYMBOLS)
-        })
+        leaked = leaked_symbols(nm.stdout)
         if leaked:
             print("\n".join(hash_report), file=sys.stderr)
             print("[isolation] LEAKED online symbols in OFF mdkr64:",
