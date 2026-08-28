@@ -32,13 +32,17 @@ ROOT = Path(__file__).resolve().parent.parent
 TESTS = ROOT / "tests"
 
 # The full native-takeover lane set: the 13 exit-gate lanes + the C1 no-seam proof,
-# plus two coverage-fill lanes -- the isolation-guard self-test (proves the OFF
-# isolation gate is non-vacuous) and the 3-consecutive-tournament re-arm lane
-# (proves the re-arm is repeatable, not one-shot). Order is deliberate: the fast
-# structural/meta checks first, the long multi-race loopback soaks last, so a quick
-# break surfaces early.
+# plus coverage-fill lanes -- the isolation-guard self-test (proves the OFF
+# isolation gate is non-vacuous), the 3-consecutive-tournament re-arm lane (proves
+# the re-arm is repeatable, not one-shot), and the T3 beta hand-off render-seam lane
+# (proves the launcher retired its per-race SELECTING widgets for BOTH modes and
+# still recovers to the ImGui fallback after a LEFT/ERROR return -- no engine boot).
+# Order is deliberate: the fast structural/meta checks first, the long multi-race
+# loopback soaks last, so a quick break surfaces early.
 LANES = (
     "check_online_isolation_selftest.py",   # meta: the isolation guard is non-vacuous
+    "check_online_beta_handoff.py",         # T3: launcher SELECTING widgets retired ->
+                                            #  universal native hand-off card (no engine)
     "check_online_engine_boot_direct.py",   # golden race hash 7da2ea67 pinned
     "check_online_session_boot.py",
     "check_online_charselect.py",

@@ -1037,6 +1037,7 @@ WORKFLOW_COMPANION_SCRIPTS = {
 # ship as real CHECKS entries above, and online_live_transport_e2e as the
 # browser_local capstone, so they are deliberately absent from this set.)
 ONLINE_TAKEOVER_SCRIPTS = {
+    "check_online_beta_handoff.py",
     "check_online_camera_lens.py",
     "check_online_ceremony.py",
     "check_online_charselect.py",
