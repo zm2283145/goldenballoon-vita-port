@@ -159,7 +159,11 @@ def check_cup_rounds_pin() -> int | None:
 
 def check_watchdog_wedge(binary: Path, rom: Path, verbose: bool) -> int | None:
     """(W1) START but the descriptor/match-input never arms -> the engine's
-    wall-clock watchdog fires and the run EXITS cleanly (bounded), NOT a hang."""
+    FRAME-BUDGET watchdog fires (WATCHDOG_RE: "exceeded N-frame budget") and the
+    run EXITS CLEANLY (rc 0), bounded, NOT a hang. This two-endpoint loopback path
+    uses the frame-count budget + clean exit; the wall-clock deadline + ERROR
+    (nonzero) exit is the single-endpoint contract, covered in
+    check_online_lobby_single_endpoint.py."""
     try:
         rc, output = run_engine(
             binary, rom, ticks=6000, timeout=300, verbose=verbose,
