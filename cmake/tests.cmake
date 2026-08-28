@@ -357,6 +357,22 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         COMMAND mdkr_adventure_party_trace_test
                 ${CMAKE_SOURCE_DIR}/tests/data/adventure_party_trace_golden.txt)
 
+    # Adventure Party formation planner (AP-07, pure half). Deterministic
+    # candidate geometry with no ROM: symmetry across the heading axis, byte
+    # determinism, rigid rotation invariance, bounded/duplicate-free fallback,
+    # count coverage 2/3/4, and typed rejection of degenerate params. Links m
+    # for sinf/cosf (the one accepted per-platform variance). The
+    # collision-validating game adapter is NOT this module and lands with Wave C.
+    add_executable(mdkr_adventure_party_spawn_test
+        ${CMAKE_SOURCE_DIR}/tests/test_adventure_party_spawn.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_spawn.c)
+    target_include_directories(mdkr_adventure_party_spawn_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_adventure_party_spawn_test PRIVATE m)
+    endif()
+    add_test(NAME adventure_party_spawn COMMAND mdkr_adventure_party_spawn_test)
+
     # Pack discovery, load order and path resolution. fs_utf8.c is a real link
     # dependency, not decoration: path access goes through mdkr_fopen_utf8 and
     # mdkr_path_query_utf8 so the Windows arm inherits the existing UTF-8
