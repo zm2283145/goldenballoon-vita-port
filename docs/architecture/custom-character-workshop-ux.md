@@ -224,7 +224,14 @@ intentionally keeps the retail font. Missing glyphs, unsafe invisible direction
 controls, malformed UTF-8, and unterminated input fail closed to the shared
 retail projection. The UI and accessible guidance name the active mode,
 direction, fallback reason, folded and fallback counts. Narration retains
-authored UTF-8.
+authored UTF-8. The launcher merges the same pinned Latin/Greek/Cyrillic,
+Arabic, and Hebrew faces into its ordinary ImGui atlas so editable logical-order
+UTF-8, library rows, and recovery messages never degrade to missing-glyph
+boxes. ImGui editing remains
+codepoint-oriented rather than a substitute for a shaped text editor: the
+selected-character heading and the explicit Identity previews therefore render
+through the exact game rasterizer and are the authoritative visual result for
+joining, direction, and compact fit.
 Sort labels use deterministic ASCII-case-insensitive byte order with package id
 as the tie-break; authors are advised to use ASCII when locale-independent
 ordering matters. This makes today's fallback honest without claiming full

@@ -74,6 +74,13 @@ bool gfx_character_text_render_rgba(
 const char *gfx_character_text_fallback_reason_name(
     GfxCharacterTextFallbackReason reason);
 
+/* The launcher merges these same immutable script faces into its UI atlas so
+ * authored names remain readable in fields and library rows before the exact
+ * shaped game preview. The returned base85 storage has process lifetime. */
+const char *gfx_character_text_latin_face_base85(void);
+const char *gfx_character_text_arabic_face_base85(void);
+const char *gfx_character_text_hebrew_face_base85(void);
+
 /* Releases the lazily decompressed face and raster scratch storage. */
 void gfx_character_text_shutdown(void);
 

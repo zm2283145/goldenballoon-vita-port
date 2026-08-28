@@ -143,6 +143,70 @@ Test once on a fresh save and once on an existing save.
 6. Relaunch and confirm the unlock persists. Exercise save import and erase;
    the unlock state shown by the UI must match the documented operation.
 
+## 5b. Custom Character Workshop acceptance
+
+Run this section on macOS, Windows, and Linux packaged candidates whenever the
+Workshop is part of the release. Use a license-clean test model you are allowed
+to modify and a disposable data directory. Do not publish the character source,
+ROM, captures, or generated reports merely because they were used for
+acceptance.
+
+1. Start with no ROM selected. Open **Character Workshop**, import a GLB, review
+   its validator report and rights, choose a donor profile, create a named
+   draft, close the app, and resume it. Repeat intake with one unambiguous
+   DAE/ZIP or canonical `.mdkrsource` result. Confirm unsupported DCC formats
+   receive copyable conversion guidance and execute no adapter code.
+2. Try an invalid GLB, ambiguous ZIP, traversal entry, invalid SPDX expression,
+   missing importer, changed source, and an existing export destination. Each
+   failure must preserve the source and playable last-known-good package, name
+   the corrective action, and never overwrite a file.
+3. Link the normal base-game ROM. In Offset Studio inspect character select,
+   car, hovercraft, and plane from front, side, top, and underside. Correct
+   scale, facing, floor/seat height, XYZ placement, yaw, and hand/foot targets
+   with pointer controls and exact numeric fields. Confirm undo/redo, per-context
+   isolation, copy-fit confirmation, restart persistence, stale-evidence
+   invalidation, and reset-to-package-anchor wording.
+4. In Animation Studio inspect held 0/50/100% phases and at least one A/B
+   transition. Review source/reference/fallback motion, contact residuals,
+   limits, and secondary motion. An awkward or clipping pose must stay visibly
+   unapproved; the UI must not convert it into a green result automatically.
+5. Capture a transparent model-only still and send it directly to Portrait
+   Studio. Exercise crop/matte/mask, a style preset, pixel edit, undo/redo, and
+   all seven readability views. Verify the exact 40x40 portrait in character
+   select, HUD, results/rankings, minimap/collection flag, and the independent
+   custom roster.
+6. Set a mixed Latin/Arabic or Latin/Hebrew display and short name. Confirm the
+   exact native shaped preview, direction announcement, live roster pixels, and
+   cluster-safe compact fit. Then add an uncovered glyph and confirm the UI
+   names the retail fallback and shows its exact projected text rather than a
+   misleading partial native rendering.
+7. Run the complete select plus five-course race review and the 1P-through-4P
+   matrix. Inspect bounds, floor/seat/facing, camera/anatomy, four contacts,
+   retained-vehicle surface and opaque-depth witnesses, LOD intervals, wall
+   cadence, and optional GPU timestamps. Export a device profile only after its
+   GPU/driver privacy disclosure. Keep over-target rows red or explicitly
+   excepted against the exact device/workload; never relabel them as passing.
+8. Build/install, assign to multiple local players, disable, rebuild/update,
+   restore a prior revision, export and mutation-free review a portable package,
+   re-enable, and permanently remove it. Disconnect networking before the
+   offline relaunch. Verify assignments fall back safely, the external source
+   and license remain byte-identical, and removal cleans only package-owned
+   drafts/evidence.
+9. Confirm donor simulation, collision, audio, save/ghost identity, and network
+   authority remain explicit. OpenGL must retain the donor rather than show a
+   partial custom model; online peers must not be told that visual-package
+   negotiation or transfer exists.
+
+Observe the complete flow at both ordinary and 200% UI scale, including a
+narrow 640x480 layout. Cover mouse, keyboard, controller, touch, and screen
+reader; enable reduced motion and inspect the colour-vision views. Record each
+cell as `pass`, `fail`, or `not available` with platform, OS, GPU/driver, display,
+controller/touch device, screen reader, package/source digest, candidate
+artifact SHA-256, and evidence-report SHA-256. A failed or unobserved required
+cell blocks release; `not available` is acceptable only for a modality the
+tested platform genuinely cannot provide and must be covered on another
+supported test system.
+
 ## 6. Browser custody and the local-only boundary
 
 Before importing a ROM, confirm there is no **Add phone controllers**, Phone

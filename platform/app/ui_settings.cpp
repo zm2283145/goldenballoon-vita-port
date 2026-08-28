@@ -2191,6 +2191,21 @@ struct CharacterIdentityEdit {
 };
 
 std::map<std::string, CharacterIdentityEdit> g_characterIdentityEdits;
+
+struct CharacterWorkshopHeadingRaster {
+    std::string packageId;
+    std::string source;
+    std::array<uint8_t,
+               GFX_CHARACTER_TEXT_MAX_WIDTH *
+                   GFX_CHARACTER_TEXT_MAX_HEIGHT * 4u> pixels{};
+    GfxCharacterTextMetrics metrics{};
+    bool ready = false;
+};
+
+/* Only the selected heading is cached. Keeping this separate from the mutable
+ * Identity draft lets every Workshop tab present the exact shaped runtime name
+ * without growing a texture/raster cache for the whole installed library. */
+CharacterWorkshopHeadingRaster g_characterWorkshopHeadingRaster;
 std::set<std::string> g_characterPortraitStyleTraceKeys;
 std::set<std::string> g_characterPortraitVariantTraceKeys;
 std::set<std::string> g_characterPortraitProofTraceKeys;
@@ -5451,6 +5466,7 @@ void refreshCharacterRegistry() {
     g_characterComparisonBlend.clear();
     g_characterComparisonTraceKeys.clear();
     g_characterRevisionInventories.clear();
+    g_characterWorkshopHeadingRaster = CharacterWorkshopHeadingRaster{};
     g_characterRegistryDirectory.clear();
     g_characterRegistryInventoryAvailable = false;
     if (mdkr_user_characters_directory(directory, sizeof(directory))) {
@@ -20007,20 +20023,54 @@ static void drawNativeCharacterNamePreview(
     draw->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y),
                         IM_COL32(28, 32, 44, 255), 3.0f);
     for (uint32_t y = 0u; y < metrics.height; ++y) {
-        for (uint32_t x = 0u; x < metrics.width; ++x) {
+        uint32_t x = 0u;
+        while (x < metrics.width) {
             const uint8_t *pixel = pixels +
                 (static_cast<size_t>(y) * stridePixels + x) * 4u;
-            if (pixel[3] == 0u) continue;
+            if (pixel[3] == 0u) {
+                ++x;
+                continue;
+            }
+            uint32_t end = x + 1u;
+            while (end < metrics.width) {
+                const uint8_t *next = pixels +
+                    (static_cast<size_t>(y) * stridePixels + end) * 4u;
+                if (std::memcmp(pixel, next, 4u) != 0) break;
+                ++end;
+            }
             draw->AddRectFilled(
                 ImVec2(origin.x + x * scale, origin.y + y * scale),
-                ImVec2(origin.x + (x + 1u) * scale,
+                ImVec2(origin.x + end * scale,
                        origin.y + (y + 1u) * scale),
                 IM_COL32(pixel[0], pixel[1], pixel[2], pixel[3]));
+            x = end;
         }
     }
     draw->AddRect(origin, ImVec2(origin.x + size.x, origin.y + size.y),
                   IM_COL32(88, 98, 120, 255), 3.0f);
     ui::SpeakFocusedItem(spokenLabel, "native glyph preview", spokenHelp);
+}
+
+static bool prepareCharacterWorkshopHeading(
+    const MdkrModernCharacterEntry *entry) {
+    CharacterWorkshopHeadingRaster &raster =
+        g_characterWorkshopHeadingRaster;
+    if (raster.packageId == entry->id &&
+        raster.source == entry->display_name) {
+        return raster.ready;
+    }
+    raster = CharacterWorkshopHeadingRaster{};
+    raster.packageId = entry->id;
+    raster.source = entry->display_name;
+    raster.ready = gfx_character_text_render_rgba(
+        entry->display_name, sizeof(entry->display_name),
+        GFX_CHARACTER_TEXT_MAX_WIDTH, GFX_CHARACTER_TEXT_MAX_HEIGHT,
+        raster.pixels.data(), raster.pixels.size(),
+        GFX_CHARACTER_TEXT_MAX_WIDTH * 4u, &raster.metrics) &&
+        raster.metrics.non_ascii_codepoints != 0u &&
+        raster.metrics.native_renderable &&
+        raster.metrics.fallback_reason == GFX_CHARACTER_TEXT_FALLBACK_NONE;
+    return raster.ready;
 }
 
 bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
@@ -20144,7 +20194,7 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
         "Controls deterministic custom-roster order. ASCII letters compare case-insensitively; the package id breaks ties.");
     if (!stagingDraft) ImGui::EndDisabled();
     ui::TextSubtleWrapped(
-        "Display name is the full visible label; short name fits compact roster tiles; narration name is the accessible spoken label; sort label controls deterministic roster order. Each must be non-empty printable UTF-8.");
+        "Display name is the full visible label; short name fits compact roster tiles; narration name is the accessible spoken label; sort label controls deterministic roster order. Each must be non-empty printable UTF-8. Type or paste Unicode in logical order; the exact shaped in-game result below is authoritative for joining, direction, and fit.");
     {
         const bool projectionReady =
             displayValid && shortValid && displayEvidence.valid_utf8 &&
@@ -20167,10 +20217,16 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
                           "%s", "invalid");
         }
         if (edit.nativeDisplayReady) {
-            ImGui::TextUnformatted(
-                edit.nativeDisplayMetrics.right_to_left
-                    ? "Display • native shaped glyphs • RTL/mixed"
-                    : "Display • native shaped glyphs");
+            const bool rtl = edit.nativeDisplayMetrics.right_to_left;
+            (void)ImGui::Selectable(
+                rtl ? "Display • native shaped glyphs • RTL/mixed"
+                    : "Display • native shaped glyphs",
+                false);
+            ui::SpeakFocusedItem(
+                "Display native glyph preview",
+                rtl ? "native shaped RTL or mixed-direction glyphs"
+                    : "native shaped glyphs",
+                "The exact read-only game raster is directly below this row. The authored display name remains available in its editable field.");
             drawNativeCharacterNamePreview(
                 "##character-display-native-preview",
                 edit.nativeDisplayPixels.data(),
@@ -20190,10 +20246,18 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
                 "Read-only exact retail-glyph projection. Select and copy this value if you need to review it outside the Workshop.");
         }
         if (edit.nativeShortReady) {
-            ImGui::TextUnformatted(
-                edit.nativeShortMetrics.right_to_left
+            const bool rtl = edit.nativeShortMetrics.right_to_left;
+            (void)ImGui::Selectable(
+                rtl
                     ? "Short tile • native shaped RTL/mixed glyphs and exact fit"
-                    : "Short tile • native shaped glyphs and exact fit");
+                    : "Short tile • native shaped glyphs and exact fit",
+                false);
+            ui::SpeakFocusedItem(
+                "Short-name native glyph preview",
+                rtl
+                    ? "native shaped RTL or mixed-direction glyphs with exact compact fit"
+                    : "native shaped glyphs with exact compact fit",
+                "The exact read-only game raster is directly below this row, including cluster-safe ellipsis when the tile width requires it.");
             drawNativeCharacterNamePreview(
                 "##character-short-native-preview",
                 edit.nativeShortPixels.data(), 64u,
@@ -23569,10 +23633,20 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         rigReviewed);
 
     ImGui::PushID(entry->id);
-    ImGui::PushFont(AppTheme::fonts().section);
-    ImGui::TextUnformatted(entry->display_name);
-    ImGui::PopFont();
-    ImGui::SameLine();
+    const bool nativeNameHeading = prepareCharacterWorkshopHeading(entry);
+    if (nativeNameHeading) {
+        drawNativeCharacterNamePreview(
+            "##character-workshop-native-heading",
+            g_characterWorkshopHeadingRaster.pixels.data(),
+            GFX_CHARACTER_TEXT_MAX_WIDTH,
+            g_characterWorkshopHeadingRaster.metrics,
+            entry->narration_name,
+            "Exact shaped in-game display name. Edit its logical Unicode source and compact form in Identity.");
+    } else {
+        ImGui::PushFont(AppTheme::fonts().section);
+        ImGui::TextUnformatted(entry->display_name);
+        ImGui::PopFont();
+    }
     const char *lifecycleSummary = readiness.readyToPlay
         ? "Enabled · Ready to play"
         : readiness.readyToEnable
@@ -23581,9 +23655,15 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                 ? "Enabled · Play blocked — review required"
                 : "Disabled · Workshop incomplete";
     ImGui::TextDisabled("%s", lifecycleSummary);
-    ImGui::TextDisabled("%s · %s gameplay profile",
-                        entry->short_name,
-                        donorName(entry->donor));
+    if (nativeNameHeading) {
+        ImGui::TextDisabled(
+            "%s gameplay profile · exact compact label in Identity",
+            donorName(entry->donor));
+    } else {
+        ImGui::TextDisabled("%s · %s gameplay profile",
+                            entry->short_name,
+                            donorName(entry->donor));
+    }
     drawCharacterWorkshopTabs();
 
     if (g_characterWorkshopTab == CharacterWorkshopTab::Overview) {

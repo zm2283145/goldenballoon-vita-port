@@ -498,7 +498,10 @@ controls. Covered Latin, Greek, Cyrillic, Arabic, Hebrew, combining, and mixed
 right-to-left names use the same pinned HarfBuzz/SheenBidi raster path previewed
 in Portrait Studio. Missing glyphs and unsafe invisible direction controls fail
 closed to the disclosed retail-font projection; no host font or second ROM is
-consulted.
+consulted. Launcher fields accept logical-order UTF-8 and merge the complete
+pinned character-name faces so input stays readable; the shaped character
+heading and Identity previews are the authoritative in-game order, joining,
+and width fit.
 
 Portrait Studio can also start from any local, non-animated, non-interlaced,
 8-bit RGB/RGBA PNG from 16 through 4096 pixels per side. It validates the full

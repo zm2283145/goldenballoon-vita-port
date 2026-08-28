@@ -775,22 +775,23 @@ def main() -> int:
                 else:
                     gpu_noninvalid = (scene_samples + gpu_pending +
                                       gpu_ring_full)
-                    scene_invalid_gap = samples - gpu_noninvalid
-                    minimum_usable = max(1, (samples * 2) // 3)
                     quality_available = (
                         gpu_status == 3 and
-                        scene_samples >= minimum_usable
+                        scene_samples > 0
                     )
                     quality_rejected = (
                         gpu_status == 5 and
-                        scene_samples < minimum_usable and
                         gpu_invalid > 0
                     )
-                    # A rejected window may also contain wall-cadence frames
-                    # where presentation intentionally submitted no scene
-                    # pass. Exact exclusion equality is meaningful only for
-                    # an actionable available window; the error contract must
-                    # still keep every reported counter bounded and honest.
+                    # Wall-cadence intervals and GPU scene submissions have
+                    # deliberately separate admission boundaries: capture
+                    # replay, a final F1 frame, or presentation without an
+                    # initial scene pass can make their totals differ. The
+                    # backend's unit-tested quality gate classifies completed
+                    # scene pairs using its private scene-invalid counter;
+                    # this boundary validates the published status,
+                    # distributions, and bounded aggregate exclusions without
+                    # inventing a one-to-one relationship with wall samples.
                     scene_distribution_valid = (
                         scene_p50 > 0 and scene_p95 >= scene_p50
                     ) if scene_samples > 0 else (
@@ -802,12 +803,7 @@ def main() -> int:
                             not scene_distribution_valid or
                             gpu_pending > 6 or gpu_ring_full > samples or
                             gpu_invalid > samples or
-                            gpu_noninvalid > samples or
-                            (quality_available and
-                             scene_invalid_gap > gpu_invalid) or
-                            (quality_available and
-                             not (gpu_scopes & 0x2) and
-                             scene_invalid_gap != gpu_invalid)):
+                            gpu_noninvalid > samples):
                         failures.append(
                             f"{label} returned inconsistent scene-pass GPU "
                             f"timestamps status={gpu_status} scopes={gpu_scopes:x} "

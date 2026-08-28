@@ -396,6 +396,47 @@ pass. Confirm the file list it prints is what you expect to publish, and that
 `mdkr64_web.js` / `mdkr64_web.wasm` are present in `dist/web` but **not** tracked in
 git.
 
+## 4b. Custom Character Workshop release evidence
+
+Section 2b's unrestricted suite is also the automated release gate for the
+Custom Character Workshop. Its log must contain passing roster, live identity,
+collection-flag, raw-intake, history, draft-transfer, Portrait Studio,
+test-evidence, and exact-renderer-preview tasks. A focused rerun is useful while
+fixing a failure, but its `SUBSET` verdict never replaces the complete-suite
+record.
+
+Before publishing any build that exposes the Workshop:
+
+- [ ] Run **Custom Character Workshop acceptance** in
+      [`RELEASE_CANDIDATE_TEST_GUIDE.md`](RELEASE_CANDIDATE_TEST_GUIDE.md) on
+      the exact packaged candidate, not a source-tree executable.
+- [ ] Complete its mouse, keyboard, controller, touch, screen-reader, 200%
+      scale, narrow-layout, reduced-motion, and colour-vision matrix. Record
+      `not available` honestly where a platform lacks a modality; do not turn
+      an unobserved cell into a pass.
+- [ ] Exercise clean install, offline relaunch, disable, rebuild/update,
+      last-known-good recovery, portable export/review, and permanent removal.
+      The user's original model and license must remain outside application
+      custody and unchanged.
+- [ ] Capture select plus car, hovercraft, and plane evidence for floor,
+      facing, seat, contacts, pose transitions, occlusion, and 1P/4P cost on at
+      least one physical WebGPU device. Record every amber/error row; a local
+      performance exception is evidence, not a manufactured pass.
+- [ ] Verify both a native mixed-direction name and a missing-glyph fallback,
+      including their keyboard/screen-reader descriptions and exact live
+      roster pixels.
+- [ ] Verify the package contains the HarfBuzz and SheenBidi notices alongside
+      the importer, validator, BasisU, and meshoptimizer notices. Keep the
+      character model, ROM, saves, screenshots, and device-profile exports out
+      of the public release archive.
+
+Record the candidate commit and artifact hash, package/source digest, platform,
+GPU/driver, output/render size, input/accessibility modalities, completed
+contexts, evidence-report hash, and first failed step. Screenshots and model
+captures may contain user-licensed or ROM-derived pixels: retain them as private
+acceptance evidence unless their redistribution rights were reviewed
+separately.
+
 ## 5. Desktop packaging and publication
 
 Desktop workflow version inputs are filename components, so public releases use

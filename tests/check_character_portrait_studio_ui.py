@@ -158,6 +158,9 @@ def main() -> int:
         settings_source = (
             ROOT / "platform" / "app" / "ui_settings.cpp"
         ).read_text(encoding="utf-8")
+        theme_source = (
+            ROOT / "platform" / "app" / "app_theme.cpp"
+        ).read_text(encoding="utf-8")
         launcher_source = (
             ROOT / "platform" / "app" / "ui_launcher.cpp"
         ).read_text(encoding="utf-8")
@@ -166,6 +169,9 @@ def main() -> int:
             "prepareInlineCharacterCapture",
             "g_characterPendingPortraitSources[packageId]",
             "Portrait model capture validated and returned",
+            "prepareCharacterWorkshopHeading",
+            "##character-workshop-native-heading",
+            "Type or paste Unicode in logical order",
         ):
             if marker not in settings_source:
                 raise RuntimeError(
@@ -179,6 +185,18 @@ def main() -> int:
             if marker not in launcher_source:
                 raise RuntimeError(
                     f"quick portrait handoff lost launcher link {marker!r}"
+                )
+        for marker in (
+            "kCharacterNameGlyphRanges",
+            "kArabicGlyphRanges",
+            "kHebrewGlyphRanges",
+            "gfx_character_text_latin_face_base85()",
+            "gfx_character_text_arabic_face_base85()",
+            "gfx_character_text_hebrew_face_base85()",
+        ):
+            if marker not in theme_source:
+                raise RuntimeError(
+                    f"launcher text fields lost embedded script face {marker!r}"
                 )
         with tempfile.TemporaryDirectory(
                 prefix="mdkr-portrait-studio-ui-") as temporary:
@@ -224,9 +242,11 @@ def main() -> int:
                  " views=7",
                  "character-name-projection package=" + PACKAGE_ID +
                  " display_codepoints=11 display_folded=2 display_fallback=1 "
-                 "display_mode=retail display_reason=shaping or bidi required "
+                 "display_mode=retail display_reason=missing glyph "
+                 "display_shaped=0 display_rtl=0 display_bidi_runs=0 "
                  "short_codepoints=11 short_folded=2 short_fallback=1 "
-                 "short_mode=retail short_reason=shaping or bidi required valid=1 "
+                 "short_mode=retail short_reason=missing glyph "
+                 "short_shaped=0 short_rtl=0 short_bidi_runs=0 valid=1 "
                  "shared-engine-path=1",
                  "Display retail-font fallback, History OE ?. Read-only exact "
                  "retail-glyph projection.",
@@ -286,6 +306,44 @@ def main() -> int:
                     "rendering or keyboard-walking Portrait Studio mutated "
                     "installed package bytes"
                 )
+
+            # Exercise the opposite presentation path independently: a mixed
+            # LTR/RTL name must use the exact native shaper in both visible
+            # previews and expose that fact to keyboard/speech users. Keeping
+            # this separate from the emoji fixture proves the honest fallback
+            # and native bidi paths without allowing either to mask the other.
+            rtl_root = root / "rtl"
+            rtl_root.mkdir()
+            rtl_characters = install_fixture(
+                rtl_root, display_name="Dixie \u062f\u064a\u0643\u0633\u064a"
+            )
+            rtl_before = inventory(rtl_characters)
+            rtl_ui = rtl_root / "accessible"
+            rtl_ui.mkdir()
+            rtl_shot = rtl_ui / "portrait-studio-rtl-a11y.bmp"
+            run(
+                binary, rtl_root,
+                environment(rtl_ui, rtl_characters, rtl_shot,
+                            compact=False, accessible=True,
+                            portrait_source=portrait_source),
+                ("character-name-projection package=" + PACKAGE_ID +
+                 " display_codepoints=11 display_folded=0 display_fallback=5 "
+                 "display_mode=native display_reason=none display_shaped=1 "
+                 "display_rtl=1 display_bidi_runs=2",
+                 "short_mode=native short_reason=none short_shaped=1 "
+                 "short_rtl=1 short_bidi_runs=2 valid=1 "
+                 "shared-engine-path=1",
+                 "text=Display native glyph preview, native shaped RTL or "
+                 "mixed-direction glyphs.",
+                 "text=Short-name native glyph preview, native shaped RTL or "
+                 "mixed-direction glyphs with exact compact fit."),
+            )
+            check_bmp(rtl_shot, 1280, 720)
+            if inventory(rtl_characters) != rtl_before:
+                raise RuntimeError(
+                    "native bidi preview or accessibility walk mutated "
+                    "installed package bytes"
+                )
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"check_character_portrait_studio_ui: FAIL -- {error}",
               file=sys.stderr)
@@ -294,8 +352,9 @@ def main() -> int:
           "lab and six-variant comparison sheet, one-action exact model "
           "portrait handoff, bounded PNG source/capture "
           "framing with durable freeform subject mask, advanced pixel tools, "
-          "200% compact rendering, keyboard "
-          "speech, and installed-byte purity")
+          "200% compact rendering, honest missing-glyph fallback, exact "
+          "mixed-direction shaping, keyboard speech, and installed-byte "
+          "purity")
     return 0
 
 

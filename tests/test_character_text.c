@@ -234,7 +234,22 @@ static void test_argument_bounds(void) {
             "impossible destination fit was not diagnosed");
 }
 
+static void test_launcher_face_exports(void) {
+    const char *latin = gfx_character_text_latin_face_base85();
+    const char *arabic = gfx_character_text_arabic_face_base85();
+    const char *hebrew = gfx_character_text_hebrew_face_base85();
+    require(latin != NULL && latin[0] != '\0',
+            "launcher Latin/Greek/Cyrillic face is unavailable");
+    require(arabic != NULL && arabic[0] != '\0',
+            "launcher Arabic face is unavailable");
+    require(hebrew != NULL && hebrew[0] != '\0',
+            "launcher Hebrew face is unavailable");
+    require(latin != arabic && latin != hebrew && arabic != hebrew,
+            "launcher script faces unexpectedly alias one another");
+}
+
 int main(void) {
+    test_launcher_face_exports();
     test_direct_scripts();
     test_shaping_and_honest_fallbacks();
     test_fit_and_determinism();

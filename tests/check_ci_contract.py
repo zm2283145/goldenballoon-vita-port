@@ -79,6 +79,7 @@ CMAKE_PROJECT = ROOT / "CMakeLists.txt"
 UI_SETTINGS = ROOT / "platform" / "app" / "ui_settings.cpp"
 APP_SOURCE_DIR = ROOT / "platform" / "app"
 RELEASE_CHECKLIST = ROOT / "docs" / "RELEASE_CHECKLIST.md"
+RELEASE_CANDIDATE_GUIDE = ROOT / "docs" / "RELEASE_CANDIDATE_TEST_GUIDE.md"
 RELEASE_NOTES = ROOT / "RELEASE_NOTES.md"
 TESTS = ROOT / "tests"
 TESTS_README = TESTS / "README.md"
@@ -124,6 +125,7 @@ SOURCES = {
     "cmake": CMAKE_PROJECT,
     "ui_settings": UI_SETTINGS,
     "checklist": RELEASE_CHECKLIST,
+    "candidate_guide": RELEASE_CANDIDATE_GUIDE,
     "release_notes": RELEASE_NOTES,
     "tests_readme": TESTS_README,
 }

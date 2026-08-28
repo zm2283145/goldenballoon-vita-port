@@ -978,6 +978,18 @@ const char *gfx_character_text_fallback_reason_name(
     }
 }
 
+const char *gfx_character_text_latin_face_base85(void) {
+    return MdkrCharacterText_compressed_data_base85;
+}
+
+const char *gfx_character_text_arabic_face_base85(void) {
+    return MdkrCharacterTextArabic_compressed_data_base85;
+}
+
+const char *gfx_character_text_hebrew_face_base85(void) {
+    return MdkrCharacterTextHebrew_compressed_data_base85;
+}
+
 void gfx_character_text_shutdown(void) {
     size_t index;
     for (index = 0u; index < TEXT_FACE_COUNT; ++index) {
