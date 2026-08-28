@@ -422,12 +422,15 @@ The portrait profile is square, 16–1024 pixels, non-interlaced 8-bit RGB or
 RGBA PNG, at most 8 MiB, non-animated, and fully chunk/CRC checked offline.
 The three name overrides are optional and otherwise resolve to `display_name`;
 when present they must be non-empty, NFC-normalized, bounded printable UTF-8
-without control or bidirectional-formatting characters. The current game font
-replaces each unsupported Unicode codepoint with one question-mark cell through
-one bounded UTF-8 projection shared by the live custom roster and Workshop.
-Authors see the exact projected display/short names, fallback counts, and the
-ASCII-case-insensitive deterministic sort policy before Build; the live ROM
-font still performs final pixel-width fitting. Full localized shaping remains
+without control or bidirectional-formatting characters. One bounded UTF-8
+projection shared by the live custom roster and Workshop preserves printable
+ASCII; deterministically folds common Latin diacritics and ligatures, attached
+combining marks, typographic punctuation, and full-width ASCII; and replaces
+each still-unsupported Unicode codepoint with one question-mark cell. Authors
+see the exact projected display/short names, folded and fallback counts, and
+the ASCII-case-insensitive deterministic sort policy before Build; the live ROM
+font still performs final pixel-width fitting. Native glyph rendering, shaping,
+and bidirectional layout for scripts outside that retail repertoire remain
 separate presentation work.
 The runtime independently bounds and decodes it, then uses integer
 premultiplied-alpha bilinear filtering to produce the game-owned 40x40 card.

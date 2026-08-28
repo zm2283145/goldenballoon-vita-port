@@ -31,7 +31,7 @@ from character_validation_fixture import accepted_character_validation  # noqa: 
 PACKAGE_ID = "org.mdkr.history-proof"
 
 
-def install_fixture(root: Path) -> Path:
+def install_fixture(root: Path, *, display_name: str = "History Proof") -> Path:
     source = root / "source"
     characters = root / "characters"
     source.mkdir()
@@ -43,7 +43,7 @@ def install_fixture(root: Path) -> Path:
     model.write_bytes(make_humanoid_glb(with_lod=True))
     portrait.write_bytes(make_portrait_png(40))
     manifest, _ = wizard.build_manifest(
-        model, PACKAGE_ID, "History Proof", "CC0-1.0",
+        model, PACKAGE_ID, display_name, "CC0-1.0",
         "Generated MDKR fixture", "https://example.invalid/history-proof",
         "diddy", ["car", "hovercraft", "plane"], portrait=portrait,
         minimap_rgb=[100, 180, 240], rig_mode="humanoid-retarget-v1",

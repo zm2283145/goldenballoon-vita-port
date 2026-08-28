@@ -56,11 +56,38 @@ int main(void) {
     require(mdkr_modern_character_text_project(
                 "Dixie \xC3\x89 \xF0\x9F\x8F\x81", 14u,
                 projected, sizeof(projected), &text_projection) &&
-                strcmp(projected, "Dixie ? ?") == 0 &&
+                strcmp(projected, "Dixie E ?") == 0 &&
                 text_projection.valid_utf8 &&
                 text_projection.input_codepoints == 9u &&
-                text_projection.unsupported_codepoints == 2u,
-            "UTF-8 codepoints did not project one-for-one into fallback cells");
+                text_projection.folded_codepoints == 1u &&
+                text_projection.unsupported_codepoints == 1u,
+            "Latin folding and unsupported fallback were not distinguished");
+    require(mdkr_modern_character_text_project(
+                "Zo\xC3\xAB \xC5\x92uvre Stra\xC3\x9F" "e", 20u,
+                projected, sizeof(projected), &text_projection) &&
+                strcmp(projected, "Zoe OEuvre Strasse") == 0 &&
+                text_projection.valid_utf8 &&
+                text_projection.folded_codepoints == 3u &&
+                text_projection.unsupported_codepoints == 0u,
+            "common Latin letters and ligatures did not remain readable");
+    require(mdkr_modern_character_text_project(
+                "Jose\xCC\x81", 7u, projected, sizeof(projected),
+                &text_projection) && strcmp(projected, "Jose") == 0 &&
+                text_projection.folded_codepoints == 1u &&
+                text_projection.unsupported_codepoints == 0u,
+            "combining mark attached to a Latin base was not folded");
+    require(mdkr_modern_character_text_project(
+                "\xCC\x81", 3u, projected, sizeof(projected),
+                &text_projection) && strcmp(projected, "?") == 0 &&
+                text_projection.folded_codepoints == 0u &&
+                text_projection.unsupported_codepoints == 1u,
+            "standalone combining mark was silently discarded");
+    require(mdkr_modern_character_text_project(
+                "A\xE2\x80\x94\xEF\xBC\xA2\xE2\x80\xA6", 11u,
+                projected, sizeof(projected), &text_projection) &&
+                strcmp(projected, "A-B...") == 0 &&
+                text_projection.folded_codepoints == 3u,
+            "typographic punctuation or full-width ASCII was not folded");
     require(mdkr_modern_character_text_project(
                 "A\tB", 4u, projected, sizeof(projected),
                 &text_projection) &&
@@ -79,11 +106,40 @@ int main(void) {
                     text_projection.unsupported_codepoints == 2u,
                 "malformed UTF-8 projection was not bounded and explicit");
     }
+    {
+        static const char invalid_scalars[] = {
+            (char)0xE0, (char)0x80, (char)0x80, ' ',
+            (char)0xED, (char)0xA0, (char)0x80, ' ',
+            (char)0xF4, (char)0x90, (char)0x80, (char)0x80, '\0'
+        };
+        require(mdkr_modern_character_text_project(
+                    invalid_scalars, sizeof(invalid_scalars), projected,
+                    sizeof(projected), &text_projection) &&
+                    strcmp(projected, "??? ??? ????") == 0 &&
+                    !text_projection.valid_utf8 &&
+                    text_projection.input_codepoints == 12u &&
+                    text_projection.unsupported_codepoints == 10u,
+                "overlong, surrogate, or out-of-range scalars escaped "
+                "validation");
+    }
+    require(mdkr_modern_character_text_project(
+                "\xF4\x8F\xBF\xBF", 5u, projected,
+                sizeof(projected), &text_projection) &&
+                strcmp(projected, "?") == 0 && text_projection.valid_utf8 &&
+                text_projection.input_codepoints == 1u &&
+                text_projection.unsupported_codepoints == 1u,
+            "maximum valid Unicode scalar was not consumed as one codepoint");
     require(mdkr_modern_character_text_project(
                 "Dixie", 6u, projected, 4u, &text_projection) &&
                 strcmp(projected, "Dix") == 0 &&
                 text_projection.output_truncated,
             "bounded projection did not report output truncation");
+    require(mdkr_modern_character_text_project(
+                "\xC5\x92", 3u, projected, 2u, &text_projection) &&
+                strcmp(projected, "O") == 0 &&
+                text_projection.folded_codepoints == 1u &&
+                text_projection.output_truncated,
+            "expanding ligature did not preserve bounded truncation evidence");
     {
         static const char unterminated[] = {'A', 'B'};
         require(!mdkr_modern_character_text_project(

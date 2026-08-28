@@ -183,7 +183,7 @@ def main() -> int:
         with tempfile.TemporaryDirectory(
                 prefix="mdkr-portrait-studio-ui-") as temporary:
             root = Path(temporary)
-            characters = install_fixture(root)
+            characters = install_fixture(root, display_name="Hístory Œ 🏁")
             before = inventory(characters)
             portrait_source = root / "portrait-source.png"
             write_portrait_source(portrait_source)
@@ -223,9 +223,13 @@ def main() -> int:
                  "character-portrait-readability package=" + PACKAGE_ID +
                  " views=7",
                  "character-name-projection package=" + PACKAGE_ID +
-                 " display_codepoints=13 display_fallback=0 "
-                 "short_codepoints=13 short_fallback=0 valid=1 "
+                 " display_codepoints=11 display_folded=2 display_fallback=1 "
+                 "short_codepoints=11 short_folded=2 short_fallback=1 valid=1 "
                  "shared-engine-path=1",
+                 "Display game-font preview, History OE ?. Read-only exact "
+                 "retail-glyph projection.",
+                 "Short tile game-font preview, History OE ?. Read-only "
+                 "retail-glyph projection.",
                  "character-portrait-source-action package=" + PACKAGE_ID +
                  " loaded=1 applied=0",
                  "character-portrait-source package=" + PACKAGE_ID,

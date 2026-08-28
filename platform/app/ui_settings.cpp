@@ -19782,6 +19782,12 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
         entry, CharacterHistoryTool::Identity);
     const bool stagingDraft = g_characterActiveDrafts.find(entry->id) !=
         g_characterActiveDrafts.end();
+    char displayProjection[MDKR_MODERN_CHARACTER_NAME_MAX];
+    char shortProjection[MDKR_MODERN_CHARACTER_SHORT_NAME_MAX];
+    char displayProjectionHelp[384];
+    char shortProjectionHelp[384];
+    MdkrModernCharacterTextProjection displayEvidence;
+    MdkrModernCharacterTextProjection shortEvidence;
     ui::TextSubtleWrapped(
         "Author the character's player-facing names, square portrait artwork, and readable minimap colour. Named drafts compile these identity fields with gameplay and rig choices as one reviewed source revision.");
     if (!stagingDraft) ImGui::BeginDisabled();
@@ -19789,16 +19795,44 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     (void)ImGui::InputTextWithHint(
         "Display name##character-display-name", "Dixie Kong",
         edit.displayName, sizeof(edit.displayName));
+    const bool displayValid = mdkr_modern_character_text_project(
+        edit.displayName, sizeof(edit.displayName), displayProjection,
+        sizeof(displayProjection), &displayEvidence) != 0;
+    if (displayValid && displayEvidence.valid_utf8) {
+        std::snprintf(
+            displayProjectionHelp, sizeof(displayProjectionHelp),
+            "Sets the full player-facing name. In-game retail-font preview: %s. %u folded, %u unsupported. Narration remains separate UTF-8.",
+            displayProjection, displayEvidence.folded_codepoints,
+            displayEvidence.unsupported_codepoints);
+    } else {
+        std::snprintf(
+            displayProjectionHelp, sizeof(displayProjectionHelp), "%s",
+            "Sets the full player-facing name. The current value is not valid bounded UTF-8 and cannot be published.");
+    }
     ui::SpeakFocusedItem(
         "Display name", edit.displayName,
-        "Sets the full player-facing name. The exact retail game-font projection is shown below; narration remains a separate field.");
+        displayProjectionHelp);
     ImGui::SetNextItemWidth(std::min(420.0f, ImGui::GetContentRegionAvail().x));
     (void)ImGui::InputTextWithHint(
         "Short name##character-short-name", "Dixie",
         edit.shortName, sizeof(edit.shortName));
+    const bool shortValid = mdkr_modern_character_text_project(
+        edit.shortName, sizeof(edit.shortName), shortProjection,
+        sizeof(shortProjection), &shortEvidence) != 0;
+    if (shortValid && shortEvidence.valid_utf8) {
+        std::snprintf(
+            shortProjectionHelp, sizeof(shortProjectionHelp),
+            "Sets the compact custom-roster label. In-game retail-font preview: %s. %u folded, %u unsupported. Test performs the final pixel-width fit.",
+            shortProjection, shortEvidence.folded_codepoints,
+            shortEvidence.unsupported_codepoints);
+    } else {
+        std::snprintf(
+            shortProjectionHelp, sizeof(shortProjectionHelp), "%s",
+            "Sets the compact custom-roster label. The current value is not valid bounded UTF-8 and cannot be published.");
+    }
     ui::SpeakFocusedItem(
         "Short name", edit.shortName,
-        "Sets the compact custom-roster label. The exact retail game-font projection is shown below and the live roster performs the final pixel-width fit.");
+        shortProjectionHelp);
     ImGui::SetNextItemWidth(std::min(420.0f, ImGui::GetContentRegionAvail().x));
     (void)ImGui::InputTextWithHint(
         "Narration name##character-narration-name", "Dixie Kong",
@@ -19817,16 +19851,6 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     ui::TextSubtleWrapped(
         "Display name is the full visible label; short name fits compact roster tiles; narration name is the accessible spoken label; sort label controls deterministic roster order. Each must be non-empty printable UTF-8.");
     {
-        char displayProjection[MDKR_MODERN_CHARACTER_NAME_MAX];
-        char shortProjection[MDKR_MODERN_CHARACTER_SHORT_NAME_MAX];
-        MdkrModernCharacterTextProjection displayEvidence;
-        MdkrModernCharacterTextProjection shortEvidence;
-        const bool displayValid = mdkr_modern_character_text_project(
-            edit.displayName, sizeof(edit.displayName), displayProjection,
-            sizeof(displayProjection), &displayEvidence) != 0;
-        const bool shortValid = mdkr_modern_character_text_project(
-            edit.shortName, sizeof(edit.shortName), shortProjection,
-            sizeof(shortProjection), &shortEvidence) != 0;
         const bool projectionReady =
             displayValid && shortValid && displayEvidence.valid_utf8 &&
             shortEvidence.valid_utf8 &&
@@ -19836,13 +19860,39 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
             shortEvidence.input_codepoints != 0u &&
             !displayEvidence.output_truncated &&
             !shortEvidence.output_truncated;
-        ImGui::SeparatorText("Exact retail game-font projection");
+        ImGui::SeparatorText("Retail game-font preview");
         ui::TextSubtleWrapped(
-            "The custom roster draws the retail 96-glyph font. Printable ASCII is exact; each other Unicode codepoint becomes one question-mark cell instead of one cell per UTF-8 byte. Narration keeps authored UTF-8. Test performs the final ROM-font pixel-width fit.");
-        ImGui::Text("Display: %s", displayValid ? displayProjection : "invalid");
-        ImGui::Text("Short tile: %s", shortValid ? shortProjection : "invalid");
+            "The custom roster draws the retail 96-glyph font. Printable ASCII is exact. Common Latin diacritics and ligatures, attached combining marks, typographic punctuation, and full-width ASCII fold predictably into readable glyphs. Every still-unsupported Unicode codepoint becomes one question-mark cell instead of one cell per UTF-8 byte. Narration keeps authored UTF-8. Test performs the final ROM-font pixel-width fit.");
+        if (!displayValid) {
+            std::snprintf(displayProjection, sizeof(displayProjection),
+                          "%s", "invalid");
+        }
+        if (!shortValid) {
+            std::snprintf(shortProjection, sizeof(shortProjection),
+                          "%s", "invalid");
+        }
+        ImGui::SetNextItemWidth(
+            std::min(420.0f, ImGui::GetContentRegionAvail().x));
+        (void)ImGui::InputText(
+            "Display preview##character-display-font-preview",
+            displayProjection, sizeof(displayProjection),
+            ImGuiInputTextFlags_ReadOnly);
+        ui::SpeakFocusedItem(
+            "Display game-font preview", displayProjection,
+            "Read-only exact retail-glyph projection. Select and copy this value if you need to review it outside the Workshop.");
+        ImGui::SetNextItemWidth(
+            std::min(420.0f, ImGui::GetContentRegionAvail().x));
+        (void)ImGui::InputText(
+            "Short tile preview##character-short-font-preview",
+            shortProjection, sizeof(shortProjection),
+            ImGuiInputTextFlags_ReadOnly);
+        ui::SpeakFocusedItem(
+            "Short tile game-font preview", shortProjection,
+            "Read-only retail-glyph projection. The exact game Test still performs final ROM-font pixel-width fitting.");
         const uint32_t unsupported = displayEvidence.unsupported_codepoints +
             shortEvidence.unsupported_codepoints;
+        const uint32_t folded = displayEvidence.folded_codepoints +
+            shortEvidence.folded_codepoints;
         if (!projectionReady) {
             ImGui::TextColored(
                 AppTheme::bad(),
@@ -19852,6 +19902,11 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
                 AppTheme::accent(),
                 "%u unsupported visual %s use '?'; author an ASCII display/short name to avoid fallback.",
                 unsupported, unsupported == 1u ? "codepoint" : "codepoints");
+        } else if (folded != 0u) {
+            ImGui::TextColored(
+                AppTheme::good(),
+                "%u visual %s folded into the exact readable preview above.",
+                folded, folded == 1u ? "codepoint was" : "codepoints were");
         } else {
             ImGui::TextColored(
                 AppTheme::good(),
@@ -19863,10 +19918,12 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
             g_characterNameProjectionTraceKeys.insert(entry->id).second) {
             std::fprintf(
                 stderr,
-                "[app-ui] character-name-projection package=%s display_codepoints=%u display_fallback=%u short_codepoints=%u short_fallback=%u valid=%d shared-engine-path=1\n",
+                "[app-ui] character-name-projection package=%s display_codepoints=%u display_folded=%u display_fallback=%u short_codepoints=%u short_folded=%u short_fallback=%u valid=%d shared-engine-path=1\n",
                 entry->id, displayEvidence.input_codepoints,
+                displayEvidence.folded_codepoints,
                 displayEvidence.unsupported_codepoints,
                 shortEvidence.input_codepoints,
+                shortEvidence.folded_codepoints,
                 shortEvidence.unsupported_codepoints,
                 projectionReady ? 1 : 0);
         }
