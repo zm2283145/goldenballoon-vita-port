@@ -335,7 +335,11 @@ for f in \
   CHANGELOG.md \
   docs/STATUS.md \
   docs/DEVELOPER_HANDBOOK.md \
-  docs/RELEASE_CHECKLIST.md; do
+  docs/RELEASE_CHECKLIST.md \
+  docs/RELEASE_CANDIDATE_TEST_GUIDE.md \
+  docs/ref/mdkr-character-release-acceptance-v1.schema.json \
+  tests/test_character_release_evidence.py \
+  tools/check_character_release_evidence.py; do
   if [ ! -s "$f" ]; then
     note "missing or empty release doc: $f"
   fi

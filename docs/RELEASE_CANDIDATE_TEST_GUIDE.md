@@ -151,6 +151,26 @@ to modify and a disposable data directory. Do not publish the character source,
 ROM, captures, or generated reports merely because they were used for
 acceptance.
 
+Before the first observation, create the canonical receipt without overwriting
+an existing record:
+
+```bash
+python3 tools/check_character_release_evidence.py \
+  --write-template character-acceptance.json
+```
+
+Replace its placeholders as the exact macOS, Windows, and Linux packaged
+candidates are exercised. The record deliberately has no operator identity,
+paths, ROM data, model bytes, screenshots, or device-profile contents; keep
+those private and bind only their reviewed digests. The template starts with
+failing statuses so an untouched or partial record can never look approved.
+During data entry, `--structure-only` provides an explicitly non-approving
+preflight. A release approval always requires `--artifact-dir`; the tool refuses
+to print an approving verdict without rehashing the artifact and provenance
+bytes itself. Name the normalized physical device or assistive tool in every
+passing modality note (for example, controller model or screen-reader version),
+without recording an operator identity.
+
 1. Start with no ROM selected. Open **Character Workshop**, import a GLB, review
    its validator report and rights, choose a donor profile, create a named
    draft, close the app, and resume it. Repeat intake with one unambiguous
@@ -206,6 +226,23 @@ artifact SHA-256, and evidence-report SHA-256. A failed or unobserved required
 cell blocks release; `not available` is acceptable only for a modality the
 tested platform genuinely cannot provide and must be covered on another
 supported test system.
+
+After all observations, place the four candidate artifacts and their provenance
+sidecars in one directory and run:
+
+```bash
+python3 tools/check_character_release_evidence.py \
+  character-acceptance.json --artifact-dir /path/to/candidate-artifacts
+```
+
+The verifier requires both Linux formats, the macOS DMG, Windows ZIP, all three
+platform runs, every 1P-4P row and front/side/top/underside context, every
+identity surface, at least one real pass for each input modality, and one
+privacy-bounded low/mid/high physical-device profile. It rejects failed required
+cells, silent `not_available` values, substituted bytes, placeholder hashes,
+private machine paths, and unexplained performance exceptions. Record the
+printed receipt SHA-256 in the release decision; a source-tree test log is not a
+substitute.
 
 ## 6. Browser custody and the local-only boundary
 

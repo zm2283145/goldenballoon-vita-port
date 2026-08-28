@@ -677,6 +677,20 @@ last known-good assembly remains available if an update fails.
 - Destructive actions state whether source, draft, assembly, assignments and
   screenshots are affected.
 
+Release qualification uses the public
+`mdkr-character-release-acceptance/1` receipt rather than an informal
+spreadsheet. Its fail-closed verifier binds the exact macOS, Windows, Linux
+AppImage, and Linux tarball bytes plus provenance sidecars to three observed
+platform runs; enumerates all nine journeys, exact contexts and pole views,
+1P-4P layouts, identity surfaces, input/accessibility modalities, and
+low/mid/high physical-device profiles; and reports the receipt's own SHA-256.
+Only normalized device descriptions, decisions, and digests enter the record.
+ROMs, model/license bytes, captures, local paths, and operator identity remain
+outside it. `not_available` is legal only for an unavailable modality with a
+reason and another platform must supply an observed pass; required journeys and
+views cannot be waived. A performance exception remains visibly distinct from
+a pass and requires a reason.
+
 ## Current implementation audit
 
 | Capability | Current spike | Required product state |

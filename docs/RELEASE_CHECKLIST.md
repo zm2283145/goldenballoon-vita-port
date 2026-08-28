@@ -419,9 +419,11 @@ Before publishing any build that exposes the Workshop:
       The user's original model and license must remain outside application
       custody and unchanged.
 - [ ] Capture select plus car, hovercraft, and plane evidence for floor,
-      facing, seat, contacts, pose transitions, occlusion, and 1P/4P cost on at
-      least one physical WebGPU device. Record every amber/error row; a local
-      performance exception is evidence, not a manufactured pass.
+      facing, seat, contacts, pose transitions, occlusion, and the complete
+      1P-4P cost matrix. Retain privacy-bounded profiles from representative
+      low-, mid-, and high-tier physical WebGPU devices. Record every
+      amber/error row; a local performance exception is evidence, not a
+      manufactured pass.
 - [ ] Verify both a native mixed-direction name and a missing-glyph fallback,
       including their keyboard/screen-reader descriptions and exact live
       roster pixels.
@@ -429,13 +431,23 @@ Before publishing any build that exposes the Workshop:
       the importer, validator, BasisU, and meshoptimizer notices. Keep the
       character model, ROM, saves, screenshots, and device-profile exports out
       of the public release archive.
+- [ ] Validate the completed privacy-bounded receipt against the exact artifact
+      and provenance bytes. A template is intentionally red until every
+      required observation is replaced:
+
+      ```bash
+      python3 tools/check_character_release_evidence.py \
+        character-acceptance.json --artifact-dir /path/to/candidate-artifacts
+      ```
 
 Record the candidate commit and artifact hash, package/source digest, platform,
 GPU/driver, output/render size, input/accessibility modalities, completed
 contexts, evidence-report hash, and first failed step. Screenshots and model
 captures may contain user-licensed or ROM-derived pixels: retain them as private
 acceptance evidence unless their redistribution rights were reviewed
-separately.
+separately. The receipt schema is
+[`ref/mdkr-character-release-acceptance-v1.schema.json`](ref/mdkr-character-release-acceptance-v1.schema.json);
+archive the validator's receipt SHA-256 with the release decision.
 
 ## 5. Desktop packaging and publication
 

@@ -10,6 +10,19 @@ MDKR_TRACE=1 ./build/mdkr64 --headless-frames 1700 \
 Expected: `menuId=3` (character select). The options script yields `menuId=12`.
 Both prove real input reaches the game and menus advance/diverge on navigation.
 
+## Character release acceptance receipt
+
+`character_release_evidence` runs
+`tests/test_character_release_evidence.py`. It keeps the public
+`mdkr-character-release-acceptance/1` schema and verifier in lockstep, proves
+that incomplete human/device observations fail closed, and exercises exact
+artifact plus provenance hashing. The release operator creates the deliberately
+red template with `tools/check_character_release_evidence.py --write-template`
+and validates it against the packaged artifact directory only after all three
+platforms and low/mid/high physical-device tiers have been observed. The
+receipt stores normalized descriptions and digests only; ROMs, character
+assets, captures, paths, and operator identity remain private.
+
 **Always run muted and headless** — `MDKR_AUDIO=0` plus `--headless-frames N`.
 Omitting `--headless-frames` opens a window *and* the SDL audio device.
 

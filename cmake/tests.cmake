@@ -392,6 +392,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME character_spike_evidence
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_character_spike_evidence.py)
+    add_test(NAME character_release_evidence
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_release_evidence.py)
     add_executable(mdkr_character_workshop_model_test
         ${CMAKE_SOURCE_DIR}/tests/test_character_workshop_model.cpp
         ${CMAKE_SOURCE_DIR}/platform/app/character_workshop_model.cpp)
