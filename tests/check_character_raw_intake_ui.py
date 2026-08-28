@@ -26,6 +26,7 @@ from test_character_asset_probe import (  # noqa: E402
 )
 from test_collada_to_glb import DAE  # noqa: E402
 import character_package_manager as manager  # noqa: E402
+import character_source_adapter as source_adapter  # noqa: E402
 from character_validation_fixture import (  # noqa: E402
     accepted_character_validation,
 )
@@ -254,6 +255,9 @@ def main() -> int:
                         "MDKR_A11Y_TRACE": "1",
                     })
                     expected.append("text=Copy GLB export checklist")
+                    expected.append(
+                        "text=Copy data-only adapter handoff requirements"
+                    )
                 run(
                     binary, guidance_root, guidance_environment,
                     tuple(expected),
@@ -425,6 +429,155 @@ def main() -> int:
                 conversion_a11y_environment,
                 ("text=Converted GLB destination",
                  "text=Convert, inspect, and continue"),
+            )
+
+            adapter_root = root / "adapter-output"
+            adapter_root.mkdir()
+            adapter_model = adapter_root / "export.glb"
+            adapter_model.write_bytes(make_animated_glb())
+            adapter_license = adapter_root / "NOTICE.txt"
+            adapter_license.write_text(
+                "CC0 adapter fixture notice\n", encoding="utf-8"
+            )
+            adapter_artifact = adapter_root / "artist.mdkrsource"
+            source_adapter.pack(
+                model_path=adapter_model, output_path=adapter_artifact,
+                adapter_name="Fixture Blender exporter",
+                adapter_version="1.0.0",
+                adapter_homepage="https://example.invalid/adapter",
+                source_format="Blender scene",
+                source_sha256=hashlib.sha256(
+                    b"exact fixture blend bytes"
+                ).hexdigest(),
+                conversion_profile="Golden Balloon character-v1",
+                conversion_settings_sha256=hashlib.sha256(
+                    b'{"animations":"baked","modifiers":"evaluated"}'
+                ).hexdigest(),
+                license_path=adapter_license,
+                license_spdx="CC0-1.0",
+                attribution="Fixture artist",
+                source_url="https://example.invalid/fixture",
+            )
+            adapter_digest = hashlib.sha256(
+                adapter_artifact.read_bytes()
+            ).hexdigest()
+            extracted_model = adapter_root / "reviewed.glb"
+            adapter_environment = isolated_environment(
+                adapter_root, adapter_artifact,
+                adapter_root / "adapter-handoff.bmp",
+                compact=False, drop=True,
+            )
+            adapter_environment.update({
+                "MDKR_APP_SMOKE_FRAMES": "180",
+                "MDKR_APP_SMOKE_CHARACTER_ADAPTER_ACTION":
+                    "extract-reviewed",
+                "MDKR_APP_SMOKE_CHARACTER_ADAPTER_OUTPUT":
+                    str(extracted_model),
+                "MDKR_APP_SMOKE_CHARACTER_ADAPTER_TOKEN":
+                    "mdkr64-character-adapter-output-v1",
+            })
+            run(
+                binary, adapter_root, adapter_environment,
+                ("character-adapter-review inspected=1 extracted=0 "
+                 "executed=0 authenticated=0",
+                 "character-adapter-handoff reviewed=1 extracted=1 "
+                 "inspected=1 executed=0 authenticated=0 license=1",
+                 "raw-intake resumed=1 inspected=1 mappings=1 drafts=1"),
+            )
+            _, adapter_rows = raw_inventory(adapter_root)
+            adapter_provenance = adapter_root / "reviewed.mdkrsource.json"
+            if (
+                len(adapter_rows) != 1
+                or row_text(adapter_rows[0], 2) != str(extracted_model)
+                or row_text(adapter_rows[0], 3) != str(
+                    adapter_root / "reviewed.LICENSE.txt"
+                )
+                or row_text(adapter_rows[0], 6) != "CC0-1.0"
+                or row_text(adapter_rows[0], 7) != "Fixture artist"
+                or not extracted_model.is_file()
+                or not adapter_provenance.is_file()
+                or hashlib.sha256(adapter_artifact.read_bytes()).hexdigest()
+                    != adapter_digest
+                or list((adapter_root / "characters").glob("*.mdkc"))
+            ):
+                raise RuntimeError(
+                    "adapter handoff did not preserve its exact artifact, "
+                    "prefill rights, and open one uninstalled source draft"
+                )
+            preserve_capture(
+                adapter_root / "adapter-handoff.bmp", evidence_dir,
+                "adapter-handoff.bmp",
+            )
+
+            adapter_review = root / "adapter-review"
+            adapter_review.mkdir()
+            (adapter_review / "video.ini").write_text(
+                "[Accessibility]\nSpeech=1\n", encoding="utf-8"
+            )
+            adapter_review_environment = isolated_environment(
+                adapter_review, adapter_artifact,
+                adapter_review / "adapter-review-200.bmp",
+                compact=False, drop=True,
+            )
+            (adapter_review / "prefs" / "mdkr64_app.ini").write_text(
+                "ui_scale=2.00\n", encoding="utf-8"
+            )
+            adapter_review_environment.update({
+                "MDKR_APP_SMOKE_FRAMES": "220",
+                "MDKR_APP_SMOKE_WINDOW_SIZE": "640x480",
+                "MDKR_APP_SMOKE_A11Y_WALK": "1",
+                "MDKR_APP_SMOKE_INPUT": "keyboard",
+                "MDKR_APP_SMOKE_INPUT_TOKEN": "mdkr64-app-ui-input-v1",
+                "MDKR_A11Y_TRACE": "1",
+            })
+            run(
+                binary, adapter_review, adapter_review_environment,
+                ("character-adapter-review inspected=1 extracted=0 "
+                 "executed=0 authenticated=0",
+                 "text=Accept external adapter result",
+                 "text=Extracted GLB destination",
+                 "text=Extract verified data and continue"),
+            )
+            check_bmp(adapter_review / "adapter-review-200.bmp", 640, 480)
+            if any(adapter_review.glob("reviewed.*")):
+                raise RuntimeError(
+                    "mutation-free adapter review extracted output unexpectedly"
+                )
+            preserve_capture(
+                adapter_review / "adapter-review-200.bmp", evidence_dir,
+                "adapter-review-200.bmp",
+            )
+
+            adapter_visual = root / "adapter-visual"
+            adapter_visual.mkdir()
+            adapter_visual_environment = isolated_environment(
+                adapter_visual, adapter_artifact,
+                adapter_visual / "adapter-review-visible-200.bmp",
+                compact=False, drop=True,
+            )
+            (adapter_visual / "prefs" / "mdkr64_app.ini").write_text(
+                "ui_scale=2.00\n", encoding="utf-8"
+            )
+            adapter_visual_environment.update({
+                "MDKR_APP_SMOKE_FRAMES": "90",
+                "MDKR_APP_SMOKE_WINDOW_SIZE": "640x480",
+                "MDKR_APP_SMOKE_CHARACTER_ADAPTER_FOCUS_REVIEW": "1",
+                "MDKR_APP_SMOKE_CHARACTER_ADAPTER_TOKEN":
+                    "mdkr64-character-adapter-output-v1",
+            })
+            run(
+                binary, adapter_visual, adapter_visual_environment,
+                ("character-adapter-review inspected=1 extracted=0 "
+                 "executed=0 authenticated=0",
+                 "character-adapter-review-focused=1",
+                 "compact-layout dense=1 contained=1 overlap=0 "),
+            )
+            check_bmp(
+                adapter_visual / "adapter-review-visible-200.bmp", 640, 480
+            )
+            preserve_capture(
+                adapter_visual / "adapter-review-visible-200.bmp",
+                evidence_dir, "adapter-review-visible-200.bmp",
             )
 
             wide = root / "wide"
@@ -1098,7 +1251,8 @@ def main() -> int:
         print(f"check_character_raw_intake_ui: FAIL -- {error}",
               file=sys.stderr)
         return 1
-    print("check_character_raw_intake_ui: PASS -- bounded DAE/ZIP conversion, "
+    print("check_character_raw_intake_ui: PASS -- canonical review-first "
+          "data-only adapter handoff, bounded DAE/ZIP conversion, "
           "ZIP-bomb, invalid-SPDX, and hostile-GLB refusal, "
           "actionable missing-importer recovery, "
           "recipient compatibility/readiness review, "

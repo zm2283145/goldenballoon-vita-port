@@ -783,6 +783,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/app_ui_policy.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_window.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/arg_triage.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_adapter_output_index.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_candidate_index.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_edit_history.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/character_failure_index.cpp
@@ -1517,6 +1518,15 @@ if(NOT EMSCRIPTEN)
             target_compile_features(mdkr_character_raw_intake_index_test PRIVATE cxx_std_17)
             add_test(NAME character_raw_intake_index
                 COMMAND mdkr_character_raw_intake_index_test)
+
+            add_executable(mdkr_character_adapter_output_index_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_adapter_output_index.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_adapter_output_index.cpp)
+            target_include_directories(mdkr_character_adapter_output_index_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_adapter_output_index_test PRIVATE cxx_std_17)
+            add_test(NAME character_adapter_output_index
+                COMMAND mdkr_character_adapter_output_index_test)
 
             add_executable(mdkr_character_raw_draft_store_test
                 ${CMAKE_SOURCE_DIR}/tests/test_character_raw_draft_store.cpp

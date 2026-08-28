@@ -5,6 +5,7 @@
 #include "app_ui_policy.h"
 #include "app_version.h"
 #include "app_window.h"
+#include "character_adapter_output_index.h"
 #include "character_candidate_index.h"
 #include "character_draft_snapshot.h"
 #include "character_draft_store.h"
@@ -1861,6 +1862,17 @@ std::string g_characterRegistryDirectory;
 char g_characterImportPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
 char g_characterConversionOutputPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {0};
 bool g_characterConversionSmokePrefilled = false;
+
+struct CharacterAdapterOutputReview {
+    bool ready = false;
+    bool externalToolAccepted = false;
+    std::string sourcePath;
+    CharacterAdapterOutputIndex::Review facts;
+};
+
+CharacterAdapterOutputReview g_characterAdapterOutputReview;
+bool g_characterAdapterSmokeActionApplied = false;
+bool g_characterAdapterSmokeReviewFocused = false;
 std::string g_characterManagerReport;
 std::string g_characterInstallWarning;
 std::string g_characterPendingRemoval;
@@ -3297,6 +3309,8 @@ CharacterManagerWorker g_characterManagerWorker;
 
 const char *characterManagerJobDescription(const std::string &command) {
     if (command == "convert-authoring-source") return "converting the source";
+    if (command == "write-adapter-output-index") return "reviewing adapter data";
+    if (command == "extract-reviewed-adapter-output") return "extracting reviewed data";
     if (command == "write-raw-glb-index") return "inspecting the model";
     if (command == "build-raw-glb") return "building the source package";
     if (command == "write-candidate-index") return "validating the package";
@@ -3329,6 +3343,8 @@ void serviceCharacterManagerWorker() {
     g_characterFailureInventory.loaded = false;
     if (!result.success &&
         (command == "convert-authoring-source" ||
+         command == "write-adapter-output-index" ||
+         command == "extract-reviewed-adapter-output" ||
          command == "write-raw-glb-index" ||
          command == "build-raw-glb" ||
          command == "write-candidate-index")) {
@@ -3847,6 +3863,7 @@ bool characterPathHasExtension(const std::string &path,
 enum class CharacterSourceKind {
     Unknown,
     Package,
+    AdapterOutput,
     Glb,
     Dae,
     Zip,
@@ -3861,6 +3878,9 @@ enum class CharacterSourceKind {
 CharacterSourceKind characterSourceKind(const std::string &path) {
     if (characterPathHasExtension(path, ".mdkrchar")) {
         return CharacterSourceKind::Package;
+    }
+    if (characterPathHasExtension(path, ".mdkrsource")) {
+        return CharacterSourceKind::AdapterOutput;
     }
     if (characterPathHasExtension(path, ".glb")) {
         return CharacterSourceKind::Glb;
@@ -3958,6 +3978,12 @@ std::string characterSourceExportGuidance(CharacterSourceKind kind) {
         "3. Use metres and glTF's +Y-up coordinate system. Do not destructively turn the character just for this game; declare its authored forward axis during Workshop intake.\n"
         "4. Apply or export triangulation consistently, verify normal/tangent direction, and keep every texture inside the GLB.\n"
         "5. Drop the exported GLB here. The Workshop will inventory it, preserve the original project, and require explicit mapping, licensing, review, and install steps.";
+}
+
+std::string characterSourceAdapterGuidance(CharacterSourceKind kind) {
+    return std::string("Golden Balloon data-only adapter handoff for ") +
+        characterSourceFormatName(kind) +
+        "\n\nExport one .mdkrsource v1 archive containing exactly adapter.json, model.glb, and optionally LICENSE.txt. The manifest must bind the final GLB, the exact original-source SHA-256, adapter name/version, and a documented conversion-profile plus canonical-settings SHA-256. License metadata and exact notice bytes are all-present or all-absent.\n\nThe launcher treats every field as an external claim, validates the GLB, reviews the artifact without extracting, says explicitly that integrity is not a signature, and revalidates before exclusive extraction. It never loads or executes the adapter.\n\nReference contract: docs/architecture/character-source-adapter-contract.md";
 }
 
 MdkrTextStateStorage characterRawDraftStorage() {
@@ -4482,6 +4508,65 @@ bool queueCharacterRawGlbInspection(
                 path, indexPath, indexed);
             if (completion) completion(inspected);
         });
+}
+
+bool queueCharacterAdapterOutputInspection(
+    const std::string &path, std::function<void(bool)> completion) {
+    // Do not remove a ready/running worker's publication before the UI thread
+    // consumes it. Repeated clicks while inspection runs are harmless.
+    if (g_characterManagerWorker.busy()) return false;
+    if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
+    if (g_characterRegistryDirectory.empty()) return false;
+    g_characterAdapterOutputReview = CharacterAdapterOutputReview{};
+    const std::string indexPath = g_characterRegistryDirectory +
+        "/.launcher-character-adapter-output.tsv";
+    (void)mdkr_remove_utf8(indexPath.c_str());
+    return queueCharacterManager(
+        "write-adapter-output-index", {path, indexPath}, false,
+        [path, indexPath, completion = std::move(completion)](bool indexed) {
+            const std::string text = indexed
+                ? readCharacterManagerResult(indexPath) : "";
+            (void)mdkr_remove_utf8(indexPath.c_str());
+            CharacterAdapterOutputIndex::Review facts;
+            const bool parsed = indexed &&
+                CharacterAdapterOutputIndex::parse(text, facts);
+            if (parsed) {
+                g_characterAdapterOutputReview.ready = true;
+                g_characterAdapterOutputReview.sourcePath = path;
+                g_characterAdapterOutputReview.facts = std::move(facts);
+                g_characterAdapterOutputReview.externalToolAccepted = false;
+            } else if (indexed) {
+                g_characterManagerReport =
+                    "The adapter-result review inventory was malformed; no extraction or draft was enabled.";
+            }
+            if (completion) completion(parsed);
+        });
+}
+
+std::string characterAdapterSiblingPath(const std::string &modelPath,
+                                        const char *suffix) {
+    const std::filesystem::path model(modelPath);
+    return (model.parent_path() /
+            (model.stem().string() + suffix)).string();
+}
+
+bool applyCharacterAdapterDefaults(
+    const CharacterAdapterOutputIndex::Review &review,
+    const std::string &modelPath) {
+    CharacterRawIntake &intake = g_characterRawIntake;
+    if (review.licensePresent) {
+        const std::string licensePath = characterAdapterSiblingPath(
+            modelPath, ".LICENSE.txt");
+        std::snprintf(intake.licensePath, sizeof(intake.licensePath), "%s",
+                      licensePath.c_str());
+        std::snprintf(intake.spdx, sizeof(intake.spdx), "%s",
+                      review.licenseSpdx.c_str());
+        std::snprintf(intake.attribution, sizeof(intake.attribution), "%s",
+                      review.attribution.c_str());
+        std::snprintf(intake.sourceUrl, sizeof(intake.sourceUrl), "%s",
+                      review.sourceUrl.c_str());
+    }
+    return saveCharacterRawIntake();
 }
 
 bool buildCharacterRawGlbCandidate(std::function<void(bool)> completion) {
@@ -23049,6 +23134,8 @@ const char *characterFailureKindLabel(CharacterFailureIndex::RetryKind kind) {
             return "Package validation";
         case CharacterFailureIndex::RetryKind::Convert:
             return "Authoring conversion";
+        case CharacterFailureIndex::RetryKind::AdapterInspect:
+            return "Adapter-result inspection";
     }
     return "Import validation";
 }
@@ -23434,11 +23521,37 @@ void drawCharacterImportControls(bool rail) {
         ui::SpeakFocusedItem(
             "Browse for character source",
             nullptr,
-            "Chooses a local mdkrchar package, self-contained GLB, COLLADA model, authoring ZIP, or common DCC source. DCC projects receive safe GLB export guidance; nothing is installed until validation, review, and explicit confirmation succeed.");
+            "Chooses a local mdkrchar package, canonical mdkrsource adapter result, self-contained GLB, COLLADA model, authoring ZIP, or common DCC source. External adapter code is never executed; nothing is installed until validation, review, and explicit confirmation succeed.");
     }
     const CharacterSourceKind sourceKind = characterSourceKind(
         g_characterImportPath);
     const bool rawGlb = sourceKind == CharacterSourceKind::Glb;
+    const bool adapterOutput =
+        sourceKind == CharacterSourceKind::AdapterOutput;
+    const bool adapterReviewed = adapterOutput &&
+        g_characterAdapterOutputReview.ready &&
+        g_characterAdapterOutputReview.sourcePath == g_characterImportPath;
+    if (adapterReviewed && !g_characterAdapterSmokeActionApplied) {
+        const char *adapterAction = std::getenv(
+            "MDKR_APP_SMOKE_CHARACTER_ADAPTER_ACTION");
+        const char *adapterOutputPath = std::getenv(
+            "MDKR_APP_SMOKE_CHARACTER_ADAPTER_OUTPUT");
+        const char *adapterToken = std::getenv(
+            "MDKR_APP_SMOKE_CHARACTER_ADAPTER_TOKEN");
+        if (adapterAction != nullptr && adapterOutputPath != nullptr &&
+            adapterToken != nullptr &&
+            std::strcmp(adapterAction, "extract-reviewed") == 0 &&
+            std::strcmp(adapterToken,
+                        "mdkr64-character-adapter-output-v1") == 0) {
+            g_characterAdapterSmokeActionApplied = true;
+            g_characterAdapterOutputReview.externalToolAccepted = true;
+            std::snprintf(
+                g_characterConversionOutputPath,
+                sizeof(g_characterConversionOutputPath), "%s",
+                adapterOutputPath);
+            (void)Settings_importCharacterPackage(g_characterImportPath);
+        }
+    }
     const bool convertibleSource = sourceKind == CharacterSourceKind::Dae ||
         sourceKind == CharacterSourceKind::Zip;
     const bool dccExportRequired = characterSourceNeedsDccExport(sourceKind);
@@ -23460,25 +23573,113 @@ void drawCharacterImportControls(bool rail) {
             ui::SpeakFocusedItem(
                 "Copy GLB export checklist", nullptr,
                 "Copies the format-specific self-contained GLB export steps. It does not open, execute, convert, or change the selected DCC source.");
+            if (ImGui::Button("Copy adapter requirements")) {
+                const std::string adapterGuidance =
+                    characterSourceAdapterGuidance(sourceKind);
+                ImGui::SetClipboardText(adapterGuidance.c_str());
+                setStatus(
+                    "Data-only adapter handoff requirements copied; no adapter or project file was opened.",
+                    AppTheme::good());
+            }
+            ui::SpeakFocusedItem(
+                "Copy data-only adapter handoff requirements", nullptr,
+                "Copies the public mdkrsource format summary for external tool authors. The launcher never installs or executes an adapter.");
         }
         ui::CardEnd();
     }
-    if (convertibleSource) {
+    if (adapterOutput && adapterReviewed) {
+        const CharacterAdapterOutputIndex::Review &review =
+            g_characterAdapterOutputReview.facts;
+        if (ui::CardBegin("##character-adapter-output-review",
+                          AppTheme::accent(), 0.0f)) {
+            ImGui::TextColored(AppTheme::accent(),
+                               "External adapter result reviewed");
+            ImGui::TextWrapped("%s %s · %s source",
+                               review.adapterName.c_str(),
+                               review.adapterVersion.c_str(),
+                               review.sourceFormat.c_str());
+            ImGui::TextWrapped("Conversion profile: %s",
+                               review.conversionProfile.c_str());
+            ImGui::TextWrapped("Conversion settings SHA-256: %s",
+                               review.conversionSettingsSha256.c_str());
+            ImGui::TextDisabled(
+                "%s model · %u vertices · %u triangles · %u joints",
+                candidateBytes(review.modelBytes).c_str(), review.vertices,
+                review.triangles, review.joints);
+            ui::TextSubtleWrapped(
+                "Integrity checked: the artifact binds this GLB and the adapter-declared original source digest. This is not a signature, endorsement, sandbox, or proof of who made the converter.");
+            if (!review.adapterHomepage.empty()) {
+                ImGui::TextWrapped("Adapter information: %s",
+                                   review.adapterHomepage.c_str());
+            }
+            ImGui::TextWrapped("Original source SHA-256: %s",
+                               review.sourceSha256.c_str());
+            if (review.licensePresent) {
+                ImGui::TextWrapped("Included rights metadata: %s · %s",
+                                   review.licenseSpdx.c_str(),
+                                   review.attribution.c_str());
+                ui::TextSubtleWrapped(
+                    "The exact notice will be extracted beside the GLB and prefilled for review. You still confirm local rights before building and redistribution rights before sharing.");
+            } else {
+                ImGui::TextColored(
+                    AppTheme::accent(),
+                    "No license included — choose the exact notice in the draft");
+            }
+            ImGui::Checkbox(
+                "Accept this adapter result",
+                &g_characterAdapterOutputReview.externalToolAccepted);
+            ui::SpeakFocusedItem(
+                "Accept external adapter result",
+                g_characterAdapterOutputReview.externalToolAccepted
+                    ? "Accepted" : "Not accepted",
+                "Confirms only that you chose this data-only result. It does not trust or run adapter code, grant rights, build a package, install a character, or treat the converter identity as signed.");
+        }
+        ui::CardEnd();
+        if (!g_characterAdapterSmokeReviewFocused) {
+            const char *focusReview = std::getenv(
+                "MDKR_APP_SMOKE_CHARACTER_ADAPTER_FOCUS_REVIEW");
+            const char *focusToken = std::getenv(
+                "MDKR_APP_SMOKE_CHARACTER_ADAPTER_TOKEN");
+            if (focusReview != nullptr && focusToken != nullptr &&
+                std::strcmp(focusReview, "1") == 0 &&
+                std::strcmp(focusToken,
+                            "mdkr64-character-adapter-output-v1") == 0) {
+                // CardEnd returns to the parent Workshop scroller. Target the
+                // complete review card there, not its non-scrolling child.
+                ImGui::SetScrollHereY(0.0f);
+                g_characterAdapterSmokeReviewFocused = true;
+                std::fprintf(stderr,
+                             "[app-ui] character-adapter-review-focused=1\n");
+            }
+        }
+    } else if (adapterOutput) {
         ui::TextSubtleWrapped(
-            "DAE and ZIP are conversion inputs, never installable packages. Choose a new GLB destination; the bounded converter refuses traversal, encrypted/symlink members, ambiguous model choices, external textures, authored COLLADA animation, and every overwrite. The resulting self-contained GLB enters the ordinary resumable authoring and review flow.");
+            "A .mdkrsource file is a data-only handoff from an external DCC or converter. Inspecting validates its exact GLB, source binding, adapter identity claim, and optional license without extracting, executing, drafting, or installing anything.");
+    }
+    if (convertibleSource || adapterReviewed) {
+        ui::TextSubtleWrapped(
+            adapterReviewed
+                ? "Choose a new GLB destination. The exact reviewed artifact is revalidated, then the model, provenance sidecar, and optional license are created exclusively. Any collision refuses the whole extraction."
+                : "DAE and ZIP are conversion inputs, never installable packages. Choose a new GLB destination; the bounded converter refuses traversal, encrypted/symlink members, ambiguous model choices, external textures, authored COLLADA animation, and every overwrite. The resulting self-contained GLB enters the ordinary resumable authoring and review flow.");
         ImGui::SetNextItemWidth(
             filedialog::isAvailable()
                 ? std::max(120.0f, ImGui::GetContentRegionAvail().x -
                                       ui::kBtnSecondary().x - ui::kGapS)
                 : -1.0f);
         ImGui::InputTextWithHint(
-            "Converted GLB destination##character-conversion-output",
+            adapterReviewed
+                ? "Extracted GLB destination##character-conversion-output"
+                : "Converted GLB destination##character-conversion-output",
             "/path/to/new-character.glb",
             g_characterConversionOutputPath,
             sizeof(g_characterConversionOutputPath));
         ui::SpeakFocusedItem(
-            "Converted GLB destination", g_characterConversionOutputPath,
-            "Must be a new GLB filename in an existing real directory. Conversion never replaces an existing path.");
+            adapterReviewed ? "Extracted GLB destination"
+                            : "Converted GLB destination",
+            g_characterConversionOutputPath,
+            adapterReviewed
+                ? "Must be a new GLB filename in an existing real directory. The sibling provenance and optional license filenames must also be unused."
+                : "Must be a new GLB filename in an existing real directory. Conversion never replaces an existing path.");
         if (filedialog::isAvailable()) {
             ImGui::SameLine();
             if (ImGui::Button("Choose output...", ui::kBtnSecondary())) {
@@ -23491,21 +23692,39 @@ void drawCharacterImportControls(bool rail) {
                 }
             }
             ui::SpeakFocusedItem(
-                "Choose converted GLB output", nullptr,
-                "Opens the operating system destination picker. Selecting an existing filename still does not grant overwrite authority.");
+                adapterReviewed ? "Choose extracted GLB output"
+                                : "Choose converted GLB output",
+                nullptr,
+                "Opens the operating system destination picker. Selecting an existing filename never grants overwrite authority.");
         }
     }
     const bool canImport = !packageInspectionBusy &&
         g_characterImportPath[0] != '\0' &&
         !dccExportRequired &&
         (!convertibleSource || g_characterConversionOutputPath[0] != '\0');
+    const char *actionReadiness = nullptr;
+    if (adapterReviewed &&
+        !g_characterAdapterOutputReview.externalToolAccepted) {
+        actionReadiness = "Accept the reviewed external adapter result first.";
+    } else if (adapterReviewed &&
+               g_characterConversionOutputPath[0] == '\0') {
+        actionReadiness = "Choose a new extracted GLB destination first.";
+    } else if (!canImport) {
+        actionReadiness = dccExportRequired
+            ? "Use the format-specific checklist above, then choose or drop the exported GLB."
+            : convertibleSource
+            ? "Choose a new converted GLB destination first."
+            : "Choose or enter a character source path first.";
+    }
     if (filedialog::isAvailable() && inlineActions &&
-        !convertibleSource && !dccExportRequired) {
+        !convertibleSource && !adapterReviewed && !dccExportRequired) {
         ImGui::SameLine();
     }
     if (!canImport) ImGui::BeginDisabled();
     if (ImGui::Button(
             dccExportRequired ? "Export a self-contained GLB to continue" :
+            adapterOutput && !adapterReviewed ? "Inspect adapter result" :
+            adapterReviewed ? "Extract verified data and continue" :
             convertibleSource ? "Convert, inspect, and continue" :
             rawGlb ? "Inspect GLB and continue" :
                      "Validate and review")) {
@@ -23514,16 +23733,17 @@ void drawCharacterImportControls(bool rail) {
     if (!canImport) ImGui::EndDisabled();
     ui::SpeakFocusedItem(
         dccExportRequired ? "Export a self-contained GLB to continue" :
+        adapterOutput && !adapterReviewed ? "Inspect adapter result" :
+        adapterReviewed ? "Extract verified data and continue" :
         convertibleSource ? "Convert, inspect, and continue" :
         rawGlb ? "Inspect GLB and continue" : "Validate and review",
-        canImport ? nullptr :
-            dccExportRequired
-                ? "Use the format-specific checklist above, then choose or drop the exported GLB."
-                : convertibleSource
-                ? "Choose a new converted GLB destination first."
-                : "Choose or enter a character source path first.",
+        actionReadiness,
         dccExportRequired
             ? "The Workshop does not execute native project files or guess at unstable interchange semantics. Export one self-contained GLB while preserving the original source."
+            : adapterOutput && !adapterReviewed
+            ? "Validates the complete data-only adapter result and publishes bounded review facts. It does not extract, run code, create a draft, or install anything."
+            : adapterReviewed
+            ? "Revalidates the exact reviewed artifact, exclusively extracts its data, and opens the resulting GLB in an ordinary resumable draft. It never executes the adapter or installs a character."
             : convertibleSource
             ? "Converts one explicit or unambiguous safe COLLADA source to a new self-contained GLB, then opens the same resumable authoring draft. It never installs or overwrites a file."
             : rawGlb
@@ -23958,7 +24178,7 @@ bool drawCustomCharactersSection(bool compact) {
             ImGui::TextUnformatted("Add your first character");
             ImGui::PopFont();
             ui::TextSubtleWrapped(
-                "Choose a reviewed .mdkrchar package, or bring a self-contained GLB to start a resumable authoring draft. DAE and safe ZIP sources can be converted to a new GLB; Blender and other DCC project files receive an exact export checklist. Nothing installs before inventory, differences, rights, and fit are reviewed.");
+                "Choose a reviewed .mdkrchar package, a data-only .mdkrsource adapter result, or a self-contained GLB to start a resumable authoring draft. DAE and safe ZIP sources can be converted to a new GLB; Blender and other DCC project files receive an exact export checklist. Nothing installs before inventory, differences, rights, and fit are reviewed.");
         }
         ui::TouchScrollCurrentWindow();
         ImGui::EndChild();
@@ -24062,7 +24282,7 @@ void Settings_setDonorGameplayProfiles(
 bool Settings_importCharacterPackage(const char *path) {
     if (path == nullptr || path[0] == '\0') {
         g_characterManagerReport =
-            "Choose a .mdkrchar package, self-contained .glb, COLLADA .dae, authoring .zip, or recognized DCC source first.";
+            "Choose a .mdkrchar package, data-only .mdkrsource adapter result, self-contained .glb, COLLADA .dae, authoring .zip, or recognized DCC source first.";
         setStatus("Character import needs a source path.", AppTheme::bad());
         return false;
     }
@@ -24083,6 +24303,143 @@ bool Settings_importCharacterPackage(const char *path) {
     std::snprintf(g_characterImportPath, sizeof(g_characterImportPath), "%s",
                   path);
     const CharacterSourceKind sourceKind = characterSourceKind(path);
+    if (sourceKind == CharacterSourceKind::AdapterOutput) {
+        const bool reviewed = g_characterAdapterOutputReview.ready &&
+            g_characterAdapterOutputReview.sourcePath == path;
+        if (!reviewed) {
+            if (!queueCharacterAdapterOutputInspection(
+                    path, [](bool inspected) {
+                        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+                            std::fprintf(
+                                stderr,
+                                "[app-ui] character-adapter-review inspected=%d extracted=0 executed=0 authenticated=0\n",
+                                inspected ? 1 : 0);
+                        }
+                        setStatus(
+                            inspected
+                                ? "Adapter result inspected. Review its converter claim, source binding, model, and rights before extracting."
+                                : "Adapter result inspection failed; no file, draft, or installed character changed.",
+                            inspected ? AppTheme::good() : AppTheme::bad());
+                    })) {
+                setStatus(
+                    "Adapter-result inspection could not start; no file or draft changed.",
+                    AppTheme::bad());
+                return false;
+            }
+            setStatus(
+                "Inspecting the data-only adapter result in the background; no converter code will run.",
+                AppTheme::accent());
+            return true;
+        }
+        if (!g_characterAdapterOutputReview.externalToolAccepted) {
+            setStatus(
+                "Review and accept the external adapter result before extracting it.",
+                AppTheme::accent());
+            return false;
+        }
+        if (g_characterConversionOutputPath[0] == '\0') {
+            setStatus(
+                "Choose a new GLB destination for the reviewed adapter result.",
+                AppTheme::accent());
+            return false;
+        }
+        const std::string outputPath = g_characterConversionOutputPath;
+        const CharacterAdapterOutputIndex::Review review =
+            g_characterAdapterOutputReview.facts;
+        if (outputPath.size() >= sizeof(g_characterImportPath) ||
+            characterAdapterSiblingPath(
+                outputPath, ".mdkrsource.json").size() >=
+                sizeof(g_characterImportPath) ||
+            (review.licensePresent && characterAdapterSiblingPath(
+                outputPath, ".LICENSE.txt").size() >=
+                sizeof(g_characterRawIntake.licensePath))) {
+            setStatus(
+                "The extracted model or sibling metadata path exceeds the Workshop path limit; choose a shorter filename.",
+                AppTheme::bad());
+            return false;
+        }
+        const std::string sourcePath = path;
+        const bool queued = queueCharacterManager(
+            "extract-reviewed-adapter-output",
+            {sourcePath, outputPath, review.artifactSha256,
+             review.modelSha256}, false,
+            [outputPath, review](bool extracted) {
+                if (!extracted) {
+                    g_characterAdapterOutputReview =
+                        CharacterAdapterOutputReview{};
+                    setStatus(
+                        "Adapter extraction failed or the artifact changed. Review it again; no partial output or draft was accepted.",
+                        AppTheme::bad());
+                    return;
+                }
+                const std::string extractionReport =
+                    g_characterManagerReport;
+                std::snprintf(
+                    g_characterImportPath, sizeof(g_characterImportPath),
+                    "%s", outputPath.c_str());
+                g_characterConversionOutputPath[0] = '\0';
+                g_characterAdapterOutputReview = CharacterAdapterOutputReview{};
+                if (!beginCharacterRawDraft(outputPath)) {
+                    g_characterManagerReport = extractionReport +
+                        "\n\nThe verified files were extracted, but their resumable draft could not open: " +
+                        g_characterRawDraftError;
+                    setStatus(
+                        "Verified data was extracted, but its draft could not open; the model, provenance, and optional license remain available.",
+                        AppTheme::bad());
+                    return;
+                }
+                if (!applyCharacterAdapterDefaults(review, outputPath)) {
+                    g_characterManagerReport = extractionReport +
+                        "\n\nThe draft opened, but included rights metadata could not be saved: " +
+                        g_characterRawDraftError;
+                    setStatus(
+                        "The draft opened, but its included rights metadata could not be saved. No package was built or installed.",
+                        AppTheme::bad());
+                    return;
+                }
+                if (!queueCharacterRawGlbInspection(
+                        outputPath,
+                        [outputPath, review,
+                         extractionReport](bool inspected) {
+                            const std::string inspectionReport =
+                                g_characterManagerReport;
+                            g_characterManagerReport = extractionReport +
+                                "\n\n" + inspectionReport;
+                            if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+                                std::fprintf(
+                                    stderr,
+                                    "[app-ui] character-adapter-handoff reviewed=1 extracted=1 inspected=%d executed=0 authenticated=0 license=%d output=%s\n",
+                                    inspected ? 1 : 0,
+                                    review.licensePresent ? 1 : 0,
+                                    outputPath.c_str());
+                            }
+                            setStatus(
+                                inspected
+                                    ? review.licensePresent
+                                        ? "Verified adapter data opened as a resumable draft; review the prefilled rights and character decisions."
+                                        : "Verified adapter data opened as a resumable draft; choose the exact license before building."
+                                    : "The verified GLB was extracted but failed character inspection; review the importer report.",
+                                inspected ? AppTheme::good()
+                                          : AppTheme::bad());
+                        })) {
+                    g_characterManagerReport = extractionReport +
+                        "\n\nThe verified GLB and draft are available, but background inspection could not start.";
+                    setStatus(
+                        "Verified data and its draft are available, but model inspection could not start.",
+                        AppTheme::bad());
+                }
+            });
+        if (!queued) {
+            setStatus(
+                "Reviewed adapter extraction could not start; no output or draft changed.",
+                AppTheme::bad());
+            return false;
+        }
+        setStatus(
+            "Revalidating and extracting the exact reviewed data in the background.",
+            AppTheme::accent());
+        return true;
+    }
     if (characterSourceNeedsDccExport(sourceKind)) {
         g_characterManagerReport = characterSourceExportGuidance(sourceKind);
         setStatus(
@@ -24262,7 +24619,7 @@ bool Settings_importCharacterPackage(const char *path) {
     }
     g_characterImportCandidate = CharacterImportCandidate{};
     g_characterManagerReport =
-        "Choose a .mdkrchar package, self-contained GLB, DAE, or supported ZIP source.";
+        "Choose a .mdkrchar package, data-only .mdkrsource adapter result, self-contained GLB, DAE, or supported ZIP source.";
     setStatus(
         "That file type is not a supported character source; nothing changed.",
         AppTheme::bad());

@@ -75,7 +75,7 @@ bool openCharacterSource(std::string &out) {
         if (![NSThread isMainThread]) return false;
         NSOpenPanel *panel = [NSOpenPanel openPanel];
         panel.title = @"Import a custom character";
-        panel.message = @"Choose a package, model, archive, or DCC source. Non-GLB authoring formats receive safe export guidance.";
+        panel.message = @"Choose a package, model, data-only adapter result, archive, or DCC source. External adapter code is never executed.";
         panel.prompt = @"Choose Source";
         panel.allowsMultipleSelection = NO;
         panel.canChooseDirectories = NO;
@@ -85,7 +85,7 @@ bool openCharacterSource(std::string &out) {
         panel.showsHiddenFiles = NO;
         NSMutableArray<UTType *> *types = [NSMutableArray array];
         for (NSString *ext in @[
-                 @"mdkrchar", @"glb", @"dae", @"gltf", @"fbx", @"obj",
+                 @"mdkrchar", @"mdkrsource", @"glb", @"dae", @"gltf", @"fbx", @"obj",
                  @"blend", @"usd", @"usda", @"usdc", @"usdz", @"ma",
                  @"mb", @"max", @"c4d", @"3ds"
              ]) {

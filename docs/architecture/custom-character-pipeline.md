@@ -25,6 +25,7 @@ This gives three deliberately separate formats:
 |---|---|---|---|
 | Authoring | Blender/Maya/etc.; optional FBX or DAE handoff | None | Creator and their DCC tools |
 | Portable source package | `.mdkrchar`: deterministic ZIP containing `manifest.json`, `model.glb`, `LICENSE.txt`, and optionally a verified `compiled.mdkc` for Python-free player import | Public, versioned | Community tools and launcher |
+| External adapter handoff | `.mdkrsource`: deterministic, data-only ZIP containing strict conversion/source provenance, one self-contained `model.glb`, and an optional exact `LICENSE.txt` | Public, versioned; integrity is not adapter authentication | External DCC tools and launcher review |
 | Runtime cache | `<id>.mdkc` when enabled or `<id>.mdkc.disabled` when retained outside runtime discovery: validated, GPU-oriented sections plus a source digest | Private to an engine cache version | Import compiler and renderer |
 
 ## What the spike actually implements

@@ -13,6 +13,7 @@ enum class RetryKind : uint8_t {
     RawInspect,
     PackageInspect,
     Convert,
+    AdapterInspect,
 };
 
 struct Row {

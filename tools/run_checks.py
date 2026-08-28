@@ -742,7 +742,8 @@ CHECKS = (
           "generated package portrait ownership and isolated WebGPU pixels on "
           "the real Fire Mountain collection-arena flag"),
     Check("character_raw_intake_ui", "check_character_raw_intake_ui.py", "native",
-          "ROM-free multi-draft GLB intake, same-source branching, source-bound "
+          "ROM-free review-first data-only adapter handoff, multi-draft GLB "
+          "intake, same-source branching, source-bound "
           "mapping restore, close/resume navigation, exact switch/delete/install "
           "cleanup, legacy migration, source-byte "
           "purity, corruption refusal, keyboard speech, and 200% compact "

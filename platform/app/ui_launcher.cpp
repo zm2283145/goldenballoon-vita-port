@@ -180,7 +180,8 @@ bool hasCharacterSourceExtension(const std::string &path) {
         }
         return true;
     };
-    return matches(".mdkrchar") || matches(".glb") || matches(".dae") ||
+    return matches(".mdkrchar") || matches(".mdkrsource") ||
+        matches(".glb") || matches(".dae") ||
         matches(".zip") || matches(".gltf") || matches(".fbx") ||
         matches(".obj") || matches(".blend") || matches(".usd") ||
         matches(".usda") || matches(".usdc") || matches(".usdz") ||

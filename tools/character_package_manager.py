@@ -30,6 +30,7 @@ from typing import Any, Callable, Iterator
 import character_asset_compiler as compiler
 import character_asset_probe as probe
 import character_manifest_wizard as wizard
+import character_source_adapter as source_adapter
 import collada_to_glb as collada
 import gltf_validator_adapter as gltf_validator
 
@@ -49,6 +50,7 @@ RAW_INTAKE_CANDIDATE_NAME = ".launcher-character-raw-candidate.mdkrchar"
 RAW_INTAKE_MAX_CLIPS = 256
 RAW_INTAKE_MAX_NODES = 4096
 RAW_INTAKE_MAX_CHOICE_BYTES = 256
+ADAPTER_OUTPUT_INDEX_NAME = ".launcher-character-adapter-output.tsv"
 FAILURE_SCHEMA = "mdkr-character-import-failure-v1"
 FAILURE_INDEX_SCHEMA = "mdkr-character-import-failures-v1"
 FAILURE_DIRECTORY_NAME = ".failed-character-imports"
@@ -261,6 +263,163 @@ def convert_authoring_source(input_path: Path,
             if key not in ("input", "output")
         },
     }
+
+
+def inspect_adapter_output(input_path: Path) -> dict[str, Any]:
+    """Validate a data-only adapter handoff without extracting any member."""
+    artifact = source_adapter.inspect_path(input_path)
+    model_payload = artifact["model_payload"]
+    validation = _validate_character_glb(
+        model_payload, "third-party adapter output model"
+    )
+    report = probe.inspect_glb_bytes(model_payload, require_character=True)
+    if report["errors"]:
+        raise ManagerError(
+            "adapter output GLB is not character-ready: " +
+            "; ".join(report["errors"])
+        )
+    return {
+        **{key: value for key, value in artifact.items()
+           if not key.endswith("_payload")},
+        "validation": _validation_summary(validation),
+        "vertices": report["vertex_count"],
+        "triangles": report["triangle_count"],
+        "joints": report["max_joints"],
+        "materials": report["material_count"],
+        "textures": report["texture_count"],
+    }
+
+
+def write_adapter_output_index(input_path: Path, directory: Path,
+                               index_path: Path) -> dict[str, Any]:
+    """Write bounded review facts for the launcher's mutation-free review."""
+    root = _prepare_directory(directory)
+    if (index_path.parent.resolve() != root or
+            index_path.name != ADAPTER_OUTPUT_INDEX_NAME):
+        raise ManagerError(
+            "adapter output index must use the launcher's exact file inside "
+            "the character directory"
+        )
+    report = inspect_adapter_output(input_path)
+
+    def encoded(value: str) -> str:
+        return "-" if not value else value.encode("utf-8").hex()
+
+    fields = (
+        report["artifact_sha256"], report["model_sha256"],
+        report["source_sha256"], str(report["artifact_bytes"]),
+        str(report["model_bytes"]), str(report["vertices"]),
+        str(report["triangles"]), str(report["joints"]),
+        str(report["materials"]), str(report["textures"]),
+        "1" if report["license_present"] else "0",
+        report["license_sha256"] or "-",
+        encoded(report["adapter_name"]),
+        encoded(report["adapter_version"]),
+        encoded(report["adapter_homepage"]),
+        encoded(report["source_format"]),
+        encoded(report["conversion_profile"]),
+        report["conversion_settings_sha256"],
+        encoded(report["license_spdx"]),
+        encoded(report["license_attribution"]),
+        encoded(report["license_source_url"]),
+    )
+    payload = (
+        "mdkr-character-adapter-output-index-v1\n" +
+        "\t".join(fields) + "\n"
+    ).encode("ascii")
+    _write_atomic(index_path, payload)
+    return {**report, "index_file": index_path.name, "authenticated": False}
+
+
+def _adapter_output_paths(model_output: Path, license_present: bool) -> tuple[
+        Path, Path | None, Path]:
+    if model_output.suffix.lower() != ".glb":
+        raise ManagerError("adapter model output must use a .glb suffix")
+    if model_output.parent.is_symlink() or not model_output.parent.is_dir():
+        raise ManagerError("adapter output directory must be a real existing directory")
+    model = model_output.parent.resolve() / model_output.name
+    license_output = (
+        model.with_name(model.stem + ".LICENSE.txt")
+        if license_present else None
+    )
+    provenance = model.with_name(model.stem + ".mdkrsource.json")
+    return model, license_output, provenance
+
+
+def extract_reviewed_adapter_output(
+        input_path: Path, output_path: Path, expected_artifact_sha256: str,
+        expected_model_sha256: str) -> dict[str, Any]:
+    """Revalidate and exclusively extract only the exact reviewed artifact."""
+    for label, digest in (
+            ("reviewed artifact", expected_artifact_sha256),
+            ("reviewed model", expected_model_sha256)):
+        if (len(digest) != 64 or
+                any(character not in "0123456789abcdef" for character in digest)):
+            raise ManagerError(f"{label} digest is invalid")
+    artifact = source_adapter.inspect_path(input_path)
+    if artifact["artifact_sha256"] != expected_artifact_sha256:
+        raise ManagerError(
+            "the adapter output changed after review; inspect the new bytes before extracting"
+        )
+    if artifact["model_sha256"] != expected_model_sha256:
+        raise ManagerError(
+            "the adapter model identity changed after review; inspect it again"
+        )
+    # Repeat the pinned validator at the committing boundary.  The review's
+    # success is evidence, not permission to trust bytes re-read later.
+    validation = _validate_character_glb(
+        artifact["model_payload"], "reviewed adapter output model"
+    )
+    model, license_output, provenance_output = _adapter_output_paths(
+        output_path, artifact["license_present"]
+    )
+    destinations = [model, provenance_output]
+    if license_output is not None:
+        destinations.append(license_output)
+    for destination in destinations:
+        if destination.exists() or destination.is_symlink():
+            raise ManagerError(
+                f"adapter extraction destination already exists: {destination.name}"
+            )
+    provenance = {
+        "schema": source_adapter.SCHEMA,
+        "integrity_only_not_signed": True,
+        **{key: value for key, value in artifact.items()
+           if not key.endswith("_payload")},
+        "validation": _validation_summary(validation),
+    }
+    provenance_payload = (
+        json.dumps(provenance, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    created: list[tuple[Path, os.stat_result, str]] = []
+    try:
+        model_payload = artifact["model_payload"]
+        model_identity = _write_exclusive(model, model_payload)
+        created.append((model, model_identity,
+                        hashlib.sha256(model_payload).hexdigest()))
+        if license_output is not None:
+            license_payload = artifact["license_payload"]
+            assert isinstance(license_payload, bytes)
+            license_identity = _write_exclusive(license_output, license_payload)
+            created.append((license_output, license_identity,
+                            hashlib.sha256(license_payload).hexdigest()))
+        provenance_identity = _write_exclusive(
+            provenance_output, provenance_payload)
+        created.append((provenance_output, provenance_identity,
+                        hashlib.sha256(provenance_payload).hexdigest()))
+    except Exception:
+        for created_path, identity, digest in reversed(created):
+            _unlink_created_exact(created_path, identity, digest)
+        raise
+    return {
+        **provenance,
+        "action": "extract-reviewed-adapter-output",
+        "model_output": str(model),
+        "license_output": str(license_output) if license_output else "",
+        "provenance_output": str(provenance_output),
+    }
+
+
 def _bounded_authoring_input(path: Path, maximum: int, label: str) -> bytes:
     try:
         flags = os.O_RDONLY
@@ -336,16 +495,60 @@ def _compatible_source_digests(archive: zipfile.ZipFile) -> set[str]:
     }
 
 
-def _write_exclusive(path: Path, payload: bytes) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
+    return left.st_dev == right.st_dev and left.st_ino == right.st_ino
+
+
+def _unlink_created_exact(path: Path, identity: os.stat_result,
+                          digest: str | None = None) -> None:
+    """Remove only the same regular file, optionally with the same full bytes."""
+    descriptor = -1
     try:
-        with os.fdopen(descriptor, "wb") as output:
+        flags = os.O_RDONLY
+        for flag in ("O_BINARY", "O_CLOEXEC", "O_NONBLOCK", "O_NOFOLLOW"):
+            flags |= getattr(os, flag, 0)
+        descriptor = os.open(path, flags)
+        current = os.fstat(descriptor)
+        if not stat.S_ISREG(current.st_mode) or not _same_file_identity(
+                current, identity):
+            return
+        if digest is not None:
+            observed = hashlib.sha256()
+            with os.fdopen(descriptor, "rb") as stream:
+                descriptor = -1
+                while chunk := stream.read(1024 * 1024):
+                    observed.update(chunk)
+            if observed.hexdigest() != digest:
+                return
+        latest = path.lstat()
+        if (stat.S_ISREG(latest.st_mode) and
+                _same_file_identity(latest, identity)):
+            path.unlink()
+    except OSError:
+        return
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _write_exclusive(path: Path, payload: bytes) -> os.stat_result:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    identity = os.fstat(descriptor)
+    try:
+        output = os.fdopen(descriptor, "wb")
+        descriptor = -1
+        with output:
             output.write(payload)
             output.flush()
             os.fsync(output.fileno())
     except BaseException:
-        path.unlink(missing_ok=True)
+        if descriptor >= 0:
+            os.close(descriptor)
+        # The file may contain only a prefix, so identity—not the intended
+        # final digest—is the safe cleanup predicate at this point.
+        _unlink_created_exact(path, identity)
         raise
+    return identity
 
 
 def _write_atomic(path: Path, payload: bytes) -> None:
@@ -401,6 +604,12 @@ def _failure_source_for_command(args: argparse.Namespace) -> tuple[
         return args.model, "raw-inspect", None
     if command == "convert-authoring-source":
         return args.input, "convert", args.output
+    if command == "write-adapter-output-index":
+        return args.input, "adapter-inspect", None
+    if command == "extract-reviewed-adapter-output":
+        # A failed committing extraction must return through a fresh review;
+        # recovery never remembers consent or tries to recreate output files.
+        return args.input, "adapter-inspect", None
     if command in ("install", "inspect", "write-candidate-index",
                    "install-reviewed", "prepare"):
         return args.package, "package-inspect", None
@@ -436,7 +645,8 @@ def _read_failure_record(path: Path) -> dict[str, Any]:
     for key in ("command", "retry_kind", "source_path", "error"):
         if not isinstance(record[key], str):
             raise ManagerError(f"failed-import recovery {key} is invalid")
-    if record["retry_kind"] not in ("raw-inspect", "package-inspect", "convert"):
+    if record["retry_kind"] not in (
+            "raw-inspect", "package-inspect", "convert", "adapter-inspect"):
         raise ManagerError("failed-import recovery retry kind is invalid")
     if (not record["source_path"] or
             len(record["source_path"].encode("utf-8")) > MAX_FAILURE_PATH_BYTES):
@@ -2253,6 +2463,8 @@ def retry_failed_import(record_id: str, directory: Path) -> dict[str, Any]:
                 result = inspect_raw_glb(source)
             elif record["retry_kind"] == "package-inspect":
                 result = inspect(source)
+            elif record["retry_kind"] == "adapter-inspect":
+                result = inspect_adapter_output(source)
             else:
                 output = record["output_path"]
                 if output is None:
@@ -2261,6 +2473,7 @@ def retry_failed_import(record_id: str, directory: Path) -> dict[str, Any]:
                     )
                 result = convert_authoring_source(source, Path(output))
         except (OSError, zipfile.BadZipFile, json.JSONDecodeError, probe.ProbeError,
+                source_adapter.AdapterOutputError,
                 compiler.CompileError, ManagerError) as exc:
             record["attempts"] += 1
             record["last_failed_unix"] = int(time.time())
@@ -2526,6 +2739,20 @@ def _parser() -> argparse.ArgumentParser:
     )
     convert_parser.add_argument("input", type=Path)
     convert_parser.add_argument("output", type=Path)
+    adapter_index_parser = sub.add_parser(
+        "write-adapter-output-index",
+        help="validate a canonical data-only adapter result for review",
+    )
+    adapter_index_parser.add_argument("input", type=Path)
+    adapter_index_parser.add_argument("output", type=Path)
+    adapter_extract_parser = sub.add_parser(
+        "extract-reviewed-adapter-output",
+        help="revalidate and exclusively extract an exact reviewed adapter result",
+    )
+    adapter_extract_parser.add_argument("input", type=Path)
+    adapter_extract_parser.add_argument("output", type=Path)
+    adapter_extract_parser.add_argument("expected_artifact_sha256")
+    adapter_extract_parser.add_argument("expected_model_sha256")
     raw_build_parser = sub.add_parser(
         "build-raw-glb",
         help="build a reviewed source-only candidate from launcher intake fields",
@@ -2690,6 +2917,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "convert-authoring-source":
             report = convert_authoring_source(args.input, args.output)
+        elif args.command == "write-adapter-output-index":
+            report = write_adapter_output_index(
+                args.input, args.directory, args.output
+            )
+        elif args.command == "extract-reviewed-adapter-output":
+            report = extract_reviewed_adapter_output(
+                args.input, args.output, args.expected_artifact_sha256,
+                args.expected_model_sha256,
+            )
         elif args.command == "build-raw-glb":
             vehicle_mask = args.vehicle_mask
             if vehicle_mask < 1 or vehicle_mask > 7:
@@ -2764,6 +3000,7 @@ def main(argv: list[str] | None = None) -> int:
         report = {"ok": True, **report}
         status = 0
     except (OSError, zipfile.BadZipFile, json.JSONDecodeError, probe.ProbeError,
+            source_adapter.AdapterOutputError,
             compiler.CompileError, ManagerError) as exc:
         report = {"ok": False, "error": str(exc)}
         if args.directory is not None:
@@ -2775,7 +3012,8 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 if recovery is not None:
                     report["failed_import"] = recovery
-            except (OSError, probe.ProbeError, ManagerError,
+            except (OSError, probe.ProbeError,
+                    source_adapter.AdapterOutputError, ManagerError,
                     gltf_validator.ValidatorError) as recovery_error:
                 report["recovery_error"] = str(recovery_error)
         status = 2

@@ -4858,7 +4858,21 @@ temporary unless `--evidence-dir` is supplied.
 
 ## Raw source Workshop intake — `tests/check_character_raw_intake_ui.py`
 
-This ROM-free WebGPU gate first drops a nested authoring ZIP containing one
+This ROM-free WebGPU gate first creates and drops a canonical `.mdkrsource`
+artifact with a self-contained GLB, exact original-source and conversion-
+settings bindings, external adapter identity claim, and exact license bytes.
+It requires mutation-free review, explicit unsigned-adapter disclosure,
+separate acceptance, exact reviewed-digest revalidation, collision-free
+exclusive GLB/license/provenance extraction, rights prefill without approval,
+and the ordinary resumable draft/inspection handoff. A second process
+keyboard/speech-walks that review at 200% in a 640x480 window and proves review
+alone extracts nothing. Hostile unit fixtures reject unknown/duplicate/symlink
+members, duplicate JSON keys, digest changes, review races, and every sibling
+destination collision without partial output. The reference adapter packer is
+also proved deterministic and explicitly does not report an authenticated
+converter.
+
+The same ROM-free WebGPU gate then drops a nested authoring ZIP containing one
 generated license-clean DAE, requires bounded conversion to an exclusively
 created self-contained GLB, confirms the missing embedded-license disclosure,
 and verifies the ZIP stays byte-identical and no package/cache is published. It
@@ -4908,6 +4922,12 @@ python3 tests/check_character_raw_intake_ui.py \
 The gate is registered as the `app_character_raw_intake` CTest and the
 `character_raw_intake_ui` run-check; it needs neither a ROM nor a community
 model.
+
+The underlying data-only format and extraction lifecycle are independently
+registered as the `character_source_adapter` Python CTest and the native
+`character_adapter_output_index` CTest. The public frozen contract and
+reference pack/inspect commands are documented in
+`docs/architecture/character-source-adapter-contract.md`.
 
 ## Workshop tool history — `tests/check_character_workshop_history_ui.py`
 

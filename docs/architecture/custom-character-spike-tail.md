@@ -464,6 +464,21 @@ rebases, resumes, builds, activates, or assigns a character. The real rendered
 two-catalog lifecycle covers exclusive export, 200% keyboard/speech review,
 confirmed durable import, duplicate idempotence, and wrong-source refusal.
 
+The third-party source-adapter extension is now executable without broadening
+the trusted runtime. Any external Blender/FBX/USD/DCC tool can emit the public,
+deterministic `.mdkrsource` v1 data contract: one self-contained GLB bound to
+the exact artifact, original source digest, adapter name/version/homepage
+claim, and conversion profile/settings digest, plus optional exact rights
+bytes. The launcher performs a mutation-free bounded review, explicitly says
+that integrity is not a signature, collects separate acceptance and a new
+destination, then revalidates the reviewed artifact and GLB before fail-atomic
+exclusive extraction. It opens the result through the ordinary resumable raw
+draft and never loads or executes adapter code. The public reference packer,
+hostile parser/extraction suite, real rendered lifecycle, and 200% keyboard/
+speech review freeze the extension contract. A future signed executable
+adapter marketplace remains a separate optional product with its own sandbox,
+permission, signing, update, and revocation policy.
+
 ### M8 — Human and device qualification (ongoing release gate)
 
 - Run observed first-use sessions with a finished package, a raw GLB, a nested
@@ -518,9 +533,9 @@ The immediate remaining order is therefore:
    transparency qualification, compressed textures, recorded simplification,
    and expanded material profiles); custom world-shadow casting/receiving,
    per-view primitive ordering, and projected LOD are complete;
-4. complete signed clean-machine/upgrade observation plus adapter and online
-   contracts; recipient compatibility/diff review, exact-base draft transfer,
-   and the frozen and packaged importer lifecycle are automated
+4. complete signed clean-machine/upgrade observation plus online contracts;
+   the data-only adapter contract, recipient compatibility/diff review,
+   exact-base draft transfer, and the frozen and packaged importer lifecycle are automated
    on all three release operating systems; and
 5. run the observed human, controller/screen-reader, perceptual, and maintained
    multi-device qualification matrix in M8.

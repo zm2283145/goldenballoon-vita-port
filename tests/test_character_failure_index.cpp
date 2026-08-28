@@ -45,6 +45,16 @@ int main() {
                inventory.rows[1].retryKind ==
                    CharacterFailureIndex::RetryKind::PackageInspect,
            "recovery fields retain exact values");
+    CharacterFailureIndex::Inventory adapterInventory;
+    expect(CharacterFailureIndex::parse(
+               "mdkr-character-import-failures-v1\t1\t1\n" +
+                   a + "\t0\t1\t1\t0\t0\tadapter-inspect\t" +
+                   hex("/tmp/artist.mdkrsource") + "\t-\t" +
+                   hex("Model digest changed") + "\n",
+               adapterInventory) &&
+               adapterInventory.rows[0].retryKind ==
+                   CharacterFailureIndex::RetryKind::AdapterInspect,
+           "data-only adapter inspection recovery parses without output authority");
     const CharacterFailureIndex::Inventory before = inventory;
     expect(!CharacterFailureIndex::parse(
                "mdkr-character-import-failures-v1\t1\t1\n" +

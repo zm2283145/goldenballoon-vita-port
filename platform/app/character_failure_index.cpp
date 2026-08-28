@@ -137,6 +137,8 @@ bool parseRetryKind(const std::string &text,
         output = CharacterFailureIndex::RetryKind::PackageInspect;
     } else if (text == "convert") {
         output = CharacterFailureIndex::RetryKind::Convert;
+    } else if (text == "adapter-inspect") {
+        output = CharacterFailureIndex::RetryKind::AdapterInspect;
     } else {
         return false;
     }

@@ -5,7 +5,8 @@ The stable input contract is a self-contained glTF 2.0 binary (GLB); this tool
 adds MDKR policy checks and builds a deterministic, data-only source package
 around that GLB. A bounded, dependency-free COLLADA convenience adapter lives
 in collada_to_glb.py. Richer DAE/FBX authoring still belongs in Blender or an
-equivalent DCC exporter, with GLB as the handoff boundary.
+equivalent DCC exporter, with either GLB or the public data-only `.mdkrsource`
+adapter result as the handoff boundary. Adapter code never runs in the game.
 """
 
 from __future__ import annotations

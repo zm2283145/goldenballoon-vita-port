@@ -44,10 +44,13 @@ bool isAvailable();
 // which is fine because ImGui state is retained across the modal.
 bool openRom(std::string &out);
 
-// Choose a reviewable package, runtime/conversion input, or common DCC source.
+// Choose a reviewable package, canonical data-only adapter result,
+// runtime/conversion input, or common DCC source.
 // The launcher inspects the suffix and never installs bytes merely because the
 // user selected them. DAE/ZIP require an explicit converted destination;
 // FBX/OBJ/glTF/USD/native projects receive guidance and are never executed.
+// A .mdkrsource file is reviewed and revalidated before exclusive extraction;
+// it never grants authority to execute the adapter that produced it.
 bool openCharacterSource(std::string &out);
 
 // Choose the exact license/notice text embedded beside a raw GLB. Extension is
