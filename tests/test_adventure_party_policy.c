@@ -556,6 +556,28 @@ static void test_action_authority(void) {
            "authority: out-of-range seat may do nothing");
 }
 
+/* AP-10 controller-disconnect pause authority. Pure decision: the shared pause
+ * is held iff any BOUND seat's pad is absent. Underpins the game adapter's
+ * "force pause + block unpause until every bound pad returns". */
+static void test_disconnect_should_pause(void) {
+    const uint8_t mask3 = 0x7; /* seats 0,1,2 bound */
+    expect(adventure_party_disconnect_should_pause(mask3, 0x7) == 0,
+           "disconnect: every bound pad present -> no pause");
+    expect(adventure_party_disconnect_should_pause(mask3, 0x3) == 1,
+           "disconnect: a bound pad (seat 2) missing -> hold pause");
+    expect(adventure_party_disconnect_should_pause(mask3, 0x0) == 1,
+           "disconnect: all bound pads missing -> hold pause");
+    expect(adventure_party_disconnect_should_pause(mask3, 0x6) == 1,
+           "disconnect: host pad missing -> hold pause");
+    /* A present bit for an UNBOUND seat never forces or clears a pause. */
+    expect(adventure_party_disconnect_should_pause(0x3, 0xF) == 0,
+           "disconnect: spare port present, all bound present -> no pause");
+    expect(adventure_party_disconnect_should_pause(0x3, 0x8) == 1,
+           "disconnect: bound seats absent despite a spare present -> hold pause");
+    expect(adventure_party_disconnect_should_pause(0x0, 0x0) == 0,
+           "disconnect: no bound seats -> never a pause");
+}
+
 int main(void) {
     test_capability_table_split_rows();
     test_capability_table_host_solo_rows();
@@ -571,6 +593,7 @@ int main(void) {
     test_token_issued_only_for_team_win();
     test_exact_once_across_loss_retry_win();
     test_action_authority();
+    test_disconnect_should_pause();
 
     printf("test_adventure_party_policy: %d failure(s)\n", failures);
     return failures ? 1 : 0;

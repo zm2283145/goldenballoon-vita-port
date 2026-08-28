@@ -5745,6 +5745,59 @@ Key measurement finding: AP-08 overrides the racer/viewport count *inside*
 `check_adventure_party_admission.py` were updated to assert `aparty_layout`
 accordingly (was: the pre-AP-08 "hub still 1P" tripwire).
 
+### Adventure Party lobby interactions — `tests/check_adventure_party_transition.py`
+
+```bash
+python3 tests/check_adventure_party_transition.py            # ~3-4 min, muted + headless
+python3 tests/check_adventure_party_transition.py -v
+```
+
+The AP-09/10 focused route: with a party in the central hub, every shared lobby
+interaction resolves to ONE authority, proven from the running binary's `aparty_`
+traces (the AP-05 schema):
+
+- **Doors/exits** — any participant may trigger, but the pure reducer
+  (`adventure_party_arbitrate_transition`) latches exactly ONE whole-party
+  transition per level generation. A *single* door (host only) drives one
+  authored load and re-forms the WHOLE party at the destination lobby
+  (`aparty_transition` once + destination `aparty_roster`/`aparty_layout`); two
+  racers into the door in the same window still yield one transition — the lowest
+  seat wins, the loser's door is rejected (`aparty_interaction action=2
+  verdict=-1`), and there is no second load. Proven at 2P and 3P.
+- **Golden balloons** — two non-host seats race a shared hub balloon and it is
+  collected exactly once (`aparty_interaction action=3 verdict=0`), by a non-host
+  seat; the per-course collected flag makes the double-collect a mechanical
+  impossibility (first toucher wins).
+- **Pause** — a non-host `Start` opens the ONE shared pause (`aparty_interaction
+  action=1` with a non-host seat) and the host owns the resume decision
+  (`action=1 verdict=0` from seat 0). One `gIsPaused` / one pause menu, never
+  per-viewport.
+- **Disconnect** — dropping a bound pad during the lobby (the `MDKR_AP_DROP_PAD`
+  injector; the input-script presence mask is whole-route and cannot) forces the
+  shared pause (`aparty_interaction seat=<dropped> action=1 verdict=-3`); the
+  pure `adventure_party_disconnect_should_pause` decision it rests on is unit-
+  tested ROM-free in `test_adventure_party_policy`.
+
+Racers are steered by the `MDKR_AP_SEAT_ROUTE` test injector (each named seat
+follows its own waypoint route to a door `E<dest>` or balloon `B<id>`), the only
+way to send exactly one seat, or different seats, at a door — the shared
+`MDKR_DRIVE_ROUTE` drives every human at one target. Two positive controls run
+inside the gate: the single-door output must FAIL the conflicting assertions (a
+single door has no losing-door rejection), and stripping the `aparty_transition`
+lines must FAIL the single-door assertions (no latched transition). The off arm
+(doors behave stock) is covered by `check_adventure_hub.py`.
+
+Save fixture: the started Adventure One slot-0 save from
+`check_adventure_party_admission.py` (imported), resumed by the host's FILE_SELECT
+confirm. No developer save is read or written.
+
+Scope note: the session's `level_generation` is not bumped on a lobby→lobby
+(hub→hub) transition, because the AP-02 state machine models all lobbies as one
+`ACTIVE_LOBBY` state with no lobby-transition event. The arbiter latch is
+correctly terminal for the departing generation (the anti-double-load guarantee),
+and each test scene performs a single hop; releasing the latch for a *subsequent*
+hop needs a lobby-transition generation bump (see the task-8 report concern).
+
 ### Harness isolation — `tests/check_harness_isolation.py`
 
 ```bash

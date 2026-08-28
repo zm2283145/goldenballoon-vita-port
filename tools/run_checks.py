@@ -773,6 +773,12 @@ CHECKS = (
           "AP-08 Adventure Party hub roster: 2/3/4 humans spawn atomically with N "
           "viewports (3P minimap), per-seat input binding, and a per-viewport hub "
           "HUD; off routes to Tracks; flat-field and swapped-binding controls fire"),
+    Check("adventure_party_transition", "check_adventure_party_transition.py",
+          "native",
+          "AP-09/10 shared lobby interactions: exactly one arbitrated whole-party "
+          "door transition (single + conflicting, 2P/3P), any-seat balloon "
+          "collect-once, non-host pause open with host resume authority, and "
+          "disconnect-forced shared pause; two positive controls fire"),
     Check("adventure_hub", "check_adventure_hub.py", "native",
           "Adventure hub traversal"),
     Check("adventure_two", "check_adventure_two.py", "native",
