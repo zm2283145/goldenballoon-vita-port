@@ -47,7 +47,7 @@ MdkrOnlineCharselectResult mdkr_online_charselect_tick(s32 updateRate);
  * MDKR_TEST_ONLINE_CHARSELECT). Ordinary runs always return false. */
 u8 mdkr_online_charselect_test_active(void);
 
-/* PD-T6d: true when the CHARSELECT cursor/confirm/ready is driven by SCRIPTED
+/* true when the CHARSELECT cursor/confirm/ready is driven by SCRIPTED
  * input (env MDKR_TEST_ONLINE_CHARSELECT or MDKR_TEST_ONLINE_LOBBY_START) rather
  * than the live pad. The scripted script presses a browse-B at tick 3 as the I1
  * no-wedge coverage, which must NOT leave-to-room, so the session honors a
