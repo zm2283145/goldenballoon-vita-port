@@ -262,7 +262,7 @@ void ensureInitialized() {
     const MdkrOnlineCompatibilityV1 compatibility = fakeCompatibility();
     std::unique_ptr<IMdkrOnlineAdapter> adapter = makeAdapter(compatibility);
     if (!adapter) return;
-    /* ADAPTER-LIFETIME INVARIANT (design C-1, mirrors ~LiveAdapter in
+    /* ADAPTER-LIFETIME INVARIANT (mirrors ~LiveAdapter in
      * match_live_adapter.cpp): a LIVE adapter is destroyed ONLY via
      * teardownAdapterAsync, which retracts BOTH engine registries (race-boot +
      * room-ready) on the launcher thread BEFORE the detached destruction -- so a
@@ -860,7 +860,7 @@ bool buildBetaLiveAdapter(const LauncherState &state, MdkrOnlineJourney journey,
         g_online.betaBuildFailed = true;
         return false;
     }
-    /* ADAPTER-LIFETIME INVARIANT (design C-1, mirrors ~LiveAdapter in
+    /* ADAPTER-LIFETIME INVARIANT (mirrors ~LiveAdapter in
      * match_live_adapter.cpp): a LIVE adapter is destroyed ONLY via
      * teardownAdapterAsync, which retracts BOTH engine registries (race-boot +
      * room-ready) on the launcher thread BEFORE the detached destruction. This
@@ -870,7 +870,7 @@ bool buildBetaLiveAdapter(const LauncherState &state, MdkrOnlineJourney journey,
      * reset / reassign g_online.adapter while it holds a live adapter without
      * routing through teardownAdapterAsync, or a registry pointer will dangle. */
     g_online.adapter = std::move(adapter);
-    /* PD-T6h2c: a fresh adapter/session -- re-arm the one-shot room-ready latch so
+    /* A fresh adapter/session -- re-arm the one-shot room-ready latch so
      * the next tournament SELECTING transition can publish this adapter for the
      * native descriptor-less takeover. */
     OnlineRoom_resetRoomReadyLatch();
@@ -1764,7 +1764,7 @@ void drawBetaSessionCard(const MdkrOnlineLobby &lobby, bool isLeader,
             }
         }
     } else if (tournamentHandoff) {
-        // PD-T6e: this is the native takeover window (SELECTING + 2 members + LOBBY +
+        // This is the native takeover window (SELECTING + 2 members + LOBBY +
         // tournament) -- native TRACKSELECT owns cup choice the instant it boots
         // (within a frame or two), so the ImGui cup picker + series line are dead.
         // Replace them with a compact note; the prominent hand-off card in the body
@@ -2042,7 +2042,7 @@ bool drawBetaSelection(const MdkrOnlineViewModel &model) {
     return drawSelectionControl(model);
 }
 
-// ---- PD-T6e tournament hand-off card ---------------------------------------
+// ---- Tournament hand-off card ----------------------------------------------
 // For a TOURNAMENT room in the native takeover window (SELECTING + 2 members +
 // LOBBY + tournament) the descriptor-less native online screens boot within a
 // frame or two and OWN cup choice, character/vehicle, ready and every race, so
@@ -2072,13 +2072,13 @@ void drawBetaSelectingBody(LauncherState &state,
     const std::uint64_t localEndpoint = betaLocalEndpoint(lobby, isLeader);
     const MdkrOnlineSeat *localSeat = betaSeatFor(lobby, localEndpoint);
 
-    // PD-T6e: the native takeover window. The base condition mirrors the wiring's
+    // The native takeover window. The base condition mirrors the wiring's
     // room-ready condition (online_live_wiring.cpp OnlineRoom_roomReadyConditionHolds):
     // this body is only reached at SELECTING + LOBBY, so a tournament room with 2
     // members is exactly the room-ready trigger's scope. While it holds AND the
     // takeover is actually live, the tournament-scoped ImGui widgets (cup picker,
     // series line, ready/start) are dead and a hand-off card stands in for them.
-    // PD-T6e fix1 (Critical-1): AND in OnlineRoom_roomReadyTakeoverEngaged() so the
+    // AND in OnlineRoom_roomReadyTakeoverEngaged() so the
     // card is shown ONLY when the takeover can still fire (or just fired, boot
     // pending). After a LEFT/ERROR return the room lands back at SELECTING+2+LOBBY+
     // tournament but the latch stays SET with nothing pending (by design -- LEFT/ERROR
@@ -2178,7 +2178,7 @@ void drawBetaSelectingBody(LauncherState &state,
     }
     ui::Gap(ui::kGapM);
 
-    // PD-T6e: in the tournament takeover window the native CHARSELECT owns ready, so
+    // In the tournament takeover window the native CHARSELECT owns ready, so
     // the tournament ready-gating region is dead -- show the hand-off card instead.
     // Single-race (and a 1-member tournament still filling up) keeps the full
     // Ready/Start region below unchanged.
@@ -2320,7 +2320,7 @@ void drawBetaResultsBody(LauncherState &state,
                         : "Waiting for the host to start a new tournament or "
                           "end the session.");
             } else if (OnlineRoom_roomReadyTakeoverEngaged()) {
-                // PD-T6e: with Minor-4's re-arm in place a tournament's races run
+                // With the re-arm in place a tournament's races run
                 // in-process under the native takeover, so when the takeover is still
                 // live the host's Next Race (RACE_AGAIN -> REMATCH) flips the room back
                 // to SELECTING where the room-ready trigger hands the next race to the
@@ -2332,10 +2332,10 @@ void drawBetaResultsBody(LauncherState &state,
                         : "Waiting for the host to continue — the game takes "
                           "over from the next race.");
             } else {
-                // PD-T6e fix1 (Critical-1): the native takeover is NOT live in this
+                // The native takeover is NOT live in this
                 // room (a LEFT/ERROR return left the latch set with nothing pending),
                 // so the ImGui per-race fallback IS the continuation -- show the honest
-                // Next-Race prompt (pre-T6e copy), never a false hand-off promise. The
+                // Next-Race prompt, never a false hand-off promise. The
                 // Next Race button below then re-races this cup round via the race-boot
                 // fallback, exactly as at BASE.
                 const MdkrOnlineTrackInfo *nextTrack =
@@ -2552,7 +2552,7 @@ void drawBetaRoom(LauncherState &state) {
 
     drawBetaStartRaceFeedback(model);
 
-    /* PD-T6e MINOR-4: complete a pending room-ready re-arm every frame, BEFORE the
+    /* Complete a pending room-ready re-arm every frame, BEFORE the
      * SELECTING branch polls the trigger. A no-op unless a FINISHED return armed it;
      * then it clears the latch while the room is out of the takeover condition (here,
      * parked in RESULTS), so the host's next New Tournament re-fires the native
@@ -2565,7 +2565,7 @@ void drawBetaRoom(LauncherState &state) {
     bool primaryDrawn = false;
     if (haveLobby && model.kind == MDKR_ONLINE_VIEW_SELECTING &&
         lobby.phase == MDKR_ONLINE_LOBBY) {
-        /* PD-T6h2c PRODUCTION ROOM-READY takeover: the instant a TOURNAMENT room
+        /* PRODUCTION ROOM-READY takeover: the instant a TOURNAMENT room
          * first reaches this SELECTING body with 2 members in LOBBY, publish this
          * adapter for the descriptor-less native takeover (consume-once). The
          * launcher's interactive loop polls it and boots the engine so native
@@ -2769,7 +2769,7 @@ static void teardownAdapterAsync(std::unique_ptr<IMdkrOnlineAdapter> adapter) {
     // resolve-raw two lines below).
     (void)mdkr_online_live_adapter_retract_race_boot(
         OnlineRoom_resolveRawLiveAdapter(adapter.get()));
-    // PD-T6h2c IMPORTANT-1 (same hazard class for the room-ready registry): the
+    // Same hazard class for the room-ready registry: the
     // room-ready poll publishes the RESOLVED RAW inner LiveAdapter pointer, so a
     // "Leave Race" click on the very frame the room first hits SELECTING+2members+
     // LOBBY+TOURNAMENT could hand runInteractiveLauncher a dying adapter (UAF on
