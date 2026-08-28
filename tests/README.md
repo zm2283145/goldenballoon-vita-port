@@ -23,6 +23,14 @@ platforms and low/mid/high physical-device tiers have been observed. The
 receipt stores normalized descriptions and digests only; ROMs, character
 assets, captures, paths, and operator identity remain private.
 
+`modern_character_draw_store` protects the renderer's retained custom-character
+commands. It proves current and previous skin palettes are copied immutably into
+demand-driven exact-size storage, rigid and invalid draws behave safely, released
+assets and overtaken generations fail closed, shutdown frees every palette, and
+renderer restart cannot revive a stale token. This preserves the 256-joint and
+2,048-command ceilings without permanently reserving the worst-case 68 MB bone
+palette in every build.
+
 **Always run muted and headless** — `MDKR_AUDIO=0` plus `--headless-frames N`.
 Omitting `--headless-frames` opens a window *and* the SDL audio device.
 

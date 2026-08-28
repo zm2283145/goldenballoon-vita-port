@@ -321,6 +321,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/modern_character_registry.c # bounded local generic-character discovery
     ${CMAKE_SOURCE_DIR}/platform/modern_character_pose.c # semantic clips, cross-fades, sockets, skin palettes
     ${CMAKE_SOURCE_DIR}/platform/modern_character_render.c # bounded PNG decode and immutable GPU resources
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_draw_store.c # exact-size immutable retained palettes
     ${CMAKE_SOURCE_DIR}/platform/modern_character_identity.c # bounded identity decode and game-ready portrait resampling
     ${CMAKE_SOURCE_DIR}/platform/modern_character_text.c # shared bounded UTF-8 to retail-font identity projection
     ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_character_text.c # project-owned bounded LTR custom-name glyph renderer

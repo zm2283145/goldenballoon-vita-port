@@ -411,6 +411,14 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform)
     add_test(NAME modern_character_gpu_timing
         COMMAND mdkr_modern_character_gpu_timing_test)
+    add_executable(mdkr_modern_character_draw_store_test
+        ${CMAKE_SOURCE_DIR}/tests/test_modern_character_draw_store.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_draw_store.c)
+    target_include_directories(mdkr_modern_character_draw_store_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/fast3d)
+    add_test(NAME modern_character_draw_store
+        COMMAND mdkr_modern_character_draw_store_test)
     add_executable(mdkr_modern_character_capture_projection_test
         ${CMAKE_SOURCE_DIR}/tests/test_modern_character_capture_projection.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_capture_projection.c)

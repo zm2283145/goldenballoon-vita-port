@@ -94,6 +94,7 @@
 #include "gfx_uniforms.h"
 #include "gfx_pc_dkr.h"
 #include "modern_character_render.h"
+#include "modern_character_draw_store.h"
 #include "modern_character_limits.h"
 #ifdef MDKR_WEBGPU_BACKEND
 #include "gfx_webgpu.h"
@@ -110,8 +111,6 @@
 #define DKR_VBO_STRIDE_MAX 32          /* floats per vertex (generous)        */
 #define DKR_DL_MAX_DEPTH   16          /* nested G_DL / G_DMADL recursion cap */
 #define DKR_FONT_UPSCALE   4
-#define DKR_MODERN_DRAW_RING 2048u
-#define DKR_MODERN_MAX_BONES 256u
 
 enum { DKR_PRESENTATION_PARTICLE_KIND_POINT = 4 };
 
@@ -124,22 +123,15 @@ static GfxFontRegistry dkr_font_registry;
 static struct GfxRenderingAPI *gfx_rapi;
 static void gfx_flush(void);
 
-typedef struct DkrModernDrawEntry {
-    uint32_t token;
-    struct GfxModernSkinnedDraw draw;
-    float bones[DKR_MODERN_MAX_BONES * 16u];
-    float previous_bones[DKR_MODERN_MAX_BONES * 16u];
-} DkrModernDrawEntry;
-
 /*
  * A bounded immutable command payload ring. Display-list construction may run
  * ahead of a presentation replay, so the command stores a generation-bearing
- * token rather than an address. At the maximum expected split-screen load the
- * ring retains many authored ticks; an exceptionally delayed/overfull replay
- * fails visible by dropping the custom draw, never by reading a newer pose.
+ * token rather than an address. Bone palettes are retained at their exact
+ * validated size in lazy store-owned allocations, avoiding a permanent 64 MB
+ * zero-fill reservation for characters that use far fewer than 256 joints.
+ * An exceptionally delayed/overfull replay fails visible by dropping the
+ * custom draw, never by reading a newer pose.
  */
-static DkrModernDrawEntry dkr_modern_draw_ring[DKR_MODERN_DRAW_RING];
-static uint32_t dkr_modern_draw_serial = 1u;
 static uint64_t dkr_modern_camera_missing_matrix;
 static uint64_t dkr_modern_camera_missing_eye;
 static uint64_t dkr_modern_camera_singular_world;
@@ -151,15 +143,13 @@ bool gfx_modern_character_supported(void) {
 
 uint32_t gfx_modern_character_register_draw(
     const struct GfxModernSkinnedDraw *draw) {
-    DkrModernDrawEntry *entry;
-    uint32_t token;
     uint32_t component;
     if (!gfx_modern_character_supported() || draw == NULL || draw->asset == NULL ||
         draw->primitive >= draw->asset->primitive_count ||
         draw->player >= MDKR_MODERN_CHARACTER_PLAYERS ||
         draw->view >= MDKR_MODERN_CHARACTER_VIEWS ||
         draw->reference_only > 1u ||
-        draw->bone_count > DKR_MODERN_MAX_BONES ||
+        draw->bone_count > MDKR_MODERN_DRAW_STORE_MAX_BONES ||
         (draw->bone_count != 0u &&
          (draw->bone_matrices == NULL ||
           draw->previous_bone_matrices == NULL))) {
@@ -185,36 +175,11 @@ uint32_t gfx_modern_character_register_draw(
     for (component = 0u; component < 16u; ++component) {
         if (draw->shadow_world_matrix[component] != 0.0f) return 0u;
     }
-    token = dkr_modern_draw_serial++;
-    if (token == 0u) token = dkr_modern_draw_serial++;
-    entry = &dkr_modern_draw_ring[token % DKR_MODERN_DRAW_RING];
-    memset(entry, 0, sizeof(*entry));
-    entry->token = token;
-    entry->draw = *draw;
-    if (draw->bone_count != 0u) {
-        memcpy(entry->bones, draw->bone_matrices,
-               (size_t)draw->bone_count * 16u * sizeof(float));
-        memcpy(entry->previous_bones, draw->previous_bone_matrices,
-               (size_t)draw->bone_count * 16u * sizeof(float));
-        entry->draw.bone_matrices = entry->bones;
-        entry->draw.previous_bone_matrices = entry->previous_bones;
-    } else {
-        entry->draw.bone_matrices = NULL;
-        entry->draw.previous_bone_matrices = NULL;
-    }
-    return token;
+    return mdkr_modern_draw_store_register(draw);
 }
 
 void gfx_modern_character_release_asset(uint64_t asset_id) {
-    uint32_t index;
-    for (index = 0u; index < DKR_MODERN_DRAW_RING; index++) {
-        if (dkr_modern_draw_ring[index].token != 0u &&
-            dkr_modern_draw_ring[index].draw.asset != NULL &&
-            dkr_modern_draw_ring[index].draw.asset->asset_id == asset_id) {
-            memset(&dkr_modern_draw_ring[index], 0,
-                   sizeof(dkr_modern_draw_ring[index]));
-        }
-    }
+    mdkr_modern_draw_store_release_asset(asset_id);
     if (gfx_rapi != NULL && gfx_rapi->release_modern_asset != NULL) {
         gfx_flush();
         gfx_rapi->release_modern_asset(asset_id);
@@ -3466,32 +3431,32 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
 }
 
 static void dkr_draw_modern_character(uint32_t token) {
-    const DkrModernDrawEntry *entry;
+    const struct GfxModernSkinnedDraw *retained;
     struct GfxModernSkinnedDraw resolved;
-    float interpolated_bones[DKR_MODERN_MAX_BONES * 16u];
+    float interpolated_bones[MDKR_MODERN_DRAW_STORE_MAX_BONES * 16u];
     float fog_color[3];
     bool fog_enabled;
     if (token == 0u || !gfx_modern_character_supported() ||
         rsp.active_slot < 0 || rsp.active_slot >= 3) {
         return;
     }
-    entry = &dkr_modern_draw_ring[token % DKR_MODERN_DRAW_RING];
-    if (entry->token != token || entry->draw.asset == NULL) {
+    retained = mdkr_modern_draw_store_resolve(token);
+    if (retained == NULL || retained->asset == NULL) {
         /* The bounded ring was overtaken. Dropping the custom command leaves
          * memory and replay ownership safe; callers keep the donor visible
          * unless every command registration succeeded. */
         return;
     }
-    resolved = entry->draw;
+    resolved = *retained;
     if (dkr_replay_pass && dkr_replay_object_alpha_valid &&
         !mdkr_modern_render_resolve_draw(
-            &entry->draw, dkr_replay_object_alpha_numerator,
+            retained, dkr_replay_object_alpha_numerator,
             dkr_replay_object_alpha_denominator, &resolved,
-            interpolated_bones, DKR_MODERN_MAX_BONES)) {
+            interpolated_bones, MDKR_MODERN_DRAW_STORE_MAX_BONES)) {
         /* A pathological midpoint (for example an exact half-turn matrix
          * lerp) is not a safe normal transform. Hold the authored endpoint
          * rather than publish NaNs to the GPU. */
-        resolved = entry->draw;
+        resolved = *retained;
     }
     resolved.shadow_binding_valid = 0u;
     resolved.shadow_cast_valid = 0u;
@@ -7995,6 +7960,7 @@ void gfx_shutdown(void) {
     struct GfxRenderingAPI *rapi = gfx_rapi;
 
     if (rapi == NULL) {
+        mdkr_modern_draw_store_shutdown();
         return;
     }
 
@@ -8045,6 +8011,7 @@ void gfx_shutdown(void) {
     free(tex_mip_buf);
     tex_mip_buf = NULL;
     tex_mip_cap = 0;
+    mdkr_modern_draw_store_shutdown();
     gfx_presentation_packet_shutdown();
     gfx_retained_task_shutdown();
     gfx_shadow_frame_shutdown();
