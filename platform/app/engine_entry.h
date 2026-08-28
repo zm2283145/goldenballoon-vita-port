@@ -85,6 +85,7 @@ typedef enum {
 
 #define MDKR_CHARACTER_PREVIEW_CONTACTS 4u
 #define MDKR_CHARACTER_PREVIEW_LANDMARKS 3u
+#define MDKR_CHARACTER_PREVIEW_OCCLUDERS 3u
 typedef enum MdkrCharacterPreviewLandmark {
     MDKR_CHARACTER_PREVIEW_LANDMARK_HIPS = 0,
     MDKR_CHARACTER_PREVIEW_LANDMARK_CHEST,
@@ -226,6 +227,19 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned opaque_visibility_scene_tiles;
     unsigned long long opaque_visibility_isolated_tile_mask;
     unsigned long long opaque_visibility_scene_tile_mask;
+    /* Exact named opaque-depth overlap in stable order: retained vehicle body,
+     * vehicle-part sprites, held object. Presence is distinct from
+     * qualification so "not equipped" never reads as "measured clear." */
+    unsigned opaque_visibility_occluder_present_mask;
+    unsigned opaque_visibility_occluder_qualified_mask;
+    unsigned opaque_visibility_occluder_draws
+        [MDKR_CHARACTER_PREVIEW_OCCLUDERS];
+    unsigned opaque_visibility_occluder_unqualified_draws
+        [MDKR_CHARACTER_PREVIEW_OCCLUDERS];
+    unsigned opaque_visibility_occluder_overlap_tiles
+        [MDKR_CHARACTER_PREVIEW_OCCLUDERS];
+    unsigned long long opaque_visibility_occluder_overlap_tile_mask
+        [MDKR_CHARACTER_PREVIEW_OCCLUDERS];
     /* Model-alpha captures additionally bind the donor-target fit to exact PNG
      * pixels. Points 0..7 are the calibrated AABB corners (XYZ bits), point 8
      * is the anchor, and point 9 is a scaled forward endpoint. All values are
@@ -276,7 +290,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 20u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 21u
 #define MDKR_CHARACTER_PREVIEW_TRANSITION_DWELL_MILLI \
     MDKR_MODERN_CHARACTER_INSPECTION_TRANSITION_DWELL_MILLI
 #define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u
@@ -292,7 +306,7 @@ extern MdkrCharacterPreviewResult *g_mdkrCharacterPreviewResult;
  * gameplay-camera, visibility, and (for vehicles) retained-body/contact
  * witnesses. Keeping the samples separate prevents a favourable frame from
  * hiding another state's clipping or occlusion without invalidating durable
- * v20 timing evidence. */
+ * v21 timing evidence. */
 typedef enum MdkrCharacterMotionReviewSample {
     MDKR_CHARACTER_MOTION_REVIEW_START = 0,
     MDKR_CHARACTER_MOTION_REVIEW_STEER,

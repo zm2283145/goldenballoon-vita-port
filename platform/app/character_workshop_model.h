@@ -179,6 +179,7 @@ struct CharacterWorkshopFitReviewFacts {
     bool advisoryFitWarning = false;
     bool cameraWarning = false;
     bool surfaceWarning = false;
+    bool attachmentVisibilityWarning = false;
     bool sceneReviewed = false;
     bool contactExceptionRequired = false;
     bool contactExceptionApproved = false;

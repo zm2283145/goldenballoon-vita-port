@@ -1902,6 +1902,36 @@ void platform_modern_character_visibility_publish(
             (int64_t)diagnostics->scissor[1] +
                     diagnostics->scissor[3] <= diagnostics->output_height;
     }
+    int occludersValid = diagnostics != NULL &&
+        (diagnostics->occluder_present_mask & ~0x7u) == 0u &&
+        (diagnostics->occluder_qualified_mask &
+         ~diagnostics->occluder_present_mask) == 0u;
+    if (occludersValid) {
+        for (uint32_t category = 0u;
+             category < MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES;
+             ++category) {
+            const uint32_t bit = 1u << category;
+            const uint32_t draws = diagnostics->occluder_draws[category];
+            const uint32_t unqualified =
+                diagnostics->occluder_unqualified_draws[category];
+            const uint64_t overlap =
+                diagnostics->occluder_overlap_tile_mask[category];
+            const int present =
+                (diagnostics->occluder_present_mask & bit) != 0u;
+            const int qualified =
+                (diagnostics->occluder_qualified_mask & bit) != 0u;
+            if (unqualified > draws || present != (draws != 0u) ||
+                modern_character_visibility_bit_count(overlap) !=
+                    diagnostics->occluder_overlap_tiles[category] ||
+                diagnostics->occluder_overlap_tiles[category] > 64u ||
+                (overlap & ~diagnostics->isolated_tile_mask) != 0u ||
+                (qualified && (draws == 0u || unqualified != 0u)) ||
+                (!qualified && overlap != 0u)) {
+                occludersValid = 0;
+                break;
+            }
+        }
+    }
     if (s_modernCharacterVisibilityStatus !=
             MDKR_MODERN_CHARACTER_VISIBILITY_IN_FLIGHT ||
         diagnostics == NULL ||
@@ -1909,7 +1939,8 @@ void platform_modern_character_visibility_publish(
             MDKR_MODERN_CHARACTER_VISIBILITY_VERSION ||
         diagnostics->valid != 1u ||
         diagnostics->qualified > 1u ||
-        !rectsValid || diagnostics->primitive_draws == 0u ||
+        !rectsValid || !occludersValid ||
+        diagnostics->primitive_draws == 0u ||
         classifiedDraws != diagnostics->primitive_draws ||
         diagnostics->grid_columns != 8u || diagnostics->grid_rows != 8u ||
         diagnostics->isolated_visible_tiles > 64u ||
@@ -1926,6 +1957,7 @@ void platform_modern_character_visibility_publish(
         (diagnostics->qualified
              ? diagnostics->transparent_draws != 0u
              : diagnostics->transparent_draws == 0u ||
+                   diagnostics->occluder_qualified_mask != 0u ||
                    diagnostics->isolated_visible_tiles != 0u ||
                    diagnostics->scene_visible_tiles != 0u ||
                    diagnostics->isolated_tile_mask != 0u ||

@@ -6389,12 +6389,14 @@ void render_3d_model(Object *obj) {
     Sprite *something;
 #ifdef NATIVE_PORT
     s32 modernModelIndex;
+    s32 workshopOccluderTarget;
 #endif
 
 #ifdef NATIVE_PORT
     sModernCharacterReplacementObject = NULL;
     sModernCharacterReplacementModel = NULL;
     sModernCharacterReplacementSelect = FALSE;
+    workshopOccluderTarget = FALSE;
     modernModelIndex = object_render_model_index(obj);
     modInst = obj->modelInstances[modernModelIndex];
 #else
@@ -6619,6 +6621,10 @@ modern_select_done:;
 modern_racer_done:;
             }
         }
+        workshopOccluderTarget =
+            obj == sModernCharacterReplacementObject &&
+            !sModernCharacterReplacementSelect && racerObj != NULL &&
+            racerObj->playerIndex == PLAYER_ONE;
 #endif
         vertOffset = FALSE;
         if (racerObj != NULL) {
@@ -6667,11 +6673,24 @@ modern_racer_done:;
         } else {
             gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255, 255);
         }
+#ifdef NATIVE_PORT
+        if (workshopOccluderTarget) {
+            gDkrSetCharacterOccluder(
+                gObjectCurrDisplayList++,
+                G_DKR_CHARACTER_OCCLUDER_VEHICLE_BODY);
+        }
+#endif
         if (opacity < 255) {
             meshBatch = render_mesh(objModel, obj, 0, RENDER_SEMI_TRANSPARENT, vertOffset);
         } else {
             meshBatch = render_mesh(objModel, obj, 0, RENDER_NONE, vertOffset);
         }
+#ifdef NATIVE_PORT
+        if (workshopOccluderTarget) {
+            gDkrSetCharacterOccluder(
+                gObjectCurrDisplayList++, G_DKR_CHARACTER_OCCLUDER_NONE);
+        }
+#endif
         if (obj->header->directionalPointLighting) {
             if (hasOpacity) {
                 gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, intensity, intensity, intensity, opacity);
@@ -6707,6 +6726,13 @@ modern_racer_done:;
                         if (opacity < 255) {
                             flags |= RENDER_SEMI_TRANSPARENT;
                         }
+#ifdef NATIVE_PORT
+                        if (workshopOccluderTarget) {
+                            gDkrSetCharacterOccluder(
+                                gObjectCurrDisplayList++,
+                                G_DKR_CHARACTER_OCCLUDER_VEHICLE_PARTS);
+                        }
+#endif
 #ifdef ANTI_TAMPER
                         cicFailed = FALSE;
                         // Anti-Piracy check
@@ -6768,6 +6794,13 @@ modern_racer_done:;
                     }
                 }
             }
+#ifdef NATIVE_PORT
+            if (workshopOccluderTarget) {
+                gDkrSetCharacterOccluder(
+                    gObjectCurrDisplayList++,
+                    G_DKR_CHARACTER_OCCLUDER_NONE);
+            }
+#endif
         }
         // This section draws the egg sprite being held by a racer.
         if (racerObj != NULL) {
@@ -6777,6 +6810,13 @@ modern_racer_done:;
                 if (index >= 0 && index < objModel->numberOfAttachPoints) {
                     flags = (RENDER_Z_COMPARE | RENDER_FOG_ACTIVE | RENDER_Z_UPDATE);
                     something = loopObj->sprites[loopObj->modelIndex];
+#ifdef NATIVE_PORT
+                    if (workshopOccluderTarget) {
+                        gDkrSetCharacterOccluder(
+                            gObjectCurrDisplayList++,
+                            G_DKR_CHARACTER_OCCLUDER_HELD_OBJECT);
+                    }
+#endif
 #ifndef NATIVE_PORT
                     /* NATIVE_PORT: the convergence lerp moved to
                      * racer_held_object_lerp(), called once per tick from
@@ -6794,6 +6834,13 @@ modern_racer_done:;
                         render_sprite_billboard(&gObjectCurrDisplayList, &gObjectCurrMatrix, &gObjectCurrVertexList,
                                                 loopObj, something, flags);
                     }
+#ifdef NATIVE_PORT
+                    if (workshopOccluderTarget) {
+                        gDkrSetCharacterOccluder(
+                            gObjectCurrDisplayList++,
+                            G_DKR_CHARACTER_OCCLUDER_NONE);
+                    }
+#endif
                 }
             }
         }
@@ -6803,12 +6850,35 @@ modern_racer_done:;
                                 obj->shading->shadowB, opacity);
                 directional_lighting_on();
             }
+#ifdef NATIVE_PORT
+            if (workshopOccluderTarget) {
+                gDkrSetCharacterOccluder(
+                    gObjectCurrDisplayList++,
+                    G_DKR_CHARACTER_OCCLUDER_VEHICLE_BODY);
+            }
+#endif
             render_mesh(objModel, obj, meshBatch, RENDER_SEMI_TRANSPARENT, vertOffset);
+#ifdef NATIVE_PORT
+            if (workshopOccluderTarget) {
+                gDkrSetCharacterOccluder(
+                    gObjectCurrDisplayList++,
+                    G_DKR_CHARACTER_OCCLUDER_NONE);
+            }
+#endif
             if (obj->header->directionalPointLighting) {
                 directional_lighting_off();
             }
         }
 #ifdef NATIVE_PORT
+        if (workshopOccluderTarget) {
+            /* Scope is redundantly reset at the inspected racer boundary so a
+             * malformed or unexpectedly empty attachment display list can
+             * never name a later object. Do not emit this diagnostic boundary
+             * for ordinary objects: the interpreter flushes at every scope
+             * command. */
+            gDkrSetCharacterOccluder(
+                gObjectCurrDisplayList++, G_DKR_CHARACTER_OCCLUDER_NONE);
+        }
         sModernCharacterReplacementObject = NULL;
         sModernCharacterReplacementModel = NULL;
         sModernCharacterReplacementSelect = FALSE;

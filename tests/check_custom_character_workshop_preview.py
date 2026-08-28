@@ -1070,6 +1070,7 @@ def main() -> int:
                     failures.append(
                         f"{label} retained samples for an unqualified volume"
                     )
+            isolated_mask = 0
             visibility_match = re.search(
                 r"visibility=(\d+)/(\d+) visibilitySize=(\d+)x(\d+) "
                 r"visibilityDraws=(\d+),(\d+),(\d+),(\d+) "
@@ -1145,6 +1146,67 @@ def main() -> int:
                     failures.append(
                         f"{label} did not replay the complete mixed opaque/"
                         "alpha-tested primitive set"
+                    )
+            occluder_match = re.search(
+                r"occluders=([0-9a-f]+)/([0-9a-f]+) "
+                r"occluderDraws=(\d+),(\d+),(\d+) "
+                r"occluderUnqualified=(\d+),(\d+),(\d+) "
+                r"occluderOverlap=(\d+),(\d+),(\d+) "
+                r"occluderMask=([0-9a-f]{16}),([0-9a-f]{16}),"
+                r"([0-9a-f]{16})",
+                arm_output,
+            )
+            if occluder_match is None:
+                failures.append(
+                    f"{label} emitted no named occluder contract"
+                )
+            else:
+                groups = occluder_match.groups()
+                present = int(groups[0], 16)
+                qualified = int(groups[1], 16)
+                draws = tuple(map(int, groups[2:5]))
+                unqualified = tuple(map(int, groups[5:8]))
+                overlap_tiles = tuple(map(int, groups[8:11]))
+                overlap_masks = tuple(
+                    int(value, 16) for value in groups[11:14]
+                )
+                named_valid = (
+                    present & ~0x7 == 0
+                    and qualified & ~present == 0
+                    and all(
+                        ((present >> index) & 1) == (draws[index] > 0)
+                        and unqualified[index] <= draws[index]
+                        and overlap_tiles[index]
+                            == overlap_masks[index].bit_count()
+                        and overlap_tiles[index] <= 64
+                        and overlap_masks[index] & ~isolated_mask == 0
+                        and (((qualified >> index) & 1) == 0
+                             or (draws[index] > 0
+                                 and unqualified[index] == 0))
+                        and (((qualified >> index) & 1) != 0
+                             or overlap_masks[index] == 0)
+                        for index in range(3)
+                    )
+                )
+                if context == "select":
+                    named_valid = named_valid and present == 0
+                else:
+                    # These qualified routes always draw the retained vehicle
+                    # body and its separately attached parts. No challenge egg
+                    # is equipped, so held-object absence must remain distinct
+                    # from a fabricated clear measurement.
+                    named_valid = (
+                        named_valid
+                        and present & 0x3 == 0x3
+                        and present & 0x4 == 0
+                        and draws[0] > 0 and draws[1] > 0
+                    )
+                if not named_valid:
+                    failures.append(
+                        f"{label} returned inconsistent named occluder "
+                        f"evidence present={present:x} qualified={qualified:x} "
+                        f"draws={draws} unqualified={unqualified} "
+                        f"overlap={overlap_tiles}/{overlap_masks}"
                     )
             environment_match = re.search(
                 r"character_workshop_result: .* backend=(webgpu-[^ ]+) "
@@ -1311,6 +1373,8 @@ def main() -> int:
         ("visibility-allocation-retry", "skinned.visibility-texture", True),
         ("visibility-allocation-exhausted",
          "skinned.visibility-seed-pipeline@all", False),
+        ("visibility-attribution-pipeline-exhausted",
+         "skinned.visibility-occluded-pipeline@all", False),
     ]
     if not failures:
         for label, fault, expect_recovery in visibility_fault_arms:
@@ -2096,8 +2160,9 @@ def main() -> int:
         "exact four-contact post-solve witnesses and qualified retained-vehicle "
         "surface intersection samples, bounded one-session three-state select "
         "and three-course complete eleven-sample race semantic batteries, "
-        "exact isolated-versus-scene "
-        "opaque-depth region evidence with recoverable, bounded optional-GPU "
+        "exact isolated-versus-scene opaque-depth regions plus game-tagged "
+        "vehicle-body/part/held-object presence, qualification, and overlap "
+        "evidence with recoverable, bounded optional-GPU "
         "allocation failure, one-to-four-player WebGPU "
         "stress, exact nonblocking scene/character GPU timestamp contracts "
         "with honest capability fallback, and fail-closed invalid requests"

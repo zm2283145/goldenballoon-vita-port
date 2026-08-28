@@ -1139,7 +1139,7 @@ character material to form a large contiguous component inside the central safe
 frame, and proves the RGBA product has a nonempty bounded subject, a genuinely
 transparent background, and no hidden matte color in zero-alpha pixels. It also
 proves an existing capture stays byte-identical.
-Every valid custom-character arm also requires result-v20's asynchronous 8 x 8 opaque-depth
+Every valid custom-character arm also requires result-v21's asynchronous 8 x 8 opaque-depth
 witness: one exact replay records isolated occupied regions and a second replay
 uses equality against the completed scene depth. Portable WebGPU occlusion
 queries are treated only as booleans. Exact masks and popcounts are retained;
@@ -1147,6 +1147,13 @@ alpha-tested fragments use the real cutoff, blended materials are explicitly
 unqualified, and a completed all-zero query is actionable “not rendered”
 evidence rather than an unavailable result. The output-sized private depth
 surface is released immediately after submission and the readback never blocks.
+Vehicle contexts additionally replay game-tagged retained-body,
+vehicle-part-sprite, and held-object batches into the private target, then test
+the exact posed subject with a greater-depth diagnostic pipeline. Result v21
+retains per-class presence, qualification, batch counts, and boolean overlap
+masks. A named overlap means that class lies in front geometrically in this
+sample, not that it is the final frontmost pixel; blended classes and an absent
+held object stay explicit rather than being guessed clear.
 The optional query set, resolve/readback buffers, isolated depth target, and
 material-specific seed/equality pipelines are prepared as one asynchronous
 validation-plus-out-of-memory error-scope transaction. No diagnostic handle is
@@ -1174,13 +1181,13 @@ the source, fit, renderer presentation, qualified scene, pose, motion source,
 warmed frame/inspection timeline, target-frame fit, camera projection,
 viewport/scissor, and output grid match exactly. Both products remain
 comparison-only and cannot satisfy fit, motion,
-portrait, or performance evidence. Embedded offscreen preview, named attachment
-attribution, weather and vehicle conditions beyond the three qualified course
+portrait, or performance evidence. Embedded offscreen preview, weather and
+vehicle conditions beyond the three qualified course
 families, and a maintained device-profile/headroom corpus remain open.
 
 Launcher-owned previews also arm the existing bounded presentation census. The
 game discards a 120-authored-tick warm-up, resets only the observational timing
-window, and freezes a structured version-20 result when the F1 overlay opens (or
+window, and freezes a structured version-21 result when the F1 overlay opens (or
 at engine shutdown). The surviving launcher publishes that result back to the
 same package inspector: displayed interval sample count, median/p95/p99/mean/max,
 authored tick-wall sample/mean, and warmed replacement/part/donor-suppression
@@ -1195,7 +1202,7 @@ Fewer than 60 intervals
 and synthetic pacing are explicitly diagnostic-only. Visual-inspection results
 remain session-only and cannot contaminate durable timing evidence.
 Offset Studio also has a separate version-3 scene-review result containing
-three complete v20 select samples or eleven complete v20 vehicle samples bound
+three complete v21 select samples or eleven complete v21 vehicle samples bound
 to one of three qualified course families. A single resumable launcher action
 keeps select in its authored room and runs every vehicle on an open baseline,
 dense scenery, and an alternate environment. The strict one-player exact routes
@@ -1209,7 +1216,7 @@ when resuming, aggregates the most concerning state across all 33 vehicle rows,
 and never stores these samples as clean performance evidence. Long clean race
 detail is collapsible; any warning opens the state table by default.
 
-The launcher collects only version-20 captures armed after at least 12 eligible
+The launcher collects only version-21 captures armed after at least 12 eligible
 frames in bounded session metadata and can export a self-contained HTML
 qualification report. Publication validates the complete typed PNG and binds
 its SHA-256 immediately. A model-only result also requires the renderer's exact
@@ -1259,12 +1266,13 @@ visible and never count as current, while an LOD-only change does not revoke the
 separate vehicle-fit review. Baseline pinning, exact-cell deletion, package
 deletion, restart recovery, an actual LOD-policy stale transition, and
 malformed-inventory preservation are covered by a rendered ROM-free lifecycle
-gate. Evidence schema v8 retains the signed target-frame bounds, ground/seat
+gate. Evidence schema v9 retains the signed target-frame bounds, ground/seat
 anchor, normalized facing direction, and four exact post-solve
 root/bend/target/end/error contact witnesses from the successful replacement
 draw, retained-vehicle topology and containment facts, and the opaque-depth
-grid, so Fit and Performance retain the same renderer measurement after
-restart. The v20 result contract requires either all four self-consistent
+grid plus named vehicle-body/part/held-object attribution, so Fit and
+Performance retain the same renderer measurement after restart. The v21 result
+contract requires either all four self-consistent
 witnesses or none; a vehicle result with nonzero automatic solve count cannot
 omit or partially publish them. It also carries a versioned GPU timing contract:
 the initial gameplay color/depth pass is timestamped when the device supports
@@ -1278,8 +1286,8 @@ estimate is substituted. All optional timestamp query and readback resources are
 preallocated during renderer initialization inside portable validation and
 out-of-memory error scopes, so allocation failure cannot become a fatal
 uncaptured device error or introduce a wait in gameplay. Authenticated
-v1 through v7 inventories load older fields with explicit unavailable states and
-migrate in place on the next
+v1 through v8 inventories load older fields with explicit unavailable states
+and migrate to v9 in place on the next
 successful write; the established
 filename remains unchanged so old evidence is never orphaned. Same-environment
 baseline cards compare wall cadence, scene-pass GPU time, and—only when both
@@ -1390,7 +1398,7 @@ fail before GPU allocation; decoded cost accounting matches actual allocations.
   cross-fades, presentation endpoint retention, WebGPU GPU skinning, reviewed
   humanoid fallback poses, and vehicle contacts are implemented.
 - Exact Animation Studio review holds 0/50/100% samples or alternates two
-  distinct semantics through those same cross-fades. The current result-v20 contract reports both
+  distinct semantics through those same cross-fades. The current result-v21 contract reports both
   motion sources, per-destination blend milliseconds, switches, blended ticks,
   completions, and package-fallback ticks without entering durable performance
   evidence.

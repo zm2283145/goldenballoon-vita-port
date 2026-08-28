@@ -20,6 +20,7 @@ constexpr const char *kHeaderV5 = "mdkr-character-test-evidence-v5";
 constexpr const char *kHeaderV6 = "mdkr-character-test-evidence-v6";
 constexpr const char *kHeaderV7 = "mdkr-character-test-evidence-v7";
 constexpr const char *kHeaderV8 = "mdkr-character-test-evidence-v8";
+constexpr const char *kHeaderV9 = "mdkr-character-test-evidence-v9";
 constexpr size_t kFieldsPerRowV1 = 39u;
 constexpr size_t kFieldsPerRowV2 = 52u;
 constexpr size_t kFieldsPerRowV3 = 105u;
@@ -28,6 +29,7 @@ constexpr size_t kFieldsPerRowV5 = 164u;
 constexpr size_t kFieldsPerRowV6 = 174u;
 constexpr size_t kFieldsPerRowV7 = 187u;
 constexpr size_t kFieldsPerRowV8 = 209u;
+constexpr size_t kFieldsPerRowV9 = 223u;
 constexpr size_t      kMaximumRowBytes =
     (CharacterTestEvidenceStore::kMaximumBuildVersionBytes * 2u) +
     (CharacterTestEvidenceStore::kMaximumBackendBytes * 2u) +
@@ -714,7 +716,20 @@ bool evidenceValid(const CharacterTestEvidenceStore::Evidence &evidence,
             evidence.opaqueVisibilityIsolatedTiles != 0u ||
             evidence.opaqueVisibilitySceneTiles != 0u ||
             evidence.opaqueVisibilityIsolatedTileMask != 0u ||
-            evidence.opaqueVisibilitySceneTileMask != 0u) return false;
+            evidence.opaqueVisibilitySceneTileMask != 0u ||
+            evidence.opaqueVisibilityOccluderPresentMask != 0u ||
+            evidence.opaqueVisibilityOccluderQualifiedMask != 0u) {
+            return false;
+        }
+        for (size_t category = 0u; category < 3u; ++category) {
+            if (evidence.opaqueVisibilityOccluderDraws[category] != 0u ||
+                evidence.opaqueVisibilityOccluderUnqualifiedDraws
+                    [category] != 0u ||
+                evidence.opaqueVisibilityOccluderOverlapTiles
+                    [category] != 0u ||
+                evidence.opaqueVisibilityOccluderOverlapTileMask
+                    [category] != 0u) return false;
+        }
         for (size_t component = 0u; component < 4u; ++component) {
             if (evidence.opaqueVisibilityViewport[component] != 0 ||
                 evidence.opaqueVisibilityScissor[component] != 0) return false;
@@ -753,7 +768,55 @@ bool evidenceValid(const CharacterTestEvidenceStore::Evidence &evidence,
             bitCount(evidence.opaqueVisibilitySceneTileMask) ==
                 evidence.opaqueVisibilitySceneTiles &&
             (evidence.opaqueVisibilitySceneTileMask &
-             ~evidence.opaqueVisibilityIsolatedTileMask) == 0u;
+             ~evidence.opaqueVisibilityIsolatedTileMask) == 0u &&
+            (evidence.opaqueVisibilityOccluderPresentMask & ~0x7u) == 0u &&
+            (evidence.opaqueVisibilityOccluderQualifiedMask &
+             ~evidence.opaqueVisibilityOccluderPresentMask) == 0u;
+        for (size_t category = 0u;
+             category < 3u && visibilityStateValid; ++category) {
+            const uint32_t bit = 1u << category;
+            const uint32_t draws =
+                evidence.opaqueVisibilityOccluderDraws[category];
+            const uint32_t unqualified =
+                evidence.opaqueVisibilityOccluderUnqualifiedDraws
+                    [category];
+            const uint64_t overlap =
+                evidence.opaqueVisibilityOccluderOverlapTileMask
+                    [category];
+            const bool present =
+                (evidence.opaqueVisibilityOccluderPresentMask & bit) != 0u;
+            const bool qualified =
+                (evidence.opaqueVisibilityOccluderQualifiedMask & bit) != 0u;
+            visibilityStateValid = unqualified <= draws &&
+                present == (draws != 0u) &&
+                evidence.opaqueVisibilityOccluderOverlapTiles[category] <=
+                    64u &&
+                bitCount(overlap) ==
+                    evidence.opaqueVisibilityOccluderOverlapTiles[category] &&
+                (overlap &
+                 ~evidence.opaqueVisibilityIsolatedTileMask) == 0u &&
+                (!qualified || (draws != 0u && unqualified == 0u)) &&
+                (qualified || overlap == 0u);
+        }
+        if (evidence.resultVersion < 21u) {
+            visibilityStateValid = visibilityStateValid &&
+                evidence.opaqueVisibilityOccluderPresentMask == 0u &&
+                evidence.opaqueVisibilityOccluderQualifiedMask == 0u;
+            for (size_t category = 0u; category < 3u; ++category) {
+                visibilityStateValid = visibilityStateValid &&
+                    evidence.opaqueVisibilityOccluderDraws[category] == 0u &&
+                    evidence.opaqueVisibilityOccluderUnqualifiedDraws
+                        [category] == 0u &&
+                    evidence.opaqueVisibilityOccluderOverlapTiles
+                        [category] == 0u &&
+                    evidence.opaqueVisibilityOccluderOverlapTileMask
+                        [category] == 0u;
+            }
+        }
+        if (evidence.context == 1u) {
+            visibilityStateValid = visibilityStateValid &&
+                evidence.opaqueVisibilityOccluderPresentMask == 0u;
+        }
         for (size_t component = 0u; component < 4u; ++component) {
             const int64_t limit = (component & 1u)
                 ? evidence.opaqueVisibilityHeight
@@ -784,6 +847,7 @@ bool evidenceValid(const CharacterTestEvidenceStore::Evidence &evidence,
             (evidence.opaqueVisibilityQualified
                  ? evidence.opaqueVisibilityTransparentDraws == 0u
                  : evidence.opaqueVisibilityTransparentDraws != 0u &&
+                       evidence.opaqueVisibilityOccluderQualifiedMask == 0u &&
                        evidence.opaqueVisibilityIsolatedTiles == 0u &&
                        evidence.opaqueVisibilitySceneTiles == 0u &&
                        evidence.opaqueVisibilityIsolatedTileMask == 0u &&
@@ -1018,6 +1082,25 @@ std::vector<std::string> recordFields(
     fields.push_back(number(evidence.opaqueVisibilitySceneTiles));
     fields.push_back(number(evidence.opaqueVisibilityIsolatedTileMask));
     fields.push_back(number(evidence.opaqueVisibilitySceneTileMask));
+    fields.push_back(number(
+        evidence.opaqueVisibilityOccluderPresentMask));
+    fields.push_back(number(
+        evidence.opaqueVisibilityOccluderQualifiedMask));
+    for (uint32_t value : evidence.opaqueVisibilityOccluderDraws) {
+        fields.push_back(number(value));
+    }
+    for (uint32_t value :
+         evidence.opaqueVisibilityOccluderUnqualifiedDraws) {
+        fields.push_back(number(value));
+    }
+    for (uint32_t value :
+         evidence.opaqueVisibilityOccluderOverlapTiles) {
+        fields.push_back(number(value));
+    }
+    for (uint64_t value :
+         evidence.opaqueVisibilityOccluderOverlapTileMask) {
+        fields.push_back(number(value));
+    }
     return fields;
 }
 
@@ -1094,7 +1177,8 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
         (fields[0] != kHeaderV1 && fields[0] != kHeaderV2 &&
          fields[0] != kHeaderV3 && fields[0] != kHeaderV4 &&
          fields[0] != kHeaderV5 && fields[0] != kHeaderV6 &&
-         fields[0] != kHeaderV7 && fields[0] != kHeaderV8) ||
+         fields[0] != kHeaderV7 && fields[0] != kHeaderV8 &&
+         fields[0] != kHeaderV9) ||
         !parseUnsigned(fields[1], kMaximumRecords, count) ||
         !digestValid(fields[2])) {
         error = "test evidence inventory header is invalid";
@@ -1108,13 +1192,15 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
     const bool legacyV5 = header == kHeaderV5;
     const bool legacyV6 = header == kHeaderV6;
     const bool legacyV7 = header == kHeaderV7;
+    const bool legacyV8 = header == kHeaderV8;
     const size_t rowFields = legacyV1 ? kFieldsPerRowV1
         : legacyV2 ? kFieldsPerRowV2
         : legacyV3 ? kFieldsPerRowV3
         : legacyV4 ? kFieldsPerRowV4
         : legacyV5 ? kFieldsPerRowV5
         : legacyV6 ? kFieldsPerRowV6
-        : legacyV7 ? kFieldsPerRowV7 : kFieldsPerRowV8;
+        : legacyV7 ? kFieldsPerRowV7
+        : legacyV8 ? kFieldsPerRowV8 : kFieldsPerRowV9;
     const std::string countText         = fields[1];
     const std::string inventoryChecksum = fields[2];
     begin                               = end + 1u;
@@ -1340,7 +1426,8 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
             assignDistribution(evidence.gpuTiming.character_draws);
         }
         if (header == kHeaderV5 || header == kHeaderV6 ||
-            header == kHeaderV7 || header == kHeaderV8) {
+            header == kHeaderV7 || header == kHeaderV8 ||
+            header == kHeaderV9) {
             size_t field = 124u;
             uint64_t unsignedValue = 0u;
             int64_t signedValue = 0;
@@ -1409,7 +1496,7 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
             }
         }
         if (header == kHeaderV6 || header == kHeaderV7 ||
-            header == kHeaderV8) {
+            header == kHeaderV8 || header == kHeaderV9) {
             size_t field = 163u;
             uint64_t value = 0u;
             bool surfaceFieldsValid = parseUnsigned(
@@ -1450,7 +1537,8 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
                 return false;
             }
         }
-        if (header == kHeaderV7 || header == kHeaderV8) {
+        if (header == kHeaderV7 || header == kHeaderV8 ||
+            header == kHeaderV9) {
             size_t field = 173u;
             uint64_t value = 0u;
             bool volumeFieldsValid = parseUnsigned(
@@ -1487,7 +1575,7 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
                 return false;
             }
         }
-        if (header == kHeaderV8) {
+        if (header == kHeaderV8 || header == kHeaderV9) {
             size_t field = 186u;
             uint64_t value = 0u;
             int64_t signedValue = 0;
@@ -1537,6 +1625,45 @@ bool parse(const std::string &text, Inventory &output, std::string &error) {
                 evidence.opaqueVisibilitySceneTileMask);
             if (!visibilityFieldsValid || field != 208u) {
                 error = "test evidence opaque visibility fields are invalid";
+                return false;
+            }
+        }
+        if (header == kHeaderV9) {
+            size_t field = 208u;
+            uint64_t value = 0u;
+            bool namedFieldsValid = parseUnsigned(
+                fields[field++], 0x7u, value);
+            evidence.opaqueVisibilityOccluderPresentMask =
+                static_cast<uint32_t>(value);
+            namedFieldsValid = namedFieldsValid && parseUnsigned(
+                fields[field++], 0x7u, value);
+            evidence.opaqueVisibilityOccluderQualifiedMask =
+                static_cast<uint32_t>(value);
+            for (uint32_t &count :
+                 evidence.opaqueVisibilityOccluderDraws) {
+                namedFieldsValid = namedFieldsValid && parseUnsigned(
+                    fields[field++], UINT32_MAX, value);
+                count = static_cast<uint32_t>(value);
+            }
+            for (uint32_t &count :
+                 evidence.opaqueVisibilityOccluderUnqualifiedDraws) {
+                namedFieldsValid = namedFieldsValid && parseUnsigned(
+                    fields[field++], UINT32_MAX, value);
+                count = static_cast<uint32_t>(value);
+            }
+            for (uint32_t &count :
+                 evidence.opaqueVisibilityOccluderOverlapTiles) {
+                namedFieldsValid = namedFieldsValid && parseUnsigned(
+                    fields[field++], 64u, value);
+                count = static_cast<uint32_t>(value);
+            }
+            for (uint64_t &mask :
+                 evidence.opaqueVisibilityOccluderOverlapTileMask) {
+                namedFieldsValid = namedFieldsValid && parseUnsigned(
+                    fields[field++], UINT64_MAX, mask);
+            }
+            if (!namedFieldsValid || field != 222u) {
+                error = "test evidence named occluder fields are invalid";
                 return false;
             }
         }
@@ -1593,7 +1720,7 @@ bool serialize(const Inventory &inventory, std::string &output, std::string &err
         }
         packages.insert(evidence.packageId);
         const std::vector<std::string> fields = recordFields(evidence);
-        if (fields.size() + 1u != kFieldsPerRowV8) {
+        if (fields.size() + 1u != kFieldsPerRowV9) {
             error = "test evidence serializer field contract drifted";
             return false;
         }
@@ -1609,8 +1736,8 @@ bool serialize(const Inventory &inventory, std::string &output, std::string &err
         }
     }
     const std::string count  = std::to_string(ordered.records.size());
-    std::string       result = std::string(kHeaderV8) + "\t" + count + "\t" +
-                               inventoryDigest(kHeaderV8, count, body) +
+    std::string       result = std::string(kHeaderV9) + "\t" + count + "\t" +
+                               inventoryDigest(kHeaderV9, count, body) +
                                "\n" + body;
     if (result.size() > kMaximumSerializedBytes) {
         error = "serialized test evidence exceeds its byte bound";

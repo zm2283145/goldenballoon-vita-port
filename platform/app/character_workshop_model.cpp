@@ -870,7 +870,8 @@ CharacterWorkshopFitReviewDecision CharacterWorkshop_reviewFit(
          static_cast<uint64_t>(facts.sceneVisibleTiles) * 100u <
              static_cast<uint64_t>(facts.isolatedVisibleTiles) * 60u);
     result.warnings = facts.advisoryFitWarning || facts.cameraWarning ||
-        facts.surfaceWarning || visibilityWarning;
+        facts.surfaceWarning || facts.attachmentVisibilityWarning ||
+        visibilityWarning;
     result.ready = facts.exactContract &&
         !result.visibilityBlocksReview && facts.sceneReviewed &&
         (!facts.contactExceptionRequired ||

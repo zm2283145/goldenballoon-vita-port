@@ -8,7 +8,8 @@
 extern "C" {
 #endif
 
-#define MDKR_MODERN_CHARACTER_VISIBILITY_VERSION 1u
+#define MDKR_MODERN_CHARACTER_VISIBILITY_VERSION 2u
+#define MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES 3u
 
 typedef enum MdkrModernCharacterVisibilityStatus {
     MDKR_MODERN_CHARACTER_VISIBILITY_IDLE = 0,
@@ -36,6 +37,20 @@ typedef struct MdkrModernCharacterVisibilityDiagnostics {
     uint32_t scene_visible_tiles;
     uint64_t isolated_tile_mask;
     uint64_t scene_tile_mask;
+    /* Per-class opaque-depth attribution in stable order: retained vehicle
+     * body, attached vehicle-part sprites, held object. `present_mask` means
+     * the game emitted at least one named batch; `qualified_mask` means every
+     * such batch had replayable opaque depth semantics. An absent or
+     * unqualified class always carries a zero overlap result. */
+    uint32_t occluder_present_mask;
+    uint32_t occluder_qualified_mask;
+    uint32_t occluder_draws[MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES];
+    uint32_t occluder_unqualified_draws
+        [MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES];
+    uint32_t occluder_overlap_tiles
+        [MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES];
+    uint64_t occluder_overlap_tile_mask
+        [MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES];
 } MdkrModernCharacterVisibilityDiagnostics;
 
 #ifdef __cplusplus

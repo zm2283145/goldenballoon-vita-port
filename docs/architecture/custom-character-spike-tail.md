@@ -180,7 +180,7 @@ explicitly restricted to the generated fixture and exists only for CI.
   an explicit vehicle-only copy action remains available for intentional reuse.
 - **Implemented for the complete scene-review contract:** visible advisory bands classify floor/seat
   datum error, facing, and unusual volume proportions as Ready, Review, or
-  Action needed. Result v20 also retains the last complete accepted scene MVP,
+  Action needed. Result v21 also retains the last complete accepted scene MVP,
   viewport, and scissor and projects the calibrated volume plus exact
   current-pose hips/chest/head node origins into bounded fixed-point camera
   evidence. Offset Studio reports camera occupancy, clipping, head placement,
@@ -194,9 +194,12 @@ explicitly restricted to the generated fixture and exists only for CI.
   topology-qualified containment, opaque-depth visibility, and contact evidence.
   Approval requires all current source/fit/LOD/presentation-bound course
   batteries and reopens every legacy approval once. Select approval covers
-  idle/hover/confirm; every vehicle approval covers 33 samples in total. This
-  still does not identify a specific occluding attachment or prove weather and
-  vehicle conditions outside the qualified course set.
+  idle/hover/confirm; every vehicle approval covers 33 samples in total.
+  Stable game-owned scopes now distinguish retained body, vehicle-part sprites,
+  and held objects and carry their presence, replay qualification, and in-front
+  overlap into the per-state table and explicit warning acknowledgement. This
+  intentionally does not identify an individual wheel/prop sprite or prove
+  weather and vehicle conditions outside the qualified course set.
 
 Acceptance: the example faces the camera in select, its feet are floor-aligned,
 and its head/torso land inside each ordinary vehicle camera without manual JSON.
@@ -286,8 +289,9 @@ in the package review and durable evidence.
   are visible exact-evidence guides. An over-limit review now requires an
   explicit source-and-fit-bound exception, participates in Fit undo/redo,
   survives named-draft v13 resume, and rolls back if persistence fails.
-  Named attached-part attribution and frame-to-frame oscillation still require
-  renderer-derived witnesses before they can be qualified honestly.
+  Named retained-body, vehicle-part, and held-object attribution is now an exact
+  sampled-pose renderer witness. Frame-to-frame contact oscillation still needs
+  its own bounded renderer-derived witness before it can be qualified honestly.
 - **Implemented:** test car, hovercraft, and plane across all eleven race
   samples on three qualified courses rather than one favourable parked frame.
   The UI

@@ -574,6 +574,7 @@ static s32 workshop_preview_publish_opaque_visibility(
     u32 component;
     u32 isolatedTileCount = 0u;
     u32 sceneTileCount = 0u;
+    u32 occluder;
     u64 classifiedDraws;
     u64 mask;
     if (result == NULL ||
@@ -597,6 +598,35 @@ static s32 workshop_preview_publish_opaque_visibility(
         sceneTileCount += (u32)(mask & 1u);
         mask >>= 1u;
     }
+    if ((diagnostics.occluder_present_mask & ~0x7u) != 0u ||
+        (diagnostics.occluder_qualified_mask &
+         ~diagnostics.occluder_present_mask) != 0u) return FALSE;
+    for (occluder = 0u;
+         occluder < MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES;
+         ++occluder) {
+        u32 overlapTileCount = 0u;
+        const u32 bit = 1u << occluder;
+        mask = diagnostics.occluder_overlap_tile_mask[occluder];
+        while (mask != 0u) {
+            overlapTileCount += (u32)(mask & 1u);
+            mask >>= 1u;
+        }
+        if (diagnostics.occluder_unqualified_draws[occluder] >
+                diagnostics.occluder_draws[occluder] ||
+            ((diagnostics.occluder_present_mask & bit) != 0u) !=
+                (diagnostics.occluder_draws[occluder] != 0u) ||
+            overlapTileCount !=
+                diagnostics.occluder_overlap_tiles[occluder] ||
+            diagnostics.occluder_overlap_tiles[occluder] > 64u ||
+            (diagnostics.occluder_overlap_tile_mask[occluder] &
+             ~diagnostics.isolated_tile_mask) != 0u ||
+            ((diagnostics.occluder_qualified_mask & bit) != 0u
+                 ? diagnostics.occluder_draws[occluder] == 0u ||
+                       diagnostics.occluder_unqualified_draws[occluder] != 0u
+                 : diagnostics.occluder_overlap_tile_mask[occluder] != 0u)) {
+            return FALSE;
+        }
+    }
     if (classifiedDraws != diagnostics.primitive_draws ||
         diagnostics.grid_columns != 8u || diagnostics.grid_rows != 8u ||
         diagnostics.isolated_visible_tiles > 64u ||
@@ -609,6 +639,7 @@ static s32 workshop_preview_publish_opaque_visibility(
         (diagnostics.qualified
              ? diagnostics.transparent_draws != 0u
              : diagnostics.transparent_draws == 0u ||
+                   diagnostics.occluder_qualified_mask != 0u ||
                    diagnostics.isolated_visible_tiles != 0u ||
                    diagnostics.scene_visible_tiles != 0u ||
                    diagnostics.isolated_tile_mask != 0u ||
@@ -656,6 +687,22 @@ static s32 workshop_preview_publish_opaque_visibility(
     result->opaque_visibility_isolated_tile_mask =
         diagnostics.isolated_tile_mask;
     result->opaque_visibility_scene_tile_mask = diagnostics.scene_tile_mask;
+    result->opaque_visibility_occluder_present_mask =
+        diagnostics.occluder_present_mask;
+    result->opaque_visibility_occluder_qualified_mask =
+        diagnostics.occluder_qualified_mask;
+    for (occluder = 0u;
+         occluder < MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES;
+         ++occluder) {
+        result->opaque_visibility_occluder_draws[occluder] =
+            diagnostics.occluder_draws[occluder];
+        result->opaque_visibility_occluder_unqualified_draws[occluder] =
+            diagnostics.occluder_unqualified_draws[occluder];
+        result->opaque_visibility_occluder_overlap_tiles[occluder] =
+            diagnostics.occluder_overlap_tiles[occluder];
+        result->opaque_visibility_occluder_overlap_tile_mask[occluder] =
+            diagnostics.occluder_overlap_tile_mask[occluder];
+    }
     return TRUE;
 }
 
@@ -1068,6 +1115,9 @@ static void workshop_preview_measurement_finish(void) {
         "visibility=%d/%d visibilitySize=%ux%u "
         "visibilityDraws=%u,%u,%u,%u visibilityGrid=%ux%u "
         "visibilityTiles=%u/%u visibilityMask=%016llx/%016llx "
+        "occluders=%x/%x occluderDraws=%u,%u,%u "
+        "occluderUnqualified=%u,%u,%u occluderOverlap=%u,%u,%u "
+        "occluderMask=%016llx,%016llx,%016llx "
         "pose=%d phase=%u "
         "transitionFrom=%d transitionPhase=%u transition=%llu/%llu/%llu "
         "transitionBlend=%u,%u transitionSource=%d,%d "
@@ -1174,6 +1224,20 @@ static void workshop_preview_measurement_finish(void) {
         result->opaque_visibility_isolated_tiles,
         result->opaque_visibility_scene_tile_mask,
         result->opaque_visibility_isolated_tile_mask,
+        result->opaque_visibility_occluder_present_mask,
+        result->opaque_visibility_occluder_qualified_mask,
+        result->opaque_visibility_occluder_draws[0],
+        result->opaque_visibility_occluder_draws[1],
+        result->opaque_visibility_occluder_draws[2],
+        result->opaque_visibility_occluder_unqualified_draws[0],
+        result->opaque_visibility_occluder_unqualified_draws[1],
+        result->opaque_visibility_occluder_unqualified_draws[2],
+        result->opaque_visibility_occluder_overlap_tiles[0],
+        result->opaque_visibility_occluder_overlap_tiles[1],
+        result->opaque_visibility_occluder_overlap_tiles[2],
+        result->opaque_visibility_occluder_overlap_tile_mask[0],
+        result->opaque_visibility_occluder_overlap_tile_mask[1],
+        result->opaque_visibility_occluder_overlap_tile_mask[2],
         (int)result->pose, result->pose_phase_milli,
         (int)result->transition_from_pose,
         result->transition_from_phase_milli,

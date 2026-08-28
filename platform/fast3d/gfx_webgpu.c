@@ -594,6 +594,29 @@ struct WgpuSkinnedVisibilityDraw {
     uint32_t width;
     uint32_t height;
 };
+struct WgpuNamedOccluderDraw {
+    uint32_t occluder;
+    WGPURenderPipeline pipeline;
+    WGPUBindGroup bind_group;
+    uint32_t vertex_offset;
+    uint32_t vertex_bytes;
+    uint32_t vertex_count;
+    int viewport[4];
+    int scissor[4];
+    uint32_t width;
+    uint32_t height;
+};
+#define WGPU_NAMED_OCCLUDER_MAX_DRAWS 512u
+static struct WgpuNamedOccluderDraw
+    s_named_occluder_draws[WGPU_NAMED_OCCLUDER_MAX_DRAWS];
+static uint32_t s_named_occluder_draw_count;
+static bool s_named_occluder_overflow;
+static uint32_t s_named_occluder_draws_by_class
+    [MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES];
+static uint32_t s_named_occluder_unqualified_by_class
+    [MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES];
+static uint32_t s_modern_character_occluder =
+    GFX_MODERN_CHARACTER_OCCLUDER_NONE;
 static struct WgpuSkinnedVisibilityDraw
     s_skinned_visibility_draws[WGPU_SKINNED_CAPTURE_MAX_DRAWS];
 static uint32_t s_skinned_visibility_draw_count;
@@ -603,6 +626,8 @@ static uint32_t s_skinned_visibility_masked_draws;
 static uint32_t s_skinned_visibility_transparent_draws;
 static WGPUTexture s_skinned_visibility_depth_tex;
 static WGPUTextureView s_skinned_visibility_depth_view;
+static WGPUTexture s_skinned_visibility_color_tex;
+static WGPUTextureView s_skinned_visibility_color_view;
 static uint32_t s_skinned_visibility_width;
 static uint32_t s_skinned_visibility_height;
 static WGPUQuerySet s_skinned_visibility_query_set;
@@ -627,13 +652,40 @@ static MdkrModernCharacterVisibilityDiagnostics
 #define WGPU_SKINNED_VISIBILITY_GRID 8u
 #define WGPU_SKINNED_VISIBILITY_TILES \
     (WGPU_SKINNED_VISIBILITY_GRID * WGPU_SKINNED_VISIBILITY_GRID)
+#define WGPU_SKINNED_VISIBILITY_QUERY_GROUPS \
+    (2u + MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES)
 #define WGPU_SKINNED_VISIBILITY_QUERIES \
-    (WGPU_SKINNED_VISIBILITY_TILES * 2u)
+    (WGPU_SKINNED_VISIBILITY_TILES * \
+     WGPU_SKINNED_VISIBILITY_QUERY_GROUPS)
 #define WGPU_SKINNED_VISIBILITY_BYTES \
     (WGPU_SKINNED_VISIBILITY_QUERIES * sizeof(uint64_t))
 static void wgpu_render_skinned_visibility(void);
 static void wgpu_skinned_visibility_submitted(bool submitted);
 static void wgpu_release_skinned_visibility(void);
+static void wgpu_release_cached_pipeline(WGPURenderPipeline pipeline);
+static void wgpu_release_cached_bind_group(WGPUBindGroup bind_group);
+
+static void wgpu_named_occluder_draws_reset(void) {
+    for (uint32_t index = 0u; index < s_named_occluder_draw_count;
+         ++index) {
+        if (s_named_occluder_draws[index].bind_group != NULL) {
+            wgpu_release_cached_bind_group(
+                s_named_occluder_draws[index].bind_group);
+        }
+        if (s_named_occluder_draws[index].pipeline != NULL) {
+            wgpu_release_cached_pipeline(
+                s_named_occluder_draws[index].pipeline);
+        }
+    }
+    memset(s_named_occluder_draws, 0,
+           sizeof(s_named_occluder_draws));
+    memset(s_named_occluder_draws_by_class, 0,
+           sizeof(s_named_occluder_draws_by_class));
+    memset(s_named_occluder_unqualified_by_class, 0,
+           sizeof(s_named_occluder_unqualified_by_class));
+    s_named_occluder_draw_count = 0u;
+    s_named_occluder_overflow = false;
+}
 
 /* Timestamp evidence is deliberately bounded and never waits in the frame
  * path. Queue order resolves a frame's values before a later frame rewrites
@@ -2811,6 +2863,12 @@ static void wgpu_update_light_ubo(void) {
 static bool wgpu_start_frame(void) {
     const bool replay = gfx_dkr_replay_pass_active();
     (void)wgpu_consume_callback_failure();
+    /* Commands retain backend handles only until this frame's auxiliary
+     * replay has been encoded. Release the previous frame before recycling
+     * vertex-stream offsets. */
+    wgpu_named_occluder_draws_reset();
+    s_modern_character_occluder =
+        GFX_MODERN_CHARACTER_OCCLUDER_NONE;
     s_frame_open = false;
     s_output_overlay_active = false;
     g_pc_shadow_map_ready = 0;
@@ -7588,6 +7646,11 @@ static void wgpu_set_shadow_view(int view_index) {
     s_shadow_receiver_view = view_index;
 }
 static void wgpu_set_blend_mode(enum GfxBlendMode mode) { s_cur_blend = mode; }
+static void wgpu_set_modern_character_occluder(uint32_t occluder) {
+    s_modern_character_occluder =
+        occluder < GFX_MODERN_CHARACTER_OCCLUDER_COUNT
+            ? occluder : GFX_MODERN_CHARACTER_OCCLUDER_NONE;
+}
 
 /* Lazily create the draw fallbacks (1x1 white texture, nearest sampler) + the
  * per-frame bump vertex buffer (declared with the frame state above). Each draw
@@ -8582,6 +8645,59 @@ static void wgpu_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     }
     wgpuRenderPassEncoderSetVertexBuffer(s_pass, 0, s_vbuf, voff, bytes);
     wgpuRenderPassEncoderDraw(s_pass, (uint32_t)(3 * buf_vbo_num_tris), 1, 0, 0);
+    if (platform_modern_character_visibility_requested() &&
+        s_modern_character_occluder >
+            GFX_MODERN_CHARACTER_OCCLUDER_NONE &&
+        s_modern_character_occluder <
+            GFX_MODERN_CHARACTER_OCCLUDER_COUNT) {
+        const uint32_t category = s_modern_character_occluder - 1u;
+        ++s_named_occluder_draws_by_class[category];
+        /* Blending, memory-color reads, or missing ordinary depth semantics
+         * are deliberately not coerced into opaque attribution. The class is
+         * still reported as present and requiring visual review. */
+        const bool qualified = s_depth_test && s_depth_update &&
+            s_depth_compare && s_cur_blend == GFX_BLEND_DISABLED &&
+            !rdp_mem_draw;
+        if (!qualified) {
+            ++s_named_occluder_unqualified_by_class[category];
+        } else if (s_named_occluder_draw_count >=
+                       WGPU_NAMED_OCCLUDER_MAX_DRAWS ||
+                   buf_vbo_num_tris > UINT32_MAX / 3u) {
+            s_named_occluder_overflow = true;
+        } else {
+            struct WgpuNamedOccluderDraw *command =
+                &s_named_occluder_draws[
+                    s_named_occluder_draw_count++];
+            int sx = s_sc_set ? s_sc_x : 0;
+            int sy = s_sc_set
+                ? (int)target_h - (s_sc_y + s_sc_h) : 0;
+            int sw = s_sc_set ? s_sc_w : (int)target_w;
+            int sh = s_sc_set ? s_sc_h : (int)target_h;
+            wgpu_clamp_rect(&sx, &sy, &sw, &sh,
+                            (int)target_w, (int)target_h);
+            command->occluder = s_modern_character_occluder;
+            command->pipeline = pipe;
+            command->bind_group = bg;
+            command->vertex_offset = voff;
+            command->vertex_bytes = bytes;
+            command->vertex_count =
+                (uint32_t)(3u * buf_vbo_num_tris);
+            command->viewport[0] = vp_x;
+            command->viewport[1] = vp_y;
+            command->viewport[2] = vp_w;
+            command->viewport[3] = vp_h;
+            command->scissor[0] = sx;
+            command->scissor[1] = sy;
+            command->scissor[2] = sw;
+            command->scissor[3] = sh;
+            command->width = target_w;
+            command->height = target_h;
+            wgpuRenderPipelineAddRef(command->pipeline);
+            if (command->bind_group != NULL) {
+                wgpuBindGroupAddRef(command->bind_group);
+            }
+        }
+    }
     /* bg is owned by the bind-group cache (retained across draws); the pass holds
      * its own reference until submit, so we never release it here. */
 }
@@ -9586,6 +9702,7 @@ static WGPURenderPipeline s_skinned_pipe[6] = {NULL}; /* alpha mode * 2 + double
 static WGPURenderPipeline s_skinned_capture_pipe[6] = {NULL};
 static WGPURenderPipeline s_skinned_visibility_seed_pipe[6] = {NULL};
 static WGPURenderPipeline s_skinned_visibility_equal_pipe[6] = {NULL};
+static WGPURenderPipeline s_skinned_visibility_occluded_pipe[6] = {NULL};
 static WGPUSampler s_skinned_sampler = NULL;
 static WGPUTexture s_skinned_fallback_tex[5] = {NULL};
 static WGPUTextureView s_skinned_fallback_view[5] = {NULL};
@@ -9734,6 +9851,7 @@ enum WgpuSkinnedPipelineMode {
     WGPU_SKINNED_PIPELINE_CAPTURE,
     WGPU_SKINNED_PIPELINE_VISIBILITY_SEED,
     WGPU_SKINNED_PIPELINE_VISIBILITY_EQUAL,
+    WGPU_SKINNED_PIPELINE_VISIBILITY_OCCLUDED,
 };
 
 static WGPURenderPipeline wgpu_skinned_pipeline_for(
@@ -9753,10 +9871,13 @@ static WGPURenderPipeline wgpu_skinned_pipeline_for(
         : mode == WGPU_SKINNED_PIPELINE_VISIBILITY_SEED
             ? s_skinned_visibility_seed_pipe
         : mode == WGPU_SKINNED_PIPELINE_VISIBILITY_EQUAL
-            ? s_skinned_visibility_equal_pipe : s_skinned_pipe;
+            ? s_skinned_visibility_equal_pipe
+        : mode == WGPU_SKINNED_PIPELINE_VISIBILITY_OCCLUDED
+            ? s_skinned_visibility_occluded_pipe : s_skinned_pipe;
     const bool diagnostic =
         mode == WGPU_SKINNED_PIPELINE_VISIBILITY_SEED ||
-        mode == WGPU_SKINNED_PIPELINE_VISIBILITY_EQUAL;
+        mode == WGPU_SKINNED_PIPELINE_VISIBILITY_EQUAL ||
+        mode == WGPU_SKINNED_PIPELINE_VISIBILITY_OCCLUDED;
     if (alpha_mode > 2u || !wgpu_skinned_layout()) return NULL;
     key = alpha_mode * 2u + double_sided;
     if (pipelines[key] != NULL) return pipelines[key];
@@ -9796,9 +9917,14 @@ static WGPURenderPipeline wgpu_skinned_pipeline_for(
     fragment.targets = &color;
     depth.format = WGPU_DEPTH_FORMAT;
     depth.depthCompare = mode == WGPU_SKINNED_PIPELINE_VISIBILITY_EQUAL
-        ? WGPUCompareFunction_Equal : WGPUCompareFunction_LessEqual;
+        ? WGPUCompareFunction_Equal
+        : mode == WGPU_SKINNED_PIPELINE_VISIBILITY_OCCLUDED
+            ? WGPUCompareFunction_Greater
+            : WGPUCompareFunction_LessEqual;
     depth.depthWriteEnabled =
-        mode == WGPU_SKINNED_PIPELINE_VISIBILITY_EQUAL || alpha_mode == 2u
+        mode == WGPU_SKINNED_PIPELINE_VISIBILITY_EQUAL ||
+                mode == WGPU_SKINNED_PIPELINE_VISIBILITY_OCCLUDED ||
+                alpha_mode == 2u
             ? WGPUOptionalBool_False : WGPUOptionalBool_True;
     depth.stencilFront.compare = WGPUCompareFunction_Always;
     depth.stencilFront.failOp = depth.stencilFront.depthFailOp = depth.stencilFront.passOp = WGPUStencilOperation_Keep;
@@ -9821,6 +9947,8 @@ static WGPURenderPipeline wgpu_skinned_pipeline_for(
             ? GFX_WEBGPU_FAULT_SKINNED_VISIBILITY_SEED_PIPELINE
         : mode == WGPU_SKINNED_PIPELINE_VISIBILITY_EQUAL
             ? GFX_WEBGPU_FAULT_SKINNED_VISIBILITY_EQUAL_PIPELINE
+        : mode == WGPU_SKINNED_PIPELINE_VISIBILITY_OCCLUDED
+            ? GFX_WEBGPU_FAULT_SKINNED_VISIBILITY_OCCLUDED_PIPELINE
             : GFX_WEBGPU_FAULT_SKINNED_PIPELINE;
     pipelines[key] = gfx_webgpu_fault_hit(fault_point)
         ? NULL : wgpuDeviceCreateRenderPipeline(s_device, &descriptor);
@@ -10304,12 +10432,20 @@ static void wgpu_draw_modern_skinned(const struct GfxModernSkinnedDraw *draw,
 }
 
 static void wgpu_release_skinned_visibility_target(void) {
+    if (s_skinned_visibility_color_view != NULL) {
+        wgpuTextureViewRelease(s_skinned_visibility_color_view);
+    }
     if (s_skinned_visibility_depth_view != NULL) {
         wgpuTextureViewRelease(s_skinned_visibility_depth_view);
+    }
+    if (s_skinned_visibility_color_tex != NULL) {
+        wgpuTextureRelease(s_skinned_visibility_color_tex);
     }
     if (s_skinned_visibility_depth_tex != NULL) {
         wgpuTextureRelease(s_skinned_visibility_depth_tex);
     }
+    s_skinned_visibility_color_view = NULL;
+    s_skinned_visibility_color_tex = NULL;
     s_skinned_visibility_depth_view = NULL;
     s_skinned_visibility_depth_tex = NULL;
     s_skinned_visibility_width = 0u;
@@ -10326,8 +10462,13 @@ static void wgpu_release_skinned_visibility_pipelines(void) {
             wgpuRenderPipelineRelease(
                 s_skinned_visibility_equal_pipe[index]);
         }
+        if (s_skinned_visibility_occluded_pipe[index] != NULL) {
+            wgpuRenderPipelineRelease(
+                s_skinned_visibility_occluded_pipe[index]);
+        }
         s_skinned_visibility_seed_pipe[index] = NULL;
         s_skinned_visibility_equal_pipe[index] = NULL;
+        s_skinned_visibility_occluded_pipe[index] = NULL;
     }
 }
 
@@ -10356,6 +10497,8 @@ static bool wgpu_skinned_visibility_resources_ready(
         s_skinned_visibility_readback == NULL ||
         s_skinned_visibility_depth_tex == NULL ||
         s_skinned_visibility_depth_view == NULL ||
+        s_skinned_visibility_color_tex == NULL ||
+        s_skinned_visibility_color_view == NULL ||
         s_skinned_visibility_width != width ||
         s_skinned_visibility_height != height) return false;
     for (uint32_t index = 0u;
@@ -10376,7 +10519,8 @@ static bool wgpu_skinned_visibility_resources_ready(
         const uint32_t key = (flags & 3u) * 2u +
             (((flags & 4u) != 0u) ? 1u : 0u);
         if (key >= 6u || s_skinned_visibility_seed_pipe[key] == NULL ||
-            s_skinned_visibility_equal_pipe[key] == NULL) return false;
+            s_skinned_visibility_equal_pipe[key] == NULL ||
+            s_skinned_visibility_occluded_pipe[key] == NULL) return false;
     }
     return true;
 }
@@ -10524,11 +10668,28 @@ static bool wgpu_skinned_visibility_prepare(
         }
     }
     if (s_skinned_visibility_depth_view == NULL ||
+        s_skinned_visibility_color_view == NULL ||
         s_skinned_visibility_width != width ||
         s_skinned_visibility_height != height) {
         wgpu_release_skinned_visibility_target();
         WGPUTextureDescriptor descriptor = {0};
         WGPUExtent3D extent = {width, height, 1u};
+        descriptor.label = wgpu_sv("workshop-character-occluder-color");
+        descriptor.size = extent;
+        descriptor.mipLevelCount = 1u;
+        descriptor.sampleCount = 1u;
+        descriptor.dimension = WGPUTextureDimension_2D;
+        descriptor.format = s_surface_format;
+        descriptor.usage = WGPUTextureUsage_RenderAttachment;
+        s_skinned_visibility_color_tex = WGPU_FAULT_CREATE(
+            SKINNED_VISIBILITY_TEXTURE,
+            wgpuDeviceCreateTexture(s_device, &descriptor));
+        if (s_skinned_visibility_color_tex != NULL) {
+            s_skinned_visibility_color_view = WGPU_FAULT_CREATE(
+                SKINNED_VISIBILITY_VIEW,
+                wgpuTextureCreateView(
+                    s_skinned_visibility_color_tex, NULL));
+        }
         descriptor.label = wgpu_sv("workshop-character-isolated-depth");
         descriptor.size = extent;
         descriptor.mipLevelCount = 1u;
@@ -10545,7 +10706,8 @@ static bool wgpu_skinned_visibility_prepare(
                 wgpuTextureCreateView(
                     s_skinned_visibility_depth_tex, NULL));
         }
-        if (s_skinned_visibility_depth_view == NULL) {
+        if (s_skinned_visibility_depth_view == NULL ||
+            s_skinned_visibility_color_view == NULL) {
             preparation->creation_ok = false;
             wgpu_release_skinned_visibility_target();
         } else {
@@ -10575,7 +10737,10 @@ static bool wgpu_skinned_visibility_prepare(
                 WGPU_SKINNED_PIPELINE_VISIBILITY_SEED) == NULL ||
             wgpu_skinned_pipeline_for(
                 material_flags,
-                WGPU_SKINNED_PIPELINE_VISIBILITY_EQUAL) == NULL) {
+                WGPU_SKINNED_PIPELINE_VISIBILITY_EQUAL) == NULL ||
+            wgpu_skinned_pipeline_for(
+                material_flags,
+                WGPU_SKINNED_PIPELINE_VISIBILITY_OCCLUDED) == NULL) {
             preparation->creation_ok = false;
         }
     }
@@ -10709,6 +10874,172 @@ static bool wgpu_skinned_visibility_draw_pass(
     return complete;
 }
 
+static bool wgpu_skinned_visibility_named_pass(
+    uint32_t category, uint32_t first_query, bool replay_occluder) {
+    WGPURenderPassColorAttachment color = {0};
+    WGPURenderPassDepthStencilAttachment depth = {0};
+    WGPURenderPassDescriptor descriptor = {0};
+    color.view = s_skinned_visibility_color_view;
+    color.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+    color.loadOp = WGPULoadOp_Clear;
+    color.storeOp = WGPUStoreOp_Discard;
+    color.clearValue = (WGPUColor){0.0, 0.0, 0.0, 0.0};
+    depth.view = s_skinned_visibility_depth_view;
+    depth.depthLoadOp = WGPULoadOp_Clear;
+    depth.depthStoreOp = WGPUStoreOp_Discard;
+    depth.depthClearValue = 1.0f;
+    descriptor.label =
+        wgpu_sv("workshop-character-named-occluder-pass");
+    descriptor.colorAttachmentCount = 1u;
+    descriptor.colorAttachments = &color;
+    descriptor.depthStencilAttachment = &depth;
+    descriptor.occlusionQuerySet = s_skinned_visibility_query_set;
+    WGPURenderPassEncoder pass = WGPU_FAULT_CREATE(
+        SKINNED_VISIBILITY_PASS,
+        wgpuCommandEncoderBeginRenderPass(s_encoder, &descriptor));
+    if (pass == NULL) return false;
+    bool complete = true;
+    if (replay_occluder) {
+        for (uint32_t index = 0u; index < s_named_occluder_draw_count;
+             ++index) {
+            const struct WgpuNamedOccluderDraw *command =
+                &s_named_occluder_draws[index];
+            if (command->occluder != category + 1u) continue;
+            if (command->pipeline == NULL || command->vertex_bytes == 0u ||
+                command->vertex_count == 0u ||
+                command->viewport[2] <= 0 || command->viewport[3] <= 0 ||
+                command->scissor[2] <= 0 || command->scissor[3] <= 0) {
+                complete = false;
+                break;
+            }
+            wgpuRenderPassEncoderSetViewport(
+                pass, (float)command->viewport[0],
+                (float)command->viewport[1],
+                (float)command->viewport[2],
+                (float)command->viewport[3], 0.0f, 1.0f);
+            wgpuRenderPassEncoderSetScissorRect(
+                pass, (uint32_t)command->scissor[0],
+                (uint32_t)command->scissor[1],
+                (uint32_t)command->scissor[2],
+                (uint32_t)command->scissor[3]);
+            wgpuRenderPassEncoderSetPipeline(pass, command->pipeline);
+            if (command->bind_group != NULL) {
+                wgpuRenderPassEncoderSetBindGroup(
+                    pass, 0u, command->bind_group, 0u, NULL);
+            }
+            wgpuRenderPassEncoderSetVertexBuffer(
+                pass, 0u, s_vbuf, command->vertex_offset,
+                command->vertex_bytes);
+            wgpuRenderPassEncoderDraw(
+                pass, command->vertex_count, 1u, 0u, 0u);
+        }
+    }
+    for (uint32_t tile = 0u;
+         tile < WGPU_SKINNED_VISIBILITY_TILES; ++tile) {
+        const uint32_t tile_x = tile % WGPU_SKINNED_VISIBILITY_GRID;
+        const uint32_t tile_y = tile / WGPU_SKINNED_VISIBILITY_GRID;
+        const int tile_left = (int)(tile_x * s_skinned_visibility_width /
+            WGPU_SKINNED_VISIBILITY_GRID);
+        const int tile_top = (int)(tile_y * s_skinned_visibility_height /
+            WGPU_SKINNED_VISIBILITY_GRID);
+        const int tile_right = (int)((tile_x + 1u) *
+            s_skinned_visibility_width / WGPU_SKINNED_VISIBILITY_GRID);
+        const int tile_bottom = (int)((tile_y + 1u) *
+            s_skinned_visibility_height / WGPU_SKINNED_VISIBILITY_GRID);
+        wgpuRenderPassEncoderBeginOcclusionQuery(
+            pass, first_query + tile);
+        if (replay_occluder && complete) {
+            for (uint32_t index = 0u;
+                 index < s_skinned_visibility_draw_count; ++index) {
+                const struct WgpuSkinnedVisibilityDraw *command =
+                    &s_skinned_visibility_draws[index];
+                const struct GfxModernSkinnedAsset *asset = command->asset;
+                if (asset == NULL ||
+                    command->primitive >= asset->primitive_count) {
+                    complete = false;
+                    break;
+                }
+                const struct GfxModernPrimitive *primitive =
+                    &asset->primitives[command->primitive];
+                if (primitive->material >= asset->material_count) {
+                    complete = false;
+                    break;
+                }
+                struct WgpuSkinnedEntry *resources =
+                    wgpu_skinned_resources(asset);
+                WGPURenderPipeline pipeline = wgpu_skinned_pipeline_for(
+                    asset->materials[primitive->material].flags,
+                    WGPU_SKINNED_PIPELINE_VISIBILITY_OCCLUDED);
+                WGPUBindGroup bind_group = resources != NULL
+                    ? wgpu_skinned_material_bg(
+                          resources, asset, primitive->material) : NULL;
+                int viewport_x = command->viewport[0];
+                int viewport_y = (int)command->height -
+                    (command->viewport[1] + command->viewport[3]);
+                int viewport_width = command->viewport[2];
+                int viewport_height = command->viewport[3];
+                int scissor_x = command->scissor[0];
+                int scissor_y = (int)command->height -
+                    (command->scissor[1] + command->scissor[3]);
+                int scissor_width = command->scissor[2];
+                int scissor_height = command->scissor[3];
+                wgpu_clamp_rect(
+                    &viewport_x, &viewport_y, &viewport_width,
+                    &viewport_height, (int)command->width,
+                    (int)command->height);
+                wgpu_clamp_rect(
+                    &scissor_x, &scissor_y, &scissor_width,
+                    &scissor_height, (int)command->width,
+                    (int)command->height);
+                const int scissor_right = scissor_x + scissor_width;
+                const int scissor_bottom = scissor_y + scissor_height;
+                scissor_x = scissor_x > tile_left
+                    ? scissor_x : tile_left;
+                scissor_y = scissor_y > tile_top
+                    ? scissor_y : tile_top;
+                const int clipped_right = scissor_right < tile_right
+                    ? scissor_right : tile_right;
+                const int clipped_bottom = scissor_bottom < tile_bottom
+                    ? scissor_bottom : tile_bottom;
+                scissor_width = clipped_right - scissor_x;
+                scissor_height = clipped_bottom - scissor_y;
+                if (resources == NULL || pipeline == NULL ||
+                    bind_group == NULL || viewport_width <= 0 ||
+                    viewport_height <= 0) {
+                    complete = false;
+                    break;
+                }
+                if (scissor_width <= 0 || scissor_height <= 0) continue;
+                wgpuRenderPassEncoderSetViewport(
+                    pass, (float)viewport_x, (float)viewport_y,
+                    (float)viewport_width, (float)viewport_height,
+                    0.0f, 1.0f);
+                wgpuRenderPassEncoderSetScissorRect(
+                    pass, (uint32_t)scissor_x, (uint32_t)scissor_y,
+                    (uint32_t)scissor_width,
+                    (uint32_t)scissor_height);
+                wgpuRenderPassEncoderSetPipeline(pass, pipeline);
+                wgpuRenderPassEncoderSetBindGroup(
+                    pass, 0u, bind_group, 1u,
+                    &command->dynamic_offset);
+                wgpuRenderPassEncoderSetVertexBuffer(
+                    pass, 0u, resources->vbuf, 0u,
+                    (uint64_t)asset->vertex_count * 72u);
+                wgpuRenderPassEncoderSetIndexBuffer(
+                    pass, resources->ibuf, WGPUIndexFormat_Uint32, 0u,
+                    (uint64_t)asset->index_count * 4u);
+                wgpuRenderPassEncoderDrawIndexed(
+                    pass, primitive->index_count, 1u,
+                    primitive->first_index, 0, 0u);
+            }
+        }
+        wgpuRenderPassEncoderEndOcclusionQuery(pass);
+    }
+    wgpuRenderPassEncoderEnd(pass);
+    wgpuRenderPassEncoderRelease(pass);
+    return complete;
+}
+
 static void wgpu_render_skinned_visibility(void) {
     if (!platform_modern_character_visibility_requested()) return;
     if (s_skinned_visibility_prepare_state ==
@@ -10781,7 +11112,51 @@ static void wgpu_render_skinned_visibility(void) {
         &s_skinned_visibility_pending.scissor[2],
         &s_skinned_visibility_pending.scissor[3],
         (int)first->width, (int)first->height);
+    for (uint32_t category = 0u;
+         category < MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES;
+         ++category) {
+        const uint32_t category_bit = 1u << category;
+        const uint32_t draws =
+            s_named_occluder_draws_by_class[category];
+        uint32_t unqualified =
+            s_named_occluder_unqualified_by_class[category];
+        if (draws != 0u) {
+            s_skinned_visibility_pending.occluder_present_mask |=
+                category_bit;
+        }
+        for (uint32_t index = 0u;
+             index < s_named_occluder_draw_count; ++index) {
+            const struct WgpuNamedOccluderDraw *command =
+                &s_named_occluder_draws[index];
+            if (command->occluder != category + 1u) continue;
+            if (command->width != first->width ||
+                command->height != first->height ||
+                memcmp(command->viewport,
+                       s_skinned_visibility_pending.viewport,
+                       sizeof(command->viewport)) != 0 ||
+                memcmp(command->scissor,
+                       s_skinned_visibility_pending.scissor,
+                       sizeof(command->scissor)) != 0) {
+                unqualified = draws;
+                break;
+            }
+        }
+        if (s_named_occluder_overflow && draws != 0u) {
+            unqualified = draws;
+        }
+        s_skinned_visibility_pending.occluder_draws[category] = draws;
+        s_skinned_visibility_pending
+            .occluder_unqualified_draws[category] = unqualified;
+        if (draws != 0u && unqualified == 0u) {
+            s_skinned_visibility_pending.occluder_qualified_mask |=
+                category_bit;
+        }
+    }
     if (s_skinned_visibility_transparent_draws != 0u) {
+        /* A blended subject cannot make a qualified opaque-depth comparison,
+         * even when the named scene batches themselves are opaque. Preserve
+         * presence and draw classification but publish no overlap claim. */
+        s_skinned_visibility_pending.occluder_qualified_mask = 0u;
         if (!platform_modern_character_visibility_begin()) return;
         platform_modern_character_visibility_publish(
             &s_skinned_visibility_pending);
@@ -10800,6 +11175,20 @@ static void wgpu_render_skinned_visibility(void) {
             WGPU_SKINNED_VISIBILITY_TILES)) {
         platform_modern_character_visibility_fail();
         return;
+    }
+    for (uint32_t category = 0u;
+         category < MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES;
+         ++category) {
+        const bool qualified =
+            (s_skinned_visibility_pending.occluder_qualified_mask &
+             (1u << category)) != 0u;
+        if (!wgpu_skinned_visibility_named_pass(
+                category,
+                (2u + category) * WGPU_SKINNED_VISIBILITY_TILES,
+                qualified)) {
+            platform_modern_character_visibility_fail();
+            return;
+        }
     }
     wgpuCommandEncoderResolveQuerySet(
         s_encoder, s_skinned_visibility_query_set, 0u,
@@ -10832,6 +11221,10 @@ static void wgpu_skinned_visibility_map_callback(
         uint64_t scene_mask = 0u;
         uint32_t isolated_tiles = 0u;
         uint32_t scene_tiles = 0u;
+        uint64_t occluder_masks
+            [MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES] = {0u};
+        uint32_t occluder_tiles
+            [MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES] = {0u};
         if (samples != NULL) {
             for (uint32_t tile = 0u;
                  tile < WGPU_SKINNED_VISIBILITY_TILES; ++tile) {
@@ -10843,23 +11236,60 @@ static void wgpu_skinned_visibility_map_callback(
                     scene_mask |= UINT64_C(1) << tile;
                     ++scene_tiles;
                 }
+                for (uint32_t category = 0u;
+                     category <
+                         MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES;
+                     ++category) {
+                    if (samples[(2u + category) *
+                                WGPU_SKINNED_VISIBILITY_TILES + tile] !=
+                        0u) {
+                        occluder_masks[category] |=
+                            UINT64_C(1) << tile;
+                        ++occluder_tiles[category];
+                    }
+                }
             }
         }
-        if (current && samples != NULL &&
-            (scene_mask & ~isolated_mask) == 0u) {
+        bool masks_valid = (scene_mask & ~isolated_mask) == 0u;
+        for (uint32_t category = 0u;
+             category < MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES;
+             ++category) {
+            const bool qualified =
+                (s_skinned_visibility_pending.occluder_qualified_mask &
+                 (1u << category)) != 0u;
+            if ((occluder_masks[category] & ~isolated_mask) != 0u ||
+                (!qualified && occluder_masks[category] != 0u)) {
+                masks_valid = false;
+            }
+        }
+        if (current && samples != NULL && masks_valid) {
             s_skinned_visibility_pending.isolated_visible_tiles =
                 isolated_tiles;
             s_skinned_visibility_pending.scene_visible_tiles = scene_tiles;
             s_skinned_visibility_pending.isolated_tile_mask = isolated_mask;
             s_skinned_visibility_pending.scene_tile_mask = scene_mask;
+            for (uint32_t category = 0u;
+                 category < MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES;
+                 ++category) {
+                s_skinned_visibility_pending
+                    .occluder_overlap_tiles[category] =
+                        occluder_tiles[category];
+                s_skinned_visibility_pending
+                    .occluder_overlap_tile_mask[category] =
+                        occluder_masks[category];
+            }
             platform_modern_character_visibility_publish(
                 &s_skinned_visibility_pending);
             fprintf(stderr,
-                    "[WGPU-CHARACTER-VISIBILITY] ready=1 sceneTiles=%u isolatedTiles=%u sceneMask=%016llx isolatedMask=%016llx draws=%u\n",
+                    "[WGPU-CHARACTER-VISIBILITY] ready=1 sceneTiles=%u isolatedTiles=%u sceneMask=%016llx isolatedMask=%016llx draws=%u occluders=%x/%x overlap=%u,%u,%u\n",
                     scene_tiles, isolated_tiles,
                     (unsigned long long)scene_mask,
                     (unsigned long long)isolated_mask,
-                    s_skinned_visibility_pending.primitive_draws);
+                    s_skinned_visibility_pending.primitive_draws,
+                    s_skinned_visibility_pending.occluder_present_mask,
+                    s_skinned_visibility_pending.occluder_qualified_mask,
+                    occluder_tiles[0], occluder_tiles[1],
+                    occluder_tiles[2]);
         } else if (current) {
             fprintf(stderr,
                     "[WGPU-CHARACTER-VISIBILITY] ready=0 status=invalid-query sceneTiles=%u isolatedTiles=%u sceneMask=%016llx isolatedMask=%016llx\n",
@@ -10923,6 +11353,7 @@ static void wgpu_skinned_visibility_submitted(bool submitted) {
 static void wgpu_release_skinned_visibility(void) {
     ++s_skinned_visibility_generation;
     platform_modern_character_visibility_fail();
+    wgpu_named_occluder_draws_reset();
     wgpu_release_skinned_visibility_resources();
     s_skinned_visibility_mapping = false;
     s_skinned_visibility_encoded = false;
@@ -11815,6 +12246,8 @@ static void wgpu_release_device_objects(void) {
            sizeof(s_skinned_visibility_seed_pipe));
     memset(s_skinned_visibility_equal_pipe, 0,
            sizeof(s_skinned_visibility_equal_pipe));
+    memset(s_skinned_visibility_occluded_pipe, 0,
+           sizeof(s_skinned_visibility_occluded_pipe));
     s_skinned_sampler = NULL;
     memset(s_skinned_fallback_tex, 0, sizeof(s_skinned_fallback_tex));
     memset(s_skinned_fallback_view, 0, sizeof(s_skinned_fallback_view));
@@ -12226,6 +12659,8 @@ struct GfxRenderingAPI gfx_webgpu_api = {
     .set_scissor = wgpu_set_scissor,
     .set_shadow_view = wgpu_set_shadow_view,
     .set_blend_mode = wgpu_set_blend_mode,
+    .set_modern_character_occluder =
+        wgpu_set_modern_character_occluder,
     .draw_triangles = wgpu_draw_triangles,
     .read_framebuffer_rgb = wgpu_read_framebuffer_rgb,
     .get_modern_character_capture_dimensions =

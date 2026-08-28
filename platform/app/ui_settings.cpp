@@ -7963,6 +7963,26 @@ void drawCharacterFitQualityBands(
         "Green means the measured starting range is ordinary, amber asks for judgement, and red identifies a likely placement defect. These advisory bands never reject unusual anatomy. Camera framing, retained-body surface crossings, qualified closed-volume containment, and the final opaque-depth region witness are exact within their stated bounds. The composed scene and representative poses remain authoritative for transparent materials, costume silhouette, unsampled geometry, motion clearance, and deciding whether a wheel, skid, propeller, held object, or piece of scenery caused an observed occlusion.");
 }
 
+bool characterPreviewAttachmentVisibilityNeedsReview(
+    const MdkrCharacterPreviewResult &sample) {
+    if (sample.version < 21u ||
+        sample.context == MDKR_CHARACTER_PREVIEW_SELECT) return false;
+    /* Retained vehicle-body overlap is expected around a seated racer. The
+     * independently drawn parts and held object are the actionable classes. */
+    for (unsigned occluder = 1u;
+         occluder < MDKR_CHARACTER_PREVIEW_OCCLUDERS; ++occluder) {
+        const unsigned bit = 1u << occluder;
+        if ((sample.opaque_visibility_occluder_present_mask & bit) == 0u) {
+            continue;
+        }
+        if ((sample.opaque_visibility_occluder_qualified_mask & bit) == 0u ||
+            sample.opaque_visibility_occluder_overlap_tiles[occluder] != 0u) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void drawCharacterMotionReviewSummary(
     const CharacterMotionReviewSessionResult &session, bool compact) {
     unsigned sampleCount = 0u;
@@ -7987,8 +8007,11 @@ void drawCharacterMotionReviewSummary(
     bool haveUnqualifiedVisibility = false;
     bool haveUnqualifiedVolume = false;
     bool haveContactWitness = false;
+    bool haveNamedAttachments = false;
     unsigned unqualifiedVisibility = 0u;
     unsigned unqualifiedVolume = 0u;
+    unsigned attachmentReviewStates = 0u;
+    unsigned firstAttachmentReview = 0u;
     for (unsigned index = 0u; index < sampleCount; ++index) {
         const MdkrCharacterPreviewResult &sample =
             session.result.samples[index];
@@ -8020,6 +8043,17 @@ void drawCharacterMotionReviewSummary(
             haveUnqualifiedVolume = true;
             unqualifiedVolume = index;
         }
+        if (vehicle &&
+            (sample.opaque_visibility_occluder_present_mask & 0x6u) != 0u) {
+            haveNamedAttachments = true;
+        }
+        if (vehicle &&
+            characterPreviewAttachmentVisibilityNeedsReview(sample)) {
+            if (attachmentReviewStates == 0u) {
+                firstAttachmentReview = index;
+            }
+            ++attachmentReviewStates;
+        }
         if (!sample.opaque_visibility_qualified) {
             if (!haveUnqualifiedVisibility) unqualifiedVisibility = index;
             haveUnqualifiedVisibility = true;
@@ -8046,7 +8080,8 @@ void drawCharacterMotionReviewSummary(
     const bool reviewClean =
         worstCameraBits == 0u && worstCrossings == 0u && worstInside == 0u &&
         !haveUnqualifiedVolume && !haveUnqualifiedVisibility &&
-        haveQualifiedVisibility && worstVisibilityRatio >= 0.6;
+        haveQualifiedVisibility && worstVisibilityRatio >= 0.6 &&
+        attachmentReviewStates == 0u;
     ImGui::TextColored(
         reviewClean ? AppTheme::good() : AppTheme::accent(),
         "%s · %u of %u exact states measured",
@@ -8058,7 +8093,7 @@ void drawCharacterMotionReviewSummary(
         reviewClean ? ImGuiTreeNodeFlags_None
                     : ImGuiTreeNodeFlags_DefaultOpen);
     if (showDetails && ImGui::BeginTable(
-            "##motion-review-states", compact || !vehicle ? 3 : 5,
+            "##motion-review-states", compact || !vehicle ? 3 : 6,
             ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
                 ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("State");
@@ -8066,6 +8101,7 @@ void drawCharacterMotionReviewSummary(
         ImGui::TableSetupColumn("Visible");
         if (!compact && vehicle) {
             ImGui::TableSetupColumn("Vehicle body");
+            ImGui::TableSetupColumn("Parts / item");
             ImGui::TableSetupColumn("Contacts");
         }
         ImGui::TableHeadersRow();
@@ -8110,6 +8146,36 @@ void drawCharacterMotionReviewSummary(
                         sample.vehicle_containment_inside_samples);
                 }
                 ImGui::TableSetColumnIndex(4);
+                bool attachmentPresent = false;
+                bool attachmentUnqualified = false;
+                unsigned attachmentOverlap = 0u;
+                for (unsigned occluder = 1u;
+                     occluder < MDKR_CHARACTER_PREVIEW_OCCLUDERS;
+                     ++occluder) {
+                    const unsigned bit = 1u << occluder;
+                    if ((sample.opaque_visibility_occluder_present_mask &
+                         bit) == 0u) continue;
+                    attachmentPresent = true;
+                    attachmentUnqualified |=
+                        (sample.opaque_visibility_occluder_qualified_mask &
+                         bit) == 0u;
+                    attachmentOverlap +=
+                        sample.opaque_visibility_occluder_overlap_tiles
+                            [occluder];
+                }
+                if (!attachmentPresent) {
+                    ImGui::TextDisabled("Not drawn");
+                } else if (attachmentUnqualified) {
+                    ImGui::TextColored(AppTheme::accent(), "Visual check");
+                } else if (attachmentOverlap != 0u) {
+                    ImGui::TextColored(
+                        AppTheme::accent(), "In front · %u region%s",
+                        attachmentOverlap,
+                        attachmentOverlap == 1u ? "" : "s");
+                } else {
+                    ImGui::TextColored(AppTheme::good(), "No overlap");
+                }
+                ImGui::TableSetColumnIndex(5);
                 if (sample.contact_witness_mask == 0u) {
                     ImGui::TextDisabled("Not solved");
                 } else {
@@ -8124,6 +8190,7 @@ void drawCharacterMotionReviewSummary(
     char framingSummary[96];
     char bodySummary[128];
     char visibilitySummary[128];
+    char attachmentSummary[128];
     char contactSummary[128];
     if (worstCameraBits == 0u) {
         std::snprintf(framingSummary, sizeof(framingSummary),
@@ -8165,6 +8232,23 @@ void drawCharacterMotionReviewSummary(
                       "visibility unavailable");
     }
     if (!vehicle) {
+        std::snprintf(attachmentSummary, sizeof(attachmentSummary),
+                      "parts/item not applicable");
+    } else if (attachmentReviewStates != 0u) {
+        std::snprintf(
+            attachmentSummary, sizeof(attachmentSummary),
+            "parts/item review in %u state%s (first: %s)",
+            attachmentReviewStates,
+            attachmentReviewStates == 1u ? "" : "s",
+            definitions[firstAttachmentReview].label);
+    } else if (haveNamedAttachments) {
+        std::snprintf(attachmentSummary, sizeof(attachmentSummary),
+                      "drawn parts/item have no in-front warning");
+    } else {
+        std::snprintf(attachmentSummary, sizeof(attachmentSummary),
+                      "parts/item not drawn");
+    }
+    if (!vehicle) {
         std::snprintf(contactSummary, sizeof(contactSummary),
                       "contacts not applicable");
     } else if (haveContactWitness) {
@@ -8177,8 +8261,8 @@ void drawCharacterMotionReviewSummary(
                       "contacts not procedurally solved");
     }
     ImGui::TextDisabled(
-        "Review summary: %s · %s · %s · %s", framingSummary, bodySummary,
-        visibilitySummary, contactSummary);
+        "Review summary: %s · %s · %s · %s · %s", framingSummary,
+        bodySummary, visibilitySummary, attachmentSummary, contactSummary);
     ui::TextSubtleWrapped(
         vehicle
             ? "Every race semantic is a fresh renderer witness after the authored pose settled and remained visible for at least 60 complete character draws. Run it again whenever you need another look. Warnings remain reviewable for unusual anatomy, transparent materials, and intentional costume overlap; an opaque state with no visible regions still blocks approval."
@@ -8188,6 +8272,20 @@ void drawCharacterMotionReviewSummary(
 /* Rendered app-lifecycle tests use this only behind their paired smoke token.
  * Build the same strict value contract the engine returns so the UI tests do
  * not regain the old one-favourable-frame approval shortcut. */
+void clearCharacterPreviewOccluderEvidence(
+    MdkrCharacterPreviewResult &result) {
+    result.opaque_visibility_occluder_present_mask = 0u;
+    result.opaque_visibility_occluder_qualified_mask = 0u;
+    std::memset(result.opaque_visibility_occluder_draws, 0,
+                sizeof(result.opaque_visibility_occluder_draws));
+    std::memset(result.opaque_visibility_occluder_unqualified_draws, 0,
+                sizeof(result.opaque_visibility_occluder_unqualified_draws));
+    std::memset(result.opaque_visibility_occluder_overlap_tiles, 0,
+                sizeof(result.opaque_visibility_occluder_overlap_tiles));
+    std::memset(result.opaque_visibility_occluder_overlap_tile_mask, 0,
+                sizeof(result.opaque_visibility_occluder_overlap_tile_mask));
+}
+
 void publishCharacterMotionReviewSmokeFixture(
     const MdkrModernCharacterEntry *entry,
     const CharacterTuningEdit &edit,
@@ -8201,6 +8299,9 @@ void publishCharacterMotionReviewSmokeFixture(
     if (definitions == nullptr || sampleCount == 0u) return;
     MdkrCharacterPreviewResult publicationBase = base;
     publicationBase.context = context;
+    if (context == MDKR_CHARACTER_PREVIEW_SELECT) {
+        clearCharacterPreviewOccluderEvidence(publicationBase);
+    }
     MdkrCharacterMotionReviewResult review{};
     review.version = MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION;
     review.started = review.completed = 1;
@@ -8211,7 +8312,7 @@ void publishCharacterMotionReviewSmokeFixture(
         MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_MASK(sampleCount);
     for (unsigned index = 0u; index < sampleCount; ++index) {
         MdkrCharacterPreviewResult &sample = review.samples[index];
-        sample = base;
+        sample = publicationBase;
         sample.context = context;
         sample.players = 1;
         sample.pose = definitions[index].pose;
@@ -9403,6 +9504,9 @@ bool drawCharacterTuningEditor(int player,
                  fitEvidence.result.vehicle_volume_qualified == 0 ||
                  fitEvidence.result
                          .vehicle_containment_inside_samples != 0u);
+            bool attachmentVisibilityWarning = exactReviewContract &&
+                characterPreviewAttachmentVisibilityNeedsReview(
+                    fitEvidence.result);
             CharacterWorkshopFitReviewFacts reviewFacts;
             reviewFacts.exactContract = exactReviewContract;
             reviewFacts.opaqueVisibilityQualified =
@@ -9432,6 +9536,9 @@ bool drawCharacterTuningEditor(int player,
                                 sample.vehicle_surface_crossing_pairs != 0u ||
                                 sample.vehicle_volume_qualified == 0 ||
                                 sample.vehicle_containment_inside_samples != 0u;
+                            attachmentVisibilityWarning |=
+                                characterPreviewAttachmentVisibilityNeedsReview(
+                                    sample);
                         }
                         if (!sample.opaque_visibility_qualified) {
                             unqualifiedVisibility = true;
@@ -9471,6 +9578,8 @@ bool drawCharacterTuningEditor(int player,
             reviewFacts.advisoryFitWarning = advisoryFitWarning;
             reviewFacts.cameraWarning = cameraWarning;
             reviewFacts.surfaceWarning = surfaceWarning;
+            reviewFacts.attachmentVisibilityWarning =
+                attachmentVisibilityWarning;
             CharacterWorkshopFitReviewDecision reviewDecision =
                 CharacterWorkshop_reviewFit(reviewFacts);
             const bool visibilityBlocksReview =
@@ -10457,6 +10566,21 @@ CharacterTestEvidenceStore::Evidence characterTestEvidenceFromResult(
         result.opaque_visibility_isolated_tile_mask;
     evidence.opaqueVisibilitySceneTileMask =
         result.opaque_visibility_scene_tile_mask;
+    evidence.opaqueVisibilityOccluderPresentMask =
+        result.opaque_visibility_occluder_present_mask;
+    evidence.opaqueVisibilityOccluderQualifiedMask =
+        result.opaque_visibility_occluder_qualified_mask;
+    for (unsigned occluder = 0u;
+         occluder < MDKR_CHARACTER_PREVIEW_OCCLUDERS; ++occluder) {
+        evidence.opaqueVisibilityOccluderDraws[occluder] =
+            result.opaque_visibility_occluder_draws[occluder];
+        evidence.opaqueVisibilityOccluderUnqualifiedDraws[occluder] =
+            result.opaque_visibility_occluder_unqualified_draws[occluder];
+        evidence.opaqueVisibilityOccluderOverlapTiles[occluder] =
+            result.opaque_visibility_occluder_overlap_tiles[occluder];
+        evidence.opaqueVisibilityOccluderOverlapTileMask[occluder] =
+            result.opaque_visibility_occluder_overlap_tile_mask[occluder];
+    }
     evidence.backend = boundedCharacterPreviewText(
         result.renderer_backend, sizeof(result.renderer_backend));
     evidence.adapter = boundedCharacterPreviewText(
@@ -10605,6 +10729,21 @@ MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
         evidence.opaqueVisibilityIsolatedTileMask;
     result.opaque_visibility_scene_tile_mask =
         evidence.opaqueVisibilitySceneTileMask;
+    result.opaque_visibility_occluder_present_mask =
+        evidence.opaqueVisibilityOccluderPresentMask;
+    result.opaque_visibility_occluder_qualified_mask =
+        evidence.opaqueVisibilityOccluderQualifiedMask;
+    for (unsigned occluder = 0u;
+         occluder < MDKR_CHARACTER_PREVIEW_OCCLUDERS; ++occluder) {
+        result.opaque_visibility_occluder_draws[occluder] =
+            evidence.opaqueVisibilityOccluderDraws[occluder];
+        result.opaque_visibility_occluder_unqualified_draws[occluder] =
+            evidence.opaqueVisibilityOccluderUnqualifiedDraws[occluder];
+        result.opaque_visibility_occluder_overlap_tiles[occluder] =
+            evidence.opaqueVisibilityOccluderOverlapTiles[occluder];
+        result.opaque_visibility_occluder_overlap_tile_mask[occluder] =
+            evidence.opaqueVisibilityOccluderOverlapTileMask[occluder];
+    }
     result.output_width = evidence.outputWidth;
     result.output_height = evidence.outputHeight;
     result.render_width = evidence.renderWidth;
@@ -11114,7 +11253,21 @@ bool characterPreviewOpaqueVisibilityValid(
             result.opaque_visibility_isolated_tiles != 0u ||
             result.opaque_visibility_scene_tiles != 0u ||
             result.opaque_visibility_isolated_tile_mask != 0u ||
-            result.opaque_visibility_scene_tile_mask != 0u) return false;
+            result.opaque_visibility_scene_tile_mask != 0u ||
+            result.opaque_visibility_occluder_present_mask != 0u ||
+            result.opaque_visibility_occluder_qualified_mask != 0u) {
+            return false;
+        }
+        for (unsigned occluder = 0u;
+             occluder < MDKR_CHARACTER_PREVIEW_OCCLUDERS; ++occluder) {
+            if (result.opaque_visibility_occluder_draws[occluder] != 0u ||
+                result.opaque_visibility_occluder_unqualified_draws
+                    [occluder] != 0u ||
+                result.opaque_visibility_occluder_overlap_tiles
+                    [occluder] != 0u ||
+                result.opaque_visibility_occluder_overlap_tile_mask
+                    [occluder] != 0u) return false;
+        }
         for (unsigned component = 0u; component < 4u; ++component) {
             if (result.opaque_visibility_viewport[component] != 0 ||
                 result.opaque_visibility_scissor[component] != 0) return false;
@@ -11146,7 +11299,40 @@ bool characterPreviewOpaqueVisibilityValid(
         bitCount(result.opaque_visibility_scene_tile_mask) !=
             result.opaque_visibility_scene_tiles ||
         (result.opaque_visibility_scene_tile_mask &
-         ~result.opaque_visibility_isolated_tile_mask) != 0u) return false;
+         ~result.opaque_visibility_isolated_tile_mask) != 0u ||
+        (result.opaque_visibility_occluder_present_mask & ~0x7u) != 0u ||
+        (result.opaque_visibility_occluder_qualified_mask &
+         ~result.opaque_visibility_occluder_present_mask) != 0u) return false;
+    for (unsigned occluder = 0u;
+         occluder < MDKR_CHARACTER_PREVIEW_OCCLUDERS; ++occluder) {
+        const unsigned bit = 1u << occluder;
+        const unsigned draws =
+            result.opaque_visibility_occluder_draws[occluder];
+        const unsigned unqualified =
+            result.opaque_visibility_occluder_unqualified_draws[occluder];
+        const auto overlap =
+            result.opaque_visibility_occluder_overlap_tile_mask[occluder];
+        const bool present =
+            (result.opaque_visibility_occluder_present_mask & bit) != 0u;
+        const bool qualified =
+            (result.opaque_visibility_occluder_qualified_mask & bit) != 0u;
+        if (unqualified > draws || present != (draws != 0u) ||
+            result.opaque_visibility_occluder_overlap_tiles[occluder] >
+                64u ||
+            bitCount(overlap) !=
+                result.opaque_visibility_occluder_overlap_tiles[occluder] ||
+            (overlap &
+             ~result.opaque_visibility_isolated_tile_mask) != 0u ||
+            (qualified && (draws == 0u || unqualified != 0u)) ||
+            (!qualified && overlap != 0u)) return false;
+    }
+    if (result.version < 21u &&
+        (result.opaque_visibility_occluder_present_mask != 0u ||
+         result.opaque_visibility_occluder_qualified_mask != 0u)) {
+        return false;
+    }
+    if (result.context == MDKR_CHARACTER_PREVIEW_SELECT &&
+        result.opaque_visibility_occluder_present_mask != 0u) return false;
     for (unsigned component = 0u; component < 4u; ++component) {
         const int limit = (component & 1u)
             ? static_cast<int>(result.opaque_visibility_height)
@@ -11175,6 +11361,7 @@ bool characterPreviewOpaqueVisibilityValid(
     return result.opaque_visibility_qualified
         ? result.opaque_visibility_transparent_draws == 0u
         : result.opaque_visibility_transparent_draws != 0u &&
+              result.opaque_visibility_occluder_qualified_mask == 0u &&
               result.opaque_visibility_isolated_tiles == 0u &&
               result.opaque_visibility_scene_tiles == 0u &&
               result.opaque_visibility_isolated_tile_mask == 0u &&
@@ -11662,6 +11849,68 @@ void drawCharacterOpaqueVisibilityDiagnostics(
         }
         return;
     }
+    const auto drawNamedOccluders = [&]() {
+        if (result.version < 21u ||
+            result.context == MDKR_CHARACTER_PREVIEW_SELECT) return;
+        const char *partLabel =
+            result.context == MDKR_CHARACTER_PREVIEW_CAR
+                ? "Wheels / kart parts"
+            : result.context == MDKR_CHARACTER_PREVIEW_HOVERCRAFT
+                ? "Skids / fan assembly"
+                : "Propeller / aircraft parts";
+        const char *labels[MDKR_CHARACTER_PREVIEW_OCCLUDERS] = {
+            "Retained vehicle body", partLabel, "Held object"};
+        ImGui::SeparatorText("What lies in front of the character here");
+        for (unsigned occluder = 0u;
+             occluder < MDKR_CHARACTER_PREVIEW_OCCLUDERS; ++occluder) {
+            const unsigned bit = 1u << occluder;
+            const bool present =
+                (result.opaque_visibility_occluder_present_mask & bit) != 0u;
+            const bool qualified =
+                (result.opaque_visibility_occluder_qualified_mask & bit) != 0u;
+            if (!present) {
+                ImGui::TextDisabled(
+                    "%s · Not present in this sampled pose",
+                    labels[occluder]);
+            } else if (!qualified) {
+                const unsigned unqualified =
+                    result.opaque_visibility_occluder_unqualified_draws
+                        [occluder];
+                if (!result.opaque_visibility_qualified) {
+                    ImGui::TextColored(
+                        AppTheme::accent(),
+                        "%s · Character transparency requires visual review",
+                        labels[occluder]);
+                } else if (unqualified != 0u) {
+                    ImGui::TextColored(
+                        AppTheme::accent(),
+                        "%s · Visual review required (%u of %u batches use blended or non-depth rendering)",
+                        labels[occluder], unqualified,
+                        result.opaque_visibility_occluder_draws[occluder]);
+                } else {
+                    ImGui::TextColored(
+                        AppTheme::accent(),
+                        "%s · Exact replay was not qualified; inspect the composed scene",
+                        labels[occluder]);
+                }
+            } else {
+                const unsigned overlap =
+                    result.opaque_visibility_occluder_overlap_tiles
+                        [occluder];
+                ImGui::TextColored(
+                    overlap != 0u ? AppTheme::accent() : AppTheme::good(),
+                    overlap != 0u
+                        ? "%s · In front in %u of %u occupied regions"
+                        : "%s · No in-front overlap in this sampled pose",
+                    labels[occluder], overlap,
+                    result.opaque_visibility_isolated_tiles);
+            }
+        }
+        if (!compact) {
+            ui::TextSubtleWrapped(
+                "These rows isolate game-owned draw classes and ask whether each class has opaque depth in front of the exact posed character. They identify geometric overlap potential in this sampled pose, not the final frontmost pixel: scenery or another class can still win the composed depth test. Absent means not equipped or not drawn here, never measured clear; blended batches stay a visual review item.");
+        }
+    };
     if (!result.opaque_visibility_qualified) {
         ImGui::TextColored(
             AppTheme::accent(),
@@ -11676,6 +11925,7 @@ void drawCharacterOpaqueVisibilityDiagnostics(
             ui::TextSubtleWrapped(
                 "Alpha blending has no single opaque-depth coverage meaning. Masked cutouts are measured after their real alpha discard, but blended hair, fabric, glow, or glass stays an explicit composed-scene review item.");
         }
+        drawNamedOccluders();
         return;
     }
     if (result.opaque_visibility_isolated_tiles == 0u) {
@@ -11690,6 +11940,7 @@ void drawCharacterOpaqueVisibilityDiagnostics(
             ui::TextSubtleWrapped(
                 "The exact isolated replay produced no opaque or alpha-tested fragments. The character may be outside the camera, fully clipped, facing away with one-sided geometry, or completely rejected by its alpha mask. This is a valid failing visual result, not missing evidence; use the camera and facing overlays before changing offsets blindly.");
         }
+        drawNamedOccluders();
         return;
     }
     const double visiblePercent =
@@ -11709,6 +11960,7 @@ void drawCharacterOpaqueVisibilityDiagnostics(
         result.opaque_visibility_isolated_tiles,
         result.opaque_visibility_opaque_draws,
         result.opaque_visibility_masked_draws);
+    drawNamedOccluders();
     const float gridExtent = std::min(
         12.0f * ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x);
     const float cell = std::max(8.0f, gridExtent / 8.0f);
@@ -14050,12 +14302,21 @@ void drawCharacterTestEvidenceMatrix(
             result.opaque_visibility_scene_tiles = 7u;
             result.opaque_visibility_isolated_tile_mask = 0x3ffu;
             result.opaque_visibility_scene_tile_mask = 0x7fu;
+            result.opaque_visibility_occluder_present_mask = 0x3u;
+            result.opaque_visibility_occluder_qualified_mask = 0x1u;
+            result.opaque_visibility_occluder_draws[0] = 3u;
+            result.opaque_visibility_occluder_draws[1] = 2u;
+            result.opaque_visibility_occluder_unqualified_draws[1] = 1u;
+            result.opaque_visibility_occluder_overlap_tiles[0] = 2u;
+            result.opaque_visibility_occluder_overlap_tile_mask[0] = 0x3u;
             if (std::strcmp(
                     smokeAction, "publish-zero-visibility") == 0) {
                 result.opaque_visibility_isolated_tiles = 0u;
                 result.opaque_visibility_scene_tiles = 0u;
                 result.opaque_visibility_isolated_tile_mask = 0u;
                 result.opaque_visibility_scene_tile_mask = 0u;
+                result.opaque_visibility_occluder_overlap_tiles[0] = 0u;
+                result.opaque_visibility_occluder_overlap_tile_mask[0] = 0u;
             }
             std::snprintf(result.renderer_backend,
                           sizeof(result.renderer_backend), "%s",
@@ -14285,6 +14546,7 @@ void drawCharacterTestEvidenceMatrix(
                             MdkrCharacterPreviewContext>(context + 1u);
                         cell.players = static_cast<int>(players);
                         if (context == MDKR_CHARACTER_CONTEXT_SELECT) {
+                            clearCharacterPreviewOccluderEvidence(cell);
                             cell.contact_solves = 0u;
                             cell.contact_error_mean_micrometres = 0u;
                             cell.contact_error_max_micrometres = 0u;

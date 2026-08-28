@@ -4375,6 +4375,19 @@ static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
         case G_MW_DKR_MODERN_CHARACTER:
             dkr_draw_modern_character(data);
             break;
+        case G_MW_DKR_CHARACTER_OCCLUDER:
+            /* The buffered ordinary triangle stream belongs wholly to the old
+             * scope. Preserve that boundary before publishing the next one to
+             * an optional diagnostic backend. Invalid native commands fail
+             * closed to NONE instead of misattributing following objects. */
+            gfx_flush();
+            if (gfx_rapi != NULL &&
+                gfx_rapi->set_modern_character_occluder != NULL) {
+                gfx_rapi->set_modern_character_occluder(
+                    data < GFX_MODERN_CHARACTER_OCCLUDER_COUNT
+                        ? data : GFX_MODERN_CHARACTER_OCCLUDER_NONE);
+            }
+            break;
         case G_MW_FOG:          /* 0x08 — fog_mul (hi 16) / fog_offset (lo 16) */
             rsp.fog_mul = (int16_t)(data >> 16);
             rsp.fog_offset = (int16_t)(data & 0xffff);

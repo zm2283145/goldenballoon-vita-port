@@ -389,6 +389,9 @@ void testExactFitReviewGate() {
     facts.cameraWarning = false;
     facts.surfaceWarning = true;
     assert(CharacterWorkshop_reviewFit(facts).warnings);
+    facts.surfaceWarning = false;
+    facts.attachmentVisibilityWarning = true;
+    assert(CharacterWorkshop_reviewFit(facts).warnings);
 }
 
 void testSceneReviewProgression() {

@@ -111,13 +111,13 @@ def evidence_rows(root: Path) -> list[list[str]]:
     header = lines[0].split("\t")
     if (
         len(header) != 3
-        or header[0] != "mdkr-character-test-evidence-v8"
+        or header[0] != "mdkr-character-test-evidence-v9"
         or int(header[1]) != len(lines) - 1
         or len(header[2]) != 64
     ):
         raise RuntimeError("test evidence inventory header is malformed")
     rows = [line.split("\t") for line in lines[1:]]
-    if any(len(row) != 209 for row in rows):
+    if any(len(row) != 223 for row in rows):
         raise RuntimeError("test evidence inventory row is malformed")
     return rows
 
@@ -494,7 +494,7 @@ def main() -> int:
                 or rows[0][0] != "0"
                 or rows[0][1] != PACKAGE_ID
                 or (rows[0][7], rows[0][8]) != ("2", "4")
-                or rows[0][9] != "20"
+                or rows[0][9] != "21"
                 or bytes.fromhex(rows[0][29]).decode("utf-8")
                 != "webgpu-test"
                 or bytes.fromhex(rows[0][30]).decode("utf-8")
@@ -551,9 +551,12 @@ def main() -> int:
                     2, 2, 0, 0,
                     8, 8, 10, 7, 1023, 127,
                 )
+                or tuple(map(int, rows[0][208:222]))
+                != (3, 1, 3, 2, 0, 0, 1, 0, 2, 0, 0, 3, 0, 0)
             ):
                 raise RuntimeError(
-                    "qualified exact result did not persist exact device, fit, anatomy, camera, and vehicle-surface fields"
+                    "qualified exact result did not persist exact device, fit, anatomy, camera, and vehicle-surface fields: "
+                    + repr(tuple(map(int, rows[0][186:222])))
                 )
 
             run(

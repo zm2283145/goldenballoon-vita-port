@@ -26,6 +26,18 @@ enum GfxBlendMode {
     GFX_BLEND_ALPHA_RDP_CVG_MEMORY = 6, /* shader coverage + memory color */
 };
 
+/* Game-owned draw scopes used only by the Character Workshop's one-shot
+ * attribution witness. Values are a stable renderer contract: the display-list
+ * interpreter flushes ordinary triangles before changing scope, so a backend
+ * can retain exact batches without guessing from textures or mesh names. */
+enum GfxModernCharacterOccluder {
+    GFX_MODERN_CHARACTER_OCCLUDER_NONE = 0,
+    GFX_MODERN_CHARACTER_OCCLUDER_VEHICLE_BODY,
+    GFX_MODERN_CHARACTER_OCCLUDER_VEHICLE_PARTS,
+    GFX_MODERN_CHARACTER_OCCLUDER_HELD_OBJECT,
+    GFX_MODERN_CHARACTER_OCCLUDER_COUNT,
+};
+
 enum GfxRenderingStatus {
     GFX_RENDERING_UNINITIALIZED = 0,
     GFX_RENDERING_READY,
@@ -162,6 +174,9 @@ struct GfxRenderingAPI {
     /* Optional per-world-viewport shadow receiver selection. */
     void (*set_shadow_view)(int view_index);
     void (*set_blend_mode)(enum GfxBlendMode mode);
+    /* Optional exact Workshop attribution scope. NULL backends still render
+     * normally; callers must flush before changing it. */
+    void (*set_modern_character_occluder)(uint32_t occluder);
     void (*draw_triangles)(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris);
     bool (*read_framebuffer_rgb)(int x, int y, int width, int height, uint8_t *rgb_out);
     /* Optional exact modern-character-only capture. The backend replays its

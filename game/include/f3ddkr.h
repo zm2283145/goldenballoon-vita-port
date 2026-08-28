@@ -176,6 +176,11 @@
 #define G_MW_DKR_SMOOTH_NORMALS 0x0E
 #define G_MW_DKR_WORLD_REGION 0x10
 #define G_MW_DKR_MODERN_CHARACTER 0x12
+#define G_MW_DKR_CHARACTER_OCCLUDER 0x14
+#define G_DKR_CHARACTER_OCCLUDER_NONE 0
+#define G_DKR_CHARACTER_OCCLUDER_VEHICLE_BODY 1
+#define G_DKR_CHARACTER_OCCLUDER_VEHICLE_PARTS 2
+#define G_DKR_CHARACTER_OCCLUDER_HELD_OBJECT 3
 #define G_VTX_APPEND 1
 
 #define gDkrEnableBillboard(pkt)            \
@@ -208,6 +213,8 @@
     gMoveWd(pkt, G_MW_DKR_SMOOTH_NORMALS, 0, (normals))
 #define gDkrDrawModernCharacter(pkt, drawToken) \
     gMoveWd(pkt, G_MW_DKR_MODERN_CHARACTER, 0, (drawToken))
+#define gDkrSetCharacterOccluder(pkt, occluder) \
+    gMoveWd(pkt, G_MW_DKR_CHARACTER_OCCLUDER, 0, (occluder))
 #endif
 
 #define TRIN_DISABLE_TEXTURE 0

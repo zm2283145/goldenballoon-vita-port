@@ -5102,6 +5102,7 @@ struct GfxRenderingAPI gfx_opengl_api = {
     .set_scissor = gfx_opengl_set_scissor,
     .set_shadow_view = gfx_opengl_set_shadow_view,
     .set_blend_mode = gfx_opengl_set_blend_mode,
+    .set_modern_character_occluder = NULL,
     .draw_triangles = gfx_opengl_draw_triangles,
     .read_framebuffer_rgb = gfx_opengl_read_framebuffer_rgb,
     .get_modern_character_capture_dimensions = NULL,
