@@ -304,6 +304,38 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME enhancement_registry COMMAND mdkr_enhancement_registry_test)
 
+    # Adventure Party session state machine (AP-02). Pure and ROM-free by
+    # design; these tests are the module's whole edge-case surface — every
+    # legal/illegal state-event pair, generation staleness, exact-once award
+    # consumption and roster suspend/restore — so they must keep running even
+    # when MDKR_ADVENTURE_PARTY_OMIT strips the module from the game binary
+    # (the test compiles the sources directly and does not care).
+    add_executable(mdkr_adventure_party_state_test
+        ${CMAKE_SOURCE_DIR}/tests/test_adventure_party_state.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_state.c)
+    target_include_directories(mdkr_adventure_party_state_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_adventure_party_state_test PRIVATE m)
+    endif()
+    add_test(NAME adventure_party_state COMMAND mdkr_adventure_party_state_test)
+
+    # Adventure Party policy core (AP-03): the v1 capability table with its
+    # fail-closed unknowns, the three-way count vocabulary, deterministic
+    # transition arbitration and exact-once token issuance. Links the state
+    # module too because the exact-once and count tests exercise a real
+    # session end to end — that composition is the invariant.
+    add_executable(mdkr_adventure_party_policy_test
+        ${CMAKE_SOURCE_DIR}/tests/test_adventure_party_policy.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_policy.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_state.c)
+    target_include_directories(mdkr_adventure_party_policy_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_adventure_party_policy_test PRIVATE m)
+    endif()
+    add_test(NAME adventure_party_policy COMMAND mdkr_adventure_party_policy_test)
+
     # Pack discovery, load order and path resolution. fs_utf8.c is a real link
     # dependency, not decoration: path access goes through mdkr_fopen_utf8 and
     # mdkr_path_query_utf8 so the Windows arm inherits the existing UTF-8

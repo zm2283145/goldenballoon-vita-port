@@ -410,6 +410,22 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/mdkr_challenge.c   # Challenge/battle terminal-event test driver
     ${CMAKE_SOURCE_DIR}/platform/mdkr_taj.c         # Taj challenge lifecycle/outcome test driver
 )
+# Adventure Party (AP-02/AP-03): pure native session state machine + policy
+# core, own directory, adventure_party_ prefix (never party_ — that is Phone
+# Party — and never mdkr_adventure_ — those are the test hooks above). The
+# OMIT arm exists from the first module commit: when ON the sources leave the
+# game binary and MDKR_ADVENTURE_PARTY_OMIT=1 (set beside the other compile
+# definitions below) lets future adapter call sites compile out. The unit
+# tests in cmake/tests.cmake compile these sources directly and never consult
+# this option, so ctest is identical on both arms.
+option(MDKR_ADVENTURE_PARTY_OMIT
+       "Exclude the Adventure Party modules from the game binary" OFF)
+if(NOT MDKR_ADVENTURE_PARTY_OMIT)
+    list(APPEND PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_state.c  # session states/generations/exact-once
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_policy.c # capability table + arbitration + authority
+    )
+endif()
 # GL-only support TUs — the browser build is WebGPU-only, so they'd only pull in
 # glad/GL symbols that don't exist under wasm. Keep them native-only.
 if(NOT EMSCRIPTEN)
@@ -570,6 +586,13 @@ target_compile_definitions(${MDKR_TARGET} PRIVATE
     _FINALROM
     SDL_MAIN_HANDLED
 )
+# Adventure Party OMIT arm (option declared beside PLATFORM_SOURCES above):
+# with the module sources excluded, this definition is what future adapter
+# call sites #if out on, so an OMIT build cannot half-link the feature.
+if(MDKR_ADVENTURE_PARTY_OMIT)
+    target_compile_definitions(${MDKR_TARGET} PRIVATE
+        MDKR_ADVENTURE_PARTY_OMIT=1)
+endif()
 
 # --- Version stamping (PK-1, macOS packaging) ------------------------------
 # Single source of truth for the packaged release version. Wired to a real
