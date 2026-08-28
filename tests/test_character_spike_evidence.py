@@ -48,8 +48,10 @@ class CharacterSpikeEvidenceTests(unittest.TestCase):
             "replacements=61 contacts=60 contactMaxUm=42000 "
             "contactWitness=f contactWitnessErrorUm=10000,20000,30000,40000 "
             "fit=1 fitAnchorUm=0,0,0 fitBoundsYUm=0,1250000 "
-            "fitForwardMilli=0,0,1000 pose=2 phase=500 poseTicks=60 "
-            "poseFallback=0 gpu=3/3 sceneGpuNs=60,100,200 "
+            "fitForwardMilli=0,0,1000 pose=2 phase=500 transitionFrom=0 "
+            "transitionPhase=0 transition=0/0/0 transitionBlend=0,0 "
+            "transitionSource=2,0 poseTicks=60 poseFallback=0 "
+            "gpu=3/3 sceneGpuNs=60,100,200 "
             "characterGpuNs=60,30,50 gpuExcluded=0,0,0 "
             "backend=webgpu-metal adapter=Fixture GPU driver=test "
             "vendor=00000001 device=00000002 output=1280x960 render=1280x960\n"
@@ -64,6 +66,7 @@ class CharacterSpikeEvidenceTests(unittest.TestCase):
         self.assertEqual(2000, parsed["wall_microseconds"]["p95"])
         self.assertEqual(42000, parsed["contacts"]["maximum_micrometres"])
         self.assertEqual([0, 1250000], parsed["fit"]["bounds_y_micrometres"])
+        self.assertEqual(2, parsed["pose"]["motion_source"])
         self.assertEqual("Fixture GPU", parsed["environment"]["adapter"])
         with self.assertRaisesRegex(evidence.EvidenceError, "package fallback"):
             evidence._parse_result(output.replace("poseFallback=0",
@@ -72,6 +75,19 @@ class CharacterSpikeEvidenceTests(unittest.TestCase):
                                     "warmed real-time"):
             evidence._parse_result(output.replace("realtime=1", "realtime=0"),
                                    "car-1p")
+
+    def test_context_match_tracks_the_scene_aware_preview_contract(self) -> None:
+        output = (
+            "[TRACE] character_workshop_preview: started context=select "
+            "scene=0 players=1 vehicle=-1 level=22\n"
+        )
+        self.assertTrue(evidence._entered_context(output, "select", 1))
+        self.assertFalse(evidence._entered_context(output, "car", 1))
+        self.assertFalse(evidence._entered_context(output, "select", 2))
+        self.assertFalse(evidence._entered_context(
+            output.replace("scene=0", "scene=2"), "select", 1))
+        self.assertFalse(evidence._entered_context(
+            output.replace("scene=0 ", ""), "select", 1))
 
     def test_existing_evidence_is_never_overwritten(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

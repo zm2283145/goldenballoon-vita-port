@@ -336,7 +336,11 @@ def _parse_result(output: str, label: str) -> dict[str, Any]:
             r"fitBoundsYUm=(-?\d+),(-?\d+) "
             r"fitForwardMilli=(-?\d+),(-?\d+),(-?\d+)"
         ),
-        "pose": r"pose=(\d+) phase=(\d+) poseTicks=(\d+) poseFallback=(\d+)",
+        "pose": (
+            r"pose=(\d+) phase=(\d+) transitionFrom=0 transitionPhase=0 "
+            r"transition=0/0/0 transitionBlend=0,0 "
+            r"transitionSource=([1-3]),0 poseTicks=(\d+) poseFallback=(\d+)"
+        ),
         "gpu": (
             r"gpu=(\d+)/([0-9a-f]+) sceneGpuNs=(\d+),(\d+),(\d+) "
             r"characterGpuNs=(\d+),(\d+),(\d+)"
@@ -371,7 +375,7 @@ def _parse_result(output: str, label: str) -> dict[str, Any]:
         raise EvidenceError(f"{label} did not produce a warmed replacement window")
     if fit[0] != 1 or fit[4] > fit[5]:
         raise EvidenceError(f"{label} returned invalid fit evidence")
-    if pose[2] <= 0 or pose[3] != 0:
+    if pose[3] <= 0 or pose[4] != 0:
         raise EvidenceError(f"{label} used an unintended package fallback pose")
     if "[WGPU-MODERN-CHARACTER]" not in output or "refusedDraws=0" not in output:
         raise EvidenceError(f"{label} did not render a clean modern character")
@@ -397,7 +401,8 @@ def _parse_result(output: str, label: str) -> dict[str, Any]:
         },
         "pose": {
             "id": pose[0], "phase_milli": pose[1],
-            "ticks": pose[2], "package_fallback_ticks": pose[3],
+            "motion_source": pose[2], "ticks": pose[3],
+            "package_fallback_ticks": pose[4],
         },
         "gpu": {
             "status": gpu[0], "scope_mask": gpu[1],
@@ -415,6 +420,15 @@ def _parse_result(output: str, label: str) -> dict[str, Any]:
             "render": [int(environment[7]), int(environment[8])],
         },
     }
+
+
+def _entered_context(output: str, context: str, players: int) -> bool:
+    """Match the versioned direct-preview route without depending on field gaps."""
+    return re.search(
+        rf"character_workshop_preview: started "
+        rf"context={re.escape(context)} scene=0 players={players}(?:\s|$)",
+        output,
+    ) is not None
 
 
 def _exact_context(
@@ -457,8 +471,7 @@ def _exact_context(
     )
     if process.returncode != 0:
         raise EvidenceError(f"{label} exact renderer exited with {process.returncode}")
-    expected = f"character_workshop_preview: started context={context} players={players}"
-    if expected not in output:
+    if not _entered_context(output, context, players):
         raise EvidenceError(f"{label} did not enter the requested game context")
     parsed = _parse_result(output, label)
 
@@ -489,7 +502,7 @@ def _exact_context(
         raise EvidenceError(
             f"{label} screenshot renderer exited with {capture.returncode}"
         )
-    if expected not in capture_output:
+    if not _entered_context(capture_output, context, players):
         raise EvidenceError(
             f"{label} screenshot run did not enter the requested game context"
         )
